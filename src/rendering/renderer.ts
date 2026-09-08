@@ -30,6 +30,7 @@ import {
 import {
   cellToScreenRect,
   fixedToModel,
+  fitViewport,
   modelToScreen,
   viewportModelRect,
   visibleCellRect
@@ -269,6 +270,20 @@ function patternCanvasRect(
   );
 }
 
+const GRID_SHOW_AT_FIT_RATIO = 1.2;
+
+function shouldDrawGrid(
+  document: PatternDocument,
+  viewport: Viewport,
+  metrics: CanvasMetrics,
+  style: RendererStyle
+): boolean {
+  if (!style.showGrid) return false;
+  const currentZoom = viewport.zoom > 0 && Number.isFinite(viewport.zoom) ? viewport.zoom : 1;
+  const fitZoom = fitViewport(document, metrics, 0).zoom;
+  return currentZoom >= fitZoom * GRID_SHOW_AT_FIT_RATIO;
+}
+
 function drawGrid(
   context: CanvasContextAdapter,
   document: PatternDocument,
@@ -278,7 +293,7 @@ function drawGrid(
   visible: CellRect,
   lod: RenderLod
 ): void {
-  if (!style.showGrid || visible.width === 0 || visible.height === 0) return;
+  if (!shouldDrawGrid(document, viewport, metrics, style) || visible.width === 0 || visible.height === 0) return;
   const bounds = patternCanvasRect(document, viewport, metrics);
   if (!bounds) return;
   const configuredInterval = Number.isFinite(style.gridInterval) ? Math.max(1, Math.floor(style.gridInterval)) : 1;
@@ -342,7 +357,7 @@ function drawMidGrid(
   visible: CellRect,
   lod: RenderLod
 ): void {
-  if (!style.showGrid || lod === RenderLod.Overview || visible.width === 0 || visible.height === 0) return;
+  if (!shouldDrawGrid(document, viewport, metrics, style) || lod === RenderLod.Overview || visible.width === 0 || visible.height === 0) return;
   const bounds = patternCanvasRect(document, viewport, metrics);
   if (!bounds) return;
   const interval = Number.isFinite(style.midGridInterval) ? Math.max(1, Math.floor(style.midGridInterval)) : 5;
@@ -436,7 +451,7 @@ function drawGridForCells(
   cells: readonly CellRect[],
   lod: RenderLod
 ): void {
-  if (!style.showGrid || lod === RenderLod.Overview || cells.length === 0) return;
+  if (!shouldDrawGrid(document, viewport, metrics, style) || lod === RenderLod.Overview || cells.length === 0) return;
   const bounds = patternCanvasRect(document, viewport, metrics);
   if (!bounds) return;
   const interval = Math.max(1, Math.floor(style.gridInterval));

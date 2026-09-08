@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CellKind, createDocument } from '../domain';
-import { cellToScreenRect, getCanvasMetrics, visibleCellRect } from '../editor/coordinates';
+import { cellToScreenRect, fitViewport, getCanvasMetrics, visibleCellRect } from '../editor/coordinates';
 import type { CanvasContextAdapter, CanvasTarget, PendingCellState, TraceImage } from '../editor/contracts';
 import { MAX_ATLAS_PIXELS, createDefaultAtlasTarget } from './context';
 import { isCanvasImageSource } from './atlas';
@@ -636,7 +636,7 @@ describe('Canvas 2D chart renderer', () => {
     const detail = createCanvasRenderer({
       document: compactDocument,
       targets: { base: target(detailContext), overlay: target(recordingContext()) },
-      metrics: getCanvasMetrics(80, 80),
+      metrics: getCanvasMetrics(64, 64),
       viewport: { x: 0, y: 0, zoom: 16 },
       style: { mode: 'combined', gridInterval: 2 }
     });
@@ -664,7 +664,7 @@ describe('Canvas 2D chart renderer', () => {
       document,
       targets: { base: target(base), overlay: target(recordingContext()) },
       metrics: getCanvasMetrics(320, 160, { dpr: 2 }),
-      viewport: { x: 0, y: 0, zoom: 16 },
+      viewport: { x: 0, y: 0, zoom: 20 },
       style: { gridColor: '#00ff00', midGridColor: '#0000ff', majorGridColor: '#ff0000', gridInterval: 10, midGridInterval: 5 }
     });
     renderer.renderNow();
@@ -673,22 +673,56 @@ describe('Canvas 2D chart renderer', () => {
     expect(midSegments.length).toBe(4); // x at 5,10,15 and y at 5.
     expect(new Set(midSegments.map((call) => call.lineWidth))).toEqual(new Set([1]));
     const midLineTos = midSegments.map((call) => call.args as number[]);
-    // Vertical lines span the full chart height at x=80,160,240; horizontal spans full width at y=80.
-    const verticals = midLineTos.filter(([x]) => x === 80 || x === 160 || x === 240);
+    // Vertical lines span the clipped chart height at x=100,200,300; horizontal spans the canvas width at y=100.
+    const verticals = midLineTos.filter(([x]) => x === 100 || x === 200 || x === 300);
     expect(verticals.length).toBe(3);
     for (const [, y] of verticals) expect(y).toBe(160);
-    const horizontal = midLineTos.find(([x, y]) => x === 320 && y === 80);
+    const horizontal = midLineTos.find(([x, y]) => x === 320 && y === 100);
     expect(horizontal).toBeDefined();
     // No mid line at the document edges: the only mid segments are the three
-    // verticals at interior multiples of 5 (x=80,160,240 for cells 5,10,15)
-    // and the single horizontal at y=80 (cell 5). No vertical at x=0/x=320.
+    // verticals at interior multiples of 5 (x=100,200,300 for cells 5,10,15)
+    // and the single horizontal at y=100 (cell 5). No vertical at x=0/x=400.
     const midMoves = base.records
       .filter((call) => call.name === 'moveTo' && call.strokeStyle === '#0000ff')
       .map((call) => call.args as number[]);
     const verticalMoves = midMoves.filter(([, y]) => y === 0 || y === 160);
     const verticalMoveXs = verticalMoves.map(([x]) => x).sort((a, b) => a - b);
-    expect(verticalMoveXs).toEqual([80, 160, 240]);
+    expect(verticalMoveXs).toEqual([100, 200, 300]);
     renderer.dispose();
+  });
+
+  it('shows every grid tier at and above 120% of the rectangular fit zoom', () => {
+    const document = chart(20, 10);
+    const metrics = getCanvasMetrics(640, 320, { dpr: 2 });
+    const fitZoom = fitViewport(document, metrics, 0).zoom;
+    const cases = [
+      { ratio: 1, visible: false },
+      { ratio: 1.1999, visible: false },
+      { ratio: 1.2, visible: true },
+      { ratio: 1.2001, visible: true }
+    ];
+
+    for (const { ratio, visible } of cases) {
+      const base = recordingContext();
+      const renderer = createCanvasRenderer({
+        document,
+        targets: { base: target(base), overlay: target(recordingContext()) },
+        metrics,
+        viewport: { x: 0, y: 0, zoom: fitZoom * ratio },
+        style: { gridColor: '#00ff00', midGridColor: '#0000ff', majorGridColor: '#ff0000', gridInterval: 10, midGridInterval: 5 }
+      });
+      renderer.renderNow();
+      const gridRecords = base.records.filter((call) =>
+        call.name === 'stroke' && (call.strokeStyle === '#00ff00' || call.strokeStyle === '#0000ff' || call.strokeStyle === '#ff0000')
+      );
+      if (visible) {
+        expect(gridRecords.some((call) => call.strokeStyle === '#ff0000')).toBe(true);
+        expect(gridRecords.some((call) => call.strokeStyle === '#0000ff')).toBe(true);
+      } else {
+        expect(gridRecords).toEqual([]);
+      }
+      renderer.dispose();
+    }
   });
 
   it('omits the 5-cell tier at overview zoom and on tiny charts', () => {
@@ -721,9 +755,9 @@ describe('Canvas 2D chart renderer', () => {
   it('keeps grid coordinates inside the pattern and canvas bounds at every LOD and DPR', () => {
     const cases = [
       { name: 'overview', document: chart(100, 100), metrics: getCanvasMetrics(40, 32, { dpr: 2 }), viewport: { x: 3.25, y: 4.5, zoom: 1 }, grid: true },
-      { name: 'compact', document: chart(100, 100), metrics: getCanvasMetrics(40, 32, { dpr: 1.5 }), viewport: { x: 3.25, y: 4.5, zoom: 8 }, grid: true },
-      { name: 'detail', document: chart(100, 100), metrics: getCanvasMetrics(40, 32, { dpr: 2 }), viewport: { x: 3.25, y: 4.5, zoom: 16 }, grid: true },
-      { name: 'centered pattern', document: chart(2, 2), metrics: getCanvasMetrics(80, 60, { dpr: 2 }), viewport: { x: 0, y: 0, zoom: 16 }, grid: true }
+      { name: 'compact', document: chart(7, 7), metrics: getCanvasMetrics(40, 32, { dpr: 1.5 }), viewport: { x: 0.25, y: 0.5, zoom: 8 }, grid: true },
+      { name: 'detail', document: chart(3, 3), metrics: getCanvasMetrics(40, 32, { dpr: 2 }), viewport: { x: 0, y: 0, zoom: 16 }, grid: true },
+      { name: 'centered pattern', document: chart(2, 2), metrics: getCanvasMetrics(80, 60, { dpr: 2 }), viewport: { x: 0, y: 0, zoom: 40 }, grid: true }
     ];
 
     for (const testCase of cases) {
@@ -866,8 +900,8 @@ describe('Canvas 2D chart renderer', () => {
     const renderer = createCanvasRenderer({
       document,
       targets: { base: target(recordingContext()), overlay: target(overlay) },
-      metrics: getCanvasMetrics(48, 16),
-      viewport: { x: 0, y: 0, zoom: 16 },
+      metrics: getCanvasMetrics(48, 20),
+      viewport: { x: 0, y: 0, zoom: 20 },
       style: { gridColor: '#00aa00', majorGridColor: '#00aa00', gridInterval: 1 },
       overlay: {
         pendingCells: [{ x: 1, y: 0 }],
@@ -876,8 +910,8 @@ describe('Canvas 2D chart renderer', () => {
     });
     renderer.renderNow();
 
-    const maskIndex = overlay.records.findIndex((call) => call.name === 'fillRect' && call.args.join(',') === '16,0,16,16' && call.fillStyle === '#ffffff');
-    const stateIndex = overlay.records.findIndex((call) => call.name === 'fillRect' && call.args.join(',') === '16,0,16,16' && call.fillStyle === '#f00');
+    const maskIndex = overlay.records.findIndex((call) => call.name === 'fillRect' && call.args.join(',') === '20,0,20,20' && call.fillStyle === '#ffffff');
+    const stateIndex = overlay.records.findIndex((call) => call.name === 'fillRect' && call.args.join(',') === '20,0,20,20' && call.fillStyle === '#f00');
     const gridIndices = overlay.records
       .map((call, index, records) => call.name === 'moveTo' && call.strokeStyle === '#00aa00' && records[index + 1]?.name === 'lineTo' && records[index + 2]?.name === 'stroke' ? index : -1)
       .filter((index) => index >= 0);
@@ -894,14 +928,14 @@ describe('Canvas 2D chart renderer', () => {
       const from = overlay.records[index].args as number[];
       const to = overlay.records[index + 1].args as number[];
       expect(overlay.records[index + 1].name).toBe('lineTo');
-      expect(from[0]).toBeGreaterThanOrEqual(16);
-      expect(from[0]).toBeLessThanOrEqual(32);
-      expect(to[0]).toBeGreaterThanOrEqual(16);
-      expect(to[0]).toBeLessThanOrEqual(32);
+      expect(from[0]).toBeGreaterThanOrEqual(20);
+      expect(from[0]).toBeLessThanOrEqual(40);
+      expect(to[0]).toBeGreaterThanOrEqual(20);
+      expect(to[0]).toBeLessThanOrEqual(40);
       expect(from[1]).toBeGreaterThanOrEqual(0);
-      expect(from[1]).toBeLessThanOrEqual(16);
+      expect(from[1]).toBeLessThanOrEqual(20);
       expect(to[1]).toBeGreaterThanOrEqual(0);
-      expect(to[1]).toBeLessThanOrEqual(16);
+      expect(to[1]).toBeLessThanOrEqual(20);
     }
     renderer.dispose();
   });
@@ -1415,13 +1449,13 @@ describe('Canvas 2D chart renderer', () => {
     }
   });
 
-  it('keeps an adaptive overview grid visible and bounded at minimum zoom', () => {
+  it('keeps an adaptive overview grid visible and bounded at low zoom', () => {
     const base = recordingContext();
     const renderer = createCanvasRenderer({
       document: chart(1_000, 1_000),
       targets: { base: target(base), overlay: target(recordingContext()) },
       metrics: getCanvasMetrics(160, 120),
-      viewport: { x: 500, y: 500, zoom: 0.01 },
+      viewport: { x: 500, y: 500, zoom: 0.15 },
       atlasTargetFactory: (width, height) => target(recordingContext(), new FakeCanvasImageSource(width, height)),
       style: { gridColor: '#00ff00', majorGridColor: '#ff0000' }
     });
@@ -1444,7 +1478,7 @@ describe('Canvas 2D chart renderer', () => {
       document,
       targets: { base: target(base), overlay: target(recordingContext()) },
       metrics: getCanvasMetrics(320, 160, { dpr: 2 }),
-      viewport: { x: 0, y: 0, zoom: 16 },
+      viewport: { x: 0, y: 0, zoom: 24 },
       style: { gridColor: '#00ff00', midGridColor: '#0000ff', majorGridColor: '#ff0000', gridInterval: 10, midGridInterval: 5, showGrid: false }
     });
     renderer.renderNow();
