@@ -39,7 +39,17 @@ const pwaOptions = {
   }
 };
 
+function normalizeBasePath(value: string): string {
+  const path = value.trim().replace(/^\/+|\/+$/g, '');
+  return path ? `/${path}/` : '/';
+}
+
 function githubPagesBase(): string {
+  const basePathOverride = process.env.VITE_BASE_PATH;
+  if (basePathOverride !== undefined) {
+    return normalizeBasePath(basePathOverride);
+  }
+
   const githubRepository = process.env.GITHUB_REPOSITORY;
 
   // Only GitHub Actions project-site builds need a repository base path.
