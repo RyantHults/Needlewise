@@ -1,0 +1,2350 @@
+import {
+  CellKind,
+  createPatternFragment,
+  clonePatternFragment,
+  DomainError,
+  mixedEraseCommand,
+  preflightMixedEraseCommand,
+  deleteRegionCommand,
+  pasteFragmentCommand,
+  preflightBulkCellCommand,
+  type BulkCellEdit,
+  type CommandResult,
+  type DomainCommand,
+  type PatternDocument,
+  type PatternFragment
+} from '../domain';
+import type {
+  CanvasMetrics,
+  CanvasRenderer,
+  CellRect,
+  AuthoringStitchBrush,
+  EditorToolState,
+  EditorUiStore,
+  EraserMode,
+  FixedPoint,
+  GridRect,
+  Invalidation,
+  ModelPoint,
+  OverlayState,
+  PendingCellState,
+  SelectedCellSemantics,
+  ScreenPoint,
+  TraceBoundsChangeCallback,
+  TraceImage,
+  TraceImageSampler,
+  TraceRgb,
+  TraceSampleCallback,
+  StitchBrush,
+  Viewport
+} from './contracts';
+import { normalizeBrushSize } from './contracts';
+import {
+  fitViewport,
+  hitTestCell,
+  isFiniteModelPoint,
+  isFiniteScreenPoint,
+  isFiniteViewport,
+  normalizeViewport,
+  screenToModel,
+  zoomAt,
+  zoomBy,
+  cellToScreenRect,
+  type ViewportClampOptions
+} from './coordinates';
+import { cellKey, supercoverLine } from './interpolation';
+import {
+  type EditorRevisionToken,
+  type EditorTransaction,
+  type WorkspaceEditorGateway,
+  type WorkspaceEditorSnapshot,
+  StaleEditorTransactionError
+} from './gateway';
+import type { KeyboardSample, PointerSample, WheelSample } from './input';
+import {
+  FillCancelledError,
+  FillStaleResultError,
+  createFillWorkerClient,
+  isFillResultCurrent,
+  type FillJob,
+  type FillResultMessage,
+  type FillWorkerClient
+} from './fill';
+import { sampleTraceImage } from '../rendering/trace';
+import { nearestDmcColor } from '../catalog';
+
+export interface EditorSurfaceControllerOptions {
+  readonly gateway: WorkspaceEditorGateway;
+  readonly renderer: CanvasRenderer;
+  readonly uiStore: EditorUiStore;
+  readonly metrics?: CanvasMetrics;
+  readonly minZoom?: number;
+  readonly maxZoom?: number;
+  readonly fillClient?: FillWorkerClient;
+  readonly traceImage?: TraceImage;
+  readonly traceSampler?: TraceImageSampler;
+  readonly onTraceSample?: TraceSampleCallback;
+  readonly onTraceBoundsChange?: TraceBoundsChangeCallback;
+}
+
+export interface EditorSurfaceControllerLifecycle {
+  start(): void;
+  stop(): void;
+  /** Replace the rendered document without recreating editor interaction state. */
+  setDocument(document: PatternDocument, invalidation?: Invalidation): void;
+  setMetrics(metrics: CanvasMetrics): void;
+  setTraceImage(trace: TraceImage | undefined): void;
+  clearTraceImage(): void;
+  setTraceSampleCallback(callback: TraceSampleCallback | undefined): void;
+  dispose(): void;
+}
+
+type Gesture = PaintGesture | EraserGesture | SelectionGesture | BackstitchGesture | PanGesture | PinchGesture | MoveImageGesture | ResizeImageGesture;
+
+interface PaintGesture {
+  readonly kind: 'paint';
+  readonly pointerId: number;
+  readonly transaction: EditorTransaction;
+  readonly brush: StitchBrush;
+  readonly brushSize: number;
+  readonly cells: Map<string, ModelPoint>;
+  lastCell: ModelPoint | undefined;
+}
+
+interface EraserGesture {
+  readonly kind: 'eraser';
+  readonly pointerId: number;
+  readonly transaction: EditorTransaction;
+  readonly mode: EraserMode;
+  readonly brushSize: number;
+  readonly cells: Map<string, ModelPoint>;
+  readonly components: Map<string, { readonly cell: ModelPoint; readonly corner: number }>;
+  lastCell: ModelPoint | undefined;
+}
+
+interface SelectionGesture {
+  readonly kind: 'selection';
+  readonly pointerId: number;
+  readonly anchor: ModelPoint;
+  readonly hadSelection: boolean;
+  current: ModelPoint;
+}
+
+interface BackstitchGesture {
+  readonly kind: 'backstitch';
+  readonly pointerId: number;
+  readonly mode: 'create' | 'move';
+  readonly token: EditorRevisionToken;
+  readonly selectedId?: number;
+  readonly movingEndpoint?: 'start' | 'end';
+  start: FixedPoint;
+  end: FixedPoint;
+}
+
+interface PanGesture {
+  readonly kind: 'pan';
+  readonly pointerId: number;
+  lastX: number;
+  lastY: number;
+}
+
+interface PinchGesture {
+  readonly kind: 'pinch';
+  readonly pointerIds: readonly [number, number];
+  readonly startViewport: Viewport;
+  readonly startMidpoint: ModelPoint;
+  readonly startDistance: number;
+}
+
+interface MoveImageGesture {
+  readonly kind: 'move-image';
+  readonly pointerId: number;
+  readonly startScreenX: number;
+  readonly startScreenY: number;
+  readonly startBounds: CellRect;
+}
+
+type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
+
+interface ResizeImageGesture {
+  readonly kind: 'resize-image';
+  readonly pointerId: number;
+  readonly corner: ResizeCorner;
+  /** The fixed opposite corner in cell coordinates (may be fractional). */
+  readonly anchor: { x: number; y: number };
+  readonly startBounds: CellRect;
+}
+
+/** Screen-pixel distance under which a move-image pointer gesture counts as a tap. */
+const MOVE_IMAGE_TAP_PIXELS = 5;
+/** Screen-pixel hit radius for resize-mode corner handles. */
+const RESIZE_HANDLE_HIT_PIXELS = 12;
+
+function cloneCell(cell: ModelPoint): ModelPoint {
+  return { x: Math.floor(cell.x), y: Math.floor(cell.y) };
+}
+
+/** The cell-coordinate corner opposite the resized corner (stays fixed during a drag). */
+function resizeAnchor(corner: ResizeCorner, bounds: CellRect): { x: number; y: number } {
+  switch (corner) {
+    case 'nw': return { x: bounds.x + bounds.width, y: bounds.y + bounds.height };
+    case 'ne': return { x: bounds.x, y: bounds.y + bounds.height };
+    case 'sw': return { x: bounds.x + bounds.width, y: bounds.y };
+    case 'se': return { x: bounds.x, y: bounds.y };
+  }
+}
+
+function validScreenSample(sample: PointerSample): boolean {
+  return isFiniteScreenPoint({ x: sample.screenX, y: sample.screenY });
+}
+
+function midpoint(left: PointerSample, right: PointerSample): ModelPoint {
+  return { x: (left.screenX + right.screenX) / 2, y: (left.screenY + right.screenY) / 2 };
+}
+
+function distance(left: PointerSample, right: PointerSample): number {
+  return Math.hypot(left.screenX - right.screenX, left.screenY - right.screenY);
+}
+
+function editForBrush(brush: StitchBrush): BulkCellEdit {
+  if (brush.kind === 'full') return { kind: 'full', color: brush.paletteId };
+  if (brush.kind === 'half') return { kind: 'half', direction: brush.direction, color: brush.paletteId };
+  return { kind: 'quarter', corner: brush.corner, color: brush.paletteId };
+}
+
+function cloneBrush(brush: StitchBrush): StitchBrush {
+  if (brush.kind === 'full') return { kind: 'full', paletteId: brush.paletteId };
+  if (brush.kind === 'half') return { kind: 'half', direction: brush.direction, paletteId: brush.paletteId };
+  return { kind: 'quarter', corner: brush.corner, paletteId: brush.paletteId };
+}
+
+function indicesForCells(cells: readonly ModelPoint[], width: number): Uint32Array {
+  for (const cell of cells) if (!isFiniteModelPoint(cell)) throw new DomainError('invalid-coordinate', 'Cell coordinates must be finite.');
+  const indices = [...new Set(cells.map((cell) => Math.floor(cell.y) * width + Math.floor(cell.x)))].sort((left, right) => left - right);
+  return new Uint32Array(indices);
+}
+
+/** Return the clipped, deterministic square stamp centered on a hit cell. */
+function brushCells(center: ModelPoint, size: number, document: PatternDocument): ModelPoint[] {
+  const cellX = Math.floor(center.x);
+  const cellY = Math.floor(center.y);
+  const offset = Math.floor(size / 2);
+  const cells: ModelPoint[] = [];
+  for (let y = cellY - offset; y < cellY - offset + size; y += 1) {
+    for (let x = cellX - offset; x < cellX - offset + size; x += 1) {
+      if (x >= 0 && y >= 0 && x < document.width && y < document.height) cells.push({ x, y });
+    }
+  }
+  return cells;
+}
+
+function stampBrush(cells: Map<string, ModelPoint>, center: ModelPoint, size: number, document: PatternDocument): void {
+  for (const cell of brushCells(center, size, document)) cells.set(cellKey(cell), cell);
+}
+
+function cellState(document: PatternDocument, index: number, edit: BulkCellEdit): PendingCellState {
+  const offset = index * 4;
+  let kind = document.kind[index] as CellKind;
+  const colors: [number, number, number, number] = [
+    document.colors[offset],
+    document.colors[offset + 1],
+    document.colors[offset + 2],
+    document.colors[offset + 3]
+  ];
+  let completed = document.completed[index];
+  if (edit.kind === 'erase-cell') {
+    kind = CellKind.Empty;
+    colors.fill(0);
+    completed = 0;
+  } else if (edit.kind === 'erase-quarter') {
+    if (kind === CellKind.Quarters) {
+      colors[edit.corner] = 0;
+      completed &= ~(1 << edit.corner);
+      if (colors.every((color) => color === 0)) {
+        kind = CellKind.Empty;
+        completed = 0;
+      }
+    }
+  } else if (edit.kind === 'full' || edit.kind === 'half') {
+    const nextKind = edit.kind === 'full'
+      ? CellKind.Full
+      : edit.direction === '\\' ? CellKind.HalfBackslash : CellKind.HalfSlash;
+    const sameGeometry = kind === nextKind;
+    kind = nextKind;
+    colors.fill(0);
+    colors[0] = edit.color;
+    completed = sameGeometry ? completed & 1 : 0;
+  } else {
+    const wasQuarter = kind === CellKind.Quarters;
+    if (!wasQuarter) {
+      kind = CellKind.Quarters;
+      colors.fill(0);
+      completed = 0;
+    }
+    const oldColor = colors[edit.corner];
+    const oldBit = completed & (1 << edit.corner);
+    const nextBit = wasQuarter && oldColor !== 0 ? oldBit : 0;
+    colors[edit.corner] = edit.color;
+    completed = (completed & ~(1 << edit.corner)) | nextBit;
+  }
+  return {
+    index,
+    cell: { x: index % document.width, y: Math.floor(index / document.width) },
+    kind,
+    colors,
+    completed
+  };
+}
+
+function cellStateChanged(document: PatternDocument, state: PendingCellState): boolean {
+  const offset = state.index * 4;
+  return document.kind[state.index] !== state.kind
+    || document.completed[state.index] !== state.completed
+    || document.colors[offset] !== state.colors[0]
+    || document.colors[offset + 1] !== state.colors[1]
+    || document.colors[offset + 2] !== state.colors[2]
+    || document.colors[offset + 3] !== state.colors[3];
+}
+
+export function normalizeGridRect(start: ModelPoint, end: ModelPoint): GridRect {
+  if (!isFiniteModelPoint(start) || !isFiniteModelPoint(end)) throw new DomainError('invalid-coordinate', 'Selection coordinates must be finite.');
+  const left = Math.min(Math.floor(start.x), Math.floor(end.x));
+  const top = Math.min(Math.floor(start.y), Math.floor(end.y));
+  const right = Math.max(Math.floor(start.x), Math.floor(end.x)) + 1;
+  const bottom = Math.max(Math.floor(start.y), Math.floor(end.y)) + 1;
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+export const gridRectFromPoints = normalizeGridRect;
+
+function boundedGridRect(rect: GridRect, document: PatternDocument): GridRect | undefined {
+  const left = Math.max(0, Math.min(document.width, rect.x));
+  const top = Math.max(0, Math.min(document.height, rect.y));
+  const right = Math.max(left, Math.min(document.width, rect.x + rect.width));
+  const bottom = Math.max(top, Math.min(document.height, rect.y + rect.height));
+  if (right <= left || bottom <= top) return undefined;
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+function quarterCornerAt(point: ModelPoint): 0 | 1 | 2 | 3 {
+  const column = Math.floor((point.x - Math.floor(point.x)) * 2);
+  const row = Math.floor((point.y - Math.floor(point.y)) * 2);
+  if (row === 0) return column === 0 ? 0 : 1;
+  return column === 0 ? 3 : 2;
+}
+
+function fixedPointAt(point: ModelPoint, document: PatternDocument): FixedPoint {
+  if (!isFiniteModelPoint(point)) throw new DomainError('invalid-coordinate', 'Backstitch coordinates must be finite.');
+  return {
+    x: Math.min(document.width * 4, Math.max(0, Math.round(point.x) * 4)),
+    y: Math.min(document.height * 4, Math.max(0, Math.round(point.y) * 4))
+  };
+}
+
+function fixedPointToModel(point: FixedPoint): ModelPoint {
+  return { x: point.x / 4, y: point.y / 4 };
+}
+
+function distanceToSegment(point: ModelPoint, start: ModelPoint, end: ModelPoint): number {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSquared = dx * dx + dy * dy;
+  if (lengthSquared === 0) return Math.hypot(point.x - start.x, point.y - start.y);
+  const projection = Math.min(1, Math.max(0, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared));
+  return Math.hypot(point.x - (start.x + projection * dx), point.y - (start.y + projection * dy));
+}
+
+export function cellRectForIndices(indices: Uint32Array, width: number, height: number): CellRect | undefined {
+  if (indices.length === 0 || width < 1 || height < 1) return undefined;
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (const index of indices) {
+    if (index >= width * height) continue;
+    const x = index % width;
+    const y = Math.floor(index / width);
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  }
+  return maxX < minX || maxY < minY
+    ? undefined
+    : { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+}
+
+export function selectedCellSemantics(document: PatternDocument, cell: ModelPoint): SelectedCellSemantics {
+  if (!isFiniteModelPoint(cell)) throw new DomainError('invalid-coordinate', 'Selected cell coordinates must be finite.');
+  const x = Math.min(Math.max(0, Math.floor(cell.x)), document.width - 1);
+  const y = Math.min(Math.max(0, Math.floor(cell.y)), document.height - 1);
+  const index = y * document.width + x;
+  const kind = document.kind[index];
+  const geometry: SelectedCellSemantics['geometry'] = kind === CellKind.Full
+    ? 'full'
+    : kind === CellKind.HalfBackslash
+      ? 'half-backslash'
+      : kind === CellKind.HalfSlash
+        ? 'half-slash'
+        : kind === CellKind.Quarters
+          ? 'quarters'
+          : 'empty';
+  const offset = index * 4;
+  const slotCount = kind === CellKind.Quarters ? 4 : kind === CellKind.Empty ? 0 : 1;
+  const paletteIds: number[] = [];
+  let completed = 0;
+  for (let slot = 0; slot < slotCount; slot += 1) {
+    const paletteId = document.colors[offset + slot];
+    if (paletteId === 0) continue;
+    paletteIds.push(paletteId);
+    if ((document.completed[index] & (1 << slot)) !== 0) completed += 1;
+  }
+  const paletteNames = paletteIds.map((paletteId) => document.palette.find((entry) => entry.id === paletteId)?.name ?? `Palette ${String(paletteId)}`);
+  const completion: SelectedCellSemantics['completion'] = {
+    completed,
+    total: paletteIds.length,
+    summary: paletteIds.length === 0 ? 'No stitch' : `${String(completed)} of ${String(paletteIds.length)} complete`
+  };
+  const stitchSummary = geometry === 'empty' ? 'empty' : geometry;
+  const paletteSummary = paletteNames.length === 0 ? 'no palette' : paletteNames.join(', ');
+  return {
+    row: y + 1,
+    column: x + 1,
+    cell: { x, y },
+    geometry,
+    paletteId: paletteIds[0] ?? null,
+    paletteName: paletteNames[0] ?? null,
+    paletteIds,
+    paletteNames,
+    completion,
+    summary: `Row ${String(y + 1)}, column ${String(x + 1)} · ${stitchSummary} · ${paletteSummary} · ${completion.summary}`
+  };
+}
+
+export function isTextEditingTarget(target: unknown): boolean {
+  if (!target || typeof target !== 'object') return false;
+  const value = target as {
+    tagName?: unknown;
+    isContentEditable?: unknown;
+    getAttribute?: (name: string) => string | null;
+    closest?: (selector: string) => unknown;
+  };
+  if (value.isContentEditable === true) return true;
+  if (typeof value.tagName === 'string' && /^(input|textarea|select|option)$/i.test(value.tagName)) return true;
+  const contentEditable = value.getAttribute?.('contenteditable');
+  if (contentEditable !== null && contentEditable !== undefined && contentEditable !== 'false') return true;
+  const editableParent = value.closest?.('[contenteditable]');
+  return editableParent !== null && editableParent !== undefined;
+}
+
+export class EditorSurfaceController implements EditorSurfaceControllerLifecycle {
+  private readonly gateway: WorkspaceEditorGateway;
+  private readonly renderer: CanvasRenderer;
+  private readonly uiStore: EditorUiStore;
+  private metrics: CanvasMetrics | undefined;
+  private readonly viewportOptions: ViewportClampOptions;
+  private readonly fillClient: FillWorkerClient;
+  private readonly ownsFillClient: boolean;
+  private traceImage: TraceImage | undefined;
+  private readonly traceSampler: TraceImageSampler;
+  private traceSampleCallback: TraceSampleCallback | undefined;
+  private traceBoundsChangeCallback: TraceBoundsChangeCallback | undefined;
+  /** Tool to restore when leaving move/resize-image mode via Escape or a toggle click. */
+  private imageToolPreviousTool: EditorToolState | null = null;
+  private started = false;
+  private disposed = false;
+  private editorFocused = false;
+  private unsubscribeGateway: (() => void) | undefined;
+  private unsubscribeUi: (() => void) | undefined;
+  private lastGatewaySnapshot: WorkspaceEditorSnapshot;
+  private gesture: Gesture | undefined;
+  private readonly touchPointers = new Map<number, PointerSample>();
+  private spaceHeld = false;
+  private commandInFlight = false;
+  private selection: GridRect | undefined;
+  private selectionAnchor: ModelPoint | undefined;
+  private clipboard: PatternFragment | undefined;
+  private eraserCorner: 0 | 1 | 2 | 3 = 0;
+  private selectedBackstitchId: number | undefined;
+  private keyboardBackstitchAnchor: FixedPoint | undefined;
+  private keyboardBackstitchToken: EditorRevisionToken | undefined;
+  private fillJob: FillJob | undefined;
+  private fillToken: EditorRevisionToken | undefined;
+  private fillBrushSnapshot: StitchBrush | undefined;
+  /** Window-level keydown listener active only while a reference-image tool is on. */
+  private imageToolKeydownListener: ((event: KeyboardEvent) => void) | null = null;
+
+  constructor(options: EditorSurfaceControllerOptions) {
+    this.gateway = options.gateway;
+    this.renderer = options.renderer;
+    this.uiStore = options.uiStore;
+    this.metrics = options.metrics;
+    this.viewportOptions = { minZoom: options.minZoom, maxZoom: options.maxZoom };
+    this.fillClient = options.fillClient ?? createFillWorkerClient();
+    this.ownsFillClient = options.fillClient === undefined;
+    this.traceImage = options.traceImage;
+    this.traceSampler = options.traceSampler ?? ((trace, document, viewport, metrics, point) => sampleTraceImage(trace, document, viewport, metrics, point));
+    this.traceSampleCallback = options.onTraceSample;
+    this.traceBoundsChangeCallback = options.onTraceBoundsChange;
+    if (this.traceImage) this.renderer.setTraceImage?.(this.traceImage);
+    this.lastGatewaySnapshot = this.gateway.getSnapshot();
+  }
+
+  start(): void {
+    if (this.started || this.disposed) return;
+    this.started = true;
+    this.unsubscribeGateway = this.gateway.subscribe((snapshot) => this.onGatewaySnapshot(snapshot));
+    this.unsubscribeUi = this.uiStore.subscribe((state, previous) => this.onUiState(state, previous));
+    this.lastGatewaySnapshot = this.gateway.getSnapshot();
+    this.onGatewaySnapshot(this.lastGatewaySnapshot, true);
+    const initialDocument = this.lastGatewaySnapshot.document;
+    if (initialDocument && this.metrics) this.projectViewport(normalizeViewport(this.uiStore.getState().viewport, initialDocument, this.metrics, this.viewportOptions));
+    this.projectUiState(this.uiStore.getState());
+  }
+
+  stop(): void {
+    if (!this.started) return;
+    this.started = false;
+    this.unsubscribeGateway?.();
+    this.unsubscribeUi?.();
+    this.unsubscribeGateway = undefined;
+    this.unsubscribeUi = undefined;
+    this.cancelGesture();
+    this.cancelFill(false);
+    this.touchPointers.clear();
+    this.spaceHeld = false;
+    this.editorFocused = false;
+  }
+
+  setDocument(document: PatternDocument, invalidation?: Invalidation): void {
+    if (this.disposed) return;
+    const snapshot = this.gateway.getSnapshot();
+    const documentChanged = snapshot.document !== document || snapshot.revision !== document.revision;
+    if (documentChanged && this.gesture) {
+      this.cancelGesture();
+      this.setStatus('Stroke cancelled: project changed');
+    }
+    if (documentChanged && this.fillJob) this.cancelFill(false);
+    this.renderer.setDocument(document, invalidation ?? { layer: 'all', full: true, reason: 'external-document' });
+    this.publishSelectedCellForDocument(document, true);
+  }
+
+  dispose(): void {
+    if (this.disposed) return;
+    this.exitImageTool();
+    this.stop();
+    if (this.ownsFillClient) this.fillClient.dispose();
+    this.disposed = true;
+  }
+
+  setTool(tool: EditorToolState): void {
+    const state = this.uiStore.getState();
+    if (state.tool.tool !== tool.tool) this.resetToolTransient();
+    if (tool.tool === 'move-image') {
+      this.enterMoveImage();
+      return;
+    }
+    if (tool.tool === 'resize-image') {
+      this.enterResizeImage();
+      return;
+    }
+    if (state.tool.tool === 'move-image' || state.tool.tool === 'resize-image') {
+      // Leaving a reference-image tool by any other tool clears the remembered
+      // state and restores full pattern opacity.
+      this.exitImageTool();
+    }
+    if (tool.tool === 'eraser' && tool.corner !== undefined) this.eraserCorner = tool.corner;
+    if ((tool.tool === 'paint' || tool.tool === 'fill') && tool.brush === undefined) {
+      // Normalize brush-less paint/fill states (which the UI can submit while
+      // entering a tool) so pointer, keyboard, and palette paths can rely on a
+      // brush being present. Carry the current brush when one exists, otherwise
+      // fall back to the selected color, the first active palette color, or id 1.
+      const carried = state.tool.tool === 'paint' || state.tool.tool === 'fill' ? state.tool.brush : undefined;
+      const brush: StitchBrush = carried ?? { kind: 'full', paletteId: state.paletteId ?? this.firstActivePaletteId() ?? 1 };
+      this.uiStore.setTool(tool.tool === 'paint' ? { tool: 'paint', brush } : { tool: 'fill', brush });
+      return;
+    }
+    this.uiStore.setTool(tool);
+  }
+
+  setEraserMode(mode: EraserMode): void {
+    const current = this.uiStore.getState().tool;
+    this.setTool({ tool: 'eraser', mode });
+    if (current.tool === 'eraser' && current.mode === mode) this.uiStore.setTool({ ...current, mode });
+  }
+
+  setEraserCorner(corner: 0 | 1 | 2 | 3): void {
+    this.eraserCorner = corner;
+    const current = this.uiStore.getState().tool;
+    if (current.tool === 'eraser') this.uiStore.setTool({ ...current, corner });
+  }
+
+  getSelection(): GridRect | undefined {
+    return this.selection;
+  }
+
+  setSelection(start: ModelPoint, end = start): GridRect | undefined {
+    const document = this.gateway.getSnapshot().document;
+    if (!document || !isFiniteModelPoint(start) || !isFiniteModelPoint(end)) return undefined;
+    const rect = boundedGridRect(normalizeGridRect(start, end), document);
+    this.selection = rect;
+    this.selectionAnchor = rect ? { x: rect.x, y: rect.y } : undefined;
+    this.publishSelectionOverlay();
+    return rect;
+  }
+
+  clearSelection(): void {
+    this.selection = undefined;
+    this.selectionAnchor = undefined;
+    this.publishSelectionOverlay();
+  }
+
+  getClipboard(): PatternFragment | undefined {
+    return this.clipboard ? clonePatternFragment(this.clipboard) : undefined;
+  }
+
+  copySelection(): PatternFragment | undefined {
+    const snapshot = this.gateway.getSnapshot();
+    if (!snapshot.document || !this.selection) return undefined;
+    this.clipboard = clonePatternFragment(createPatternFragment(snapshot.document, this.selection));
+    this.setStatus(`Copied ${String(this.selection.width)}×${String(this.selection.height)} cells`);
+    return clonePatternFragment(this.clipboard);
+  }
+
+  pasteClipboard(): boolean {
+    const snapshot = this.gateway.getSnapshot();
+    if (!snapshot.document || !snapshot.projectId || snapshot.revision === null || !this.clipboard) return false;
+    const anchor = this.selection ? { x: this.selection.x, y: this.selection.y } : this.uiStore.getState().keyboardCursor;
+    if (!anchor) return false;
+    const fragment = clonePatternFragment(this.clipboard);
+    try {
+      this.commandInFlight = true;
+      const result = this.gateway.execute(
+        pasteFragmentCommand(fragment, anchor, snapshot.revision),
+        { projectId: snapshot.projectId, revision: snapshot.revision }
+      );
+      this.commandInFlight = false;
+      this.projectCommandResult(result, undefined, `Pasted ${String(fragment.width)}×${String(fragment.height)} cells`);
+      return true;
+    } catch (error) {
+      this.commandInFlight = false;
+      if (error instanceof StaleEditorTransactionError) {
+        this.clearSelection();
+        this.setStatus('Paste cancelled: project changed');
+        return false;
+      }
+      if (error instanceof DomainError) {
+        this.clearSelection();
+        this.setStatus('Paste unavailable');
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  cancelFill(showStatus = true): boolean {
+    const job = this.fillJob;
+    if (!job) return false;
+    this.fillJob = undefined;
+    this.fillToken = undefined;
+    this.fillBrushSnapshot = undefined;
+    job.cancel();
+    this.setFillPending(false);
+    if (showStatus) this.setStatus('Fill cancelled');
+    return true;
+  }
+
+  cancelActiveFill(): boolean {
+    return this.cancelFill();
+  }
+
+  fillAt(cell?: ModelPoint): boolean {
+    const target = cell ?? this.uiStore.getState().keyboardCursor ?? { x: 0, y: 0 };
+    return this.startFillAt(target);
+  }
+
+  isFillPending(): boolean {
+    return this.fillJob !== undefined;
+  }
+
+  getSelectedBackstitchId(): number | undefined {
+    return this.selectedBackstitchId;
+  }
+
+  deleteSelectedBackstitch(): boolean {
+    const id = this.selectedBackstitchId;
+    const snapshot = this.gateway.getSnapshot();
+    if (id === undefined || !snapshot.projectId || snapshot.revision === null) return false;
+    const result = this.executeCommandWithToken(
+      { type: 'remove-backstitch', id },
+      `Deleted backstitch ${String(id)}`
+    );
+    if (result) this.resetBackstitchState();
+    return result;
+  }
+
+  /** Delete the current cell selection as one revision-safe history operation. */
+  deleteSelection(): boolean {
+    const selection = this.selection;
+    const selectedBackstitchId = this.selectedBackstitchId;
+    const snapshot = this.gateway.getSnapshot();
+    if (!selection || !snapshot.document || !snapshot.projectId || snapshot.revision === null) return false;
+    const result = this.executeCommandWithToken(
+      deleteRegionCommand(selection, snapshot.revision),
+      `Deleted ${String(selection.width)}×${String(selection.height)} cell${selection.width * selection.height === 1 ? '' : 's'}`
+    );
+    const after = this.gateway.getSnapshot().document;
+    if (result && selectedBackstitchId !== undefined && after && !after.backstitches.ids.some((id) => id === selectedBackstitchId)) this.resetBackstitchState();
+    this.clearSelection();
+    return result;
+  }
+
+  handleFocus(): void {
+    this.editorFocused = true;
+  }
+
+  setBrush(brush: StitchBrush): void {
+    this.uiStore.setState({ tool: { tool: 'paint', brush }, paletteId: brush.paletteId });
+  }
+
+  getBrushSize(): number {
+    return normalizeBrushSize(this.uiStore.getBrushSize?.() ?? this.uiStore.getState().brushSize ?? 1);
+  }
+
+  setBrushSize(size: number): void {
+    this.uiStore.setBrushSize(normalizeBrushSize(size));
+  }
+
+  setAuthoringBrush(brush: AuthoringStitchBrush): void {
+    this.setBrush(brush);
+  }
+
+  setChartMode(mode: Parameters<EditorUiStore['setMode']>[0]): void {
+    this.uiStore.setMode(mode);
+  }
+
+  setMode(mode: Parameters<EditorUiStore['setMode']>[0]): void {
+    this.setChartMode(mode);
+  }
+
+  setGridVisible(visible: boolean): void {
+    this.uiStore.setGridVisible(visible);
+  }
+
+  setMetrics(metrics: CanvasMetrics): void {
+    if (this.disposed) return;
+    // Pointer samples and pinch baselines are expressed in the old viewport
+    // coordinate system. Discard them before changing CSS/DPR metrics so a
+    // later sample cannot bridge or jump across the resize.
+    this.cancelGesture();
+    this.touchPointers.clear();
+    this.metrics = metrics;
+    this.renderer.setMetrics(metrics);
+    const snapshot = this.gateway.getSnapshot();
+    if (snapshot.document) this.projectViewport(normalizeViewport(this.uiStore.getState().viewport, snapshot.document, metrics, this.viewportOptions));
+  }
+
+  setTraceImage(trace: TraceImage | undefined): void {
+    if (this.disposed) return;
+    this.traceImage = trace;
+    this.renderer.setTraceImage(trace);
+  }
+
+  setTraceImageSettings(settings: Pick<TraceImage, 'visible' | 'opacity'>): void {
+    if (this.disposed || !this.traceImage) return;
+    this.traceImage = { ...this.traceImage, ...settings };
+    this.renderer.setTraceImageSettings?.(settings);
+  }
+
+  clearTraceImage(): void {
+    this.setTraceImage(undefined);
+  }
+
+  getTraceImage(): TraceImage | undefined {
+    return this.traceImage ?? this.renderer.getTraceImage?.();
+  }
+
+  setTraceSampleCallback(callback: TraceSampleCallback | undefined): void {
+    this.traceSampleCallback = callback;
+  }
+
+  sampleTraceAt(point: ScreenPoint): TraceRgb | undefined {
+    const snapshot = this.gateway.getSnapshot();
+    const trace = this.getTraceImage();
+    if (!isFiniteScreenPoint(point) || !isFiniteViewport(this.uiStore.getState().viewport) || !snapshot.document || !trace || !this.metrics) return undefined;
+    return this.traceSampler(trace, snapshot.document, this.uiStore.getState().viewport, this.metrics, point);
+  }
+
+  /** Eyedropper: pick a cell's palette color, otherwise sample the reference image. */
+  private eyedropperAt(sample: PointerSample, document: PatternDocument): boolean {
+    if (!validScreenSample(sample) || !isFiniteViewport(this.uiStore.getState().viewport)) return false;
+    const cell = this.paintHitCell(sample, document);
+    if (cell) {
+      const picked = this.pickCellPalette(document, cell);
+      if (picked !== undefined) {
+        this.activatePickedColor(picked);
+        return true;
+      }
+    }
+    const rgb = this.sampleTraceAt({ x: sample.screenX, y: sample.screenY });
+    if (!rgb) return false;
+    return this.activateSampledColor(rgb);
+  }
+
+  private pickCellPalette(document: PatternDocument, cell: ModelPoint): number | undefined {
+    const index = cell.y * document.width + cell.x;
+    const kind = document.kind[index];
+    if (kind === CellKind.Empty) return undefined;
+    const offset = index * 4;
+    const slotCount = kind === CellKind.Quarters ? 4 : 1;
+    for (let slot = 0; slot < slotCount; slot += 1) {
+      const paletteId = document.colors[offset + slot];
+      if (paletteId !== 0) return paletteId;
+    }
+    return undefined;
+  }
+
+  private activatePickedColor(paletteId: number): void {
+    this.selectPalette(paletteId);
+    this.setTool({ tool: 'paint', brush: { kind: 'full', paletteId } });
+  }
+
+  private activateSampledColor(rgb: TraceRgb): boolean {
+    const snapshot = this.gateway.getSnapshot();
+    const document = snapshot.document;
+    if (!document) return false;
+    const matched = nearestDmcColor({ r: rgb.r, g: rgb.g, b: rgb.b });
+    const existing = document.palette.find((entry) => entry.active && entry.catalog?.code === matched?.code);
+    const paletteId = existing?.id;
+    if (paletteId === undefined) {
+      if (!matched) {
+        this.traceSampleCallback?.(rgb);
+        return false;
+      }
+      try {
+        const result = this.gateway.execute({
+          type: 'palette-create',
+          name: matched.name,
+          color: matched.hex,
+          active: true,
+          catalog: {
+            catalogId: 'dmc-compatible-screen-approximation',
+            sourceId: matched.sourceId,
+            code: matched.code,
+            name: matched.name,
+            hex: matched.hex,
+            rgb: [matched.rgb[0], matched.rgb[1], matched.rgb[2]]
+          }
+        });
+        if (result.paletteId === undefined) return false;
+        this.activatePickedColor(result.paletteId);
+      } catch {
+        return false;
+      }
+    } else {
+      this.activatePickedColor(paletteId);
+    }
+    this.traceSampleCallback?.(rgb);
+    return true;
+  }
+
+  pointerDown(sample: PointerSample): boolean {
+    return this.handlePointerDown(sample);
+  }
+
+  pointerMove(sample: PointerSample): boolean {
+    return this.handlePointerMove(sample);
+  }
+
+  pointerUp(sample: PointerSample): boolean {
+    return this.handlePointerUp(sample);
+  }
+
+  pointerCancel(sample: PointerSample): boolean {
+    return this.handlePointerCancel(sample);
+  }
+
+  pointerLostCapture(sample: PointerSample): boolean {
+    return this.handlePointerLostCapture(sample);
+  }
+
+  wheel(sample: WheelSample): boolean {
+    return this.handleWheel(sample);
+  }
+
+  keyDown(sample: KeyboardSample): boolean {
+    return this.handleKeyDown(sample);
+  }
+
+  keyUp(sample: KeyboardSample): boolean {
+    return this.handleKeyUp(sample);
+  }
+
+  /** True when any stitch or backstitch uses the palette id. */
+  private isPaletteReferenced(document: PatternDocument, id: number): boolean {
+    for (let index = 0; index < document.colors.length; index += 1) if (document.colors[index] === id) return true;
+    for (let index = 0; index < document.backstitches.colors.length; index += 1) if (document.backstitches.colors[index] === id) return true;
+    return false;
+  }
+
+  /**
+   * Enforce at most one "pending" (added-but-unused) palette entry. Activating
+   * an unused color supersedes the current pending entry; activating a color
+   * already on the pattern just highlights it (pending is left untouched).
+   */
+  private reconcilePendingPalette(targetId: number | null): void {
+    if (targetId === null) return;
+    const snapshot = this.gateway.getSnapshot();
+    const document = snapshot.document;
+    if (!document) return;
+    const state = this.uiStore.getState();
+    const targetReferenced = this.isPaletteReferenced(document, targetId);
+    if (targetReferenced) return;
+    const pending = state.pendingPaletteId;
+    if (pending !== null && pending !== targetId) {
+      const pendingEntry = document.palette.find((entry) => entry.id === pending);
+      if (pendingEntry?.active && !this.isPaletteReferenced(document, pending)) {
+        try {
+          this.gateway.execute({ type: 'palette-deactivate', id: pending });
+        } catch {
+          // The pending color may have been removed concurrently; ignore.
+        }
+      }
+    }
+    this.uiStore.setPendingPaletteId(targetId);
+  }
+
+  selectPalette(paletteId: number | null): void {
+    const state = this.uiStore.getState();
+    if (paletteId === null || state.tool.tool !== 'paint') {
+      this.uiStore.setPaletteId(paletteId);
+      this.reconcilePendingPalette(paletteId);
+      return;
+    }
+    const brush = state.tool.brush;
+    const nextBrush: StitchBrush = brush === undefined
+      ? { kind: 'full', paletteId }
+      : brush.kind === 'full'
+        ? { kind: 'full', paletteId }
+        : brush.kind === 'half'
+          ? { kind: 'half', direction: brush.direction, paletteId }
+          : { kind: 'quarter', corner: brush.corner, paletteId };
+    this.uiStore.setState({ paletteId, tool: { tool: 'paint', brush: nextBrush } });
+    this.reconcilePendingPalette(paletteId);
+  }
+
+  handlePointerDown(sample: PointerSample): boolean {
+    this.ensureStarted();
+    if (this.disposed) return false;
+    if (!validScreenSample(sample)) return false;
+    if (sample.pointerType !== 'touch') this.editorFocused = true;
+    if (sample.pointerType === 'touch') {
+      if (this.gesture?.kind === 'paint') return false;
+      const tool = this.uiStore.getState().tool.tool;
+      if (tool === 'move-image' || tool === 'resize-image') {
+        // Single-finger image-tool drags; keep multi-touch ignored.
+        const snapshot = this.gateway.getSnapshot();
+        if (!snapshot.document) return false;
+        return tool === 'move-image' ? this.beginMoveImage(sample, snapshot.document) : this.beginResizeImage(sample);
+      }
+      this.touchPointers.set(sample.pointerId, sample);
+      if (this.touchPointers.size >= 2 && this.gesture?.kind !== 'pinch') this.beginPinch();
+      else if (this.touchPointers.size === 1) this.gesture = { kind: 'pan', pointerId: sample.pointerId, lastX: sample.screenX, lastY: sample.screenY };
+      return true;
+    }
+    if (this.gesture) return false;
+    const selectedTool = this.uiStore.getState().tool;
+    const pan = sample.button === 1 || Boolean(sample.buttons && (sample.buttons & 4) !== 0) || this.spaceHeld || selectedTool.tool === 'pan';
+    if (pan) {
+      this.gesture = { kind: 'pan', pointerId: sample.pointerId, lastX: sample.screenX, lastY: sample.screenY };
+      return true;
+    }
+    if ((sample.button ?? 0) !== 0 || (sample.pointerType !== 'mouse' && sample.pointerType !== 'pen')) return false;
+    const snapshot = this.gateway.getSnapshot();
+    if (!snapshot.document || !snapshot.projectId || snapshot.revision === null) return false;
+    if (selectedTool.tool === 'move-image') {
+      return this.beginMoveImage(sample, snapshot.document);
+    }
+    if (selectedTool.tool === 'resize-image') {
+      return this.beginResizeImage(sample);
+    }
+    if (selectedTool.tool === 'eyedropper') {
+      return this.eyedropperAt(sample, snapshot.document);
+    }
+    if (selectedTool.tool === 'select') {
+      const cell = this.paintHitCell(sample, snapshot.document);
+      if (!cell) {
+        const hadSelection = this.selection !== undefined;
+        if (hadSelection) this.clearSelection();
+        return hadSelection;
+      }
+      const hadSelection = this.selection !== undefined;
+      this.selectionAnchor = cell;
+      this.selection = normalizeGridRect(cell, cell);
+      this.gesture = { kind: 'selection', pointerId: sample.pointerId, anchor: cell, hadSelection, current: cell };
+      this.publishSelectionOverlay();
+      return true;
+    }
+    if (selectedTool.tool === 'fill') {
+      const cell = this.paintHitCell(sample, snapshot.document);
+      return cell ? this.startFillAt(cell, selectedTool.brush) : false;
+    }
+    if (selectedTool.tool === 'backstitch') return this.beginBackstitch(sample, snapshot);
+    if (selectedTool.tool === 'eraser') {
+      const cell = this.paintHitCell(sample, snapshot.document);
+      if (!cell) return false;
+      const transaction = this.gateway.beginTransaction();
+      const brushSize = this.getBrushSize();
+      const cells = new Map<string, ModelPoint>();
+      const components = new Map<string, { readonly cell: ModelPoint; readonly corner: number }>();
+      const mode = selectedTool.mode ?? 'whole-cell';
+      this.addEraserSample(cells, components, cell, mode, sample, snapshot.document, brushSize);
+      this.gesture = { kind: 'eraser', pointerId: sample.pointerId, transaction, mode, brushSize, cells, components, lastCell: cell };
+      this.publishPendingCells(cells, this.pendingEraserStates(cells, components, mode, snapshot.document));
+      return true;
+    }
+    if (selectedTool.tool !== 'paint') return false;
+    const cell = this.paintHitCell(sample, snapshot.document);
+    if (!cell) return false;
+    const transaction = this.gateway.beginTransaction();
+    const brushSize = this.getBrushSize();
+    const cells = new Map<string, ModelPoint>();
+    stampBrush(cells, cell, brushSize, snapshot.document);
+    this.gesture = { kind: 'paint', pointerId: sample.pointerId, transaction, brush: selectedTool.brush, brushSize, cells, lastCell: cell };
+    this.publishPendingCells(cells, this.pendingPaintStates(cells, selectedTool.brush, transaction.token.revision, snapshot.document));
+    return true;
+  }
+
+  handlePointerMove(sample: PointerSample): boolean {
+    this.ensureStarted();
+    if (this.disposed) return false;
+    if (!validScreenSample(sample)) return false;
+    if (sample.pointerType === 'touch') {
+      if (!this.touchPointers.has(sample.pointerId) && this.gesture?.kind !== 'move-image' && this.gesture?.kind !== 'resize-image') return false;
+      this.touchPointers.set(sample.pointerId, sample);
+      if (this.gesture?.kind === 'move-image') {
+        if (this.gesture.pointerId === sample.pointerId) this.updateMoveImage(sample);
+        return true;
+      }
+      if (this.gesture?.kind === 'resize-image') {
+        if (this.gesture.pointerId === sample.pointerId) this.updateResizeImage(sample);
+        return true;
+      }
+      if (this.gesture?.kind === 'pinch') this.updatePinch();
+      else if (this.gesture?.kind === 'pan' && this.gesture.pointerId === sample.pointerId) this.updatePan(sample);
+      return true;
+    }
+    const gesture = this.gesture;
+    if (!gesture || gesture.kind === 'pinch' || gesture.pointerId !== sample.pointerId) return false;
+    if (gesture.kind === 'move-image') {
+      this.updateMoveImage(sample);
+      return true;
+    }
+    if (gesture.kind === 'resize-image') {
+      this.updateResizeImage(sample);
+      return true;
+    }
+    if (gesture.kind === 'paint') {
+      const snapshot = this.gateway.getSnapshot();
+      if (!this.isCurrentTransaction(gesture.transaction.token, snapshot)) {
+        this.cancelGesture();
+        this.setStatus('Stroke cancelled: project changed');
+        return true;
+      }
+      const document = snapshot.document;
+      if (!document) return false;
+      this.appendPaintSample(gesture, sample, document);
+      this.publishPendingCells(gesture.cells, this.pendingPaintStates(gesture.cells, gesture.brush, gesture.transaction.token.revision, document));
+      return true;
+    }
+    if (gesture.kind === 'eraser') {
+      const snapshot = this.gateway.getSnapshot();
+      if (!this.isCurrentTransaction(gesture.transaction.token, snapshot)) {
+        this.cancelGesture();
+        this.setStatus('Erase cancelled: project changed');
+        return true;
+      }
+      const document = snapshot.document;
+      if (!document) return false;
+      this.appendEraserSample(gesture, sample, document);
+      this.publishPendingCells(gesture.cells, this.pendingEraserStates(gesture.cells, gesture.components, gesture.mode, document));
+      return true;
+    }
+    if (gesture.kind === 'selection') {
+      const document = this.gateway.getSnapshot().document;
+      if (!document) return false;
+      const cell = this.paintHitCell(sample, document);
+      if (!cell) return true;
+      gesture.current = cell;
+      this.selection = boundedGridRect(normalizeGridRect(gesture.anchor, cell), document);
+      this.publishSelectionOverlay();
+      return true;
+    }
+    if (gesture.kind === 'backstitch') {
+      const document = this.gateway.getSnapshot().document;
+      if (!document || !isFiniteViewport(this.uiStore.getState().viewport)) return false;
+      const snapped = fixedPointAt(this.backstitchModelPoint(sample), document);
+      if (gesture.movingEndpoint === 'start') gesture.start = snapped;
+      else gesture.end = snapped;
+      this.publishBackstitchPreview(gesture.start, gesture.end);
+      return true;
+    }
+    this.updatePan(sample);
+    return true;
+  }
+
+  handlePointerUp(sample: PointerSample): boolean {
+    this.ensureStarted();
+    if (!validScreenSample(sample)) {
+      const gesture = this.gesture;
+      if (gesture && gesture.kind !== 'pinch' && gesture.pointerId === sample.pointerId) this.cancelGesture();
+      return false;
+    }
+    if (sample.pointerType === 'touch') {
+      this.touchPointers.delete(sample.pointerId);
+      if (this.gesture?.kind === 'move-image') {
+        if (this.gesture.pointerId === sample.pointerId) this.finishMoveImage(this.gesture, sample);
+        return true;
+      }
+      if (this.gesture?.kind === 'resize-image') {
+        if (this.gesture.pointerId === sample.pointerId) this.finishResizeImage();
+        return true;
+      }
+      if (this.gesture?.kind === 'pinch') {
+        if (this.gesture.pointerIds.includes(sample.pointerId)) this.rebaseTouchGesture();
+      } else if (this.gesture?.kind === 'pan' && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
+      return true;
+    }
+    const gesture = this.gesture;
+    if (!gesture || gesture.kind === 'pinch' || gesture.pointerId !== sample.pointerId) return false;
+    if (gesture.kind === 'paint') {
+      const document = this.gateway.getSnapshot().document;
+      if (document) this.appendPaintSample(gesture, sample, document);
+      this.finishPaint(true);
+    } else if (gesture.kind === 'eraser') {
+      const document = this.gateway.getSnapshot().document;
+      if (document) this.appendEraserSample(gesture, sample, document);
+      this.finishEraser(true);
+    } else if (gesture.kind === 'selection') {
+      this.gesture = undefined;
+      const click = gesture.anchor.x === gesture.current.x && gesture.anchor.y === gesture.current.y;
+      if (gesture.hadSelection && click) this.clearSelection();
+      else this.publishSelectionOverlay();
+    } else if (gesture.kind === 'backstitch') {
+      const document = this.gateway.getSnapshot().document;
+      if (document && isFiniteViewport(this.uiStore.getState().viewport)) {
+        const snapped = fixedPointAt(this.backstitchModelPoint(sample), document);
+        if (gesture.movingEndpoint === 'start') gesture.start = snapped;
+        else gesture.end = snapped;
+        this.publishBackstitchPreview(gesture.start, gesture.end);
+      }
+      this.finishBackstitch(gesture);
+    } else if (gesture.kind === 'move-image') {
+      this.finishMoveImage(gesture, sample);
+    } else if (gesture.kind === 'resize-image') {
+      this.finishResizeImage();
+    } else this.gesture = undefined;
+    return true;
+  }
+
+  handlePointerCancel(sample: PointerSample): boolean {
+    this.ensureStarted();
+    this.spaceHeld = false;
+    if (sample.pointerType === 'touch') {
+      this.touchPointers.delete(sample.pointerId);
+      if ((this.gesture?.kind === 'move-image' || this.gesture?.kind === 'resize-image') && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
+      else if (this.gesture?.kind === 'pinch') {
+        if (this.gesture.pointerIds.includes(sample.pointerId)) this.rebaseTouchGesture();
+      } else if (this.gesture?.kind === 'pan' && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
+      return true;
+    }
+    const gesture = this.gesture;
+    if (!gesture || gesture.kind === 'pinch' || gesture.pointerId !== sample.pointerId) return false;
+    if (gesture.kind === 'paint') this.finishPaint(false);
+    else if (gesture.kind === 'eraser') this.finishEraser(false);
+    else if (gesture.kind === 'selection') {
+      this.gesture = undefined;
+      this.clearSelection();
+    } else if (gesture.kind === 'backstitch') this.resetBackstitchState();
+    else if (gesture.kind === 'move-image' || gesture.kind === 'resize-image') this.gesture = undefined;
+    else this.gesture = undefined;
+    return true;
+  }
+
+  handlePointerLostCapture(sample: PointerSample): boolean {
+    this.ensureStarted();
+    this.spaceHeld = false;
+    if (sample.pointerType === 'touch') {
+      this.touchPointers.delete(sample.pointerId);
+      if ((this.gesture?.kind === 'move-image' || this.gesture?.kind === 'resize-image') && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
+      else if (this.gesture?.kind === 'pinch') {
+        if (this.gesture.pointerIds.includes(sample.pointerId)) this.rebaseTouchGesture();
+      } else if (this.gesture?.kind === 'pan' && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
+      return true;
+    }
+    const gesture = this.gesture;
+    if (!gesture || gesture.kind === 'pinch' || gesture.pointerId !== sample.pointerId) return false;
+    if (gesture.kind === 'move-image' || gesture.kind === 'resize-image') this.gesture = undefined;
+    this.cancelGesture();
+    return true;
+  }
+
+  handleWheel(sample: WheelSample): boolean {
+    this.ensureStarted();
+    if (this.disposed) return false;
+    if (!isFiniteScreenPoint({ x: sample.screenX, y: sample.screenY }) || !Number.isFinite(sample.deltaY)) return false;
+    const viewport = this.uiStore.getState().viewport;
+    if (!isFiniteViewport(viewport)) return false;
+    const factor = Math.exp(-sample.deltaY * 0.001);
+    this.projectViewport(zoomAt(viewport, { x: sample.screenX, y: sample.screenY }, viewport.zoom * factor, this.viewportOptions));
+    return true;
+  }
+
+  handleKeyDown(sample: KeyboardSample): boolean {
+    this.ensureStarted();
+    if (this.disposed || isTextEditingTarget(sample.target)) return false;
+    const key = sample.key;
+    const lower = key.toLowerCase();
+    const modified = Boolean(sample.ctrlKey || sample.metaKey);
+    if (modified && lower === 'z') {
+      sample.preventDefault?.();
+      this.historyAction(sample.shiftKey ? 'redo' : 'undo');
+      return true;
+    }
+    if (modified && lower === 'y') {
+      sample.preventDefault?.();
+      this.historyAction('redo');
+      return true;
+    }
+    if (modified && lower === 'c') {
+      if (!this.editorFocused || isTextEditingTarget(sample.target)) return false;
+      sample.preventDefault?.();
+      return this.copySelection() !== undefined;
+    }
+    if (modified && lower === 'v') {
+      if (!this.editorFocused || isTextEditingTarget(sample.target)) return false;
+      sample.preventDefault?.();
+      return this.pasteClipboard();
+    }
+    if (key === 'Escape') {
+      sample.preventDefault?.();
+      if (this.uiStore.getState().tool.tool === 'move-image' || this.uiStore.getState().tool.tool === 'resize-image') {
+        this.setTool(this.imageToolPreviousTool ?? { tool: 'pan' });
+        return true;
+      }
+      const hadBackstitchAnchor = this.keyboardBackstitchAnchor !== undefined;
+      this.cancelGesture();
+      this.clearSelection();
+      this.cancelFill();
+      this.resetBackstitchState();
+      if (hadBackstitchAnchor) this.setStatus('Backstitch start cancelled');
+      return true;
+    }
+    if (key === 'ArrowLeft' || key === 'ArrowRight' || key === 'ArrowUp' || key === 'ArrowDown') {
+      sample.preventDefault?.();
+      const cursor = this.uiStore.getState().keyboardCursor ?? { x: 0, y: 0 };
+      const delta = key === 'ArrowLeft' ? { x: -1, y: 0 } : key === 'ArrowRight' ? { x: 1, y: 0 } : key === 'ArrowUp' ? { x: 0, y: -1 } : { x: 0, y: 1 };
+      this.setKeyboardCursor({ x: cursor.x + delta.x, y: cursor.y + delta.y }, Boolean(sample.shiftKey));
+      return true;
+    }
+    if (key === ' ' || key === 'Spacebar' || key === 'Space') {
+      sample.preventDefault?.();
+      this.spaceHeld = true;
+      return true;
+    }
+    if (key === 'Enter') {
+      sample.preventDefault?.();
+      this.activateKeyboardCursor();
+      return true;
+    }
+    if (key === 'Delete' || key === 'Backspace') {
+      sample.preventDefault?.();
+      if (this.selection) this.deleteSelection();
+      else if (this.uiStore.getState().tool.tool === 'backstitch' && this.selectedBackstitchId !== undefined) this.deleteSelectedBackstitch();
+      else this.eraseAtKeyboardCursor();
+      return true;
+    }
+    if (key === '+' || (key === '=' && sample.shiftKey)) {
+      sample.preventDefault?.();
+      this.projectViewport(zoomBy(this.uiStore.getState().viewport, this.viewportCenter(), 1.25, this.viewportOptions));
+      return true;
+    }
+    if (key === '-') {
+      sample.preventDefault?.();
+      this.projectViewport(zoomBy(this.uiStore.getState().viewport, this.viewportCenter(), 0.8, this.viewportOptions));
+      return true;
+    }
+    if (key === '0') {
+      sample.preventDefault?.();
+      this.fit();
+      return true;
+    }
+    return false;
+  }
+
+  handleKeyUp(sample: KeyboardSample): boolean {
+    if (sample.key === ' ' || sample.key === 'Spacebar' || sample.key === 'Space') {
+      this.spaceHeld = false;
+      if (isTextEditingTarget(sample.target)) return false;
+      return true;
+    }
+    if (isTextEditingTarget(sample.target)) return false;
+    return false;
+  }
+
+  handleBlur(): void {
+    this.spaceHeld = false;
+    this.editorFocused = false;
+    if (this.gesture?.kind === 'backstitch') this.resetBackstitchState();
+  }
+
+  private beginPinch(): void {
+    const pointers = [...this.touchPointers.values()];
+    if (pointers.length < 2) return;
+    const first = pointers[0];
+    const second = pointers[1];
+    this.gesture = {
+      kind: 'pinch',
+      pointerIds: [first.pointerId, second.pointerId],
+      startViewport: this.uiStore.getState().viewport,
+      startMidpoint: midpoint(first, second),
+      startDistance: Math.max(1, distance(first, second))
+    };
+  }
+
+  private rebaseTouchGesture(): void {
+    const pointers = [...this.touchPointers.values()];
+    if (pointers.length >= 2) {
+      const first = pointers[0];
+      const second = pointers[1];
+      this.gesture = {
+        kind: 'pinch',
+        pointerIds: [first.pointerId, second.pointerId],
+        startViewport: this.uiStore.getState().viewport,
+        startMidpoint: midpoint(first, second),
+        startDistance: Math.max(1, distance(first, second))
+      };
+    } else if (pointers.length === 1) {
+      const remaining = pointers[0];
+      this.gesture = { kind: 'pan', pointerId: remaining.pointerId, lastX: remaining.screenX, lastY: remaining.screenY };
+    } else {
+      this.gesture = undefined;
+    }
+  }
+
+  private updatePinch(): void {
+    if (this.gesture?.kind !== 'pinch') return;
+    const first = this.touchPointers.get(this.gesture.pointerIds[0]);
+    const second = this.touchPointers.get(this.gesture.pointerIds[1]);
+    if (!first || !second) return;
+    const currentMidpoint = midpoint(first, second);
+    const currentDistance = Math.max(1, distance(first, second));
+    const zoomed = zoomAt(this.gesture.startViewport, this.gesture.startMidpoint, this.gesture.startViewport.zoom * currentDistance / this.gesture.startDistance, this.viewportOptions);
+    this.projectViewport({
+      x: zoomed.x - (currentMidpoint.x - this.gesture.startMidpoint.x) / zoomed.zoom,
+      y: zoomed.y - (currentMidpoint.y - this.gesture.startMidpoint.y) / zoomed.zoom,
+      zoom: zoomed.zoom
+    });
+  }
+
+  private updatePan(sample: PointerSample): void {
+    if (this.gesture?.kind !== 'pan') return;
+    const delta = { x: sample.screenX - this.gesture.lastX, y: sample.screenY - this.gesture.lastY };
+    this.gesture.lastX = sample.screenX;
+    this.gesture.lastY = sample.screenY;
+    this.projectViewport({
+      x: this.uiStore.getState().viewport.x - delta.x / this.uiStore.getState().viewport.zoom,
+      y: this.uiStore.getState().viewport.y - delta.y / this.uiStore.getState().viewport.zoom,
+      zoom: this.uiStore.getState().viewport.zoom
+    });
+  }
+
+  private paintHitCell(sample: PointerSample, document: PatternDocument): ModelPoint | undefined {
+    if (!validScreenSample(sample) || !isFiniteViewport(this.uiStore.getState().viewport)) return undefined;
+    const cell = hitTestCell({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport);
+    return cell.x < 0 || cell.y < 0 || cell.x >= document.width || cell.y >= document.height ? undefined : cloneCell(cell);
+  }
+
+  private appendPaintSample(gesture: PaintGesture, sample: PointerSample, document: PatternDocument): void {
+    const nextCell = this.paintHitCell(sample, document);
+    if (!nextCell) {
+      // Off-chart travel is a discontinuity. Re-entry is a new stroke origin,
+      // not a line segment from the last in-chart sample.
+      gesture.lastCell = undefined;
+      return;
+    }
+    if (gesture.lastCell) {
+      for (const cell of supercoverLine(gesture.lastCell, nextCell)) stampBrush(gesture.cells, cell, gesture.brushSize, document);
+    } else {
+      stampBrush(gesture.cells, nextCell, gesture.brushSize, document);
+    }
+    gesture.lastCell = nextCell;
+  }
+
+  private addEraserSample(
+    cells: Map<string, ModelPoint>,
+    components: Map<string, { readonly cell: ModelPoint; readonly corner: number }>,
+    cell: ModelPoint,
+    mode: EraserMode,
+    sample: PointerSample,
+    document: PatternDocument,
+    size: number
+  ): void {
+    if (!isFiniteViewport(this.uiStore.getState().viewport)) return;
+    const stamped = brushCells(cell, size, document);
+    const corner = mode === 'component'
+      ? quarterCornerAt(screenToModel({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport))
+      : undefined;
+    for (const stampedCell of stamped) {
+      const key = cellKey(stampedCell);
+      cells.set(key, stampedCell);
+      const index = stampedCell.y * document.width + stampedCell.x;
+      if (corner !== undefined && document.kind[index] === CellKind.Quarters) components.set(`${key}:${String(corner)}`, { cell: stampedCell, corner });
+    }
+  }
+
+  private appendEraserSample(gesture: EraserGesture, sample: PointerSample, document: PatternDocument): void {
+    const nextCell = this.paintHitCell(sample, document);
+    if (!nextCell) {
+      gesture.lastCell = undefined;
+      return;
+    }
+    const cells = gesture.lastCell ? supercoverLine(gesture.lastCell, nextCell) : [nextCell];
+    const firstCell = gesture.lastCell && cellKey(gesture.lastCell) !== cellKey(nextCell) ? 1 : 0;
+    for (let position = firstCell; position < cells.length; position += 1) {
+      this.addEraserSample(gesture.cells, gesture.components, cells[position], gesture.mode, sample, document, gesture.brushSize);
+    }
+    gesture.lastCell = nextCell;
+  }
+
+  private finishPaint(commit: boolean): void {
+    const gesture = this.gesture;
+    if (!gesture || gesture.kind !== 'paint') return;
+    this.gesture = undefined;
+    this.clearPendingCells();
+    if (!commit || gesture.cells.size === 0) return;
+    const snapshot = this.gateway.getSnapshot();
+    if (!snapshot.document) return;
+    const cells = [...gesture.cells.values()];
+    const indices = indicesForCells(cells, snapshot.document.width);
+    const command: DomainCommand = {
+      type: 'bulk-cell',
+      indices,
+      edit: editForBrush(gesture.brush),
+      expectedRevision: gesture.transaction.token.revision
+    };
+    try {
+      if (!this.isCurrentTransaction(gesture.transaction.token, snapshot)) {
+        this.setStatus('Stroke cancelled: project changed');
+        return;
+      }
+      const preflight = preflightBulkCellCommand(snapshot.document, command);
+      if (preflight.changedIndices.length === 0) {
+        this.setStatus('No change');
+        return;
+      }
+      this.commandInFlight = true;
+      const result = gesture.transaction.commit(command);
+      this.commandInFlight = false;
+      this.projectCommandResult(result, indices, `Painted ${String(indices.length)} cell${indices.length === 1 ? '' : 's'}`);
+    } catch (error) {
+      this.commandInFlight = false;
+      if (error instanceof StaleEditorTransactionError) this.setStatus('Stroke cancelled: project changed');
+      else throw error;
+    }
+  }
+
+  private finishEraser(commit: boolean): void {
+    const gesture = this.gesture;
+    if (!gesture || gesture.kind !== 'eraser') return;
+    this.gesture = undefined;
+    this.clearPendingCells();
+    if (!commit || gesture.cells.size === 0) return;
+    const snapshot = this.gateway.getSnapshot();
+    if (!snapshot.document) return;
+    const wholeIndices: number[] = [];
+    const componentTargets: Array<{ index: number; corner: number }> = [];
+    for (const cell of gesture.cells.values()) {
+      const index = cell.y * snapshot.document.width + cell.x;
+      if (gesture.mode !== 'component' || snapshot.document.kind[index] !== CellKind.Quarters) {
+        wholeIndices.push(index);
+      }
+    }
+    for (const { cell, corner } of gesture.components.values()) {
+      componentTargets.push({ index: cell.y * snapshot.document.width + cell.x, corner });
+    }
+    wholeIndices.sort((left, right) => left - right);
+    componentTargets.sort((left, right) => left.index - right.index || left.corner - right.corner);
+    const componentIndices = new Uint32Array(componentTargets.length);
+    const componentCorners = new Uint8Array(componentTargets.length);
+    componentTargets.forEach((target, position) => {
+      componentIndices[position] = target.index;
+      componentCorners[position] = target.corner;
+    });
+    const command = mixedEraseCommand(
+      new Uint32Array(wholeIndices),
+      componentIndices,
+      componentCorners,
+      gesture.transaction.token.revision
+    );
+    try {
+      if (!this.isCurrentTransaction(gesture.transaction.token, snapshot)) {
+        this.setStatus('Erase cancelled: project changed');
+        return;
+      }
+      const preflight = preflightMixedEraseCommand(snapshot.document, command);
+      if (preflight.changedCellCount === 0) {
+        this.setStatus('No change');
+        return;
+      }
+      this.commandInFlight = true;
+      const result = gesture.transaction.commit(command);
+      this.commandInFlight = false;
+      this.projectCommandResult(result, indicesForCells([...gesture.cells.values()], snapshot.document.width), `Erased ${String(gesture.cells.size)} cell${gesture.cells.size === 1 ? '' : 's'}`);
+    } catch (error) {
+      this.commandInFlight = false;
+      if (error instanceof StaleEditorTransactionError) this.setStatus('Erase cancelled: project changed');
+      else throw error;
+    }
+  }
+
+  private publishSelectionOverlay(): void {
+    const state = this.uiStore.getState();
+    this.uiStore.setOverlay({ ...state.overlay, selection: this.selection });
+  }
+
+  private publishBackstitchPreview(start: FixedPoint, end: FixedPoint): void {
+    const state = this.uiStore.getState();
+    this.uiStore.setOverlay({
+      ...state.overlay,
+      backstitchPreview: {
+        start,
+        end,
+        color: this.activePaletteColor()
+      }
+    });
+  }
+
+  private clearBackstitchPreview(): void {
+    const state = this.uiStore.getState();
+    if (!state.overlay.backstitchPreview) return;
+    this.uiStore.setOverlay({ ...state.overlay, backstitchPreview: undefined });
+  }
+
+  private setFillPending(pending: boolean): void {
+    const state = this.uiStore.getState();
+    this.uiStore.setOverlay({ ...state.overlay, fillPending: pending ? true : undefined });
+  }
+
+  private activePaletteColor(): string | undefined {
+    const snapshot = this.gateway.getSnapshot();
+    const paletteId = this.uiStore.getState().paletteId;
+    return snapshot.document?.palette.find((entry) => entry.id === paletteId)?.color;
+  }
+
+  private addBackstitchHit(document: PatternDocument, point: ModelPoint): { id: number; start: FixedPoint; end: FixedPoint } | undefined {
+    const tolerance = Math.max(0.25, 8 / Math.max(0.01, this.uiStore.getState().viewport.zoom));
+    let best: { id: number; distance: number; start: FixedPoint; end: FixedPoint } | undefined;
+    const store = document.backstitches;
+    for (let index = 0; index < store.ids.length; index += 1) {
+      const start = { x: store.x1[index], y: store.y1[index] };
+      const end = { x: store.x2[index], y: store.y2[index] };
+      const distance = distanceToSegment(point, fixedPointToModel(start), fixedPointToModel(end));
+      if (distance <= tolerance && (!best || distance < best.distance)) best = { id: store.ids[index], distance, start, end };
+    }
+    return best;
+  }
+
+  private backstitchModelPoint(sample: PointerSample): ModelPoint {
+    if (!validScreenSample(sample) || !isFiniteViewport(this.uiStore.getState().viewport)) throw new DomainError('invalid-coordinate', 'Backstitch screen coordinates must be finite.');
+    return screenToModel({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport);
+  }
+
+  private beginBackstitch(sample: PointerSample, snapshot: WorkspaceEditorSnapshot): boolean {
+    if (!validScreenSample(sample) || !isFiniteViewport(this.uiStore.getState().viewport) || !snapshot.document || !snapshot.projectId || snapshot.revision === null) return false;
+    this.keyboardBackstitchAnchor = undefined;
+    this.keyboardBackstitchToken = undefined;
+    const point = this.backstitchModelPoint(sample);
+    if (point.x < 0 || point.y < 0 || point.x > snapshot.document.width || point.y > snapshot.document.height) return false;
+    const hit = this.addBackstitchHit(snapshot.document, point);
+    if (hit) {
+      this.selectedBackstitchId = hit.id;
+      const startDistance = Math.hypot(point.x - fixedPointToModel(hit.start).x, point.y - fixedPointToModel(hit.start).y);
+      const endDistance = Math.hypot(point.x - fixedPointToModel(hit.end).x, point.y - fixedPointToModel(hit.end).y);
+      this.gesture = {
+        kind: 'backstitch',
+        pointerId: sample.pointerId,
+        mode: 'move',
+        token: { projectId: snapshot.projectId, revision: snapshot.revision },
+        selectedId: hit.id,
+        movingEndpoint: startDistance <= endDistance ? 'start' : 'end',
+        start: hit.start,
+        end: hit.end
+      };
+      this.publishBackstitchPreview(hit.start, hit.end);
+      this.setStatus(`Selected backstitch ${String(hit.id)}`);
+      return true;
+    }
+    this.selectedBackstitchId = undefined;
+    const snapped = fixedPointAt(point, snapshot.document);
+    this.gesture = {
+      kind: 'backstitch',
+      pointerId: sample.pointerId,
+      mode: 'create',
+      token: { projectId: snapshot.projectId, revision: snapshot.revision },
+      start: snapped,
+      end: snapped
+    };
+    this.publishBackstitchPreview(snapped, snapped);
+    return true;
+  }
+
+  private finishBackstitch(gesture: BackstitchGesture): void {
+    this.gesture = undefined;
+    this.clearBackstitchPreview();
+    const snapshot = this.gateway.getSnapshot();
+    if (!snapshot.document || !snapshot.projectId || snapshot.revision === null) {
+      this.resetBackstitchState();
+      return;
+    }
+    if (gesture.mode === 'create') {
+      if (gesture.start.x === gesture.end.x && gesture.start.y === gesture.end.y) {
+        this.resetBackstitchState();
+        return;
+      }
+      const created = this.executeCommandWithToken({
+        type: 'add-backstitch',
+        start: gesture.start,
+        end: gesture.end,
+        color: this.uiStore.getState().paletteId ?? 1
+      }, 'Created backstitch');
+      if (created) {
+        const after = this.gateway.getSnapshot().document;
+        this.selectedBackstitchId = after && after.backstitches.ids.length > 0
+          ? after.backstitches.ids[after.backstitches.ids.length - 1]
+          : undefined;
+      }
+      return;
+    }
+    if (gesture.selectedId === undefined) return;
+    const changed = this.executeCommandWithToken({
+      type: 'move-backstitch',
+      id: gesture.selectedId,
+      start: gesture.start,
+      end: gesture.end
+    }, 'Moved backstitch');
+    if (!changed) this.selectedBackstitchId = gesture.selectedId;
+  }
+
+  private activateKeyboardBackstitch(): void {
+    const snapshot = this.gateway.getSnapshot();
+    if (!snapshot.document || !snapshot.projectId || snapshot.revision === null) return;
+    const cursor = this.uiStore.getState().keyboardCursor ?? { x: 0, y: 0 };
+    if (!isFiniteModelPoint(cursor)) return;
+    if (!this.uiStore.getState().keyboardCursor) this.setKeyboardCursor(cursor);
+    const point = fixedPointAt(cursor, snapshot.document);
+    if (!this.keyboardBackstitchAnchor) {
+      this.keyboardBackstitchAnchor = point;
+      this.keyboardBackstitchToken = { projectId: snapshot.projectId, revision: snapshot.revision };
+      this.publishBackstitchPreview(point, point);
+      this.setStatus(`Backstitch start anchored at (${String(point.x)}, ${String(point.y)}); move cursor and press Enter`);
+      return;
+    }
+    const anchor = this.keyboardBackstitchAnchor;
+    const token = this.keyboardBackstitchToken;
+    if (!token || token.projectId !== snapshot.projectId || token.revision !== snapshot.revision) {
+      this.resetBackstitchState();
+      this.setStatus('Backstitch cancelled: project changed');
+      return;
+    }
+    if (anchor.x === point.x && anchor.y === point.y) {
+      this.publishBackstitchPreview(anchor, point);
+      this.setStatus('Move the cursor before pressing Enter to finish the backstitch');
+      return;
+    }
+    this.keyboardBackstitchAnchor = undefined;
+    this.keyboardBackstitchToken = undefined;
+    this.clearBackstitchPreview();
+    const created = this.executeCommandWithToken({
+      type: 'add-backstitch',
+      start: anchor,
+      end: point,
+      color: this.uiStore.getState().paletteId ?? 1
+    }, 'Created backstitch', token);
+    if (created) {
+      const after = this.gateway.getSnapshot().document;
+      this.selectedBackstitchId = after && after.backstitches.ids.length > 0
+        ? after.backstitches.ids[after.backstitches.ids.length - 1]
+        : undefined;
+    }
+  }
+
+  private resetBackstitchState(): void {
+    if (this.gesture?.kind === 'backstitch') this.gesture = undefined;
+    this.selectedBackstitchId = undefined;
+    this.keyboardBackstitchAnchor = undefined;
+    this.keyboardBackstitchToken = undefined;
+    this.clearBackstitchPreview();
+  }
+
+  private executeCommandWithToken(command: DomainCommand, status: string, expectedToken?: EditorRevisionToken): boolean {
+    const snapshot = this.gateway.getSnapshot();
+    if (!snapshot.projectId || snapshot.revision === null) return false;
+    const token = expectedToken ?? { projectId: snapshot.projectId, revision: snapshot.revision };
+    if (token.projectId !== snapshot.projectId || token.revision !== snapshot.revision) {
+      this.setStatus(`${status} cancelled: project changed`);
+      return false;
+    }
+    try {
+      this.commandInFlight = true;
+      const result = this.gateway.execute(command, token);
+      this.commandInFlight = false;
+      this.projectCommandResult(result, undefined, status);
+      return result.changed;
+    } catch (error) {
+      this.commandInFlight = false;
+      if (error instanceof StaleEditorTransactionError) {
+        this.setStatus(`${status} cancelled: project changed`);
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  private startFillAt(cell: ModelPoint, brush?: StitchBrush): boolean {
+    const snapshot = this.gateway.getSnapshot();
+    if (!isFiniteModelPoint(cell) || !snapshot.document || !snapshot.projectId || snapshot.revision === null) return false;
+    const cellX = Math.floor(cell.x);
+    const cellY = Math.floor(cell.y);
+    if (cellX < 0 || cellY < 0 || cellX >= snapshot.document.width || cellY >= snapshot.document.height) return false;
+    this.cancelFill(false);
+    const currentTool = this.uiStore.getState().tool;
+    const capturedBrush = cloneBrush(brush ?? (currentTool.tool === 'fill' ? currentTool.brush : undefined) ?? {
+      kind: 'full',
+      paletteId: this.uiStore.getState().paletteId ?? 1
+    });
+    const token: EditorRevisionToken = { projectId: snapshot.projectId, revision: snapshot.revision };
+    let job: FillJob;
+    try {
+      job = this.fillClient.submit({
+        projectId: token.projectId,
+        baseRevision: token.revision,
+        width: snapshot.document.width,
+        height: snapshot.document.height,
+        startIndex: cellY * snapshot.document.width + cellX,
+        kind: snapshot.document.kind,
+        colors: snapshot.document.colors
+      });
+    } catch (error) {
+      this.setStatus(error instanceof Error ? error.message : 'Fill could not start');
+      return false;
+    }
+    this.fillJob = job;
+    this.fillToken = token;
+    this.fillBrushSnapshot = capturedBrush;
+    this.setFillPending(true);
+    this.setStatus('Filling…');
+    void job.promise.then((result) => this.finishFill(job, token, result)).catch((error: unknown) => {
+      if (this.fillJob !== job) return;
+      this.fillJob = undefined;
+      this.fillToken = undefined;
+      this.fillBrushSnapshot = undefined;
+      this.setFillPending(false);
+      if (error instanceof FillCancelledError) this.setStatus('Fill cancelled');
+      else if (error instanceof FillStaleResultError) this.setStatus('Fill discarded: project changed');
+      else this.setStatus(error instanceof Error ? error.message : 'Fill failed');
+    });
+    return true;
+  }
+
+  private finishFill(job: FillJob, token: EditorRevisionToken, result: FillResultMessage): void {
+    if (this.fillJob !== job) return;
+    this.fillJob = undefined;
+    this.fillToken = undefined;
+    const capturedBrush = this.fillBrushSnapshot;
+    this.fillBrushSnapshot = undefined;
+    this.setFillPending(false);
+    const current = this.gateway.getSnapshot();
+    if (!isFillResultCurrent(result, { projectId: token.projectId, baseRevision: token.revision, requestId: job.request.requestId })
+      || current.projectId !== token.projectId
+      || current.revision !== token.revision
+      || !current.document
+      || result.width !== current.document.width
+      || result.height !== current.document.height
+      || result.startIndex < 0) {
+      this.setStatus('Fill discarded: project changed');
+      return;
+    }
+    if (!capturedBrush) {
+      this.setStatus('Fill discarded: brush unavailable');
+      return;
+    }
+    const edit = editForBrush(capturedBrush);
+    this.executeCommandWithToken({ type: 'bulk-cell', indices: result.indices, edit }, 'Filled region');
+  }
+
+  private activateKeyboardCursor(): void {
+    const tool = this.uiStore.getState().tool;
+    if (tool.tool === 'backstitch') {
+      this.activateKeyboardBackstitch();
+      return;
+    }
+    if (tool.tool === 'fill') {
+      const cursor = this.uiStore.getState().keyboardCursor ?? { x: 0, y: 0 };
+      this.startFillAt(cursor, tool.brush);
+      return;
+    }
+    if (tool.tool === 'eraser') {
+      this.eraseAtKeyboardCursor();
+      return;
+    }
+    if (tool.tool === 'eyedropper') {
+      this.sampleTraceAtKeyboardCursor();
+      return;
+    }
+    if (tool.tool === 'paint') this.paintAtKeyboardCursor();
+  }
+
+  private sampleTraceAtKeyboardCursor(): void {
+    const state = this.uiStore.getState();
+    const cursor = state.keyboardCursor ?? { x: 0, y: 0 };
+    if (!isFiniteModelPoint(cursor) || !isFiniteViewport(state.viewport)) return;
+    const rgb = this.sampleTraceAt({
+      x: (cursor.x + 0.5 - state.viewport.x) * state.viewport.zoom,
+      y: (cursor.y + 0.5 - state.viewport.y) * state.viewport.zoom
+    });
+    if (rgb) this.activateSampledColor(rgb);
+  }
+
+  private paintAtKeyboardCursor(): void {
+    const state = this.uiStore.getState();
+    if (state.tool.tool !== 'paint') return;
+    const snapshot = this.gateway.getSnapshot();
+    const cursor = state.keyboardCursor ?? { x: 0, y: 0 };
+    if (!snapshot.document || !snapshot.projectId || snapshot.revision === null || !isFiniteModelPoint(cursor) || !isFiniteViewport(state.viewport)) return;
+    const cell = cloneCell(cursor);
+    if (cell.x < 0 || cell.y < 0 || cell.x >= snapshot.document.width || cell.y >= snapshot.document.height) return;
+    this.executeCellEdit(brushCells(cell, this.getBrushSize(), snapshot.document), editForBrush(state.tool.brush), `Painted cell (${String(cell.x)}, ${String(cell.y)})`);
+  }
+
+  private eraseAtKeyboardCursor(): void {
+    const state = this.uiStore.getState();
+    const snapshot = this.gateway.getSnapshot();
+    const cursor = state.keyboardCursor ?? { x: 0, y: 0 };
+    if (!snapshot.document || !snapshot.projectId || snapshot.revision === null || !isFiniteModelPoint(cursor) || !isFiniteViewport(state.viewport)) return;
+    const cell = cloneCell(cursor);
+    if (cell.x < 0 || cell.y < 0 || cell.x >= snapshot.document.width || cell.y >= snapshot.document.height) return;
+    const eraser = state.tool.tool === 'eraser' ? state.tool : undefined;
+    const index = cell.y * snapshot.document.width + cell.x;
+    const edit: BulkCellEdit = eraser?.mode === 'component' && snapshot.document.kind[index] === CellKind.Quarters
+      ? { kind: 'erase-quarter', corner: eraser.corner ?? this.eraserCorner }
+      : { kind: 'erase-cell' };
+    const status = edit.kind === 'erase-quarter'
+      ? `Erased quarter ${String(edit.corner)} at (${String(cell.x)}, ${String(cell.y)})`
+      : `Erased cell (${String(cell.x)}, ${String(cell.y)})`;
+    this.executeCellEdit(brushCells(cell, this.getBrushSize(), snapshot.document), edit, status);
+  }
+
+  private executeCellEdit(cells: readonly ModelPoint[], edit: BulkCellEdit, status: string): void {
+    const snapshot = this.gateway.getSnapshot();
+    if (!snapshot.document || !snapshot.projectId || snapshot.revision === null) return;
+    const indices = indicesForCells(cells, snapshot.document.width);
+    const command: DomainCommand = { type: 'bulk-cell', indices, edit, expectedRevision: snapshot.revision };
+    try {
+      const preflight = preflightBulkCellCommand(snapshot.document, command);
+      if (preflight.changedIndices.length === 0) {
+        this.setStatus('No change');
+        return;
+      }
+      this.commandInFlight = true;
+      const result = this.gateway.execute(command, { projectId: snapshot.projectId, revision: snapshot.revision });
+      this.commandInFlight = false;
+      this.projectCommandResult(result, indices, status);
+    } catch (error) {
+      this.commandInFlight = false;
+      if (error instanceof StaleEditorTransactionError) this.setStatus('Action cancelled: project changed');
+      else throw error;
+    }
+  }
+
+  private historyAction(action: 'undo' | 'redo'): void {
+    const snapshot = this.gateway.getSnapshot();
+    if (!snapshot.projectId || snapshot.revision === null) return;
+    const token: EditorRevisionToken = { projectId: snapshot.projectId, revision: snapshot.revision };
+    try {
+      this.commandInFlight = true;
+      const result = action === 'undo' ? this.gateway.undo(token) : this.gateway.redo(token);
+      this.commandInFlight = false;
+      this.projectCommandResult(result, undefined, action === 'undo' ? 'Undid action' : 'Redid action');
+    } catch (error) {
+      this.commandInFlight = false;
+      if (error instanceof StaleEditorTransactionError) this.setStatus('Action cancelled: project changed');
+      else throw error;
+    }
+  }
+
+  private projectCommandResult(result: CommandResult, requestedIndices: Uint32Array | undefined, status: string): void {
+    const previous = this.lastGatewaySnapshot;
+    this.lastGatewaySnapshot = {
+      projectId: previous.projectId,
+      revision: result.revision,
+      document: result.document
+    };
+    if (!result.changed) {
+      this.setStatus('No change');
+      return;
+    }
+    const changed = result.changedIndices && result.changedIndices.length > 0 ? result.changedIndices : requestedIndices;
+    const cellRect = changed ? cellRectForIndices(changed, result.document.width, result.document.height) : undefined;
+    const backstitchesChanged = result.changedBackstitchIds !== undefined && result.changedBackstitchIds.length > 0;
+    const invalidation: Invalidation = backstitchesChanged
+      ? { layer: 'base', full: true, reason: 'editor-command' }
+      : cellRect
+      ? { layer: 'base', cellRect, reason: 'editor-command' }
+      : { layer: 'base', full: true, reason: 'editor-command' };
+    this.renderer.setDocument(result.document, invalidation);
+    this.publishSelectedCell(false);
+    this.setStatus(status);
+  }
+
+  private onGatewaySnapshot(snapshot: WorkspaceEditorSnapshot, force = false): void {
+    if (!this.started || this.commandInFlight) return;
+    const previous = this.lastGatewaySnapshot;
+    const projectChanged = previous.projectId !== snapshot.projectId;
+    const documentChanged = previous.document !== snapshot.document || previous.revision !== snapshot.revision;
+    this.lastGatewaySnapshot = snapshot;
+    if (!force && !projectChanged && !documentChanged) return;
+    if (projectChanged) this.resetForProjectSwitch(snapshot);
+    else if (this.gesture && ((this.gesture.kind === 'paint' || this.gesture.kind === 'eraser')
+      ? (this.gesture.transaction.token.revision !== snapshot.revision || this.gesture.transaction.token.projectId !== snapshot.projectId)
+      : this.gesture.kind === 'backstitch'
+        ? (this.gesture.token.revision !== snapshot.revision || this.gesture.token.projectId !== snapshot.projectId)
+        : false)) {
+      this.cancelGesture();
+      this.setStatus('Stroke cancelled: project changed');
+    }
+    if (!projectChanged && this.fillJob && this.fillToken
+      && (this.fillToken.projectId !== snapshot.projectId || this.fillToken.revision !== snapshot.revision)) this.cancelFill(false);
+    if (snapshot.document) {
+      if (this.metrics) this.projectViewport(normalizeViewport(this.uiStore.getState().viewport, snapshot.document, this.metrics, this.viewportOptions));
+      this.setDocument(snapshot.document, { layer: 'all', full: true, reason: projectChanged ? 'project-switch' : 'external-document' });
+    } else {
+      this.renderer.setOverlay({});
+      this.uiStore.setSelectedCell(null);
+    }
+  }
+
+  private resetForProjectSwitch(snapshot: WorkspaceEditorSnapshot): void {
+    this.cancelGesture();
+    this.cancelFill(false);
+    this.resetBackstitchState();
+    this.selection = undefined;
+    this.selectionAnchor = undefined;
+    this.clipboard = undefined;
+    this.touchPointers.clear();
+    this.uiStore.setState({ overlay: {}, keyboardCursor: null, status: null });
+    if (snapshot.document && this.metrics) this.projectViewport(fitViewport(snapshot.document, this.metrics, 0, this.viewportOptions));
+  }
+
+  private onUiState(state: ReturnType<EditorUiStore['getState']>, previous: ReturnType<EditorUiStore['getState']>): void {
+    if (!this.started || this.disposed) return;
+    if (state.tool.tool === 'eraser' && state.tool.corner !== undefined) this.eraserCorner = state.tool.corner;
+    if (state.tool.tool !== previous.tool.tool) this.resetToolTransient();
+    if (state.viewport !== previous.viewport) this.renderer.setViewport(state.viewport);
+    if (state.mode !== previous.mode) this.renderer.setStyle({ mode: state.mode });
+    if (state.gridVisible !== previous.gridVisible) this.renderer.setStyle({ showGrid: state.gridVisible });
+    if (state.overlay !== previous.overlay) this.renderer.setOverlay(state.overlay);
+  }
+
+  private projectUiState(state: ReturnType<EditorUiStore['getState']>): void {
+    this.renderer.setViewport(state.viewport);
+    this.renderer.setStyle({ mode: state.mode, showGrid: state.gridVisible });
+    this.renderer.setOverlay(state.overlay);
+  }
+
+  private isCurrentTransaction(token: EditorRevisionToken, snapshot: WorkspaceEditorSnapshot): boolean {
+    return token.projectId === snapshot.projectId && token.revision === snapshot.revision && snapshot.document !== null;
+  }
+
+  private pendingPaintStates(cells: Map<string, ModelPoint>, brush: StitchBrush, revision: number, document: PatternDocument): PendingCellState[] {
+    const indices = indicesForCells([...cells.values()], document.width);
+    const preflight = preflightBulkCellCommand(document, {
+      type: 'bulk-cell',
+      indices,
+      edit: editForBrush(brush),
+      expectedRevision: revision
+    });
+    return Array.from(preflight.changedIndices, (index) => cellState(document, index, preflight.edit));
+  }
+
+  private pendingEraserStates(
+    cells: Map<string, ModelPoint>,
+    components: Map<string, { readonly cell: ModelPoint; readonly corner: number }>,
+    mode: EraserMode,
+    document: PatternDocument
+  ): PendingCellState[] {
+    const cornersByIndex = new Map<number, number[]>();
+    for (const { cell, corner } of components.values()) {
+      const index = cell.y * document.width + cell.x;
+      const corners = cornersByIndex.get(index) ?? [];
+      corners.push(corner);
+      cornersByIndex.set(index, corners);
+    }
+    const states: PendingCellState[] = [];
+    for (const index of indicesForCells([...cells.values()], document.width)) {
+      const corners = cornersByIndex.get(index) ?? [];
+      let state: PendingCellState;
+      if (mode !== 'component' || document.kind[index] !== CellKind.Quarters) {
+        state = cellState(document, index, { kind: 'erase-cell' });
+      } else if (corners.length === 0) {
+        continue;
+      } else {
+        const colors: [number, number, number, number] = [
+          document.colors[index * 4],
+          document.colors[index * 4 + 1],
+          document.colors[index * 4 + 2],
+          document.colors[index * 4 + 3]
+        ];
+        let completed = document.completed[index];
+        for (const corner of corners) {
+          colors[corner as 0 | 1 | 2 | 3] = 0;
+          completed &= ~(1 << corner);
+        }
+        const kind = colors.every((color) => color === 0) ? CellKind.Empty : CellKind.Quarters;
+        state = {
+          index,
+          cell: { x: index % document.width, y: Math.floor(index / document.width) },
+          kind,
+          colors,
+          completed: kind === CellKind.Empty ? 0 : completed
+        };
+      }
+      if (cellStateChanged(document, state)) states.push(state);
+    }
+    return states;
+  }
+
+  private publishPendingCells(cells: Map<string, ModelPoint>, states: readonly PendingCellState[]): void {
+    const state = this.uiStore.getState();
+    const overlay: OverlayState = { ...state.overlay, pendingCells: [...cells.values()], pendingCellStates: [...states] };
+    this.uiStore.setOverlay(overlay);
+  }
+
+  private clearPendingCells(): void {
+    const state = this.uiStore.getState();
+    if (!state.overlay.pendingCells && !state.overlay.pendingCellStates) return;
+    this.uiStore.setOverlay({ ...state.overlay, pendingCells: undefined, pendingCellStates: undefined });
+  }
+
+  private cancelGesture(): void {
+    const backstitch = this.gesture?.kind === 'backstitch';
+    this.gesture = undefined;
+    this.clearPendingCells();
+    if (backstitch) this.resetBackstitchState();
+    this.spaceHeld = false;
+  }
+
+  private resetToolTransient(): void {
+    this.cancelGesture();
+    this.cancelFill(false);
+    this.resetBackstitchState();
+  }
+
+  private firstActivePaletteId(): number | undefined {
+    return this.gateway.getSnapshot().document?.palette.find((entry) => entry.active)?.id;
+  }
+
+  /**
+   * Enter the move-image tool. Without a trace image there is nothing to move,
+   * so the request is ignored and the current tool stays active. Clicking the
+   * tool again toggles back to the remembered tool.
+   */
+  private enterMoveImage(): void {
+    if (!this.traceImage) return;
+    const state = this.uiStore.getState();
+    if (state.tool.tool === 'move-image') {
+      this.setTool(this.imageToolPreviousTool ?? { tool: 'pan' });
+      return;
+    }
+    this.imageToolPreviousTool = state.tool;
+    this.uiStore.setTool({ tool: 'move-image' });
+    this.renderer.setPatternDimmed?.(true);
+    // Escape/arrows must work even when the canvas does not have focus (the
+    // toolbar button keeps focus after clicking it), so listen on the window.
+    this.installImageToolKeydownListener();
+  }
+
+  /**
+   * Enter the resize-image tool, sharing the reference-tool scaffolding with
+   * move-image (dimming, window key handling, remembered previous tool).
+   */
+  private enterResizeImage(): void {
+    if (!this.traceImage) return;
+    const state = this.uiStore.getState();
+    if (state.tool.tool === 'resize-image') {
+      this.setTool(this.imageToolPreviousTool ?? { tool: 'pan' });
+      return;
+    }
+    this.imageToolPreviousTool = state.tool;
+    this.uiStore.setTool({ tool: 'resize-image' });
+    this.renderer.setPatternDimmed?.(true);
+    this.uiStore.setOverlay({ ...state.overlay, imageResizeHandles: true });
+    this.installImageToolKeydownListener();
+  }
+
+  /** Leave either reference-image tool: remove the listener, clear dimming and handles. Idempotent. */
+  private exitImageTool(): void {
+    this.removeImageToolKeydownListener();
+    this.imageToolPreviousTool = null;
+    this.renderer.setPatternDimmed?.(false);
+    const state = this.uiStore.getState();
+    if (state.overlay.imageResizeHandles) this.uiStore.setOverlay({ ...state.overlay, imageResizeHandles: false });
+  }
+
+  private installImageToolKeydownListener(): void {
+    this.removeImageToolKeydownListener();
+    const handler = (event: KeyboardEvent): void => this.handleImageToolKeydown(event);
+    this.imageToolKeydownListener = handler;
+    globalThis.addEventListener?.('keydown', handler);
+  }
+
+  private removeImageToolKeydownListener(): void {
+    if (this.imageToolKeydownListener) {
+      globalThis.removeEventListener?.('keydown', this.imageToolKeydownListener);
+      this.imageToolKeydownListener = null;
+    }
+  }
+
+  private handleImageToolKeydown(event: KeyboardEvent): void {
+    if (this.disposed) return;
+    const tool = this.uiStore.getState().tool.tool;
+    if (tool !== 'move-image' && tool !== 'resize-image') return;
+    const key = event.key;
+    if (key === 'Escape') {
+      event.preventDefault();
+      this.setTool(this.imageToolPreviousTool ?? { tool: 'pan' });
+      return;
+    }
+    if (tool !== 'move-image') return; // Arrow keys are move-only.
+    if (key === 'ArrowLeft' || key === 'ArrowRight' || key === 'ArrowUp' || key === 'ArrowDown') {
+      event.preventDefault();
+      const dx = key === 'ArrowLeft' ? -1 : key === 'ArrowRight' ? 1 : 0;
+      const dy = key === 'ArrowUp' ? -1 : key === 'ArrowDown' ? 1 : 0;
+      this.nudgeTraceImage(dx, dy);
+    }
+  }
+
+  /** Shift the reference image by a whole-cell delta and persist via the callback. */
+  private nudgeTraceImage(dx: number, dy: number): void {
+    if (!this.traceImage) return;
+    const current = this.traceImage;
+    const bounds = current.chartBounds;
+    if (!bounds) return;
+    const chartBounds = { x: bounds.x + dx, y: bounds.y + dy, width: bounds.width, height: bounds.height };
+    const next: TraceImage = { ...current, chartBounds };
+    this.setTraceImage(next);
+    this.renderer.requestRender();
+    this.traceBoundsChangeCallback?.({ ...chartBounds });
+  }
+
+  private beginMoveImage(sample: PointerSample, document: PatternDocument): boolean {
+    if (!this.traceImage) return false;
+    const viewport = this.uiStore.getState().viewport;
+    if (!isFiniteViewport(viewport)) return false;
+    const trace = this.traceImage;
+    const bounds: CellRect = trace.chartBounds ?? { x: 0, y: 0, width: document.width, height: document.height };
+    this.gesture = { kind: 'move-image', pointerId: sample.pointerId, startScreenX: sample.screenX, startScreenY: sample.screenY, startBounds: bounds };
+    return true;
+  }
+
+  private finishMoveImage(gesture: MoveImageGesture, sample: PointerSample): void {
+    this.gesture = undefined;
+    if (Math.hypot(sample.screenX - gesture.startScreenX, sample.screenY - gesture.startScreenY) <= MOVE_IMAGE_TAP_PIXELS) {
+      this.tapNudgeTraceImage(sample);
+      return;
+    }
+    const bounds = this.traceImage?.chartBounds;
+    if (bounds) this.traceBoundsChangeCallback?.({ ...bounds });
+  }
+
+  /** Tap-to-nudge: move the image one cell toward the tap's dominant axis when the tap is outside the image. */
+  private tapNudgeTraceImage(sample: PointerSample): void {
+    const trace = this.traceImage;
+    const document = this.gateway.getSnapshot().document;
+    const viewport = this.uiStore.getState().viewport;
+    if (!trace || !document || !isFiniteViewport(viewport)) return;
+    const bounds = trace.chartBounds ?? { x: 0, y: 0, width: document.width, height: document.height };
+    const tap = screenToModel({ x: sample.screenX, y: sample.screenY }, viewport);
+    const minX = Math.floor(bounds.x);
+    const minY = Math.floor(bounds.y);
+    const maxX = Math.ceil(bounds.x + bounds.width);
+    const maxY = Math.ceil(bounds.y + bounds.height);
+    if (tap.x >= minX && tap.x < maxX && tap.y >= minY && tap.y < maxY) return;
+    const centerX = bounds.x + bounds.width / 2;
+    const centerY = bounds.y + bounds.height / 2;
+    const dx = tap.x - centerX;
+    const dy = tap.y - centerY;
+    if (Math.abs(dx) > Math.abs(dy)) this.nudgeTraceImage(dx > 0 ? 1 : -1, 0);
+    else if (Math.abs(dy) > Math.abs(dx)) this.nudgeTraceImage(0, dy > 0 ? 1 : -1);
+    else if (dx !== 0) this.nudgeTraceImage(dx > 0 ? 1 : -1, 0);
+  }
+
+  private updateMoveImage(sample: PointerSample): void {
+    if (this.gesture?.kind !== 'move-image' || !this.traceImage) return;
+    const viewport = this.uiStore.getState().viewport;
+    if (!isFiniteViewport(viewport)) return;
+    const dx = (sample.screenX - this.gesture.startScreenX) / viewport.zoom;
+    const dy = (sample.screenY - this.gesture.startScreenY) / viewport.zoom;
+    const next: TraceImage = {
+      ...this.traceImage,
+      chartBounds: {
+        x: this.gesture.startBounds.x + dx,
+        y: this.gesture.startBounds.y + dy,
+        width: this.gesture.startBounds.width,
+        height: this.gesture.startBounds.height
+      }
+    };
+    // Reuse the public setter so the renderer sees a trace image with the same
+    // source identity (its same-source check keeps the bitmap undisposed).
+    this.setTraceImage(next);
+    this.renderer.requestRender();
+  }
+
+  /** Screen-space corner points of the reference image (same conversion the renderer uses). */
+  private resizeCornerPoints(): { corner: ResizeCorner; point: ScreenPoint }[] | undefined {
+    const bounds = this.traceImage?.chartBounds;
+    const viewport = this.uiStore.getState().viewport;
+    if (!bounds || !isFiniteViewport(viewport)) return undefined;
+    const rect = cellToScreenRect(bounds, viewport);
+    return [
+      { corner: 'nw', point: { x: rect.x, y: rect.y } },
+      { corner: 'ne', point: { x: rect.x + rect.width, y: rect.y } },
+      { corner: 'sw', point: { x: rect.x, y: rect.y + rect.height } },
+      { corner: 'se', point: { x: rect.x + rect.width, y: rect.y + rect.height } }
+    ];
+  }
+
+  private beginResizeImage(sample: PointerSample): boolean {
+    if (!this.traceImage) return false;
+    const viewport = this.uiStore.getState().viewport;
+    if (!isFiniteViewport(viewport)) return false;
+    const bounds = this.traceImage.chartBounds;
+    if (!bounds) return false;
+    const corners = this.resizeCornerPoints();
+    if (!corners) return false;
+    const radius = RESIZE_HANDLE_HIT_PIXELS;
+    const hit = corners.find(({ point }) =>
+      (point.x - sample.screenX) ** 2 + (point.y - sample.screenY) ** 2 <= radius * radius
+    );
+    if (!hit) return false; // Pointer not near a corner: no-op.
+    const anchor = resizeAnchor(hit.corner, bounds);
+    this.gesture = { kind: 'resize-image', pointerId: sample.pointerId, corner: hit.corner, anchor, startBounds: bounds };
+    return true;
+  }
+
+  private updateResizeImage(sample: PointerSample): void {
+    if (this.gesture?.kind !== 'resize-image' || !this.traceImage) return;
+    const viewport = this.uiStore.getState().viewport;
+    if (!isFiniteViewport(viewport)) return;
+    const pointer = screenToModel({ x: sample.screenX, y: sample.screenY }, viewport);
+    const { corner, anchor, startBounds } = this.gesture;
+    let left = startBounds.x;
+    let top = startBounds.y;
+    let right = left + startBounds.width;
+    let bottom = top + startBounds.height;
+    switch (corner) {
+      case 'nw':
+        left = Math.min(pointer.x, anchor.x - 1);
+        top = Math.min(pointer.y, anchor.y - 1);
+        break;
+      case 'ne':
+        right = Math.max(pointer.x, anchor.x + 1);
+        top = Math.min(pointer.y, anchor.y - 1);
+        break;
+      case 'sw':
+        left = Math.min(pointer.x, anchor.x - 1);
+        bottom = Math.max(pointer.y, anchor.y + 1);
+        break;
+      case 'se':
+        right = Math.max(pointer.x, anchor.x + 1);
+        bottom = Math.max(pointer.y, anchor.y + 1);
+        break;
+    }
+    // Enforce a minimum 1x1 cell so the rect never inverts or collapses.
+    if (right - left < 1) right = left + 1;
+    if (bottom - top < 1) bottom = top + 1;
+    const chartBounds = { x: left, y: top, width: right - left, height: bottom - top };
+    this.setTraceImage({ ...this.traceImage, chartBounds });
+    this.renderer.requestRender();
+  }
+
+  private finishResizeImage(): void {
+    this.gesture = undefined;
+    const bounds = this.traceImage?.chartBounds;
+    if (bounds) this.traceBoundsChangeCallback?.({ ...bounds });
+  }
+
+  private setKeyboardCursor(cursor: ModelPoint, extendSelection = false): void {
+    const snapshot = this.gateway.getSnapshot();
+    if (!snapshot.document || !isFiniteModelPoint(cursor)) return;
+    const bounded = {
+      x: Math.min(Math.max(0, Math.floor(cursor.x)), snapshot.document.width - 1),
+      y: Math.min(Math.max(0, Math.floor(cursor.y)), snapshot.document.height - 1)
+    };
+    if (extendSelection) {
+      this.selectionAnchor ??= this.uiStore.getState().keyboardCursor ?? { x: 0, y: 0 };
+      this.selection = boundedGridRect(normalizeGridRect(this.selectionAnchor, bounded), snapshot.document);
+    } else {
+      this.selection = undefined;
+      this.selectionAnchor = undefined;
+    }
+    const selected = selectedCellSemantics(snapshot.document, bounded);
+    const keyboardBackstitchStatus = this.keyboardBackstitchAnchor
+      ? `Backstitch start anchored at (${String(this.keyboardBackstitchAnchor.x)}, ${String(this.keyboardBackstitchAnchor.y)}); press Enter to finish`
+      : selected.summary;
+    this.uiStore.setState({
+      keyboardCursor: bounded,
+      overlay: { ...this.uiStore.getState().overlay, cursor: bounded },
+      selectedCell: selected,
+      status: keyboardBackstitchStatus
+    });
+    if (this.keyboardBackstitchAnchor) this.publishBackstitchPreview(this.keyboardBackstitchAnchor, fixedPointAt(bounded, snapshot.document));
+    this.publishSelectionOverlay();
+  }
+
+  private publishSelectedCell(updateStatus: boolean): void {
+    this.publishSelectedCellForDocument(this.gateway.getSnapshot().document, updateStatus);
+  }
+
+  private publishSelectedCellForDocument(document: PatternDocument | null, updateStatus: boolean): void {
+    const cursor = this.uiStore.getState().keyboardCursor;
+    const selected = document && cursor && isFiniteModelPoint(cursor) ? selectedCellSemantics(document, cursor) : null;
+    this.uiStore.setSelectedCell(selected);
+    if (updateStatus) this.uiStore.setStatus(selected?.summary ?? null);
+  }
+
+  private projectViewport(viewport: Viewport): void {
+    const snapshot = this.gateway.getSnapshot();
+    const next = normalizeViewport(viewport, snapshot.document ?? undefined, this.metrics ?? undefined, this.viewportOptions);
+    this.uiStore.setViewport(next);
+  }
+
+  private viewportCenter(): ModelPoint {
+    return { x: (this.metrics?.cssWidth ?? 0) / 2, y: (this.metrics?.cssHeight ?? 0) / 2 };
+  }
+
+  private fit(): void {
+    const snapshot = this.gateway.getSnapshot();
+    if (snapshot.document && this.metrics) this.projectViewport(fitViewport(snapshot.document, this.metrics, 0, this.viewportOptions));
+  }
+
+  private setStatus(status: string): void {
+    this.uiStore.setStatus(status);
+  }
+
+  private ensureStarted(): void {
+    if (!this.started && !this.disposed) this.start();
+  }
+}
+
+export const createEditorSurfaceController = (options: EditorSurfaceControllerOptions): EditorSurfaceController => new EditorSurfaceController(options);

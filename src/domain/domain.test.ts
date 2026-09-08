@@ -1,0 +1,1169 @@
+import { describe, expect, it } from 'vitest';
+import {
+  applyCommand,
+  assertValidDocument,
+  bulkCellCommand,
+  bulkClearCompletionCommand,
+  bulkClearBackstitchCompletionCommand,
+  bulkCompletionCommand,
+  bulkEraseCellCommand,
+  bulkEraseQuarterCommand,
+  bulkSetCompletionCommand,
+  bulkSetBackstitchCompletionCommand,
+  bulkSetFullCommand,
+  bulkSetHalfCommand,
+  bulkSetQuarterCommand,
+  bulkToggleCompletionCommand,
+  bulkToggleBackstitchCompletionCommand,
+  CellKind,
+  createDocument,
+  createEditor,
+  defaultPaletteSymbol,
+  deleteRegionCommand,
+  createPatternFragment,
+  assertValidPatternFragment,
+  getBackstitch,
+  getCell,
+  HalfDirection,
+  isAlphanumericSymbol,
+  listBackstitches,
+  MAX_PALETTE_SYMBOL_LENGTH,
+  MAX_PERSISTABLE_CELL_COUNT,
+  mixedEraseCommand,
+  pasteFragmentCommand,
+  QuarterCorner,
+  readPatternFragmentCell,
+  validateDocument,
+  validatePatternFragment,
+  DEFAULT_HISTORY_LIMIT_BYTES,
+  DomainError,
+  estimateBulkCellHistoryBytes,
+  estimateBulkCompletionHistoryBytes,
+  estimateBulkBackstitchCompletionHistoryBytes,
+  estimatePasteFragmentHistoryBytes,
+  estimateMixedEraseHistoryBytes,
+  estimateDeleteRegionHistoryBytes,
+  mergePaletteCommand,
+  PALETTE_SYMBOLS,
+  type PatternDocument,
+  type PatternFragment
+} from './index';
+import { DMC_CATALOG_RECORD_COUNT } from '../catalog';
+import { MAX_PALETTE_COLORS } from './index';
+
+function document(width = 4, height = 3) {
+  return createDocument({
+    width,
+    height,
+    palette: [
+      { id: 1, name: 'Red', color: '#d33' },
+      { id: 2, name: 'Blue', color: '#36c' },
+      { id: 3, name: 'Gold', color: '#da2' }
+    ]
+  });
+}
+
+function apply(pattern: ReturnType<typeof document>, command: Parameters<typeof applyCommand>[1]) {
+  return applyCommand(pattern, command).document;
+}
+
+function cellSnapshot(pattern: PatternDocument): PatternDocument {
+  return {
+    ...pattern,
+    kind: pattern.kind.slice(),
+    colors: pattern.colors.slice(),
+    completed: pattern.completed.slice(),
+    backstitches: {
+      ids: pattern.backstitches.ids.slice(),
+      x1: pattern.backstitches.x1.slice(),
+      y1: pattern.backstitches.y1.slice(),
+      x2: pattern.backstitches.x2.slice(),
+      y2: pattern.backstitches.y2.slice(),
+      colors: pattern.backstitches.colors.slice(),
+      completed: pattern.backstitches.completed.slice()
+    },
+    palette: pattern.palette.map((entry) => ({ ...entry }))
+  };
+}
+
+describe('typed-array pattern document', () => {
+  it('uses compact arrays and preserves completion for recolor but not geometry changes', () => {
+    const pattern = document();
+    expect(pattern.kind).toBeInstanceOf(Uint8Array);
+    expect(pattern.colors).toBeInstanceOf(Uint16Array);
+    expect(pattern.completed).toBeInstanceOf(Uint8Array);
+    expect(pattern.kind.length).toBe(12);
+    expect(pattern.colors.length).toBe(48);
+
+    let next = apply(pattern, { type: 'set-full', x: 1, y: 1, color: 1, completed: true });
+    expect(getCell(next, 1, 1).completed).toBe(false);
+    next = apply(next, { type: 'set-completion', x: 1, y: 1, completed: true });
+    next = apply(next, { type: 'set-full', x: 1, y: 1, color: 2 });
+    expect(getCell(next, 1, 1).color).toBe(2);
+    expect(getCell(next, 1, 1).completed).toBe(true);
+
+    next = apply(next, { type: 'set-half', x: 1, y: 1, direction: HalfDirection.Slash, color: 2 });
+    expect(getCell(next, 1, 1).kind).toBe(CellKind.HalfSlash);
+    expect(getCell(next, 1, 1).completed).toBe(false);
+    next = apply(next, { type: 'set-half', x: 0, y: 0, direction: HalfDirection.Backslash, color: 1, completed: true });
+    expect(getCell(next, 0, 0).completed).toBe(false);
+  });
+
+  it('keeps independent quarter slots and completion bits', () => {
+    let pattern = document();
+    pattern = apply(pattern, { type: 'set-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1, completed: true });
+    expect(getCell(pattern, 0, 0).quarters[QuarterCorner.NW].completed).toBe(false);
+    pattern = apply(pattern, { type: 'set-completion', x: 0, y: 0, corner: QuarterCorner.NW, completed: true });
+    pattern = apply(pattern, { type: 'set-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 });
+    const cell = getCell(pattern, 0, 0);
+    expect(cell.kind).toBe(CellKind.Quarters);
+    expect(cell.quarters[QuarterCorner.NW]).toMatchObject({ color: 1, completed: true });
+    expect(cell.quarters[QuarterCorner.SE]).toMatchObject({ color: 2, completed: false });
+    expect(pattern.completed[0]).toBe(1);
+
+    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 3 });
+    expect(getCell(pattern, 0, 0).kind).toBe(CellKind.Full);
+    expect(pattern.colors.slice(0, 4)).toEqual(new Uint16Array([3, 0, 0, 0]));
+    expect(pattern.completed[0]).toBe(0);
+  });
+
+  it('requires explicit completion and enforces active, non-reserved palette IDs', () => {
+    expect(() => createDocument({ width: 1, height: 1, palette: [{ id: 0xffff, name: 'Reserved', color: '#000' }] })).toThrow();
+    let pattern = document(2, 2);
+    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
+    pattern = apply(pattern, { type: 'set-quarter', x: 1, y: 1, corner: QuarterCorner.NW, color: 1 });
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 4 }, color: 1 });
+    expect(() => apply(pattern, { type: 'palette-deactivate', id: 1 })).toThrow();
+    expect(() => apply(pattern, { type: 'palette-update', id: 1, active: false })).toThrow();
+    pattern.palette[0] = { ...pattern.palette[0], active: false };
+    expect(validateDocument(pattern)).toBe(false);
+  });
+
+  it('merges a referenced palette color into another and deactivates the source atomically', () => {
+    let pattern = document(2, 2);
+    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
+    pattern = apply(pattern, { type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 1 });
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 4 }, color: 1 });
+    const editor = createEditor(pattern);
+    const result = editor.execute(mergePaletteCommand(1, 2));
+
+    expect(result.changed).toBe(true);
+    expect(result.recalculateMetrics).toBe(true);
+    const next = result.document;
+    expect(next.palette.find((entry) => entry.id === 1)?.active).toBe(false);
+    expect(next.palette.find((entry) => entry.id === 1)?.id).toBe(1);
+    expect(next.colors[0]).toBe(2);
+    expect(next.colors[1 * 4]).toBe(2);
+    expect(getBackstitch(next, 1)?.color).toBe(2);
+    expect(validateDocument(next)).toBe(true);
+
+    expect(editor.undo().changed).toBe(true);
+    const undone = editor.document;
+    expect(undone.palette.find((entry) => entry.id === 1)?.active).toBe(true);
+    expect(undone.colors[0]).toBe(1);
+    expect(getBackstitch(undone, 1)?.color).toBe(1);
+    expect(editor.redo().changed).toBe(true);
+    expect(editor.document.colors[0]).toBe(2);
+  });
+
+  it('removes an unreferenced palette color via merge and rejects invalid merges', () => {
+    const pattern = document(2, 2);
+    const merged = applyCommand(pattern, mergePaletteCommand(3, 1)).document;
+    expect(merged.palette.find((entry) => entry.id === 3)?.active).toBe(false);
+    expect(merged.palette.find((entry) => entry.id === 3)?.id).toBe(3);
+
+    expect(() => applyCommand(pattern, mergePaletteCommand(1, 1))).toThrow();
+    expect(() => applyCommand(pattern, mergePaletteCommand(99, 1))).toThrow();
+    expect(() => applyCommand(pattern, mergePaletteCommand(1, 99))).toThrow();
+    const inactiveMerge = applyCommand(pattern, { type: 'palette-create', name: 'Muted', color: '#888', active: false }).document;
+    expect(() => applyCommand(inactiveMerge, mergePaletteCommand(2, 4))).toThrow();
+  });
+
+  it('atomically creates a replacement color and merges into it in one command', () => {
+    let pattern = document(2, 1);
+    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
+    const editor = createEditor(pattern);
+    const result = editor.execute({
+      type: 'palette-merge',
+      from: 1,
+      createTo: { name: 'Lilac', color: '#C9A0DC', catalog: { catalogId: 'c', sourceId: 's', code: '3740', name: 'Lilac', hex: '#C9A0DC', rgb: [201, 160, 220] } }
+    });
+    expect(result.changed).toBe(true);
+    const next = result.document;
+    const added = next.palette.find((entry) => entry.catalog?.code === '3740');
+    expect(added).toBeDefined();
+    expect(next.palette.find((entry) => entry.id === 1)?.active).toBe(false);
+    expect(next.colors[0]).toBe(added!.id);
+    expect(validateDocument(next)).toBe(true);
+    expect(editor.undo().changed).toBe(true);
+    expect(editor.document.colors[0]).toBe(1);
+  });
+
+  it('deep-compares and restores v2 palette material and catalog fields', () => {
+    const pattern = createDocument({
+      width: 1,
+      height: 1,
+      palette: [{
+        id: 1,
+        name: 'Red',
+        color: '#d33',
+        symbol: '✚',
+        material: { kind: 'floss', label: 'Cotton', unit: 'skeins', amount: 2 },
+        catalog: { catalogId: 'catalog', sourceId: 'source', code: 'R', name: 'Red', hex: '#DD3333', rgb: [221, 51, 51] }
+      }]
+    });
+    const editor = createEditor(pattern);
+    const result = editor.execute({ type: 'palette-update', id: 1, material: { kind: 'floss', label: 'Silk', unit: 'meters', amount: 4 }, catalog: { catalogId: 'catalog-2', sourceId: 'source-2', code: 'R2', name: 'Red 2', hex: '#CC2222', rgb: [204, 34, 34] } });
+    expect(result.changed).toBe(true);
+    expect(editor.document.palette[0].material).toMatchObject({ label: 'Silk', unit: 'meters', amount: 4 });
+    expect(editor.document.palette[0].catalog?.catalogId).toBe('catalog-2');
+    editor.undo();
+    expect(editor.document.palette[0].material).toMatchObject({ label: 'Cotton', unit: 'skeins', amount: 2 });
+    expect(editor.document.palette[0].catalog?.catalogId).toBe('catalog');
+    editor.redo();
+    expect(editor.document.palette[0].catalog?.rgb).toEqual([204, 34, 34]);
+  });
+
+  it('assigns Unicode defaults in order, covers the brand ceiling, and cycles past the pool', () => {
+    // The symbol pool must exceed the brand palette ceiling so every valid
+    // palette id maps to a unique default glyph.
+    expect(PALETTE_SYMBOLS.length).toBeGreaterThanOrEqual(DMC_CATALOG_RECORD_COUNT);
+    expect(new Set(PALETTE_SYMBOLS).size).toBe(PALETTE_SYMBOLS.length);
+    for (const glyph of PALETTE_SYMBOLS) {
+      expect(glyph.length).toBeGreaterThan(0);
+      expect(glyph.length).toBeLessThanOrEqual(MAX_PALETTE_SYMBOL_LENGTH);
+      expect(isAlphanumericSymbol(glyph)).toBe(false);
+    }
+    // The first 28 glyphs are tier-1 coverage symbols, interleaved by coarse
+    // visual class via round-robin seeded at ● (filled / hollow / line-cross /
+    // diagonal / curved / arrow / pointy-pictographic).
+    expect(PALETTE_SYMBOLS.slice(0, 28)).toEqual([
+      '●', '△', '✕', '◭', '⟳', '↯', '✦', '▛', '□', '✠', '∕', '∞', '↖', '✹', '◆', '⬚', '∥', '◿', '◔', '↗', '\u25ef', '▲', '▣', '∏', '◸', '∾', '↙', '\u2721'
+    ]);
+    expect([1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(defaultPaletteSymbol)).toEqual(
+      ['●', '△', '✕', '◭', '⟳', '↯', '✦', '▛', '□', '✠']
+    );
+    expect(defaultPaletteSymbol(20)).toBe('\u2197');
+    expect(defaultPaletteSymbol(28)).toBe('\u2721');
+    // Ids 1..DMC_CATALOG_RECORD_COUNT each get a distinct default glyph.
+    const assigned = new Set<string>();
+    for (let id = 1; id <= DMC_CATALOG_RECORD_COUNT; id += 1) {
+      assigned.add(defaultPaletteSymbol(id));
+    }
+    expect(assigned.size).toBe(DMC_CATALOG_RECORD_COUNT);
+    // Past the end of the pool the assignment cycles deterministically as a
+    // safety tail (unreachable under the business ceiling).
+    expect(defaultPaletteSymbol(PALETTE_SYMBOLS.length + 1)).toBe('●');
+    expect(defaultPaletteSymbol(2 * PALETTE_SYMBOLS.length + 1)).toBe('●');
+    expect(() => defaultPaletteSymbol(0)).toThrow(DomainError);
+  });
+
+  it('validates reassigned palette symbols through palette-update', () => {
+    const editor = createEditor(document(2, 2));
+    expect(editor.document.palette.map((entry) => entry.symbol)).toEqual(['●', '△', '✕']);
+    const result = editor.execute({ type: 'palette-update', id: 1, symbol: '☆' });
+    expect(result.changed).toBe(true);
+    expect(editor.document.palette[0].symbol).toBe('☆');
+    expect(() => editor.execute({ type: 'palette-update', id: 2, symbol: '' })).toThrow(/empty/);
+    expect(() => editor.execute({ type: 'palette-update', id: 2, symbol: '   ' })).toThrow(/empty/);
+    expect(() => editor.execute({ type: 'palette-update', id: 2, symbol: 'ABC' })).toThrow(/alphanumeric/);
+    // A single astral-plane glyph is exactly 2 UTF-16 units, so it passes.
+    editor.execute({ type: 'palette-update', id: 2, symbol: '𝕏' });
+    expect(editor.document.palette[1].symbol).toBe('𝕏');
+    expect(() => editor.execute({ type: 'palette-update', id: 3, symbol: '☆' })).toThrow(/duplicated/);
+    expect(() => editor.execute({ type: 'palette-update', id: 99, symbol: '○' })).toThrow();
+    // Alphanumeric symbols stay banned so the legacy "S3" defaults cannot
+    // resurface, but enclosed-digit glyphs (which are non-alphanumeric
+    // Unicode) still pass.
+    expect(() => editor.execute({ type: 'palette-update', id: 2, symbol: 'S3' })).toThrow(/alphanumeric/);
+    expect(() => editor.execute({ type: 'palette-update', id: 2, symbol: 'Ａ' })).toThrow(/alphanumeric/);
+    editor.execute({ type: 'palette-update', id: 2, symbol: '①' });
+    expect(editor.document.palette[1].symbol).toBe('①');
+    // Astral-plane emoji pinned with VS16 + skin-tone modifier (4 UTF-16
+    // units) is accepted; anything beyond the cap is still rejected.
+    editor.execute({ type: 'palette-update', id: 2, symbol: '🧶\u{fe0f}' });
+    expect(editor.document.palette[1].symbol).toBe('🧶\u{fe0f}');
+    expect(() => editor.execute({ type: 'palette-update', id: 2, symbol: '🧶\u{fe0f}ab' })).toThrow(/4 UTF-16/);
+  });
+
+  it('auto-assigns a unique glyph per palette entry up to the brand ceiling and rejects past it', () => {
+    let pattern = createDocument({ width: 2, height: 2 });
+    for (let id = 1; id <= DMC_CATALOG_RECORD_COUNT; id++) {
+      pattern = applyCommand(pattern, { type: 'palette-create', name: `Color ${id}`, color: '#123456' }).document;
+    }
+    expect(pattern.palette).toHaveLength(DMC_CATALOG_RECORD_COUNT);
+    // Auto-assignment takes the first unused glyph in pool order, so the first
+    // DMC_CATALOG_RECORD_COUNT entries carry unique, ordered symbols.
+    expect(pattern.palette.map((entry) => entry.symbol)).toEqual(PALETTE_SYMBOLS.slice(0, DMC_CATALOG_RECORD_COUNT));
+    // The next palette-create would exceed the brand ceiling, so it must throw
+    // instead of overflowing onto a cycled duplicate.
+    expect(() => applyCommand(pattern, { type: 'palette-create', name: 'Color over', color: '#654321' })).toThrow(/brand's color count/);
+    // Explicit duplicates stay rejected on create and update alike (checked on
+    // a small palette so the brand-ceiling guard does not fire first).
+    const small = document(2, 2);
+    expect(() => applyCommand(small, { type: 'palette-create', name: 'Copy', color: '#000000', symbol: '●' })).toThrow(/duplicated/);
+    expect(() => applyCommand(small, { type: 'palette-update', id: 2, symbol: '●' })).toThrow(/duplicated/);
+  });
+
+  it('yields all-unique symbols at the brand ceiling and rejects ids above it', () => {
+    const entries = Array.from({ length: DMC_CATALOG_RECORD_COUNT }, (_, index) => ({
+      id: index + 1,
+      name: `Color ${index + 1}`,
+      color: '#123456'
+    }));
+    const pattern = createDocument({ width: 2, height: 2, palette: entries });
+    expect(pattern.palette).toHaveLength(DMC_CATALOG_RECORD_COUNT);
+    expect(new Set(pattern.palette.map((entry) => entry.symbol)).size).toBe(DMC_CATALOG_RECORD_COUNT);
+    // An explicit id above the brand ceiling is rejected on palette-create.
+    expect(() => applyCommand(pattern, { type: 'palette-create', name: 'Over', color: '#ffffff', id: DMC_CATALOG_RECORD_COUNT + 1, symbol: '★' })).toThrow(/brand's color count/);
+    expect(MAX_PALETTE_COLORS).toBe(DMC_CATALOG_RECORD_COUNT);
+  });
+
+  it('enforces the shared maximum cell count during creation and validation', () => {
+    const maximum = createDocument({ width: MAX_PERSISTABLE_CELL_COUNT, height: 1 });
+    expect(maximum.kind).toHaveLength(MAX_PERSISTABLE_CELL_COUNT);
+    expect(() => createDocument({ width: MAX_PERSISTABLE_CELL_COUNT + 1, height: 1 })).toThrow(DomainError);
+
+    const invalid = document(1, 1);
+    invalid.width = MAX_PERSISTABLE_CELL_COUNT + 1;
+    expect(validateDocument(invalid)).toBe(false);
+    expect(() => assertValidDocument(invalid)).toThrow(DomainError);
+  });
+
+  it('rejects restored documents whose palette exceeds the brand ceiling', () => {
+    // Palette length above the ceiling: defense-in-depth for restored docs.
+    const tooMany = createDocument({
+      width: 1,
+      height: 1,
+      palette: Array.from({ length: MAX_PALETTE_COLORS + 1 }, (_, index) => ({
+        id: index + 1,
+        name: `Color ${index + 1}`,
+        color: '#123456'
+      }))
+    });
+    expect(validateDocument(tooMany)).toBe(false);
+    expect(() => assertValidDocument(tooMany)).toThrow(/brand's color count/);
+
+    // A single entry id above the ceiling is likewise rejected.
+    const overId = createDocument({
+      width: 1,
+      height: 1,
+      palette: [{ id: MAX_PALETTE_COLORS + 1, name: 'Over', color: '#ffffff' }]
+    });
+    expect(validateDocument(overId)).toBe(false);
+    expect(() => assertValidDocument(overId)).toThrow(/brand's color count/);
+  });
+
+  it('canonicalizes, recolors, and moves backstitches without changing identity or completion', () => {
+    let pattern = document();
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 8, y: 4 }, end: { x: 0, y: 0 }, color: 1, completed: true });
+    const id = listBackstitches(pattern)[0].id;
+    expect(getBackstitch(pattern, id)).toMatchObject({ completed: false });
+    pattern = apply(pattern, { type: 'set-backstitch-completion', id, completed: true });
+    expect(getBackstitch(pattern, id)).toMatchObject({ id, x1: 0, y1: 0, x2: 8, y2: 4, completed: true });
+
+    pattern = apply(pattern, { type: 'recolor-backstitch', id, color: 2 });
+    expect(getBackstitch(pattern, id)).toMatchObject({ color: 2, completed: true });
+    pattern = apply(pattern, { type: 'move-backstitch', id, start: { x: 12, y: 8 }, end: { x: 4, y: 4 } });
+    expect(getBackstitch(pattern, id)).toMatchObject({ id, x1: 4, y1: 4, x2: 12, y2: 8, completed: false });
+    pattern = apply(pattern, { type: 'set-backstitch-completion', id, completed: true });
+    pattern = apply(pattern, { type: 'update-backstitch', id, start: { x: 8, y: 0 }, end: { x: 12, y: 4 }, color: 1, completed: true });
+    expect(getBackstitch(pattern, id)).toMatchObject({ x1: 8, y1: 0, x2: 12, y2: 4, completed: false });
+  });
+
+  it('snaps new and moved backstitch endpoints to cell corners without migrating legacy geometry', () => {
+    let pattern = document(3, 3);
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 2, y: 2 }, end: { x: 10, y: 6 }, color: 1 });
+    expect(listBackstitches(pattern)[0]).toMatchObject({ x1: 4, y1: 4, x2: 12, y2: 8 });
+    expect(() => apply(document(3, 3), { type: 'add-backstitch', start: { x: 2, y: 2 }, end: { x: 3, y: 3 }, color: 1 })).toThrow(/identical/);
+
+    const legacy = document(3, 3);
+    legacy.backstitches = {
+      ids: new Uint32Array([1]),
+      x1: new Uint32Array([2]),
+      y1: new Uint32Array([2]),
+      x2: new Uint32Array([10]),
+      y2: new Uint32Array([6]),
+      colors: new Uint16Array([1]),
+      completed: new Uint8Array([0])
+    };
+    legacy.nextBackstitchId = 2;
+    expect(assertValidDocument(legacy)).toBeUndefined();
+    expect(listBackstitches(legacy)[0]).toMatchObject({ x1: 2, y1: 2, x2: 10, y2: 6 });
+
+    const moved = apply(legacy, { type: 'move-backstitch', id: 1, start: { x: 2, y: 2 }, end: { x: 9, y: 5 } });
+    expect(listBackstitches(moved)[0]).toMatchObject({ x1: 2, y1: 2, x2: 8, y2: 4 });
+  });
+
+  it('round-trips rotations and mirrors while moving completion with geometry', () => {
+    let pattern = document(3, 2);
+    pattern = apply(pattern, { type: 'set-half', x: 0, y: 0, direction: HalfDirection.Backslash, color: 1, completed: true });
+    pattern = apply(pattern, { type: 'set-completion', x: 0, y: 0, completed: true });
+    pattern = apply(pattern, { type: 'set-quarter', x: 2, y: 1, corner: QuarterCorner.NE, color: 2, completed: true });
+    pattern = apply(pattern, { type: 'set-completion', x: 2, y: 1, corner: QuarterCorner.NE, completed: true });
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 12, y: 8 }, color: 3, completed: true });
+    const transformedBackstitchId = listBackstitches(pattern)[0].id;
+    pattern = apply(pattern, { type: 'set-backstitch-completion', id: transformedBackstitchId, completed: true });
+    const original = pattern;
+
+    pattern = apply(pattern, { type: 'rotate-cw' });
+    expect(pattern.width).toBe(2);
+    expect(pattern.height).toBe(3);
+    pattern = apply(pattern, { type: 'rotate-ccw' });
+    expect(pattern.width).toBe(original.width);
+    expect(pattern.height).toBe(original.height);
+    expect(pattern.kind).toEqual(original.kind);
+    expect(pattern.colors).toEqual(original.colors);
+    expect(pattern.completed).toEqual(original.completed);
+    expect(listBackstitches(pattern)).toMatchObject(listBackstitches(original));
+
+    pattern = apply(pattern, { type: 'mirror-horizontal' });
+    pattern = apply(pattern, { type: 'mirror-horizontal' });
+    expect(pattern.kind).toEqual(original.kind);
+    expect(pattern.colors).toEqual(original.colors);
+    expect(pattern.completed).toEqual(original.completed);
+    expect(listBackstitches(pattern)).toMatchObject(listBackstitches(original));
+  });
+
+  it('retains only backstitches fully inside the closed crop boundary', () => {
+    let pattern = document(3, 3);
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 8, y: 8 }, color: 1 });
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 12, y: 8 }, color: 2 });
+    const retainedId = listBackstitches(pattern)[0].id;
+    pattern = apply(pattern, { type: 'crop', x: 1, y: 1, width: 1, height: 1 });
+    expect(pattern.width).toBe(1);
+    expect(pattern.height).toBe(1);
+    expect(listBackstitches(pattern)).toHaveLength(1);
+    expect(getBackstitch(pattern, retainedId)).toMatchObject({ x1: 0, y1: 0, x2: 4, y2: 4 });
+  });
+
+  it('rejects invalid palette and duplicate segments atomically', () => {
+    const editor = createEditor(document());
+    expect(() => editor.executeBatch([
+      { type: 'set-full', x: 0, y: 0, color: 1 },
+      { type: 'set-full', x: 1, y: 0, color: 99 }
+    ])).toThrow();
+    expect(editor.document.kind[0]).toBe(CellKind.Empty);
+    expect(editor.document.kind[1]).toBe(CellKind.Empty);
+    expect(editor.document.revision).toBe(0);
+    expect(editor.undoDepth).toBe(0);
+
+    editor.execute({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 4 }, color: 1 });
+    expect(() => editor.execute({ type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 0, y: 0 }, color: 2 })).toThrow();
+    expect(editor.document.backstitches.ids).toHaveLength(1);
+    expect(editor.document.revision).toBe(1);
+  });
+
+  it('rejects invalid bulk targets, intent, palette, and stale revisions atomically', () => {
+    const editor = createEditor(document());
+    const before = cellSnapshot(editor.document);
+    expect(() => editor.execute({ type: 'bulk-cell', indices: new Uint32Array([0, 2, 1]), edit: { kind: 'full', color: 1 } })).toThrow(/strictly increasing/);
+    expect(() => editor.execute({ type: 'bulk-cell', indices: new Uint32Array([0, 99]), edit: { kind: 'full', color: 1 } })).toThrow(/out of bounds/);
+    expect(() => editor.execute({ type: 'bulk-cell', indices: new Uint32Array([0, 1]), edit: { kind: 'unknown' } })).toThrow(DomainError);
+    expect(() => editor.execute({ type: 'bulk-cell', indices: new Uint32Array([0, 1]), edit: { kind: 'full', color: 99 } })).toThrow(/Palette/);
+    expect(() => editor.execute(bulkCellCommand(new Uint32Array([0]), { kind: 'full', color: 1 }, 1))).toThrow(/expected revision/);
+    expect(editor.document).toEqual(before);
+    expect(editor.document.revision).toBe(0);
+    expect(editor.undoDepth).toBe(0);
+    expect(editor.historyBytes).toBe(0);
+  });
+
+  it('rejects a bulk and ordinary command in one batch before mutation', () => {
+    const editor = createEditor(document());
+    const before = editor.document;
+    const bulk = bulkSetFullCommand(new Uint32Array([0, 1]), 1);
+
+    expect(() => editor.executeBatch([
+      { type: 'set-full', x: 2, y: 0, color: 1 },
+      bulk
+    ])).toThrow(/standalone/);
+    expect(editor.document).toBe(before);
+    expect(editor.document.kind.every((kind) => kind === CellKind.Empty)).toBe(true);
+    expect(editor.document.revision).toBe(0);
+    expect(editor.undoDepth).toBe(0);
+    expect(editor.redoDepth).toBe(0);
+  });
+
+  it('rejects multiple bulk commands in one batch before mutation', () => {
+    const editor = createEditor(document());
+    const before = editor.document;
+
+    expect(() => editor.executeBatch([
+      bulkSetFullCommand(new Uint32Array([0]), 1),
+      bulkSetHalfCommand(new Uint32Array([1]), HalfDirection.Slash, 2)
+    ])).toThrow(/standalone/);
+    expect(editor.document).toBe(before);
+    expect(editor.document.kind.every((kind) => kind === CellKind.Empty)).toBe(true);
+    expect(editor.document.revision).toBe(0);
+    expect(editor.undoDepth).toBe(0);
+    expect(editor.historyBytes).toBe(0);
+  });
+
+  it('applies homogeneous bulk cell edits with canonical completion semantics and quarter isolation', () => {
+    const editor = createEditor(document(2, 2));
+    editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    editor.execute({ type: 'set-completion', x: 0, y: 0, completed: true });
+    editor.execute({ type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 1 });
+    editor.execute({ type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.SE, color: 2 });
+    editor.execute({ type: 'set-completion', x: 1, y: 0, corner: QuarterCorner.NW, completed: true });
+    editor.execute({ type: 'set-completion', x: 1, y: 0, corner: QuarterCorner.SE, completed: true });
+    editor.clearHistory();
+
+    const full = editor.execute(bulkSetFullCommand(new Uint32Array([0]), 2));
+    expect(full.changed).toBe(true);
+    expect(full.touchedIndices).toEqual(new Uint32Array([0]));
+    expect(full.changedIndices).toEqual(new Uint32Array([0]));
+    expect(getCell(editor.document, 0, 0)).toMatchObject({ kind: CellKind.Full, color: 2, completed: true });
+
+    const quarter = editor.execute(bulkSetQuarterCommand(new Uint32Array([1]), QuarterCorner.NW, 3));
+    expect(quarter.changed).toBe(true);
+    expect(getCell(editor.document, 1, 0).quarters[QuarterCorner.NW]).toMatchObject({ color: 3, completed: true });
+    expect(getCell(editor.document, 1, 0).quarters[QuarterCorner.SE]).toMatchObject({ color: 2, completed: true });
+
+    editor.execute(bulkEraseQuarterCommand(new Uint32Array([1]), QuarterCorner.NW));
+    expect(getCell(editor.document, 1, 0).quarters[QuarterCorner.NW]).toMatchObject({ color: 0, completed: false });
+    expect(getCell(editor.document, 1, 0).quarters[QuarterCorner.SE]).toMatchObject({ color: 2, completed: true });
+
+    editor.execute(bulkEraseCellCommand(new Uint32Array([1])));
+    expect(getCell(editor.document, 1, 0).kind).toBe(CellKind.Empty);
+
+    const half = editor.execute(bulkSetHalfCommand(new Uint32Array([0]), HalfDirection.Slash, 1));
+    expect(half.changed).toBe(true);
+    expect(getCell(editor.document, 0, 0)).toMatchObject({ kind: CellKind.HalfSlash, completed: false });
+  });
+
+  it('commits one bulk edit as one sparse history entry and undoes/redoes it', () => {
+    const editor = createEditor(document(4, 3));
+    const command = bulkSetFullCommand(new Uint32Array([0, 1, 4, 5]), 1);
+    const result = editor.execute(command);
+    expect(result.revision).toBe(1);
+    expect(editor.undoDepth).toBe(1);
+    expect(editor.lastHistoryEntryKind).toBe('delta');
+    expect(result.changedIndices).toEqual(new Uint32Array([0, 1, 4, 5]));
+    expect(editor.undo().revision).toBe(2);
+    expect(editor.document.kind.slice(0, 6)).toEqual(new Uint8Array(6));
+    expect(editor.redo().revision).toBe(3);
+    expect(editor.document.kind.slice(0, 6)).toEqual(new Uint8Array([1, 1, 0, 0, 1, 1]));
+  });
+
+  it('applies set, clear, and toggle progress to occupied cell components atomically', () => {
+    const editor = createEditor(document(3, 1));
+    editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    editor.execute({ type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 2 });
+    editor.execute({ type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 });
+    editor.execute({ type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.SE, color: 2 });
+    editor.clearHistory();
+
+    const set = editor.execute(bulkSetCompletionCommand(new Uint32Array([0, 1, 2])));
+    expect(set.touchedIndices).toEqual(new Uint32Array([0, 1, 2]));
+    expect(set.changedIndices).toEqual(new Uint32Array([0, 1, 2]));
+    expect(editor.document.completed).toEqual(new Uint8Array([1, 1, 5]));
+    expect(editor.historyBytes).toBe(estimateBulkCompletionHistoryBytes(3));
+    expect(editor.undoDepth).toBe(1);
+
+    const clearCorner = editor.execute(bulkClearCompletionCommand(new Uint32Array([2]), QuarterCorner.NW));
+    expect(clearCorner.changedIndices).toEqual(new Uint32Array([2]));
+    expect(editor.document.completed[2]).toBe(4);
+
+    const toggle = editor.execute(bulkToggleCompletionCommand(new Uint32Array([0, 2])));
+    expect(toggle.changedIndices).toEqual(new Uint32Array([0, 2]));
+    expect(editor.document.completed).toEqual(new Uint8Array([0, 1, 1]));
+
+    editor.undo();
+    expect(editor.document.completed).toEqual(new Uint8Array([1, 1, 4]));
+    editor.redo();
+    expect(editor.document.completed).toEqual(new Uint8Array([0, 1, 1]));
+
+    const noOp = editor.execute(bulkCompletionCommand(new Uint32Array([0]), 'clear'));
+    expect(noOp.changed).toBe(false);
+    expect(noOp.touchedIndices).toEqual(new Uint32Array([0]));
+    expect(noOp.changedIndices).toEqual(new Uint32Array(0));
+  });
+
+  it('tracks bulk backstitch progress by stable IDs and supports one undo entry', () => {
+    const editor = createEditor(document(3, 2));
+    editor.execute({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 4 }, color: 1 });
+    editor.execute({ type: 'add-backstitch', start: { x: 0, y: 4 }, end: { x: 4, y: 8 }, color: 2 });
+    editor.execute({ type: 'add-backstitch', start: { x: 4, y: 0 }, end: { x: 8, y: 4 }, color: 3 });
+    editor.clearHistory();
+
+    const set = editor.execute(bulkSetBackstitchCompletionCommand(new Uint32Array([1, 2])));
+    expect(set.touchedBackstitchIds).toEqual(new Uint32Array([1, 2]));
+    expect(set.changedBackstitchIds).toEqual(new Uint32Array([1, 2]));
+    expect(editor.document.backstitches.completed).toEqual(new Uint8Array([1, 1, 0]));
+    expect(editor.historyBytes).toBe(estimateBulkBackstitchCompletionHistoryBytes(2));
+    expect(editor.undoDepth).toBe(1);
+    expect(() => editor.execute(bulkSetBackstitchCompletionCommand(new Uint32Array([1, 99])))).toThrow(/does not exist/);
+
+    const clear = editor.execute(bulkClearBackstitchCompletionCommand(new Uint32Array([1, 2])));
+    expect(clear.changedBackstitchIds).toEqual(new Uint32Array([1, 2]));
+    const toggle = editor.execute(bulkToggleBackstitchCompletionCommand(new Uint32Array([2, 3])));
+    expect(toggle.changedBackstitchIds).toEqual(new Uint32Array([2, 3]));
+    expect(editor.document.backstitches.completed).toEqual(new Uint8Array([0, 1, 1]));
+
+    editor.undo();
+    expect(editor.document.backstitches.completed).toEqual(new Uint8Array([0, 0, 0]));
+    editor.redo();
+    expect(editor.document.backstitches.completed).toEqual(new Uint8Array([0, 1, 1]));
+  });
+
+  it('rejects unsorted or geometrically invalid bulk completion targets before mutation', () => {
+    const editor = createEditor(document(2, 1));
+    editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    const before = cellSnapshot(editor.document);
+    expect(() => editor.execute(bulkSetCompletionCommand(new Uint32Array([1, 0])))).toThrow(/strictly increasing/);
+    expect(() => editor.execute(bulkSetCompletionCommand(new Uint32Array([0]), QuarterCorner.NW))).toThrow(/quarter geometry/);
+    expect(() => editor.execute(bulkSetCompletionCommand(new Uint32Array([1])))).toThrow(/occupied geometry/);
+    expect(editor.document).toEqual(before);
+    expect(editor.document.revision).toBe(1);
+  });
+
+  it('copies result index arrays so callers cannot alter undo/redo state', () => {
+    const editor = createEditor(document(2, 2));
+    const command = bulkSetFullCommand(new Uint32Array([0, 1]), 1);
+    const result = editor.execute(command);
+    expect(result.changedIndices).toBeInstanceOf(Uint32Array);
+    expect(result.touchedIndices).toBeInstanceOf(Uint32Array);
+
+    result.changedIndices?.fill(3);
+    result.touchedIndices?.fill(3);
+    editor.undo();
+    expect(editor.document.kind[0]).toBe(CellKind.Empty);
+    expect(editor.document.kind[1]).toBe(CellKind.Empty);
+    editor.redo();
+    expect(editor.document.kind[0]).toBe(CellKind.Full);
+    expect(editor.document.kind[1]).toBe(CellKind.Full);
+  });
+
+  it('does not create history for empty or already matching bulk targets', () => {
+    const editor = createEditor(document(2, 2));
+    const empty = editor.execute(bulkSetFullCommand(new Uint32Array(0), 1));
+    expect(empty.changed).toBe(false);
+    expect(empty.touchedIndices).toEqual(new Uint32Array(0));
+    expect(empty.changedIndices).toEqual(new Uint32Array(0));
+    editor.execute(bulkSetFullCommand(new Uint32Array([0, 1]), 1));
+    editor.clearHistory();
+    const noOp = editor.execute(bulkSetFullCommand(new Uint32Array([0, 1]), 1));
+    expect(noOp.changed).toBe(false);
+    expect(noOp.revision).toBe(1);
+    expect(editor.undoDepth).toBe(0);
+    expect(editor.historyBytes).toBe(0);
+  });
+
+  it('preflights bulk history size before mutation', () => {
+    const editor = createEditor(document(4, 3), { historyLimitBytes: 103 });
+    const before = cellSnapshot(editor.document);
+    expect(() => editor.execute(bulkSetFullCommand(new Uint32Array([0, 1, 2]), 1))).toThrow(/exceeding/);
+    expect(editor.document).toEqual(before);
+    expect(editor.document.revision).toBe(0);
+    expect(editor.undoDepth).toBe(0);
+    expect(editor.redoDepth).toBe(0);
+  });
+
+  it('handles a 500 by 500 homogeneous fill without per-cell commands', () => {
+    const width = 500;
+    const height = 500;
+    const indices = Uint32Array.from({ length: width * height }, (_, index) => index);
+    const editor = createEditor(createDocument({ width, height, palette: [{ id: 1, name: 'Red', color: '#d33' }] }));
+    const result = editor.execute(bulkSetFullCommand(indices, 1));
+    expect(result.changed).toBe(true);
+    expect(result.revision).toBe(1);
+    expect(result.changedIndices).toHaveLength(width * height);
+    expect(editor.undoDepth).toBe(1);
+    expect(editor.lastHistoryEntryKind).toBe('delta');
+    expect(editor.historyBytes).toBeLessThanOrEqual(DEFAULT_HISTORY_LIMIT_BYTES);
+    expect(editor.document.kind[0]).toBe(CellKind.Full);
+    expect(editor.document.kind.at(-1)).toBe(CellKind.Full);
+
+    const historyBytes = editor.historyBytes;
+    const noOp = editor.execute(bulkSetFullCommand(indices, 1));
+    expect(noOp.changed).toBe(false);
+    expect(editor.undoDepth).toBe(1);
+    expect(editor.historyBytes).toBe(historyBytes);
+    expect(editor.undo().changed).toBe(true);
+    expect(editor.document.kind[0]).toBe(CellKind.Empty);
+    expect(editor.document.kind.at(-1)).toBe(CellKind.Empty);
+    expect(editor.redo().changed).toBe(true);
+    expect(editor.document.kind[0]).toBe(CellKind.Full);
+  });
+
+  it('proves the packed 1,000 by 1,000 bulk path is one bounded undoable entry', () => {
+    const side = 1_000;
+    const cellCount = side * side;
+    expect(cellCount).toBe(MAX_PERSISTABLE_CELL_COUNT);
+    const indices = Uint32Array.from({ length: cellCount }, (_, index) => index);
+    const editor = createEditor(createDocument({ width: side, height: side, palette: [{ id: 1, name: 'Red', color: '#d33' }] }));
+    const command = bulkSetFullCommand(indices, 1);
+
+    const result = editor.execute(command);
+    expect(result.revision).toBe(1);
+    expect(result.changedIndices).toBeInstanceOf(Uint32Array);
+    expect(result.changedIndices).toHaveLength(cellCount);
+    expect(editor.lastHistoryEntryKind).toBe('delta');
+    expect(editor.undoDepth).toBe(1);
+    expect(editor.historyBytes).toBe(estimateBulkCellHistoryBytes(cellCount));
+    expect(editor.historyBytes).toBeLessThanOrEqual(DEFAULT_HISTORY_LIMIT_BYTES);
+
+    const historyBytes = editor.historyBytes;
+    const noOp = editor.execute(command);
+    expect(noOp.changed).toBe(false);
+    expect(editor.undoDepth).toBe(1);
+    expect(editor.historyBytes).toBe(historyBytes);
+
+    editor.undo();
+    expect(editor.document.kind[0]).toBe(CellKind.Empty);
+    expect(editor.document.kind.at(-1)).toBe(CellKind.Empty);
+    expect(editor.redoDepth).toBe(1);
+    editor.redo();
+    expect(editor.document.kind[0]).toBe(CellKind.Full);
+    expect(editor.document.kind.at(-1)).toBe(CellKind.Full);
+  });
+
+  it('rejects a 1,000 by 1,000 bulk entry over budget before mutation', () => {
+    const side = 1_000;
+    const cellCount = side * side;
+    const requiredBytes = estimateBulkCellHistoryBytes(cellCount);
+    const editor = createEditor(createDocument({ width: side, height: side, palette: [{ id: 1, name: 'Red', color: '#d33' }] }), { historyLimitBytes: requiredBytes - 1 });
+    const before = editor.document;
+    const command = bulkSetFullCommand(Uint32Array.from({ length: cellCount }, (_, index) => index), 1);
+
+    expect(() => editor.execute(command)).toThrow(/exceeding/);
+    expect(editor.document).toBe(before);
+    expect(editor.document.revision).toBe(0);
+    expect(editor.document.kind[0]).toBe(CellKind.Empty);
+    expect(editor.document.kind.at(-1)).toBe(CellKind.Empty);
+    expect(editor.undoDepth).toBe(0);
+    expect(editor.redoDepth).toBe(0);
+    expect(editor.historyBytes).toBe(0);
+  });
+
+  it('records one batch entry, treats no-ops as inert, and never reuses IDs', () => {
+    const editor = createEditor(document());
+    editor.executeBatch([
+      { type: 'set-full', x: 0, y: 0, color: 1 },
+      { type: 'set-full', x: 1, y: 0, color: 2 }
+    ]);
+    expect(editor.undoDepth).toBe(1);
+    expect(editor.document.revision).toBe(1);
+    editor.undo();
+    expect(editor.document.kind).toEqual(new Uint8Array(12));
+    expect(editor.redoDepth).toBe(1);
+    expect(editor.document.revision).toBe(2);
+    editor.redo();
+    expect(editor.document.revision).toBe(3);
+
+    const noOp = editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    expect(noOp.changed).toBe(false);
+    expect(editor.document.revision).toBe(3);
+    editor.execute({ type: 'erase-cell', x: 0, y: 0 });
+    const added = editor.execute({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 });
+    expect(added.backstitchId).toBe(1);
+    editor.undo();
+    const next = editor.execute({ type: 'add-backstitch', start: { x: 0, y: 4 }, end: { x: 4, y: 4 }, color: 1 });
+    expect(next.backstitchId).toBe(2);
+  });
+
+  it('uses a packed sparse delta for a one-cell edit in a 1,000 by 1,000 pattern', () => {
+    const pattern = createDocument({ width: 1000, height: 1000, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    const editor = createEditor(pattern);
+    editor.execute({ type: 'set-full', x: 777, y: 888, color: 1 });
+    expect(editor.lastHistoryEntryKind).toBe('delta');
+    expect(editor.historyBytes).toBeLessThan(1024);
+    expect(editor.historyBytes).toBeLessThan(pattern.kind.byteLength);
+    editor.undo();
+    expect(editor.document.kind[888000 + 777]).toBe(CellKind.Empty);
+    editor.redo();
+    expect(editor.document.kind[888000 + 777]).toBe(CellKind.Full);
+
+    const transformed = editor.execute({ type: 'mirror-horizontal' });
+    expect(transformed.changed).toBe(true);
+    expect(editor.historyBytes).toBeLessThanOrEqual(DEFAULT_HISTORY_LIMIT_BYTES);
+
+    const cropped = editor.execute({ type: 'crop', x: 0, y: 0, width: 999, height: 1000 });
+    expect(cropped.changed).toBe(true);
+    expect(editor.document.width).toBe(999);
+    expect(editor.document.height).toBe(1000);
+    expect(editor.historyBytes).toBeLessThanOrEqual(DEFAULT_HISTORY_LIMIT_BYTES);
+  }, 15_000);
+
+  it('rejects an oversized delta entry atomically', () => {
+    const editor = createEditor(document(), { historyLimitBytes: 55 });
+    const before = editor.document;
+    expect(() => editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 })).toThrow(DomainError);
+    expect(() => editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 })).toThrow(/History entry requires/);
+    expect(editor.document).toBe(before);
+    expect(editor.document.revision).toBe(0);
+    expect(editor.undoDepth).toBe(0);
+    expect(editor.redoDepth).toBe(0);
+    expect(editor.historyBytes).toBe(0);
+  });
+
+  it('rejects an oversized snapshot entry atomically', () => {
+    const editor = createEditor(document(), { historyLimitBytes: 900 });
+    const before = editor.document;
+    expect(() => editor.execute({ type: 'rotate-cw' })).toThrow(DomainError);
+    expect(editor.document).toBe(before);
+    expect(editor.document.revision).toBe(0);
+    expect(editor.undoDepth).toBe(0);
+    expect(editor.redoDepth).toBe(0);
+    expect(editor.historyBytes).toBe(0);
+  });
+
+  it('captures typed full, half, and quarter fragment cells without completion data', () => {
+    let source = document(5, 3);
+    source = apply(source, { type: 'set-full', x: 1, y: 0, color: 1 });
+    source = apply(source, { type: 'set-completion', x: 1, y: 0, completed: true });
+    source = apply(source, { type: 'set-half', x: 2, y: 0, direction: HalfDirection.Slash, color: 2 });
+    source = apply(source, { type: 'set-completion', x: 2, y: 0, completed: true });
+    source = apply(source, { type: 'set-quarter', x: 3, y: 0, corner: QuarterCorner.NW, color: 1 });
+    source = apply(source, { type: 'set-quarter', x: 3, y: 0, corner: QuarterCorner.SE, color: 3 });
+    source = apply(source, { type: 'set-completion', x: 3, y: 0, corner: QuarterCorner.NW, completed: true });
+    source = apply(source, { type: 'set-completion', x: 3, y: 0, corner: QuarterCorner.SE, completed: true });
+    source = apply(source, { type: 'add-backstitch', start: { x: 4, y: 0 }, end: { x: 16, y: 4 }, color: 2 });
+    source = apply(source, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 4 }, color: 1 });
+
+    const fragment = createPatternFragment(source, { x: 1, y: 0, width: 3, height: 2 });
+    expect(fragment.version).toBe(1);
+    expect(fragment.kind).toBeInstanceOf(Uint8Array);
+    expect(fragment.colors).toBeInstanceOf(Uint16Array);
+    expect(fragment.kind).toHaveLength(6);
+    expect(fragment.colors).toHaveLength(24);
+    expect('completed' in fragment).toBe(false);
+    expect('completed' in fragment.backstitches).toBe(false);
+    expect(validatePatternFragment(fragment)).toBe(true);
+    expect(readPatternFragmentCell(fragment, 0, 0)).toMatchObject({ kind: CellKind.Full });
+    expect(readPatternFragmentCell(fragment, 1, 0)).toMatchObject({ kind: CellKind.HalfSlash });
+    expect(readPatternFragmentCell(fragment, 2, 0)).toMatchObject({ kind: CellKind.Quarters });
+    expect(readPatternFragmentCell(fragment, 2, 0).colors).toEqual(new Uint16Array([1, 0, 3, 0]));
+    expect(fragment.backstitches.x1).toEqual(new Uint32Array([0]));
+    expect(fragment.backstitches.y1).toEqual(new Uint32Array([0]));
+    expect(fragment.backstitches.x2).toEqual(new Uint32Array([12]));
+    expect(fragment.backstitches.y2).toEqual(new Uint32Array([4]));
+    expect(fragment.backstitches.colors).toEqual(new Uint16Array([2]));
+  });
+
+  it('pastes fragments transparently with incomplete cells and new backstitch IDs', () => {
+    let source = document(5, 3);
+    source = apply(source, { type: 'set-full', x: 1, y: 0, color: 1 });
+    source = apply(source, { type: 'set-half', x: 2, y: 0, direction: HalfDirection.Slash, color: 2 });
+    source = apply(source, { type: 'set-quarter', x: 3, y: 0, corner: QuarterCorner.NW, color: 1 });
+    source = apply(source, { type: 'set-quarter', x: 3, y: 0, corner: QuarterCorner.SE, color: 3 });
+    source = apply(source, { type: 'add-backstitch', start: { x: 4, y: 0 }, end: { x: 16, y: 4 }, color: 2 });
+    const fragment = createPatternFragment(source, { x: 1, y: 0, width: 3, height: 2 });
+
+    let destination = document(6, 4);
+    destination = apply(destination, { type: 'set-full', x: 1, y: 1, color: 1 });
+    destination = apply(destination, { type: 'set-completion', x: 1, y: 1, completed: true });
+    destination = apply(destination, { type: 'set-half', x: 2, y: 1, direction: HalfDirection.Slash, color: 2 });
+    destination = apply(destination, { type: 'set-completion', x: 2, y: 1, completed: true });
+    destination = apply(destination, { type: 'set-quarter', x: 3, y: 1, corner: QuarterCorner.NW, color: 1 });
+    destination = apply(destination, { type: 'set-quarter', x: 3, y: 1, corner: QuarterCorner.SE, color: 3 });
+    destination = apply(destination, { type: 'set-completion', x: 3, y: 1, corner: QuarterCorner.NW, completed: true });
+    destination = apply(destination, { type: 'set-completion', x: 3, y: 1, corner: QuarterCorner.SE, completed: true });
+    destination = apply(destination, { type: 'set-full', x: 1, y: 2, color: 3 });
+    destination = apply(destination, { type: 'add-backstitch', start: { x: 0, y: 12 }, end: { x: 4, y: 12 }, color: 1 });
+    const directApply = applyCommand(destination, pasteFragmentCommand(fragment, { x: 1, y: 1 }));
+    expect(directApply.createdBackstitchIds).toEqual(new Uint32Array([2]));
+    expect(listBackstitches(directApply.document)).toMatchObject([
+      { id: 1, x1: 0, y1: 12, x2: 4, y2: 12, color: 1 },
+      { id: 2, x1: 4, y1: 4, x2: 16, y2: 8, color: 2 }
+    ]);
+    const initialRevision = destination.revision;
+    const editor = createEditor(destination);
+    const result = editor.execute(pasteFragmentCommand(fragment, { x: 1, y: 1 }));
+
+    expect(result.revision).toBe(initialRevision + 1);
+    expect(editor.undoDepth).toBe(1);
+    expect(editor.lastHistoryEntryKind).toBe('delta');
+    expect(result.createdBackstitchIds).toEqual(new Uint32Array([2]));
+    expect(getCell(editor.document, 1, 1)).toMatchObject({ kind: CellKind.Full, color: 1, completed: false });
+    expect(getCell(editor.document, 2, 1)).toMatchObject({ kind: CellKind.HalfSlash, color: 2, completed: false });
+    expect(getCell(editor.document, 3, 1).quarters[QuarterCorner.NW]).toMatchObject({ color: 1, completed: false });
+    expect(getCell(editor.document, 3, 1).quarters[QuarterCorner.SE]).toMatchObject({ color: 3, completed: false });
+    expect(getCell(editor.document, 1, 2)).toMatchObject({ kind: CellKind.Full, color: 3 });
+    expect(listBackstitches(editor.document)).toMatchObject([
+      { id: 1, x1: 0, y1: 12, x2: 4, y2: 12, color: 1 },
+      { id: 2, x1: 4, y1: 4, x2: 16, y2: 8, color: 2 }
+    ]);
+
+    editor.undo();
+    expect(getCell(editor.document, 1, 1).kind).toBe(CellKind.Full);
+    expect(getCell(editor.document, 1, 1).completed).toBe(true);
+    expect(listBackstitches(editor.document)).toHaveLength(1);
+    editor.redo();
+    expect(getCell(editor.document, 1, 1).completed).toBe(false);
+    expect(listBackstitches(editor.document)).toHaveLength(2);
+  });
+
+  it('rejects malformed fragments, palette references, and placement atomically', () => {
+    let source = document(2, 2);
+    source = apply(source, { type: 'set-full', x: 0, y: 0, color: 1 });
+    const fragment = createPatternFragment(source, { x: 0, y: 0, width: 2, height: 2 });
+    const destinationEditor = createEditor(document(4, 4));
+    const before = destinationEditor.document;
+
+    const invalidPalette = { ...fragment, colors: fragment.colors.slice() } as PatternFragment;
+    invalidPalette.colors[0] = 99;
+    expect(() => destinationEditor.execute(pasteFragmentCommand(invalidPalette, { x: 0, y: 0 }))).toThrow(/Palette/);
+    expect(destinationEditor.document).toBe(before);
+    expect(destinationEditor.document.revision).toBe(0);
+    expect(destinationEditor.undoDepth).toBe(0);
+
+    const invalidGeometry = {
+      ...fragment,
+      backstitches: {
+        x1: new Uint32Array([0]),
+        y1: new Uint32Array([0]),
+        x2: new Uint32Array([9]),
+        y2: new Uint32Array([0]),
+        colors: new Uint16Array([1])
+      }
+    } as PatternFragment;
+    expect(() => destinationEditor.execute(pasteFragmentCommand(invalidGeometry, { x: 0, y: 0 }))).toThrow(/fragment boundary/);
+    expect(destinationEditor.document).toBe(before);
+    expect(() => destinationEditor.execute(pasteFragmentCommand(fragment, { x: 3, y: 3 }))).toThrow(/fit entirely/);
+    expect(destinationEditor.document).toBe(before);
+    const invalidShape = { ...fragment, colors: new Uint16Array(1) } as PatternFragment;
+    expect(() => pasteFragmentCommand(invalidShape, { x: 0, y: 0 })).toThrow(/colors/);
+    const invalidDuplicate = {
+      ...fragment,
+      backstitches: {
+        x1: new Uint32Array([0, 0]),
+        y1: new Uint32Array([0, 0]),
+        x2: new Uint32Array([4, 4]),
+        y2: new Uint32Array([4, 4]),
+        colors: new Uint16Array([1, 1])
+      }
+    } as PatternFragment;
+    expect(() => pasteFragmentCommand(invalidDuplicate, { x: 0, y: 0 })).toThrow(/duplicates/);
+    const budgetEditor = createEditor(document(4, 4), { historyLimitBytes: estimatePasteFragmentHistoryBytes(1, 0, 0) - 1 });
+    const budgetBefore = budgetEditor.document;
+    expect(() => budgetEditor.execute(pasteFragmentCommand(fragment, { x: 0, y: 0 }))).toThrow(/exceeding/);
+    expect(budgetEditor.document).toBe(budgetBefore);
+    expect(budgetEditor.undoDepth).toBe(0);
+    expect(validatePatternFragment(invalidGeometry)).toBe(false);
+    expect(() => assertValidPatternFragment(invalidGeometry)).toThrow(DomainError);
+  });
+
+  it('keeps a large sparse fragment paste within a bounded packed history entry', () => {
+    const side = 500;
+    let source = document(side, side);
+    source = apply(source, { type: 'set-full', x: side - 1, y: side - 1, color: 1 });
+    const fragment = createPatternFragment(source, { x: 0, y: 0, width: side, height: side });
+    const editor = createEditor(document(side, side));
+    const result = editor.execute(pasteFragmentCommand(fragment, { x: 0, y: 0 }));
+
+    expect(result.changed).toBe(true);
+    expect(result.changedIndices).toHaveLength(1);
+    expect(result.revision).toBe(1);
+    expect(editor.undoDepth).toBe(1);
+    expect(editor.lastHistoryEntryKind).toBe('delta');
+    expect(editor.historyBytes).toBe(estimatePasteFragmentHistoryBytes(1, 0, 0));
+    expect(editor.historyBytes).toBeLessThanOrEqual(DEFAULT_HISTORY_LIMIT_BYTES);
+    editor.undo();
+    expect(editor.document.kind.at(-1)).toBe(CellKind.Empty);
+  });
+
+  it('erases mixed whole-cell and quarter targets as one packed undoable command', () => {
+    let pattern = document(4, 2);
+    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
+    pattern = apply(pattern, { type: 'set-completion', x: 0, y: 0, completed: true });
+    pattern = apply(pattern, { type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 2 });
+    pattern = apply(pattern, { type: 'set-completion', x: 1, y: 0, corner: QuarterCorner.NW, completed: true });
+    pattern = apply(pattern, { type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.NE, color: 3 });
+    pattern = apply(pattern, { type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.SW, color: 1 });
+    pattern = apply(pattern, { type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.SE, color: 2 });
+    pattern = apply(pattern, { type: 'set-completion', x: 2, y: 0, corner: QuarterCorner.NE, completed: true });
+    pattern = apply(pattern, { type: 'set-completion', x: 2, y: 0, corner: QuarterCorner.SW, completed: true });
+    pattern = apply(pattern, { type: 'set-completion', x: 2, y: 0, corner: QuarterCorner.SE, completed: true });
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 4 }, end: { x: 4, y: 8 }, color: 2 });
+    const beforePalette = pattern.palette.map((entry) => ({ ...entry }));
+    const editor = createEditor(pattern);
+    const command = mixedEraseCommand(
+      new Uint32Array([0]),
+      new Uint32Array([1, 1, 2, 2]),
+      new Uint8Array([QuarterCorner.NW, QuarterCorner.NE, QuarterCorner.NE, QuarterCorner.SW])
+    );
+
+    const result = editor.execute(command);
+    expect(result.changed).toBe(true);
+    expect(result.changedIndices).toEqual(new Uint32Array([0, 1, 2]));
+    expect(result.revision).toBe(pattern.revision + 1);
+    expect(editor.undoDepth).toBe(1);
+    expect(editor.lastHistoryEntryKind).toBe('delta');
+    expect(editor.historyBytes).toBe(estimateMixedEraseHistoryBytes(3));
+    expect(getCell(editor.document, 0, 0).kind).toBe(CellKind.Empty);
+    expect(getCell(editor.document, 0, 0).completed).toBe(false);
+    expect(getCell(editor.document, 1, 0).kind).toBe(CellKind.Empty);
+    expect(getCell(editor.document, 2, 0)).toMatchObject({ kind: CellKind.Quarters, completed: false });
+    expect(getCell(editor.document, 2, 0).quarters[QuarterCorner.NE]).toMatchObject({ color: 0, completed: false });
+    expect(getCell(editor.document, 2, 0).quarters[QuarterCorner.SW]).toMatchObject({ color: 0, completed: false });
+    expect(getCell(editor.document, 2, 0).quarters[QuarterCorner.SE]).toMatchObject({ color: 2, completed: true });
+    expect(listBackstitches(editor.document)).toMatchObject([
+      { id: 1, x1: 0, y1: 4, x2: 4, y2: 8, color: 2 }
+    ]);
+    expect(editor.document.palette).toEqual(beforePalette);
+    expect(editor.document.nextBackstitchId).toBe(pattern.nextBackstitchId);
+    expect(editor.document.nextPaletteId).toBe(pattern.nextPaletteId);
+
+    editor.undo();
+    expect(editor.undoDepth).toBe(0);
+    expect(editor.redoDepth).toBe(1);
+    expect(editor.document.kind).toEqual(pattern.kind);
+    expect(editor.document.colors).toEqual(pattern.colors);
+    expect(editor.document.completed).toEqual(pattern.completed);
+    expect(listBackstitches(editor.document)).toMatchObject(listBackstitches(pattern));
+    editor.redo();
+    expect(editor.document.kind[0]).toBe(CellKind.Empty);
+    expect(editor.document.kind[1]).toBe(CellKind.Empty);
+    const added = editor.execute({ type: 'add-backstitch', start: { x: 8, y: 0 }, end: { x: 12, y: 0 }, color: 3 });
+    expect(added.backstitchId).toBe(2);
+  });
+
+  it('treats absent whole cells as no-ops without creating history', () => {
+    const editor = createEditor(document(2, 2));
+    const before = editor.document;
+    const result = editor.execute(mixedEraseCommand(new Uint32Array([3]), new Uint32Array(), new Uint8Array()));
+
+    expect(result.changed).toBe(false);
+    expect(editor.document).toBe(before);
+    expect(editor.document.revision).toBe(0);
+    expect(editor.undoDepth).toBe(0);
+    expect(editor.redoDepth).toBe(0);
+    expect(editor.historyBytes).toBe(0);
+  });
+
+  it('deletes selected cells and only backstitches whose endpoints are inside the inclusive region bounds', () => {
+    const editor = createEditor(document(5, 4));
+    editor.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
+    editor.execute({ type: 'set-completion', x: 1, y: 1, completed: true });
+    editor.execute({ type: 'set-quarter', x: 2, y: 2, corner: QuarterCorner.SE, color: 2 });
+    editor.execute({ type: 'set-completion', x: 2, y: 2, corner: QuarterCorner.SE, completed: true });
+    editor.execute({ type: 'set-full', x: 4, y: 3, color: 3 });
+    editor.execute({ type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 12, y: 12 }, color: 1 });
+    editor.execute({ type: 'add-backstitch', start: { x: 0, y: 4 }, end: { x: 12, y: 12 }, color: 2 });
+    editor.execute({ type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 16, y: 12 }, color: 3 });
+    editor.clearHistory();
+
+    const result = editor.execute(deleteRegionCommand({ x: 1, y: 1, width: 2, height: 2 }, editor.revision));
+    expect(result.changed).toBe(true);
+    expect(result.changedIndices).toEqual(new Uint32Array([6, 12]));
+    expect(result.changedBackstitchIds).toEqual(new Uint32Array([1]));
+    expect(editor.document.kind[6]).toBe(CellKind.Empty);
+    expect(editor.document.completed[12]).toBe(0);
+    expect(editor.document.kind[19]).toBe(CellKind.Full);
+    expect(listBackstitches(editor.document).map((line) => line.id)).toEqual([2, 3]);
+    expect(editor.historyBytes).toBe(estimateDeleteRegionHistoryBytes(2, 3, 1));
+    expect(editor.undoDepth).toBe(1);
+
+    editor.undo();
+    expect(editor.document.kind[6]).toBe(CellKind.Full);
+    expect(editor.document.completed[6]).toBe(1);
+    expect(listBackstitches(editor.document).map((line) => line.id)).toEqual([1, 2, 3]);
+    editor.redo();
+    expect(listBackstitches(editor.document).map((line) => line.id)).toEqual([2, 3]);
+    expect(editor.document.nextBackstitchId).toBe(4);
+  });
+
+  it('preflights delete-region history before changing the document', () => {
+    const pattern = document(4, 4);
+    const source = createEditor(pattern);
+    source.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
+    source.execute({ type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 8, y: 8 }, color: 1 });
+    source.clearHistory();
+    const required = estimateDeleteRegionHistoryBytes(1, 1, 1);
+    const editor = createEditor(source.document, { historyLimitBytes: required - 1 });
+    const before = editor.document;
+    expect(() => editor.execute(deleteRegionCommand({ x: 1, y: 1, width: 1, height: 1 }, editor.revision))).toThrow(/exceeding/);
+    expect(editor.document).toBe(before);
+    expect(editor.document.kind[5]).toBe(CellKind.Full);
+    expect(editor.document.backstitches.ids).toEqual(new Uint32Array([1]));
+    expect(editor.revision).toBe(source.revision);
+    expect(editor.undoDepth).toBe(0);
+  });
+
+  it('rejects invalid mixed erase targets atomically', () => {
+    let pattern = document(2, 2);
+    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
+    pattern = apply(pattern, { type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 1 });
+    const editor = createEditor(pattern);
+    const before = editor.document;
+    const reject = (command: Parameters<typeof editor.execute>[0], message: RegExp) => {
+      expect(() => editor.execute(command)).toThrow(message);
+      expect(editor.document).toBe(before);
+      expect(editor.document.revision).toBe(pattern.revision);
+      expect(editor.undoDepth).toBe(0);
+    };
+
+    reject(mixedEraseCommand(new Uint32Array([0]), new Uint32Array([0]), new Uint8Array([QuarterCorner.NW])), /both a whole-cell/);
+    reject(mixedEraseCommand(new Uint32Array(), new Uint32Array([0]), new Uint8Array([QuarterCorner.NW])), /not a quarter/);
+    reject(mixedEraseCommand(new Uint32Array([4]), new Uint32Array(), new Uint8Array()), /out of bounds/);
+    reject({ type: 'mixed-erase', wholeCellIndices: new Uint32Array(), componentCellIndices: new Uint32Array([1]), componentCorners: new Uint8Array([4]) }, /invalid/);
+    expect(() => mixedEraseCommand(new Uint32Array([1, 0]), new Uint32Array(), new Uint8Array())).toThrow(/strictly increasing/);
+    expect(() => mixedEraseCommand(new Uint32Array(), new Uint32Array([1, 1]), new Uint8Array([QuarterCorner.NW, QuarterCorner.NW]))).toThrow(/sorted and unique/);
+  });
+
+  it('rejects a mixed erase over the history budget before mutation', () => {
+    let pattern = document(2, 1);
+    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
+    const requiredBytes = estimateMixedEraseHistoryBytes(1);
+    const editor = createEditor(pattern, { historyLimitBytes: requiredBytes - 1 });
+    const before = editor.document;
+
+    expect(() => editor.execute(mixedEraseCommand(new Uint32Array([0]), new Uint32Array(), new Uint8Array()))).toThrow(/exceeding/);
+    expect(editor.document).toBe(before);
+    expect(editor.document.kind[0]).toBe(CellKind.Full);
+    expect(editor.document.revision).toBe(pattern.revision);
+    expect(editor.undoDepth).toBe(0);
+    expect(editor.historyBytes).toBe(0);
+  });
+
+  it('validates invariants and exposes a boolean validator', () => {
+    const pattern = document();
+    expect(validateDocument(pattern)).toBe(true);
+    pattern.kind[0] = CellKind.Full;
+    expect(validateDocument(pattern)).toBe(false);
+    expect(() => assertValidDocument(pattern)).toThrow();
+  });
+});
+
+describe('palette symbol helpers', () => {
+  it('exposes the four-unit cap so multi-glyph and astral-plane symbols fit', () => {
+    expect(MAX_PALETTE_SYMBOL_LENGTH).toBe(4);
+    // BMP glyph, BMP + VS15, surrogate pair, surrogate pair + VS16 — all fit.
+    expect('●'.length).toBeLessThanOrEqual(MAX_PALETTE_SYMBOL_LENGTH);
+    expect('▶︎'.length).toBeLessThanOrEqual(MAX_PALETTE_SYMBOL_LENGTH);
+    expect('𝕏'.length).toBeLessThanOrEqual(MAX_PALETTE_SYMBOL_LENGTH);
+    expect('🧶\u{fe0f}'.length).toBeLessThanOrEqual(MAX_PALETTE_SYMBOL_LENGTH);
+    // Five units would overflow even with VS16 + skin tone + extra modifier.
+    expect('🧶\u{fe0f}abc'.length).toBeGreaterThan(MAX_PALETTE_SYMBOL_LENGTH);
+  });
+
+  it('flags ASCII letters, ASCII digits, and fullwidth Latin forms as alphanumeric', () => {
+    expect(isAlphanumericSymbol('S')).toBe(true);
+    expect(isAlphanumericSymbol('3')).toBe(true);
+    expect(isAlphanumericSymbol('S3')).toBe(true);
+    expect(isAlphanumericSymbol('abcXYZ')).toBe(true);
+    expect(isAlphanumericSymbol('Ａ')).toBe(true); // U+FF21 fullwidth A
+    expect(isAlphanumericSymbol('ａ')).toBe(true); // U+FF41 fullwidth a
+    expect(isAlphanumericSymbol('３')).toBe(true); // U+FF13 fullwidth 3
+    expect(isAlphanumericSymbol('ＡＢ')).toBe(true);
+  });
+
+  it('treats non-alphanumeric Unicode — including digit look-alikes — as allowed', () => {
+    // BMP geometric / cross / star glyphs from the curated set all pass.
+    for (const glyph of PALETTE_SYMBOLS) expect(isAlphanumericSymbol(glyph)).toBe(false);
+    // Astral-plane glyphs pass (their surrogate halves are not alphanumeric).
+    expect(isAlphanumericSymbol('𝕏')).toBe(false);
+    expect(isAlphanumericSymbol('🧶')).toBe(false);
+    // Variation selectors are not alphanumeric.
+    expect(isAlphanumericSymbol('▶︎')).toBe(false);
+    // Digit-shaped enclosed/dingbat forms are explicitly NOT alphanumeric:
+    // U+2460 "①", U+2461 "②", U+2776 "❶".
+    expect(isAlphanumericSymbol('①')).toBe(false);
+    expect(isAlphanumericSymbol('②')).toBe(false);
+    expect(isAlphanumericSymbol('❶')).toBe(false);
+    // Empty input is not alphanumeric (it's caught earlier as empty).
+    expect(isAlphanumericSymbol('')).toBe(false);
+  });
+});

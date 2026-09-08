@@ -1,0 +1,1459 @@
+import { describe, expect, it } from 'vitest';
+import { CellKind, createDocument } from '../domain';
+import { cellToScreenRect, getCanvasMetrics, visibleCellRect } from '../editor/coordinates';
+import type { CanvasContextAdapter, CanvasTarget, PendingCellState, TraceImage } from '../editor/contracts';
+import { MAX_ATLAS_PIXELS, createDefaultAtlasTarget } from './context';
+import { isCanvasImageSource } from './atlas';
+import { createCanvasRenderer } from './renderer';
+import { symbolForPaletteId } from './symbols';
+
+interface RecordingContext extends CanvasContextAdapter {
+  calls: string[];
+  records: Array<{
+    name: string;
+    args: unknown[];
+    fillStyle: string;
+    strokeStyle: string;
+    globalAlpha: number;
+    lineWidth: number;
+    font: string;
+  }>;
+}
+
+function recordingContext(): RecordingContext {
+  const context: RecordingContext = {
+    calls: [],
+    records: [],
+    fillStyle: '',
+    strokeStyle: '',
+    lineWidth: 1,
+    globalAlpha: 1,
+    font: '',
+    clearRect: function (this: RecordingContext, ...args: number[]): void { record(this, 'clearRect', args); },
+    fillRect: function (this: RecordingContext, ...args: number[]): void { record(this, 'fillRect', args); },
+    strokeRect: function (this: RecordingContext, ...args: number[]): void { record(this, 'strokeRect', args); },
+    rect: function (this: RecordingContext, ...args: number[]): void { record(this, 'rect', args); },
+    clip: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'clip', args); },
+    beginPath: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'beginPath', args); },
+    closePath: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'closePath', args); },
+    moveTo: function (this: RecordingContext, ...args: number[]): void { record(this, 'moveTo', args); },
+    lineTo: function (this: RecordingContext, ...args: number[]): void { record(this, 'lineTo', args); },
+    fill: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'fill', args); },
+    stroke: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'stroke', args); },
+    fillText: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'fillText', args); },
+    drawImage: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'drawImage', args); },
+    save: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'save', args); },
+    restore: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'restore', args); },
+    setTransform: function (this: RecordingContext, ...args: number[]): void { record(this, 'setTransform', args); },
+    setLineDash: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'setLineDash', args); }
+  };
+  return context;
+}
+
+function record(context: RecordingContext, name: string, args: unknown[]): void {
+  context.calls.push(name);
+  context.records.push({
+    name,
+    args,
+    fillStyle: context.fillStyle,
+    strokeStyle: context.strokeStyle,
+    globalAlpha: context.globalAlpha,
+    lineWidth: context.lineWidth,
+    font: context.font
+  });
+}
+
+function target(context: RecordingContext, source?: unknown): CanvasTarget & { resizeCount: number } {
+  let resizeCount = 0;
+  return {
+    context,
+    width: 0,
+    height: 0,
+    source,
+    get resizeCount() { return resizeCount; },
+    resize(width: number, height: number): void {
+      resizeCount += 1;
+      this.width = width;
+      this.height = height;
+    }
+  };
+}
+
+class FakeCanvasImageSource {
+  width: number;
+  height: number;
+
+  constructor(width: number, height: number) {
+    this.width = width;
+    this.height = height;
+  }
+
+  getContext(): unknown {
+    return undefined;
+  }
+}
+
+class FakeOffscreenCanvas extends FakeCanvasImageSource {
+  getContext(): RecordingContext {
+    return recordingContext();
+  }
+}
+
+function chart(width = 4, height = 4) {
+  return createDocument({
+    width,
+    height,
+    palette: [
+      { id: 1, name: 'Red', color: '#f00' },
+      { id: 35, name: 'Blue', color: '#00f' }
+    ]
+  });
+}
+
+describe('Canvas 2D chart renderer', () => {
+  it('uses deterministic base-36 symbols', () => {
+    expect(symbolForPaletteId(1)).toBe('1');
+    expect(symbolForPaletteId(35)).toBe('z');
+    expect(symbolForPaletteId(36)).toBe('10');
+  });
+
+  it('renders the v2 palette symbol instead of deriving one from the palette ID', () => {
+    const document = chart(1, 1);
+    document.palette[0] = { ...document.palette[0], symbol: '☆' };
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(32, 32),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      style: { mode: 'combined' }
+    });
+    renderer.renderNow();
+    expect(base.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(true);
+    renderer.dispose();
+  });
+
+  it('keeps the dark symbol ink on a light stitch in combined mode', () => {
+    const document = chart(1, 1);
+    document.palette[0] = { ...document.palette[0], color: '#f0f0f0' };
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(32, 32),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      style: { mode: 'combined' }
+    });
+    renderer.renderNow();
+    expect(base.records.some((call) => call.name === 'fillText' && call.fillStyle === '#242424')).toBe(true);
+    renderer.dispose();
+  });
+
+  it('flips the symbol ink to white on a dark stitch in combined mode', () => {
+    const document = chart(1, 1);
+    document.palette[0] = { ...document.palette[0], color: '#000000' };
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(32, 32),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      style: { mode: 'combined' }
+    });
+    renderer.renderNow();
+    expect(base.records.some((call) => call.name === 'fillText' && call.fillStyle === '#ffffff')).toBe(true);
+    expect(base.records.some((call) => call.name === 'fillText' && call.fillStyle === '#242424')).toBe(false);
+    renderer.dispose();
+  });
+
+  it('keeps the configured symbol ink in symbol mode regardless of cell color', () => {
+    const document = chart(1, 1);
+    document.palette[0] = { ...document.palette[0], color: '#000000' };
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(32, 32),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      style: { mode: 'symbol' }
+    });
+    renderer.renderNow();
+    expect(base.records.some((call) => call.name === 'fillText' && call.fillStyle === '#242424')).toBe(true);
+    renderer.dispose();
+  });
+
+  it('scales the symbol font to the grid cell size in combined mode', () => {
+    const document = chart(1, 1);
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(32, 32),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      style: { mode: 'combined' }
+    });
+    renderer.renderNow();
+    // A 1x1 cell spans viewport.zoom screen px (cellToScreenRect: width =
+    // height = zoom), so the default 1em symbolFont resolves to 16px.
+    expect(base.records.some((call) => call.name === 'fillText' && call.font === '600 16px sans-serif')).toBe(true);
+    renderer.dispose();
+  });
+
+  it('applies the per-glyph scale and dy override to shift the draw centre', () => {
+    // Render the same centred 1x1 cell once with the overridden glyph (℗
+    // = { scale: 0.7, dy: 2 }) and once with a plain glyph, in fresh contexts,
+    // to compare font scaling and draw-centre shift without renderer diffing.
+    const renderSingle = (symbol: string): RecordingContext => {
+      const document = chart(1, 1);
+      document.palette[0] = { ...document.palette[0], symbol };
+      document.kind[0] = CellKind.Full;
+      document.colors[0] = 1;
+      const base = recordingContext();
+      const renderer = createCanvasRenderer({
+        document,
+        targets: { base: target(base), overlay: target(recordingContext()) },
+        metrics: getCanvasMetrics(32, 32),
+        viewport: { x: 0, y: 0, zoom: 16 },
+        style: { mode: 'combined' }
+      });
+      renderer.renderNow();
+      renderer.dispose();
+      return base;
+    };
+    const marker = renderSingle('\u2117');
+    const overridden = marker.records.find((call) => call.name === 'fillText' && call.args[0] === '\u2117');
+    expect(overridden).toBeDefined();
+    // Scale shrinks the 16px cell to 16 × 0.7 = 11.2 → 11px em font.
+    expect(overridden?.font).toBe('600 11px sans-serif');
+    const plain = renderSingle('\u25cf').records.find((call) => call.name === 'fillText' && call.args[0] === '\u25cf');
+    expect(plain).toBeDefined();
+    // dy shifts the draw centre 2px below the plain glyph's baseline.
+    expect(overridden?.args[2]).toBe((plain?.args[2] as number) + 2);
+  });
+
+  it('applies scale-only overrides without shifting the draw position', () => {
+    const renderSingle = (symbol: string): RecordingContext => {
+      const document = chart(1, 1);
+      document.palette[0] = { ...document.palette[0], symbol };
+      document.kind[0] = CellKind.Full;
+      document.colors[0] = 1;
+      const base = recordingContext();
+      const renderer = createCanvasRenderer({
+        document,
+        targets: { base: target(base), overlay: target(recordingContext()) },
+        metrics: getCanvasMetrics(32, 32),
+        viewport: { x: 0, y: 0, zoom: 16 },
+        style: { mode: 'combined' }
+      });
+      renderer.renderNow();
+      renderer.dispose();
+      return base;
+    };
+    // ⣿ is overridden with { scale: 0.6 } only.
+    const braille = renderSingle('\u28FF');
+    const scalled = braille.records.find((call) => call.name === 'fillText' && call.args[0] === '\u28FF');
+    expect(scalled).toBeDefined();
+    // Scale shrinks the 16px cell to 16 × 0.6 = 9.6 → 10px em font.
+    expect(scalled?.font).toBe('600 10px sans-serif');
+    const plain = renderSingle('\u25cf').records.find((call) => call.name === 'fillText' && call.args[0] === '\u25cf');
+    expect(plain).toBeDefined();
+    // No dy entry on ⣿: the draw centre stays on the plain-glyph baseline.
+    expect(scalled?.args[2]).toBe(plain?.args[2]);
+  });
+
+  it('draws full, half, quarter geometry and culls distant backstitches', () => {
+    const document = chart();
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    document.kind[1] = CellKind.HalfBackslash;
+    document.colors[4] = 1;
+    document.kind[2] = CellKind.HalfSlash;
+    document.colors[8] = 1;
+    document.kind[3] = CellKind.Quarters;
+    document.colors.set([1, 35, 1, 35], 12);
+    document.backstitches = {
+      ids: new Uint32Array([1, 2]),
+      x1: new Uint32Array([0, 40]),
+      y1: new Uint32Array([2, 2]),
+      x2: new Uint32Array([16, 48]),
+      y2: new Uint32Array([2, 2]),
+      colors: new Uint16Array([1, 1]),
+      completed: new Uint8Array([0, 0])
+    };
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(64, 64, { dpr: 1 }),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      style: { mode: 'combined' }
+    });
+    const stats = renderer.renderNow();
+    expect(stats.visitedCells).toBe(16);
+    expect(stats.drawnCells).toBe(4);
+    expect(stats.drawnBackstitches).toBe(1);
+    expect(base.calls).toContain('fillRect');
+    expect(base.calls).toContain('fill');
+    expect(base.calls).toContain('fillText');
+    expect(base.records.find((call) => call.name === 'fillRect' && call.args[0] === 0 && call.args[1] === 0 && call.args[2] === 16 && call.args[3] === 16)).toMatchObject({ fillStyle: '#f00' });
+    expect(base.records.some((call) => call.name === 'moveTo' && call.args[0] === 16 && call.args[1] === 0)).toBe(true);
+  });
+
+  it('dims the committed pattern while move-image dimming is active', () => {
+    const document = chart(1, 1);
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(16, 16),
+      viewport: { x: 0, y: 0, zoom: 16 }
+    });
+    const cellFills = () => base.records.filter((call) => call.name === 'fillRect' && call.args[0] === 0 && call.args[1] === 0 && call.args[2] === 16 && call.args[3] === 16);
+    renderer.renderNow();
+    // The background fill and the (0,0) cell fill share the same rect; the cell
+    // is drawn last, so it is the final record while the background stays opaque.
+    expect(cellFills().at(-1)?.globalAlpha).toBe(1);
+    base.calls.length = 0;
+    base.records.length = 0;
+    renderer.setPatternDimmed?.(true);
+    renderer.renderNow();
+    expect(cellFills().at(-1)?.globalAlpha).toBe(0.5);
+    renderer.setPatternDimmed?.(false);
+    renderer.dispose();
+  });
+
+  it('renders base and overlay independently and coalesces RAF work', () => {
+    const base = recordingContext();
+    const overlay = recordingContext();
+    let requests = 0;
+    let callback: ((time: number) => void) | undefined;
+    const renderer = createCanvasRenderer({
+      document: chart(),
+      targets: { base: target(base), overlay: target(overlay) },
+      metrics: getCanvasMetrics(32, 32),
+      requestAnimationFrame: (next) => {
+        requests += 1;
+        callback = next;
+        return requests;
+      },
+      cancelAnimationFrame: () => undefined
+    });
+    renderer.renderNow();
+    base.calls.length = 0;
+    overlay.calls.length = 0;
+    renderer.setOverlay({ cursor: { x: 1, y: 1 } });
+    renderer.invalidate('overlay');
+    expect(requests).toBe(1);
+    callback?.(0);
+    expect(renderer.lastStats.baseRendered).toBe(false);
+    expect(renderer.lastStats.overlayRendered).toBe(true);
+    expect(base.calls).toEqual([]);
+    expect(overlay.calls).toContain('strokeRect');
+  });
+
+  it('uses one cached atlas in overview mode', () => {
+    const base = recordingContext();
+    let atlasBuilds = 0;
+    const renderer = createCanvasRenderer({
+      document: chart(500, 500),
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(500, 500),
+      viewport: { x: 0, y: 0, zoom: 1 },
+      atlasTargetFactory: () => {
+        atlasBuilds += 1;
+        return target(recordingContext(), new FakeCanvasImageSource(500, 500));
+      }
+    });
+    renderer.renderNow();
+    renderer.invalidate('base');
+    renderer.renderNow();
+    expect(atlasBuilds).toBe(1);
+    expect(base.calls.filter((call) => call === 'drawImage')).toHaveLength(2);
+    expect(renderer.lastStats.visitedCells).toBe(0);
+    const imageCall = base.records.find((call) => call.name === 'drawImage');
+    expect(imageCall?.args[0]).toBeInstanceOf(FakeCanvasImageSource);
+    expect(isCanvasImageSource(imageCall?.args[0])).toBe(true);
+  });
+
+  it('only resizes targets when backing dimensions change', () => {
+    const base = recordingContext();
+    const overlay = recordingContext();
+    const baseTarget = target(base);
+    const overlayTarget = target(overlay);
+    const metrics = getCanvasMetrics(64, 64, { dpr: 1 });
+    const renderer = createCanvasRenderer({
+      document: chart(),
+      targets: { base: baseTarget, overlay: overlayTarget },
+      metrics,
+      viewport: { x: 0, y: 0, zoom: 16 }
+    });
+    renderer.renderNow();
+    expect(baseTarget.resizeCount).toBe(1);
+    expect(overlayTarget.resizeCount).toBe(1);
+    renderer.invalidate('base');
+    renderer.renderNow();
+    expect(baseTarget.resizeCount).toBe(1);
+    renderer.setMetrics(metrics);
+    renderer.renderNow();
+    expect(baseTarget.resizeCount).toBe(1);
+    renderer.setMetrics(getCanvasMetrics(64, 64, { dpr: 2 }));
+    renderer.renderNow();
+    expect(baseTarget.resizeCount).toBe(2);
+    expect(overlayTarget.resizeCount).toBe(2);
+    renderer.setMetrics(getCanvasMetrics(80, 64, { dpr: 1 }));
+    renderer.renderNow();
+    expect(baseTarget.resizeCount).toBe(3);
+    expect(overlayTarget.resizeCount).toBe(3);
+    renderer.dispose();
+  });
+
+  it('treats the projected viewport as authoritative without chart-bound clamping', () => {
+    const document = chart(4, 4);
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(recordingContext()), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(64, 64),
+      viewport: { x: 100, y: -100, zoom: 16 }
+    });
+    expect(renderer.getViewport()).toEqual({ x: 100, y: -100, zoom: 16 });
+    renderer.setViewport({ x: -250, y: 350, zoom: 2 });
+    expect(renderer.getViewport()).toEqual({ x: -250, y: 350, zoom: 2 });
+    renderer.setDocument(chart(8, 8));
+    renderer.setMetrics(getCanvasMetrics(80, 80));
+    expect(renderer.getViewport()).toEqual({ x: -250, y: 350, zoom: 2 });
+    renderer.dispose();
+  });
+
+  it('coalesces reasons and performs a clipped bounded redraw', () => {
+    const document = chart(100, 100);
+    document.kind[6 * 100 + 5] = CellKind.Full;
+    document.colors[(6 * 100 + 5) * 4] = 1;
+    document.kind[6 * 100 + 6] = CellKind.Full;
+    document.colors[(6 * 100 + 6) * 4] = 1;
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(40, 40),
+      viewport: { x: 0, y: 0, zoom: 4 }
+    });
+    renderer.renderNow();
+    base.calls.length = 0;
+    base.records.length = 0;
+    renderer.invalidate({ layer: 'base', cellRect: { x: 5, y: 6, width: 1, height: 1 }, reason: 'paint-cell' });
+    renderer.invalidate({ layer: 'base', cellRect: { x: 6, y: 6, width: 1, height: 1 }, reason: 'completion-cell' });
+    renderer.renderNow();
+    expect(renderer.getLastInvalidation()).toMatchObject({
+      base: true,
+      cellRect: { x: 5, y: 6, width: 2, height: 1 },
+      reasons: ['paint-cell', 'completion-cell']
+    });
+    expect(renderer.lastStats.visitedCells).toBe(2);
+    expect(base.records.some((call) => call.name === 'clip')).toBe(true);
+    expect(base.records.some((call) => call.name === 'clearRect' && call.args.join(',') === '0,0,40,40')).toBe(false);
+    expect(base.records.some((call) => call.name === 'clearRect' && call.args.join(',') === '20,24,8,4')).toBe(true);
+    renderer.setStyle({ gridColor: '#000' });
+    renderer.renderNow();
+    expect(base.records.some((call) => call.name === 'clearRect' && call.args.join(',') === '0,0,40,40')).toBe(true);
+    renderer.dispose();
+  });
+
+  it('accepts bounded invalidation atomically through document and overlay setters', () => {
+    const original = chart(100, 100);
+    const next = chart(100, 100);
+    next.kind[6 * 100 + 5] = CellKind.Full;
+    next.colors[(6 * 100 + 5) * 4] = 1;
+    next.revision = original.revision + 1;
+    const base = recordingContext();
+    const overlay = recordingContext();
+    const baseTarget = target(base);
+    const overlayTarget = target(overlay);
+    const renderer = createCanvasRenderer({
+      document: original,
+      targets: { base: baseTarget, overlay: overlayTarget },
+      metrics: getCanvasMetrics(40, 40),
+      viewport: { x: 0, y: 0, zoom: 4 }
+    });
+    renderer.renderNow();
+    base.calls.length = 0;
+    base.records.length = 0;
+    overlay.calls.length = 0;
+    overlay.records.length = 0;
+
+    renderer.setDocument(next, {
+      layer: 'base',
+      cellRect: { x: 5, y: 6, width: 1, height: 1 },
+      reason: 'document-revision'
+    });
+    renderer.renderNow();
+    expect(renderer.lastStats.visitedCells).toBe(1);
+    expect(renderer.lastStats.baseRendered).toBe(true);
+    expect(renderer.lastStats.overlayRendered).toBe(false);
+    expect(base.records.some((call) => call.name === 'clip')).toBe(true);
+    expect(base.records.some((call) => call.name === 'clearRect' && call.args.join(',') === '0,0,40,40')).toBe(false);
+    expect(baseTarget.resizeCount).toBe(1);
+    expect(overlay.records).toEqual([]);
+    expect(renderer.getLastInvalidation().reasons).toContain('document-revision');
+
+    overlay.calls.length = 0;
+    overlay.records.length = 0;
+    renderer.setOverlay({ cursor: { x: 5, y: 6 } }, {
+      layer: 'overlay',
+      cellRect: { x: 5, y: 6, width: 1, height: 1 },
+      reason: 'cursor-region'
+    });
+    renderer.renderNow();
+    expect(renderer.lastStats.baseRendered).toBe(false);
+    expect(renderer.lastStats.overlayRendered).toBe(true);
+    expect(overlay.records.some((call) => call.name === 'clip')).toBe(true);
+    expect(overlay.records.some((call) => call.name === 'clearRect' && call.args.join(',') === '0,0,40,40')).toBe(false);
+    expect(overlayTarget.resizeCount).toBe(1);
+    expect(renderer.getLastInvalidation().reasons).toContain('cursor-region');
+    renderer.dispose();
+  });
+
+  it('does not cancel the initial full draw when setDocument receives a bounded invalidation first', () => {
+    const original = chart(100, 100);
+    const next = chart(100, 100);
+    next.kind[6 * 100 + 5] = CellKind.Full;
+    next.colors[(6 * 100 + 5) * 4] = 1;
+    const base = recordingContext();
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document: original,
+      targets: { base: target(base), overlay: target(overlay) },
+      metrics: getCanvasMetrics(40, 40),
+      viewport: { x: 0, y: 0, zoom: 4 }
+    });
+    renderer.setDocument(next, {
+      layer: 'base',
+      cellRect: { x: 5, y: 6, width: 1, height: 1 },
+      reason: 'before-initial-document'
+    });
+    const stats = renderer.renderNow();
+    expect(stats.baseRendered).toBe(true);
+    expect(stats.overlayRendered).toBe(true);
+    expect(base.records.some((call) => call.name === 'clearRect' && call.args.join(',') === '0,0,40,40')).toBe(true);
+    expect(overlay.records.some((call) => call.name === 'clearRect' && call.args.join(',') === '0,0,40,40')).toBe(true);
+    renderer.dispose();
+  });
+
+  it('does not cancel the initial full draw when setOverlay receives a bounded invalidation first', () => {
+    const base = recordingContext();
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document: chart(100, 100),
+      targets: { base: target(base), overlay: target(overlay) },
+      metrics: getCanvasMetrics(40, 40),
+      viewport: { x: 0, y: 0, zoom: 4 }
+    });
+    renderer.setOverlay({ cursor: { x: 5, y: 6 } }, {
+      layer: 'overlay',
+      cellRect: { x: 5, y: 6, width: 1, height: 1 },
+      reason: 'before-initial-overlay'
+    });
+    const stats = renderer.renderNow();
+    expect(stats.baseRendered).toBe(true);
+    expect(stats.overlayRendered).toBe(true);
+    expect(base.records.some((call) => call.name === 'clearRect' && call.args.join(',') === '0,0,40,40')).toBe(true);
+    expect(overlay.records.some((call) => call.name === 'clearRect' && call.args.join(',') === '0,0,40,40')).toBe(true);
+    renderer.dispose();
+  });
+
+  it('rebuilds an overview atlas for a changed document while keeping bounded setter invalidation full-safe', () => {
+    const original = chart(2, 2);
+    original.kind[0] = CellKind.Full;
+    original.colors[0] = 1;
+    const next = chart(2, 2);
+    next.kind[0] = CellKind.Full;
+    next.colors[0] = 35;
+    next.revision = original.revision + 1;
+    const base = recordingContext();
+    let atlasBuilds = 0;
+    const renderer = createCanvasRenderer({
+      document: original,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(20, 20),
+      viewport: { x: 0, y: 0, zoom: 1 },
+      atlasTargetFactory: (width, height) => {
+        atlasBuilds += 1;
+        return target(recordingContext(), new FakeCanvasImageSource(width, height));
+      }
+    });
+    renderer.renderNow();
+    base.records.length = 0;
+    renderer.setDocument(next, {
+      layer: 'base',
+      cellRect: { x: 0, y: 0, width: 1, height: 1 },
+      reason: 'document-overview'
+    });
+    renderer.renderNow();
+    expect(atlasBuilds).toBe(2);
+    expect(renderer.lastStats.lod).toBe('overview');
+    expect(base.records.some((call) => call.name === 'clearRect' && call.args.join(',') === '0,0,20,20')).toBe(true);
+    renderer.dispose();
+  });
+
+  it('keeps compact geometry and Symbol glyphs while Combined remains detail-only', () => {
+    const compactContext = recordingContext();
+    const compactDocument = chart(5, 5);
+    compactDocument.palette[0] = { ...compactDocument.palette[0], symbol: '☆' };
+    compactDocument.kind[0] = CellKind.Full;
+    compactDocument.colors[0] = 1;
+    compactDocument.completed[0] = 1;
+    const compact = createCanvasRenderer({
+      document: compactDocument,
+      targets: { base: target(compactContext), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(40, 40),
+      viewport: { x: 0, y: 0, zoom: 8 },
+      style: { mode: 'symbol', gridInterval: 2 }
+    });
+    compact.renderNow();
+
+    const compactCombinedContext = recordingContext();
+    const compactCombined = createCanvasRenderer({
+      document: compactDocument,
+      targets: { base: target(compactCombinedContext), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(40, 40),
+      viewport: { x: 0, y: 0, zoom: 8 },
+      style: { mode: 'combined', gridInterval: 2 }
+    });
+    compactCombined.renderNow();
+
+    const detailContext = recordingContext();
+    const detail = createCanvasRenderer({
+      document: compactDocument,
+      targets: { base: target(detailContext), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(80, 80),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      style: { mode: 'combined', gridInterval: 2 }
+    });
+    detail.renderNow();
+    expect(compact.lastStats.lod).toBe('compact');
+    expect(compactCombined.lastStats.lod).toBe('compact');
+    expect(detail.lastStats.lod).toBe('detail');
+    expect(compactContext.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(true);
+    expect(compactCombinedContext.records.some((call) => call.name === 'fillText')).toBe(false);
+    expect(detailContext.records.some((call) => call.name === 'fillText')).toBe(true);
+    expect(compactContext.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#d8d8d8')).toBe(false);
+    expect(compactCombinedContext.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#d8d8d8')).toBe(false);
+    expect(detailContext.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#d8d8d8')).toBe(true);
+    expect(detailContext.records.filter((call) => call.name === 'stroke').length).toBeGreaterThan(compactCombinedContext.records.filter((call) => call.name === 'stroke').length);
+    expect(compactContext.records.some((call) => call.name === 'fillRect' && call.globalAlpha === 0.62)).toBe(true);
+    compact.dispose();
+    compactCombined.dispose();
+    detail.dispose();
+  });
+
+  it('draws the 5-cell highlight tier between the stitch grid and the 10-cell grid', () => {
+    const document = chart(20, 10);
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(320, 160, { dpr: 2 }),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      style: { gridColor: '#00ff00', midGridColor: '#0000ff', majorGridColor: '#ff0000', gridInterval: 10, midGridInterval: 5 }
+    });
+    renderer.renderNow();
+    // Mid-grid lines use the distinct mid color and width 1.
+    const midSegments = base.records.filter((call) => call.name === 'lineTo' && call.strokeStyle === '#0000ff');
+    expect(midSegments.length).toBe(4); // x at 5,10,15 and y at 5.
+    expect(new Set(midSegments.map((call) => call.lineWidth))).toEqual(new Set([1]));
+    const midLineTos = midSegments.map((call) => call.args as number[]);
+    // Vertical lines span the full chart height at x=80,160,240; horizontal spans full width at y=80.
+    const verticals = midLineTos.filter(([x]) => x === 80 || x === 160 || x === 240);
+    expect(verticals.length).toBe(3);
+    for (const [, y] of verticals) expect(y).toBe(160);
+    const horizontal = midLineTos.find(([x, y]) => x === 320 && y === 80);
+    expect(horizontal).toBeDefined();
+    // No mid line at the document edges: the only mid segments are the three
+    // verticals at interior multiples of 5 (x=80,160,240 for cells 5,10,15)
+    // and the single horizontal at y=80 (cell 5). No vertical at x=0/x=320.
+    const midMoves = base.records
+      .filter((call) => call.name === 'moveTo' && call.strokeStyle === '#0000ff')
+      .map((call) => call.args as number[]);
+    const verticalMoves = midMoves.filter(([, y]) => y === 0 || y === 160);
+    const verticalMoveXs = verticalMoves.map(([x]) => x).sort((a, b) => a - b);
+    expect(verticalMoveXs).toEqual([80, 160, 240]);
+    renderer.dispose();
+  });
+
+  it('omits the 5-cell tier at overview zoom and on tiny charts', () => {
+    const overview = recordingContext();
+    const renderer = createCanvasRenderer({
+      document: chart(100, 100),
+      targets: { base: target(overview), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(40, 32, { dpr: 2 }),
+      viewport: { x: 3.25, y: 4.5, zoom: 1 },
+      style: { midGridColor: '#0000ff' }
+    });
+    renderer.renderNow();
+    expect(overview.records.some((call) => call.strokeStyle === '#0000ff')).toBe(false);
+    renderer.dispose();
+
+    const tiny = recordingContext();
+    const tinyRenderer = createCanvasRenderer({
+      document: chart(4, 3),
+      targets: { base: target(tiny), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(64, 48, { dpr: 1 }),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      style: { midGridColor: '#0000ff' }
+    });
+    tinyRenderer.renderNow();
+    // 4x3 chart has no interior multiples of 5 (5 > 4 and 5 > 3), so no mid lines.
+    expect(tiny.records.some((call) => call.strokeStyle === '#0000ff')).toBe(false);
+    tinyRenderer.dispose();
+  });
+
+  it('keeps grid coordinates inside the pattern and canvas bounds at every LOD and DPR', () => {
+    const cases = [
+      { name: 'overview', document: chart(100, 100), metrics: getCanvasMetrics(40, 32, { dpr: 2 }), viewport: { x: 3.25, y: 4.5, zoom: 1 }, grid: true },
+      { name: 'compact', document: chart(100, 100), metrics: getCanvasMetrics(40, 32, { dpr: 1.5 }), viewport: { x: 3.25, y: 4.5, zoom: 8 }, grid: true },
+      { name: 'detail', document: chart(100, 100), metrics: getCanvasMetrics(40, 32, { dpr: 2 }), viewport: { x: 3.25, y: 4.5, zoom: 16 }, grid: true },
+      { name: 'centered pattern', document: chart(2, 2), metrics: getCanvasMetrics(80, 60, { dpr: 2 }), viewport: { x: 0, y: 0, zoom: 16 }, grid: true }
+    ];
+
+    for (const testCase of cases) {
+      const base = recordingContext();
+      const renderer = createCanvasRenderer({
+        document: testCase.document,
+        targets: { base: target(base), overlay: target(recordingContext()) },
+        metrics: testCase.metrics,
+        viewport: testCase.viewport,
+        style: { gridColor: '#00ff00', majorGridColor: '#ff0000', gridInterval: 2 }
+      });
+      renderer.renderNow();
+
+      const pattern = cellToScreenRect({ x: 0, y: 0, width: testCase.document.width, height: testCase.document.height }, renderer.getViewport());
+      const left = Math.max(0, pattern.x);
+      const right = Math.min(testCase.metrics.cssWidth, pattern.x + pattern.width);
+      const top = Math.max(0, pattern.y);
+      const bottom = Math.min(testCase.metrics.cssHeight, pattern.y + pattern.height);
+      const gridCoordinates = base.records
+        .filter((call) => call.name === 'moveTo' || call.name === 'lineTo')
+        .filter((call) => call.strokeStyle === '#00ff00' || call.strokeStyle === '#ff0000')
+        .flatMap((call) => [call.args as number[]]);
+
+
+      if (testCase.grid) expect(gridCoordinates.length, testCase.name).toBeGreaterThan(0);
+      else expect(gridCoordinates, testCase.name).toEqual([]);
+      for (const [x, y] of gridCoordinates) {
+        expect(x, `${testCase.name} grid x`).toBeGreaterThanOrEqual(left);
+        expect(x, `${testCase.name} grid x`).toBeLessThanOrEqual(right);
+        expect(y, `${testCase.name} grid y`).toBeGreaterThanOrEqual(top);
+        expect(y, `${testCase.name} grid y`).toBeLessThanOrEqual(bottom);
+      }
+      renderer.dispose();
+    }
+  });
+
+  it('clips interaction overlays to the visible PatternDocument rectangle', () => {
+    const document = chart(4, 3);
+    const overlay = recordingContext();
+    const metrics = getCanvasMetrics(80, 60, { dpr: 2 });
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      metrics,
+      viewport: { x: 0, y: 0, zoom: 10 },
+      overlay: {
+        pendingCells: [{ x: -1, y: 0 }, { x: 0, y: 0 }, { x: 3, y: 2 }, { x: 4, y: 3 }],
+        backstitchPreview: { start: { x: -8, y: -4 }, end: { x: 24, y: 16 } },
+        selection: { x: -2, y: -1, width: 8, height: 6 },
+        cursor: { x: 3, y: 2 }
+      }
+    });
+    renderer.renderNow();
+
+    const pattern = cellToScreenRect({ x: 0, y: 0, width: document.width, height: document.height }, renderer.getViewport());
+    const left = Math.max(0, pattern.x);
+    const right = Math.min(metrics.cssWidth, pattern.x + pattern.width);
+    const top = Math.max(0, pattern.y);
+    const bottom = Math.min(metrics.cssHeight, pattern.y + pattern.height);
+    const coordinates = overlay.records
+      .filter((call) => ['fillRect', 'strokeRect', 'moveTo', 'lineTo'].includes(call.name))
+      .flatMap((call) => {
+        if (call.name === 'fillRect' || call.name === 'strokeRect') {
+          const [x, y, width, height] = call.args as number[];
+          return [[x, y], [x + width, y + height]];
+        }
+        return [call.args as number[]];
+      });
+
+    expect(overlay.records.some((call) => call.name === 'fillRect' && call.args[0] === 0 && call.args[1] === 0)).toBe(true);
+    expect(overlay.records.some((call) => call.name === 'strokeRect' && call.args[0] === left && call.args[1] === top)).toBe(true);
+    expect(overlay.records.some((call) => call.name === 'strokeRect' && call.args[0] === 30 && call.args[1] === 20)).toBe(true);
+    for (const [x, y] of coordinates) {
+      expect(x).toBeGreaterThanOrEqual(left);
+      expect(x).toBeLessThanOrEqual(right);
+      expect(y).toBeGreaterThanOrEqual(top);
+      expect(y).toBeLessThanOrEqual(bottom);
+    }
+    renderer.dispose();
+  });
+
+  it('renders exact sparse pending after-states for full, half, erase, legacy, and no-op cells', () => {
+    const document = chart(6, 1);
+    document.kind[3] = CellKind.Full;
+    document.colors[3 * 4] = 35;
+    document.kind[4] = CellKind.Quarters;
+    document.colors.set([1, 35, 1, 35], 4 * 4);
+    document.kind[5] = CellKind.Full;
+    document.colors[5 * 4] = 35;
+    const pendingCellStates: PendingCellState[] = [
+      { index: 0, cell: { x: 0, y: 0 }, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 },
+      { index: 1, cell: { x: 1, y: 0 }, kind: CellKind.HalfBackslash, colors: [1, 0, 0, 0], completed: 0 },
+      { index: 2, cell: { x: 2, y: 0 }, kind: CellKind.HalfSlash, colors: [35, 0, 0, 0], completed: 0 },
+      { index: 3, cell: { x: 3, y: 0 }, kind: CellKind.Empty, colors: [0, 0, 0, 0], completed: 0 },
+      { index: 4, cell: { x: 4, y: 0 }, kind: CellKind.Quarters, colors: [1, 0, 1, 0], completed: 0 }
+    ];
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      metrics: getCanvasMetrics(96, 16),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      overlay: {
+        pendingCells: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 2, y: 0 }, { x: 3, y: 0 }, { x: 4, y: 0 }, { x: 5, y: 0 }],
+        pendingCellStates
+      }
+    });
+    renderer.renderNow();
+
+    const fillRects = overlay.records.filter((call) => call.name === 'fillRect');
+    const paths = overlay.records.filter((call) => call.name === 'moveTo' || call.name === 'lineTo');
+    expect(fillRects.some((call) => call.args.join(',') === '0,0,16,16' && call.fillStyle === '#f00')).toBe(true);
+    expect(paths.some((call) => call.name === 'moveTo' && call.args.join(',') === '16,0' && call.fillStyle === '#f00')).toBe(true);
+    expect(paths.some((call) => call.name === 'lineTo' && call.args.join(',') === '32,16' && call.fillStyle === '#f00')).toBe(true);
+    expect(paths.some((call) => call.name === 'moveTo' && call.args.join(',') === '32,0' && call.fillStyle === '#00f')).toBe(true);
+    expect(paths.some((call) => call.name === 'lineTo' && call.args.join(',') === '32,16' && call.fillStyle === '#00f')).toBe(true);
+    expect(fillRects.some((call) => call.args.join(',') === '48,0,16,16' && call.fillStyle === '#ffffff')).toBe(true);
+    expect(paths.some((call) => call.name === 'moveTo' && call.args[0] === 48 && (call.strokeStyle === '#f00' || call.strokeStyle === '#00f'))).toBe(false);
+    expect(paths.some((call) => call.name === 'moveTo' && call.args.join(',') === '64,0' && call.fillStyle === '#f00')).toBe(true);
+    expect(paths.some((call) => call.name === 'moveTo' && call.args.join(',') === '80,16' && call.fillStyle === '#f00')).toBe(true);
+    expect(paths.some((call) => call.fillStyle === '#00f' && Number(call.args[0]) >= 64)).toBe(false);
+    expect(fillRects.some((call) => call.args[0] === 80)).toBe(false);
+    renderer.dispose();
+  });
+
+  it('repaints affected grid and crossing backstitches above a pending mask', () => {
+    const document = chart(3, 1);
+    document.kind[1] = CellKind.Full;
+    document.colors[4] = 35;
+    document.backstitches = {
+      ids: new Uint32Array([1, 2]),
+      x1: new Uint32Array([2, 9]),
+      y1: new Uint32Array([2, 2]),
+      x2: new Uint32Array([6, 11]),
+      y2: new Uint32Array([2, 2]),
+      colors: new Uint16Array([35, 35]),
+      completed: new Uint8Array([0, 0])
+    };
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      metrics: getCanvasMetrics(48, 16),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      style: { gridColor: '#00aa00', majorGridColor: '#00aa00', gridInterval: 1 },
+      overlay: {
+        pendingCells: [{ x: 1, y: 0 }],
+        pendingCellStates: [{ index: 1, cell: { x: 1, y: 0 }, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 }]
+      }
+    });
+    renderer.renderNow();
+
+    const maskIndex = overlay.records.findIndex((call) => call.name === 'fillRect' && call.args.join(',') === '16,0,16,16' && call.fillStyle === '#ffffff');
+    const stateIndex = overlay.records.findIndex((call) => call.name === 'fillRect' && call.args.join(',') === '16,0,16,16' && call.fillStyle === '#f00');
+    const gridIndices = overlay.records
+      .map((call, index, records) => call.name === 'moveTo' && call.strokeStyle === '#00aa00' && records[index + 1]?.name === 'lineTo' && records[index + 2]?.name === 'stroke' ? index : -1)
+      .filter((index) => index >= 0);
+    const backstitchIndices = overlay.records
+      .map((call, index, records) => call.name === 'moveTo' && call.strokeStyle === '#00f' && records[index + 1]?.name === 'lineTo' && records[index + 2]?.name === 'stroke' ? index : -1)
+      .filter((index) => index >= 0);
+    expect(maskIndex).toBeGreaterThanOrEqual(0);
+    expect(stateIndex).toBeGreaterThan(maskIndex);
+    expect(gridIndices.length).toBe(4);
+    expect(backstitchIndices).toHaveLength(1);
+    expect(gridIndices[0]).toBeGreaterThan(stateIndex);
+    expect(backstitchIndices[0]).toBeGreaterThan(gridIndices.at(-1) ?? -1);
+    for (const index of gridIndices) {
+      const from = overlay.records[index].args as number[];
+      const to = overlay.records[index + 1].args as number[];
+      expect(overlay.records[index + 1].name).toBe('lineTo');
+      expect(from[0]).toBeGreaterThanOrEqual(16);
+      expect(from[0]).toBeLessThanOrEqual(32);
+      expect(to[0]).toBeGreaterThanOrEqual(16);
+      expect(to[0]).toBeLessThanOrEqual(32);
+      expect(from[1]).toBeGreaterThanOrEqual(0);
+      expect(from[1]).toBeLessThanOrEqual(16);
+      expect(to[1]).toBeGreaterThanOrEqual(0);
+      expect(to[1]).toBeLessThanOrEqual(16);
+    }
+    renderer.dispose();
+  });
+
+  it('clips pending backstitch repairs to the sparse pending-cell union', () => {
+    const document = chart(4, 1);
+    document.kind[1] = CellKind.Full;
+    document.colors[4] = 1;
+    document.kind[3] = CellKind.Full;
+    document.colors[12] = 1;
+    document.backstitches = {
+      ids: new Uint32Array([1, 2]),
+      x1: new Uint32Array([2, 9]),
+      y1: new Uint32Array([2, 2]),
+      x2: new Uint32Array([14, 11]),
+      y2: new Uint32Array([2, 2]),
+      colors: new Uint16Array([35, 35]),
+      completed: new Uint8Array([0, 0])
+    };
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      metrics: getCanvasMetrics(64, 16),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      style: { gridColor: '#00aa00', majorGridColor: '#00aa00', gridInterval: 1 },
+      overlay: {
+        pendingCellStates: [
+          { index: 1, cell: { x: 1, y: 0 }, kind: CellKind.Empty, colors: [0, 0, 0, 0], completed: 0 },
+          { index: 3, cell: { x: 3, y: 0 }, kind: CellKind.Empty, colors: [0, 0, 0, 0], completed: 0 }
+        ]
+      }
+    });
+    renderer.renderNow();
+
+    const backstitchMoves = overlay.records
+      .filter((call, index, records) => call.name === 'moveTo' && call.strokeStyle === '#00f' && records[index + 1]?.name === 'lineTo' && records[index + 2]?.name === 'stroke')
+      .map((call) => call.args as number[]);
+    const backstitchLines = overlay.records
+      .filter((call, index, records) => call.name === 'lineTo' && call.strokeStyle === '#00f' && records[index - 1]?.name === 'moveTo' && records[index + 1]?.name === 'stroke')
+      .map((call) => call.args as number[]);
+    expect(backstitchMoves).toEqual([[16, 8], [48, 8]]);
+    expect(backstitchLines).toEqual([[32, 8], [56, 8]]);
+    expect(backstitchMoves.some(([x]) => x === 8)).toBe(false);
+    for (const [x, y] of [...backstitchMoves, ...backstitchLines]) {
+      expect(y).toBe(8);
+      expect(x === 16 || x === 32 || x === 48 || x === 56).toBe(true);
+    }
+    renderer.dispose();
+  });
+
+  it('omits pending backstitch repair at overview LOD', () => {
+    const document = chart(2, 1);
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    document.backstitches = {
+      ids: new Uint32Array([1]),
+      x1: new Uint32Array([0]),
+      y1: new Uint32Array([2]),
+      x2: new Uint32Array([8]),
+      y2: new Uint32Array([2]),
+      colors: new Uint16Array([35]),
+      completed: new Uint8Array([0])
+    };
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      metrics: getCanvasMetrics(32, 16),
+      viewport: { x: 0, y: 0, zoom: 1 },
+      style: { gridColor: '#00aa00', majorGridColor: '#00aa00' },
+      overlay: {
+        pendingCellStates: [{ index: 0, cell: { x: 0, y: 0 }, kind: CellKind.Empty, colors: [0, 0, 0, 0], completed: 0 }]
+      }
+    });
+    expect(renderer.renderNow().lod).toBe('overview');
+    expect(overlay.records.some((call) => call.name === 'moveTo' && call.strokeStyle === '#00f')).toBe(false);
+    expect(overlay.records.some((call) => call.name === 'moveTo' && call.strokeStyle === '#00aa00')).toBe(false);
+    renderer.dispose();
+  });
+
+  it('keeps color presentation distinct while Symbol Overview paints actual glyphs', () => {
+    const modeColor = (mode: 'color' | 'grayscale' | 'symbol' | 'combined'): string => {
+      const atlasContext = recordingContext();
+      const renderer = createCanvasRenderer({
+        document: chart(1, 1),
+        targets: { base: target(recordingContext()), overlay: target(recordingContext()) },
+        metrics: getCanvasMetrics(20, 20),
+        viewport: { x: 0, y: 0, zoom: 1 },
+        style: { mode },
+        atlasTargetFactory: () => target(atlasContext, new FakeCanvasImageSource(1, 1))
+      });
+      renderer.getDocument().kind[0] = CellKind.Full;
+      renderer.getDocument().colors[0] = 1;
+      renderer.renderNow();
+      renderer.dispose();
+      const stitch = atlasContext.records.filter((call) => call.name === 'fillRect').at(-1);
+      return stitch?.fillStyle ?? '';
+    };
+    const color = modeColor('color');
+    const grayscale = modeColor('grayscale');
+    const combined = modeColor('combined');
+    expect(color).toBe('#f00');
+    expect(grayscale).toMatch(/^#([0-9a-f]{2})\1\1$/i);
+    expect(combined).not.toBe(color);
+    expect(combined).not.toBe(grayscale);
+
+    const sourceContext = recordingContext();
+    const base = recordingContext();
+    const document = chart(1, 1);
+    document.palette[0] = { ...document.palette[0], symbol: '☆' };
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    const symbolRenderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(20, 20),
+      viewport: { x: 0, y: 0, zoom: 1 },
+      style: {
+        mode: 'symbol',
+        symbolColor: '#123456',
+        symbolBackgroundColor: '#abcdef'
+      },
+      atlasTargetFactory: (width, height) => target(sourceContext, new FakeCanvasImageSource(width, height))
+    });
+    symbolRenderer.renderNow();
+    expect(base.records.some((call) => call.name === 'drawImage')).toBe(true);
+    expect(sourceContext.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(true);
+    expect(sourceContext.records.some((call) => call.name === 'fillText' && call.fillStyle === '#123456')).toBe(true);
+    expect(sourceContext.records.some((call) => call.name === 'fillRect' && call.fillStyle === '#abcdef')).toBe(true);
+    expect(sourceContext.records.some((call) => call.name === 'fillRect' && call.fillStyle !== '#abcdef')).toBe(false);
+    symbolRenderer.dispose();
+  });
+
+  it('preserves a custom Symbol glyph at Detail, Compact, and Overview zooms', () => {
+    const render = (zoom: number): { base: RecordingContext; source: RecordingContext } => {
+      const document = chart(1, 1);
+      document.palette[0] = { ...document.palette[0], symbol: '☆' };
+      document.kind[0] = CellKind.Full;
+      document.colors[0] = 1;
+      const base = recordingContext();
+      const source = recordingContext();
+      const renderer = createCanvasRenderer({
+        document,
+        targets: { base: target(base), overlay: target(recordingContext()) },
+        metrics: getCanvasMetrics(32, 32),
+        viewport: { x: 0, y: 0, zoom },
+        style: { mode: 'symbol' },
+        atlasTargetFactory: (width, height) => target(source, new FakeCanvasImageSource(width, height))
+      });
+      renderer.renderNow();
+      renderer.dispose();
+      return { base, source };
+    };
+
+    const detail = render(16);
+    const compact = render(8);
+    const overview = render(1);
+    expect(detail.base.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(true);
+    expect(compact.base.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(true);
+    expect(overview.base.records.some((call) => call.name === 'drawImage')).toBe(true);
+    expect(overview.base.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(false);
+    expect(overview.source.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(true);
+  });
+
+  it('keeps Symbol glyph behavior at every LOD threshold boundary', () => {
+    for (const [zoom, expectedLod] of [[3.99, 'overview'], [4, 'compact'], [11.99, 'compact'], [12, 'detail']] as const) {
+      const document = chart(1, 1);
+      document.palette[0] = { ...document.palette[0], symbol: '☆' };
+      document.kind[0] = CellKind.Full;
+      document.colors[0] = 1;
+      const base = recordingContext();
+      const source = recordingContext();
+      const renderer = createCanvasRenderer({
+        document,
+        targets: { base: target(base), overlay: target(recordingContext()) },
+        metrics: getCanvasMetrics(32, 32),
+        viewport: { x: 0, y: 0, zoom },
+        style: { mode: 'symbol' },
+        atlasTargetFactory: (width, height) => target(source, new FakeCanvasImageSource(width, height))
+      });
+      expect(renderer.renderNow().lod).toBe(expectedLod);
+      if (expectedLod === 'overview') {
+        expect(source.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(true);
+        expect(base.records.some((call) => call.name === 'drawImage')).toBe(true);
+      } else {
+        expect(base.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(true);
+      }
+      renderer.dispose();
+    }
+  });
+
+  it('reuses the Symbol overview atlas across viewport, grid, and overlay changes', () => {
+    const document = chart(2, 2);
+    document.palette[0] = { ...document.palette[0], symbol: '☆' };
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    const base = recordingContext();
+    const sources: RecordingContext[] = [];
+    let builds = 0;
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(32, 32),
+      viewport: { x: 0, y: 0, zoom: 1 },
+      style: { mode: 'symbol' },
+      atlasTargetFactory: (width, height) => {
+        builds += 1;
+        const source = recordingContext();
+        sources.push(source);
+        return target(source, new FakeCanvasImageSource(width, height));
+      }
+    });
+    renderer.renderNow();
+    expect(builds).toBe(1);
+    const firstSourceGlyphs = sources[0].records.filter((call) => call.name === 'fillText').length;
+    const firstDrawImages = base.records.filter((call) => call.name === 'drawImage').length;
+
+    renderer.setViewport({ x: 0.25, y: 0.1, zoom: 2 });
+    renderer.renderNow();
+    expect(builds).toBe(1);
+    expect(sources[0].records.filter((call) => call.name === 'fillText')).toHaveLength(firstSourceGlyphs);
+    expect(base.records.filter((call) => call.name === 'drawImage').length).toBe(firstDrawImages + 1);
+
+    renderer.setOverlay({ cursor: { x: 0, y: 0 } });
+    renderer.renderNow();
+    renderer.setStyle({ showGrid: false });
+    renderer.renderNow();
+    expect(builds).toBe(1);
+
+    const changedDocument = chart(2, 2);
+    changedDocument.palette[0] = { ...changedDocument.palette[0], symbol: '☆' };
+    changedDocument.kind[0] = CellKind.Full;
+    changedDocument.colors[0] = 1;
+    changedDocument.revision = document.revision + 1;
+    renderer.setDocument(changedDocument);
+    renderer.renderNow();
+    expect(builds).toBe(2);
+
+    for (const styleChange of [
+      { symbolFont: '600 0.8em sans-serif' },
+      { symbolColor: '#123456' },
+      { symbolBackgroundColor: '#abcdef' },
+      { showSymbols: false }
+    ]) {
+      renderer.setStyle(styleChange);
+      renderer.renderNow();
+    }
+    expect(builds).toBe(6);
+    renderer.dispose();
+  });
+
+  it('falls back to direct Symbol glyphs when overview atlas allocation fails', () => {
+    const base = recordingContext();
+    const document = chart(1, 1);
+    document.palette[0] = { ...document.palette[0], symbol: '☆' };
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(32, 32),
+      viewport: { x: 0, y: 0, zoom: 1 },
+      style: { mode: 'symbol', symbolColor: '#123456', symbolBackgroundColor: '#abcdef' },
+      atlasTargetFactory: () => undefined
+    });
+    expect(() => renderer.renderNow()).not.toThrow();
+    expect(base.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(true);
+    expect(base.records.some((call) => call.name === 'fillRect' && call.fillStyle === '#abcdef')).toBe(true);
+    expect(base.records.filter((call) => call.name === 'fillRect').every((call) => call.fillStyle === '#ffffff' || call.fillStyle === '#abcdef')).toBe(true);
+    renderer.dispose();
+  });
+
+  it('falls back to direct Symbol glyphs when the atlas context cannot paint text', () => {
+    const base = recordingContext();
+    const source = recordingContext();
+    source.fillText = undefined;
+    const document = chart(1, 1);
+    document.palette[0] = { ...document.palette[0], symbol: '☆' };
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(32, 32),
+      viewport: { x: 0, y: 0, zoom: 1 },
+      style: { mode: 'symbol' },
+      atlasTargetFactory: (width, height) => target(source, new FakeCanvasImageSource(width, height))
+    });
+    expect(() => renderer.renderNow()).not.toThrow();
+    expect(base.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(true);
+    expect(base.records.some((call) => call.name === 'drawImage')).toBe(false);
+    renderer.dispose();
+  });
+
+  it('keeps Symbol geometry when neither atlas nor base text painting is available', () => {
+    const base = recordingContext();
+    base.fillText = undefined;
+    const document = chart(1, 1);
+    document.palette[0] = { ...document.palette[0], symbol: '☆' };
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(32, 32),
+      viewport: { x: 0, y: 0, zoom: 1 },
+      style: { mode: 'symbol', symbolBackgroundColor: '#abcdef' },
+      atlasTargetFactory: () => undefined
+    });
+    expect(() => renderer.renderNow()).not.toThrow();
+    expect(base.records.some((call) => call.name === 'fillText')).toBe(false);
+    expect(base.records.some((call) => call.name === 'fillRect' && call.fillStyle === '#abcdef')).toBe(true);
+    expect(base.records.filter((call) => call.name === 'fillRect').every((call) => call.fillStyle === '#ffffff' || call.fillStyle === '#abcdef')).toBe(true);
+    renderer.dispose();
+  });
+
+  it('keeps the dense 1000x1000 Symbol overview source within the pixel budget and cached', () => {
+    const document = chart(1000, 1000);
+    document.palette[0] = { ...document.palette[0], symbol: '☆' };
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    const base = recordingContext();
+    let builds = 0;
+    let allocation: { width: number; height: number } | undefined;
+    let source: RecordingContext | undefined;
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(32, 32),
+      viewport: { x: 0, y: 0, zoom: 1 },
+      style: { mode: 'symbol' },
+      atlasTargetFactory: (width, height) => {
+        builds += 1;
+        allocation = { width, height };
+        source = recordingContext();
+        expect(width * height).toBeLessThanOrEqual(MAX_ATLAS_PIXELS);
+        return target(source, new FakeCanvasImageSource(width, height));
+      }
+    });
+    renderer.renderNow();
+    expect(allocation).toEqual({ width: 4000, height: 4000 });
+    expect(builds).toBe(1);
+    const sourceGlyphs = source?.records.filter((call) => call.name === 'fillText').length;
+    renderer.setViewport({ x: 0, y: 0, zoom: 2 });
+    renderer.renderNow();
+    expect(builds).toBe(1);
+    expect(source?.records.filter((call) => call.name === 'fillText').length).toBe(sourceGlyphs);
+    renderer.dispose();
+  });
+
+  it('creates a real default atlas source when OffscreenCanvas is available', () => {
+    const original = Object.getOwnPropertyDescriptor(globalThis, 'OffscreenCanvas');
+    Object.defineProperty(globalThis, 'OffscreenCanvas', {
+      configurable: true,
+      value: FakeOffscreenCanvas
+    });
+    try {
+      const atlas = createDefaultAtlasTarget(8, 8);
+      expect(atlas).toBeDefined();
+      expect(isCanvasImageSource(atlas?.source)).toBe(true);
+    } finally {
+      if (original) Object.defineProperty(globalThis, 'OffscreenCanvas', original);
+      else delete (globalThis as { OffscreenCanvas?: unknown }).OffscreenCanvas;
+    }
+  });
+
+  it('draws resize-mode corner handles on the overlay canvas at the projected image corners', () => {
+    const source = { width: 20, height: 10 };
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document: chart(2, 1),
+      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      metrics: getCanvasMetrics(32, 16),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      traceImage: { source, width: 20, height: 10, chartBounds: { x: 0, y: 0, width: 2, height: 1 } }
+    });
+    renderer.setOverlay({ imageResizeHandles: true });
+    renderer.renderNow();
+    const handles = overlay.records.filter((call) => call.name === 'fillRect' && call.args[2] === 8 && call.args[3] === 8);
+    // Corners at (0,0),(32,0),(0,16),(32,16); each 8x8 square centered there.
+    expect(handles).toHaveLength(4);
+    expect(handles[0]).toMatchObject({ fillStyle: 'rgba(255, 255, 255, 0.95)', args: [-4, -4, 8, 8] });
+    expect(overlay.records.some((call) => call.name === 'strokeRect')).toBe(true);
+    renderer.setOverlay({});
+    renderer.dispose();
+  });
+
+  it('renders and disposes a trace image through the base renderer API', () => {
+    const base = recordingContext();
+    let disposed = 0;
+    const source = { width: 20, height: 10 };
+    const trace: TraceImage = { source, width: 20, height: 10, opacity: 0.5, dispose: () => { disposed += 1; } };
+    const renderer = createCanvasRenderer({
+      document: chart(2, 1),
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(32, 16, { dpr: 2 }),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      traceImage: trace
+    });
+    renderer.renderNow();
+    const image = base.records.find((call) => call.name === 'drawImage');
+    expect(image?.args).toEqual([source, 0, 0, 20, 10, 0, 0, 32, 16]);
+    expect(image?.globalAlpha).toBe(0.5);
+    expect(renderer.getTraceImage()).toBe(trace);
+    renderer.clearTraceImage();
+    expect(disposed).toBe(1);
+    renderer.renderNow();
+    renderer.dispose();
+    expect(disposed).toBe(1);
+  });
+
+  it('keeps bitmap ownership across trace presentation updates and closes once on replacement', () => {
+    const source = { width: 20, height: 10 };
+    let closes = 0;
+    const dispose = () => { closes += 1; };
+    const renderer = createCanvasRenderer({
+      document: chart(2, 1),
+      targets: { base: target(recordingContext()), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(32, 16),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      traceImage: { source, width: 20, height: 10, visible: true, opacity: 1, dispose }
+    });
+    renderer.setTraceImage({ source, width: 20, height: 10, visible: false, opacity: 0, dispose });
+    expect(closes).toBe(0);
+    renderer.setTraceImage({ source: { width: 20, height: 10 }, width: 20, height: 10, dispose });
+    expect(closes).toBe(1);
+    renderer.clearTraceImage();
+    expect(closes).toBe(2);
+    renderer.dispose();
+    expect(closes).toBe(2);
+  });
+
+  it('keeps Overview trace pixels below committed atlas cells and preserves empty background', () => {
+    const base = recordingContext();
+    const atlas = recordingContext();
+    const traceSource = { width: 20, height: 10 };
+    const renderer = createCanvasRenderer({
+      document: chart(2, 1),
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(20, 10),
+      viewport: { x: 0, y: 0, zoom: 1 },
+      traceImage: { source: traceSource, width: 20, height: 10 },
+      atlasTargetFactory: (width, height) => target(atlas, new FakeCanvasImageSource(width, height))
+    });
+    renderer.renderNow();
+    const images = base.records.filter((call) => call.name === 'drawImage');
+    expect(images).toHaveLength(2);
+    expect(images[0].args[0]).toBe(traceSource);
+    expect(images[1].args[0]).toBeInstanceOf(FakeCanvasImageSource);
+    expect(atlas.records.some((call) => call.name === 'fillRect')).toBe(false);
+    expect(base.records.some((call) => call.name === 'fillRect' && call.fillStyle === '#ffffff' && call.args.join(',') === '0,0,20,10')).toBe(true);
+    renderer.dispose();
+  });
+
+  it('falls back without ever passing an invalid atlas object to drawImage', () => {
+    const base = recordingContext();
+    const document = chart(2, 2);
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(20, 20),
+      viewport: { x: 0, y: 0, zoom: 1 },
+      atlasTargetFactory: () => undefined
+    });
+    const stats = renderer.renderNow();
+    expect(stats.lod).toBe('overview');
+    expect(stats.visitedCells).toBe(4);
+    expect(base.records.some((call) => call.name === 'drawImage')).toBe(false);
+    renderer.dispose();
+  });
+
+  it('keeps large-pattern work bounded to visible cells and atlas dimensions', () => {
+    for (const size of [500, 1000]) {
+      const document = chart(size, size);
+      const detail = createCanvasRenderer({
+        document,
+        targets: { base: target(recordingContext()), overlay: target(recordingContext()) },
+        metrics: getCanvasMetrics(500, 500),
+        viewport: { x: 0, y: 0, zoom: 16 }
+      });
+      expect(detail.renderNow().visitedCells).toBe(visibleCellRect(detail.getViewport(), getCanvasMetrics(500, 500), document).width * visibleCellRect(detail.getViewport(), getCanvasMetrics(500, 500), document).height);
+      detail.dispose();
+
+      const compact = createCanvasRenderer({
+        document,
+        targets: { base: target(recordingContext()), overlay: target(recordingContext()) },
+        metrics: getCanvasMetrics(500, 500),
+        viewport: { x: 0, y: 0, zoom: 8 }
+      });
+      expect(compact.renderNow().visitedCells).toBe(visibleCellRect(compact.getViewport(), getCanvasMetrics(500, 500), document).width * visibleCellRect(compact.getViewport(), getCanvasMetrics(500, 500), document).height);
+      compact.dispose();
+
+      let allocation: { width: number; height: number } | undefined;
+      const overview = createCanvasRenderer({
+        document,
+        targets: { base: target(recordingContext()), overlay: target(recordingContext()) },
+        metrics: getCanvasMetrics(500, 500),
+        viewport: { x: 0, y: 0, zoom: 1 },
+        atlasTargetFactory: (width, height) => {
+          allocation = { width, height };
+          expect(width * height).toBeLessThanOrEqual(MAX_ATLAS_PIXELS);
+          return target(recordingContext(), new FakeCanvasImageSource(width, height));
+        }
+      });
+      expect(overview.renderNow().lod).toBe('overview');
+      expect(allocation).toEqual({ width: size, height: size });
+      overview.dispose();
+    }
+  });
+
+  it('keeps an adaptive overview grid visible and bounded at minimum zoom', () => {
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document: chart(1_000, 1_000),
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(160, 120),
+      viewport: { x: 500, y: 500, zoom: 0.01 },
+      atlasTargetFactory: (width, height) => target(recordingContext(), new FakeCanvasImageSource(width, height)),
+      style: { gridColor: '#00ff00', majorGridColor: '#ff0000' }
+    });
+
+    expect(renderer.renderNow().lod).toBe('overview');
+    const gridLines = base.records.filter((call) =>
+      (call.name === 'moveTo' || call.name === 'lineTo')
+      && (call.strokeStyle === '#00ff00' || call.strokeStyle === '#ff0000')
+    );
+    expect(gridLines.length).toBeGreaterThan(0);
+    expect(gridLines.length).toBeLessThanOrEqual(2 * (160 / 8 + 2 + 120 / 8 + 2));
+    expect(base.records.some((call) => call.name === 'moveTo' && call.strokeStyle === '#4b4b4b')).toBe(true);
+    renderer.dispose();
+  });
+
+  it('hides every grid tier together when showGrid is false', () => {
+    const document = chart(20, 10);
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(320, 160, { dpr: 2 }),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      style: { gridColor: '#00ff00', midGridColor: '#0000ff', majorGridColor: '#ff0000', gridInterval: 10, midGridInterval: 5, showGrid: false }
+    });
+    renderer.renderNow();
+    const gridRecords = base.records.filter((call) =>
+      call.strokeStyle === '#00ff00' || call.strokeStyle === '#0000ff' || call.strokeStyle === '#ff0000'
+    );
+    expect(gridRecords).toEqual([]);
+    // The chart border is independent of the grid toggle and still renders.
+    expect(base.records.some((call) => call.name === 'moveTo' && call.strokeStyle === '#4b4b4b')).toBe(true);
+    renderer.dispose();
+  });
+});

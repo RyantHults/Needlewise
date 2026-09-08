@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+.vite/
+*.tsbuildinfo
+*.log
+pnpm-debug.log*
+.env
+.env.*
+!.env.example
+.cache/
+.slim/deepwork/

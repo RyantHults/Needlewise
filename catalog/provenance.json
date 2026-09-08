@@ -1,0 +1,186 @@
+{
+  "schemaVersion": 1,
+  "catalogId": "dmc-compatible-screen-approximation",
+  "source": {
+    "repository": "https://github.com/syke99/go-c2dmc",
+    "repositoryTree": "https://github.com/syke99/go-c2dmc/tree/1474067bf9c75a4acc15990eb086846f23e025b5",
+    "repositoryLicense": "MIT",
+    "inspectedTreeSha": "1474067bf9c75a4acc15990eb086846f23e025b5",
+    "upstreamDataUrl": "https://floss.maxxmint.com/dmc_to_rgb.php",
+    "runtimePolicy": "The application reads only the committed normalized asset; it never fetches the upstream page."
+  },
+  "snapshot": {
+    "retrievedAt": "2026-08-30T22:47:01Z",
+    "htmlSha256": "80b8cf1994d160836f1cb0cea8c6f49963707ee02a56a42a11ba640c94d9c086",
+    "dataSha256": "80b8cf1994d160836f1cb0cea8c6f49963707ee02a56a42a11ba640c94d9c086",
+    "normalizedCatalogSha256": "92944307643514d24d828d1628f1766530843e4f5ed848414b9e180d54853de9",
+    "observedHtmlTableRows": 502,
+    "observedDmcRecordCount": 489,
+    "sourceRgbMismatchCount": 11,
+    "sourceRgbMismatches": [
+      {
+        "code": "309",
+        "sourceRgb": [
+          86,
+          74,
+          74
+        ],
+        "hexRgb": [
+          186,
+          74,
+          74
+        ]
+      },
+      {
+        "code": "3609",
+        "sourceRgb": [
+          244,
+          174,
+          213
+        ],
+        "hexRgb": [
+          244,
+          174,
+          215
+        ]
+      },
+      {
+        "code": "225",
+        "sourceRgb": [
+          255,
+          223,
+          213
+        ],
+        "hexRgb": [
+          255,
+          223,
+          215
+        ]
+      },
+      {
+        "code": "210",
+        "sourceRgb": [
+          195,
+          159,
+          195
+        ],
+        "hexRgb": [
+          210,
+          159,
+          195
+        ]
+      },
+      {
+        "code": "3755",
+        "sourceRgb": [
+          147,
+          180,
+          206
+        ],
+        "hexRgb": [
+          146,
+          180,
+          206
+        ]
+      },
+      {
+        "code": "3849",
+        "sourceRgb": [
+          82,
+          179,
+          164
+        ],
+        "hexRgb": [
+          82,
+          179,
+          174
+        ]
+      },
+      {
+        "code": "3848",
+        "sourceRgb": [
+          85,
+          147,
+          146
+        ],
+        "hexRgb": [
+          65,
+          147,
+          146
+        ]
+      },
+      {
+        "code": "890",
+        "sourceRgb": [
+          23,
+          73,
+          35
+        ],
+        "hexRgb": [
+          24,
+          73,
+          35
+        ]
+      },
+      {
+        "code": "3830",
+        "sourceRgb": [
+          185,
+          85,
+          68
+        ],
+        "hexRgb": [
+          188,
+          85,
+          68
+        ]
+      },
+      {
+        "code": "09",
+        "sourceRgb": [
+          85,
+          32,
+          14
+        ],
+        "hexRgb": [
+          85,
+          32,
+          20
+        ]
+      },
+      {
+        "code": "33",
+        "sourceRgb": [
+          156,
+          89,
+          158
+        ],
+        "hexRgb": [
+          156,
+          89,
+          156
+        ]
+      }
+    ]
+  },
+  "extraction": {
+    "parser": "scripts/build-dmc-catalog.mjs",
+    "rules": [
+      "Parse only local TR/TD rows containing dmc_to_rgb_value.php?dmc= links.",
+      "Require 480-520 DMC data rows and exactly 489 rows from this captured source; reject any seven-cell table row that is not a DMC data row.",
+      "Require seven cells, alphanumeric source code matching its link text, non-empty name, and matching style/link HEX values.",
+      "Normalize source IDs to dmc-{CODE} with uppercase code while preserving the displayed code.",
+      "Derive normalized RGB bytes from the validated six-digit HEX value so every committed record is internally consistent.",
+      "Record, but do not silently use, upstream decimal RGB cells when they disagree with HEX; malformed values fail closed.",
+      "Reject duplicate codes, source IDs, HEX values, malformed records, invalid RGB bytes, and HEX/RGB mismatches."
+    ],
+    "validation": "Fail closed on missing, malformed, duplicate, out-of-range, or structurally unexpected records."
+  },
+  "status": {
+    "official": false,
+    "approximation": true,
+    "description": "A DMC-compatible screen-color approximation derived from the captured upstream HEX table; not an official DMC color standard or colorimetric conversion.",
+    "dmcAffiliation": false,
+    "unresolvedUpstreamRightsWarning": "The upstream page and its color/name data may carry rights or attribution obligations not resolved by this snapshot. Review upstream terms before redistribution or commercial use."
+  }
+}
