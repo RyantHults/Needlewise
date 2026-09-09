@@ -28,6 +28,7 @@ import {
 import { validateAcceptedConversionDraft, type AcceptedConversionDraft } from '../conversion/image-to-pattern';
 import type { ProgressActivity } from '../persistence';
 import type { PatternMetrics } from '../domain';
+import { DMC_CATALOG_METADATA, getDmcColor } from '../catalog';
 import { WorkspaceError } from './errors';
 import { ProjectSession } from './session';
 import type {
@@ -96,12 +97,20 @@ function cloneHealth(health: ProjectHealth): ProjectHealth {
 }
 
 export function createStarterDocument(options: Pick<StarterProjectOptions, 'width' | 'height'> = {}): PatternDocument {
-  // New projects start with no palette so users choose their own colors.
-  // `createDocument` seeds `nextPaletteId` at 1 for an empty palette.
+  // New projects seed their palette with DMC Black 310 so there is always a usable color.
+  // `createDocument` seeds `nextPaletteId` at 2 for that single entry.
+  const black = getDmcColor('310');
   return createDocument({
     width: options.width ?? DEFAULT_WIDTH,
     height: options.height ?? DEFAULT_HEIGHT,
-    palette: []
+    palette: black
+      ? [{
+          id: 1,
+          name: black.name,
+          color: black.hex,
+          catalog: { catalogId: DMC_CATALOG_METADATA.catalogId, sourceId: black.sourceId, code: black.code, name: black.name, hex: black.hex, rgb: [...black.rgb] as [number, number, number] }
+        }]
+      : []
   });
 }
 

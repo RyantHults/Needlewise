@@ -135,7 +135,7 @@ kbd { min-width: 1.65rem; border: 1px solid #c0ccc0; border-radius: 0.3rem; padd
 .footer-note { padding: 2.5rem 0 0.8rem; color: #8b857d; font-size: 0.75rem; text-align: center; }
 .footer-note span:first-child { margin-right: 0.4rem; color: #bc5a3d; font-size: 1.1rem; }
 .footer-divider { padding: 0 0.45rem; color: #b4ada3; }
-.modal-backdrop { position:fixed; inset:0; z-index:10; display:grid; place-items:center; padding:1rem; background:rgba(39,35,33,.35); }
+.modal-backdrop { position:fixed; inset:0; z-index:200; display:grid; place-items:center; padding:1rem; background:rgba(39,35,33,.35); }
 .create-modal { position:relative; width:min(100%,30rem); border:1px solid #dad3c8; border-radius:1rem; padding:1.7rem; background:#fffdf9; box-shadow:0 1.5rem 4rem rgba(39,35,33,.2); }
 .create-modal h2 { margin:.1rem 0 1.2rem; padding-right:2.5rem; }
 .modal-close { position:absolute; top:1rem; right:1rem; width:2.5rem; height:2.5rem; border-radius:50%; background:transparent; color:#6f6a63; font-size:1.5rem; }

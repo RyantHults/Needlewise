@@ -3,6 +3,7 @@ import {
   CellKind,
   cloneDocument,
   createDocument,
+  defaultPaletteSymbol,
   type PatternDocument
 } from '../domain';
 import {
@@ -300,22 +301,29 @@ describe('headless project workspace', () => {
     }
   });
 
-  it('creates configurable blank projects with bounded dimensions and an empty starter palette', async () => {
+  it('creates configurable blank projects with bounded dimensions and a black 310 starter palette', async () => {
     const repository = new MemoryRepository();
     const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'blank' });
     try {
       const defaults = createStarterDocument();
       expect(defaults.width).toBe(100);
       expect(defaults.height).toBe(100);
-      expect(defaults.palette).toEqual([]);
-      expect(defaults.nextPaletteId).toBe(1);
+      expect(defaults.palette).toHaveLength(1);
+      expect(defaults.palette[0]).toMatchObject({
+        id: 1, name: 'Black', color: '#000000', active: true,
+        catalog: { catalogId: 'dmc-compatible-screen-approximation', sourceId: 'dmc-310', code: '310', name: 'Black', hex: '#000000', rgb: [0, 0, 0] }
+      });
+      expect(defaults.palette[0].symbol).toBe(defaultPaletteSymbol(1));
+      expect(defaults.palette[0].material.kind).toBe('floss');
+      expect(defaults.nextPaletteId).toBe(2);
 
       const session = await workspace.createProject({ id: 'blank', title: 'My blank project', width: 3, height: 4 });
       expect(session.metadata.title).toBe('My blank project');
       expect(session.document.width).toBe(3);
       expect(session.document.height).toBe(4);
-      expect(session.document.palette).toEqual([]);
-      expect(session.document.nextPaletteId).toBe(1);
+      expect(session.document.palette).toHaveLength(1);
+      expect(session.document.palette[0]).toMatchObject({ id: 1, name: 'Black', color: '#000000' });
+      expect(session.document.nextPaletteId).toBe(2);
 
       expect(() => createStarterDocument({ width: 0, height: 1 })).toThrow();
       expect(() => createStarterDocument({ width: 1.5, height: 1 })).toThrow();
@@ -326,15 +334,16 @@ describe('headless project workspace', () => {
     }
   });
 
-  it('creates a starter document with an empty palette that round-trips through persistence', () => {
+  it('creates a starter document with its default black palette that round-trips through persistence', () => {
     const starter = createStarterDocument();
     expect(starter.width).toBe(100);
     expect(starter.height).toBe(100);
-    expect(starter.palette).toEqual([]);
-    expect(starter.nextPaletteId).toBe(1);
+    expect(starter.palette).toHaveLength(1);
+    expect(starter.palette[0]).toMatchObject({ id: 1, name: 'Black', color: '#000000' });
+    expect(starter.nextPaletteId).toBe(2);
     const decoded = decodeDocument(encodeDocument(starter));
-    expect(decoded.palette).toEqual([]);
-    expect(decoded.nextPaletteId).toBe(1);
+    expect(decoded.palette).toEqual(starter.palette);
+    expect(decoded.nextPaletteId).toBe(2);
     expect(decoded.width).toBe(100);
     expect(decoded.height).toBe(100);
   });
