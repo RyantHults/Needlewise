@@ -10,7 +10,8 @@
     "typecheck": "tsc -b --pretty false",
     "lint": "eslint .",
     "test": "vitest",
-    "test:run": "vitest run"
+    "test:run": "vitest run",
+    "benchmark:delete-history": "vitest run --disableConsoleIntercept --config scripts/vitest.benchmark.config.ts scripts/benchmark-delete-history.bench.ts"
   },
   "dependencies": {
     "dexie": "^4.4.5",

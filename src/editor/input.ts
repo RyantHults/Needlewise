@@ -43,6 +43,10 @@ export interface PointerEventsAdapter {
   dispose(): void;
 }
 
+export interface PointerEventsAdapterOptions {
+  readonly keyboardSurface?: PointerEventSurface;
+}
+
 function localPoint(surface: PointerEventSurface, event: PointerEvent): { x: number; y: number } {
   const rect = surface.getBoundingClientRect?.();
   return {
@@ -75,8 +79,10 @@ function isFinitePointerSample(value: PointerSample): boolean {
 /** Attach DOM Pointer Events without putting DOM knowledge in the controller. */
 export function createPointerEventsAdapter(
   surface: PointerEventSurface,
-  controller: Pick<EditorSurfaceController, 'handlePointerDown' | 'handlePointerMove' | 'handlePointerUp' | 'handlePointerCancel' | 'handlePointerLostCapture' | 'handleWheel' | 'handleKeyDown' | 'handleKeyUp' | 'handleBlur'> & Partial<Pick<EditorSurfaceController, 'handleFocus'>>
+  controller: Pick<EditorSurfaceController, 'handlePointerDown' | 'handlePointerMove' | 'handlePointerUp' | 'handlePointerCancel' | 'handlePointerLostCapture' | 'handleWheel' | 'handleKeyDown' | 'handleKeyUp' | 'handleBlur'> & Partial<Pick<EditorSurfaceController, 'handleFocus'>>,
+  options: PointerEventsAdapterOptions = {}
 ): PointerEventsAdapter {
+  const keyboardSurface = options.keyboardSurface ?? surface;
   const onPointerDown = (event: Event): void => {
     const pointer = event as PointerEvent;
     const next = sample(surface, pointer);
@@ -146,8 +152,8 @@ export function createPointerEventsAdapter(
   surface.addEventListener('pointercancel', onPointerCancel);
   surface.addEventListener('lostpointercapture', onLostPointerCapture);
   surface.addEventListener('wheel', onWheel, { passive: false });
-  surface.addEventListener('keydown', onKeyDown);
-  surface.addEventListener('keyup', onKeyUp);
+  keyboardSurface.addEventListener('keydown', onKeyDown);
+  keyboardSurface.addEventListener('keyup', onKeyUp);
   surface.addEventListener('blur', onBlur);
   return {
     dispose(): void {
@@ -157,8 +163,8 @@ export function createPointerEventsAdapter(
       surface.removeEventListener('pointercancel', onPointerCancel);
       surface.removeEventListener('lostpointercapture', onLostPointerCapture);
       surface.removeEventListener('wheel', onWheel, false);
-      surface.removeEventListener('keydown', onKeyDown);
-      surface.removeEventListener('keyup', onKeyUp);
+      keyboardSurface.removeEventListener('keydown', onKeyDown);
+      keyboardSurface.removeEventListener('keyup', onKeyUp);
       surface.removeEventListener('blur', onBlur);
     }
   };

@@ -111,6 +111,48 @@ describe('TraceImageControls reference image tools', () => {
     unmount();
   });
 
+  it('sets hidden opacity to zero and restores the persisted opacity when shown again', async () => {
+    const sourceImage = { ...descriptor, opacity: 0.65 };
+    const applyTraceImageChange = vi.fn(async (next: typeof sourceImage) => { Object.assign(sourceImage, next); });
+    const setTraceImageSettings = vi.fn();
+    const workspace = { sourceImage, getAsset: () => undefined, applyTraceImageChange } as never;
+    render(<TraceImageControls workspace={workspace} document={{ width: 2, height: 2 } as never} controller={{ setTraceImageSettings } as never} />);
+    const checkbox = screen.getByRole('checkbox', { name: 'Show image' });
+    const slider = screen.getByRole('slider');
+    expect(slider).toHaveValue('0.65');
+
+    fireEvent.click(checkbox);
+    expect(slider).toHaveValue('0');
+    expect(setTraceImageSettings).toHaveBeenLastCalledWith({ visible: false, opacity: 0 });
+    await waitFor(() => expect(applyTraceImageChange).toHaveBeenCalledTimes(1));
+    expect(sourceImage).toMatchObject({ traceVisible: false, opacity: 0.65 });
+    expect(applyTraceImageChange).toHaveBeenLastCalledWith(expect.objectContaining({ traceVisible: false, opacity: 0.65 }), expect.objectContaining({ label: 'trace-image-visibility' }));
+
+    fireEvent.click(checkbox);
+    expect(slider).toHaveValue('0.65');
+    expect(setTraceImageSettings).toHaveBeenLastCalledWith({ visible: true, opacity: 0.65 });
+    await waitFor(() => expect(applyTraceImageChange).toHaveBeenCalledTimes(2));
+    expect(sourceImage).toMatchObject({ traceVisible: true, opacity: 0.65 });
+    expect(applyTraceImageChange).toHaveBeenLastCalledWith(expect.objectContaining({ traceVisible: true, opacity: 0.65 }), expect.objectContaining({ label: 'trace-image-visibility' }));
+  });
+
+  it('restores stored opacity when showing a freshly mounted hidden descriptor', async () => {
+    const sourceImage = { ...descriptor, traceVisible: false, opacity: 0.4 };
+    const applyTraceImageChange = vi.fn(async (next: typeof sourceImage) => { Object.assign(sourceImage, next); });
+    const setTraceImageSettings = vi.fn();
+    const workspace = { sourceImage, getAsset: () => undefined, applyTraceImageChange } as never;
+    render(<TraceImageControls workspace={workspace} document={{ width: 2, height: 2 } as never} controller={{ setTraceImageSettings } as never} />);
+    const slider = screen.getByRole('slider');
+    expect(slider).toHaveValue('0');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Show image' }));
+    expect(slider).toHaveValue('0.4');
+    expect(setTraceImageSettings).toHaveBeenLastCalledWith({ visible: true, opacity: 0.4 });
+    await waitFor(() => expect(applyTraceImageChange).toHaveBeenCalledTimes(1));
+    expect(sourceImage).toMatchObject({ traceVisible: true, opacity: 0.4 });
+    expect(applyTraceImageChange).toHaveBeenLastCalledWith(expect.objectContaining({ traceVisible: true, opacity: 0.4 }), expect.objectContaining({ label: 'trace-image-visibility' }));
+  });
+
   it('commits a visibility toggle as one history entry', async () => {
     const applyTraceImageChange = vi.fn(async () => undefined);
     const workspace = { sourceImage: descriptor, getAsset: () => undefined, applyTraceImageChange, setSourceImage: vi.fn(async () => undefined) } as never;

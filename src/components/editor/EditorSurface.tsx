@@ -129,6 +129,7 @@ export function EditorSurface({
   const frame = useRef<HTMLDivElement>(null),
     base = useRef<HTMLCanvasElement>(null),
     overlay = useRef<HTMLCanvasElement>(null),
+    workspaceRoot = useRef<HTMLElement>(null),
     controllerRef = useRef<EditorSurfaceController | null>(null);
   const [controller, setController] = useState<EditorSurfaceController | null>(
     null,
@@ -175,8 +176,9 @@ export function EditorSurface({
   useEffect(() => {
     const el = frame.current,
       b = base.current,
-      o = overlay.current;
-    if (!el || !b || !o) return;
+      o = overlay.current,
+      root = workspaceRoot.current;
+    if (!el || !b || !o || !root) return;
     try {
       const metrics = getCanvasMetrics(640, 480, { devicePixelRatio: 1 });
       const first = document.palette.find((x) => x.active);
@@ -238,7 +240,7 @@ export function EditorSurface({
       setController(c);
       setUi(store.getState());
       const unsub = store.subscribe(setUi);
-      const adapter = createPointerEventsAdapter(el, c);
+      const adapter = createPointerEventsAdapter(el, c, { keyboardSurface: root });
       const observer =
         typeof ResizeObserver === "undefined"
           ? undefined
@@ -857,7 +859,7 @@ export function EditorSurface({
     selectedBrush?.kind === "half" && selectedBrush.direction === "\\";
   const backstitchActive = ui?.tool.tool === "backstitch";
   return (
-    <section className="editor-workspace" aria-labelledby="editor-title">
+    <section ref={workspaceRoot} className="editor-workspace" aria-labelledby="editor-title">
       <header className="editor-heading">
         <a
           className="editor-brand"

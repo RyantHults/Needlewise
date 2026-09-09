@@ -44,6 +44,7 @@ import type {
 } from './types';
 import { DomainError } from './types';
 import { assertValidDocument } from './validation';
+import { attachDeleteMetricsImpactForDelta } from './internal-metrics-impact';
 
 export const DEFAULT_HISTORY_LIMIT_BYTES = 64 * 1024 * 1024;
 
@@ -83,20 +84,60 @@ function writeBackstitches(document: PatternDocument, store: PatternDocument['ba
   };
 }
 
+function cloneForDelete(document: PatternDocument): PatternDocument {
+  return {
+    ...document,
+    kind: document.kind.slice(),
+    colors: document.colors.slice(),
+    completed: document.completed.slice()
+  };
+}
+
+function cloneBackstitchCompletionPlane(document: PatternDocument): void {
+  document.backstitches = {
+    ...document.backstitches,
+    completed: document.backstitches.completed.slice()
+  };
+}
+
+function applyPackedCellSide(document: PatternDocument, cells: SparseMutationDelta['cells'], useAfter: boolean): void {
+  const sourceKind = useAfter ? cells.afterKind : cells.beforeKind;
+  const sourceColors = useAfter ? cells.afterColors : cells.beforeColors;
+  const sourceCompleted = useAfter ? cells.afterCompleted : cells.beforeCompleted;
+
+  let runStart = 0;
+  while (runStart < cells.indices.length) {
+    let runEnd = runStart + 1;
+    while (runEnd < cells.indices.length && cells.indices[runEnd] === cells.indices[runEnd - 1] + 1) runEnd += 1;
+    const runLength = runEnd - runStart;
+    const destination = cells.indices[runStart];
+    if (runLength > 1) {
+      document.kind.set(sourceKind.subarray(runStart, runEnd), destination);
+      document.completed.set(sourceCompleted.subarray(runStart, runEnd), destination);
+      document.colors.set(sourceColors.subarray(runStart * 4, runEnd * 4), destination * 4);
+    } else {
+      const colorOffset = runStart * 4;
+      const documentOffset = destination * 4;
+      document.kind[destination] = sourceKind[runStart];
+      document.completed[destination] = sourceCompleted[runStart];
+      for (let slot = 0; slot < 4; slot += 1) document.colors[documentOffset + slot] = sourceColors[colorOffset + slot];
+    }
+    runStart = runEnd;
+  }
+}
+
 function applyDelta(document: PatternDocument, delta: SparseMutationDelta, useAfter: boolean): PatternDocument {
-  const next = cloneDocument(document);
+  const next: PatternDocument = { ...document };
   const cells = delta.cells;
-  for (let position = 0; position < cells.indices.length; position += 1) {
-    const index = cells.indices[position];
-    const colorOffset = position * 4;
-    const sourceColors = useAfter ? cells.afterColors : cells.beforeColors;
-    const documentOffset = index * 4;
-    next.kind[index] = useAfter ? cells.afterKind[position] : cells.beforeKind[position];
-    next.completed[index] = useAfter ? cells.afterCompleted[position] : cells.beforeCompleted[position];
-    for (let slot = 0; slot < 4; slot += 1) next.colors[documentOffset + slot] = sourceColors[colorOffset + slot];
+  if (cells.indices.length > 0) {
+    next.kind = document.kind.slice();
+    next.colors = document.colors.slice();
+    next.completed = document.completed.slice();
+    applyPackedCellSide(next, cells, useAfter);
   }
   const cellCompletionDelta = delta.cellCompletions;
-  if (cellCompletionDelta !== undefined) {
+  if (cellCompletionDelta !== undefined && cellCompletionDelta.indices.length > 0) {
+    if (cells.indices.length === 0) next.completed = document.completed.slice();
     for (let position = 0; position < cellCompletionDelta.indices.length; position += 1) {
       const index = cellCompletionDelta.indices[position];
       next.completed[index] = useAfter ? cellCompletionDelta.afterCompleted[position] : cellCompletionDelta.beforeCompleted[position];
@@ -107,7 +148,8 @@ function applyDelta(document: PatternDocument, delta: SparseMutationDelta, useAf
   const backstitches = useAfter ? delta.afterBackstitches : delta.beforeBackstitches;
   if (backstitches !== undefined) writeBackstitches(next, backstitches);
   const completionDelta = delta.backstitchCompletions;
-  if (completionDelta !== undefined) {
+  if (completionDelta !== undefined && completionDelta.ids.length > 0) {
+    if (backstitches === undefined) cloneBackstitchCompletionPlane(next);
     for (let position = 0; position < completionDelta.ids.length; position += 1) {
       const id = completionDelta.ids[position];
       const backstitchPosition = next.backstitches.ids.findIndex((candidate) => candidate === id);
@@ -426,10 +468,9 @@ export class DocumentEditor {
       });
     }
 
-    const draft = cloneDocument(this.current);
+    const draft = cloneForDelete(this.current);
     const mutation = applyDeleteRegionCommand(draft, command, preflight);
     draft.revision = this.current.revision + 1;
-    assertValidDocument(draft);
     if (mutation.delta === undefined) throw new DomainError('invalid-delete-region', 'A changed delete-region command did not produce a history delta.');
     const entry: DeltaEntry = {
       kind: 'delta',
@@ -441,7 +482,9 @@ export class DocumentEditor {
     ensureHistoryEntryFits(entry.bytes, this.historyLimit);
     this.current = draft;
     this.pushHistory(entry);
-    return result(this.current, true, undefined, undefined, mutation);
+    const commandResult = result(this.current, true, undefined, undefined, mutation);
+    attachDeleteMetricsImpactForDelta(commandResult, mutation.delta, 'after');
+    return commandResult;
   }
 
   private executeSnapshotCommand(command: DomainCommand): CommandResult {
@@ -578,7 +621,9 @@ export class DocumentEditor {
     this.redoStack.push(entry);
     this.redoBytes += entry.bytes;
     this.current = next;
-    return result(this.current, true, undefined, undefined, { changed: true, snapshot: entry.kind === 'snapshot', progress: reverseProgress(entry.progress), recalculateMetrics: entry.recalculateMetrics });
+    const commandResult = result(this.current, true, undefined, undefined, { changed: true, snapshot: entry.kind === 'snapshot', progress: reverseProgress(entry.progress), recalculateMetrics: entry.recalculateMetrics });
+    if (entry.kind === 'delta') attachDeleteMetricsImpactForDelta(commandResult, entry.delta, 'before');
+    return commandResult;
   }
 
   redo(): CommandResult {
@@ -595,7 +640,9 @@ export class DocumentEditor {
     this.undoStack.push(entry);
     this.undoBytes += entry.bytes;
     this.current = next;
-    return result(this.current, true, undefined, undefined, { changed: true, snapshot: entry.kind === 'snapshot', progress: cloneProgress(entry.progress), recalculateMetrics: entry.recalculateMetrics });
+    const commandResult = result(this.current, true, undefined, undefined, { changed: true, snapshot: entry.kind === 'snapshot', progress: cloneProgress(entry.progress), recalculateMetrics: entry.recalculateMetrics });
+    if (entry.kind === 'delta') attachDeleteMetricsImpactForDelta(commandResult, entry.delta, 'after');
+    return commandResult;
   }
 
   clearHistory(): void {

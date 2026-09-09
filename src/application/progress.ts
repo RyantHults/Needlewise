@@ -13,6 +13,12 @@ import {
   type PatternDocument,
   type PatternMetrics
 } from '../domain';
+import {
+  deleteMetricsImpactForResult,
+  type DeleteMetricsImpact,
+  type DeleteMetricsImpactEntry,
+  type DeleteMetricsImpactTarget
+} from '../domain/internal-metrics-impact';
 
 export interface ProgressActivityDelta {
   readonly marked: number;
@@ -231,6 +237,81 @@ function buildMetrics(
   };
 }
 
+function isNonNegativeInteger(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+function isValidImpactEntry(entry: DeleteMetricsImpactEntry): boolean {
+  return Number.isSafeInteger(entry.paletteId) && entry.paletteId > 0
+    && isNonNegativeInteger(entry.removedFull)
+    && isNonNegativeInteger(entry.removedHalf)
+    && isNonNegativeInteger(entry.removedQuarter)
+    && isNonNegativeInteger(entry.removedCellCompleted)
+    && isNonNegativeInteger(entry.beforeBackstitchCount)
+    && isNonNegativeInteger(entry.afterBackstitchCount)
+    && isNonNegativeInteger(entry.beforeBackstitchCompleted)
+    && isNonNegativeInteger(entry.afterBackstitchCompleted)
+    && Number.isFinite(entry.beforeBackstitchLengthFixed) && entry.beforeBackstitchLengthFixed >= 0
+    && Number.isFinite(entry.afterBackstitchLengthFixed) && entry.afterBackstitchLengthFixed >= 0
+    && entry.removedCellCompleted <= entry.removedFull + entry.removedHalf + entry.removedQuarter
+    && entry.beforeBackstitchCompleted <= entry.beforeBackstitchCount
+    && entry.afterBackstitchCompleted <= entry.afterBackstitchCount
+    && entry.afterBackstitchCount <= entry.beforeBackstitchCount
+    && entry.afterBackstitchCompleted <= entry.beforeBackstitchCompleted
+    && entry.afterBackstitchLengthFixed <= entry.beforeBackstitchLengthFixed;
+}
+
+function cloneCounts(counts: MutableCounts): MutableCounts {
+  return { ...counts };
+}
+
+function applyDeleteMetricsImpact(
+  sourceCounts: Map<number, MutableCounts>,
+  impact: DeleteMetricsImpact,
+  target: DeleteMetricsImpactTarget
+): Map<number, MutableCounts> | undefined {
+  if (impact === null || typeof impact !== 'object' || (target !== 'before' && target !== 'after') || !Array.isArray(impact.entries) || impact.entries.length === 0) return undefined;
+  const nextCounts = new Map<number, MutableCounts>();
+  for (const [paletteId, counts] of sourceCounts) {
+    if (!Number.isSafeInteger(paletteId) || !isNonNegativeInteger(counts.full) || !isNonNegativeInteger(counts.half) || !isNonNegativeInteger(counts.quarter) || !isNonNegativeInteger(counts.backstitch) || !isNonNegativeInteger(counts.completedComponents) || counts.completedComponents > counts.full + counts.half + counts.quarter + counts.backstitch || !Number.isFinite(counts.backstitchLengthFixed) || counts.backstitchLengthFixed < 0) return undefined;
+    nextCounts.set(paletteId, cloneCounts(counts));
+  }
+
+  const seen = new Set<number>();
+  let hasDeletedComponent = false;
+  for (const entry of impact.entries) {
+    if (entry === null || typeof entry !== 'object' || !isValidImpactEntry(entry) || seen.has(entry.paletteId)) return undefined;
+    seen.add(entry.paletteId);
+    if (entry.removedFull > 0 || entry.removedHalf > 0 || entry.removedQuarter > 0 || entry.beforeBackstitchCount !== entry.afterBackstitchCount) hasDeletedComponent = true;
+    const current = sourceCounts.get(entry.paletteId);
+    if (current === undefined) return undefined;
+
+    const sourceBackstitchCount = target === 'after' ? entry.beforeBackstitchCount : entry.afterBackstitchCount;
+    const targetBackstitchCount = target === 'after' ? entry.afterBackstitchCount : entry.beforeBackstitchCount;
+    const sourceBackstitchCompleted = target === 'after' ? entry.beforeBackstitchCompleted : entry.afterBackstitchCompleted;
+    const targetBackstitchCompleted = target === 'after' ? entry.afterBackstitchCompleted : entry.beforeBackstitchCompleted;
+    const sourceBackstitchLength = target === 'after' ? entry.beforeBackstitchLengthFixed : entry.afterBackstitchLengthFixed;
+    const targetBackstitchLength = target === 'after' ? entry.afterBackstitchLengthFixed : entry.beforeBackstitchLengthFixed;
+    if (current.backstitch !== sourceBackstitchCount || current.backstitchLengthFixed !== sourceBackstitchLength || current.completedComponents < sourceBackstitchCompleted) return undefined;
+
+    const sourceCellCompleted = current.completedComponents - sourceBackstitchCompleted;
+    if (target === 'after' && sourceCellCompleted < entry.removedCellCompleted) return undefined;
+    const cellDirection = target === 'after' ? -1 : 1;
+    const next = {
+      ...current,
+      full: current.full + cellDirection * entry.removedFull,
+      half: current.half + cellDirection * entry.removedHalf,
+      quarter: current.quarter + cellDirection * entry.removedQuarter,
+      backstitch: targetBackstitchCount,
+      backstitchLengthFixed: targetBackstitchLength,
+      completedComponents: sourceCellCompleted + cellDirection * entry.removedCellCompleted + targetBackstitchCompleted
+    };
+    if (!isNonNegativeInteger(next.full) || !isNonNegativeInteger(next.half) || !isNonNegativeInteger(next.quarter) || !isNonNegativeInteger(next.backstitch) || !isNonNegativeInteger(next.completedComponents) || !Number.isFinite(next.backstitchLengthFixed) || next.backstitchLengthFixed < 0 || next.completedComponents > next.full + next.half + next.quarter + next.backstitch) return undefined;
+    nextCounts.set(entry.paletteId, next);
+  }
+  return hasDeletedComponent ? nextCounts : undefined;
+}
+
 /**
  * Maintains the derived metrics read model. Bulk commands use the exact
  * changed-index/changed-ID sets supplied by the domain; commands without a
@@ -299,6 +380,17 @@ export class ProgressMetricsService {
       ? undefined
       : { marked: result.progress.marked, unmarked: result.progress.unmarked };
     let delta: ProgressActivityDelta;
+    const deleteImpact = deleteMetricsImpactForResult(result);
+    if (deleteImpact !== undefined && result.recalculateMetrics === true && previous.revision === this.revision && next.revision === previous.revision + 1 && progressDelta !== undefined) {
+      const nextCounts = applyDeleteMetricsImpact(this.counts, deleteImpact.impact, deleteImpact.target);
+      if (nextCounts !== undefined) {
+        this.current = buildMetrics(next, nextCounts, this.settings, this.aidaCount);
+        this.counts = nextCounts;
+        this.currentDocument = next;
+        this.revision = next.revision;
+        return progressDelta;
+      }
+    }
     if (result.recalculateMetrics === true || previous.revision !== this.revision) {
       delta = progressDelta ?? (hasExplicitProgress
         ? transitionForChangedSets(previous, next, progressCellIndices, progressBackstitchIds)

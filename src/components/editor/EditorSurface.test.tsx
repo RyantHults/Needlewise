@@ -6,6 +6,7 @@ import { PALETTE_SYMBOLS } from '../../domain';
 
 const f = vi.hoisted(() => ({
   c: { start: vi.fn(), setMetrics: vi.fn(), setDocument: vi.fn(), dispose: vi.fn(), setBrush: vi.fn(), setTool: vi.fn(), setEraserMode: vi.fn(), selectPalette: vi.fn(), setChartMode: vi.fn(), setGridVisible: vi.fn(), setBrushSize: vi.fn(), deleteSelection: vi.fn(), handleKeyDown: vi.fn(() => false), getTraceImage: vi.fn(() => undefined), setTraceImage: vi.fn(), setTraceImageSettings: vi.fn(), clearTraceImage: vi.fn() },
+  adapter: vi.fn(() => ({ dispose: vi.fn() })),
   r: { dispose: vi.fn() }, resize: undefined as (() => void) | undefined,
   uiState: { mode: 'color', gridVisible: true, overlay: {}, tool: { tool: 'paint' }, paletteId: 1, pendingPaletteId: null as number | null },
   capturedCallback: null as ((bounds: { x: number; y: number; width: number; height: number }) => void) | null
@@ -17,7 +18,7 @@ vi.mock('../../rendering/trace', async () => {
   return { ...actual, decodeTraceImage: vi.fn(async () => ({ source: {}, bitmap: {}, width: 2, height: 2, dispose: vi.fn() })) };
 });
 vi.mock('../../editor/coordinates', () => ({ getCanvasMetrics: vi.fn(() => ({ cssWidth: 640, cssHeight: 480, pixelWidth: 640, pixelHeight: 480, backingWidth: 640, backingHeight: 480, requestedDpr: 1, dpr: 1, maxDpr: 2, maxBackingPixels: 1e6 })) }));
-vi.mock('../../editor', () => ({ ChartPresentationMode: { Color: 'color', Symbol: 'symbol', Grayscale: 'grayscale', Combined: 'combined' }, createUiStore: vi.fn(() => ({ getState: () => f.uiState, subscribe: vi.fn(() => () => undefined) })), createWorkspaceEditorGateway: vi.fn(() => ({ dispose: vi.fn() })), createPointerEventsAdapter: vi.fn(() => ({ dispose: vi.fn() })), createEditorSurfaceController: vi.fn((options: unknown) => { f.capturedCallback = (options as { onTraceBoundsChange?: (b: { x: number; y: number; width: number; height: number }) => void }).onTraceBoundsChange ?? null; return f.c as never; }) }));
+vi.mock('../../editor', () => ({ ChartPresentationMode: { Color: 'color', Symbol: 'symbol', Grayscale: 'grayscale', Combined: 'combined' }, createUiStore: vi.fn(() => ({ getState: () => f.uiState, subscribe: vi.fn(() => () => undefined) })), createWorkspaceEditorGateway: vi.fn(() => ({ dispose: vi.fn() })), createPointerEventsAdapter: f.adapter, createEditorSurfaceController: vi.fn((options: unknown) => { f.capturedCallback = (options as { onTraceBoundsChange?: (b: { x: number; y: number; width: number; height: number }) => void }).onTraceBoundsChange ?? null; return f.c as never; }) }));
 const ws = { metadata: { title: 'Sampler', notes: '', aidaCount: 14 }, updateActiveMetadata: vi.fn(), updateActiveAidaCount: vi.fn(), execute: vi.fn(), getStateSnapshot: vi.fn(), setSourceImage: vi.fn(() => Promise.resolve()), applyTraceImageChange: vi.fn(() => Promise.resolve()), getAsset: vi.fn(), sourceImage: undefined as ({ chartBounds: { x: number; y: number; width: number; height: number } } | undefined) } as never;
 const doc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
 const two = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321' } }, { id: 2, name: 'Sky', color: '#48c', active: true }], backstitches: { ids: new Uint32Array() } } as never;
@@ -43,6 +44,19 @@ describe('EditorSurface', () => {
     view.rerender(<EditorSurface workspace={ws} document={next} />);
     expect(f.c.start).toHaveBeenCalledOnce(); expect(f.c.dispose).not.toHaveBeenCalled(); expect(f.c.setDocument).toHaveBeenCalledWith(next, expect.objectContaining({ reason: 'external-document' }));
     expect(screen.getByText(/20 × 16 stitches/)).toBeInTheDocument(); expect(screen.getByRole('slider', { name: /Brush size/ })).toHaveValue('7');
+  });
+  it('binds keyboard delivery to the workspace while retaining canvas pointer delivery', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    expect(f.adapter).toHaveBeenCalledOnce();
+    const [pointerSurface, , options] = f.adapter.mock.calls[0] as unknown as [
+      HTMLElement,
+      unknown,
+      { keyboardSurface: HTMLElement },
+    ];
+    expect(pointerSurface).toHaveClass('canvas-frame');
+    expect(options.keyboardSurface).toHaveClass('editor-workspace');
+    expect(options.keyboardSurface).toBe(document.querySelector('.editor-workspace'));
+    expect(pointerSurface).not.toBe(options.keyboardSurface);
   });
   it('wires resize and the Stitch menu', () => { render(<EditorSurface workspace={ws} document={doc} />); f.resize?.(); fireEvent.click(screen.getByRole('button', { name: 'Stitch' })); expect(f.c.setMetrics).toHaveBeenCalled(); fireEvent.change(screen.getByRole('slider', { name: /Brush size/ }), { target: { value: '7' } }); expect(f.c.setBrushSize).toHaveBeenCalledWith(7); fireEvent.click(screen.getByRole('button', { name: 'Full stitch' })); expect(f.c.setBrush).toHaveBeenCalledWith(expect.objectContaining({ kind: 'full' })); });
   it('marks the selected stitch type and half direction in the Stitch menu', () => { f.uiState.tool = { tool: 'paint', brush: { kind: 'half', direction: '/', paletteId: 1 } } as never; const view = render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Stitch' })); expect(screen.getByRole('button', { name: 'Full stitch' })).toHaveAttribute('aria-pressed', 'false'); expect(screen.getByRole('button', { name: 'Half stitch /' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: `Half stitch ${String.fromCharCode(92)}` })).toHaveAttribute('aria-pressed', 'false'); expect(screen.getByRole('button', { name: 'Backstitch' })).toHaveAttribute('aria-pressed', 'false'); view.unmount(); f.uiState.tool = { tool: 'backstitch' }; render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Stitch' })); expect(screen.getByRole('button', { name: 'Backstitch' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: 'Full stitch' })).toHaveAttribute('aria-pressed', 'false'); });

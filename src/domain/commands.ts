@@ -40,6 +40,13 @@ import {
 } from './types';
 import { assertValidDocument } from './validation';
 import { assertValidPatternFragment } from './fragment';
+import { fixedPointBackstitchLength } from './metrics';
+import {
+  attachDeleteMetricsImpactForDelta,
+  createDeleteMetricsImpact,
+  registerDeleteMetricsImpact,
+  type DeleteMetricsImpactEntry
+} from './internal-metrics-impact';
 
 export interface MutationInfo {
   changed: boolean;
@@ -105,6 +112,98 @@ function cloneBackstitchStore(store: BackstitchStore): BackstitchStore {
     colors: store.colors.slice(),
     completed: store.completed.slice()
   };
+}
+
+interface MutableDeleteMetricsImpactEntry {
+  paletteId: number;
+  removedFull: number;
+  removedHalf: number;
+  removedQuarter: number;
+  removedCellCompleted: number;
+  beforeBackstitchCount: number;
+  afterBackstitchCount: number;
+  beforeBackstitchCompleted: number;
+  afterBackstitchCompleted: number;
+  beforeBackstitchLengthFixed: number;
+  afterBackstitchLengthFixed: number;
+}
+
+function emptyDeleteMetricsImpactEntry(paletteId: number): MutableDeleteMetricsImpactEntry {
+  return {
+    paletteId,
+    removedFull: 0,
+    removedHalf: 0,
+    removedQuarter: 0,
+    removedCellCompleted: 0,
+    beforeBackstitchCount: 0,
+    afterBackstitchCount: 0,
+    beforeBackstitchCompleted: 0,
+    afterBackstitchCompleted: 0,
+    beforeBackstitchLengthFixed: 0,
+    afterBackstitchLengthFixed: 0
+  };
+}
+
+function deleteMetricsEntry(entries: Map<number, MutableDeleteMetricsImpactEntry>, paletteId: number): MutableDeleteMetricsImpactEntry {
+  let entry = entries.get(paletteId);
+  if (entry === undefined) {
+    entry = emptyDeleteMetricsImpactEntry(paletteId);
+    entries.set(paletteId, entry);
+  }
+  return entry;
+}
+
+function addDeletedCellComponentImpact(
+  entries: Map<number, MutableDeleteMetricsImpactEntry>,
+  paletteId: number,
+  field: 'removedFull' | 'removedHalf' | 'removedQuarter',
+  completed: boolean
+): void {
+  if (paletteId === 0) return;
+  const entry = deleteMetricsEntry(entries, paletteId);
+  entry[field] += 1;
+  if (completed) entry.removedCellCompleted += 1;
+}
+
+function addDeletedCellImpact(
+  entries: Map<number, MutableDeleteMetricsImpactEntry>,
+  document: PatternDocument,
+  index: number
+): void {
+  const kind = document.kind[index];
+  const offset = colorsOffset(index);
+  const completion = document.completed[index];
+  if (kind === CellKind.Full) {
+    addDeletedCellComponentImpact(entries, document.colors[offset], 'removedFull', (completion & 1) !== 0);
+  } else if (kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash) {
+    addDeletedCellComponentImpact(entries, document.colors[offset], 'removedHalf', (completion & 1) !== 0);
+  } else if (kind === CellKind.Quarters) {
+    for (let slot = 0; slot < 4; slot += 1) {
+      const color = document.colors[offset + slot];
+      if (color !== 0) addDeletedCellComponentImpact(entries, color, 'removedQuarter', (completion & (1 << slot)) !== 0);
+    }
+  }
+}
+
+function addBackstitchImpact(
+  entries: Map<number, MutableDeleteMetricsImpactEntry>,
+  record: BackstitchRecord,
+  side: 'before' | 'after'
+): void {
+  const entry = deleteMetricsEntry(entries, record.color);
+  if (side === 'before') {
+    entry.beforeBackstitchCount += 1;
+    if (record.completed) entry.beforeBackstitchCompleted += 1;
+    entry.beforeBackstitchLengthFixed += fixedPointBackstitchLength(record.x1, record.y1, record.x2, record.y2);
+  } else {
+    entry.afterBackstitchCount += 1;
+    if (record.completed) entry.afterBackstitchCompleted += 1;
+    entry.afterBackstitchLengthFixed += fixedPointBackstitchLength(record.x1, record.y1, record.x2, record.y2);
+  }
+}
+
+function finalizeDeleteMetricsImpact(entries: Map<number, MutableDeleteMetricsImpactEntry>): ReturnType<typeof createDeleteMetricsImpact> {
+  return createDeleteMetricsImpact([...entries.values()] as DeleteMetricsImpactEntry[]);
 }
 
 function sameBackstitchStore(left: BackstitchStore, right: BackstitchStore): boolean {
@@ -1370,6 +1469,7 @@ export function applyDeleteRegionCommand(
   const afterKind = new Uint8Array(changedIndices.length);
   const afterColors = new Uint16Array(changedIndices.length * 4);
   const afterCompleted = new Uint8Array(changedIndices.length);
+  const impactEntries = new Map<number, MutableDeleteMetricsImpactEntry>();
 
   for (let position = 0; position < changedIndices.length; position += 1) {
     const index = changedIndices[position];
@@ -1378,10 +1478,24 @@ export function applyDeleteRegionCommand(
     beforeKind[position] = document.kind[index];
     beforeCompleted[position] = document.completed[index];
     for (let slot = 0; slot < 4; slot += 1) beforeColors[packedOffset + slot] = document.colors[documentOffset + slot];
-    clearCell(document, index);
-    afterKind[position] = document.kind[index];
-    afterCompleted[position] = document.completed[index];
-    for (let slot = 0; slot < 4; slot += 1) afterColors[packedOffset + slot] = document.colors[documentOffset + slot];
+    addDeletedCellImpact(impactEntries, document, index);
+  }
+
+  // changedIndices is row-major and contains only cells that are not already
+  // canonical empty values. Clear each contiguous changed run in bulk rather
+  // than repeatedly writing the four color slots for a dense selection. The
+  // after arrays are intentionally left at their zero-initialized canonical
+  // empty values.
+  let runStart = 0;
+  while (runStart < changedIndices.length) {
+    let runEnd = runStart + 1;
+    while (runEnd < changedIndices.length && changedIndices[runEnd] === changedIndices[runEnd - 1] + 1) runEnd += 1;
+    const cellStart = changedIndices[runStart];
+    const cellEnd = changedIndices[runEnd - 1] + 1;
+    document.kind.fill(0, cellStart, cellEnd);
+    document.completed.fill(0, cellStart, cellEnd);
+    document.colors.fill(0, cellStart * 4, cellEnd * 4);
+    runStart = runEnd;
   }
 
   let beforeBackstitches: BackstitchStore | undefined;
@@ -1389,8 +1503,21 @@ export function applyDeleteRegionCommand(
   if (preflight.changedBackstitchIds.length > 0) {
     beforeBackstitches = cloneBackstitchStore(document.backstitches);
     const deleted = new Set<number>(preflight.changedBackstitchIds);
-    replaceBackstitches(document, listBackstitches(document).filter((record) => !deleted.has(record.id)));
+    const retained: BackstitchRecord[] = [];
+    for (const record of listBackstitches(document)) {
+      addBackstitchImpact(impactEntries, record, 'before');
+      if (!deleted.has(record.id)) {
+        addBackstitchImpact(impactEntries, record, 'after');
+        retained.push(record);
+      }
+    }
+    replaceBackstitches(document, retained);
     afterBackstitches = cloneBackstitchStore(document.backstitches);
+  } else if (impactEntries.size > 0) {
+    for (const record of listBackstitches(document)) {
+      addBackstitchImpact(impactEntries, record, 'before');
+      addBackstitchImpact(impactEntries, record, 'after');
+    }
   }
 
   if (changedIndices.length === 0 && preflight.changedBackstitchIds.length === 0) {
@@ -1407,6 +1534,7 @@ export function applyDeleteRegionCommand(
     cells: { indices: changedIndices, beforeKind, beforeColors, beforeCompleted, afterKind, afterColors, afterCompleted },
     ...(beforeBackstitches === undefined ? {} : { beforeBackstitches, afterBackstitches })
   };
+  registerDeleteMetricsImpact(delta, finalizeDeleteMetricsImpact(impactEntries));
   return {
     changed: true,
     snapshot: false,
@@ -2533,7 +2661,7 @@ export function applyCommand(document: PatternDocument, command: DomainCommand):
   }
   draft.revision = document.revision + 1;
   assertValidDocument(draft);
-  return {
+  const commandResult: CommandResult = {
     document: draft,
     changed: true,
     revision: draft.revision,
@@ -2547,6 +2675,8 @@ export function applyCommand(document: PatternDocument, command: DomainCommand):
     ...(result.recalculateMetrics === undefined ? {} : { recalculateMetrics: result.recalculateMetrics }),
     ...(result.createdBackstitchIds === undefined ? {} : { createdBackstitchIds: result.createdBackstitchIds.slice() })
   };
+  if (result.delta !== undefined) attachDeleteMetricsImpactForDelta(commandResult, result.delta, 'after');
+  return commandResult;
 }
 
 export function executeCommand(document: PatternDocument, command: DomainCommand): CommandResult;

@@ -27,6 +27,8 @@ import {
   HalfDirection,
   isAlphanumericSymbol,
   listBackstitches,
+  MaterialKind,
+  MaterialUnit,
   MAX_PALETTE_SYMBOL_LENGTH,
   MAX_PERSISTABLE_CELL_COUNT,
   mixedEraseCommand,
@@ -83,6 +85,31 @@ function cellSnapshot(pattern: PatternDocument): PatternDocument {
       completed: pattern.backstitches.completed.slice()
     },
     palette: pattern.palette.map((entry) => ({ ...entry }))
+  };
+}
+
+function documentContentSnapshot(pattern: PatternDocument) {
+  return {
+    kind: pattern.kind.slice(),
+    colors: pattern.colors.slice(),
+    completed: pattern.completed.slice(),
+    backstitches: {
+      ids: pattern.backstitches.ids.slice(),
+      x1: pattern.backstitches.x1.slice(),
+      y1: pattern.backstitches.y1.slice(),
+      x2: pattern.backstitches.x2.slice(),
+      y2: pattern.backstitches.y2.slice(),
+      colors: pattern.backstitches.colors.slice(),
+      completed: pattern.backstitches.completed.slice()
+    },
+    palette: pattern.palette.map((entry) => ({
+      ...entry,
+      material: { ...entry.material },
+      ...(entry.catalog === undefined ? {} : { catalog: { ...entry.catalog, rgb: [...entry.catalog.rgb] } })
+    })),
+    settings: { ...pattern.settings },
+    nextBackstitchId: pattern.nextBackstitchId,
+    nextPaletteId: pattern.nextPaletteId
   };
 }
 
@@ -633,6 +660,17 @@ describe('typed-array pattern document', () => {
     editor.redo();
     expect(editor.document.kind[0]).toBe(CellKind.Full);
     expect(editor.document.kind[1]).toBe(CellKind.Full);
+
+    const deleteEditor = createEditor(document(2, 2));
+    deleteEditor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    deleteEditor.clearHistory();
+    const deleteResult = deleteEditor.execute(deleteRegionCommand({ x: 0, y: 0, width: 1, height: 1 }, deleteEditor.revision));
+    deleteResult.changedIndices?.fill(3);
+    deleteResult.touchedIndices?.fill(3);
+    deleteEditor.undo();
+    expect(deleteEditor.document.kind[0]).toBe(CellKind.Full);
+    deleteEditor.redo();
+    expect(deleteEditor.document.kind[0]).toBe(CellKind.Empty);
   });
 
   it('does not create history for empty or already matching bulk targets', () => {
@@ -1063,6 +1101,170 @@ describe('typed-array pattern document', () => {
     editor.redo();
     expect(listBackstitches(editor.document).map((line) => line.id)).toEqual([2, 3]);
     expect(editor.document.nextBackstitchId).toBe(4);
+  });
+
+  it('restores every delete plane and nested document value through undo and redo', () => {
+    let pattern = createDocument({
+      width: 4,
+      height: 3,
+      palette: [{
+        id: 1,
+        name: 'Nested red',
+        color: '#d33',
+        material: { kind: MaterialKind.Custom, label: 'silk', unit: MaterialUnit.Meters, amount: 2.5 },
+        catalog: {
+          catalogId: 'test-catalog',
+          sourceId: 'test-source',
+          code: 'T1',
+          name: 'Nested red',
+          hex: '#d33d33',
+          rgb: [211, 61, 51]
+        }
+      }],
+      settings: { symbolSet: 'test-symbols', materialUnit: MaterialUnit.Meters }
+    });
+    pattern = apply(pattern, { type: 'set-full', x: 1, y: 0, color: 1 });
+    pattern = apply(pattern, { type: 'set-completion', x: 1, y: 0, completed: true });
+    pattern = apply(pattern, { type: 'set-half', x: 2, y: 0, direction: HalfDirection.Slash, color: 1 });
+    pattern = apply(pattern, { type: 'set-quarter', x: 1, y: 1, corner: QuarterCorner.NE, color: 1 });
+    pattern = apply(pattern, { type: 'set-quarter', x: 1, y: 1, corner: QuarterCorner.SW, color: 1, completed: true });
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 4, y: 0 }, end: { x: 12, y: 8 }, color: 1 });
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 });
+    const editor = createEditor(pattern);
+    const before = editor.document;
+    const beforeContent = documentContentSnapshot(before);
+
+    const deleted = editor.execute(deleteRegionCommand({ x: 1, y: 0, width: 2, height: 2 }, editor.revision));
+    expect(deleted.changed).toBe(true);
+    expect(editor.document.revision).toBe(before.revision + 1);
+    expect(documentContentSnapshot(editor.document)).toMatchObject({
+      kind: expect.any(Uint8Array),
+      colors: expect.any(Uint16Array),
+      completed: expect.any(Uint8Array),
+      nextBackstitchId: before.nextBackstitchId,
+      nextPaletteId: before.nextPaletteId
+    });
+    expect(editor.document.kind[1]).toBe(CellKind.Empty);
+    expect(editor.document.kind[2]).toBe(CellKind.Empty);
+    expect(editor.document.kind[5]).toBe(CellKind.Empty);
+    expect(editor.document.kind[6]).toBe(CellKind.Empty);
+    expect(editor.document.kind[11]).toBe(CellKind.Empty);
+    expect(editor.document.backstitches.ids).toEqual(new Uint32Array([2]));
+    expect(editor.document.palette).toEqual(before.palette);
+    expect(editor.document.settings).toBe(before.settings);
+    assertValidDocument(editor.document);
+    const afterContent = documentContentSnapshot(editor.document);
+
+    const undone = editor.undo();
+    expect(undone.revision).toBe(before.revision + 2);
+    expect(documentContentSnapshot(editor.document)).toEqual(beforeContent);
+    expect(editor.document.palette).toBe(before.palette);
+    expect(editor.document.settings).toBe(before.settings);
+    assertValidDocument(editor.document);
+
+    const redone = editor.redo();
+    expect(redone.revision).toBe(before.revision + 3);
+    expect(documentContentSnapshot(editor.document)).toEqual(afterContent);
+    expect(editor.document.palette).toBe(before.palette);
+    expect(editor.document.settings).toBe(before.settings);
+    assertValidDocument(editor.document);
+  });
+
+  it('keeps prior delete generations immutable while later edits use new planes', () => {
+    let pattern = document(4, 2);
+    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
+    pattern = apply(pattern, { type: 'set-half', x: 1, y: 0, direction: HalfDirection.Backslash, color: 2 });
+    const editor = createEditor(pattern);
+    const preDelete = editor.document;
+    const preDeleteContent = documentContentSnapshot(preDelete);
+
+    editor.execute(deleteRegionCommand({ x: 0, y: 0, width: 2, height: 1 }, editor.revision));
+    const postDelete = editor.document;
+    const postDeleteContent = documentContentSnapshot(postDelete);
+    expect(postDelete.kind).not.toBe(preDelete.kind);
+    expect(postDelete.colors).not.toBe(preDelete.colors);
+    expect(postDelete.completed).not.toBe(preDelete.completed);
+    expect(preDelete.kind[0]).toBe(CellKind.Full);
+    expect(preDelete.kind[1]).toBe(CellKind.HalfBackslash);
+
+    editor.undo();
+    const postUndo = editor.document;
+    expect(postUndo.kind).not.toBe(postDelete.kind);
+    expect(postUndo.colors).not.toBe(postDelete.colors);
+    expect(postUndo.completed).not.toBe(postDelete.completed);
+    const postUndoContent = documentContentSnapshot(postUndo);
+    expect(documentContentSnapshot(preDelete)).toEqual(preDeleteContent);
+    expect(documentContentSnapshot(postDelete)).toEqual(postDeleteContent);
+
+    editor.redo();
+    editor.execute({ type: 'set-full', x: 3, y: 1, color: 3 });
+    expect(documentContentSnapshot(preDelete)).toEqual(preDeleteContent);
+    expect(documentContentSnapshot(postDelete)).toEqual(postDeleteContent);
+    expect(documentContentSnapshot(postUndo)).toEqual(postUndoContent);
+  });
+
+  it('keeps delete no-ops, stale revisions, and budget failures atomic', () => {
+    const noOpEditor = createEditor(document(3, 3));
+    const noOpBefore = noOpEditor.document;
+    const noOp = noOpEditor.execute(deleteRegionCommand({ x: 0, y: 0, width: 3, height: 3 }, noOpEditor.revision));
+    expect(noOp.changed).toBe(false);
+    expect(noOpEditor.document).toBe(noOpBefore);
+    expect(noOpEditor.revision).toBe(0);
+    expect(noOpEditor.undoDepth).toBe(0);
+    expect(noOpEditor.historyBytes).toBe(0);
+
+    expect(() => noOpEditor.execute(deleteRegionCommand({ x: 0, y: 0, width: 1, height: 1 }, 1))).toThrow(/revision/i);
+    expect(noOpEditor.document).toBe(noOpBefore);
+    expect(noOpEditor.revision).toBe(0);
+    expect(noOpEditor.undoDepth).toBe(0);
+
+    const occupied = apply(document(3, 3), { type: 'set-full', x: 1, y: 1, color: 1 });
+    const budgetEditor = createEditor(occupied, { historyLimitBytes: estimateDeleteRegionHistoryBytes(1) - 1 });
+    const budgetBefore = budgetEditor.document;
+    const budgetBeforeContent = documentContentSnapshot(budgetBefore);
+    expect(() => budgetEditor.execute(deleteRegionCommand({ x: 1, y: 1, width: 1, height: 1 }, budgetEditor.revision))).toThrow(/exceeding/);
+    expect(budgetEditor.document).toBe(budgetBefore);
+    expect(documentContentSnapshot(budgetEditor.document)).toEqual(budgetBeforeContent);
+    expect(budgetEditor.revision).toBe(occupied.revision);
+    expect(budgetEditor.undoDepth).toBe(0);
+    expect(budgetEditor.redoDepth).toBe(0);
+  });
+
+  it('deletes, validates, and restores a dense 1,000 by 1,000 document', { timeout: 120_000 }, () => {
+    const side = 1_000;
+    const cellCount = side * side;
+    const pattern = document(side, side);
+    pattern.kind.fill(CellKind.Full);
+    pattern.completed.fill(1);
+    for (let index = 0; index < cellCount; index += 1) pattern.colors[index * 4] = 1;
+    assertValidDocument(pattern);
+
+    const editor = createEditor(pattern);
+    const beforeDocument = editor.document;
+    const before = documentContentSnapshot(editor.document);
+    const deleted = editor.execute(deleteRegionCommand({ x: 0, y: 0, width: side, height: side }, editor.revision));
+    expect(deleted.changed).toBe(true);
+    expect(deleted.changedIndices).toHaveLength(cellCount);
+    expect(editor.historyBytes).toBe(estimateDeleteRegionHistoryBytes(cellCount));
+    expect(editor.undoDepth).toBe(1);
+    expect(editor.document.kind).toEqual(new Uint8Array(cellCount));
+    expect(editor.document.colors).toEqual(new Uint16Array(cellCount * 4));
+    expect(editor.document.completed).toEqual(new Uint8Array(cellCount));
+    expect(editor.document.backstitches).toBe(beforeDocument.backstitches);
+    expect(editor.document.palette).toBe(beforeDocument.palette);
+    expect(editor.document.settings).toBe(beforeDocument.settings);
+    assertValidDocument(editor.document);
+    const after = documentContentSnapshot(editor.document);
+
+    editor.undo();
+    expect(editor.document.revision).toBe(2);
+    expect(documentContentSnapshot(editor.document)).toEqual(before);
+    assertValidDocument(editor.document);
+
+    editor.redo();
+    expect(editor.document.revision).toBe(3);
+    expect(documentContentSnapshot(editor.document)).toEqual(after);
+    assertValidDocument(editor.document);
   });
 
   it('preflights delete-region history before changing the document', () => {
