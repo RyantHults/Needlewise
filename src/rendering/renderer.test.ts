@@ -1369,7 +1369,7 @@ describe('Canvas 2D chart renderer', () => {
     expect(closes).toBe(2);
   });
 
-  it('keeps Overview trace pixels below committed atlas cells and preserves empty background', () => {
+  it('keeps Overview trace pixels above committed atlas cells and preserves empty background', () => {
     const base = recordingContext();
     const atlas = recordingContext();
     const traceSource = { width: 20, height: 10 };
@@ -1384,10 +1384,45 @@ describe('Canvas 2D chart renderer', () => {
     renderer.renderNow();
     const images = base.records.filter((call) => call.name === 'drawImage');
     expect(images).toHaveLength(2);
-    expect(images[0].args[0]).toBe(traceSource);
-    expect(images[1].args[0]).toBeInstanceOf(FakeCanvasImageSource);
+    expect(images[0].args[0]).toBeInstanceOf(FakeCanvasImageSource);
+    expect(images[1].args[0]).toBe(traceSource);
     expect(atlas.records.some((call) => call.name === 'fillRect')).toBe(false);
     expect(base.records.some((call) => call.name === 'fillRect' && call.fillStyle === '#ffffff' && call.args.join(',') === '0,0,20,10')).toBe(true);
+    renderer.dispose();
+  });
+
+  it('draws the trace after regular cells, grid, chart border, and backstitches', () => {
+    const base = recordingContext();
+    const traceSource = { width: 32, height: 16 };
+    const document = chart(2, 1);
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    document.backstitches = {
+      ids: new Uint32Array([1]),
+      x1: new Uint32Array([0]),
+      y1: new Uint32Array([2]),
+      x2: new Uint32Array([16]),
+      y2: new Uint32Array([2]),
+      colors: new Uint16Array([1]),
+      completed: new Uint8Array([0])
+    };
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(32, 16),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      traceImage: { source: traceSource, width: 32, height: 16 }
+    });
+
+    const stats = renderer.renderNow();
+    expect(stats.lod).not.toBe('overview');
+    expect(stats.drawnBackstitches).toBe(1);
+    const traceIndex = base.records.findIndex((call) => call.name === 'drawImage' && call.args[0] === traceSource);
+    const committedPaintIndices = base.records
+      .map((call, index) => ({ call, index }))
+      .filter(({ call }) => ['fillRect', 'fill', 'fillText', 'stroke', 'strokeRect', 'moveTo', 'lineTo'].includes(call.name))
+      .map(({ index }) => index);
+    expect(traceIndex).toBeGreaterThan(Math.max(...committedPaintIndices));
     renderer.dispose();
   });
 

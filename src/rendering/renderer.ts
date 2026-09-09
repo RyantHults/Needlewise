@@ -1179,7 +1179,6 @@ export class Canvas2DRenderer implements CanvasRenderer {
       context.globalAlpha = 1;
       context.fillRect(invalidationRect.x, invalidationRect.y, invalidationRect.width, invalidationRect.height);
     }
-    drawTraceImage(context, this.traceImage, this.document, this.viewport, this.metrics);
     // Move-image mode dims the committed pattern so the reference image reads
     // on top; the reference image itself keeps its configured opacity.
     const dimAlpha = this.patternDimmed ? 0.5 : 1;
@@ -1221,6 +1220,7 @@ export class Canvas2DRenderer implements CanvasRenderer {
             drawGrid(context, this.document, this.viewport, this.metrics, this.style, visible, lod);
             drawChartBorder(context, this.document, this.viewport, this.metrics, this.style);
             if (dimAlpha < 1) restore(context);
+            drawTraceImage(context, this.traceImage, this.document, this.viewport, this.metrics);
             return { visitedCells: 0, drawnCells: 0, drawnBackstitches: 0 };
           }
         }
@@ -1229,6 +1229,7 @@ export class Canvas2DRenderer implements CanvasRenderer {
         drawGrid(context, this.document, this.viewport, this.metrics, this.style, visible, lod);
         drawChartBorder(context, this.document, this.viewport, this.metrics, this.style);
         if (dimAlpha < 1) restore(context);
+        drawTraceImage(context, this.traceImage, this.document, this.viewport, this.metrics);
         return { ...fallback, drawnBackstitches: 0 };
       }
       context.imageSmoothingEnabled = false;
@@ -1239,12 +1240,14 @@ export class Canvas2DRenderer implements CanvasRenderer {
         drawGrid(context, this.document, this.viewport, this.metrics, this.style, visible, lod);
         drawChartBorder(context, this.document, this.viewport, this.metrics, this.style);
         if (dimAlpha < 1) restore(context);
+        drawTraceImage(context, this.traceImage, this.document, this.viewport, this.metrics);
         return { visitedCells: 0, drawnCells: 0, drawnBackstitches: 0 };
       }
       const fallback = drawOverviewFallback(context, this.document, this.viewport, this.metrics, this.style);
       drawGrid(context, this.document, this.viewport, this.metrics, this.style, visible, lod);
       drawChartBorder(context, this.document, this.viewport, this.metrics, this.style);
       if (dimAlpha < 1) restore(context);
+      drawTraceImage(context, this.traceImage, this.document, this.viewport, this.metrics);
       return { ...fallback, drawnBackstitches: 0 };
     }
     const visible = visibleCellRect(this.viewport, this.metrics, this.document);
@@ -1273,8 +1276,9 @@ export class Canvas2DRenderer implements CanvasRenderer {
       height: invalidationRect.height / this.viewport.zoom
     } : undefined;
     const drawnBackstitches = drawBackstitches(context, this.document, this.viewport, this.metrics, this.style, dirtyModel, dimAlpha);
-    if (partial) restore(context);
     if (dimAlpha < 1) restore(context);
+    drawTraceImage(context, this.traceImage, this.document, this.viewport, this.metrics);
+    if (partial) restore(context);
     return { visitedCells: dirtyCells.width * dirtyCells.height, drawnCells, drawnBackstitches };
   }
 

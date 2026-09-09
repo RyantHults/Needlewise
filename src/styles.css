@@ -399,8 +399,8 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .canvas-actions .trace-visibility { display:grid; place-items:center; width:2.4rem; height:2.4rem; margin:0; border:1px solid #d5cec3; border-radius:.4rem; color:#88452f; cursor:pointer; }
 .canvas-actions .trace-visibility input { position:absolute; opacity:0; }
 .canvas-actions .trace-visibility:has(input:checked) { border-color:#bc5a3d; background:#f1e4da; }
-.canvas-actions .trace-opacity { display:flex; align-items:center; gap:.25rem; width:7rem; margin:0; }
-.canvas-actions .trace-opacity input { width:4.5rem; accent-color:#bc5a3d; }
+.canvas-actions .trace-opacity { display:flex; align-items:center; gap:.25rem; width:9rem; margin:0; }
+.canvas-actions .trace-opacity input { width:7.605rem; accent-color:#bc5a3d; }
 .canvas-actions .trace-opacity output { color:#88452f; font-size:.68rem; font-weight:700; }
 .canvas-actions .trace-mode-row { display:flex; gap:.3rem; margin:0; }
 .canvas-actions .trace-remove { margin-top:0; color:#88452f; }
