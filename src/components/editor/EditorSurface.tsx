@@ -46,6 +46,74 @@ const modes = [
   [ChartPresentationMode.Grayscale, "B/W"],
   [ChartPresentationMode.Combined, "Both"],
 ] as const;
+const EDITOR_PREFERENCES_KEY = "needlewise-editor-preferences:v1";
+type EditorPreferences = {
+  version: 1;
+  railSide: "left" | "right";
+  paletteDisplay: { symbols: boolean; numbers: boolean };
+};
+
+const defaultEditorPreferences = (): EditorPreferences => ({
+  version: 1,
+  railSide: "left",
+  paletteDisplay: { symbols: true, numbers: true },
+});
+
+const isEditorPreferences = (value: unknown): value is EditorPreferences => {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<EditorPreferences>;
+  const paletteDisplay = candidate.paletteDisplay;
+  return (
+    candidate.version === 1 &&
+    (candidate.railSide === "left" || candidate.railSide === "right") &&
+    !!paletteDisplay &&
+    typeof paletteDisplay === "object" &&
+    typeof paletteDisplay.symbols === "boolean" &&
+    typeof paletteDisplay.numbers === "boolean"
+  );
+};
+
+const readEditorPreferences = (workspaceId: string): EditorPreferences => {
+  const defaults = defaultEditorPreferences();
+  try {
+    const stored = globalThis.localStorage.getItem(EDITOR_PREFERENCES_KEY);
+    if (stored !== null) {
+      try {
+        const parsed = JSON.parse(stored) as unknown;
+        return isEditorPreferences(parsed) ? parsed : defaults;
+      } catch {
+        return defaults;
+      }
+    }
+
+    const legacy = globalThis.localStorage.getItem(
+      `needlewise-editor-palette:${workspaceId}`,
+    );
+    if (legacy === null) return defaults;
+
+    try {
+      const parsed = JSON.parse(legacy) as unknown;
+      if (!parsed || typeof parsed !== "object") return defaults;
+      const candidate = parsed as Partial<{ symbols: boolean; numbers: boolean }>;
+      if (
+        (candidate.symbols !== undefined && typeof candidate.symbols !== "boolean") ||
+        (candidate.numbers !== undefined && typeof candidate.numbers !== "boolean")
+      )
+        return defaults;
+      return {
+        ...defaults,
+        paletteDisplay: {
+          symbols: candidate.symbols ?? true,
+          numbers: candidate.numbers ?? true,
+        },
+      };
+    } catch {
+      return defaults;
+    }
+  } catch {
+    return defaults;
+  }
+};
 // The symbol picker renders the palette as one continuous wall (glyphs already
 // held by other palette entries are omitted, so only reachable assignments show)
 // and the filter above narrows the wall on demand.
@@ -78,7 +146,11 @@ export function EditorSurface({
   const [controlPanel, setControlPanel] = useState<"stitch" | "view" | null>(
     null,
   );
-  const [railSide, setRailSide] = useState<"left" | "right">("left");
+  const [preferences, setPreferences] = useState<EditorPreferences>(() =>
+    readEditorPreferences(workspace.metadata?.id ?? "default"),
+  );
+  const railSide = preferences.railSide;
+  const paletteOptions = preferences.paletteDisplay;
   const dialog = useRef<HTMLDivElement>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
@@ -100,26 +172,6 @@ export function EditorSurface({
   const [paletteMenu, setPaletteMenu] = useState<number | null>(null);
   const palettePress = useRef<number | null>(null);
   const paletteLongPressed = useRef(false);
-  const preferenceKey = `needlewise-editor-palette:${workspace.metadata?.id ?? "default"}`;
-  const [loadedPreferenceKey, setLoadedPreferenceKey] = useState(preferenceKey);
-  const [paletteOptions, setPaletteOptions] = useState(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem(preferenceKey) ?? "null") as Partial<{ symbols: boolean; numbers: boolean }> | null;
-      return { symbols: stored?.symbols ?? true, numbers: stored?.numbers ?? true };
-    } catch {
-      return { symbols: true, numbers: true };
-    }
-  });
-  useEffect(() => {
-    if (loadedPreferenceKey === preferenceKey) return;
-    try {
-      const stored = JSON.parse(localStorage.getItem(preferenceKey) ?? "null") as Partial<{ symbols: boolean; numbers: boolean }> | null;
-      setPaletteOptions({ symbols: stored?.symbols ?? true, numbers: stored?.numbers ?? true });
-    } catch {
-      setPaletteOptions({ symbols: true, numbers: true });
-    }
-    setLoadedPreferenceKey(preferenceKey);
-  }, [loadedPreferenceKey, preferenceKey]);
   useEffect(() => {
     const el = frame.current,
       b = base.current,
@@ -244,13 +296,15 @@ export function EditorSurface({
     workspace.metadata?.units,
   ]);
   useEffect(() => {
-    if (loadedPreferenceKey !== preferenceKey) return;
     try {
-      localStorage.setItem(preferenceKey, JSON.stringify(paletteOptions));
+      globalThis.localStorage.setItem(
+        EDITOR_PREFERENCES_KEY,
+        JSON.stringify(preferences),
+      );
     } catch {
       // Preferences are a convenience; private browsing must not block editing.
     }
-  }, [loadedPreferenceKey, paletteOptions, preferenceKey]);
+  }, [preferences]);
   const palette = document.palette.filter((x) => x.active),
     noThread = !palette.length;
   const choose = (kind: "full" | "half", direction?: string) => {
@@ -1183,7 +1237,12 @@ export function EditorSurface({
                       type="button"
                       className="trace-mode-button"
                       aria-pressed={railSide === "left"}
-                      onClick={() => setRailSide("left")}
+                      onClick={() =>
+                        setPreferences((current) => ({
+                          ...current,
+                          railSide: "left",
+                        }))
+                      }
                     >
                       Left
                     </button>
@@ -1191,18 +1250,47 @@ export function EditorSurface({
                       type="button"
                       className="trace-mode-button"
                       aria-pressed={railSide === "right"}
-                      onClick={() => setRailSide("right")}
+                      onClick={() =>
+                        setPreferences((current) => ({
+                          ...current,
+                          railSide: "right",
+                        }))
+                      }
                     >
                       Right
                     </button>
                   </div>
                   <label className="check-row palette-display-toggle">
                     Show palette symbols
-                    <input type="checkbox" checked={paletteOptions.symbols} onChange={(event) => setPaletteOptions((current) => ({ ...current, symbols: event.target.checked }))} />
+                    <input
+                      type="checkbox"
+                      checked={paletteOptions.symbols}
+                      onChange={(event) =>
+                        setPreferences((current) => ({
+                          ...current,
+                          paletteDisplay: {
+                            ...current.paletteDisplay,
+                            symbols: event.target.checked,
+                          },
+                        }))
+                      }
+                    />
                   </label>
                   <label className="check-row palette-display-toggle">
                     Show palette numbers
-                    <input type="checkbox" checked={paletteOptions.numbers} onChange={(event) => setPaletteOptions((current) => ({ ...current, numbers: event.target.checked }))} />
+                    <input
+                      type="checkbox"
+                      checked={paletteOptions.numbers}
+                      onChange={(event) =>
+                        setPreferences((current) => ({
+                          ...current,
+                          paletteDisplay: {
+                            ...current.paletteDisplay,
+                            numbers: event.target.checked,
+                          },
+                        }))
+                      }
+                    />
                   </label>
                 </section>
                 <button className="button button-primary" type="submit">

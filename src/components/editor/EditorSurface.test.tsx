@@ -115,6 +115,63 @@ describe('EditorSurface', () => {
   });
   it('auto-fits the pattern once on init with the Fit-button routine', () => { render(<EditorSurface workspace={ws} document={doc} />); expect(f.c.setMetrics).toHaveBeenCalled(); const fits = () => (f.c.handleKeyDown as ReturnType<typeof vi.fn>).mock.calls.filter(([event]) => (event as { key: string }).key === '0'); expect(fits()).toHaveLength(1); fireEvent.click(screen.getByRole('button', { name: 'Fit' })); expect(fits()).toHaveLength(2); });
   it('renders settings sections, immediate rail placement, and delete controls', () => { render(<EditorSurface workspace={ws} document={doc} />); expect(screen.getByRole('button', { name: 'Delete selection' })).toBeDisabled(); expect(screen.queryByRole('button', { name: /Move controls/ })).not.toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument(); expect(screen.getByRole('heading', { name: 'Project' })).toBeInTheDocument(); expect(screen.getByRole('heading', { name: 'Editor' })).toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: 'Right' })); expect(screen.getByRole('button', { name: 'Right' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: 'Left' })).toHaveAttribute('aria-pressed', 'false'); expect(document.querySelector('.editor-layout')).toHaveClass('rail-right'); fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' }); expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
+  it('hydrates global editor preferences across workspace changes', () => {
+    localStorage.setItem('needlewise-editor-preferences:v1', JSON.stringify({ version: 1, railSide: 'right', paletteDisplay: { symbols: false, numbers: false } }));
+    const view = render(<EditorSurface workspace={ws} document={doc} />);
+    expect(document.querySelector('.editor-layout')).toHaveClass('rail-right');
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    let settings = screen.getByRole('dialog', { name: 'Settings' });
+    expect(within(settings).getByRole('button', { name: 'Right' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(settings).getByRole('checkbox', { name: 'Show palette symbols' })).not.toBeChecked();
+    expect(within(settings).getByRole('checkbox', { name: 'Show palette numbers' })).not.toBeChecked();
+    view.unmount();
+
+    const otherWorkspace = { ...(ws as unknown as { metadata: Record<string, unknown> }), metadata: { ...(ws as unknown as { metadata: Record<string, unknown> }).metadata, id: 'different-project' } } as never;
+    render(<EditorSurface workspace={otherWorkspace} document={doc} />);
+    expect(document.querySelector('.editor-layout')).toHaveClass('rail-right');
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    settings = screen.getByRole('dialog', { name: 'Settings' });
+    expect(within(settings).getByRole('button', { name: 'Right' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(settings).getByRole('checkbox', { name: 'Show palette symbols' })).not.toBeChecked();
+    expect(within(settings).getByRole('checkbox', { name: 'Show palette numbers' })).not.toBeChecked();
+  });
+  it('writes the complete global editor preferences envelope immediately', async () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Right' }));
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Settings' })).getByRole('checkbox', { name: 'Show palette symbols' }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'right', paletteDisplay: { symbols: false, numbers: true } }));
+  });
+  it('falls back to default editor preferences for malformed global storage', () => {
+    localStorage.setItem('needlewise-editor-preferences:v1', '{not-json');
+    render(<EditorSurface workspace={ws} document={doc} />);
+    expect(document.querySelector('.editor-layout')).toHaveClass('rail-left');
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    const settings = screen.getByRole('dialog', { name: 'Settings' });
+    expect(within(settings).getByRole('button', { name: 'Left' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(settings).getByRole('checkbox', { name: 'Show palette symbols' })).toBeChecked();
+    expect(within(settings).getByRole('checkbox', { name: 'Show palette numbers' })).toBeChecked();
+  });
+  it('falls back to default editor preferences for invalid global fields', () => {
+    localStorage.setItem('needlewise-editor-preferences:v1', JSON.stringify({ version: 2, railSide: 'right', paletteDisplay: { symbols: false, numbers: false } }));
+    render(<EditorSurface workspace={ws} document={doc} />);
+    expect(document.querySelector('.editor-layout')).toHaveClass('rail-left');
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    const settings = screen.getByRole('dialog', { name: 'Settings' });
+    expect(within(settings).getByRole('button', { name: 'Left' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(settings).getByRole('checkbox', { name: 'Show palette symbols' })).toBeChecked();
+    expect(within(settings).getByRole('checkbox', { name: 'Show palette numbers' })).toBeChecked();
+  });
+  it('migrates legacy palette display preferences into the global envelope', async () => {
+    localStorage.setItem('needlewise-editor-palette:default', JSON.stringify({ symbols: false, numbers: true }));
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    const settings = screen.getByRole('dialog', { name: 'Settings' });
+    expect(within(settings).getByRole('button', { name: 'Left' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(settings).getByRole('checkbox', { name: 'Show palette symbols' })).not.toBeChecked();
+    expect(within(settings).getByRole('checkbox', { name: 'Show palette numbers' })).toBeChecked();
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'left', paletteDisplay: { symbols: false, numbers: true } }));
+  });
   it('independently toggles the palette symbol and number settings', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
