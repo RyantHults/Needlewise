@@ -53,10 +53,11 @@ describe('TraceImageControls lifecycle', () => {
     input.dispatchEvent(new Event('change', { bubbles: true }));
     await waitFor(() => expect(replaceSourceImage).toHaveBeenCalled());
     expect(replaceSourceImage).toHaveBeenCalledWith(expect.objectContaining({
-      settings: expect.objectContaining({ width: 8_000, height: 6_000, chartBounds: { x: 18.75, y: 1.5625, width: 62.5, height: 46.875 } })
+      settings: expect.objectContaining({ width: 8_000, height: 6_000, chartBounds: { x: 19, y: 2, width: 63, height: 47 } })
     }));
     // The handoff overlay carries the pre-scaled trace (fit from overlay dims).
-    expect(controller.setTraceImage).toHaveBeenCalledWith(expect.objectContaining({ width: 2_000, height: 1_500, chartBounds: { x: 18.75, y: 1.5625, width: 62.5, height: 46.875 } }));
+    expect(controller.setTraceImage).toHaveBeenCalledWith(expect.objectContaining({ width: 2_000, height: 1_500, chartBounds: { x: 19, y: 2, width: 63, height: 47 } }));
+    await waitFor(() => expect(screen.getByText('large.png imported.')).toBeInTheDocument());
     unmount();
   });
 });
@@ -64,11 +65,13 @@ describe('TraceImageControls lifecycle', () => {
 describe('TraceImageControls reference image tools', () => {
   const descriptor = { assetId: 'trace', mimeType: 'image/png' as const, width: 2, height: 2, crop: { x: 0, y: 0, width: 1, height: 1 }, chartBounds: { x: 0, y: 0, width: 2, height: 2 }, traceVisible: true, opacity: 1 };
 
-  it('hides the reference image tools without a descriptor', () => {
+  it('keeps image tools visible but disabled without a descriptor', () => {
     const workspace = { sourceImage: undefined, getAsset: () => undefined } as never;
     render(<TraceImageControls workspace={workspace} document={{ width: 2, height: 2 } as never} controller={null} />);
-    expect(screen.queryByRole('button', { name: 'Move image' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Resize image' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Move image' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Resize image' })).toBeDisabled();
+    expect(screen.getByRole('checkbox', { name: 'Show image' })).toBeDisabled();
+    expect(screen.getByRole('slider')).toBeDisabled();
   });
 
   it('renders the reference image tools with a descriptor and reflects activeTool via aria-pressed', () => {

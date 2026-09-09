@@ -8,6 +8,7 @@ import {
 } from '../domain';
 import { DMC_CATALOG, DMC_CATALOG_METADATA, type DmcCatalogColor } from '../catalog';
 import { MAX_IMAGE_DECODE_BYTES, MAX_IMAGE_DECODE_DIMENSION, MAX_IMAGE_DECODE_PIXELS } from '../shared/limits';
+import { MAX_WORKING_IMAGE_DIMENSION, MAX_WORKING_IMAGE_PIXELS } from '../shared/image-sizing';
 
 export const CONVERSION_PROTOCOL = 'needlewise.image-conversion.v1' as const;
 export const CONVERSION_REQUEST_TYPE = 'conversion-request' as const;
@@ -18,8 +19,8 @@ export const CONVERSION_ERROR_TYPE = 'conversion-error' as const;
 export const DEFAULT_CONVERSION_PALETTE_BUDGET = 24;
 export const MAX_CONVERSION_PALETTE_BUDGET = DMC_CATALOG.length;
 export const MAX_CONVERSION_DIMENSION = 1_000;
-export const MAX_CONVERSION_SOURCE_DIMENSION = 4_096;
-export const MAX_CONVERSION_SOURCE_PIXELS = MAX_CONVERSION_SOURCE_DIMENSION * MAX_CONVERSION_SOURCE_DIMENSION;
+export const MAX_CONVERSION_SOURCE_DIMENSION = MAX_WORKING_IMAGE_DIMENSION;
+export const MAX_CONVERSION_SOURCE_PIXELS = MAX_WORKING_IMAGE_PIXELS;
 /**
  * Hard ceiling for a single full-resolution decode. Bitmaps beyond the working
  * bounds but within this ceiling are decoded once and then pre-scaled down to

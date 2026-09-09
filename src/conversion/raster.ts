@@ -12,13 +12,12 @@ import {
   MAX_CONVERSION_DECODE_PIXELS,
   MAX_CONVERSION_DIMENSION,
   MAX_CONVERSION_SOURCE_BYTES,
-  MAX_CONVERSION_SOURCE_DIMENSION,
-  MAX_CONVERSION_SOURCE_PIXELS,
   MAX_CONVERSION_TARGET_PIXELS,
   resampleRaster,
   type ConversionCancellation,
   type ConversionRaster
 } from './image-to-pattern';
+import { fitImageWithinWorkingBounds, MAX_WORKING_IMAGE_DIMENSION, MAX_WORKING_IMAGE_PIXELS } from '../shared/image-sizing';
 
 export interface ConversionRasterContext {
   drawImage(...args: unknown[]): void;
@@ -177,18 +176,14 @@ export interface RasterFit {
 export function fitRasterWithinBounds(
   width: number,
   height: number,
-  maxDimension = MAX_CONVERSION_SOURCE_DIMENSION,
-  maxPixels = MAX_CONVERSION_SOURCE_PIXELS
+  maxDimension = MAX_WORKING_IMAGE_DIMENSION,
+  maxPixels = MAX_WORKING_IMAGE_PIXELS
 ): RasterFit {
   if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1) {
     throw new ConversionError('invalid-raster', 'Raster dimensions are outside the supported bounds.');
   }
   if (width <= maxDimension && height <= maxDimension && width * height <= maxPixels) return { width, height };
-  const scale = Math.min(maxDimension / width, maxDimension / height, maxPixels / (width * height));
-  return {
-    width: Math.max(1, Math.floor(width * scale)),
-    height: Math.max(1, Math.floor(height * scale))
-  };
+  return fitImageWithinWorkingBounds(width, height, maxDimension, maxPixels);
 }
 
 export interface PreparedRasterSource {

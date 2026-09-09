@@ -78,25 +78,37 @@ describe('EditorSurface', () => {
     expect(saveStatus.querySelector('.save-dot')).toHaveClass('save-dot-error');
     expect(screen.queryByText('Local save needs attention')).not.toBeInTheDocument();
   });
-  it('closes section popovers outside while retaining clicks inside and swapping sections', () => {
+  it('keeps section popovers separate from the canvas action row', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Stitch' }));
     const panel = screen.getByRole('button', { name: 'Full stitch' }).closest('.editor-control-panel') as HTMLElement;
     fireEvent.pointerDown(panel);
     expect(screen.getByRole('button', { name: 'Full stitch' })).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: 'View settings' }));
-    expect(screen.getByRole('group', { name: 'View settings' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'View settings' })).not.toBeInTheDocument();
+    const actions = document.querySelector('.canvas-actions') as HTMLElement;
+    const reference = within(actions).getByRole('toolbar', { name: 'Reference image' });
+    const view = within(actions).getByRole('group', { name: 'View settings' });
+    expect(reference).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'View settings' })).toBeInTheDocument();
+    expect(within(view).queryByRole('checkbox', { name: 'Show grid' })).not.toBeInTheDocument();
+    for (const name of ['Color', 'Symbol', 'B/W', 'Both']) {
+      expect(within(view).getByRole('button', { name })).toHaveAttribute('title', name);
+    }
+    const zoomIn = within(actions).getByRole('button', { name: 'Zoom in' });
+    const fit = within(actions).getByRole('button', { name: 'Fit' });
+    expect(reference.compareDocumentPosition(view) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(view.compareDocumentPosition(zoomIn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(zoomIn.compareDocumentPosition(fit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.pointerDown(screen.getByRole('group', { name: 'Stitch chart canvas' }));
     expect(screen.queryByRole('button', { name: 'Full stitch' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('group', { name: 'View settings' })).not.toBeInTheDocument();
   });
   it('uses the bucket marker for Fill and exposes one active direct tool', () => {
     f.uiState.tool = { tool: 'fill' };
     render(<EditorSurface workspace={ws} document={doc} />);
     const fill = screen.getByRole('button', { name: 'Fill' });
     expect(fill).toHaveAttribute('aria-pressed', 'true');
-    expect(fill).toHaveTextContent('🪣');
-    expect(screen.getByRole('button', { name: 'Select' }).querySelector('[data-icon="select-dashed-rectangle"] rect')).toHaveAttribute('stroke-dasharray', '1.5 1.5');
+    expect(fill.querySelector('[data-icon="paint-bucket"]')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Select' }).querySelector('[data-icon="select"]')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Pan' })).toHaveAttribute('aria-pressed', 'false');
     expect(screen.getByRole('button', { name: 'Eraser' })).toHaveAttribute('aria-pressed', 'false');
     expect(screen.getByRole('button', { name: 'Stitch' })).not.toHaveClass('rail-button-active');
@@ -163,41 +175,38 @@ describe('EditorSurface', () => {
   it('portals the details dialog outside the application root and closes it from the backdrop', async () => { const shell = document.createElement('div'); shell.dataset.application = ''; document.body.append(shell); render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); const dialog = screen.getByRole('dialog', { name: 'Settings' }); expect(dialog.closest('[data-application]')).toBeNull(); expect(shell).toHaveProperty('inert', true); fireEvent.click(dialog); expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument(); fireEvent.click(dialog.closest('.modal-backdrop') as HTMLElement); await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument()); expect(shell).toHaveProperty('inert', false); shell.remove(); });
   it('portals the add-color dialog outside the application root and closes it from the backdrop', async () => { const shell = document.createElement('div'); shell.dataset.application = ''; document.body.append(shell); render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: /Add new color/ })); const dialog = screen.getByRole('dialog', { name: 'Add a thread color' }); expect(dialog.closest('[data-application]')).toBeNull(); expect(shell).toHaveProperty('inert', true); fireEvent.click(dialog); expect(screen.getByRole('dialog', { name: 'Add a thread color' })).toBeInTheDocument(); fireEvent.click(dialog.closest('.modal-backdrop') as HTMLElement); await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument()); expect(shell).toHaveProperty('inert', false); shell.remove(); });
   it('portals the remove dialog outside the application root and closes it from the backdrop', async () => { const shell = document.createElement('div'); shell.dataset.application = ''; document.body.append(shell); render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); const dialog = screen.getByRole('dialog', { name: 'Remove Ruby' }); expect(dialog.closest('[data-application]')).toBeNull(); expect(shell).toHaveProperty('inert', true); fireEvent.click(dialog); expect(screen.getByRole('dialog', { name: 'Remove Ruby' })).toBeInTheDocument(); fireEvent.click(dialog.closest('.modal-backdrop') as HTMLElement); await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument()); expect(shell).toHaveProperty('inert', false); shell.remove(); });
-  it('hides the reference image tools without a reference image', () => { render(<EditorSurface workspace={ws} document={doc} />); expect(screen.queryByRole('button', { name: 'Move image' })).not.toBeInTheDocument(); expect(screen.queryByRole('button', { name: 'Resize image' })).not.toBeInTheDocument(); });
-  it('activates Move image from the reference image panel', async () => { (ws as { sourceImage: unknown }).sourceImage = { assetId: 'trace', mimeType: 'image/png', width: 2, height: 2, crop: { x: 0, y: 0, width: 1, height: 1 }, chartBounds: { x: 0, y: 0, width: 2, height: 2 }, traceVisible: true, opacity: 1 }; (ws as { getAsset: ReturnType<typeof vi.fn> }).getAsset.mockReturnValue({ id: 'trace', name: 'trace.png', mimeType: 'image/png', data: new Uint8Array([1]), checksum: '0'.repeat(64) }); f.uiState.tool = { tool: 'move-image' }; render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'View settings' })); const button = screen.getByRole('button', { name: 'Move image' }); expect(button).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: 'Resize image' })).toHaveAttribute('aria-pressed', 'false'); expect(button.closest('fieldset')).toHaveTextContent('Reference image'); fireEvent.click(button); expect(f.c.setTool).toHaveBeenCalledWith(expect.objectContaining({ tool: 'move-image' })); await waitFor(() => expect(f.c.setTraceImage).toHaveBeenCalled()); });
-  it('keeps a persisted visible reference image attached while the View settings popup opens and closes', async () => {
+  it('disables the reference image tools without a reference image', () => { render(<EditorSurface workspace={ws} document={doc} />); expect(screen.getByRole('button', { name: 'Move image' })).toBeDisabled(); expect(screen.getByRole('button', { name: 'Resize image' })).toBeDisabled(); expect(screen.getByRole('checkbox', { name: 'Show image' })).toBeDisabled(); });
+  it('activates Move image from the compact reference toolbar', async () => { (ws as { sourceImage: unknown }).sourceImage = { assetId: 'trace', mimeType: 'image/png', width: 2, height: 2, crop: { x: 0, y: 0, width: 1, height: 1 }, chartBounds: { x: 0, y: 0, width: 2, height: 2 }, traceVisible: true, opacity: 1 }; (ws as { getAsset: ReturnType<typeof vi.fn> }).getAsset.mockReturnValue({ id: 'trace', name: 'trace.png', mimeType: 'image/png', data: new Uint8Array([1]), checksum: '0'.repeat(64) }); f.uiState.tool = { tool: 'move-image' }; render(<EditorSurface workspace={ws} document={doc} />); const actionRow = document.querySelector('.canvas-actions') as HTMLElement; const toolbar = within(actionRow).getByRole('toolbar', { name: 'Reference image' }); const button = within(toolbar).getByRole('button', { name: 'Move image' }); expect(button).toHaveAttribute('aria-pressed', 'true'); expect(within(toolbar).getByRole('button', { name: 'Resize image' })).toHaveAttribute('aria-pressed', 'false'); expect(button.closest('[role="toolbar"]')).toBe(toolbar); fireEvent.click(button); expect(f.c.setTool).toHaveBeenCalledWith(expect.objectContaining({ tool: 'move-image' })); await waitFor(() => expect(f.c.setTraceImage).toHaveBeenCalled()); });
+  it('keeps a persisted visible reference image attached in the canvas action row', async () => {
     (ws as { sourceImage: unknown }).sourceImage = { assetId: 'trace', mimeType: 'image/png', width: 2, height: 2, crop: { x: 0, y: 0, width: 1, height: 1 }, chartBounds: { x: 0, y: 0, width: 2, height: 2 }, traceVisible: true, opacity: 1 };
     (ws as { getAsset: ReturnType<typeof vi.fn> }).getAsset.mockReturnValue({ id: 'trace', name: 'trace.png', mimeType: 'image/png', data: new Uint8Array([1]), checksum: '0'.repeat(64) });
     render(<EditorSurface workspace={ws} document={doc} />);
     await waitFor(() => expect(f.c.setTraceImage).toHaveBeenCalledWith(expect.objectContaining({ visible: true })));
     const attached = f.c.setTraceImage.mock.calls.length;
-    fireEvent.click(screen.getByRole('button', { name: 'View settings' }));
-    expect(screen.getByRole('checkbox', { name: 'Show image' })).toBeChecked();
-    fireEvent.click(screen.getByRole('button', { name: 'View settings' }));
-    expect(screen.queryByRole('group', { name: 'View settings' })).not.toBeInTheDocument();
+    const actionRow = document.querySelector('.canvas-actions') as HTMLElement;
+    const toolbar = within(actionRow).getByRole('toolbar', { name: 'Reference image' });
+    expect(toolbar).toBeInTheDocument();
+    expect(within(toolbar).getByRole('checkbox', { name: 'Show image' })).toBeChecked();
+    expect(screen.queryByRole('button', { name: 'View settings' })).not.toBeInTheDocument();
     expect(f.c.clearTraceImage).not.toHaveBeenCalled();
     expect(f.c.setTraceImage).toHaveBeenCalledTimes(attached);
-    fireEvent.click(screen.getByRole('button', { name: 'View settings' }));
-    expect(screen.getByRole('checkbox', { name: 'Show image' })).toBeChecked();
+    expect(within(toolbar).getByRole('checkbox', { name: 'Show image' })).toBeChecked();
   });
 
-  it('keeps a hidden reference image hidden after the View settings popup closes', async () => {
+  it('keeps a hidden reference image hidden after the canvas action changes it', async () => {
     (ws as { sourceImage: unknown }).sourceImage = { assetId: 'trace', mimeType: 'image/png', width: 2, height: 2, crop: { x: 0, y: 0, width: 1, height: 1 }, chartBounds: { x: 0, y: 0, width: 2, height: 2 }, traceVisible: true, opacity: 1 };
     (ws as { getAsset: ReturnType<typeof vi.fn> }).getAsset.mockReturnValue({ id: 'trace', name: 'trace.png', mimeType: 'image/png', data: new Uint8Array([1]), checksum: '0'.repeat(64) });
     const applyTraceImageChange = (ws as { applyTraceImageChange: ReturnType<typeof vi.fn> }).applyTraceImageChange;
     applyTraceImageChange.mockImplementation(async (next: unknown) => { (ws as { sourceImage: unknown }).sourceImage = next; });
     render(<EditorSurface workspace={ws} document={doc} />);
     await waitFor(() => expect(f.c.setTraceImage).toHaveBeenCalled());
-    fireEvent.click(screen.getByRole('button', { name: 'View settings' }));
-    const toggle = screen.getByRole('checkbox', { name: 'Show image' });
+    const toolbar = screen.getByRole('toolbar', { name: 'Reference image' });
+    const toggle = within(toolbar).getByRole('checkbox', { name: 'Show image' });
     fireEvent.click(toggle);
     await waitFor(() => expect(applyTraceImageChange).toHaveBeenCalledWith(expect.objectContaining({ traceVisible: false }), expect.objectContaining({ label: 'trace-image-visibility' })));
     expect(toggle).not.toBeChecked();
-    fireEvent.click(screen.getByRole('button', { name: 'View settings' }));
-    expect(screen.queryByRole('group', { name: 'View settings' })).not.toBeInTheDocument();
     expect(f.c.clearTraceImage).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'View settings' }));
-    expect(screen.getByRole('checkbox', { name: 'Show image' })).not.toBeChecked();
+    expect(within(toolbar).getByRole('checkbox', { name: 'Show image' })).not.toBeChecked();
   });
 
   it('sanitizes fractional bounds by rounding without clamping to the pattern', async () => {
@@ -212,21 +221,12 @@ describe('EditorSurface', () => {
     expect((ws as { applyTraceImageChange: ReturnType<typeof vi.fn> }).applyTraceImageChange).toHaveBeenCalledWith(expect.objectContaining({ chartBounds: { x: -3, y: 3, width: 3, height: 4 } }), expect.objectContaining({ label: 'trace-image-bounds' }));
     expect(f.c.setTraceImage).toHaveBeenCalledWith(expect.objectContaining({ chartBounds: { x: -3, y: 3, width: 3, height: 4 } }));
   });
-  it('toggles the chart grid through the controller and reflects view state', () => {
-    f.uiState.gridVisible = true;
-    const shown = render(<EditorSurface workspace={ws} document={doc} />);
-    fireEvent.click(screen.getByRole('button', { name: 'View settings' })); const toggle = screen.getByRole('checkbox', { name: 'Show grid' });
-    expect(toggle).toBeChecked();
-    expect(toggle.closest('fieldset')).toHaveTextContent('View settings');
-    fireEvent.click(toggle);
-    expect(f.c.setGridVisible).toHaveBeenCalledWith(false);
-    shown.unmount();
-    f.uiState.gridVisible = false;
+  it('keeps grid state internal and removes the grid toggle from the action row', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
-    fireEvent.click(screen.getByRole('button', { name: 'View settings' }));
-    expect(screen.getByRole('checkbox', { name: 'Show grid' })).not.toBeChecked();
+    expect(screen.queryByRole('checkbox', { name: 'Show grid' })).not.toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'View settings' })).toBeInTheDocument();
   });
-  it('activates Resize image from the reference image panel', async () => { (ws as { sourceImage: unknown }).sourceImage = { assetId: 'trace', mimeType: 'image/png', width: 2, height: 2, crop: { x: 0, y: 0, width: 1, height: 1 }, chartBounds: { x: 0, y: 0, width: 2, height: 2 }, traceVisible: true, opacity: 1 }; (ws as { getAsset: ReturnType<typeof vi.fn> }).getAsset.mockReturnValue({ id: 'trace', name: 'trace.png', mimeType: 'image/png', data: new Uint8Array([1]), checksum: '0'.repeat(64) }); f.uiState.tool = { tool: 'resize-image' }; render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'View settings' })); const button = screen.getByRole('button', { name: 'Resize image' }); expect(button).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: 'Move image' })).toHaveAttribute('aria-pressed', 'false'); fireEvent.click(button); expect(f.c.setTool).toHaveBeenCalledWith(expect.objectContaining({ tool: 'resize-image' }));     await waitFor(() => expect(f.c.setTraceImage).toHaveBeenCalled()); });
+  it('activates Resize image from the compact reference toolbar', async () => { (ws as { sourceImage: unknown }).sourceImage = { assetId: 'trace', mimeType: 'image/png', width: 2, height: 2, crop: { x: 0, y: 0, width: 1, height: 1 }, chartBounds: { x: 0, y: 0, width: 2, height: 2 }, traceVisible: true, opacity: 1 }; (ws as { getAsset: ReturnType<typeof vi.fn> }).getAsset.mockReturnValue({ id: 'trace', name: 'trace.png', mimeType: 'image/png', data: new Uint8Array([1]), checksum: '0'.repeat(64) }); f.uiState.tool = { tool: 'resize-image' }; render(<EditorSurface workspace={ws} document={doc} />); const toolbar = screen.getByRole('toolbar', { name: 'Reference image' }); const button = within(toolbar).getByRole('button', { name: 'Resize image' }); expect(button).toHaveAttribute('aria-pressed', 'true'); expect(within(toolbar).getByRole('button', { name: 'Move image' })).toHaveAttribute('aria-pressed', 'false'); fireEvent.click(button); expect(f.c.setTool).toHaveBeenCalledWith(expect.objectContaining({ tool: 'resize-image' })); await waitFor(() => expect(f.c.setTraceImage).toHaveBeenCalled()); });
   it('opens the symbol picker from a palette chip and assigns a free symbol', async () => {
     const palette = [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: '●' }, { id: 2, name: 'Sky', color: '#48c', active: true, symbol: '■' }];
     const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } } as never;

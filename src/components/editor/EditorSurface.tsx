@@ -22,6 +22,13 @@ import { TraceImageControls } from "./TraceImageControls";
 import { searchDmcColors } from "../../catalog";
 import { useMemo } from "react";
 import { createPortal } from "react-dom";
+import stitchIcon from "../../assets/editor-tools/stitch.svg";
+import eraserIcon from "../../assets/editor-tools/eraser.svg";
+import fillIcon from "../../assets/editor-tools/paint-bucket.svg";
+import selectIcon from "../../assets/editor-tools/select.svg";
+import eyedropperIcon from "../../assets/editor-tools/eyedropper.svg";
+import panIcon from "../../assets/editor-tools/pan.svg";
+import clearSelectIcon from "../../assets/editor-tools/clear-select.svg";
 interface Props {
   workspace: ProjectWorkspace;
   document: NonNullable<
@@ -31,12 +38,13 @@ interface Props {
   exportDisabled?: boolean;
   saveMessage?: string;
   saveStatus?: import("../../application/types").SaveStatus;
+  onOpenMaterials?: () => void;
 }
 const modes = [
   [ChartPresentationMode.Color, "Color"],
-  [ChartPresentationMode.Symbol, "Symbols"],
-  [ChartPresentationMode.Grayscale, "Grayscale"],
-  [ChartPresentationMode.Combined, "Combined"],
+  [ChartPresentationMode.Symbol, "Symbol"],
+  [ChartPresentationMode.Grayscale, "B/W"],
+  [ChartPresentationMode.Combined, "Both"],
 ] as const;
 // The symbol picker renders the palette as one continuous wall (glyphs already
 // held by other palette entries are omitted, so only reachable assignments show)
@@ -48,6 +56,7 @@ export function EditorSurface({
   exportDisabled = false,
   saveMessage,
   saveStatus,
+  onOpenMaterials,
 }: Props) {
   const frame = useRef<HTMLDivElement>(null),
     base = useRef<HTMLCanvasElement>(null),
@@ -793,8 +802,6 @@ export function EditorSurface({
   const halfBackslashActive =
     selectedBrush?.kind === "half" && selectedBrush.direction === "\\";
   const backstitchActive = ui?.tool.tool === "backstitch";
-  const viewActive =
-    ui?.tool.tool === "move-image" || ui?.tool.tool === "resize-image";
   return (
     <section className="editor-workspace" aria-labelledby="editor-title">
       <header className="editor-heading">
@@ -857,6 +864,7 @@ export function EditorSurface({
           >
             ⚙
           </button>
+          <button className="info-button" type="button" aria-label="Materials and progress" title="Materials and progress" onClick={onOpenMaterials}>i</button>
         </div>
         <div className="editor-heading-project">
           <h2 id="editor-title">{projectName}</h2>
@@ -890,16 +898,7 @@ export function EditorSurface({
                 setControlPanel(controlPanel === "stitch" ? null : "stitch")
               }
             >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  d="m14.5 5.5 4 4M4 20l3.2-.8L18.7 7.7a2.1 2.1 0 0 0-3-3L4.2 16.2 4 20Z"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
+              <img data-icon="stitch" src={stitchIcon} alt="" aria-hidden="true" />
             </button>
             <button
               className="rail-button"
@@ -909,16 +908,7 @@ export function EditorSurface({
               aria-pressed={ui?.tool.tool === "pan"}
               onClick={() => invoke("pan")}
             >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  d="M8 11V6a1.5 1.5 0 0 1 3 0v4-6a1.5 1.5 0 0 1 3 0v6-5a1.5 1.5 0 0 1 3 0v7l1-1a1.5 1.5 0 0 1 2.1 2.1l-3.5 4.1A4 4 0 0 1 13.6 19H11a4 4 0 0 1-3.6-2.2L5.8 14A1.5 1.5 0 0 1 8 12.5Z"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.6"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
+              <img data-icon="pan" src={panIcon} alt="" aria-hidden="true" />
             </button>
             <button
               className="rail-button"
@@ -928,22 +918,7 @@ export function EditorSurface({
               aria-pressed={ui?.tool.tool === "eraser"}
               onClick={() => invoke("eraser")}
             >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  d="m4 15 9-9a2 2 0 0 1 2.8 0l3.2 3.2a2 2 0 0 1 0 2.8l-7 7H7a2 2 0 0 1-1.4-.6L4 17.8A2 2 0 0 1 4 15Z"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinejoin="round"
-                />
-                <path
-                  d="m13 19 4 0"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                />
-              </svg>
+              <img data-icon="eraser" src={eraserIcon} alt="" aria-hidden="true" />
             </button>
             <button
               className="rail-button"
@@ -953,23 +928,7 @@ export function EditorSurface({
               aria-pressed={ui?.tool.tool === "select"}
               onClick={() => invoke("select")}
             >
-              <svg
-                data-icon="select-dashed-rectangle"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <rect
-                  x="4"
-                  y="5"
-                  width="16"
-                  height="14"
-                  rx="1"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeDasharray="1.5 1.5"
-                />
-              </svg>
+              <img data-icon="select" src={selectIcon} alt="" aria-hidden="true" />
             </button>
             <button
               className="rail-button"
@@ -980,7 +939,7 @@ export function EditorSurface({
               aria-pressed={ui?.tool.tool === "fill"}
               onClick={() => invoke("fill")}
             >
-              <span aria-hidden="true">🪣</span>
+              <img data-icon="paint-bucket" src={fillIcon} alt="" aria-hidden="true" />
             </button>
             <button
               className="rail-button"
@@ -990,29 +949,9 @@ export function EditorSurface({
               aria-pressed={ui?.tool.tool === "eyedropper"}
               onClick={() => invoke("eyedropper")}
             >
-              <span aria-hidden="true">🧪</span>
+              <img data-icon="eyedropper" src={eyedropperIcon} alt="" aria-hidden="true" />
             </button>
-            <button
-              className={`rail-button${viewActive ? " rail-button-active" : ""}`}
-              type="button"
-              aria-label="View settings"
-              title="View settings"
-              data-section-trigger
-              aria-expanded={controlPanel === "view"}
-              onClick={() =>
-                setControlPanel(controlPanel === "view" ? null : "view")
-              }
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  d="M5 6h14M5 12h14M5 18h14M9 4v4M15 10v4M11 16v4"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.8"
-                  strokeLinecap="round"
-                />
-              </svg>
-            </button>
+            <button className="rail-button" type="button" disabled={!ui?.overlay.selection} onClick={() => controllerRef.current?.deleteSelection?.()} aria-label="Delete selection" title="Delete selection"><img data-icon="clear-select" src={clearSelectIcon} alt="" aria-hidden="true" /></button>
           </nav>
           <div className="palette-rail" role="region" aria-label="Thread colors">
             <button
@@ -1081,44 +1020,6 @@ export function EditorSurface({
               </fieldset>
             </div>
           )}
-          {
-            <div
-              className="editor-control-panel"
-              hidden={controlPanel !== "view"}
-            >
-              <TraceImageControls
-                workspace={workspace}
-                document={document}
-                controller={controller}
-                activeTool={ui?.tool.tool}
-              />
-              <fieldset className="chart-view">
-                <legend>View settings</legend>
-                {modes.map(([v, l]) => (
-                  <button
-                    type="button"
-                    key={v}
-                    aria-pressed={ui?.mode === v}
-                    onClick={() => controllerRef.current?.setChartMode(v)}
-                  >
-                    {l}
-                  </button>
-                ))}
-                <label className="trace-toggle">
-                  <input
-                    type="checkbox"
-                    checked={ui?.gridVisible ?? true}
-                    onChange={(event) =>
-                      controllerRef.current?.setGridVisible(
-                        event.target.checked,
-                      )
-                    }
-                  />{" "}
-                  Show grid
-                </label>
-              </fieldset>
-            </div>
-          }
         </aside>
         <div className="canvas-column">
           <div
@@ -1142,39 +1043,47 @@ export function EditorSurface({
             )}
           </div>
           <div className="canvas-actions">
-            <button
+            <section className="action-section reference-actions" aria-labelledby="reference-actions-label">
+              <h3 id="reference-actions-label">Reference image</h3>
+              <TraceImageControls workspace={workspace} document={document} controller={controller} activeTool={ui?.tool.tool} />
+            </section>
+            <section className="action-section view-actions" aria-labelledby="view-actions-label">
+            <h3 id="view-actions-label">View settings</h3>
+            <div className="chart-view" role="group" aria-label="View settings">
+              {modes.map(([v, l]) => (
+                <button type="button" key={v} title={l} aria-label={l} aria-pressed={ui?.mode === v} onClick={() => controllerRef.current?.setChartMode(v)}>
+                  <span aria-hidden="true">{v === ChartPresentationMode.Color ? "◈" : v === ChartPresentationMode.Symbol ? "✣" : v === ChartPresentationMode.Grayscale ? "▧" : "◈✣"}</span><small>{l}</small>
+                </button>
+              ))}
+            </div>
+            </section>
+            <section className="action-section canvas-actions-group" aria-labelledby="canvas-actions-label">
+            <h3 id="canvas-actions-label">Canvas controls</h3>
+            <button className="bottom-control"
               type="button"
               onClick={() => command("+")}
               aria-label="Zoom in"
               title="Zoom in"
             >
-              +
+              <span aria-hidden="true">+</span><small>In</small>
             </button>
-            <button
+            <button className="bottom-control"
               type="button"
               onClick={() => command("-")}
               aria-label="Zoom out"
               title="Zoom out"
             >
-              −
+              <span aria-hidden="true">−</span><small>Out</small>
             </button>
-            <button
+            <button className="bottom-control"
               type="button"
               onClick={() => command("0")}
               aria-label="Fit"
               title="Fit canvas"
             >
-              ⌖
+              <span aria-hidden="true">⌖</span><small>Fit</small>
             </button>
-            <button
-              type="button"
-              disabled={!ui?.overlay.selection}
-              onClick={() => controllerRef.current?.deleteSelection?.()}
-              aria-label="Delete selection"
-              title="Delete selection"
-            >
-              ⌫
-            </button>
+            </section>
           </div>
         </div>
       </div>

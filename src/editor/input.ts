@@ -8,6 +8,10 @@ export interface PointerSample {
   readonly button?: number;
   readonly buttons?: number;
   readonly isPrimary?: boolean;
+  readonly ctrlKey?: boolean;
+  readonly metaKey?: boolean;
+  readonly shiftKey?: boolean;
+  readonly altKey?: boolean;
 }
 
 export interface WheelSample {
@@ -56,7 +60,11 @@ function sample(surface: PointerEventSurface, event: PointerEvent): PointerSampl
     screenY: point.y,
     button: event.button,
     buttons: event.buttons,
-    isPrimary: event.isPrimary
+    isPrimary: event.isPrimary,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+    shiftKey: event.shiftKey,
+    altKey: event.altKey
   };
 }
 

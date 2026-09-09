@@ -6,7 +6,7 @@ import { Phase3Panel } from './Phase3Panel';
 function renderPanel(execute = vi.fn().mockResolvedValue(undefined), metadata: { units?: 'metric' | 'imperial' } | null = null) {
   const updateActiveMetadata = vi.fn().mockResolvedValue(undefined);
   const workspace = { activeProjectId: 'test', metadata, materialSettings: null, updateActiveMaterialSettings: vi.fn().mockResolvedValue(undefined), updateActiveMetadata } as never;
-  render(<Phase3Panel document={createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Black', color: '#000000' }, { id: 2, name: 'White', color: '#FFFFFF' }] })} metrics={null} sessionStats={null} activity={null} execute={execute} workspace={workspace} />);
+  render(<Phase3Panel document={createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Black', color: '#000000' }, { id: 2, name: 'White', color: '#FFFFFF' }] })} metrics={null} sessionStats={null} activity={null} execute={execute} workspace={workspace} open />);
   return { execute, updateActiveMetadata };
 }
 
@@ -23,7 +23,7 @@ describe('Phase3Panel palette controls', () => {
     const plus = screen.getByRole('button', { name: 'Add a color to the palette' });
 
     fireEvent.click(plus);
-    expect(document.activeElement).toBe(screen.getByLabelText('Search offline catalog'));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Search offline catalog')));
 
     fireEvent.change(screen.getByLabelText('Search offline catalog'), { target: { value: '310' } });
     fireEvent.click(await screen.findByRole('button', { name: 'Add Black' }));
@@ -39,9 +39,11 @@ describe('Phase3Panel palette controls', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Add a color to the palette' }));
 
     expect(shell).toHaveProperty('inert', true);
-    expect(screen.getByRole('dialog').closest('[data-application]')).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Add a thread color' }).closest('[data-application]')).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Plan the thread' })).toBeInTheDocument();
     fireEvent.keyDown(screen.getByLabelText('Search offline catalog'), { key: 'Escape' });
-    await waitFor(() => expect(shell).toHaveProperty('inert', false));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add a thread color' })).not.toBeInTheDocument());
+    expect(shell).toHaveProperty('inert', true);
     shell.remove();
   });
 

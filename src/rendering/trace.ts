@@ -11,8 +11,9 @@ import type {
 } from '../editor/contracts';
 import { cellToScreenRect } from '../editor/coordinates';
 import { isWithinImageDecodeBounds, MAX_IMAGE_DECODE_BYTES } from '../shared/limits';
+import { fitImageWithinWorkingBounds, MAX_WORKING_IMAGE_DIMENSION, MAX_WORKING_IMAGE_PIXELS } from '../shared/image-sizing';
 
-export const MAX_TRACE_IMAGE_PIXELS = 16_000_000;
+export const MAX_TRACE_IMAGE_PIXELS = MAX_WORKING_IMAGE_PIXELS;
 export const MAX_TRACE_IMAGE_BYTES = MAX_IMAGE_DECODE_BYTES;
 export const MAX_TRACE_HEADER_BYTES = 64 * 1024;
 export const TRACE_IMAGE_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp'] as const;
@@ -413,13 +414,9 @@ function closeBitmap(bitmap: TraceBitmap): void {
   }
 }
 
-/** Aspect-preserving contain fit of an oversized decode into a working pixel bound (round down, min 1). */
+/** Aspect-preserving contain fit of an oversized decode into the shared working bounds. */
 function fitTraceDecodeBounds(width: number, height: number, workingPixels: number): { width: number; height: number } {
-  const scale = Math.sqrt(workingPixels / (width * height));
-  return {
-    width: Math.max(1, Math.floor(width * scale)),
-    height: Math.max(1, Math.floor(height * scale))
-  };
+  return fitImageWithinWorkingBounds(width, height, MAX_WORKING_IMAGE_DIMENSION, workingPixels);
 }
 
 interface PreparedTraceSource {
@@ -544,16 +541,21 @@ export async function decodeTraceImage(blob: Blob, options: TraceDecodeOptions =
   }
   // The full-resolution decode is no longer needed once the pre-scaled canvas
   // exists, so release it immediately instead of holding both in memory.
+  // Capture the decoded dimensions before release: a closed ImageBitmap
+  // reports width/height as 0 in browsers, which would zero the persisted
+  // source descriptor on pre-scaled uploads.
   const bitmapClosed = prepared !== undefined;
+  const sourceWidth = bitmap.width;
+  const sourceHeight = bitmap.height;
   if (prepared) closeBitmap(bitmap);
   let disposed = false;
   return {
     bitmap,
     source: prepared?.source ?? bitmap,
-    width: prepared?.width ?? bitmap.width,
-    height: prepared?.height ?? bitmap.height,
-    sourceWidth: bitmap.width,
-    sourceHeight: bitmap.height,
+    width: prepared?.width ?? sourceWidth,
+    height: prepared?.height ?? sourceHeight,
+    sourceWidth,
+    sourceHeight,
     visible: true,
     opacity: 1,
     dispose: () => {
@@ -589,13 +591,13 @@ export function fitTraceImageBounds(
   if (!positiveInteger(imageWidth) || !positiveInteger(imageHeight) || !positiveInteger(patternWidth) || !positiveInteger(patternHeight)) return fallback;
   const fitScale = Math.min(patternWidth / imageWidth, patternHeight / imageHeight);
   const powerScale = Math.pow(2, Math.floor(Math.log2(fitScale)));
-  const width = imageWidth * powerScale;
-  const height = imageHeight * powerScale;
-  // Clamp with a small epsilon so floating point cannot push x+width (or
-  // y+height) just past the pattern edge while leaving a hairline gap on the
-  // other side after the round trip through layout arithmetic.
-  const x = Math.min(Math.max(0, (patternWidth - width) / 2), Math.max(0, patternWidth - width));
-  const y = Math.min(Math.max(0, (patternHeight - height) / 2), Math.max(0, patternHeight - height));
+  const width = Math.min(patternWidth, Math.max(1, Math.round(imageWidth * powerScale)));
+  const height = Math.min(patternHeight, Math.max(1, Math.round(imageHeight * powerScale)));
+  // Round the fitted dimensions first, then recenter them. This keeps every
+  // persisted bound a safe integer while ensuring rounding cannot overflow the
+  // containing pattern.
+  const x = Math.round((patternWidth - width) / 2);
+  const y = Math.round((patternHeight - height) / 2);
   return { x, y, width, height };
 }
 

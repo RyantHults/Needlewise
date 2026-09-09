@@ -178,28 +178,25 @@ describe('bounded conversion rasterization', () => {
     expect(harness.created.every((canvas) => canvas.width === 0 && canvas.height === 0)).toBe(true);
   });
 
-  it('pre-scales an oversized bitmap through successive 2x halvings then a final quality draw', async () => {
+  it('pre-scales an oversized bitmap to the shared working bounds', async () => {
     const harness = surfaceHarness();
     const result = await decodeAndResampleImage(pngSource(8_000, 6_000), 100, 100, {
       createImageBitmap: async () => ({ width: 8_000, height: 6_000 }),
       surfaceFactory: harness.factory
     });
-    // Fitted: min(4096/8000, 4096/6000, 16_777_216 / 48_000_000) applied to 8000x6000.
-    const scale = Math.min(4_096 / 8_000, 4_096 / 6_000, 16_777_216 / 48_000_000);
+    // Fitted: min(1, 4096/8000, 4096/6000, sqrt(16_000_000 / 48_000_000)) applied to 8000x6000.
+    const scale = Math.min(1, 4_096 / 8_000, 4_096 / 6_000, Math.sqrt(16_000_000 / 48_000_000));
     const fittedWidth = Math.max(1, Math.floor(8_000 * scale));
     const fittedHeight = Math.max(1, Math.floor(6_000 * scale));
-    // Halving: 8000x6000 -> 4000x3000, then the final draw to the fitted size.
+    // The exact fitted size is within a factor of 2, so it is reached in one draw.
     expect(harness.draws.map((draw) => draw.destinationRect)).toEqual([
-      [0, 0, 4_000, 3_000],
       [0, 0, fittedWidth, fittedHeight],
       [0, 0, 100, 100]
     ]);
     expect(harness.draws[0]?.smoothing).toBe(true);
-    expect(harness.draws[1]?.smoothing).toBe(true);
-    expect(harness.draws[1]?.quality).toBe('high');
-    // The halving draw consumes the decoded bitmap; later draws chain canvas to canvas.
+    expect(harness.draws[1]?.smoothing).toBe(false);
+    // The target draw consumes the pre-scaled canvas.
     expect(harness.draws[1]?.source).toBe(harness.created[0]);
-    expect(harness.draws[2]?.source).toBe(harness.created[1]);
     expect(result.sourceWidth).toBe(8_000);
     expect(result.sourceHeight).toBe(6_000);
     expect(harness.created.every((canvas) => canvas.freed)).toBe(true);
@@ -209,7 +206,7 @@ describe('bounded conversion rasterization', () => {
 describe('fitRasterWithinBounds', () => {
   it('passes sources within the working bounds through untouched', () => {
     expect(fitRasterWithinBounds(3_000, 2_000)).toEqual({ width: 3_000, height: 2_000 });
-    expect(fitRasterWithinBounds(4_096, 4_096)).toEqual({ width: 4_096, height: 4_096 });
+    expect(fitRasterWithinBounds(4_000, 4_000)).toEqual({ width: 4_000, height: 4_000 });
   });
 
   it('clamps the limiting axis to the bound and scales the other proportionally', () => {
@@ -218,8 +215,8 @@ describe('fitRasterWithinBounds', () => {
   });
 
   it('respects the pixel bound when both axes fit individually', () => {
-    expect(fitRasterWithinBounds(8_191, 8_191, 4_096)).toEqual({ width: 2_048, height: 2_048 });
-    expect(fitRasterWithinBounds(8_192, 8_192, 4_096)).toEqual({ width: 2_048, height: 2_048 });
+    expect(fitRasterWithinBounds(8_191, 8_191, 4_096)).toEqual({ width: 4_000, height: 4_000 });
+    expect(fitRasterWithinBounds(8_192, 8_192, 4_096)).toEqual({ width: 4_000, height: 4_000 });
   });
 
   it('keeps degenerate aspect ratios at a minimum of one pixel', () => {

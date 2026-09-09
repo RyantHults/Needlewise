@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import App from './App';
 import { applyCommand, createDocument } from './domain';
@@ -27,27 +27,41 @@ describe('measurement units end-to-end', () => {
     window.history.replaceState({}, '', '/patterns');
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: /Open Units quilt/ }));
-    await screen.findByText(/^Total:/);
-    expect(screen.getByText('Total: 0.01 skeins')).toBeInTheDocument();
-    expect(screen.getByText('0.01 skeins')).toBeInTheDocument();
-    expect(screen.getAllByText('0.04–0.05 yd').length).toBe(2);
+    const openMaterials = async () => {
+      fireEvent.click(await screen.findByRole('button', { name: 'Materials and progress' }));
+      return screen.findByRole('dialog', { name: 'Plan the thread' });
+    };
+    const closeMaterials = async (dialog: HTMLElement) => {
+      fireEvent.keyDown(dialog, { key: 'Escape' });
+      await screen.findByRole('button', { name: 'Materials and progress' });
+    };
+    let materials = await openMaterials();
+    await within(materials).findByText(/^Total:/);
+    expect(within(materials).getByText('Total: 0.01 skeins')).toBeInTheDocument();
+    expect(within(materials).getByText('0.01 skeins')).toBeInTheDocument();
+    expect(within(materials).getAllByText('0.04–0.05 yd').length).toBe(2);
+    await closeMaterials(materials);
 
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
     fireEvent.click(screen.getByRole('button', { name: 'Imperial' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
-    await screen.findByText(/1 × 1 in/);
-    expect(screen.getByText('Total: 0.01 skeins')).toBeInTheDocument();
-    expect(screen.getByText('0.01 skeins')).toBeInTheDocument();
-    expect(screen.getByText(/Total:/).textContent).toContain('0.04–0.05 yd');
-    expect(screen.getAllByText('0.04–0.05 yd').length).toBe(2);
+    materials = await openMaterials();
+    await within(materials).findByText(/1 × 1 in/);
+    expect(within(materials).getByText('Total: 0.01 skeins')).toBeInTheDocument();
+    expect(within(materials).getByText('0.01 skeins')).toBeInTheDocument();
+    expect(within(materials).getByText(/Total:/).textContent).toContain('0.04–0.05 yd');
+    expect(within(materials).getAllByText('0.04–0.05 yd').length).toBe(2);
+    await closeMaterials(materials);
 
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
     fireEvent.click(screen.getByRole('button', { name: 'Metric' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
-    await screen.findByText(/2\.54 × 2\.54 cm/);
-    expect(screen.getByText('Total: 0.01 skeins')).toBeInTheDocument();
-    expect(screen.getByText('0.01 skeins')).toBeInTheDocument();
-    expect(screen.getByText(/Total:/).textContent).toContain('0.04–0.05 yd');
-    expect(screen.getAllByText('0.04–0.05 yd').length).toBe(2);
+    materials = await openMaterials();
+    await within(materials).findByText(/2\.54 × 2\.54 cm/);
+    expect(within(materials).getByText('Total: 0.01 skeins')).toBeInTheDocument();
+    expect(within(materials).getByText('0.01 skeins')).toBeInTheDocument();
+    expect(within(materials).getByText(/Total:/).textContent).toContain('0.04–0.05 yd');
+    expect(within(materials).getAllByText('0.04–0.05 yd').length).toBe(2);
+    await closeMaterials(materials);
   }, 30000);
 });

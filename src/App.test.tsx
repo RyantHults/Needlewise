@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { useProjectWorkspace } from './application/react';
@@ -152,6 +152,29 @@ describe('application shell', () => {
     expect(screen.queryByRole('heading', { name: 'Cross-stitch patterns' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Tools & shortcuts' })).not.toBeInTheDocument();
     expect(await screen.findByRole('button', { name: 'Download Pattern' })).toBeInTheDocument();
+  });
+
+  it('opens Materials and progress from the editor header and closes the modal accessibly', async () => {
+    window.history.replaceState({}, '', '/patterns/one/edit');
+    mockedWorkspace.mockReturnValue({ ...baseWorkspace, workspace: editorWorkspace, state: { ...baseWorkspace.state, projectId: 'one', metadata: { id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 }, document: { width: 16, height: 16, palette: [], colors: new Uint16Array(), backstitches: { ids: new Uint32Array() } } } } as never);
+    render(<App />);
+
+    expect(screen.queryByRole('heading', { name: 'Plan the thread' })).not.toBeInTheDocument();
+    const info = await screen.findByRole('button', { name: 'Materials and progress' });
+    fireEvent.click(info);
+    const dialog = await screen.findByRole('dialog', { name: 'Plan the thread' });
+    expect(within(dialog).getByRole('heading', { name: 'Material model' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Save material settings' })).toBeInTheDocument();
+    expect(screen.getByTestId('application')).toHaveProperty('inert', true);
+
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Plan the thread' })).not.toBeInTheDocument());
+    expect(document.activeElement).toBe(info);
+
+    fireEvent.click(info);
+    const reopened = await screen.findByRole('dialog', { name: 'Plan the thread' });
+    fireEvent.click(reopened.closest('.modal-backdrop') as HTMLElement);
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Plan the thread' })).not.toBeInTheDocument());
   });
 
   it('owns focus and makes the complete application inert while create is open', async () => {

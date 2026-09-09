@@ -37,6 +37,7 @@ function WorkspaceApp() {
   const [pwaState, setPwaState] = useState<PwaUpdateState>({ supported: false, registered: false, updateAvailable: false, offlineReady: false, error: null });
   const [updating, setUpdating] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [materialsOpen, setMaterialsOpen] = useState(false);
   const [createMode, setCreateMode] = useState<'blank' | 'image'>('blank');
   const [createTitle, setCreateTitle] = useState('Untitled sampler');
   const [createWidth, setCreateWidth] = useState('100');
@@ -259,8 +260,8 @@ function WorkspaceApp() {
                 <p className="tools-note">Shortcuts will become active when a project is open.</p>
               </aside>}
             </div>
-            {active && workspace && state.document && !state.usingRecovery && <EditorSurface key={state.projectId} workspace={workspace} document={state.document} onExport={() => void handleExport()} exportDisabled={actionDisabled} saveMessage={saveMessage} saveStatus={saveState.status} />}
-            {isEditor && active && workspace && state.document && !state.usingRecovery && <Phase3Panel document={state.document} workspace={workspace} metrics={metrics} sessionStats={sessionStats} activity={activity} execute={execute} />}
+            {active && workspace && state.document && !state.usingRecovery && <EditorSurface key={state.projectId} workspace={workspace} document={state.document} onExport={() => void handleExport()} exportDisabled={actionDisabled} saveMessage={saveMessage} saveStatus={saveState.status} onOpenMaterials={() => setMaterialsOpen(true)} />}
+            {isEditor && active && workspace && state.document && !state.usingRecovery && <Phase3Panel document={state.document} workspace={workspace} metrics={metrics} sessionStats={sessionStats} activity={activity} execute={execute} open={materialsOpen} onClose={() => { setMaterialsOpen(false); window.setTimeout(() => document.querySelector<HTMLButtonElement>('.info-button')?.focus(), 0); }} />}
           </>
         )}
         {!routeError && <input ref={inputRef} className="visually-hidden" type="file" accept=".needlewise,application/octet-stream" aria-label="Choose a Needlewise project archive" disabled={actionDisabled} onChange={(event) => { const file = event.target.files?.[0]; if (file) void handleImport(file); }} />}

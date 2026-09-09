@@ -143,8 +143,8 @@ function rendererFixture() {
   return { renderer, calls };
 }
 
-function pointer(pointerId: number, screenX: number, screenY: number, pointerType = 'mouse', button = 0): PointerSample {
-  return { pointerId, pointerType, screenX, screenY, button, buttons: button === 0 ? 1 : 4, isPrimary: true };
+function pointer(pointerId: number, screenX: number, screenY: number, pointerType = 'mouse', button = 0, modifiers: Partial<PointerSample> = {}): PointerSample {
+  return { pointerId, pointerType, screenX, screenY, button, buttons: button === 0 ? 1 : 4, isPrimary: true, ...modifiers };
 }
 
 function controllerFixture(options: Partial<EditorSurfaceControllerOptions> = {}) {
@@ -388,7 +388,7 @@ describe('EditorSurfaceController', () => {
     expect(calls.setDocument).toHaveLength(2);
     expect(calls.setDocument.at(-1)?.invalidation).toMatchObject({ layer: 'base', cellRect: { x: 0, y: 0, width: 5, height: 1 } });
     expect(uiStore.getState().overlay.pendingCells).toBeUndefined();
-    expect(uiStore.getState().status).toBe('Painted 5 cells');
+    expect(uiStore.getState().status).toBe('Stitched 5 cells');
     expect(gateway.undoDepth).toBe(1);
     gateway.undo({ projectId: 'project-a', revision: 1 });
     expect(gateway.getSnapshot().document?.kind.slice(0, 5)).toEqual(new Uint8Array(5));
@@ -496,7 +496,7 @@ describe('EditorSurfaceController', () => {
     expect(uiStore.getState().selectedCell).toMatchObject({ row: 1, column: 2, geometry: 'empty', paletteId: null, completion: { summary: 'No stitch' } });
     controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined });
     expect(uiStore.getState().selectedCell).toMatchObject({ row: 1, column: 2, geometry: 'full', paletteId: 1, paletteName: 'Thread', completion: { completed: 0, total: 1 } });
-    expect(uiStore.getState().status).toBe('Painted cell (1, 0)');
+    expect(uiStore.getState().status).toBe('Stitched cell (1, 0)');
     gateway.execute({ type: 'set-full', x: 1, y: 0, color: 1 });
     expect(uiStore.getState().selectedCell?.geometry).toBe('full');
     controller.handleKeyDown({ key: '0', preventDefault: () => undefined });
@@ -987,20 +987,35 @@ describe('EditorSurfaceController', () => {
     controller.dispose();
   });
 
-  it('resizes from the southeast corner anchored at the opposite corner', () => {
+  it('resizes from the southeast corner anchored at the opposite corner, preserving the aspect ratio', () => {
     const callback = vi.fn();
     const trace = { source: {}, width: 2, height: 2, chartBounds: { x: 4, y: 4, width: 2, height: 2 } };
     const { renderer, controller } = controllerFixture({ traceImage: trace, onTraceBoundsChange: callback });
     controller.setTool({ tool: 'resize-image' });
     controller.handlePointerDown(pointer(1, 96, 96));
+    // Pointer (7,5) would give a 3x1 freeform rect; the 1:1 start ratio makes
+    // the horizontal motion dominant and drives the height to match (3x3).
     controller.handlePointerMove(pointer(1, 112, 64));
-    expect(renderer.getTraceImage()?.chartBounds).toEqual({ x: 4, y: 4, width: 3, height: 1 });
+    expect(renderer.getTraceImage()?.chartBounds).toEqual({ x: 4, y: 4, width: 3, height: 3 });
     controller.handlePointerUp(pointer(1, 112, 64));
+    expect(callback).toHaveBeenCalledWith({ x: 4, y: 4, width: 3, height: 3 });
+    controller.dispose();
+  });
+
+  it('resizes from the southeast corner freeform while Ctrl is held', () => {
+    const callback = vi.fn();
+    const trace = { source: {}, width: 2, height: 2, chartBounds: { x: 4, y: 4, width: 2, height: 2 } };
+    const { renderer, controller } = controllerFixture({ traceImage: trace, onTraceBoundsChange: callback });
+    controller.setTool({ tool: 'resize-image' });
+    controller.handlePointerDown(pointer(1, 96, 96));
+    controller.handlePointerMove(pointer(1, 112, 64, 'mouse', 0, { ctrlKey: true }));
+    expect(renderer.getTraceImage()?.chartBounds).toEqual({ x: 4, y: 4, width: 3, height: 1 });
+    controller.handlePointerUp(pointer(1, 112, 64, 'mouse', 0, { ctrlKey: true }));
     expect(callback).toHaveBeenCalledWith({ x: 4, y: 4, width: 3, height: 1 });
     controller.dispose();
   });
 
-  it('resizes from the northwest corner shrinking toward the anchor', () => {
+  it('resizes from the northwest corner shrinking toward the anchor, preserving the aspect ratio', () => {
     const callback = vi.fn();
     const trace = { source: {}, width: 2, height: 2, chartBounds: { x: 4, y: 4, width: 2, height: 2 } };
     const { renderer, controller } = controllerFixture({ traceImage: trace, onTraceBoundsChange: callback });
@@ -1013,25 +1028,75 @@ describe('EditorSurfaceController', () => {
     controller.dispose();
   });
 
-  it('resizes from the northeast corner', () => {
+  it('resizes from the northeast corner, preserving the aspect ratio', () => {
     const trace = { source: {}, width: 2, height: 2, chartBounds: { x: 4, y: 4, width: 2, height: 2 } };
     const { renderer, controller } = controllerFixture({ traceImage: trace });
     controller.setTool({ tool: 'resize-image' });
     controller.handlePointerDown(pointer(1, 96, 64));
     controller.handlePointerMove(pointer(1, 112, 32));
-    expect(renderer.getTraceImage()?.chartBounds).toEqual({ x: 4, y: 2, width: 3, height: 4 });
+    // Vertical motion dominates the 1:1 ratio, pulling width to match height.
+    expect(renderer.getTraceImage()?.chartBounds).toEqual({ x: 4, y: 2, width: 4, height: 4 });
     controller.handlePointerUp(pointer(1, 112, 32));
     controller.dispose();
   });
 
-  it('resizes from the southwest corner', () => {
+  it('resizes from the northeast corner freeform while Ctrl is held', () => {
+    const trace = { source: {}, width: 2, height: 2, chartBounds: { x: 4, y: 4, width: 2, height: 2 } };
+    const { renderer, controller } = controllerFixture({ traceImage: trace });
+    controller.setTool({ tool: 'resize-image' });
+    controller.handlePointerDown(pointer(1, 96, 64));
+    controller.handlePointerMove(pointer(1, 112, 32, 'mouse', 0, { ctrlKey: true }));
+    expect(renderer.getTraceImage()?.chartBounds).toEqual({ x: 4, y: 2, width: 3, height: 4 });
+    controller.handlePointerUp(pointer(1, 112, 32, 'mouse', 0, { ctrlKey: true }));
+    controller.dispose();
+  });
+
+  it('resizes from the southwest corner, preserving the aspect ratio', () => {
     const trace = { source: {}, width: 2, height: 2, chartBounds: { x: 4, y: 4, width: 2, height: 2 } };
     const { renderer, controller } = controllerFixture({ traceImage: trace });
     controller.setTool({ tool: 'resize-image' });
     controller.handlePointerDown(pointer(1, 64, 96));
     controller.handlePointerMove(pointer(1, 32, 112));
-    expect(renderer.getTraceImage()?.chartBounds).toEqual({ x: 2, y: 4, width: 4, height: 3 });
+    expect(renderer.getTraceImage()?.chartBounds).toEqual({ x: 2, y: 4, width: 4, height: 4 });
     controller.handlePointerUp(pointer(1, 32, 112));
+    controller.dispose();
+  });
+
+  it('resizes from the southwest corner freeform while Ctrl is held', () => {
+    const trace = { source: {}, width: 2, height: 2, chartBounds: { x: 4, y: 4, width: 2, height: 2 } };
+    const { renderer, controller } = controllerFixture({ traceImage: trace });
+    controller.setTool({ tool: 'resize-image' });
+    controller.handlePointerDown(pointer(1, 64, 96));
+    controller.handlePointerMove(pointer(1, 32, 112, 'mouse', 0, { ctrlKey: true }));
+    expect(renderer.getTraceImage()?.chartBounds).toEqual({ x: 2, y: 4, width: 4, height: 3 });
+    controller.handlePointerUp(pointer(1, 32, 112, 'mouse', 0, { ctrlKey: true }));
+    controller.dispose();
+  });
+
+  it('snaps the resized corner to the canvas edge within the screen-pixel tolerance', () => {
+    const callback = vi.fn();
+    const trace = { source: {}, width: 2, height: 2, chartBounds: { x: 4, y: 4, width: 2, height: 2 } };
+    const { renderer, controller } = controllerFixture({ traceImage: trace, onTraceBoundsChange: callback });
+    controller.setTool({ tool: 'resize-image' });
+    controller.handlePointerDown(pointer(1, 96, 96));
+    // 8px / zoom 16 = 0.5 cells; model (7.5, 5) is within 0.5 of the right
+    // canvas edge (8) but far from the bottom edge, so only x snaps.
+    // Ctrl keeps the resize freeform so the snap is observable.
+    controller.handlePointerMove(pointer(1, 120, 80, 'mouse', 0, { ctrlKey: true }));
+    expect(renderer.getTraceImage()?.chartBounds).toEqual({ x: 4, y: 4, width: 4, height: 1 });
+    controller.handlePointerUp(pointer(1, 120, 80, 'mouse', 0, { ctrlKey: true }));
+    expect(callback).toHaveBeenCalledWith({ x: 4, y: 4, width: 4, height: 1 });
+    controller.dispose();
+  });
+
+  it('snaps the dragged corner into the canvas origin when within tolerance', () => {
+    const trace = { source: {}, width: 2, height: 2, chartBounds: { x: 4, y: 4, width: 2, height: 2 } };
+    const { renderer, controller } = controllerFixture({ traceImage: trace });
+    controller.setTool({ tool: 'resize-image' });
+    controller.handlePointerDown(pointer(1, 64, 64));
+    // Model (0.3, 0.4) snaps to (0, 0), expanding the image to the origin.
+    controller.handlePointerMove(pointer(1, 4.8, 6.4));
+    expect(renderer.getTraceImage()?.chartBounds).toEqual({ x: 0, y: 0, width: 6, height: 6 });
     controller.dispose();
   });
 

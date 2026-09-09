@@ -179,6 +179,8 @@ interface ResizeImageGesture {
 const MOVE_IMAGE_TAP_PIXELS = 5;
 /** Screen-pixel hit radius for resize-mode corner handles. */
 const RESIZE_HANDLE_HIT_PIXELS = 12;
+/** Screen-pixel distance at which a dragged corner snaps to the canvas edge. */
+const RESIZE_EDGE_SNAP_PIXELS = 8;
 
 function cloneCell(cell: ModelPoint): ModelPoint {
   return { x: Math.floor(cell.x), y: Math.floor(cell.y) };
@@ -192,6 +194,11 @@ function resizeAnchor(corner: ResizeCorner, bounds: CellRect): { x: number; y: n
     case 'sw': return { x: bounds.x + bounds.width, y: bounds.y };
     case 'se': return { x: bounds.x, y: bounds.y };
   }
+}
+
+/** Snap a model coordinate to a target edge when within a cell tolerance. */
+function snapTowards(value: number, target: number, tolerance: number): number {
+  return Math.abs(value - target) <= tolerance ? target : value;
 }
 
 function validScreenSample(sample: PointerSample): boolean {
@@ -1446,7 +1453,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.commandInFlight = true;
       const result = gesture.transaction.commit(command);
       this.commandInFlight = false;
-      this.projectCommandResult(result, indices, `Painted ${String(indices.length)} cell${indices.length === 1 ? '' : 's'}`);
+      this.projectCommandResult(result, indices, `Stitched ${String(indices.length)} cell${indices.length === 1 ? '' : 's'}`);
     } catch (error) {
       this.commandInFlight = false;
       if (error instanceof StaleEditorTransactionError) this.setStatus('Stroke cancelled: project changed');
@@ -1824,7 +1831,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (!snapshot.document || !snapshot.projectId || snapshot.revision === null || !isFiniteModelPoint(cursor) || !isFiniteViewport(state.viewport)) return;
     const cell = cloneCell(cursor);
     if (cell.x < 0 || cell.y < 0 || cell.x >= snapshot.document.width || cell.y >= snapshot.document.height) return;
-    this.executeCellEdit(brushCells(cell, this.getBrushSize(), snapshot.document), editForBrush(state.tool.brush), `Painted cell (${String(cell.x)}, ${String(cell.y)})`);
+    this.executeCellEdit(brushCells(cell, this.getBrushSize(), snapshot.document), editForBrush(state.tool.brush), `Stitched cell (${String(cell.x)}, ${String(cell.y)})`);
   }
 
   private eraseAtKeyboardCursor(): void {
@@ -2246,33 +2253,77 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (this.gesture?.kind !== 'resize-image' || !this.traceImage) return;
     const viewport = this.uiStore.getState().viewport;
     if (!isFiniteViewport(viewport)) return;
-    const pointer = screenToModel({ x: sample.screenX, y: sample.screenY }, viewport);
+    const document = this.gateway.getSnapshot().document;
     const { corner, anchor, startBounds } = this.gesture;
+    const freeform = Boolean(sample.ctrlKey || sample.metaKey);
+    // The dragged corner snaps to the nearest canvas edge within a screen-pixel
+    // tolerance so flush alignment is trivial; the opposite corner stays fixed.
+    const snapCells = document ? RESIZE_EDGE_SNAP_PIXELS / viewport.zoom : 0;
+    const pointer = screenToModel({ x: sample.screenX, y: sample.screenY }, viewport);
+    const snapped = document
+      ? {
+          x: snapTowards(pointer.x, corner === 'nw' || corner === 'sw' ? 0 : document.width, snapCells),
+          y: snapTowards(pointer.y, corner === 'nw' || corner === 'ne' ? 0 : document.height, snapCells)
+        }
+      : pointer;
     let left = startBounds.x;
     let top = startBounds.y;
     let right = left + startBounds.width;
     let bottom = top + startBounds.height;
     switch (corner) {
       case 'nw':
-        left = Math.min(pointer.x, anchor.x - 1);
-        top = Math.min(pointer.y, anchor.y - 1);
+        left = Math.min(snapped.x, anchor.x - 1);
+        top = Math.min(snapped.y, anchor.y - 1);
         break;
       case 'ne':
-        right = Math.max(pointer.x, anchor.x + 1);
-        top = Math.min(pointer.y, anchor.y - 1);
+        right = Math.max(snapped.x, anchor.x + 1);
+        top = Math.min(snapped.y, anchor.y - 1);
         break;
       case 'sw':
-        left = Math.min(pointer.x, anchor.x - 1);
-        bottom = Math.max(pointer.y, anchor.y + 1);
+        left = Math.min(snapped.x, anchor.x - 1);
+        bottom = Math.max(snapped.y, anchor.y + 1);
         break;
       case 'se':
-        right = Math.max(pointer.x, anchor.x + 1);
-        bottom = Math.max(pointer.y, anchor.y + 1);
+        right = Math.max(snapped.x, anchor.x + 1);
+        bottom = Math.max(snapped.y, anchor.y + 1);
         break;
     }
     // Enforce a minimum 1x1 cell so the rect never inverts or collapses.
     if (right - left < 1) right = left + 1;
     if (bottom - top < 1) bottom = top + 1;
+    // Preserve the start aspect ratio unless the user holds Ctrl/Meta; the
+    // dimension that moved furthest relative to its start drives the other.
+    if (!freeform && startBounds.width > 0 && startBounds.height > 0) {
+      const relativeWidth = (right - left) / startBounds.width;
+      const relativeHeight = (bottom - top) / startBounds.height;
+      let width: number;
+      let height: number;
+      if (relativeWidth >= relativeHeight) {
+        width = Math.max(1, right - left);
+        height = Math.max(1, (right - left) * (startBounds.height / startBounds.width));
+      } else {
+        height = Math.max(1, bottom - top);
+        width = Math.max(1, (bottom - top) * (startBounds.width / startBounds.height));
+      }
+      switch (corner) {
+        case 'nw':
+          right = anchor.x; bottom = anchor.y;
+          left = right - width; top = bottom - height;
+          break;
+        case 'ne':
+          left = anchor.x; bottom = anchor.y;
+          right = left + width; top = bottom - height;
+          break;
+        case 'sw':
+          right = anchor.x; top = anchor.y;
+          left = right - width; bottom = top + height;
+          break;
+        case 'se':
+          left = anchor.x; top = anchor.y;
+          right = left + width; bottom = top + height;
+          break;
+      }
+    }
     const chartBounds = { x: left, y: top, width: right - left, height: bottom - top };
     this.setTraceImage({ ...this.traceImage, chartBounds });
     this.renderer.requestRender();

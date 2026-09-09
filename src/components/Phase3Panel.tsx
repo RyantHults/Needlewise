@@ -6,7 +6,7 @@ import type { ProgressActivity } from '../persistence';
 import type { SessionProgressStats } from '../application/progress';
 import type { ProjectWorkspace } from '../application/workspace';
 
-interface Props { document: PatternDocument; metrics: PatternMetrics | null; sessionStats: SessionProgressStats | null; activity: ProgressActivity | null; execute: (command: { type: string; [key: string]: unknown }) => Promise<unknown>; workspace: ProjectWorkspace }
+interface Props { document: PatternDocument; metrics: PatternMetrics | null; sessionStats: SessionProgressStats | null; activity: ProgressActivity | null; execute: (command: { type: string; [key: string]: unknown }) => Promise<unknown>; workspace: ProjectWorkspace; open?: boolean; onClose?: () => void }
 
 const number = (value: number) => Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
 const YARDS_PER_METER = 1.09361;
@@ -32,7 +32,8 @@ function materialYardage(material: PaletteMetrics['material'] | Omit<PaletteMetr
   return `${number(material.estimatedMeters * YARDS_PER_METER)} yd`;
 }
 
-export function Phase3Panel({ document, metrics, execute, workspace }: Props) {
+export function Phase3Panel({ document, metrics, execute, workspace, open: controlledOpen, onClose }: Props) {
+  const materialsOpen = controlledOpen ?? true;
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [notice, setNotice] = useState('');
@@ -48,16 +49,16 @@ export function Phase3Panel({ document, metrics, execute, workspace }: Props) {
   useEffect(() => setForm({ strands: String(settings.strands), waste: String(settings.waste * 100) }), [workspace.activeProjectId, settings.strands, settings.waste]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!materialsOpen) return;
     const root = globalThis.document.querySelector<HTMLElement>('[data-application]');
     const wasInert = root?.inert ?? false;
     if (root) root.inert = true;
     const el = dialog.current;
     if (!el) return () => { if (root) root.inert = wasInert; };
     const focusable = () => [...el.querySelectorAll<HTMLElement>('button, input')].filter((item) => !item.hasAttribute('disabled') && item.tabIndex >= 0);
-    el.querySelector<HTMLInputElement>('#catalog-search')?.focus();
+    el.querySelector<HTMLElement>('.modal-close')?.focus();
     const key = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { event.preventDefault(); close(); return; }
+      if (event.key === 'Escape') { event.preventDefault(); onClose?.(); return; }
       if (event.key !== 'Tab') return;
       const all = focusable(); const first = all[0]; const last = all.at(-1);
       if (event.shiftKey && globalThis.document.activeElement === first) { event.preventDefault(); last?.focus(); }
@@ -65,6 +66,11 @@ export function Phase3Panel({ document, metrics, execute, workspace }: Props) {
     };
     el.addEventListener('keydown', key);
     return () => { el.removeEventListener('keydown', key); if (root) root.inert = wasInert; };
+  }, [materialsOpen, onClose]);
+
+  useEffect(() => {
+    if (!open) return;
+    window.setTimeout(() => globalThis.document.querySelector<HTMLInputElement>('#catalog-search')?.focus(), 0);
   }, [open]);
 
   const close = () => { setOpen(false); window.setTimeout(() => launcher.current?.focus(), 0); };
@@ -90,7 +96,7 @@ export function Phase3Panel({ document, metrics, execute, workspace }: Props) {
 
   const catalog = open ? createPortal(
     <div className="modal-backdrop" role="presentation">
-      <div ref={dialog} className="catalog-dialog create-modal" role="dialog" aria-modal="true" aria-labelledby="catalog-title">
+      <div ref={dialog} className="catalog-dialog create-modal" role="dialog" aria-modal="true" aria-labelledby="catalog-title" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); close(); } }}>
         <button className="modal-close" type="button" aria-label="Close catalog dialog" onClick={close}>×</button>
         <p className="section-label">Offline catalog</p><h2 id="catalog-title">Add a thread color</h2>
         <div className="catalog-box"><label htmlFor="catalog-search">Search offline catalog</label><input id="catalog-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Name or DMC code" />
@@ -100,7 +106,11 @@ export function Phase3Panel({ document, metrics, execute, workspace }: Props) {
       </div>
     </div>, globalThis.document.body) : null;
 
-  return <section className="phase3-panel" aria-labelledby="materials-title">
+  if (!materialsOpen) return null;
+  return createPortal(<div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) onClose?.(); }}>
+    <div ref={dialog} className="create-modal materials-dialog" role="dialog" aria-modal="true" aria-labelledby="materials-title">
+    <button className="modal-close" type="button" aria-label="Close materials and progress" onClick={() => onClose?.()}>×</button>
+    <section className="phase3-panel" aria-labelledby="materials-title">
     <div className="phase3-heading"><div><p className="section-label">Materials &amp; progress</p><h2 id="materials-title">Plan the thread</h2></div><p className="catalog-disclaimer">Offline DMC-compatible colors are screen approximations. Confirm a real skein before buying.</p></div>
     <div className="phase3-grid"><section className="palette-manager" aria-labelledby="palette-title"><div className="palette-title-row"><h3 id="palette-title">{active.length ? active.map((entry) => entry.name).join(' and ') : 'Palette'} </h3><button ref={launcher} className="add-palette-button" type="button" aria-label="Add a color to the palette" onClick={() => { setNotice(''); setOpen(true); }}>+</button></div>
       {active.map((entry) => { const item = paletteMetrics.get(entry.id); const yards = materialYardage(item?.material); return <div className="material-row" key={entry.id}><span className="swatch" style={{ background: entry.color }} /><span className="material-main"><strong>{entry.name}</strong><span>{item ? `${item.full} full · ${item.half} half · ${item.quarter} quarter · ${item.backstitch} backstitch` : 'No stitches yet'}</span></span><span className="material-estimate">{materialLine(item?.material)}{yards !== null && <span className="material-yards">{yards}</span>}</span></div>; })}
@@ -108,5 +118,5 @@ export function Phase3Panel({ document, metrics, execute, workspace }: Props) {
     <div className="estimate-card"><strong>Finished size and thread total</strong><p>{finishedSize ?? 'Finished size unavailable — no Aida count is set.'}</p><p>Total: {materialLine(total)}{totalYards !== null && <span className="material-yards">{totalYards}</span>}</p><p className="material-note">{modelNote}</p></div>
     {metrics?.progress && <div className="progress-strip"><div><span>Progress</span><strong>{number(metrics.progress.percent)}%</strong><progress max="100" value={metrics.progress.percent} /></div><div><span>Completed</span><strong>{metrics.progress.completedComponents}</strong></div><div><span>Remaining</span><strong>{metrics.progress.remainingComponents}</strong></div><div><span>Total</span><strong>{metrics.progress.totalComponents}</strong></div></div>}
     {catalog}
-  </section>;
+    </section></div></div>, globalThis.document.body);
 }

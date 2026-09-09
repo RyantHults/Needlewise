@@ -2,8 +2,8 @@
  * Cross-surface image decode ceilings shared by every surface that touches a
  * full-resolution image:
  *
- * - Conversion pre-scales oversized decodes to the conversion working bounds
- *   (4096 x 4096 / 16,777,216 pixels).
+ * - Conversion pre-scales oversized decodes to the shared working bounds
+ *   (4096 axis / 16,000,000 pixels).
  * - Persistence accepts reference assets up to the decode ceiling so a large
  *   image that converts can also be kept as the project's source image.
  * - The editor reference decode pre-scales oversized bitmaps down to its own

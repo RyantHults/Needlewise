@@ -11,6 +11,7 @@ import {
   fitTraceImageBounds,
   sampleTraceImage
 } from './trace';
+import { MAX_WORKING_IMAGE_DIMENSION, MAX_WORKING_IMAGE_PIXELS } from '../shared/image-sizing';
 
 interface RecordingContext extends CanvasContextAdapter {
   records: Array<{ name: string; args: unknown[]; globalAlpha: number; strokeStyle: string }>;
@@ -311,7 +312,12 @@ describe('trace image projection and local raster utilities', () => {
       createImageBitmap: async () => bitmap,
       surfaceFactory: harness.factory
     });
-    const scale = Math.sqrt(MAX_TRACE_IMAGE_PIXELS / (8_000 * 6_000));
+    const scale = Math.min(
+      1,
+      MAX_WORKING_IMAGE_DIMENSION / 8_000,
+      MAX_WORKING_IMAGE_DIMENSION / 6_000,
+      Math.sqrt(MAX_WORKING_IMAGE_PIXELS / (8_000 * 6_000))
+    );
     const fittedWidth = Math.floor(8_000 * scale);
     const fittedHeight = Math.floor(6_000 * scale);
     // One final high-quality draw to the exact fitted size (final factor <=2x).
@@ -336,6 +342,31 @@ describe('trace image projection and local raster utilities', () => {
     expect(harness.created[0]?.height).toBe(0);
   });
 
+  it('keeps decoded source dimensions after closing an oversized bitmap (browser close semantics)', async () => {
+    const harness = traceSurfaceHarness();
+    let closed = false;
+    const close = vi.fn(() => { closed = true; });
+    // Browsers zero out an ImageBitmap's width/height after close(); the mock
+    // mirrors that so the persisted source descriptor cannot be zeroed.
+    const bitmap = {
+      get width() { return closed ? 0 : 3_300; },
+      get height() { return closed ? 0 : 5_100; },
+      close
+    };
+    const decoded = await decodeTraceImage(new Blob([validPngHeader], { type: 'image/png' }), {
+      createImageBitmap: async () => bitmap,
+      surfaceFactory: harness.factory
+    });
+    // 3300x5100 = 16.83 MP exceeds the working bound, so the decode is
+    // pre-scaled and the full-resolution bitmap is closed inside decode.
+    expect(closed).toBe(true);
+    expect(decoded.width * decoded.height).toBeLessThanOrEqual(MAX_TRACE_IMAGE_PIXELS);
+    expect(decoded.sourceWidth).toBe(3_300);
+    expect(decoded.sourceHeight).toBe(5_100);
+    decoded.dispose?.();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it('pre-scales an oversized reference image through successive 2x halvings then a final quality draw', async () => {
     const harness = traceSurfaceHarness();
     const bitmap = { width: 8_192, height: 8_192, close: vi.fn() };
@@ -357,6 +388,26 @@ describe('trace image projection and local raster utilities', () => {
     decoded.dispose?.();
     expect(harness.created.every((canvas) => canvas.freed)).toBe(true);
     expect(harness.created.every((canvas) => canvas.width === 0 && canvas.height === 0)).toBe(true);
+  });
+
+  it('fits an 8000x6000 decode within both working bounds', async () => {
+    const harness = traceSurfaceHarness();
+    const bitmap = { width: 8_000, height: 6_000, close: vi.fn() };
+    const boundedFactory = (width: number, height: number) => {
+      if (width > MAX_WORKING_IMAGE_DIMENSION || height > MAX_WORKING_IMAGE_DIMENSION) {
+        throw new Error('working surface exceeds the axis bound');
+      }
+      return harness.factory(width, height);
+    };
+    const decoded = await decodeTraceImage(new Blob([validPngHeader], { type: 'image/png' }), {
+      createImageBitmap: async () => bitmap,
+      surfaceFactory: boundedFactory
+    });
+    expect(decoded.width).toBe(4_096);
+    expect(decoded.height).toBe(3_072);
+    expect(decoded.width * decoded.height).toBeLessThanOrEqual(MAX_WORKING_IMAGE_PIXELS);
+    expect(harness.draws.map((draw) => draw.destinationRect)).toEqual([[0, 0, 4_096, 3_072]]);
+    decoded.dispose?.();
   });
 
   it('rejects decoded reference images past the shared decode ceiling', async () => {
@@ -386,11 +437,21 @@ describe('trace image projection and local raster utilities', () => {
   });
 
   it('snaps a non-power-of-two downscale to the largest power of two', () => {
-    expect(fitTraceImageBounds(300, 150, 100, 50)).toEqual({ x: 12.5, y: 6.25, width: 75, height: 37.5 });
+    expect(fitTraceImageBounds(300, 150, 100, 50)).toEqual({ x: 13, y: 6, width: 75, height: 38 });
   });
 
   it('centers a large downscale using the largest power of two', () => {
-    expect(fitTraceImageBounds(1000, 500, 100, 50)).toEqual({ x: 18.75, y: 9.375, width: 62.5, height: 31.25 });
+    expect(fitTraceImageBounds(1000, 500, 100, 50)).toEqual({ x: 19, y: 10, width: 63, height: 31 });
+  });
+
+  it('rounds fractional aspect-fit bounds into positive safe integers inside the pattern', () => {
+    const bounds = fitTraceImageBounds(301, 157, 100, 50);
+    expect(bounds).toEqual({ x: 13, y: 6, width: 75, height: 39 });
+    expect(Object.values(bounds).every((value) => Number.isSafeInteger(value))).toBe(true);
+    expect(bounds.x).toBeGreaterThanOrEqual(0);
+    expect(bounds.y).toBeGreaterThanOrEqual(0);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(100);
+    expect(bounds.y + bounds.height).toBeLessThanOrEqual(50);
   });
 
   it('upscales a small image so each source pixel block covers an integer cell count', () => {
