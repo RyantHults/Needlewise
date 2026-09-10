@@ -350,6 +350,9 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .rail-button img[data-icon="stitch"] { width:1.105rem; height:1.105rem; }
 .rail-placement svg { width:.65rem; height:.65rem; }
 .rail-button span { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+.rail-button .stitch-brush-icon { position:relative; width:1.3rem; height:1.3rem; overflow:hidden; clip:auto; border:1px solid currentColor; border-radius:.12rem; background:currentColor; }
+.rail-button .stitch-brush-icon-half { background:linear-gradient(135deg, transparent 0 35%, currentColor 35% 65%, transparent 65% 100%); }
+.rail-button .stitch-brush-icon-three-quarter { background:linear-gradient(135deg, currentColor 0 50%, transparent 50% 100%); }
 .rail-placement { position:relative; left:.55rem; align-self:flex-end; width:1.4rem; height:1.4rem; border-radius:.275rem; color:#88452f; }
 .rail-right .rail-placement { right:.55rem; left:auto; align-self:flex-start; }
 .editor-control-panel { position:absolute; top:0; left:calc(100% + .6rem); z-index:100; width:15rem; max-width:min(15rem,calc(100vw - 5rem)); border:1px solid #e1dbd1; border-radius:.65rem; padding:.7rem; background:#fffdf9; box-shadow:0 .5rem 1.5rem rgba(67,55,42,.18); }
@@ -383,6 +386,9 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .canvas-actions { align-items:flex-start; }
 .canvas-actions .action-section { position:relative; display:flex; align-items:center; gap:.35rem; min-width:0; height:3.75rem; border:1px solid #e1dbd1; border-radius:.55rem; padding:.45rem .35rem .15rem; background:#fffdf9; }
 .canvas-actions .action-section > h3 { position:absolute; top:-.42rem; left:.55rem; margin:0; padding:0 .3rem; background:#fffdf9; color:#8a837a; font-size:.58rem; font-weight:700; letter-spacing:.06em; line-height:1; text-transform:uppercase; white-space:nowrap; }
+.canvas-actions .brush-settings { flex:0 1 12rem; }
+.canvas-actions .brush-settings .brush-size-control { display:flex; flex-direction:column; width:100%; margin:0; border:0; padding:0; }
+.canvas-actions .brush-settings .brush-size-control input[type="range"] { width:100%; margin-top:.55rem; }
 .canvas-actions .view-actions .chart-view { border:0; padding:0; background:transparent; }
 .canvas-actions .bottom-control { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.05rem; }
 .canvas-actions .bottom-control small { color:#625c55; font-size:.56rem; font-weight:700; line-height:1; }

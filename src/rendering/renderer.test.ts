@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { CellKind, createDocument } from '../domain';
 import { cellToScreenRect, fitViewport, getCanvasMetrics, visibleCellRect } from '../editor/coordinates';
 import type { CanvasContextAdapter, CanvasTarget, PendingCellState, TraceImage } from '../editor/contracts';
+import { ThreeQuarterPair } from '../editor/cell-kinds';
 import { MAX_ATLAS_PIXELS, createDefaultAtlasTarget } from './context';
 import { isCanvasImageSource } from './atlas';
 import { createCanvasRenderer } from './renderer';
@@ -77,6 +78,55 @@ function target(context: RecordingContext, source?: unknown): CanvasTarget & { r
       this.height = height;
     }
   };
+}
+
+function pixelContext(width: number, height: number): RecordingContext & { pixels: string[][] } {
+  const context = recordingContext() as RecordingContext & { pixels: string[][] };
+  context.pixels = Array.from({ length: height }, () => Array.from({ length: width }, () => ''));
+  let path: Array<[number, number]> = [];
+  const paintRect = (left: number, top: number, rectWidth: number, rectHeight: number): void => {
+    for (let y = Math.max(0, Math.floor(top)); y < Math.min(height, Math.ceil(top + rectHeight)); y += 1) {
+      for (let x = Math.max(0, Math.floor(left)); x < Math.min(width, Math.ceil(left + rectWidth)); x += 1) context.pixels[y][x] = context.fillStyle;
+    }
+  };
+  const inside = (x: number, y: number): boolean => {
+    let result = false;
+    for (let index = 0, previous = path.length - 1; index < path.length; previous = index, index += 1) {
+      const [currentX, currentY] = path[index];
+      const [previousX, previousY] = path[previous];
+      const crosses = (currentY > y) !== (previousY > y)
+        && x < (previousX - currentX) * (y - currentY) / (previousY - currentY) + currentX;
+      if (crosses) result = !result;
+    }
+    return result;
+  };
+  context.clearRect = function (this: typeof context, ...args: number[]): void {
+    record(this, 'clearRect', args);
+    this.pixels = Array.from({ length: height }, () => Array.from({ length: width }, () => ''));
+  };
+  context.fillRect = function (this: typeof context, ...args: number[]): void {
+    record(this, 'fillRect', args);
+    paintRect(args[0], args[1], args[2], args[3]);
+  };
+  context.beginPath = function (this: typeof context): void {
+    record(this, 'beginPath', []);
+    path = [];
+  };
+  context.moveTo = function (this: typeof context, x: number, y: number): void {
+    record(this, 'moveTo', [x, y]);
+    path.push([x, y]);
+  };
+  context.lineTo = function (this: typeof context, x: number, y: number): void {
+    record(this, 'lineTo', [x, y]);
+    path.push([x, y]);
+  };
+  context.fill = function (this: typeof context): void {
+    record(this, 'fill', []);
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) if (inside(x + 0.5, y + 0.5)) this.pixels[y][x] = this.fillStyle;
+    }
+  };
+  return context;
 }
 
 class FakeCanvasImageSource {
@@ -309,6 +359,94 @@ describe('Canvas 2D chart renderer', () => {
     expect(base.records.some((call) => call.name === 'moveTo' && call.args[0] === 16 && call.args[1] === 0)).toBe(true);
   });
 
+  it('renders half bands and all directional three-quarter triangles with exact paths', () => {
+    const document = chart(6, 1);
+    document.kind.set([
+      CellKind.HalfBackslash,
+      CellKind.HalfSlash,
+      CellKind.ThreeQuarterNW,
+      CellKind.ThreeQuarterNE,
+      CellKind.ThreeQuarterSE,
+      CellKind.ThreeQuarterSW
+    ]);
+    for (let index = 0; index < 6; index += 1) document.colors[index * 4] = 1;
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(96, 16),
+      viewport: { x: 0, y: 0, zoom: 16 }
+    });
+    renderer.renderNow();
+    const paths = base.records
+      .filter((call) => call.fillStyle === '#f00' && call.strokeStyle === '' && (call.name === 'moveTo' || call.name === 'lineTo'))
+      .map((call) => [call.name, ...(call.args as number[])]);
+    const halfLeg = 16 * Math.SQRT1_2;
+    expect(paths).toEqual([
+      ['moveTo', 0, 0], ['lineTo', 16 - halfLeg, 0], ['lineTo', 16, halfLeg], ['lineTo', 16, 16], ['lineTo', halfLeg, 16], ['lineTo', 0, 16 - halfLeg],
+      ['moveTo', 16 + halfLeg, 0], ['lineTo', 32, 0], ['lineTo', 32, 16 - halfLeg], ['lineTo', 32 - halfLeg, 16], ['lineTo', 16, 16], ['lineTo', 16, halfLeg],
+      ['moveTo', 32, 0], ['lineTo', 48, 0], ['lineTo', 32, 16],
+      ['moveTo', 48, 0], ['lineTo', 64, 0], ['lineTo', 64, 16],
+      ['moveTo', 80, 0], ['lineTo', 80, 16], ['lineTo', 64, 16],
+      ['moveTo', 80, 0], ['lineTo', 96, 16], ['lineTo', 80, 16]
+    ]);
+    renderer.dispose();
+  });
+
+  it('renders paired three-quarter axes with distinct detail colors and asymmetric completion', () => {
+    const document = chart(2, 1);
+    document.kind[0] = ThreeQuarterPair;
+    document.colors.set([1, 0, 35, 0], 0);
+    document.completed[0] = 1;
+    document.kind[1] = ThreeQuarterPair;
+    document.colors.set([0, 35, 0, 1], 4);
+    document.completed[1] = 2;
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(32, 16),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      style: { mode: 'color' }
+    });
+    renderer.renderNow();
+    const paths = base.records
+      .filter((call) => (call.fillStyle === '#f00' || call.fillStyle === '#00f') && call.strokeStyle !== '#4b4b4b' && call.args[1] !== 4 && (call.name === 'moveTo' || call.name === 'lineTo'))
+      .map((call) => [call.name, ...(call.args as number[]), call.fillStyle]);
+    expect(paths).toEqual([
+      ['moveTo', 0, 0, '#f00'], ['lineTo', 16, 0, '#f00'], ['lineTo', 0, 16, '#f00'],
+      ['moveTo', 16, 0, '#00f'], ['lineTo', 16, 16, '#00f'], ['lineTo', 0, 16, '#00f'],
+      ['moveTo', 16, 0, '#00f'], ['lineTo', 32, 0, '#00f'], ['lineTo', 32, 16, '#00f'],
+      ['moveTo', 16, 0, '#f00'], ['lineTo', 32, 16, '#f00'], ['lineTo', 16, 16, '#f00']
+    ]);
+    expect(base.records.filter((call) => call.name === 'stroke' && call.strokeStyle === '#242424')).toHaveLength(2);
+    renderer.dispose();
+  });
+
+  it('renders pending paired colors and only the occupied completion mark', () => {
+    const document = chart(1, 1);
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      metrics: getCanvasMetrics(16, 16),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      overlay: {
+        pendingCellStates: [{ index: 0, cell: { x: 0, y: 0 }, kind: ThreeQuarterPair, colors: [1, 0, 35, 0], completed: 1 }]
+      }
+    });
+    renderer.renderNow();
+    const paths = overlay.records
+      .filter((call) => (call.fillStyle === '#f00' || call.fillStyle === '#00f') && call.strokeStyle !== '#ffffff' && call.args[1] !== 4 && (call.name === 'moveTo' || call.name === 'lineTo'))
+      .map((call) => [call.name, ...(call.args as number[]), call.fillStyle]);
+    expect(paths).toEqual([
+      ['moveTo', 0, 0, '#f00'], ['lineTo', 16, 0, '#f00'], ['lineTo', 0, 16, '#f00'],
+      ['moveTo', 16, 0, '#00f'], ['lineTo', 16, 16, '#00f'], ['lineTo', 0, 16, '#00f']
+    ]);
+    expect(overlay.records.filter((call) => call.name === 'stroke' && call.strokeStyle === '#242424')).toHaveLength(1);
+    renderer.dispose();
+  });
+
   it('dims the committed pattern while move-image dimming is active', () => {
     const document = chart(1, 1);
     document.kind[0] = CellKind.Full;
@@ -385,6 +523,177 @@ describe('Canvas 2D chart renderer', () => {
     const imageCall = base.records.find((call) => call.name === 'drawImage');
     expect(imageCall?.args[0]).toBeInstanceOf(FakeCanvasImageSource);
     expect(isCanvasImageSource(imageCall?.args[0])).toBe(true);
+  });
+
+  it('keeps half-band and directional three-quarter geometry in color overview atlases and fallbacks', () => {
+    const createDocument = () => {
+      const document = chart(2, 1);
+      document.kind[0] = CellKind.HalfBackslash;
+      document.kind[1] = CellKind.ThreeQuarterNE;
+      document.colors[0] = 1;
+      document.colors[4] = 1;
+      return document;
+    };
+    const geometryPaths = (context: RecordingContext): unknown[][] => context.records
+      .filter((call) => call.fillStyle === '#f00' && call.strokeStyle === '' && (call.name === 'moveTo' || call.name === 'lineTo'))
+      .map((call) => [call.name, ...(call.args as number[])]);
+    const halfLeg = Math.SQRT1_2;
+    const expected = [
+      ['moveTo', 0, 0], ['lineTo', 1 - halfLeg, 0], ['lineTo', 1, halfLeg], ['lineTo', 1, 1], ['lineTo', halfLeg, 1], ['lineTo', 0, 1 - halfLeg],
+      ['moveTo', 1, 0], ['lineTo', 2, 0], ['lineTo', 2, 1]
+    ];
+
+    const atlasSource = recordingContext();
+    const atlasRenderer = createCanvasRenderer({
+      document: createDocument(),
+      targets: { base: target(recordingContext()), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(32, 16),
+      viewport: { x: 0, y: 0, zoom: 1 },
+      style: { mode: 'color' },
+      atlasTargetFactory: (width, height) => target(atlasSource, new FakeCanvasImageSource(width, height))
+    });
+    atlasRenderer.renderNow();
+    expect(geometryPaths(atlasSource)).toEqual(expected);
+    atlasRenderer.dispose();
+
+    const fallbackBase = recordingContext();
+    const fallbackRenderer = createCanvasRenderer({
+      document: createDocument(),
+      targets: { base: target(fallbackBase), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(32, 16),
+      viewport: { x: 0, y: 0, zoom: 1 },
+      style: { mode: 'color' },
+      atlasTargetFactory: () => undefined
+    });
+    fallbackRenderer.renderNow();
+    expect(geometryPaths(fallbackBase)).toEqual(expected);
+    fallbackRenderer.dispose();
+  });
+
+  it('renders both paired axes in color overview atlases and no-atlas fallback', () => {
+    const createDocument = () => {
+      const document = chart(2, 1);
+      document.kind[0] = ThreeQuarterPair;
+      document.colors.set([1, 0, 35, 0], 0);
+      document.kind[1] = ThreeQuarterPair;
+      document.colors.set([0, 35, 0, 1], 4);
+      return document;
+    };
+    const geometryPaths = (context: RecordingContext): unknown[][] => context.records
+      .filter((call) => (call.fillStyle === '#f00' || call.fillStyle === '#00f') && call.strokeStyle === '' && (call.name === 'moveTo' || call.name === 'lineTo'))
+      .map((call) => [call.name, ...(call.args as number[]), call.fillStyle]);
+    const expectedAtlas = [
+      ['moveTo', 0, 0, '#f00'], ['lineTo', 2, 0, '#f00'], ['lineTo', 0, 2, '#f00'],
+      ['moveTo', 2, 0, '#00f'], ['lineTo', 2, 2, '#00f'], ['lineTo', 0, 2, '#00f'],
+      ['moveTo', 2, 0, '#00f'], ['lineTo', 4, 0, '#00f'], ['lineTo', 4, 2, '#00f'],
+      ['moveTo', 2, 0, '#f00'], ['lineTo', 4, 2, '#f00'], ['lineTo', 2, 2, '#f00']
+    ];
+    const expectedFallback = [
+      ['moveTo', 0, 0, '#f00'], ['lineTo', 1, 0, '#f00'], ['lineTo', 0, 1, '#f00'],
+      ['moveTo', 1, 0, '#00f'], ['lineTo', 1, 1, '#00f'], ['lineTo', 0, 1, '#00f'],
+      ['moveTo', 1, 0, '#00f'], ['lineTo', 2, 0, '#00f'], ['lineTo', 2, 1, '#00f'],
+      ['moveTo', 1, 0, '#f00'], ['lineTo', 2, 1, '#f00'], ['lineTo', 1, 1, '#f00']
+    ];
+    const atlasSource = recordingContext();
+    const atlasRenderer = createCanvasRenderer({
+      document: createDocument(),
+      targets: { base: target(recordingContext()), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(32, 16),
+      viewport: { x: 0, y: 0, zoom: 1 },
+      style: { mode: 'color' },
+      atlasTargetFactory: (width, height) => target(atlasSource, new FakeCanvasImageSource(width, height))
+    });
+    atlasRenderer.renderNow();
+    expect(geometryPaths(atlasSource)).toEqual(expectedAtlas);
+    atlasRenderer.dispose();
+
+    const fallbackBase = recordingContext();
+    const fallbackRenderer = createCanvasRenderer({
+      document: createDocument(),
+      targets: { base: target(fallbackBase), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(32, 16),
+      viewport: { x: 0, y: 0, zoom: 1 },
+      style: { mode: 'color' },
+      atlasTargetFactory: () => undefined
+    });
+    fallbackRenderer.renderNow();
+    expect(geometryPaths(fallbackBase)).toEqual(expectedFallback);
+    fallbackRenderer.dispose();
+  });
+
+  it('preserves both paired colors in 2x source pixels at overview zoom', () => {
+    const document = chart(2, 1);
+    document.kind[0] = ThreeQuarterPair;
+    document.colors.set([1, 0, 35, 0], 0);
+    document.kind[1] = ThreeQuarterPair;
+    document.colors.set([0, 35, 0, 1], 4);
+    const source = pixelContext(4, 2);
+    const base = recordingContext();
+    const imageSource = new FakeCanvasImageSource(4, 2);
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(4, 2),
+      viewport: { x: 0, y: 0, zoom: 2 },
+      style: { mode: 'color' },
+      atlasTargetFactory: (width, height) => {
+        expect([width, height]).toEqual([4, 2]);
+        return target(source, imageSource);
+      }
+    });
+    renderer.renderNow();
+    expect(source.pixels[0][0]).toBe('#f00');
+    expect(source.pixels[1][1]).toBe('#00f');
+    expect(source.pixels[0][3]).toBe('#00f');
+    expect(source.pixels[1][2]).toBe('#f00');
+    const drawImageArgs = base.records.find((call) => call.name === 'drawImage')?.args;
+    expect(drawImageArgs?.[0]).toBe(imageSource);
+    expect(drawImageArgs?.slice(1).map((value) => Math.abs(value as number))).toEqual([0, 0, 4, 2, 0, 0, 4, 2]);
+    renderer.dispose();
+  });
+
+  it('treats directional three-quarter cells as one atlas slot and rebuilds on revision', () => {
+    const document = chart(1, 1);
+    document.kind[0] = CellKind.ThreeQuarterNW;
+    document.colors[0] = 1;
+    const sources: RecordingContext[] = [];
+    let builds = 0;
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(recordingContext()), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(8, 8),
+      viewport: { x: 0, y: 0, zoom: 1 },
+      style: { mode: 'symbol' },
+      atlasTargetFactory: (width, height) => {
+        builds += 1;
+        const source = recordingContext();
+        sources.push(source);
+        return target(source, new FakeCanvasImageSource(width, height));
+      }
+    });
+    renderer.renderNow();
+    expect(builds).toBe(1);
+    expect(sources[0].records.filter((call) => call.name === 'fill')).toHaveLength(1);
+    expect(sources[0].records.filter((call) => call.name === 'moveTo' || call.name === 'lineTo').map((call) => call.args)).toEqual([
+      [0, 0], [8, 0], [0, 8]
+    ]);
+
+    renderer.invalidate('base');
+    renderer.renderNow();
+    expect(builds).toBe(1);
+
+    const next = chart(1, 1);
+    next.kind[0] = CellKind.ThreeQuarterSW;
+    next.colors[0] = 1;
+    next.revision = document.revision + 1;
+    renderer.setDocument(next);
+    renderer.renderNow();
+    expect(builds).toBe(2);
+    expect(sources[1].records.filter((call) => call.name === 'fill')).toHaveLength(1);
+    expect(sources[1].records.filter((call) => call.name === 'moveTo' || call.name === 'lineTo').map((call) => call.args)).toEqual([
+      [0, 0], [8, 8], [0, 8]
+    ]);
+    renderer.dispose();
   });
 
   it('only resizes targets when backing dimensions change', () => {
@@ -869,10 +1178,11 @@ describe('Canvas 2D chart renderer', () => {
 
     const fillRects = overlay.records.filter((call) => call.name === 'fillRect');
     const paths = overlay.records.filter((call) => call.name === 'moveTo' || call.name === 'lineTo');
+    const halfLeg = 16 * Math.SQRT1_2;
     expect(fillRects.some((call) => call.args.join(',') === '0,0,16,16' && call.fillStyle === '#f00')).toBe(true);
     expect(paths.some((call) => call.name === 'moveTo' && call.args.join(',') === '16,0' && call.fillStyle === '#f00')).toBe(true);
-    expect(paths.some((call) => call.name === 'lineTo' && call.args.join(',') === '32,16' && call.fillStyle === '#f00')).toBe(true);
-    expect(paths.some((call) => call.name === 'moveTo' && call.args.join(',') === '32,0' && call.fillStyle === '#00f')).toBe(true);
+    expect(paths.some((call) => call.name === 'lineTo' && call.args[0] === 16 - halfLeg + 16 && call.args[1] === 0 && call.fillStyle === '#f00')).toBe(true);
+    expect(paths.some((call) => call.name === 'moveTo' && call.args[0] === 32 + halfLeg && call.args[1] === 0 && call.fillStyle === '#00f')).toBe(true);
     expect(paths.some((call) => call.name === 'lineTo' && call.args.join(',') === '32,16' && call.fillStyle === '#00f')).toBe(true);
     expect(fillRects.some((call) => call.args.join(',') === '48,0,16,16' && call.fillStyle === '#ffffff')).toBe(true);
     expect(paths.some((call) => call.name === 'moveTo' && call.args[0] === 48 && (call.strokeStyle === '#f00' || call.strokeStyle === '#00f'))).toBe(false);

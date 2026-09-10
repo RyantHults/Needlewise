@@ -7,6 +7,8 @@ import {
   normalizeMaterialSettings,
   getMetricsAidaCount,
   deriveFinishedSize,
+  isThreeQuarterPairKind,
+  isThreeQuarterSingleKind,
   type CommandResult,
   type MetricsOptions,
   type NormalizedMaterialSettings,
@@ -37,6 +39,7 @@ interface MutableCounts {
   full: number;
   half: number;
   quarter: number;
+  threeQuarter: number;
   backstitch: number;
   completedComponents: number;
   backstitchLengthFixed: number;
@@ -47,7 +50,7 @@ function zeroDelta(): ProgressActivityDelta {
 }
 
 function emptyCounts(): MutableCounts {
-  return { full: 0, half: 0, quarter: 0, backstitch: 0, completedComponents: 0, backstitchLengthFixed: 0 };
+  return { full: 0, half: 0, quarter: 0, threeQuarter: 0, backstitch: 0, completedComponents: 0, backstitchLengthFixed: 0 };
 }
 
 function completionCount(document: PatternDocument, index: number): number {
@@ -55,6 +58,12 @@ function completionCount(document: PatternDocument, index: number): number {
   const kind = document.kind[index];
   const offset = index * 4;
   if (kind === CellKind.Full || kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash) return (document.colors[offset] !== 0 && (document.completed[index] & 1) !== 0) ? 1 : 0;
+  if (isThreeQuarterSingleKind(kind)) return (document.colors[offset] !== 0 && (document.completed[index] & 1) !== 0) ? 1 : 0;
+  if (isThreeQuarterPairKind(kind)) {
+    let completed = 0;
+    for (let slot = 0; slot < 4; slot += 1) if (document.colors[offset + slot] !== 0 && (document.completed[index] & (1 << slot)) !== 0) completed += 1;
+    return completed;
+  }
   if (kind !== CellKind.Quarters) return 0;
   let completed = 0;
   for (let slot = 0; slot < 4; slot += 1) {
@@ -111,7 +120,7 @@ function addCellCounts(target: Map<number, MutableCounts>, document: PatternDocu
   const kind = document.kind[index];
   const offset = index * 4;
   const completion = document.completed[index];
-  const add = (paletteId: number, completed: boolean, field: 'full' | 'half' | 'quarter'): void => {
+  const add = (paletteId: number, completed: boolean, field: 'full' | 'half' | 'quarter' | 'threeQuarter'): void => {
     if (paletteId === 0) return;
     const counts = target.get(paletteId) ?? emptyCounts();
     counts[field] += multiplier;
@@ -121,6 +130,10 @@ function addCellCounts(target: Map<number, MutableCounts>, document: PatternDocu
 
   if (kind === CellKind.Full || kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash) {
     add(document.colors[offset], (completion & 1) !== 0, kind === CellKind.Full ? 'full' : 'half');
+  } else if (isThreeQuarterSingleKind(kind)) {
+    add(document.colors[offset], (completion & 1) !== 0, 'threeQuarter');
+  } else if (isThreeQuarterPairKind(kind)) {
+    for (let slot = 0; slot < 4; slot += 1) add(document.colors[offset + slot], (completion & (1 << slot)) !== 0, 'threeQuarter');
   } else if (kind === CellKind.Quarters) {
     for (let slot = 0; slot < 4; slot += 1) add(document.colors[offset + slot], (completion & (1 << slot)) !== 0, 'quarter');
   }
@@ -148,6 +161,7 @@ function countsFromMetrics(metrics: PatternMetrics): Map<number, MutableCounts> 
     full: palette.full,
     half: palette.half,
     quarter: palette.quarter,
+    threeQuarter: palette.threeQuarter ?? 0,
     backstitch: palette.backstitch,
     completedComponents: palette.completedComponents,
     backstitchLengthFixed: palette.backstitchLengthFixed
@@ -177,13 +191,14 @@ function buildMetrics(
   const materials: PatternMetrics['materials'][number][] = [];
   for (const paletteId of paletteIds) {
     const counts = countsByPalette.get(paletteId) ?? emptyCounts();
-    const totalComponents = counts.full + counts.half + counts.quarter + counts.backstitch;
+    const totalComponents = counts.full + counts.half + counts.quarter + counts.threeQuarter + counts.backstitch;
     const material = metricMaterial(paletteId, counts, paletteEntries.get(paletteId)?.material.unit, settings, aidaCount);
     const palette = {
       paletteId,
       full: counts.full,
       half: counts.half,
       quarter: counts.quarter,
+      ...(counts.threeQuarter === 0 ? {} : { threeQuarter: counts.threeQuarter }),
       backstitch: counts.backstitch,
       backstitchLengthFixed: counts.backstitchLengthFixed,
       backstitchLength: counts.backstitchLengthFixed / FIXED_POINT_UNITS_PER_CELL,
@@ -197,16 +212,18 @@ function buildMetrics(
     totals.full += counts.full;
     totals.half += counts.half;
     totals.quarter += counts.quarter;
+    totals.threeQuarter += counts.threeQuarter;
     totals.backstitch += counts.backstitch;
     totals.completedComponents += counts.completedComponents;
     totals.backstitchLengthFixed += counts.backstitchLengthFixed;
   }
-  const totalComponents = totals.full + totals.half + totals.quarter + totals.backstitch;
+  const totalComponents = totals.full + totals.half + totals.quarter + totals.threeQuarter + totals.backstitch;
   const fraction = totalComponents === 0 ? 0 : totals.completedComponents / totalComponents;
   const totalMetrics = {
     full: totals.full,
     half: totals.half,
     quarter: totals.quarter,
+    ...(totals.threeQuarter === 0 ? {} : { threeQuarter: totals.threeQuarter }),
     backstitch: totals.backstitch,
     backstitchLengthFixed: totals.backstitchLengthFixed,
     backstitchLength: totals.backstitchLengthFixed / FIXED_POINT_UNITS_PER_CELL,
@@ -246,6 +263,7 @@ function isValidImpactEntry(entry: DeleteMetricsImpactEntry): boolean {
     && isNonNegativeInteger(entry.removedFull)
     && isNonNegativeInteger(entry.removedHalf)
     && isNonNegativeInteger(entry.removedQuarter)
+    && isNonNegativeInteger(entry.removedThreeQuarter)
     && isNonNegativeInteger(entry.removedCellCompleted)
     && isNonNegativeInteger(entry.beforeBackstitchCount)
     && isNonNegativeInteger(entry.afterBackstitchCount)
@@ -253,7 +271,7 @@ function isValidImpactEntry(entry: DeleteMetricsImpactEntry): boolean {
     && isNonNegativeInteger(entry.afterBackstitchCompleted)
     && Number.isFinite(entry.beforeBackstitchLengthFixed) && entry.beforeBackstitchLengthFixed >= 0
     && Number.isFinite(entry.afterBackstitchLengthFixed) && entry.afterBackstitchLengthFixed >= 0
-    && entry.removedCellCompleted <= entry.removedFull + entry.removedHalf + entry.removedQuarter
+    && entry.removedCellCompleted <= entry.removedFull + entry.removedHalf + entry.removedQuarter + entry.removedThreeQuarter
     && entry.beforeBackstitchCompleted <= entry.beforeBackstitchCount
     && entry.afterBackstitchCompleted <= entry.afterBackstitchCount
     && entry.afterBackstitchCount <= entry.beforeBackstitchCount
@@ -273,7 +291,7 @@ function applyDeleteMetricsImpact(
   if (impact === null || typeof impact !== 'object' || (target !== 'before' && target !== 'after') || !Array.isArray(impact.entries) || impact.entries.length === 0) return undefined;
   const nextCounts = new Map<number, MutableCounts>();
   for (const [paletteId, counts] of sourceCounts) {
-    if (!Number.isSafeInteger(paletteId) || !isNonNegativeInteger(counts.full) || !isNonNegativeInteger(counts.half) || !isNonNegativeInteger(counts.quarter) || !isNonNegativeInteger(counts.backstitch) || !isNonNegativeInteger(counts.completedComponents) || counts.completedComponents > counts.full + counts.half + counts.quarter + counts.backstitch || !Number.isFinite(counts.backstitchLengthFixed) || counts.backstitchLengthFixed < 0) return undefined;
+    if (!Number.isSafeInteger(paletteId) || !isNonNegativeInteger(counts.full) || !isNonNegativeInteger(counts.half) || !isNonNegativeInteger(counts.quarter) || !isNonNegativeInteger(counts.threeQuarter) || !isNonNegativeInteger(counts.backstitch) || !isNonNegativeInteger(counts.completedComponents) || counts.completedComponents > counts.full + counts.half + counts.quarter + counts.threeQuarter + counts.backstitch || !Number.isFinite(counts.backstitchLengthFixed) || counts.backstitchLengthFixed < 0) return undefined;
     nextCounts.set(paletteId, cloneCounts(counts));
   }
 
@@ -282,7 +300,7 @@ function applyDeleteMetricsImpact(
   for (const entry of impact.entries) {
     if (entry === null || typeof entry !== 'object' || !isValidImpactEntry(entry) || seen.has(entry.paletteId)) return undefined;
     seen.add(entry.paletteId);
-    if (entry.removedFull > 0 || entry.removedHalf > 0 || entry.removedQuarter > 0 || entry.beforeBackstitchCount !== entry.afterBackstitchCount) hasDeletedComponent = true;
+    if (entry.removedFull > 0 || entry.removedHalf > 0 || entry.removedQuarter > 0 || entry.removedThreeQuarter > 0 || entry.beforeBackstitchCount !== entry.afterBackstitchCount) hasDeletedComponent = true;
     const current = sourceCounts.get(entry.paletteId);
     if (current === undefined) return undefined;
 
@@ -302,11 +320,12 @@ function applyDeleteMetricsImpact(
       full: current.full + cellDirection * entry.removedFull,
       half: current.half + cellDirection * entry.removedHalf,
       quarter: current.quarter + cellDirection * entry.removedQuarter,
+      threeQuarter: current.threeQuarter + cellDirection * entry.removedThreeQuarter,
       backstitch: targetBackstitchCount,
       backstitchLengthFixed: targetBackstitchLength,
       completedComponents: sourceCellCompleted + cellDirection * entry.removedCellCompleted + targetBackstitchCompleted
     };
-    if (!isNonNegativeInteger(next.full) || !isNonNegativeInteger(next.half) || !isNonNegativeInteger(next.quarter) || !isNonNegativeInteger(next.backstitch) || !isNonNegativeInteger(next.completedComponents) || !Number.isFinite(next.backstitchLengthFixed) || next.backstitchLengthFixed < 0 || next.completedComponents > next.full + next.half + next.quarter + next.backstitch) return undefined;
+    if (!isNonNegativeInteger(next.full) || !isNonNegativeInteger(next.half) || !isNonNegativeInteger(next.quarter) || !isNonNegativeInteger(next.threeQuarter) || !isNonNegativeInteger(next.backstitch) || !isNonNegativeInteger(next.completedComponents) || !Number.isFinite(next.backstitchLengthFixed) || next.backstitchLengthFixed < 0 || next.completedComponents > next.full + next.half + next.quarter + next.threeQuarter + next.backstitch) return undefined;
     nextCounts.set(entry.paletteId, next);
   }
   return hasDeletedComponent ? nextCounts : undefined;

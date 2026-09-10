@@ -9,6 +9,7 @@ import {
   type PatternFragmentBackstitches
 } from './types';
 import { assertValidDocument } from './validation';
+import { isThreeQuarterKind, isThreeQuarterPairKind } from './model';
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -60,13 +61,16 @@ export function getPatternFragmentValidationErrors(fragment: PatternFragment): s
   for (let index = 0; index < count; index += 1) {
     const kind = fragment.kind[index];
     const offset = index * 4;
-    if (![CellKind.Empty, CellKind.Full, CellKind.HalfBackslash, CellKind.HalfSlash, CellKind.Quarters].includes(kind as CellKind)) {
+    if (![CellKind.Empty, CellKind.Full, CellKind.HalfBackslash, CellKind.HalfSlash, CellKind.Quarters].some((value) => value === kind) && !isThreeQuarterKind(kind) && !isThreeQuarterPairKind(kind)) {
       errors.push(`Pattern fragment cell ${String(index)} has an unknown kind.`);
       continue;
     }
     if (kind === CellKind.Empty) {
       if (fragment.colors[offset] !== 0 || fragment.colors[offset + 1] !== 0 || fragment.colors[offset + 2] !== 0 || fragment.colors[offset + 3] !== 0) errors.push(`Empty pattern fragment cell ${String(index)} contains color data.`);
-    } else if (kind === CellKind.Full || kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash) {
+    } else if (isThreeQuarterPairKind(kind)) {
+      const occupiedMask = [0, 1, 2, 3].reduce((mask, slot) => mask | (fragment.colors[offset + slot] === 0 ? 0 : 1 << slot), 0);
+      if (occupiedMask !== 0b0101 && occupiedMask !== 0b1010) errors.push(`Three-quarter pair fragment cell ${String(index)} must contain exactly one opposite occupied pair.`);
+    } else if (kind === CellKind.Full || kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash || isThreeQuarterKind(kind)) {
       if (fragment.colors[offset] === 0 || fragment.colors[offset + 1] !== 0 || fragment.colors[offset + 2] !== 0 || fragment.colors[offset + 3] !== 0) errors.push(`Pattern fragment cell ${String(index)} has invalid non-quarter color data.`);
     } else if (fragment.colors[offset] === 0 && fragment.colors[offset + 1] === 0 && fragment.colors[offset + 2] === 0 && fragment.colors[offset + 3] === 0) {
       errors.push(`Pattern fragment quarter cell ${String(index)} must contain at least one color.`);

@@ -2,12 +2,15 @@ import { CellKind, type PatternDocument } from '../domain';
 import type { CanvasTarget, RendererStyle } from '../editor/contracts';
 import { MAX_ATLAS_PIXELS, restore, save } from './context';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
+import { isLegacyQuarterKind, isThreeQuarterPairKind, threeQuarterPairComponents } from '../editor/cell-kinds';
 
 export interface ColorAtlas {
   /** Undefined means the environment cannot provide a CanvasImageSource. */
   readonly source: CanvasImageSource | undefined;
   readonly width: number;
   readonly height: number;
+  /** Source pixels represented by one logical cell. */
+  readonly pixelsPerCell: number;
   readonly revision: number;
 }
 
@@ -65,6 +68,31 @@ function combinedOverviewColor(color: string, id: number): string {
   return rgbHex(rgb[0] * 0.8 + symbol * 0.2, rgb[1] * 0.8 + symbol * 0.2, rgb[2] * 0.8 + symbol * 0.2);
 }
 
+const COLOR_ATLAS_MAX_DIMENSION = 32_767;
+
+/** Pair cells need a 2×2 source footprint so their two colors survive rasterization. */
+export function colorAtlasPixelsPerCell(document: PatternDocument): number {
+  let hasPair = false;
+  for (const kind of document.kind) {
+    if (isThreeQuarterPairKind(kind)) {
+      hasPair = true;
+      break;
+    }
+  }
+  if (!hasPair) return 1;
+  const width = document.width * 2;
+  const height = document.height * 2;
+  const pixels = width * height;
+  return Number.isSafeInteger(width)
+    && Number.isSafeInteger(height)
+    && Number.isSafeInteger(pixels)
+    && width <= COLOR_ATLAS_MAX_DIMENSION
+    && height <= COLOR_ATLAS_MAX_DIMENSION
+    && pixels <= MAX_ATLAS_PIXELS
+    ? 2
+    : 0;
+}
+
 export function overviewColorForPaletteId(
   document: PatternDocument,
   id: number,
@@ -111,6 +139,7 @@ export class ColorAtlasCache {
     style: RendererStyle,
     targetFactory?: (width: number, height: number) => CanvasTarget | undefined
   ): ColorAtlas {
+    const pixelsPerCell = colorAtlasPixelsPerCell(document);
     const current = this.entry;
     if (
       current &&
@@ -118,29 +147,33 @@ export class ColorAtlasCache {
       current.revision === document.revision &&
       current.mode === style.mode &&
       current.background === style.backgroundColor &&
-      current.missingColor === style.missingPaletteColor
+      current.missingColor === style.missingPaletteColor &&
+      current.pixelsPerCell === pixelsPerCell
     ) return current;
 
-    const target = targetFactory?.(document.width, document.height);
+    const atlasWidth = pixelsPerCell > 0 ? document.width * pixelsPerCell : 0;
+    const atlasHeight = pixelsPerCell > 0 ? document.height * pixelsPerCell : 0;
+    const target = pixelsPerCell > 0 ? targetFactory?.(atlasWidth, atlasHeight) : undefined;
     const source = target && isCanvasImageSource(target.source) ? target.source : undefined;
     if (target) {
       const context = target.context;
       save(context);
       if (context.imageSmoothingEnabled !== undefined) context.imageSmoothingEnabled = false;
-      context.clearRect(0, 0, document.width, document.height);
+      context.clearRect(0, 0, atlasWidth, atlasHeight);
       for (let y = 0; y < document.height; y += 1) {
         for (let x = 0; x < document.width; x += 1) {
+          const cellRect = { x: x * pixelsPerCell, y: y * pixelsPerCell, width: pixelsPerCell, height: pixelsPerCell };
           const index = y * document.width + x;
           const offset = index * 4;
           const kind = document.kind[index];
           if (kind === CellKind.Empty) continue;
-          if (kind === CellKind.Quarters) {
-            const half = 0.5;
+          if (isLegacyQuarterKind(kind)) {
+            const half = pixelsPerCell / 2;
             const colors = [
-              [x, y, half, half, 0],
-              [x + half, y, half, half, 1],
-              [x + half, y + half, half, half, 2],
-              [x, y + half, half, half, 3]
+              [cellRect.x, cellRect.y, half, half, 0],
+              [cellRect.x + half, cellRect.y, half, half, 1],
+              [cellRect.x + half, cellRect.y + half, half, half, 2],
+              [cellRect.x, cellRect.y + half, half, half, 3]
             ] as const;
             for (const [left, top, width, height, slot] of colors) {
               const color = document.colors[offset + slot];
@@ -148,11 +181,19 @@ export class ColorAtlasCache {
               context.fillStyle = overviewColorForPaletteId(document, color, style);
               context.fillRect(left, top, width, height);
             }
+          } else if (isThreeQuarterPairKind(kind)) {
+            for (const component of threeQuarterPairComponents(document.colors.subarray(offset, offset + 4))) {
+              const color = document.colors[offset + component.slot];
+              if (color === 0) continue;
+              context.fillStyle = overviewColorForPaletteId(document, color, style);
+              drawStitchGeometry(context, component.kind, cellRect);
+            }
           } else {
             const color = document.colors[offset];
             if (color === 0) continue;
             context.fillStyle = overviewColorForPaletteId(document, color, style);
-            context.fillRect(x, y, 1, 1);
+            if (kind === CellKind.Full) context.fillRect(cellRect.x, cellRect.y, cellRect.width, cellRect.height);
+            else drawStitchGeometry(context, kind, cellRect);
           }
         }
       }
@@ -160,8 +201,9 @@ export class ColorAtlasCache {
     }
     this.entry = {
       source,
-      width: document.width,
-      height: document.height,
+      width: atlasWidth,
+      height: atlasHeight,
+      pixelsPerCell,
       revision: document.revision,
       document,
       mode: style.mode,
@@ -294,9 +336,9 @@ export class SymbolAtlasCache {
             const kind = document.kind[index];
             if (kind === CellKind.Empty) continue;
             const rect = { x: x * ppc, y: y * ppc, width: ppc, height: ppc };
-            const paint = (id: number, slot?: number): void => {
+            const paint = (id: number, slot?: number, geometryKind = kind): void => {
               context.fillStyle = style.symbolBackgroundColor;
-              drawStitchGeometry(context, kind, rect, slot);
+              drawStitchGeometry(context, geometryKind, rect, slot);
               if (style.showSymbols) {
                 try {
                   if (!drawPaletteSymbol(context, document, id, rect, style, slot)) textAvailable = false;
@@ -307,10 +349,15 @@ export class SymbolAtlasCache {
                 }
               }
             };
-            if (kind === CellKind.Quarters) {
+            if (isLegacyQuarterKind(kind)) {
               for (let slot = 0; slot < 4; slot += 1) {
                 const id = document.colors[offset + slot];
                 if (id !== 0) paint(id, slot);
+              }
+            } else if (isThreeQuarterPairKind(kind)) {
+              for (const component of threeQuarterPairComponents(document.colors.subarray(offset, offset + 4))) {
+                const id = document.colors[offset + component.slot];
+                if (id !== 0) paint(id, component.slot, component.kind);
               }
             } else {
               paint(document.colors[offset], undefined);

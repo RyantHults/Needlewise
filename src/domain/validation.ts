@@ -1,5 +1,5 @@
 import { CellKind, DOCUMENT_SCHEMA_VERSION, DomainError, MaterialKind, MaterialUnit, MAX_PERSISTABLE_CELL_COUNT, PALETTE_ID_MAX, type PatternDocument, type ValidationResult } from './types';
-import { UINT32_MAX, isAutoOverflowEntry, MAX_PALETTE_COLORS } from './model';
+import { UINT32_MAX, isAutoOverflowEntry, isThreeQuarterKind, isThreeQuarterPairKind, MAX_PALETTE_COLORS } from './model';
 
 function isPositiveInteger(value: number): boolean {
   return Number.isInteger(value) && value > 0;
@@ -121,7 +121,7 @@ export function collectValidationErrors(document: PatternDocument): string[] {
     const kind = document.kind[index];
     const offset = index * 4;
     const completion = document.completed[index];
-    if (![CellKind.Empty, CellKind.Full, CellKind.HalfBackslash, CellKind.HalfSlash, CellKind.Quarters].includes(kind as CellKind)) {
+    if (![CellKind.Empty, CellKind.Full, CellKind.HalfBackslash, CellKind.HalfSlash, CellKind.Quarters].some((value) => value === kind) && !isThreeQuarterKind(kind) && !isThreeQuarterPairKind(kind)) {
       errors.push(`Cell ${String(index)} has an unknown kind.`);
       continue;
     }
@@ -134,7 +134,22 @@ export function collectValidationErrors(document: PatternDocument): string[] {
       continue;
     }
 
-    if (kind === CellKind.Full || kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash) {
+    if (isThreeQuarterPairKind(kind)) {
+      const occupiedMask = [0, 1, 2, 3].reduce((mask, slot) => mask | (document.colors[offset + slot] === 0 ? 0 : 1 << slot), 0);
+      if (occupiedMask !== 0b0101 && occupiedMask !== 0b1010) errors.push(`Three-quarter pair cell ${String(index)} must contain exactly one opposite occupied pair.`);
+      for (let slot = 0; slot < 4; slot += 1) {
+        const color = document.colors[offset + slot];
+        const bit = 1 << slot;
+        if (color === 0) {
+          if ((completion & bit) !== 0) errors.push(`Three-quarter pair completion is set for an empty slot at cell ${String(index)}.`);
+        } else if (!hasPalette(document, color)) {
+          errors.push(`Three-quarter pair at cell ${String(index)} has an unknown palette ID.`);
+        }
+      }
+      continue;
+    }
+
+    if (kind === CellKind.Full || kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash || isThreeQuarterKind(kind)) {
       if (document.colors[offset] === 0 || !hasPalette(document, document.colors[offset])) {
         errors.push(`Cell ${String(index)} has an invalid primary palette ID.`);
       }

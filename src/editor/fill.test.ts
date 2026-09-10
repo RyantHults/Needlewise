@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { CellKind } from '../domain';
 import {
   FILL_PROTOCOL,
   FILL_REQUEST_TYPE,
@@ -16,6 +17,7 @@ import {
   runExactFloodFill,
   validateFillRequest
 } from './fill';
+import { ThreeQuarterPair } from './cell-kinds';
 
 function input(
   width: number,
@@ -77,6 +79,30 @@ describe('fill protocol and exact flood fill', () => {
     expect(request.kind).not.toBe(kind);
     expect(request.colors).not.toBe(colors);
     expect(runExactFloodFill(request)).toEqual(new Uint32Array([0, 1, 3, 4, 5]));
+  });
+
+  it('accepts directional three-quarter kinds and keeps their directions as fill boundaries', () => {
+    const kind = new Uint8Array([
+      CellKind.ThreeQuarterNW, CellKind.ThreeQuarterNW, CellKind.ThreeQuarterNE,
+      CellKind.ThreeQuarterNW, CellKind.ThreeQuarterNW, CellKind.ThreeQuarterNE
+    ]);
+    const colors = new Uint16Array(6 * 4);
+    colors[0] = 2;
+    colors[4] = 2;
+    colors[12] = 2;
+    colors[16] = 2;
+    const request = createFillRequest(input(3, 2, 0, kind, colors));
+    expect(runExactFloodFill(request)).toEqual(new Uint32Array([0, 1, 3, 4]));
+  });
+
+  it('accepts paired three-quarter color/completion planes as exact fill tuples', () => {
+    const kind = new Uint8Array([ThreeQuarterPair, ThreeQuarterPair, ThreeQuarterPair]);
+    const colors = new Uint16Array(3 * 4);
+    colors.set([1, 0, 2, 0], 0);
+    colors.set([1, 0, 2, 0], 4);
+    colors.set([1, 0, 3, 0], 8);
+    const request = createFillRequest(input(3, 1, 0, kind, colors));
+    expect(runExactFloodFill(request)).toEqual(new Uint32Array([0, 1]));
   });
 
   it('fills connected empty regions while respecting sparse boundaries', () => {

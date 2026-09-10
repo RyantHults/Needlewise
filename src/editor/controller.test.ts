@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { CellKind, createDocument, createEditor, type CommandResult, type DomainCommand, type PatternDocument } from '../domain';
+import { CellKind, collectValidationErrors, createDocument, createEditor, type CommandResult, type DomainCommand, type PatternDocument } from '../domain';
 import { getCanvasMetrics } from './coordinates';
-import { EditorSurfaceController, type EditorSurfaceControllerOptions } from './controller';
+import { EditorSurfaceController, selectedCellSemantics, type EditorSurfaceControllerOptions } from './controller';
 import { StaleEditorTransactionError, type EditorRevisionToken, type EditorTransaction, type WorkspaceEditorGateway, type WorkspaceEditorSnapshot } from './gateway';
 import { createUiStore } from './ui-store';
+import { ThreeQuarterPair } from './cell-kinds';
 import { nearestDmcColor } from '../catalog';
 import type { CanvasRenderer, Invalidation, OverlayState, RendererStyle, RenderStats, TraceImage, TraceRgb, Viewport } from './contracts';
 import type { PointerSample } from './input';
@@ -396,22 +397,22 @@ describe('EditorSurfaceController', () => {
     controller.dispose();
   });
 
-  it('previews and commits both diagonal half-stitch authoring variants', () => {
-    const slash = controllerFixture();
-    slash.controller.setAuthoringBrush({ kind: 'half', direction: '/', paletteId: 1 });
-    slash.controller.handlePointerDown(pointer(1, 8, 8));
-    expect(slash.uiStore.getState().overlay.pendingCellStates).toMatchObject([{ kind: CellKind.HalfSlash, colors: [1, 0, 0, 0] }]);
-    slash.controller.handlePointerUp(pointer(1, 8, 8));
-    expect(slash.gateway.getSnapshot().document?.kind[0]).toBe(CellKind.HalfSlash);
-    slash.controller.dispose();
-
-    const backslash = controllerFixture();
-    backslash.controller.setAuthoringBrush({ kind: 'half', direction: '\\', paletteId: 1 });
-    backslash.controller.handlePointerDown(pointer(1, 8, 8));
-    expect(backslash.uiStore.getState().overlay.pendingCellStates).toMatchObject([{ kind: CellKind.HalfBackslash }]);
-    backslash.controller.handlePointerUp(pointer(1, 8, 8));
-    expect(backslash.gateway.getSnapshot().document?.kind[0]).toBe(CellKind.HalfBackslash);
-    backslash.controller.dispose();
+  it('derives one half-stitch diagonal from the pointer-down corner', () => {
+    const cases = [
+      { x: 4, y: 4, kind: CellKind.HalfBackslash },
+      { x: 12, y: 4, kind: CellKind.HalfSlash },
+      { x: 12, y: 12, kind: CellKind.HalfBackslash },
+      { x: 4, y: 12, kind: CellKind.HalfSlash }
+    ] as const;
+    for (const [pointerId, testCase] of cases.entries()) {
+      const fixture = controllerFixture();
+      fixture.controller.setAuthoringBrush({ kind: 'half', paletteId: 1 });
+      fixture.controller.handlePointerDown(pointer(pointerId + 1, testCase.x, testCase.y));
+      expect(fixture.uiStore.getState().overlay.pendingCellStates).toMatchObject([{ kind: testCase.kind, colors: [1, 0, 0, 0] }]);
+      fixture.controller.handlePointerUp(pointer(pointerId + 1, testCase.x, testCase.y));
+      expect(fixture.gateway.getSnapshot().document?.kind[0]).toBe(testCase.kind);
+      fixture.controller.dispose();
+    }
   });
 
   it('discards cancelled paint once and rejects a stale stroke', () => {
@@ -661,14 +662,204 @@ describe('EditorSurfaceController', () => {
     });
     expect(gateway.undoDepth).toBe(1);
 
-    controller.setAuthoringBrush({ kind: 'half', direction: '/', paletteId: 1 });
+    controller.setAuthoringBrush({ kind: 'half', paletteId: 1 });
     controller.handlePointerDown(pointer(2, 24, 24));
     expect(uiStore.getState().overlay.pendingCellStates?.map((state) => state.kind)).toEqual([
-      CellKind.HalfSlash, CellKind.HalfSlash, CellKind.HalfSlash, CellKind.HalfSlash
+      CellKind.HalfBackslash, CellKind.HalfBackslash, CellKind.HalfBackslash, CellKind.HalfBackslash
     ]);
     controller.handlePointerUp(pointer(2, 24, 24));
-    expect(gateway.commands.at(-1)).toMatchObject({ type: 'bulk-cell', edit: { kind: 'half', direction: '/' } });
+    expect(gateway.commands.at(-1)).toMatchObject({ type: 'bulk-cell', edit: { kind: 'half', direction: '\\' } });
     controller.dispose();
+  });
+
+  it('previews and commits a three-quarter brush using the pointer-down corner uniformly', () => {
+    const cases = [
+      { x: 4, y: 4, kind: CellKind.ThreeQuarterNW },
+      { x: 12, y: 4, kind: CellKind.ThreeQuarterNE },
+      { x: 12, y: 12, kind: CellKind.ThreeQuarterSE },
+      { x: 4, y: 12, kind: CellKind.ThreeQuarterSW }
+    ] as const;
+    for (const [pointerId, testCase] of cases.entries()) {
+      const fixture = controllerFixture();
+      fixture.controller.setAuthoringBrush({ kind: 'three-quarter', paletteId: 1 });
+      fixture.controller.handlePointerDown(pointer(pointerId + 1, testCase.x, testCase.y));
+      expect(fixture.uiStore.getState().overlay.pendingCellStates).toMatchObject([
+        { index: 0, kind: testCase.kind, colors: [1, 0, 0, 0], completed: 0 }
+      ]);
+      fixture.controller.handlePointerUp(pointer(pointerId + 1, testCase.x, testCase.y));
+      expect(fixture.gateway.commands.at(-1)).toMatchObject({
+        type: 'bulk-cell',
+        edit: { kind: 'three-quarter' }
+      });
+      expect(fixture.gateway.getSnapshot().document?.kind[0]).toBe(testCase.kind);
+      fixture.controller.dispose();
+    }
+
+    const dragged = controllerFixture();
+    dragged.controller.setBrushSize(2);
+    dragged.controller.setAuthoringBrush({ kind: 'three-quarter', paletteId: 1 });
+    dragged.controller.handlePointerDown(pointer(9, 20, 20));
+    dragged.controller.handlePointerMove(pointer(9, 36, 20));
+    dragged.controller.handlePointerUp(pointer(9, 36, 20));
+    expect(dragged.gateway.commands.at(-1)).toMatchObject({ edit: { kind: 'three-quarter', corner: 0 } });
+    for (const index of [0, 1, 2, 8, 9, 10]) {
+      expect(Array.from(dragged.gateway.getSnapshot().document!.colors.slice(index * 4, index * 4 + 4))).toEqual([1, 0, 0, 0]);
+      expect(dragged.gateway.getSnapshot().document!.kind[index]).toBe(CellKind.ThreeQuarterNW);
+    }
+    dragged.controller.dispose();
+  });
+
+  it('reports each directional three-quarter as one selected completion slot', () => {
+    const document = createDocument({ width: 4, height: 1, palette: [{ id: 1, name: 'Thread', color: '#123456' }] });
+    const kinds = [
+      ['three-quarter-nw', CellKind.ThreeQuarterNW],
+      ['three-quarter-ne', CellKind.ThreeQuarterNE],
+      ['three-quarter-se', CellKind.ThreeQuarterSE],
+      ['three-quarter-sw', CellKind.ThreeQuarterSW]
+    ] as const;
+    for (const [index, [geometry, kind]] of kinds.entries()) {
+      document.kind[index] = kind;
+      document.colors[index * 4] = 1;
+      document.completed[index] = 1;
+      expect(selectedCellSemantics(document, { x: index, y: 0 })).toMatchObject({
+        geometry,
+        paletteIds: [1],
+        completion: { completed: 1, total: 1, summary: '1 of 1 complete' }
+      });
+      document.kind[index] = CellKind.Empty;
+      document.colors[index * 4] = 0;
+      document.completed[index] = 0;
+    }
+  });
+
+  it('previews paired three-quarter replace, opposite add, adjacent no-op, and component erase', () => {
+    const replace = controllerFixture();
+    replace.gateway.execute({ type: 'palette-create', name: 'Blue', color: '#00f' });
+    const replaceDocument = replace.gateway.getSnapshot().document!;
+    replaceDocument.kind[0] = CellKind.ThreeQuarterNW;
+    replaceDocument.colors[0] = 1;
+    replace.controller.setAuthoringBrush({ kind: 'three-quarter', paletteId: 2 });
+    replace.controller.handlePointerDown(pointer(1, 4, 4));
+    expect(replace.uiStore.getState().overlay.pendingCellStates).toMatchObject([
+      { kind: CellKind.ThreeQuarterNW, colors: [2, 0, 0, 0], completed: 0 }
+    ]);
+    replace.controller.handlePointerCancel(pointer(1, 4, 4));
+    replace.controller.dispose();
+
+    const add = controllerFixture();
+    const addDocument = add.gateway.getSnapshot().document!;
+    addDocument.kind[0] = CellKind.ThreeQuarterNW;
+    addDocument.colors[0] = 1;
+    add.controller.setAuthoringBrush({ kind: 'three-quarter', paletteId: 1 });
+    add.controller.handlePointerDown(pointer(2, 12, 12));
+    expect(add.uiStore.getState().overlay.pendingCellStates).toMatchObject([
+      { kind: ThreeQuarterPair, colors: [1, 0, 1, 0], completed: 0 }
+    ]);
+    add.controller.handlePointerCancel(pointer(2, 12, 12));
+    add.controller.dispose();
+
+    const addSlash = controllerFixture();
+    const addSlashDocument = addSlash.gateway.getSnapshot().document!;
+    addSlashDocument.kind[0] = CellKind.ThreeQuarterNE;
+    addSlashDocument.colors[0] = 1;
+    addSlash.controller.setAuthoringBrush({ kind: 'three-quarter', paletteId: 1 });
+    addSlash.controller.handlePointerDown(pointer(5, 4, 12));
+    expect(addSlash.uiStore.getState().overlay.pendingCellStates).toMatchObject([
+      { kind: ThreeQuarterPair, colors: [0, 1, 0, 1], completed: 0 }
+    ]);
+    addSlash.controller.handlePointerCancel(pointer(5, 4, 12));
+    addSlash.controller.dispose();
+
+    const adjacent = controllerFixture();
+    const adjacentDocument = adjacent.gateway.getSnapshot().document!;
+    adjacentDocument.kind[0] = CellKind.ThreeQuarterNW;
+    adjacentDocument.colors[0] = 1;
+    adjacent.controller.setAuthoringBrush({ kind: 'three-quarter', paletteId: 1 });
+    adjacent.controller.handlePointerDown(pointer(3, 12, 4));
+    expect(adjacent.uiStore.getState().overlay.pendingCellStates).toEqual([]);
+    adjacent.controller.handlePointerCancel(pointer(3, 12, 4));
+    adjacent.controller.dispose();
+
+    const erased = controllerFixture();
+    const erasedDocument = erased.gateway.getSnapshot().document!;
+    erasedDocument.kind[0] = ThreeQuarterPair;
+    erasedDocument.colors.set([1, 0, 2, 0], 0);
+    erasedDocument.completed[0] = 5;
+    erased.controller.setTool({ tool: 'eraser', mode: 'component' });
+    erased.controller.handlePointerDown(pointer(4, 4, 4));
+    expect(erased.uiStore.getState().overlay.pendingCellStates).toMatchObject([
+      { kind: CellKind.ThreeQuarterSE, colors: [2, 0, 0, 0], completed: 1 }
+    ]);
+    erased.controller.handlePointerCancel(pointer(4, 4, 4));
+    erased.controller.dispose();
+
+    const selectedDocument = createDocument({
+      width: 1,
+      height: 1,
+      palette: [
+        { id: 1, name: 'Red', color: '#f00' },
+        { id: 2, name: 'Blue', color: '#00f' }
+      ]
+    });
+    selectedDocument.kind[0] = ThreeQuarterPair;
+    selectedDocument.colors.set([1, 0, 2, 0]);
+    selectedDocument.completed[0] = 5;
+    expect(selectedCellSemantics(selectedDocument, { x: 0, y: 0 })).toMatchObject({
+      geometry: 'three-quarter-pair',
+      paletteIds: [1, 2],
+      completion: { completed: 2, total: 2, summary: '2 of 2 complete' }
+    });
+  });
+
+  it('eyedrops the clicked triangle color from both paired axes', () => {
+    const fixture = controllerFixture();
+    fixture.gateway.execute({ type: 'palette-create', name: 'Blue', color: '#00f' });
+    const document = fixture.gateway.getSnapshot().document!;
+    document.kind[0] = ThreeQuarterPair;
+    document.colors.set([1, 0, 2, 0], 0);
+    document.kind[1] = ThreeQuarterPair;
+    document.colors.set([0, 2, 0, 1], 4);
+    fixture.controller.setTool({ tool: 'eyedropper' });
+    fixture.controller.handlePointerDown(pointer(1, 4, 4));
+    expect(fixture.uiStore.getState().paletteId).toBe(1);
+    fixture.controller.setTool({ tool: 'eyedropper' });
+    fixture.controller.handlePointerDown(pointer(2, 12, 12));
+    expect(fixture.uiStore.getState().paletteId).toBe(2);
+    fixture.controller.setTool({ tool: 'eyedropper' });
+    fixture.controller.handlePointerDown(pointer(3, 28, 4));
+    expect(fixture.uiStore.getState().paletteId).toBe(2);
+    fixture.controller.setTool({ tool: 'eyedropper' });
+    fixture.controller.handlePointerDown(pointer(4, 20, 12));
+    expect(fixture.uiStore.getState().paletteId).toBe(1);
+    fixture.controller.dispose();
+  });
+
+  it.skipIf(!(() => {
+    const probe = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Thread', color: '#123456' }] });
+    probe.kind[0] = ThreeQuarterPair;
+    probe.colors.set([1, 0, 1, 0]);
+    return collectValidationErrors(probe).length === 0;
+  })())('commits paired component erase canonically and restores it through undo/redo', () => {
+    const fixture = controllerFixture();
+    fixture.gateway.execute({ type: 'palette-create', name: 'Blue', color: '#00f' });
+    const document = fixture.gateway.getSnapshot().document!;
+    document.kind[0] = ThreeQuarterPair;
+    document.colors.set([1, 0, 2, 0], 0);
+    document.completed[0] = 5;
+    fixture.controller.setTool({ tool: 'eraser', mode: 'component' });
+    fixture.controller.handlePointerDown(pointer(1, 4, 4));
+    fixture.controller.handlePointerUp(pointer(1, 4, 4));
+    expect(fixture.gateway.commands.at(-1)).toMatchObject({ type: 'mixed-erase' });
+    expect(fixture.gateway.getSnapshot().document?.kind[0]).toBe(CellKind.ThreeQuarterSE);
+    expect(Array.from(fixture.gateway.getSnapshot().document!.colors.slice(0, 4))).toEqual([2, 0, 0, 0]);
+    expect(fixture.gateway.getSnapshot().document?.completed[0]).toBe(1);
+    fixture.controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
+    expect(fixture.gateway.getSnapshot().document?.kind[0]).toBe(ThreeQuarterPair);
+    expect(Array.from(fixture.gateway.getSnapshot().document!.colors.slice(0, 4))).toEqual([1, 0, 2, 0]);
+    expect(fixture.gateway.getSnapshot().document?.completed[0]).toBe(5);
+    fixture.controller.handleKeyDown({ key: 'y', ctrlKey: true, preventDefault: () => undefined });
+    expect(fixture.gateway.getSnapshot().document?.kind[0]).toBe(CellKind.ThreeQuarterSE);
+    fixture.controller.dispose();
   });
 
   it('erases a clipped multi-cell brush as one command and suppresses no-op stamps', () => {

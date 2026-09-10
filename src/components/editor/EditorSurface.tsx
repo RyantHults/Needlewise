@@ -144,9 +144,6 @@ export function EditorSurface({
   const [units, setUnits] = useState<DisplayUnits>(
     workspace.metadata?.units ?? "metric",
   );
-  const [controlPanel, setControlPanel] = useState<"stitch" | "view" | null>(
-    null,
-  );
   const [preferences, setPreferences] = useState<EditorPreferences>(() =>
     readEditorPreferences(workspace.metadata?.id ?? "default"),
   );
@@ -309,13 +306,12 @@ export function EditorSurface({
   }, [preferences]);
   const palette = document.palette.filter((x) => x.active),
     noThread = !palette.length;
-  const choose = (kind: "full" | "half", direction?: string) => {
+  const choose = (kind: "full" | "half" | "three-quarter") => {
     const id = palette[0]?.id;
     if (id)
       controllerRef.current?.setBrush({
         kind,
         paletteId: id,
-        ...(direction ? { direction } : {}),
       } as never);
   };
   const invoke = (tool: string) => {
@@ -805,19 +801,6 @@ export function EditorSurface({
     };
   }, [symbolTarget]);
   useEffect(() => {
-    if (!controlPanel) return;
-    const closeOnOutside = (event: PointerEvent) => {
-      const target = event.target;
-      if (!(target instanceof Element)) return;
-      if (target.closest("[data-section-trigger], .editor-control-panel"))
-        return;
-      setControlPanel(null);
-    };
-    globalThis.document.addEventListener("pointerdown", closeOnOutside);
-    return () =>
-      globalThis.document.removeEventListener("pointerdown", closeOnOutside);
-  }, [controlPanel]);
-  useEffect(() => {
     if (paletteMenu === null) return;
     const close = (event: PointerEvent) => {
       if (event.target instanceof Element && event.target.closest(".palette-row")) return;
@@ -844,8 +827,6 @@ export function EditorSurface({
       ? `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(inches * 2.54)} cm`
       : `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(inches)} in`;
   const dimensionSummary = `${document.width} × ${document.height} stitches · ${formatMeasure(document.width / aidaCount)} × ${formatMeasure(document.height / aidaCount)}`;
-  const stitchActive =
-    ui?.tool.tool === "paint" || ui?.tool.tool === "backstitch";
   const selectedBrush =
     ui?.tool.tool === "paint"
       ? ui.tool.brush
@@ -853,10 +834,9 @@ export function EditorSurface({
         ? ui.tool.brush
         : undefined;
   const fullStitchActive = selectedBrush?.kind === "full";
-  const halfSlashActive =
-    selectedBrush?.kind === "half" && selectedBrush.direction === "/";
-  const halfBackslashActive =
-    selectedBrush?.kind === "half" && selectedBrush.direction === "\\";
+  const halfActive = selectedBrush?.kind === "half";
+  const threeQuarterActive =
+    (selectedBrush as { kind?: string } | undefined)?.kind === "three-quarter";
   const backstitchActive = ui?.tool.tool === "backstitch";
   return (
     <section ref={workspaceRoot} className="editor-workspace" aria-labelledby="editor-title">
@@ -944,15 +924,43 @@ export function EditorSurface({
         <aside className="editor-rail-shell" aria-label="Editor controls">
           <nav className="editor-rail" aria-label="Editor sections">
             <button
-              className={`rail-button${stitchActive ? " rail-button-active" : ""}`}
+              className="rail-button"
               type="button"
-              aria-label="Stitch"
-              title="Stitch"
-              data-section-trigger
-              aria-expanded={controlPanel === "stitch"}
-              onClick={() =>
-                setControlPanel(controlPanel === "stitch" ? null : "stitch")
-              }
+              aria-label="Full stitch"
+              title="Full stitch"
+              aria-pressed={fullStitchActive}
+              onClick={() => choose("full")}
+            >
+              <span className="stitch-brush-icon stitch-brush-icon-full" aria-hidden="true" />
+            </button>
+            <button
+              className="rail-button"
+              type="button"
+              aria-label="Half stitch"
+              title="Half stitch"
+              aria-pressed={halfActive}
+              onClick={() => choose("half")}
+            >
+              <span className="stitch-brush-icon stitch-brush-icon-half" aria-hidden="true" />
+            </button>
+            <button
+              className="rail-button"
+              type="button"
+              aria-label="3/4 stitch"
+              title="3/4 stitch"
+              aria-pressed={threeQuarterActive}
+              onClick={() => choose("three-quarter")}
+            >
+              <span className="stitch-brush-icon stitch-brush-icon-three-quarter" aria-hidden="true" />
+            </button>
+            <button
+              className="rail-button"
+              type="button"
+              disabled={noThread}
+              aria-label="Backstitch"
+              title="Backstitch"
+              aria-pressed={backstitchActive}
+              onClick={() => invoke("backstitch")}
             >
               <img data-icon="stitch" src={stitchIcon} alt="" aria-hidden="true" />
             </button>
@@ -1021,61 +1029,6 @@ export function EditorSurface({
             {pendingEntry && paletteRow(pendingEntry)}
             {palette.filter((x) => x.id !== pendingEntry?.id).map(paletteRow)}
           </div>
-          {controlPanel === "stitch" && (
-            <div className="editor-control-panel">
-              <fieldset>
-                <legend>Stitch</legend>
-                <label className="brush-size-control" htmlFor="brush-size">
-                  <span>
-                    Brush size <output>{size}</output>
-                  </span>
-                  <input
-                    id="brush-size"
-                    type="range"
-                    min="1"
-                    max="10"
-                    value={size}
-                    onChange={(e) => {
-                      const n = Number(e.target.value);
-                      setSize(n);
-                      controllerRef.current?.setBrushSize?.(n);
-                    }}
-                  />
-                </label>
-                <div className="tool-grid">
-                  <button
-                    type="button"
-                    aria-pressed={fullStitchActive}
-                    onClick={() => choose("full")}
-                  >
-                    Full stitch
-                  </button>
-                  <button
-                    type="button"
-                    aria-pressed={halfSlashActive}
-                    onClick={() => choose("half", "/")}
-                  >
-                    Half stitch /
-                  </button>
-                  <button
-                    type="button"
-                    aria-pressed={halfBackslashActive}
-                    onClick={() => choose("half", String.fromCharCode(92))}
-                  >
-                    Half stitch {String.fromCharCode(92)}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={noThread}
-                    aria-pressed={backstitchActive}
-                    onClick={() => invoke("backstitch")}
-                  >
-                    Backstitch
-                  </button>
-                </div>
-              </fieldset>
-            </div>
-          )}
         </aside>
         <div className="canvas-column">
           <div
@@ -1099,6 +1052,24 @@ export function EditorSurface({
             )}
           </div>
           <div className="canvas-actions">
+            <section className="action-section brush-settings" aria-labelledby="brush-settings-label">
+              <h3 id="brush-settings-label">Brush settings</h3>
+              <label className="brush-size-control" htmlFor="brush-size">
+                <span>Brush size <output>{size}</output></span>
+                <input
+                  id="brush-size"
+                  type="range"
+                  min="1"
+                  max="10"
+                  value={size}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    setSize(n);
+                    controllerRef.current?.setBrushSize?.(n);
+                  }}
+                />
+              </label>
+            </section>
             <section className="action-section reference-actions" aria-labelledby="reference-actions-label">
               <h3 id="reference-actions-label">Reference image</h3>
               <TraceImageControls workspace={workspace} document={document} controller={controller} activeTool={ui?.tool.tool} />

@@ -410,7 +410,17 @@ export interface EditorUiState {
   readonly pendingPaletteId: number | null;
 }
 
-export type SelectedCellGeometry = 'empty' | 'full' | 'half-backslash' | 'half-slash' | 'quarters';
+export type SelectedCellGeometry =
+  | 'empty'
+  | 'full'
+  | 'half-backslash'
+  | 'half-slash'
+  | 'quarters'
+  | 'three-quarter-nw'
+  | 'three-quarter-ne'
+  | 'three-quarter-se'
+  | 'three-quarter-sw'
+  | 'three-quarter-pair';
 
 export interface SelectedCellCompletion {
   readonly completed: number;
@@ -447,13 +457,15 @@ export type EditorToolKind = (typeof EditorToolKind)[keyof typeof EditorToolKind
 export const StitchBrushKind = {
   Full: 'full',
   Half: 'half',
-  Quarter: 'quarter'
+  Quarter: 'quarter',
+  ThreeQuarter: 'three-quarter'
 } as const;
 
 /** Brush variants exposed to new authoring flows. Quarter geometry is legacy-only. */
 export const AuthoringStitchBrushKind = {
   Full: 'full',
-  Half: 'half'
+  Half: 'half',
+  ThreeQuarter: 'three-quarter'
 } as const;
 
 export type AuthoringStitchBrushKind = (typeof AuthoringStitchBrushKind)[keyof typeof AuthoringStitchBrushKind];
@@ -467,7 +479,13 @@ export interface FullStitchBrush {
 
 export interface HalfStitchBrush {
   readonly kind: 'half';
-  readonly direction: '\\' | '/';
+  /** Retained for legacy callers; authoring derives this from the hit corner. */
+  readonly direction?: '\\' | '/';
+  readonly paletteId: number;
+}
+
+export interface ThreeQuarterStitchBrush {
+  readonly kind: 'three-quarter';
   readonly paletteId: number;
 }
 
@@ -477,8 +495,8 @@ export interface QuarterStitchBrush {
   readonly paletteId: number;
 }
 
-export type StitchBrush = FullStitchBrush | HalfStitchBrush | QuarterStitchBrush;
-export type AuthoringStitchBrush = FullStitchBrush | HalfStitchBrush;
+export type StitchBrush = FullStitchBrush | HalfStitchBrush | ThreeQuarterStitchBrush | QuarterStitchBrush;
+export type AuthoringStitchBrush = FullStitchBrush | HalfStitchBrush | ThreeQuarterStitchBrush;
 export type LegacyStitchBrush = QuarterStitchBrush;
 
 export interface PaintToolState {

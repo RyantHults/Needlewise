@@ -10,7 +10,13 @@ import {
   normalizePaletteEntry,
   clonePaletteEntry,
   PALETTE_SYMBOLS,
-  UINT32_MAX
+  UINT32_MAX,
+  isThreeQuarterKind,
+  isThreeQuarterPairKind,
+  isThreeQuarterSingleKind,
+  oppositeQuarterCorner,
+  threeQuarterCornerForKind,
+  threeQuarterKindForCorner
 } from './model';
 import {
   CellKind,
@@ -119,6 +125,7 @@ interface MutableDeleteMetricsImpactEntry {
   removedFull: number;
   removedHalf: number;
   removedQuarter: number;
+  removedThreeQuarter: number;
   removedCellCompleted: number;
   beforeBackstitchCount: number;
   afterBackstitchCount: number;
@@ -134,6 +141,7 @@ function emptyDeleteMetricsImpactEntry(paletteId: number): MutableDeleteMetricsI
     removedFull: 0,
     removedHalf: 0,
     removedQuarter: 0,
+    removedThreeQuarter: 0,
     removedCellCompleted: 0,
     beforeBackstitchCount: 0,
     afterBackstitchCount: 0,
@@ -156,13 +164,14 @@ function deleteMetricsEntry(entries: Map<number, MutableDeleteMetricsImpactEntry
 function addDeletedCellComponentImpact(
   entries: Map<number, MutableDeleteMetricsImpactEntry>,
   paletteId: number,
-  field: 'removedFull' | 'removedHalf' | 'removedQuarter',
-  completed: boolean
+  field: 'removedFull' | 'removedHalf' | 'removedQuarter' | 'removedThreeQuarter',
+  completed: boolean,
+  amount = 1
 ): void {
   if (paletteId === 0) return;
   const entry = deleteMetricsEntry(entries, paletteId);
-  entry[field] += 1;
-  if (completed) entry.removedCellCompleted += 1;
+  entry[field] += amount;
+  if (completed) entry.removedCellCompleted += amount;
 }
 
 function addDeletedCellImpact(
@@ -177,6 +186,13 @@ function addDeletedCellImpact(
     addDeletedCellComponentImpact(entries, document.colors[offset], 'removedFull', (completion & 1) !== 0);
   } else if (kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash) {
     addDeletedCellComponentImpact(entries, document.colors[offset], 'removedHalf', (completion & 1) !== 0);
+  } else if (isThreeQuarterPairKind(kind)) {
+    for (const corner of [QuarterCorner.NW, QuarterCorner.NE, QuarterCorner.SE, QuarterCorner.SW]) {
+      const color = document.colors[offset + corner];
+      if (color !== 0) addDeletedCellComponentImpact(entries, color, 'removedThreeQuarter', (completion & (1 << corner)) !== 0);
+    }
+  } else if (isThreeQuarterSingleKind(kind)) {
+    addDeletedCellComponentImpact(entries, document.colors[offset], 'removedThreeQuarter', (completion & 1) !== 0);
   } else if (kind === CellKind.Quarters) {
     for (let slot = 0; slot < 4; slot += 1) {
       const color = document.colors[offset + slot];
@@ -412,8 +428,16 @@ function normalizeType(type: string): string {
     half: 'set-half',
     quarter: 'set-quarter',
     quarters: 'set-quarters',
+    'three-quarter': 'set-three-quarter',
+    threequarter: 'set-three-quarter',
+    threequarters: 'set-three-quarter',
+    'three-quarter-stitch': 'set-three-quarter',
+    'set-threequarter': 'set-three-quarter',
+    'set-three-quarters': 'set-three-quarter',
     'paint-half': 'set-half',
     'paint-quarter': 'set-quarter',
+    'paint-three-quarter': 'set-three-quarter',
+    'paint-threequarter': 'set-three-quarter',
     paint: 'set-cell',
     'paint-cell': 'set-cell',
     'set-stitch': 'set-cell',
@@ -484,7 +508,7 @@ export function commandRequiresSnapshot(command: DomainCommand): boolean {
 function touchCommandTargets(document: PatternDocument, command: DomainCommand, tracker: MutationTracker): void {
   const type = normalizeType(command.type);
   if (type === 'batch') return;
-  const cellTypes = new Set(['set-cell', 'set-full', 'set-half', 'set-quarter', 'set-quarters', 'erase-cell', 'erase-quarter', 'recolor-cell', 'recolor', 'set-completion', 'toggle-completion']);
+  const cellTypes = new Set(['set-cell', 'set-full', 'set-half', 'set-quarter', 'set-quarters', 'set-three-quarter', 'erase-cell', 'erase-quarter', 'recolor-cell', 'recolor', 'set-completion', 'toggle-completion']);
   if (cellTypes.has(type)) {
     const x = valueOf(command, 'x', 'column');
     const y = valueOf(command, 'y', 'row');
@@ -533,7 +557,7 @@ function parseDirection(value: unknown): HalfDirection {
 }
 
 function parseKind(value: unknown): CellKind {
-  if (typeof value === 'number' && [0, 1, 2, 3, 4].includes(value)) return value as CellKind;
+  if (typeof value === 'number' && value >= CellKind.Empty && value <= CellKind.ThreeQuarterPair && Number.isInteger(value)) return value as CellKind;
   if (typeof value === 'string') {
     const normalized = value.toLowerCase().replace(/[-_ ]/g, '');
     if (normalized === 'empty') return CellKind.Empty;
@@ -542,6 +566,11 @@ function parseKind(value: unknown): CellKind {
     if (normalized === 'halfbackslash' || normalized === 'backslash') return CellKind.HalfBackslash;
     if (normalized === 'halfslash' || normalized === 'slash') return CellKind.HalfSlash;
     if (normalized === 'quarter' || normalized === 'quarters') return CellKind.Quarters;
+    if (normalized === 'threequarternw' || normalized === 'threequarternorthwest') return CellKind.ThreeQuarterNW;
+    if (normalized === 'threequarterne' || normalized === 'threequarternortheast') return CellKind.ThreeQuarterNE;
+    if (normalized === 'threequarterse' || normalized === 'threequartersoutheast') return CellKind.ThreeQuarterSE;
+    if (normalized === 'threequartersw' || normalized === 'threequartersouthwest') return CellKind.ThreeQuarterSW;
+    if (normalized === 'threequarterpair' || normalized === 'pairedthreequarter' || normalized === 'pairedthreequarters') return CellKind.ThreeQuarterPair;
   }
   throw new DomainError('invalid-kind', `Cell kind ${String(value)} is invalid.`);
 }
@@ -630,7 +659,140 @@ function writeQuarter(
   return writeQuarterAtIndex(document, index, corner, color);
 }
 
+function writeThreeQuarterAtIndex(
+  document: PatternDocument,
+  index: number,
+  corner: QuarterCorner,
+  color: number
+): boolean {
+  const currentKind = document.kind[index];
+  const currentCorner = threeQuarterCornerForKind(currentKind);
+  if (isThreeQuarterSingleKind(currentKind)) {
+    if (currentCorner === undefined) return false;
+    if (corner === currentCorner) return writeThreeQuarterKindAtIndex(document, index, currentKind, color);
+    if (corner === oppositeQuarterCorner(currentCorner)) {
+      const offset = colorsOffset(index);
+      const existingColor = document.colors[offset];
+      const existingCompleted = document.completed[index] & 1;
+      document.kind[index] = CellKind.ThreeQuarterPair;
+      document.colors.fill(0, offset, offset + 4);
+      document.colors[offset + currentCorner] = existingColor;
+      document.colors[offset + corner] = color;
+      document.completed[index] = existingCompleted === 0 ? 0 : 1 << currentCorner;
+      return true;
+    }
+    return false;
+  }
+  if (isThreeQuarterPairKind(currentKind)) {
+    const offset = colorsOffset(index);
+    if (document.colors[offset + corner] === 0 || document.colors[offset + corner] === color) return false;
+    document.colors[offset + corner] = color;
+    return true;
+  }
+  const desiredKind = threeQuarterKindForCorner(corner);
+  return writeThreeQuarterKindAtIndex(document, index, desiredKind, color);
+}
+
+function writeThreeQuarterKindAtIndex(
+  document: PatternDocument,
+  index: number,
+  desiredKind: number,
+  color: number
+): boolean {
+  if (!isThreeQuarterSingleKind(desiredKind)) throw new DomainError('invalid-kind', `Cell kind ${String(desiredKind)} is not a single three-quarter kind.`);
+  const offset = colorsOffset(index);
+  const nextCompletion = document.kind[index] === desiredKind ? document.completed[index] & 1 : 0;
+  const same = document.kind[index] === desiredKind
+    && document.colors[offset] === color
+    && document.colors[offset + 1] === 0
+    && document.colors[offset + 2] === 0
+    && document.colors[offset + 3] === 0
+    && document.completed[index] === nextCompletion;
+  if (same) return false;
+  document.kind[index] = desiredKind;
+  document.colors[offset] = color;
+  document.colors[offset + 1] = 0;
+  document.colors[offset + 2] = 0;
+  document.colors[offset + 3] = 0;
+  document.completed[index] = nextCompletion;
+  return true;
+}
+
+function writeThreeQuarterPairAtIndex(document: PatternDocument, index: number, colors: ArrayLike<number>, sourceOffset = 0): boolean {
+  const color0 = colors[sourceOffset];
+  const color1 = colors[sourceOffset + 1];
+  const color2 = colors[sourceOffset + 2];
+  const color3 = colors[sourceOffset + 3];
+  const isNorthwestSoutheast = color0 !== 0 && color2 !== 0 && color1 === 0 && color3 === 0;
+  const isNortheastSouthwest = color1 !== 0 && color3 !== 0 && color0 === 0 && color2 === 0;
+  if (!isNorthwestSoutheast && !isNortheastSouthwest) throw new DomainError('invalid-kind', 'A three-quarter pair must occupy exactly one opposite corner pair.');
+  const offset = colorsOffset(index);
+  const sameGeometry = document.kind[index] === CellKind.ThreeQuarterPair;
+  let nextCompletion = 0;
+  if (sameGeometry) {
+    for (let slot = 0; slot < 4; slot += 1) {
+      if (colors[sourceOffset + slot] !== 0 && document.colors[offset + slot] !== 0) nextCompletion |= document.completed[index] & (1 << slot);
+    }
+  }
+  const same = document.kind[index] === CellKind.ThreeQuarterPair
+    && document.colors[offset] === color0
+    && document.colors[offset + 1] === color1
+    && document.colors[offset + 2] === color2
+    && document.colors[offset + 3] === color3;
+  if (same) return false;
+  document.kind[index] = CellKind.ThreeQuarterPair;
+  document.colors[offset] = color0;
+  document.colors[offset + 1] = color1;
+  document.colors[offset + 2] = color2;
+  document.colors[offset + 3] = color3;
+  document.completed[index] = nextCompletion;
+  return true;
+}
+
+function writeThreeQuarter(
+  document: PatternDocument,
+  x: number,
+  y: number,
+  corner: QuarterCorner,
+  color: number
+): boolean {
+  const index = cellIndex(document, x, y);
+  requirePaletteEntry(document, color);
+  return writeThreeQuarterAtIndex(document, index, corner, color);
+}
+
+function removeThreeQuarterAtIndex(document: PatternDocument, index: number, corner: QuarterCorner): boolean {
+  const kind = document.kind[index];
+  const offset = colorsOffset(index);
+  const singleCorner = threeQuarterCornerForKind(kind);
+  if (singleCorner !== undefined) {
+    if (singleCorner !== corner || document.colors[offset] === 0) return false;
+    document.kind[index] = CellKind.Empty;
+    document.completed[index] = 0;
+    document.colors.fill(0, offset, offset + 4);
+    return true;
+  }
+  if (!isThreeQuarterPairKind(kind) || document.colors[offset + corner] === 0) return false;
+  document.colors[offset + corner] = 0;
+  document.completed[index] &= ~(1 << corner);
+  const survivors = [0, 1, 2, 3].filter((candidate) => document.colors[offset + candidate] !== 0) as QuarterCorner[];
+  if (survivors.length === 0) {
+    document.kind[index] = CellKind.Empty;
+    document.completed[index] = 0;
+  } else if (survivors.length === 1) {
+    const survivor = survivors[0];
+    const survivorColor = document.colors[offset + survivor];
+    const survivorCompleted = document.completed[index] & (1 << survivor);
+    document.kind[index] = threeQuarterKindForCorner(survivor);
+    document.colors.fill(0, offset, offset + 4);
+    document.colors[offset] = survivorColor;
+    document.completed[index] = survivorCompleted === 0 ? 0 : 1;
+  }
+  return true;
+}
+
 function removeQuarterAtIndex(document: PatternDocument, index: number, corner: QuarterCorner): boolean {
+  if (isThreeQuarterKind(document.kind[index]) || isThreeQuarterPairKind(document.kind[index])) return removeThreeQuarterAtIndex(document, index, corner);
   if (document.kind[index] !== CellKind.Quarters) return false;
   const offset = colorsOffset(index);
   if (document.colors[offset + corner] === 0 && (document.completed[index] & (1 << corner)) === 0) return false;
@@ -684,6 +846,10 @@ function parseBulkEdit(command: DomainCommand): BulkCellEdit {
     const corner = parseCorner(bulkEditValue(command, source, 'corner', 'quarter', 'slot'));
     return { kind: 'quarter', corner, color: requiredNumber(bulkEditValue(command, source, 'color', 'paletteId', 'colorId'), 'bulk color') };
   }
+  if (kind === 'threequarter' || kind === 'setthreequarter' || kind === 'threequarters') {
+    const corner = parseCorner(bulkEditValue(command, source, 'corner', 'quarter', 'slot'));
+    return { kind: 'three-quarter', corner, color: requiredNumber(bulkEditValue(command, source, 'color', 'paletteId', 'colorId'), 'bulk color') };
+  }
   if (kind === 'erase' || kind === 'erasecell' || kind === 'clear' || kind === 'clearcell') return { kind: 'erase-cell' };
   if (kind === 'erasequarter' || kind === 'removequarter' || kind === 'clearquarter') {
     return { kind: 'erase-quarter', corner: parseCorner(bulkEditValue(command, source, 'corner', 'quarter', 'slot')) };
@@ -719,6 +885,13 @@ function validateBulkIndices(document: PatternDocument, command: DomainCommand):
   return indices;
 }
 
+function threeQuarterComponentPresent(document: PatternDocument, index: number, corner: QuarterCorner): boolean {
+  const offset = colorsOffset(index);
+  const singleCorner = threeQuarterCornerForKind(document.kind[index]);
+  if (singleCorner !== undefined) return singleCorner === corner && document.colors[offset] !== 0;
+  return isThreeQuarterPairKind(document.kind[index]) && document.colors[offset + corner] !== 0;
+}
+
 function bulkCellWouldChange(document: PatternDocument, index: number, edit: BulkCellEdit): boolean {
   const offset = colorsOffset(index);
   if (edit.kind === 'erase-cell') {
@@ -731,7 +904,8 @@ function bulkCellWouldChange(document: PatternDocument, index: number, edit: Bul
   }
   if (edit.kind === 'erase-quarter') {
     return document.kind[index] === CellKind.Quarters
-      && (document.colors[offset + edit.corner] !== 0 || (document.completed[index] & (1 << edit.corner)) !== 0);
+      ? document.colors[offset + edit.corner] !== 0 || (document.completed[index] & (1 << edit.corner)) !== 0
+      : threeQuarterComponentPresent(document, index, edit.corner);
   }
   if (edit.kind === 'full' || edit.kind === 'half') {
     const desiredKind = edit.kind === 'full'
@@ -744,6 +918,16 @@ function bulkCellWouldChange(document: PatternDocument, index: number, edit: Bul
       || document.colors[offset + 1] !== 0
       || document.colors[offset + 2] !== 0
       || document.colors[offset + 3] !== 0;
+  }
+  if (edit.kind === 'three-quarter') {
+    const currentKind = document.kind[index];
+    const currentCorner = threeQuarterCornerForKind(currentKind);
+    if (currentCorner !== undefined) {
+      if (edit.corner === currentCorner) return document.colors[offset] !== edit.color;
+      return edit.corner === oppositeQuarterCorner(currentCorner);
+    }
+    if (isThreeQuarterPairKind(currentKind)) return document.colors[offset + edit.corner] !== 0 && document.colors[offset + edit.corner] !== edit.color;
+    return true;
   }
   if (document.kind[index] !== CellKind.Quarters) return true;
   const oldColor = document.colors[offset + edit.corner];
@@ -767,7 +951,7 @@ export function preflightBulkCellCommand(document: PatternDocument, command: Dom
   if (!command || normalizeType(command.type) !== 'bulk-cell') throw new DomainError('invalid-command', 'A bulk cell command must have type bulk-cell.');
   validateBulkRevision(document, command);
   const edit = parseBulkEdit(command);
-  if (edit.kind === 'full' || edit.kind === 'half' || edit.kind === 'quarter') requirePaletteEntry(document, edit.color);
+  if (edit.kind === 'full' || edit.kind === 'half' || edit.kind === 'quarter' || edit.kind === 'three-quarter') requirePaletteEntry(document, edit.color);
   const indices = validateBulkIndices(document, command);
   let changedCount = 0;
   for (const index of indices) if (bulkCellWouldChange(document, index, edit)) changedCount += 1;
@@ -802,9 +986,23 @@ function completionMaskForCell(document: PatternDocument, index: number, corner:
   const offset = colorsOffset(index);
   if (kind === CellKind.Empty) throw new DomainError('invalid-completion-target', `Cell ${String(index)} has no occupied geometry.`);
   if (corner !== undefined) {
-    if (kind !== CellKind.Quarters) throw new DomainError('invalid-completion-target', `Cell ${String(index)} does not contain quarter geometry.`);
-    if (document.colors[offset + corner] === 0) throw new DomainError('invalid-completion-target', `Cell ${String(index)} has no occupied quarter at corner ${String(corner)}.`);
-    return 1 << corner;
+    if (kind === CellKind.Quarters) {
+      if (document.colors[offset + corner] === 0) throw new DomainError('invalid-completion-target', `Cell ${String(index)} has no occupied quarter at corner ${String(corner)}.`);
+      return 1 << corner;
+    }
+    const singleCorner = threeQuarterCornerForKind(kind);
+    if (singleCorner !== undefined) {
+      if (singleCorner !== corner) throw new DomainError('invalid-completion-target', `Cell ${String(index)} has no three-quarter component at corner ${String(corner)}.`);
+      return 1;
+    }
+    if (isThreeQuarterPairKind(kind) && document.colors[offset + corner] !== 0) return 1 << corner;
+    throw new DomainError('invalid-completion-target', `Cell ${String(index)} does not contain quarter geometry at corner ${String(corner)}.`);
+  }
+  if (isThreeQuarterPairKind(kind)) {
+    let mask = 0;
+    for (const slot of [QuarterCorner.NW, QuarterCorner.NE, QuarterCorner.SE, QuarterCorner.SW]) if (document.colors[offset + slot] !== 0) mask |= 1 << slot;
+    if (mask === 0) throw new DomainError('invalid-completion-target', `Cell ${String(index)} has no occupied three-quarter geometry.`);
+    return mask;
   }
   if (kind !== CellKind.Quarters) return 1;
   let mask = 0;
@@ -817,6 +1015,12 @@ function completedComponentCountForCell(document: PatternDocument, index: number
   const kind = document.kind[index];
   const offset = colorsOffset(index);
   if (kind === CellKind.Full || kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash) return (document.completed[index] & 1) !== 0 ? 1 : 0;
+  if (isThreeQuarterSingleKind(kind)) return (document.completed[index] & 1) !== 0 ? 1 : 0;
+  if (isThreeQuarterPairKind(kind)) {
+    let count = 0;
+    for (const corner of [QuarterCorner.NW, QuarterCorner.NE, QuarterCorner.SE, QuarterCorner.SW]) if (document.colors[offset + corner] !== 0 && (document.completed[index] & (1 << corner)) !== 0) count += 1;
+    return count;
+  }
   if (kind !== CellKind.Quarters) return 0;
   let count = 0;
   for (let slot = 0; slot < 4; slot += 1) if (document.colors[offset + slot] !== 0 && (document.completed[index] & (1 << slot)) !== 0) count += 1;
@@ -827,6 +1031,10 @@ function progressCountFromMask(mask: number): number {
   let count = 0;
   for (let bit = 1; bit <= 8; bit <<= 1) if ((mask & bit) !== 0) count += 1;
   return count;
+}
+
+function progressCountForCellMask(document: PatternDocument, index: number, mask: number): number {
+  return progressCountFromMask(mask);
 }
 
 export interface BulkCompletionPreflight {
@@ -968,6 +1176,7 @@ export function applyBulkCellCommand(document: PatternDocument, command: DomainC
       case 'full': writeFullAtIndex(document, index, preflight.edit.color); break;
       case 'half': writeFullAtIndex(document, index, preflight.edit.color, preflight.edit.direction); break;
       case 'quarter': writeQuarterAtIndex(document, index, preflight.edit.corner, preflight.edit.color); break;
+      case 'three-quarter': writeThreeQuarterAtIndex(document, index, preflight.edit.corner, preflight.edit.color); break;
       case 'erase-cell': clearCell(document, index); break;
       case 'erase-quarter': removeQuarterAtIndex(document, index, preflight.edit.corner); break;
     }
@@ -1016,11 +1225,11 @@ export function applyBulkCompletionCommand(document: PatternDocument, command: D
   for (let position = 0; position < preflight.changedIndices.length; position += 1) {
     const index = preflight.changedIndices[position];
     const mask = completionMaskForCell(document, index, preflight.corner);
-    const beforeCount = progressCountFromMask(document.completed[index] & mask);
+    const beforeCount = progressCountForCellMask(document, index, document.completed[index] & mask);
     beforeCompleted[position] = document.completed[index];
     document.completed[index] = applyProgressOperation(document.completed[index], mask, preflight.operation);
     afterCompleted[position] = document.completed[index];
-    const afterCount = progressCountFromMask(document.completed[index] & mask);
+    const afterCount = progressCountForCellMask(document, index, document.completed[index] & mask);
     marked += Math.max(0, afterCount - beforeCount);
     unmarked += Math.max(0, beforeCount - afterCount);
   }
@@ -1197,6 +1406,12 @@ export function bulkSetQuarterCommand(indices: Uint32Array, corner: QuarterCorne
   return bulkCellCommand(indices, { kind: 'quarter', corner, color }, expectedRevision);
 }
 
+export function bulkSetThreeQuarterCommand(indices: Uint32Array, corner: QuarterCorner, color: number, expectedRevision?: number): BulkCellCommand {
+  return bulkCellCommand(indices, { kind: 'three-quarter', corner, color }, expectedRevision);
+}
+
+export const bulkSetThreeQuartersCommand = bulkSetThreeQuarterCommand;
+
 export function bulkEraseCellCommand(indices: Uint32Array, expectedRevision?: number): BulkCellCommand {
   return bulkCellCommand(indices, { kind: 'erase-cell' }, expectedRevision);
 }
@@ -1208,6 +1423,8 @@ export function bulkEraseQuarterCommand(indices: Uint32Array, corner: QuarterCor
 export const bulkFullCommand = bulkSetFullCommand;
 export const bulkHalfCommand = bulkSetHalfCommand;
 export const bulkQuarterCommand = bulkSetQuarterCommand;
+export const bulkThreeQuarterCommand = bulkSetThreeQuarterCommand;
+export const bulkThreeQuartersCommand = bulkSetThreeQuarterCommand;
 export const bulkEraseCommand = bulkEraseCellCommand;
 
 function validateMixedEraseArrays(
@@ -1246,12 +1463,53 @@ function validateMixedEraseDocumentTargets(document: PatternDocument, targets: {
     while (wholePosition < targets.wholeCellIndices.length && targets.wholeCellIndices[wholePosition] < index) wholePosition += 1;
     if (wholePosition < targets.wholeCellIndices.length && targets.wholeCellIndices[wholePosition] === index) throw new DomainError('invalid-mixed-erase', `Cell ${String(index)} cannot be both a whole-cell and component target.`);
     if (index >= document.kind.length) throw new DomainError('out-of-bounds', `Component cell index ${String(index)} is out of bounds.`);
-    if (document.kind[index] !== CellKind.Quarters) throw new DomainError('invalid-mixed-erase', `Component cell index ${String(index)} is not a quarter cell.`);
+    if (document.kind[index] !== CellKind.Quarters && !isThreeQuarterKind(document.kind[index]) && !isThreeQuarterPairKind(document.kind[index])) throw new DomainError('invalid-mixed-erase', `Component cell index ${String(index)} is not a quarter or three-quarter cell.`);
   }
 }
 
 function mixedComponentWouldChange(document: PatternDocument, cell: number, corners: Uint8Array, start: number, end: number): boolean {
   const offset = colorsOffset(cell);
+  if (isThreeQuarterKind(document.kind[cell]) || isThreeQuarterPairKind(document.kind[cell])) {
+    let kind = document.kind[cell];
+    const colors = [document.colors[offset], document.colors[offset + 1], document.colors[offset + 2], document.colors[offset + 3]];
+    let completion = document.completed[cell];
+    let changed = false;
+    for (let position = start; position < end; position += 1) {
+      const corner = corners[position] as QuarterCorner;
+      const singleCorner = threeQuarterCornerForKind(kind);
+      if (singleCorner !== undefined) {
+        if (singleCorner !== corner || colors[0] === 0) continue;
+        kind = CellKind.Empty;
+        colors[0] = 0;
+        colors[1] = 0;
+        colors[2] = 0;
+        colors[3] = 0;
+        completion = 0;
+        changed = true;
+        continue;
+      }
+      if (!isThreeQuarterPairKind(kind) || colors[corner] === 0) continue;
+      colors[corner] = 0;
+      completion &= ~(1 << corner);
+      const survivors = [0, 1, 2, 3].filter((candidate) => colors[candidate] !== 0) as QuarterCorner[];
+      if (survivors.length === 0) {
+        kind = CellKind.Empty;
+        completion = 0;
+      } else if (survivors.length === 1) {
+        const survivor = survivors[0];
+        const survivorColor = colors[survivor];
+        const survivorCompleted = completion & (1 << survivor);
+        kind = threeQuarterKindForCorner(survivor);
+        colors[0] = survivorColor;
+        colors[1] = 0;
+        colors[2] = 0;
+        colors[3] = 0;
+        completion = survivorCompleted === 0 ? 0 : 1;
+      }
+      changed = true;
+    }
+    return changed;
+  }
   let color0 = document.colors[offset];
   let color1 = document.colors[offset + 1];
   let color2 = document.colors[offset + 2];
@@ -1591,7 +1849,15 @@ function pasteCellWouldChange(document: PatternDocument, targetIndex: number, fr
   if (sourceKind === CellKind.Empty) return false;
   const targetOffset = colorsOffset(targetIndex);
   const sourceOffset = colorsOffset(sourceIndex);
-  if (sourceKind === CellKind.Full || sourceKind === CellKind.HalfBackslash || sourceKind === CellKind.HalfSlash) {
+  if (isThreeQuarterPairKind(sourceKind)) {
+    return document.kind[targetIndex] !== CellKind.ThreeQuarterPair
+      || document.colors[targetOffset] !== fragment.colors[sourceOffset]
+      || document.colors[targetOffset + 1] !== fragment.colors[sourceOffset + 1]
+      || document.colors[targetOffset + 2] !== fragment.colors[sourceOffset + 2]
+      || document.colors[targetOffset + 3] !== fragment.colors[sourceOffset + 3]
+      || document.completed[targetIndex] !== 0;
+  }
+  if (sourceKind === CellKind.Full || sourceKind === CellKind.HalfBackslash || sourceKind === CellKind.HalfSlash || isThreeQuarterSingleKind(sourceKind)) {
     return document.kind[targetIndex] !== sourceKind
       || document.colors[targetOffset] !== fragment.colors[sourceOffset]
       || document.colors[targetOffset + 1] !== 0
@@ -1611,7 +1877,7 @@ function validatePastePalette(document: PatternDocument, fragment: PatternFragme
   for (let index = 0; index < count; index += 1) {
     if (fragment.kind[index] === CellKind.Empty) continue;
     const offset = colorsOffset(index);
-    if (fragment.kind[index] === CellKind.Quarters) {
+    if (fragment.kind[index] === CellKind.Quarters || isThreeQuarterPairKind(fragment.kind[index])) {
       for (let slot = 0; slot < 4; slot += 1) if (fragment.colors[offset + slot] !== 0) requirePaletteEntry(document, fragment.colors[offset + slot]);
     } else {
       requirePaletteEntry(document, fragment.colors[offset]);
@@ -1687,6 +1953,8 @@ function applyPastedCell(document: PatternDocument, targetIndex: number, fragmen
   if (sourceKind === CellKind.Full) writeFullAtIndex(document, targetIndex, fragment.colors[sourceOffset]);
   else if (sourceKind === CellKind.HalfBackslash) writeFullAtIndex(document, targetIndex, fragment.colors[sourceOffset], HalfDirection.Backslash);
   else if (sourceKind === CellKind.HalfSlash) writeFullAtIndex(document, targetIndex, fragment.colors[sourceOffset], HalfDirection.Slash);
+  else if (isThreeQuarterSingleKind(sourceKind)) writeThreeQuarterKindAtIndex(document, targetIndex, sourceKind, fragment.colors[sourceOffset]);
+  else if (isThreeQuarterPairKind(sourceKind)) writeThreeQuarterPairAtIndex(document, targetIndex, fragment.colors, sourceOffset);
   else if (sourceKind === CellKind.Quarters) writeQuartersAtIndex(document, targetIndex, fragment.colors, sourceOffset, false);
   document.completed[targetIndex] = 0;
 }
@@ -1841,9 +2109,25 @@ function cellCommand(document: PatternDocument, command: DomainCommand): Mutatio
   const x = requiredNumber(valueOf(command, 'x', 'column'), 'x');
   const y = requiredNumber(valueOf(command, 'y', 'row'), 'y');
   const modeValue = valueOf(command, 'kind', 'mode', 'stitch');
+  const normalizedMode = typeof modeValue === 'string' ? modeValue.toLowerCase().replace(/[-_ ]/g, '') : '';
+  if (normalizedMode === 'threequarter' || normalizedMode === 'threequarters') {
+    return writeThreeQuarter(document, x, y, parseCorner(valueOf(command, 'corner', 'quarter', 'slot')), parseColor(command)) ? changed() : noChange();
+  }
   const kind = modeValue === undefined ? CellKind.Full : parseKind(modeValue);
   if (kind === CellKind.Empty) return clearCell(document, cellIndex(document, x, y)) ? changed() : noChange();
   if (kind === CellKind.Full) return writeFull(document, x, y, parseColor(command)) ? changed() : noChange();
+  if (kind === CellKind.ThreeQuarterPair) {
+    const rawColors = valueOf(command, 'colors', 'threeQuarterColors', 'pairColors');
+    if (!Array.isArray(rawColors) || rawColors.length !== 4) throw new DomainError('invalid-command', 'A three-quarter pair requires four physical color slots.');
+    const pairColors = rawColors.map((value) => requiredNumber(value, 'three-quarter pair color'));
+    for (const color of pairColors) if (color !== 0) requirePaletteEntry(document, color);
+    return writeThreeQuarterPairAtIndex(document, cellIndex(document, x, y), pairColors) ? changed() : noChange();
+  }
+  if (isThreeQuarterKind(kind)) {
+    const color = parseColor(command);
+    requirePaletteEntry(document, color);
+    return writeThreeQuarterKindAtIndex(document, cellIndex(document, x, y), kind, color) ? changed() : noChange();
+  }
   if (kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash) {
     const direction = typeof modeValue === 'string' && modeValue.toLowerCase() === 'half'
       ? parseDirection(valueOf(command, 'direction', 'diagonal', 'slash'))
@@ -1875,6 +2159,13 @@ function applySetHalfCommand(document: PatternDocument, command: DomainCommand):
   return writeFull(document, x, y, parseColor(command), direction) ? changed() : noChange();
 }
 
+function applySetThreeQuarterCommand(document: PatternDocument, command: DomainCommand): MutationInfo {
+  const x = requiredNumber(valueOf(command, 'x', 'column'), 'x');
+  const y = requiredNumber(valueOf(command, 'y', 'row'), 'y');
+  const corner = parseCorner(valueOf(command, 'corner', 'quarter', 'slot'));
+  return writeThreeQuarter(document, x, y, corner, parseColor(command)) ? changed() : noChange();
+}
+
 function quarterCommand(document: PatternDocument, command: DomainCommand): MutationInfo {
   const x = requiredNumber(valueOf(command, 'x', 'column'), 'x');
   const y = requiredNumber(valueOf(command, 'y', 'row'), 'y');
@@ -1894,6 +2185,29 @@ function recolorCell(document: PatternDocument, command: DomainCommand): Mutatio
   const offset = colorsOffset(index);
   const cornerValue = valueOf(command, 'corner', 'quarter', 'slot');
   if (document.kind[index] === CellKind.Empty) return noChange();
+  if (isThreeQuarterSingleKind(document.kind[index])) {
+    const singleCorner = threeQuarterCornerForKind(document.kind[index]);
+    if (cornerValue !== undefined && parseCorner(cornerValue) !== singleCorner) return noChange();
+    if (document.colors[offset] === color) return noChange();
+    document.colors[offset] = color;
+    return changed();
+  }
+  if (isThreeQuarterPairKind(document.kind[index])) {
+    if (cornerValue !== undefined) {
+      const corner = parseCorner(cornerValue);
+      if (document.colors[offset + corner] === 0 || document.colors[offset + corner] === color) return noChange();
+      document.colors[offset + corner] = color;
+      return changed();
+    }
+    let didChange = false;
+    for (const corner of [QuarterCorner.NW, QuarterCorner.NE, QuarterCorner.SE, QuarterCorner.SW]) {
+      if (document.colors[offset + corner] !== 0 && document.colors[offset + corner] !== color) {
+        document.colors[offset + corner] = color;
+        didChange = true;
+      }
+    }
+    return didChange ? changed() : noChange();
+  }
   if (document.kind[index] === CellKind.Quarters && cornerValue !== undefined) {
     const corner = parseCorner(cornerValue);
     if (document.colors[offset + corner] === 0 || document.colors[offset + corner] === color) return noChange();
@@ -1929,7 +2243,19 @@ function completionCommand(document: PatternDocument, command: DomainCommand, to
     document.completed[index] = next;
     return changed(false, progressForCell(index, beforeCount, completedComponentCountForCell(document, index)));
   }
-  const slots = document.kind[index] === CellKind.Quarters ? [0, 1, 2, 3] : [0];
+  if (cornerValue !== undefined && (isThreeQuarterKind(document.kind[index]) || isThreeQuarterPairKind(document.kind[index]))) {
+    const requestedCorner = parseCorner(cornerValue);
+    const singleCorner = threeQuarterCornerForKind(document.kind[index]);
+    const bit = singleCorner === undefined ? 1 << requestedCorner : singleCorner === requestedCorner ? 1 : 0;
+    if (bit === 0 || (isThreeQuarterPairKind(document.kind[index]) && document.colors[offset + requestedCorner] === 0)) return noChange();
+    const next = toggle ? document.completed[index] ^ bit : requested ? document.completed[index] | bit : document.completed[index] & ~bit;
+    if (next === document.completed[index]) return noChange();
+    document.completed[index] = next;
+    return changed(false, progressForCell(index, beforeCount, completedComponentCountForCell(document, index)));
+  }
+  const slots = document.kind[index] === CellKind.Quarters
+    ? [0, 1, 2, 3]
+    : isThreeQuarterPairKind(document.kind[index]) ? [0, 1, 2, 3] : [0];
   let nextMask = document.completed[index];
   for (const slot of slots) {
     if (document.colors[offset + slot] === 0) continue;
@@ -2301,7 +2627,22 @@ function rotateOnce(document: PatternDocument, clockwise: boolean): void {
       const nextOffset = nextIndex * 4;
       const kind = oldKind[oldIndex];
       nextKind[nextIndex] = kind;
-      if (kind === CellKind.Quarters) {
+      if (isThreeQuarterPairKind(kind)) {
+        const mapCorner = clockwise ? mapCornerCW : mapCornerCCW;
+        for (let slot = 0; slot < 4; slot += 1) {
+          const nextSlot = mapCorner(slot as QuarterCorner);
+          nextColors[nextOffset + nextSlot] = oldColors[oldOffset + slot];
+          if (oldCompleted[oldIndex] & (1 << slot)) nextCompleted[nextIndex] |= 1 << nextSlot;
+        }
+      } else if (isThreeQuarterSingleKind(kind)) {
+        const corner = threeQuarterCornerForKind(kind);
+        if (corner !== undefined) {
+          const mapCorner = clockwise ? mapCornerCW : mapCornerCCW;
+          nextKind[nextIndex] = threeQuarterKindForCorner(mapCorner(corner));
+        }
+        nextColors[nextOffset] = oldColors[oldOffset];
+        nextCompleted[nextIndex] = oldCompleted[oldIndex] & 1;
+      } else if (kind === CellKind.Quarters) {
         const mapCorner = clockwise ? mapCornerCW : mapCornerCCW;
         for (let slot = 0; slot < 4; slot += 1) {
           const nextSlot = mapCorner(slot as QuarterCorner);
@@ -2347,7 +2688,22 @@ function mirror(document: PatternDocument, horizontal: boolean): void {
       const nextOffset = nextIndex * 4;
       const kind = oldKind[oldIndex];
       nextKind[nextIndex] = kind;
-      if (kind === CellKind.Quarters) {
+      if (isThreeQuarterPairKind(kind)) {
+        const mapCorner = horizontal ? mapCornerHorizontal : mapCornerVertical;
+        for (let slot = 0; slot < 4; slot += 1) {
+          const nextSlot = mapCorner(slot as QuarterCorner);
+          nextColors[nextOffset + nextSlot] = oldColors[oldOffset + slot];
+          if (oldCompleted[oldIndex] & (1 << slot)) nextCompleted[nextIndex] |= 1 << nextSlot;
+        }
+      } else if (isThreeQuarterSingleKind(kind)) {
+        const corner = threeQuarterCornerForKind(kind);
+        if (corner !== undefined) {
+          const mapCorner = horizontal ? mapCornerHorizontal : mapCornerVertical;
+          nextKind[nextIndex] = threeQuarterKindForCorner(mapCorner(corner));
+        }
+        nextColors[nextOffset] = oldColors[oldOffset];
+        nextCompleted[nextIndex] = oldCompleted[oldIndex] & 1;
+      } else if (kind === CellKind.Quarters) {
         const mapCorner = horizontal ? mapCornerHorizontal : mapCornerVertical;
         for (let slot = 0; slot < 4; slot += 1) {
           const nextSlot = mapCorner(slot as QuarterCorner);
@@ -2557,7 +2913,7 @@ export function applyCommandsToDraft(document: PatternDocument, commands: readon
   };
 }
 
-export function applyOneToDraft(document: PatternDocument, command: DomainCommand, tracker?: MutationTracker): MutationInfo {
+function applyOneToDraftInternal(document: PatternDocument, command: DomainCommand, tracker?: MutationTracker): MutationInfo {
   if (!command || typeof command.type !== 'string') throw new DomainError('invalid-command', 'Every command must have a type.');
   validateExpectedCommandRevision(document, command);
   const type = normalizeType(command.type);
@@ -2583,6 +2939,7 @@ export function applyOneToDraft(document: PatternDocument, command: DomainComman
     case 'set-full': return applySetFullCommand(document, command);
     case 'set-half': return applySetHalfCommand(document, command);
     case 'set-quarter': return quarterCommand(document, command);
+    case 'set-three-quarter': return applySetThreeQuarterCommand(document, command);
     case 'set-quarters': {
       const x = requiredNumber(valueOf(command, 'x', 'column'), 'x');
       const y = requiredNumber(valueOf(command, 'y', 'row'), 'y');
@@ -2635,6 +2992,10 @@ export function applyOneToDraft(document: PatternDocument, command: DomainComman
     case 'crop': return applyCrop(document, command);
     default: throw new DomainError('unknown-command', `Unknown command type ${command.type}.`);
   }
+}
+
+export function applyOneToDraft(document: PatternDocument, command: DomainCommand, tracker?: MutationTracker): MutationInfo {
+  return applyOneToDraftInternal(document, command, tracker);
 }
 
 export function applyCommand(document: PatternDocument, command: DomainCommand): CommandResult {
@@ -2703,9 +3064,15 @@ export function quarterCommandFor(x: number, y: number, corner: QuarterCorner, c
   return { type: 'set-quarter', x, y, corner, color, ...(completed === undefined ? {} : { completed }) };
 }
 
+export function threeQuarterCommandFor(x: number, y: number, corner: QuarterCorner, color: number, completed?: boolean): DomainCommand {
+  return { type: 'set-three-quarter', x, y, corner, color, ...(completed === undefined ? {} : { completed }) };
+}
+
 export const setFullCommand = fullCommand;
 export const setHalfCommand = halfCommand;
 export const setQuarterCommand = quarterCommandFor;
+export const setThreeQuarterCommand = threeQuarterCommandFor;
+export const threeQuarterCommand = threeQuarterCommandFor;
 
 export function createPaletteCommand(input: PaletteEntryInput): DomainCommand {
   return { type: 'palette-create', ...input };
@@ -2747,6 +3114,10 @@ export function setHalf(document: PatternDocument, x: number, y: number, directi
 
 export function setQuarter(document: PatternDocument, x: number, y: number, corner: QuarterCorner, color: number, completed?: boolean): CommandResult {
   return applyCommand(document, quarterCommandFor(x, y, corner, color, completed));
+}
+
+export function setThreeQuarter(document: PatternDocument, x: number, y: number, corner: QuarterCorner, color: number, completed?: boolean): CommandResult {
+  return applyCommand(document, threeQuarterCommandFor(x, y, corner, color, completed));
 }
 
 export function eraseCell(document: PatternDocument, x: number, y: number): CommandResult {

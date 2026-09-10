@@ -1,17 +1,27 @@
-/** The only cell modes supported by the v1 document grammar. */
+/** Persisted cell geometry tags. Quarters is reserved for legacy slot geometry. */
 export const CellKind = {
   Empty: 0,
   Full: 1,
   HalfBackslash: 2,
   HalfSlash: 3,
   Quarters: 4,
+  ThreeQuarterNW: 5,
+  ThreeQuarterNE: 6,
+  ThreeQuarterSE: 7,
+  ThreeQuarterSW: 8,
+  ThreeQuarterPair: 9,
   Half: 2,
   Quarter: 4,
   EMPTY: 0,
   FULL: 1,
   HALF_BACKSLASH: 2,
   HALF_SLASH: 3,
-  QUARTERS: 4
+  QUARTERS: 4,
+  THREE_QUARTER_NW: 5,
+  THREE_QUARTER_NE: 6,
+  THREE_QUARTER_SE: 7,
+  THREE_QUARTER_SW: 8,
+  THREE_QUARTER_PAIR: 9
 } as const;
 
 export type CellKind = (typeof CellKind)[keyof typeof CellKind];
@@ -46,8 +56,10 @@ export const FIXED_POINT_UNITS_PER_CELL = 4;
 /** The largest grid that can be allocated, iterated, and persisted by v1. */
 export const MAX_PERSISTABLE_CELL_COUNT = 1_000_000;
 export const PATTERN_FRAGMENT_VERSION = 1 as const;
-export const DOCUMENT_SCHEMA_VERSION = 2 as const;
+export const DOCUMENT_SCHEMA_VERSION = 4 as const;
 export const LEGACY_DOCUMENT_SCHEMA_VERSION = 1 as const;
+export const PENULTIMATE_DOCUMENT_SCHEMA_VERSION = 2 as const;
+export const PRIOR_DOCUMENT_SCHEMA_VERSION = 3 as const;
 export const PALETTE_ID_MAX = 0xfffe;
 export const PALETTE_ID_RESERVED = 0xffff;
 
@@ -230,6 +242,7 @@ export type FragmentSelection = CropRect;
 export type BulkCellEdit =
   | { readonly kind: 'full'; readonly color: number }
   | { readonly kind: 'half'; readonly direction: HalfDirection; readonly color: number }
+  | { readonly kind: 'three-quarter'; readonly corner: QuarterCorner; readonly color: number }
   | { readonly kind: 'quarter'; readonly corner: QuarterCorner; readonly color: number }
   | { readonly kind: 'erase-cell' }
   | { readonly kind: 'erase-quarter'; readonly corner: QuarterCorner };

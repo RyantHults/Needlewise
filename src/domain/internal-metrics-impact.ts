@@ -3,6 +3,7 @@ export interface DeleteMetricsImpactEntry {
   readonly removedFull: number;
   readonly removedHalf: number;
   readonly removedQuarter: number;
+  readonly removedThreeQuarter: number;
   readonly removedCellCompleted: number;
   readonly beforeBackstitchCount: number;
   readonly afterBackstitchCount: number;

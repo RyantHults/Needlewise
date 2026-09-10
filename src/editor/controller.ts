@@ -3,11 +3,13 @@ import {
   createPatternFragment,
   clonePatternFragment,
   DomainError,
+  HalfDirection,
   mixedEraseCommand,
   preflightMixedEraseCommand,
   deleteRegionCommand,
   pasteFragmentCommand,
   preflightBulkCellCommand,
+  QuarterCorner,
   type BulkCellEdit,
   type CommandResult,
   type DomainCommand,
@@ -72,6 +74,16 @@ import {
 } from './fill';
 import { sampleTraceImage } from '../rendering/trace';
 import { nearestDmcColor } from '../catalog';
+import {
+  isThreeQuarterKind,
+  isThreeQuarterPairKind,
+  isLegacyQuarterKind,
+  ThreeQuarterPair,
+  threeQuarterCornersShareAxis,
+  threeQuarterPairComponents,
+  threeQuarterCornerForKind,
+  threeQuarterKindForCorner
+} from './cell-kinds';
 
 export interface EditorSurfaceControllerOptions {
   readonly gateway: WorkspaceEditorGateway;
@@ -106,6 +118,8 @@ interface PaintGesture {
   readonly pointerId: number;
   readonly transaction: EditorTransaction;
   readonly brush: StitchBrush;
+  /** Geometry captured at pointer-down; every stamped cell uses this edit. */
+  readonly edit: BulkCellEdit;
   readonly brushSize: number;
   readonly cells: Map<string, ModelPoint>;
   lastCell: ModelPoint | undefined;
@@ -213,15 +227,26 @@ function distance(left: PointerSample, right: PointerSample): number {
   return Math.hypot(left.screenX - right.screenX, left.screenY - right.screenY);
 }
 
-function editForBrush(brush: StitchBrush): BulkCellEdit {
+function editForBrush(brush: StitchBrush, pointerDownCorner?: QuarterCorner): BulkCellEdit {
   if (brush.kind === 'full') return { kind: 'full', color: brush.paletteId };
-  if (brush.kind === 'half') return { kind: 'half', direction: brush.direction, color: brush.paletteId };
+  if (brush.kind === 'half') {
+    const direction = pointerDownCorner === QuarterCorner.NW || pointerDownCorner === QuarterCorner.SE
+      ? HalfDirection.Backslash
+      : pointerDownCorner === QuarterCorner.NE || pointerDownCorner === QuarterCorner.SW
+        ? HalfDirection.Slash
+        : brush.direction ?? HalfDirection.Backslash;
+    return { kind: 'half', direction, color: brush.paletteId };
+  }
+  if (brush.kind === 'three-quarter') {
+    return { kind: 'three-quarter', corner: pointerDownCorner ?? QuarterCorner.NW, color: brush.paletteId };
+  }
   return { kind: 'quarter', corner: brush.corner, color: brush.paletteId };
 }
 
 function cloneBrush(brush: StitchBrush): StitchBrush {
   if (brush.kind === 'full') return { kind: 'full', paletteId: brush.paletteId };
-  if (brush.kind === 'half') return { kind: 'half', direction: brush.direction, paletteId: brush.paletteId };
+  if (brush.kind === 'half') return { kind: 'half', ...(brush.direction === undefined ? {} : { direction: brush.direction }), paletteId: brush.paletteId };
+  if (brush.kind === 'three-quarter') return { kind: 'three-quarter', paletteId: brush.paletteId };
   return { kind: 'quarter', corner: brush.corner, paletteId: brush.paletteId };
 }
 
@@ -249,10 +274,82 @@ function stampBrush(cells: Map<string, ModelPoint>, center: ModelPoint, size: nu
   for (const cell of brushCells(center, size, document)) cells.set(cellKey(cell), cell);
 }
 
+function componentCornerForHit(document: PatternDocument, index: number, corner: 0 | 1 | 2 | 3): 0 | 1 | 2 | 3 | undefined {
+  const kind = document.kind[index];
+  if (isLegacyQuarterKind(kind)) return corner;
+  if (isThreeQuarterKind(kind)) return threeQuarterCornerForKind(kind) === corner ? corner : undefined;
+  if (isThreeQuarterPairKind(kind)) {
+    const colors = document.colors.subarray(index * 4, index * 4 + 4);
+    return threeQuarterPairComponents(colors).some((component) => component.corner === corner) ? corner : undefined;
+  }
+  return undefined;
+}
+
+function applyEraseQuarterState(
+  kind: CellKind,
+  colors: [number, number, number, number],
+  completed: number,
+  corner: 0 | 1 | 2 | 3
+): { kind: CellKind; colors: [number, number, number, number]; completed: number } {
+  if (isLegacyQuarterKind(kind)) {
+    colors[corner] = 0;
+    completed &= ~(1 << corner);
+    if (colors.every((color) => color === 0)) return { kind: CellKind.Empty, colors: [0, 0, 0, 0], completed: 0 };
+    return { kind, colors, completed };
+  }
+  if (isThreeQuarterKind(kind)) {
+    if (threeQuarterCornerForKind(kind) !== corner) return { kind, colors, completed };
+    return { kind: CellKind.Empty, colors: [0, 0, 0, 0], completed: 0 };
+  }
+  if (isThreeQuarterPairKind(kind)) {
+    const components = threeQuarterPairComponents(colors);
+    const remaining = components.find((component) => component.corner !== corner);
+    if (!components.some((component) => component.corner === corner) || !remaining) return { kind, colors, completed };
+    const nextColors: [number, number, number, number] = [0, 0, 0, 0];
+    nextColors[0] = colors[remaining.slot];
+    return {
+      kind: remaining.kind,
+      colors: nextColors,
+      completed: (completed & (1 << remaining.slot)) !== 0 ? 1 : 0
+    };
+  }
+  return { kind, colors, completed };
+}
+
+function applyThreeQuarterPaintState(
+  kind: CellKind,
+  colors: [number, number, number, number],
+  completed: number,
+  corner: 0 | 1 | 2 | 3,
+  color: number
+): { kind: CellKind; colors: [number, number, number, number]; completed: number } {
+  const existingCorner = threeQuarterCornerForKind(kind);
+  if (existingCorner !== undefined) {
+    if (existingCorner === corner) return { kind, colors: [color, 0, 0, 0], completed: completed & 1 };
+    if (!threeQuarterCornersShareAxis(existingCorner, corner)) return { kind, colors, completed };
+    const nextColors: [number, number, number, number] = [0, 0, 0, 0];
+    nextColors[existingCorner] = colors[0];
+    nextColors[corner] = color;
+    return {
+      kind: ThreeQuarterPair,
+      colors: nextColors,
+      completed: (completed & 1) !== 0 ? 1 << existingCorner : 0
+    };
+  }
+  if (isThreeQuarterPairKind(kind)) {
+    const components = threeQuarterPairComponents(colors);
+    if (!components.some((component) => component.corner === corner)) return { kind, colors, completed };
+    const nextColors = colors.slice() as [number, number, number, number];
+    nextColors[corner] = color;
+    return { kind, colors: nextColors, completed };
+  }
+  return { kind: threeQuarterKindForCorner(corner), colors: [color, 0, 0, 0], completed: 0 };
+}
+
 function cellState(document: PatternDocument, index: number, edit: BulkCellEdit): PendingCellState {
   const offset = index * 4;
   let kind = document.kind[index] as CellKind;
-  const colors: [number, number, number, number] = [
+  let colors: [number, number, number, number] = [
     document.colors[offset],
     document.colors[offset + 1],
     document.colors[offset + 2],
@@ -264,14 +361,7 @@ function cellState(document: PatternDocument, index: number, edit: BulkCellEdit)
     colors.fill(0);
     completed = 0;
   } else if (edit.kind === 'erase-quarter') {
-    if (kind === CellKind.Quarters) {
-      colors[edit.corner] = 0;
-      completed &= ~(1 << edit.corner);
-      if (colors.every((color) => color === 0)) {
-        kind = CellKind.Empty;
-        completed = 0;
-      }
-    }
+    ({ kind, colors, completed } = applyEraseQuarterState(kind, colors, completed, edit.corner));
   } else if (edit.kind === 'full' || edit.kind === 'half') {
     const nextKind = edit.kind === 'full'
       ? CellKind.Full
@@ -281,6 +371,8 @@ function cellState(document: PatternDocument, index: number, edit: BulkCellEdit)
     colors.fill(0);
     colors[0] = edit.color;
     completed = sameGeometry ? completed & 1 : 0;
+  } else if (edit.kind === 'three-quarter') {
+    ({ kind, colors, completed } = applyThreeQuarterPaintState(kind, colors, completed, edit.corner, edit.color));
   } else {
     const wasQuarter = kind === CellKind.Quarters;
     if (!wasQuarter) {
@@ -340,6 +432,16 @@ function quarterCornerAt(point: ModelPoint): 0 | 1 | 2 | 3 {
   return column === 0 ? 3 : 2;
 }
 
+function pairCornerAt(point: ModelPoint, colors: ArrayLike<number>): 0 | 1 | 2 | 3 {
+  const localX = point.x - Math.floor(point.x);
+  const localY = point.y - Math.floor(point.y);
+  const components = threeQuarterPairComponents(colors);
+  const first = components[0].corner;
+  const second = components[1].corner;
+  const firstTriangle = first === 0 ? localX + localY <= 1 : localY <= localX;
+  return firstTriangle ? first : second;
+}
+
 function fixedPointAt(point: ModelPoint, document: PatternDocument): FixedPoint {
   if (!isFiniteModelPoint(point)) throw new DomainError('invalid-coordinate', 'Backstitch coordinates must be finite.');
   return {
@@ -387,6 +489,7 @@ export function selectedCellSemantics(document: PatternDocument, cell: ModelPoin
   const y = Math.min(Math.max(0, Math.floor(cell.y)), document.height - 1);
   const index = y * document.width + x;
   const kind = document.kind[index];
+  const threeQuarterCorner = threeQuarterCornerForKind(kind);
   const geometry: SelectedCellSemantics['geometry'] = kind === CellKind.Full
     ? 'full'
     : kind === CellKind.HalfBackslash
@@ -395,12 +498,26 @@ export function selectedCellSemantics(document: PatternDocument, cell: ModelPoin
         ? 'half-slash'
         : kind === CellKind.Quarters
           ? 'quarters'
-          : 'empty';
+          : isThreeQuarterPairKind(kind)
+            ? 'three-quarter-pair'
+          : threeQuarterCorner === 0
+            ? 'three-quarter-nw'
+            : threeQuarterCorner === 1
+              ? 'three-quarter-ne'
+              : threeQuarterCorner === 2
+                ? 'three-quarter-se'
+                : threeQuarterCorner === 3
+                  ? 'three-quarter-sw'
+                  : 'empty';
   const offset = index * 4;
-  const slotCount = kind === CellKind.Quarters ? 4 : kind === CellKind.Empty ? 0 : 1;
+  const slots: readonly number[] = isLegacyQuarterKind(kind)
+    ? [0, 1, 2, 3]
+    : isThreeQuarterPairKind(kind)
+      ? threeQuarterPairComponents(document.colors.subarray(offset, offset + 4)).map((component) => component.slot)
+      : kind === CellKind.Empty ? [] : [0];
   const paletteIds: number[] = [];
   let completed = 0;
-  for (let slot = 0; slot < slotCount; slot += 1) {
+  for (const slot of slots) {
     const paletteId = document.colors[offset + slot];
     if (paletteId === 0) continue;
     paletteIds.push(paletteId);
@@ -477,7 +594,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private keyboardBackstitchToken: EditorRevisionToken | undefined;
   private fillJob: FillJob | undefined;
   private fillToken: EditorRevisionToken | undefined;
-  private fillBrushSnapshot: StitchBrush | undefined;
+  private fillEditSnapshot: BulkCellEdit | undefined;
   /** Window-level keydown listener active only while a reference-image tool is on. */
   private imageToolKeydownListener: ((event: KeyboardEvent) => void) | null = null;
 
@@ -654,7 +771,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (!job) return false;
     this.fillJob = undefined;
     this.fillToken = undefined;
-    this.fillBrushSnapshot = undefined;
+    this.fillEditSnapshot = undefined;
     job.cancel();
     this.setFillPending(false);
     if (showStatus) this.setStatus('Fill cancelled');
@@ -785,9 +902,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   /** Eyedropper: pick a cell's palette color, otherwise sample the reference image. */
   private eyedropperAt(sample: PointerSample, document: PatternDocument): boolean {
     if (!validScreenSample(sample) || !isFiniteViewport(this.uiStore.getState().viewport)) return false;
+    const point = screenToModel({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport);
     const cell = this.paintHitCell(sample, document);
     if (cell) {
-      const picked = this.pickCellPalette(document, cell);
+      const picked = this.pickCellPalette(document, cell, point);
       if (picked !== undefined) {
         this.activatePickedColor(picked);
         return true;
@@ -798,13 +916,24 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return this.activateSampledColor(rgb);
   }
 
-  private pickCellPalette(document: PatternDocument, cell: ModelPoint): number | undefined {
+  private pickCellPalette(document: PatternDocument, cell: ModelPoint, point?: ModelPoint): number | undefined {
     const index = cell.y * document.width + cell.x;
     const kind = document.kind[index];
     if (kind === CellKind.Empty) return undefined;
     const offset = index * 4;
-    const slotCount = kind === CellKind.Quarters ? 4 : 1;
-    for (let slot = 0; slot < slotCount; slot += 1) {
+    if (isThreeQuarterPairKind(kind) && point) {
+      const colors = document.colors.subarray(offset, offset + 4);
+      const corner = pairCornerAt(point, colors);
+      const component = threeQuarterPairComponents(colors).find((entry) => entry.corner === corner);
+      const paletteId = component && document.colors[offset + component.slot];
+      if (paletteId) return paletteId;
+    }
+    const slots: readonly number[] = isLegacyQuarterKind(kind)
+      ? [0, 1, 2, 3]
+      : isThreeQuarterPairKind(kind)
+        ? threeQuarterPairComponents(document.colors.subarray(offset, offset + 4)).map((component) => component.slot)
+        : [0];
+    for (const slot of slots) {
       const paletteId = document.colors[offset + slot];
       if (paletteId !== 0) return paletteId;
     }
@@ -889,7 +1018,17 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   /** True when any stitch or backstitch uses the palette id. */
   private isPaletteReferenced(document: PatternDocument, id: number): boolean {
-    for (let index = 0; index < document.colors.length; index += 1) if (document.colors[index] === id) return true;
+    const cellCount = Math.min(document.kind.length, Math.floor(document.colors.length / 4));
+    for (let index = 0; index < cellCount; index += 1) {
+      const offset = index * 4;
+      const kind = document.kind[index];
+      const slots: readonly number[] = isLegacyQuarterKind(kind)
+        ? [0, 1, 2, 3]
+        : isThreeQuarterPairKind(kind)
+          ? threeQuarterPairComponents(document.colors.subarray(offset, offset + 4)).map((component) => component.slot)
+          : [0];
+      for (const slot of slots) if (document.colors[offset + slot] === id) return true;
+    }
     for (let index = 0; index < document.backstitches.colors.length; index += 1) if (document.backstitches.colors[index] === id) return true;
     return false;
   }
@@ -934,8 +1073,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       : brush.kind === 'full'
         ? { kind: 'full', paletteId }
         : brush.kind === 'half'
-          ? { kind: 'half', direction: brush.direction, paletteId }
-          : { kind: 'quarter', corner: brush.corner, paletteId };
+          ? { kind: 'half', ...(brush.direction === undefined ? {} : { direction: brush.direction }), paletteId }
+          : brush.kind === 'three-quarter'
+            ? { kind: 'three-quarter', paletteId }
+            : { kind: 'quarter', corner: brush.corner, paletteId };
     this.uiStore.setState({ paletteId, tool: { tool: 'paint', brush: nextBrush } });
     this.reconcilePendingPalette(paletteId);
   }
@@ -994,7 +1135,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if (selectedTool.tool === 'fill') {
       const cell = this.paintHitCell(sample, snapshot.document);
-      return cell ? this.startFillAt(cell, selectedTool.brush) : false;
+      return cell ? this.startFillAt(cell, selectedTool.brush, this.paintCorner(sample)) : false;
     }
     if (selectedTool.tool === 'backstitch') return this.beginBackstitch(sample, snapshot);
     if (selectedTool.tool === 'eraser') {
@@ -1017,8 +1158,9 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const brushSize = this.getBrushSize();
     const cells = new Map<string, ModelPoint>();
     stampBrush(cells, cell, brushSize, snapshot.document);
-    this.gesture = { kind: 'paint', pointerId: sample.pointerId, transaction, brush: selectedTool.brush, brushSize, cells, lastCell: cell };
-    this.publishPendingCells(cells, this.pendingPaintStates(cells, selectedTool.brush, transaction.token.revision, snapshot.document));
+    const edit = editForBrush(selectedTool.brush, this.paintCorner(sample));
+    this.gesture = { kind: 'paint', pointerId: sample.pointerId, transaction, brush: selectedTool.brush, edit, brushSize, cells, lastCell: cell };
+    this.publishPendingCells(cells, this.pendingPaintStates(cells, edit, transaction.token.revision, snapshot.document));
     return true;
   }
 
@@ -1061,7 +1203,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const document = snapshot.document;
       if (!document) return false;
       this.appendPaintSample(gesture, sample, document);
-      this.publishPendingCells(gesture.cells, this.pendingPaintStates(gesture.cells, gesture.brush, gesture.transaction.token.revision, document));
+      this.publishPendingCells(gesture.cells, this.pendingPaintStates(gesture.cells, gesture.edit, gesture.transaction.token.revision, document));
       return true;
     }
     if (gesture.kind === 'eraser') {
@@ -1372,6 +1514,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return cell.x < 0 || cell.y < 0 || cell.x >= document.width || cell.y >= document.height ? undefined : cloneCell(cell);
   }
 
+  private paintCorner(sample: PointerSample): QuarterCorner | undefined {
+    if (!validScreenSample(sample) || !isFiniteViewport(this.uiStore.getState().viewport)) return undefined;
+    return quarterCornerAt(screenToModel({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport));
+  }
+
   private appendPaintSample(gesture: PaintGesture, sample: PointerSample, document: PatternDocument): void {
     const nextCell = this.paintHitCell(sample, document);
     if (!nextCell) {
@@ -1406,7 +1553,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const key = cellKey(stampedCell);
       cells.set(key, stampedCell);
       const index = stampedCell.y * document.width + stampedCell.x;
-      if (corner !== undefined && document.kind[index] === CellKind.Quarters) components.set(`${key}:${String(corner)}`, { cell: stampedCell, corner });
+      const componentCorner = corner === undefined ? undefined : componentCornerForHit(document, index, corner);
+      if (componentCorner !== undefined) components.set(`${key}:${String(componentCorner)}`, { cell: stampedCell, corner: componentCorner });
     }
   }
 
@@ -1437,7 +1585,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const command: DomainCommand = {
       type: 'bulk-cell',
       indices,
-      edit: editForBrush(gesture.brush),
+      edit: gesture.edit,
       expectedRevision: gesture.transaction.token.revision
     };
     try {
@@ -1446,14 +1594,23 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         return;
       }
       const preflight = preflightBulkCellCommand(snapshot.document, command);
-      if (preflight.changedIndices.length === 0) {
+      const changedIndices = gesture.edit.kind === 'three-quarter'
+        ? new Uint32Array(
+            Array.from(preflight.changedIndices)
+              .map((index) => cellState(snapshot.document!, index, preflight.edit))
+              .filter((state) => cellStateChanged(snapshot.document!, state))
+              .map((state) => state.index)
+          )
+        : indices;
+      if (preflight.changedIndices.length === 0 || changedIndices.length === 0) {
         this.setStatus('No change');
         return;
       }
+      const effectiveCommand: DomainCommand = { ...command, indices: changedIndices };
       this.commandInFlight = true;
-      const result = gesture.transaction.commit(command);
+      const result = gesture.transaction.commit(effectiveCommand);
       this.commandInFlight = false;
-      this.projectCommandResult(result, indices, `Stitched ${String(indices.length)} cell${indices.length === 1 ? '' : 's'}`);
+      this.projectCommandResult(result, changedIndices, `Stitched ${String(changedIndices.length)} cell${changedIndices.length === 1 ? '' : 's'}`);
     } catch (error) {
       this.commandInFlight = false;
       if (error instanceof StaleEditorTransactionError) this.setStatus('Stroke cancelled: project changed');
@@ -1471,14 +1628,21 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (!snapshot.document) return;
     const wholeIndices: number[] = [];
     const componentTargets: Array<{ index: number; corner: number }> = [];
-    for (const cell of gesture.cells.values()) {
-      const index = cell.y * snapshot.document.width + cell.x;
-      if (gesture.mode !== 'component' || snapshot.document.kind[index] !== CellKind.Quarters) {
-        wholeIndices.push(index);
-      }
-    }
     for (const { cell, corner } of gesture.components.values()) {
       componentTargets.push({ index: cell.y * snapshot.document.width + cell.x, corner });
+    }
+    const targetedIndexes = new Set(componentTargets.map((target) => target.index));
+    for (const cell of gesture.cells.values()) {
+      const index = cell.y * snapshot.document.width + cell.x;
+      const kind = snapshot.document.kind[index];
+      const componentGeometry = isLegacyQuarterKind(kind) || isThreeQuarterKind(kind) || isThreeQuarterPairKind(kind);
+      if (gesture.mode !== 'component' || !componentGeometry) {
+        wholeIndices.push(index);
+      } else if (!targetedIndexes.has(index)) {
+        // A component gesture that misses the persisted 3/4 component is an
+        // intentional no-op, rather than a whole-cell erase.
+        continue;
+      }
     }
     wholeIndices.sort((left, right) => left - right);
     componentTargets.sort((left, right) => left.index - right.index || left.corner - right.corner);
@@ -1718,7 +1882,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
   }
 
-  private startFillAt(cell: ModelPoint, brush?: StitchBrush): boolean {
+  private startFillAt(cell: ModelPoint, brush?: StitchBrush, pointerDownCorner?: QuarterCorner): boolean {
     const snapshot = this.gateway.getSnapshot();
     if (!isFiniteModelPoint(cell) || !snapshot.document || !snapshot.projectId || snapshot.revision === null) return false;
     const cellX = Math.floor(cell.x);
@@ -1748,14 +1912,14 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     this.fillJob = job;
     this.fillToken = token;
-    this.fillBrushSnapshot = capturedBrush;
+    this.fillEditSnapshot = editForBrush(capturedBrush, pointerDownCorner);
     this.setFillPending(true);
     this.setStatus('Filling…');
     void job.promise.then((result) => this.finishFill(job, token, result)).catch((error: unknown) => {
       if (this.fillJob !== job) return;
       this.fillJob = undefined;
       this.fillToken = undefined;
-      this.fillBrushSnapshot = undefined;
+      this.fillEditSnapshot = undefined;
       this.setFillPending(false);
       if (error instanceof FillCancelledError) this.setStatus('Fill cancelled');
       else if (error instanceof FillStaleResultError) this.setStatus('Fill discarded: project changed');
@@ -1768,8 +1932,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (this.fillJob !== job) return;
     this.fillJob = undefined;
     this.fillToken = undefined;
-    const capturedBrush = this.fillBrushSnapshot;
-    this.fillBrushSnapshot = undefined;
+    const capturedEdit = this.fillEditSnapshot;
+    this.fillEditSnapshot = undefined;
     this.setFillPending(false);
     const current = this.gateway.getSnapshot();
     if (!isFillResultCurrent(result, { projectId: token.projectId, baseRevision: token.revision, requestId: job.request.requestId })
@@ -1782,12 +1946,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.setStatus('Fill discarded: project changed');
       return;
     }
-    if (!capturedBrush) {
+    if (!capturedEdit) {
       this.setStatus('Fill discarded: brush unavailable');
       return;
     }
-    const edit = editForBrush(capturedBrush);
-    this.executeCommandWithToken({ type: 'bulk-cell', indices: result.indices, edit }, 'Filled region');
+    this.executeCommandWithToken({ type: 'bulk-cell', indices: result.indices, edit: capturedEdit }, 'Filled region');
   }
 
   private activateKeyboardCursor(): void {
@@ -1843,8 +2006,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (cell.x < 0 || cell.y < 0 || cell.x >= snapshot.document.width || cell.y >= snapshot.document.height) return;
     const eraser = state.tool.tool === 'eraser' ? state.tool : undefined;
     const index = cell.y * snapshot.document.width + cell.x;
-    const edit: BulkCellEdit = eraser?.mode === 'component' && snapshot.document.kind[index] === CellKind.Quarters
-      ? { kind: 'erase-quarter', corner: eraser.corner ?? this.eraserCorner }
+    const corner = eraser?.corner ?? this.eraserCorner;
+    const componentKind = snapshot.document.kind[index];
+    const edit: BulkCellEdit = eraser?.mode === 'component'
+      && (isLegacyQuarterKind(componentKind) || isThreeQuarterKind(componentKind) || isThreeQuarterPairKind(componentKind))
+      ? { kind: 'erase-quarter', corner }
       : { kind: 'erase-cell' };
     const status = edit.kind === 'erase-quarter'
       ? `Erased quarter ${String(edit.corner)} at (${String(cell.x)}, ${String(cell.y)})`
@@ -1859,14 +2025,23 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const command: DomainCommand = { type: 'bulk-cell', indices, edit, expectedRevision: snapshot.revision };
     try {
       const preflight = preflightBulkCellCommand(snapshot.document, command);
-      if (preflight.changedIndices.length === 0) {
+      const changedIndices = edit.kind === 'three-quarter'
+        ? new Uint32Array(
+            Array.from(preflight.changedIndices)
+              .map((index) => cellState(snapshot.document!, index, preflight.edit))
+              .filter((state) => cellStateChanged(snapshot.document!, state))
+              .map((state) => state.index)
+          )
+        : indices;
+      if (preflight.changedIndices.length === 0 || changedIndices.length === 0) {
         this.setStatus('No change');
         return;
       }
+      const effectiveCommand: DomainCommand = { ...command, indices: changedIndices };
       this.commandInFlight = true;
-      const result = this.gateway.execute(command, { projectId: snapshot.projectId, revision: snapshot.revision });
+      const result = this.gateway.execute(effectiveCommand, { projectId: snapshot.projectId, revision: snapshot.revision });
       this.commandInFlight = false;
-      this.projectCommandResult(result, indices, status);
+      this.projectCommandResult(result, changedIndices, status);
     } catch (error) {
       this.commandInFlight = false;
       if (error instanceof StaleEditorTransactionError) this.setStatus('Action cancelled: project changed');
@@ -1973,15 +2148,16 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return token.projectId === snapshot.projectId && token.revision === snapshot.revision && snapshot.document !== null;
   }
 
-  private pendingPaintStates(cells: Map<string, ModelPoint>, brush: StitchBrush, revision: number, document: PatternDocument): PendingCellState[] {
+  private pendingPaintStates(cells: Map<string, ModelPoint>, edit: BulkCellEdit, revision: number, document: PatternDocument): PendingCellState[] {
     const indices = indicesForCells([...cells.values()], document.width);
     const preflight = preflightBulkCellCommand(document, {
       type: 'bulk-cell',
       indices,
-      edit: editForBrush(brush),
+      edit,
       expectedRevision: revision
     });
-    return Array.from(preflight.changedIndices, (index) => cellState(document, index, preflight.edit));
+    return Array.from(preflight.changedIndices, (index) => cellState(document, index, preflight.edit))
+      .filter((state) => cellStateChanged(document, state));
   }
 
   private pendingEraserStates(
@@ -2001,10 +2177,29 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     for (const index of indicesForCells([...cells.values()], document.width)) {
       const corners = cornersByIndex.get(index) ?? [];
       let state: PendingCellState;
-      if (mode !== 'component' || document.kind[index] !== CellKind.Quarters) {
+      const originalKind = document.kind[index];
+      const componentGeometry = isLegacyQuarterKind(originalKind) || isThreeQuarterKind(originalKind) || isThreeQuarterPairKind(originalKind);
+      if (mode !== 'component' || !componentGeometry) {
         state = cellState(document, index, { kind: 'erase-cell' });
       } else if (corners.length === 0) {
         continue;
+      } else if (!isLegacyQuarterKind(originalKind)) {
+        let kind = originalKind as CellKind;
+        let colors: [number, number, number, number] = [
+          document.colors[index * 4],
+          document.colors[index * 4 + 1],
+          document.colors[index * 4 + 2],
+          document.colors[index * 4 + 3]
+        ];
+        let completed = document.completed[index];
+        for (const corner of corners) ({ kind, colors, completed } = applyEraseQuarterState(kind, colors, completed, corner as 0 | 1 | 2 | 3));
+        state = {
+          index,
+          cell: { x: index % document.width, y: Math.floor(index / document.width) },
+          kind,
+          colors,
+          completed
+        };
       } else {
         const colors: [number, number, number, number] = [
           document.colors[index * 4],

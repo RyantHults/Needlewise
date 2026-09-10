@@ -53,6 +53,15 @@ describe('durable progress activity', () => {
     }
   });
 
+  it('persists integer three-quarter activity components and rejects fractional counts', () => {
+    const activity = recordDailyProgress(undefined, '2026-08-30', 1, 1);
+    expect(activity).toEqual({ daily: [{ date: '2026-08-30', marked: 1, unmarked: 1 }] });
+    expect(recordDailyProgress(activity, '2026-08-30', 1, 0)).toEqual({ daily: [{ date: '2026-08-30', marked: 2, unmarked: 1 }] });
+    expect(() => recordDailyProgress(undefined, '2026-08-30', 0.75, 0)).toThrow(TypeError);
+    expect(() => recordDailyProgress(undefined, '2026-08-30', 0, 0.75)).toThrow(TypeError);
+    expect(() => recordDailyProgress({ daily: [{ date: '2026-08-30', marked: 0.75, unmarked: 0 }] }, '2026-08-31', 0, 0)).toThrow(TypeError);
+  });
+
   it('keeps a valid document loadable when auxiliary activity is corrupt', async () => {
     const repo = nextRepository();
     try {

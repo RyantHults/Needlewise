@@ -7,3 +7,4 @@ export * from './controller';
 export * from './ui-store';
 export * from './viewport';
 export * from './fill';
+export * from './cell-kinds';

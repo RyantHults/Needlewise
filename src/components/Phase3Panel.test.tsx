@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { applyCommand, computePatternMetrics, createDocument } from '../domain';
+import { applyCommand, computePatternMetrics, createDocument, QuarterCorner } from '../domain';
 import { Phase3Panel } from './Phase3Panel';
 
 function renderPanel(execute = vi.fn().mockResolvedValue(undefined), metadata: { units?: 'metric' | 'imperial' } | null = null) {
@@ -111,6 +111,17 @@ describe('Phase3Panel palette controls', () => {
     const yhi = format((yardsRange?.max ?? 0) * 1.09361);
     expect(ylo).not.toBe(yhi);
     expect(screen.getByText(/Total:/).textContent).toContain(`${ylo}–${yhi} yd`);
+  });
+
+  it('shows a palette made only of three-quarter stitches', () => {
+    let pattern = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Ruby', color: '#AA0000' }] });
+    pattern = applyCommand(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
+    pattern = applyCommand(pattern, { type: 'set-three-quarter', x: 1, y: 0, corner: QuarterCorner.SE, color: 1 }).document;
+    const computed = computePatternMetrics(pattern, { aidaCount: 14, strands: 1, waste: 0, skeinLengthMeters: 8 });
+
+    render(<Phase3Panel document={pattern} metrics={computed} sessionStats={null} activity={null} execute={vi.fn()} workspace={{ activeProjectId: 'one', materialSettings: computed.materialSettings, updateActiveMaterialSettings: vi.fn().mockResolvedValue(undefined), updateActiveMetadata: vi.fn().mockResolvedValue(undefined) } as never} />);
+
+    expect(screen.getByText('0 full · 0 half · 0 quarter · 2 3/4 · 0 backstitch')).toBeInTheDocument();
   });
 
   it('leaves unit selection to project settings while following metadata units', () => {

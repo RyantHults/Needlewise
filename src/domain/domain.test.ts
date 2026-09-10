@@ -13,6 +13,7 @@ import {
   bulkSetFullCommand,
   bulkSetHalfCommand,
   bulkSetQuarterCommand,
+  bulkSetThreeQuarterCommand,
   bulkToggleCompletionCommand,
   bulkToggleBackstitchCompletionCommand,
   CellKind,
@@ -24,8 +25,11 @@ import {
   assertValidPatternFragment,
   getBackstitch,
   getCell,
+  getQuarter,
   HalfDirection,
   isAlphanumericSymbol,
+  isQuarterKind,
+  isThreeQuarterKind,
   listBackstitches,
   MaterialKind,
   MaterialUnit,
@@ -152,6 +156,181 @@ describe('typed-array pattern document', () => {
     expect(getCell(pattern, 0, 0).kind).toBe(CellKind.Full);
     expect(pattern.colors.slice(0, 4)).toEqual(new Uint16Array([3, 0, 0, 0]));
     expect(pattern.completed[0]).toBe(0);
+  });
+
+  it('writes a homogeneous three-quarter geometry from each pointer corner', () => {
+    const expected: Array<[QuarterCorner, number[]]> = [
+      [QuarterCorner.NW, [CellKind.ThreeQuarterNW, 2, 0, 0, 0]],
+      [QuarterCorner.NE, [CellKind.ThreeQuarterNE, 2, 0, 0, 0]],
+      [QuarterCorner.SE, [CellKind.ThreeQuarterSE, 2, 0, 0, 0]],
+      [QuarterCorner.SW, [CellKind.ThreeQuarterSW, 2, 0, 0, 0]]
+    ];
+    for (const [corner, [kind, ...colors]] of expected) {
+      const result = applyCommand(document(), { type: 'set-three-quarter', x: 0, y: 0, corner, color: 2 });
+      expect(result.document.kind[0]).toBe(kind);
+      expect(Array.from(result.document.colors.slice(0, 4))).toEqual(colors);
+      expect(result.document.completed[0]).toBe(0);
+    }
+  });
+
+  it('keeps three-quarter cells separate from legacy quarter slots', () => {
+    const pattern = apply(document(), { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 });
+    expect(pattern.kind[0]).toBe(CellKind.ThreeQuarterSE);
+    expect(pattern.colors.slice(0, 4)).toEqual(new Uint16Array([2, 0, 0, 0]));
+    expect(getCell(pattern, 0, 0).quarters).toEqual([
+      { color: 0, completed: false },
+      { color: 0, completed: false },
+      { color: 0, completed: false },
+      { color: 0, completed: false }
+    ]);
+    expect(getQuarter(pattern, 0, 0, QuarterCorner.SE)).toEqual({ color: 0, completed: false });
+    expect(isQuarterKind(pattern.kind[0])).toBe(false);
+    expect(isThreeQuarterKind(pattern.kind[0])).toBe(true);
+
+    const invalid = document();
+    invalid.kind[0] = CellKind.ThreeQuarterNW;
+    invalid.colors[0] = 1;
+    invalid.colors[1] = 2;
+    expect(validateDocument(invalid)).toBe(false);
+    invalid.colors[1] = 0;
+    invalid.completed[0] = 2;
+    expect(validateDocument(invalid)).toBe(false);
+  });
+
+  it('pairs opposite three-quarter corners while making adjacent clicks exact no-ops', () => {
+    let pattern = document();
+    pattern = apply(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NE, color: 1 });
+    pattern = apply(pattern, { type: 'set-completion', x: 0, y: 0, completed: true });
+    const editor = createEditor(pattern);
+    const beforeAdjacent = cellSnapshot(editor.document);
+    const adjacent = editor.execute({ type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 2 });
+    expect(adjacent.changed).toBe(false);
+    expect(editor.document).toEqual(beforeAdjacent);
+    expect(editor.revision).toBe(beforeAdjacent.revision);
+    expect(editor.undoDepth).toBe(0);
+
+    const paired = editor.execute({ type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SW, color: 2 });
+    expect(paired.changed).toBe(true);
+    expect(editor.document.kind[0]).toBe(CellKind.ThreeQuarterPair);
+    expect(editor.document.colors.slice(0, 4)).toEqual(new Uint16Array([0, 1, 0, 2]));
+    expect(editor.document.completed[0]).toBe(2);
+
+    const beforePairAdjacent = cellSnapshot(editor.document);
+    const pairAdjacent = editor.execute({ type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 3 });
+    expect(pairAdjacent.changed).toBe(false);
+    expect(editor.document).toEqual(beforePairAdjacent);
+    expect(editor.revision).toBe(beforePairAdjacent.revision);
+
+    const bulkAdjacent = editor.execute(bulkSetThreeQuarterCommand(new Uint32Array([0]), QuarterCorner.NW, 3));
+    expect(bulkAdjacent.changed).toBe(false);
+    expect(editor.document).toEqual(beforePairAdjacent);
+    expect(editor.revision).toBe(beforePairAdjacent.revision);
+
+    const bulkCompletion = editor.execute(bulkSetCompletionCommand(new Uint32Array([0])));
+    expect(bulkCompletion.changedIndices).toEqual(new Uint32Array([0]));
+    expect(bulkCompletion.progress).toMatchObject({ marked: 1, unmarked: 0 });
+    expect(editor.document.completed[0]).toBe(10);
+
+    const recolored = editor.execute({ type: 'recolor-cell', x: 0, y: 0, corner: QuarterCorner.SW, color: 3 });
+    expect(recolored.changed).toBe(true);
+    expect(editor.document.colors.slice(0, 4)).toEqual(new Uint16Array([0, 1, 0, 3]));
+    expect(editor.document.completed[0]).toBe(10);
+    const beforeRecolorAdjacent = cellSnapshot(editor.document);
+    expect(editor.execute({ type: 'recolor-cell', x: 0, y: 0, corner: QuarterCorner.NW, color: 2 }).changed).toBe(false);
+    expect(editor.document).toEqual(beforeRecolorAdjacent);
+  });
+
+  it('erases paired components independently and canonicalizes the survivor', () => {
+    let pattern = document();
+    pattern = apply(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 });
+    pattern = apply(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 });
+    pattern = apply(pattern, { type: 'set-completion', x: 0, y: 0, corner: QuarterCorner.SE, completed: true });
+    const editor = createEditor(pattern);
+
+    const erased = editor.execute({ type: 'erase-quarter', x: 0, y: 0, corner: QuarterCorner.NW });
+    expect(erased.changed).toBe(true);
+    expect(editor.document.kind[0]).toBe(CellKind.ThreeQuarterSE);
+    expect(editor.document.colors.slice(0, 4)).toEqual(new Uint16Array([2, 0, 0, 0]));
+    expect(editor.document.completed[0]).toBe(1);
+
+    const adjacent = editor.execute({ type: 'erase-quarter', x: 0, y: 0, corner: QuarterCorner.NE });
+    expect(adjacent.changed).toBe(false);
+    expect(editor.document.kind[0]).toBe(CellKind.ThreeQuarterSE);
+    const whole = editor.execute({ type: 'erase-cell', x: 0, y: 0 });
+    expect(whole.changed).toBe(true);
+    expect(editor.document.kind[0]).toBe(CellKind.Empty);
+    expect(editor.document.colors.slice(0, 4)).toEqual(new Uint16Array([0, 0, 0, 0]));
+    expect(editor.document.completed[0]).toBe(0);
+  });
+
+  it('validates pair geometry and retains physical corner data through fragments', () => {
+    let pattern = document(2, 1);
+    pattern = apply(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 });
+    pattern = apply(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 1 });
+    expect(validateDocument(pattern)).toBe(true);
+    expect(getCell(pattern, 0, 0).threeQuarters).toEqual([
+      { color: 1, completed: false },
+      { color: 0, completed: false },
+      { color: 1, completed: false },
+      { color: 0, completed: false }
+    ]);
+    const fragment = createPatternFragment(pattern, { x: 0, y: 0, width: 1, height: 1 });
+    expect(validatePatternFragment(fragment)).toBe(true);
+    const pasted = applyCommand(document(2, 1), pasteFragmentCommand(fragment, { x: 1, y: 0 }));
+    expect(pasted.document.kind[1]).toBe(CellKind.ThreeQuarterPair);
+    expect(pasted.document.colors.slice(4, 8)).toEqual(new Uint16Array([1, 0, 1, 0]));
+
+    const invalid = pattern.kind.slice();
+    invalid[0] = CellKind.ThreeQuarterPair;
+    const invalidPair = { ...pattern, kind: invalid, colors: new Uint16Array([1, 1, 0, 0, 0, 0, 0, 0]) };
+    expect(validateDocument(invalidPair)).toBe(false);
+  });
+
+  it('keeps direct pair assignment idempotent and preserves matching completion slots', () => {
+    const editor = createEditor(document(1, 1));
+    editor.execute({ type: 'set-cell', x: 0, y: 0, kind: CellKind.ThreeQuarterPair, colors: [1, 0, 2, 0] });
+    editor.execute({ type: 'set-completion', x: 0, y: 0, corner: QuarterCorner.NW, completed: true });
+    const before = editor.document;
+    const beforeRevision = editor.revision;
+    const beforeUndoDepth = editor.undoDepth;
+
+    const identical = editor.execute({ type: 'set-cell', x: 0, y: 0, kind: CellKind.ThreeQuarterPair, colors: [1, 0, 2, 0] });
+    expect(identical.changed).toBe(false);
+    expect(identical.document).toBe(before);
+    expect(editor.revision).toBe(beforeRevision);
+    expect(editor.undoDepth).toBe(beforeUndoDepth);
+    expect(editor.document.completed[0]).toBe(1);
+
+    const recolored = editor.execute({ type: 'set-cell', x: 0, y: 0, kind: CellKind.ThreeQuarterPair, colors: [2, 0, 1, 0] });
+    expect(recolored.changed).toBe(true);
+    expect(editor.document.colors.slice(0, 4)).toEqual(new Uint16Array([2, 0, 1, 0]));
+    expect(editor.document.completed[0]).toBe(1);
+
+    const reoriented = editor.execute({ type: 'set-cell', x: 0, y: 0, kind: CellKind.ThreeQuarterPair, colors: [0, 2, 0, 1] });
+    expect(reoriented.changed).toBe(true);
+    expect(editor.document.completed[0]).toBe(0);
+  });
+
+  it('overwrites three-quarter geometry, preserves same-kind completion, and packs bulk undo state', () => {
+    let pattern = document();
+    pattern = apply(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 });
+    pattern = apply(pattern, { type: 'set-completion', x: 0, y: 0, completed: true });
+    const editor = createEditor(pattern);
+    const result = editor.execute(bulkSetThreeQuarterCommand(new Uint32Array([0, 1]), QuarterCorner.NW, 2));
+    expect(result.changed).toBe(true);
+    expect(result.changedIndices).toEqual(new Uint32Array([0, 1]));
+    expect(editor.document.kind[0]).toBe(CellKind.ThreeQuarterNW);
+    expect(Array.from(editor.document.colors.slice(0, 4))).toEqual([2, 0, 0, 0]);
+    expect(editor.document.completed[0]).toBe(1);
+    expect(editor.document.kind[1]).toBe(CellKind.ThreeQuarterNW);
+    expect(Array.from(editor.document.colors.slice(4, 8))).toEqual([2, 0, 0, 0]);
+    expect(editor.undo().changed).toBe(true);
+    expect(editor.document.kind[0]).toBe(CellKind.ThreeQuarterNW);
+    expect(Array.from(editor.document.colors.slice(0, 4))).toEqual([1, 0, 0, 0]);
+    expect(editor.document.completed[0]).toBe(1);
+    expect(editor.redo().changed).toBe(true);
+    expect(editor.document.kind[0]).toBe(CellKind.ThreeQuarterNW);
+    expect(Array.from(editor.document.colors.slice(0, 4))).toEqual([2, 0, 0, 0]);
   });
 
   it('requires explicit completion and enforces active, non-reserved palette IDs', () => {
@@ -450,6 +629,117 @@ describe('typed-array pattern document', () => {
     expect(pattern.colors).toEqual(original.colors);
     expect(pattern.completed).toEqual(original.completed);
     expect(listBackstitches(pattern)).toMatchObject(listBackstitches(original));
+  });
+
+  it('transforms every directional three-quarter corner with color and completion through undo and redo', () => {
+    const cases: Array<{
+      command: Parameters<ReturnType<typeof createEditor>['execute']>[0];
+      corners: [QuarterCorner, QuarterCorner, QuarterCorner, QuarterCorner];
+      position: { x: number; y: number };
+      dimensions: { width: number; height: number };
+    }> = [
+      { command: { type: 'rotate-cw' }, corners: [QuarterCorner.NE, QuarterCorner.SE, QuarterCorner.SW, QuarterCorner.NW], position: { x: 0, y: 1 }, dimensions: { width: 3, height: 2 } },
+      { command: { type: 'rotate-ccw' }, corners: [QuarterCorner.SW, QuarterCorner.NW, QuarterCorner.NE, QuarterCorner.SE], position: { x: 2, y: 0 }, dimensions: { width: 3, height: 2 } },
+      { command: { type: 'mirror-horizontal' }, corners: [QuarterCorner.NE, QuarterCorner.NW, QuarterCorner.SW, QuarterCorner.SE], position: { x: 0, y: 2 }, dimensions: { width: 2, height: 3 } },
+      { command: { type: 'mirror-vertical' }, corners: [QuarterCorner.SW, QuarterCorner.SE, QuarterCorner.NE, QuarterCorner.NW], position: { x: 1, y: 0 }, dimensions: { width: 2, height: 3 } }
+    ];
+
+    for (const testCase of cases) {
+      for (const [sourceCorner, expectedCorner] of testCase.corners.entries()) {
+        let original = document(2, 3);
+        original = apply(original, { type: 'set-three-quarter', x: 1, y: 2, corner: sourceCorner as QuarterCorner, color: 2 });
+        original = apply(original, { type: 'set-completion', x: 1, y: 2, completed: true });
+        const editor = createEditor(original);
+
+        const transformed = editor.execute(testCase.command);
+        expect(editor.document.width).toBe(testCase.dimensions.width);
+        expect(editor.document.height).toBe(testCase.dimensions.height);
+        const index = testCase.position.y * editor.document.width + testCase.position.x;
+        expect(editor.document.kind[index]).toBe([CellKind.ThreeQuarterNW, CellKind.ThreeQuarterNE, CellKind.ThreeQuarterSE, CellKind.ThreeQuarterSW][expectedCorner]);
+        expect(editor.document.colors[index * 4]).toBe(2);
+        expect(editor.document.completed[index]).toBe(1);
+        expect(transformed.changed).toBe(true);
+
+        const undone = editor.undo();
+        expect(undone.changed).toBe(true);
+        expect(editor.document.kind).toEqual(original.kind);
+        expect(editor.document.colors).toEqual(original.colors);
+        expect(editor.document.completed).toEqual(original.completed);
+        const redone = editor.redo();
+        expect(redone.changed).toBe(true);
+        expect(editor.document.kind[index]).toBe([CellKind.ThreeQuarterNW, CellKind.ThreeQuarterNE, CellKind.ThreeQuarterSE, CellKind.ThreeQuarterSW][expectedCorner]);
+        expect(editor.document.colors[index * 4]).toBe(2);
+        expect(editor.document.completed[index]).toBe(1);
+      }
+    }
+  });
+
+  it('moves paired three-quarter colors and completion bits with every transform through history', () => {
+    const cases: Array<{
+      command: Parameters<ReturnType<typeof createEditor>['execute']>[0];
+      colors: [number, number, number, number];
+      completion: number;
+    }> = [
+      { command: { type: 'rotate-cw' }, colors: [0, 1, 0, 2], completion: 10 },
+      { command: { type: 'rotate-ccw' }, colors: [0, 2, 0, 1], completion: 10 },
+      { command: { type: 'mirror-horizontal' }, colors: [0, 1, 0, 2], completion: 10 },
+      { command: { type: 'mirror-vertical' }, colors: [0, 2, 0, 1], completion: 10 }
+    ];
+
+    for (const testCase of cases) {
+      let original = document(1, 1);
+      original = apply(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 });
+      original = apply(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 });
+      original = apply(original, { type: 'set-completion', x: 0, y: 0, corner: QuarterCorner.NW, completed: true });
+      original = apply(original, { type: 'set-completion', x: 0, y: 0, corner: QuarterCorner.SE, completed: true });
+      const editor = createEditor(original);
+
+      const transformed = editor.execute(testCase.command);
+      expect(transformed.changed).toBe(true);
+      expect(editor.document.kind[0]).toBe(CellKind.ThreeQuarterPair);
+      expect(Array.from(editor.document.colors.slice(0, 4))).toEqual(testCase.colors);
+      expect(editor.document.completed[0]).toBe(testCase.completion);
+      editor.undo();
+      expect(editor.document.kind).toEqual(original.kind);
+      expect(editor.document.colors).toEqual(original.colors);
+      expect(editor.document.completed).toEqual(original.completed);
+      editor.redo();
+      expect(Array.from(editor.document.colors.slice(0, 4))).toEqual(testCase.colors);
+      expect(editor.document.completed[0]).toBe(testCase.completion);
+    }
+  });
+
+  it('preserves asymmetric paired completion bits through transforms and history', () => {
+    const cases: Array<{
+      command: Parameters<ReturnType<typeof createEditor>['execute']>[0];
+      colors: [number, number, number, number];
+      completion: number;
+    }> = [
+      { command: { type: 'rotate-cw' }, colors: [0, 1, 0, 2], completion: 2 },
+      { command: { type: 'rotate-ccw' }, colors: [0, 2, 0, 1], completion: 8 },
+      { command: { type: 'mirror-horizontal' }, colors: [0, 1, 0, 2], completion: 2 },
+      { command: { type: 'mirror-vertical' }, colors: [0, 2, 0, 1], completion: 8 }
+    ];
+
+    for (const testCase of cases) {
+      let original = document(1, 1);
+      original = apply(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 });
+      original = apply(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 });
+      original = apply(original, { type: 'set-completion', x: 0, y: 0, corner: QuarterCorner.NW, completed: true });
+      const editor = createEditor(original);
+
+      const transformed = editor.execute(testCase.command);
+      expect(transformed.changed).toBe(true);
+      expect(Array.from(editor.document.colors.slice(0, 4))).toEqual(testCase.colors);
+      expect(editor.document.completed[0]).toBe(testCase.completion);
+
+      editor.undo();
+      expect(editor.document.colors).toEqual(original.colors);
+      expect(editor.document.completed).toEqual(original.completed);
+      editor.redo();
+      expect(Array.from(editor.document.colors.slice(0, 4))).toEqual(testCase.colors);
+      expect(editor.document.completed[0]).toBe(testCase.completion);
+    }
   });
 
   it('retains only backstitches fully inside the closed crop boundary', () => {
@@ -878,6 +1168,23 @@ describe('typed-array pattern document', () => {
     expect(fragment.backstitches.x2).toEqual(new Uint32Array([12]));
     expect(fragment.backstitches.y2).toEqual(new Uint32Array([4]));
     expect(fragment.backstitches.colors).toEqual(new Uint16Array([2]));
+  });
+
+  it('captures, validates, and pastes directional three-quarter fragment cells', () => {
+    let source = document(2, 1);
+    source = apply(source, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 });
+    source = apply(source, { type: 'set-completion', x: 0, y: 0, completed: true });
+    const fragment = createPatternFragment(source, { x: 0, y: 0, width: 1, height: 1 });
+    expect(validatePatternFragment(fragment)).toBe(true);
+    expect(readPatternFragmentCell(fragment, 0, 0)).toMatchObject({ kind: CellKind.ThreeQuarterSE, colors: new Uint16Array([2, 0, 0, 0]) });
+
+    const destination = applyCommand(document(2, 1), pasteFragmentCommand(fragment, { x: 1, y: 0 }));
+    expect(destination.document.kind[1]).toBe(CellKind.ThreeQuarterSE);
+    expect(destination.document.colors.slice(4, 8)).toEqual(new Uint16Array([2, 0, 0, 0]));
+    expect(destination.document.completed[1]).toBe(0);
+
+    const invalid = { ...fragment, colors: new Uint16Array([2, 1, 0, 0]) };
+    expect(validatePatternFragment(invalid)).toBe(false);
   });
 
   it('pastes fragments transparently with incomplete cells and new backstitch IDs', () => {

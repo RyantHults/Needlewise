@@ -9,6 +9,14 @@ import {
 import { contrastSymbolInk } from './contrast';
 import { SYMBOL_RENDER_OVERRIDES, symbolFontForCell } from './symbol-font';
 import { grayscaleColor, symbolForPaletteId } from './symbols';
+import {
+  isThreeQuarterKind,
+  isThreeQuarterPairKind,
+  ThreeQuarterNE,
+  ThreeQuarterNW,
+  ThreeQuarterSE,
+  ThreeQuarterSW
+} from '../editor/cell-kinds';
 
 function polygon(context: CanvasContextAdapter, points: readonly ScreenPoint[]): void {
   context.beginPath();
@@ -18,7 +26,7 @@ function polygon(context: CanvasContextAdapter, points: readonly ScreenPoint[]):
   context.fill();
 }
 
-/** Paint one stitch's full, half, or quarter geometry using the current fill. */
+/** Paint stitch geometry using the current fill. Legacy quarters remain slot-based. */
 export function drawStitchGeometry(
   context: CanvasContextAdapter,
   kind: number,
@@ -33,22 +41,59 @@ export function drawStitchGeometry(
   const top = rect.y;
   const right = rect.x + rect.width;
   const bottom = rect.y + rect.height;
+  const holeWidth = rect.width * Math.SQRT1_2;
+  const holeHeight = rect.height * Math.SQRT1_2;
   if (kind === CellKind.HalfBackslash) {
     polygon(context, [
       { x: left, y: top },
-      { x: right, y: top },
-      { x: right, y: bottom }
+      { x: right - holeWidth, y: top },
+      { x: right, y: top + holeHeight },
+      { x: right, y: bottom },
+      { x: left + holeWidth, y: bottom },
+      { x: left, y: bottom - holeHeight }
     ]);
     return;
   }
   if (kind === CellKind.HalfSlash) {
     polygon(context, [
-      { x: left, y: top },
+      { x: left + holeWidth, y: top },
       { x: right, y: top },
-      { x: left, y: bottom }
+      { x: right, y: bottom - holeHeight },
+      { x: right - holeWidth, y: bottom },
+      { x: left, y: bottom },
+      { x: left, y: top + holeHeight }
     ]);
     return;
   }
+  if (isThreeQuarterKind(kind)) {
+    if (kind === ThreeQuarterNW) {
+      polygon(context, [
+        { x: left, y: top },
+        { x: right, y: top },
+        { x: left, y: bottom }
+      ]);
+    } else if (kind === ThreeQuarterNE) {
+      polygon(context, [
+        { x: left, y: top },
+        { x: right, y: top },
+        { x: right, y: bottom }
+      ]);
+    } else if (kind === ThreeQuarterSE) {
+      polygon(context, [
+        { x: right, y: top },
+        { x: right, y: bottom },
+        { x: left, y: bottom }
+      ]);
+    } else if (kind === ThreeQuarterSW) {
+      polygon(context, [
+        { x: left, y: top },
+        { x: right, y: bottom },
+        { x: left, y: bottom }
+      ]);
+    }
+    return;
+  }
+  if (isThreeQuarterPairKind(kind)) return;
   const center = { x: left + rect.width / 2, y: top + rect.height / 2 };
   const corners: readonly (readonly [ScreenPoint, ScreenPoint, ScreenPoint])[] = [
     [{ x: left, y: top }, { x: left + rect.width / 2, y: top }, center],

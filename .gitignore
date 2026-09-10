@@ -10,3 +10,4 @@ pnpm-debug.log*
 !.env.example
 .cache/
 .slim/deepwork/
+AGENTs.md

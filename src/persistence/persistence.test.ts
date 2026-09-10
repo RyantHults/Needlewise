@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { unzipSync, zipSync, strFromU8, strToU8 } from 'fflate';
-import { applyCommand, cloneDocument, computePatternMetrics, createDocument, type PatternDocument } from '../domain';
+import { applyCommand, CellKind, cloneDocument, computePatternMetrics, createDocument, migratePatternDocument, QuarterCorner, type PatternDocument } from '../domain';
 import * as binaryModule from './binary';
 import * as hashModule from './hash';
 import { prepareDocumentSnapshot, type PersistencePreparationResponse } from './preparation';
@@ -251,6 +251,93 @@ describe('binary document persistence', () => {
     expect(decoded.revision).toBe(original.revision);
   });
 
+  it('round-trips directional three-quarter kinds as compact single-slot cells', () => {
+    let original = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    original = applyCommand(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SW, color: 1 }).document;
+    original = applyCommand(original, { type: 'set-completion', x: 0, y: 0, completed: true }).document;
+    const decoded = decodeDocument(encodeDocument(original));
+
+    expect(decoded.kind[0]).toBe(CellKind.ThreeQuarterSW);
+    expect(decoded.colors).toEqual(new Uint16Array([1, 0, 0, 0]));
+    expect(decoded.completed[0]).toBe(1);
+    expect(decoded.version).toBe(4);
+    expect(encodeDocument(decoded)).toEqual(encodeDocument(original));
+  });
+
+  it('round-trips paired three-quarter kinds with physical colors and completion bits', () => {
+    let original = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] });
+    original = applyCommand(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
+    original = applyCommand(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 }).document;
+    original = applyCommand(original, { type: 'set-completion', x: 0, y: 0, corner: QuarterCorner.NW, completed: true }).document;
+    original = applyCommand(original, { type: 'set-completion', x: 0, y: 0, corner: QuarterCorner.SE, completed: true }).document;
+    const decoded = decodeDocument(encodeDocument(original));
+
+    expect(decoded.kind[0]).toBe(CellKind.ThreeQuarterPair);
+    expect(decoded.colors).toEqual(new Uint16Array([1, 0, 2, 0]));
+    expect(decoded.completed[0]).toBe(5);
+    expect(decoded.version).toBe(4);
+    expect(encodeDocument(decoded)).toEqual(encodeDocument(original));
+  });
+
+  it('migrates prior v2 binary documents containing directional three-quarter kinds', () => {
+    let original = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    original = applyCommand(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NE, color: 1 }).document;
+    original = applyCommand(original, { type: 'set-completion', x: 0, y: 0, completed: true }).document;
+    const priorBytes = encodeDocument(original);
+    new DataView(priorBytes.buffer).setUint16(8, 2, true);
+
+    const decoded = decodeDocument(priorBytes);
+    expect(decoded.version).toBe(4);
+    expect(decoded.kind).toEqual(original.kind);
+    expect(decoded.colors).toEqual(original.colors);
+    expect(decoded.completed).toEqual(original.completed);
+    expect(migratePatternDocument({ ...original, version: 2 })).toEqual(decoded);
+
+    const priorV3Bytes = encodeDocument(original);
+    new DataView(priorV3Bytes.buffer).setUint16(8, 3, true);
+    const priorV3 = decodeDocument(priorV3Bytes);
+    expect(priorV3.version).toBe(4);
+    expect(priorV3.kind).toEqual(original.kind);
+    expect(migratePatternDocument({ ...original, version: 3 })).toEqual(priorV3);
+  });
+
+  it('rejects a v1-v3 payload relabeled with a paired three-quarter kind', () => {
+    let original = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] });
+    original = applyCommand(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
+    original = applyCommand(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 }).document;
+    const relabeled = encodeDocument(original);
+    new DataView(relabeled.buffer).setUint16(8, 3, true);
+
+    expect(() => migratePatternDocument({ ...original, version: 3 })).toThrowError(/not valid in document versions 1 through 3/);
+    try {
+      decodeDocument(relabeled);
+      throw new Error('Expected relabeled legacy pair payload to be rejected.');
+    } catch (error) {
+      expect(error).toBeInstanceOf(PersistenceError);
+      expect(error).toMatchObject({ code: 'invalid-document' });
+    }
+  });
+
+  it('migrates an archive carrying a prior v2 document descriptor and binary', async () => {
+    let document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    document = applyCommand(document, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SW, color: 1 }).document;
+    const archive = await exportArchive({ metadata: metadata(document, 'prior-archive'), document, assets: [] });
+    const files = unzipSync(archive);
+    const priorDocument = files['document.bin'].slice();
+    new DataView(priorDocument.buffer).setUint16(8, 2, true);
+    files['document.bin'] = priorDocument;
+    const manifest = JSON.parse(strFromU8(files['manifest.json'])) as { document: { schemaVersion: number; sha256: string } };
+    manifest.document.schemaVersion = 2;
+    manifest.document.sha256 = await sha256(priorDocument);
+    files['manifest.json'] = strToU8(JSON.stringify(manifest));
+
+    const parsed = await parseArchive(zipSync(files));
+    expect(parsed.manifest.document.schemaVersion).toBe(4);
+    expect(parsed.document.version).toBe(4);
+    expect(parsed.document.kind).toEqual(document.kind);
+    expect(parsed.document.colors).toEqual(document.colors);
+  });
+
   it('matches the domain one-million-cell persistence boundary', () => {
     const boundary = createDocument({ width: 1_000, height: 1_000 });
     expect(boundary.kind.length).toBe(MAX_DOCUMENT_CELLS);
@@ -280,7 +367,7 @@ describe('binary document persistence', () => {
       }]
     });
     const decoded = decodeDocument(encodeDocument(original));
-    expect(decoded.version).toBe(2);
+    expect(decoded.version).toBe(4);
     expect(decoded.settings).toEqual({ symbolSet: 'letters', materialUnit: 'meters' });
     expect(decoded.palette[0]).toEqual(original.palette[0]);
   });
@@ -452,7 +539,7 @@ describe('binary document persistence', () => {
     expect((await parseArchive(descriptorArchive)).metadata.sourceImage).toBeUndefined();
   });
 
-  it('decodes legacy binary v1 documents through the v2 migration defaults', () => {
+  it('decodes legacy binary v1 documents through the current migration defaults', () => {
     const bytes = new Uint8Array(40 + 18 + 10);
     const view = new DataView(bytes.buffer);
     bytes.set(new Uint8Array([0x53, 0x54, 0x59, 0x44, 0x4f, 0x43, 0x01, 0x00]), 0);
@@ -476,7 +563,7 @@ describe('binary document persistence', () => {
     offset += 4;
     bytes.set(new TextEncoder().encode('#d33'), offset);
     const decoded = decodeDocument(bytes);
-    expect(decoded.version).toBe(2);
+    expect(decoded.version).toBe(4);
     expect(decoded.settings.symbolSet).toBe('default');
     expect(decoded.palette[0].symbol).toBe('●');
     expect(decoded.palette[0].material).toMatchObject({ kind: 'custom', label: 'Red', unit: 'skeins' });
@@ -1363,9 +1450,9 @@ describe('archive migration and validation', () => {
     files['manifest.json'] = strToU8(JSON.stringify(manifest));
     const parsed = await parseArchive(zipSync(files));
     expect(parsed.manifest.archiveVersion).toBe(PERSISTENCE_SCHEMA_VERSION);
-    expect(parsed.manifest.document.schemaVersion).toBe(2);
+    expect(parsed.manifest.document.schemaVersion).toBe(4);
     expect(parsed.metadata.sourceImage).toBeUndefined();
-    expect(parsed.document.version).toBe(2);
+    expect(parsed.document.version).toBe(4);
   });
 
   it('migrates a v2 archive manifest to the current archive version and preserves old metadata omission', async () => {

@@ -5,7 +5,7 @@ import {
   UnzipPassThrough,
   zipSync
 } from 'fflate';
-import { assertValidDocument, DOCUMENT_SCHEMA_VERSION, normalizeAidaCount, normalizeDisplayUnits, normalizeMaterialAssumptions } from '../domain';
+import { assertValidDocument, DOCUMENT_SCHEMA_VERSION, LEGACY_DOCUMENT_SCHEMA_VERSION, PENULTIMATE_DOCUMENT_SCHEMA_VERSION, PRIOR_DOCUMENT_SCHEMA_VERSION, normalizeAidaCount, normalizeDisplayUnits, normalizeMaterialAssumptions } from '../domain';
 import { PersistenceError } from './errors';
 import {
   ARCHIVE_FORMAT,
@@ -204,7 +204,7 @@ function validateManifestShape(value: unknown): ArchiveManifest {
   const metadata = value.metadata;
   const document = value.document;
   if (!isRecord(metadata) || metadata.path !== METADATA_PATH || !isNonNegativeInteger(metadata.byteLength) || metadata.byteLength > MAX_METADATA_BYTES || !isSha256(metadata.sha256)) invalidManifest('Archive metadata descriptor is invalid.');
-  if (!isRecord(document) || document.path !== DOCUMENT_PATH || (document.schemaVersion !== 1 && document.schemaVersion !== DOCUMENT_SCHEMA_VERSION) || !isNonNegativeInteger(document.byteLength) || document.byteLength > MAX_DOCUMENT_BYTES || !isSha256(document.sha256)) invalidManifest('Archive document descriptor is invalid.');
+  if (!isRecord(document) || document.path !== DOCUMENT_PATH || (document.schemaVersion !== LEGACY_DOCUMENT_SCHEMA_VERSION && document.schemaVersion !== PENULTIMATE_DOCUMENT_SCHEMA_VERSION && document.schemaVersion !== PRIOR_DOCUMENT_SCHEMA_VERSION && document.schemaVersion !== DOCUMENT_SCHEMA_VERSION) || !isNonNegativeInteger(document.byteLength) || document.byteLength > MAX_DOCUMENT_BYTES || !isSha256(document.sha256)) invalidManifest('Archive document descriptor is invalid.');
   if (!Array.isArray(value.assets) || value.assets.length > MAX_ARCHIVE_ENTRIES - 3 - (value.activity === undefined ? 0 : 1)) invalidManifest('Archive asset manifest is invalid.');
   const paths = new Set<string>([MANIFEST_PATH, METADATA_PATH, DOCUMENT_PATH]);
   const ids = new Set<string>();

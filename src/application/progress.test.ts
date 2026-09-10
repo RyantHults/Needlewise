@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { CellKind, computePatternMetrics, createDocument, createEditor, deleteRegionCommand, HalfDirection, QuarterCorner, type PatternDocument } from '../domain';
+import { bulkSetCompletionCommand, bulkSetThreeQuarterCommand, CellKind, computePatternMetrics, createDocument, createEditor, deleteRegionCommand, HalfDirection, QuarterCorner, type PatternDocument } from '../domain';
 import { setDailyProgress, type PersistencePreparationClient, type ProgressActivity, type ProjectMetadata, type SaveResult } from '../persistence';
 import { attachDeleteMetricsImpactForDelta, registerDeleteMetricsImpact, type DeleteMetricsImpact } from '../domain/internal-metrics-impact';
 import { ProjectSession } from './session';
@@ -50,6 +50,8 @@ function mixedDeleteFixture(): { editor: ReturnType<typeof createEditor>; rect: 
   editor.execute({ type: 'set-quarter', x: 1, y: 2, corner: QuarterCorner.SW, color: 2 });
   editor.execute({ type: 'set-completion', x: 1, y: 2, corner: QuarterCorner.SW, completed: true });
   editor.execute({ type: 'set-quarter', x: 1, y: 2, corner: QuarterCorner.NW, color: 3 });
+  editor.execute({ type: 'set-three-quarter', x: 2, y: 2, corner: QuarterCorner.SW, color: 1 });
+  editor.execute({ type: 'set-completion', x: 2, y: 2, completed: true });
   editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
   editor.execute({ type: 'set-completion', x: 0, y: 0, completed: true });
   editor.execute({ type: 'set-half', x: 6, y: 4, direction: HalfDirection.Backslash, color: 2 });
@@ -127,6 +129,92 @@ describe('application progress integration', () => {
     await session.retrySave();
     expect(save).toHaveBeenCalledOnce();
     await session.dispose();
+  });
+
+  it('keeps weighted three-quarter metrics current through geometry and completion changes', async () => {
+    const repository = { save: vi.fn(async (_id: string, _metadata: ProjectMetadata, next: PatternDocument): Promise<SaveResult> => ({ committed: true, stale: false, revision: next.revision })) } as unknown as WorkspaceRepository;
+    const document = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    const session = new ProjectSession({ repository, metadata: metadata('three-quarter-progress', document.revision), document, preparationClient: testPreparationClient, clock: { now: () => Date.UTC(2026, 7, 30) }, debounceMs: longDebounceMs });
+    try {
+      session.execute({ type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NE, color: 1 });
+      expect(session.metrics.totals).toMatchObject({ threeQuarter: 1, totalComponents: 1, completedComponents: 0, remainingComponents: 1 });
+
+      session.execute({ type: 'set-completion', x: 0, y: 0, completed: true });
+      expect(session.metrics.progress).toEqual({ completedComponents: 1, remainingComponents: 0, totalComponents: 1, fraction: 1, percent: 100 });
+      expect(session.sessionStats).toMatchObject({ marked: 1, unmarked: 0 });
+
+      session.execute({ type: 'set-full', x: 1, y: 0, color: 1 });
+      expect(session.metrics.totals).toMatchObject({ full: 1, threeQuarter: 1, totalComponents: 2, completedComponents: 1, remainingComponents: 1 });
+    } finally {
+      await session.dispose();
+    }
+  });
+
+  it('supports three-quarter incremental metrics, completion activity, materials, and fallback rebuilds', () => {
+    let document = createDocument({ width: 3, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    document = (createEditor(document).execute({ type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 })).document;
+    document = (createEditor(document).execute({ type: 'set-completion', x: 0, y: 0, completed: true })).document;
+    const editor = createEditor(document);
+    const service = new ProgressMetricsService(editor.document);
+
+    let previous = editor.document;
+    let result = editor.execute(bulkSetThreeQuarterCommand(new Uint32Array([0, 1]), QuarterCorner.SE, 1));
+    expect(result.changedIndices).toEqual(new Uint32Array([0, 1]));
+    expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 0 });
+    expect(service.metrics).toEqual(computePatternMetrics(editor.document));
+    expect(service.metrics.totals).toMatchObject({ threeQuarter: 3, totalComponents: 3, completedComponents: 1, remainingComponents: 2 });
+    expect(service.metrics.palettes[0].material.stitchUnits).toBe(2.25);
+
+    previous = editor.document;
+    result = editor.execute(bulkSetCompletionCommand(new Uint32Array([0, 1])));
+    expect(service.apply(previous, result)).toEqual({ marked: 2, unmarked: 0 });
+    expect(service.metrics).toEqual(computePatternMetrics(editor.document));
+    expect(service.metrics.progress).toMatchObject({ completedComponents: 3, remainingComponents: 0, totalComponents: 3 });
+
+    previous = editor.document;
+    result = editor.execute({ type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.SW, color: 1 });
+    expect(result.changedIndices).toBeUndefined();
+    expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 0 });
+    expect(service.metrics).toEqual(computePatternMetrics(editor.document));
+    expect(service.recalculate(editor.document)).toEqual(computePatternMetrics(editor.document));
+  });
+
+  it('tracks distinct-color paired deletion through incremental metrics and undo/redo', () => {
+    let document = createDocument({
+      width: 1,
+      height: 1,
+      palette: [
+        { id: 1, name: 'Red', color: '#d33' },
+        { id: 2, name: 'Blue', color: '#36c' }
+      ]
+    });
+    const editor = createEditor(document);
+    editor.execute({ type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 });
+    editor.execute({ type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 });
+    editor.execute({ type: 'set-completion', x: 0, y: 0, corner: QuarterCorner.NW, completed: true });
+    editor.clearHistory();
+    document = editor.document;
+    const service = new ProgressMetricsService(document);
+
+    let previous = editor.document;
+    let result = editor.execute(deleteRegionCommand({ x: 0, y: 0, width: 1, height: 1 }, editor.revision));
+    expect(result.recalculateMetrics).toBe(true);
+    expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 0 });
+    expect(service.metrics).toEqual(computePatternMetrics(editor.document));
+    expect(service.metrics.totals).toMatchObject({ completedComponents: 0, remainingComponents: 0 });
+
+    previous = editor.document;
+    result = editor.undo();
+    expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 0 });
+    expect(service.metrics).toEqual(computePatternMetrics(editor.document));
+    expect(service.metrics.byPalette.get(1)).toMatchObject({ threeQuarter: 1, completedComponents: 1 });
+    expect(service.metrics.byPalette.get(2)).toMatchObject({ threeQuarter: 1, completedComponents: 0 });
+
+    previous = editor.document;
+    result = editor.redo();
+    expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 0 });
+    expect(service.metrics).toEqual(computePatternMetrics(editor.document));
+    expect(service.metrics.totals).toMatchObject({ completedComponents: 0, remainingComponents: 0 });
   });
 
   it('keeps the activity window bounded and idempotent across repeated snapshots', () => {

@@ -6,10 +6,13 @@ import {
 } from './model';
 import { assertValidDocument } from './validation';
 import {
+  CellKind,
   DEFAULT_PATTERN_SETTINGS,
   DOCUMENT_SCHEMA_VERSION,
   DomainError,
   LEGACY_DOCUMENT_SCHEMA_VERSION,
+  PENULTIMATE_DOCUMENT_SCHEMA_VERSION,
+  PRIOR_DOCUMENT_SCHEMA_VERSION,
   type PaletteEntry,
   type PatternDocument
 } from './types';
@@ -61,16 +64,25 @@ function nextBackstitchId(value: unknown, document: { backstitches: PatternDocum
   return value;
 }
 
-/** Copy-on-write migration from the v1 document grammar to the v2 domain grammar. */
+function sourceKind(input: unknown, version: number): Uint8Array {
+  const kind = typedArray(input, Uint8Array, 'kind');
+  if (version !== DOCUMENT_SCHEMA_VERSION && kind.includes(CellKind.ThreeQuarterPair)) {
+    throw new DomainError('invalid-document', 'Three-quarter pair cells are not valid in document versions 1 through 3.');
+  }
+  return kind;
+}
+
+/** Copy-on-write migration from a legacy or prior document grammar to current. */
 export function migratePatternDocument(input: unknown): PatternDocument {
   if (!isObject(input)) throw new DomainError('invalid-document', 'Pattern document must be an object.');
-  if (input.version !== LEGACY_DOCUMENT_SCHEMA_VERSION && input.version !== DOCUMENT_SCHEMA_VERSION) throw new DomainError('unsupported-version', `Pattern document version ${String(input.version)} is unsupported.`);
+  if (input.version !== LEGACY_DOCUMENT_SCHEMA_VERSION && input.version !== PENULTIMATE_DOCUMENT_SCHEMA_VERSION && input.version !== PRIOR_DOCUMENT_SCHEMA_VERSION && input.version !== DOCUMENT_SCHEMA_VERSION) throw new DomainError('unsupported-version', `Pattern document version ${String(input.version)} is unsupported.`);
+  const kind = sourceKind(input.kind, input.version);
   const palette = clonePalette(input.palette);
   const migrated: PatternDocument = {
     version: DOCUMENT_SCHEMA_VERSION,
     width: input.width as number,
     height: input.height as number,
-    kind: typedArray(input.kind, Uint8Array, 'kind'),
+    kind,
     colors: typedArray(input.colors, Uint16Array, 'colors'),
     completed: typedArray(input.completed, Uint8Array, 'completed'),
     backstitches: {

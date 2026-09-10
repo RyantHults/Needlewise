@@ -6,6 +6,7 @@ import {
   type PatternDocument,
   type PatternSettings
 } from './types';
+import { isThreeQuarterPairKind, isThreeQuarterSingleKind } from './model';
 
 /**
  * Material settings used by the estimator.  The document's v2 settings do
@@ -33,6 +34,7 @@ export const DEFAULT_AIDA_COUNT = 14;
 
 /** One standard skein holds 8.7 yards. Estimates fall back to it when no skein length is calibrated. */
 export const DEFAULT_SKEIN_LENGTH_METERS = 8.7 * 0.9144;
+const THREE_QUARTER_WEIGHT = 0.75;
 
 export function normalizeAidaCount(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
@@ -105,6 +107,8 @@ export interface StitchCounts {
   readonly full: number;
   readonly half: number;
   readonly quarter: number;
+  /** Number of persisted three-quarter stitches. */
+  readonly threeQuarter?: number;
   readonly backstitch: number;
 }
 
@@ -343,6 +347,7 @@ interface MutableCounts {
   full: number;
   half: number;
   quarter: number;
+  threeQuarter: number;
   backstitch: number;
   completedComponents: number;
   backstitchLengthFixed: number;
@@ -353,14 +358,15 @@ function emptyCounts(): MutableCounts {
     full: 0,
     half: 0,
     quarter: 0,
+    threeQuarter: 0,
     backstitch: 0,
     completedComponents: 0,
     backstitchLengthFixed: 0
   };
 }
 
-function componentCount(counts: Pick<MutableCounts, 'full' | 'half' | 'quarter' | 'backstitch'>): number {
-  return counts.full + counts.half + counts.quarter + counts.backstitch;
+function componentCount(counts: Pick<MutableCounts, 'full' | 'half' | 'quarter' | 'threeQuarter' | 'backstitch'>): number {
+  return counts.full + counts.half + counts.quarter + counts.backstitch + counts.threeQuarter;
 }
 
 function toTotalMetrics(counts: MutableCounts): TotalMetrics {
@@ -369,6 +375,7 @@ function toTotalMetrics(counts: MutableCounts): TotalMetrics {
     full: counts.full,
     half: counts.half,
     quarter: counts.quarter,
+    ...(counts.threeQuarter === 0 ? {} : { threeQuarter: counts.threeQuarter }),
     backstitch: counts.backstitch,
     backstitchLengthFixed: counts.backstitchLengthFixed,
     backstitchLength: counts.backstitchLengthFixed / FIXED_POINT_UNITS_PER_CELL,
@@ -382,6 +389,7 @@ function addCounts(target: MutableCounts, source: MutableCounts): void {
   target.full += source.full;
   target.half += source.half;
   target.quarter += source.quarter;
+  target.threeQuarter += source.threeQuarter;
   target.backstitch += source.backstitch;
   target.completedComponents += source.completedComponents;
   target.backstitchLengthFixed += source.backstitchLengthFixed;
@@ -391,6 +399,7 @@ export interface MaterialCountInput {
   readonly full: number;
   readonly half: number;
   readonly quarter: number;
+  readonly threeQuarter?: number;
   readonly backstitchLengthFixed: number;
 }
 
@@ -407,11 +416,14 @@ export function materialEstimateFromCounts(
   settings: NormalizedMaterialSettings,
   aidaCount?: number
 ): MaterialEstimate {
-  // A half is half of a full-cell equivalent and a quarter is one quarter.
+  // A half is half of a full-cell equivalent, a quarter is one quarter, and
+  // a three-quarter stitch is three quarters of a full-cell equivalent.
+  const threeQuarter = counts.threeQuarter ?? 0;
   // Backstitches already carry their geometric length in cell units.
   const stitchUnits = counts.full
     + counts.half / 2
     + counts.quarter / 4
+    + threeQuarter * THREE_QUARTER_WEIGHT
     + counts.backstitchLengthFixed / FIXED_POINT_UNITS_PER_CELL;
   const strandLength = stitchUnits * settings.strands;
   const calibratedStitchLength = settings.stitchLengthMeters;
@@ -428,6 +440,7 @@ export function materialEstimateFromCounts(
           counts.full * 0.8 * (14 / count)
           + counts.half * 0.8 * (14 / count) / 2
           + counts.quarter * 0.8 * (14 / count) / 4
+          + threeQuarter * 0.8 * (14 / count) * THREE_QUARTER_WEIGHT
         ) * settings.strands
         // Backstitch is reported as one physical line of thread; it does not
         // inherit the cross-stitch strand multiplier.
@@ -495,6 +508,9 @@ function incrementPaletteCount(counts: MutableCounts, kind: number, completed: n
   } else if (kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash) {
     counts.half += 1;
     if ((completed & 1) !== 0) counts.completedComponents += 1;
+  } else if (isThreeQuarterSingleKind(kind)) {
+    counts.threeQuarter += 1;
+    if ((completed & 1) !== 0) counts.completedComponents += 1;
   }
 }
 
@@ -539,9 +555,17 @@ export function computePatternMetrics(
     const offset = index * 4;
     const completion = document.completed[index];
 
-    if (kind === CellKind.Full || kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash) {
+    if (kind === CellKind.Full || kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash || isThreeQuarterSingleKind(kind)) {
       const color = document.colors[offset];
       if (color !== 0) incrementPaletteCount(ensure(color), kind, completion);
+    } else if (isThreeQuarterPairKind(kind)) {
+      for (let slot = 0; slot < 4; slot += 1) {
+        const color = document.colors[offset + slot];
+        if (color === 0) continue;
+        const counts = ensure(color);
+        counts.threeQuarter += 1;
+        if ((completion & (1 << slot)) !== 0) counts.completedComponents += 1;
+      }
     } else if (kind === CellKind.Quarters) {
       // Quarter completion bits are tied to slots, not to the order in which
       // occupied quarters happen to be encountered.

@@ -1,4 +1,4 @@
-import { CellKind } from '../domain';
+import { isKnownCellKind } from './cell-kinds';
 
 /** The structured-clone protocol shared by the fill client and worker. */
 export const FILL_PROTOCOL = 'needlewise.fill.v1' as const;
@@ -200,7 +200,7 @@ function assertPlanes(kind: unknown, colors: unknown, cellCount: number): assert
     throw new FillProtocolError(`Fill planes exceed the ${String(MAX_FILL_PLANE_BYTES)}-byte limit.`);
   }
   for (const value of kind) {
-    if (value > CellKind.Quarters) throw new FillProtocolError(`Cell kind ${String(value)} is invalid.`);
+    if (!isKnownCellKind(value)) throw new FillProtocolError(`Cell kind ${String(value)} is invalid.`);
   }
 }
 

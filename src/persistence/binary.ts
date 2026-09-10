@@ -19,7 +19,9 @@ import {
 } from './limits';
 
 const MAGIC = new Uint8Array([0x53, 0x54, 0x59, 0x44, 0x4f, 0x43, 0x01, 0x00]);
-const BINARY_SCHEMA_VERSION = 2;
+const BINARY_SCHEMA_VERSION = 4;
+const PRIOR_BINARY_SCHEMA_VERSION = 3;
+const PENULTIMATE_BINARY_SCHEMA_VERSION = 2;
 const LEGACY_BINARY_SCHEMA_VERSION = 1;
 const LITTLE_ENDIAN_MARKER = 1;
 const HEADER_BYTES = 40;
@@ -204,7 +206,7 @@ export function decodeDocument(input: Uint8Array | ArrayBuffer): PatternDocument
   if (bytes.length < HEADER_BYTES || !sameMagic(bytes)) fail('Document binary magic is invalid.');
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const binaryVersion = view.getUint16(8, true);
-  if (binaryVersion !== BINARY_SCHEMA_VERSION && binaryVersion !== LEGACY_BINARY_SCHEMA_VERSION) throw new PersistenceError('unsupported-version', 'Document binary schema is unsupported.');
+  if (binaryVersion !== BINARY_SCHEMA_VERSION && binaryVersion !== PRIOR_BINARY_SCHEMA_VERSION && binaryVersion !== PENULTIMATE_BINARY_SCHEMA_VERSION && binaryVersion !== LEGACY_BINARY_SCHEMA_VERSION) throw new PersistenceError('unsupported-version', 'Document binary schema is unsupported.');
   if (view.getUint8(10) !== LITTLE_ENDIAN_MARKER) fail('Document byte order is unsupported.');
   if (view.getUint8(11) !== 0) fail('Document header flags are invalid.');
   const width = view.getUint32(12, true);
@@ -225,7 +227,7 @@ export function decodeDocument(input: Uint8Array | ArrayBuffer): PatternDocument
   const minimumPayload = BigInt(paletteCount) * 11n
     + BigInt(cellCount) * 10n
     + BigInt(backstitchCount) * 23n
-    + (binaryVersion === BINARY_SCHEMA_VERSION ? 8n : 0n);
+    + (binaryVersion >= PENULTIMATE_BINARY_SCHEMA_VERSION ? 8n : 0n);
   if (minimumPayload > BigInt(bytes.length - HEADER_BYTES)) fail('Document counts exceed the remaining payload.');
 
   let offset = HEADER_BYTES;
@@ -296,7 +298,7 @@ export function decodeDocument(input: Uint8Array | ArrayBuffer): PatternDocument
     });
   }
   let settings: PatternSettings | undefined;
-  if (binaryVersion === BINARY_SCHEMA_VERSION) {
+  if (binaryVersion >= PENULTIMATE_BINARY_SCHEMA_VERSION) {
     const symbolSet = readString(bytes, view, offset, 'Document symbol set');
     offset = symbolSet.offset;
     const materialUnit = readString(bytes, view, offset, 'Document material unit');
@@ -353,10 +355,14 @@ export function decodeDocument(input: Uint8Array | ArrayBuffer): PatternDocument
     nextBackstitchId,
     nextPaletteId
   };
-  const document: PatternDocument = binaryVersion === LEGACY_BINARY_SCHEMA_VERSION
-    ? migratePatternDocument({ ...rawDocument, version: 1, palette: legacyPalette })
-    : { ...rawDocument, version: 2, palette, settings: settings as PatternSettings };
+  let document: PatternDocument;
   try {
+    document = migratePatternDocument({
+      ...rawDocument,
+      version: binaryVersion,
+      palette: binaryVersion === LEGACY_BINARY_SCHEMA_VERSION ? legacyPalette : palette,
+      ...(settings === undefined ? {} : { settings })
+    });
     assertValidDocument(document);
   } catch (error) {
     throw new PersistenceError('invalid-document', 'Decoded document failed domain validation.', error);

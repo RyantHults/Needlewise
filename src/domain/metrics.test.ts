@@ -102,6 +102,53 @@ describe('derived pattern metrics', () => {
     expect(metrics.overallProgress).toBe(0.5);
   });
 
+  it('counts directional three-quarter cells as whole components while weighting material at 0.75', () => {
+    let pattern = createDocument({
+      width: 2,
+      height: 1,
+      palette: [{ id: 1, name: 'Red', color: '#d33' }]
+    });
+    pattern = applyCommand(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
+    pattern = applyCommand(pattern, { type: 'set-completion', x: 0, y: 0, completed: true }).document;
+    pattern = applyCommand(pattern, { type: 'set-three-quarter', x: 1, y: 0, corner: QuarterCorner.SE, color: 1 }).document;
+
+    const metrics = computePatternMetrics(pattern, { strands: 2, waste: 0.1 });
+    expect(metrics.palettes[0]).toMatchObject({
+      full: 0,
+      half: 0,
+      quarter: 0,
+      threeQuarter: 2,
+      backstitch: 0,
+      totalComponents: 2,
+      completedComponents: 1,
+      remainingComponents: 1,
+      material: {
+        stitchUnits: 1.5,
+        strandLength: 3,
+      }
+    });
+    expect(metrics.palettes[0].material.estimatedLength).toBeCloseTo(3.3);
+    expect(metrics.totals).toMatchObject({ threeQuarter: 2, totalComponents: 2, completedComponents: 1, remainingComponents: 1 });
+    expect(metrics.progress).toEqual({ completedComponents: 1, remainingComponents: 1, totalComponents: 2, fraction: 0.5, percent: 50 });
+  });
+
+  it('counts paired three-quarter cells as two components with independently weighted materials', () => {
+    let pattern = createDocument({
+      width: 1,
+      height: 1,
+      palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }]
+    });
+    pattern = applyCommand(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
+    pattern = applyCommand(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 }).document;
+    pattern = applyCommand(pattern, { type: 'set-completion', x: 0, y: 0, corner: QuarterCorner.NW, completed: true }).document;
+
+    const metrics = computePatternMetrics(pattern, { strands: 2, waste: 0.1 });
+    expect(metrics.totals).toMatchObject({ threeQuarter: 2, totalComponents: 2, completedComponents: 1, remainingComponents: 1 });
+    expect(metrics.palettes[0]).toMatchObject({ threeQuarter: 1, totalComponents: 1, completedComponents: 1, material: { stitchUnits: 0.75 } });
+    expect(metrics.palettes[1]).toMatchObject({ threeQuarter: 1, totalComponents: 1, completedComponents: 0, material: { stitchUnits: 0.75 } });
+    expect(metrics.progress).toEqual({ completedComponents: 1, remainingComponents: 1, totalComponents: 2, fraction: 0.5, percent: 50 });
+  });
+
   it('scans bounded 500 by 500 and 1000 by 1000 documents without adding derived state', () => {
     for (const side of [500, 1000]) {
       const pattern = createDocument({

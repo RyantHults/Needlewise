@@ -545,6 +545,10 @@ export class DocumentEditor {
     return this.execute({ type: 'set-quarter', x, y, corner, color, ...(completed === undefined ? {} : { completed }) });
   }
 
+  setThreeQuarter(x: number, y: number, corner: QuarterCorner, color: number, completed?: boolean): CommandResult {
+    return this.execute({ type: 'set-three-quarter', x, y, corner, color, ...(completed === undefined ? {} : { completed }) });
+  }
+
   bulkCompletion(command: DomainCommand): CommandResult {
     return this.execute(command);
   }

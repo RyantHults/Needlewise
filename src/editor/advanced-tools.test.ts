@@ -360,6 +360,25 @@ describe('advanced headless editor tools', () => {
     controller.dispose();
   });
 
+  it('captures the fill tool corner for a homogeneous three-quarter operation', async () => {
+    const { controller, gateway, worker } = fixture();
+    controller.setTool({ tool: 'fill', brush: { kind: 'three-quarter', paletteId: 2 } });
+    controller.handlePointerDown(pointer(1, 4, 4));
+    const request = worker.posted.find((message) => (message as { type?: string }).type === 'fill-request') as Parameters<typeof createFillResult>[0];
+    worker.emit(createFillResult(request, new Uint32Array([0, 1])));
+    await Promise.resolve();
+    expect(gateway.commands.at(-1)).toMatchObject({
+      type: 'bulk-cell',
+      indices: new Uint32Array([0, 1]),
+      edit: { kind: 'three-quarter', corner: 0, color: 2 }
+    });
+    expect(gateway.getSnapshot().document!.kind[0]).toBe(CellKind.ThreeQuarterNW);
+    expect(gateway.getSnapshot().document!.kind[1]).toBe(CellKind.ThreeQuarterNW);
+    expect(Array.from(gateway.getSnapshot().document!.colors.slice(0, 4))).toEqual([2, 0, 0, 0]);
+    expect(Array.from(gateway.getSnapshot().document!.colors.slice(4, 8))).toEqual([2, 0, 0, 0]);
+    controller.dispose();
+  });
+
   it('creates, hit-selects, snaps, moves, and deletes incomplete backstitches', () => {
     const { controller, gateway } = fixture();
     controller.setTool({ tool: 'backstitch' });

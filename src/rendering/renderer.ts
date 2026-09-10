@@ -46,6 +46,7 @@ import { clearTarget, defaultAtlasTargetFactory, drawImage, prepareTarget, resto
 import { grayscaleColor } from './symbols';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
 import { createTraceImageProjection, drawTraceImage } from './trace';
+import { isLegacyQuarterKind, isThreeQuarterPairKind, threeQuarterPairComponents } from '../editor/cell-kinds';
 
 const EMPTY_STATS: RenderStats = {
   lod: RenderLod.Overview,
@@ -182,12 +183,12 @@ function drawCellState(
   if (kind === CellKind.Empty) return false;
   const rect = cellToScreenRect({ x, y, width: 1, height: 1 }, viewport);
   const symbolMode = style.mode === ChartPresentationMode.Symbol;
-  const fill = (id: number, completed: boolean, slot?: number): void => {
+  const fill = (id: number, completed: boolean, slot?: number, geometryKind = kind): void => {
     save(context);
     context.fillStyle = symbolMode ? style.symbolBackgroundColor : styleColor(document, id, style);
     setAlpha(context, (completed ? style.completedOpacity : 1) * dimAlpha);
-    if (kind === CellKind.Full) context.fillRect(rect.x, rect.y, rect.width, rect.height);
-    else drawStitchGeometry(context, kind, rect, slot);
+    if (geometryKind === CellKind.Full) context.fillRect(rect.x, rect.y, rect.width, rect.height);
+    else drawStitchGeometry(context, geometryKind, rect, slot);
     restore(context);
     if (lod === RenderLod.Detail || symbolMode) drawSymbol(context, document, id, rect, style, slot);
     if (completed && lod === RenderLod.Detail) {
@@ -201,10 +202,15 @@ function drawCellState(
     }
   };
 
-  if (kind === CellKind.Quarters) {
+  if (isLegacyQuarterKind(kind)) {
     for (let slot = 0; slot < 4; slot += 1) {
       const id = colors[slot] ?? 0;
       if (id !== 0) fill(id, (completed & (1 << slot)) !== 0, slot);
+    }
+  } else if (isThreeQuarterPairKind(kind)) {
+    for (const component of threeQuarterPairComponents(colors)) {
+      const id = colors[component.slot] ?? 0;
+      if (id !== 0) fill(id, (completed & (1 << component.slot)) !== 0, component.slot, component.kind);
     }
   } else {
     fill(colors[0] ?? 0, (completed & 1) !== 0);
@@ -708,7 +714,7 @@ function drawOverviewFallback(
       if (document.kind[index] === CellKind.Empty) continue;
       const offset = index * 4;
       const rect = cellToScreenRect({ x, y, width: 1, height: 1 }, viewport);
-      if (document.kind[index] === CellKind.Quarters) {
+      if (isLegacyQuarterKind(document.kind[index])) {
         const halfWidth = rect.width / 2;
         const halfHeight = rect.height / 2;
         for (let slot = 0; slot < 4; slot += 1) {
@@ -722,9 +728,17 @@ function drawOverviewFallback(
             halfHeight
           );
         }
+      } else if (isThreeQuarterPairKind(document.kind[index])) {
+        for (const component of threeQuarterPairComponents(document.colors.subarray(offset, offset + 4))) {
+          const id = document.colors[offset + component.slot];
+          if (id === 0) continue;
+          context.fillStyle = overviewColorForPaletteId(document, id, style);
+          drawStitchGeometry(context, component.kind, rect);
+        }
       } else {
         context.fillStyle = overviewColorForPaletteId(document, document.colors[offset], style);
-        context.fillRect(rect.x, rect.y, rect.width, rect.height);
+        if (document.kind[index] === CellKind.Full) context.fillRect(rect.x, rect.y, rect.width, rect.height);
+        else drawStitchGeometry(context, document.kind[index], rect);
       }
       drawnCells += 1;
     }
@@ -1236,7 +1250,7 @@ export class Canvas2DRenderer implements CanvasRenderer {
       const atlas = this.atlas.get(this.document, this.style, this.atlasFactory);
       const visible = visibleCellRect(this.viewport, this.metrics, this.document);
       if (atlas.source && context.drawImage && isCanvasImageSource(atlas.source)) {
-        drawImage(context, atlas.source, atlas.width, atlas.height, -this.viewport.x * this.viewport.zoom, -this.viewport.y * this.viewport.zoom, atlas.width * this.viewport.zoom, atlas.height * this.viewport.zoom);
+        drawImage(context, atlas.source, atlas.width, atlas.height, -this.viewport.x * this.viewport.zoom, -this.viewport.y * this.viewport.zoom, this.document.width * this.viewport.zoom, this.document.height * this.viewport.zoom);
         drawGrid(context, this.document, this.viewport, this.metrics, this.style, visible, lod);
         drawChartBorder(context, this.document, this.viewport, this.metrics, this.style);
         if (dimAlpha < 1) restore(context);
