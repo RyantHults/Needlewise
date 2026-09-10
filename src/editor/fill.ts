@@ -1,8 +1,16 @@
-import { isKnownCellKind } from './cell-kinds';
+import { CellKind } from '../domain';
+import {
+  isKnownCellKind,
+  isLegacyQuarterKind,
+  isThreeQuarterKind,
+  isThreeQuarterPairKind,
+  threeQuarterCornerForKind,
+  threeQuarterPairComponents
+} from './cell-kinds';
 
 /** The structured-clone protocol shared by the fill client and worker. */
-export const FILL_PROTOCOL = 'needlewise.fill.v1' as const;
-export const FILL_PROTOCOL_VERSION = 1 as const;
+export const FILL_PROTOCOL = 'needlewise.fill.v2' as const;
+export const FILL_PROTOCOL_VERSION = 2 as const;
 export const FILL_REQUEST_TYPE = 'fill-request' as const;
 export const FILL_RESULT_TYPE = 'fill-result' as const;
 export const FILL_CANCEL_TYPE = 'fill-cancel' as const;
@@ -14,7 +22,7 @@ export const MAX_FILL_DIMENSION = 1_000_000;
 export const MAX_FILL_CELL_COUNT = 1_000_000;
 export const MAX_FILL_COLOR_SLOTS = 4;
 export const MAX_FILL_PLANE_BYTES = MAX_FILL_CELL_COUNT + MAX_FILL_CELL_COUNT * MAX_FILL_COLOR_SLOTS * 2;
-export const MAX_FILL_RESULT_BYTES = MAX_FILL_CELL_COUNT * 4;
+export const MAX_FILL_RESULT_BYTES = MAX_FILL_CELL_COUNT * 5;
 export const MAX_FILL_TAG_LENGTH = 256;
 
 export interface FillRequestInput {
@@ -24,6 +32,8 @@ export interface FillRequestInput {
   readonly width: number;
   readonly height: number;
   readonly startIndex: number;
+  /** One occupied component bit in the starting cell. */
+  readonly startMask: number;
   readonly kind: Uint8Array;
   readonly colors: Uint16Array;
 }
@@ -37,6 +47,8 @@ export interface FillRequestMessage {
   readonly width: number;
   readonly height: number;
   readonly startIndex: number;
+  /** One occupied component bit in the starting cell. */
+  readonly startMask: number;
   /** A copied one-byte geometry plane. */
   readonly kind: Uint8Array;
   /** A copied four-slot-per-cell color plane. */
@@ -52,8 +64,11 @@ export interface FillResultMessage {
   readonly width: number;
   readonly height: number;
   readonly startIndex: number;
+  readonly startMask: number;
   /** Strictly increasing, duplicate-free cell indices. */
   readonly indices: Uint32Array;
+  /** One occupied component bitmask aligned with `indices`. */
+  readonly masks: Uint8Array;
 }
 
 export interface FillCancelMessage {
@@ -204,6 +219,93 @@ function assertPlanes(kind: unknown, colors: unknown, cellCount: number): assert
   }
 }
 
+type EdgeSpan = readonly [number, number];
+type EdgeSpans = readonly [EdgeSpan, EdgeSpan, EdgeSpan, EdgeSpan];
+
+interface FillComponent {
+  readonly mask: number;
+  readonly slot: number;
+  readonly color: number;
+  readonly edges: EdgeSpans;
+  /** Directional 3/4 topology follows this logical corner across cells. */
+  readonly logicalCorner?: 0 | 1 | 2 | 3;
+}
+
+const HALF_EDGE = 1 - Math.SQRT1_2;
+const FULL_EDGE: EdgeSpan = [0, 1];
+const EMPTY_EDGE: EdgeSpan = [0, 0];
+
+function triangleEdges(kind: number): EdgeSpans {
+  if (kind === CellKind.ThreeQuarterNW) return [FULL_EDGE, EMPTY_EDGE, EMPTY_EDGE, FULL_EDGE];
+  if (kind === CellKind.ThreeQuarterNE) return [FULL_EDGE, FULL_EDGE, EMPTY_EDGE, EMPTY_EDGE];
+  if (kind === CellKind.ThreeQuarterSE) return [EMPTY_EDGE, FULL_EDGE, FULL_EDGE, EMPTY_EDGE];
+  return [EMPTY_EDGE, EMPTY_EDGE, FULL_EDGE, FULL_EDGE];
+}
+
+function halfEdges(kind: number): EdgeSpans {
+  return kind === CellKind.HalfBackslash
+    ? [[0, HALF_EDGE], [1 - HALF_EDGE, 1], [1 - HALF_EDGE, 1], [0, HALF_EDGE]]
+    : [[1 - HALF_EDGE, 1], [0, HALF_EDGE], [0, HALF_EDGE], [1 - HALF_EDGE, 1]];
+}
+
+function quarterEdges(slot: number): EdgeSpans {
+  switch (slot) {
+    case 0: return [[0, 0.5], EMPTY_EDGE, EMPTY_EDGE, [0, 0.5]];
+    case 1: return [[0.5, 1], [0, 0.5], EMPTY_EDGE, EMPTY_EDGE];
+    case 2: return [EMPTY_EDGE, [0.5, 1], [0.5, 1], EMPTY_EDGE];
+    default: return [EMPTY_EDGE, EMPTY_EDGE, [0, 0.5], [0.5, 1]];
+  }
+}
+
+function componentsForCell(request: FillRequestMessage, index: number): FillComponent[] {
+  const kind = request.kind[index];
+  if (kind === CellKind.Empty) return [];
+  const offset = index * MAX_FILL_COLOR_SLOTS;
+  if (isLegacyQuarterKind(kind)) {
+    const components: FillComponent[] = [];
+    for (let slot = 0; slot < 4; slot += 1) {
+      const color = request.colors[offset + slot];
+      if (color !== 0) components.push({ mask: 1 << slot, slot, color, edges: quarterEdges(slot) });
+    }
+    return components;
+  }
+  if (isThreeQuarterPairKind(kind)) {
+    return threeQuarterPairComponents(request.colors.subarray(offset, offset + MAX_FILL_COLOR_SLOTS))
+      .filter((component) => request.colors[offset + component.slot] !== 0)
+      .map((component) => ({
+        mask: 1 << component.slot,
+        slot: component.slot,
+        color: request.colors[offset + component.slot],
+        edges: triangleEdges(component.kind),
+        logicalCorner: component.corner
+      }));
+  }
+  if (kind === CellKind.Full) {
+    const color = request.colors[offset];
+    return color === 0 ? [] : [{ mask: 1, slot: 0, color, edges: [FULL_EDGE, FULL_EDGE, FULL_EDGE, FULL_EDGE] }];
+  }
+  if (kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash) {
+    const color = request.colors[offset];
+    return color === 0 ? [] : [{ mask: 1, slot: 0, color, edges: halfEdges(kind) }];
+  }
+  if (isThreeQuarterKind(kind)) {
+    const color = request.colors[offset];
+    return color === 0 ? [] : [{ mask: 1, slot: 0, color, edges: triangleEdges(kind), logicalCorner: threeQuarterCornerForKind(kind) }];
+  }
+  return [];
+}
+
+function isSingleComponentMask(mask: number): boolean {
+  return Number.isInteger(mask) && mask > 0 && mask <= 8 && (mask & (mask - 1)) === 0;
+}
+
+function startComponentForRequest(request: FillRequestMessage): FillComponent {
+  if (!isSingleComponentMask(request.startMask)) throw new FillProtocolError('startMask must contain exactly one component bit.');
+  const component = componentsForCell(request, request.startIndex).find((candidate) => candidate.mask === request.startMask);
+  if (!component) throw new FillProtocolError('startMask does not identify an occupied component.');
+  return component;
+}
+
 function assertIdentity(value: Pick<FillResultIdentity, 'projectId' | 'baseRevision' | 'requestId'>): void {
   isBoundedTag(value.projectId, 'projectId');
   isNonNegativeInteger(value.baseRevision, 'baseRevision', 0xffffffff);
@@ -219,6 +321,8 @@ export function assertValidFillRequest(value: unknown): asserts value is FillReq
   const cellCount = (value.width as number) * (value.height as number);
   isNonNegativeInteger(value.startIndex, 'startIndex', cellCount - 1);
   assertPlanes(value.kind, value.colors, cellCount);
+  if (!isSingleComponentMask(value.startMask as number)) throw new FillProtocolError('startMask must contain exactly one component bit.');
+  startComponentForRequest(value as unknown as FillRequestMessage);
 }
 
 export function validateFillRequest(value: unknown): value is FillRequestMessage {
@@ -238,11 +342,13 @@ export function assertValidFillResult(value: unknown): asserts value is FillResu
   assertDimensions(value.width, value.height);
   const cellCount = (value.width as number) * (value.height as number);
   isNonNegativeInteger(value.startIndex, 'startIndex', cellCount - 1);
+  if (!isSingleComponentMask(value.startMask as number)) throw new FillProtocolError('startMask must contain exactly one component bit.');
   if (!isUint32Plane(value.indices)) throw new FillProtocolError('indices must be a Uint32Array.');
+  if (!isUint8Plane(value.masks) || value.masks.length !== value.indices.length) throw new FillProtocolError('masks must be a Uint8Array aligned with indices.');
   if (value.indices.length === 0 || value.indices.length > cellCount) {
     throw new FillProtocolError('indices must contain at least one and no more than one cell per grid cell.');
   }
-  if (value.indices.byteLength > MAX_FILL_RESULT_BYTES) {
+  if (value.indices.byteLength + value.masks.byteLength > MAX_FILL_RESULT_BYTES) {
     throw new FillProtocolError(`indices exceed the ${String(MAX_FILL_RESULT_BYTES)}-byte limit.`);
   }
   let previous = -1;
@@ -252,6 +358,9 @@ export function assertValidFillResult(value: unknown): asserts value is FillResu
     }
     previous = index;
   }
+  for (const mask of value.masks) if (mask === 0 || mask > 0x0f) throw new FillProtocolError('masks must contain occupied component bits.');
+  const startPosition = Array.from(value.indices).indexOf(value.startIndex as number);
+  if (startPosition < 0 || (value.masks[startPosition] & (value.startMask as number)) === 0) throw new FillProtocolError('Fill results must include the requested start component.');
 }
 
 export function validateFillResult(value: unknown): value is FillResultMessage {
@@ -274,6 +383,7 @@ export function createFillRequest(input: FillRequestInput): FillRequestMessage {
     width: input.width,
     height: input.height,
     startIndex: input.startIndex,
+    startMask: input.startMask,
     // These copies are the only planes that are ever sent to a worker.
     kind: isUint8Plane(input.kind) ? new Uint8Array(input.kind) : input.kind,
     colors: isUint16Plane(input.colors) ? new Uint16Array(input.colors) : input.colors
@@ -309,7 +419,60 @@ export function validateFillCancel(value: unknown): value is FillCancelMessage {
   }
 }
 
-export function createFillResult(request: FillRequestMessage, indices: Uint32Array): FillResultMessage {
+export function assertValidFillCancelled(value: unknown): asserts value is FillCancelledMessage {
+  if (!isRecord(value) || value.protocol !== FILL_PROTOCOL || value.type !== FILL_CANCELLED_TYPE) {
+    throw new FillProtocolError('The fill-cancelled response protocol tag is invalid.');
+  }
+  assertIdentity(value as unknown as FillResultIdentity);
+}
+
+export function validateFillCancelled(value: unknown): value is FillCancelledMessage {
+  try {
+    assertValidFillCancelled(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function assertValidFillError(value: unknown): asserts value is FillErrorMessage {
+  if (!isRecord(value) || value.protocol !== FILL_PROTOCOL || value.type !== FILL_ERROR_TYPE) {
+    throw new FillProtocolError('The fill-error response protocol tag is invalid.');
+  }
+  if (value.projectId === undefined || value.baseRevision === undefined || value.requestId === undefined) {
+    throw new FillProtocolError('Fill errors must contain the complete request identity.');
+  }
+  assertIdentity(value as unknown as FillResultIdentity);
+  if (typeof value.code !== 'string' || value.code.length === 0) throw new FillProtocolError('Fill errors must contain a non-empty code.');
+  if (typeof value.message !== 'string' || value.message.length === 0) throw new FillProtocolError('Fill errors must contain a non-empty message.');
+}
+
+export function validateFillError(value: unknown): value is FillErrorMessage {
+  try {
+    assertValidFillError(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Stable key for the complete protocol-level request identity. */
+export function fillRequestIdentityKey(value: Pick<FillResultIdentity, 'projectId' | 'baseRevision' | 'requestId'>): string {
+  return JSON.stringify([FILL_PROTOCOL, value.projectId, value.baseRevision, value.requestId]);
+}
+
+function responseIdentity(value: unknown, type: string): FillResultIdentity | undefined {
+  if (!isRecord(value) || value.protocol !== FILL_PROTOCOL || value.type !== type) return undefined;
+  if (typeof value.projectId !== 'string' || typeof value.baseRevision !== 'number' || typeof value.requestId !== 'string') return undefined;
+  try {
+    assertIdentity({ projectId: value.projectId, baseRevision: value.baseRevision, requestId: value.requestId });
+  } catch {
+    return undefined;
+  }
+  return { projectId: value.projectId, baseRevision: value.baseRevision, requestId: value.requestId };
+}
+
+export function createFillResult(request: FillRequestMessage, indices: Uint32Array, masks: Uint8Array): FillResultMessage {
   assertValidFillRequest(request);
   const result: FillResultMessage = {
     protocol: FILL_PROTOCOL,
@@ -320,7 +483,9 @@ export function createFillResult(request: FillRequestMessage, indices: Uint32Arr
     width: request.width,
     height: request.height,
     startIndex: request.startIndex,
-    indices
+    startMask: request.startMask,
+    indices,
+    masks
   };
   assertValidFillResult(result);
   return result;
@@ -341,11 +506,11 @@ function cancellationRequested(cancellation?: FillCancellation): boolean {
 
 interface FillRunState {
   readonly request: FillRequestMessage;
-  readonly targetKind: number;
-  readonly targetOffset: number;
+  readonly targetColor: number;
   readonly queue: Uint32Array;
   readonly visited: Uint8Array;
   readonly output: Uint32Array;
+  readonly outputMasks: Uint8Array;
   head: number;
   tail: number;
   outputLength: number;
@@ -354,36 +519,43 @@ interface FillRunState {
 function createFillRunState(request: FillRequestMessage, cancellation?: FillCancellation): FillRunState {
   assertValidFillRequest(request);
   if (cancellationRequested(cancellation)) throw new FillCancelledError(request.requestId);
+  const start = startComponentForRequest(request);
+  const startNode = request.startIndex * MAX_FILL_COLOR_SLOTS + start.slot;
   const state: FillRunState = {
     request,
-    targetKind: request.kind[request.startIndex],
-    targetOffset: request.startIndex * MAX_FILL_COLOR_SLOTS,
-    queue: new Uint32Array(request.width * request.height),
-    visited: new Uint8Array(request.width * request.height),
+    targetColor: start.color,
+    queue: new Uint32Array(request.width * request.height * MAX_FILL_COLOR_SLOTS),
+    visited: new Uint8Array(request.width * request.height * MAX_FILL_COLOR_SLOTS),
     output: new Uint32Array(request.width * request.height),
+    outputMasks: new Uint8Array(request.width * request.height),
     head: 0,
     tail: 1,
     outputLength: 0
   };
-  state.queue[0] = request.startIndex;
-  state.visited[request.startIndex] = 1;
+  state.queue[0] = startNode;
+  state.visited[startNode] = 1;
   return state;
 }
 
-function matchesTarget(state: FillRunState, index: number): boolean {
-  if (state.request.kind[index] !== state.targetKind) return false;
-  const offset = index * MAX_FILL_COLOR_SLOTS;
-  const targetColors = state.targetOffset;
-  for (let slot = 0; slot < MAX_FILL_COLOR_SLOTS; slot += 1) {
-    if (state.request.colors[offset + slot] !== state.request.colors[targetColors + slot]) return false;
-  }
-  return true;
+function edgeOverlap(left: EdgeSpan, right: EdgeSpan): boolean {
+  return Math.min(left[1], right[1]) - Math.max(left[0], right[0]) > 1e-9;
 }
 
-function visitNeighbor(state: FillRunState, index: number): void {
-  if (state.visited[index] !== 0) return;
-  state.visited[index] = 1;
-  if (matchesTarget(state, index)) state.queue[state.tail++] = index;
+function visitNeighbor(state: FillRunState, index: number, component: FillComponent, edge: number, neighbor: number): void {
+  const neighborComponents = componentsForCell(state.request, neighbor);
+  const opposite = (edge + 2) % 4;
+  for (const candidate of neighborComponents) {
+    if (candidate.color !== state.targetColor) continue;
+    const directionalComponents = component.logicalCorner !== undefined && candidate.logicalCorner !== undefined;
+    const connects = directionalComponents
+      ? component.logicalCorner === candidate.logicalCorner
+      : edgeOverlap(component.edges[edge], candidate.edges[opposite]);
+    if (!connects) continue;
+    const node = neighbor * MAX_FILL_COLOR_SLOTS + candidate.slot;
+    if (state.visited[node] !== 0) continue;
+    state.visited[node] = 1;
+    state.queue[state.tail++] = node;
+  }
 }
 
 function processFillBatch(state: FillRunState, cancellation: FillCancellation | undefined, batchSize: number): boolean {
@@ -391,34 +563,41 @@ function processFillBatch(state: FillRunState, cancellation: FillCancellation | 
   const { width, height } = state.request;
   while (state.head < state.tail && processed < batchSize) {
     if (cancellationRequested(cancellation)) throw new FillCancelledError(state.request.requestId);
-    const index = state.queue[state.head++];
-    state.output[state.outputLength++] = index;
+    const node = state.queue[state.head++];
+    const index = Math.floor(node / MAX_FILL_COLOR_SLOTS);
+    const slot = node % MAX_FILL_COLOR_SLOTS;
+    const component = componentsForCell(state.request, index).find((candidate) => candidate.slot === slot);
+    if (!component) continue;
+    if (state.outputMasks[index] === 0) state.output[state.outputLength++] = index;
+    state.outputMasks[index] |= component.mask;
     const x = index % width;
     const y = Math.floor(index / width);
-    if (x > 0) visitNeighbor(state, index - 1);
-    if (x + 1 < width) visitNeighbor(state, index + 1);
-    if (y > 0) visitNeighbor(state, index - width);
-    if (y + 1 < height) visitNeighbor(state, index + width);
+    if (x > 0) visitNeighbor(state, index, component, 3, index - 1);
+    if (x + 1 < width) visitNeighbor(state, index, component, 1, index + 1);
+    if (y > 0) visitNeighbor(state, index, component, 0, index - width);
+    if (y + 1 < height) visitNeighbor(state, index, component, 2, index + width);
     processed += 1;
   }
   return state.head >= state.tail;
 }
 
-function finishFill(state: FillRunState): Uint32Array {
-  const result = state.output.slice(0, state.outputLength);
-  result.sort();
-  return result;
+function finishFill(state: FillRunState): { indices: Uint32Array; masks: Uint8Array } {
+  const indices = state.output.slice(0, state.outputLength);
+  indices.sort();
+  const masks = new Uint8Array(indices.length);
+  for (let index = 0; index < indices.length; index += 1) masks[index] = state.outputMasks[indices[index]];
+  return { indices, masks };
 }
 
 /** Run the exact, four-connected fill synchronously (useful for fallback/tests). */
-export function runExactFloodFill(request: FillRequestMessage, cancellation?: FillCancellation): Uint32Array {
+export function runExactFloodFill(request: FillRequestMessage, cancellation?: FillCancellation): { indices: Uint32Array; masks: Uint8Array } {
   const state = createFillRunState(request, cancellation);
   processFillBatch(state, cancellation, Number.MAX_SAFE_INTEGER);
   return finishFill(state);
 }
 
 /** Worker-side form which yields between bounded batches so cancel messages are observable. */
-export function runExactFloodFillAsync(request: FillRequestMessage, cancellation?: FillCancellation): Promise<Uint32Array> {
+export function runExactFloodFillAsync(request: FillRequestMessage, cancellation?: FillCancellation): Promise<{ indices: Uint32Array; masks: Uint8Array }> {
   const state = createFillRunState(request, cancellation);
   return new Promise((resolve, reject) => {
     const process = (): void => {
@@ -463,6 +642,7 @@ interface PendingFill {
   readonly reject: (error: unknown) => void;
   signalCleanup: () => void;
   cancelled: boolean;
+  sent: boolean;
 }
 
 interface FillWorkerEventTarget {
@@ -514,14 +694,9 @@ function assertCurrentResult(result: unknown, request: FillRequestMessage): asse
   const expected = asIdentity(request);
   const actual = asIdentity(result);
   if (!isFillResultCurrent(result, expected)) throw new FillStaleResultError(expected, actual);
-  if (result.width !== request.width || result.height !== request.height || result.startIndex !== request.startIndex) {
+  if (result.width !== request.width || result.height !== request.height || result.startIndex !== request.startIndex || result.startMask !== request.startMask) {
     throw new FillStaleResultError(expected, actual);
   }
-}
-
-function responseRequestId(value: unknown): string | undefined {
-  if (!isRecord(value)) return undefined;
-  return typeof value.requestId === 'string' ? value.requestId : undefined;
 }
 
 export class FillWorkerClient {
@@ -529,6 +704,7 @@ export class FillWorkerClient {
   private readonly requestIdFactory: () => string;
   private readonly useWorker: boolean;
   private worker: FillWorkerLike | null = null;
+  /** Pending jobs are keyed by the complete protocol request identity. */
   private readonly pending = new Map<string, PendingFill>();
   private disposed = false;
   private readonly onMessage = (event: MessageEvent<unknown>): void => this.handleMessage(event.data);
@@ -544,7 +720,8 @@ export class FillWorkerClient {
   submit(input: FillRequestInput, options: { readonly signal?: AbortSignal } = {}): FillJob {
     if (this.disposed) throw new Error('The fill worker client has been disposed.');
     const request = createFillRequest({ ...input, requestId: input.requestId ?? this.requestIdFactory() });
-    if (this.pending.has(request.requestId)) throw new FillProtocolError(`Fill request ID ${request.requestId} is already pending.`);
+    const requestKey = fillRequestIdentityKey(request);
+    if (this.pending.has(requestKey)) throw new FillProtocolError(`Fill request ID ${request.requestId} is already pending.`);
     let resolvePromise!: (result: FillResultMessage) => void;
     let rejectPromise!: (error: unknown) => void;
     const promise = new Promise<FillResultMessage>((resolve, reject) => {
@@ -556,17 +733,18 @@ export class FillWorkerClient {
       resolve: resolvePromise,
       reject: rejectPromise,
       signalCleanup: () => undefined,
-      cancelled: false
+      cancelled: false,
+      sent: false
     };
-    this.pending.set(request.requestId, pending);
+    this.pending.set(requestKey, pending);
     const signal = options.signal;
     if (signal) {
-      const abort = (): void => { this.cancel(request.requestId); };
+      const abort = (): void => { this.cancel(request); };
       signal.addEventListener('abort', abort, { once: true });
       pending.signalCleanup = () => signal.removeEventListener('abort', abort);
       if (signal.aborted) {
-        this.cancel(request.requestId);
-        return { request, promise, cancel: () => this.cancel(request.requestId) };
+        this.cancel(request);
+        return { request, promise, cancel: () => this.cancel(request) };
       }
     }
 
@@ -575,22 +753,23 @@ export class FillWorkerClient {
       try {
         const wireRequest = copyFillRequest(request);
         worker.postMessage(wireRequest, [wireRequest.kind.buffer, wireRequest.colors.buffer]);
+        pending.sent = true;
       } catch (error) {
         this.handleWorkerFailure(new FillWorkerTransportError(eventMessage(error, 'The fill worker could not receive the request.')));
       }
     } else {
       globalThis.queueMicrotask(() => {
-        const current = this.pending.get(request.requestId);
+        const current = this.pending.get(requestKey);
         if (!current) return;
         try {
-          const indices = runExactFloodFill(current.request, { isCancelled: () => current.cancelled });
-          this.resolvePending(request.requestId, createFillResult(current.request, indices));
+          const result = runExactFloodFill(current.request, { isCancelled: () => current.cancelled });
+          this.resolvePending(requestKey, createFillResult(current.request, result.indices, result.masks));
         } catch (error) {
-          this.rejectPending(request.requestId, error);
+          this.rejectPending(requestKey, error);
         }
       });
     }
-    return { request, promise, cancel: () => this.cancel(request.requestId) };
+    return { request, promise, cancel: () => this.cancel(request) };
   }
 
   request(input: FillRequestInput, options: { readonly signal?: AbortSignal } = {}): Promise<FillResultMessage> {
@@ -601,15 +780,16 @@ export class FillWorkerClient {
     return this.request(input, options);
   }
 
-  cancel(requestId: string): boolean {
-    const pending = this.pending.get(requestId);
+  cancel(request: FillResultIdentity): boolean {
+    const requestKey = fillRequestIdentityKey(request);
+    const pending = this.pending.get(requestKey);
     if (!pending) return false;
     pending.cancelled = true;
     pending.signalCleanup();
-    this.pending.delete(requestId);
-    pending.reject(new FillCancelledError(requestId));
+    this.pending.delete(requestKey);
+    pending.reject(new FillCancelledError(pending.request.requestId));
     const worker = this.worker;
-    if (worker) {
+    if (worker && pending.sent) {
       try {
         worker.postMessage(createFillCancel(pending.request));
       } catch {
@@ -622,7 +802,7 @@ export class FillWorkerClient {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    for (const requestId of [...this.pending.keys()]) this.cancel(requestId);
+    for (const pending of [...this.pending.values()]) this.cancel(pending.request);
     this.removeWorkerListeners(this.worker);
     try {
       this.worker?.terminate?.();
@@ -676,25 +856,30 @@ export class FillWorkerClient {
   }
 
   private handleMessage(message: unknown): void {
-    const requestId = responseRequestId(message);
-    if (!requestId) return;
-    const pending = this.pending.get(requestId);
+    if (!isRecord(message)) return;
+    const type = message.type;
+    if (type !== FILL_RESULT_TYPE && type !== FILL_CANCELLED_TYPE && type !== FILL_ERROR_TYPE) return;
+    const identity = responseIdentity(message, type);
+    // A response without a valid complete identity cannot be associated with
+    // a pending request. In particular, do not let a malformed/stale payload
+    // with a reused request ID consume the current job.
+    if (!identity) return;
+    const requestKey = fillRequestIdentityKey(identity);
+    const pending = this.pending.get(requestKey);
     if (!pending) return;
     try {
-      if (isRecord(message) && message.type === FILL_RESULT_TYPE) {
+      if (type === FILL_RESULT_TYPE) {
         assertCurrentResult(message, pending.request);
-        this.resolvePending(requestId, message);
-      } else if (isRecord(message) && message.type === FILL_CANCELLED_TYPE) {
-        this.rejectPending(requestId, new FillCancelledError(requestId));
-      } else if (isRecord(message) && message.type === FILL_ERROR_TYPE) {
-        const code = typeof message.code === 'string' ? message.code : 'worker-error';
-        const text = typeof message.message === 'string' ? message.message : 'The fill worker failed.';
-        this.rejectPending(requestId, new FillWorkerError(code, text));
+        this.resolvePending(requestKey, message);
+      } else if (type === FILL_CANCELLED_TYPE) {
+        assertValidFillCancelled(message);
+        this.rejectPending(requestKey, new FillCancelledError(pending.request.requestId));
       } else {
-        this.rejectPending(requestId, new FillProtocolError('The worker returned an unknown fill response.'));
+        assertValidFillError(message);
+        this.rejectPending(requestKey, new FillWorkerError(message.code, message.message));
       }
     } catch (error) {
-      this.rejectPending(requestId, error);
+      this.rejectPending(requestKey, error);
     }
   }
 

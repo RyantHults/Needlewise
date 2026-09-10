@@ -261,6 +261,17 @@ export interface BulkCellCommand extends DomainCommand {
   readonly expectedRevision?: number;
 }
 
+/** Recolor selected occupied cell components without changing geometry/progress. */
+export interface BulkRecolorCommand extends DomainCommand {
+  readonly type: 'bulk-recolor';
+  readonly indices: Uint32Array;
+  /** One nonzero occupied-component mask per cell index. */
+  readonly masks: Uint8Array;
+  readonly fromColor: number;
+  readonly toColor: number;
+  readonly expectedRevision?: number;
+}
+
 export interface BulkCompletionCommand extends DomainCommand {
   readonly type: 'bulk-completion';
   readonly indices: Uint32Array;
@@ -268,6 +279,8 @@ export interface BulkCompletionCommand extends DomainCommand {
   readonly completed?: boolean;
   readonly operation?: BulkProgressOperation;
   readonly corner?: QuarterCorner;
+  /** Optional per-index physical completion masks, aligned with `indices`. */
+  readonly masks?: Uint8Array;
   readonly expectedRevision?: number;
 }
 

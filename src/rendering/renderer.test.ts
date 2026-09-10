@@ -447,6 +447,30 @@ describe('Canvas 2D chart renderer', () => {
     renderer.dispose();
   });
 
+  it('renders a paired clear preview without removing the opposite completion mark', () => {
+    const document = chart(1, 1);
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      metrics: getCanvasMetrics(16, 16),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      overlay: {
+        pendingCellStates: [{ index: 0, cell: { x: 0, y: 0 }, kind: ThreeQuarterPair, colors: [1, 0, 35, 0], completed: 4 }]
+      }
+    });
+    renderer.renderNow();
+    const paths = overlay.records
+      .filter((call) => (call.fillStyle === '#f00' || call.fillStyle === '#00f') && call.strokeStyle === '' && (call.name === 'moveTo' || call.name === 'lineTo'))
+      .map((call) => [call.name, ...(call.args as number[]), call.fillStyle]);
+    expect(paths).toEqual([
+      ['moveTo', 0, 0, '#f00'], ['lineTo', 16, 0, '#f00'], ['lineTo', 0, 16, '#f00'],
+      ['moveTo', 16, 0, '#00f'], ['lineTo', 16, 16, '#00f'], ['lineTo', 0, 16, '#00f']
+    ]);
+    expect(overlay.records.filter((call) => call.name === 'stroke' && call.strokeStyle === '#242424')).toHaveLength(1);
+    renderer.dispose();
+  });
+
   it('dims the committed pattern while move-image dimming is active', () => {
     const document = chart(1, 1);
     document.kind[0] = CellKind.Full;
@@ -959,6 +983,7 @@ describe('Canvas 2D chart renderer', () => {
     expect(compactContext.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#d8d8d8')).toBe(false);
     expect(compactCombinedContext.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#d8d8d8')).toBe(false);
     expect(detailContext.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#d8d8d8')).toBe(true);
+    expect(detailContext.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#d8d8d8' && call.lineWidth === 0.35)).toBe(true);
     expect(detailContext.records.filter((call) => call.name === 'stroke').length).toBeGreaterThan(compactCombinedContext.records.filter((call) => call.name === 'stroke').length);
     expect(compactContext.records.some((call) => call.name === 'fillRect' && call.globalAlpha === 0.62)).toBe(true);
     compact.dispose();
@@ -977,10 +1002,16 @@ describe('Canvas 2D chart renderer', () => {
       style: { gridColor: '#00ff00', midGridColor: '#0000ff', majorGridColor: '#ff0000', gridInterval: 10, midGridInterval: 5 }
     });
     renderer.renderNow();
-    // Mid-grid lines use the distinct mid color and width 1.
+    // Mid-grid lines use the distinct mid color and the middle width tier.
     const midSegments = base.records.filter((call) => call.name === 'lineTo' && call.strokeStyle === '#0000ff');
     expect(midSegments.length).toBe(4); // x at 5,10,15 and y at 5.
     expect(new Set(midSegments.map((call) => call.lineWidth))).toEqual(new Set([1]));
+    const baselineSegments = base.records.filter((call) => call.name === 'lineTo' && call.strokeStyle === '#00ff00');
+    const majorSegments = base.records.filter((call) => call.name === 'lineTo' && call.strokeStyle === '#ff0000');
+    expect(baselineSegments.length).toBeGreaterThan(0);
+    expect(new Set(baselineSegments.map((call) => call.lineWidth))).toEqual(new Set([0.35]));
+    expect(majorSegments.length).toBeGreaterThan(0);
+    expect(new Set(majorSegments.map((call) => call.lineWidth))).toEqual(new Set([2.5]));
     const midLineTos = midSegments.map((call) => call.args as number[]);
     // Vertical lines span the clipped chart height at x=100,200,300; horizontal spans the canvas width at y=100.
     const verticals = midLineTos.filter(([x]) => x === 100 || x === 200 || x === 300);
@@ -997,6 +1028,23 @@ describe('Canvas 2D chart renderer', () => {
     const verticalMoves = midMoves.filter(([, y]) => y === 0 || y === 160);
     const verticalMoveXs = verticalMoves.map(([x]) => x).sort((a, b) => a - b);
     expect(verticalMoveXs).toEqual([100, 200, 300]);
+    renderer.dispose();
+  });
+
+  it('drops the 1-cell tier in compact LOD while retaining the 10-cell grid', () => {
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document: chart(20, 10),
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(80, 40),
+      viewport: { x: 0, y: 0, zoom: 8 },
+      style: { gridColor: '#00ff00', midGridColor: '#0000ff', majorGridColor: '#ff0000', gridInterval: 10, midGridInterval: 5 }
+    });
+    renderer.renderNow();
+
+    const gridLines = base.records.filter((call) => call.name === 'stroke');
+    expect(gridLines.some((call) => call.strokeStyle === '#00ff00')).toBe(false);
+    expect(gridLines.some((call) => call.strokeStyle === '#ff0000')).toBe(true);
     renderer.dispose();
   });
 

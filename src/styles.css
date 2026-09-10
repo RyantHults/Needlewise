@@ -346,7 +346,9 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .rail-button, .rail-placement { display:grid; place-items:center; width:2.8rem; height:2.8rem; border:1px solid #d5cec3; border-radius:.55rem; background:#fffdf9; color:#5c5148; cursor:pointer; transition:background 160ms ease,border-color 160ms ease,color 160ms ease; }
 .rail-button:hover, .rail-placement:hover, .rail-button[aria-expanded="true"], .rail-button[aria-pressed="true"], .rail-button-active { border-color:#bc5a3d; background:#f1e4da; color:#88452f; }
 .rail-button svg { width:1.3rem; height:1.3rem; }
+.rail-button svg[data-icon="completion"] { width:1.4rem; height:1.4rem; }
 .rail-button img { width:1.3rem; height:1.3rem; object-fit:contain; }
+.rail-button img[data-icon="backstitch"] { transform:scale(3); transform-origin:center; }
 .rail-button img[data-icon="stitch"] { width:1.105rem; height:1.105rem; }
 .rail-placement svg { width:.65rem; height:.65rem; }
 .rail-button span { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
@@ -405,7 +407,8 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .canvas-actions .trace-visibility { display:grid; place-items:center; width:2.4rem; height:2.4rem; margin:0; border:1px solid #d5cec3; border-radius:.4rem; color:#88452f; cursor:pointer; }
 .canvas-actions .trace-visibility input { position:absolute; opacity:0; }
 .canvas-actions .trace-visibility:has(input:checked) { border-color:#bc5a3d; background:#f1e4da; }
-.canvas-actions .trace-opacity { display:flex; align-items:center; gap:.25rem; width:9rem; margin:0; }
+.canvas-actions .trace-opacity { display:flex; flex-direction:column; align-items:stretch; gap:.1rem; width:9rem; margin:0; }
+.canvas-actions .trace-opacity-label { color:#687568; font-size:.62rem; font-weight:700; line-height:1; }
 .canvas-actions .trace-opacity input { width:7.605rem; accent-color:#bc5a3d; }
 .canvas-actions .trace-opacity output { color:#88452f; font-size:.68rem; font-weight:700; }
 .canvas-actions .trace-mode-row { display:flex; gap:.3rem; margin:0; }

@@ -16,6 +16,7 @@ import {
   bulkSetThreeQuarterCommand,
   bulkToggleCompletionCommand,
   bulkToggleBackstitchCompletionCommand,
+  bulkRecolorCommand,
   CellKind,
   createDocument,
   createEditor,
@@ -37,6 +38,8 @@ import {
   MAX_PERSISTABLE_CELL_COUNT,
   mixedEraseCommand,
   pasteFragmentCommand,
+  preflightBulkCompletionCommand,
+  preflightBulkRecolorCommand,
   QuarterCorner,
   readPatternFragmentCell,
   validateDocument,
@@ -44,6 +47,7 @@ import {
   DEFAULT_HISTORY_LIMIT_BYTES,
   DomainError,
   estimateBulkCellHistoryBytes,
+  estimateBulkRecolorHistoryBytes,
   estimateBulkCompletionHistoryBytes,
   estimateBulkBackstitchCompletionHistoryBytes,
   estimatePasteFragmentHistoryBytes,
@@ -863,6 +867,103 @@ describe('typed-array pattern document', () => {
     expect(editor.document.kind.slice(0, 6)).toEqual(new Uint8Array([1, 1, 0, 0, 1, 1]));
   });
 
+  it('recolors masked components across every stitch geometry in one delta', () => {
+    const editor = createEditor(document(6, 1));
+    editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    editor.execute({ type: 'set-completion', x: 0, y: 0, completed: true });
+    editor.execute({ type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 1 });
+    editor.execute({ type: 'set-completion', x: 1, y: 0, completed: true });
+    editor.execute({ type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 });
+    editor.execute({ type: 'set-completion', x: 2, y: 0, completed: true });
+    for (const [corner, color] of [[QuarterCorner.NW, 1], [QuarterCorner.NE, 2], [QuarterCorner.SE, 1], [QuarterCorner.SW, 2]] as const) {
+      editor.execute({ type: 'set-quarter', x: 3, y: 0, corner, color });
+    }
+    editor.execute({ type: 'set-completion', x: 3, y: 0, corner: QuarterCorner.NW, completed: true });
+    editor.execute({ type: 'set-three-quarter', x: 4, y: 0, corner: QuarterCorner.NW, color: 1 });
+    editor.execute({ type: 'set-three-quarter', x: 4, y: 0, corner: QuarterCorner.SE, color: 1 });
+    editor.execute({ type: 'set-completion', x: 4, y: 0, completed: true });
+    editor.execute({ type: 'set-three-quarter', x: 5, y: 0, corner: QuarterCorner.NW, color: 1 });
+    editor.execute({ type: 'set-three-quarter', x: 5, y: 0, corner: QuarterCorner.SE, color: 2 });
+    editor.execute({ type: 'set-completion', x: 5, y: 0, corner: QuarterCorner.NW, completed: true });
+    editor.clearHistory();
+
+    const indices = new Uint32Array([0, 1, 2, 3, 4, 5]);
+    const masks = new Uint8Array([1, 1, 1, 5, 5, 1]);
+    const command = bulkRecolorCommand(indices, masks, 1, 3, editor.revision);
+    const preflight = preflightBulkRecolorCommand(editor.document, command);
+    expect(preflight.indices).toEqual(indices);
+    expect(preflight.masks).toEqual(masks);
+    expect(preflight.changedIndices).toEqual(indices);
+
+    const recolored = editor.execute(command);
+    expect(recolored.changedIndices).toEqual(indices);
+    expect(editor.document.kind).toEqual(new Uint8Array([
+      CellKind.Full, CellKind.HalfSlash, CellKind.ThreeQuarterNW,
+      CellKind.Quarters, CellKind.ThreeQuarterPair, CellKind.ThreeQuarterPair
+    ]));
+    expect(editor.document.colors).toEqual(new Uint16Array([
+      3, 0, 0, 0, 3, 0, 0, 0, 3, 0, 0, 0,
+      3, 2, 3, 2, 3, 0, 3, 0, 3, 0, 2, 0
+    ]));
+    expect(editor.document.completed).toEqual(new Uint8Array([1, 1, 1, 1, 5, 1]));
+    expect(editor.undoDepth).toBe(1);
+    expect(editor.lastHistoryEntryKind).toBe('delta');
+    expect(editor.historyBytes).toBe(estimateBulkRecolorHistoryBytes(indices.length));
+
+    editor.undo();
+    expect(editor.document.colors).toEqual(new Uint16Array([
+      1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0,
+      1, 2, 1, 2, 1, 0, 1, 0, 1, 0, 2, 0
+    ]));
+    expect(editor.document.kind).toEqual(new Uint8Array([
+      CellKind.Full, CellKind.HalfSlash, CellKind.ThreeQuarterNW,
+      CellKind.Quarters, CellKind.ThreeQuarterPair, CellKind.ThreeQuarterPair
+    ]));
+    expect(editor.document.completed[0]).toBe(1);
+    editor.redo();
+    expect(editor.document.colors[0]).toBe(3);
+    expect(editor.document.completed[0]).toBe(1);
+  });
+
+  it('keeps the former Full-only recolor call as a mask-one compatibility alias', () => {
+    const command = bulkRecolorCommand(new Uint32Array([0, 4]), 1, 2);
+    expect(command.masks).toEqual(new Uint8Array([1, 1]));
+  });
+
+  it('rejects malformed, mismatched, and stale component recolors atomically', () => {
+    const editor = createEditor(document(2, 1));
+    editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    editor.execute({ type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 1 });
+    editor.clearHistory();
+    const before = cellSnapshot(editor.document);
+    const revision = editor.revision;
+    const valid = { type: 'bulk-recolor', indices: new Uint32Array([0]), masks: new Uint8Array([1]), fromColor: 1, toColor: 2 };
+    expect(() => editor.execute({ ...valid, masks: [1] })).toThrow(/Uint8Array/);
+    expect(() => editor.execute({ ...valid, indices: new Uint32Array([1, 0]), masks: new Uint8Array([1, 1]) })).toThrow(/strictly increasing/);
+    expect(() => editor.execute({ ...valid, masks: new Uint8Array([]) })).toThrow(/align/);
+    expect(() => editor.execute({ ...valid, masks: new Uint8Array([0]) })).toThrow(/nonzero/);
+    expect(() => editor.execute({ ...valid, masks: new Uint8Array([2]) })).toThrow(/subset/);
+    expect(() => editor.execute({ ...valid, fromColor: 2 })).toThrow(/source/);
+    expect(() => editor.execute({ ...valid, fromColor: 99 })).toThrow(/Palette|palette/);
+    expect(() => editor.execute({ ...valid, toColor: 99 })).toThrow(/Palette|palette/);
+    expect(() => editor.execute({ ...valid, expectedRevision: 4 })).toThrow(/expected revision/);
+    expect(editor.document).toEqual(before);
+    expect(editor.revision).toBe(revision);
+    expect(editor.undoDepth).toBe(0);
+  });
+
+  it('treats a valid source-equals-destination recolor as a no-op without revision or history', () => {
+    const editor = createEditor(document(1, 1));
+    editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    editor.clearHistory();
+    const revision = editor.revision;
+    const result = editor.execute(bulkRecolorCommand(new Uint32Array([0]), new Uint8Array([1]), 1, 1, revision));
+    expect(result.changed).toBe(false);
+    expect(result.changedIndices).toEqual(new Uint32Array(0));
+    expect(editor.revision).toBe(revision);
+    expect(editor.undoDepth).toBe(0);
+  });
+
   it('applies set, clear, and toggle progress to occupied cell components atomically', () => {
     const editor = createEditor(document(3, 1));
     editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
@@ -895,6 +996,74 @@ describe('typed-array pattern document', () => {
     expect(noOp.changed).toBe(false);
     expect(noOp.touchedIndices).toEqual(new Uint32Array([0]));
     expect(noOp.changedIndices).toEqual(new Uint32Array(0));
+  });
+
+  it('applies heterogeneous per-cell completion masks without disturbing unrelated bits', () => {
+    const editor = createEditor(document(3, 1));
+    editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    editor.execute({ type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 1 });
+    editor.execute({ type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.SE, color: 2 });
+    editor.execute({ type: 'set-completion', x: 1, y: 0, corner: QuarterCorner.NW, completed: true });
+    editor.execute({ type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 });
+    editor.execute({ type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.SE, color: 2 });
+    editor.execute({ type: 'set-completion', x: 2, y: 0, corner: QuarterCorner.SE, completed: true });
+    editor.execute({ type: 'set-completion', x: 0, y: 0, completed: true });
+    editor.clearHistory();
+
+    const command = {
+      type: 'bulk-completion' as const,
+      indices: new Uint32Array([0, 1, 2]),
+      masks: new Uint8Array([1, 4, 1]),
+      operation: 'set' as const
+    };
+    const preflight = preflightBulkCompletionCommand(editor.document, command);
+    expect(preflight.changedIndices).toEqual(new Uint32Array([1, 2]));
+    expect(preflight.masks).toEqual(new Uint8Array([4, 1]));
+
+    const set = editor.execute(command);
+    expect(set.changedIndices).toEqual(new Uint32Array([1, 2]));
+    expect(set.progress).toMatchObject({ marked: 2, unmarked: 0 });
+    expect(editor.document.completed).toEqual(new Uint8Array([1, 5, 5]));
+    expect(editor.undoDepth).toBe(1);
+
+    const clearPairComponent = editor.execute({
+      type: 'bulk-completion' as const,
+      indices: new Uint32Array([2]),
+      masks: new Uint8Array([1]),
+      operation: 'clear' as const
+    });
+    expect(clearPairComponent.changedIndices).toEqual(new Uint32Array([2]));
+    expect(clearPairComponent.progress).toMatchObject({ marked: 0, unmarked: 1 });
+    expect(editor.document.completed[2]).toBe(4);
+    expect(editor.undoDepth).toBe(2);
+
+    editor.undo();
+    expect(editor.document.completed[2]).toBe(5);
+    editor.redo();
+    expect(editor.document.completed[2]).toBe(4);
+  });
+
+  it('rejects invalid or conflicting completion masks atomically and treats zero masks as no-ops', () => {
+    const editor = createEditor(document(2, 1));
+    editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    editor.execute({ type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 2 });
+    editor.clearHistory();
+    const before = cellSnapshot(editor.document);
+
+    expect(() => editor.execute({ type: 'bulk-completion', indices: new Uint32Array([0, 1]), masks: new Uint8Array([1]), operation: 'set' })).toThrow(/align/);
+    expect(() => editor.execute({ type: 'bulk-completion', indices: new Uint32Array([0]), masks: new Uint8Array([2]), operation: 'set' })).toThrow(/subset/);
+    expect(() => editor.execute({ type: 'bulk-completion', indices: new Uint32Array([1]), masks: new Uint8Array([2]), operation: 'set' })).toThrow(/subset/);
+    expect(() => editor.execute({ type: 'bulk-completion', indices: new Uint32Array([0]), masks: new Uint8Array([1]), corner: QuarterCorner.NW, operation: 'set' })).toThrow(/corner/);
+    expect(() => editor.execute({ type: 'bulk-completion', indices: new Uint32Array([0]), masks: [1], operation: 'set' })).toThrow(/Uint8Array/);
+    expect(editor.document).toEqual(before);
+    expect(editor.undoDepth).toBe(0);
+
+    const revision = editor.revision;
+    const noOp = editor.execute({ type: 'bulk-completion', indices: new Uint32Array([0, 1]), masks: new Uint8Array([0, 0]), operation: 'set' });
+    expect(noOp.changed).toBe(false);
+    expect(noOp.changedIndices).toEqual(new Uint32Array(0));
+    expect(editor.revision).toBe(revision);
+    expect(editor.undoDepth).toBe(0);
   });
 
   it('tracks bulk backstitch progress by stable IDs and supports one undo entry', () => {

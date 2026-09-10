@@ -1,6 +1,7 @@
 import {
   applyOneToDraft,
   applyBulkCellCommand,
+  applyBulkRecolorCommand,
   applyBulkCompletionCommand,
   applyBulkBackstitchCompletionCommand,
   applyPasteFragmentCommand,
@@ -9,6 +10,7 @@ import {
   assertBulkBatchPolicy,
   commandRequiresSnapshot,
   estimateBulkCellHistoryBytes,
+  estimateBulkRecolorHistoryBytes,
   estimateBulkCompletionHistoryBytes,
   estimateBulkBackstitchCompletionHistoryBytes,
   estimatePasteFragmentHistoryBytes,
@@ -16,6 +18,7 @@ import {
   estimateDeleteRegionHistoryBytes,
   isBatchCommand,
   isBulkCellCommand,
+  isBulkRecolorCommand,
   isBulkCompletionCommand,
   isBulkBackstitchCompletionCommand,
   isPasteFragmentCommand,
@@ -24,6 +27,7 @@ import {
   MutationTracker,
   preflightPasteFragmentCommand,
   preflightBulkCellCommand,
+  preflightBulkRecolorCommand,
   preflightBulkCompletionCommand,
   preflightBulkBackstitchCompletionCommand,
   preflightMixedEraseCommand,
@@ -283,6 +287,7 @@ export class DocumentEditor {
 
   execute(command: DomainCommand): CommandResult {
     if (isBulkCellCommand(command)) return this.executeBulkCellCommand(command);
+    if (isBulkRecolorCommand(command)) return this.executeBulkRecolorCommand(command);
     if (isBulkCompletionCommand(command)) return this.executeBulkCompletionCommand(command);
     if (isBulkBackstitchCompletionCommand(command)) return this.executeBulkBackstitchCompletionCommand(command);
     if (isPasteFragmentCommand(command)) return this.executePasteFragmentCommand(command);
@@ -292,6 +297,9 @@ export class DocumentEditor {
       assertBulkBatchPolicy(command.commands as DomainCommand[]);
       if (command.commands.length === 1 && isBulkCellCommand(command.commands[0] as DomainCommand)) {
         return this.executeBulkCellCommand(command.commands[0] as DomainCommand);
+      }
+      if (command.commands.length === 1 && isBulkRecolorCommand(command.commands[0] as DomainCommand)) {
+        return this.executeBulkRecolorCommand(command.commands[0] as DomainCommand);
       }
       if (command.commands.length === 1 && isBulkCompletionCommand(command.commands[0] as DomainCommand)) {
         return this.executeBulkCompletionCommand(command.commands[0] as DomainCommand);
@@ -356,6 +364,31 @@ export class DocumentEditor {
     draft.revision = this.current.revision + 1;
     assertValidDocument(draft);
     if (mutation.delta === undefined) throw new DomainError('invalid-bulk-edit', 'A changed bulk edit did not produce a history delta.');
+    const entry: DeltaEntry = { kind: 'delta', delta: mutation.delta, bytes: typedDeltaBytes(mutation.delta), progress: cloneProgress(mutation.progress), recalculateMetrics: mutation.recalculateMetrics === true };
+    ensureHistoryEntryFits(entry.bytes, this.historyLimit);
+    this.current = draft;
+    this.pushHistory(entry);
+    return result(this.current, true, undefined, undefined, mutation);
+  }
+
+  private executeBulkRecolorCommand(command: DomainCommand): CommandResult {
+    const preflight = preflightBulkRecolorCommand(this.current, command);
+    const estimatedBytes = estimateBulkRecolorHistoryBytes(preflight.changedIndices.length);
+    ensureHistoryEntryFits(estimatedBytes, this.historyLimit);
+    if (preflight.changedIndices.length === 0) {
+      return result(this.current, false, undefined, undefined, {
+        changed: false,
+        snapshot: false,
+        touchedIndices: preflight.indices,
+        changedIndices: preflight.changedIndices,
+        progress: emptyProgress()
+      });
+    }
+    const draft = cloneDocument(this.current);
+    const mutation = applyBulkRecolorCommand(draft, command, preflight);
+    draft.revision = this.current.revision + 1;
+    assertValidDocument(draft);
+    if (mutation.delta === undefined) throw new DomainError('invalid-bulk-recolor', 'A changed bulk recolor did not produce a history delta.');
     const entry: DeltaEntry = { kind: 'delta', delta: mutation.delta, bytes: typedDeltaBytes(mutation.delta), progress: cloneProgress(mutation.progress), recalculateMetrics: mutation.recalculateMetrics === true };
     ensureHistoryEntryFits(entry.bytes, this.historyLimit);
     this.current = draft;

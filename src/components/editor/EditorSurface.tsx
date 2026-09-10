@@ -22,7 +22,7 @@ import { TraceImageControls } from "./TraceImageControls";
 import { searchDmcColors } from "../../catalog";
 import { useMemo } from "react";
 import { createPortal } from "react-dom";
-import stitchIcon from "../../assets/editor-tools/stitch.svg";
+import backstitchIcon from "../../assets/editor-tools/backstitch.svg";
 import eraserIcon from "../../assets/editor-tools/eraser.svg";
 import fillIcon from "../../assets/editor-tools/paint-bucket.svg";
 import selectIcon from "../../assets/editor-tools/select.svg";
@@ -983,7 +983,26 @@ export function EditorSurface({
               aria-pressed={backstitchActive}
               onClick={() => invoke("backstitch")}
             >
-              <img data-icon="stitch" src={stitchIcon} alt="" aria-hidden="true" />
+              <img data-icon="backstitch" src={backstitchIcon} alt="" aria-hidden="true" />
+            </button>
+            <button
+              className="rail-button"
+              type="button"
+              aria-label="Completion"
+              title="Completion"
+              aria-pressed={(ui?.tool.tool as string | undefined) === "completion"}
+              onClick={() => invoke("completion")}
+            >
+              <svg data-icon="completion" viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="m5 12.5 4.2 4.2L19 7"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
             </button>
             <button
               className="rail-button"

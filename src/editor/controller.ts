@@ -1,11 +1,13 @@
 import {
   CellKind,
+  preflightBulkRecolorCommand,
   createPatternFragment,
   clonePatternFragment,
   DomainError,
   HalfDirection,
   mixedEraseCommand,
   preflightMixedEraseCommand,
+  preflightBulkCompletionCommand,
   deleteRegionCommand,
   pasteFragmentCommand,
   preflightBulkCellCommand,
@@ -66,6 +68,7 @@ import type { KeyboardSample, PointerSample, WheelSample } from './input';
 import {
   FillCancelledError,
   FillStaleResultError,
+  MAX_FILL_COLOR_SLOTS,
   createFillWorkerClient,
   isFillResultCurrent,
   type FillJob,
@@ -111,7 +114,7 @@ export interface EditorSurfaceControllerLifecycle {
   dispose(): void;
 }
 
-type Gesture = PaintGesture | EraserGesture | SelectionGesture | BackstitchGesture | PanGesture | PinchGesture | MoveImageGesture | ResizeImageGesture;
+type Gesture = PaintGesture | EraserGesture | CompletionGesture | SelectionGesture | BackstitchGesture | PanGesture | PinchGesture | MoveImageGesture | ResizeImageGesture;
 
 interface PaintGesture {
   readonly kind: 'paint';
@@ -134,6 +137,28 @@ interface EraserGesture {
   readonly cells: Map<string, ModelPoint>;
   readonly components: Map<string, { readonly cell: ModelPoint; readonly corner: number }>;
   lastCell: ModelPoint | undefined;
+}
+
+interface CompletionGesture {
+  readonly kind: 'completion';
+  readonly pointerId: number;
+  readonly transaction: EditorTransaction;
+  readonly brushSize: number;
+  readonly operation: CompletionOperation;
+  readonly targets: Map<number, CompletionTarget>;
+  lastCell: ModelPoint | undefined;
+}
+
+type CompletionOperation = 'set' | 'clear';
+
+interface CompletionTarget {
+  readonly cell: ModelPoint;
+  readonly mask: number;
+}
+
+interface FillRecolorSnapshot {
+  readonly fromColor: number;
+  readonly toColor: number;
 }
 
 interface SelectionGesture {
@@ -243,13 +268,6 @@ function editForBrush(brush: StitchBrush, pointerDownCorner?: QuarterCorner): Bu
   return { kind: 'quarter', corner: brush.corner, color: brush.paletteId };
 }
 
-function cloneBrush(brush: StitchBrush): StitchBrush {
-  if (brush.kind === 'full') return { kind: 'full', paletteId: brush.paletteId };
-  if (brush.kind === 'half') return { kind: 'half', ...(brush.direction === undefined ? {} : { direction: brush.direction }), paletteId: brush.paletteId };
-  if (brush.kind === 'three-quarter') return { kind: 'three-quarter', paletteId: brush.paletteId };
-  return { kind: 'quarter', corner: brush.corner, paletteId: brush.paletteId };
-}
-
 function indicesForCells(cells: readonly ModelPoint[], width: number): Uint32Array {
   for (const cell of cells) if (!isFiniteModelPoint(cell)) throw new DomainError('invalid-coordinate', 'Cell coordinates must be finite.');
   const indices = [...new Set(cells.map((cell) => Math.floor(cell.y) * width + Math.floor(cell.x)))].sort((left, right) => left - right);
@@ -272,6 +290,157 @@ function brushCells(center: ModelPoint, size: number, document: PatternDocument)
 
 function stampBrush(cells: Map<string, ModelPoint>, center: ModelPoint, size: number, document: PatternDocument): void {
   for (const cell of brushCells(center, size, document)) cells.set(cellKey(cell), cell);
+}
+
+function stampCompletionTargets(
+  targets: Map<number, CompletionTarget>,
+  center: ModelPoint,
+  size: number,
+  document: PatternDocument,
+  local: ModelPoint
+): void {
+  for (const cell of brushCells(center, size, document)) {
+    const mask = completionTargetForCell(document, cell, local);
+    if (mask === 0) continue;
+    const index = cell.y * document.width + cell.x;
+    const previous = targets.get(index);
+    targets.set(index, previous ? { cell: previous.cell, mask: previous.mask | mask } : { cell, mask });
+  }
+}
+
+function completionTargetCells(targets: Map<number, CompletionTarget>): Map<string, ModelPoint> {
+  return new Map([...targets.values()].map((target) => [cellKey(target.cell), target.cell]));
+}
+
+function completionMaskForCell(document: PatternDocument, index: number): number {
+  const kind = document.kind[index];
+  if (kind === CellKind.Empty) return 0;
+  const offset = index * 4;
+  if (isLegacyQuarterKind(kind) || isThreeQuarterPairKind(kind)) {
+    let mask = 0;
+    for (let slot = 0; slot < 4; slot += 1) if (document.colors[offset + slot] !== 0) mask |= 1 << slot;
+    return mask;
+  }
+  return 1;
+}
+
+function deterministicFillMask(document: PatternDocument, index: number): number {
+  const mask = completionMaskForCell(document, index);
+  if (mask === 0) return 0;
+  const kind = document.kind[index];
+  if (!isLegacyQuarterKind(kind) && !isThreeQuarterPairKind(kind) && document.colors[index * MAX_FILL_COLOR_SLOTS] === 0) return 0;
+  return mask & -mask;
+}
+
+function completionTargetsForCells(cells: readonly ModelPoint[], document: PatternDocument): Map<number, CompletionTarget> {
+  const indices = indicesForCells(cells, document.width);
+  const targets = new Map<number, CompletionTarget>();
+  for (const index of indices) {
+    const mask = completionMaskForCell(document, index);
+    if (mask !== 0 && (document.completed[index] & mask) !== mask) {
+      targets.set(index, { cell: { x: index % document.width, y: Math.floor(index / document.width) }, mask });
+    }
+  }
+  return targets;
+}
+
+function completionCommand(
+  indices: Uint32Array,
+  masks: Uint8Array,
+  operation: CompletionOperation,
+  expectedRevision: number
+): DomainCommand {
+  // The masks field is supplied by the domain completion lane. Keep the
+  // controller compatible with the pre-mask command type while making the
+  // exact per-cell targets explicit at this boundary.
+  return {
+    type: 'bulk-completion',
+    indices,
+    masks,
+    operation,
+    expectedRevision
+  } as unknown as DomainCommand;
+}
+
+function fillRecolorCommand(
+  indices: Uint32Array,
+  masks: Uint8Array,
+  fromColor: number,
+  toColor: number,
+  expectedRevision: number
+): DomainCommand {
+  return {
+    type: 'bulk-recolor',
+    indices,
+    masks,
+    fromColor,
+    toColor,
+    expectedRevision
+  } as unknown as DomainCommand;
+}
+
+function masksForChangedIndices(indices: Uint32Array, masks: Uint8Array, changedIndices: Uint32Array): Uint8Array {
+  const changedMasks = new Uint8Array(changedIndices.length);
+  let sourcePosition = 0;
+  for (let targetPosition = 0; targetPosition < changedIndices.length; targetPosition += 1) {
+    while (sourcePosition < indices.length && indices[sourcePosition] < changedIndices[targetPosition]) sourcePosition += 1;
+    if (sourcePosition >= indices.length || indices[sourcePosition] !== changedIndices[targetPosition]) throw new DomainError('invalid-command', 'Fill result masks are not aligned with changed indices.');
+    changedMasks[targetPosition] = masks[sourcePosition];
+  }
+  return changedMasks;
+}
+
+function completionPendingState(
+  document: PatternDocument,
+  index: number,
+  mask: number,
+  operation: CompletionOperation
+): PendingCellState | undefined {
+  if (mask === 0) return undefined;
+  const completed = operation === 'set'
+    ? document.completed[index] | mask
+    : document.completed[index] & ~mask;
+  if (completed === document.completed[index]) return undefined;
+  const offset = index * 4;
+  return {
+    index,
+    cell: { x: index % document.width, y: Math.floor(index / document.width) },
+    kind: document.kind[index] as CellKind,
+    colors: [document.colors[offset], document.colors[offset + 1], document.colors[offset + 2], document.colors[offset + 3]],
+    completed
+  };
+}
+
+function normalizedPointerPosition(sample: PointerSample, viewport: Viewport): ModelPoint | undefined {
+  if (!validScreenSample(sample) || !isFiniteViewport(viewport)) return undefined;
+  const point = screenToModel({ x: sample.screenX, y: sample.screenY }, viewport);
+  return {
+    x: point.x - Math.floor(point.x),
+    y: point.y - Math.floor(point.y)
+  };
+}
+
+function completionTargetForCell(
+  document: PatternDocument,
+  cell: ModelPoint,
+  local: ModelPoint
+): number {
+  const index = cell.y * document.width + cell.x;
+  const kind = document.kind[index];
+  if (kind === CellKind.Empty) return 0;
+  const offset = index * 4;
+  if (isLegacyQuarterKind(kind)) {
+    const corner = quarterCornerAt({ x: cell.x + local.x, y: cell.y + local.y });
+    return document.colors[offset + corner] === 0 ? 0 : 1 << corner;
+  }
+  if (isThreeQuarterPairKind(kind)) {
+    const colors = document.colors.subarray(offset, offset + 4);
+    const corner = pairCornerAt({ x: cell.x + local.x, y: cell.y + local.y }, colors);
+    const component = threeQuarterPairComponents(colors).find((entry) => entry.corner === corner);
+    return component && document.colors[offset + component.slot] !== 0 ? 1 << component.slot : 0;
+  }
+  if (kind !== CellKind.Full && kind !== CellKind.HalfBackslash && kind !== CellKind.HalfSlash && !isThreeQuarterKind(kind)) return 0;
+  return document.colors[offset] === 0 ? 0 : 1;
 }
 
 function componentCornerForHit(document: PatternDocument, index: number, corner: 0 | 1 | 2 | 3): 0 | 1 | 2 | 3 | undefined {
@@ -594,7 +763,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private keyboardBackstitchToken: EditorRevisionToken | undefined;
   private fillJob: FillJob | undefined;
   private fillToken: EditorRevisionToken | undefined;
-  private fillEditSnapshot: BulkCellEdit | undefined;
+  private fillRecolorSnapshot: FillRecolorSnapshot | undefined;
   /** Window-level keydown listener active only while a reference-image tool is on. */
   private imageToolKeydownListener: ((event: KeyboardEvent) => void) | null = null;
 
@@ -678,14 +847,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.exitImageTool();
     }
     if (tool.tool === 'eraser' && tool.corner !== undefined) this.eraserCorner = tool.corner;
-    if ((tool.tool === 'paint' || tool.tool === 'fill') && tool.brush === undefined) {
-      // Normalize brush-less paint/fill states (which the UI can submit while
-      // entering a tool) so pointer, keyboard, and palette paths can rely on a
-      // brush being present. Carry the current brush when one exists, otherwise
-      // fall back to the selected color, the first active palette color, or id 1.
-      const carried = state.tool.tool === 'paint' || state.tool.tool === 'fill' ? state.tool.brush : undefined;
+    if (tool.tool === 'paint' && tool.brush === undefined) {
+      // Normalize brush-less paint states while keeping Fill palette-driven.
+      const carried = state.tool.tool === 'paint' ? state.tool.brush : undefined;
       const brush: StitchBrush = carried ?? { kind: 'full', paletteId: state.paletteId ?? this.firstActivePaletteId() ?? 1 };
-      this.uiStore.setTool(tool.tool === 'paint' ? { tool: 'paint', brush } : { tool: 'fill', brush });
+      this.uiStore.setTool({ tool: 'paint', brush });
       return;
     }
     this.uiStore.setTool(tool);
@@ -768,10 +934,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   cancelFill(showStatus = true): boolean {
     const job = this.fillJob;
+    this.fillRecolorSnapshot = undefined;
     if (!job) return false;
     this.fillJob = undefined;
     this.fillToken = undefined;
-    this.fillEditSnapshot = undefined;
     job.cancel();
     this.setFillPending(false);
     if (showStatus) this.setStatus('Fill cancelled');
@@ -1135,9 +1301,26 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if (selectedTool.tool === 'fill') {
       const cell = this.paintHitCell(sample, snapshot.document);
-      return cell ? this.startFillAt(cell, selectedTool.brush, this.paintCorner(sample)) : false;
+      const local = normalizedPointerPosition(sample, this.uiStore.getState().viewport);
+      const mask = cell && local ? completionTargetForCell(snapshot.document, cell, local) : 0;
+      return cell && mask !== 0 ? this.startFillAt(cell, mask) : false;
     }
     if (selectedTool.tool === 'backstitch') return this.beginBackstitch(sample, snapshot);
+    if (selectedTool.tool === 'completion') {
+      const cell = this.paintHitCell(sample, snapshot.document);
+      const local = normalizedPointerPosition(sample, this.uiStore.getState().viewport);
+      if (!cell || !local) return false;
+      const mask = completionTargetForCell(snapshot.document, cell, local);
+      if (mask === 0) return false;
+      const transaction = this.gateway.beginTransaction();
+      const brushSize = this.getBrushSize();
+      const operation: CompletionOperation = (snapshot.document.completed[cell.y * snapshot.document.width + cell.x] & mask) === mask ? 'clear' : 'set';
+      const targets = new Map<number, CompletionTarget>();
+      stampCompletionTargets(targets, cell, brushSize, snapshot.document, local);
+      this.gesture = { kind: 'completion', pointerId: sample.pointerId, transaction, brushSize, operation, targets, lastCell: cell };
+      this.publishPendingCells(completionTargetCells(targets), this.pendingCompletionStates(targets, operation, snapshot.document));
+      return true;
+    }
     if (selectedTool.tool === 'eraser') {
       const cell = this.paintHitCell(sample, snapshot.document);
       if (!cell) return false;
@@ -1206,6 +1389,19 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.publishPendingCells(gesture.cells, this.pendingPaintStates(gesture.cells, gesture.edit, gesture.transaction.token.revision, document));
       return true;
     }
+    if (gesture.kind === 'completion') {
+      const snapshot = this.gateway.getSnapshot();
+      if (!this.isCurrentTransaction(gesture.transaction.token, snapshot)) {
+        this.cancelGesture();
+        this.setStatus('Completion cancelled: project changed');
+        return true;
+      }
+      const document = snapshot.document;
+      if (!document) return false;
+      this.appendCompletionSample(gesture, sample, document);
+      this.publishPendingCells(completionTargetCells(gesture.targets), this.pendingCompletionStates(gesture.targets, gesture.operation, document));
+      return true;
+    }
     if (gesture.kind === 'eraser') {
       const snapshot = this.gateway.getSnapshot();
       if (!this.isCurrentTransaction(gesture.transaction.token, snapshot)) {
@@ -1270,6 +1466,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const document = this.gateway.getSnapshot().document;
       if (document) this.appendPaintSample(gesture, sample, document);
       this.finishPaint(true);
+    } else if (gesture.kind === 'completion') {
+      const document = this.gateway.getSnapshot().document;
+      if (document) this.appendCompletionSample(gesture, sample, document);
+      this.finishCompletion(true);
     } else if (gesture.kind === 'eraser') {
       const document = this.gateway.getSnapshot().document;
       if (document) this.appendEraserSample(gesture, sample, document);
@@ -1310,6 +1510,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const gesture = this.gesture;
     if (!gesture || gesture.kind === 'pinch' || gesture.pointerId !== sample.pointerId) return false;
     if (gesture.kind === 'paint') this.finishPaint(false);
+    else if (gesture.kind === 'completion') this.finishCompletion(false);
     else if (gesture.kind === 'eraser') this.finishEraser(false);
     else if (gesture.kind === 'selection') {
       this.gesture = undefined;
@@ -1535,6 +1736,21 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     gesture.lastCell = nextCell;
   }
 
+  private appendCompletionSample(gesture: CompletionGesture, sample: PointerSample, document: PatternDocument): void {
+    const nextCell = this.paintHitCell(sample, document);
+    const local = normalizedPointerPosition(sample, this.uiStore.getState().viewport);
+    if (!nextCell || !local) {
+      gesture.lastCell = undefined;
+      return;
+    }
+    if (gesture.lastCell) {
+      for (const cell of supercoverLine(gesture.lastCell, nextCell)) stampCompletionTargets(gesture.targets, cell, gesture.brushSize, document, local);
+    } else {
+      stampCompletionTargets(gesture.targets, nextCell, gesture.brushSize, document, local);
+    }
+    gesture.lastCell = nextCell;
+  }
+
   private addEraserSample(
     cells: Map<string, ModelPoint>,
     components: Map<string, { readonly cell: ModelPoint; readonly corner: number }>,
@@ -1614,6 +1830,41 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     } catch (error) {
       this.commandInFlight = false;
       if (error instanceof StaleEditorTransactionError) this.setStatus('Stroke cancelled: project changed');
+      else throw error;
+    }
+  }
+
+  private finishCompletion(commit: boolean): void {
+    const gesture = this.gesture;
+    if (!gesture || gesture.kind !== 'completion') return;
+    this.gesture = undefined;
+    this.clearPendingCells();
+    if (!commit || gesture.targets.size === 0) return;
+    const snapshot = this.gateway.getSnapshot();
+    if (!snapshot.document || !snapshot.projectId || snapshot.revision === null) return;
+    const orderedTargets = [...gesture.targets.entries()].sort(([left], [right]) => left - right);
+    const indices = new Uint32Array(orderedTargets.map(([index]) => index));
+    const masks = new Uint8Array(orderedTargets.map(([, target]) => target.mask));
+    const command = completionCommand(indices, masks, gesture.operation, gesture.transaction.token.revision);
+    try {
+      if (!this.isCurrentTransaction(gesture.transaction.token, snapshot)) {
+        this.setStatus('Completion cancelled: project changed');
+        return;
+      }
+      const preflight = preflightBulkCompletionCommand(snapshot.document, command);
+      if (preflight.changedIndices.length === 0) {
+        this.setStatus('No change');
+        return;
+      }
+      this.commandInFlight = true;
+      const result = gesture.transaction.commit(command);
+      this.commandInFlight = false;
+      const changedIndices = preflight.changedIndices.length > 0 ? preflight.changedIndices : indices;
+      const verb = gesture.operation === 'set' ? 'Completed' : 'Uncompleted';
+      this.projectCommandResult(result, changedIndices, `${verb} ${String(changedIndices.length)} cell${changedIndices.length === 1 ? '' : 's'}`);
+    } catch (error) {
+      this.commandInFlight = false;
+      if (error instanceof StaleEditorTransactionError) this.setStatus('Completion cancelled: project changed');
       else throw error;
     }
   }
@@ -1882,18 +2133,26 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
   }
 
-  private startFillAt(cell: ModelPoint, brush?: StitchBrush, pointerDownCorner?: QuarterCorner): boolean {
+  private startFillAt(cell: ModelPoint, startMask?: number): boolean {
     const snapshot = this.gateway.getSnapshot();
     if (!isFiniteModelPoint(cell) || !snapshot.document || !snapshot.projectId || snapshot.revision === null) return false;
     const cellX = Math.floor(cell.x);
     const cellY = Math.floor(cell.y);
     if (cellX < 0 || cellY < 0 || cellX >= snapshot.document.width || cellY >= snapshot.document.height) return false;
     this.cancelFill(false);
-    const currentTool = this.uiStore.getState().tool;
-    const capturedBrush = cloneBrush(brush ?? (currentTool.tool === 'fill' ? currentTool.brush : undefined) ?? {
-      kind: 'full',
-      paletteId: this.uiStore.getState().paletteId ?? 1
-    });
+    const selectedPaletteId = this.uiStore.getState().paletteId;
+    const startIndex = cellY * snapshot.document.width + cellX;
+    const targetMask = startMask ?? deterministicFillMask(snapshot.document, startIndex);
+    if (selectedPaletteId === null || targetMask === 0) {
+      this.setStatus('No change');
+      return true;
+    }
+    const sourceSlot = Math.log2(targetMask);
+    const sourceColor = snapshot.document.colors[startIndex * MAX_FILL_COLOR_SLOTS + sourceSlot];
+    if (sourceColor === 0 || sourceColor === selectedPaletteId) {
+      this.setStatus('No change');
+      return true;
+    }
     const token: EditorRevisionToken = { projectId: snapshot.projectId, revision: snapshot.revision };
     let job: FillJob;
     try {
@@ -1902,7 +2161,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         baseRevision: token.revision,
         width: snapshot.document.width,
         height: snapshot.document.height,
-        startIndex: cellY * snapshot.document.width + cellX,
+        startIndex,
+        startMask: targetMask,
         kind: snapshot.document.kind,
         colors: snapshot.document.colors
       });
@@ -1912,14 +2172,14 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     this.fillJob = job;
     this.fillToken = token;
-    this.fillEditSnapshot = editForBrush(capturedBrush, pointerDownCorner);
+    this.fillRecolorSnapshot = { fromColor: sourceColor, toColor: selectedPaletteId };
     this.setFillPending(true);
     this.setStatus('Filling…');
     void job.promise.then((result) => this.finishFill(job, token, result)).catch((error: unknown) => {
       if (this.fillJob !== job) return;
       this.fillJob = undefined;
       this.fillToken = undefined;
-      this.fillEditSnapshot = undefined;
+      this.fillRecolorSnapshot = undefined;
       this.setFillPending(false);
       if (error instanceof FillCancelledError) this.setStatus('Fill cancelled');
       else if (error instanceof FillStaleResultError) this.setStatus('Fill discarded: project changed');
@@ -1932,8 +2192,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (this.fillJob !== job) return;
     this.fillJob = undefined;
     this.fillToken = undefined;
-    const capturedEdit = this.fillEditSnapshot;
-    this.fillEditSnapshot = undefined;
+    const capturedRecolor = this.fillRecolorSnapshot;
+    this.fillRecolorSnapshot = undefined;
     this.setFillPending(false);
     const current = this.gateway.getSnapshot();
     if (!isFillResultCurrent(result, { projectId: token.projectId, baseRevision: token.revision, requestId: job.request.requestId })
@@ -1946,11 +2206,29 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.setStatus('Fill discarded: project changed');
       return;
     }
-    if (!capturedEdit) {
-      this.setStatus('Fill discarded: brush unavailable');
+    if (capturedRecolor) {
+      try {
+        const command = fillRecolorCommand(result.indices, result.masks, capturedRecolor.fromColor, capturedRecolor.toColor, token.revision);
+        const preflight = preflightBulkRecolorCommand(current.document, command);
+        if (preflight.changedIndices.length === 0) {
+          this.setStatus('No change');
+          return;
+        }
+        const changedMasks = masksForChangedIndices(result.indices, result.masks, preflight.changedIndices);
+        this.executeCommandWithToken(
+          fillRecolorCommand(preflight.changedIndices, changedMasks, capturedRecolor.fromColor, capturedRecolor.toColor, token.revision),
+          'Filled region',
+          token
+        );
+      } catch (error) {
+        if (error instanceof DomainError) {
+          this.setStatus(error.message);
+          return;
+        }
+        throw error;
+      }
       return;
     }
-    this.executeCommandWithToken({ type: 'bulk-cell', indices: result.indices, edit: capturedEdit }, 'Filled region');
   }
 
   private activateKeyboardCursor(): void {
@@ -1961,7 +2239,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if (tool.tool === 'fill') {
       const cursor = this.uiStore.getState().keyboardCursor ?? { x: 0, y: 0 };
-      this.startFillAt(cursor, tool.brush);
+      this.startFillAt(cursor);
+      return;
+    }
+    if (tool.tool === 'completion') {
+      this.completeAtKeyboardCursor();
       return;
     }
     if (tool.tool === 'eraser') {
@@ -1973,6 +2255,15 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       return;
     }
     if (tool.tool === 'paint') this.paintAtKeyboardCursor();
+  }
+
+  private completeAtKeyboardCursor(): void {
+    const state = this.uiStore.getState();
+    const snapshot = this.gateway.getSnapshot();
+    const cursor = state.keyboardCursor ?? { x: 0, y: 0 };
+    if (!snapshot.document || !snapshot.projectId || snapshot.revision === null || !isFiniteModelPoint(cursor)) return;
+    const cells = brushCells(cloneCell(cursor), this.getBrushSize(), snapshot.document);
+    this.executeCompletion(cells, `Completed cell (${String(Math.floor(cursor.x))}, ${String(Math.floor(cursor.y))})`);
   }
 
   private sampleTraceAtKeyboardCursor(): void {
@@ -2049,6 +2340,35 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
   }
 
+  private executeCompletion(cells: readonly ModelPoint[], status: string): void {
+    const snapshot = this.gateway.getSnapshot();
+    if (!snapshot.document || !snapshot.projectId || snapshot.revision === null) return;
+    const targets = completionTargetsForCells(cells, snapshot.document);
+    const orderedTargets = [...targets.entries()].sort(([left], [right]) => left - right);
+    const indices = new Uint32Array(orderedTargets.map(([index]) => index));
+    if (indices.length === 0) {
+      this.setStatus('No change');
+      return;
+    }
+    const masks = new Uint8Array(orderedTargets.map(([, target]) => target.mask));
+    const command = completionCommand(indices, masks, 'set', snapshot.revision);
+    try {
+      const preflight = preflightBulkCompletionCommand(snapshot.document, command);
+      if (preflight.changedIndices.length === 0) {
+        this.setStatus('No change');
+        return;
+      }
+      this.commandInFlight = true;
+      const result = this.gateway.execute(command, { projectId: snapshot.projectId, revision: snapshot.revision });
+      this.commandInFlight = false;
+      this.projectCommandResult(result, preflight.changedIndices.length > 0 ? preflight.changedIndices : indices, status);
+    } catch (error) {
+      this.commandInFlight = false;
+      if (error instanceof StaleEditorTransactionError) this.setStatus('Completion cancelled: project changed');
+      else throw error;
+    }
+  }
+
   private historyAction(action: 'undo' | 'redo'): void {
     const snapshot = this.gateway.getSnapshot();
     if (!snapshot.projectId || snapshot.revision === null) return;
@@ -2097,13 +2417,14 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.lastGatewaySnapshot = snapshot;
     if (!force && !projectChanged && !documentChanged) return;
     if (projectChanged) this.resetForProjectSwitch(snapshot);
-    else if (this.gesture && ((this.gesture.kind === 'paint' || this.gesture.kind === 'eraser')
+    else if (this.gesture && ((this.gesture.kind === 'paint' || this.gesture.kind === 'eraser' || this.gesture.kind === 'completion')
       ? (this.gesture.transaction.token.revision !== snapshot.revision || this.gesture.transaction.token.projectId !== snapshot.projectId)
       : this.gesture.kind === 'backstitch'
         ? (this.gesture.token.revision !== snapshot.revision || this.gesture.token.projectId !== snapshot.projectId)
         : false)) {
+      const staleStatus = this.gesture.kind === 'completion' ? 'Completion cancelled: project changed' : 'Stroke cancelled: project changed';
       this.cancelGesture();
-      this.setStatus('Stroke cancelled: project changed');
+      this.setStatus(staleStatus);
     }
     if (!projectChanged && this.fillJob && this.fillToken
       && (this.fillToken.projectId !== snapshot.projectId || this.fillToken.revision !== snapshot.revision)) this.cancelFill(false);
@@ -2158,6 +2479,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     });
     return Array.from(preflight.changedIndices, (index) => cellState(document, index, preflight.edit))
       .filter((state) => cellStateChanged(document, state));
+  }
+
+  private pendingCompletionStates(targets: Map<number, CompletionTarget>, operation: CompletionOperation, document: PatternDocument): PendingCellState[] {
+    return [...targets.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([index, target]) => completionPendingState(document, index, target.mask, operation))
+      .filter((state): state is PendingCellState => state !== undefined);
   }
 
   private pendingEraserStates(

@@ -397,6 +397,149 @@ describe('EditorSurfaceController', () => {
     controller.dispose();
   });
 
+  it('completes occupied components with one palette-independent bulk gesture', () => {
+    const fixture = controllerFixture();
+    const document = fixture.gateway.getSnapshot().document!;
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    document.kind[1] = CellKind.HalfBackslash;
+    document.colors[4] = 1;
+    document.kind[2] = CellKind.ThreeQuarterNW;
+    document.colors[8] = 1;
+    document.kind[3] = CellKind.Quarters;
+    document.colors.set([1, 0, 1, 0], 12);
+    document.kind[4] = CellKind.ThreeQuarterPair;
+    document.colors.set([1, 0, 1, 0], 16);
+    fixture.controller.setTool({ tool: 'completion' });
+    fixture.controller.handlePointerDown(pointer(1, 8, 8));
+    expect(fixture.uiStore.getState().overlay.pendingCellStates).toMatchObject([
+      { index: 0, completed: 1 }
+    ]);
+    fixture.controller.handlePointerUp(pointer(1, 8, 8));
+    expect(fixture.gateway.commands.at(-1)).toMatchObject({
+      type: 'bulk-completion',
+      indices: new Uint32Array([0])
+    });
+    expect(fixture.gateway.getSnapshot().document?.completed[0]).toBe(1);
+    expect(fixture.uiStore.getState().status).toBe('Completed 1 cell');
+
+    fixture.controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
+    expect(fixture.gateway.getSnapshot().document?.completed[0]).toBe(0);
+    fixture.controller.handleKeyDown({ key: 'y', ctrlKey: true, preventDefault: () => undefined });
+    expect(fixture.gateway.getSnapshot().document?.completed[0]).toBe(1);
+
+    fixture.gateway.commands.length = 0;
+    fixture.controller.setBrushSize(2);
+    fixture.controller.handlePointerDown(pointer(2, 24, 8));
+    fixture.controller.handlePointerMove(pointer(2, 40, 8));
+    fixture.controller.handlePointerUp(pointer(2, 40, 8));
+    expect(fixture.gateway.commands.at(-1)).toMatchObject({
+      type: 'bulk-completion',
+      indices: new Uint32Array([0, 1, 2]),
+      masks: new Uint8Array([1, 1, 1]),
+      operation: 'set'
+    });
+    expect(Array.from(fixture.gateway.getSnapshot().document!.completed.slice(0, 4))).toEqual([1, 1, 1, 0]);
+    expect(fixture.gateway.getSnapshot().document?.completed[4]).toBe(0);
+    fixture.controller.dispose();
+  });
+
+  it('ignores empty and already-complete cells and supports keyboard completion stamping', () => {
+    const fixture = controllerFixture();
+    fixture.controller.setTool({ tool: 'completion' });
+    const historyBefore = fixture.gateway.undoDepth;
+    fixture.controller.handlePointerDown(pointer(1, 8, 8));
+    fixture.controller.handlePointerUp(pointer(1, 8, 8));
+    expect(fixture.gateway.commands).toHaveLength(0);
+    expect(fixture.gateway.undoDepth).toBe(historyBefore);
+
+    const document = fixture.gateway.getSnapshot().document!;
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    document.completed[0] = 1;
+    fixture.uiStore.setKeyboardCursor({ x: 0, y: 0 });
+    fixture.controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined });
+    expect(fixture.gateway.commands).toHaveLength(0);
+    expect(fixture.gateway.undoDepth).toBe(historyBefore);
+    fixture.controller.dispose();
+  });
+
+  it('captures pointer completion operation and toggles one exact full-stitch component', () => {
+    const fixture = controllerFixture();
+    const document = fixture.gateway.getSnapshot().document!;
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    fixture.controller.setTool({ tool: 'completion' });
+
+    fixture.controller.handlePointerDown(pointer(1, 8, 8));
+    expect(fixture.uiStore.getState().overlay.pendingCellStates).toMatchObject([{ index: 0, completed: 1 }]);
+    fixture.controller.handlePointerUp(pointer(1, 8, 8));
+    expect(fixture.gateway.getSnapshot().document?.completed[0]).toBe(1);
+    expect(fixture.gateway.commands.at(-1)).toMatchObject({ operation: 'set', masks: new Uint8Array([1]) });
+
+    fixture.controller.handlePointerDown(pointer(2, 8, 8));
+    expect(fixture.uiStore.getState().overlay.pendingCellStates).toMatchObject([{ index: 0, completed: 0 }]);
+    fixture.controller.handlePointerUp(pointer(2, 8, 8));
+    expect(fixture.gateway.getSnapshot().document?.completed[0]).toBe(0);
+    expect(fixture.gateway.commands.at(-1)).toMatchObject({ operation: 'clear', masks: new Uint8Array([1]) });
+
+    fixture.controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
+    expect(fixture.gateway.getSnapshot().document?.completed[0]).toBe(1);
+    fixture.controller.handleKeyDown({ key: 'y', ctrlKey: true, preventDefault: () => undefined });
+    expect(fixture.gateway.getSnapshot().document?.completed[0]).toBe(0);
+    fixture.controller.dispose();
+  });
+
+  it('targets paired triangles by diagonal hit geometry and preserves the opposite preview component', () => {
+    const fixture = controllerFixture();
+    const document = fixture.gateway.getSnapshot().document!;
+    document.kind[0] = ThreeQuarterPair;
+    document.colors.set([1, 0, 1, 0], 0);
+    fixture.controller.setTool({ tool: 'completion' });
+
+    fixture.controller.handlePointerDown(pointer(1, 4, 4));
+    expect(fixture.uiStore.getState().overlay.pendingCellStates).toMatchObject([{ index: 0, completed: 1 }]);
+    fixture.controller.handlePointerUp(pointer(1, 4, 4));
+    expect(fixture.gateway.getSnapshot().document?.completed[0]).toBe(1);
+
+    fixture.controller.handlePointerDown(pointer(2, 12, 12));
+    expect(fixture.uiStore.getState().overlay.pendingCellStates).toMatchObject([{ index: 0, completed: 5 }]);
+    fixture.controller.handlePointerUp(pointer(2, 12, 12));
+    expect(fixture.gateway.getSnapshot().document?.completed[0]).toBe(5);
+    expect(fixture.gateway.commands.at(-1)).toMatchObject({ masks: new Uint8Array([4]), operation: 'set' });
+
+    fixture.controller.handlePointerDown(pointer(3, 4, 4));
+    expect(fixture.uiStore.getState().overlay.pendingCellStates).toMatchObject([{ index: 0, completed: 4 }]);
+    fixture.controller.handlePointerUp(pointer(3, 4, 4));
+    expect(fixture.gateway.getSnapshot().document?.completed[0]).toBe(4);
+    expect(fixture.gateway.commands.at(-1)).toMatchObject({ masks: new Uint8Array([1]), operation: 'clear' });
+    fixture.controller.dispose();
+  });
+
+  it('targets only occupied legacy quarter components and clears stale gestures', () => {
+    const fixture = controllerFixture();
+    const document = fixture.gateway.getSnapshot().document!;
+    document.kind[0] = CellKind.Quarters;
+    document.colors.set([1, 0, 1, 0], 0);
+    fixture.controller.setTool({ tool: 'completion' });
+
+    expect(fixture.controller.handlePointerDown(pointer(1, 12, 4))).toBe(false);
+    expect(fixture.gateway.commands).toHaveLength(0);
+    fixture.controller.handlePointerDown(pointer(2, 4, 4));
+    fixture.controller.handlePointerUp(pointer(2, 4, 4));
+    expect(fixture.gateway.getSnapshot().document?.completed[0]).toBe(1);
+    fixture.controller.handlePointerDown(pointer(3, 12, 12));
+    fixture.controller.handlePointerUp(pointer(3, 12, 12));
+    expect(fixture.gateway.getSnapshot().document?.completed[0]).toBe(5);
+
+    fixture.controller.handlePointerDown(pointer(4, 4, 4));
+    expect(fixture.uiStore.getState().overlay.pendingCellStates).toMatchObject([{ index: 0, completed: 4 }]);
+    fixture.gateway.switchProject();
+    expect(fixture.uiStore.getState().overlay.pendingCells).toBeUndefined();
+    expect(fixture.uiStore.getState().overlay.pendingCellStates).toBeUndefined();
+    fixture.controller.dispose();
+  });
+
   it('derives one half-stitch diagonal from the pointer-down corner', () => {
     const cases = [
       { x: 4, y: 4, kind: CellKind.HalfBackslash },
@@ -931,11 +1074,11 @@ describe('EditorSurfaceController', () => {
     controller.dispose();
   });
 
-  it('carries the active paint brush into a brush-less fill tool', () => {
+  it('keeps Fill independent from the active paint brush', () => {
     const { uiStore, controller } = controllerFixture();
     controller.setTool({ tool: 'paint', brush: { kind: 'half', direction: '/', paletteId: 1 } });
     controller.setTool({ tool: 'fill' });
-    expect(uiStore.getState().tool).toEqual({ tool: 'fill', brush: { kind: 'half', direction: '/', paletteId: 1 } });
+    expect(uiStore.getState().tool).toEqual({ tool: 'fill' });
     controller.dispose();
   });
 

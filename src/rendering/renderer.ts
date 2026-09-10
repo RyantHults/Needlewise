@@ -278,6 +278,18 @@ function patternCanvasRect(
 
 const GRID_SHOW_AT_FIT_RATIO = 1.2;
 
+function minorGridWidth(lod: RenderLod): number {
+  return lod === RenderLod.Detail ? 0.35 : 0.65;
+}
+
+function midGridWidth(lod: RenderLod): number {
+  return lod === RenderLod.Detail ? 1 : 1.5;
+}
+
+function majorGridWidth(lod: RenderLod): number {
+  return lod === RenderLod.Detail ? 2.5 : 2.25;
+}
+
 function shouldDrawGrid(
   document: PatternDocument,
   viewport: Viewport,
@@ -327,26 +339,31 @@ function drawGrid(
     for (let x = firstX; x <= lastX; x += interval) {
       const screenX = modelToScreen({ x, y: 0 }, viewport).x;
       if (screenX < bounds.x || screenX > bounds.x + bounds.width) continue;
-      const major = lod === RenderLod.Overview || lod === RenderLod.Compact || x % configuredInterval === 0;
+      // Compact LOD keeps the configured hierarchy (the 5-cell tier is
+      // drawn separately), but drops the per-cell lines. Overview is the
+      // exception: its adaptive step is itself the visible grid.
+      const major = lod === RenderLod.Overview || x % configuredInterval === 0;
+      if (lod === RenderLod.Compact && !major) continue;
       const segment = clipSegmentToRect(
         modelToScreen({ x, y: top }, viewport),
         modelToScreen({ x, y: bottom }, viewport),
         bounds
       );
-      if (segment) gridLine(context, segment.start, segment.end, major ? style.majorGridColor : style.gridColor, major ? 1.25 : 0.75);
+      if (segment) gridLine(context, segment.start, segment.end, major ? style.majorGridColor : style.gridColor, major ? majorGridWidth(lod) : minorGridWidth(lod));
     }
     const firstY = Math.ceil(top / interval) * interval;
     const lastY = Math.floor(bottom / interval) * interval;
     for (let y = firstY; y <= lastY; y += interval) {
       const screenY = modelToScreen({ x: 0, y }, viewport).y;
       if (screenY < bounds.y || screenY > bounds.y + bounds.height) continue;
-      const major = lod === RenderLod.Overview || lod === RenderLod.Compact || y % configuredInterval === 0;
+      const major = lod === RenderLod.Overview || y % configuredInterval === 0;
+      if (lod === RenderLod.Compact && !major) continue;
       const segment = clipSegmentToRect(
         modelToScreen({ x: left, y }, viewport),
         modelToScreen({ x: right, y }, viewport),
         bounds
       );
-      if (segment) gridLine(context, segment.start, segment.end, major ? style.majorGridColor : style.gridColor, major ? 1.25 : 0.75);
+      if (segment) gridLine(context, segment.start, segment.end, major ? style.majorGridColor : style.gridColor, major ? majorGridWidth(lod) : minorGridWidth(lod));
     }
   } finally {
     if (clipped) restore(context);
@@ -387,7 +404,7 @@ function drawMidGrid(
         modelToScreen({ x, y: bottom }, viewport),
         bounds
       );
-      if (segment) gridLine(context, segment.start, segment.end, style.midGridColor, 1);
+      if (segment) gridLine(context, segment.start, segment.end, style.midGridColor, midGridWidth(lod));
     }
     const firstY = Math.ceil(top / interval) * interval;
     const lastY = Math.floor(bottom / interval) * interval;
@@ -400,7 +417,7 @@ function drawMidGrid(
         modelToScreen({ x: right, y }, viewport),
         bounds
       );
-      if (segment) gridLine(context, segment.start, segment.end, style.midGridColor, 1);
+      if (segment) gridLine(context, segment.start, segment.end, style.midGridColor, midGridWidth(lod));
     }
   } finally {
     if (clipped) restore(context);
@@ -491,7 +508,7 @@ function drawGridForCells(
         modelToScreen({ x, y: y + 1 }, viewport),
         bounds
       );
-      if (segment) gridLine(context, segment.start, segment.end, major ? style.majorGridColor : style.gridColor, major ? 1.25 : 0.75);
+      if (segment) gridLine(context, segment.start, segment.end, major ? style.majorGridColor : style.gridColor, major ? majorGridWidth(lod) : minorGridWidth(lod));
     }
     for (const { x, y } of horizontal.values()) {
       const major = y % interval === 0;
@@ -501,7 +518,7 @@ function drawGridForCells(
         modelToScreen({ x: x + 1, y }, viewport),
         bounds
       );
-      if (segment) gridLine(context, segment.start, segment.end, major ? style.majorGridColor : style.gridColor, major ? 1.25 : 0.75);
+      if (segment) gridLine(context, segment.start, segment.end, major ? style.majorGridColor : style.gridColor, major ? majorGridWidth(lod) : minorGridWidth(lod));
     }
   } finally {
     if (clipped) restore(context);

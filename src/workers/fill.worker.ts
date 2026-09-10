@@ -8,6 +8,7 @@ import {
   assertValidFillCancel,
   assertValidFillRequest,
   createFillResult,
+  fillRequestIdentityKey,
   runExactFloodFillAsync,
   type FillCancelMessage,
   type FillCancelledMessage,
@@ -60,6 +61,35 @@ function isCancelMessage(value: unknown): value is FillCancelMessage {
   return isRecord(value) && value.protocol === FILL_PROTOCOL && value.type === FILL_CANCEL_TYPE;
 }
 
+/** Track active requests separately so pre-cancels can expire if orphaned. */
+const activeRequestKeys = new WeakMap<Set<string>, Set<string>>();
+
+function activeKeysFor(cancelledRequests: Set<string>): Set<string> {
+  let active = activeRequestKeys.get(cancelledRequests);
+  if (active === undefined) {
+    active = new Set<string>();
+    activeRequestKeys.set(cancelledRequests, active);
+  }
+  return active;
+}
+
+function rememberCancellation(cancelledRequests: Set<string>, request: FillCancelMessage): void {
+  const key = fillRequestIdentityKey(request);
+  const active = activeKeysFor(cancelledRequests);
+  cancelledRequests.add(key);
+  if (active.has(key)) return;
+  // A direct pre-cancel is useful when both messages are already queued in
+  // the same task, but must not live forever and poison a later ID reuse.
+  globalThis.queueMicrotask(() => {
+    if (!active.has(key)) cancelledRequests.delete(key);
+  });
+}
+
+function forgetRequest(cancelledRequests: Set<string>, key: string): void {
+  cancelledRequests.delete(key);
+  activeKeysFor(cancelledRequests).delete(key);
+}
+
 /**
  * Handle one worker message without depending on a concrete WorkerGlobalScope.
  * This keeps the entrypoint directly testable and makes cancellation cooperative.
@@ -77,7 +107,7 @@ export function handleFillWorkerMessage(
       postMessage(errorMessage(error, cancel));
       return;
     }
-    cancelledRequests.add(cancel.requestId);
+    rememberCancellation(cancelledRequests, cancel);
     return;
   }
 
@@ -90,24 +120,28 @@ export function handleFillWorkerMessage(
     return;
   }
 
-  if (cancelledRequests.has(request.requestId)) {
-    cancelledRequests.delete(request.requestId);
+  const requestKey = fillRequestIdentityKey(request);
+  const active = activeKeysFor(cancelledRequests);
+  active.add(requestKey);
+  if (cancelledRequests.has(requestKey)) {
+    forgetRequest(cancelledRequests, requestKey);
     postMessage(cancelledMessage(request));
     return;
   }
 
-  void runExactFloodFillAsync(request, { isCancelled: () => cancelledRequests.has(request.requestId) })
-    .then((indices) => {
-      if (cancelledRequests.has(request.requestId)) {
-        cancelledRequests.delete(request.requestId);
+  void runExactFloodFillAsync(request, { isCancelled: () => cancelledRequests.has(requestKey) })
+    .then((traversal) => {
+      if (cancelledRequests.has(requestKey)) {
+        forgetRequest(cancelledRequests, requestKey);
         postMessage(cancelledMessage(request));
         return;
       }
-      const result = createFillResult(request, indices);
-      postMessage(result, [result.indices.buffer]);
+      const result = createFillResult(request, traversal.indices, traversal.masks);
+      forgetRequest(cancelledRequests, requestKey);
+      postMessage(result, [result.indices.buffer, result.masks.buffer]);
     })
     .catch((error: unknown) => {
-      cancelledRequests.delete(request.requestId);
+      forgetRequest(cancelledRequests, requestKey);
       if (error instanceof FillCancelledError) {
         postMessage(cancelledMessage(request));
         return;

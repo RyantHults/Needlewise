@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { bulkSetCompletionCommand, bulkSetThreeQuarterCommand, CellKind, computePatternMetrics, createDocument, createEditor, deleteRegionCommand, HalfDirection, QuarterCorner, type PatternDocument } from '../domain';
+import { bulkRecolorCommand, bulkSetCompletionCommand, bulkSetThreeQuarterCommand, CellKind, computePatternMetrics, createDocument, createEditor, deleteRegionCommand, HalfDirection, QuarterCorner, type PatternDocument } from '../domain';
 import { setDailyProgress, type PersistencePreparationClient, type ProgressActivity, type ProjectMetadata, type SaveResult } from '../persistence';
 import { attachDeleteMetricsImpactForDelta, registerDeleteMetricsImpact, type DeleteMetricsImpact } from '../domain/internal-metrics-impact';
 import { ProjectSession } from './session';
@@ -177,6 +177,89 @@ describe('application progress integration', () => {
     expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 0 });
     expect(service.metrics).toEqual(computePatternMetrics(editor.document));
     expect(service.recalculate(editor.document)).toEqual(computePatternMetrics(editor.document));
+  });
+
+  it('keeps masked completion progress and component totals exact across heterogeneous geometry', () => {
+    let document = createDocument({
+      width: 3,
+      height: 1,
+      palette: [
+        { id: 1, name: 'Red', color: '#d33' },
+        { id: 2, name: 'Blue', color: '#36c' }
+      ]
+    });
+    const editor = createEditor(document);
+    editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    editor.execute({ type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 1 });
+    editor.execute({ type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.SE, color: 2 });
+    editor.execute({ type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 });
+    editor.execute({ type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.SE, color: 2 });
+    editor.clearHistory();
+    document = editor.document;
+    const service = new ProgressMetricsService(document);
+
+    let previous = editor.document;
+    let result = editor.execute({ type: 'bulk-completion', indices: new Uint32Array([0, 1, 2]), masks: new Uint8Array([1, 4, 1]), operation: 'set' });
+    expect(service.apply(previous, result)).toEqual({ marked: 3, unmarked: 0 });
+    expect(service.metrics).toEqual(computePatternMetrics(editor.document));
+    expect(service.metrics.totals).toMatchObject({ totalComponents: 5, completedComponents: 3, remainingComponents: 2 });
+    expect(service.metrics.byPalette.get(1)).toMatchObject({ full: 1, quarter: 1, threeQuarter: 1, completedComponents: 2 });
+    expect(service.metrics.byPalette.get(2)).toMatchObject({ quarter: 1, threeQuarter: 1, completedComponents: 1 });
+
+    previous = editor.document;
+    result = editor.execute({ type: 'bulk-completion', indices: new Uint32Array([2]), masks: new Uint8Array([1]), operation: 'clear' });
+    expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 1 });
+    expect(service.metrics).toEqual(computePatternMetrics(editor.document));
+    expect(service.metrics.totals).toMatchObject({ totalComponents: 5, completedComponents: 2, remainingComponents: 3 });
+  });
+
+  it('moves masked component counts and material between palettes without changing progress', () => {
+    const editor = createEditor(createDocument({
+      width: 5,
+      height: 1,
+      palette: [
+        { id: 1, name: 'Red', color: '#d33' },
+        { id: 2, name: 'Blue', color: '#36c' },
+        { id: 3, name: 'Gold', color: '#da2' }
+      ]
+    }));
+    editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    editor.execute({ type: 'set-completion', x: 0, y: 0, completed: true });
+    editor.execute({ type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 1 });
+    editor.execute({ type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 });
+    editor.execute({ type: 'set-quarter', x: 3, y: 0, corner: QuarterCorner.NW, color: 1 });
+    editor.execute({ type: 'set-quarter', x: 3, y: 0, corner: QuarterCorner.NE, color: 2 });
+    editor.execute({ type: 'set-three-quarter', x: 4, y: 0, corner: QuarterCorner.NW, color: 1 });
+    editor.execute({ type: 'set-three-quarter', x: 4, y: 0, corner: QuarterCorner.SE, color: 2 });
+    editor.execute({ type: 'set-completion', x: 3, y: 0, corner: QuarterCorner.NW, completed: true });
+    editor.execute({ type: 'set-completion', x: 4, y: 0, corner: QuarterCorner.NW, completed: true });
+    editor.clearHistory();
+
+    const service = new ProgressMetricsService(editor.document);
+    let previous = editor.document;
+    const recolored = editor.execute(bulkRecolorCommand(
+      new Uint32Array([0, 1, 2, 3, 4]),
+      new Uint8Array([1, 1, 1, 1, 1]),
+      1,
+      3,
+      editor.revision
+    ));
+    expect(service.apply(previous, recolored)).toEqual({ marked: 0, unmarked: 0 });
+    expect(service.metrics).toEqual(computePatternMetrics(editor.document));
+    expect(service.metrics.byPalette.get(1)).toMatchObject({ full: 0, half: 0, quarter: 0, completedComponents: 0 });
+    expect(service.metrics.byPalette.get(2)).toMatchObject({ quarter: 1, threeQuarter: 1, completedComponents: 0, material: { stitchUnits: 1 } });
+    expect(service.metrics.byPalette.get(3)).toMatchObject({ full: 1, half: 1, quarter: 1, threeQuarter: 2, completedComponents: 3, material: { stitchUnits: 3.25 } });
+
+    previous = editor.document;
+    const undone = editor.undo();
+    expect(service.apply(previous, undone)).toEqual({ marked: 0, unmarked: 0 });
+    expect(service.metrics).toEqual(computePatternMetrics(editor.document));
+    expect(service.metrics.byPalette.get(1)).toMatchObject({ full: 1, half: 1, quarter: 1, threeQuarter: 2, completedComponents: 3, material: { stitchUnits: 3.25 } });
+    previous = editor.document;
+    const redone = editor.redo();
+    expect(service.apply(previous, redone)).toEqual({ marked: 0, unmarked: 0 });
+    expect(service.metrics).toEqual(computePatternMetrics(editor.document));
+    expect(editor.undoDepth).toBe(1);
   });
 
   it('tracks distinct-color paired deletion through incremental metrics and undo/redo', () => {

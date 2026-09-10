@@ -334,20 +334,22 @@ describe('advanced headless editor tools', () => {
   });
 
   it('runs fill with immutable planes, exposes pending state, and rejects cancellation/project switches', async () => {
-    const { controller, gateway, worker, uiStore } = fixture();
-    controller.setTool({ tool: 'fill', brush: { kind: 'full', paletteId: 2 } });
+    const document = documentWithStitches();
+    const { controller, gateway, worker, uiStore } = fixture(document);
+    uiStore.setPaletteId(2);
+    controller.setTool({ tool: 'fill' });
     const before = gateway.commands.length;
     controller.handlePointerDown(pointer(1, 8, 8));
     expect(controller.isFillPending()).toBe(true);
     expect(uiStore.getState().overlay.fillPending).toBe(true);
     const request = worker.posted.find((message) => (message as { type?: string }).type === 'fill-request') as Parameters<typeof createFillResult>[0];
-    controller.setTool({ tool: 'fill', brush: { kind: 'full', paletteId: 1 } });
-    worker.emit(createFillResult(request, new Uint32Array([0, 1])));
+    worker.emit(createFillResult(request, new Uint32Array([0]), new Uint8Array([1])));
     await Promise.resolve();
     expect(gateway.commands).toHaveLength(before + 1);
-    expect(gateway.commands.at(-1)).toMatchObject({ type: 'bulk-cell', edit: { kind: 'full', color: 2 } });
+    expect(gateway.commands.at(-1)).toMatchObject({ type: 'bulk-recolor', fromColor: 1, toColor: 2 });
     expect(uiStore.getState().overlay.fillPending).toBeUndefined();
 
+    uiStore.setPaletteId(1);
     controller.handlePointerDown(pointer(2, 8, 8));
     expect(controller.cancelFill()).toBe(true);
     expect(controller.isFillPending()).toBe(false);
@@ -355,27 +357,192 @@ describe('advanced headless editor tools', () => {
     const staleRequest = worker.posted.filter((message) => (message as { type?: string }).type === 'fill-request').at(-1) as Parameters<typeof createFillResult>[0];
     gateway.switchProject();
     expect(controller.isFillPending()).toBe(false);
-    worker.emit(createFillResult(staleRequest, new Uint32Array([0])));
+    worker.emit(createFillResult(staleRequest, new Uint32Array([0]), new Uint8Array([1])));
     expect(gateway.commands).toHaveLength(before + 1);
     controller.dispose();
   });
 
-  it('captures the fill tool corner for a homogeneous three-quarter operation', async () => {
-    const { controller, gateway, worker } = fixture();
-    controller.setTool({ tool: 'fill', brush: { kind: 'three-quarter', paletteId: 2 } });
-    controller.handlePointerDown(pointer(1, 4, 4));
+  it('uses the selected palette for contiguous Full recolor regardless of brush geometry', async () => {
+    const document = documentWithStitches();
+    document.kind[1] = CellKind.Full;
+    document.colors.set([1, 0, 0, 0], 4);
+    document.completed[1] = 1;
+    document.kind[2] = CellKind.Full;
+    document.colors.set([2, 0, 0, 0], 8);
+    const { controller, gateway, worker, uiStore } = fixture(document);
+    uiStore.setPaletteId(2);
+    controller.setTool({ tool: 'fill' });
+    controller.handlePointerDown(pointer(1, 8, 8));
     const request = worker.posted.find((message) => (message as { type?: string }).type === 'fill-request') as Parameters<typeof createFillResult>[0];
-    worker.emit(createFillResult(request, new Uint32Array([0, 1])));
+    worker.emit(createFillResult(request, new Uint32Array([0, 1]), new Uint8Array([1, 1])));
     await Promise.resolve();
     expect(gateway.commands.at(-1)).toMatchObject({
-      type: 'bulk-cell',
+      type: 'bulk-recolor',
       indices: new Uint32Array([0, 1]),
-      edit: { kind: 'three-quarter', corner: 0, color: 2 }
+      fromColor: 1,
+      toColor: 2
     });
-    expect(gateway.getSnapshot().document!.kind[0]).toBe(CellKind.ThreeQuarterNW);
-    expect(gateway.getSnapshot().document!.kind[1]).toBe(CellKind.ThreeQuarterNW);
-    expect(Array.from(gateway.getSnapshot().document!.colors.slice(0, 4))).toEqual([2, 0, 0, 0]);
-    expect(Array.from(gateway.getSnapshot().document!.colors.slice(4, 8))).toEqual([2, 0, 0, 0]);
+    expect(uiStore.getState().overlay.fillPending).toBeUndefined();
+    controller.dispose();
+  });
+
+  it('recolors a Full region to the selected palette as one undoable operation', async () => {
+    const document = createDocument({ width: 2, height: 1, palette: [
+      { id: 1, name: 'Red', color: '#d33' },
+      { id: 2, name: 'Blue', color: '#36c' }
+    ] });
+    document.kind.fill(CellKind.Full);
+    document.colors[0] = 1;
+    document.colors[4] = 1;
+    document.completed[0] = 1;
+    const fillClient = createFillWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'controller-fill' });
+    const { controller, gateway } = fixture(document, fillClient);
+
+    controller.selectPalette(2);
+    controller.setTool({ tool: 'fill' });
+    const undoDepthBeforeRecolor = gateway.undoDepth;
+    expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const committed = gateway.getSnapshot().document!;
+    expect(Array.from(committed.colors.slice(0, 8))).toEqual([2, 0, 0, 0, 2, 0, 0, 0]);
+    expect(committed.kind.every((kind) => kind === CellKind.Full)).toBe(true);
+    expect(committed.completed).toEqual(new Uint8Array([1, 0]));
+    expect(gateway.undoDepth).toBe(undoDepthBeforeRecolor + 1);
+    expect(gateway.commands.at(-1)).toMatchObject({ type: 'bulk-recolor', fromColor: 1, toColor: 2 });
+
+    expect(controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined })).toBe(true);
+    expect(gateway.undoDepth).toBe(undoDepthBeforeRecolor);
+    expect(gateway.getSnapshot().document?.colors[0]).toBe(1);
+    expect(gateway.getSnapshot().document?.completed[0]).toBe(1);
+    fillClient.dispose();
+    controller.dispose();
+  });
+
+  it('pointer-fills legacy quarters and both paired three-quarter axes with captured component masks', async () => {
+    const exercise = async (
+      document: PatternDocument,
+      screenX: number,
+      screenY: number,
+      expectedStartMask: number,
+      expectedFromColor: number,
+      beforeColors: readonly number[],
+      afterColors: readonly number[],
+      completion: number
+    ): Promise<void> => {
+      const { controller, gateway, worker, uiStore } = fixture(document);
+      uiStore.setPaletteId(3);
+      controller.setTool({ tool: 'fill' });
+      expect(controller.handlePointerDown(pointer(1, screenX, screenY))).toBe(true);
+      const request = worker.posted.find((message) => (message as { type?: string }).type === 'fill-request') as Parameters<typeof createFillResult>[0];
+      expect(request.startMask).toBe(expectedStartMask);
+      // Change the selection while the worker is in flight. The command must
+      // use the destination captured when the pointer gesture began.
+      uiStore.setPaletteId(1);
+      worker.emit(createFillResult(request, new Uint32Array([0]), new Uint8Array([expectedStartMask])));
+      await Promise.resolve();
+      expect(gateway.commands.at(-1)).toMatchObject({
+        type: 'bulk-recolor',
+        masks: new Uint8Array([expectedStartMask]),
+        fromColor: expectedFromColor,
+        toColor: 3
+      });
+      const committed = gateway.getSnapshot().document!;
+      expect(Array.from(committed.colors)).toEqual(afterColors);
+      expect(committed.kind[0]).toBe(document.kind[0]);
+      expect(committed.completed[0]).toBe(completion);
+      expect(gateway.undoDepth).toBe(1);
+      expect(controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined })).toBe(true);
+      expect(gateway.undoDepth).toBe(0);
+      expect(Array.from(gateway.getSnapshot().document!.colors)).toEqual(beforeColors);
+      expect(gateway.getSnapshot().document!.completed[0]).toBe(completion);
+      controller.dispose();
+    };
+
+    const legacy = createDocument({ width: 1, height: 1, palette: [
+      { id: 1, name: 'Red', color: '#d33' },
+      { id: 2, name: 'Blue', color: '#36c' },
+      { id: 3, name: 'Gold', color: '#da2' }
+    ] });
+    legacy.kind[0] = CellKind.Quarters;
+    legacy.colors.set([1, 2, 1, 2]);
+    legacy.completed[0] = 13;
+    await exercise(legacy, 12, 4, 2, 2, [1, 2, 1, 2], [1, 3, 1, 2], 13);
+
+    const northwestSoutheast = createDocument({ width: 1, height: 1, palette: [
+      { id: 1, name: 'Red', color: '#d33' },
+      { id: 2, name: 'Blue', color: '#36c' },
+      { id: 3, name: 'Gold', color: '#da2' }
+    ] });
+    northwestSoutheast.kind[0] = CellKind.ThreeQuarterPair;
+    northwestSoutheast.colors.set([1, 0, 2, 0]);
+    northwestSoutheast.completed[0] = 5;
+    await exercise(northwestSoutheast, 4, 4, 1, 1, [1, 0, 2, 0], [3, 0, 2, 0], 5);
+
+    const northeastSouthwest = createDocument({ width: 1, height: 1, palette: [
+      { id: 1, name: 'Red', color: '#d33' },
+      { id: 2, name: 'Blue', color: '#36c' },
+      { id: 3, name: 'Gold', color: '#da2' }
+    ] });
+    northeastSouthwest.kind[0] = CellKind.ThreeQuarterPair;
+    northeastSouthwest.colors.set([0, 1, 0, 2]);
+    northeastSouthwest.completed[0] = 10;
+    await exercise(northeastSouthwest, 4, 4, 2, 1, [0, 1, 0, 2], [0, 3, 0, 2], 10);
+  });
+
+  it('treats a selected-source Full fill as a no-op without starting the worker', () => {
+    const document = documentWithStitches();
+    const { controller, gateway, worker, uiStore } = fixture(document);
+    uiStore.setPaletteId(1);
+    controller.setTool({ tool: 'fill' });
+    expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
+    expect(worker.posted).toHaveLength(0);
+    expect(gateway.commands).toHaveLength(0);
+    expect(uiStore.getState().status).toBe('No change');
+    controller.dispose();
+  });
+
+  it('treats an empty fill hit as an immediate no-op', () => {
+    const document = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    const { controller, gateway, worker, uiStore } = fixture(document);
+    uiStore.setPaletteId(1);
+    controller.setTool({ tool: 'fill' });
+    expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(false);
+    expect(worker.posted).toHaveLength(0);
+    expect(gateway.commands).toHaveLength(0);
+    controller.dispose();
+  });
+
+  it('captures the current palette for successive Full-region recolor fills', async () => {
+    const document = documentWithStitches();
+    document.palette.push({ ...document.palette[0], id: 3, name: 'Green', color: '#3c6', symbol: 'G' });
+    document.nextPaletteId = 4;
+    document.kind[1] = CellKind.Full;
+    document.colors.set([1, 0, 0, 0], 4);
+    document.completed[0] = 1;
+    const { controller, gateway, worker, uiStore } = fixture(document);
+    uiStore.setPaletteId(2);
+    controller.setTool({ tool: 'fill' });
+
+    controller.handlePointerDown(pointer(1, 8, 8));
+    let request = worker.posted.filter((message) => (message as { type?: string }).type === 'fill-request').at(-1) as Parameters<typeof createFillResult>[0];
+    worker.emit(createFillResult(request, new Uint32Array([0, 1]), new Uint8Array([1, 1])));
+    await Promise.resolve();
+    expect(gateway.commands.at(-1)).toMatchObject({ type: 'bulk-recolor', fromColor: 1, toColor: 2 });
+
+    // The domain recolor command owns this mutation; mirror its result here so
+    // the second invocation exercises the next source color in this lane.
+    const recolored = gateway.getSnapshot().document!;
+    recolored.colors[0] = 2;
+    recolored.colors[4] = 2;
+    uiStore.setPaletteId(3);
+    controller.handlePointerDown(pointer(2, 8, 8));
+    request = worker.posted.filter((message) => (message as { type?: string }).type === 'fill-request').at(-1) as Parameters<typeof createFillResult>[0];
+    worker.emit(createFillResult(request, new Uint32Array([0, 1]), new Uint8Array([1, 1])));
+    await Promise.resolve();
+    expect(gateway.commands.at(-1)).toMatchObject({ type: 'bulk-recolor', fromColor: 2, toColor: 3 });
+    expect(recolored.completed[0]).toBe(1);
     controller.dispose();
   });
 
@@ -472,11 +639,12 @@ describe('advanced headless editor tools', () => {
       width: 2,
       height: 2,
       startIndex: 0,
-      kind: new Uint8Array(4),
-      colors: new Uint16Array(16)
+      startMask: 1,
+      kind: Uint8Array.from([CellKind.Full, 0, 0, 0]),
+      colors: Uint16Array.from([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
     });
     const request = worker.posted.find((message) => (message as { type?: string }).type === 'fill-request') as Parameters<typeof createFillResult>[0];
-    worker.emit(createFillResult(request, new Uint32Array([0])));
+    worker.emit(createFillResult(request, new Uint32Array([0]), new Uint8Array([1])));
     await expect(job.promise).resolves.toMatchObject({ requestId: 'shared-request' });
     shared.dispose();
   });

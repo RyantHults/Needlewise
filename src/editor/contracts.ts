@@ -448,6 +448,7 @@ export const EditorToolKind = {
   Eraser: 'eraser',
   Select: 'select',
   Fill: 'fill',
+  Completion: 'completion',
   Backstitch: 'backstitch',
   Eyedropper: 'eyedropper'
 } as const;
@@ -522,7 +523,12 @@ export interface SelectToolState {
 
 export interface FillToolState {
   readonly tool: 'fill';
+  /** Deprecated compatibility field; Fill ignores brush geometry and color. */
   readonly brush?: StitchBrush;
+}
+
+export interface CompletionToolState {
+  readonly tool: 'completion';
 }
 
 export interface BackstitchToolState {
@@ -543,7 +549,7 @@ export interface ResizeImageToolState {
   readonly tool: 'resize-image';
 }
 
-export type EditorToolState = PaintToolState | PanToolState | EraserToolState | SelectToolState | FillToolState | BackstitchToolState | EyedropperToolState | MoveImageToolState | ResizeImageToolState;
+export type EditorToolState = PaintToolState | PanToolState | EraserToolState | SelectToolState | FillToolState | CompletionToolState | BackstitchToolState | EyedropperToolState | MoveImageToolState | ResizeImageToolState;
 export type ToolState = EditorToolState;
 export type ActiveStitchBrush = StitchBrush;
 

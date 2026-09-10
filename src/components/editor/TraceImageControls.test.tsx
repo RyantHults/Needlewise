@@ -100,6 +100,7 @@ describe('TraceImageControls reference image tools', () => {
     const { unmount } = render(<TraceImageControls workspace={workspace} document={{ width: 2, height: 2 } as never} controller={controller} />);
     const slider = document.querySelector('.trace-opacity input') as HTMLInputElement;
     expect(slider).toBeInTheDocument();
+    expect(screen.getByText('Transparency')).toBeInTheDocument();
     fireEvent.focus(slider);
     fireEvent.change(slider, { target: { value: '0.5' } });
     fireEvent.change(slider, { target: { value: '0.4' } });

@@ -21,6 +21,7 @@ import {
 import {
   CellKind,
   type BulkCellCommand,
+  type BulkRecolorCommand,
   type BulkCellEdit,
   type BulkProgressOperation,
   type BulkCompletionCommand,
@@ -971,6 +972,63 @@ export function estimateBulkCellHistoryBytes(changedCellCount: number): number {
   return changedCellCount === 0 ? 0 : changedCellCount * 24 + 32;
 }
 
+export interface BulkRecolorPreflight {
+  readonly fromColor: number;
+  readonly toColor: number;
+  readonly indices: Uint32Array;
+  readonly masks: Uint8Array;
+  readonly changedIndices: Uint32Array;
+}
+
+function occupiedColorMask(document: PatternDocument, index: number): number {
+  const kind = document.kind[index];
+  const offset = colorsOffset(index);
+  if (kind === CellKind.Empty) return 0;
+  if (kind === CellKind.Full || kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash || isThreeQuarterSingleKind(kind)) {
+    return document.colors[offset] === 0 ? 0 : 1;
+  }
+  let mask = 0;
+  for (let slot = 0; slot < 4; slot += 1) if (document.colors[offset + slot] !== 0) mask |= 1 << slot;
+  return mask;
+}
+
+/** Validate a component-aware recolor without changing the document. */
+export function preflightBulkRecolorCommand(document: PatternDocument, command: DomainCommand): BulkRecolorPreflight {
+  if (!command || normalizeType(command.type) !== 'bulk-recolor') throw new DomainError('invalid-command', 'A bulk recolor command must have type bulk-recolor.');
+  validateBulkRevision(document, command);
+  const fromColor = requiredNumber(valueOf(command, 'fromColor', 'sourceColor', 'from'), 'recolor source color');
+  const toColor = requiredNumber(valueOf(command, 'toColor', 'destinationColor', 'to'), 'recolor destination color');
+  // Validate both ends before deriving the sparse change set. This keeps a
+  // malformed fill result from becoming a history entry with an unknown
+  // palette reference.
+  requirePaletteEntry(document, fromColor);
+  requirePaletteEntry(document, toColor);
+  const indices = validateBulkIndices(document, command);
+  const rawMasks = command.masks;
+  if (!(rawMasks instanceof Uint8Array)) throw new DomainError('invalid-bulk-recolor', 'Bulk recolor masks must be a Uint8Array.');
+  if (rawMasks.length !== indices.length) throw new DomainError('invalid-bulk-recolor', 'Bulk recolor masks must align one-to-one with cell indices.');
+  const masks = rawMasks.slice();
+  for (let position = 0; position < indices.length; position += 1) {
+    const index = indices[position];
+    const mask = masks[position];
+    if (mask === 0) throw new DomainError('invalid-bulk-recolor', `Bulk recolor mask for cell ${String(index)} must be nonzero.`);
+    const occupied = occupiedColorMask(document, index);
+    if ((mask & ~occupied) !== 0) throw new DomainError('invalid-bulk-recolor', `Bulk recolor mask for cell ${String(index)} is not a subset of its occupied components.`);
+    const offset = colorsOffset(index);
+    for (let slot = 0; slot < 4; slot += 1) {
+      if ((mask & (1 << slot)) !== 0 && document.colors[offset + slot] !== fromColor) {
+        throw new DomainError('stale-command', `Bulk recolor target cell ${String(index)} no longer matches source palette ${String(fromColor)}.`);
+      }
+    }
+  }
+  return { fromColor, toColor, indices, masks, changedIndices: fromColor === toColor ? new Uint32Array(0) : indices.slice() };
+}
+
+/** Exact packed cell-only delta size used by the editor's recolor preflight. */
+export function estimateBulkRecolorHistoryBytes(changedCellCount: number): number {
+  return estimateBulkCellHistoryBytes(changedCellCount);
+}
+
 function validateProgressIndices(indices: unknown, label: string): Uint32Array {
   if (!(indices instanceof Uint32Array)) throw new DomainError('invalid-completion-targets', `${label} must be a Uint32Array.`);
   let previous = -1;
@@ -1011,6 +1069,28 @@ function completionMaskForCell(document: PatternDocument, index: number, corner:
   return mask;
 }
 
+function completionMasksForCommand(document: PatternDocument, command: DomainCommand, indices: Uint32Array): { corner?: QuarterCorner; masks: Uint8Array } {
+  const cornerValue = valueOf(command, 'corner', 'quarter', 'slot');
+  const rawMasks = command.masks;
+  if (rawMasks !== undefined && cornerValue !== undefined) throw new DomainError('invalid-completion-targets', 'Bulk completion masks cannot be combined with a corner target.');
+  if (rawMasks !== undefined) {
+    if (!(rawMasks instanceof Uint8Array)) throw new DomainError('invalid-completion-targets', 'Bulk completion masks must be a Uint8Array.');
+    if (rawMasks.length !== indices.length) throw new DomainError('invalid-completion-targets', 'Bulk completion masks must align one-to-one with cell indices.');
+    const masks = rawMasks.slice();
+    for (let position = 0; position < indices.length; position += 1) {
+      const mask = masks[position];
+      if (mask === 0) continue;
+      const occupied = completionMaskForCell(document, indices[position], undefined);
+      if ((mask & ~occupied) !== 0) throw new DomainError('invalid-completion-target', `Completion mask for cell ${String(indices[position])} is not a subset of its occupied components.`);
+    }
+    return { masks };
+  }
+  const corner = cornerValue === undefined ? undefined : parseCorner(cornerValue);
+  const masks = new Uint8Array(indices.length);
+  for (let position = 0; position < indices.length; position += 1) masks[position] = completionMaskForCell(document, indices[position], corner);
+  return { ...(corner === undefined ? {} : { corner }), masks };
+}
+
 function completedComponentCountForCell(document: PatternDocument, index: number): number {
   const kind = document.kind[index];
   const offset = colorsOffset(index);
@@ -1042,6 +1122,8 @@ export interface BulkCompletionPreflight {
   readonly corner?: QuarterCorner;
   readonly indices: Uint32Array;
   readonly changedIndices: Uint32Array;
+  /** Completion masks aligned one-to-one with `changedIndices`. */
+  readonly masks: Uint8Array;
 }
 
 /** Validates a cell progress command without changing the document. */
@@ -1050,16 +1132,20 @@ export function preflightBulkCompletionCommand(document: PatternDocument, comman
   validateBulkRevision(document, command);
   const indices = validateProgressIndices(command.indices, 'Bulk completion indices');
   for (const index of indices) if (index >= document.kind.length) throw new DomainError('out-of-bounds', `Bulk completion cell index ${String(index)} is out of bounds.`);
-  const cornerValue = valueOf(command, 'corner', 'quarter', 'slot');
-  const corner = cornerValue === undefined ? undefined : parseCorner(cornerValue);
+  const target = completionMasksForCommand(document, command, indices);
   const operation = parseBulkProgressOperation(command);
   const changed = [] as number[];
-  for (const index of indices) {
-    const mask = completionMaskForCell(document, index, corner);
+  const changedMasks = [] as number[];
+  for (let position = 0; position < indices.length; position += 1) {
+    const index = indices[position];
+    const mask = target.masks[position];
     const next = applyProgressOperation(document.completed[index], mask, operation);
-    if (next !== document.completed[index]) changed.push(index);
+    if (next !== document.completed[index]) {
+      changed.push(index);
+      changedMasks.push(mask);
+    }
   }
-  return { operation, ...(corner === undefined ? {} : { corner }), indices, changedIndices: new Uint32Array(changed) };
+  return { operation, ...(target.corner === undefined ? {} : { corner: target.corner }), indices, changedIndices: new Uint32Array(changed), masks: new Uint8Array(changedMasks) };
 }
 
 /** Exact packed cell-completion delta size used by history preflight. */
@@ -1101,6 +1187,10 @@ export function isBulkCellCommand(command: DomainCommand): command is BulkCellCo
   return Boolean(command) && typeof command.type === 'string' && normalizeType(command.type) === 'bulk-cell';
 }
 
+export function isBulkRecolorCommand(command: DomainCommand): command is BulkRecolorCommand {
+  return Boolean(command) && typeof command.type === 'string' && normalizeType(command.type) === 'bulk-recolor';
+}
+
 export function isBulkCompletionCommand(command: DomainCommand): command is BulkCompletionCommand {
   return Boolean(command) && typeof command.type === 'string' && normalizeType(command.type) === 'bulk-completion';
 }
@@ -1127,7 +1217,7 @@ export function isDeleteRegionCommand(command: DomainCommand): command is Delete
 
 function containsAtomicCommand(command: DomainCommand): boolean {
   if (!command || typeof command !== 'object') return false;
-  if (isBulkCellCommand(command) || isBulkCompletionCommand(command) || isBulkBackstitchCompletionCommand(command) || isPasteFragmentCommand(command) || isMixedEraseCommand(command) || isDeleteRegionCommand(command)) return true;
+  if (isBulkCellCommand(command) || isBulkRecolorCommand(command) || isBulkCompletionCommand(command) || isBulkBackstitchCompletionCommand(command) || isPasteFragmentCommand(command) || isMixedEraseCommand(command) || isDeleteRegionCommand(command)) return true;
   return isBatchCommand(command)
     && Array.isArray(command.commands)
     && command.commands.some((child) => containsAtomicCommand(child as DomainCommand));
@@ -1140,10 +1230,54 @@ function containsAtomicCommand(command: DomainCommand): boolean {
  */
 export function assertBulkBatchPolicy(commands: readonly DomainCommand[]): void {
   const hasBulk = commands.some((command) => containsAtomicCommand(command));
-  const isStandaloneBulk = commands.length === 1 && (isBulkCellCommand(commands[0]) || isBulkCompletionCommand(commands[0]) || isBulkBackstitchCompletionCommand(commands[0]) || isPasteFragmentCommand(commands[0]) || isMixedEraseCommand(commands[0]) || isDeleteRegionCommand(commands[0]));
+  const isStandaloneBulk = commands.length === 1 && (isBulkCellCommand(commands[0]) || isBulkRecolorCommand(commands[0]) || isBulkCompletionCommand(commands[0]) || isBulkBackstitchCompletionCommand(commands[0]) || isPasteFragmentCommand(commands[0]) || isMixedEraseCommand(commands[0]) || isDeleteRegionCommand(commands[0]));
   if (hasBulk && !isStandaloneBulk) {
-    throw new DomainError('bulk-batch-unsupported', 'Bulk cell, completion, backstitch completion, paste-fragment, mixed-erase, and delete-region commands must be executed as standalone commands, not in a multi-command batch.');
+    throw new DomainError('bulk-batch-unsupported', 'Bulk cell, recolor, completion, backstitch completion, paste-fragment, mixed-erase, and delete-region commands must be executed as standalone commands, not in a multi-command batch.');
   }
+}
+
+export function applyBulkRecolorCommand(document: PatternDocument, command: DomainCommand, preflight = preflightBulkRecolorCommand(document, command)): MutationInfo {
+  if (preflight.changedIndices.length === 0) {
+    return {
+      changed: false,
+      snapshot: false,
+      touchedIndices: preflight.indices,
+      changedIndices: preflight.changedIndices,
+      progress: emptyProgressChangeSet()
+    };
+  }
+  const changedIndices = preflight.changedIndices;
+  const beforeKind = new Uint8Array(changedIndices.length);
+  const beforeColors = new Uint16Array(changedIndices.length * 4);
+  const beforeCompleted = new Uint8Array(changedIndices.length);
+  const afterKind = new Uint8Array(changedIndices.length);
+  const afterColors = new Uint16Array(changedIndices.length * 4);
+  const afterCompleted = new Uint8Array(changedIndices.length);
+  for (let position = 0; position < changedIndices.length; position += 1) {
+    const index = changedIndices[position];
+    const documentOffset = colorsOffset(index);
+    const packedOffset = position * 4;
+    beforeKind[position] = document.kind[index];
+    beforeCompleted[position] = document.completed[index];
+    for (let slot = 0; slot < 4; slot += 1) beforeColors[packedOffset + slot] = document.colors[documentOffset + slot];
+    const mask = preflight.masks[position];
+    for (let slot = 0; slot < 4; slot += 1) {
+      if ((mask & (1 << slot)) !== 0) document.colors[documentOffset + slot] = preflight.toColor;
+    }
+    afterKind[position] = document.kind[index];
+    afterCompleted[position] = document.completed[index];
+    for (let slot = 0; slot < 4; slot += 1) afterColors[packedOffset + slot] = document.colors[documentOffset + slot];
+  }
+  return {
+    changed: true,
+    snapshot: false,
+    touchedIndices: preflight.indices,
+    changedIndices,
+    progress: emptyProgressChangeSet(),
+    delta: {
+      cells: { indices: changedIndices, beforeKind, beforeColors, beforeCompleted, afterKind, afterColors, afterCompleted }
+    }
+  };
 }
 
 export function applyBulkCellCommand(document: PatternDocument, command: DomainCommand, preflight = preflightBulkCellCommand(document, command)): MutationInfo {
@@ -1224,7 +1358,7 @@ export function applyBulkCompletionCommand(document: PatternDocument, command: D
   let unmarked = 0;
   for (let position = 0; position < preflight.changedIndices.length; position += 1) {
     const index = preflight.changedIndices[position];
-    const mask = completionMaskForCell(document, index, preflight.corner);
+    const mask = preflight.masks[position];
     const beforeCount = progressCountForCellMask(document, index, document.completed[index] & mask);
     beforeCompleted[position] = document.completed[index];
     document.completed[index] = applyProgressOperation(document.completed[index], mask, preflight.operation);
@@ -1312,15 +1446,22 @@ export function bulkCompletionCommand(
   indices: Uint32Array,
   operationOrCompleted: BulkProgressOperation | boolean,
   corner?: QuarterCorner,
-  expectedRevision?: number
+  expectedRevision?: number,
+  masks?: Uint8Array
 ): BulkCompletionCommand {
   const canonicalIndices = validateProgressCommandArray(indices, 'Bulk completion indices');
   validateExpectedRevision(expectedRevision);
+  if (masks !== undefined) {
+    if (!(masks instanceof Uint8Array)) throw new DomainError('invalid-completion-targets', 'Bulk completion masks must be a Uint8Array.');
+    if (masks.length !== canonicalIndices.length) throw new DomainError('invalid-completion-targets', 'Bulk completion masks must align one-to-one with cell indices.');
+    if (corner !== undefined) throw new DomainError('invalid-completion-targets', 'Bulk completion masks cannot be combined with a corner target.');
+  }
   const command: BulkCompletionCommand = {
     type: 'bulk-completion',
     indices: canonicalIndices,
     ...(typeof operationOrCompleted === 'boolean' ? { completed: operationOrCompleted } : { operation: operationOrCompleted }),
     ...(corner === undefined ? {} : { corner: parseCorner(corner) }),
+    ...(masks === undefined ? {} : { masks: masks.slice() }),
     ...(expectedRevision === undefined ? {} : { expectedRevision })
   };
   parseBulkProgressOperation(command);
@@ -1329,16 +1470,16 @@ export function bulkCompletionCommand(
 
 export const createBulkCompletionCommand = bulkCompletionCommand;
 
-export function bulkSetCompletionCommand(indices: Uint32Array, corner?: QuarterCorner, expectedRevision?: number): BulkCompletionCommand {
-  return bulkCompletionCommand(indices, 'set', corner, expectedRevision);
+export function bulkSetCompletionCommand(indices: Uint32Array, corner?: QuarterCorner, expectedRevision?: number, masks?: Uint8Array): BulkCompletionCommand {
+  return bulkCompletionCommand(indices, 'set', corner, expectedRevision, masks);
 }
 
-export function bulkClearCompletionCommand(indices: Uint32Array, corner?: QuarterCorner, expectedRevision?: number): BulkCompletionCommand {
-  return bulkCompletionCommand(indices, 'clear', corner, expectedRevision);
+export function bulkClearCompletionCommand(indices: Uint32Array, corner?: QuarterCorner, expectedRevision?: number, masks?: Uint8Array): BulkCompletionCommand {
+  return bulkCompletionCommand(indices, 'clear', corner, expectedRevision, masks);
 }
 
-export function bulkToggleCompletionCommand(indices: Uint32Array, corner?: QuarterCorner, expectedRevision?: number): BulkCompletionCommand {
-  return bulkCompletionCommand(indices, 'toggle', corner, expectedRevision);
+export function bulkToggleCompletionCommand(indices: Uint32Array, corner?: QuarterCorner, expectedRevision?: number, masks?: Uint8Array): BulkCompletionCommand {
+  return bulkCompletionCommand(indices, 'toggle', corner, expectedRevision, masks);
 }
 
 export function bulkBackstitchCompletionCommand(
@@ -1393,6 +1534,44 @@ export function bulkCellCommand(indices: Uint32Array, edit: BulkCellEdit, expect
 export const createBulkCellCommand = bulkCellCommand;
 export const bulkCellEditCommand = bulkCellCommand;
 export const bulkCommand = bulkCellCommand;
+
+export function bulkRecolorCommand(indices: Uint32Array, masks: Uint8Array, fromColor: number, toColor: number, expectedRevision?: number): BulkRecolorCommand;
+/** Compatibility overload for the former Full-stitch-only caller. */
+export function bulkRecolorCommand(indices: Uint32Array, fromColor: number, toColor: number, expectedRevision?: number): BulkRecolorCommand;
+export function bulkRecolorCommand(
+  indices: Uint32Array,
+  masksOrFromColor: Uint8Array | number,
+  fromColorOrToColor: number,
+  toColorOrRevision?: number,
+  expectedRevision?: number
+): BulkRecolorCommand {
+  if (!(indices instanceof Uint32Array)) throw new DomainError('invalid-bulk-indices', 'Bulk recolor indices must be a Uint32Array.');
+  let previous = -1;
+  for (const index of indices) {
+    if (index <= previous) throw new DomainError('invalid-bulk-indices', 'Bulk recolor indices must be strictly increasing and unique.');
+    previous = index;
+  }
+  const componentAware = masksOrFromColor instanceof Uint8Array;
+  const masks = componentAware ? masksOrFromColor.slice() : new Uint8Array(indices.length).fill(1);
+  if (componentAware && masks.length !== indices.length) throw new DomainError('invalid-bulk-recolor', 'Bulk recolor masks must align one-to-one with cell indices.');
+  const fromColor = componentAware ? fromColorOrToColor : masksOrFromColor;
+  const toColor = componentAware ? toColorOrRevision as number : fromColorOrToColor;
+  const revision = componentAware ? expectedRevision : toColorOrRevision;
+  if (!Number.isSafeInteger(fromColor) || !Number.isSafeInteger(toColor)) throw new DomainError('invalid-palette-id', 'Bulk recolor palette IDs must be integers.');
+  validateExpectedRevision(revision);
+  return {
+    type: 'bulk-recolor',
+    indices: indices.slice(),
+    masks,
+    fromColor,
+    toColor,
+    ...(revision === undefined ? {} : { expectedRevision: revision })
+  };
+}
+
+export const createBulkRecolorCommand = bulkRecolorCommand;
+export const bulkComponentRecolorCommand = bulkRecolorCommand;
+export const createBulkComponentRecolorCommand = bulkRecolorCommand;
 
 export function bulkSetFullCommand(indices: Uint32Array, color: number, expectedRevision?: number): BulkCellCommand {
   return bulkCellCommand(indices, { kind: 'full', color }, expectedRevision);
@@ -2921,6 +3100,10 @@ function applyOneToDraftInternal(document: PatternDocument, command: DomainComma
     const preflight = preflightBulkCellCommand(document, command);
     return applyBulkCellCommand(document, command, preflight);
   }
+  if (type === 'bulk-recolor') {
+    const preflight = preflightBulkRecolorCommand(document, command);
+    return applyBulkRecolorCommand(document, command, preflight);
+  }
   if (type === 'bulk-completion') {
     const preflight = preflightBulkCompletionCommand(document, command);
     return applyBulkCompletionCommand(document, command, preflight);
@@ -2948,6 +3131,7 @@ function applyOneToDraftInternal(document: PatternDocument, command: DomainComma
       return writeQuarters(document, x, y, rawColors.map((value) => requiredNumber(value, 'quarter color'))) ? changed() : noChange();
     }
     case 'bulk-cell': return applyBulkCellCommand(document, command);
+    case 'bulk-recolor': return applyBulkRecolorCommand(document, command);
     case 'bulk-completion': return applyBulkCompletionCommand(document, command);
     case 'bulk-backstitch-completion': return applyBulkBackstitchCompletionCommand(document, command);
     case 'paste-fragment': return applyPasteFragmentCommand(document, command);
