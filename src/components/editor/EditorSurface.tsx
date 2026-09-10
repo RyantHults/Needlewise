@@ -40,6 +40,7 @@ interface Props {
   saveStatus?: import("../../application/types").SaveStatus;
   onOpenMaterials?: () => void;
 }
+type CatalogColor = ReturnType<typeof searchDmcColors>[number];
 const modes = [
   [ChartPresentationMode.Color, "Color"],
   [ChartPresentationMode.Symbol, "Symbol"],
@@ -152,6 +153,8 @@ export function EditorSurface({
   const dialog = useRef<HTMLDivElement>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
+  const [selectedCatalogColor, setSelectedCatalogColor] =
+    useState<CatalogColor | null>(null);
   const [paletteNotice, setPaletteNotice] = useState("");
   const addTrigger = useRef<HTMLButtonElement>(null);
   const paletteDialog = useRef<HTMLDivElement>(null);
@@ -336,12 +339,30 @@ export function EditorSurface({
     );
   };
   const catalogResults = useMemo(
-    () => searchDmcColors(paletteQuery, { limit: 8 }),
+    () => {
+      const query = paletteQuery.trim().toLowerCase();
+      return searchDmcColors("").filter(
+        (color) =>
+          !query ||
+          color.code.toLowerCase().includes(query) ||
+          color.name.toLowerCase().includes(query),
+      );
+    },
     [paletteQuery],
   );
+  useEffect(() => {
+    if (!paletteOpen) return;
+    if (
+      selectedCatalogColor &&
+      catalogResults.some((color) => color.code === selectedCatalogColor.code)
+    )
+      return;
+    setSelectedCatalogColor(catalogResults[0] ?? null);
+  }, [catalogResults, paletteOpen, selectedCatalogColor]);
   const openPalettePicker = () => {
     setPaletteNotice("");
     setPaletteQuery("");
+    setSelectedCatalogColor(searchDmcColors("")[0] ?? null);
     setPaletteOpen(true);
   };
   const closePalettePicker = () => {
@@ -1301,6 +1322,31 @@ export function EditorSurface({
               <p className="section-label">Offline catalog</p>
               <h2 id="editor-catalog-title">Add a thread color</h2>
               <div className="catalog-box">
+                <div className="catalog-selection" aria-live="polite">
+                  {selectedCatalogColor ? (
+                    <>
+                      <span
+                        className="catalog-selection-swatch swatch"
+                        style={{ background: selectedCatalogColor.hex }}
+                        aria-hidden="true"
+                      />
+                      <span className="catalog-selection-details">
+                        <strong>{selectedCatalogColor.name}</strong>
+                        <span>#{selectedCatalogColor.code}</span>
+                      </span>
+                      <button
+                        className="small-action"
+                        type="button"
+                        aria-label={`Add ${selectedCatalogColor.name}`}
+                        onClick={() => void addPaletteColor(selectedCatalogColor)}
+                      >
+                        Add
+                      </button>
+                    </>
+                  ) : (
+                    <span className="catalog-selection-empty">No color selected</span>
+                  )}
+                </div>
                 <label htmlFor="catalog-search">Search offline catalog</label>
                 <input
                   id="catalog-search"
@@ -1308,27 +1354,30 @@ export function EditorSurface({
                   onChange={(e) => setPaletteQuery(e.target.value)}
                   placeholder="Name or DMC code"
                 />
-                <ul className="catalog-results">
+                <div className="catalog-color-grid" role="list" aria-label="Available thread colors">
                   {catalogResults.map((color) => (
-                    <li key={color.code}>
-                      <span
-                        className="swatch"
-                        style={{ background: color.hex }}
-                      />
-                      <span>
-                        {color.name} <small>#{color.code}</small>
-                      </span>
+                    <div role="listitem" key={color.code}>
                       <button
-                        className="small-action"
+                        className="catalog-color-button"
                         type="button"
-                        aria-label={`Add ${color.name}`}
-                        onClick={() => void addPaletteColor(color)}
+                        aria-label={`${color.name}, color ${color.code}`}
+                        aria-pressed={selectedCatalogColor?.code === color.code}
+                        onClick={() => setSelectedCatalogColor(color)}
                       >
-                        Add
+                        <span
+                          className="catalog-color-swatch"
+                          style={{ background: color.hex }}
+                          aria-hidden="true"
+                        />
                       </button>
-                    </li>
+                    </div>
                   ))}
-                </ul>
+                  {!catalogResults.length && (
+                    <p className="catalog-empty" role="status">
+                      No matching colors.
+                    </p>
+                  )}
+                </div>
               </div>
               {paletteNotice && (
                 <p className="modal-error" role="alert">

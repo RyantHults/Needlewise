@@ -440,6 +440,16 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .catalog-helper { margin:-.35rem 0 .85rem; color:#687568; font-size:.74rem; }
 .catalog-box label { display:block; margin-bottom:.3rem; color:#687568; font-size:.7rem; font-weight:700; text-transform:uppercase; }
 .catalog-box > input { width:100%; border:1px solid #c5d0c2; border-radius:.35rem; padding:.55rem; background:#f8faf6; font:inherit; font-size:.8rem; }
+.catalog-selection { display:flex; align-items:center; gap:.55rem; min-height:3rem; margin-bottom:.75rem; border:1px solid #bc5a3d; border-radius:.45rem; padding:.45rem; background:#fffdf9; }
+.catalog-selection-swatch { flex:0 0 2rem; width:2rem; height:2rem; border-radius:.3rem; }
+.catalog-selection-details { display:flex; min-width:0; flex:1; flex-direction:column; color:#625c55; font-size:.7rem; }
+.catalog-selection-details strong { overflow:hidden; color:#272321; font-size:.78rem; text-overflow:ellipsis; white-space:nowrap; }
+.catalog-selection-empty { color:#777169; font-size:.75rem; }
+.catalog-color-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(1.75rem,1fr)); gap:.35rem; max-height:18rem; margin-top:.6rem; overflow-y:auto; padding:.75rem; }
+.catalog-color-button { display:flex; align-items:center; justify-self:center; justify-content:center; width:2rem; height:2rem; min-width:2rem; min-height:2rem; border:1px solid #d1c9bd; border-radius:.4rem; padding:.15rem; background:#fffdf9; color:#4e4842; cursor:pointer; text-align:left; }
+.catalog-color-button:hover, .catalog-color-button[aria-pressed="true"] { border-color:#bc5a3d; background:#f1e4da; color:#88452f; }
+.catalog-color-swatch { flex:0 0 1.35rem; width:1.35rem; height:1.35rem; border:1px solid #9c958b; border-radius:.22rem; }
+.catalog-empty { grid-column:1 / -1; margin:.6rem 0; color:#777169; font-size:.75rem; }
 .catalog-results { list-style:none; margin:.6rem 0 0; padding:0; }
 .catalog-results li { display:flex; align-items:center; gap:.45rem; border-top:1px solid #d0dacf; padding:.5rem 0; font-size:.75rem; }
 .catalog-results li span:nth-child(2) { flex:1; }
