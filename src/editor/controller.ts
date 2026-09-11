@@ -274,15 +274,28 @@ function indicesForCells(cells: readonly ModelPoint[], width: number): Uint32Arr
   return new Uint32Array(indices);
 }
 
-/** Return the clipped, deterministic square stamp centered on a hit cell. */
+/**
+ * Return the clipped, deterministic disk stamp centered on a hit cell.
+ *
+ * Brush size is the disk diameter in cell units. Cell centers are integer
+ * offsets from the hit cell, so a size-1 brush has a radius of 0.5 and still
+ * selects exactly the hit cell.
+ */
 function brushCells(center: ModelPoint, size: number, document: PatternDocument): ModelPoint[] {
   const cellX = Math.floor(center.x);
   const cellY = Math.floor(center.y);
-  const offset = Math.floor(size / 2);
+  const radius = size / 2;
+  const radiusSquared = radius * radius;
   const cells: ModelPoint[] = [];
-  for (let y = cellY - offset; y < cellY - offset + size; y += 1) {
-    for (let x = cellX - offset; x < cellX - offset + size; x += 1) {
-      if (x >= 0 && y >= 0 && x < document.width && y < document.height) cells.push({ x, y });
+  const minX = Math.max(0, Math.ceil(cellX - radius));
+  const maxX = Math.min(document.width - 1, Math.floor(cellX + radius));
+  const minY = Math.max(0, Math.ceil(cellY - radius));
+  const maxY = Math.min(document.height - 1, Math.floor(cellY + radius));
+  for (let y = minY; y <= maxY; y += 1) {
+    for (let x = minX; x <= maxX; x += 1) {
+      const dx = x - cellX;
+      const dy = y - cellY;
+      if (dx * dx + dy * dy <= radiusSquared) cells.push({ x, y });
     }
   }
   return cells;
@@ -752,6 +765,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private lastGatewaySnapshot: WorkspaceEditorSnapshot;
   private gesture: Gesture | undefined;
   private readonly touchPointers = new Map<number, PointerSample>();
+  private lastHoverSample: PointerSample | undefined;
   private spaceHeld = false;
   private commandInFlight = false;
   private selection: GridRect | undefined;
@@ -1251,6 +1265,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.ensureStarted();
     if (this.disposed) return false;
     if (!validScreenSample(sample)) return false;
+    this.clearBrushPreview();
     if (sample.pointerType !== 'touch') this.editorFocused = true;
     if (sample.pointerType === 'touch') {
       if (this.gesture?.kind === 'paint') return false;
@@ -1351,6 +1366,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.ensureStarted();
     if (this.disposed) return false;
     if (!validScreenSample(sample)) return false;
+    if (sample.pointerType !== 'touch') {
+      this.lastHoverSample = sample;
+      if (!this.gesture) this.updateBrushPreview(sample);
+    }
     if (sample.pointerType === 'touch') {
       if (!this.touchPointers.has(sample.pointerId) && this.gesture?.kind !== 'move-image' && this.gesture?.kind !== 'resize-image') return false;
       this.touchPointers.set(sample.pointerId, sample);
@@ -1499,6 +1518,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   handlePointerCancel(sample: PointerSample): boolean {
     this.ensureStarted();
     this.spaceHeld = false;
+    this.clearBrushPreview();
     if (sample.pointerType === 'touch') {
       this.touchPointers.delete(sample.pointerId);
       if ((this.gesture?.kind === 'move-image' || this.gesture?.kind === 'resize-image') && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
@@ -1519,6 +1539,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     else if (gesture.kind === 'move-image' || gesture.kind === 'resize-image') this.gesture = undefined;
     else this.gesture = undefined;
     return true;
+  }
+
+  handlePointerLeave(): void {
+    this.lastHoverSample = undefined;
+    this.clearBrushPreview();
   }
 
   handlePointerLostCapture(sample: PointerSample): boolean {
@@ -2457,6 +2482,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (state.mode !== previous.mode) this.renderer.setStyle({ mode: state.mode });
     if (state.gridVisible !== previous.gridVisible) this.renderer.setStyle({ showGrid: state.gridVisible });
     if (state.overlay !== previous.overlay) this.renderer.setOverlay(state.overlay);
+    if ((state.tool !== previous.tool || state.brushSize !== previous.brushSize || state.viewport !== previous.viewport) && this.lastHoverSample && !this.gesture) this.updateBrushPreview(this.lastHoverSample);
   }
 
   private projectUiState(state: ReturnType<EditorUiStore['getState']>): void {
@@ -2578,6 +2604,53 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.cancelGesture();
     this.cancelFill(false);
     this.resetBackstitchState();
+    this.clearBrushPreview();
+  }
+
+  private clearBrushPreview(): void {
+    const overlay = this.uiStore.getState().overlay;
+    if (!overlay.brushPreview) return;
+    this.uiStore.setOverlay({ ...overlay, brushPreview: undefined });
+  }
+
+  private updateBrushPreview(sample: PointerSample): void {
+    const state = this.uiStore.getState();
+    const tool = state.tool;
+    const snapshot = this.gateway.getSnapshot();
+    const document = snapshot.document;
+    if (!document || this.spaceHeld || (sample.buttons ?? 0) !== 0) {
+      this.clearBrushPreview();
+      return;
+    }
+    const eligible = tool.tool === 'paint' || tool.tool === 'completion' || tool.tool === 'eraser';
+    const cell = eligible ? this.paintHitCell(sample, document) : undefined;
+    if (!eligible || !cell) {
+      this.clearBrushPreview();
+      return;
+    }
+    const brushSize = this.getBrushSize();
+    let states: PendingCellState[];
+    const kind: 'paint' | 'completion' | 'eraser' = tool.tool === 'paint' ? 'paint' : tool.tool === 'completion' ? 'completion' : 'eraser';
+    if (tool.tool === 'paint') {
+      const cells = new Map<string, ModelPoint>();
+      stampBrush(cells, cell, brushSize, document);
+      states = this.pendingPaintStates(cells, editForBrush(tool.brush, this.paintCorner(sample)), snapshot.revision ?? 0, document);
+    } else if (tool.tool === 'completion') {
+      const local = normalizedPointerPosition(sample, state.viewport);
+      const mask = local ? completionTargetForCell(document, cell, local) : 0;
+      if (mask === 0) { this.clearBrushPreview(); return; }
+      const targets = new Map<number, CompletionTarget>();
+      stampCompletionTargets(targets, cell, brushSize, document, local!);
+      const operation: CompletionOperation = (document.completed[cell.y * document.width + cell.x] & mask) === mask ? 'clear' : 'set';
+      states = this.pendingCompletionStates(targets, operation, document);
+    } else {
+      const cells = new Map<string, ModelPoint>();
+      const components = new Map<string, { readonly cell: ModelPoint; readonly corner: number }>();
+      const mode = tool.mode ?? 'whole-cell';
+      this.addEraserSample(cells, components, cell, mode, sample, document, brushSize);
+      states = this.pendingEraserStates(cells, components, mode, document);
+    }
+    this.uiStore.setOverlay({ ...state.overlay, brushPreview: { states, kind } });
   }
 
   private firstActivePaletteId(): number | undefined {

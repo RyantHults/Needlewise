@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { CellKind, collectValidationErrors, createDocument, createEditor, type CommandResult, type DomainCommand, type PatternDocument } from '../domain';
+import { CellKind, collectValidationErrors, createDocument, createEditor, type BulkCellCommand, type CommandResult, type DomainCommand, type PatternDocument } from '../domain';
 import { getCanvasMetrics } from './coordinates';
 import { EditorSurfaceController, selectedCellSemantics, type EditorSurfaceControllerOptions } from './controller';
 import { StaleEditorTransactionError, type EditorRevisionToken, type EditorTransaction, type WorkspaceEditorGateway, type WorkspaceEditorSnapshot } from './gateway';
@@ -435,11 +435,11 @@ describe('EditorSurfaceController', () => {
     fixture.controller.handlePointerUp(pointer(2, 40, 8));
     expect(fixture.gateway.commands.at(-1)).toMatchObject({
       type: 'bulk-completion',
-      indices: new Uint32Array([0, 1, 2]),
-      masks: new Uint8Array([1, 1, 1]),
+      indices: new Uint32Array([0, 1, 2, 3]),
+      masks: new Uint8Array([1, 1, 1, 4]),
       operation: 'set'
     });
-    expect(Array.from(fixture.gateway.getSnapshot().document!.completed.slice(0, 4))).toEqual([1, 1, 1, 0]);
+    expect(Array.from(fixture.gateway.getSnapshot().document!.completed.slice(0, 4))).toEqual([1, 1, 1, 4]);
     expect(fixture.gateway.getSnapshot().document?.completed[4]).toBe(0);
     fixture.controller.dispose();
   });
@@ -767,7 +767,7 @@ describe('EditorSurfaceController', () => {
     controller.dispose();
   });
 
-  it('clips centered paint brush stamps at chart edges and previews exact after-states', () => {
+  it('clips centered circular paint brush stamps at chart edges and previews exact after-states', () => {
     const { gateway, uiStore, controller } = controllerFixture();
     expect(uiStore.getState().brushSize).toBe(1);
     controller.setBrushSize(3);
@@ -793,6 +793,44 @@ describe('EditorSurfaceController', () => {
     controller.dispose();
   });
 
+  it('uses the disk diameter for exact size-one, size-two, size-three, and large stamps', () => {
+    const paintIndices = (size: number, x: number, y: number): number[] => {
+      const fixture = controllerFixture();
+      fixture.controller.setBrushSize(size);
+      fixture.controller.handlePointerDown(pointer(1, x * 16 + 8, y * 16 + 8));
+      fixture.controller.handlePointerUp(pointer(1, x * 16 + 8, y * 16 + 8));
+      const command = fixture.gateway.commands.at(-1);
+      fixture.controller.dispose();
+      if (command?.type !== 'bulk-cell') return [];
+      return Array.from((command as BulkCellCommand).indices);
+    };
+
+    expect(paintIndices(1, 3, 3)).toEqual([27]);
+    expect(paintIndices(2, 3, 3)).toEqual([19, 26, 27, 28, 35]);
+    expect(paintIndices(3, 3, 3)).toEqual([18, 19, 20, 26, 27, 28, 34, 35, 36]);
+    expect(paintIndices(5, 3, 3)).toEqual([
+      10, 11, 12,
+      17, 18, 19, 20, 21,
+      25, 26, 27, 28, 29,
+      33, 34, 35, 36, 37,
+      42, 43, 44
+    ]);
+    expect(paintIndices(5, 0, 0)).toEqual([0, 1, 2, 8, 9, 10, 16, 17]);
+  });
+
+  it('shows and clears a hover brush preview without committing a gesture', () => {
+    const { gateway, uiStore, controller } = controllerFixture();
+    controller.setBrushSize(2);
+    controller.handlePointerMove({ ...pointer(1, 24, 24), buttons: 0 });
+    expect(uiStore.getState().overlay.brushPreview).toMatchObject({ kind: 'paint' });
+    expect(uiStore.getState().overlay.brushPreview?.states).toHaveLength(5);
+    expect(uiStore.getState().overlay.brushPreview?.states.map((state) => state.index)).toEqual([1, 8, 9, 10, 17]);
+    expect(gateway.commands).toHaveLength(0);
+    controller.handlePointerLeave();
+    expect(uiStore.getState().overlay.brushPreview).toBeUndefined();
+    controller.dispose();
+  });
+
   it('deduplicates overlapping multi-cell brush drag stamps and paints half geometry', () => {
     const { gateway, uiStore, controller } = controllerFixture();
     controller.setBrushSize(2);
@@ -801,14 +839,14 @@ describe('EditorSurfaceController', () => {
     controller.handlePointerUp(pointer(1, 40, 24));
     expect(gateway.commands.at(-1)).toMatchObject({
       type: 'bulk-cell',
-      indices: new Uint32Array([0, 1, 2, 8, 9, 10])
+      indices: new Uint32Array([1, 2, 8, 9, 10, 11, 17, 18])
     });
     expect(gateway.undoDepth).toBe(1);
 
     controller.setAuthoringBrush({ kind: 'half', paletteId: 1 });
     controller.handlePointerDown(pointer(2, 24, 24));
     expect(uiStore.getState().overlay.pendingCellStates?.map((state) => state.kind)).toEqual([
-      CellKind.HalfBackslash, CellKind.HalfBackslash, CellKind.HalfBackslash, CellKind.HalfBackslash
+      CellKind.HalfBackslash, CellKind.HalfBackslash, CellKind.HalfBackslash, CellKind.HalfBackslash, CellKind.HalfBackslash
     ]);
     controller.handlePointerUp(pointer(2, 24, 24));
     expect(gateway.commands.at(-1)).toMatchObject({ type: 'bulk-cell', edit: { kind: 'half', direction: '\\' } });
@@ -845,7 +883,7 @@ describe('EditorSurfaceController', () => {
     dragged.controller.handlePointerMove(pointer(9, 36, 20));
     dragged.controller.handlePointerUp(pointer(9, 36, 20));
     expect(dragged.gateway.commands.at(-1)).toMatchObject({ edit: { kind: 'three-quarter', corner: 0 } });
-    for (const index of [0, 1, 2, 8, 9, 10]) {
+    for (const index of [1, 2, 8, 9, 10, 11, 17, 18]) {
       expect(Array.from(dragged.gateway.getSnapshot().document!.colors.slice(index * 4, index * 4 + 4))).toEqual([1, 0, 0, 0]);
       expect(dragged.gateway.getSnapshot().document!.kind[index]).toBe(CellKind.ThreeQuarterNW);
     }
@@ -1014,17 +1052,16 @@ describe('EditorSurfaceController', () => {
     controller.setTool({ tool: 'eraser', mode: 'whole-cell' });
     controller.handlePointerDown(pointer(1, 24, 24));
     expect(uiStore.getState().overlay.pendingCellStates).toMatchObject([
-      { index: 0, kind: CellKind.Empty, colors: [0, 0, 0, 0], completed: 0 },
       { index: 9, kind: CellKind.Empty, colors: [0, 0, 0, 0], completed: 0 }
     ]);
     controller.handlePointerUp(pointer(1, 24, 24));
-    expect(gateway.commands.at(-1)).toMatchObject({ type: 'mixed-erase', wholeCellIndices: new Uint32Array([0, 1, 8, 9]) });
+    expect(gateway.commands.at(-1)).toMatchObject({ type: 'mixed-erase', wholeCellIndices: new Uint32Array([1, 8, 9, 10, 17]) });
     expect(gateway.getSnapshot().document?.kind[9]).toBe(CellKind.Empty);
-    expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
+    expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Full);
     controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
     expect(gateway.getSnapshot().document?.kind[9]).toBe(CellKind.Full);
     controller.handleKeyDown({ key: 'y', ctrlKey: true, preventDefault: () => undefined });
-    expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
+    expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Full);
 
     gateway.commands.length = 0;
     gateway.execute({ type: 'set-full', x: 3, y: 3, color: 1 });
@@ -1524,10 +1561,10 @@ describe('EditorSurfaceController', () => {
     controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined });
     expect(gateway.commands.at(-1)).toMatchObject({
       type: 'bulk-cell',
-      indices: new Uint32Array([9, 10, 17, 18]),
+      indices: new Uint32Array([10, 17, 18, 19, 26]),
       edit: { kind: 'half', direction: '/' }
     });
-    for (const index of [9, 10, 17, 18]) expect(gateway.getSnapshot().document?.kind[index]).toBe(CellKind.HalfSlash);
+    for (const index of [10, 17, 18, 19, 26]) expect(gateway.getSnapshot().document?.kind[index]).toBe(CellKind.HalfSlash);
     expect(gateway.undoDepth).toBe(1);
     controller.dispose();
   });
@@ -1542,9 +1579,9 @@ describe('EditorSurfaceController', () => {
     uiStore.setKeyboardCursor({ x: 1, y: 1 });
     const historyBeforeErase = gateway.undoDepth;
     controller.handleKeyDown({ key: 'Backspace', preventDefault: () => undefined });
-    expect(gateway.commands.at(-1)).toMatchObject({ type: 'bulk-cell', indices: new Uint32Array([0, 1, 8, 9]), edit: { kind: 'erase-cell' } });
+    expect(gateway.commands.at(-1)).toMatchObject({ type: 'bulk-cell', indices: new Uint32Array([1, 8, 9, 10, 17]), edit: { kind: 'erase-cell' } });
     expect(gateway.undoDepth).toBe(historyBeforeErase + 1);
-    expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
+    expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Full);
     expect(gateway.getSnapshot().document?.kind[9]).toBe(CellKind.Empty);
     controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
     expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Full);
@@ -1554,7 +1591,7 @@ describe('EditorSurfaceController', () => {
     gateway.commands.length = 0;
     controller.setBrushSize(1);
     controller.setTool({ tool: 'eraser', mode: 'whole-cell' });
-    uiStore.setKeyboardCursor({ x: 0, y: 0 });
+    uiStore.setKeyboardCursor({ x: 0, y: 1 });
     controller.handleKeyDown({ key: 'Backspace', preventDefault: () => undefined });
     expect(gateway.commands).toHaveLength(0);
     uiStore.setKeyboardCursor({ x: -1, y: 0 });

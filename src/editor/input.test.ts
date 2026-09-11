@@ -80,7 +80,7 @@ describe('DOM pointer event adapter', () => {
     expect(blurs).toBe(1);
     expect(surface.captures).toEqual([7]);
     expect(surface.releases).toEqual([7]);
-    expect(surface.handlers.size).toBe(9);
+    expect(surface.handlers.size).toBe(10);
     adapter.dispose();
     expect(surface.handlers.size).toBe(0);
   });
@@ -105,7 +105,7 @@ describe('DOM pointer event adapter', () => {
 
     expect(pointerSurface.handlers.has('keydown')).toBe(false);
     expect(pointerSurface.handlers.has('keyup')).toBe(false);
-    expect(pointerSurface.handlers.size).toBe(7);
+    expect(pointerSurface.handlers.size).toBe(8);
     expect(keyboardSurface.handlers.size).toBe(2);
 
     keyboardSurface.dispatch('keydown', new KeyboardEvent('keydown', { key: 'z', ctrlKey: true }));

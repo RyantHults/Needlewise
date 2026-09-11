@@ -44,6 +44,7 @@ import {
 } from './atlas';
 import { clearTarget, defaultAtlasTargetFactory, drawImage, prepareTarget, restore, save } from './context';
 import { grayscaleColor } from './symbols';
+import { contrastSymbolInk } from './contrast';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
 import { createTraceImageProjection, drawTraceImage } from './trace';
 import { isLegacyQuarterKind, isThreeQuarterPairKind, threeQuarterPairComponents } from '../editor/cell-kinds';
@@ -887,6 +888,49 @@ function drawBackstitchPreview(
   restore(context);
 }
 
+function drawBrushPreview(
+  context: CanvasContextAdapter,
+  document: PatternDocument,
+  preview: OverlayState['brushPreview'],
+  viewport: Viewport,
+  style: RendererStyle,
+  lod: RenderLod,
+  bounds: Rect
+): void {
+  if (!preview?.states.length) return;
+  const cells = new Set<string>();
+  for (const state of preview.states) {
+    const x = Math.floor(state.cell.x);
+    const y = Math.floor(state.cell.y);
+    if (x >= 0 && y >= 0 && x < document.width && y < document.height) cells.add(`${x},${y}`);
+  }
+  if (!cells.size) return;
+  save(context);
+  setAlpha(context, 0.42);
+  context.lineWidth = Math.max(0.75, Math.min(1.5, viewport.zoom * 0.06));
+  context.setLineDash?.([3, 2]);
+  for (const key of cells) {
+    const [x, y] = key.split(',').map(Number);
+    const rect = intersectRects(cellToScreenRect({ x, y, width: 1, height: 1 }, viewport), bounds);
+    if (!rect) continue;
+    const index = y * document.width + x;
+    const paletteId = document.colors[index * 4] ?? 0;
+    const background = paletteId === 0 ? style.backgroundColor : styleColor(document, paletteId, style);
+    context.strokeStyle = preview.color ?? contrastSymbolInk(background, style.symbolColor);
+    context.beginPath();
+    const left = modelToScreen({ x, y }, viewport);
+    const right = modelToScreen({ x: x + 1, y }, viewport);
+    const bottomRight = modelToScreen({ x: x + 1, y: y + 1 }, viewport);
+    const bottom = modelToScreen({ x, y: y + 1 }, viewport);
+    if (!cells.has(`${x},${y - 1}`)) { context.moveTo(left.x, left.y); context.lineTo(right.x, right.y); }
+    if (!cells.has(`${x + 1},${y}`)) { context.moveTo(right.x, right.y); context.lineTo(bottomRight.x, bottomRight.y); }
+    if (!cells.has(`${x},${y + 1}`)) { context.moveTo(bottomRight.x, bottomRight.y); context.lineTo(bottom.x, bottom.y); }
+    if (!cells.has(`${x - 1},${y}`)) { context.moveTo(bottom.x, bottom.y); context.lineTo(left.x, left.y); }
+    context.stroke();
+  }
+  restore(context);
+}
+
 function drawOverlay(
   context: CanvasContextAdapter,
   document: PatternDocument,
@@ -917,6 +961,7 @@ function drawOverlay(
     drawPendingCells(context, document, overlay.pendingCells, viewport, style, bounds);
   }
   drawGridForCells(context, document, viewport, metrics, style, pendingStateCells, lod);
+  drawBrushPreview(context, document, overlay.brushPreview, viewport, style, lod, bounds);
   drawBackstitchesForCells(context, document, viewport, metrics, style, pendingStateCells, lod, bounds);
   drawBackstitchPreview(context, document, overlay.backstitchPreview, viewport, style, bounds);
   const selection = overlayRect(overlay.selection);

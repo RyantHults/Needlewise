@@ -471,6 +471,45 @@ describe('Canvas 2D chart renderer', () => {
     renderer.dispose();
   });
 
+  it('renders a clipped brush preview as a low-alpha outer footprint outline', () => {
+    const document = chart(5, 5);
+    document.palette[0] = { ...document.palette[0], color: '#ffffff' };
+    document.palette[1] = { ...document.palette[1], color: '#000000' };
+    document.colors[1 * 4] = 35;
+    document.colors[5 * 4] = 1;
+    document.colors[6 * 4] = 35;
+    document.colors[7 * 4] = 35;
+    document.colors[11 * 4] = 35;
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      metrics: getCanvasMetrics(80, 80),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      overlay: {
+        brushPreview: {
+          kind: 'paint',
+          states: [
+            { index: 1, cell: { x: 1, y: 0 }, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 },
+            { index: 5, cell: { x: 0, y: 1 }, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 },
+            { index: 6, cell: { x: 1, y: 1 }, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 },
+            { index: 7, cell: { x: 2, y: 1 }, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 },
+            { index: 11, cell: { x: 1, y: 2 }, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 }
+          ]
+        }
+      }
+    });
+    renderer.renderNow();
+    expect(overlay.records.some((call) => call.name === 'fillRect' && call.globalAlpha < 0.3)).toBe(false);
+    expect(overlay.records.filter((call) => call.name === 'fill').length).toBe(0);
+    expect(overlay.records.some((call) => call.name === 'stroke' && call.globalAlpha === 0.42)).toBe(true);
+    const previewSegments = overlay.records.filter((call) => call.name === 'lineTo' && (call.strokeStyle === '#242424' || call.strokeStyle === '#ffffff'));
+    expect(previewSegments.length).toBe(12);
+    expect(new Set(previewSegments.map((call) => call.globalAlpha))).toEqual(new Set([0.42]));
+    expect(new Set(previewSegments.map((call) => call.strokeStyle))).toEqual(new Set(['#242424', '#ffffff']));
+    renderer.dispose();
+  });
+
   it('dims the committed pattern while move-image dimming is active', () => {
     const document = chart(1, 1);
     document.kind[0] = CellKind.Full;

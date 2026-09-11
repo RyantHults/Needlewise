@@ -186,6 +186,7 @@ export interface OverlayState {
   readonly selection?: SelectionOverlay | CellRect | null;
   readonly cursor?: CursorOverlay | ModelPoint | null;
   readonly backstitchPreview?: BackstitchPreviewOverlay | null;
+  readonly brushPreview?: BrushPreviewOverlay | null;
   readonly fillPending?: boolean;
   /** Cells in an uncommitted paint or erase gesture; these never belong to the document. */
   readonly pendingCells?: readonly ModelPoint[];
@@ -202,6 +203,12 @@ export interface BackstitchPreviewOverlay {
   readonly start: FixedPoint;
   readonly end: FixedPoint;
   readonly color?: string;
+}
+
+export interface BrushPreviewOverlay {
+  readonly states: readonly PendingCellState[];
+  readonly color?: string;
+  readonly kind: 'paint' | 'completion' | 'eraser';
 }
 
 export type InvalidationLayer = 'base' | 'overlay' | 'all';
