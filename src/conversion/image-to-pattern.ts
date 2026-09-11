@@ -57,7 +57,7 @@ export interface ConversionSourceImageCandidate {
   readonly height: number;
   readonly crop: { readonly x: 0; readonly y: 0; readonly width: 1; readonly height: 1 };
   readonly chartBounds: { readonly x: 0; readonly y: 0; readonly width: number; readonly height: number };
-  readonly traceVisible: true;
+  readonly traceVisible: boolean;
   readonly opacity: 1;
 }
 
@@ -510,7 +510,7 @@ export function convertRasterToPattern(raster: ConversionRaster, options: Conver
       height: sourceHeight,
       crop: { x: 0, y: 0, width: 1, height: 1 },
       chartBounds: { x: 0, y: 0, width: document.width, height: document.height },
-      traceVisible: true,
+      traceVisible: false,
       opacity: 1
     }
   };
@@ -648,7 +648,7 @@ export async function convertRasterToPatternAsync(
       height: sourceHeight,
       crop: { x: 0, y: 0, width: 1, height: 1 },
       chartBounds: { x: 0, y: 0, width: document.width, height: document.height },
-      traceVisible: true,
+      traceVisible: false,
       opacity: 1
     }
   };
@@ -666,7 +666,7 @@ export function validateConversionDraft(draft: ConversionDraft): void {
   if (draft.document.kind.length !== draft.document.width * draft.document.height || draft.document.colors.length !== draft.document.width * draft.document.height * 4) throw new ConversionError('invalid-draft', 'The conversion draft planes are malformed.');
   if (!draft.stats || draft.stats.targetWidth !== draft.document.width || draft.stats.targetHeight !== draft.document.height || draft.stats.totalPixels !== draft.document.width * draft.document.height || !Number.isSafeInteger(draft.stats.transparentPixels) || !Number.isSafeInteger(draft.stats.emptyPixels) || !Number.isSafeInteger(draft.stats.stitchedPixels) || draft.stats.transparentPixels < 0 || draft.stats.transparentPixels > draft.stats.emptyPixels || draft.stats.emptyPixels < 0 || draft.stats.stitchedPixels < 0 || draft.stats.emptyPixels + draft.stats.stitchedPixels !== draft.stats.totalPixels) throw new ConversionError('invalid-draft', 'The conversion draft statistics do not match its document.');
   assertPositiveSourceDimensions(draft.stats.sourceWidth, draft.stats.sourceHeight);
-  if (!draft.sourceImage || (draft.sourceImage.assetId !== undefined && (typeof draft.sourceImage.assetId !== 'string' || draft.sourceImage.assetId.length < 1)) || (draft.sourceImage.mimeType !== undefined && typeof draft.sourceImage.mimeType !== 'string') || draft.sourceImage.width !== draft.stats.sourceWidth || draft.sourceImage.height !== draft.stats.sourceHeight || draft.sourceImage.crop.x !== 0 || draft.sourceImage.crop.y !== 0 || draft.sourceImage.crop.width !== 1 || draft.sourceImage.crop.height !== 1 || draft.sourceImage.chartBounds.x !== 0 || draft.sourceImage.chartBounds.y !== 0 || draft.sourceImage.chartBounds.width !== draft.document.width || draft.sourceImage.chartBounds.height !== draft.document.height || draft.sourceImage.traceVisible !== true || draft.sourceImage.opacity !== 1) throw new ConversionError('invalid-draft', 'The conversion draft source image candidate is malformed.');
+  if (!draft.sourceImage || (draft.sourceImage.assetId !== undefined && (typeof draft.sourceImage.assetId !== 'string' || draft.sourceImage.assetId.length < 1)) || (draft.sourceImage.mimeType !== undefined && typeof draft.sourceImage.mimeType !== 'string') || draft.sourceImage.width !== draft.stats.sourceWidth || draft.sourceImage.height !== draft.stats.sourceHeight || draft.sourceImage.crop.x !== 0 || draft.sourceImage.crop.y !== 0 || draft.sourceImage.crop.width !== 1 || draft.sourceImage.crop.height !== 1 || draft.sourceImage.chartBounds.x !== 0 || draft.sourceImage.chartBounds.y !== 0 || draft.sourceImage.chartBounds.width !== draft.document.width || draft.sourceImage.chartBounds.height !== draft.document.height || typeof draft.sourceImage.traceVisible !== 'boolean' || draft.sourceImage.opacity !== 1) throw new ConversionError('invalid-draft', 'The conversion draft source image candidate is malformed.');
   const paletteIds = new Set(draft.document.palette.map((entry) => entry.id));
   let usageTotal = 0;
   for (const entry of draft.stats.paletteUsage) {

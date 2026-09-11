@@ -213,7 +213,12 @@ describe('headless project workspace', () => {
       expect(repository.saveCalls).toEqual([{ id: 'converted', revision: 0 }]);
       const saved = repository.records.get('converted');
       expect(saved?.assets.map(({ id }) => id)).toEqual(['source']);
-      expect(saved?.metadata.sourceImage).toMatchObject({ assetId: 'source', width: 2, height: 2, chartBounds: { width: 2, height: 2 } });
+      expect(saved?.metadata.sourceImage).toMatchObject({ assetId: 'source', width: 2, height: 2, chartBounds: { width: 2, height: 2 }, traceVisible: false });
+      expect(session.sourceImage?.traceVisible).toBe(false);
+      session.applyTraceImageChange({ ...session.sourceImage!, traceVisible: true }, { label: 'trace-image-visibility' });
+      expect(session.sourceImage?.traceVisible).toBe(true);
+      await session.flush();
+      expect((await repository.load('converted'))?.metadata.sourceImage?.traceVisible).toBe(true);
     } finally {
       await workspace.dispose();
     }

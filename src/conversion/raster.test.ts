@@ -16,6 +16,32 @@ function pngSource(width: number, height: number): Blob {
   return new Blob([pngBytes(width, height).buffer as ArrayBuffer], { type: 'image/png' });
 }
 
+function webpSource(width: number, height: number, mimeType = 'image/webp'): Blob {
+  const bytes = new Uint8Array(30);
+  bytes.set([82, 73, 70, 70, 22, 0, 0, 0, 87, 69, 66, 80, 86, 80, 56, 88, 10, 0, 0, 0], 0);
+  bytes[24] = (width - 1) & 0xff;
+  bytes[25] = ((width - 1) >> 8) & 0xff;
+  bytes[26] = ((width - 1) >> 16) & 0xff;
+  bytes[27] = (height - 1) & 0xff;
+  bytes[28] = ((height - 1) >> 8) & 0xff;
+  bytes[29] = ((height - 1) >> 16) & 0xff;
+  return new Blob([bytes.buffer as ArrayBuffer], { type: mimeType });
+}
+
+function largeVp8HeaderSource(width: number, height: number): Blob {
+  const bytes = new Uint8Array(64 * 1024);
+  bytes.set([82, 73, 70, 70, 0, 0, 0, 0, 87, 69, 66, 80, 86, 80, 56, 32], 0);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(4, 337_014, true);
+  view.setUint32(16, 337_002, true);
+  bytes[23] = 0x9d;
+  bytes[24] = 0x01;
+  bytes[25] = 0x2a;
+  view.setUint16(26, width, true);
+  view.setUint16(28, height, true);
+  return new Blob([bytes.buffer as ArrayBuffer], { type: 'image/webp' });
+}
+
 interface RecordedDraw {
   source: unknown;
   sourceRect: number[];
@@ -98,6 +124,38 @@ describe('bounded conversion rasterization', () => {
     expect(result.sourceWidth).toBe(2);
     expect(closed).toBe(1);
     expect(smoothing).toBe(false);
+  });
+
+  it('uses the WebP header when a browser declares the content as JPEG', async () => {
+    const harness = surfaceHarness();
+    let decodedMimeType = '';
+    const result = await decodeAndResampleImage(webpSource(1_057, 1_600, 'image/jpeg'), 2, 2, {
+      createImageBitmap: async (blob) => {
+        decodedMimeType = blob.type;
+        return { width: 1_057, height: 1_600 };
+      },
+      surfaceFactory: harness.factory
+    });
+    expect(decodedMimeType).toBe('image/webp');
+    expect(result.sourceWidth).toBe(1_057);
+    expect(result.sourceHeight).toBe(1_600);
+    expect(result.width).toBe(2);
+    expect(result.height).toBe(2);
+  });
+
+  it('accepts VP8 dimensions when the declared chunk extends beyond the header probe', async () => {
+    const harness = surfaceHarness();
+    let decoded = false;
+    const result = await decodeAndResampleImage(largeVp8HeaderSource(1_057, 1_600), 2, 2, {
+      createImageBitmap: async () => {
+        decoded = true;
+        return { width: 1_057, height: 1_600 };
+      },
+      surfaceFactory: harness.factory
+    });
+    expect(decoded).toBe(true);
+    expect(result.sourceWidth).toBe(1_057);
+    expect(result.sourceHeight).toBe(1_600);
   });
 
   it('rejects target allocations outside conversion bounds before decoding', async () => {

@@ -185,6 +185,16 @@ function webpDimensions(bytes: Uint8Array): { width: number; height: number } | 
   return undefined;
 }
 
+function detectRasterDimensions(bytes: Uint8Array): { mimeType: SourceImageMimeType; dimensions: { width: number; height: number; orientation?: SourceImageOrientation } } | undefined {
+  const png = pngDimensions(bytes);
+  if (png) return { mimeType: 'image/png', dimensions: png };
+  const jpeg = jpegDimensions(bytes);
+  if (jpeg) return { mimeType: 'image/jpeg', dimensions: jpeg };
+  const webp = webpDimensions(bytes);
+  if (webp) return { mimeType: 'image/webp', dimensions: webp };
+  return undefined;
+}
+
 function ensureDimensions(mimeType: SourceImageMimeType, dimensions: { width: number; height: number; orientation?: SourceImageOrientation } | undefined): RasterImageDimensions {
   if (!dimensions || !isWithinImageDecodeBounds(dimensions.width, dimensions.height)) invalidAsset('Source image signature is invalid or its dimensions exceed the pixel limit.');
   return { mimeType, width: dimensions.width, height: dimensions.height, ...(dimensions.orientation === undefined ? {} : { orientation: dimensions.orientation }) };
@@ -194,12 +204,8 @@ export function inspectRasterAsset(asset: Pick<ProjectAsset, 'mimeType' | 'data'
   const mimeType = asset.mimeType.trim().toLowerCase();
   if (!isSupportedMimeType(mimeType)) invalidAsset(`Source image MIME type ${asset.mimeType} is not supported.`);
   const bytes = bytesOf(asset);
-  const dimensions = mimeType === 'image/png'
-    ? pngDimensions(bytes)
-    : mimeType === 'image/jpeg'
-      ? jpegDimensions(bytes)
-      : webpDimensions(bytes);
-  return ensureDimensions(mimeType, dimensions);
+  const detected = detectRasterDimensions(bytes);
+  return ensureDimensions(detected?.mimeType ?? mimeType, detected?.dimensions);
 }
 
 function validateCrop(value: unknown): NormalizedSourceImageCrop {
@@ -240,7 +246,7 @@ export function normalizeSourceImageDescriptor(
   if (!isRecord(input) || typeof input.assetId !== 'string' || input.assetId !== asset.id) invalidMetadata('Source image asset ID does not match the selected asset.');
   if (typeof asset.checksum !== 'string' || !/^[0-9a-f]{64}$/.test(asset.checksum)) invalidAsset(`Source image asset ${asset.id} does not have a valid checksum.`);
   const dimensions = inspectRasterAsset(asset);
-  if (input.mimeType !== undefined && input.mimeType !== dimensions.mimeType) invalidMetadata('Source image MIME type does not match the selected asset.');
+  if (input.mimeType !== undefined && !isSupportedMimeType(input.mimeType)) invalidMetadata('Source image MIME type is not supported.');
   if (input.width !== undefined && input.width !== dimensions.width) invalidMetadata('Source image width does not match the selected asset.');
   if (input.height !== undefined && input.height !== dimensions.height) invalidMetadata('Source image height does not match the selected asset.');
   if (input.orientation !== undefined && input.orientation !== (dimensions.orientation ?? 1)) invalidMetadata('Source image orientation does not match the selected asset.');

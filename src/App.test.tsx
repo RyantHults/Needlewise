@@ -270,7 +270,18 @@ describe('application shell', () => {
   });
 
   it('passes the selected aida count when creating from an image', async () => {
-    conversion.convert.mockResolvedValue({ draft: { stats: { sourceWidth: 640, sourceHeight: 480 }, document: { width: 2, height: 2, palette: [], colors: new Uint16Array(16) } } });
+    conversion.convert.mockResolvedValue({ draft: {
+      stats: { sourceWidth: 640, sourceHeight: 480 },
+      document: { width: 2, height: 2, palette: [], colors: new Uint16Array(16) },
+      sourceImage: {
+        width: 640,
+        height: 480,
+        crop: { x: 0, y: 0, width: 1, height: 1 },
+        chartBounds: { x: 0, y: 0, width: 2, height: 2 },
+        traceVisible: false,
+        opacity: 1
+      }
+    } });
     Object.defineProperty(URL, 'createObjectURL', { value: vi.fn().mockReturnValue('blob:test'), configurable: true });
     Object.defineProperty(URL, 'revokeObjectURL', { value: vi.fn(), configurable: true });
     images.length = 0;
@@ -288,6 +299,8 @@ describe('application shell', () => {
     await waitFor(() => expect(createProjectFromConversion).toHaveBeenCalledOnce());
     expect(createProjectFromConversion.mock.calls[0][0]).toMatchObject({ aidaCount: 22, title: 'Untitled sampler' });
     expect(createProjectFromConversion.mock.calls[0][0].draft).toBeDefined();
+    expect(createProjectFromConversion.mock.calls[0][0].draft.sourceImage).toMatchObject({ traceVisible: false });
+    expect(createProjectFromConversion.mock.calls[0][0].sourceImageAsset).toMatchObject({ name: 'one.png', mimeType: 'image/png' });
     vi.unstubAllGlobals();
   });
 });

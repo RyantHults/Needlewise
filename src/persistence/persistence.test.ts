@@ -21,6 +21,8 @@ import {
   ProjectRepository,
   NeedlewiseDatabase,
   inspectRasterAsset,
+  normalizeSourceImageAsset,
+  normalizeSourceImageDescriptor,
   sha256,
   type ProjectMetadata,
   type PreparedDocumentCapability,
@@ -188,6 +190,37 @@ describe('binary document persistence', () => {
     expect(() => inspectRasterAsset({ mimeType: 'image/png', data: new Uint8Array([1, 2, 3]) })).toThrow(PersistenceError);
     expect(() => inspectRasterAsset({ mimeType: 'image/png', data: pngBytes(8_193, 1) })).toThrow(PersistenceError);
     expect(() => inspectRasterAsset({ mimeType: 'image/png', data: pngBytes(9_000, 8_000) })).toThrow(PersistenceError);
+  });
+
+  it('canonicalizes a WebP asset declared as JPEG and persists matching source metadata', async () => {
+    const data = webpBytes(1_057, 1_600);
+    const normalizedAsset = await normalizeSourceImageAsset({ id: 'monalisa', name: 'monalisa.jpg', mimeType: 'image/jpeg', data });
+    expect(normalizedAsset.mimeType).toBe('image/webp');
+    expect(inspectRasterAsset({ mimeType: 'image/jpeg', data })).toEqual({ mimeType: 'image/webp', width: 1_057, height: 1_600 });
+
+    const descriptor = normalizeSourceImageDescriptor({
+      assetId: 'monalisa',
+      mimeType: 'image/jpeg',
+      width: 1_057,
+      height: 1_600,
+      crop: { x: 0, y: 0, width: 1, height: 1 },
+      chartBounds: { x: 0, y: 0, width: 2, height: 2 },
+      traceVisible: false,
+      opacity: 1
+    }, { width: 2, height: 2 }, normalizedAsset);
+    expect(descriptor).toMatchObject({ assetId: 'monalisa', mimeType: 'image/webp', width: 1_057, height: 1_600, traceVisible: false });
+
+    const repo = await repository();
+    try {
+      const document = createDocument({ width: 2, height: 2, palette: [] });
+      await repo.save('mislabeled-webp', { ...metadata(document, 'mislabeled-webp'), sourceImage: descriptor }, document, [normalizedAsset]);
+      const loaded = await repo.load('mislabeled-webp');
+      expect(loaded?.metadata.sourceImage).toMatchObject({ mimeType: 'image/webp', width: 1_057, height: 1_600 });
+      expect(loaded?.assets[0]).toMatchObject({ id: 'monalisa', mimeType: 'image/webp' });
+      expect(loaded?.health?.sourceImage).toMatchObject({ assetId: 'monalisa', status: 'valid' });
+    } finally {
+      await closeRepository(repo);
+    }
   });
 
   it('round-trips a large source image reference within the shared decode ceiling', async () => {

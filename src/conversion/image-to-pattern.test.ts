@@ -61,11 +61,16 @@ describe('deterministic image conversion core', () => {
     expect(first.document.colors[4]).toBe(2);
     expect(first.document.colors[8]).toBe(1);
     expect(first.document.colors[12]).toBe(0);
+    expect(first.sourceImage.traceVisible).toBe(false);
     expect(first.stats.transparentPixels).toBe(1);
     expect(first.stats.emptyPixels).toBe(1);
     expect(first.document.kind).toEqual(second.document.kind);
     expect(first.document.colors).toEqual(second.document.colors);
     expect(first.document.palette).toEqual(second.document.palette);
+    expect(second.sourceImage.traceVisible).toBe(false);
+    const accepted = acceptConversionDraft(first);
+    expect(accepted.sourceImage.traceVisible).toBe(false);
+    expect(() => validateAcceptedConversionDraft(accepted)).not.toThrow();
   });
 
   it('includes Black and White only when the image actually contains them', () => {
@@ -205,6 +210,7 @@ describe('deterministic image conversion core', () => {
     const synchronous = convertRasterToPattern(source, options);
     const asynchronous = await convertRasterToPatternAsync(source, options);
     expect(asynchronous.document.palette.map((entry) => entry.catalog?.sourceId)).toEqual(synchronous.document.palette.map((entry) => entry.catalog?.sourceId));
+    expect(asynchronous.sourceImage.traceVisible).toBe(false);
   });
 
   it('skips a background source color before selection so it drops out of the palette and usage', () => {

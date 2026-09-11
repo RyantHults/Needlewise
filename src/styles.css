@@ -316,11 +316,12 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .icon-button:hover, .gear-button:hover { border-color:#bc5a3d; background:#f1e4da; }
 .editor-layout { position:relative; grid-template-columns:9.3rem minmax(0,1fr); gap:.55rem; align-items:start; overflow:visible; }
 .editor-layout.rail-right { grid-template-columns:minmax(0,1fr) 9.3rem; }
-.editor-rail-shell { position:relative; display:flex; flex-direction:row; align-items:flex-start; gap:.3rem; min-width:3.1rem; z-index:20; overflow:visible; }
+.editor-rail-shell { position:relative; display:flex; flex-direction:row; align-items:stretch; gap:.3rem; min-width:3.1rem; height:100%; min-height:0; z-index:20; overflow:visible; }
 .rail-right .editor-rail-shell { grid-column:2; grid-row:1; }
 .rail-right .canvas-column { grid-column:1; grid-row:1; }
 .editor-rail { display:flex; flex-direction:column; gap:.25rem; }
-.palette-rail { --palette-square:2.55rem; --palette-surround:#ead8cc; display:grid; grid-template-columns:repeat(2, 2.75rem); gap:.35rem; align-content:start; margin-left:.35rem; }
+.palette-rail { --palette-square:2.55rem; --palette-surround:#ead8cc; display:flex; min-height:0; max-height:100%; flex-direction:column; gap:.35rem; align-items:center; margin-left:.35rem; }
+.palette-rail-items { display:grid; grid-template-columns:repeat(2, 2.75rem); gap:.35rem; min-height:0; overflow-y:auto; align-content:start; padding:.1rem .15rem .35rem; scrollbar-width:thin; }
 .editor-layout:not(.rail-right) .palette-rail { order:-1; margin-left:0; margin-right:.35rem; }
 .palette-rail .palette-row { display:block; min-height:3.55rem; padding:0; overflow:visible; background:transparent; }
 .palette-rail .palette-button { display:grid; width:2.75rem; height:3.55rem; min-height:3.55rem; padding:0; overflow:visible; border:0; border-radius:.45rem; background:transparent; }
@@ -511,7 +512,7 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
   .editor-heading-project { grid-column:1 / -1; grid-row:2; width:100%; }
   .editor-heading-info { grid-column:1 / -1; grid-row:3; justify-content:center; flex-wrap:wrap; }
   .editor-layout, .editor-layout.rail-right { grid-template-columns:1fr; overflow:visible; }
-  .editor-rail-shell, .rail-right .editor-rail-shell { grid-column:1; grid-row:1; top:.5rem; right:auto; left:.5rem; width:auto; }
+  .editor-rail-shell, .rail-right .editor-rail-shell { grid-column:1; grid-row:1; top:.5rem; right:auto; left:.5rem; width:auto; height:min(70vh,36rem); }
   .rail-right .editor-rail-shell { right:.5rem; left:auto; }
   .editor-layout:not(.rail-right) .editor-rail-shell { left:6.25rem; }
   .editor-layout.rail-right .editor-rail-shell { right:6.25rem; }

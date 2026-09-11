@@ -1066,8 +1066,10 @@ export function EditorSurface({
               title="Add new color"
               onClick={openPalettePicker}
             ><span className="palette-add-glyph">+</span></button>
-            {pendingEntry && paletteRow(pendingEntry)}
-            {palette.filter((x) => x.id !== pendingEntry?.id).map(paletteRow)}
+            <div className="palette-rail-items">
+              {pendingEntry && paletteRow(pendingEntry)}
+              {palette.filter((x) => x.id !== pendingEntry?.id).map(paletteRow)}
+            </div>
           </div>
         </aside>
         <div className="canvas-column">

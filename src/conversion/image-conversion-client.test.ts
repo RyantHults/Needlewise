@@ -37,6 +37,20 @@ function imageBlob(): Blob {
   return new Blob([pngBytes(1, 1).buffer as ArrayBuffer], { type: 'image/png' });
 }
 
+function mislabeledWebpBlob(): Blob {
+  const width = 1_057;
+  const height = 1_600;
+  const bytes = new Uint8Array(30);
+  bytes.set([82, 73, 70, 70, 22, 0, 0, 0, 87, 69, 66, 80, 86, 80, 56, 88, 10, 0, 0, 0], 0);
+  bytes[24] = (width - 1) & 0xff;
+  bytes[25] = ((width - 1) >> 8) & 0xff;
+  bytes[26] = ((width - 1) >> 16) & 0xff;
+  bytes[27] = (height - 1) & 0xff;
+  bytes[28] = ((height - 1) >> 8) & 0xff;
+  bytes[29] = ((height - 1) >> 16) & 0xff;
+  return new Blob([bytes.buffer as ArrayBuffer], { type: 'image/jpeg' });
+}
+
 class FakeWorker implements ConversionWorkerLike {
   readonly posted: unknown[] = [];
   readonly terminated = { count: 0 };
@@ -225,6 +239,22 @@ describe('image conversion worker client', () => {
     worker.emit({ protocol: job.request.protocol, type: 'conversion-error', token: job.request.token, code: 'unavailable', message: 'no OffscreenCanvas' });
     await expect(job.promise).resolves.toMatchObject({ token: job.request.token });
     expect(decodeCalls).toBe(1);
+    client.dispose();
+  });
+
+  it('converts WebP content when the browser declares the blob as JPEG', async () => {
+    const client = createConversionWorkerClient({
+      useWorker: false,
+      rasterOptions: {
+        createImageBitmap: async () => ({ width: 1_057, height: 1_600 }),
+        surfaceFactory: () => ({ context: { drawImage: () => undefined, getImageData: () => ({ data: new Uint8ClampedArray(16) }) } })
+      }
+    });
+    const result = await client.requestImage(mislabeledWebpBlob(), { ...input(), targetWidth: 2, targetHeight: 2, requestId: 'mislabeled-webp' });
+    expect(result.draft.stats.sourceWidth).toBe(1_057);
+    expect(result.draft.stats.sourceHeight).toBe(1_600);
+    expect(result.draft.document.width).toBe(2);
+    expect(result.draft.document.height).toBe(2);
     client.dispose();
   });
 

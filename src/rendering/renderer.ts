@@ -646,7 +646,7 @@ function drawBackstitchScreenSegment(
 ): void {
   save(context);
   context.strokeStyle = styleColor(document, colorId, style);
-  context.lineWidth = Math.max(1, Math.min(3, viewport.zoom * 0.1));
+  context.lineWidth = Math.max(2, Math.min(6, viewport.zoom * 0.2));
   setAlpha(context, (completed ? style.completedOpacity : 1) * dimAlpha);
   linePath(context, start, end);
   restore(context);
@@ -882,7 +882,7 @@ function drawBackstitchPreview(
   if (!screenSegment) return;
   save(context);
   context.strokeStyle = preview.color ?? style.selectionColor;
-  context.lineWidth = Math.max(style.overlayLineWidth, Math.min(4, viewport.zoom * 0.12));
+  context.lineWidth = Math.max(style.overlayLineWidth * 2, Math.min(8, viewport.zoom * 0.24));
   context.setLineDash?.([6, 4]);
   linePath(context, screenSegment.start, screenSegment.end);
   restore(context);
