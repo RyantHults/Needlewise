@@ -5,7 +5,7 @@ import { searchDmcColors } from '../../catalog';
 import { PALETTE_SYMBOLS } from '../../domain';
 
 const f = vi.hoisted(() => ({
-  c: { start: vi.fn(), setMetrics: vi.fn(), setDocument: vi.fn(), dispose: vi.fn(), setBrush: vi.fn(), setTool: vi.fn(), setEraserMode: vi.fn(), selectPalette: vi.fn(), setChartMode: vi.fn(), setGridVisible: vi.fn(), setBrushSize: vi.fn(), deleteSelection: vi.fn(), handleKeyDown: vi.fn(() => false), getTraceImage: vi.fn(() => undefined), setTraceImage: vi.fn(), setTraceImageSettings: vi.fn(), clearTraceImage: vi.fn() },
+  c: { start: vi.fn(), setMetrics: vi.fn(), setDocument: vi.fn(), dispose: vi.fn(), setBrush: vi.fn(), setTool: vi.fn(), setEraserMode: vi.fn(), selectPalette: vi.fn(), selectCreatedPalette: vi.fn(), setChartMode: vi.fn(), setGridVisible: vi.fn(), setBrushSize: vi.fn(), deleteSelection: vi.fn(), handleKeyDown: vi.fn(() => false), getTraceImage: vi.fn(() => undefined), setTraceImage: vi.fn(), setTraceImageSettings: vi.fn(), clearTraceImage: vi.fn() },
   adapter: vi.fn(() => ({ dispose: vi.fn() })),
   r: { dispose: vi.fn() }, resize: undefined as (() => void) | undefined,
   uiState: { mode: 'color', gridVisible: true, overlay: {}, tool: { tool: 'paint' }, paletteId: 1, pendingPaletteId: null as number | null },
@@ -44,6 +44,142 @@ describe('EditorSurface', () => {
     expect(f.c.start).toHaveBeenCalledOnce(); expect(f.c.dispose).not.toHaveBeenCalled(); expect(f.c.setDocument).toHaveBeenCalledWith(next, expect.objectContaining({ reason: 'external-document' }));
     expect(screen.getByText(/20 × 16 stitches/)).toBeInTheDocument(); expect(screen.getByRole('slider', { name: /Brush size/ })).toHaveValue('7');
   });
+  it('reuses palette activity when completion changes only the completion plane', () => {
+    let colorReads = 0;
+    const colors = new Proxy(new Uint16Array(1024), {
+      get(target, property) {
+        if (typeof property === 'string' && /^(0|[1-9]\d*)$/.test(property)) colorReads += 1;
+        return Reflect.get(target, property);
+      }
+    });
+    type TestDocument = {
+      width: number;
+      height: number;
+      colors: Uint16Array;
+      completed: Uint8Array;
+      backstitches: { ids: Uint32Array; colors: Uint16Array };
+      palette: unknown[];
+    };
+    const baseDocument = Object.assign({}, doc as object, {
+      colors,
+      completed: new Uint8Array(256),
+      backstitches: { ids: new Uint32Array(), colors: new Uint16Array() }
+    }) as TestDocument;
+    const view = render(<EditorSurface workspace={ws} document={baseDocument as never} />);
+    const readsAfterInitialRender = colorReads;
+    const completionDocument = Object.assign({}, baseDocument, {
+      completed: Uint8Array.from((baseDocument as { completed: Uint8Array }).completed),
+      revision: 1
+    }) as TestDocument;
+    (completionDocument as { completed: Uint8Array }).completed[0] = 1;
+
+    view.rerender(<EditorSurface workspace={ws} document={completionDocument as never} />);
+
+    expect(colorReads).toBe(readsAfterInitialRender);
+  });
+  it('opens the Tools and Colors popovers with expanded state and restores focus on Escape', async () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const tools = screen.getByRole('button', { name: 'Tools', hidden: true });
+    const colors = screen.getByRole('button', { name: /^Colors:/, hidden: true });
+
+    expect(tools).toHaveAttribute('aria-expanded', 'false');
+    expect(colors).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(tools);
+    expect(screen.getByRole('dialog', { name: 'Tools' })).toBeInTheDocument();
+    expect(tools).toHaveAttribute('aria-expanded', 'true');
+    expect(colors).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Tools' })).not.toBeInTheDocument();
+      expect(document.activeElement).toBe(tools);
+    });
+
+    fireEvent.click(tools);
+    expect(screen.getByRole('dialog', { name: 'Tools' })).toBeInTheDocument();
+    fireEvent.click(tools);
+    expect(screen.queryByRole('dialog', { name: 'Tools' })).not.toBeInTheDocument();
+    expect(tools).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(colors);
+    expect(screen.getByRole('dialog', { name: 'Colors' })).toBeInTheDocument();
+    expect(colors).toHaveAttribute('aria-expanded', 'true');
+    expect(tools).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Colors' })).not.toBeInTheDocument();
+      expect(document.activeElement).toBe(colors);
+    });
+  });
+  it('dismisses each mobile popover from an outside pointer', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const tools = screen.getByRole('button', { name: 'Tools', hidden: true });
+    const colors = screen.getByRole('button', { name: /^Colors:/, hidden: true });
+
+    fireEvent.click(tools);
+    expect(screen.getByRole('dialog', { name: 'Tools' })).toBeInTheDocument();
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole('dialog', { name: 'Tools' })).not.toBeInTheDocument();
+    expect(tools).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(colors);
+    expect(screen.getByRole('dialog', { name: 'Colors' })).toBeInTheDocument();
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole('dialog', { name: 'Colors' })).not.toBeInTheDocument();
+    expect(colors).toHaveAttribute('aria-expanded', 'false');
+  });
+  it('closes Colors after selecting an existing color but stays open for Add new color', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const colors = screen.getByRole('button', { name: /^Colors:/, hidden: true });
+
+    fireEvent.click(colors);
+    const colorsDialog = screen.getByRole('dialog', { name: 'Colors' });
+    fireEvent.click(within(colorsDialog).getByRole('button', { name: '321Ruby' }));
+    expect(f.c.selectPalette).toHaveBeenCalledWith(1);
+    expect(screen.queryByRole('dialog', { name: 'Colors' })).not.toBeInTheDocument();
+
+    fireEvent.click(colors);
+    expect(screen.getByRole('dialog', { name: 'Colors' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Add new color' }));
+    expect(screen.getByRole('dialog', { name: 'Colors' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Add a thread color' })).toBeInTheDocument();
+  });
+  it('keeps Colors open through the portalled add-color flow until an outside pointer dismisses it', async () => {
+    const red = searchDmcColors('321')[0];
+    const createdDocument = {
+      width: 16,
+      height: 16,
+      colors: new Uint16Array(1024),
+      palette: [
+        { id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321' } },
+        { id: 2, name: red.name, color: red.hex, active: true, catalog: { code: red.code } }
+      ],
+      backstitches: { ids: new Uint32Array() }
+    } as never;
+    (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockResolvedValueOnce({ document: createdDocument });
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const colors = screen.getByRole('button', { name: /^Colors:/, hidden: true });
+
+    fireEvent.click(colors);
+    const colorsDialog = screen.getByRole('dialog', { name: 'Colors' });
+    fireEvent.click(within(colorsDialog).getByRole('button', { name: 'Add new color' }));
+    const addDialog = screen.getByRole('dialog', { name: 'Add a thread color' });
+    expect(screen.getByRole('dialog', { name: 'Colors' })).toBeInTheDocument();
+
+    fireEvent.pointerDown(addDialog);
+    expect(screen.getByRole('dialog', { name: 'Colors' })).toBeInTheDocument();
+
+    fireEvent.change(within(addDialog).getByLabelText('Search offline catalog'), { target: { value: '321' } });
+    fireEvent.click(within(addDialog).getByRole('button', { name: /Red, color 321/ }));
+    fireEvent.click(within(addDialog).getByRole('button', { name: 'Add Red' }));
+    await waitFor(() => expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).toHaveBeenCalled());
+    await waitFor(() => expect(f.c.selectCreatedPalette).toHaveBeenCalledWith(2));
+    expect(screen.queryByRole('dialog', { name: 'Add a thread color' })).not.toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Colors' })).toBeInTheDocument();
+
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole('dialog', { name: 'Colors' })).not.toBeInTheDocument();
+  });
   it('binds keyboard delivery to the workspace while retaining canvas pointer delivery', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     expect(f.adapter).toHaveBeenCalledOnce();
@@ -74,7 +210,7 @@ describe('EditorSurface', () => {
     const rail = screen.getByRole('complementary', { name: 'Editor controls' });
     expect(rail).toContainElement(paletteRegion);
     expect(paletteRegion).toHaveClass('palette-rail');
-    expect(rail.firstElementChild?.tagName).toBe('NAV');
+    expect(rail.querySelector('nav.editor-rail')).toBeInTheDocument();
   });
   it('keeps the condensed export and save indicators semantic', () => {
     render(<EditorSurface workspace={ws} document={doc} onExport={vi.fn()} exportDisabled saveMessage="Local save needs attention" saveStatus="error" />);

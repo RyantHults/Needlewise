@@ -104,6 +104,22 @@ function cloneBackstitchCompletionPlane(document: PatternDocument): void {
   };
 }
 
+function normalizedPaletteCommandType(command: DomainCommand): string {
+  if (!command || typeof command.type !== 'string') return '';
+  const normalized = command.type.replace(/([a-z])([A-Z])/g, '$1-$2').replace(/_/g, '-').toLowerCase();
+  if (normalized === 'create-palette' || normalized === 'add-palette' || normalized === 'palette-add') return 'palette-create';
+  if (normalized === 'update-palette') return 'palette-update';
+  if (normalized === 'deactivate-color' || normalized === 'deactivate-palette-color') return 'palette-deactivate';
+  return normalized;
+}
+
+function isPaletteMetadataOnlyCommand(command: DomainCommand): boolean {
+  const type = normalizedPaletteCommandType(command);
+  if (type === 'palette-create' || type === 'palette-update' || type === 'palette-deactivate') return true;
+  if (type !== 'batch' || !Array.isArray(command.commands) || command.commands.length === 0) return false;
+  return command.commands.every((child) => isPaletteMetadataOnlyCommand(child as DomainCommand));
+}
+
 function applyPackedCellSide(document: PatternDocument, cells: SparseMutationDelta['cells'], useAfter: boolean): void {
   const sourceKind = useAfter ? cells.afterKind : cells.beforeKind;
   const sourceColors = useAfter ? cells.afterColors : cells.beforeColors;
@@ -317,6 +333,7 @@ export class DocumentEditor {
         return this.executeDeleteRegionCommand(command.commands[0] as DomainCommand);
       }
     }
+    if (isPaletteMetadataOnlyCommand(command)) return this.executePaletteMetadataCommand(command);
     if (commandRequiresSnapshot(command)) return this.executeSnapshotCommand(command);
 
     const draft = cloneDocument(this.current);
@@ -334,6 +351,36 @@ export class DocumentEditor {
     }
     draft.revision = this.current.revision + 1;
     assertValidDocument(draft);
+    const delta = tracker.toDelta(draft);
+    const entry: DeltaEntry = { kind: 'delta', delta, bytes: typedDeltaBytes(delta), progress: cloneProgress(mutation.progress), recalculateMetrics: mutation.recalculateMetrics === true };
+    ensureHistoryEntryFits(entry.bytes, this.historyLimit);
+    this.current = draft;
+    this.pushHistory(entry);
+    return result(this.current, true, mutation.backstitchId, mutation.paletteId, mutation);
+  }
+
+  private executePaletteMetadataCommand(command: DomainCommand): CommandResult {
+    // Palette metadata commands are preflighted by applyOneToDraft and do not
+    // touch dimensions, dense cell planes, or backstitches. Keep those
+    // structures shared so this path remains bounded by palette metadata.
+    const draft: PatternDocument = { ...this.current, palette: this.current.palette.slice() };
+    const tracker = new MutationTracker();
+    let mutation: MutationInfo;
+    try {
+      mutation = applyOneToDraft(draft, command, tracker);
+    } catch (error) {
+      tracker.rollback(draft);
+      throw error;
+    }
+    if (!mutation.changed || !tracker.hasChanges(draft)) {
+      tracker.rollback(draft);
+      return result(this.current, false, mutation.backstitchId, mutation.paletteId, mutation);
+    }
+    draft.revision = this.current.revision + 1;
+    // The current document was validated when it entered history, and the
+    // palette command preflight validates every changed metadata field and
+    // reference rule. Since all content-bearing planes remain shared, a full
+    // document validation here would only reread the unchanged dense planes.
     const delta = tracker.toDelta(draft);
     const entry: DeltaEntry = { kind: 'delta', delta, bytes: typedDeltaBytes(delta), progress: cloneProgress(mutation.progress), recalculateMetrics: mutation.recalculateMetrics === true };
     ensureHistoryEntryFits(entry.bytes, this.historyLimit);
@@ -409,10 +456,10 @@ export class DocumentEditor {
         progress: { cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0), marked: 0, unmarked: 0 }
       });
     }
-    const draft = cloneDocument(this.current);
+    // Invariant: preflight validated every target, and completion apply mutates only this copied dense plane.
+    const draft: PatternDocument = { ...this.current, completed: this.current.completed.slice() };
     const mutation = applyBulkCompletionCommand(draft, command, preflight);
     draft.revision = this.current.revision + 1;
-    assertValidDocument(draft);
     if (mutation.delta === undefined) throw new DomainError('invalid-completion-command', 'A changed bulk completion did not produce a history delta.');
     const entry: DeltaEntry = { kind: 'delta', delta: mutation.delta, bytes: typedDeltaBytes(mutation.delta), progress: cloneProgress(mutation.progress), recalculateMetrics: mutation.recalculateMetrics === true };
     ensureHistoryEntryFits(entry.bytes, this.historyLimit);

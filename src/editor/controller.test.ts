@@ -110,6 +110,7 @@ class FakeGateway implements WorkspaceEditorGateway {
 
 function rendererFixture() {
   let viewport: Viewport = { x: 0, y: 0, zoom: 16 };
+  let renderedDocument: PatternDocument | undefined;
   const calls = {
     setDocument: [] as Array<{ document: PatternDocument; invalidation?: Invalidation }>,
     setViewport: [] as Viewport[],
@@ -121,11 +122,14 @@ function rendererFixture() {
   let traceImage: TraceImage | undefined;
   const renderer = {
     lastStats: { lod: 'detail', visitedCells: 0, drawnCells: 0, drawnBackstitches: 0, baseRendered: false, overlayRendered: false } as RenderStats,
-    getDocument: () => undefined,
+    getDocument: () => renderedDocument,
     getViewport: () => viewport,
     getStyle: () => ({}) as RendererStyle,
     getTraceImage: () => traceImage,
-    setDocument: (document: PatternDocument, invalidation?: Invalidation) => calls.setDocument.push({ document, invalidation }),
+    setDocument: (document: PatternDocument, invalidation?: Invalidation) => {
+      renderedDocument = document;
+      calls.setDocument.push({ document, invalidation });
+    },
     setViewport: (next: Viewport) => { viewport = next; calls.setViewport.push(next); },
     setMetrics: (metrics: unknown) => calls.setMetrics.push(metrics),
     setStyle: (style: Partial<RendererStyle>) => calls.setStyle.push(style),
@@ -688,6 +692,48 @@ describe('EditorSurfaceController', () => {
     controller.dispose();
   });
 
+  it('skips React completion sync when the renderer already owns that document generation', () => {
+    const { gateway, controller, calls, uiStore } = controllerFixture();
+    uiStore.setKeyboardCursor({ x: 0, y: 0 });
+    gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    controller.setTool({ tool: 'completion' });
+    controller.handlePointerDown(pointer(1, 8, 8));
+    controller.handlePointerUp(pointer(1, 8, 8));
+
+    const callsAfterCompletion = calls.setDocument.length;
+    const completedDocument = gateway.getSnapshot().document!;
+    expect(uiStore.getState().selectedCell?.completion.completed).toBe(1);
+    expect(calls.setDocument.at(-1)?.invalidation).toMatchObject({
+      layer: 'base',
+      cellRect: { x: 0, y: 0, width: 1, height: 1 },
+      reason: 'editor-command'
+    });
+
+    controller.setDocument(completedDocument, {
+      layer: 'all',
+      full: true,
+      reason: 'external-document'
+    });
+
+    expect(calls.setDocument).toHaveLength(callsAfterCompletion);
+    expect(uiStore.getState().selectedCell?.completion.completed).toBe(1);
+
+    const externalDocument = createDocument({
+      width: 4,
+      height: 4,
+      palette: [{ id: 1, name: 'Thread', color: '#123456' }]
+    });
+    externalDocument.revision = completedDocument.revision + 1;
+    controller.setDocument(externalDocument, {
+      layer: 'all',
+      full: true,
+      reason: 'external-document'
+    });
+    expect(calls.setDocument).toHaveLength(callsAfterCompletion + 1);
+    expect(calls.setDocument.at(-1)?.document).toBe(externalDocument);
+    controller.dispose();
+  });
+
   it('projects UI state one way, supports keyboard editing/history, and ignores text controls', () => {
     const { gateway, uiStore, controller, calls } = controllerFixture();
     uiStore.setViewport({ x: 1, y: 2, zoom: 20 });
@@ -1139,6 +1185,48 @@ describe('EditorSurfaceController', () => {
     controller.selectPalette(2);
     expect(uiStore.getState().paletteId).toBe(2);
     expect(uiStore.getState().tool).toEqual({ tool: 'paint', brush: { kind: 'full', paletteId: 2 } });
+    controller.dispose();
+  });
+
+  it('selects a created palette entry without scanning dense visual planes', () => {
+    const { gateway, uiStore, controller } = controllerFixture();
+    const document = gateway.getSnapshot().document!;
+    let visualReads = 0;
+    document.colors = new Proxy(document.colors, {
+      get(target, property) {
+        if (typeof property === 'string' && /^(0|[1-9]\d*)$/.test(property)) visualReads += 1;
+        return Reflect.get(target, property);
+      }
+    });
+    document.backstitches.colors = new Proxy(document.backstitches.colors, {
+      get(target, property) {
+        if (typeof property === 'string' && /^(0|[1-9]\d*)$/.test(property)) visualReads += 1;
+        return Reflect.get(target, property);
+      }
+    });
+    document.palette.push({ ...document.palette[0], id: 2, name: 'Created' });
+
+    controller.selectCreatedPalette(2);
+
+    expect(visualReads).toBe(0);
+    expect(uiStore.getState().paletteId).toBe(2);
+    expect(uiStore.getState().tool).toMatchObject({ tool: 'paint', brush: { paletteId: 2 } });
+    expect(uiStore.getState().pendingPaletteId).toBe(2);
+    controller.dispose();
+  });
+
+  it('safely supersedes an older pending palette when selecting a created entry', () => {
+    const { gateway, uiStore, controller } = controllerFixture();
+    const document = gateway.getSnapshot().document!;
+    document.palette.push({ ...document.palette[0], id: 2, name: 'Created' });
+    uiStore.setPendingPaletteId(1);
+
+    controller.selectCreatedPalette(2);
+
+    expect(gateway.commands.at(-1)).toMatchObject({ type: 'palette-deactivate', id: 1 });
+    expect(gateway.getSnapshot().document?.palette.find((entry) => entry.id === 1)?.active).toBe(false);
+    expect(uiStore.getState().paletteId).toBe(2);
+    expect(uiStore.getState().pendingPaletteId).toBe(2);
     controller.dispose();
   });
 

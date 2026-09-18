@@ -4,6 +4,7 @@ import { createPwaUpdateAdapter, type PwaUpdateAdapter, type PwaUpdateState } fr
 import { EditorSurface } from './components/editor/EditorSurface';
 import { Phase3Panel } from './components/Phase3Panel';
 import { CreateModal } from './components/CreateModal';
+import { ProjectGallery } from './components/ProjectGallery';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 
 const projectPath = (id: string) => `/patterns/${encodeURIComponent(id)}/edit`;
@@ -105,7 +106,8 @@ function WorkspaceApp() {
       return;
     }
     dialogWasOpen.current = true;
-    restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : createTriggerRef.current;
+    const activeElement = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
+    restoreFocusRef.current = activeElement ?? restoreFocusRef.current ?? createTriggerRef.current;
     if (application) application.inert = true;
     const dialog = createDialogRef.current;
     if (!dialog) return;
@@ -142,7 +144,11 @@ function WorkspaceApp() {
           ? 'Local save needs attention'
           : 'Local project loaded';
 
-  function handleCreate() { setCreateError(''); setCreateOpen(true); }
+  function handleCreate(trigger: HTMLButtonElement) {
+    createTriggerRef.current = trigger;
+    restoreFocusRef.current = trigger;
+    setCreateError(''); setCreateOpen(true);
+  }
   async function submitCreate(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); const width = Number(createWidth); const height = Number(createHeight);
     if (createMode === 'image') return;
@@ -217,10 +223,6 @@ function WorkspaceApp() {
         <a className="brand" href="/patterns" aria-label="Needlewise home">
           <span className="brand-mark" aria-hidden="true">✣</span><span>Needlewise</span>
         </a>
-        {initialized && active && !routeError && <div className="topbar-actions">
-          <div className="save-state" aria-label="Save status"><span className={`save-dot ${saveState.status === 'error' ? 'save-dot-error' : ''}`} aria-hidden="true" />{saveMessage}</div>
-          {isEditor && <button className="button button-primary topbar-export" type="button" disabled={actionDisabled} onClick={() => void handleExport()}>Download Pattern</button>}
-        </div>}
       </header>}
 
       <main id="workspace" data-page={isEditor ? 'editor' : 'patterns'}>
@@ -233,33 +235,15 @@ function WorkspaceApp() {
           </section>
         ) : (
           <>
-            {!isEditor && <section className="hero" aria-labelledby="page-title">
-              <div className="hero-copy">
-                <p className="kicker">Pattern studio <span aria-hidden="true">/</span> Project 01</p>
-                <h1 id="page-title">{routeIssue ? 'Project not found' : active ? active.metadata.title : 'Cross-stitch patterns'}</h1>
-                <p className="intro">A calm, local-first place to shape your next pattern. Your work stays on this device.</p>
-              </div>
-              <div className="hero-stitches" aria-hidden="true"><span>× ×</span><span> ×</span><span>× × ×</span></div>
-            </section>}
-
-            <div className={`content-grid${isEditor ? ' editor-project-hidden' : ''}`}>
-              <section className="project-card" aria-labelledby="project-heading">
-                <div className="card-heading">
-                  <div><p className="section-label">Your workspace</p><h2 id="project-heading">No project open</h2></div>
-                </div>
-                <div className="empty-state">
-                  <div className="empty-icon" aria-hidden="true"><span>＋</span></div>
-                  <div className="empty-copy"><h3>Your canvas is ready</h3><p>Create a pattern from scratch or bring in a local project to get started.</p><div className="actions"><button ref={createTriggerRef} className="button button-primary" type="button" disabled={actionDisabled} onClick={() => void handleCreate()}>Create a new pattern <span aria-hidden="true">→</span></button><button className="button button-secondary" type="button" disabled={actionDisabled} onClick={() => inputRef.current?.click()}>Import a project</button></div></div>
-                </div>
-              </section>
-
-              {!isEditor && <aside className="tools-card" aria-labelledby="tools-title">
-                <div className="card-heading compact"><div><p className="section-label">Keep handy</p><h2 id="tools-title">Tools &amp; shortcuts</h2></div><span className="spark" aria-hidden="true">✦</span></div>
-                {projects.length > 0 && <div className="project-list"><h3>Local projects</h3><ul>{projects.map((project) => <li key={project.id}><div className="project-row"><button type="button" className="project-open" disabled={actionDisabled} aria-label={`Open ${project.title}, revision ${project.revision}, updated ${new Date(project.updatedAt).toLocaleDateString()}`} onClick={() => navigate(projectPath(project.id))}>{project.title}<small>Revision {project.revision} · {new Date(project.updatedAt).toLocaleDateString()}</small><span aria-hidden="true">→</span></button><button type="button" className={`project-delete${confirmDeleteId === project.id ? ' project-delete-confirming' : ''}`} disabled={actionDisabled} aria-label={`Delete ${project.title}`} onClick={() => handleDeleteClick(project.id, project.title)}>{confirmDeleteId === project.id ? 'Confirm delete?' : 'Delete'}</button></div></li>)}</ul></div>}
-                <ul className="shortcut-list"><li><span>New pattern</span><kbd>N</kbd></li><li><span>Import project</span><kbd>I</kbd></li><li><span>Show shortcuts</span><kbd>?</kbd></li></ul>
-                <p className="tools-note">Shortcuts will become active when a project is open.</p>
-              </aside>}
-            </div>
+            {!isEditor && <ProjectGallery
+              projects={projects}
+              disabled={actionDisabled}
+              onOpen={(project) => navigate(projectPath(project.id))}
+              onDelete={(project) => handleDeleteClick(project.id, project.title)}
+              deleteConfirmId={confirmDeleteId}
+              onCreate={handleCreate}
+              onImport={() => inputRef.current?.click()}
+            />}
             {active && workspace && state.document && !state.usingRecovery && <EditorSurface key={state.projectId} workspace={workspace} document={state.document} onExport={() => void handleExport()} exportDisabled={actionDisabled} saveMessage={saveMessage} saveStatus={saveState.status} onOpenMaterials={() => setMaterialsOpen(true)} />}
             {isEditor && active && workspace && state.document && !state.usingRecovery && <Phase3Panel document={state.document} workspace={workspace} metrics={metrics} sessionStats={sessionStats} activity={activity} execute={execute} open={materialsOpen} onClose={() => { setMaterialsOpen(false); window.setTimeout(() => document.querySelector<HTMLButtonElement>('.info-button')?.focus(), 0); }} />}
           </>

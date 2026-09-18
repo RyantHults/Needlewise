@@ -5,10 +5,6 @@ function isPositiveInteger(value: number): boolean {
   return Number.isInteger(value) && value > 0;
 }
 
-function hasPalette(document: PatternDocument, id: number): boolean {
-  return document.palette.some((entry) => entry.id === id && entry.active);
-}
-
 export function collectValidationErrors(document: PatternDocument): string[] {
   const errors: string[] = [];
   if (!document || document.version !== DOCUMENT_SCHEMA_VERSION) {
@@ -40,6 +36,7 @@ export function collectValidationErrors(document: PatternDocument): string[] {
   if (errors.length > 0) return errors;
 
   const paletteIds = new Set<number>();
+  const activePaletteIds = new Set<number>();
   if (document.palette.length > MAX_PALETTE_COLORS) {
     errors.push(`The palette cannot exceed the brand's color count (${String(MAX_PALETTE_COLORS)}).`);
   }
@@ -85,6 +82,7 @@ export function collectValidationErrors(document: PatternDocument): string[] {
       }
     }
     paletteIds.add(entry.id);
+    if (entry.active === true) activePaletteIds.add(entry.id);
   }
 
   const symbols = new Set<string>();
@@ -142,7 +140,7 @@ export function collectValidationErrors(document: PatternDocument): string[] {
         const bit = 1 << slot;
         if (color === 0) {
           if ((completion & bit) !== 0) errors.push(`Three-quarter pair completion is set for an empty slot at cell ${String(index)}.`);
-        } else if (!hasPalette(document, color)) {
+        } else if (!activePaletteIds.has(color)) {
           errors.push(`Three-quarter pair at cell ${String(index)} has an unknown palette ID.`);
         }
       }
@@ -150,7 +148,7 @@ export function collectValidationErrors(document: PatternDocument): string[] {
     }
 
     if (kind === CellKind.Full || kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash || isThreeQuarterKind(kind)) {
-      if (document.colors[offset] === 0 || !hasPalette(document, document.colors[offset])) {
+      if (document.colors[offset] === 0 || !activePaletteIds.has(document.colors[offset])) {
         errors.push(`Cell ${String(index)} has an invalid primary palette ID.`);
       }
       if (document.colors[offset + 1] !== 0 || document.colors[offset + 2] !== 0 || document.colors[offset + 3] !== 0 || (completion & 0x0e) !== 0) {
@@ -167,7 +165,7 @@ export function collectValidationErrors(document: PatternDocument): string[] {
         if ((completion & bit) !== 0) errors.push(`Quarter completion is set for an empty slot at cell ${String(index)}.`);
       } else {
         quarterCount += 1;
-        if (!hasPalette(document, color)) errors.push(`Quarter at cell ${String(index)} has an unknown palette ID.`);
+        if (!activePaletteIds.has(color)) errors.push(`Quarter at cell ${String(index)} has an unknown palette ID.`);
       }
     }
     if (quarterCount < 1 || quarterCount > 4) errors.push(`Quarter cell ${String(index)} must contain one to four quarters.`);
@@ -195,7 +193,7 @@ export function collectValidationErrors(document: PatternDocument): string[] {
     if (x1 === x2 && y1 === y2) errors.push(`Backstitch ${String(id)} has identical endpoints.`);
     if (x1 > x2 || (x1 === x2 && y1 > y2)) errors.push(`Backstitch ${String(id)} endpoints are not canonical.`);
     if (segments.has(key)) errors.push(`Backstitch ${String(id)} duplicates another segment.`);
-    if (!hasPalette(document, store.colors[index])) errors.push(`Backstitch ${String(id)} has an unknown palette ID.`);
+    if (!activePaletteIds.has(store.colors[index])) errors.push(`Backstitch ${String(id)} has an unknown palette ID.`);
     if (store.completed[index] > 1) errors.push(`Backstitch ${String(id)} has an invalid completion bit.`);
     ids.add(id);
     segments.add(key);

@@ -77,7 +77,7 @@ describe('application shell', () => {
 
   it('creates the starter project from the empty workspace', async () => {
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: /Create a new pattern/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'New pattern' }));
     fireEvent.click(screen.getByRole('button', { name: 'Create blank pattern' }));
 
     await waitFor(() => expect(createProject).toHaveBeenCalledOnce());
@@ -151,6 +151,7 @@ describe('application shell', () => {
 
     expect(screen.queryByRole('heading', { name: 'Cross-stitch patterns' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Tools & shortcuts' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Projects' })).not.toBeInTheDocument();
     expect(await screen.findByRole('button', { name: 'Download Pattern' })).toBeInTheDocument();
   });
 
@@ -179,7 +180,7 @@ describe('application shell', () => {
 
   it('owns focus and makes the complete application inert while create is open', async () => {
     render(<App />);
-    const trigger = screen.getByRole('button', { name: /Create a new pattern/ });
+    const trigger = screen.getByRole('button', { name: 'New pattern' });
     fireEvent.click(trigger);
 
     const dialog = await screen.findByRole('dialog');
@@ -197,9 +198,21 @@ describe('application shell', () => {
     expect(document.activeElement).toBe(trigger);
   });
 
+  it('restores focus to the empty-state create trigger after closing the modal', async () => {
+    render(<App />);
+    const trigger = screen.getByRole('button', { name: 'Create your first pattern' });
+    fireEvent.click(trigger);
+
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it('uses roving focus and arrow selection for creation modes', async () => {
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: /Create a new pattern/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'New pattern' }));
     const blank = await screen.findByRole('radio', { name: 'Blank canvas' });
     const image = screen.getByRole('radio', { name: /From image/ });
     expect(blank).toHaveAttribute('tabindex', '0');
@@ -208,6 +221,17 @@ describe('application shell', () => {
     expect(image).toHaveAttribute('aria-checked', 'true');
     expect(image).toHaveAttribute('tabindex', '0');
     expect(document.activeElement).toBe(image);
+  });
+
+  it('navigates to the editor when a landing gallery project is opened', async () => {
+    const project = { id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4, width: 16, height: 16 };
+    mockedWorkspace.mockReturnValue({ ...baseWorkspace, projects: [project] } as never);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Garden sampler' }));
+
+    await waitFor(() => expect(openProject).toHaveBeenCalledWith('one'));
+    expect(window.location.pathname).toBe('/patterns/one/edit');
   });
 
   it('deletes a project from the landing list through a two-step inline confirm', async () => {
@@ -225,9 +249,9 @@ describe('application shell', () => {
     // First click arms the confirm state; nothing is deleted yet.
     fireEvent.click(deleteButton);
     expect(deleteProject).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: 'Delete Garden sampler' })).toHaveTextContent('Confirm delete?');
+    expect(screen.getByRole('button', { name: 'Confirm delete Garden sampler' })).toHaveTextContent('Confirm delete?');
     // Second click performs the deletion.
-    fireEvent.click(screen.getByRole('button', { name: 'Delete Garden sampler' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete Garden sampler' }));
     await waitFor(() => expect(deleteProject).toHaveBeenCalledWith('one'));
     expect(screen.getByText('Project deleted.')).toBeInTheDocument();
   });
@@ -247,7 +271,7 @@ describe('application shell', () => {
     } as never);
     rerender(<App />);
     fireEvent.click(screen.getByRole('button', { name: 'Delete Garden sampler' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Delete Garden sampler' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete Garden sampler' }));
     await waitFor(() => expect(deleteThenRefresh).toHaveBeenCalledWith('one'));
     // The refreshed list (which the adapter re-reads after every action) no
     // longer contains the deleted row.
@@ -259,7 +283,7 @@ describe('application shell', () => {
 
   it('passes the selected aida count when creating a blank pattern', async () => {
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: /Create a new pattern/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'New pattern' }));
     const select = screen.getByLabelText('Aida count');
     expect(select).toHaveValue('14');
     fireEvent.change(select, { target: { value: '18' } });
@@ -287,7 +311,7 @@ describe('application shell', () => {
     images.length = 0;
     vi.stubGlobal('Image', MockImage);
     render(<App />);
-    fireEvent.click(screen.getByRole('button', { name: /Create a new pattern/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'New pattern' }));
     fireEvent.click(screen.getByRole('radio', { name: /From image/ }));
     fireEvent.change(screen.getByLabelText(/Choose a PNG/), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } });
     act(() => { images[0].onload?.(); });

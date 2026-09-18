@@ -3,6 +3,7 @@ import type { CanvasTarget, RendererStyle } from '../editor/contracts';
 import { MAX_ATLAS_PIXELS, restore, save } from './context';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
 import { isLegacyQuarterKind, isThreeQuarterPairKind, threeQuarterPairComponents } from '../editor/cell-kinds';
+import { symbolForPaletteId } from './symbols';
 
 export interface ColorAtlas {
   /** Undefined means the environment cannot provide a CanvasImageSource. */
@@ -15,7 +16,12 @@ export interface ColorAtlas {
 }
 
 interface AtlasCacheEntry extends ColorAtlas {
-  readonly document: PatternDocument;
+  readonly documentWidth: number;
+  readonly documentHeight: number;
+  readonly kindPlane: PatternDocument['kind'];
+  readonly colorsPlane: PatternDocument['colors'];
+  readonly paletteIds: readonly number[];
+  readonly paletteProjection: string;
   readonly mode: RendererStyle['mode'];
   readonly background: string;
   readonly missingColor: string;
@@ -24,6 +30,59 @@ interface AtlasCacheEntry extends ColorAtlas {
 function paletteColor(document: PatternDocument, id: number, missing: string): string {
   if (id === 0) return 'transparent';
   return document.palette.find((entry) => entry.id === id)?.color ?? missing;
+}
+
+/** Collect only palette IDs that can contribute pixels to either overview atlas. */
+function paletteIdsUsedByAtlas(document: PatternDocument): readonly number[] {
+  const ids = new Set<number>();
+  const add = (id: number): void => {
+    if (id !== 0) ids.add(id);
+  };
+  for (let index = 0; index < document.kind.length; index += 1) {
+    const kind = document.kind[index];
+    if (kind === CellKind.Empty) continue;
+    const offset = index * 4;
+    if (isLegacyQuarterKind(kind)) {
+      for (let slot = 0; slot < 4; slot += 1) add(document.colors[offset + slot]);
+    } else if (isThreeQuarterPairKind(kind)) {
+      for (const component of threeQuarterPairComponents(document.colors.subarray(offset, offset + 4))) {
+        add(document.colors[offset + component.slot]);
+      }
+    } else {
+      add(document.colors[offset]);
+    }
+  }
+  return Object.freeze([...ids].sort((left, right) => left - right));
+}
+
+/** Primitive visual metadata only; palette entry objects are never retained. */
+function colorPaletteProjection(
+  palette: PatternDocument['palette'],
+  ids: readonly number[]
+): string {
+  return JSON.stringify(ids.map((id) => {
+    const entry = palette.find((candidate) => candidate.id === id);
+    return [id, entry?.color ?? null];
+  })) ?? '';
+}
+
+function symbolPaletteProjection(
+  palette: PatternDocument['palette'],
+  ids: readonly number[],
+  mode: RendererStyle['mode'],
+  showSymbols: boolean
+): string {
+  const symbolsAreVisual = showSymbols && (mode === 'symbol' || mode === 'combined');
+  return JSON.stringify(ids.map((id) => {
+    const entry = palette.find((candidate) => candidate.id === id);
+    // Combined mode uses the palette color to choose symbol ink. Symbol mode
+    // uses the configured ink color, so palette color is not a visual input.
+    return [
+      id,
+      symbolsAreVisual ? entry?.symbol ?? symbolForPaletteId(id) : null,
+      symbolsAreVisual && mode === 'combined' ? entry?.color ?? null : null
+    ];
+  })) ?? '';
 }
 
 function parseRgb(color: string): readonly [number, number, number] | undefined {
@@ -124,8 +183,8 @@ export function isCanvasImageSource(value: unknown): value is CanvasImageSource 
 
 /**
  * A single cached bitmap-sized target for overview rendering. The cache is
- * invalidated by document identity/revision or presentation colors; it never
- * writes to the document.
+ * invalidated by visual plane identity, primitive palette projections, or
+ * presentation colors; it never writes to the document.
  */
 export class ColorAtlasCache {
   private entry: AtlasCacheEntry | undefined;
@@ -139,17 +198,33 @@ export class ColorAtlasCache {
     style: RendererStyle,
     targetFactory?: (width: number, height: number) => CanvasTarget | undefined
   ): ColorAtlas {
-    const pixelsPerCell = colorAtlasPixelsPerCell(document);
     const current = this.entry;
-    if (
+    const reusablePlanesAndStyle = Boolean(
       current &&
-      current.document === document &&
-      current.revision === document.revision &&
+      current.documentWidth === document.width &&
+      current.documentHeight === document.height &&
+      current.kindPlane === document.kind &&
+      current.colorsPlane === document.colors &&
       current.mode === style.mode &&
       current.background === style.backgroundColor &&
-      current.missingColor === style.missingPaletteColor &&
-      current.pixelsPerCell === pixelsPerCell
-    ) return current;
+      current.missingColor === style.missingPaletteColor
+    );
+    if (reusablePlanesAndStyle && current) {
+      const paletteProjection = colorPaletteProjection(document.palette, current.paletteIds);
+      if (paletteProjection === current.paletteProjection) {
+        // Completion changes replace the document and revision, but do not
+        // change the overview pixels. Refresh the public metadata without
+        // rerasterizing (or scanning the kind plane for atlas resolution).
+        this.entry = { ...current, revision: document.revision };
+        return this.entry;
+      }
+    }
+
+    const paletteIds = reusablePlanesAndStyle && current
+      ? current.paletteIds
+      : paletteIdsUsedByAtlas(document);
+    const paletteProjection = colorPaletteProjection(document.palette, paletteIds);
+    const pixelsPerCell = colorAtlasPixelsPerCell(document);
 
     const atlasWidth = pixelsPerCell > 0 ? document.width * pixelsPerCell : 0;
     const atlasHeight = pixelsPerCell > 0 ? document.height * pixelsPerCell : 0;
@@ -205,7 +280,12 @@ export class ColorAtlasCache {
       height: atlasHeight,
       pixelsPerCell,
       revision: document.revision,
-      document,
+      documentWidth: document.width,
+      documentHeight: document.height,
+      kindPlane: document.kind,
+      colorsPlane: document.colors,
+      paletteIds,
+      paletteProjection,
       mode: style.mode,
       background: style.backgroundColor,
       missingColor: style.missingPaletteColor
@@ -225,12 +305,17 @@ export interface SymbolAtlas {
 }
 
 interface SymbolAtlasCacheEntry extends SymbolAtlas {
-  readonly document: PatternDocument;
   readonly documentWidth: number;
   readonly documentHeight: number;
+  readonly kindPlane: PatternDocument['kind'];
+  readonly colorsPlane: PatternDocument['colors'];
+  readonly paletteIds: readonly number[];
+  readonly paletteProjection: string;
+  readonly mode: RendererStyle['mode'];
   readonly symbolFont: string;
   readonly symbolColor: string;
   readonly symbolBackgroundColor: string;
+  readonly missingColor: string;
   readonly showSymbols: boolean;
   readonly ppc: number;
 }
@@ -284,19 +369,32 @@ export class SymbolAtlasCache {
   ): SymbolAtlas {
     const ppc = symbolAtlasPixelsPerCell(document);
     const current = this.entry;
-    if (
+    const reusablePlanesAndStyle = Boolean(
       current &&
-      current.document === document &&
-      current.revision === document.revision &&
       current.documentWidth === document.width &&
       current.documentHeight === document.height &&
+      current.kindPlane === document.kind &&
+      current.colorsPlane === document.colors &&
+      current.mode === style.mode &&
       current.symbolFont === style.symbolFont &&
       current.symbolColor === style.symbolColor &&
       current.symbolBackgroundColor === style.symbolBackgroundColor &&
+      current.missingColor === style.missingPaletteColor &&
       current.showSymbols === style.showSymbols &&
       current.ppc === ppc
-    ) return current;
+    );
+    if (reusablePlanesAndStyle && current) {
+      const paletteProjection = symbolPaletteProjection(document.palette, current.paletteIds, style.mode, style.showSymbols);
+      if (paletteProjection === current.paletteProjection) {
+        this.entry = { ...current, revision: document.revision };
+        return this.entry;
+      }
+    }
 
+    const paletteIds = reusablePlanesAndStyle && current
+      ? current.paletteIds
+      : paletteIdsUsedByAtlas(document);
+    const paletteProjection = symbolPaletteProjection(document.palette, paletteIds, style.mode, style.showSymbols);
     const dimensions = symbolAtlasDimensions(document, ppc);
     if (!dimensions || !targetFactory) {
       const unavailable: SymbolAtlasCacheEntry = {
@@ -304,12 +402,17 @@ export class SymbolAtlasCache {
         width: dimensions?.width ?? 0,
         height: dimensions?.height ?? 0,
         revision: document.revision,
-        document,
         documentWidth: document.width,
         documentHeight: document.height,
+        kindPlane: document.kind,
+        colorsPlane: document.colors,
+        paletteIds,
+        paletteProjection,
+        mode: style.mode,
         symbolFont: style.symbolFont,
         symbolColor: style.symbolColor,
         symbolBackgroundColor: style.symbolBackgroundColor,
+        missingColor: style.missingPaletteColor,
         showSymbols: style.showSymbols,
         ppc,
         textAvailable: false
@@ -380,12 +483,17 @@ export class SymbolAtlasCache {
       width: dimensions.width,
       height: dimensions.height,
       revision: document.revision,
-      document,
       documentWidth: document.width,
       documentHeight: document.height,
+      kindPlane: document.kind,
+      colorsPlane: document.colors,
+      paletteIds,
+      paletteProjection,
+      mode: style.mode,
       symbolFont: style.symbolFont,
       symbolColor: style.symbolColor,
       symbolBackgroundColor: style.symbolBackgroundColor,
+      missingColor: style.missingPaletteColor,
       showSymbols: style.showSymbols,
       ppc,
       textAvailable

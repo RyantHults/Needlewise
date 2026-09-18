@@ -8,6 +8,7 @@ export * from './database';
 export * from './repository';
 export * from './activity';
 export * from './source-image';
+export * from './project-thumbnail';
 export {
   PersistencePreparationClientError,
   PersistencePreparationTransportError,

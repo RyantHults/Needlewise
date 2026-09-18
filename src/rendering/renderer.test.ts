@@ -978,6 +978,108 @@ describe('Canvas 2D chart renderer', () => {
     renderer.dispose();
   });
 
+  it('reuses the color overview atlas when only completion and revision change', () => {
+    const document = chart(2, 2);
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    const completionOnlyDocument = {
+      ...document,
+      completed: document.completed.slice(),
+      revision: document.revision + 1
+    };
+    const base = recordingContext();
+    const sources: RecordingContext[] = [];
+    let builds = 0;
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(20, 20),
+      viewport: { x: 0, y: 0, zoom: 1 },
+      atlasTargetFactory: (width, height) => {
+        builds += 1;
+        const source = recordingContext();
+        sources.push(source);
+        return target(source, new FakeCanvasImageSource(width, height));
+      }
+    });
+    renderer.renderNow();
+    const firstSourceCalls = sources[0].records.length;
+
+    renderer.setDocument(completionOnlyDocument);
+    renderer.renderNow();
+
+    expect(builds).toBe(1);
+    expect(sources[0].records).toHaveLength(firstSourceCalls);
+    renderer.dispose();
+  });
+
+  it('reuses the color overview atlas for unused palette changes but rebuilds for a used color mutation', () => {
+    const document = chart(2, 2);
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    const densePlaneReads = { kind: 0, colors: 0 };
+    const trackPlane = <T extends Uint8Array | Uint16Array>(plane: T, name: keyof typeof densePlaneReads): T => new Proxy(plane, {
+      get(target, property) {
+        if (typeof property === 'string' && /^\d+$/.test(property)) densePlaneReads[name] += 1;
+        const value = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      }
+    }) as T;
+    document.kind = trackPlane(document.kind, 'kind');
+    document.colors = trackPlane(document.colors, 'colors');
+    const base = recordingContext();
+    const sources: RecordingContext[] = [];
+    let builds = 0;
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(20, 20),
+      viewport: { x: 0, y: 0, zoom: 1 },
+      atlasTargetFactory: (width, height) => {
+        builds += 1;
+        const source = recordingContext();
+        sources.push(source);
+        return target(source, new FakeCanvasImageSource(width, height));
+      }
+    });
+    renderer.renderNow();
+    const firstSourceCalls = sources[0].records.length;
+    densePlaneReads.kind = 0;
+    densePlaneReads.colors = 0;
+
+    const appended = {
+      ...document,
+      palette: [...document.palette, { ...document.palette[1], id: 99, name: 'Unused' }],
+      revision: document.revision + 1
+    };
+    renderer.setDocument(appended);
+    renderer.renderNow();
+    expect(builds).toBe(1);
+    expect(sources[0].records).toHaveLength(firstSourceCalls);
+    expect(densePlaneReads).toEqual({ kind: 0, colors: 0 });
+    densePlaneReads.kind = 0;
+    densePlaneReads.colors = 0;
+
+    const unusedUpdated = {
+      ...appended,
+      palette: appended.palette.map((entry) => entry.id === 99 ? { ...entry, color: '#abcdef' } : entry),
+      revision: appended.revision + 1
+    };
+    renderer.setDocument(unusedUpdated);
+    renderer.renderNow();
+    expect(builds).toBe(1);
+    expect(sources[0].records).toHaveLength(firstSourceCalls);
+    expect(densePlaneReads).toEqual({ kind: 0, colors: 0 });
+
+    (unusedUpdated.palette[0] as { color: string }).color = '#123456';
+    unusedUpdated.revision += 1;
+    renderer.setDocument(unusedUpdated);
+    renderer.renderNow();
+    expect(builds).toBe(2);
+    expect(sources[1].records.some((call) => call.name === 'fillRect' && call.fillStyle === '#123456')).toBe(true);
+    renderer.dispose();
+  });
+
   it('keeps compact geometry and Symbol glyphs while Combined remains detail-only', () => {
     const compactContext = recordingContext();
     const compactDocument = chart(5, 5);
@@ -1549,6 +1651,16 @@ describe('Canvas 2D chart renderer', () => {
     renderer.renderNow();
     expect(builds).toBe(1);
     const firstSourceGlyphs = sources[0].records.filter((call) => call.name === 'fillText').length;
+
+    const completionOnlyDocument = {
+      ...document,
+      completed: document.completed.slice(),
+      revision: document.revision + 1
+    };
+    renderer.setDocument(completionOnlyDocument);
+    renderer.renderNow();
+    expect(builds).toBe(1);
+    expect(sources[0].records.filter((call) => call.name === 'fillText')).toHaveLength(firstSourceGlyphs);
     const firstDrawImages = base.records.filter((call) => call.name === 'drawImage').length;
 
     renderer.setViewport({ x: 0.25, y: 0.1, zoom: 2 });
@@ -1582,6 +1694,59 @@ describe('Canvas 2D chart renderer', () => {
       renderer.renderNow();
     }
     expect(builds).toBe(6);
+    renderer.dispose();
+  });
+
+  it('reuses the Symbol overview atlas for unused palette changes but rebuilds for a used symbol mutation', () => {
+    const document = chart(2, 2);
+    document.palette[0] = { ...document.palette[0], symbol: '☆' };
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    const base = recordingContext();
+    const sources: RecordingContext[] = [];
+    let builds = 0;
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(32, 32),
+      viewport: { x: 0, y: 0, zoom: 1 },
+      style: { mode: 'symbol' },
+      atlasTargetFactory: (width, height) => {
+        builds += 1;
+        const source = recordingContext();
+        sources.push(source);
+        return target(source, new FakeCanvasImageSource(width, height));
+      }
+    });
+    renderer.renderNow();
+    const firstSourceGlyphs = sources[0].records.filter((call) => call.name === 'fillText').length;
+
+    const appended = {
+      ...document,
+      palette: [...document.palette, { ...document.palette[1], id: 99, name: 'Unused', symbol: '◇' }],
+      revision: document.revision + 1
+    };
+    renderer.setDocument(appended);
+    renderer.renderNow();
+    expect(builds).toBe(1);
+    expect(sources[0].records.filter((call) => call.name === 'fillText')).toHaveLength(firstSourceGlyphs);
+
+    const unusedUpdated = {
+      ...appended,
+      palette: appended.palette.map((entry) => entry.id === 99 ? { ...entry, symbol: '◈' } : entry),
+      revision: appended.revision + 1
+    };
+    renderer.setDocument(unusedUpdated);
+    renderer.renderNow();
+    expect(builds).toBe(1);
+    expect(sources[0].records.filter((call) => call.name === 'fillText')).toHaveLength(firstSourceGlyphs);
+
+    (unusedUpdated.palette[0] as { symbol: string }).symbol = '★';
+    unusedUpdated.revision += 1;
+    renderer.setDocument(unusedUpdated);
+    renderer.renderNow();
+    expect(builds).toBe(2);
+    expect(sources[1].records.some((call) => call.name === 'fillText' && call.args[0] === '★')).toBe(true);
     renderer.dispose();
   });
 

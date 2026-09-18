@@ -14,6 +14,13 @@ import { decodeDocument, encodeDocument } from './binary';
 import { sha256 } from './hash';
 import { MAX_DAILY_PROGRESS_ENTRIES, normalizeProgressActivity, type ProgressActivity } from './activity';
 import { inspectSourceImage, validateSourceImageDescriptor } from './source-image';
+import {
+  completeProjectSummary,
+  deriveProjectSummary,
+  sanitizeProjectMetadata,
+  withProjectSummary,
+  type ProjectDocumentSummary
+} from './project-thumbnail';
 import type {
   ArchiveImportOptions,
   ProjectAsset,
@@ -424,6 +431,51 @@ export class ProjectRepository {
     this.verifiedCurrentCache = { ...snapshot, bytes: exactBytes };
   }
 
+  /** Backfill derived metadata only after a verified, unchanged current load. */
+  private async bestEffortBackfillSummary(
+    projectId: string,
+    loadedMetadata: ProjectMetadata,
+    head: StoredProjectHead | undefined,
+    summary: ProjectDocumentSummary
+  ): Promise<void> {
+    try {
+      if (!isStoredHead(projectId, head)) return;
+      const existing = completeProjectSummary(loadedMetadata);
+      if (
+        existing?.width === summary.width
+        && existing.height === summary.height
+        && JSON.stringify(existing.thumbnail) === JSON.stringify(summary.thumbnail)
+      ) return;
+      await this.db.transaction('rw', [this.db.projects, this.db.projectHeads], async () => {
+        const [metadata, storedHead] = await Promise.all([
+          this.db.projects.get(projectId),
+          this.db.projectHeads.get(projectId)
+        ]);
+        if (
+          !metadata
+          || !isMetadataRecord(projectId, metadata)
+          || metadata.revision !== loadedMetadata.revision
+          || !isStoredHead(projectId, storedHead)
+          || storedHead.revision !== head.revision
+          || storedHead.checksum !== head.checksum
+        ) return;
+        const freshSummary = completeProjectSummary(metadata);
+        if (
+          freshSummary?.width === summary.width
+          && freshSummary.height === summary.height
+          && JSON.stringify(freshSummary.thumbnail) === JSON.stringify(summary.thumbnail)
+        ) return;
+        // Merge with the row read inside the CAS transaction so unrelated
+        // metadata edits made after load are not overwritten by this cache
+        // repair.
+        await this.db.projects.put(withProjectSummary(metadata, summary));
+      });
+    } catch {
+      // Metadata is a cache of verified document data. A quota or transaction
+      // failure must never turn a successful document load into an error.
+    }
+  }
+
   private async writeReplacementRows(
     projectId: string,
     metadata: ProjectMetadata,
@@ -495,7 +547,7 @@ export class ProjectRepository {
     return consumePreparedDocumentCapability(
       prepared,
       { projectId, revision: metadata.revision, requestId: options.preparedRequestId },
-      (bytes, checksum) => this.commitReplaced(projectId, metadata, metadata.revision, bytes, checksum, assetsInput, options, false)
+      (bytes, checksum, summary) => this.commitReplaced(projectId, metadata, summary, metadata.revision, bytes, checksum, assetsInput, options, false)
     );
   }
 
@@ -503,9 +555,10 @@ export class ProjectRepository {
     assertValidDocument(sourceDocument);
     const document = cloneDocument(sourceDocument);
     const metadata = validateProjectMetadata(projectId, metadataInput, document);
+    const summary = deriveProjectSummary(document);
     const bytes = encodeDocument(document);
     const checksum = await sha256(bytes);
-    return this.commitReplaced(projectId, metadata, document.revision, bytes, checksum, assetsInput, options, true);
+    return this.commitReplaced(projectId, metadata, summary, document.revision, bytes, checksum, assetsInput, options, true);
   }
 
   private async tryWarmReplacement(
@@ -550,7 +603,8 @@ export class ProjectRepository {
     }
   }
 
-  private async commitReplaced(projectId: string, metadata: ProjectMetadata, revision: number, bytes: Uint8Array, checksum: string, assetsInput: readonly ProjectAssetInput[] | undefined, options: SaveOptions, clonePreparedBytes: boolean): Promise<SaveResult> {
+  private async commitReplaced(projectId: string, metadataInput: ProjectMetadata, summary: ProjectDocumentSummary, revision: number, bytes: Uint8Array, checksum: string, assetsInput: readonly ProjectAssetInput[] | undefined, options: SaveOptions, clonePreparedBytes: boolean): Promise<SaveResult> {
+    const metadata = withProjectSummary(metadataInput, summary);
     let legacyAssetIds = new Set<string>();
     if (assetsInput !== undefined) {
       try {
@@ -664,7 +718,9 @@ export class ProjectRepository {
     // Retain mode deliberately validates only the metadata and auxiliary
     // rows. It never touches the document value, so no document clone,
     // assertion, encoding, checksum, or snapshot readback is performed.
-    const metadata = validateProjectMetadata(projectId, metadataInput, expectedRevision);
+    const validatedMetadata = validateProjectMetadata(projectId, metadataInput, expectedRevision);
+    const incomingMetadata = sanitizeProjectMetadata(validatedMetadata);
+    const incomingSummary = completeProjectSummary(incomingMetadata);
     let legacyAssetIds = new Set<string>();
     if (assetsInput !== undefined) {
       try {
@@ -688,7 +744,11 @@ export class ProjectRepository {
 
     try {
       const result = await this.db.transaction('rw', [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.assets, this.db.dailyActivity], async () => {
-        let head = await this.db.projectHeads.get(projectId);
+        const [storedMetadata, storedHead] = await Promise.all([
+          this.db.projects.get(projectId),
+          this.db.projectHeads.get(projectId)
+        ]);
+        let head = storedHead;
         let legacyCurrent: StoredDocumentSnapshot | undefined;
         let needsBackfill = false;
         if (!isStoredHead(projectId, head)) {
@@ -707,10 +767,30 @@ export class ProjectRepository {
           return { committed: false, stale: true, revision: head?.revision ?? legacyCurrent?.revision ?? expectedRevision };
         }
 
+        // Retain changes metadata and auxiliary rows only. A complete summary
+        // already stored for the head wins as one unit; otherwise a complete
+        // incoming summary fills all three fields. Partial summaries are
+        // never assembled field-by-field.
+        const safeStoredMetadata = storedMetadata !== undefined
+          && storedMetadata.revision === expectedRevision
+          && isMetadataRecord(projectId, storedMetadata)
+          ? sanitizeProjectMetadata(storedMetadata)
+          : undefined;
+        const retainedSummary = (safeStoredMetadata === undefined ? undefined : completeProjectSummary(safeStoredMetadata)) ?? incomingSummary;
+        const retainedMetadata: ProjectMetadata = { ...incomingMetadata };
+        delete retainedMetadata.width;
+        delete retainedMetadata.height;
+        delete retainedMetadata.thumbnail;
+        if (retainedSummary !== undefined) {
+          retainedMetadata.width = retainedSummary.width;
+          retainedMetadata.height = retainedSummary.height;
+          retainedMetadata.thumbnail = retainedSummary.thumbnail;
+        }
+
         // This transaction intentionally excludes all snapshot writes. The
         // expected-head check and every auxiliary-row update are atomic.
         if (needsBackfill) await this.db.projectHeads.put(head);
-        await this.db.projects.put(metadata);
+        await this.db.projects.put(retainedMetadata);
         if (assets !== undefined) {
           await this.db.assets.where('projectId').equals(projectId).delete();
           const storedAssets: StoredProjectAsset[] = assets.map((asset) => ({ ...asset, projectId, data: asset.data.slice() }));
@@ -773,13 +853,16 @@ export class ProjectRepository {
       const loadedActivity = activityFromStored(projectId, storedActivity);
       const sourceImage = inspectSourceImage(metadata.sourceImage, loadedAssets.assets);
       const safeMetadata = sanitizeSourceImageMetadata(metadata);
+      const summary = deriveProjectSummary(document);
+      const canonicalMetadata = withProjectSummary(safeMetadata.metadata, summary);
       const extraWarnings = [
         ...(loadedActivity.warning === undefined ? [] : [loadedActivity.warning]),
         ...(safeMetadata.warning === undefined ? [] : [safeMetadata.warning])
       ];
-      const health = makeProjectHealth(projectId, safeMetadata.metadata, currentHealth, recoveryHealth, loadedAssets.health, extraWarnings, sourceImage);
+      const health = makeProjectHealth(projectId, canonicalMetadata, currentHealth, recoveryHealth, loadedAssets.health, extraWarnings, sourceImage);
       this.cacheVerifiedCurrentSnapshot(current);
-      return { metadata: { ...safeMetadata.metadata }, document, head, recovery: recoveryRecord, assets: loadedAssets.assets, activity: loadedActivity.activity, health };
+      await this.bestEffortBackfillSummary(projectId, metadata, head, summary);
+      return { metadata: sanitizeProjectMetadata(canonicalMetadata), document, head, recovery: recoveryRecord, assets: loadedAssets.assets, activity: loadedActivity.activity, health };
     } catch (error) {
       this.clearVerifiedCurrentCache(projectId);
       if (error instanceof PersistenceError) throw error;
@@ -814,7 +897,9 @@ export class ProjectRepository {
   async listProjects(): Promise<ProjectMetadata[]> {
     try {
       const candidates = await this.db.projects.toArray();
-      const visible = candidates.filter((candidate) => isMetadataRecord(candidate.id, candidate)).map((candidate) => ({ ...candidate }));
+      const visible = candidates
+        .filter((candidate) => isMetadataRecord(candidate.id, candidate))
+        .map((candidate) => sanitizeProjectMetadata(candidate));
       return visible.sort((left, right) => right.updatedAt - left.updatedAt || right.revision - left.revision || left.id.localeCompare(right.id));
     } catch (error) {
       if (error instanceof PersistenceError) throw error;
@@ -951,15 +1036,17 @@ export class ProjectRepository {
       const loadedActivity = activityFromStored(projectId, storedActivity);
       const sourceImage = inspectSourceImage(metadata.sourceImage, loadedAssets.assets);
       const safeMetadata = sanitizeSourceImageMetadata(metadata);
+      const summary = deriveProjectSummary(document);
+      const canonicalMetadata = withProjectSummary({ ...safeMetadata.metadata, revision: document.revision }, summary);
       const extraWarnings = [
         ...(loadedActivity.warning === undefined ? [] : [loadedActivity.warning]),
         ...(safeMetadata.warning === undefined ? [] : [safeMetadata.warning])
       ];
       const currentHealth = await inspectSnapshot(current, projectId);
       if (currentHealth.status === 'corrupt') this.clearVerifiedCurrentCache(projectId);
-      const health = makeProjectHealth(projectId, safeMetadata.metadata, currentHealth, recoveryHealth, loadedAssets.health, extraWarnings, sourceImage);
+      const health = makeProjectHealth(projectId, canonicalMetadata, currentHealth, recoveryHealth, loadedAssets.health, extraWarnings, sourceImage);
       return {
-        metadata: { ...safeMetadata.metadata, revision: document.revision },
+        metadata: sanitizeProjectMetadata(canonicalMetadata),
         document,
         head,
         recovery: null,
@@ -1014,6 +1101,7 @@ export class ProjectRepository {
         }
       }
       const promotedChecksum = await sha256(recoveryBytes);
+      const promotedSummary = deriveProjectSummary(recoveryDocument);
       const savedAt = this.now();
       await this.db.transaction('rw', this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, async () => {
         const [latestMetadata, latestCurrent, latestRecovery] = await Promise.all([
@@ -1038,7 +1126,7 @@ export class ProjectRepository {
         } else {
           await this.db.recoverySnapshots.delete(projectId);
         }
-        await this.db.projects.put({ ...latestMetadata, revision: recoveryDocument.revision });
+        await this.db.projects.put(withProjectSummary({ ...latestMetadata, revision: recoveryDocument.revision }, promotedSummary));
         await this.db.currentSnapshots.put(toStoredSnapshot(projectId, recoveryDocument, recoveryBytes, promotedChecksum, savedAt));
         await this.db.projectHeads.put(toStoredHead(projectId, recoveryDocument.revision, promotedChecksum));
       });
@@ -1072,6 +1160,7 @@ export class ProjectRepository {
     // complete before the write transaction begins.
     const bundle = await importArchive(input, options);
     this.clearVerifiedCurrentCache(bundle.metadata.id);
+    const importedMetadata = withProjectSummary(bundle.metadata, deriveProjectSummary(bundle.document));
     const bytes = encodeDocument(bundle.document);
     const checksum = await sha256(bytes);
     const savedAt = this.now();
@@ -1123,7 +1212,7 @@ export class ProjectRepository {
             if (sourceStillMatches) await this.db.recoverySnapshots.put(replacementRecovery);
           }
         }
-        await this.db.projects.put({ ...bundle.metadata, revision: bundle.document.revision });
+        await this.db.projects.put(importedMetadata);
         await this.db.currentSnapshots.put(toStoredSnapshot(bundle.metadata.id, bundle.document, bytes, checksum, savedAt));
         await this.db.projectHeads.put(toStoredHead(bundle.metadata.id, bundle.document.revision, checksum));
         await this.db.assets.where('projectId').equals(bundle.metadata.id).delete();

@@ -39,6 +39,7 @@ import {
 import { sha256 } from './hash';
 import { decodeDocument, encodeDocument } from './binary';
 import { inspectRasterAsset, validateSourceImageDescriptor } from './source-image';
+import { deriveProjectSummary } from './project-thumbnail';
 
 const MANIFEST_PATH = 'manifest.json';
 const METADATA_PATH = 'metadata.json';
@@ -595,6 +596,10 @@ export async function exportArchive(bundle: Omit<ArchiveBundle, 'manifest'>, opt
     }
   }
   if (metadata.revision !== bundle.document.revision) throw new PersistenceError('invalid-metadata', 'Project metadata and document revisions must match.');
+  const summary = deriveProjectSummary(bundle.document);
+  // Archives carry stable document dimensions for compatibility, but the
+  // thumbnail is a local cache and is deliberately never serialized.
+  metadata = { ...metadata, width: summary.width, height: summary.height };
   const documentBytes = encodeDocument(bundle.document);
   if (documentBytes.length > MAX_DOCUMENT_BYTES) invalidArchive('Document snapshot exceeds the archive limit.');
   const assets: ProjectAsset[] = [];
@@ -716,6 +721,9 @@ export async function parseArchive(input: Uint8Array | ArrayBuffer | Blob, optio
   if (metadata.id !== manifest.projectId) invalidManifest('Archive project metadata does not match its manifest.');
   const document = decodeDocument(documentBytes);
   if (document.revision !== metadata.revision) invalidArchive('Archive metadata and document revisions do not match.');
+  // Derived archive fields are never trusted. Rebuild dimensions from the
+  // validated document and leave the thumbnail for repository persistence.
+  metadata = { ...metadata, width: document.width, height: document.height };
   if (metadata.sourceImage !== undefined) {
     try {
       validateSourceImageDescriptor(metadata.sourceImage);

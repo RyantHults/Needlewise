@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { bulkRecolorCommand, bulkSetCompletionCommand, bulkSetThreeQuarterCommand, CellKind, computePatternMetrics, createDocument, createEditor, deleteRegionCommand, HalfDirection, QuarterCorner, type PatternDocument } from '../domain';
+import { bulkRecolorCommand, bulkSetCompletionCommand, bulkSetThreeQuarterCommand, CellKind, computePatternMetrics, createDocument, createEditor, deleteRegionCommand, HalfDirection, QuarterCorner, type DomainCommand, type PatternDocument } from '../domain';
 import { setDailyProgress, type PersistencePreparationClient, type ProgressActivity, type ProjectMetadata, type SaveResult } from '../persistence';
 import { attachDeleteMetricsImpactForDelta, registerDeleteMetricsImpact, type DeleteMetricsImpact } from '../domain/internal-metrics-impact';
 import { ProjectSession } from './session';
@@ -92,6 +92,16 @@ function expectDeleteMetricsRoundTrip(editor: ReturnType<typeof createEditor>, r
   previous = editor.document;
   result = editor.redo();
   expectExactMetrics(service, editor.document, service.apply(previous, result));
+}
+
+function countIndexedReads<T extends Uint8Array | Uint16Array | Uint32Array>(plane: T, reads: { value: number }): T {
+  return new Proxy(plane, {
+    get(target, property) {
+      if (typeof property === 'string' && /^\d+$/.test(property)) reads.value += 1;
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    }
+  });
 }
 
 describe('application progress integration', () => {
@@ -508,5 +518,110 @@ describe('application progress integration', () => {
     expect(editor.undoDepth).toBe(0);
     expect(editor.redoDepth).toBe(0);
     expect(service.metrics).toEqual(beforeMetrics);
+  });
+
+  it('reuses counts for palette-only execute, undo, and redo without reading planes', () => {
+    const editor = createEditor(createDocument({
+      width: 3,
+      height: 2,
+      palette: [{ id: 1, name: 'Red', color: '#d33' }]
+    }));
+    editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    editor.execute({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 4 }, color: 1 });
+    editor.clearHistory();
+
+    const reads = { value: 0 };
+    editor.document.kind = countIndexedReads(editor.document.kind, reads);
+    editor.document.colors = countIndexedReads(editor.document.colors, reads);
+    editor.document.completed = countIndexedReads(editor.document.completed, reads);
+    editor.document.backstitches = {
+      ...editor.document.backstitches,
+      ids: countIndexedReads(editor.document.backstitches.ids, reads),
+      x1: countIndexedReads(editor.document.backstitches.x1, reads),
+      y1: countIndexedReads(editor.document.backstitches.y1, reads),
+      x2: countIndexedReads(editor.document.backstitches.x2, reads),
+      y2: countIndexedReads(editor.document.backstitches.y2, reads),
+      colors: countIndexedReads(editor.document.backstitches.colors, reads),
+      completed: countIndexedReads(editor.document.backstitches.completed, reads)
+    };
+    const service = new ProgressMetricsService(editor.document);
+    reads.value = 0;
+
+    const apply = (command: DomainCommand): void => {
+      const previous = editor.document;
+      const result = editor.execute(command);
+      // Palette deactivation validates that the ID is unreferenced in the
+      // domain. Reset that command-level probe before checking the metrics
+      // application path itself.
+      reads.value = 0;
+      expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 0 });
+      expect(reads.value).toBe(0);
+    };
+    const applyHistory = (operation: () => ReturnType<typeof editor.undo>): void => {
+      const previous = editor.document;
+      const result = operation();
+      expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 0 });
+      expect(reads.value).toBe(0);
+    };
+
+    apply({ type: 'palette-create', name: 'Blue', color: '#36c' });
+    expect(service.metrics.byPalette.get(1)).toMatchObject({ full: 1, backstitch: 1, totalComponents: 2 });
+    expect(service.metrics.byPalette.get(2)).toMatchObject({ full: 0, half: 0, quarter: 0, backstitch: 0, totalComponents: 0 });
+
+    apply({ type: 'palette-update', id: 2, name: 'Updated blue', color: '#369', material: { kind: 'custom', label: 'Metres', unit: 'meters' } });
+    expect(editor.document.palette.find((entry) => entry.id === 2)).toMatchObject({ name: 'Updated blue', color: '#369' });
+    expect(service.metrics.byPalette.get(2)?.material.materialUnit).toBe('meters');
+
+    apply({ type: 'palette-deactivate', id: 2 });
+    expect(editor.document.palette.find((entry) => entry.id === 2)?.active).toBe(false);
+
+    applyHistory(() => editor.undo());
+    applyHistory(() => editor.undo());
+    applyHistory(() => editor.undo());
+    expect(service.metrics.byPalette.has(2)).toBe(false);
+
+    applyHistory(() => editor.redo());
+    expect(service.metrics.byPalette.get(2)).toMatchObject({ totalComponents: 0 });
+    applyHistory(() => editor.redo());
+    applyHistory(() => editor.redo());
+    expect(editor.document.palette.find((entry) => entry.id === 2)?.active).toBe(false);
+  });
+
+  it('reconciles cached zero-count palettes across material rebuild, undo, and redo', () => {
+    const editor = createEditor(createDocument({
+      width: 2,
+      height: 1,
+      palette: [{ id: 1, name: 'Red', color: '#d33' }]
+    }));
+    editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    editor.clearHistory();
+
+    const reads = { value: 0 };
+    editor.document.kind = countIndexedReads(editor.document.kind, reads);
+    editor.document.colors = countIndexedReads(editor.document.colors, reads);
+    editor.document.completed = countIndexedReads(editor.document.completed, reads);
+    const service = new ProgressMetricsService(editor.document);
+    reads.value = 0;
+
+    const previous = editor.document;
+    const created = editor.execute({ type: 'palette-create', name: 'Unused', color: '#36c' });
+    expect(service.apply(previous, created)).toEqual({ marked: 0, unmarked: 0 });
+    expect(reads.value).toBe(0);
+    expect(service.metrics.byPalette.get(2)).toMatchObject({ totalComponents: 0 });
+
+    service.setMaterialSettings({ strands: 2 });
+    reads.value = 0;
+
+    const beforeUndo = editor.document;
+    const undone = editor.undo();
+    expect(service.apply(beforeUndo, undone)).toEqual({ marked: 0, unmarked: 0 });
+    expect(reads.value).toBe(0);
+    expect(service.metrics.byPalette.has(2)).toBe(false);
+
+    const beforeRedo = editor.document;
+    const redone = editor.redo();
+    expect(service.apply(beforeRedo, redone)).toEqual({ marked: 0, unmarked: 0 });
+    expect(reads.value).toBe(0);
+    expect(service.metrics.byPalette.get(2)).toMatchObject({ totalComponents: 0 });
   });
 });

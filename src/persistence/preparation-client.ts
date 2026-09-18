@@ -12,6 +12,7 @@ import {
 } from './preparation';
 import { cloneDocument, type PatternDocument } from '../domain';
 import { PersistenceError } from './errors';
+import { deriveProjectSummary, type ProjectDocumentSummary } from './project-thumbnail';
 import type { PreparedDocumentCapability } from './types';
 
 export interface PersistencePreparationWorkerLike {
@@ -72,6 +73,7 @@ interface PreparedDocumentPayload {
   readonly requestId: string;
   readonly bytes: Uint8Array;
   readonly checksum: string;
+  readonly summary: ProjectDocumentSummary;
 }
 
 const preparedCapabilities = new WeakMap<object, PreparedDocumentPayload>();
@@ -94,7 +96,7 @@ function payloadForCapability(capability: PreparedDocumentCapability): PreparedD
 export function consumePreparedDocumentCapability<T>(
   capability: PreparedDocumentCapability,
   expected: { readonly projectId: string; readonly revision: number; readonly requestId: string },
-  consume: (bytes: Uint8Array, checksum: string) => T
+  consume: (bytes: Uint8Array, checksum: string, summary: ProjectDocumentSummary) => T
 ): T {
   const payload = payloadForCapability(capability);
   if (!payload) throw new PersistenceError('invalid-document', 'Prepared document capability is not authenticated.');
@@ -102,11 +104,20 @@ export function consumePreparedDocumentCapability<T>(
     throw new PersistenceError('invalid-document', 'Prepared document capability identity does not match the save attempt.');
   }
   preparedCapabilities.delete(capability);
-  return consume(payload.bytes, payload.checksum);
+  return consume(payload.bytes, payload.checksum, {
+    width: payload.summary.width,
+    height: payload.summary.height,
+    thumbnail: {
+      ...payload.summary.thumbnail,
+      palette: [...payload.summary.thumbnail.palette],
+      indices: [...payload.summary.thumbnail.indices]
+    }
+  });
 }
 
 interface PendingPreparation {
   readonly token: PersistencePreparationToken;
+  readonly summary: ProjectDocumentSummary;
   readonly resolve: (result: PreparedDocumentCapability) => void;
   readonly reject: (error: unknown) => void;
 }
@@ -196,6 +207,12 @@ export class PersistencePreparationWorkerClient implements PersistencePreparatio
     // The client owns the structured-clone equivalent. The caller may keep
     // editing its live document while preparation is queued or running.
     const ownedDocument = cloneDocument(input.document);
+    let summary: ProjectDocumentSummary;
+    try {
+      summary = deriveProjectSummary(ownedDocument);
+    } catch (error) {
+      return Promise.reject(error);
+    }
     let token: PersistencePreparationToken = {
       projectId: input.projectId,
       revision: input.revision,
@@ -224,7 +241,7 @@ export class PersistencePreparationWorkerClient implements PersistencePreparatio
       resolvePromise = resolve;
       rejectPromise = reject;
     });
-    this.pending.set(key, { token, resolve: resolvePromise, reject: rejectPromise });
+    this.pending.set(key, { token, summary, resolve: resolvePromise, reject: rejectPromise });
     const worker = this.useWorker ? this.ensureWorker() : null;
     if (worker) {
       try {
@@ -345,7 +362,7 @@ export class PersistencePreparationWorkerClient implements PersistencePreparatio
     });
   }
 
-  private resolvePending(key: string, result: Omit<PreparedDocumentPayload, 'owner'>): void {
+  private resolvePending(key: string, result: Omit<PreparedDocumentPayload, 'owner' | 'summary'>): void {
     const pending = this.pending.get(key);
     if (!pending) return;
     if (result.projectId !== pending.token.projectId || result.revision !== pending.token.revision || result.requestId !== pending.token.requestId) {
@@ -354,7 +371,7 @@ export class PersistencePreparationWorkerClient implements PersistencePreparatio
       return;
     }
     this.pending.delete(key);
-    pending.resolve(createPreparedCapability(this.capabilityOwner, result));
+    pending.resolve(createPreparedCapability(this.capabilityOwner, { ...result, summary: pending.summary }));
   }
 
   private rejectPending(key: string, error: unknown): void {

@@ -998,6 +998,143 @@ describe('typed-array pattern document', () => {
     expect(noOp.changedIndices).toEqual(new Uint32Array(0));
   });
 
+  it('shares unrelated planes for cell completion while preserving progress and undo/redo', () => {
+    const side = 256;
+    let pattern = document(side, side);
+    pattern = apply(pattern, { type: 'set-full', x: 128, y: 128, color: 1 });
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 4 }, color: 1 });
+    const editor = createEditor(pattern);
+    const before = editor.document;
+    const target = 128 * side + 128;
+    const beforeKind = before.kind;
+    const beforeColors = before.colors;
+    const beforeCompleted = before.completed;
+    const beforeBackstitches = before.backstitches;
+    const beforePalette = before.palette;
+    const beforeSettings = before.settings;
+
+    const completed = editor.execute(bulkSetCompletionCommand(new Uint32Array([target])));
+    const after = editor.document;
+    expect(completed.changed).toBe(true);
+    expect(completed.changedIndices).toEqual(new Uint32Array([target]));
+    expect(completed.progress).toMatchObject({ marked: 1, unmarked: 0, cellIndices: new Uint32Array([target]) });
+    expect(after).not.toBe(before);
+    expect(after.kind).toBe(beforeKind);
+    expect(after.colors).toBe(beforeColors);
+    expect(after.completed).not.toBe(beforeCompleted);
+    expect(after.palette).toBe(beforePalette);
+    expect(after.settings).toBe(beforeSettings);
+    expect(after.backstitches).toBe(beforeBackstitches);
+    expect(after.completed[target]).toBe(1);
+    expect(after.completed[target - 1]).toBe(0);
+    expect(after.revision).toBe(before.revision + 1);
+    expect(editor.lastHistoryEntryKind).toBe('delta');
+    expect(editor.historyBytes).toBe(estimateBulkCompletionHistoryBytes(1));
+    expect(editor.undoDepth).toBe(1);
+
+    const undone = editor.undo();
+    expect(undone.progress).toMatchObject({ marked: 0, unmarked: 1, cellIndices: new Uint32Array([target]) });
+    expect(editor.document.completed).toEqual(beforeCompleted);
+    expect(editor.document.completed).not.toBe(after.completed);
+    expect(editor.document.kind).toBe(beforeKind);
+    expect(editor.document.colors).toBe(beforeColors);
+    expect(editor.document.palette).toBe(beforePalette);
+    expect(editor.document.settings).toBe(beforeSettings);
+    expect(editor.document.backstitches).toBe(beforeBackstitches);
+    expect(editor.undoDepth).toBe(0);
+    expect(editor.redoDepth).toBe(1);
+
+    const redone = editor.redo();
+    expect(redone.progress).toMatchObject({ marked: 1, unmarked: 0, cellIndices: new Uint32Array([target]) });
+    expect(editor.document.completed[target]).toBe(1);
+    expect(editor.document.completed).not.toBe(after.completed);
+    expect(editor.document.kind).toBe(beforeKind);
+    expect(editor.document.colors).toBe(beforeColors);
+    expect(editor.document.palette).toBe(beforePalette);
+    expect(editor.document.settings).toBe(beforeSettings);
+    expect(editor.document.backstitches).toBe(beforeBackstitches);
+    expect(editor.undoDepth).toBe(1);
+    expect(editor.redoDepth).toBe(0);
+  });
+
+  it('shares dense planes for palette metadata history across create, undo, and redo', () => {
+    const side = 1000;
+    const editor = createEditor(document(side, side));
+    const before = editor.document;
+    const densePlaneReads = { kind: 0, colors: 0, completed: 0 };
+    const proxyPlane = <T extends Uint8Array | Uint16Array>(plane: T, name: keyof typeof densePlaneReads): T => new Proxy(plane, {
+      get(target, property, receiver) {
+        densePlaneReads[name] += 1;
+        return Reflect.get(target, property, receiver);
+      }
+    }) as T;
+    const originalKind = before.kind;
+    const originalColors = before.colors;
+    const originalCompleted = before.completed;
+    const kind = proxyPlane(originalKind, 'kind');
+    const colors = proxyPlane(originalColors, 'colors');
+    const completed = proxyPlane(originalCompleted, 'completed');
+    before.kind = kind;
+    before.colors = colors;
+    before.completed = completed;
+
+    const created = editor.execute({ type: 'palette-create', name: 'Green', color: '#3a3' });
+    expect(created.changed).toBe(true);
+    expect(created.recalculateMetrics).toBe(false);
+    expect(editor.document.kind).toBe(kind);
+    expect(editor.document.colors).toBe(colors);
+    expect(editor.document.completed).toBe(completed);
+    expect(editor.document.backstitches).toBe(before.backstitches);
+    expect(editor.document.palette).not.toBe(before.palette);
+    const createdPalette = editor.document.palette;
+    const createdId = created.paletteId;
+    expect(createdId).toBeDefined();
+    expect(createdPalette.some((entry) => entry.id === createdId && entry.active)).toBe(true);
+
+    expect(editor.undo().changed).toBe(true);
+    expect(editor.document.palette).toEqual(before.palette);
+    expect(editor.document.kind).toBe(kind);
+    expect(editor.document.colors).toBe(colors);
+    expect(editor.document.completed).toBe(completed);
+    expect(editor.redo().changed).toBe(true);
+    expect(editor.document.palette).toEqual(createdPalette);
+    expect(editor.document.kind).toBe(kind);
+    expect(editor.document.colors).toBe(colors);
+    expect(editor.document.completed).toBe(completed);
+
+    editor.document.kind = originalKind;
+    editor.document.colors = originalColors;
+    editor.document.completed = originalCompleted;
+    before.kind = originalKind;
+    before.colors = originalColors;
+    before.completed = originalCompleted;
+    expect(densePlaneReads).toEqual({ kind: 0, colors: 0, completed: 0 });
+
+    const updated = editor.execute({ type: 'palette-update', id: createdId!, name: 'Updated green' });
+    expect(updated.changed).toBe(true);
+    expect(editor.document.palette.find((entry) => entry.id === createdId)?.name).toBe('Updated green');
+    expect(editor.document.kind).toBe(originalKind);
+    expect(editor.document.colors).toBe(originalColors);
+    expect(editor.document.completed).toBe(originalCompleted);
+    expect(editor.undo().changed).toBe(true);
+    expect(editor.document.palette).toEqual(createdPalette);
+    expect(editor.redo().changed).toBe(true);
+    expect(editor.document.palette.find((entry) => entry.id === createdId)?.name).toBe('Updated green');
+
+    const deactivated = editor.execute({ type: 'palette-deactivate', id: createdId! });
+    expect(deactivated.changed).toBe(true);
+    expect(editor.document.palette.find((entry) => entry.id === createdId)?.active).toBe(false);
+    expect(editor.document.kind).toBe(originalKind);
+    expect(editor.document.colors).toBe(originalColors);
+    expect(editor.document.completed).toBe(originalCompleted);
+    expect(editor.undo().changed).toBe(true);
+    expect(editor.document.palette.find((entry) => entry.id === createdId)?.active).toBe(true);
+    expect(editor.redo().changed).toBe(true);
+    expect(editor.document.palette.find((entry) => entry.id === createdId)?.active).toBe(false);
+
+    assertValidDocument(editor.document);
+  });
+
   it('applies heterogeneous per-cell completion masks without disturbing unrelated bits', () => {
     const editor = createEditor(document(3, 1));
     editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });

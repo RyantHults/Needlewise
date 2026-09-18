@@ -20,6 +20,7 @@ import {
   PersistencePreparationWorkerClient,
   ProjectRepository,
   NeedlewiseDatabase,
+  deriveProjectSummary,
   inspectRasterAsset,
   normalizeSourceImageAsset,
   normalizeSourceImageDescriptor,
@@ -716,6 +717,67 @@ describe('local project repository', () => {
     }
   });
 
+  it('keeps retain summaries complete and never combines partial fields', async () => {
+    const repo = await repository();
+    try {
+      const document = createDocument({ width: 3, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+      const summary = deriveProjectSummary(document);
+      await repo.save('retain-summary', metadata(document, 'retain-summary'), document);
+      const head = await repo.db.projectHeads.get('retain-summary');
+      const stored = await repo.db.projects.get('retain-summary');
+      if (!head || !stored) throw new Error('missing retain summary state');
+
+      // A complete stored summary wins over a conflicting incoming cache.
+      await repo.save(
+        'retain-summary',
+        { ...metadata(document, 'retain-summary'), ...summary, width: 999, height: 999 },
+        { revision: document.revision } as PatternDocument,
+        undefined,
+        { mode: 'retain', expectedHead: head }
+      );
+      expect(await repo.db.projects.get('retain-summary')).toMatchObject(summary);
+
+      // A legacy record with only one summary field is repaired from a
+      // complete incoming summary, as one atomic unit.
+      const partial = { ...stored, width: 999 };
+      delete partial.height;
+      delete partial.thumbnail;
+      await repo.db.projects.put(partial);
+      await repo.save(
+        'retain-summary',
+        { ...metadata(document, 'retain-summary'), ...summary },
+        { revision: document.revision } as PatternDocument,
+        undefined,
+        { mode: 'retain', expectedHead: head }
+      );
+      expect(await repo.db.projects.get('retain-summary')).toMatchObject(summary);
+
+      // If neither side has a complete valid summary, no summary fields are
+      // retained, rather than preserving a misleading partial cache.
+      const malformed = await repo.db.projects.get('retain-summary');
+      if (!malformed) throw new Error('missing repaired metadata');
+      malformed.width = summary.width;
+      malformed.thumbnail = { ...summary.thumbnail, revision: summary.thumbnail.revision + 1 };
+      delete malformed.height;
+      await repo.db.projects.put(malformed);
+      await repo.save(
+        'retain-summary',
+        metadata(document, 'retain-summary'),
+        { revision: document.revision } as PatternDocument,
+        undefined,
+        { mode: 'retain', expectedHead: head }
+      );
+      const withoutSummary = await repo.db.projects.get('retain-summary');
+      expect(withoutSummary).not.toHaveProperty('width');
+      expect(withoutSummary).not.toHaveProperty('height');
+      expect(withoutSummary).not.toHaveProperty('thumbnail');
+      expect((await repo.load('retain-summary'))?.metadata).toMatchObject(summary);
+      expect(await repo.db.projects.get('retain-summary')).toMatchObject(summary);
+    } finally {
+      await closeRepository(repo);
+    }
+  });
+
   it('rejects an explicit retain when the compact head checksum is stale', async () => {
     const repo = await repository();
     try {
@@ -904,7 +966,12 @@ describe('local project repository', () => {
       const revision1 = applyCommand(revision0, { type: 'set-full', x: 1, y: 1, color: 1 }).document;
       await repo.save('prepared', metadata(revision0, 'prepared'), revision0);
       const rawPrepared = await prepareDocumentSnapshot(cloneDocument(revision1), { projectId: 'prepared', revision: revision1.revision, requestId: 'raw-prepared' });
+      const preparedSummary = deriveProjectSummary(revision1);
+      const validRevision1 = cloneDocument(revision1);
       const prepared = await preparation.prepare({ projectId: 'prepared', revision: revision1.revision, document: revision1, requestId: 'prepared-1' });
+      // The preparation client must retain its summary from the owned clone,
+      // not from a document the caller continues to mutate.
+      revision1.colors.fill(0);
       const preparedRequestId = preparation.getRequestId(prepared);
       encodeSpy.mockClear();
       hashSpy.mockClear();
@@ -913,6 +980,16 @@ describe('local project repository', () => {
       expect(result).toMatchObject({ committed: true, stale: false, revision: revision1.revision, head: { projectId: 'prepared', revision: revision1.revision } });
       expect(encodeSpy).not.toHaveBeenCalled();
       expect(hashSpy.mock.calls.some(([value]) => value instanceof Uint8Array && value.length === rawPrepared.bytes.length && value.every((byte, index) => byte === rawPrepared.bytes[index]))).toBe(false);
+      expect(await repo.db.projects.get('prepared')).toMatchObject({
+        width: preparedSummary.width,
+        height: preparedSummary.height,
+        thumbnail: preparedSummary.thumbnail
+      });
+      expect((await repo.load('prepared'))?.metadata).toMatchObject({
+        width: preparedSummary.width,
+        height: preparedSummary.height,
+        thumbnail: preparedSummary.thumbnail
+      });
       expect((await repo.load('prepared'))?.recovery?.revision).toBe(revision0.revision);
       expect(await repo.db.projectHeads.get('prepared')).toEqual(result.head);
 
@@ -920,13 +997,13 @@ describe('local project repository', () => {
       await expect(repo.savePrepared('prepared', metadata(revision1, 'prepared'), rawPrepared as unknown as PreparedDocumentCapability, undefined, { preparedRequestId: 'raw-prepared' })).rejects.toMatchObject({ code: 'invalid-document' });
       await expect(repo.savePrepared('prepared', metadata(revision1, 'prepared'), Object.freeze({}) as PreparedDocumentCapability, undefined, { preparedRequestId: preparedRequestId })).rejects.toMatchObject({ code: 'invalid-document' });
 
-      const wrongProject = await preparation.prepare({ projectId: 'other-project', revision: revision1.revision, document: revision1, requestId: 'wrong-project' });
+      const wrongProject = await preparation.prepare({ projectId: 'other-project', revision: revision1.revision, document: validRevision1, requestId: 'wrong-project' });
       await expect(repo.savePrepared('prepared', metadata(revision1, 'prepared'), wrongProject, undefined, { preparedRequestId: 'wrong-project' })).rejects.toMatchObject({ code: 'invalid-document' });
 
       const wrongRevision = await preparation.prepare({ projectId: 'prepared', revision: revision0.revision, document: revision0, requestId: 'wrong-revision' });
       await expect(repo.savePrepared('prepared', metadata(revision1, 'prepared'), wrongRevision, undefined, { preparedRequestId: 'wrong-revision' })).rejects.toMatchObject({ code: 'invalid-document' });
 
-      const otherRequest = await preparation.prepare({ projectId: 'prepared', revision: revision1.revision, document: revision1, requestId: 'other-request' });
+      const otherRequest = await preparation.prepare({ projectId: 'prepared', revision: revision1.revision, document: validRevision1, requestId: 'other-request' });
       await expect(repo.savePrepared('prepared', metadata(revision1, 'prepared'), otherRequest, undefined, { preparedRequestId: preparedRequestId })).rejects.toMatchObject({ code: 'invalid-document' });
       await expect(repo.savePrepared('prepared', metadata(revision1, 'prepared'), prepared, undefined, { preparedRequestId })).rejects.toMatchObject({ code: 'invalid-document' });
       expect(await repo.db.currentSnapshots.get('prepared')).toEqual(before);
@@ -1194,6 +1271,7 @@ describe('local project repository', () => {
       ]));
       const recovered = await repo.loadRecovery('recoverable', revision0.revision);
       expect(recovered?.document.revision).toBe(revision0.revision);
+      expect(recovered?.metadata).toMatchObject({ width: revision0.width, height: revision0.height, thumbnail: deriveProjectSummary(revision0).thumbnail });
     } finally {
       await closeRepository(repo);
     }
@@ -1278,6 +1356,7 @@ describe('local project repository', () => {
       const current = await repo.db.currentSnapshots.get('promotion-head');
       const head = await repo.db.projectHeads.get('promotion-head');
       expect(promoted.document.revision).toBe(revision0.revision);
+      expect(promoted.metadata).toMatchObject({ width: revision0.width, height: revision0.height, thumbnail: deriveProjectSummary(revision0).thumbnail });
       expect(head).toEqual({ projectId: 'promotion-head', revision: revision0.revision, checksum: current?.checksum });
     } finally {
       await closeRepository(repo);
@@ -1319,19 +1398,120 @@ describe('local project repository', () => {
 
   it('lists known projects without hiding incomplete records and exposes health', async () => {
     const repo = await repository();
+    const currentRead = vi.spyOn(repo.db.currentSnapshots, 'get');
     try {
       const valid = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
       await repo.save('valid', { ...metadata(valid, 'valid'), updatedAt: 30 }, valid);
       await repo.db.projects.put({ id: 'incomplete', title: 'Incomplete', notes: '', createdAt: 1, updatedAt: 50, revision: 0 });
       await repo.db.projects.put({ id: 'corrupt', title: 'Corrupt', notes: '', createdAt: 1, updatedAt: 40, revision: 0 });
       await repo.db.currentSnapshots.put({ projectId: 'corrupt', revision: 0, bytes: new Uint8Array([0, 1, 2]), checksum: '0'.repeat(64), savedAt: 1 });
-      expect((await repo.listProjects()).map((project) => project.id)).toEqual(['incomplete', 'corrupt', 'valid']);
+      await repo.db.projects.put({
+        ...metadata(valid, 'malformed-summary'),
+        updatedAt: 35,
+        width: valid.width,
+        thumbnail: { version: 1, revision: valid.revision, columns: 1, rows: 1, palette: [], indices: [0] }
+      });
+      currentRead.mockClear();
+      expect((await repo.listProjects()).map((project) => project.id)).toEqual(['incomplete', 'corrupt', 'malformed-summary', 'valid']);
+      expect(currentRead).not.toHaveBeenCalled();
+      const visibleMalformed = (await repo.listProjects()).find((project) => project.id === 'malformed-summary');
+      expect(visibleMalformed).toMatchObject({ id: 'malformed-summary' });
+      expect(visibleMalformed?.width).toBeUndefined();
+      expect(visibleMalformed?.thumbnail).toBeUndefined();
       const health = await repo.listProjectHealth();
       expect(health.find((project) => project.projectId === 'valid')).toMatchObject({ current: { status: 'valid' } });
       expect(health.find((project) => project.projectId === 'corrupt')).toMatchObject({ current: { status: 'corrupt' } });
       expect(health.find((project) => project.projectId === 'incomplete')).toMatchObject({ current: { status: 'missing' } });
     } finally {
+      currentRead.mockRestore();
       await closeRepository(repo);
+    }
+  });
+
+  it('does not fail a verified load when summary cache backfill cannot write', async () => {
+    const repo = await repository();
+    try {
+      const document = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+      await repo.save('backfill-write-failure', metadata(document, 'backfill-write-failure'), document);
+      const stored = await repo.db.projects.get('backfill-write-failure');
+      if (!stored) throw new Error('missing backfill metadata');
+      delete stored.width;
+      delete stored.height;
+      delete stored.thumbnail;
+      await repo.db.projects.put(stored);
+
+      const currentRead = vi.spyOn(repo.db.currentSnapshots, 'get');
+      currentRead.mockClear();
+      const projectPut = vi.spyOn(repo.db.projects, 'put').mockRejectedValueOnce(new Error('cache write failed'));
+      try {
+        await expect(repo.load('backfill-write-failure')).resolves.toMatchObject({ document: { width: 2, height: 2 } });
+        expect(currentRead).toHaveBeenCalledTimes(1);
+      } finally {
+        projectPut.mockRestore();
+        currentRead.mockRestore();
+      }
+    } finally {
+      await closeRepository(repo);
+    }
+  });
+
+  it('does not open a backfill transaction for an already canonical summary', async () => {
+    const repo = await repository();
+    try {
+      const document = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+      await repo.save('canonical-backfill', metadata(document, 'canonical-backfill'), document);
+      const transaction = vi.spyOn(repo.db, 'transaction');
+      try {
+        await repo.load('canonical-backfill');
+        expect(transaction).toHaveBeenCalledTimes(1);
+      } finally {
+        transaction.mockRestore();
+      }
+    } finally {
+      await closeRepository(repo);
+    }
+  });
+
+  it('does not let a stale load backfill over a concurrent replacement summary', async () => {
+    databaseCounter += 1;
+    const db = new NeedlewiseDatabase(`needlewise-persistence-test-${String(databaseCounter)}`);
+    const staleLoader = new ProjectRepository(db, { now: () => 10 });
+    const writer = new ProjectRepository(db, { now: () => 11 });
+    try {
+      const oldDocument = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+      const newDocument = createDocument({ width: 3, height: 1, palette: [{ id: 1, name: 'Blue', color: '#36c' }] });
+      await writer.save('backfill-race', metadata(oldDocument, 'backfill-race'), oldDocument);
+      const legacyMetadata = await db.projects.get('backfill-race');
+      if (!legacyMetadata) throw new Error('missing race metadata');
+      delete legacyMetadata.width;
+      delete legacyMetadata.height;
+      delete legacyMetadata.thumbnail;
+      await db.projects.put(legacyMetadata);
+
+      type TransactionCall = (mode: 'r' | 'rw', ...args: unknown[]) => Promise<unknown>;
+      const originalTransaction = db.transaction.bind(db) as unknown as TransactionCall;
+      let firstRead = true;
+      db.transaction = ((mode: 'r' | 'rw', ...args: unknown[]) => {
+        const result = originalTransaction(mode, ...args);
+        if (!firstRead) return result;
+        firstRead = false;
+        return result.then(async (value) => {
+          await writer.save('backfill-race', metadata(newDocument, 'backfill-race'), newDocument, undefined, { allowSameRevision: true });
+          return value;
+        });
+      }) as unknown as typeof db.transaction;
+
+      const loaded = await staleLoader.load('backfill-race');
+      expect(loaded?.document.width).toBe(oldDocument.width);
+      const newestMetadata = await db.projects.get('backfill-race');
+      expect(newestMetadata).toMatchObject({
+        width: newDocument.width,
+        height: newDocument.height,
+        thumbnail: deriveProjectSummary(newDocument).thumbnail
+      });
+    } finally {
+      await staleLoader.close();
+      await db.delete();
     }
   });
 
@@ -1343,9 +1523,16 @@ describe('local project repository', () => {
       const asset = new Uint8Array([1, 2, 3, 4, 5]);
       const projectMetadata = metadata(document);
       await repo.save('project-1', projectMetadata, document, [{ id: 'reference', name: 'reference.bin', mimeType: 'application/octet-stream', data: asset }]);
+      expect((await repo.load('project-1'))?.metadata).toMatchObject({ width: document.width, height: document.height, thumbnail: deriveProjectSummary(document).thumbnail });
       const archive = await repo.exportProject('project-1');
+      const archivedMetadata = JSON.parse(strFromU8(unzipSync(archive)['metadata.json'])) as Record<string, unknown>;
+      expect(archivedMetadata).not.toHaveProperty('thumbnail');
+      const parsed = await parseArchive(archive);
+      expect(parsed.metadata).not.toHaveProperty('thumbnail');
+      expect(parsed.metadata).toMatchObject({ width: document.width, height: document.height });
       const imported = await importedRepo.importProject(archive);
       expect(imported.metadata).toMatchObject(projectMetadata);
+      expect(imported.metadata).toMatchObject({ width: document.width, height: document.height, thumbnail: deriveProjectSummary(document).thumbnail });
       expect(imported.document.kind).toEqual(document.kind);
       expect(imported.document.colors).toEqual(document.colors);
       expect(imported.head).toMatchObject({ projectId: 'project-1', revision: document.revision, checksum: (await importedRepo.db.currentSnapshots.get('project-1'))?.checksum });

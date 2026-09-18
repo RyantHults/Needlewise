@@ -29,6 +29,7 @@ import selectIcon from "../../assets/editor-tools/select.svg";
 import eyedropperIcon from "../../assets/editor-tools/eyedropper.svg";
 import panIcon from "../../assets/editor-tools/pan.svg";
 import clearSelectIcon from "../../assets/editor-tools/clear-select.svg";
+import stitchIcon from "../../assets/editor-tools/stitch.svg";
 interface Props {
   workspace: ProjectWorkspace;
   document: NonNullable<
@@ -171,6 +172,11 @@ export function EditorSurface({
   const symbolDialog = useRef<HTMLDivElement>(null);
   const symbolTrigger = useRef<HTMLButtonElement | null>(null);
   const [paletteMenu, setPaletteMenu] = useState<number | null>(null);
+  const [mobilePanel, setMobilePanel] = useState<"tools" | "colors" | null>(null);
+  const mobileDock = useRef<HTMLElement>(null);
+  const mobileToolsTrigger = useRef<HTMLButtonElement>(null);
+  const mobileColorsTrigger = useRef<HTMLButtonElement>(null);
+  const mobilePopover = useRef<HTMLDivElement>(null);
   const palettePress = useRef<number | null>(null);
   const paletteLongPressed = useRef(false);
   useEffect(() => {
@@ -309,6 +315,7 @@ export function EditorSurface({
   }, [preferences]);
   const palette = document.palette.filter((x) => x.active),
     noThread = !palette.length;
+  const selectedPalette = palette.find((x) => x.id === ui?.paletteId) ?? palette[0];
   const choose = (kind: "full" | "half" | "three-quarter") => {
     const id = palette[0]?.id;
     if (id)
@@ -373,7 +380,8 @@ export function EditorSurface({
     color: ReturnType<typeof searchDmcColors>[number],
   ) => {
     try {
-      await workspace.execute({
+      const previousIds = new Set(document.palette.map((entry) => entry.id));
+      const result = await workspace.execute({
         type: "palette-create",
         name: color.name,
         color: color.hex,
@@ -386,6 +394,11 @@ export function EditorSurface({
           rgb: color.rgb,
         },
       });
+      const createdDocument = result?.document ?? workspace.getStateSnapshot().document;
+      const added = createdDocument?.palette.find(
+        (entry) => entry.active && entry.catalog?.code === color.code && !previousIds.has(entry.id),
+      );
+      if (added) controllerRef.current?.selectCreatedPalette(added.id);
       closePalettePicker();
     } catch (error) {
       setPaletteNotice(
@@ -410,7 +423,7 @@ export function EditorSurface({
         if (c) set.add(c);
       }
     return set;
-  }, [document]);
+  }, [document.colors, document.backstitches.colors]);
   const pendingEntry =
     ui?.pendingPaletteId != null && !paletteActiveIds.has(ui.pendingPaletteId)
       ? palette.find((x) => x.id === ui.pendingPaletteId)
@@ -476,7 +489,16 @@ export function EditorSurface({
             event.preventDefault(); openPaletteMenu(x.id);
           }
         }}
-        onClick={() => { if (!paletteLongPressed.current) controllerRef.current?.selectPalette(x.id); paletteLongPressed.current = false; }}
+        onClick={() => {
+          if (!paletteLongPressed.current) {
+            controllerRef.current?.selectPalette(x.id);
+            // This callback is the existing-color selection path. The mobile
+            // panel is the only place mobilePanel can be open, so this is a
+            // no-op for the desktop rail and does not affect add/manage actions.
+            setMobilePanel(null);
+          }
+          paletteLongPressed.current = false;
+        }}
       >
         <span className="palette-swatch" style={{ backgroundColor: x.color }} aria-hidden="true">
           {paletteOptions.symbols && <span className="palette-swatch-symbol">{x.symbol}</span>}
@@ -832,6 +854,30 @@ export function EditorSurface({
     globalThis.document.addEventListener("keydown", escape);
     return () => { globalThis.document.removeEventListener("pointerdown", close); globalThis.document.removeEventListener("keydown", escape); };
   }, [paletteMenu]);
+  useEffect(() => {
+    if (!mobilePanel) return;
+    mobilePopover.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setMobilePanel(null);
+        window.setTimeout(() => {
+          (mobilePanel === "tools" ? mobileToolsTrigger : mobileColorsTrigger).current?.focus();
+        }, 0);
+      }
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (paletteOpen) return;
+      const target = event.target;
+      if (target instanceof Node && !mobileDock.current?.contains(target) && !(target instanceof Element && target.closest(".mobile-dock-trigger, .editor-rail-popover"))) setMobilePanel(null);
+    };
+    globalThis.document.addEventListener("keydown", onKeyDown);
+    globalThis.document.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      globalThis.document.removeEventListener("keydown", onKeyDown);
+      globalThis.document.removeEventListener("pointerdown", onPointerDown);
+    };
+  }, [mobilePanel, paletteOpen]);
   const symbolFilterQuery = symbolFilter.trim().toLowerCase();
   const symbolMatches = symbolEntry
     ? PALETTE_SYMBOLS.filter(
@@ -942,7 +988,8 @@ export function EditorSurface({
         </div>
       </header>
       <div className={`editor-layout rail-${railSide}`}>
-        <aside className="editor-rail-shell" aria-label="Editor controls">
+        <aside ref={mobileDock} className="editor-rail-shell" aria-label="Editor controls">
+          <div ref={mobilePanel === "tools" ? mobilePopover : undefined} id="mobile-tools-popover" className={`editor-rail-popover mobile-tools-popover${mobilePanel === "tools" ? " mobile-popover-open" : ""}`} role={mobilePanel === "tools" ? "dialog" : undefined} aria-label="Tools" tabIndex={-1}>
           <nav className="editor-rail" aria-label="Editor sections">
             <button
               className="rail-button"
@@ -1057,6 +1104,8 @@ export function EditorSurface({
             </button>
             <button className="rail-button" type="button" disabled={!ui?.overlay.selection} onClick={() => controllerRef.current?.deleteSelection?.()} aria-label="Delete selection" title="Delete selection"><img data-icon="clear-select" src={clearSelectIcon} alt="" aria-hidden="true" /></button>
           </nav>
+          </div>
+          <div ref={mobilePanel === "colors" ? mobilePopover : undefined} id="mobile-colors-popover" className={`editor-rail-popover mobile-colors-popover${mobilePanel === "colors" ? " mobile-popover-open" : ""}`} role={mobilePanel === "colors" ? "dialog" : undefined} aria-label="Colors" tabIndex={-1}>
           <div className="palette-rail" role="region" aria-label="Thread colors">
             <button
               ref={addTrigger}
@@ -1070,6 +1119,7 @@ export function EditorSurface({
               {pendingEntry && paletteRow(pendingEntry)}
               {palette.filter((x) => x.id !== pendingEntry?.id).map(paletteRow)}
             </div>
+          </div>
           </div>
         </aside>
         <div className="canvas-column">
@@ -1092,6 +1142,16 @@ export function EditorSurface({
                 <canvas ref={overlay} aria-hidden="true" />
               </>
             )}
+          </div>
+          <div className="mobile-dock-card">
+            <div className="mobile-dock-triggers" aria-label="Open editor controls">
+              <button ref={mobileToolsTrigger} className="mobile-dock-trigger" type="button" aria-label="Tools" aria-expanded={mobilePanel === "tools"} aria-controls="mobile-tools-popover" onClick={() => setMobilePanel(mobilePanel === "tools" ? null : "tools")}>
+                <img src={stitchIcon} alt="" aria-hidden="true" />
+              </button>
+              <button ref={mobileColorsTrigger} className="mobile-dock-trigger mobile-colors-trigger" type="button" aria-label={selectedPalette ? `Colors: ${selectedPalette.name}` : "Colors"} title={selectedPalette ? `Colors: ${selectedPalette.name}` : "Colors"} aria-expanded={mobilePanel === "colors"} aria-controls="mobile-colors-popover" onClick={() => setMobilePanel(mobilePanel === "colors" ? null : "colors")}>
+                <span className="mobile-dock-color-swatch" style={{ backgroundColor: selectedPalette?.color ?? "#fffdf9" }} aria-hidden="true" />
+              </button>
+            </div>
           </div>
           <div className="canvas-actions">
             <section className="action-section brush-settings" aria-labelledby="brush-settings-label">

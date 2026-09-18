@@ -832,6 +832,15 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.setStatus('Stroke cancelled: project changed');
     }
     if (documentChanged && this.fillJob) this.cancelFill(false);
+    const rendererDocument = this.renderer.getDocument?.();
+    const rendererOwnsDocumentGeneration = !documentChanged
+      && invalidation?.reason !== 'project-switch'
+      && rendererDocument === document
+      && rendererDocument.revision === document.revision;
+    if (rendererOwnsDocumentGeneration) {
+      this.publishSelectedCellForDocument(document, true);
+      return;
+    }
     this.renderer.setDocument(document, invalidation ?? { layer: 'all', full: true, reason: 'external-document' });
     this.publishSelectedCellForDocument(document, true);
   }
@@ -1153,7 +1162,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
           }
         });
         if (result.paletteId === undefined) return false;
-        this.activatePickedColor(result.paletteId);
+        this.selectCreatedPalette(result.paletteId);
+        this.setTool({ tool: 'paint', brush: { kind: 'full', paletteId: result.paletteId } });
       } catch {
         return false;
       }
@@ -1240,11 +1250,43 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.uiStore.setPendingPaletteId(targetId);
   }
 
+  /** Select a palette entry returned by a successful palette-create command. */
+  selectCreatedPalette(paletteId: number): void {
+    this.setPaletteSelection(paletteId);
+    const snapshot = this.gateway.getSnapshot();
+    const document = snapshot.document;
+    if (!document) return;
+    const pending = this.uiStore.getState().pendingPaletteId;
+    if (pending !== null && pending !== paletteId) {
+      const pendingEntry = document.palette.find((entry) => entry.id === pending);
+      if (pendingEntry?.active) {
+        try {
+          // The create result proves the new entry is unreferenced. Let the
+          // domain command safely validate an older pending entry without
+          // scanning the chart here.
+          this.gateway.execute({ type: 'palette-deactivate', id: pending });
+        } catch {
+          // The pending color may have been removed or referenced concurrently.
+        }
+      }
+    }
+    this.uiStore.setPendingPaletteId(paletteId);
+  }
+
   selectPalette(paletteId: number | null): void {
-    const state = this.uiStore.getState();
-    if (paletteId === null || state.tool.tool !== 'paint') {
+    if (paletteId === null) {
       this.uiStore.setPaletteId(paletteId);
       this.reconcilePendingPalette(paletteId);
+      return;
+    }
+    this.setPaletteSelection(paletteId);
+    this.reconcilePendingPalette(paletteId);
+  }
+
+  private setPaletteSelection(paletteId: number): void {
+    const state = this.uiStore.getState();
+    if (state.tool.tool !== 'paint') {
+      this.uiStore.setPaletteId(paletteId);
       return;
     }
     const brush = state.tool.brush;
@@ -1258,7 +1300,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
             ? { kind: 'three-quarter', paletteId }
             : { kind: 'quarter', corner: brush.corner, paletteId };
     this.uiStore.setState({ paletteId, tool: { tool: 'paint', brush: nextBrush } });
-    this.reconcilePendingPalette(paletteId);
   }
 
   handlePointerDown(sample: PointerSample): boolean {

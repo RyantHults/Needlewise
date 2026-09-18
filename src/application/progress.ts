@@ -53,6 +53,16 @@ function emptyCounts(): MutableCounts {
   return { full: 0, half: 0, quarter: 0, threeQuarter: 0, backstitch: 0, completedComponents: 0, backstitchLengthFixed: 0 };
 }
 
+function hasCountBearingUsage(counts: MutableCounts): boolean {
+  return counts.full !== 0
+    || counts.half !== 0
+    || counts.quarter !== 0
+    || counts.threeQuarter !== 0
+    || counts.backstitch !== 0
+    || counts.completedComponents !== 0
+    || counts.backstitchLengthFixed !== 0;
+}
+
 function completionCount(document: PatternDocument, index: number): number {
   if (index < 0 || index >= document.kind.length) return 0;
   const kind = document.kind[index];
@@ -168,6 +178,26 @@ function countsFromMetrics(metrics: PatternMetrics): Map<number, MutableCounts> 
   }]));
 }
 
+/**
+ * Palette-only document generations share every plane that contributes to a
+ * count. Comparing plane identities avoids touching either the dense cell
+ * arrays or the sparse backstitch arrays.
+ */
+function sharesCountBearingPlanes(previous: PatternDocument, next: PatternDocument): boolean {
+  return previous.width === next.width
+    && previous.height === next.height
+    && previous.kind === next.kind
+    && previous.colors === next.colors
+    && previous.completed === next.completed
+    && previous.backstitches.ids === next.backstitches.ids
+    && previous.backstitches.x1 === next.backstitches.x1
+    && previous.backstitches.y1 === next.backstitches.y1
+    && previous.backstitches.x2 === next.backstitches.x2
+    && previous.backstitches.y2 === next.backstitches.y2
+    && previous.backstitches.colors === next.backstitches.colors
+    && previous.backstitches.completed === next.backstitches.completed;
+}
+
 function metricMaterial(
   paletteId: number,
   counts: MutableCounts,
@@ -185,6 +215,9 @@ function buildMetrics(
   aidaCount?: number
 ): PatternMetrics {
   const paletteEntries = new Map(document.palette.map((entry) => [entry.id, entry]));
+  for (const [paletteId, counts] of countsByPalette) {
+    if (!paletteEntries.has(paletteId) && !hasCountBearingUsage(counts)) countsByPalette.delete(paletteId);
+  }
   const paletteIds = [...document.palette.map((entry) => entry.id), ...[...countsByPalette.keys()].filter((id) => !paletteEntries.has(id))];
   const totals = emptyCounts();
   const palettes: PatternMetrics['palettes'][number][] = [];
@@ -409,6 +442,14 @@ export class ProgressMetricsService {
         this.revision = next.revision;
         return progressDelta;
       }
+    }
+    if (previous.revision === this.revision && next.revision === previous.revision + 1 && sharesCountBearingPlanes(previous, next)) {
+      const settings = previous.settings === next.settings ? this.settings : normalizeMaterialSettings(next, this.options);
+      this.settings = settings;
+      this.current = buildMetrics(next, this.counts, settings, this.aidaCount);
+      this.currentDocument = next;
+      this.revision = next.revision;
+      return progressDelta ?? zeroDelta();
     }
     if (result.recalculateMetrics === true || previous.revision !== this.revision) {
       delta = progressDelta ?? (hasExplicitProgress

@@ -58,6 +58,20 @@ export interface SourceImageReplacementInput {
   settings: SourceImageSettingsInput;
 }
 
+/** The bounded, cacheable color sample used by project listings. */
+export interface ProjectThumbnailSummary {
+  version: 1;
+  revision: number;
+  columns: number;
+  rows: number;
+  /** Palette index zero is always the neutral fabric color. */
+  palette: string[];
+  /** One palette index for every sampled cell, in row-major order. */
+  indices: number[];
+}
+
+export type ProjectThumbnail = ProjectThumbnailSummary;
+
 export interface ProjectMetadata {
   id: string;
   title: string;
@@ -73,6 +87,11 @@ export interface ProjectMetadata {
   materialSettings?: NormalizedMaterialSettings;
   /** Optional semantic reference to a checked, separately stored source image asset. */
   sourceImage?: SourceImageDescriptor;
+  /** Canonical dimensions of the saved document, when available. */
+  width?: number;
+  height?: number;
+  /** Canonical bounded color sample of the saved document, when available. */
+  thumbnail?: ProjectThumbnailSummary;
 }
 
 export interface ProjectAssetInput {
