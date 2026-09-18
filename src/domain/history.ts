@@ -7,6 +7,7 @@ import {
   applyPasteFragmentCommand,
   applyMixedEraseCommand,
   applyDeleteRegionCommand,
+  applyDeleteCellSetCommand,
   assertBulkBatchPolicy,
   commandRequiresSnapshot,
   estimateBulkCellHistoryBytes,
@@ -16,6 +17,7 @@ import {
   estimatePasteFragmentHistoryBytes,
   estimateMixedEraseHistoryBytes,
   estimateDeleteRegionHistoryBytes,
+  estimateDeleteCellSetHistoryBytes,
   isBatchCommand,
   isBulkCellCommand,
   isBulkRecolorCommand,
@@ -24,6 +26,7 @@ import {
   isPasteFragmentCommand,
   isMixedEraseCommand,
   isDeleteRegionCommand,
+  isDeleteCellSetCommand,
   MutationTracker,
   preflightPasteFragmentCommand,
   preflightBulkCellCommand,
@@ -32,6 +35,7 @@ import {
   preflightBulkBackstitchCompletionCommand,
   preflightMixedEraseCommand,
   preflightDeleteRegionCommand,
+  preflightDeleteCellSetCommand,
   type MutationInfo,
   type SparseMutationDelta
 } from './commands';
@@ -309,6 +313,7 @@ export class DocumentEditor {
     if (isPasteFragmentCommand(command)) return this.executePasteFragmentCommand(command);
     if (isMixedEraseCommand(command)) return this.executeMixedEraseCommand(command);
     if (isDeleteRegionCommand(command)) return this.executeDeleteRegionCommand(command);
+    if (isDeleteCellSetCommand(command)) return this.executeDeleteCellSetCommand(command);
     if (isBatchCommand(command) && Array.isArray(command.commands)) {
       assertBulkBatchPolicy(command.commands as DomainCommand[]);
       if (command.commands.length === 1 && isBulkCellCommand(command.commands[0] as DomainCommand)) {
@@ -331,6 +336,9 @@ export class DocumentEditor {
       }
       if (command.commands.length === 1 && isDeleteRegionCommand(command.commands[0] as DomainCommand)) {
         return this.executeDeleteRegionCommand(command.commands[0] as DomainCommand);
+      }
+      if (command.commands.length === 1 && isDeleteCellSetCommand(command.commands[0] as DomainCommand)) {
+        return this.executeDeleteCellSetCommand(command.commands[0] as DomainCommand);
       }
     }
     if (isPaletteMetadataOnlyCommand(command)) return this.executePaletteMetadataCommand(command);
@@ -567,6 +575,44 @@ export class DocumentEditor {
     return commandResult;
   }
 
+  private executeDeleteCellSetCommand(command: DomainCommand): CommandResult {
+    const preflight = preflightDeleteCellSetCommand(this.current, command);
+    const estimatedBytes = estimateDeleteCellSetHistoryBytes(
+      preflight.changedIndices.length,
+      this.current.backstitches.ids.length,
+      preflight.changedBackstitchIds.length
+    );
+    ensureHistoryEntryFits(estimatedBytes, this.historyLimit);
+    if (estimatedBytes === 0) {
+      return result(this.current, false, undefined, undefined, {
+        changed: false,
+        snapshot: false,
+        touchedIndices: preflight.touchedIndices,
+        changedIndices: preflight.changedIndices,
+        changedBackstitchIds: preflight.changedBackstitchIds,
+        progress: emptyProgress()
+      });
+    }
+
+    const draft = cloneForDelete(this.current);
+    const mutation = applyDeleteCellSetCommand(draft, command, preflight);
+    draft.revision = this.current.revision + 1;
+    if (mutation.delta === undefined) throw new DomainError('invalid-delete-cell-set', 'A changed delete-cell-set command did not produce a history delta.');
+    const entry: DeltaEntry = {
+      kind: 'delta',
+      delta: mutation.delta,
+      bytes: typedDeltaBytes(mutation.delta),
+      progress: cloneProgress(mutation.progress),
+      recalculateMetrics: mutation.recalculateMetrics === true
+    };
+    ensureHistoryEntryFits(entry.bytes, this.historyLimit);
+    this.current = draft;
+    this.pushHistory(entry);
+    const commandResult = result(this.current, true, undefined, undefined, mutation);
+    attachDeleteMetricsImpactForDelta(commandResult, mutation.delta, 'after');
+    return commandResult;
+  }
+
   private executeSnapshotCommand(command: DomainCommand): CommandResult {
     const before = cloneDocument(this.current);
     const draft = cloneDocument(this.current);
@@ -643,6 +689,10 @@ export class DocumentEditor {
 
   deleteRegion(rect: CropRect): CommandResult {
     return this.execute({ type: 'delete-region', ...rect });
+  }
+
+  deleteCellSet(indices: Uint32Array, expectedRevision?: number): CommandResult {
+    return this.execute({ type: 'delete-cell-set', indices, ...(expectedRevision === undefined ? {} : { expectedRevision }) });
   }
 
   addBackstitch(start: Point, end: Point, color: number, completed = false): CommandResult {

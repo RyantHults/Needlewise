@@ -7,6 +7,7 @@ import { MAX_ATLAS_PIXELS, createDefaultAtlasTarget } from './context';
 import { isCanvasImageSource } from './atlas';
 import { createCanvasRenderer } from './renderer';
 import { symbolForPaletteId } from './symbols';
+import { sparseSelectionGeometry } from '../editor/lasso';
 
 interface RecordingContext extends CanvasContextAdapter {
   calls: string[];
@@ -1333,6 +1334,37 @@ describe('Canvas 2D chart renderer', () => {
       expect(x).toBeLessThanOrEqual(right);
       expect(y).toBeGreaterThanOrEqual(top);
       expect(y).toBeLessThanOrEqual(bottom);
+    }
+    renderer.dispose();
+  });
+
+  it('renders live lasso paths and sparse exterior/interior boundaries inside the chart', () => {
+    const document = chart(3, 3);
+    const overlay = recordingContext();
+    const geometry = sparseSelectionGeometry(new Uint32Array([0, 1, 2, 3, 5, 6, 7, 8]), 3, 3)!;
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      metrics: getCanvasMetrics(30, 30),
+      viewport: { x: 0, y: 0, zoom: 10 },
+      overlay: {
+        selection: { rect: geometry.bounds, kind: 'sparse', indices: Array.from(geometry.indices), boundaries: geometry.boundaries },
+        lassoPath: { points: [{ x: 0.5, y: 0.5 }, { x: -1, y: 0 }, { x: 4, y: 0 }, { x: 4, y: 4 }] }
+      }
+    });
+    renderer.renderNow();
+
+    expect(overlay.records.some((call) => call.name === 'setLineDash')).toBe(true);
+    expect(overlay.records.filter((call) => call.name === 'stroke' && call.strokeStyle === '#2266cc').length).toBe(19);
+    expect(overlay.records.some((call) => call.name === 'moveTo' && call.args.join(',') === '10,10')).toBe(true);
+    for (const call of overlay.records.filter((entry) => ['moveTo', 'lineTo'].includes(entry.name))) {
+      const points = call.name === 'moveTo' || call.name === 'lineTo' ? [call.args as number[]] : [[call.args[0] as number, call.args[1] as number]];
+      for (const [x, y] of points) {
+        expect(x).toBeGreaterThanOrEqual(0);
+        expect(x).toBeLessThanOrEqual(30);
+        expect(y).toBeGreaterThanOrEqual(0);
+        expect(y).toBeLessThanOrEqual(30);
+      }
     }
     renderer.dispose();
   });

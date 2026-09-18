@@ -26,6 +26,7 @@ import backstitchIcon from "../../assets/editor-tools/backstitch.svg";
 import eraserIcon from "../../assets/editor-tools/eraser.svg";
 import fillIcon from "../../assets/editor-tools/paint-bucket.svg";
 import selectIcon from "../../assets/editor-tools/select.svg";
+import lassoIcon from "../../assets/editor-tools/lasso.svg";
 import eyedropperIcon from "../../assets/editor-tools/eyedropper.svg";
 import panIcon from "../../assets/editor-tools/pan.svg";
 import clearSelectIcon from "../../assets/editor-tools/clear-select.svg";
@@ -1080,6 +1081,16 @@ export function EditorSurface({
               onClick={() => invoke("select")}
             >
               <img data-icon="select" src={selectIcon} alt="" aria-hidden="true" />
+            </button>
+            <button
+              className="rail-button"
+              type="button"
+              aria-label="Lasso select"
+              title="Lasso select"
+              aria-pressed={String(ui?.tool.tool) === "lasso"}
+              onClick={() => invoke("lasso")}
+            >
+              <img data-icon="lasso" src={lassoIcon} alt="" aria-hidden="true" />
             </button>
             <button
               className="rail-button"

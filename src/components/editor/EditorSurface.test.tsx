@@ -256,6 +256,18 @@ describe('EditorSurface', () => {
     expect(screen.getByRole('button', { name: 'Eraser' })).toHaveAttribute('aria-pressed', 'false');
     expect(screen.getByRole('button', { name: 'Full stitch' })).toHaveAttribute('aria-pressed', 'false');
   });
+  it('wires Lasso select beside Select with an accessible pressed state', () => {
+    f.uiState.tool = { tool: 'lasso' };
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const select = screen.getByRole('button', { name: 'Select' });
+    const lasso = screen.getByRole('button', { name: 'Lasso select' });
+    expect(lasso).toHaveAttribute('title', 'Lasso select');
+    expect(lasso).toHaveAttribute('aria-pressed', 'true');
+    expect(lasso.querySelector('[data-icon="lasso"]')).toBeInTheDocument();
+    expect(select.compareDocumentPosition(lasso) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.click(lasso);
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'lasso' });
+  });
   it('auto-fits the pattern once on init with the Fit-button routine', () => { render(<EditorSurface workspace={ws} document={doc} />); expect(f.c.setMetrics).toHaveBeenCalled(); const fits = () => (f.c.handleKeyDown as ReturnType<typeof vi.fn>).mock.calls.filter(([event]) => (event as { key: string }).key === '0'); expect(fits()).toHaveLength(1); fireEvent.click(screen.getByRole('button', { name: 'Fit' })); expect(fits()).toHaveLength(2); });
   it('renders settings sections, immediate rail placement, and delete controls', () => { render(<EditorSurface workspace={ws} document={doc} />); expect(screen.getByRole('button', { name: 'Delete selection' })).toBeDisabled(); expect(screen.queryByRole('button', { name: /Move controls/ })).not.toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument(); expect(screen.getByRole('heading', { name: 'Project' })).toBeInTheDocument(); expect(screen.getByRole('heading', { name: 'Editor' })).toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: 'Right' })); expect(screen.getByRole('button', { name: 'Right' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: 'Left' })).toHaveAttribute('aria-pressed', 'false'); expect(document.querySelector('.editor-layout')).toHaveClass('rail-right'); fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' }); expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
   it('hydrates global editor preferences across workspace changes', () => {

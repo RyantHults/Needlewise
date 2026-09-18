@@ -16,6 +16,7 @@ import {
   type FixedPoint,
   type Invalidation,
   type InvalidationLayer,
+  type LassoPathOverlay,
   type LodThresholds,
   type ModelPoint,
   type OverlayState,
@@ -23,6 +24,8 @@ import {
   type RenderStats,
   type RendererStyle,
   type Rect,
+  type SelectionBoundarySegment,
+  type SelectionOverlay,
   type ScreenPoint,
   type TraceImage,
   type Viewport
@@ -48,6 +51,7 @@ import { contrastSymbolInk } from './contrast';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
 import { createTraceImageProjection, drawTraceImage } from './trace';
 import { isLegacyQuarterKind, isThreeQuarterPairKind, threeQuarterPairComponents } from '../editor/cell-kinds';
+import { selectionBoundarySegments } from '../editor/lasso';
 
 const EMPTY_STATS: RenderStats = {
   lod: RenderLod.Overview,
@@ -793,6 +797,68 @@ function overlayPoint(value: OverlayState['cursor']): ModelPoint | undefined {
   return value;
 }
 
+function overlayLassoPoints(value: OverlayState['lassoPath']): readonly ModelPoint[] | undefined {
+  if (!value) return undefined;
+  return Array.isArray(value) ? value : (value as LassoPathOverlay).points;
+}
+
+function drawLassoPath(
+  context: CanvasContextAdapter,
+  points: readonly ModelPoint[] | undefined,
+  document: PatternDocument,
+  viewport: Viewport,
+  style: RendererStyle,
+  bounds: Rect,
+  color?: string
+): void {
+  if (!points || points.length < 2) return;
+  const chart = { x: 0, y: 0, width: document.width, height: document.height };
+  save(context);
+  context.strokeStyle = color ?? style.selectionColor;
+  context.lineWidth = style.overlayLineWidth;
+  context.setLineDash?.([6, 4]);
+  for (let index = 0; index < points.length; index += 1) {
+    const modelSegment = clipSegmentToRect(points[index], points[(index + 1) % points.length], chart);
+    if (!modelSegment) continue;
+    const screenSegment = clipSegmentToRect(
+      modelToScreen(modelSegment.start, viewport),
+      modelToScreen(modelSegment.end, viewport),
+      bounds
+    );
+    if (!screenSegment) continue;
+    linePath(context, screenSegment.start, screenSegment.end);
+  }
+  restore(context);
+}
+
+function drawSparseSelectionBoundaries(
+  context: CanvasContextAdapter,
+  boundaries: readonly SelectionBoundarySegment[],
+  document: PatternDocument,
+  viewport: Viewport,
+  style: RendererStyle,
+  bounds: Rect,
+  color?: string
+): void {
+  if (boundaries.length === 0) return;
+  const chart = { x: 0, y: 0, width: document.width, height: document.height };
+  save(context);
+  context.strokeStyle = color ?? style.selectionColor;
+  context.lineWidth = style.overlayLineWidth;
+  for (const boundary of boundaries) {
+    const modelSegment = clipSegmentToRect(boundary.start, boundary.end, chart);
+    if (!modelSegment) continue;
+    const screenSegment = clipSegmentToRect(
+      modelToScreen(modelSegment.start, viewport),
+      modelToScreen(modelSegment.end, viewport),
+      bounds
+    );
+    if (!screenSegment) continue;
+    linePath(context, screenSegment.start, screenSegment.end);
+  }
+  restore(context);
+}
+
 function drawPendingCells(
   context: CanvasContextAdapter,
   document: PatternDocument,
@@ -964,23 +1030,44 @@ function drawOverlay(
   drawBrushPreview(context, document, overlay.brushPreview, viewport, style, lod, bounds);
   drawBackstitchesForCells(context, document, viewport, metrics, style, pendingStateCells, lod, bounds);
   drawBackstitchPreview(context, document, overlay.backstitchPreview, viewport, style, bounds);
-  const selection = overlayRect(overlay.selection);
+  const selectionValue = overlay.selection;
+  const selection = overlayRect(selectionValue);
   if (selection && overlay.showSelection !== false) {
     context.strokeStyle = overlay.color ?? style.selectionColor;
-    const boundedSelection = intersectCellRects(selection, { x: 0, y: 0, width: document.width, height: document.height });
-    const rect = boundedSelection.width > 0 && boundedSelection.height > 0
-      ? intersectRects(cellToScreenRect(boundedSelection, viewport), bounds)
-      : undefined;
-    if (rect && context.strokeRect) context.strokeRect(rect.x, rect.y, rect.width, rect.height);
-    else if (rect) {
-      context.beginPath();
-      context.moveTo(rect.x, rect.y);
-      context.lineTo(rect.x + rect.width, rect.y);
-      context.lineTo(rect.x + rect.width, rect.y + rect.height);
-      context.lineTo(rect.x, rect.y + rect.height);
-      context.closePath?.();
-      context.stroke();
+    const sparse = selectionValue && 'rect' in selectionValue ? selectionValue as SelectionOverlay : undefined;
+    const sparseIndices = sparse?.indices ?? sparse?.cellIndices;
+    const boundaries = sparse?.boundaries
+      ?? sparse?.boundarySegments
+      ?? sparse?.boundary
+      ?? (sparse?.exteriorBoundary || sparse?.interiorBoundary
+        ? [...(sparse.exteriorBoundary ?? []), ...(sparse.interiorBoundary ?? [])]
+        : undefined)
+      ?? (sparse?.kind === 'sparse' && sparseIndices
+        ? selectionBoundarySegments(new Uint32Array(sparseIndices), document.width, document.height)
+        : undefined);
+    if (boundaries && boundaries.length > 0) {
+      drawSparseSelectionBoundaries(context, boundaries, document, viewport, style, bounds, overlay.color ?? sparse?.color);
+    } else {
+      const boundedSelection = intersectCellRects(selection, { x: 0, y: 0, width: document.width, height: document.height });
+      const rect = boundedSelection.width > 0 && boundedSelection.height > 0
+        ? intersectRects(cellToScreenRect(boundedSelection, viewport), bounds)
+        : undefined;
+      if (rect && context.strokeRect) context.strokeRect(rect.x, rect.y, rect.width, rect.height);
+      else if (rect) {
+        context.beginPath();
+        context.moveTo(rect.x, rect.y);
+        context.lineTo(rect.x + rect.width, rect.y);
+        context.lineTo(rect.x + rect.width, rect.y + rect.height);
+        context.lineTo(rect.x, rect.y + rect.height);
+        context.closePath?.();
+        context.stroke();
+      }
     }
+  }
+  if (overlay.showSelection !== false) {
+    const path = overlayLassoPoints(overlay.lassoPath);
+    const pathValue = overlay.lassoPath && !Array.isArray(overlay.lassoPath) ? overlay.lassoPath as LassoPathOverlay : undefined;
+    drawLassoPath(context, path, document, viewport, style, bounds, overlay.color ?? pathValue?.color);
   }
   const cursor = overlayPoint(overlay.cursor);
   if (cursor && overlay.showCursor !== false) {

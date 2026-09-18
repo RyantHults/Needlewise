@@ -1,6 +1,7 @@
 import {
   CellKind,
   DomainError,
+  FIXED_POINT_UNITS_PER_CELL,
   MAX_PERSISTABLE_CELL_COUNT,
   PATTERN_FRAGMENT_VERSION,
   type FragmentSelection,
@@ -22,6 +23,61 @@ function cellCount(width: number, height: number): number | undefined {
 
 function segmentKey(x1: number, y1: number, x2: number, y2: number): string {
   return `${String(x1)},${String(y1)},${String(x2)},${String(y2)}`;
+}
+
+function containsCellIndex(indices: Uint32Array, target: number): boolean {
+  let low = 0;
+  let high = indices.length - 1;
+  while (low <= high) {
+    const middle = low + Math.floor((high - low) / 2);
+    const candidate = indices[middle];
+    if (candidate === target) return true;
+    if (candidate < target) low = middle + 1;
+    else high = middle - 1;
+  }
+  return false;
+}
+
+/**
+ * Returns whether a fixed-point coordinate is in the closed union of the
+ * selected cell squares. Boundary coordinates intentionally test both
+ * adjacent cells, so a shared selected boundary belongs to the selection.
+ */
+export function isFixedPointContainedInCellUnion(
+  x: number,
+  y: number,
+  documentWidth: number,
+  documentHeight: number,
+  indices: Uint32Array
+): boolean {
+  if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x > documentWidth * FIXED_POINT_UNITS_PER_CELL || y > documentHeight * FIXED_POINT_UNITS_PER_CELL) return false;
+  const units = FIXED_POINT_UNITS_PER_CELL;
+  const cellX = Math.floor(x / units);
+  const cellY = Math.floor(y / units);
+  const xCandidates = x % units === 0 ? [cellX - 1, cellX] : [cellX];
+  const yCandidates = y % units === 0 ? [cellY - 1, cellY] : [cellY];
+  for (const candidateY of yCandidates) {
+    if (candidateY < 0 || candidateY >= documentHeight) continue;
+    for (const candidateX of xCandidates) {
+      if (candidateX < 0 || candidateX >= documentWidth) continue;
+      if (containsCellIndex(indices, candidateY * documentWidth + candidateX)) return true;
+    }
+  }
+  return false;
+}
+
+/** Shared endpoint containment rule for sparse fragment capture and deletion. */
+export function backstitchEndpointsContainedInCellUnion(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  documentWidth: number,
+  documentHeight: number,
+  indices: Uint32Array
+): boolean {
+  return isFixedPointContainedInCellUnion(x1, y1, documentWidth, documentHeight, indices)
+    && isFixedPointContainedInCellUnion(x2, y2, documentWidth, documentHeight, indices);
 }
 
 function fragmentBackstitches(value: unknown): value is PatternFragmentBackstitches {
@@ -158,9 +214,81 @@ export function createPatternFragment(document: PatternDocument, selection: Frag
   return { version: PATTERN_FRAGMENT_VERSION, width: selection.width, height: selection.height, kind, colors, backstitches };
 }
 
+function validateCellSetSelection(document: PatternDocument, indices: Uint32Array): void {
+  if (!(indices instanceof Uint32Array) || indices.length === 0) throw new DomainError('invalid-cell-set', 'Cell selection indices must be a non-empty Uint32Array.');
+  let previous = -1;
+  for (const index of indices) {
+    if (index <= previous) throw new DomainError('invalid-cell-set', 'Cell selection indices must be strictly increasing and unique.');
+    if (index >= document.kind.length) throw new DomainError('out-of-bounds', `Cell selection index ${String(index)} is out of bounds.`);
+    previous = index;
+  }
+}
+
+/** Capture a sparse selection into the existing transparent v1 fragment format. */
+export function createPatternFragmentFromCells(document: PatternDocument, indices: Uint32Array): PatternFragment {
+  assertValidDocument(document);
+  validateCellSetSelection(document, indices);
+
+  let minX = document.width;
+  let minY = document.height;
+  let maxX = -1;
+  let maxY = -1;
+  for (const index of indices) {
+    const x = index % document.width;
+    const y = Math.floor(index / document.width);
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  }
+
+  const width = maxX - minX + 1;
+  const height = maxY - minY + 1;
+  const count = width * height;
+  const kind = new Uint8Array(count);
+  const colors = new Uint16Array(count * 4);
+  for (const index of indices) {
+    const sourceX = index % document.width;
+    const sourceY = Math.floor(index / document.width);
+    const targetIndex = (sourceY - minY) * width + sourceX - minX;
+    kind[targetIndex] = document.kind[index];
+    colors.set(document.colors.subarray(index * 4, index * 4 + 4), targetIndex * 4);
+  }
+
+  let containedCount = 0;
+  for (let index = 0; index < document.backstitches.ids.length; index += 1) {
+    const store = document.backstitches;
+    if (backstitchEndpointsContainedInCellUnion(store.x1[index], store.y1[index], store.x2[index], store.y2[index], document.width, document.height, indices)) containedCount += 1;
+  }
+  const backstitches: PatternFragmentBackstitches = {
+    x1: new Uint32Array(containedCount),
+    y1: new Uint32Array(containedCount),
+    x2: new Uint32Array(containedCount),
+    y2: new Uint32Array(containedCount),
+    colors: new Uint16Array(containedCount)
+  };
+  const left = minX * FIXED_POINT_UNITS_PER_CELL;
+  const top = minY * FIXED_POINT_UNITS_PER_CELL;
+  let targetIndex = 0;
+  for (let index = 0; index < document.backstitches.ids.length; index += 1) {
+    const store = document.backstitches;
+    if (!backstitchEndpointsContainedInCellUnion(store.x1[index], store.y1[index], store.x2[index], store.y2[index], document.width, document.height, indices)) continue;
+    backstitches.x1[targetIndex] = store.x1[index] - left;
+    backstitches.y1[targetIndex] = store.y1[index] - top;
+    backstitches.x2[targetIndex] = store.x2[index] - left;
+    backstitches.y2[targetIndex] = store.y2[index] - top;
+    backstitches.colors[targetIndex] = store.colors[index];
+    targetIndex += 1;
+  }
+  return { version: PATTERN_FRAGMENT_VERSION, width, height, kind, colors, backstitches };
+}
+
 export const copyPatternFragment = createPatternFragment;
 export const createFragment = createPatternFragment;
 export const capturePatternFragment = createPatternFragment;
+export const capturePatternFragmentFromCells = createPatternFragmentFromCells;
+export const createSparsePatternFragment = createPatternFragmentFromCells;
+export const copyPatternFragmentFromCells = createPatternFragmentFromCells;
 
 export function clonePatternFragment(fragment: PatternFragment): PatternFragment {
   assertValidPatternFragment(fragment);

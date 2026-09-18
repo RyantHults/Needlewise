@@ -330,6 +330,13 @@ export interface DeleteRegionCommand extends DomainCommand {
   readonly expectedRevision?: number;
 }
 
+/** Clear an ordered, duplicate-free sparse set of cells atomically. */
+export interface DeleteCellSetCommand extends DomainCommand {
+  readonly type: 'delete-cell-set';
+  readonly indices: Uint32Array;
+  readonly expectedRevision?: number;
+}
+
 export interface CommandResult {
   document: PatternDocument;
   changed: boolean;

@@ -34,6 +34,7 @@ import {
   type BackstitchStore,
   type CommandResult,
   type CropRect,
+  type DeleteCellSetCommand,
   type DeleteRegionCommand,
   type DomainCommand,
   type MixedEraseCommand,
@@ -46,7 +47,7 @@ import {
   type ProgressChangeSet
 } from './types';
 import { assertValidDocument } from './validation';
-import { assertValidPatternFragment } from './fragment';
+import { assertValidPatternFragment, backstitchEndpointsContainedInCellUnion } from './fragment';
 import { fixedPointBackstitchLength } from './metrics';
 import {
   attachDeleteMetricsImpactForDelta,
@@ -491,6 +492,8 @@ function normalizeType(type: string): string {
     paste: 'paste-fragment',
     'paste-fragment-command': 'paste-fragment',
     'mixed-erase-command': 'mixed-erase',
+    'delete-cell-set-command': 'delete-cell-set',
+    'delete-cells': 'delete-cell-set',
     'delete-selection': 'delete-region',
     'clear-region': 'delete-region',
     'erase-region': 'delete-region',
@@ -1215,9 +1218,13 @@ export function isDeleteRegionCommand(command: DomainCommand): command is Delete
   return Boolean(command) && typeof command.type === 'string' && normalizeType(command.type) === 'delete-region';
 }
 
+export function isDeleteCellSetCommand(command: DomainCommand): command is DeleteCellSetCommand {
+  return Boolean(command) && typeof command.type === 'string' && normalizeType(command.type) === 'delete-cell-set';
+}
+
 function containsAtomicCommand(command: DomainCommand): boolean {
   if (!command || typeof command !== 'object') return false;
-  if (isBulkCellCommand(command) || isBulkRecolorCommand(command) || isBulkCompletionCommand(command) || isBulkBackstitchCompletionCommand(command) || isPasteFragmentCommand(command) || isMixedEraseCommand(command) || isDeleteRegionCommand(command)) return true;
+  if (isBulkCellCommand(command) || isBulkRecolorCommand(command) || isBulkCompletionCommand(command) || isBulkBackstitchCompletionCommand(command) || isPasteFragmentCommand(command) || isMixedEraseCommand(command) || isDeleteRegionCommand(command) || isDeleteCellSetCommand(command)) return true;
   return isBatchCommand(command)
     && Array.isArray(command.commands)
     && command.commands.some((child) => containsAtomicCommand(child as DomainCommand));
@@ -1230,9 +1237,9 @@ function containsAtomicCommand(command: DomainCommand): boolean {
  */
 export function assertBulkBatchPolicy(commands: readonly DomainCommand[]): void {
   const hasBulk = commands.some((command) => containsAtomicCommand(command));
-  const isStandaloneBulk = commands.length === 1 && (isBulkCellCommand(commands[0]) || isBulkRecolorCommand(commands[0]) || isBulkCompletionCommand(commands[0]) || isBulkBackstitchCompletionCommand(commands[0]) || isPasteFragmentCommand(commands[0]) || isMixedEraseCommand(commands[0]) || isDeleteRegionCommand(commands[0]));
+  const isStandaloneBulk = commands.length === 1 && (isBulkCellCommand(commands[0]) || isBulkRecolorCommand(commands[0]) || isBulkCompletionCommand(commands[0]) || isBulkBackstitchCompletionCommand(commands[0]) || isPasteFragmentCommand(commands[0]) || isMixedEraseCommand(commands[0]) || isDeleteRegionCommand(commands[0]) || isDeleteCellSetCommand(commands[0]));
   if (hasBulk && !isStandaloneBulk) {
-    throw new DomainError('bulk-batch-unsupported', 'Bulk cell, recolor, completion, backstitch completion, paste-fragment, mixed-erase, and delete-region commands must be executed as standalone commands, not in a multi-command batch.');
+    throw new DomainError('bulk-batch-unsupported', 'Bulk cell, recolor, completion, backstitch completion, paste-fragment, mixed-erase, delete-region, and delete-cell-set commands must be executed as standalone commands, not in a multi-command batch.');
   }
 }
 
@@ -1830,6 +1837,12 @@ export interface DeleteRegionPreflight {
   readonly changedBackstitchIds: Uint32Array;
 }
 
+interface DeleteSelectionPreflight {
+  readonly touchedIndices: Uint32Array;
+  readonly changedIndices: Uint32Array;
+  readonly changedBackstitchIds: Uint32Array;
+}
+
 /** Validate a selection deletion without changing the document. */
 export function preflightDeleteRegionCommand(document: PatternDocument, command: DomainCommand): DeleteRegionPreflight {
   if (!command || normalizeType(command.type) !== 'delete-region') throw new DomainError('invalid-command', 'A delete-region command must have type delete-region.');
@@ -1894,10 +1907,9 @@ export function estimateDeleteRegionHistoryBytes(
   return cellBytes + backstitchBytes + 32;
 }
 
-export function applyDeleteRegionCommand(
+function applyDeleteSelectionCommand(
   document: PatternDocument,
-  command: DomainCommand,
-  preflight = preflightDeleteRegionCommand(document, command)
+  preflight: DeleteSelectionPreflight
 ): MutationInfo {
   const changedIndices = preflight.changedIndices;
   const beforeKind = new Uint8Array(changedIndices.length);
@@ -1983,6 +1995,86 @@ export function applyDeleteRegionCommand(
     delta
   };
 }
+
+export function applyDeleteRegionCommand(
+  document: PatternDocument,
+  command: DomainCommand,
+  preflight = preflightDeleteRegionCommand(document, command)
+): MutationInfo {
+  return applyDeleteSelectionCommand(document, preflight);
+}
+
+export interface DeleteCellSetPreflight extends DeleteSelectionPreflight {
+  readonly indices: Uint32Array;
+}
+
+function validateDeleteCellSetIndices(document: PatternDocument, indices: unknown): Uint32Array {
+  if (!(indices instanceof Uint32Array) || indices.length === 0) throw new DomainError('invalid-delete-cell-set', 'Delete cell-set indices must be a non-empty Uint32Array.');
+  let previous = -1;
+  for (const index of indices) {
+    if (index <= previous) throw new DomainError('invalid-delete-cell-set', 'Delete cell-set indices must be strictly increasing and unique.');
+    if (index >= document.kind.length) throw new DomainError('out-of-bounds', `Delete cell-set index ${String(index)} is out of bounds.`);
+    previous = index;
+  }
+  return indices;
+}
+
+/** Validate a sparse cell-set deletion without changing the document. */
+export function preflightDeleteCellSetCommand(document: PatternDocument, command: DomainCommand): DeleteCellSetPreflight {
+  if (!command || normalizeType(command.type) !== 'delete-cell-set') throw new DomainError('invalid-command', 'A delete-cell-set command must have type delete-cell-set.');
+  validateBulkRevision(document, command);
+  const indices = validateDeleteCellSetIndices(document, command.indices);
+  const changedCells: number[] = [];
+  for (const index of indices) if (cellHasGeometry(document, index)) changedCells.push(index);
+  const changedLines: number[] = [];
+  for (let index = 0; index < document.backstitches.ids.length; index += 1) {
+    const store = document.backstitches;
+    if (backstitchEndpointsContainedInCellUnion(store.x1[index], store.y1[index], store.x2[index], store.y2[index], document.width, document.height, indices)) {
+      changedLines.push(store.ids[index]);
+    }
+  }
+  return {
+    indices,
+    touchedIndices: indices,
+    changedIndices: new Uint32Array(changedCells),
+    changedBackstitchIds: new Uint32Array(changedLines)
+  };
+}
+
+/** Exact packed history size for a sparse cell-set deletion. */
+export function estimateDeleteCellSetHistoryBytes(
+  changedCellCount: number,
+  existingBackstitchCount = 0,
+  deletedBackstitchCount = 0
+): number {
+  return estimateDeleteRegionHistoryBytes(changedCellCount, existingBackstitchCount, deletedBackstitchCount);
+}
+
+export function applyDeleteCellSetCommand(
+  document: PatternDocument,
+  command: DomainCommand,
+  preflight = preflightDeleteCellSetCommand(document, command)
+): MutationInfo {
+  return applyDeleteSelectionCommand(document, preflight);
+}
+
+export function deleteCellSetCommand(indices: Uint32Array, expectedRevision?: number): DeleteCellSetCommand {
+  if (!(indices instanceof Uint32Array) || indices.length === 0) throw new DomainError('invalid-delete-cell-set', 'Delete cell-set indices must be a non-empty Uint32Array.');
+  let previous = -1;
+  for (const index of indices) {
+    if (index <= previous) throw new DomainError('invalid-delete-cell-set', 'Delete cell-set indices must be strictly increasing and unique.');
+    previous = index;
+  }
+  validateExpectedRevision(expectedRevision);
+  return {
+    type: 'delete-cell-set',
+    indices: indices.slice(),
+    ...(expectedRevision === undefined ? {} : { expectedRevision })
+  };
+}
+
+export const createDeleteCellSetCommand = deleteCellSetCommand;
+export const deleteCellsCommand = deleteCellSetCommand;
 
 export function deleteRegionCommand(rect: CropRect, expectedRevision?: number): DeleteRegionCommand;
 export function deleteRegionCommand(x: number, y: number, width: number, height: number, expectedRevision?: number): DeleteRegionCommand;
@@ -3137,6 +3229,7 @@ function applyOneToDraftInternal(document: PatternDocument, command: DomainComma
     case 'paste-fragment': return applyPasteFragmentCommand(document, command);
     case 'mixed-erase': return applyMixedEraseCommand(document, command);
     case 'delete-region': return applyDeleteRegionCommand(document, command);
+    case 'delete-cell-set': return applyDeleteCellSetCommand(document, command);
     case 'erase-cell': {
       const x = requiredNumber(valueOf(command, 'x', 'column'), 'x');
       const y = requiredNumber(valueOf(command, 'y', 'row'), 'y');

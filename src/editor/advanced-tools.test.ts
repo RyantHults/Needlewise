@@ -100,6 +100,11 @@ class FakeGateway implements WorkspaceEditorGateway {
     this.emit();
   }
 
+  replaceDocument(document: PatternDocument): void {
+    this.editor = createEditor(document);
+    this.emit();
+  }
+
   dispose(): void {}
 
   private token(): EditorRevisionToken {
@@ -310,6 +315,117 @@ describe('advanced headless editor tools', () => {
     expect(controller.handlePointerUp(pointer(1, 40, 24))).toBe(true);
     expect(controller.getSelection()).toEqual({ x: 0, y: 0, width: 3, height: 2 });
     controller.dispose();
+  });
+
+  it('captures lasso selection modifiers at pointer-down and preserves selection while cancelled', () => {
+    const { controller, uiStore } = fixture();
+    controller.setTool({ tool: 'lasso' });
+    controller.setSelection({ x: 6, y: 6 });
+    const before = controller.getSelection();
+
+    expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
+    expect(uiStore.getState().overlay.lassoPath).toMatchObject({ points: [{ x: 0.5, y: 0.5 }] });
+    expect(controller.getSelection()).toEqual(before);
+    controller.handlePointerMove(pointer(1, 0, 0));
+    controller.handlePointerMove(pointer(1, 48, 0));
+    controller.handlePointerMove(pointer(1, 48, 48));
+    controller.handlePointerMove(pointer(1, 0, 48));
+    controller.handlePointerCancel(pointer(1, 0, 48));
+    expect(controller.getSelection()).toEqual(before);
+    expect(uiStore.getState().overlay.lassoPath).toBeUndefined();
+
+    controller.handlePointerDown(pointer(2, 8, 8));
+    controller.handlePointerMove(pointer(2, 0, 0));
+    controller.handlePointerMove(pointer(2, 48, 0));
+    controller.handlePointerMove(pointer(2, 48, 48));
+    controller.handlePointerMove(pointer(2, 0, 48));
+    controller.handlePointerUp(pointer(2, 0, 48));
+    expect(controller.getSelection()).toEqual({ x: 0, y: 0, width: 3, height: 3 });
+    expect(controller.getSelectionIndices()).toEqual(new Uint32Array([0, 1, 2, 8, 9, 10, 16, 17, 18]));
+    expect(uiStore.getState().overlay.selection).toMatchObject({ kind: 'sparse', indices: [0, 1, 2, 8, 9, 10, 16, 17, 18] });
+
+    controller.handlePointerDown({ ...pointer(3, 24, 8), shiftKey: true });
+    controller.handlePointerUp({ ...pointer(3, 24, 8), shiftKey: false });
+    expect(controller.getSelectionIndices()).toEqual(new Uint32Array([0, 1, 2, 8, 9, 10, 16, 17, 18]));
+
+    controller.handlePointerDown({ ...pointer(4, 24, 8), shiftKey: true, altKey: true });
+    controller.handlePointerUp({ ...pointer(4, 24, 8), shiftKey: false, altKey: false });
+    expect(controller.getSelectionIndices()).toEqual(new Uint32Array([0, 2, 8, 9, 10, 16, 17, 18]));
+
+    controller.handleKeyDown({ key: 'ArrowRight', preventDefault: () => undefined });
+    expect(controller.getSelection()).toBeUndefined();
+    controller.handleKeyDown({ key: 'ArrowDown', shiftKey: true, preventDefault: () => undefined });
+    expect(controller.getSelection()).toEqual({ x: 1, y: 0, width: 1, height: 2 });
+    controller.dispose();
+  });
+
+  it('routes sparse copy and delete through ordered cell-set domain operations', () => {
+    const { controller, gateway } = fixture();
+    controller.setTool({ tool: 'lasso' });
+    controller.handlePointerDown(pointer(1, 8, 8));
+    controller.handlePointerUp(pointer(1, 8, 8));
+    controller.handlePointerDown({ ...pointer(2, 40, 8), shiftKey: true });
+    controller.handlePointerUp(pointer(2, 40, 8));
+    expect(controller.getSelectionIndices()).toEqual(new Uint32Array([0, 2]));
+    expect(controller.copySelection()).toBeDefined();
+    expect(Array.from(controller.getClipboard()!.kind)).toEqual([CellKind.Full, CellKind.Empty, CellKind.Quarters]);
+
+    expect(controller.deleteSelection()).toBe(true);
+    expect(gateway.commands.at(-1)).toMatchObject({ type: 'delete-cell-set', indices: new Uint32Array([0, 2]) });
+    expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
+    expect(gateway.getSnapshot().document?.kind[1]).toBe(CellKind.Quarters);
+    expect(gateway.getSnapshot().document?.kind[2]).toBe(CellKind.Empty);
+    controller.dispose();
+  });
+
+  it('clears sparse and legacy selections before a same-project dimension change', () => {
+    const unchanged = fixture();
+    unchanged.controller.setSelection({ x: 1, y: 1 }, { x: 2, y: 2 });
+    unchanged.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    expect(unchanged.controller.getSelection()).toEqual({ x: 1, y: 1, width: 2, height: 2 });
+    unchanged.controller.dispose();
+
+    const sparse = fixture();
+    sparse.controller.setTool({ tool: 'lasso' });
+    sparse.controller.handlePointerDown(pointer(1, 8, 8));
+    sparse.controller.handlePointerUp(pointer(1, 8, 8));
+    expect(sparse.controller.getSelectionIndices()).toEqual(new Uint32Array([0]));
+
+    sparse.gateway.replaceDocument(createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
+    expect(sparse.controller.getSelection()).toBeUndefined();
+    expect(sparse.controller.getSelectionIndices()).toBeUndefined();
+    expect(sparse.uiStore.getState().overlay.selection).toBeUndefined();
+    expect(sparse.controller.copySelection()).toBeUndefined();
+    expect(sparse.controller.deleteSelection()).toBe(false);
+    sparse.controller.dispose();
+
+    const legacy = fixture();
+    legacy.controller.setSelection({ x: 1, y: 1 }, { x: 2, y: 2 });
+    expect(legacy.controller.getSelection()).toEqual({ x: 1, y: 1, width: 2, height: 2 });
+    legacy.gateway.replaceDocument(createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
+    expect(legacy.controller.getSelection()).toBeUndefined();
+    expect(legacy.uiStore.getState().overlay.selection).toBeUndefined();
+    expect(legacy.controller.deleteSelection()).toBe(false);
+    legacy.controller.dispose();
+
+    const direct = fixture();
+    direct.controller.setSelection({ x: 1, y: 1 });
+    direct.controller.setDocument(createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
+    expect(direct.controller.getSelection()).toBeUndefined();
+    expect(direct.uiStore.getState().overlay.selection).toBeUndefined();
+    direct.controller.dispose();
+
+    const cropped = fixture();
+    cropped.controller.setSelection({ x: 1, y: 1 });
+    cropped.gateway.execute({ type: 'crop', x: 0, y: 0, width: 4, height: 4 });
+    expect(cropped.controller.getSelection()).toBeUndefined();
+    cropped.controller.dispose();
+
+    const rotated = fixture(createDocument({ width: 8, height: 4, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
+    rotated.controller.setSelection({ x: 1, y: 1 });
+    rotated.gateway.execute({ type: 'rotate-cw' });
+    expect(rotated.controller.getSelection()).toBeUndefined();
+    rotated.controller.dispose();
   });
 
   it('copies a local transparent fragment without completion and pastes in one transaction', () => {

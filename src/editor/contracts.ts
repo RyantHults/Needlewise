@@ -166,6 +166,28 @@ export const DEFAULT_LOD_THRESHOLDS: LodThresholds = {
 export interface SelectionOverlay {
   readonly rect: CellRect;
   readonly color?: string;
+  /** Ordered document indices for a sparse selection. */
+  readonly indices?: ArrayLike<number>;
+  /** Compatibility alias for integrations that call these cell indices. */
+  readonly cellIndices?: ArrayLike<number>;
+  readonly boundaries?: readonly SelectionBoundarySegment[];
+  /** Compatibility alias for boundary-oriented renderers. */
+  readonly boundarySegments?: readonly SelectionBoundarySegment[];
+  readonly boundary?: readonly SelectionBoundarySegment[];
+  readonly exteriorBoundary?: readonly SelectionBoundarySegment[];
+  readonly interiorBoundary?: readonly SelectionBoundarySegment[];
+  readonly kind?: 'rect' | 'sparse';
+}
+
+export interface SelectionBoundarySegment {
+  readonly start: ModelPoint;
+  readonly end: ModelPoint;
+  readonly kind: 'exterior' | 'interior';
+}
+
+export interface LassoPathOverlay {
+  readonly points: readonly ModelPoint[];
+  readonly color?: string;
 }
 
 export interface CursorOverlay {
@@ -184,6 +206,7 @@ export interface PendingCellState {
 
 export interface OverlayState {
   readonly selection?: SelectionOverlay | CellRect | null;
+  readonly lassoPath?: LassoPathOverlay | readonly ModelPoint[] | null;
   readonly cursor?: CursorOverlay | ModelPoint | null;
   readonly backstitchPreview?: BackstitchPreviewOverlay | null;
   readonly brushPreview?: BrushPreviewOverlay | null;
@@ -454,6 +477,7 @@ export const EditorToolKind = {
   Pan: 'pan',
   Eraser: 'eraser',
   Select: 'select',
+  Lasso: 'lasso',
   Fill: 'fill',
   Completion: 'completion',
   Backstitch: 'backstitch',
@@ -528,6 +552,10 @@ export interface SelectToolState {
   readonly tool: 'select';
 }
 
+export interface LassoToolState {
+  readonly tool: 'lasso';
+}
+
 export interface FillToolState {
   readonly tool: 'fill';
   /** Deprecated compatibility field; Fill ignores brush geometry and color. */
@@ -556,7 +584,7 @@ export interface ResizeImageToolState {
   readonly tool: 'resize-image';
 }
 
-export type EditorToolState = PaintToolState | PanToolState | EraserToolState | SelectToolState | FillToolState | CompletionToolState | BackstitchToolState | EyedropperToolState | MoveImageToolState | ResizeImageToolState;
+export type EditorToolState = PaintToolState | PanToolState | EraserToolState | SelectToolState | LassoToolState | FillToolState | CompletionToolState | BackstitchToolState | EyedropperToolState | MoveImageToolState | ResizeImageToolState;
 export type ToolState = EditorToolState;
 export type ActiveStitchBrush = StitchBrush;
 

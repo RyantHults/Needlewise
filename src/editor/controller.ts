@@ -2,6 +2,7 @@ import {
   CellKind,
   preflightBulkRecolorCommand,
   createPatternFragment,
+  createPatternFragmentFromCells,
   clonePatternFragment,
   DomainError,
   HalfDirection,
@@ -9,6 +10,7 @@ import {
   preflightMixedEraseCommand,
   preflightBulkCompletionCommand,
   deleteRegionCommand,
+  deleteCellSetCommand,
   pasteFragmentCommand,
   preflightBulkCellCommand,
   QuarterCorner,
@@ -78,6 +80,16 @@ import {
 import { sampleTraceImage } from '../rendering/trace';
 import { nearestDmcColor } from '../catalog';
 import {
+  appendLassoPoint,
+  appendLassoRasterPoint,
+  createLassoRasterAccumulator,
+  finishLassoRaster,
+  MAX_LASSO_PATH_POINTS,
+  selectionRectToIndices,
+  sparseSelectionGeometry,
+  type SelectionBoundarySegment
+} from './lasso';
+import {
   isThreeQuarterKind,
   isThreeQuarterPairKind,
   isLegacyQuarterKind,
@@ -114,7 +126,7 @@ export interface EditorSurfaceControllerLifecycle {
   dispose(): void;
 }
 
-type Gesture = PaintGesture | EraserGesture | CompletionGesture | SelectionGesture | BackstitchGesture | PanGesture | PinchGesture | MoveImageGesture | ResizeImageGesture;
+type Gesture = PaintGesture | EraserGesture | CompletionGesture | SelectionGesture | LassoGesture | BackstitchGesture | PanGesture | PinchGesture | MoveImageGesture | ResizeImageGesture;
 
 interface PaintGesture {
   readonly kind: 'paint';
@@ -168,6 +180,36 @@ interface SelectionGesture {
   readonly hadSelection: boolean;
   current: ModelPoint;
 }
+
+interface LassoGesture {
+  readonly kind: 'lasso';
+  readonly pointerId: number;
+  readonly token: EditorRevisionToken;
+  readonly startingCell?: ModelPoint;
+  readonly operation: 'replace' | 'union' | 'subtract';
+  /** Display-only path; final selection semantics live in `raster`. */
+  readonly points: ModelPoint[];
+  readonly raster: ReturnType<typeof createLassoRasterAccumulator>;
+  previewSamples: number;
+}
+
+interface RectangularSelection {
+  readonly kind: 'rect';
+  readonly rect: GridRect;
+  readonly documentWidth: number;
+  readonly documentHeight: number;
+}
+
+interface SparseSelection {
+  readonly kind: 'sparse';
+  readonly indices: Uint32Array;
+  readonly bounds: GridRect;
+  readonly boundaries: readonly SelectionBoundarySegment[];
+  readonly documentWidth: number;
+  readonly documentHeight: number;
+}
+
+type FinalizedSelection = RectangularSelection | SparseSelection;
 
 interface BackstitchGesture {
   readonly kind: 'backstitch';
@@ -607,6 +649,24 @@ function boundedGridRect(rect: GridRect, document: PatternDocument): GridRect | 
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
+function finalizedSelectionBounds(selection: FinalizedSelection | undefined): GridRect | undefined {
+  return selection?.kind === 'rect' ? selection.rect : selection?.bounds;
+}
+
+function selectionMatchesDocument(selection: FinalizedSelection | undefined, document: PatternDocument | null): boolean {
+  return selection === undefined
+    || (document !== null
+      && selection.documentWidth === document.width
+      && selection.documentHeight === document.height);
+}
+
+function finalizedSelectionIndices(selection: FinalizedSelection | undefined, document: PatternDocument): Uint32Array | undefined {
+  if (!selection) return undefined;
+  return selection.kind === 'sparse'
+    ? selection.indices
+    : selectionRectToIndices(selection.rect, document.width, document.height);
+}
+
 function quarterCornerAt(point: ModelPoint): 0 | 1 | 2 | 3 {
   const column = Math.floor((point.x - Math.floor(point.x)) * 2);
   const row = Math.floor((point.y - Math.floor(point.y)) * 2);
@@ -768,7 +828,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private lastHoverSample: PointerSample | undefined;
   private spaceHeld = false;
   private commandInFlight = false;
-  private selection: GridRect | undefined;
+  private selection: FinalizedSelection | undefined;
   private selectionAnchor: ModelPoint | undefined;
   private clipboard: PatternFragment | undefined;
   private eraserCorner: 0 | 1 | 2 | 3 = 0;
@@ -825,6 +885,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   setDocument(document: PatternDocument, invalidation?: Invalidation): void {
     if (this.disposed) return;
+    this.reconcileSelectionDimensions(document);
     const snapshot = this.gateway.getSnapshot();
     const documentChanged = snapshot.document !== document || snapshot.revision !== document.revision;
     if (documentChanged && this.gesture) {
@@ -893,14 +954,22 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   getSelection(): GridRect | undefined {
-    return this.selection;
+    this.reconcileSelectionDimensions(this.gateway.getSnapshot().document);
+    return finalizedSelectionBounds(this.selection);
+  }
+
+  /** Ordered indices are kept available for the domain sparse-selection lane. */
+  getSelectionIndices(): Uint32Array | undefined {
+    const document = this.gateway.getSnapshot().document;
+    this.reconcileSelectionDimensions(document);
+    return document ? finalizedSelectionIndices(this.selection, document) : undefined;
   }
 
   setSelection(start: ModelPoint, end = start): GridRect | undefined {
     const document = this.gateway.getSnapshot().document;
     if (!document || !isFiniteModelPoint(start) || !isFiniteModelPoint(end)) return undefined;
     const rect = boundedGridRect(normalizeGridRect(start, end), document);
-    this.selection = rect;
+    this.selection = rect ? { kind: 'rect', rect, documentWidth: document.width, documentHeight: document.height } : undefined;
     this.selectionAnchor = rect ? { x: rect.x, y: rect.y } : undefined;
     this.publishSelectionOverlay();
     return rect;
@@ -912,22 +981,39 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.publishSelectionOverlay();
   }
 
+  private reconcileSelectionDimensions(document: PatternDocument | null): void {
+    if (selectionMatchesDocument(this.selection, document)) return;
+    this.selection = undefined;
+    this.selectionAnchor = undefined;
+    this.publishSelectionOverlay();
+  }
+
   getClipboard(): PatternFragment | undefined {
     return this.clipboard ? clonePatternFragment(this.clipboard) : undefined;
   }
 
   copySelection(): PatternFragment | undefined {
     const snapshot = this.gateway.getSnapshot();
+    this.reconcileSelectionDimensions(snapshot.document);
     if (!snapshot.document || !this.selection) return undefined;
-    this.clipboard = clonePatternFragment(createPatternFragment(snapshot.document, this.selection));
-    this.setStatus(`Copied ${String(this.selection.width)}×${String(this.selection.height)} cells`);
+    const bounds = finalizedSelectionBounds(this.selection);
+    if (!bounds) return undefined;
+    const indices = finalizedSelectionIndices(this.selection, snapshot.document);
+    this.clipboard = clonePatternFragment(this.selection.kind === 'sparse' && indices
+      ? createPatternFragmentFromCells(snapshot.document, indices)
+      : createPatternFragment(snapshot.document, bounds));
+    this.setStatus(this.selection.kind === 'sparse'
+      ? `Copied ${String(this.selection.indices.length)} cells`
+      : `Copied ${String(bounds.width)}×${String(bounds.height)} cells`);
     return clonePatternFragment(this.clipboard);
   }
 
   pasteClipboard(): boolean {
     const snapshot = this.gateway.getSnapshot();
+    this.reconcileSelectionDimensions(snapshot.document);
     if (!snapshot.document || !snapshot.projectId || snapshot.revision === null || !this.clipboard) return false;
-    const anchor = this.selection ? { x: this.selection.x, y: this.selection.y } : this.uiStore.getState().keyboardCursor;
+    const bounds = finalizedSelectionBounds(this.selection);
+    const anchor = bounds ? { x: bounds.x, y: bounds.y } : this.uiStore.getState().keyboardCursor;
     if (!anchor) return false;
     const fragment = clonePatternFragment(this.clipboard);
     try {
@@ -998,13 +1084,19 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   /** Delete the current cell selection as one revision-safe history operation. */
   deleteSelection(): boolean {
-    const selection = this.selection;
     const selectedBackstitchId = this.selectedBackstitchId;
     const snapshot = this.gateway.getSnapshot();
-    if (!selection || !snapshot.document || !snapshot.projectId || snapshot.revision === null) return false;
+    this.reconcileSelectionDimensions(snapshot.document);
+    const currentSelection = this.selection;
+    const bounds = finalizedSelectionBounds(currentSelection);
+    if (!currentSelection || !bounds || !snapshot.document || !snapshot.projectId || snapshot.revision === null) return false;
+    const indices = finalizedSelectionIndices(currentSelection, snapshot.document);
+    const command = currentSelection.kind === 'sparse' && indices
+      ? deleteCellSetCommand(indices, snapshot.revision)
+      : deleteRegionCommand(bounds, snapshot.revision);
     const result = this.executeCommandWithToken(
-      deleteRegionCommand(selection, snapshot.revision),
-      `Deleted ${String(selection.width)}×${String(selection.height)} cell${selection.width * selection.height === 1 ? '' : 's'}`
+      command,
+      `Deleted ${String(currentSelection.kind === 'sparse' ? currentSelection.indices.length : bounds.width * bounds.height)} cell${(currentSelection.kind === 'sparse' ? currentSelection.indices.length : bounds.width * bounds.height) === 1 ? '' : 's'}`
     );
     const after = this.gateway.getSnapshot().document;
     if (result && selectedBackstitchId !== undefined && after && !after.backstitches.ids.some((id) => id === selectedBackstitchId)) this.resetBackstitchState();
@@ -1350,9 +1442,32 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       }
       const hadSelection = this.selection !== undefined;
       this.selectionAnchor = cell;
-      this.selection = normalizeGridRect(cell, cell);
+      this.selection = { kind: 'rect', rect: normalizeGridRect(cell, cell), documentWidth: snapshot.document.width, documentHeight: snapshot.document.height };
       this.gesture = { kind: 'selection', pointerId: sample.pointerId, anchor: cell, hadSelection, current: cell };
       this.publishSelectionOverlay();
+      return true;
+    }
+    if (selectedTool.tool === 'lasso') {
+      const cell = this.paintHitCell(sample, snapshot.document);
+      const point = this.lassoModelPoint(sample);
+      if (!cell || !point) return false;
+      const operation: LassoGesture['operation'] = sample.altKey ? 'subtract' : sample.shiftKey ? 'union' : 'replace';
+      this.gesture = {
+        kind: 'lasso',
+        pointerId: sample.pointerId,
+        token: { projectId: snapshot.projectId, revision: snapshot.revision },
+        startingCell: cell,
+        operation,
+        points: [point],
+        raster: createLassoRasterAccumulator(
+          snapshot.document.width,
+          snapshot.document.height,
+          point,
+          { x: cell.x + 0.5, y: cell.y + 0.5 }
+        ),
+        previewSamples: 0
+      };
+      this.publishLassoPath([point]);
       return true;
     }
     if (selectedTool.tool === 'fill') {
@@ -1475,13 +1590,34 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.publishPendingCells(gesture.cells, this.pendingEraserStates(gesture.cells, gesture.components, gesture.mode, document));
       return true;
     }
+    if (gesture.kind === 'lasso') {
+      const snapshot = this.gateway.getSnapshot();
+      if (!this.isCurrentTransaction(gesture.token, snapshot)) {
+        this.cancelGesture();
+        this.setStatus('Lasso cancelled: project changed');
+        return true;
+      }
+      const point = this.lassoModelPoint(sample);
+      if (point) {
+        appendLassoRasterPoint(gesture.raster, point);
+      }
+      if (point && appendLassoPoint(gesture.points, point)) {
+        gesture.previewSamples += 1;
+        // Once the hard cap is approached, clone the bounded preview less
+        // often. Finalization still uses every retained point and always
+        // publishes the latest path before clearing it.
+        if (gesture.points.length < MAX_LASSO_PATH_POINTS / 2 || gesture.previewSamples % 16 === 0) this.publishLassoPath(gesture.points);
+      }
+      return true;
+    }
     if (gesture.kind === 'selection') {
       const document = this.gateway.getSnapshot().document;
       if (!document) return false;
       const cell = this.paintHitCell(sample, document);
       if (!cell) return true;
       gesture.current = cell;
-      this.selection = boundedGridRect(normalizeGridRect(gesture.anchor, cell), document);
+      const rect = boundedGridRect(normalizeGridRect(gesture.anchor, cell), document);
+      this.selection = rect ? { kind: 'rect', rect, documentWidth: document.width, documentHeight: document.height } : undefined;
       this.publishSelectionOverlay();
       return true;
     }
@@ -1534,6 +1670,19 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const document = this.gateway.getSnapshot().document;
       if (document) this.appendEraserSample(gesture, sample, document);
       this.finishEraser(true);
+    } else if (gesture.kind === 'lasso') {
+      const snapshot = this.gateway.getSnapshot();
+      if (!this.isCurrentTransaction(gesture.token, snapshot)) {
+        this.cancelGesture();
+        this.setStatus('Lasso cancelled: project changed');
+        return true;
+      }
+      const point = this.lassoModelPoint(sample);
+      if (point) {
+        appendLassoRasterPoint(gesture.raster, point);
+        appendLassoPoint(gesture.points, point);
+      }
+      this.finishLasso(gesture);
     } else if (gesture.kind === 'selection') {
       this.gesture = undefined;
       const click = gesture.anchor.x === gesture.current.x && gesture.anchor.y === gesture.current.y;
@@ -1573,6 +1722,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (gesture.kind === 'paint') this.finishPaint(false);
     else if (gesture.kind === 'completion') this.finishCompletion(false);
     else if (gesture.kind === 'eraser') this.finishEraser(false);
+    else if (gesture.kind === 'lasso') {
+      this.gesture = undefined;
+      this.clearLassoPath();
+    }
     else if (gesture.kind === 'selection') {
       this.gesture = undefined;
       this.clearSelection();
@@ -1779,6 +1932,44 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (!validScreenSample(sample) || !isFiniteViewport(this.uiStore.getState().viewport)) return undefined;
     const cell = hitTestCell({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport);
     return cell.x < 0 || cell.y < 0 || cell.x >= document.width || cell.y >= document.height ? undefined : cloneCell(cell);
+  }
+
+  private lassoModelPoint(sample: PointerSample): ModelPoint | undefined {
+    if (!validScreenSample(sample) || !isFiniteViewport(this.uiStore.getState().viewport)) return undefined;
+    const point = screenToModel({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport);
+    return isFiniteModelPoint(point) ? point : undefined;
+  }
+
+  private finishLasso(gesture: LassoGesture): void {
+    this.gesture = undefined;
+    const snapshot = this.gateway.getSnapshot();
+    const document = snapshot.document;
+    this.clearLassoPath();
+    if (!document) return;
+    const captured = finishLassoRaster(gesture.raster);
+    const current = finalizedSelectionIndices(this.selection, document) ?? new Uint32Array();
+    let next: Uint32Array;
+    if (gesture.operation === 'replace') {
+      next = captured;
+    } else if (gesture.operation === 'union') {
+      next = new Uint32Array([...current, ...captured].sort((left, right) => left - right).filter((index, position, values) => position === 0 || index !== values[position - 1]));
+    } else {
+      const subtract = new Set(captured);
+      next = new Uint32Array(Array.from(current).filter((index) => !subtract.has(index)));
+    }
+    const sparse = sparseSelectionGeometry(next, document.width, document.height);
+    this.selection = sparse
+      ? {
+          kind: 'sparse',
+          indices: sparse.indices,
+          bounds: sparse.bounds,
+          boundaries: sparse.boundaries,
+          documentWidth: document.width,
+          documentHeight: document.height
+        }
+      : undefined;
+    this.selectionAnchor = undefined;
+    this.publishSelectionOverlay();
   }
 
   private paintCorner(sample: PointerSample): QuarterCorner | undefined {
@@ -1998,7 +2189,33 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   private publishSelectionOverlay(): void {
     const state = this.uiStore.getState();
-    this.uiStore.setOverlay({ ...state.overlay, selection: this.selection });
+    const selection = this.selection?.kind === 'rect'
+      ? this.selection.rect
+      : this.selection
+        ? {
+            rect: this.selection.bounds,
+            kind: 'sparse' as const,
+            indices: Array.from(this.selection.indices),
+            cellIndices: Array.from(this.selection.indices),
+            boundaries: this.selection.boundaries,
+            boundarySegments: this.selection.boundaries,
+            boundary: this.selection.boundaries,
+            exteriorBoundary: this.selection.boundaries.filter((segment) => segment.kind === 'exterior'),
+            interiorBoundary: this.selection.boundaries.filter((segment) => segment.kind === 'interior')
+          }
+        : undefined;
+    this.uiStore.setOverlay({ ...state.overlay, selection });
+  }
+
+  private publishLassoPath(points: readonly ModelPoint[]): void {
+    const state = this.uiStore.getState();
+    this.uiStore.setOverlay({ ...state.overlay, lassoPath: { points: points.map((point) => ({ ...point })) } });
+  }
+
+  private clearLassoPath(): void {
+    const state = this.uiStore.getState();
+    if (!state.overlay.lassoPath) return;
+    this.uiStore.setOverlay({ ...state.overlay, lassoPath: undefined });
   }
 
   private publishBackstitchPreview(start: FixedPoint, end: FixedPoint): void {
@@ -2470,6 +2687,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       : cellRect
       ? { layer: 'base', cellRect, reason: 'editor-command' }
       : { layer: 'base', full: true, reason: 'editor-command' };
+    this.reconcileSelectionDimensions(result.document);
     this.renderer.setDocument(result.document, invalidation);
     this.publishSelectedCell(false);
     this.setStatus(status);
@@ -2485,10 +2703,12 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (projectChanged) this.resetForProjectSwitch(snapshot);
     else if (this.gesture && ((this.gesture.kind === 'paint' || this.gesture.kind === 'eraser' || this.gesture.kind === 'completion')
       ? (this.gesture.transaction.token.revision !== snapshot.revision || this.gesture.transaction.token.projectId !== snapshot.projectId)
-      : this.gesture.kind === 'backstitch'
+      : (this.gesture.kind === 'backstitch' || this.gesture.kind === 'lasso')
         ? (this.gesture.token.revision !== snapshot.revision || this.gesture.token.projectId !== snapshot.projectId)
         : false)) {
-      const staleStatus = this.gesture.kind === 'completion' ? 'Completion cancelled: project changed' : 'Stroke cancelled: project changed';
+      const staleStatus = this.gesture.kind === 'completion'
+        ? 'Completion cancelled: project changed'
+        : this.gesture.kind === 'lasso' ? 'Lasso cancelled: project changed' : 'Stroke cancelled: project changed';
       this.cancelGesture();
       this.setStatus(staleStatus);
     }
@@ -2637,6 +2857,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const backstitch = this.gesture?.kind === 'backstitch';
     this.gesture = undefined;
     this.clearPendingCells();
+    this.clearLassoPath();
     if (backstitch) this.resetBackstitchState();
     this.spaceHeld = false;
   }
@@ -2981,7 +3202,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     };
     if (extendSelection) {
       this.selectionAnchor ??= this.uiStore.getState().keyboardCursor ?? { x: 0, y: 0 };
-      this.selection = boundedGridRect(normalizeGridRect(this.selectionAnchor, bounded), snapshot.document);
+      const rect = boundedGridRect(normalizeGridRect(this.selectionAnchor, bounded), snapshot.document);
+      this.selection = rect ? { kind: 'rect', rect, documentWidth: snapshot.document.width, documentHeight: snapshot.document.height } : undefined;
     } else {
       this.selection = undefined;
       this.selectionAnchor = undefined;

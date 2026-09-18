@@ -22,7 +22,9 @@ import {
   createEditor,
   defaultPaletteSymbol,
   deleteRegionCommand,
+  deleteCellSetCommand,
   createPatternFragment,
+  createPatternFragmentFromCells,
   assertValidPatternFragment,
   getBackstitch,
   getCell,
@@ -53,6 +55,7 @@ import {
   estimatePasteFragmentHistoryBytes,
   estimateMixedEraseHistoryBytes,
   estimateDeleteRegionHistoryBytes,
+  estimateDeleteCellSetHistoryBytes,
   mergePaletteCommand,
   PALETTE_SYMBOLS,
   type PatternDocument,
@@ -1939,6 +1942,104 @@ describe('typed-array pattern document', () => {
     pattern.kind[0] = CellKind.Full;
     expect(validateDocument(pattern)).toBe(false);
     expect(() => assertValidDocument(pattern)).toThrow();
+  });
+
+  it('captures sparse cells into a tight transparent fragment and uses closed-union endpoints', () => {
+    let source = document(4, 1);
+    source = apply(source, { type: 'set-full', x: 1, y: 0, color: 1 });
+    source = apply(source, { type: 'set-full', x: 3, y: 0, color: 2 });
+    source.backstitches = {
+      ids: new Uint32Array([1, 2]),
+      x1: new Uint32Array([8, 10]),
+      y1: new Uint32Array([0, 2]),
+      x2: new Uint32Array([12, 12]),
+      y2: new Uint32Array([0, 2]),
+      colors: new Uint16Array([1, 2]),
+      completed: new Uint8Array([0, 1])
+    };
+    source.nextBackstitchId = 3;
+    assertValidDocument(source);
+
+    const fragment = createPatternFragmentFromCells(source, new Uint32Array([1, 3]));
+    expect(fragment.width).toBe(3);
+    expect(fragment.height).toBe(1);
+    expect(fragment.kind).toEqual(new Uint8Array([CellKind.Full, CellKind.Empty, CellKind.Full]));
+    expect(fragment.colors).toEqual(new Uint16Array([1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0]));
+    expect(fragment.backstitches.x1).toEqual(new Uint32Array([4]));
+    expect(fragment.backstitches.y1).toEqual(new Uint32Array([0]));
+    expect(fragment.backstitches.x2).toEqual(new Uint32Array([8]));
+    expect(fragment.backstitches.y2).toEqual(new Uint32Array([0]));
+    expect(validatePatternFragment(fragment)).toBe(true);
+
+    let destination = document(3, 1);
+    destination = apply(destination, { type: 'set-full', x: 1, y: 0, color: 3 });
+    const pasted = applyCommand(destination, pasteFragmentCommand(fragment, { x: 0, y: 0 }));
+    expect(pasted.document.kind).toEqual(new Uint8Array([CellKind.Full, CellKind.Full, CellKind.Full]));
+    expect(pasted.document.colors).toEqual(new Uint16Array([1, 0, 0, 0, 3, 0, 0, 0, 2, 0, 0, 0]));
+  });
+
+  it('deletes sparse cells and contained backstitches as one undoable delta', () => {
+    let pattern = document(4, 1);
+    pattern = apply(pattern, { type: 'set-full', x: 1, y: 0, color: 1 });
+    pattern = apply(pattern, { type: 'set-full', x: 2, y: 0, color: 2 });
+    pattern = apply(pattern, { type: 'set-full', x: 3, y: 0, color: 3 });
+    pattern.backstitches = {
+      ids: new Uint32Array([1, 2]),
+      x1: new Uint32Array([8, 10]),
+      y1: new Uint32Array([0, 2]),
+      x2: new Uint32Array([12, 12]),
+      y2: new Uint32Array([0, 2]),
+      colors: new Uint16Array([1, 2]),
+      completed: new Uint8Array([0, 1])
+    };
+    pattern.nextBackstitchId = 3;
+    assertValidDocument(pattern);
+    const editor = createEditor(pattern);
+    editor.clearHistory();
+    const before = documentContentSnapshot(editor.document);
+
+    const result = editor.execute(deleteCellSetCommand(new Uint32Array([1, 3]), editor.revision));
+    expect(result.changed).toBe(true);
+    expect(result.changedIndices).toEqual(new Uint32Array([1, 3]));
+    expect(result.changedBackstitchIds).toEqual(new Uint32Array([1]));
+    expect(editor.document.kind).toEqual(new Uint8Array([CellKind.Empty, CellKind.Empty, CellKind.Full, CellKind.Empty]));
+    expect(editor.document.backstitches.ids).toEqual(new Uint32Array([2]));
+    expect(editor.undoDepth).toBe(1);
+    expect(editor.lastHistoryEntryKind).toBe('delta');
+    expect(editor.historyBytes).toBe(estimateDeleteCellSetHistoryBytes(2, 2, 1));
+
+    editor.undo();
+    expect(documentContentSnapshot(editor.document)).toEqual(before);
+    editor.redo();
+    expect(editor.document.kind).toEqual(new Uint8Array([CellKind.Empty, CellKind.Empty, CellKind.Full, CellKind.Empty]));
+    expect(editor.document.backstitches.ids).toEqual(new Uint32Array([2]));
+
+    const direct = applyCommand(pattern, deleteCellSetCommand(new Uint32Array([1, 3]), pattern.revision));
+    expect(direct.changed).toBe(true);
+    expect(direct.document.backstitches.ids).toEqual(new Uint32Array([2]));
+  });
+
+  it('rejects malformed sparse deletion atomically and keeps no-ops out of history', () => {
+    const editor = createEditor(document(2, 1));
+    const before = editor.document;
+    expect(() => deleteCellSetCommand(new Uint32Array())).toThrow(/non-empty/);
+    expect(() => deleteCellSetCommand(new Uint32Array([1, 0]))).toThrow(/strictly increasing/);
+    expect(() => deleteCellSetCommand(new Uint32Array([0, 0]))).toThrow(/strictly increasing/);
+    expect(() => editor.execute({ type: 'delete-cell-set', indices: new Uint32Array([2]) })).toThrow(/out of bounds/);
+    expect(() => editor.execute(deleteCellSetCommand(new Uint32Array([0]), 1))).toThrow(/revision/i);
+    expect(() => editor.executeBatch([deleteCellSetCommand(new Uint32Array([0])), { type: 'set-full', x: 1, y: 0, color: 1 }])).toThrow(/standalone/);
+    expect(editor.document).toBe(before);
+    expect(editor.revision).toBe(0);
+    expect(editor.undoDepth).toBe(0);
+    expect(editor.historyBytes).toBe(0);
+
+    const noOpEditor = createEditor(document(2, 1));
+    const noOpBefore = noOpEditor.document;
+    const noOp = noOpEditor.execute(deleteCellSetCommand(new Uint32Array([0]), noOpEditor.revision));
+    expect(noOp.changed).toBe(false);
+    expect(noOpEditor.document).toBe(noOpBefore);
+    expect(noOpEditor.undoDepth).toBe(0);
+    expect(noOpEditor.historyBytes).toBe(0);
   });
 });
 
