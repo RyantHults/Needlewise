@@ -262,6 +262,40 @@ const MOVE_IMAGE_TAP_PIXELS = 5;
 const RESIZE_HANDLE_HIT_PIXELS = 12;
 /** Screen-pixel distance at which a dragged corner snaps to the canvas edge. */
 const RESIZE_EDGE_SNAP_PIXELS = 8;
+/** Screen-pixel movement permitted for a stationary multi-touch history tap. */
+export const TOUCH_HISTORY_TAP_SLOP_PIXELS = 12;
+/** Maximum timestamp span permitted for a stationary multi-touch history tap. */
+export const TOUCH_HISTORY_TAP_MAX_DURATION_MS = 350;
+
+const TOUCH_DIAGNOSTIC_PREFIX = '[Needlewise touch]';
+type TouchHistoryRejectionReason =
+  | 'movement'
+  | 'duration'
+  | 'distinct-contact-limit'
+  | 'concurrent-contact-limit'
+  | 'cancelled'
+  | 'lost-capture'
+  | 'blur'
+  | 'project/document reset'
+  | 'reference-image-tool';
+
+function debugTouch(event: string, details: Record<string, unknown>): void {
+  try {
+    const debug = globalThis.console?.debug;
+    if (typeof debug === 'function') debug.call(globalThis.console, TOUCH_DIAGNOSTIC_PREFIX, event, details);
+  } catch {
+    // Diagnostics must never affect editor input.
+  }
+}
+
+interface TouchHistoryCandidate {
+  readonly startPositions: Map<number, ScreenPoint>;
+  readonly distinctPointerIds: Set<number>;
+  readonly startedAt?: number;
+  maxPointers: number;
+  invalid: boolean;
+  rejectionReason?: TouchHistoryRejectionReason;
+}
 
 function cloneCell(cell: ModelPoint): ModelPoint {
   return { x: Math.floor(cell.x), y: Math.floor(cell.y) };
@@ -825,6 +859,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private lastGatewaySnapshot: WorkspaceEditorSnapshot;
   private gesture: Gesture | undefined;
   private readonly touchPointers = new Map<number, PointerSample>();
+  private touchHistoryCandidate: TouchHistoryCandidate | undefined;
   private lastHoverSample: PointerSample | undefined;
   private spaceHeld = false;
   private commandInFlight = false;
@@ -1405,11 +1440,15 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const tool = this.uiStore.getState().tool.tool;
       if (tool === 'move-image' || tool === 'resize-image') {
         // Single-finger image-tool drags; keep multi-touch ignored.
+        this.rejectTouchHistoryCandidate('reference-image-tool');
+        debugTouch('history-excluded', { reason: 'reference-image-tool', tool });
         const snapshot = this.gateway.getSnapshot();
         if (!snapshot.document) return false;
         return tool === 'move-image' ? this.beginMoveImage(sample, snapshot.document) : this.beginResizeImage(sample);
       }
+      if (this.touchPointers.size === 0) this.beginTouchHistoryCandidate(sample);
       this.touchPointers.set(sample.pointerId, sample);
+      this.updateTouchHistoryCandidate(sample);
       if (this.touchPointers.size >= 2 && this.gesture?.kind !== 'pinch') this.beginPinch();
       else if (this.touchPointers.size === 1) this.gesture = { kind: 'pan', pointerId: sample.pointerId, lastX: sample.screenX, lastY: sample.screenY };
       return true;
@@ -1529,6 +1568,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (sample.pointerType === 'touch') {
       if (!this.touchPointers.has(sample.pointerId) && this.gesture?.kind !== 'move-image' && this.gesture?.kind !== 'resize-image') return false;
       this.touchPointers.set(sample.pointerId, sample);
+      const stationaryHistoryTap = this.updateTouchHistoryCandidate(sample);
       if (this.gesture?.kind === 'move-image') {
         if (this.gesture.pointerId === sample.pointerId) this.updateMoveImage(sample);
         return true;
@@ -1537,8 +1577,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         if (this.gesture.pointerId === sample.pointerId) this.updateResizeImage(sample);
         return true;
       }
-      if (this.gesture?.kind === 'pinch') this.updatePinch();
-      else if (this.gesture?.kind === 'pan' && this.gesture.pointerId === sample.pointerId) this.updatePan(sample);
+      if (this.gesture?.kind === 'pinch') {
+        if (!stationaryHistoryTap) this.updatePinch();
+      } else if (this.gesture?.kind === 'pan' && this.gesture.pointerId === sample.pointerId) {
+        if (!stationaryHistoryTap) this.updatePan(sample);
+      }
       return true;
     }
     const gesture = this.gesture;
@@ -1642,6 +1685,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       return false;
     }
     if (sample.pointerType === 'touch') {
+      this.updateTouchHistoryCandidate(sample);
       this.touchPointers.delete(sample.pointerId);
       if (this.gesture?.kind === 'move-image') {
         if (this.gesture.pointerId === sample.pointerId) this.finishMoveImage(this.gesture, sample);
@@ -1654,6 +1698,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       if (this.gesture?.kind === 'pinch') {
         if (this.gesture.pointerIds.includes(sample.pointerId)) this.rebaseTouchGesture();
       } else if (this.gesture?.kind === 'pan' && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
+      if (this.touchPointers.size === 0) this.finishTouchHistoryCandidate();
       return true;
     }
     const gesture = this.gesture;
@@ -1710,11 +1755,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.spaceHeld = false;
     this.clearBrushPreview();
     if (sample.pointerType === 'touch') {
+      this.rejectTouchHistoryCandidate('cancelled');
       this.touchPointers.delete(sample.pointerId);
       if ((this.gesture?.kind === 'move-image' || this.gesture?.kind === 'resize-image') && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
       else if (this.gesture?.kind === 'pinch') {
         if (this.gesture.pointerIds.includes(sample.pointerId)) this.rebaseTouchGesture();
       } else if (this.gesture?.kind === 'pan' && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
+      if (this.touchPointers.size === 0) this.clearTouchHistoryCandidate();
       return true;
     }
     const gesture = this.gesture;
@@ -1744,11 +1791,17 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.ensureStarted();
     this.spaceHeld = false;
     if (sample.pointerType === 'touch') {
+      // Browsers can emit lostpointercapture immediately after pointerup has
+      // already removed this pointer. That notification is not a cancellation
+      // of the still-active multi-touch sequence.
+      if (!this.touchPointers.has(sample.pointerId)) return true;
+      this.rejectTouchHistoryCandidate('lost-capture');
       this.touchPointers.delete(sample.pointerId);
       if ((this.gesture?.kind === 'move-image' || this.gesture?.kind === 'resize-image') && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
       else if (this.gesture?.kind === 'pinch') {
         if (this.gesture.pointerIds.includes(sample.pointerId)) this.rebaseTouchGesture();
       } else if (this.gesture?.kind === 'pan' && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
+      if (this.touchPointers.size === 0) this.clearTouchHistoryCandidate();
       return true;
     }
     const gesture = this.gesture;
@@ -1864,7 +1917,77 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   handleBlur(): void {
     this.spaceHeld = false;
     this.editorFocused = false;
+    this.rejectTouchHistoryCandidate('blur');
+    this.clearTouchHistoryCandidate();
     if (this.gesture?.kind === 'backstitch') this.resetBackstitchState();
+  }
+
+  private beginTouchHistoryCandidate(sample: PointerSample): void {
+    this.touchHistoryCandidate = {
+      startPositions: new Map([[sample.pointerId, { x: sample.screenX, y: sample.screenY }]]),
+      distinctPointerIds: new Set([sample.pointerId]),
+      ...(Number.isFinite(sample.timeStamp) ? { startedAt: sample.timeStamp } : {}),
+      maxPointers: 1,
+      invalid: false
+    };
+    debugTouch('history-candidate-begin', {
+      pointerId: sample.pointerId,
+      distinctContacts: 1,
+      concurrentContacts: 1,
+      x: sample.screenX,
+      y: sample.screenY,
+      timeStamp: sample.timeStamp ?? null
+    });
+  }
+
+  private rejectTouchHistoryCandidate(reason: TouchHistoryRejectionReason): void {
+    const candidate = this.touchHistoryCandidate;
+    if (!candidate || candidate.rejectionReason) return;
+    candidate.invalid = true;
+    candidate.rejectionReason = reason;
+    debugTouch('history-candidate-rejected', {
+      reason,
+      distinctContacts: candidate.distinctPointerIds.size,
+      maxConcurrentContacts: candidate.maxPointers
+    });
+  }
+
+  private updateTouchHistoryCandidate(sample: PointerSample): boolean {
+    const candidate = this.touchHistoryCandidate;
+    if (!candidate) return false;
+    candidate.distinctPointerIds.add(sample.pointerId);
+    if (candidate.distinctPointerIds.size > 3) this.rejectTouchHistoryCandidate('distinct-contact-limit');
+    candidate.maxPointers = Math.max(candidate.maxPointers, this.touchPointers.size);
+    if (candidate.maxPointers > 3) this.rejectTouchHistoryCandidate('concurrent-contact-limit');
+    const start = candidate.startPositions.get(sample.pointerId);
+    if (!start) candidate.startPositions.set(sample.pointerId, { x: sample.screenX, y: sample.screenY });
+    if (start && Math.hypot(sample.screenX - start.x, sample.screenY - start.y) > TOUCH_HISTORY_TAP_SLOP_PIXELS) this.rejectTouchHistoryCandidate('movement');
+    if (candidate.startedAt !== undefined && Number.isFinite(sample.timeStamp)
+      && sample.timeStamp! - candidate.startedAt > TOUCH_HISTORY_TAP_MAX_DURATION_MS) this.rejectTouchHistoryCandidate('duration');
+    return !candidate.invalid;
+  }
+
+  private clearTouchHistoryCandidate(): void {
+    this.touchHistoryCandidate = undefined;
+  }
+
+  private finishTouchHistoryCandidate(): void {
+    const candidate = this.touchHistoryCandidate;
+    const distinctCount = candidate?.distinctPointerIds.size;
+    if (!candidate) return;
+    if (!candidate.invalid && (distinctCount !== candidate.maxPointers || (distinctCount !== 2 && distinctCount !== 3))) this.rejectTouchHistoryCandidate('distinct-contact-limit');
+    const valid = !candidate.invalid && distinctCount !== undefined && (distinctCount === 2 || distinctCount === 3);
+    debugTouch('history-candidate-complete', {
+      distinctContacts: distinctCount ?? 0,
+      maxConcurrentContacts: candidate.maxPointers,
+      valid,
+      rejectionReason: candidate.rejectionReason ?? null
+    });
+    this.touchHistoryCandidate = undefined;
+    if (!valid || distinctCount === undefined) return;
+    const action = distinctCount === 2 ? 'undo' : 'redo';
+    debugTouch('history-dispatch', { action, distinctContacts: distinctCount });
+    this.historyAction(action);
   }
 
   private beginPinch(): void {
@@ -2700,6 +2823,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const documentChanged = previous.document !== snapshot.document || previous.revision !== snapshot.revision;
     this.lastGatewaySnapshot = snapshot;
     if (!force && !projectChanged && !documentChanged) return;
+    if (documentChanged && this.touchHistoryCandidate) {
+      this.rejectTouchHistoryCandidate('project/document reset');
+      this.clearTouchHistoryCandidate();
+    }
     if (projectChanged) this.resetForProjectSwitch(snapshot);
     else if (this.gesture && ((this.gesture.kind === 'paint' || this.gesture.kind === 'eraser' || this.gesture.kind === 'completion')
       ? (this.gesture.transaction.token.revision !== snapshot.revision || this.gesture.transaction.token.projectId !== snapshot.projectId)
@@ -2856,6 +2983,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private cancelGesture(): void {
     const backstitch = this.gesture?.kind === 'backstitch';
     this.gesture = undefined;
+    this.clearTouchHistoryCandidate();
     this.clearPendingCells();
     this.clearLassoPath();
     if (backstitch) this.resetBackstitchState();

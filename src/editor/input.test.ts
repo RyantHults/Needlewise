@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createPointerEventsAdapter, type PointerEventSurface, type PointerSample } from './input';
 
 class FakeSurface implements PointerEventSurface {
@@ -120,6 +120,7 @@ describe('DOM pointer event adapter', () => {
   });
 
   it('delivers touch pointer sequences through the DOM surface with capture lifecycle intact', () => {
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
     const surface = document.createElement('div');
     const captures: number[] = [];
     const releases: number[] = [];
@@ -142,13 +143,14 @@ describe('DOM pointer event adapter', () => {
       handleBlur: () => undefined
     };
     const adapter = createPointerEventsAdapter(surface, controller);
-    const event = (type: string, clientX: number, clientY: number): PointerEvent => {
+    const event = (type: string, clientX: number, clientY: number, timeStamp: number): PointerEvent => {
       const next = new Event(type, { cancelable: true });
       Object.defineProperties(next, {
         pointerId: { value: 11 },
         pointerType: { value: 'touch' },
         clientX: { value: clientX },
         clientY: { value: clientY },
+        timeStamp: { value: timeStamp },
         button: { value: 0 },
         buttons: { value: type === 'pointerup' ? 0 : 1 },
         isPrimary: { value: true },
@@ -157,20 +159,55 @@ describe('DOM pointer event adapter', () => {
       return next as PointerEvent;
     };
 
-    surface.dispatchEvent(event('pointerdown', 15, 26));
-    surface.dispatchEvent(event('pointermove', 18, 29));
-    surface.dispatchEvent(event('pointerup', 20, 31));
+    surface.dispatchEvent(event('pointerdown', 15, 26, 100));
+    surface.dispatchEvent(event('pointermove', 18, 29, 125));
+    surface.dispatchEvent(event('pointerup', 20, 31, 150));
     adapter.dispose();
     surface.remove();
 
     expect(downs).toHaveLength(1);
     expect(moves).toHaveLength(1);
     expect(ups).toHaveLength(1);
-    expect(downs[0]).toEqual(expect.objectContaining({ pointerType: 'touch', screenX: 5, screenY: 6 }));
-    expect(moves[0]).toEqual(expect.objectContaining({ pointerType: 'touch', screenX: 8, screenY: 9 }));
-    expect(ups[0]).toEqual(expect.objectContaining({ pointerType: 'touch', screenX: 10, screenY: 11 }));
+    expect(downs[0]).toEqual(expect.objectContaining({ pointerType: 'touch', screenX: 5, screenY: 6, timeStamp: 100 }));
+    expect(moves[0]).toEqual(expect.objectContaining({ pointerType: 'touch', screenX: 8, screenY: 9, timeStamp: 125 }));
+    expect(ups[0]).toEqual(expect.objectContaining({ pointerType: 'touch', screenX: 10, screenY: 11, timeStamp: 150 }));
     expect(captures).toEqual([11]);
     expect(releases).toEqual([11]);
+    debug.mockRestore();
+  });
+
+  it('diagnoses touch transport lifecycle events without logging pointer moves', () => {
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
+    const surface = new FakeSurface();
+    const controller = {
+      handlePointerDown: () => true,
+      handlePointerMove: () => true,
+      handlePointerUp: () => true,
+      handlePointerCancel: () => true,
+      handlePointerLostCapture: () => true,
+      handleWheel: () => true,
+      handleKeyDown: () => true,
+      handleKeyUp: () => true,
+      handleBlur: () => undefined
+    };
+    const adapter = createPointerEventsAdapter(surface, controller);
+    const touchEvent = (id: number, type: string, timeStamp: number): PointerEvent => ({
+      ...pointerEvent(id, 15, 26),
+      pointerType: 'touch',
+      timeStamp
+    } as unknown as PointerEvent);
+    surface.dispatch('pointerdown', touchEvent(1, 'pointerdown', 10));
+    surface.dispatch('pointerup', touchEvent(1, 'pointerup', 20));
+    surface.dispatch('pointercancel', touchEvent(1, 'pointercancel', 30));
+    surface.dispatch('lostpointercapture', touchEvent(1, 'lostpointercapture', 40));
+    adapter.dispose();
+    expect(debug.mock.calls.filter(([prefix]) => prefix === '[Needlewise touch]')).toHaveLength(4);
+    expect(debug.mock.calls.map(([, eventName]) => eventName)).toEqual(['pointerdown', 'pointerup', 'pointercancel', 'lostpointercapture']);
+    expect(debug.mock.calls.every(([, , details]) => (details as { x: number; y: number; timeStamp: number; handled: boolean }).x === 5
+      && (details as { y: number }).y === 6
+      && (details as { timeStamp: number }).timeStamp >= 10
+      && (details as { handled: boolean }).handled)).toBe(true);
+    debug.mockRestore();
   });
 
   it('does not forward non-finite pointer or wheel samples', () => {

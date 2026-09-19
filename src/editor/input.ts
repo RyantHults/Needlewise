@@ -8,6 +8,8 @@ export interface PointerSample {
   readonly button?: number;
   readonly buttons?: number;
   readonly isPrimary?: boolean;
+  /** DOM PointerEvent.timeStamp; omitted by deterministic headless callers. */
+  readonly timeStamp?: number;
   readonly ctrlKey?: boolean;
   readonly metaKey?: boolean;
   readonly shiftKey?: boolean;
@@ -65,6 +67,7 @@ function sample(surface: PointerEventSurface, event: PointerEvent): PointerSampl
     button: event.button,
     buttons: event.buttons,
     isPrimary: event.isPrimary,
+    ...(Number.isFinite(event.timeStamp) ? { timeStamp: event.timeStamp } : {}),
     ctrlKey: event.ctrlKey,
     metaKey: event.metaKey,
     shiftKey: event.shiftKey,
@@ -74,6 +77,23 @@ function sample(surface: PointerEventSurface, event: PointerEvent): PointerSampl
 
 function isFinitePointerSample(value: PointerSample): boolean {
   return Number.isFinite(value.screenX) && Number.isFinite(value.screenY);
+}
+
+function debugTouchPointer(eventName: string, pointer: PointerEvent, point: { x: number; y: number }, timeStamp: number | null, handled?: boolean): void {
+  try {
+    const debug = globalThis.console?.debug;
+    if (typeof debug === 'function') {
+      debug.call(globalThis.console, '[Needlewise touch]', eventName, {
+        pointerId: pointer.pointerId,
+        x: point.x,
+        y: point.y,
+        timeStamp,
+        ...(handled === undefined ? {} : { handled })
+      });
+    }
+  } catch {
+    // Diagnostics must never affect pointer transport.
+  }
 }
 
 /** Attach DOM Pointer Events without putting DOM knowledge in the controller. */
@@ -86,7 +106,9 @@ export function createPointerEventsAdapter(
   const onPointerDown = (event: Event): void => {
     const pointer = event as PointerEvent;
     const next = sample(surface, pointer);
-    if (isFinitePointerSample(next) && controller.handlePointerDown(next)) {
+    const handled = isFinitePointerSample(next) ? controller.handlePointerDown(next) : false;
+    if (pointer.pointerType === 'touch') debugTouchPointer('pointerdown', pointer, { x: next.screenX, y: next.screenY }, next.timeStamp ?? null, handled);
+    if (handled) {
       surface.setPointerCapture?.(pointer.pointerId);
       event.preventDefault();
     }
@@ -105,20 +127,23 @@ export function createPointerEventsAdapter(
   const onPointerUp = (event: Event): void => {
     const pointer = event as PointerEvent;
     const next = sample(surface, pointer);
-    if (isFinitePointerSample(next)) controller.handlePointerUp(next);
+    const handled = isFinitePointerSample(next) ? controller.handlePointerUp(next) : false;
+    if (pointer.pointerType === 'touch') debugTouchPointer('pointerup', pointer, { x: next.screenX, y: next.screenY }, next.timeStamp ?? null, handled);
     surface.releasePointerCapture?.(pointer.pointerId);
   };
   const onPointerCancel = (event: Event): void => {
     const pointer = event as PointerEvent;
     const next = sample(surface, pointer);
-    if (isFinitePointerSample(next)) controller.handlePointerCancel(next);
+    const handled = isFinitePointerSample(next) ? controller.handlePointerCancel(next) : false;
+    if (pointer.pointerType === 'touch') debugTouchPointer('pointercancel', pointer, { x: next.screenX, y: next.screenY }, next.timeStamp ?? null, handled);
     surface.releasePointerCapture?.(pointer.pointerId);
   };
   const onPointerLeave = (): void => { controller.handlePointerLeave?.(); };
   const onLostPointerCapture = (event: Event): void => {
     const pointer = event as PointerEvent;
     const next = sample(surface, pointer);
-    if (isFinitePointerSample(next)) controller.handlePointerLostCapture(next);
+    const handled = isFinitePointerSample(next) ? controller.handlePointerLostCapture(next) : false;
+    if (pointer.pointerType === 'touch') debugTouchPointer('lostpointercapture', pointer, { x: next.screenX, y: next.screenY }, next.timeStamp ?? null, handled);
   };
   const onWheel = (event: Event): void => {
     const wheel = event as WheelEvent;

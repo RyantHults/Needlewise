@@ -599,6 +599,205 @@ describe('EditorSurfaceController', () => {
     controller.dispose();
   });
 
+  it('recognizes stationary two-finger undo and three-finger redo taps after all fingers lift', () => {
+    const undo = controllerFixture();
+    undo.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    expect(undo.gateway.undoDepth).toBe(1);
+    undo.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
+    undo.controller.handlePointerDown(pointer(2, 60, 20, 'touch'));
+    undo.controller.handlePointerUp(pointer(2, 60, 20, 'touch'));
+    expect(undo.gateway.undoDepth).toBe(1);
+    undo.controller.handlePointerUp(pointer(1, 20, 20, 'touch'));
+    expect(undo.gateway.undoDepth).toBe(0);
+    expect(undo.gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
+    undo.controller.dispose();
+
+    const redo = controllerFixture();
+    redo.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    redo.gateway.undo({ projectId: 'project-a', revision: 1 });
+    redo.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
+    redo.controller.handlePointerDown(pointer(2, 60, 20, 'touch'));
+    redo.controller.handlePointerDown(pointer(3, 40, 60, 'touch'));
+    redo.controller.handlePointerUp(pointer(2, 60, 20, 'touch'));
+    redo.controller.handlePointerUp(pointer(1, 20, 20, 'touch'));
+    expect(redo.gateway.undoDepth).toBe(0);
+    redo.controller.handlePointerUp(pointer(3, 40, 60, 'touch'));
+    expect(redo.gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Full);
+    expect(redo.gateway.undoDepth).toBe(1);
+    redo.controller.dispose();
+  });
+
+  it('diagnoses accepted and rejected touch history candidates without logging moves', () => {
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
+    const accepted = controllerFixture();
+    accepted.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    accepted.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
+    accepted.controller.handlePointerDown(pointer(2, 60, 20, 'touch'));
+    accepted.controller.handlePointerUp(pointer(2, 60, 20, 'touch'));
+    accepted.controller.handlePointerUp(pointer(1, 20, 20, 'touch'));
+    accepted.controller.dispose();
+
+    const rejected = controllerFixture();
+    rejected.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    rejected.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
+    rejected.controller.handlePointerDown(pointer(2, 60, 20, 'touch'));
+    rejected.controller.handlePointerMove(pointer(2, 100, 20, 'touch'));
+    rejected.controller.handlePointerUp(pointer(2, 100, 20, 'touch'));
+    rejected.controller.handlePointerUp(pointer(1, 20, 20, 'touch'));
+    rejected.controller.dispose();
+
+    const touchCalls = debug.mock.calls.filter(([prefix]) => prefix === '[Needlewise touch]');
+    expect(touchCalls.some(([, eventName]) => eventName === 'history-candidate-begin')).toBe(true);
+    expect(touchCalls.some(([, eventName, details]) => eventName === 'history-candidate-complete' && (details as { valid: boolean }).valid)).toBe(true);
+    expect(touchCalls.some(([, eventName, details]) => eventName === 'history-dispatch' && (details as { action: string }).action === 'undo')).toBe(true);
+    expect(touchCalls.some(([, eventName, details]) => eventName === 'history-candidate-rejected' && (details as { reason: string }).reason === 'movement')).toBe(true);
+    expect(touchCalls.some(([, eventName]) => eventName === 'pointermove')).toBe(false);
+    debug.mockRestore();
+  });
+
+  it('ignores post-pointerup lost capture while preserving a two-finger undo candidate', () => {
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
+    const fixture = controllerFixture();
+    fixture.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    fixture.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
+    fixture.controller.handlePointerDown(pointer(2, 60, 20, 'touch'));
+    fixture.controller.handlePointerUp(pointer(1, 20, 20, 'touch'));
+    fixture.controller.handlePointerLostCapture(pointer(1, 20, 20, 'touch'));
+    fixture.controller.handlePointerUp(pointer(2, 60, 20, 'touch'));
+    expect(fixture.gateway.undoDepth).toBe(0);
+    expect(fixture.gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
+    expect(debug.mock.calls.some(([, eventName, details]) => eventName === 'history-candidate-rejected'
+      && (details as { reason: string }).reason === 'lost-capture')).toBe(false);
+    fixture.controller.dispose();
+    debug.mockRestore();
+  });
+
+  it('does not roll a history candidate onto newly contacted pointer IDs', () => {
+    const twoThenThree = controllerFixture();
+    twoThenThree.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    twoThenThree.gateway.undo({ projectId: 'project-a', revision: 1 });
+    expect(twoThenThree.gateway.undoDepth).toBe(0);
+    twoThenThree.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
+    twoThenThree.controller.handlePointerDown(pointer(2, 60, 20, 'touch'));
+    twoThenThree.controller.handlePointerUp(pointer(1, 20, 20, 'touch'));
+    twoThenThree.controller.handlePointerDown(pointer(3, 40, 60, 'touch'));
+    twoThenThree.controller.handlePointerUp(pointer(3, 40, 60, 'touch'));
+    twoThenThree.controller.handlePointerUp(pointer(2, 60, 20, 'touch'));
+    expect(twoThenThree.gateway.undoDepth).toBe(0);
+    expect(twoThenThree.gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
+    twoThenThree.gateway.redo({ projectId: 'project-a', revision: 2 });
+    expect(twoThenThree.gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Full);
+    twoThenThree.controller.dispose();
+
+    const threeThenFour = controllerFixture();
+    threeThenFour.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    threeThenFour.gateway.undo({ projectId: 'project-a', revision: 1 });
+    threeThenFour.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
+    threeThenFour.controller.handlePointerDown(pointer(2, 60, 20, 'touch'));
+    threeThenFour.controller.handlePointerDown(pointer(3, 40, 60, 'touch'));
+    threeThenFour.controller.handlePointerUp(pointer(1, 20, 20, 'touch'));
+    threeThenFour.controller.handlePointerDown(pointer(4, 80, 60, 'touch'));
+    threeThenFour.controller.handlePointerUp(pointer(4, 80, 60, 'touch'));
+    threeThenFour.controller.handlePointerUp(pointer(2, 60, 20, 'touch'));
+    threeThenFour.controller.handlePointerUp(pointer(3, 40, 60, 'touch'));
+    expect(threeThenFour.gateway.undoDepth).toBe(0);
+    expect(threeThenFour.gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
+    threeThenFour.controller.dispose();
+  });
+
+  it('rejects non-tap touch sequences and suppresses only stationary jitter', () => {
+    const single = controllerFixture();
+    single.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    single.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
+    single.controller.handlePointerUp(pointer(1, 20, 20, 'touch'));
+    expect(single.gateway.undoDepth).toBe(1);
+    single.controller.dispose();
+
+    const four = controllerFixture();
+    four.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    for (const [id, x, y] of [[1, 20, 20], [2, 60, 20], [3, 40, 60], [4, 80, 60]] as const) four.controller.handlePointerDown(pointer(id, x, y, 'touch'));
+    for (const id of [4, 2, 1, 3]) four.controller.handlePointerUp(pointer(id, 20, 20, 'touch'));
+    expect(four.gateway.undoDepth).toBe(1);
+    four.controller.dispose();
+
+    const jitter = controllerFixture();
+    jitter.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    const before = jitter.uiStore.getState().viewport;
+    jitter.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
+    jitter.controller.handlePointerDown(pointer(2, 60, 20, 'touch'));
+    jitter.controller.handlePointerMove(pointer(1, 25, 25, 'touch'));
+    jitter.controller.handlePointerMove(pointer(2, 55, 25, 'touch'));
+    jitter.controller.handlePointerUp(pointer(1, 25, 25, 'touch'));
+    jitter.controller.handlePointerUp(pointer(2, 55, 25, 'touch'));
+    expect(jitter.uiStore.getState().viewport).toEqual(before);
+    expect(jitter.gateway.undoDepth).toBe(0);
+    jitter.controller.dispose();
+
+    const moved = controllerFixture();
+    moved.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    const beforePinch = moved.uiStore.getState().viewport;
+    moved.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
+    moved.controller.handlePointerDown(pointer(2, 60, 20, 'touch'));
+    moved.controller.handlePointerMove(pointer(2, 100, 20, 'touch'));
+    moved.controller.handlePointerUp(pointer(1, 20, 20, 'touch'));
+    moved.controller.handlePointerUp(pointer(2, 100, 20, 'touch'));
+    expect(moved.uiStore.getState().viewport).not.toEqual(beforePinch);
+    expect(moved.gateway.undoDepth).toBe(1);
+    moved.controller.dispose();
+
+    const duration = controllerFixture();
+    duration.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    duration.controller.handlePointerDown(pointer(1, 20, 20, 'touch', 0, { timeStamp: 0 }));
+    duration.controller.handlePointerDown(pointer(2, 60, 20, 'touch', 0, { timeStamp: 0 }));
+    duration.controller.handlePointerUp(pointer(2, 60, 20, 'touch', 0, { timeStamp: 351 }));
+    duration.controller.handlePointerUp(pointer(1, 20, 20, 'touch', 0, { timeStamp: 351 }));
+    expect(duration.gateway.undoDepth).toBe(1);
+    duration.controller.dispose();
+  });
+
+  it('clears multi-touch history candidates on cancellation, capture loss, blur, resets, and stale documents', () => {
+    const exercise = (teardown: (fixture: ReturnType<typeof controllerFixture>) => void): void => {
+      const fixture = controllerFixture();
+      fixture.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+      fixture.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
+      fixture.controller.handlePointerDown(pointer(2, 60, 20, 'touch'));
+      teardown(fixture);
+      fixture.controller.handlePointerUp(pointer(1, 20, 20, 'touch'));
+      fixture.controller.handlePointerUp(pointer(2, 60, 20, 'touch'));
+      expect(fixture.gateway.undoDepth).toBe(1);
+      fixture.controller.dispose();
+    };
+    exercise((fixture) => fixture.controller.handlePointerCancel(pointer(1, 20, 20, 'touch')));
+    exercise((fixture) => fixture.controller.handlePointerLostCapture(pointer(1, 20, 20, 'touch')));
+    exercise((fixture) => fixture.controller.handleBlur());
+    exercise((fixture) => fixture.controller.setMetrics(getCanvasMetrics(96, 96)));
+
+    const stale = controllerFixture();
+    stale.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    stale.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
+    stale.controller.handlePointerDown(pointer(2, 60, 20, 'touch'));
+    stale.gateway.execute({ type: 'set-full', x: 1, y: 0, color: 1 });
+    stale.controller.handlePointerUp(pointer(1, 20, 20, 'touch'));
+    stale.controller.handlePointerUp(pointer(2, 60, 20, 'touch'));
+    expect(stale.gateway.undoDepth).toBe(2);
+    stale.controller.dispose();
+  });
+
+  it('does not recognize history taps in move-image or resize-image tools', () => {
+    const trace = { source: {}, width: 4, height: 4, chartBounds: { x: 0, y: 0, width: 8, height: 8 } };
+    for (const tool of ['move-image', 'resize-image'] as const) {
+      const fixture = controllerFixture({ traceImage: trace });
+      fixture.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+      fixture.controller.setTool({ tool });
+      fixture.controller.handlePointerDown(pointer(1, 8, 8, 'touch'));
+      fixture.controller.handlePointerDown(pointer(2, 8, 8, 'touch'));
+      fixture.controller.handlePointerUp(pointer(1, 8, 8, 'touch'));
+      fixture.controller.handlePointerUp(pointer(2, 8, 8, 'touch'));
+      expect(fixture.gateway.undoDepth).toBe(1);
+      fixture.controller.dispose();
+    }
+  });
+
   it('reserves Space for temporary pan and clears the modifier on stop and text targets', () => {
     const first = controllerFixture();
     first.controller.handleKeyDown({ key: 'Space', preventDefault: () => undefined });
