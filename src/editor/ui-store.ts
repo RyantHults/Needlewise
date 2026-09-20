@@ -21,7 +21,7 @@ export const DEFAULT_EDITOR_UI_STATE: EditorUiState = {
   mode: ChartPresentationMode.Color,
   gridVisible: true,
   overlay: {},
-  tool: { tool: 'paint', brush: { kind: 'full', paletteId: 1 } },
+  tool: { tool: 'pan' },
   paletteId: 1,
   keyboardCursor: null,
   selectedCell: null,

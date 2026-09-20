@@ -154,7 +154,7 @@ function pointer(pointerId: number, screenX: number, screenY: number, pointerTyp
 
 function controllerFixture(options: Partial<EditorSurfaceControllerOptions> = {}, initialDocument?: PatternDocument) {
   const gateway = new FakeGateway(initialDocument);
-  const uiStore = createUiStore();
+  const uiStore = createUiStore({ tool: { tool: 'paint', brush: { kind: 'full', paletteId: 1 } } });
   const renderer = rendererFixture();
   const controller = new EditorSurfaceController({ gateway, uiStore, renderer: renderer.renderer, metrics: getCanvasMetrics(128, 128), ...options });
   controller.start();
@@ -162,6 +162,14 @@ function controllerFixture(options: Partial<EditorSurfaceControllerOptions> = {}
 }
 
 describe('EditorSurfaceController', () => {
+  it('defaults new UI stores to pan while preserving explicit initial tools', () => {
+    expect(createUiStore().getState().tool).toEqual({ tool: 'pan' });
+    expect(createUiStore({ tool: { tool: 'paint', brush: { kind: 'full', paletteId: 1 } } }).getState().tool).toEqual({
+      tool: 'paint',
+      brush: { kind: 'full', paletteId: 1 }
+    });
+  });
+
   it('adds the nearest DMC color to the palette and activates the paint brush when sampling the reference image', () => {
     const sampled: TraceRgb[] = [];
     const trace: TraceImage = { source: {}, width: 4, height: 4 };

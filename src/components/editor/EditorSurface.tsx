@@ -220,10 +220,7 @@ export function EditorSurface({
         first
           ? {
               paletteId: first.id,
-              tool: {
-                tool: "paint",
-                brush: { kind: "full", paletteId: first.id },
-              },
+              tool: { tool: "pan" },
             }
           : { paletteId: null, tool: { tool: "pan" } },
       );
@@ -1029,6 +1026,15 @@ export function EditorSurface({
         <aside ref={mobileDock} className="editor-rail-shell" aria-label="Editor controls">
           <div ref={mobilePanel === "tools" ? mobilePopover : undefined} id="mobile-tools-popover" className={`editor-rail-popover mobile-tools-popover${mobilePanel === "tools" ? " mobile-popover-open" : ""}`} role={mobilePanel === "tools" ? "dialog" : undefined} aria-label="Tools" tabIndex={-1}>
           <nav className="editor-rail" aria-label="Editor sections">
+            <button className="rail-button" type="button" aria-label="Pan" title="Pan" aria-pressed={ui?.tool.tool === "pan"} onClick={() => invoke("pan")}>
+              <img data-icon="pan" src={panIcon} alt="" aria-hidden="true" />
+            </button>
+            <button className="rail-button" type="button" aria-label="Select" title="Select" aria-pressed={ui?.tool.tool === "select"} onClick={() => invoke("select")}>
+              <img data-icon="select" src={selectIcon} alt="" aria-hidden="true" />
+            </button>
+            <button className="rail-button" type="button" aria-label="Lasso select" title="Lasso select" aria-pressed={String(ui?.tool.tool) === "lasso"} onClick={() => invoke("lasso")}>
+              <img data-icon="lasso" src={lassoIcon} alt="" aria-hidden="true" />
+            </button>
             <button
               className="rail-button"
               type="button"
@@ -1092,42 +1098,12 @@ export function EditorSurface({
             <button
               className="rail-button"
               type="button"
-              aria-label="Pan"
-              title="Pan"
-              aria-pressed={ui?.tool.tool === "pan"}
-              onClick={() => invoke("pan")}
-            >
-              <img data-icon="pan" src={panIcon} alt="" aria-hidden="true" />
-            </button>
-            <button
-              className="rail-button"
-              type="button"
               aria-label="Eraser"
               title="Eraser"
               aria-pressed={ui?.tool.tool === "eraser"}
               onClick={() => invoke("eraser")}
             >
               <img data-icon="eraser" src={eraserIcon} alt="" aria-hidden="true" />
-            </button>
-            <button
-              className="rail-button"
-              type="button"
-              aria-label="Select"
-              title="Select"
-              aria-pressed={ui?.tool.tool === "select"}
-              onClick={() => invoke("select")}
-            >
-              <img data-icon="select" src={selectIcon} alt="" aria-hidden="true" />
-            </button>
-            <button
-              className="rail-button"
-              type="button"
-              aria-label="Lasso select"
-              title="Lasso select"
-              aria-pressed={String(ui?.tool.tool) === "lasso"}
-              onClick={() => invoke("lasso")}
-            >
-              <img data-icon="lasso" src={lassoIcon} alt="" aria-hidden="true" />
             </button>
             <button
               className="rail-button"

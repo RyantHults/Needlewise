@@ -8,7 +8,7 @@ const f = vi.hoisted(() => ({
   c: { start: vi.fn(), setMetrics: vi.fn(), setDocument: vi.fn(), dispose: vi.fn(), setBrush: vi.fn(), setTool: vi.fn(), setEraserMode: vi.fn(), selectPalette: vi.fn(), selectCreatedPalette: vi.fn(), setChartMode: vi.fn(), setGridVisible: vi.fn(), setBrushSize: vi.fn(), setTouchMovementOnly: vi.fn(), deleteSelection: vi.fn(), handleKeyDown: vi.fn(() => false), getTraceImage: vi.fn(() => undefined), setTraceImage: vi.fn(), setTraceImageSettings: vi.fn(), clearTraceImage: vi.fn() },
   adapter: vi.fn(() => ({ dispose: vi.fn() })),
   r: { dispose: vi.fn() }, resize: undefined as (() => void) | undefined,
-  uiState: { mode: 'color', gridVisible: true, overlay: {}, tool: { tool: 'paint' }, paletteId: 1, pendingPaletteId: null as number | null },
+  uiState: { mode: 'color', gridVisible: true, overlay: {}, tool: { tool: 'paint' }, paletteId: 1, pendingPaletteId: null as number | null }, createdUiState: null as unknown,
   capturedCallback: null as ((bounds: { x: number; y: number; width: number; height: number }) => void) | null
 }));
 vi.mock('../../rendering/context', () => ({ createCanvasTarget: vi.fn(() => ({ context: {} })) }));
@@ -18,7 +18,7 @@ vi.mock('../../rendering/trace', async () => {
   return { ...actual, decodeTraceImage: vi.fn(async () => ({ source: {}, bitmap: {}, width: 2, height: 2, dispose: vi.fn() })) };
 });
 vi.mock('../../editor/coordinates', () => ({ getCanvasMetrics: vi.fn(() => ({ cssWidth: 640, cssHeight: 480, pixelWidth: 640, pixelHeight: 480, backingWidth: 640, backingHeight: 480, requestedDpr: 1, dpr: 1, maxDpr: 2, maxBackingPixels: 1e6 })) }));
-vi.mock('../../editor', () => ({ ChartPresentationMode: { Color: 'color', Symbol: 'symbol', Grayscale: 'grayscale', Combined: 'combined' }, createUiStore: vi.fn(() => ({ getState: () => f.uiState, subscribe: vi.fn(() => () => undefined) })), createWorkspaceEditorGateway: vi.fn(() => ({ dispose: vi.fn() })), createPointerEventsAdapter: f.adapter, createEditorSurfaceController: vi.fn((options: unknown) => { f.capturedCallback = (options as { onTraceBoundsChange?: (b: { x: number; y: number; width: number; height: number }) => void }).onTraceBoundsChange ?? null; return f.c as never; }) }));
+vi.mock('../../editor', () => ({ ChartPresentationMode: { Color: 'color', Symbol: 'symbol', Grayscale: 'grayscale', Combined: 'combined' }, createUiStore: vi.fn((initial: unknown) => { f.createdUiState = initial; return { getState: () => f.uiState, subscribe: vi.fn(() => () => undefined) }; }), createWorkspaceEditorGateway: vi.fn(() => ({ dispose: vi.fn() })), createPointerEventsAdapter: f.adapter, createEditorSurfaceController: vi.fn((options: unknown) => { f.capturedCallback = (options as { onTraceBoundsChange?: (b: { x: number; y: number; width: number; height: number }) => void }).onTraceBoundsChange ?? null; return f.c as never; }) }));
 const ws = { metadata: { title: 'Sampler', notes: '', aidaCount: 14 }, updateActiveMetadata: vi.fn(), updateActiveAidaCount: vi.fn(), execute: vi.fn(), getStateSnapshot: vi.fn(), setSourceImage: vi.fn(() => Promise.resolve()), applyTraceImageChange: vi.fn(() => Promise.resolve()), getAsset: vi.fn(), sourceImage: undefined as ({ chartBounds: { x: number; y: number; width: number; height: number } } | undefined) } as never;
 const doc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
 const two = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321' } }, { id: 2, name: 'Sky', color: '#48c', active: true }], backstitches: { ids: new Uint32Array() } } as never;
@@ -32,10 +32,14 @@ const expectedTiles = (palette: { id: number; symbol: string }[], openId: number
   const held = new Set(palette.filter((e) => e.id !== openId).map((e) => e.symbol));
   return PALETTE_SYMBOLS.filter((s) => s === open.symbol || !held.has(s)).length;
 };
-beforeEach(() => { vi.clearAllMocks(); localStorage.clear(); f.uiState.pendingPaletteId = null; f.uiState.tool = { tool: 'paint' }; f.uiState.gridVisible = true; (ws as { sourceImage: unknown }).sourceImage = undefined; vi.stubGlobal('ResizeObserver', vi.fn(function (cb: () => void) { f.resize = cb; return { observe: vi.fn(), disconnect: vi.fn() }; })); });
+beforeEach(() => { vi.clearAllMocks(); localStorage.clear(); f.createdUiState = null; f.uiState.pendingPaletteId = null; f.uiState.tool = { tool: 'paint' }; f.uiState.gridVisible = true; (ws as { sourceImage: unknown }).sourceImage = undefined; vi.stubGlobal('ResizeObserver', vi.fn(function (cb: () => void) { f.resize = cb; return { observe: vi.fn(), disconnect: vi.fn() }; })); });
 afterEach(() => { vi.useRealTimers(); localStorage.clear(); });
 
 describe('EditorSurface', () => {
+  it('initializes the UI store with Pan while retaining the active palette', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    expect(f.createdUiState).toEqual({ paletteId: 1, tool: { tool: 'pan' } });
+  });
   it('preserves UI state when the document changes', () => {
     const view = render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.change(screen.getByRole('slider', { name: /Brush size/ }), { target: { value: '7' } });
@@ -194,6 +198,14 @@ describe('EditorSurface', () => {
     expect(pointerSurface).not.toBe(options.keyboardSurface);
   });
   it('wires the top-level stitch tools and relocated brush size control', () => { render(<EditorSurface workspace={ws} document={doc} />); f.resize?.(); expect(f.c.setMetrics).toHaveBeenCalled(); const brushSettings = screen.getByRole('heading', { name: 'Brush settings' }).parentElement as HTMLElement; const size = within(brushSettings).getByRole('slider', { name: /Brush size/ }); fireEvent.change(size, { target: { value: '7' } }); expect(f.c.setBrushSize).toHaveBeenCalledWith(7); fireEvent.click(screen.getByRole('button', { name: 'Full stitch' })); expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'full', paletteId: 1 }); fireEvent.click(screen.getByRole('button', { name: 'Half stitch' })); expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'half', paletteId: 1 }); fireEvent.click(screen.getByRole('button', { name: '3/4 stitch' })); expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'three-quarter', paletteId: 1 }); expect(screen.queryByRole('button', { name: 'Stitch' })).not.toBeInTheDocument(); });
+  it('orders movement and selection tools first without reordering the remaining tools', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const rail = within(screen.getByRole('navigation', { name: 'Editor sections' }));
+    expect(rail.getAllByRole('button').map((button) => button.getAttribute('aria-label'))).toEqual([
+      'Pan', 'Select', 'Lasso select', 'Full stitch', 'Half stitch', '3/4 stitch',
+      'Backstitch', 'Completion', 'Eraser', 'Fill', 'Eyedropper', 'Delete selection',
+    ]);
+  });
   it('marks top-level stitch tools with accessible pressed state and fill icons', () => { f.uiState.tool = { tool: 'paint', brush: { kind: 'half', paletteId: 1 } } as never; const view = render(<EditorSurface workspace={ws} document={doc} />); expect(screen.getByRole('button', { name: 'Full stitch' })).toHaveAttribute('aria-pressed', 'false'); expect(screen.getByRole('button', { name: 'Half stitch' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: '3/4 stitch' })).toHaveAttribute('aria-pressed', 'false'); expect(screen.getByRole('button', { name: 'Full stitch' }).querySelector('.stitch-brush-icon-full')).toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Half stitch' }).querySelector('.stitch-brush-icon-half')).toBeInTheDocument(); expect(screen.getByRole('button', { name: '3/4 stitch' }).querySelector('.stitch-brush-icon-three-quarter')).toBeInTheDocument(); view.unmount(); f.uiState.tool = { tool: 'backstitch' }; render(<EditorSurface workspace={ws} document={doc} />); expect(screen.getByRole('button', { name: 'Backstitch' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: 'Full stitch' })).toHaveAttribute('aria-pressed', 'false'); });
   it('invokes Completion as a top-level tool and exposes its pressed state', () => { f.uiState.tool = { tool: 'completion' }; render(<EditorSurface workspace={ws} document={doc} />); const completion = screen.getByRole('button', { name: 'Completion' }); expect(completion).toHaveAttribute('title', 'Completion'); expect(completion).toHaveAttribute('aria-pressed', 'true'); expect(completion.querySelector('[data-icon="completion"]')).toBeInTheDocument(); fireEvent.click(completion); expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'completion' }); });
   it('surfaces the project name, selected-unit size, rail controls, header history, and palette rail', () => {
@@ -353,7 +365,7 @@ describe('EditorSurface', () => {
     const info = within(settings).getByRole('button', { name: 'Pencil mode information' });
     const tooltip = within(settings).getByRole('tooltip');
     expect(info).toHaveAttribute('aria-describedby', 'pencil-mode-tooltip');
-    expect(tooltip).toHaveTextContent(/finger touch for movement controls while a pen or stylus can draw/);
+    expect(tooltip).toHaveTextContent(/Normal touch can only move or zoom/);
     expect(info).toHaveAttribute('type', 'button');
   });
   it('independently toggles the palette symbol and number settings', () => {
