@@ -1416,10 +1416,30 @@ export function EditorSurface({
                     />
                   </label>
                   <label className="check-row palette-display-toggle" htmlFor="enable-pencil-mode">
-                    Enable pencil mode
+                    <span className="pencil-mode-label">
+                      Enable pencil mode
+                      <span className="settings-info-wrap">
+                        <button
+                          className="settings-info-button"
+                          type="button"
+                          aria-label="Pencil mode information"
+                          aria-describedby="pencil-mode-tooltip"
+                        >
+                          i
+                        </button>
+                        <span
+                          id="pencil-mode-tooltip"
+                          className="settings-info-tooltip"
+                          role="tooltip"
+                        >
+                          In pencil mode, only a pencil or stylus can make changes to the pattern. Normal touch can only move or zoom.
+                        </span>
+                      </span>
+                    </span>
                     <input
                       id="enable-pencil-mode"
                       type="checkbox"
+                      aria-label="Enable pencil mode"
                       checked={pencilModeEnabled}
                       onChange={(event) =>
                         setPreferences((current) => ({

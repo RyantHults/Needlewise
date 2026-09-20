@@ -346,6 +346,16 @@ describe('EditorSurface', () => {
     expect(f.c.setTouchMovementOnly).toHaveBeenCalledWith(true);
     await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'left', paletteDisplay: { symbols: true, numbers: true }, pencilModeEnabled: true }));
   });
+  it('provides an accessible pencil mode tooltip trigger', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    const settings = screen.getByRole('dialog', { name: 'Settings' });
+    const info = within(settings).getByRole('button', { name: 'Pencil mode information' });
+    const tooltip = within(settings).getByRole('tooltip');
+    expect(info).toHaveAttribute('aria-describedby', 'pencil-mode-tooltip');
+    expect(tooltip).toHaveTextContent(/finger touch for movement controls while a pen or stylus can draw/);
+    expect(info).toHaveAttribute('type', 'button');
+  });
   it('independently toggles the palette symbol and number settings', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));

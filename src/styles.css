@@ -162,6 +162,12 @@ kbd { min-width: 1.65rem; border: 1px solid #c0ccc0; border-radius: 0.3rem; padd
 .file-drop strong { overflow:hidden; color:#4e4842; text-overflow:ellipsis; white-space:nowrap; }
 .file-drop:hover { border-color:#88452f; background:#f8eee7; }
 .check-row { display:flex; align-items:center; gap:.5rem; margin-top:.8rem; color:#625c55; font-size:.78rem; }
+.pencil-mode-label { display:inline-flex; align-items:center; gap:.35rem; }
+.settings-info-wrap { position:relative; display:inline-flex; align-items:center; }
+.settings-info-button { display:inline-grid; place-items:center; width:1.05rem; height:1.05rem; padding:0; border:1px solid #bc5a3d; border-radius:50%; background:#fffdf9; color:#88452f; font:700 .72rem Georgia,serif; font-style:italic; cursor:help; }
+.settings-info-button:hover, .settings-info-button:focus-visible { background:#f1e4da; outline:2px solid #bc5a3d; outline-offset:2px; }
+.settings-info-tooltip { position:absolute; z-index:10; top:calc(100% + .5rem); left:0; display:none; width:15rem; padding:.55rem .65rem; border:1px solid #d5cec3; border-radius:.35rem; background:#fffdf9; color:#625c55; box-shadow:0 .35rem 1rem rgb(53 42 33 / 16%); font-size:.72rem; font-weight:500; line-height:1.35; letter-spacing:normal; text-transform:none; white-space:normal; }
+.settings-info-wrap:hover .settings-info-tooltip, .settings-info-button:focus + .settings-info-tooltip { display:block; }
 .palette-display-toggle { justify-content:flex-start; width:100%; max-width:none; white-space:nowrap; }
 .palette-display-toggle input { flex:0 0 auto; }
 .check-row input { width:auto; margin:0; accent-color:#bc5a3d; }
