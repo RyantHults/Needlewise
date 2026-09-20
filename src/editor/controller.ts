@@ -117,6 +117,8 @@ export interface EditorSurfaceControllerOptions {
 export interface EditorSurfaceControllerLifecycle {
   start(): void;
   stop(): void;
+  /** Configure whether touch input is restricted to movement-only behavior. */
+  setTouchMovementOnly(enabled: boolean): void;
   /** Replace the rendered document without recreating editor interaction state. */
   setDocument(document: PatternDocument, invalidation?: Invalidation): void;
   setMetrics(metrics: CanvasMetrics): void;
@@ -126,7 +128,7 @@ export interface EditorSurfaceControllerLifecycle {
   dispose(): void;
 }
 
-type Gesture = PaintGesture | EraserGesture | CompletionGesture | SelectionGesture | LassoGesture | BackstitchGesture | PanGesture | PinchGesture | MoveImageGesture | ResizeImageGesture;
+type Gesture = PaintGesture | EraserGesture | CompletionGesture | SelectionGesture | LassoGesture | BackstitchGesture | TouchActionGesture | PanGesture | PinchGesture | MoveImageGesture | ResizeImageGesture;
 
 interface PaintGesture {
   readonly kind: 'paint';
@@ -176,9 +178,11 @@ interface FillRecolorSnapshot {
 interface SelectionGesture {
   readonly kind: 'selection';
   readonly pointerId: number;
-  readonly anchor: ModelPoint;
+  readonly anchor: ModelPoint | undefined;
   readonly hadSelection: boolean;
-  current: ModelPoint;
+  readonly previousSelection: FinalizedSelection | undefined;
+  readonly previousSelectionAnchor: ModelPoint | undefined;
+  current: ModelPoint | undefined;
 }
 
 interface LassoGesture {
@@ -220,6 +224,13 @@ interface BackstitchGesture {
   readonly movingEndpoint?: 'start' | 'end';
   start: FixedPoint;
   end: FixedPoint;
+}
+
+interface TouchActionGesture {
+  readonly kind: 'touch-action';
+  readonly pointerId: number;
+  readonly tool: 'fill' | 'eyedropper';
+  readonly token: EditorRevisionToken;
 }
 
 interface PanGesture {
@@ -860,6 +871,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private gesture: Gesture | undefined;
   private readonly touchPointers = new Map<number, PointerSample>();
   private touchHistoryCandidate: TouchHistoryCandidate | undefined;
+  /** Touch editing is the default; the UI may opt into movement-only input. */
+  private touchMovementOnly = false;
   private lastHoverSample: PointerSample | undefined;
   private spaceHeld = false;
   private commandInFlight = false;
@@ -947,6 +960,16 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.stop();
     if (this.ownsFillClient) this.fillClient.dispose();
     this.disposed = true;
+  }
+
+  setTouchMovementOnly(enabled: boolean): void {
+    if (this.touchMovementOnly === enabled) return;
+    this.touchMovementOnly = enabled;
+    if (this.touchPointers.size === 0) return;
+    // Do not let a gesture started under the previous policy commit after the
+    // policy changes.
+    this.cancelGesture();
+    this.touchPointers.clear();
   }
 
   setTool(tool: EditorToolState): void {
@@ -1436,12 +1459,12 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.clearBrushPreview();
     if (sample.pointerType !== 'touch') this.editorFocused = true;
     if (sample.pointerType === 'touch') {
-      if (this.gesture?.kind === 'paint') return false;
       const tool = this.uiStore.getState().tool.tool;
       if (tool === 'move-image' || tool === 'resize-image') {
         // Single-finger image-tool drags; keep multi-touch ignored.
         this.rejectTouchHistoryCandidate('reference-image-tool');
         debugTouch('history-excluded', { reason: 'reference-image-tool', tool });
+        if (this.gesture?.kind === tool && this.gesture.pointerId !== sample.pointerId) return true;
         const snapshot = this.gateway.getSnapshot();
         if (!snapshot.document) return false;
         return tool === 'move-image' ? this.beginMoveImage(sample, snapshot.document) : this.beginResizeImage(sample);
@@ -1449,9 +1472,16 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       if (this.touchPointers.size === 0) this.beginTouchHistoryCandidate(sample);
       this.touchPointers.set(sample.pointerId, sample);
       this.updateTouchHistoryCandidate(sample);
-      if (this.touchPointers.size >= 2 && this.gesture?.kind !== 'pinch') this.beginPinch();
-      else if (this.touchPointers.size === 1) this.gesture = { kind: 'pan', pointerId: sample.pointerId, lastX: sample.screenX, lastY: sample.screenY };
-      return true;
+      if (this.touchMovementOnly) {
+        if (this.touchPointers.size >= 2 && this.gesture?.kind !== 'pinch') this.beginPinch();
+        else if (this.touchPointers.size === 1) this.gesture = { kind: 'pan', pointerId: sample.pointerId, lastX: sample.screenX, lastY: sample.screenY };
+        return true;
+      }
+      if (this.touchPointers.size >= 2) {
+        if (this.gesture?.kind !== 'pinch' && this.gesture?.kind !== 'pan') this.cancelTouchEditingGesture();
+        if (this.gesture?.kind !== 'pinch') this.beginPinch();
+        return true;
+      }
     }
     if (this.gesture) return false;
     const selectedTool = this.uiStore.getState().tool;
@@ -1460,7 +1490,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.gesture = { kind: 'pan', pointerId: sample.pointerId, lastX: sample.screenX, lastY: sample.screenY };
       return true;
     }
-    if ((sample.button ?? 0) !== 0 || (sample.pointerType !== 'mouse' && sample.pointerType !== 'pen')) return false;
+    if ((sample.button ?? 0) !== 0 || (sample.pointerType !== 'mouse' && sample.pointerType !== 'pen' && sample.pointerType !== 'touch')) return false;
     const snapshot = this.gateway.getSnapshot();
     if (!snapshot.document || !snapshot.projectId || snapshot.revision === null) return false;
     if (selectedTool.tool === 'move-image') {
@@ -1469,20 +1499,54 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (selectedTool.tool === 'resize-image') {
       return this.beginResizeImage(sample);
     }
+    if (selectedTool.tool === 'eyedropper' && sample.pointerType === 'touch') {
+      this.gesture = {
+        kind: 'touch-action',
+        pointerId: sample.pointerId,
+        tool: 'eyedropper',
+        token: { projectId: snapshot.projectId, revision: snapshot.revision }
+      };
+      return true;
+    }
     if (selectedTool.tool === 'eyedropper') {
       return this.eyedropperAt(sample, snapshot.document);
     }
     if (selectedTool.tool === 'select') {
       const cell = this.paintHitCell(sample, snapshot.document);
+      const previousSelection = this.selection;
+      const previousSelectionAnchor = this.selectionAnchor;
       if (!cell) {
-        const hadSelection = this.selection !== undefined;
+        const hadSelection = previousSelection !== undefined;
+        if (sample.pointerType === 'touch' && hadSelection) {
+          this.selection = undefined;
+          this.selectionAnchor = undefined;
+          this.gesture = {
+            kind: 'selection',
+            pointerId: sample.pointerId,
+            anchor: undefined,
+            hadSelection,
+            previousSelection,
+            previousSelectionAnchor,
+            current: undefined
+          };
+          this.publishSelectionOverlay();
+          return true;
+        }
         if (hadSelection) this.clearSelection();
         return hadSelection;
       }
-      const hadSelection = this.selection !== undefined;
+      const hadSelection = previousSelection !== undefined;
       this.selectionAnchor = cell;
       this.selection = { kind: 'rect', rect: normalizeGridRect(cell, cell), documentWidth: snapshot.document.width, documentHeight: snapshot.document.height };
-      this.gesture = { kind: 'selection', pointerId: sample.pointerId, anchor: cell, hadSelection, current: cell };
+      this.gesture = {
+        kind: 'selection',
+        pointerId: sample.pointerId,
+        anchor: cell,
+        hadSelection,
+        previousSelection,
+        previousSelectionAnchor,
+        current: cell
+      };
       this.publishSelectionOverlay();
       return true;
     }
@@ -1513,6 +1577,16 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const cell = this.paintHitCell(sample, snapshot.document);
       const local = normalizedPointerPosition(sample, this.uiStore.getState().viewport);
       const mask = cell && local ? completionTargetForCell(snapshot.document, cell, local) : 0;
+      if (sample.pointerType === 'touch') {
+        if (!cell || mask === 0) return false;
+        this.gesture = {
+          kind: 'touch-action',
+          pointerId: sample.pointerId,
+          tool: 'fill',
+          token: { projectId: snapshot.projectId, revision: snapshot.revision }
+        };
+        return true;
+      }
       return cell && mask !== 0 ? this.startFillAt(cell, mask) : false;
     }
     if (selectedTool.tool === 'backstitch') return this.beginBackstitch(sample, snapshot);
@@ -1577,12 +1651,17 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         if (this.gesture.pointerId === sample.pointerId) this.updateResizeImage(sample);
         return true;
       }
+      if (this.gesture?.kind === 'touch-action') return true;
       if (this.gesture?.kind === 'pinch') {
         if (!stationaryHistoryTap) this.updatePinch();
       } else if (this.gesture?.kind === 'pan' && this.gesture.pointerId === sample.pointerId) {
         if (!stationaryHistoryTap) this.updatePan(sample);
+      } else if (this.touchMovementOnly) {
+        return true;
       }
-      return true;
+      // Single-finger touch editing uses the same chart-tool paths as mouse
+      // and pen input. Multi-touch has already been consumed above.
+      if (this.gesture?.kind === 'pinch' || this.gesture?.kind === 'pan') return true;
     }
     const gesture = this.gesture;
     if (!gesture || gesture.kind === 'pinch' || gesture.pointerId !== sample.pointerId) return false;
@@ -1656,6 +1735,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (gesture.kind === 'selection') {
       const document = this.gateway.getSnapshot().document;
       if (!document) return false;
+      if (!gesture.anchor) return true;
       const cell = this.paintHitCell(sample, document);
       if (!cell) return true;
       gesture.current = cell;
@@ -1679,6 +1759,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   handlePointerUp(sample: PointerSample): boolean {
     this.ensureStarted();
+    const touchPointerReleased = sample.pointerType === 'touch';
     if (!validScreenSample(sample)) {
       const gesture = this.gesture;
       if (gesture && gesture.kind !== 'pinch' && gesture.pointerId === sample.pointerId) this.cancelGesture();
@@ -1699,10 +1780,18 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         if (this.gesture.pointerIds.includes(sample.pointerId)) this.rebaseTouchGesture();
       } else if (this.gesture?.kind === 'pan' && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
       if (this.touchPointers.size === 0) this.finishTouchHistoryCandidate();
-      return true;
+      if (this.gesture?.kind === 'pinch' || this.gesture?.kind === 'pan' || this.touchPointers.size > 0) return true;
     }
     const gesture = this.gesture;
-    if (!gesture || gesture.kind === 'pinch' || gesture.pointerId !== sample.pointerId) return false;
+    if (gesture?.kind === 'touch-action' && gesture.pointerId === sample.pointerId) {
+      this.gesture = undefined;
+      this.finishTouchAction(gesture, sample);
+      return true;
+    }
+    if (!gesture || gesture.kind === 'pinch' || gesture.pointerId !== sample.pointerId) {
+      if (touchPointerReleased && this.touchPointers.size === 0) this.finishTouchHistoryCandidate();
+      return touchPointerReleased;
+    }
     if (gesture.kind === 'paint') {
       const document = this.gateway.getSnapshot().document;
       if (document) this.appendPaintSample(gesture, sample, document);
@@ -1720,6 +1809,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       if (!this.isCurrentTransaction(gesture.token, snapshot)) {
         this.cancelGesture();
         this.setStatus('Lasso cancelled: project changed');
+        if (touchPointerReleased && this.touchPointers.size === 0) this.finishTouchHistoryCandidate();
         return true;
       }
       const point = this.lassoModelPoint(sample);
@@ -1730,7 +1820,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.finishLasso(gesture);
     } else if (gesture.kind === 'selection') {
       this.gesture = undefined;
-      const click = gesture.anchor.x === gesture.current.x && gesture.anchor.y === gesture.current.y;
+      const click = gesture.anchor !== undefined && gesture.current !== undefined
+        && gesture.anchor.x === gesture.current.x && gesture.anchor.y === gesture.current.y;
       if (gesture.hadSelection && click) this.clearSelection();
       else this.publishSelectionOverlay();
     } else if (gesture.kind === 'backstitch') {
@@ -1747,6 +1838,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     } else if (gesture.kind === 'resize-image') {
       this.finishResizeImage();
     } else this.gesture = undefined;
+    if (touchPointerReleased && this.touchPointers.size === 0) this.finishTouchHistoryCandidate();
     return true;
   }
 
@@ -1761,6 +1853,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       else if (this.gesture?.kind === 'pinch') {
         if (this.gesture.pointerIds.includes(sample.pointerId)) this.rebaseTouchGesture();
       } else if (this.gesture?.kind === 'pan' && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
+      else if (!this.touchMovementOnly && this.gesture?.pointerId === sample.pointerId) this.cancelGesture();
       if (this.touchPointers.size === 0) this.clearTouchHistoryCandidate();
       return true;
     }
@@ -1773,10 +1866,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.gesture = undefined;
       this.clearLassoPath();
     }
-    else if (gesture.kind === 'selection') {
-      this.gesture = undefined;
-      this.clearSelection();
-    } else if (gesture.kind === 'backstitch') this.resetBackstitchState();
+    else if (gesture.kind === 'selection') this.cancelGesture();
+    else if (gesture.kind === 'backstitch') this.resetBackstitchState();
     else if (gesture.kind === 'move-image' || gesture.kind === 'resize-image') this.gesture = undefined;
     else this.gesture = undefined;
     return true;
@@ -1801,6 +1892,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       else if (this.gesture?.kind === 'pinch') {
         if (this.gesture.pointerIds.includes(sample.pointerId)) this.rebaseTouchGesture();
       } else if (this.gesture?.kind === 'pan' && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
+      else if (!this.touchMovementOnly && this.gesture?.pointerId === sample.pointerId) this.cancelGesture();
       if (this.touchPointers.size === 0) this.clearTouchHistoryCandidate();
       return true;
     }
@@ -2049,6 +2141,23 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       y: this.uiStore.getState().viewport.y - delta.y / this.uiStore.getState().viewport.zoom,
       zoom: this.uiStore.getState().viewport.zoom
     });
+  }
+
+  /** Run a touch-only one-shot action after the contact sequence is known to be single-finger. */
+  private finishTouchAction(gesture: TouchActionGesture, sample: PointerSample): void {
+    const snapshot = this.gateway.getSnapshot();
+    if (!this.isCurrentTransaction(gesture.token, snapshot) || !snapshot.document) {
+      this.setStatus('Action cancelled: project changed');
+      return;
+    }
+    if (gesture.tool === 'eyedropper') {
+      this.eyedropperAt(sample, snapshot.document);
+      return;
+    }
+    const cell = this.paintHitCell(sample, snapshot.document);
+    const local = normalizedPointerPosition(sample, this.uiStore.getState().viewport);
+    const mask = cell && local ? completionTargetForCell(snapshot.document, cell, local) : 0;
+    if (cell && mask !== 0) this.startFillAt(cell, mask);
   }
 
   private paintHitCell(sample: PointerSample, document: PatternDocument): ModelPoint | undefined {
@@ -2830,12 +2939,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (projectChanged) this.resetForProjectSwitch(snapshot);
     else if (this.gesture && ((this.gesture.kind === 'paint' || this.gesture.kind === 'eraser' || this.gesture.kind === 'completion')
       ? (this.gesture.transaction.token.revision !== snapshot.revision || this.gesture.transaction.token.projectId !== snapshot.projectId)
-      : (this.gesture.kind === 'backstitch' || this.gesture.kind === 'lasso')
+      : (this.gesture.kind === 'backstitch' || this.gesture.kind === 'lasso' || this.gesture.kind === 'touch-action')
         ? (this.gesture.token.revision !== snapshot.revision || this.gesture.token.projectId !== snapshot.projectId)
         : false)) {
       const staleStatus = this.gesture.kind === 'completion'
         ? 'Completion cancelled: project changed'
-        : this.gesture.kind === 'lasso' ? 'Lasso cancelled: project changed' : 'Stroke cancelled: project changed';
+        : this.gesture.kind === 'lasso' ? 'Lasso cancelled: project changed'
+          : this.gesture.kind === 'touch-action' ? 'Action cancelled: project changed' : 'Stroke cancelled: project changed';
       this.cancelGesture();
       this.setStatus(staleStatus);
     }
@@ -2980,13 +3090,26 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.uiStore.setOverlay({ ...state.overlay, pendingCells: undefined, pendingCellStates: undefined });
   }
 
+  /** Cancel a one-finger chart edit when a second finger takes over. */
+  private cancelTouchEditingGesture(): void {
+    const candidate = this.touchHistoryCandidate;
+    this.cancelGesture();
+    this.touchHistoryCandidate = candidate;
+  }
+
   private cancelGesture(): void {
+    const selection = this.gesture?.kind === 'selection' ? this.gesture : undefined;
     const backstitch = this.gesture?.kind === 'backstitch';
     this.gesture = undefined;
     this.clearTouchHistoryCandidate();
     this.clearPendingCells();
     this.clearLassoPath();
     if (backstitch) this.resetBackstitchState();
+    if (selection) {
+      this.selection = selection.previousSelection;
+      this.selectionAnchor = selection.previousSelectionAnchor;
+      this.publishSelectionOverlay();
+    }
     this.spaceHeld = false;
   }
 

@@ -633,6 +633,88 @@ describe('EditorSurfaceController', () => {
     controller.dispose();
   });
 
+  it('edits with a single touch by default and can restore movement-only touch input', () => {
+    const editing = controllerFixture();
+    editing.controller.handlePointerDown(pointer(1, 8, 8, 'touch'));
+    editing.controller.handlePointerMove(pointer(1, 40, 8, 'touch'));
+    editing.controller.handlePointerUp(pointer(1, 40, 8, 'touch'));
+    expect(editing.gateway.commands.at(-1)).toMatchObject({ type: 'bulk-cell', indices: new Uint32Array([0, 1, 2]) });
+    expect(editing.gateway.getSnapshot().document?.kind.slice(0, 3)).toEqual(new Uint8Array([CellKind.Full, CellKind.Full, CellKind.Full]));
+    editing.controller.dispose();
+
+    const movementOnly = controllerFixture();
+    const before = movementOnly.uiStore.getState().viewport;
+    movementOnly.controller.setTouchMovementOnly(true);
+    movementOnly.controller.handlePointerDown(pointer(1, 24, 24, 'touch'));
+    movementOnly.controller.handlePointerMove(pointer(1, 4, 24, 'touch'));
+    movementOnly.controller.handlePointerUp(pointer(1, 4, 24, 'touch'));
+    expect(movementOnly.gateway.commands).toHaveLength(0);
+    expect(movementOnly.uiStore.getState().viewport).not.toEqual(before);
+    movementOnly.controller.dispose();
+  });
+
+  it('defers touch Fill and Eyedropper actions until a multi-touch sequence is ruled out', () => {
+    const fill = controllerFixture();
+    fill.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    fill.controller.setTool({ tool: 'fill' });
+    fill.controller.handlePointerDown(pointer(1, 8, 8, 'touch'));
+    expect(fill.controller.isFillPending()).toBe(false);
+    fill.controller.handlePointerDown(pointer(2, 60, 8, 'touch'));
+    fill.controller.handlePointerUp(pointer(2, 60, 8, 'touch'));
+    fill.controller.handlePointerUp(pointer(1, 8, 8, 'touch'));
+    expect(fill.controller.isFillPending()).toBe(false);
+    expect(fill.gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
+    expect(fill.gateway.undoDepth).toBe(0);
+    fill.controller.dispose();
+
+    const eyedropper = controllerFixture({
+      traceImage: { source: {}, width: 4, height: 4 },
+      traceSampler: () => ({ r: 201, g: 102, b: 3 })
+    });
+    eyedropper.gateway.execute({ type: 'set-full', x: 2, y: 2, color: 1 });
+    eyedropper.controller.setTool({ tool: 'eyedropper' });
+    eyedropper.controller.handlePointerDown(pointer(1, 8, 8, 'touch'));
+    expect(eyedropper.uiStore.getState().tool).toEqual({ tool: 'eyedropper' });
+    eyedropper.controller.handlePointerDown(pointer(2, 60, 8, 'touch'));
+    eyedropper.controller.handlePointerDown(pointer(3, 60, 60, 'touch'));
+    eyedropper.controller.handlePointerUp(pointer(3, 60, 60, 'touch'));
+    eyedropper.controller.handlePointerUp(pointer(2, 60, 8, 'touch'));
+    eyedropper.controller.handlePointerUp(pointer(1, 8, 8, 'touch'));
+    expect(eyedropper.uiStore.getState().tool).toEqual({ tool: 'eyedropper' });
+    expect(eyedropper.gateway.getSnapshot().document?.kind[2 * 8 + 2]).toBe(CellKind.Full);
+    expect(eyedropper.gateway.undoDepth).toBe(1);
+    expect(eyedropper.gateway.commands.filter((command) => command.type === 'palette-create')).toHaveLength(0);
+    eyedropper.controller.dispose();
+  });
+
+  it('restores or clears a touch selection when the gesture is superseded or cancelled', () => {
+    const superseded = controllerFixture();
+    superseded.controller.setSelection({ x: 4, y: 4 });
+    superseded.controller.setTool({ tool: 'select' });
+    superseded.controller.handlePointerDown(pointer(1, 8, 8, 'touch'));
+    expect(superseded.controller.getSelection()).toEqual({ x: 0, y: 0, width: 1, height: 1 });
+    superseded.controller.handlePointerDown(pointer(2, 60, 8, 'touch'));
+    expect(superseded.controller.getSelection()).toEqual({ x: 4, y: 4, width: 1, height: 1 });
+    superseded.controller.handlePointerUp(pointer(2, 60, 8, 'touch'));
+    superseded.controller.handlePointerUp(pointer(1, 8, 8, 'touch'));
+    superseded.controller.dispose();
+
+    const cancelled = controllerFixture();
+    cancelled.controller.setSelection({ x: 3, y: 3 });
+    cancelled.controller.setTool({ tool: 'select' });
+    cancelled.controller.handlePointerDown(pointer(1, 8, 8, 'touch'));
+    cancelled.controller.handlePointerCancel(pointer(1, 8, 8, 'touch'));
+    expect(cancelled.controller.getSelection()).toEqual({ x: 3, y: 3, width: 1, height: 1 });
+    cancelled.controller.dispose();
+
+    const cleared = controllerFixture();
+    cleared.controller.setTool({ tool: 'select' });
+    cleared.controller.handlePointerDown(pointer(1, 8, 8, 'touch'));
+    cleared.controller.handlePointerLostCapture(pointer(1, 8, 8, 'touch'));
+    expect(cleared.controller.getSelection()).toBeUndefined();
+    cleared.controller.dispose();
+  });
+
   it('recognizes stationary two-finger undo and three-finger redo taps after all fingers lift', () => {
     const undo = controllerFixture();
     undo.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
@@ -742,6 +824,7 @@ describe('EditorSurfaceController', () => {
   it('rejects non-tap touch sequences and suppresses only stationary jitter', () => {
     const single = controllerFixture();
     single.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    single.controller.setTouchMovementOnly(true);
     single.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
     single.controller.handlePointerUp(pointer(1, 20, 20, 'touch'));
     expect(single.gateway.undoDepth).toBe(1);

@@ -54,17 +54,22 @@ type EditorPreferences = {
   version: 1;
   railSide: "left" | "right";
   paletteDisplay: { symbols: boolean; numbers: boolean };
+  /** Restrict finger touch to movement controls; pen input still edits. */
+  pencilModeEnabled: boolean;
 };
 
 const defaultEditorPreferences = (): EditorPreferences => ({
   version: 1,
   railSide: "left",
   paletteDisplay: { symbols: true, numbers: true },
+  pencilModeEnabled: false,
 });
 
 const isEditorPreferences = (value: unknown): value is EditorPreferences => {
   if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<EditorPreferences>;
+  const candidate = value as Partial<EditorPreferences> & {
+    touchEditingEnabled?: unknown;
+  };
   const paletteDisplay = candidate.paletteDisplay;
   return (
     candidate.version === 1 &&
@@ -72,8 +77,27 @@ const isEditorPreferences = (value: unknown): value is EditorPreferences => {
     !!paletteDisplay &&
     typeof paletteDisplay === "object" &&
     typeof paletteDisplay.symbols === "boolean" &&
-    typeof paletteDisplay.numbers === "boolean"
+    typeof paletteDisplay.numbers === "boolean" &&
+    (candidate.pencilModeEnabled === undefined ||
+      typeof candidate.pencilModeEnabled === "boolean") &&
+    (candidate.touchEditingEnabled === undefined ||
+      typeof candidate.touchEditingEnabled === "boolean")
   );
+};
+
+const normalizeEditorPreferences = (value: EditorPreferences): EditorPreferences => {
+  const legacy = value as EditorPreferences & { touchEditingEnabled?: boolean };
+  return {
+    version: value.version,
+    railSide: value.railSide,
+    paletteDisplay: value.paletteDisplay,
+    // The earlier uncommitted envelope named the inverse setting.
+    pencilModeEnabled:
+      value.pencilModeEnabled ??
+      (legacy.touchEditingEnabled === undefined
+        ? false
+        : !legacy.touchEditingEnabled),
+  };
 };
 
 const readEditorPreferences = (workspaceId: string): EditorPreferences => {
@@ -83,7 +107,9 @@ const readEditorPreferences = (workspaceId: string): EditorPreferences => {
     if (stored !== null) {
       try {
         const parsed = JSON.parse(stored) as unknown;
-        return isEditorPreferences(parsed) ? parsed : defaults;
+        return isEditorPreferences(parsed)
+          ? normalizeEditorPreferences(parsed)
+          : defaults;
       } catch {
         return defaults;
       }
@@ -152,6 +178,7 @@ export function EditorSurface({
   );
   const railSide = preferences.railSide;
   const paletteOptions = preferences.paletteDisplay;
+  const pencilModeEnabled = preferences.pencilModeEnabled;
   const dialog = useRef<HTMLDivElement>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
@@ -244,6 +271,9 @@ export function EditorSurface({
         },
       });
       controllerRef.current = c;
+      (c as EditorSurfaceController & {
+        setTouchMovementOnly?: (only: boolean) => void;
+      }).setTouchMovementOnly?.(preferences.pencilModeEnabled);
       setController(c);
       setUi(store.getState());
       const unsub = store.subscribe(setUi);
@@ -284,6 +314,13 @@ export function EditorSurface({
       setFallback(true);
     }
   }, [workspace]);
+  useEffect(() => {
+    (controllerRef.current as
+      | (EditorSurfaceController & {
+          setTouchMovementOnly?: (only: boolean) => void;
+        })
+      | null)?.setTouchMovementOnly?.(pencilModeEnabled);
+  }, [pencilModeEnabled]);
   useEffect(() => {
     controllerRef.current?.setDocument(document, {
       layer: "all",
@@ -1374,6 +1411,20 @@ export function EditorSurface({
                             ...current.paletteDisplay,
                             numbers: event.target.checked,
                           },
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="check-row palette-display-toggle" htmlFor="enable-pencil-mode">
+                    Enable pencil mode
+                    <input
+                      id="enable-pencil-mode"
+                      type="checkbox"
+                      checked={pencilModeEnabled}
+                      onChange={(event) =>
+                        setPreferences((current) => ({
+                          ...current,
+                          pencilModeEnabled: event.target.checked,
                         }))
                       }
                     />

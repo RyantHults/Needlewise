@@ -5,7 +5,7 @@ import { searchDmcColors } from '../../catalog';
 import { PALETTE_SYMBOLS } from '../../domain';
 
 const f = vi.hoisted(() => ({
-  c: { start: vi.fn(), setMetrics: vi.fn(), setDocument: vi.fn(), dispose: vi.fn(), setBrush: vi.fn(), setTool: vi.fn(), setEraserMode: vi.fn(), selectPalette: vi.fn(), selectCreatedPalette: vi.fn(), setChartMode: vi.fn(), setGridVisible: vi.fn(), setBrushSize: vi.fn(), deleteSelection: vi.fn(), handleKeyDown: vi.fn(() => false), getTraceImage: vi.fn(() => undefined), setTraceImage: vi.fn(), setTraceImageSettings: vi.fn(), clearTraceImage: vi.fn() },
+  c: { start: vi.fn(), setMetrics: vi.fn(), setDocument: vi.fn(), dispose: vi.fn(), setBrush: vi.fn(), setTool: vi.fn(), setEraserMode: vi.fn(), selectPalette: vi.fn(), selectCreatedPalette: vi.fn(), setChartMode: vi.fn(), setGridVisible: vi.fn(), setBrushSize: vi.fn(), setTouchMovementOnly: vi.fn(), deleteSelection: vi.fn(), handleKeyDown: vi.fn(() => false), getTraceImage: vi.fn(() => undefined), setTraceImage: vi.fn(), setTraceImageSettings: vi.fn(), clearTraceImage: vi.fn() },
   adapter: vi.fn(() => ({ dispose: vi.fn() })),
   r: { dispose: vi.fn() }, resize: undefined as (() => void) | undefined,
   uiState: { mode: 'color', gridVisible: true, overlay: {}, tool: { tool: 'paint' }, paletteId: 1, pendingPaletteId: null as number | null },
@@ -295,7 +295,7 @@ describe('EditorSurface', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
     fireEvent.click(screen.getByRole('button', { name: 'Right' }));
     fireEvent.click(within(screen.getByRole('dialog', { name: 'Settings' })).getByRole('checkbox', { name: 'Show palette symbols' }));
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'right', paletteDisplay: { symbols: false, numbers: true } }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'right', paletteDisplay: { symbols: false, numbers: true }, pencilModeEnabled: false }));
   });
   it('falls back to default editor preferences for malformed global storage', () => {
     localStorage.setItem('needlewise-editor-preferences:v1', '{not-json');
@@ -325,7 +325,26 @@ describe('EditorSurface', () => {
     expect(within(settings).getByRole('button', { name: 'Left' })).toHaveAttribute('aria-pressed', 'true');
     expect(within(settings).getByRole('checkbox', { name: 'Show palette symbols' })).not.toBeChecked();
     expect(within(settings).getByRole('checkbox', { name: 'Show palette numbers' })).toBeChecked();
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'left', paletteDisplay: { symbols: false, numbers: true } }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'left', paletteDisplay: { symbols: false, numbers: true }, pencilModeEnabled: false }));
+  });
+  it('defaults pencil mode off and updates the controller', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    expect(f.c.setTouchMovementOnly).toHaveBeenCalledWith(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    const settings = screen.getByRole('dialog', { name: 'Settings' });
+    const pencil = within(settings).getByRole('checkbox', { name: 'Enable pencil mode' });
+    expect(pencil).not.toBeChecked();
+    fireEvent.click(pencil);
+    expect(pencil).toBeChecked();
+    expect(f.c.setTouchMovementOnly).toHaveBeenLastCalledWith(true);
+  });
+  it('migrates the inverse touch preference into pencil mode', async () => {
+    localStorage.setItem('needlewise-editor-preferences:v1', JSON.stringify({ version: 1, railSide: 'left', paletteDisplay: { symbols: true, numbers: true }, touchEditingEnabled: false }));
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    expect(within(screen.getByRole('dialog', { name: 'Settings' })).getByRole('checkbox', { name: 'Enable pencil mode' })).toBeChecked();
+    expect(f.c.setTouchMovementOnly).toHaveBeenCalledWith(true);
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'left', paletteDisplay: { symbols: true, numbers: true }, pencilModeEnabled: true }));
   });
   it('independently toggles the palette symbol and number settings', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
