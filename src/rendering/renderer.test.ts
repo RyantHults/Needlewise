@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CellKind, createDocument } from '../domain';
+import { CellKind, createDocument, createPatternFragment } from '../domain';
 import { cellToScreenRect, fitViewport, getCanvasMetrics, visibleCellRect } from '../editor/coordinates';
 import type { CanvasContextAdapter, CanvasTarget, PendingCellState, TraceImage } from '../editor/contracts';
 import { ThreeQuarterPair } from '../editor/cell-kinds';
@@ -166,6 +166,173 @@ describe('Canvas 2D chart renderer', () => {
     expect(symbolForPaletteId(1)).toBe('1');
     expect(symbolForPaletteId(35)).toBe('z');
     expect(symbolForPaletteId(36)).toBe('10');
+  });
+
+  it('renders floating fragments with transparent holes, destination masking, cleared completion, backstitches, and a clipped boundary', () => {
+    const document = chart(3, 2);
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    document.completed[0] = 1;
+    const source = chart(2, 1);
+    source.kind[1] = CellKind.Full;
+    source.colors[4] = 1;
+    source.backstitches = {
+      ids: new Uint32Array([1]),
+      x1: new Uint32Array([0]),
+      y1: new Uint32Array([0]),
+      x2: new Uint32Array([8]),
+      y2: new Uint32Array([0]),
+      colors: new Uint16Array([1]),
+      completed: new Uint8Array([1])
+    };
+    source.nextBackstitchId = 2;
+    const fragment = createPatternFragment(source, { x: 0, y: 0, width: 2, height: 1 });
+    const base = recordingContext();
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(overlay) },
+      metrics: getCanvasMetrics(48, 32),
+      viewport: { x: 0, y: 0, zoom: 16 }
+    });
+    renderer.renderNow();
+    overlay.calls.length = 0;
+    overlay.records.length = 0;
+    renderer.setOverlay({ floatingPaste: { fragment, destination: { x: -1, y: 0, width: 2, height: 1 } } });
+    renderer.renderNow();
+
+    expect(overlay.records.some((record) => record.name === 'fillRect' && record.fillStyle === '#ffffff')).toBe(true);
+    expect(overlay.records.some((record) => record.name === 'strokeRect')).toBe(false);
+    expect(overlay.records.some((record) => record.name === 'lineTo')).toBe(true);
+    expect(overlay.records.some((record) => record.name === 'fillRect' && record.args[0] === 16)).toBe(false);
+    renderer.dispose();
+  });
+
+  it('translates sparse exterior and interior copy-time contours at a legal clamped destination', () => {
+    const document = chart(8, 8);
+    const source = chart(3, 3);
+    const fragment = createPatternFragment(source, { x: 0, y: 0, width: 3, height: 3 });
+    const geometry = sparseSelectionGeometry(new Uint32Array([0, 1, 2, 3, 5, 6, 7, 8]), 3, 3)!;
+    const boundaries = geometry.boundaries.map((boundary) => Object.freeze({
+      start: Object.freeze({ ...boundary.start }),
+      end: Object.freeze({ ...boundary.end }),
+      kind: boundary.kind
+    }));
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      metrics: getCanvasMetrics(80, 80),
+      viewport: { x: 0, y: 0, zoom: 10 },
+      overlay: {
+        floatingPaste: {
+          fragment,
+          destination: { x: 5, y: 5, width: 3, height: 3 },
+          copySelection: { kind: 'sparse', rect: { x: 5, y: 5, width: 3, height: 3 }, boundaries }
+        }
+      }
+    });
+    renderer.renderNow();
+
+    expect(geometry.boundaries.some((boundary) => boundary.kind === 'exterior')).toBe(true);
+    expect(geometry.boundaries.some((boundary) => boundary.kind === 'interior')).toBe(true);
+    const contourPaths = overlay.records
+      .filter((record) => record.strokeStyle === '#2266cc' && ['moveTo', 'lineTo'].includes(record.name))
+      .map((record) => `${record.name}:${(record.args as number[]).join(',')}`);
+    expect(contourPaths).toEqual(expect.arrayContaining([
+      'moveTo:50,50', 'lineTo:60,50',
+      'moveTo:70,60', 'lineTo:60,60',
+      'moveTo:60,60', 'lineTo:60,70',
+      'moveTo:70,70', 'lineTo:70,60',
+      'moveTo:60,70', 'lineTo:70,70'
+    ]));
+    expect(boundaries[0]?.start).toEqual(geometry.boundaries[0]?.start);
+    renderer.dispose();
+  });
+
+  it('clips a rectangular copied contour by its true visible edges', () => {
+    const document = chart(3, 2);
+    const source = chart(2, 1);
+    const fragment = createPatternFragment(source, { x: 0, y: 0, width: 2, height: 1 });
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      metrics: getCanvasMetrics(48, 32),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      style: { showGrid: false },
+      overlay: { floatingPaste: { fragment, destination: { x: -1, y: 0, width: 2, height: 1 } } }
+    });
+    renderer.renderNow();
+
+    const contourPath = overlay.records.filter((record) => record.strokeStyle === '#2266cc' && ['moveTo', 'lineTo'].includes(record.name));
+    expect(contourPath).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'moveTo', args: [0, 0] }),
+      expect.objectContaining({ name: 'lineTo', args: [16, 0] }),
+      expect.objectContaining({ name: 'moveTo', args: [16, 0] }),
+      expect.objectContaining({ name: 'lineTo', args: [16, 16] }),
+      expect.objectContaining({ name: 'moveTo', args: [16, 16] }),
+      expect.objectContaining({ name: 'lineTo', args: [0, 16] })
+    ]));
+    expect(contourPath.some((record) => record.name === 'moveTo' && record.args.join(',') === '0,16')).toBe(false);
+    renderer.dispose();
+  });
+
+  it('culls large sparse copy-time contour work to the visible chart', () => {
+    const document = chart(64, 64);
+    const source = chart(64, 64);
+    const indices = new Uint32Array(Array.from({ length: 32 * 64 }, (_, position) => {
+      const y = Math.floor(position / 32);
+      const x = (position % 32) * 2;
+      return y * 64 + x;
+    }));
+    const geometry = sparseSelectionGeometry(indices, 64, 64)!;
+    const fragment = createPatternFragment(source, geometry.bounds);
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      metrics: getCanvasMetrics(64, 64),
+      viewport: { x: 0, y: 0, zoom: 8 },
+      style: { showGrid: false },
+      overlay: {
+        floatingPaste: {
+          fragment,
+          destination: { x: 1, y: 0, width: geometry.bounds.width, height: geometry.bounds.height },
+          copySelection: { kind: 'sparse', rect: geometry.bounds, boundaries: geometry.boundaries }
+        }
+      }
+    });
+    renderer.renderNow();
+
+    const contourStrokes = overlay.records.filter((record) => record.name === 'stroke' && record.strokeStyle === '#2266cc');
+    expect(geometry.boundaries.length).toBeGreaterThan(4000);
+    expect(contourStrokes.length).toBeGreaterThan(0);
+    expect(contourStrokes.length).toBeLessThan(400);
+    renderer.dispose();
+  });
+
+  it('bounds floating preview cell work to the visible source-coordinate intersection', () => {
+    const document = chart(4, 4);
+    const source = createDocument({ width: 128, height: 128, palette: [{ id: 1, name: 'Red', color: '#f00' }] });
+    source.kind[2 * source.width + 2] = CellKind.Full;
+    source.colors[(2 * source.width + 2) * 4] = 1;
+    const fragment = createPatternFragment(source, { x: 0, y: 0, width: 128, height: 128 });
+    const base = recordingContext();
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(overlay) },
+      metrics: getCanvasMetrics(64, 64),
+      viewport: { x: 2, y: 2, zoom: 16 }
+    });
+    renderer.renderNow();
+    overlay.calls.length = 0;
+    overlay.records.length = 0;
+    renderer.setOverlay({ floatingPaste: { fragment, destination: { x: 0, y: 0, width: 128, height: 128 } } });
+    renderer.renderNow();
+    expect(overlay.records.filter((record) => record.name === 'fillRect').length).toBeLessThanOrEqual(2);
+    renderer.dispose();
   });
 
   it('renders the v2 palette symbol instead of deriving one from the palette ID', () => {

@@ -14,6 +14,7 @@ import {
   type CellRect,
   type CoalescedInvalidation,
   type FixedPoint,
+  type FloatingPasteOverlay,
   type Invalidation,
   type InvalidationLayer,
   type LassoPathOverlay,
@@ -838,15 +839,36 @@ function drawSparseSelectionBoundaries(
   viewport: Viewport,
   style: RendererStyle,
   bounds: Rect,
-  color?: string
+  color?: string,
+  offsetX = 0,
+  offsetY = 0
 ): void {
   if (boundaries.length === 0) return;
   const chart = { x: 0, y: 0, width: document.width, height: document.height };
+  const zoom = viewport.zoom;
+  const visibleModel = {
+    x: viewport.x + bounds.x / zoom,
+    y: viewport.y + bounds.y / zoom,
+    width: bounds.width / zoom,
+    height: bounds.height / zoom
+  };
+  const clipModel = intersectRects(chart, visibleModel);
+  if (!clipModel) return;
   save(context);
   context.strokeStyle = color ?? style.selectionColor;
   context.lineWidth = style.overlayLineWidth;
   for (const boundary of boundaries) {
-    const modelSegment = clipSegmentToRect(boundary.start, boundary.end, chart);
+    const startX = boundary.start.x + offsetX;
+    const startY = boundary.start.y + offsetY;
+    const endX = boundary.end.x + offsetX;
+    const endY = boundary.end.y + offsetY;
+    const minX = Math.min(startX, endX);
+    const maxX = Math.max(startX, endX);
+    const minY = Math.min(startY, endY);
+    const maxY = Math.max(startY, endY);
+    if (maxX < clipModel.x || minX > clipModel.x + clipModel.width
+      || maxY < clipModel.y || minY > clipModel.y + clipModel.height) continue;
+    const modelSegment = clipSegmentToRect({ x: startX, y: startY }, { x: endX, y: endY }, clipModel);
     if (!modelSegment) continue;
     const screenSegment = clipSegmentToRect(
       modelToScreen(modelSegment.start, viewport),
@@ -855,6 +877,33 @@ function drawSparseSelectionBoundaries(
     );
     if (!screenSegment) continue;
     linePath(context, screenSegment.start, screenSegment.end);
+  }
+  restore(context);
+}
+
+function drawSelectionRect(
+  context: CanvasContextAdapter,
+  rect: CellRect,
+  viewport: Viewport,
+  style: RendererStyle,
+  bounds: Rect,
+  color: string | undefined,
+  dashed: boolean
+): void {
+  const screenRect = cellToScreenRect(rect, viewport);
+  const edges: readonly [ScreenPoint, ScreenPoint][] = [
+    [{ x: screenRect.x, y: screenRect.y }, { x: screenRect.x + screenRect.width, y: screenRect.y }],
+    [{ x: screenRect.x + screenRect.width, y: screenRect.y }, { x: screenRect.x + screenRect.width, y: screenRect.y + screenRect.height }],
+    [{ x: screenRect.x + screenRect.width, y: screenRect.y + screenRect.height }, { x: screenRect.x, y: screenRect.y + screenRect.height }],
+    [{ x: screenRect.x, y: screenRect.y + screenRect.height }, { x: screenRect.x, y: screenRect.y }]
+  ];
+  save(context);
+  context.strokeStyle = color ?? style.selectionColor;
+  context.lineWidth = style.overlayLineWidth;
+  if (dashed) context.setLineDash?.([6, 4]);
+  for (const [start, end] of edges) {
+    const clipped = clipSegmentToRect(start, end, bounds);
+    if (clipped) linePath(context, clipped.start, clipped.end);
   }
   restore(context);
 }
@@ -923,6 +972,104 @@ function drawPendingCellStates(
     if (cell) cells.push(cell);
   }
   return cells;
+}
+
+function drawFloatingPaste(
+  context: CanvasContextAdapter,
+  document: PatternDocument,
+  preview: FloatingPasteOverlay | null | undefined,
+  viewport: Viewport,
+  metrics: CanvasMetrics,
+  style: RendererStyle,
+  lod: RenderLod,
+  bounds: Rect
+): void {
+  if (!preview) return;
+  const destination = preview.destination;
+  const chart = { x: 0, y: 0, width: document.width, height: document.height };
+  const visibleDestination = intersectCellRects(destination, intersectCellRects(visibleCellRect(viewport, metrics, document), chart));
+  if (visibleDestination.width > 0 && visibleDestination.height > 0) {
+    const sourceLeft = visibleDestination.x - destination.x;
+    const sourceTop = visibleDestination.y - destination.y;
+    const sourceRight = sourceLeft + visibleDestination.width;
+    const sourceBottom = sourceTop + visibleDestination.height;
+    for (let y = sourceTop; y < sourceBottom; y += 1) {
+      for (let x = sourceLeft; x < sourceRight; x += 1) {
+        const sourceIndex = y * preview.fragment.width + x;
+        const kind = preview.fragment.kind[sourceIndex] as CellKind;
+        if (kind === CellKind.Empty) continue;
+        const targetX = destination.x + x;
+        const targetY = destination.y + y;
+        if (targetX < 0 || targetY < 0 || targetX >= document.width || targetY >= document.height) continue;
+        const targetRect = cellToScreenRect({ x: targetX, y: targetY, width: 1, height: 1 }, viewport);
+        const clipped = intersectRects(targetRect, bounds);
+        if (!clipped) continue;
+        const offset = sourceIndex * 4;
+        save(context);
+        context.fillStyle = style.mode === ChartPresentationMode.Symbol ? style.symbolBackgroundColor : style.backgroundColor;
+        setAlpha(context, 1);
+        context.fillRect(clipped.x, clipped.y, clipped.width, clipped.height);
+        restore(context);
+        drawCellState(
+          context,
+          document,
+          targetX,
+          targetY,
+          kind,
+          preview.fragment.colors.subarray(offset, offset + 4),
+          0,
+          style,
+          viewport,
+          lod
+        );
+      }
+    }
+  }
+
+  if (lod !== RenderLod.Overview && visibleDestination.width > 0 && visibleDestination.height > 0) {
+    const offsetX = destination.x * 4;
+    const offsetY = destination.y * 4;
+    for (let index = 0; index < preview.fragment.backstitches.x1.length; index += 1) {
+      const start = fixedToModel({
+        x: preview.fragment.backstitches.x1[index] + offsetX,
+        y: preview.fragment.backstitches.y1[index] + offsetY
+      });
+      const end = fixedToModel({
+        x: preview.fragment.backstitches.x2[index] + offsetX,
+        y: preview.fragment.backstitches.y2[index] + offsetY
+      });
+      const clippedModel = clipSegmentToRect(start, end, chart);
+      if (!clippedModel) continue;
+      const clippedScreen = clipSegmentToRect(modelToScreen(clippedModel.start, viewport), modelToScreen(clippedModel.end, viewport), bounds);
+      if (!clippedScreen) continue;
+      drawBackstitchScreenSegment(context, document, viewport, style, clippedScreen.start, clippedScreen.end, preview.fragment.backstitches.colors[index], false);
+    }
+  }
+
+  const copySelection = preview.copySelection;
+  if (copySelection) {
+    if (copySelection.kind === 'sparse' && copySelection.boundaries) {
+      drawSparseSelectionBoundaries(
+        context,
+        copySelection.boundaries,
+        document,
+        viewport,
+        style,
+        bounds,
+        preview.color,
+        destination.x,
+        destination.y
+      );
+    } else {
+      drawSelectionRect(context, {
+        x: destination.x,
+        y: destination.y,
+        width: copySelection.rect.width,
+        height: copySelection.rect.height
+      }, viewport, style, bounds, preview.color, false);
+    }
+  }
+  drawSelectionRect(context, destination, viewport, style, bounds, preview.color, true);
 }
 
 function drawBackstitchPreview(
@@ -1030,6 +1177,7 @@ function drawOverlay(
   drawBrushPreview(context, document, overlay.brushPreview, viewport, style, lod, bounds);
   drawBackstitchesForCells(context, document, viewport, metrics, style, pendingStateCells, lod, bounds);
   drawBackstitchPreview(context, document, overlay.backstitchPreview, viewport, style, bounds);
+  drawFloatingPaste(context, document, overlay.floatingPaste, viewport, metrics, style, lod, bounds);
   const selectionValue = overlay.selection;
   const selection = overlayRect(selectionValue);
   if (selection && overlay.showSelection !== false) {

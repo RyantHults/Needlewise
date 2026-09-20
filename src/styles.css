@@ -348,6 +348,10 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .palette-menu button { border:1px solid #d5cec3; border-radius:.3rem; padding:.3rem; background:#fffdf9; color:#4e4842; font-size:.7rem; text-align:left; }
 .palette-menu button:hover { border-color:#bc5a3d; color:#88452f; }
 .palette-menu .palette-menu-delete { color:#a94e34; }
+.touch-copy-menu { position:absolute; z-index:120; display:grid; gap:.15rem; width:max-content; padding:.2rem; border:1px solid #d5cec3; border-radius:.55rem; background:#fffdf9; box-shadow:0 .5rem 1.2rem rgba(67,55,42,.2); }
+.touch-copy-menu button { min-height:2.75rem; border:1px solid #d5cec3; border-radius:.3rem; padding:.3rem .45rem; background:#fffdf9; color:#4e4842; font-size:.72rem; text-align:left; }
+.touch-copy-menu button:disabled { opacity:.45; cursor:not-allowed; }
+.touch-copy-menu button:hover, .touch-copy-menu button:focus-visible { border-color:#bc5a3d; color:#88452f; outline:2px solid #bc5a3d; outline-offset:1px; }
 .rail-right .palette-menu { right:calc(100% + .35rem); left:auto; }
 .canvas-column { grid-column:2; grid-row:1; min-width:0; }
 .rail-button, .rail-placement { display:grid; place-items:center; width:2.8rem; height:2.8rem; border:1px solid #d5cec3; border-radius:.55rem; background:#fffdf9; color:#5c5148; cursor:pointer; transition:background 160ms ease,border-color 160ms ease,color 160ms ease; }

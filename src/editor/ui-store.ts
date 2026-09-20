@@ -26,7 +26,8 @@ export const DEFAULT_EDITOR_UI_STATE: EditorUiState = {
   keyboardCursor: null,
   selectedCell: null,
   status: null,
-  pendingPaletteId: null
+  pendingPaletteId: null,
+  canPaste: false
 };
 
 function sameState(left: EditorUiState, right: EditorUiState): boolean {
@@ -40,7 +41,8 @@ function sameState(left: EditorUiState, right: EditorUiState): boolean {
     && left.keyboardCursor === right.keyboardCursor
     && left.selectedCell === right.selectedCell
     && left.status === right.status
-    && left.pendingPaletteId === right.pendingPaletteId;
+    && left.pendingPaletteId === right.pendingPaletteId
+    && left.canPaste === right.canPaste;
 }
 
 export function createUiStore(initial: Partial<EditorUiState> = {}): EditorUiStore {
@@ -125,6 +127,10 @@ export function createUiStore(initial: Partial<EditorUiState> = {}): EditorUiSto
 
     setStatus(status: string | null): void {
       store.setState({ status });
+    },
+
+    setCanPaste(canPaste: boolean): void {
+      store.setState({ canPaste });
     },
 
     subscribe(listener: UiListener): () => void {

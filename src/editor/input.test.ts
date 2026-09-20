@@ -5,6 +5,7 @@ class FakeSurface implements PointerEventSurface {
   readonly handlers = new Map<string, (event: Event) => void>();
   readonly captures: number[] = [];
   readonly releases: number[] = [];
+  containedTarget: unknown;
 
   addEventListener(type: string, listener: (event: Event) => void): void {
     this.handlers.set(type, listener);
@@ -24,6 +25,10 @@ class FakeSurface implements PointerEventSurface {
 
   getBoundingClientRect(): { left: number; top: number } {
     return { left: 10, top: 20 };
+  }
+
+  contains(target: unknown): boolean {
+    return target === this.containedTarget;
   }
 
   dispatch(type: string, event: Event): void {
@@ -119,6 +124,80 @@ describe('DOM pointer event adapter', () => {
     expect(keyboardSurface.handlers.size).toBe(0);
   });
 
+  it('keeps controller blur cleanup when focus leaves the editor but ignores contained focus transitions', () => {
+    const surface = new FakeSurface();
+    const child = {};
+    surface.containedTarget = child;
+    let blurs = 0;
+    const controller = {
+      handlePointerDown: () => true,
+      handlePointerMove: () => true,
+      handlePointerUp: () => true,
+      handlePointerCancel: () => true,
+      handlePointerLostCapture: () => true,
+      handleWheel: () => true,
+      handleKeyDown: () => true,
+      handleKeyUp: () => true,
+      handleBlur: () => { blurs += 1; }
+    };
+    const adapter = createPointerEventsAdapter(surface, controller);
+    const containedBlur = new Event('blur') as FocusEvent;
+    Object.defineProperty(containedBlur, 'relatedTarget', { value: child });
+    surface.dispatch('blur', containedBlur);
+    expect(blurs).toBe(0);
+    const settingsTarget = {};
+    const externalBlur = new Event('blur') as FocusEvent;
+    Object.defineProperty(externalBlur, 'relatedTarget', { value: settingsTarget });
+    surface.dispatch('blur', externalBlur);
+    expect(blurs).toBe(1);
+    surface.dispatch('blur', new Event('blur'));
+    expect(blurs).toBe(2);
+    adapter.dispose();
+  });
+
+  it('excludes local interactive targets from pointer and keyboard controller routing', () => {
+    const surface = new FakeSurface();
+    const menuTarget = {};
+    const calls = { down: 0, move: 0, up: 0, cancel: 0, lost: 0, keyDown: 0, keyUp: 0 };
+    const controller = {
+      handlePointerDown: () => { calls.down += 1; return true; },
+      handlePointerMove: () => { calls.move += 1; return true; },
+      handlePointerUp: () => { calls.up += 1; return true; },
+      handlePointerCancel: () => { calls.cancel += 1; return true; },
+      handlePointerLostCapture: () => { calls.lost += 1; return true; },
+      handleWheel: () => true,
+      handleKeyDown: () => { calls.keyDown += 1; return true; },
+      handleKeyUp: () => { calls.keyUp += 1; return true; },
+      handleBlur: () => undefined
+    };
+    const adapter = createPointerEventsAdapter(surface, controller, {
+      shouldExcludeTarget: (target) => target === menuTarget
+    });
+    const withTarget = <T extends object>(event: T, target: unknown): T => {
+      Object.defineProperty(event, 'target', { value: target });
+      return event;
+    };
+    for (const [type, event] of [
+      ['pointerdown', pointerEvent(1, 15, 26)],
+      ['pointermove', pointerEvent(1, 16, 27)],
+      ['pointerup', pointerEvent(1, 16, 27)],
+      ['pointercancel', pointerEvent(1, 16, 27)],
+      ['lostpointercapture', pointerEvent(1, 16, 27)]
+    ] as const) surface.dispatch(type, withTarget(event, menuTarget) as unknown as Event);
+    const keyboardEvent = (target: unknown): Event => withTarget({ key: 'Enter', preventDefault: () => undefined }, target) as unknown as Event;
+    surface.dispatch('keydown', keyboardEvent(menuTarget));
+    surface.dispatch('keyup', keyboardEvent(menuTarget));
+    expect(calls).toEqual({ down: 0, move: 0, up: 0, cancel: 0, lost: 0, keyDown: 0, keyUp: 0 });
+
+    surface.dispatch('pointerdown', withTarget(pointerEvent(2, 15, 26), {}) as unknown as Event);
+    surface.dispatch('keydown', keyboardEvent({}));
+    surface.dispatch('keyup', keyboardEvent({}));
+    expect(calls.down).toBe(1);
+    expect(calls.keyDown).toBe(1);
+    expect(calls.keyUp).toBe(1);
+    adapter.dispose();
+  });
+
   it('delivers touch pointer sequences through the DOM surface with capture lifecycle intact', () => {
     const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
     const surface = document.createElement('div');
@@ -127,6 +206,8 @@ describe('DOM pointer event adapter', () => {
     const downs: PointerSample[] = [];
     const moves: PointerSample[] = [];
     const ups: PointerSample[] = [];
+    let released = false;
+    let lostAfterRelease = 0;
     surface.getBoundingClientRect = () => ({ left: 10, top: 20 } as DOMRect);
     Object.defineProperty(surface, 'setPointerCapture', { value: (id: number) => captures.push(id) });
     Object.defineProperty(surface, 'releasePointerCapture', { value: (id: number) => releases.push(id) });
@@ -134,9 +215,9 @@ describe('DOM pointer event adapter', () => {
     const controller = {
       handlePointerDown: (sample: PointerSample) => { downs.push(sample); return true; },
       handlePointerMove: (sample: PointerSample) => { moves.push(sample); return true; },
-      handlePointerUp: (sample: PointerSample) => { ups.push(sample); return true; },
+      handlePointerUp: (sample: PointerSample) => { ups.push(sample); released = true; return true; },
       handlePointerCancel: () => true,
-      handlePointerLostCapture: () => true,
+      handlePointerLostCapture: () => { if (released) lostAfterRelease += 1; return true; },
       handleWheel: () => true,
       handleKeyDown: () => true,
       handleKeyUp: () => true,
@@ -162,6 +243,7 @@ describe('DOM pointer event adapter', () => {
     surface.dispatchEvent(event('pointerdown', 15, 26, 100));
     surface.dispatchEvent(event('pointermove', 18, 29, 125));
     surface.dispatchEvent(event('pointerup', 20, 31, 150));
+    surface.dispatchEvent(event('lostpointercapture', 20, 31, 175));
     adapter.dispose();
     surface.remove();
 
@@ -171,6 +253,7 @@ describe('DOM pointer event adapter', () => {
     expect(downs[0]).toEqual(expect.objectContaining({ pointerType: 'touch', screenX: 5, screenY: 6, timeStamp: 100 }));
     expect(moves[0]).toEqual(expect.objectContaining({ pointerType: 'touch', screenX: 8, screenY: 9, timeStamp: 125 }));
     expect(ups[0]).toEqual(expect.objectContaining({ pointerType: 'touch', screenX: 10, screenY: 11, timeStamp: 150 }));
+    expect(lostAfterRelease).toBe(1);
     expect(captures).toEqual([11]);
     expect(releases).toEqual([11]);
     debug.mockRestore();

@@ -1,4 +1,4 @@
-import type { CellKind, PatternDocument } from '../domain';
+import type { CellKind, PatternDocument, PatternFragment } from '../domain';
 
 /** The four ways in which a chart can present a stitch. */
 export const ChartPresentationMode = {
@@ -215,6 +215,9 @@ export interface OverlayState {
   readonly pendingCells?: readonly ModelPoint[];
   /** Exact sparse cell states that the pending gesture would produce. */
   readonly pendingCellStates?: readonly PendingCellState[];
+  readonly floatingPaste?: FloatingPasteOverlay | null;
+  /** A touch-only request for the UI to offer Copy for the active selection. */
+  readonly touchCopyRequest?: TouchCopyRequest | null;
   readonly color?: string;
   readonly showCursor?: boolean;
   readonly showSelection?: boolean;
@@ -232,6 +235,28 @@ export interface BrushPreviewOverlay {
   readonly states: readonly PendingCellState[];
   readonly color?: string;
   readonly kind: 'paint' | 'completion' | 'eraser';
+}
+
+/** Presentation-only preview for a controller-owned, uncommitted paste. */
+export interface FloatingPasteOverlay {
+  readonly fragment: PatternFragment;
+  readonly destination: GridRect;
+  readonly copySelection?: FloatingPasteSelectionOverlay;
+  readonly color?: string;
+}
+
+export interface FloatingPasteSelectionOverlay {
+  readonly kind: 'rect' | 'sparse';
+  readonly rect: CellRect;
+  /** Sparse boundaries are normalized to the copy rectangle's top-left. */
+  readonly boundaries?: readonly SelectionBoundarySegment[];
+}
+
+export interface TouchCopyRequest {
+  readonly cell: ModelPoint;
+  readonly selection: GridRect;
+  readonly screenX: number;
+  readonly screenY: number;
 }
 
 export type InvalidationLayer = 'base' | 'overlay' | 'all';
@@ -438,6 +463,8 @@ export interface EditorUiState {
   readonly status: string | null;
   /** Active palette entry added by the eyedropper but not yet referenced by a stitch or backstitch. */
   readonly pendingPaletteId: number | null;
+  /** True when the controller has a cloned in-app fragment available to paste. */
+  readonly canPaste: boolean;
 }
 
 export type SelectedCellGeometry =
@@ -609,5 +636,6 @@ export interface EditorUiStore {
   setKeyboardCursor(cursor: ModelPoint | null): void;
   setSelectedCell(selectedCell: SelectedCellSemantics | null): void;
   setStatus(status: string | null): void;
+  setCanPaste(canPaste: boolean): void;
   subscribe(listener: UiListener): () => void;
 }

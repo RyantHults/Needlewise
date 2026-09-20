@@ -39,6 +39,7 @@ export interface PointerEventSurface {
   setPointerCapture?(pointerId: number): void;
   releasePointerCapture?(pointerId: number): void;
   getBoundingClientRect?(): { readonly left: number; readonly top: number };
+  contains?(target: unknown): boolean;
 }
 
 export interface PointerEventsAdapter {
@@ -47,6 +48,10 @@ export interface PointerEventsAdapter {
 
 export interface PointerEventsAdapterOptions {
   readonly keyboardSurface?: PointerEventSurface;
+  /** Return true when a local interactive target owns this event. */
+  readonly shouldExcludeTarget?: (target: unknown, eventType: string) => boolean;
+  /** Compatibility spelling for callers that describe the predicate as routing exclusion. */
+  readonly excludeFromRouting?: (target: unknown, eventType: string) => boolean;
 }
 
 function localPoint(surface: PointerEventSurface, event: PointerEvent): { x: number; y: number } {
@@ -103,7 +108,13 @@ export function createPointerEventsAdapter(
   options: PointerEventsAdapterOptions = {}
 ): PointerEventsAdapter {
   const keyboardSurface = options.keyboardSurface ?? surface;
+  const isExcluded = (event: Event, eventType: string): boolean => {
+    const target = (event as { readonly target?: unknown }).target ?? null;
+    return options.shouldExcludeTarget?.(target, eventType) === true
+      || options.excludeFromRouting?.(target, eventType) === true;
+  };
   const onPointerDown = (event: Event): void => {
+    if (isExcluded(event, 'pointerdown')) return;
     const pointer = event as PointerEvent;
     const next = sample(surface, pointer);
     const handled = isFinitePointerSample(next) ? controller.handlePointerDown(next) : false;
@@ -114,6 +125,7 @@ export function createPointerEventsAdapter(
     }
   };
   const onPointerMove = (event: Event): void => {
+    if (isExcluded(event, 'pointermove')) return;
     const pointer = event as PointerEvent;
     const coalesced = typeof pointer.getCoalescedEvents === 'function' ? pointer.getCoalescedEvents() : [];
     const samples = coalesced.length > 0 ? coalesced : [pointer];
@@ -125,6 +137,7 @@ export function createPointerEventsAdapter(
     if (handled) event.preventDefault();
   };
   const onPointerUp = (event: Event): void => {
+    if (isExcluded(event, 'pointerup')) return;
     const pointer = event as PointerEvent;
     const next = sample(surface, pointer);
     const handled = isFinitePointerSample(next) ? controller.handlePointerUp(next) : false;
@@ -132,6 +145,7 @@ export function createPointerEventsAdapter(
     surface.releasePointerCapture?.(pointer.pointerId);
   };
   const onPointerCancel = (event: Event): void => {
+    if (isExcluded(event, 'pointercancel')) return;
     const pointer = event as PointerEvent;
     const next = sample(surface, pointer);
     const handled = isFinitePointerSample(next) ? controller.handlePointerCancel(next) : false;
@@ -140,6 +154,7 @@ export function createPointerEventsAdapter(
   };
   const onPointerLeave = (): void => { controller.handlePointerLeave?.(); };
   const onLostPointerCapture = (event: Event): void => {
+    if (isExcluded(event, 'lostpointercapture')) return;
     const pointer = event as PointerEvent;
     const next = sample(surface, pointer);
     const handled = isFinitePointerSample(next) ? controller.handlePointerLostCapture(next) : false;
@@ -152,6 +167,7 @@ export function createPointerEventsAdapter(
       && controller.handleWheel({ screenX: point.x, screenY: point.y, deltaY: wheel.deltaY })) event.preventDefault();
   };
   const onKeyDown = (event: Event): void => {
+    if (isExcluded(event, 'keydown')) return;
     const keyboard = event as KeyboardEvent;
     controller.handleFocus?.();
     controller.handleKeyDown({
@@ -166,10 +182,13 @@ export function createPointerEventsAdapter(
     });
   };
   const onKeyUp = (event: Event): void => {
+    if (isExcluded(event, 'keyup')) return;
     const keyboard = event as KeyboardEvent;
     if (controller.handleKeyUp({ key: keyboard.key, code: keyboard.code, target: keyboard.target })) event.preventDefault();
   };
-  const onBlur = (): void => {
+  const onBlur = (event: Event): void => {
+    const relatedTarget = (event as FocusEvent).relatedTarget;
+    if (relatedTarget && surface.contains?.(relatedTarget) === true) return;
     controller.handleBlur();
   };
   surface.addEventListener('pointerdown', onPointerDown);

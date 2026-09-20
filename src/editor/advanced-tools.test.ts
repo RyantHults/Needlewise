@@ -345,11 +345,13 @@ describe('advanced headless editor tools', () => {
     expect(uiStore.getState().overlay.selection).toMatchObject({ kind: 'sparse', indices: [0, 1, 2, 8, 9, 10, 16, 17, 18] });
 
     controller.handlePointerDown({ ...pointer(3, 24, 8), shiftKey: true });
+    controller.handlePointerMove({ ...pointer(3, 40, 8), shiftKey: true });
     controller.handlePointerUp({ ...pointer(3, 24, 8), shiftKey: false });
     expect(controller.getSelectionIndices()).toEqual(new Uint32Array([0, 1, 2, 8, 9, 10, 16, 17, 18]));
 
     controller.handlePointerDown({ ...pointer(4, 24, 8), shiftKey: true, altKey: true });
-    controller.handlePointerUp({ ...pointer(4, 24, 8), shiftKey: false, altKey: false });
+    controller.handlePointerMove({ ...pointer(4, 40, 8), shiftKey: true, altKey: true });
+    controller.handlePointerUp({ ...pointer(4, 40, 8), shiftKey: false, altKey: false });
     expect(controller.getSelectionIndices()).toEqual(new Uint32Array([0, 2, 8, 9, 10, 16, 17, 18]));
 
     controller.handleKeyDown({ key: 'ArrowRight', preventDefault: () => undefined });
@@ -376,6 +378,127 @@ describe('advanced headless editor tools', () => {
     expect(gateway.getSnapshot().document?.kind[1]).toBe(CellKind.Quarters);
     expect(gateway.getSnapshot().document?.kind[2]).toBe(CellKind.Empty);
     controller.dispose();
+  });
+
+  it('defers selected-cell actions for mouse and pen while preserving drag gestures', () => {
+    const { controller, uiStore } = fixture();
+    controller.setTool({ tool: 'select' });
+    controller.setSelection({ x: 0, y: 0 });
+
+    controller.handlePointerDown(pointer(1, 8, 8));
+    controller.handlePointerUp(pointer(1, 8, 8));
+    expect(uiStore.getState().overlay.touchCopyRequest).toMatchObject({ cell: { x: 0, y: 0 }, screenX: 8, screenY: 8 });
+    controller.dismissTouchCopyRequest();
+
+    controller.handlePointerDown({ ...pointer(2, 8, 8), pointerType: 'pen' });
+    controller.handlePointerMove({ ...pointer(2, 40, 8), pointerType: 'pen' });
+    controller.handlePointerUp({ ...pointer(2, 40, 8), pointerType: 'pen' });
+    expect(uiStore.getState().overlay.touchCopyRequest).toBeUndefined();
+    expect(controller.getSelection()).toEqual({ x: 0, y: 0, width: 3, height: 1 });
+    controller.dispose();
+  });
+
+  it('applies a release beyond slop when mouse or pen has not emitted a move', () => {
+    const mouse = fixture();
+    mouse.controller.setTool({ tool: 'select' });
+    mouse.controller.setSelection({ x: 0, y: 0 });
+    mouse.controller.handlePointerDown(pointer(1, 8, 8));
+    mouse.controller.handlePointerUp(pointer(1, 40, 8));
+    expect(mouse.uiStore.getState().overlay.touchCopyRequest).toBeUndefined();
+    expect(mouse.controller.getSelection()).toEqual({ x: 0, y: 0, width: 3, height: 1 });
+    mouse.controller.dispose();
+
+    const pen = fixture();
+    pen.controller.setTool({ tool: 'select' });
+    pen.controller.setSelection({ x: 0, y: 0 });
+    pen.controller.handlePointerDown({ ...pointer(1, 8, 8), pointerType: 'pen' });
+    pen.controller.handlePointerUp({ ...pointer(1, 40, 8), pointerType: 'pen' });
+    expect(pen.uiStore.getState().overlay.touchCopyRequest).toBeUndefined();
+    expect(pen.controller.getSelection()).toEqual({ x: 0, y: 0, width: 3, height: 1 });
+    pen.controller.dispose();
+  });
+
+  it('renders copy-time selection geometry when pasting from a different selection', () => {
+    const { controller, uiStore } = fixture();
+    controller.setTool({ tool: 'select' });
+    controller.setSelection({ x: 1, y: 1 }, { x: 2, y: 2 });
+    controller.copySelection();
+    controller.setSelection({ x: 5, y: 5 });
+
+    expect(controller.pasteSelection()).toBe(true);
+    expect(uiStore.getState().overlay.floatingPaste).toMatchObject({
+      destination: { x: 5, y: 5, width: 2, height: 2 },
+      copySelection: { kind: 'rect', rect: { x: 1, y: 1, width: 2, height: 2 } }
+    });
+    controller.handleKeyDown({ key: 'Escape', preventDefault: () => undefined });
+    expect(controller.getSelection()).toEqual({ x: 5, y: 5, width: 1, height: 1 });
+    controller.dispose();
+  });
+
+  it('retains the immutable sparse copy outline reference while dragging a floating paste', () => {
+    const { controller, uiStore } = fixture();
+    controller.setTool({ tool: 'lasso' });
+    controller.handlePointerDown(pointer(1, 8, 8));
+    controller.handlePointerUp(pointer(1, 8, 8));
+    controller.handlePointerDown({ ...pointer(2, 40, 8), shiftKey: true });
+    controller.handlePointerUp({ ...pointer(2, 40, 8), shiftKey: false });
+    controller.copySelection();
+    controller.clearSelection();
+    uiStore.setKeyboardCursor({ x: 3, y: 3 });
+    expect(controller.pasteSelection()).toBe(true);
+    const initial = uiStore.getState().overlay.floatingPaste?.copySelection;
+    const initialBoundaries = initial?.boundaries;
+    expect(initial?.kind).toBe('sparse');
+
+    controller.handlePointerDown(pointer(3, 56, 56));
+    controller.handlePointerMove(pointer(3, 72, 56));
+    controller.handlePointerUp(pointer(3, 72, 56));
+    const afterDrag = uiStore.getState().overlay.floatingPaste?.copySelection;
+    expect(afterDrag).toBe(initial);
+    expect(afterDrag?.boundaries).toBe(initialBoundaries);
+    controller.dispose();
+  });
+
+  it('clears selected B after commit and restores B for no-op or recoverable failure', () => {
+    const committed = fixture();
+    committed.controller.setTool({ tool: 'select' });
+    committed.controller.setSelection({ x: 0, y: 0 });
+    committed.controller.copySelection();
+    committed.controller.setSelection({ x: 5, y: 5 });
+    expect(committed.controller.pasteSelection()).toBe(true);
+    committed.controller.handlePointerDown(pointer(1, 8, 8));
+    expect(committed.controller.getSelection()).toBeUndefined();
+    expect(committed.uiStore.getState().overlay.selection).toBeUndefined();
+    committed.controller.dispose();
+
+    const noOp = fixture();
+    noOp.controller.setTool({ tool: 'select' });
+    noOp.controller.setSelection({ x: 4, y: 4 });
+    noOp.controller.copySelection();
+    noOp.controller.setSelection({ x: 5, y: 5 });
+    const noOpCommandCount = noOp.gateway.commands.length;
+    expect(noOp.controller.pasteSelection()).toBe(true);
+    expect(noOp.uiStore.getState().overlay.floatingPaste).toMatchObject({ destination: { x: 5, y: 5 } });
+    noOp.controller.handlePointerDown(pointer(1, 8, 8));
+    expect(noOp.gateway.commands).toHaveLength(noOpCommandCount);
+    expect(noOp.uiStore.getState().status).toBe('No change');
+    expect(noOp.controller.getSelection()).toEqual({ x: 5, y: 5, width: 1, height: 1 });
+    expect(noOp.uiStore.getState().overlay.floatingPaste).toBeUndefined();
+    noOp.controller.dispose();
+
+    const failed = fixture();
+    failed.controller.setTool({ tool: 'select' });
+    failed.controller.setSelection({ x: 0, y: 0 });
+    failed.controller.copySelection();
+    failed.controller.setSelection({ x: 5, y: 5 });
+    expect(failed.controller.pasteSelection()).toBe(true);
+    failed.gateway.getSnapshot().document!.palette.length = 0;
+    failed.controller.handlePointerDown(pointer(1, 8, 8));
+    expect(failed.uiStore.getState().overlay.floatingPaste).toBeDefined();
+    expect(failed.controller.getSelection()).toBeUndefined();
+    failed.controller.handleKeyDown({ key: 'Escape', preventDefault: () => undefined });
+    expect(failed.controller.getSelection()).toEqual({ x: 5, y: 5, width: 1, height: 1 });
+    failed.controller.dispose();
   });
 
   it('clears sparse and legacy selections before a same-project dimension change', () => {
@@ -429,7 +552,7 @@ describe('advanced headless editor tools', () => {
   });
 
   it('copies a local transparent fragment without completion and pastes in one transaction', () => {
-    const { controller, gateway } = fixture();
+    const { controller, gateway, uiStore } = fixture();
     controller.setTool({ tool: 'select' });
     controller.setSelection({ x: 0, y: 0 });
     expect(controller.handleKeyDown({ key: 'c', ctrlKey: true, preventDefault: () => undefined })).toBe(true);
@@ -439,6 +562,10 @@ describe('advanced headless editor tools', () => {
     controller.handleKeyDown({ key: 'ArrowRight', preventDefault: () => undefined });
     const before = gateway.commands.length;
     expect(controller.handleKeyDown({ key: 'v', ctrlKey: true, preventDefault: () => undefined })).toBe(true);
+    expect(gateway.commands).toHaveLength(before);
+    expect(controller.getSelection()).toBeUndefined();
+    expect(uiStore.getState().overlay.floatingPaste).toMatchObject({ destination: { x: 1, y: 0, width: 1, height: 1 } });
+    controller.handlePointerDown(pointer(1, 8, 40));
     expect(gateway.commands).toHaveLength(before + 1);
     expect(gateway.commands.at(-1)?.type).toBe('paste-fragment');
     expect(gateway.getSnapshot().document?.completed[1]).toBe(0);
@@ -447,6 +574,322 @@ describe('advanced headless editor tools', () => {
     gateway.switchProject();
     expect(controller.getClipboard()).toBeUndefined();
     controller.dispose();
+  });
+
+  it('keeps floating paste out of document history until commit and supports replacement, cancel, and clamped anchors', () => {
+    const { controller, gateway, uiStore } = fixture();
+    controller.setTool({ tool: 'select' });
+    controller.setSelection({ x: 0, y: 0 });
+    controller.copySelection();
+    controller.clearSelection();
+    uiStore.setKeyboardCursor({ x: 4, y: 4 });
+    const revision = gateway.getSnapshot().revision;
+    expect(controller.pasteSelection()).toBe(true);
+    expect(gateway.getSnapshot().revision).toBe(revision);
+    expect(gateway.commands.at(-1)?.type).not.toBe('paste-fragment');
+    expect(uiStore.getState().canPaste).toBe(true);
+    expect(uiStore.getState().overlay.floatingPaste).toMatchObject({ destination: { x: 4, y: 4, width: 1, height: 1 } });
+
+    uiStore.setKeyboardCursor({ x: 7, y: 7 });
+    expect(controller.pasteSelection()).toBe(true);
+    expect(uiStore.getState().overlay.floatingPaste).toMatchObject({ destination: { x: 7, y: 7, width: 1, height: 1 } });
+    controller.handleKeyDown({ key: 'Escape', preventDefault: () => undefined });
+    expect(uiStore.getState().overlay.floatingPaste).toBeUndefined();
+    expect(controller.getSelection()).toBeUndefined();
+    expect(gateway.getSnapshot().revision).toBe(revision);
+
+    controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 1 });
+    controller.copySelection();
+    controller.clearSelection();
+    uiStore.setKeyboardCursor({ x: 7, y: 7 });
+    expect(controller.pasteSelection()).toBe(true);
+    expect(uiStore.getState().overlay.floatingPaste).toMatchObject({ destination: { x: 6, y: 6, width: 2, height: 2 } });
+    controller.handlePointerDown(pointer(1, 8, 8));
+    expect(gateway.commands.at(-1)?.type).toBe('paste-fragment');
+    expect(controller.getSelection()).toBeUndefined();
+    expect(gateway.undoDepth).toBe(1);
+    controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
+    controller.handleKeyDown({ key: 'y', ctrlKey: true, preventDefault: () => undefined });
+    expect(gateway.undoDepth).toBe(1);
+    controller.dispose();
+  });
+
+  it('moves floating paste with pointer input, reverts on a second touch, and exposes touch Copy only on release', () => {
+    const { controller, gateway, uiStore } = fixture();
+    controller.setTool({ tool: 'select' });
+    controller.setSelection({ x: 0, y: 0 });
+    controller.copySelection();
+    controller.clearSelection();
+    uiStore.setKeyboardCursor({ x: 0, y: 0 });
+    controller.pasteSelection();
+    const previewFragment = uiStore.getState().overlay.floatingPaste?.fragment;
+    controller.handlePointerDown({ ...pointer(1, 8, 8), pointerType: 'touch' });
+    controller.handlePointerMove({ ...pointer(1, 40, 8), pointerType: 'touch' });
+    expect(uiStore.getState().overlay.floatingPaste).toMatchObject({ destination: { x: 2, y: 0 } });
+    expect(uiStore.getState().overlay.floatingPaste?.fragment).toBe(previewFragment);
+    controller.handlePointerDown({ ...pointer(2, 60, 8), pointerType: 'touch' });
+    expect(uiStore.getState().overlay.floatingPaste).toMatchObject({ destination: { x: 0, y: 0 } });
+    controller.handlePointerUp({ ...pointer(2, 60, 8), pointerType: 'touch' });
+    controller.handlePointerUp({ ...pointer(1, 40, 8), pointerType: 'touch' });
+    expect(gateway.commands.filter((command) => command.type === 'paste-fragment')).toHaveLength(0);
+    controller.handleKeyDown({ key: 'Escape', preventDefault: () => undefined });
+
+    controller.setSelection({ x: 0, y: 0 });
+    controller.handlePointerDown({ ...pointer(3, 8, 8), pointerType: 'touch' });
+    expect(uiStore.getState().overlay.touchCopyRequest).toBeUndefined();
+    controller.handlePointerUp({ ...pointer(3, 8, 8), pointerType: 'touch' });
+    expect(uiStore.getState().overlay.touchCopyRequest).toMatchObject({
+      cell: { x: 0, y: 0 },
+      selection: { x: 0, y: 0, width: 1, height: 1 },
+      screenX: 8,
+      screenY: 8
+    });
+    controller.copySelection();
+    expect(uiStore.getState().overlay.touchCopyRequest).toBeUndefined();
+    controller.dispose();
+  });
+
+  it('retains a floating preview for recoverable command failure and discards it when the token goes stale', () => {
+    const failed = fixture();
+    failed.controller.setTool({ tool: 'select' });
+    failed.controller.setSelection({ x: 0, y: 0 });
+    failed.controller.copySelection();
+    failed.controller.clearSelection();
+    failed.uiStore.setKeyboardCursor({ x: 0, y: 0 });
+    failed.controller.pasteSelection();
+    failed.gateway.getSnapshot().document!.palette.length = 0;
+    failed.controller.handlePointerDown(pointer(1, 120, 120));
+    expect(failed.uiStore.getState().overlay.floatingPaste).toBeDefined();
+    expect(failed.uiStore.getState().status).toBe('Paste unavailable');
+    failed.controller.dispose();
+
+    const stale = fixture();
+    stale.controller.setTool({ tool: 'select' });
+    stale.controller.setSelection({ x: 0, y: 0 });
+    stale.controller.copySelection();
+    stale.controller.clearSelection();
+    stale.uiStore.setKeyboardCursor({ x: 0, y: 0 });
+    stale.controller.pasteSelection();
+    stale.gateway.execute({ type: 'set-full', x: 7, y: 7, color: 1 });
+    expect(stale.uiStore.getState().overlay.floatingPaste).toBeUndefined();
+    expect(stale.controller.getSelection()).toBeUndefined();
+    stale.controller.dispose();
+  });
+
+  it('keeps floating paste through keyboard Enter, Space/middle navigation, and post-pinch pan', () => {
+    const { controller, gateway, uiStore } = fixture();
+    controller.setTool({ tool: 'select' });
+    controller.setSelection({ x: 0, y: 0 });
+    controller.copySelection();
+    controller.clearSelection();
+    uiStore.setKeyboardCursor({ x: 0, y: 0 });
+    controller.pasteSelection();
+    const revision = gateway.getSnapshot().revision;
+    controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined });
+    expect(gateway.getSnapshot().revision).toBe(revision);
+
+    const beforeSpace = uiStore.getState().viewport;
+    controller.handleKeyDown({ key: 'Space', preventDefault: () => undefined });
+    controller.handlePointerDown(pointer(1, 8, 8));
+    controller.handlePointerMove(pointer(1, 40, 8));
+    controller.handlePointerUp(pointer(1, 40, 8));
+    controller.handleKeyUp({ key: 'Space' });
+    expect(uiStore.getState().viewport).not.toEqual(beforeSpace);
+    expect(uiStore.getState().overlay.floatingPaste).toBeDefined();
+
+    const beforeMiddle = uiStore.getState().viewport;
+    controller.handlePointerDown({ ...pointer(2, 8, 8), button: 1, buttons: 4 });
+    controller.handlePointerMove({ ...pointer(2, 40, 8), button: 1, buttons: 4 });
+    controller.handlePointerUp({ ...pointer(2, 40, 8), button: 1, buttons: 0 });
+    expect(uiStore.getState().viewport).not.toEqual(beforeMiddle);
+
+    const beforePinch = uiStore.getState().viewport;
+    controller.handlePointerDown({ ...pointer(3, 48, 48), pointerType: 'touch' });
+    controller.handlePointerDown({ ...pointer(4, 64, 48), pointerType: 'touch' });
+    controller.handlePointerMove({ ...pointer(4, 80, 48), pointerType: 'touch' });
+    controller.handlePointerUp({ ...pointer(3, 48, 48), pointerType: 'touch' });
+    controller.handlePointerMove({ ...pointer(4, 96, 48), pointerType: 'touch' });
+    controller.handlePointerUp({ ...pointer(4, 96, 48), pointerType: 'touch' });
+    expect(uiStore.getState().viewport).not.toEqual(beforePinch);
+    expect(uiStore.getState().overlay.floatingPaste).toBeDefined();
+    expect(gateway.getSnapshot().revision).toBe(revision);
+    controller.dispose();
+  });
+
+  it('ignores adapter lost-capture notifications that arrive after a floating pointer has already released', () => {
+    const { controller, uiStore } = fixture();
+    controller.setTool({ tool: 'select' });
+    controller.setSelection({ x: 0, y: 0 });
+    controller.copySelection();
+    controller.clearSelection();
+    uiStore.setKeyboardCursor({ x: 0, y: 0 });
+    controller.pasteSelection();
+    controller.handlePointerDown(pointer(1, 8, 8));
+    controller.handlePointerUp(pointer(1, 8, 8));
+    controller.handlePointerLostCapture(pointer(1, 8, 8));
+    expect(uiStore.getState().overlay.floatingPaste).toBeDefined();
+    controller.dispose();
+  });
+
+  it('lets unrelated Space, middle-button, pinch, and post-pinch cancellation clean up normally', () => {
+    const { controller, uiStore } = fixture();
+    controller.setTool({ tool: 'select' });
+    controller.setSelection({ x: 0, y: 0 });
+    controller.copySelection();
+    controller.clearSelection();
+    uiStore.setKeyboardCursor({ x: 0, y: 0 });
+    controller.pasteSelection();
+
+    controller.handleKeyDown({ key: 'Space', preventDefault: () => undefined });
+    controller.handlePointerDown(pointer(1, 8, 8));
+    controller.handlePointerMove(pointer(1, 40, 8));
+    controller.handlePointerCancel(pointer(1, 40, 8));
+    controller.handleKeyUp({ key: 'Space' });
+    expect(uiStore.getState().overlay.floatingPaste).toBeDefined();
+
+    controller.handlePointerDown({ ...pointer(2, 8, 8), button: 1, buttons: 4 });
+    controller.handlePointerMove({ ...pointer(2, 40, 8), button: 1, buttons: 4 });
+    controller.handlePointerLostCapture({ ...pointer(2, 40, 8), button: 1, buttons: 4 });
+    expect(uiStore.getState().overlay.floatingPaste).toBeDefined();
+
+    controller.handlePointerDown({ ...pointer(3, 48, 48), pointerType: 'touch' });
+    controller.handlePointerDown({ ...pointer(4, 64, 48), pointerType: 'touch' });
+    controller.handlePointerMove({ ...pointer(4, 80, 48), pointerType: 'touch' });
+    controller.handlePointerCancel({ ...pointer(3, 48, 48), pointerType: 'touch' });
+    expect(uiStore.getState().overlay.floatingPaste).toBeDefined();
+    controller.handlePointerCancel({ ...pointer(4, 80, 48), pointerType: 'touch' });
+    expect(uiStore.getState().overlay.floatingPaste).toBeDefined();
+    controller.dispose();
+  });
+
+  it('falls back from touch Copy to Select or Pan movement according to touch policy', () => {
+    const editing = fixture();
+    editing.controller.setTool({ tool: 'select' });
+    editing.controller.setSelection({ x: 0, y: 0 });
+    editing.controller.handlePointerDown({ ...pointer(1, 8, 8), pointerType: 'touch' });
+    editing.controller.handlePointerMove({ ...pointer(1, 24, 8), pointerType: 'touch' });
+    editing.controller.handlePointerUp({ ...pointer(1, 24, 8), pointerType: 'touch' });
+    expect(editing.uiStore.getState().overlay.touchCopyRequest).toBeUndefined();
+    expect(editing.controller.getSelection()).toEqual({ x: 0, y: 0, width: 2, height: 1 });
+    editing.controller.dispose();
+
+    const releaseFallback = fixture();
+    releaseFallback.controller.setTool({ tool: 'select' });
+    releaseFallback.controller.setSelection({ x: 0, y: 0 });
+    releaseFallback.controller.handlePointerDown({ ...pointer(1, 8, 8), pointerType: 'touch' });
+    releaseFallback.controller.handlePointerUp({ ...pointer(1, 40, 8), pointerType: 'touch' });
+    expect(releaseFallback.uiStore.getState().overlay.touchCopyRequest).toBeUndefined();
+    expect(releaseFallback.controller.getSelection()).toEqual({ x: 0, y: 0, width: 3, height: 1 });
+    releaseFallback.controller.dispose();
+
+    const movementOnly = fixture();
+    movementOnly.controller.setTool({ tool: 'select' });
+    movementOnly.controller.setSelection({ x: 0, y: 0 });
+    const before = movementOnly.uiStore.getState().viewport;
+    movementOnly.controller.setTouchMovementOnly(true);
+    movementOnly.controller.handlePointerDown({ ...pointer(1, 8, 8), pointerType: 'touch' });
+    movementOnly.controller.handlePointerUp({ ...pointer(1, 40, 8), pointerType: 'touch' });
+    expect(movementOnly.uiStore.getState().viewport).not.toEqual(before);
+    expect(movementOnly.controller.getSelection()).toEqual({ x: 0, y: 0, width: 1, height: 1 });
+    movementOnly.controller.dispose();
+  });
+
+  it('cancels selected-cell candidates before and after movement fallback', () => {
+    const beforeCancel = fixture();
+    beforeCancel.controller.setTool({ tool: 'select' });
+    beforeCancel.controller.setSelection({ x: 0, y: 0 });
+    beforeCancel.controller.handlePointerDown(pointer(1, 8, 8));
+    beforeCancel.controller.handlePointerCancel(pointer(1, 8, 8));
+    expect(beforeCancel.controller.getSelection()).toEqual({ x: 0, y: 0, width: 1, height: 1 });
+    expect(beforeCancel.uiStore.getState().overlay.touchCopyRequest).toBeUndefined();
+    beforeCancel.controller.handlePointerDown(pointer(2, 8, 8));
+    beforeCancel.controller.handlePointerLostCapture(pointer(2, 8, 8));
+    expect(beforeCancel.controller.getSelection()).toEqual({ x: 0, y: 0, width: 1, height: 1 });
+    beforeCancel.controller.dispose();
+
+    const afterFallback = fixture();
+    afterFallback.controller.setTool({ tool: 'select' });
+    afterFallback.controller.setSelection({ x: 0, y: 0 });
+    afterFallback.controller.handlePointerDown(pointer(1, 8, 8));
+    afterFallback.controller.handlePointerMove(pointer(1, 40, 8));
+    afterFallback.controller.handlePointerCancel(pointer(1, 40, 8));
+    expect(afterFallback.controller.getSelection()).toEqual({ x: 0, y: 0, width: 1, height: 1 });
+    afterFallback.controller.handlePointerDown(pointer(2, 8, 8));
+    afterFallback.controller.handlePointerMove(pointer(2, 40, 8));
+    afterFallback.controller.handlePointerLostCapture(pointer(2, 40, 8));
+    expect(afterFallback.controller.getSelection()).toEqual({ x: 0, y: 0, width: 1, height: 1 });
+    afterFallback.controller.dispose();
+  });
+
+  it('keeps inside-selection two- and three-touch history gestures out of the action menu', () => {
+    const undo = fixture();
+    undo.controller.setTool({ tool: 'select' });
+    undo.controller.setSelection({ x: 0, y: 0 }, { x: 2, y: 0 });
+    undo.gateway.execute({ type: 'set-full', x: 7, y: 7, color: 1 });
+    undo.controller.handlePointerDown({ ...pointer(1, 8, 8), pointerType: 'touch' });
+    undo.controller.handlePointerDown({ ...pointer(2, 24, 8), pointerType: 'touch' });
+    undo.controller.handlePointerUp({ ...pointer(2, 24, 8), pointerType: 'touch' });
+    undo.controller.handlePointerUp({ ...pointer(1, 8, 8), pointerType: 'touch' });
+    expect(undo.uiStore.getState().overlay.touchCopyRequest).toBeUndefined();
+    expect(undo.gateway.getSnapshot().document?.kind[7 * 8 + 7]).toBe(CellKind.Empty);
+    undo.controller.dispose();
+
+    const redo = fixture();
+    redo.controller.setTool({ tool: 'select' });
+    redo.controller.setSelection({ x: 0, y: 0 }, { x: 2, y: 0 });
+    redo.gateway.execute({ type: 'set-full', x: 7, y: 7, color: 1 });
+    redo.gateway.undo({ projectId: 'project-a', revision: redo.gateway.getSnapshot().revision! });
+    redo.controller.handlePointerDown({ ...pointer(1, 8, 8), pointerType: 'touch' });
+    redo.controller.handlePointerDown({ ...pointer(2, 24, 8), pointerType: 'touch' });
+    redo.controller.handlePointerDown({ ...pointer(3, 40, 8), pointerType: 'touch' });
+    redo.controller.handlePointerUp({ ...pointer(3, 40, 8), pointerType: 'touch' });
+    redo.controller.handlePointerUp({ ...pointer(2, 24, 8), pointerType: 'touch' });
+    redo.controller.handlePointerUp({ ...pointer(1, 8, 8), pointerType: 'touch' });
+    expect(redo.uiStore.getState().overlay.touchCopyRequest).toBeUndefined();
+    expect(redo.gateway.getSnapshot().document?.kind[7 * 8 + 7]).toBe(CellKind.Full);
+    redo.controller.dispose();
+  });
+
+  it('preserves movement-only pinch and two/three-finger history gestures', () => {
+    const undo = fixture();
+    undo.controller.setTouchMovementOnly(true);
+    undo.controller.setTool({ tool: 'select' });
+    undo.controller.setSelection({ x: 0, y: 0 });
+    undo.gateway.execute({ type: 'set-full', x: 7, y: 7, color: 1 });
+    undo.controller.handlePointerDown({ ...pointer(1, 20, 20), pointerType: 'touch' });
+    undo.controller.handlePointerDown({ ...pointer(2, 60, 20), pointerType: 'touch' });
+    undo.controller.handlePointerUp({ ...pointer(2, 60, 20), pointerType: 'touch' });
+    undo.controller.handlePointerUp({ ...pointer(1, 20, 20), pointerType: 'touch' });
+    expect(undo.gateway.getSnapshot().document?.kind[63]).toBe(CellKind.Empty);
+    undo.controller.dispose();
+
+    const redo = fixture();
+    redo.controller.setTouchMovementOnly(true);
+    redo.controller.setTool({ tool: 'select' });
+    redo.controller.setSelection({ x: 0, y: 0 });
+    redo.gateway.execute({ type: 'set-full', x: 7, y: 7, color: 1 });
+    redo.gateway.undo({ projectId: 'project-a', revision: redo.gateway.getSnapshot().revision! });
+    redo.controller.handlePointerDown({ ...pointer(1, 20, 20), pointerType: 'touch' });
+    redo.controller.handlePointerDown({ ...pointer(2, 60, 20), pointerType: 'touch' });
+    redo.controller.handlePointerDown({ ...pointer(3, 40, 60), pointerType: 'touch' });
+    redo.controller.handlePointerUp({ ...pointer(2, 60, 20), pointerType: 'touch' });
+    redo.controller.handlePointerUp({ ...pointer(1, 20, 20), pointerType: 'touch' });
+    redo.controller.handlePointerUp({ ...pointer(3, 40, 60), pointerType: 'touch' });
+    expect(redo.gateway.getSnapshot().document?.kind[63]).toBe(CellKind.Full);
+    redo.controller.dispose();
+
+    const pinch = fixture();
+    pinch.controller.setTouchMovementOnly(true);
+    pinch.controller.setTool({ tool: 'select' });
+    pinch.controller.setSelection({ x: 0, y: 0 });
+    const before = pinch.uiStore.getState().viewport;
+    pinch.controller.handlePointerDown({ ...pointer(1, 20, 20), pointerType: 'touch' });
+    pinch.controller.handlePointerDown({ ...pointer(2, 60, 20), pointerType: 'touch' });
+    pinch.controller.handlePointerMove({ ...pointer(2, 100, 20), pointerType: 'touch' });
+    expect(pinch.uiStore.getState().viewport).not.toEqual(before);
+    pinch.controller.handlePointerUp({ ...pointer(1, 20, 20), pointerType: 'touch' });
+    pinch.controller.handlePointerUp({ ...pointer(2, 100, 20), pointerType: 'touch' });
+    pinch.controller.dispose();
   });
 
   it('runs fill with immutable planes, exposes pending state, and rejects cancellation/project switches', async () => {
@@ -726,7 +1169,7 @@ describe('advanced headless editor tools', () => {
     cancelled.controller.dispose();
   });
 
-  it('isolates clipboard storage and reports an out-of-bounds paste without throwing', () => {
+  it('isolates clipboard storage and clamps an oversized destination without throwing', () => {
     const { controller, gateway, uiStore } = fixture();
     controller.setTool({ tool: 'select' });
     controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 1 });
@@ -738,9 +1181,9 @@ describe('advanced headless editor tools', () => {
     expect(controller.getClipboard()?.colors[0]).toBe(1);
     controller.setSelection({ x: 7, y: 7 });
     const beforeRevision = gateway.getSnapshot().revision;
-    expect(controller.pasteClipboard()).toBe(false);
+    expect(controller.pasteClipboard()).toBe(true);
     expect(gateway.getSnapshot().revision).toBe(beforeRevision);
-    expect(uiStore.getState().status).toBe('Paste unavailable');
+    expect(uiStore.getState().overlay.floatingPaste).toMatchObject({ destination: { x: 6, y: 6, width: 2, height: 2 } });
     controller.dispose();
   });
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ChartPresentationMode,
   createEditorSurfaceController,
@@ -29,7 +29,6 @@ import selectIcon from "../../assets/editor-tools/select.svg";
 import lassoIcon from "../../assets/editor-tools/lasso.svg";
 import eyedropperIcon from "../../assets/editor-tools/eyedropper.svg";
 import panIcon from "../../assets/editor-tools/pan.svg";
-import clearSelectIcon from "../../assets/editor-tools/clear-select.svg";
 import stitchIcon from "../../assets/editor-tools/stitch.svg";
 interface Props {
   workspace: ProjectWorkspace;
@@ -43,6 +42,12 @@ interface Props {
   onOpenMaterials?: () => void;
 }
 type CatalogColor = ReturnType<typeof searchDmcColors>[number];
+type TouchCopyRequestWithScreen = {
+  cell: { x: number; y: number };
+  selection: { x: number; y: number; width: number; height: number };
+  screenX: number;
+  screenY: number;
+};
 const modes = [
   [ChartPresentationMode.Color, "Color"],
   [ChartPresentationMode.Symbol, "Symbol"],
@@ -205,8 +210,15 @@ export function EditorSurface({
   const mobileToolsTrigger = useRef<HTMLButtonElement>(null);
   const mobileColorsTrigger = useRef<HTMLButtonElement>(null);
   const mobilePopover = useRef<HTMLDivElement>(null);
+  const touchCopyMenu = useRef<HTMLDivElement>(null);
+  const touchCopyAction = useRef<HTMLButtonElement>(null);
   const palettePress = useRef<number | null>(null);
   const paletteLongPressed = useRef(false);
+  const touchCopyRequest = ui?.overlay.touchCopyRequest as
+    | TouchCopyRequestWithScreen
+    | null
+    | undefined;
+  const [touchCopyPosition, setTouchCopyPosition] = useState<{ left: number; top: number } | null>(null);
   useEffect(() => {
     const el = frame.current,
       b = base.current,
@@ -274,7 +286,15 @@ export function EditorSurface({
       setController(c);
       setUi(store.getState());
       const unsub = store.subscribe(setUi);
-      const adapter = createPointerEventsAdapter(el, c, { keyboardSurface: root });
+      const adapter = createPointerEventsAdapter(
+        el,
+        c,
+        {
+          keyboardSurface: root,
+          shouldExcludeTarget: (target: unknown) =>
+            target instanceof Element && Boolean(target.closest(".touch-copy-menu")),
+        },
+      );
       const observer =
         typeof ResizeObserver === "undefined"
           ? undefined
@@ -913,6 +933,79 @@ export function EditorSurface({
       globalThis.document.removeEventListener("pointerdown", onPointerDown);
     };
   }, [mobilePanel, paletteOpen]);
+  const dismissTouchCopy = () => {
+      controllerRef.current?.dismissTouchCopyRequest?.();
+      window.setTimeout(() => frame.current?.focus(), 0);
+  };
+  const copyTouchSelection = () => {
+    const surface = controllerRef.current as
+      | (EditorSurfaceController & { copySelection?: () => unknown })
+      | null;
+    surface?.copySelection?.();
+    dismissTouchCopy();
+  };
+  const runSelectionAction = (action: "copy" | "paste" | "delete") => {
+    if (action === "copy") copyTouchSelection();
+    else if (action === "paste") {
+      controllerRef.current?.pasteSelection();
+      dismissTouchCopy();
+    } else {
+      controllerRef.current?.deleteSelection?.();
+      dismissTouchCopy();
+    }
+  };
+  const handleSelectionActionKeyDown = (
+    event: React.KeyboardEvent<HTMLButtonElement>,
+    action: "copy" | "paste" | "delete",
+  ) => {
+    event.stopPropagation();
+    if (event.key === "Escape") {
+      event.preventDefault();
+      dismissTouchCopy();
+    } else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      runSelectionAction(action);
+    }
+  };
+  useLayoutEffect(() => {
+    if (!touchCopyRequest) {
+      setTouchCopyPosition(null);
+      return;
+    }
+    const surface = frame.current;
+    const menu = touchCopyMenu.current;
+    if (!surface || !menu) return;
+    const width = surface.clientWidth || 640;
+    const height = surface.clientHeight || 480;
+    const menuWidth = menu.offsetWidth || 150;
+    const menuHeight = menu.offsetHeight || 48;
+    const left = touchCopyRequest.screenX - menuWidth / 2;
+    const top = touchCopyRequest.screenY - menuHeight / 2;
+    setTouchCopyPosition({
+      left: Math.max(0, Math.min(left, width - menuWidth)),
+      top: Math.max(0, Math.min(top, height - menuHeight)),
+    });
+    touchCopyAction.current?.focus();
+  }, [touchCopyRequest]);
+  useEffect(() => {
+    if (!touchCopyRequest) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      dismissTouchCopy();
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Node && touchCopyMenu.current?.contains(event.target)) return;
+      dismissTouchCopy();
+    };
+    globalThis.document.addEventListener("keydown", onKeyDown);
+    globalThis.document.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      globalThis.document.removeEventListener("keydown", onKeyDown);
+      globalThis.document.removeEventListener("pointerdown", onPointerDown);
+    };
+  }, [touchCopyRequest]);
   const symbolFilterQuery = symbolFilter.trim().toLowerCase();
   const symbolMatches = symbolEntry
     ? PALETTE_SYMBOLS.filter(
@@ -1126,7 +1219,6 @@ export function EditorSurface({
             >
               <img data-icon="eyedropper" src={eyedropperIcon} alt="" aria-hidden="true" />
             </button>
-            <button className="rail-button" type="button" disabled={!ui?.overlay.selection} onClick={() => controllerRef.current?.deleteSelection?.()} aria-label="Delete selection" title="Delete selection"><img data-icon="clear-select" src={clearSelectIcon} alt="" aria-hidden="true" /></button>
           </nav>
           </div>
           <div ref={mobilePanel === "colors" ? mobilePopover : undefined} id="mobile-colors-popover" className={`editor-rail-popover mobile-colors-popover${mobilePanel === "colors" ? " mobile-popover-open" : ""}`} role={mobilePanel === "colors" ? "dialog" : undefined} aria-label="Colors" tabIndex={-1}>
@@ -1164,6 +1256,53 @@ export function EditorSurface({
               <>
                 <canvas ref={base} aria-hidden="true" />
                 <canvas ref={overlay} aria-hidden="true" />
+                {touchCopyRequest && ui && (
+                  <div
+                    ref={touchCopyMenu}
+                    className="touch-copy-menu"
+                    role="group"
+                    aria-label="Selection actions"
+                    onKeyDown={(event) => {
+                      event.stopPropagation();
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        dismissTouchCopy();
+                      }
+                    }}
+                    onKeyUp={(event) => event.stopPropagation()}
+                    style={{
+                      left: `${touchCopyPosition?.left ?? touchCopyRequest.screenX}px`,
+                      top: `${touchCopyPosition?.top ?? touchCopyRequest.screenY}px`,
+                    }}
+                  >
+                    <button
+                      ref={touchCopyAction}
+                      type="button"
+                      onClick={() => runSelectionAction("copy")}
+                      onKeyDown={(event) => handleSelectionActionKeyDown(event, "copy")}
+                      onKeyUp={(event) => event.stopPropagation()}
+                    >
+                      Copy selection
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!ui.canPaste}
+                      onClick={() => runSelectionAction("paste")}
+                      onKeyDown={(event) => handleSelectionActionKeyDown(event, "paste")}
+                      onKeyUp={(event) => event.stopPropagation()}
+                    >
+                      Paste selection
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => runSelectionAction("delete")}
+                      onKeyDown={(event) => handleSelectionActionKeyDown(event, "delete")}
+                      onKeyUp={(event) => event.stopPropagation()}
+                    >
+                      Delete selection
+                    </button>
+                  </div>
+                )}
               </>
             )}
           </div>

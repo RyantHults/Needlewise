@@ -12,6 +12,7 @@ import {
   deleteRegionCommand,
   deleteCellSetCommand,
   pasteFragmentCommand,
+  preflightPasteFragmentCommand,
   preflightBulkCellCommand,
   QuarterCorner,
   type BulkCellEdit,
@@ -119,6 +120,8 @@ export interface EditorSurfaceControllerLifecycle {
   stop(): void;
   /** Configure whether touch input is restricted to movement-only behavior. */
   setTouchMovementOnly(enabled: boolean): void;
+  pasteSelection(): boolean;
+  dismissTouchCopyRequest(): void;
   /** Replace the rendered document without recreating editor interaction state. */
   setDocument(document: PatternDocument, invalidation?: Invalidation): void;
   setMetrics(metrics: CanvasMetrics): void;
@@ -231,6 +234,8 @@ interface TouchActionGesture {
   readonly pointerId: number;
   readonly tool: 'fill' | 'eyedropper';
   readonly token: EditorRevisionToken;
+  readonly startScreenX: number;
+  readonly startScreenY: number;
 }
 
 interface PanGesture {
@@ -265,6 +270,43 @@ interface ResizeImageGesture {
   /** The fixed opposite corner in cell coordinates (may be fractional). */
   readonly anchor: { x: number; y: number };
   readonly startBounds: CellRect;
+}
+
+interface FloatingPasteState {
+  readonly fragment: PatternFragment;
+  readonly copySelection: ClipboardSelectionGeometry;
+  readonly destination: GridRect;
+  readonly token: EditorRevisionToken;
+  readonly previousSelection: FinalizedSelection | undefined;
+  readonly previousSelectionAnchor: ModelPoint | undefined;
+}
+
+interface ClipboardSelectionGeometry {
+  readonly kind: 'rect' | 'sparse';
+  readonly rect: CellRect;
+  readonly boundaries?: readonly SelectionBoundarySegment[];
+}
+
+interface FloatingPasteMoveGesture {
+  readonly pointerId: number;
+  readonly startScreenX: number;
+  readonly startScreenY: number;
+  readonly startDestination: GridRect;
+}
+
+interface FloatingPasteTouchCandidate {
+  readonly pointerId: number;
+  readonly action: 'commit' | 'move';
+  readonly startScreenX: number;
+  readonly startScreenY: number;
+}
+
+interface TouchCopyCandidate {
+  readonly pointerId: number;
+  readonly pointerType: string;
+  readonly tool: 'select' | 'lasso';
+  readonly cell: ModelPoint;
+  readonly sample: PointerSample;
 }
 
 /** Screen-pixel distance under which a move-image pointer gesture counts as a tap. */
@@ -694,6 +736,17 @@ function boundedGridRect(rect: GridRect, document: PatternDocument): GridRect | 
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
+function clampFloatingDestination(anchor: ModelPoint, fragment: PatternFragment, document: PatternDocument): GridRect {
+  const maxX = Math.max(0, document.width - fragment.width);
+  const maxY = Math.max(0, document.height - fragment.height);
+  return {
+    x: Math.min(maxX, Math.max(0, Math.floor(anchor.x))),
+    y: Math.min(maxY, Math.max(0, Math.floor(anchor.y))),
+    width: fragment.width,
+    height: fragment.height
+  };
+}
+
 function finalizedSelectionBounds(selection: FinalizedSelection | undefined): GridRect | undefined {
   return selection?.kind === 'rect' ? selection.rect : selection?.bounds;
 }
@@ -879,6 +932,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private selection: FinalizedSelection | undefined;
   private selectionAnchor: ModelPoint | undefined;
   private clipboard: PatternFragment | undefined;
+  private clipboardSelection: ClipboardSelectionGeometry | undefined;
+  private floatingPaste: FloatingPasteState | undefined;
+  private floatingPasteMoveGesture: FloatingPasteMoveGesture | undefined;
+  private floatingPasteTouchCandidate: FloatingPasteTouchCandidate | undefined;
+  private touchCopyCandidate: TouchCopyCandidate | undefined;
   private eraserCorner: 0 | 1 | 2 | 3 = 0;
   private selectedBackstitchId: number | undefined;
   private keyboardBackstitchAnchor: FixedPoint | undefined;
@@ -924,6 +982,9 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.unsubscribeUi?.();
     this.unsubscribeGateway = undefined;
     this.unsubscribeUi = undefined;
+    this.discardFloatingPaste();
+    this.floatingPasteTouchCandidate = undefined;
+    this.touchCopyCandidate = undefined;
     this.cancelGesture();
     this.cancelFill(false);
     this.touchPointers.clear();
@@ -933,9 +994,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   setDocument(document: PatternDocument, invalidation?: Invalidation): void {
     if (this.disposed) return;
-    this.reconcileSelectionDimensions(document);
     const snapshot = this.gateway.getSnapshot();
     const documentChanged = snapshot.document !== document || snapshot.revision !== document.revision;
+    if (documentChanged && this.floatingPaste) this.discardFloatingPaste();
+    this.reconcileSelectionDimensions(document);
     if (documentChanged && this.gesture) {
       this.cancelGesture();
       this.setStatus('Stroke cancelled: project changed');
@@ -970,10 +1032,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     // policy changes.
     this.cancelGesture();
     this.touchPointers.clear();
+    this.touchCopyCandidate = undefined;
+    this.clearTouchCopyRequest();
   }
 
   setTool(tool: EditorToolState): void {
     const state = this.uiStore.getState();
+    if (state.tool.tool !== tool.tool && this.floatingPaste) this.discardFloatingPaste();
     if (state.tool.tool !== tool.tool) this.resetToolTransient();
     if (tool.tool === 'move-image') {
       this.enterMoveImage();
@@ -1029,6 +1094,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const rect = boundedGridRect(normalizeGridRect(start, end), document);
     this.selection = rect ? { kind: 'rect', rect, documentWidth: document.width, documentHeight: document.height } : undefined;
     this.selectionAnchor = rect ? { x: rect.x, y: rect.y } : undefined;
+    this.clearTouchCopyRequest();
     this.publishSelectionOverlay();
     return rect;
   }
@@ -1036,6 +1102,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   clearSelection(): void {
     this.selection = undefined;
     this.selectionAnchor = undefined;
+    this.clearTouchCopyRequest();
     this.publishSelectionOverlay();
   }
 
@@ -1043,6 +1110,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (selectionMatchesDocument(this.selection, document)) return;
     this.selection = undefined;
     this.selectionAnchor = undefined;
+    this.clearTouchCopyRequest();
     this.publishSelectionOverlay();
   }
 
@@ -1057,41 +1125,114 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const bounds = finalizedSelectionBounds(this.selection);
     if (!bounds) return undefined;
     const indices = finalizedSelectionIndices(this.selection, snapshot.document);
+    const copySelection: ClipboardSelectionGeometry = this.selection.kind === 'sparse'
+      ? {
+        kind: 'sparse',
+        rect: { ...bounds },
+        boundaries: this.selection.boundaries.map((boundary) => ({
+          start: { x: boundary.start.x - bounds.x, y: boundary.start.y - bounds.y },
+          end: { x: boundary.end.x - bounds.x, y: boundary.end.y - bounds.y },
+          kind: boundary.kind
+        }))
+      }
+      : { kind: 'rect', rect: { ...bounds } };
     this.clipboard = clonePatternFragment(this.selection.kind === 'sparse' && indices
       ? createPatternFragmentFromCells(snapshot.document, indices)
       : createPatternFragment(snapshot.document, bounds));
+    this.clipboardSelection = copySelection;
+    this.uiStore.setCanPaste(true);
+    this.clearTouchCopyRequest();
     this.setStatus(this.selection.kind === 'sparse'
       ? `Copied ${String(this.selection.indices.length)} cells`
       : `Copied ${String(bounds.width)}×${String(bounds.height)} cells`);
     return clonePatternFragment(this.clipboard);
   }
 
-  pasteClipboard(): boolean {
+  pasteSelection(): boolean {
     const snapshot = this.gateway.getSnapshot();
     this.reconcileSelectionDimensions(snapshot.document);
     if (!snapshot.document || !snapshot.projectId || snapshot.revision === null || !this.clipboard) return false;
+    const fragment = clonePatternFragment(this.clipboard);
+    if (fragment.width > snapshot.document.width || fragment.height > snapshot.document.height) {
+      this.setStatus('Paste unavailable');
+      return false;
+    }
     const bounds = finalizedSelectionBounds(this.selection);
     const anchor = bounds ? { x: bounds.x, y: bounds.y } : this.uiStore.getState().keyboardCursor;
     if (!anchor) return false;
-    const fragment = clonePatternFragment(this.clipboard);
+    const destination = clampFloatingDestination(anchor, fragment, snapshot.document);
+    const copySelection = this.clipboardSelection ?? {
+      kind: 'rect' as const,
+      rect: { x: 0, y: 0, width: fragment.width, height: fragment.height }
+    };
+    const previous = this.floatingPaste;
+    const previousSelection = previous?.previousSelection ?? this.selection;
+    const previousSelectionAnchor = previous?.previousSelectionAnchor ?? this.selectionAnchor;
+    this.floatingPasteMoveGesture = undefined;
+    this.floatingPasteTouchCandidate = undefined;
+    this.touchCopyCandidate = undefined;
+    this.clearTouchCopyRequest();
+    this.selection = undefined;
+    this.selectionAnchor = undefined;
+    this.floatingPaste = {
+      fragment,
+      copySelection,
+      destination,
+      token: { projectId: snapshot.projectId, revision: snapshot.revision },
+      previousSelection,
+      previousSelectionAnchor
+    };
+    this.publishSelectionOverlay();
+    this.publishFloatingPasteOverlay();
+    this.setStatus('Paste ready');
+    return true;
+  }
+
+  pasteClipboard(): boolean {
+    return this.pasteSelection();
+  }
+
+  dismissTouchCopyRequest(): void {
+    this.clearTouchCopyRequest();
+  }
+
+  private commitFloatingPaste(): boolean {
+    const floating = this.floatingPaste;
+    if (!floating) return false;
+    const snapshot = this.gateway.getSnapshot();
+    if (!this.isCurrentTransaction(floating.token, snapshot) || !snapshot.document || !snapshot.projectId || snapshot.revision === null) {
+      this.discardFloatingPaste();
+      this.setStatus('Paste cancelled: project changed');
+      return false;
+    }
+    const command = pasteFragmentCommand(floating.fragment, { x: floating.destination.x, y: floating.destination.y }, snapshot.revision);
     try {
+      const preflight = preflightPasteFragmentCommand(snapshot.document, command);
+      if (preflight.changedCellCount === 0 && preflight.newBackstitchCount === 0) {
+        this.discardFloatingPaste();
+        this.setStatus('No change');
+        return true;
+      }
       this.commandInFlight = true;
-      const result = this.gateway.execute(
-        pasteFragmentCommand(fragment, anchor, snapshot.revision),
-        { projectId: snapshot.projectId, revision: snapshot.revision }
-      );
+      const result = this.gateway.execute(command, { projectId: snapshot.projectId, revision: snapshot.revision });
       this.commandInFlight = false;
-      this.projectCommandResult(result, undefined, `Pasted ${String(fragment.width)}×${String(fragment.height)} cells`);
+      this.floatingPaste = undefined;
+      this.floatingPasteMoveGesture = undefined;
+      this.floatingPasteTouchCandidate = undefined;
+      this.selection = undefined;
+      this.selectionAnchor = undefined;
+      this.publishFloatingPasteOverlay();
+      this.projectCommandResult(result, undefined, `Pasted ${String(floating.fragment.width)}×${String(floating.fragment.height)} cells`);
+      this.publishSelectionOverlay();
       return true;
     } catch (error) {
       this.commandInFlight = false;
       if (error instanceof StaleEditorTransactionError) {
-        this.clearSelection();
+        this.discardFloatingPaste();
         this.setStatus('Paste cancelled: project changed');
         return false;
       }
       if (error instanceof DomainError) {
-        this.clearSelection();
         this.setStatus('Paste unavailable');
         return false;
       }
@@ -1129,6 +1270,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   deleteSelectedBackstitch(): boolean {
+    if (this.floatingPaste) return false;
     const id = this.selectedBackstitchId;
     const snapshot = this.gateway.getSnapshot();
     if (id === undefined || !snapshot.projectId || snapshot.revision === null) return false;
@@ -1142,6 +1284,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   /** Delete the current cell selection as one revision-safe history operation. */
   deleteSelection(): boolean {
+    if (this.floatingPaste) return false;
     const selectedBackstitchId = this.selectedBackstitchId;
     const snapshot = this.gateway.getSnapshot();
     this.reconcileSelectionDimensions(snapshot.document);
@@ -1201,6 +1344,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     // later sample cannot bridge or jump across the resize.
     this.cancelGesture();
     this.touchPointers.clear();
+    this.touchCopyCandidate = undefined;
+    this.clearTouchCopyRequest();
     this.metrics = metrics;
     this.renderer.setMetrics(metrics);
     const snapshot = this.gateway.getSnapshot();
@@ -1321,6 +1466,238 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.activatePickedColor(paletteId);
     }
     this.traceSampleCallback?.(rgb);
+    return true;
+  }
+
+  private floatingPasteContains(sample: PointerSample, destination = this.floatingPaste?.destination): boolean {
+    if (!destination || !validScreenSample(sample) || !isFiniteViewport(this.uiStore.getState().viewport)) return false;
+    const point = screenToModel({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport);
+    return point.x >= destination.x && point.y >= destination.y
+      && point.x < destination.x + destination.width && point.y < destination.y + destination.height;
+  }
+
+  private updateFloatingPasteDestination(sample: PointerSample, gesture: FloatingPasteMoveGesture): void {
+    const floating = this.floatingPaste;
+    const snapshot = this.gateway.getSnapshot();
+    if (!floating || !snapshot.document || !isFiniteViewport(this.uiStore.getState().viewport)) return;
+    const viewport = this.uiStore.getState().viewport;
+    const next = clampFloatingDestination({
+      x: gesture.startDestination.x + Math.round((sample.screenX - gesture.startScreenX) / viewport.zoom),
+      y: gesture.startDestination.y + Math.round((sample.screenY - gesture.startScreenY) / viewport.zoom)
+    }, floating.fragment, snapshot.document);
+    if (next.x === floating.destination.x && next.y === floating.destination.y) return;
+    this.floatingPaste = { ...floating, destination: next };
+    this.publishFloatingPasteOverlay();
+  }
+
+  private restoreFloatingPasteMove(): void {
+    const gesture = this.floatingPasteMoveGesture;
+    const floating = this.floatingPaste;
+    if (!gesture || !floating) return;
+    if (floating.destination.x !== gesture.startDestination.x || floating.destination.y !== gesture.startDestination.y) {
+      this.floatingPaste = { ...floating, destination: { ...gesture.startDestination } };
+      this.publishFloatingPasteOverlay();
+    }
+    this.floatingPasteMoveGesture = undefined;
+  }
+
+  private handleFloatingPointerDown(sample: PointerSample): boolean | undefined {
+    const floating = this.floatingPaste;
+    if (!floating) return undefined;
+    if (sample.pointerType !== 'touch'
+      && (this.spaceHeld || sample.button === 1 || Boolean(sample.buttons && (sample.buttons & 4) !== 0))) return undefined;
+    if (sample.pointerType === 'touch') {
+      if (this.touchPointers.size === 0) this.beginTouchHistoryCandidate(sample);
+      this.touchPointers.set(sample.pointerId, sample);
+      this.updateTouchHistoryCandidate(sample);
+      if (this.touchPointers.size >= 2) {
+        this.restoreFloatingPasteMove();
+        this.floatingPasteTouchCandidate = undefined;
+        if (this.gesture?.kind !== 'pinch') this.beginPinch();
+        return true;
+      }
+      const inside = this.floatingPasteContains(sample);
+      this.floatingPasteTouchCandidate = {
+        pointerId: sample.pointerId,
+        action: inside ? 'move' : 'commit',
+        startScreenX: sample.screenX,
+        startScreenY: sample.screenY
+      };
+      if (inside) {
+        this.floatingPasteMoveGesture = {
+          pointerId: sample.pointerId,
+          startScreenX: sample.screenX,
+          startScreenY: sample.screenY,
+          startDestination: { ...floating.destination }
+        };
+      }
+      return true;
+    }
+    if (sample.pointerType !== 'mouse' && sample.pointerType !== 'pen') return true;
+    const primary = (sample.button ?? 0) === 0 && !this.spaceHeld;
+    if (!primary || sample.button === 1 || Boolean(sample.buttons && (sample.buttons & 4) !== 0)) return true;
+    if (this.floatingPasteContains(sample)) {
+      this.floatingPasteMoveGesture = {
+        pointerId: sample.pointerId,
+        startScreenX: sample.screenX,
+        startScreenY: sample.screenY,
+        startDestination: { ...floating.destination }
+      };
+      return true;
+    }
+    this.commitFloatingPaste();
+    return true;
+  }
+
+  private handleFloatingPointerMove(sample: PointerSample): boolean | undefined {
+    if (!this.floatingPaste) return undefined;
+    if (sample.pointerType === 'touch' && (this.gesture?.kind === 'pinch' || this.gesture?.kind === 'pan')) return undefined;
+    if (this.floatingPasteMoveGesture?.pointerId === sample.pointerId) {
+      if (sample.pointerType === 'touch') this.updateTouchHistoryCandidate(sample);
+      this.updateFloatingPasteDestination(sample, this.floatingPasteMoveGesture);
+      return true;
+    }
+    if (this.floatingPasteTouchCandidate?.pointerId === sample.pointerId) {
+      const candidate = this.floatingPasteTouchCandidate;
+      if (Math.hypot(sample.screenX - candidate.startScreenX, sample.screenY - candidate.startScreenY) > TOUCH_HISTORY_TAP_SLOP_PIXELS) {
+        this.floatingPasteTouchCandidate = undefined;
+        this.floatingPasteMoveGesture = undefined;
+        this.rejectTouchHistoryCandidate('movement');
+      }
+      return true;
+    }
+    return sample.pointerType === 'touch' ? true : undefined;
+  }
+
+  private handleFloatingPointerUp(sample: PointerSample): boolean | undefined {
+    if (!this.floatingPaste) return undefined;
+    if (sample.pointerType === 'touch' && (this.gesture?.kind === 'pinch' || this.gesture?.kind === 'pan')) return undefined;
+    if (this.floatingPasteMoveGesture?.pointerId === sample.pointerId) {
+      this.floatingPasteMoveGesture = undefined;
+      this.floatingPasteTouchCandidate = undefined;
+      if (sample.pointerType === 'touch') this.touchPointers.delete(sample.pointerId);
+      if (sample.pointerType === 'touch' && this.touchPointers.size === 0) this.finishTouchHistoryCandidate();
+      return true;
+    }
+    if (this.floatingPasteTouchCandidate?.pointerId === sample.pointerId) {
+      const candidate = this.floatingPasteTouchCandidate;
+      this.floatingPasteTouchCandidate = undefined;
+      if (sample.pointerType === 'touch') this.touchPointers.delete(sample.pointerId);
+      if (sample.pointerType === 'touch' && this.touchPointers.size === 0) this.finishTouchHistoryCandidate();
+      if (candidate.action === 'commit') this.commitFloatingPaste();
+      return true;
+    }
+    if (sample.pointerType === 'touch') {
+      if (this.gesture?.kind === 'pan' && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
+      this.touchPointers.delete(sample.pointerId);
+      if (this.touchPointers.size === 0) this.finishTouchHistoryCandidate();
+      return true;
+    }
+    return undefined;
+  }
+
+  private handleFloatingPointerCancel(sample: PointerSample, lostCapture = false): boolean | undefined {
+    if (!this.floatingPaste) return undefined;
+    const ownsMove = this.floatingPasteMoveGesture?.pointerId === sample.pointerId;
+    const ownsCandidate = this.floatingPasteTouchCandidate?.pointerId === sample.pointerId;
+    if (!ownsMove && !ownsCandidate) return undefined;
+    if (sample.pointerType === 'touch') {
+      this.rejectTouchHistoryCandidate(lostCapture ? 'lost-capture' : 'cancelled');
+      this.touchPointers.delete(sample.pointerId);
+    }
+    this.discardFloatingPaste();
+    return true;
+  }
+
+  private touchCopyCell(document: PatternDocument, sample: PointerSample): ModelPoint | undefined {
+    if (!this.selection) return undefined;
+    const cell = this.paintHitCell(sample, document);
+    if (!cell) return undefined;
+    const indices = finalizedSelectionIndices(this.selection, document);
+    if (!indices) return undefined;
+    const index = cell.y * document.width + cell.x;
+    for (const selected of indices) if (selected === index) return cell;
+    return undefined;
+  }
+
+  private beginTouchCopyFallback(candidate: TouchCopyCandidate, sample: PointerSample): boolean {
+    const snapshot = this.gateway.getSnapshot();
+    const document = snapshot.document;
+    if (!document) return true;
+    if (candidate.pointerType === 'touch' && this.touchMovementOnly) {
+      this.gesture = {
+        kind: 'pan',
+        pointerId: candidate.pointerId,
+        lastX: candidate.sample.screenX,
+        lastY: candidate.sample.screenY
+      };
+      this.updatePan(sample);
+      return true;
+    }
+    const previousSelection = this.selection;
+    const previousSelectionAnchor = this.selectionAnchor;
+    if (candidate.tool === 'select') {
+      const cell = this.paintHitCell(candidate.sample, document);
+      if (!cell) return true;
+      this.selectionAnchor = cell;
+      this.selection = {
+        kind: 'rect',
+        rect: normalizeGridRect(cell, cell),
+        documentWidth: document.width,
+        documentHeight: document.height
+      };
+      this.gesture = {
+        kind: 'selection',
+        pointerId: candidate.pointerId,
+        anchor: cell,
+        hadSelection: previousSelection !== undefined,
+        previousSelection,
+        previousSelectionAnchor,
+        current: cell
+      };
+      this.publishSelectionOverlay();
+      return false;
+    }
+    const point = this.lassoModelPoint(candidate.sample);
+    const cell = this.paintHitCell(candidate.sample, document);
+    if (!cell || !point || !snapshot.projectId || snapshot.revision === null) return true;
+    const operation: LassoGesture['operation'] = candidate.sample.altKey ? 'subtract' : candidate.sample.shiftKey ? 'union' : 'replace';
+    this.gesture = {
+      kind: 'lasso',
+      pointerId: candidate.pointerId,
+      token: { projectId: snapshot.projectId, revision: snapshot.revision },
+      startingCell: cell,
+      operation,
+      points: [point],
+      raster: createLassoRasterAccumulator(document.width, document.height, point, { x: cell.x + 0.5, y: cell.y + 0.5 }),
+      previewSamples: 0
+    };
+    this.publishLassoPath([point]);
+    return false;
+  }
+
+  private advanceTouchCopyCandidate(sample: PointerSample): boolean | undefined {
+    const candidate = this.touchCopyCandidate;
+    if (!candidate || candidate.pointerId !== sample.pointerId) return undefined;
+    if (Math.hypot(sample.screenX - candidate.sample.screenX, sample.screenY - candidate.sample.screenY) <= TOUCH_HISTORY_TAP_SLOP_PIXELS) return undefined;
+    this.touchCopyCandidate = undefined;
+    this.clearTouchCopyRequest();
+    return this.beginTouchCopyFallback(candidate, sample);
+  }
+
+  private publishTouchCopyRequest(candidate: TouchCopyCandidate, sample: PointerSample): boolean {
+    const selection = finalizedSelectionBounds(this.selection);
+    if (!selection) return false;
+    const state = this.uiStore.getState();
+    this.uiStore.setOverlay({
+      ...state.overlay,
+      touchCopyRequest: {
+        cell: { ...candidate.cell },
+        selection: { ...selection },
+        screenX: sample.screenX,
+        screenY: sample.screenY
+      }
+    });
     return true;
   }
 
@@ -1457,6 +1834,9 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (this.disposed) return false;
     if (!validScreenSample(sample)) return false;
     this.clearBrushPreview();
+    this.clearTouchCopyRequest();
+    const floatingPointerDown = this.handleFloatingPointerDown(sample);
+    if (floatingPointerDown !== undefined) return floatingPointerDown;
     if (sample.pointerType !== 'touch') this.editorFocused = true;
     if (sample.pointerType === 'touch') {
       const tool = this.uiStore.getState().tool.tool;
@@ -1472,6 +1852,18 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       if (this.touchPointers.size === 0) this.beginTouchHistoryCandidate(sample);
       this.touchPointers.set(sample.pointerId, sample);
       this.updateTouchHistoryCandidate(sample);
+      if (this.touchPointers.size === 1 && sample.isPrimary !== false && !this.gesture && (tool === 'select' || tool === 'lasso')) {
+        const snapshot = this.gateway.getSnapshot();
+        const cell = snapshot.document ? this.touchCopyCell(snapshot.document, sample) : undefined;
+        if (cell) {
+          this.touchCopyCandidate = { pointerId: sample.pointerId, pointerType: sample.pointerType, tool, cell, sample };
+          return true;
+        }
+      }
+      if (this.touchPointers.size >= 2) {
+        this.touchCopyCandidate = undefined;
+        this.clearTouchCopyRequest();
+      }
       if (this.touchMovementOnly) {
         if (this.touchPointers.size >= 2 && this.gesture?.kind !== 'pinch') this.beginPinch();
         else if (this.touchPointers.size === 1) this.gesture = { kind: 'pan', pointerId: sample.pointerId, lastX: sample.screenX, lastY: sample.screenY };
@@ -1499,12 +1891,28 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (selectedTool.tool === 'resize-image') {
       return this.beginResizeImage(sample);
     }
+    if (sample.isPrimary !== false && (sample.pointerType === 'mouse' || sample.pointerType === 'pen')
+      && (selectedTool.tool === 'select' || selectedTool.tool === 'lasso')) {
+      const cell = this.touchCopyCell(snapshot.document, sample);
+      if (cell) {
+        this.touchCopyCandidate = {
+          pointerId: sample.pointerId,
+          pointerType: sample.pointerType,
+          tool: selectedTool.tool,
+          cell,
+          sample
+        };
+        return true;
+      }
+    }
     if (selectedTool.tool === 'eyedropper' && sample.pointerType === 'touch') {
       this.gesture = {
         kind: 'touch-action',
         pointerId: sample.pointerId,
         tool: 'eyedropper',
-        token: { projectId: snapshot.projectId, revision: snapshot.revision }
+        token: { projectId: snapshot.projectId, revision: snapshot.revision },
+        startScreenX: sample.screenX,
+        startScreenY: sample.screenY
       };
       return true;
     }
@@ -1583,7 +1991,9 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
           kind: 'touch-action',
           pointerId: sample.pointerId,
           tool: 'fill',
-          token: { projectId: snapshot.projectId, revision: snapshot.revision }
+          token: { projectId: snapshot.projectId, revision: snapshot.revision },
+          startScreenX: sample.screenX,
+          startScreenY: sample.screenY
         };
         return true;
       }
@@ -1635,6 +2045,12 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.ensureStarted();
     if (this.disposed) return false;
     if (!validScreenSample(sample)) return false;
+    const floatingPointerMove = this.handleFloatingPointerMove(sample);
+    if (floatingPointerMove !== undefined) return floatingPointerMove;
+    if (sample.pointerType !== 'touch') {
+      const pointerCopyFallback = this.advanceTouchCopyCandidate(sample);
+      if (pointerCopyFallback === true) return true;
+    }
     if (sample.pointerType !== 'touch') {
       this.lastHoverSample = sample;
       if (!this.gesture) this.updateBrushPreview(sample);
@@ -1643,6 +2059,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       if (!this.touchPointers.has(sample.pointerId) && this.gesture?.kind !== 'move-image' && this.gesture?.kind !== 'resize-image') return false;
       this.touchPointers.set(sample.pointerId, sample);
       const stationaryHistoryTap = this.updateTouchHistoryCandidate(sample);
+      const touchCopyFallback = this.advanceTouchCopyCandidate(sample);
+      if (touchCopyFallback === true) return true;
       if (this.gesture?.kind === 'move-image') {
         if (this.gesture.pointerId === sample.pointerId) this.updateMoveImage(sample);
         return true;
@@ -1651,7 +2069,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         if (this.gesture.pointerId === sample.pointerId) this.updateResizeImage(sample);
         return true;
       }
-      if (this.gesture?.kind === 'touch-action') return true;
+      if (this.gesture?.kind === 'touch-action') {
+        if (this.gesture.pointerId === sample.pointerId
+          && Math.hypot(sample.screenX - this.gesture.startScreenX, sample.screenY - this.gesture.startScreenY) > TOUCH_HISTORY_TAP_SLOP_PIXELS) this.cancelGesture();
+        return true;
+      }
       if (this.gesture?.kind === 'pinch') {
         if (!stationaryHistoryTap) this.updatePinch();
       } else if (this.gesture?.kind === 'pan' && this.gesture.pointerId === sample.pointerId) {
@@ -1765,8 +2187,34 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       if (gesture && gesture.kind !== 'pinch' && gesture.pointerId === sample.pointerId) this.cancelGesture();
       return false;
     }
+    const floatingPointerUp = this.handleFloatingPointerUp(sample);
+    if (floatingPointerUp !== undefined) return floatingPointerUp;
+    const pointerCopyCandidate = this.touchCopyCandidate?.pointerId === sample.pointerId ? this.touchCopyCandidate : undefined;
+    if (pointerCopyCandidate && sample.pointerType !== 'touch') {
+      if (Math.hypot(sample.screenX - pointerCopyCandidate.sample.screenX, sample.screenY - pointerCopyCandidate.sample.screenY) <= TOUCH_HISTORY_TAP_SLOP_PIXELS) {
+        this.touchCopyCandidate = undefined;
+        this.publishTouchCopyRequest(pointerCopyCandidate, sample);
+        return true;
+      }
+      const fallbackHandled = this.advanceTouchCopyCandidate(sample);
+      if (fallbackHandled !== true) this.handlePointerMove(sample);
+    }
     if (sample.pointerType === 'touch') {
       this.updateTouchHistoryCandidate(sample);
+      const touchCopyCandidate = this.touchCopyCandidate?.pointerId === sample.pointerId ? this.touchCopyCandidate : undefined;
+      if (touchCopyCandidate) {
+        const moved = Math.hypot(sample.screenX - touchCopyCandidate.sample.screenX, sample.screenY - touchCopyCandidate.sample.screenY)
+          > TOUCH_HISTORY_TAP_SLOP_PIXELS;
+        if (!moved) {
+          this.touchCopyCandidate = undefined;
+          this.touchPointers.delete(sample.pointerId);
+          if (this.touchPointers.size === 0) this.finishTouchHistoryCandidate();
+          this.publishTouchCopyRequest(touchCopyCandidate, sample);
+          return true;
+        }
+        const fallbackHandled = this.advanceTouchCopyCandidate(sample);
+        if (fallbackHandled !== true) this.handlePointerMove(sample);
+      }
       this.touchPointers.delete(sample.pointerId);
       if (this.gesture?.kind === 'move-image') {
         if (this.gesture.pointerId === sample.pointerId) this.finishMoveImage(this.gesture, sample);
@@ -1846,8 +2294,19 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.ensureStarted();
     this.spaceHeld = false;
     this.clearBrushPreview();
+    const floatingPointerCancel = this.handleFloatingPointerCancel(sample);
+    if (floatingPointerCancel !== undefined) return floatingPointerCancel;
+    if (sample.pointerType !== 'touch' && this.touchCopyCandidate?.pointerId === sample.pointerId) {
+      this.touchCopyCandidate = undefined;
+      this.clearTouchCopyRequest();
+      return true;
+    }
     if (sample.pointerType === 'touch') {
       this.rejectTouchHistoryCandidate('cancelled');
+      if (this.touchCopyCandidate?.pointerId === sample.pointerId) {
+        this.touchCopyCandidate = undefined;
+        this.clearTouchCopyRequest();
+      }
       this.touchPointers.delete(sample.pointerId);
       if ((this.gesture?.kind === 'move-image' || this.gesture?.kind === 'resize-image') && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
       else if (this.gesture?.kind === 'pinch') {
@@ -1881,12 +2340,23 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   handlePointerLostCapture(sample: PointerSample): boolean {
     this.ensureStarted();
     this.spaceHeld = false;
+    const floatingPointerLostCapture = this.handleFloatingPointerCancel(sample, true);
+    if (floatingPointerLostCapture !== undefined) return floatingPointerLostCapture;
+    if (sample.pointerType !== 'touch' && this.touchCopyCandidate?.pointerId === sample.pointerId) {
+      this.touchCopyCandidate = undefined;
+      this.clearTouchCopyRequest();
+      return true;
+    }
     if (sample.pointerType === 'touch') {
       // Browsers can emit lostpointercapture immediately after pointerup has
       // already removed this pointer. That notification is not a cancellation
       // of the still-active multi-touch sequence.
       if (!this.touchPointers.has(sample.pointerId)) return true;
       this.rejectTouchHistoryCandidate('lost-capture');
+      if (this.touchCopyCandidate?.pointerId === sample.pointerId) {
+        this.touchCopyCandidate = undefined;
+        this.clearTouchCopyRequest();
+      }
       this.touchPointers.delete(sample.pointerId);
       if ((this.gesture?.kind === 'move-image' || this.gesture?.kind === 'resize-image') && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
       else if (this.gesture?.kind === 'pinch') {
@@ -1938,10 +2408,15 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (modified && lower === 'v') {
       if (!this.editorFocused || isTextEditingTarget(sample.target)) return false;
       sample.preventDefault?.();
-      return this.pasteClipboard();
+      return this.pasteSelection();
     }
     if (key === 'Escape') {
       sample.preventDefault?.();
+      this.clearTouchCopyRequest();
+      if (this.floatingPaste) {
+        this.discardFloatingPaste();
+        return true;
+      }
       if (this.uiStore.getState().tool.tool === 'move-image' || this.uiStore.getState().tool.tool === 'resize-image') {
         this.setTool(this.imageToolPreviousTool ?? { tool: 'pan' });
         return true;
@@ -1968,11 +2443,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if (key === 'Enter') {
       sample.preventDefault?.();
+      if (this.floatingPaste) return true;
       this.activateKeyboardCursor();
       return true;
     }
     if (key === 'Delete' || key === 'Backspace') {
       sample.preventDefault?.();
+      if (this.floatingPaste) return true;
       if (this.selection) this.deleteSelection();
       else if (this.uiStore.getState().tool.tool === 'backstitch' && this.selectedBackstitchId !== undefined) this.deleteSelectedBackstitch();
       else this.eraseAtKeyboardCursor();
@@ -2009,6 +2486,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   handleBlur(): void {
     this.spaceHeld = false;
     this.editorFocused = false;
+    if (this.floatingPaste) this.discardFloatingPaste();
+    this.floatingPasteTouchCandidate = undefined;
+    this.touchCopyCandidate = undefined;
+    this.clearTouchCopyRequest();
     this.rejectTouchHistoryCandidate('blur');
     this.clearTouchHistoryCandidate();
     if (this.gesture?.kind === 'backstitch') this.resetBackstitchState();
@@ -2437,6 +2918,40 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
           }
         : undefined;
     this.uiStore.setOverlay({ ...state.overlay, selection });
+  }
+
+  private publishFloatingPasteOverlay(): void {
+    const state = this.uiStore.getState();
+    this.uiStore.setOverlay({
+      ...state.overlay,
+      floatingPaste: this.floatingPaste
+        ? {
+            fragment: this.floatingPaste.fragment,
+            destination: { ...this.floatingPaste.destination },
+            copySelection: this.floatingPaste.copySelection,
+            color: this.activePaletteColor()
+          }
+        : undefined
+    });
+  }
+
+  private clearTouchCopyRequest(): void {
+    const state = this.uiStore.getState();
+    if (state.overlay.touchCopyRequest === undefined) return;
+    this.uiStore.setOverlay({ ...state.overlay, touchCopyRequest: undefined });
+  }
+
+  private discardFloatingPaste(): void {
+    const floating = this.floatingPaste;
+    this.floatingPaste = undefined;
+    this.floatingPasteMoveGesture = undefined;
+    this.floatingPasteTouchCandidate = undefined;
+    if (floating) {
+      this.selection = floating.previousSelection;
+      this.selectionAnchor = floating.previousSelectionAnchor;
+    }
+    this.publishFloatingPasteOverlay();
+    if (floating) this.publishSelectionOverlay();
   }
 
   private publishLassoPath(points: readonly ModelPoint[]): void {
@@ -2885,6 +3400,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   private historyAction(action: 'undo' | 'redo'): void {
+    if (this.floatingPaste) this.discardFloatingPaste();
     const snapshot = this.gateway.getSnapshot();
     if (!snapshot.projectId || snapshot.revision === null) return;
     const token: EditorRevisionToken = { projectId: snapshot.projectId, revision: snapshot.revision };
@@ -2932,9 +3448,14 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const documentChanged = previous.document !== snapshot.document || previous.revision !== snapshot.revision;
     this.lastGatewaySnapshot = snapshot;
     if (!force && !projectChanged && !documentChanged) return;
+    if (projectChanged || documentChanged) this.discardFloatingPaste();
     if (documentChanged && this.touchHistoryCandidate) {
       this.rejectTouchHistoryCandidate('project/document reset');
       this.clearTouchHistoryCandidate();
+    }
+    if (projectChanged || documentChanged) {
+      this.touchCopyCandidate = undefined;
+      this.clearTouchCopyRequest();
     }
     if (projectChanged) this.resetForProjectSwitch(snapshot);
     else if (this.gesture && ((this.gesture.kind === 'paint' || this.gesture.kind === 'eraser' || this.gesture.kind === 'completion')
@@ -2961,13 +3482,18 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   private resetForProjectSwitch(snapshot: WorkspaceEditorSnapshot): void {
+    this.discardFloatingPaste();
     this.cancelGesture();
     this.cancelFill(false);
     this.resetBackstitchState();
     this.selection = undefined;
     this.selectionAnchor = undefined;
     this.clipboard = undefined;
+    this.clipboardSelection = undefined;
+    this.uiStore.setCanPaste(false);
     this.touchPointers.clear();
+    this.floatingPasteTouchCandidate = undefined;
+    this.touchCopyCandidate = undefined;
     this.uiStore.setState({ overlay: {}, keyboardCursor: null, status: null });
     if (snapshot.document && this.metrics) this.projectViewport(fitViewport(snapshot.document, this.metrics, 0, this.viewportOptions));
   }
@@ -2975,7 +3501,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private onUiState(state: ReturnType<EditorUiStore['getState']>, previous: ReturnType<EditorUiStore['getState']>): void {
     if (!this.started || this.disposed) return;
     if (state.tool.tool === 'eraser' && state.tool.corner !== undefined) this.eraserCorner = state.tool.corner;
-    if (state.tool.tool !== previous.tool.tool) this.resetToolTransient();
+    if (state.tool.tool !== previous.tool.tool) {
+      if (this.floatingPaste) this.discardFloatingPaste();
+      this.resetToolTransient();
+    }
     if (state.viewport !== previous.viewport) this.renderer.setViewport(state.viewport);
     if (state.mode !== previous.mode) this.renderer.setStyle({ mode: state.mode });
     if (state.gridVisible !== previous.gridVisible) this.renderer.setStyle({ showGrid: state.gridVisible });
@@ -3115,6 +3644,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   private resetToolTransient(): void {
     this.cancelGesture();
+    this.touchCopyCandidate = undefined;
+    this.clearTouchCopyRequest();
     this.cancelFill(false);
     this.resetBackstitchState();
     this.clearBrushPreview();
