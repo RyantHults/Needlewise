@@ -11,6 +11,7 @@ import {
   encodeDocument,
   exportArchive,
   importArchive,
+  cloneSessionHistory,
   PersistenceError,
   PersistencePreparationWorkerClient,
   sha256,
@@ -23,7 +24,8 @@ import {
   type PersistencePreparationInput,
   type PersistencePreparationClient,
   type SaveOptions,
-  type SaveResult
+  type SaveResult,
+  type SessionHistoryEnvelope
 } from '../persistence';
 import { consumePreparedDocumentCapability } from '../persistence/preparation-client';
 import { createStarterDocument, ProjectWorkspace } from './index';
@@ -38,7 +40,8 @@ function copyRecord(record: ProjectRecord): ProjectRecord {
     document: cloneDocument(record.document),
     ...(record.head === undefined ? {} : { head: { ...record.head } }),
     recovery: record.recovery === null ? null : { revision: record.recovery.revision, document: cloneDocument(record.recovery.document) },
-    assets: record.assets.map((asset) => ({ ...asset, data: new Uint8Array(asset.data) }))
+    assets: record.assets.map((asset) => ({ ...asset, data: new Uint8Array(asset.data) })),
+    ...(record.history === undefined ? {} : { history: cloneSessionHistory(record.history) })
   };
 }
 
@@ -83,7 +86,8 @@ class MemoryRepository implements WorkspaceRepository {
       document: cloneDocument(persistedDocument),
       ...(head === undefined ? {} : { head }),
       recovery: retained ? current?.recovery ?? null : current === undefined ? null : { revision: current.document.revision, document: cloneDocument(current.document) },
-      assets: nextAssets
+      assets: nextAssets,
+      ...(options.history !== undefined && 'trace' in options.history ? { history: cloneSessionHistory(options.history as SessionHistoryEnvelope) } : {})
     });
     return { committed: true, stale: false, revision: persistedDocument.revision, head };
   }

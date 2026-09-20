@@ -59,7 +59,8 @@ import {
   mergePaletteCommand,
   PALETTE_SYMBOLS,
   type PatternDocument,
-  type PatternFragment
+  type PatternFragment,
+  computePatternMetrics
 } from './index';
 import { DMC_CATALOG_RECORD_COUNT } from '../catalog';
 import { MAX_PALETTE_COLORS } from './index';
@@ -331,13 +332,223 @@ describe('typed-array pattern document', () => {
     expect(editor.document.completed[0]).toBe(1);
     expect(editor.document.kind[1]).toBe(CellKind.ThreeQuarterNW);
     expect(Array.from(editor.document.colors.slice(4, 8))).toEqual([2, 0, 0, 0]);
-    expect(editor.undo().changed).toBe(true);
+    const undone = editor.undo();
+    expect(undone.changed).toBe(true);
+    expect(undone.changedIndices).toEqual(new Uint32Array([0, 1]));
+    undone.changedIndices?.fill(99);
     expect(editor.document.kind[0]).toBe(CellKind.ThreeQuarterNW);
     expect(Array.from(editor.document.colors.slice(0, 4))).toEqual([1, 0, 0, 0]);
     expect(editor.document.completed[0]).toBe(1);
-    expect(editor.redo().changed).toBe(true);
+    const redone = editor.redo();
+    expect(redone.changed).toBe(true);
+    expect(redone.changedIndices).toEqual(new Uint32Array([0, 1]));
     expect(editor.document.kind[0]).toBe(CellKind.ThreeQuarterNW);
     expect(Array.from(editor.document.colors.slice(0, 4))).toEqual([2, 0, 0, 0]);
+  });
+
+  it('exports and restores detached delta history with undo and redo stacks', () => {
+    const editor = createEditor(document(3, 1));
+    editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    editor.execute({ type: 'set-full', x: 1, y: 0, color: 2 });
+    editor.undo();
+    const suppliedCurrent = editor.document;
+    const exported = editor.exportHistory();
+    expect(exported.version).toBe(1);
+    expect(exported.undo).toHaveLength(1);
+    expect(exported.redo).toHaveLength(1);
+
+    const restored = createEditor(suppliedCurrent, { historyLimitBytes: editor.historyLimitBytes });
+    restored.importHistory(exported);
+    (exported.undo[0] as { kind: 'delta'; delta: { cells: { indices: Uint32Array } } }).delta.cells.indices[0] = 99;
+    expect(restored.undoDepth).toBe(1);
+    expect(restored.redoDepth).toBe(1);
+    const undone = restored.undo();
+    expect(undone.revision).toBe(suppliedCurrent.revision + 1);
+    expect(restored.document.kind).toEqual(new Uint8Array(3));
+    const redone = restored.redo();
+    expect(redone.revision).toBe(suppliedCurrent.revision + 2);
+    expect(restored.document.kind[0]).toBe(CellKind.Full);
+  });
+
+  it('exports and restores snapshot history and preserves expected revisions', () => {
+    const editor = createEditor(document(2, 1));
+    editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    const beforeSnapshot = documentContentSnapshot(editor.document);
+    editor.execute({ type: 'rotate-cw' });
+    const afterSnapshot = documentContentSnapshot(editor.document);
+    editor.undo();
+    const preSnapshotRedo = editor.redo();
+    const preSnapshotUndo = editor.undo();
+    const suppliedCurrent = editor.document;
+    const restored = createEditor(suppliedCurrent, { historyLimitBytes: editor.historyLimitBytes });
+    restored.importHistory(editor.exportHistory());
+    expect(restored.undoDepth).toBe(1);
+    expect(restored.redoDepth).toBe(1);
+
+    const redoneSnapshot = restored.redo();
+    expect(redoneSnapshot.revision).toBe(suppliedCurrent.revision + 1);
+    expect(redoneSnapshot.progress).toEqual(preSnapshotRedo.progress);
+    expect(documentContentSnapshot(restored.document)).toEqual(afterSnapshot);
+    const undoneSnapshot = restored.undo();
+    expect(undoneSnapshot.revision).toBe(suppliedCurrent.revision + 2);
+    expect(undoneSnapshot.progress).toEqual(preSnapshotUndo.progress);
+    expect(documentContentSnapshot(restored.document)).toEqual(beforeSnapshot);
+  });
+
+  it('keeps mirror snapshot progress empty across restored undo and redo', () => {
+    const editor = createEditor(document(2, 1));
+    editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    editor.execute({ type: 'mirror-horizontal' });
+    const afterMirror = documentContentSnapshot(editor.document);
+    const preUndo = editor.undo();
+    const preRedo = editor.redo();
+    const restored = createEditor(editor.document, { historyLimitBytes: editor.historyLimitBytes });
+    restored.importHistory(editor.exportHistory());
+    const undone = restored.undo();
+    expect(undone.progress).toEqual(preUndo.progress);
+    expect(undone.progress).toEqual({ marked: 0, unmarked: 0, cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0) });
+    const redone = restored.redo();
+    expect(redone.progress).toEqual(preRedo.progress);
+    expect(redone.progress).toEqual({ marked: 0, unmarked: 0, cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0) });
+    expect(documentContentSnapshot(restored.document)).toEqual(afterMirror);
+  });
+
+  it('keeps erase of completed geometry out of completion activity', () => {
+    const editor = createEditor(document(1, 1));
+    editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    editor.execute({ type: 'set-completion', x: 0, y: 0, completed: true });
+    editor.clearHistory();
+    editor.execute({ type: 'erase-cell', x: 0, y: 0 });
+    const preUndo = editor.undo();
+    const preRedo = editor.redo();
+    const restored = createEditor(editor.document, { historyLimitBytes: editor.historyLimitBytes });
+    restored.importHistory(editor.exportHistory());
+    const undone = restored.undo();
+    expect(undone.progress).toEqual(preUndo.progress);
+    expect(undone.progress).toEqual({ marked: 0, unmarked: 0, cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0) });
+    expect(undone.recalculateMetrics).toBe(true);
+    expect(computePatternMetrics(undone.document).progress).toMatchObject({ completedComponents: 1, remainingComponents: 0 });
+    const redone = restored.redo();
+    expect(redone.progress).toEqual(preRedo.progress);
+    expect(redone.progress).toEqual({ marked: 0, unmarked: 0, cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0) });
+    expect(computePatternMetrics(redone.document).progress).toMatchObject({ completedComponents: 0, remainingComponents: 0 });
+  });
+
+  it('rejects malformed or oversized history without mutating the editor and documents export trimming', () => {
+    const editor = createEditor(document(3, 1));
+    editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    editor.execute({ type: 'set-full', x: 1, y: 0, color: 2 });
+    editor.undo();
+    const before = documentContentSnapshot(editor.document);
+    const beforeUndoDepth = editor.undoDepth;
+    const beforeRedoDepth = editor.redoDepth;
+
+    const malformed = editor.exportHistory();
+    (malformed.undo[0] as { bytes: number }).bytes += 1;
+    expect(() => editor.importHistory(malformed)).toThrow(/canonical|History|history/);
+    expect(documentContentSnapshot(editor.document)).toEqual(before);
+    expect(editor.undoDepth).toBe(beforeUndoDepth);
+    expect(editor.redoDepth).toBe(beforeRedoDepth);
+
+    const oversized = editor.exportHistory();
+    (oversized.undo[0] as { bytes: number }).bytes += 1;
+    expect(() => editor.importHistory(oversized)).toThrow(/canonical|History|history/);
+    expect(documentContentSnapshot(editor.document)).toEqual(before);
+    expect(editor.undoDepth).toBe(beforeUndoDepth);
+    expect(editor.redoDepth).toBe(beforeRedoDepth);
+
+    const entryBytes = editor.exportHistory().undo[0].bytes;
+    const capped = editor.exportHistory({ maxBytes: entryBytes });
+    expect(capped.undo).toHaveLength(0);
+    expect(capped.redo).toHaveLength(1);
+    const cappedEditor = createEditor(editor.document, { historyLimitBytes: editor.historyLimitBytes });
+    cappedEditor.importHistory(capped);
+    expect(cappedEditor.undoDepth).toBe(0);
+    expect(cappedEditor.redoDepth).toBe(1);
+  });
+
+  it('replays history bounds against resized states and reconstructs semantic progress', () => {
+    const editor = createEditor(document(4, 4));
+    editor.execute({ type: 'set-full', x: 3, y: 3, color: 1 });
+    editor.execute({ type: 'crop', x: 0, y: 0, width: 1, height: 1 });
+    const cropped = editor.document;
+    const exported = editor.exportHistory();
+    const restored = createEditor(cropped, { historyLimitBytes: editor.historyLimitBytes });
+    restored.importHistory(exported);
+    restored.undo();
+    expect(restored.document.width).toBe(4);
+    expect(restored.document.kind[15]).toBe(CellKind.Full);
+    restored.undo();
+    expect(restored.document.kind[15]).toBe(CellKind.Empty);
+    restored.redo();
+    expect(restored.document.kind[15]).toBe(CellKind.Full);
+    restored.redo();
+    expect(restored.document.width).toBe(1);
+
+    const completionEditor = createEditor(document(1, 1));
+    completionEditor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    completionEditor.execute(bulkSetCompletionCommand(new Uint32Array([0])));
+    const preCompletionUndo = completionEditor.undo();
+    const preCompletionRedo = completionEditor.redo();
+    const completionHistory = completionEditor.exportHistory();
+    const completionEntry = completionHistory.undo[1] as { progress: { marked: number; unmarked: number }; recalculateMetrics: boolean };
+    completionEntry.progress.marked = 999;
+    completionEntry.progress.unmarked = 999;
+    completionEntry.recalculateMetrics = false;
+    const rejectedCompletion = createEditor(completionEditor.document, { historyLimitBytes: completionEditor.historyLimitBytes });
+    expect(() => rejectedCompletion.importHistory(completionHistory)).toThrow(/progress/i);
+    expect(rejectedCompletion.undoDepth).toBe(0);
+    const completionRestored = createEditor(completionEditor.document, { historyLimitBytes: completionEditor.historyLimitBytes });
+    completionRestored.importHistory(completionEditor.exportHistory());
+    const undoneCompletion = completionRestored.undo();
+    expect(undoneCompletion.recalculateMetrics).toBe(true);
+    expect(undoneCompletion.progress).toEqual(preCompletionUndo.progress);
+    expect(undoneCompletion.progress).toEqual({ marked: 0, unmarked: 1, cellIndices: new Uint32Array([0]), backstitchIds: new Uint32Array(0) });
+    expect(computePatternMetrics(undoneCompletion.document).progress).toMatchObject({ completedComponents: 0, remainingComponents: 1 });
+    const redoneCompletion = completionRestored.redo();
+    expect(redoneCompletion.recalculateMetrics).toBe(true);
+    expect(redoneCompletion.progress).toEqual(preCompletionRedo.progress);
+    expect(redoneCompletion.progress).toEqual({ marked: 1, unmarked: 0, cellIndices: new Uint32Array([0]), backstitchIds: new Uint32Array(0) });
+    expect(computePatternMetrics(redoneCompletion.document).progress).toMatchObject({ completedComponents: 1, remainingComponents: 0 });
+
+    const backstitchEditor = createEditor(document(2, 1));
+    backstitchEditor.execute({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 });
+    const backstitchId = backstitchEditor.document.backstitches.ids[0];
+    backstitchEditor.execute(bulkSetBackstitchCompletionCommand(new Uint32Array([backstitchId])));
+    const preBackstitchUndo = backstitchEditor.undo();
+    const preBackstitchRedo = backstitchEditor.redo();
+    const backstitchHistory = backstitchEditor.exportHistory();
+    const backstitchEntry = backstitchHistory.undo[1] as { progress: { marked: number; unmarked: number }; recalculateMetrics: boolean };
+    backstitchEntry.progress.marked = 999;
+    backstitchEntry.progress.unmarked = 999;
+    backstitchEntry.recalculateMetrics = false;
+    const rejectedBackstitch = createEditor(backstitchEditor.document, { historyLimitBytes: backstitchEditor.historyLimitBytes });
+    expect(() => rejectedBackstitch.importHistory(backstitchHistory)).toThrow(/progress/i);
+    expect(rejectedBackstitch.undoDepth).toBe(0);
+    const restoredBackstitch = createEditor(backstitchEditor.document, { historyLimitBytes: backstitchEditor.historyLimitBytes });
+    restoredBackstitch.importHistory(backstitchEditor.exportHistory());
+    const restoredBackstitchUndo = restoredBackstitch.undo();
+    expect(restoredBackstitchUndo.progress).toEqual(preBackstitchUndo.progress);
+    expect(restoredBackstitchUndo.progress).toMatchObject({ marked: 0, unmarked: 1, backstitchIds: new Uint32Array([backstitchId]) });
+    const restoredBackstitchRedo = restoredBackstitch.redo();
+    expect(restoredBackstitchRedo.progress).toEqual(preBackstitchRedo.progress);
+    expect(restoredBackstitchRedo.progress).toMatchObject({ marked: 1, unmarked: 0, backstitchIds: new Uint32Array([backstitchId]) });
+  });
+
+  it('rejects a raw history payload over the decode ceiling before cloning it', () => {
+    const editor = createEditor(document(2, 3));
+    editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    for (let index = 0; index < 12; index += 1) editor.execute({ type: index % 2 === 0 ? 'rotate-cw' : 'mirror-horizontal' });
+    const exported = editor.exportHistory();
+    const snapshots = exported.undo.filter((entry): entry is Extract<typeof entry, { kind: 'snapshot' }> => entry.kind === 'snapshot');
+    expect(snapshots.length).toBeGreaterThan(8);
+    const repeated = 'x'.repeat(4_000_000);
+    for (const entry of snapshots) {
+      (entry.before.palette[0] as { name: string }).name = repeated;
+      (entry.after.palette[0] as { name: string }).name = repeated;
+    }
+    expect(() => editor.importHistory(exported)).toThrow(/decode ceiling|history/i);
+    expect(editor.undoDepth).toBeGreaterThan(0);
   });
 
   it('requires explicit completion and enforces active, non-reserved palette IDs', () => {
@@ -1981,6 +2192,7 @@ describe('typed-array pattern document', () => {
   it('deletes sparse cells and contained backstitches as one undoable delta', () => {
     let pattern = document(4, 1);
     pattern = apply(pattern, { type: 'set-full', x: 1, y: 0, color: 1 });
+    pattern = apply(pattern, { type: 'set-completion', x: 1, y: 0, completed: true });
     pattern = apply(pattern, { type: 'set-full', x: 2, y: 0, color: 2 });
     pattern = apply(pattern, { type: 'set-full', x: 3, y: 0, color: 3 });
     pattern.backstitches = {
@@ -2008,11 +2220,31 @@ describe('typed-array pattern document', () => {
     expect(editor.lastHistoryEntryKind).toBe('delta');
     expect(editor.historyBytes).toBe(estimateDeleteCellSetHistoryBytes(2, 2, 1));
 
-    editor.undo();
+    const undone = editor.undo();
+    expect(undone.requiresFullRedraw).toBe(true);
     expect(documentContentSnapshot(editor.document)).toEqual(before);
-    editor.redo();
+    const redone = editor.redo();
+    expect(redone.requiresFullRedraw).toBe(true);
     expect(editor.document.kind).toEqual(new Uint8Array([CellKind.Empty, CellKind.Empty, CellKind.Full, CellKind.Empty]));
     expect(editor.document.backstitches.ids).toEqual(new Uint32Array([2]));
+
+    const preExportUndo = editor.undo();
+    const preExportRedo = editor.redo();
+    expect(preExportUndo.requiresFullRedraw).toBe(true);
+    expect(preExportRedo.requiresFullRedraw).toBe(true);
+    const exported = editor.exportHistory();
+    expect(Object.prototype.hasOwnProperty.call((exported.undo[0] as { delta: object }).delta, 'deleteMetricsImpact')).toBe(false);
+    const restored = createEditor(editor.document, { historyLimitBytes: editor.historyLimitBytes });
+    restored.importHistory(exported);
+    const restoredUndo = restored.undo();
+    expect(restoredUndo.requiresFullRedraw).toBe(true);
+    expect(restoredUndo.recalculateMetrics).toBe(true);
+    expect(restoredUndo.progress).toEqual({ marked: 0, unmarked: 0, cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0) });
+    expect(computePatternMetrics(restoredUndo.document).progress).toMatchObject({ completedComponents: 2 });
+    const restoredRedo = restored.redo();
+    expect(restoredRedo.progress).toEqual({ marked: 0, unmarked: 0, cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0) });
+    expect(restoredRedo.recalculateMetrics).toBe(true);
+    expect(computePatternMetrics(restoredRedo.document).progress).toMatchObject({ completedComponents: 1, remainingComponents: 1 });
 
     const direct = applyCommand(pattern, deleteCellSetCommand(new Uint32Array([1, 3]), pattern.revision));
     expect(direct.changed).toBe(true);

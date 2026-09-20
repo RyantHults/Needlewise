@@ -152,8 +152,8 @@ function pointer(pointerId: number, screenX: number, screenY: number, pointerTyp
   return { pointerId, pointerType, screenX, screenY, button, buttons: button === 0 ? 1 : 4, isPrimary: true, ...modifiers };
 }
 
-function controllerFixture(options: Partial<EditorSurfaceControllerOptions> = {}) {
-  const gateway = new FakeGateway();
+function controllerFixture(options: Partial<EditorSurfaceControllerOptions> = {}, initialDocument?: PatternDocument) {
+  const gateway = new FakeGateway(initialDocument);
   const uiStore = createUiStore();
   const renderer = rendererFixture();
   const controller = new EditorSurfaceController({ gateway, uiStore, renderer: renderer.renderer, metrics: getCanvasMetrics(128, 128), ...options });
@@ -398,6 +398,40 @@ describe('EditorSurfaceController', () => {
     gateway.undo({ projectId: 'project-a', revision: 1 });
     expect(gateway.getSnapshot().document?.kind.slice(0, 5)).toEqual(new Uint8Array(5));
     expect(gateway.undoDepth).toBe(0);
+    controller.dispose();
+  });
+
+  it('uses bounded invalidation when undoing and redoing paint with an unused active palette color', () => {
+    const document = createDocument({
+      width: 8,
+      height: 8,
+      palette: [
+        { id: 1, name: 'Thread', color: '#123456' },
+        { id: 2, name: 'Unused active thread', color: '#abcdef', active: true }
+      ]
+    });
+    const { gateway, controller, calls } = controllerFixture({}, document);
+    controller.setBrush({ kind: 'full', paletteId: 2 });
+    controller.handlePointerDown(pointer(1, 8, 8));
+    controller.handlePointerUp(pointer(1, 8, 8));
+
+    expect(gateway.getSnapshot().document?.colors[0]).toBe(2);
+    expect(calls.setDocument.at(-1)?.invalidation).toMatchObject({
+      layer: 'base',
+      cellRect: { x: 0, y: 0, width: 1, height: 1 },
+      reason: 'editor-command'
+    });
+
+    controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
+    controller.handleKeyDown({ key: 'z', ctrlKey: true, shiftKey: true, preventDefault: () => undefined });
+
+    expect(gateway.getSnapshot().document?.colors[0]).toBe(2);
+    expect(calls.setDocument.at(-1)?.invalidation).toMatchObject({
+      layer: 'base',
+      cellRect: { x: 0, y: 0, width: 1, height: 1 },
+      reason: 'editor-command'
+    });
+    expect(calls.setDocument.at(-1)?.invalidation?.full).toBeUndefined();
     controller.dispose();
   });
 
@@ -991,6 +1025,13 @@ describe('EditorSurfaceController', () => {
     controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
     expect(gateway.getSnapshot().document?.backstitches.ids).toEqual(new Uint32Array([1, 2]));
     expect(uiStore.getState().status).toBe('Undid action');
+    expect(calls.setDocument.at(-1)?.invalidation).toMatchObject({ layer: 'base', full: true });
+    expect(calls.setDocument.at(-1)?.invalidation?.cellRect).toBeUndefined();
+    controller.handleKeyDown({ key: 'z', ctrlKey: true, shiftKey: true, preventDefault: () => undefined });
+    expect(gateway.getSnapshot().document?.backstitches.ids).toEqual(new Uint32Array([2]));
+    expect(uiStore.getState().status).toBe('Redid action');
+    expect(calls.setDocument.at(-1)?.invalidation).toMatchObject({ layer: 'base', full: true });
+    expect(calls.setDocument.at(-1)?.invalidation?.cellRect).toBeUndefined();
     controller.dispose();
   });
 

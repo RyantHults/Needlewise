@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto';
+import Dexie from 'dexie';
 import { unzipSync, zipSync, strFromU8, strToU8 } from 'fflate';
-import { applyCommand, CellKind, cloneDocument, computePatternMetrics, createDocument, migratePatternDocument, QuarterCorner, type PatternDocument } from '../domain';
+import { applyCommand, CellKind, cloneDocument, computePatternMetrics, createDocument, createEditor, migratePatternDocument, QuarterCorner, type PatternDocument } from '../domain';
 import * as binaryModule from './binary';
 import * as hashModule from './hash';
 import { prepareDocumentSnapshot, type PersistencePreparationResponse } from './preparation';
@@ -14,10 +15,12 @@ import {
   MAX_ASSET_BYTES,
   MAX_DOCUMENT_CELLS,
   MAX_DOCUMENT_BYTES,
+  MAX_SESSION_HISTORY_BYTES,
   PERSISTENCE_SCHEMA_VERSION,
   parseArchive,
   PersistenceError,
   PersistencePreparationWorkerClient,
+  prepareSessionHistory,
   ProjectRepository,
   NeedlewiseDatabase,
   deriveProjectSummary,
@@ -25,10 +28,13 @@ import {
   normalizeSourceImageAsset,
   normalizeSourceImageDescriptor,
   sha256,
+  traceStateFingerprint,
   type ProjectMetadata,
   type PreparedDocumentCapability,
   type StoredDocumentSnapshot,
-  type SourceImageDescriptor
+  type SessionHistoryEnvelope,
+  type SourceImageDescriptor,
+  type TraceHistoryAsset
 } from './index';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -121,6 +127,35 @@ function metadata(document: PatternDocument, id = 'project-1'): ProjectMetadata 
   return { id, title: 'Test project', notes: 'Local notes', createdAt: 1, updatedAt: Date.now(), revision: document.revision };
 }
 
+async function traceHistoryFixture(document: PatternDocument, assetId = 'reference'): Promise<{ history: SessionHistoryEnvelope; asset: TraceHistoryAsset; descriptor: SourceImageDescriptor }> {
+  const data = pngBytes(2, 2);
+  const asset: TraceHistoryAsset = { id: assetId, name: 'reference.png', mimeType: 'image/png', data, checksum: await sha256(data) };
+  const descriptor: SourceImageDescriptor = {
+    assetId,
+    mimeType: 'image/png',
+    width: 2,
+    height: 2,
+    crop: { x: 0, y: 0, width: 1, height: 1 },
+    chartBounds: { x: 0, y: 0, width: document.width, height: document.height },
+    traceVisible: true,
+    opacity: 0.8
+  };
+  return {
+    history: {
+      version: 1,
+      document: createEditor(document).exportHistory(),
+      trace: {
+        undo: [{ label: 'import reference', sourceBefore: null, sourceAfter: descriptor, assetBefore: { kind: 'absent' }, assetAfter: { kind: 'captured', asset } }],
+        redo: []
+      },
+      undoOrder: [{ kind: 'trace', index: 0 }],
+      redoOrder: []
+    },
+    asset,
+    descriptor
+  };
+}
+
 async function repository(): Promise<ProjectRepository> {
   databaseCounter += 1;
   const db = new NeedlewiseDatabase(`needlewise-persistence-test-${String(databaseCounter)}`);
@@ -178,6 +213,385 @@ class RepositoryPreparationWorker {
     this.listeners.clear();
   }
 }
+
+describe('durable document history persistence', () => {
+  it('round-trips detached history anchored to the exact current head', async () => {
+    const repo = await repository();
+    try {
+      const base = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+      const editor = createEditor(base);
+      const document = editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 }).document;
+      const history = editor.exportHistory();
+      expect(await prepareSessionHistory(document, history)).toBeDefined();
+      await repo.save('history-round-trip', metadata(document, 'history-round-trip'), document, undefined, { history });
+
+      const stored = await repo.db.documentHistories.get('history-round-trip');
+      const head = await repo.db.projectHeads.get('history-round-trip');
+      expect(stored).toMatchObject({ projectId: 'history-round-trip', revision: document.revision, checksum: head?.checksum, savedAt: 10 });
+      expect(stored?.history.version).toBe(history.version);
+      expect(stored?.history.document.undo).toHaveLength(history.undo.length);
+      expect(stored?.history.document.redo).toHaveLength(history.redo.length);
+      expect(stored?.history.document.undo[0]?.kind).toBe(history.undo[0]?.kind);
+      expect(Array.from((stored?.history.document.undo[0] as { kind: 'delta'; delta: { cells: { indices: Uint32Array } } }).delta.cells.indices)).toEqual(Array.from((history.undo[0] as { kind: 'delta'; delta: { cells: { indices: Uint32Array } } }).delta.cells.indices));
+      const loaded = await repo.load('history-round-trip');
+      expect(loaded?.history?.document.undo).toHaveLength(history.undo.length);
+      expect(loaded?.history?.undoOrder).toEqual([{ kind: 'document', index: 0 }]);
+
+      const twoStepEditor = createEditor(base);
+      twoStepEditor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+      const twoStep = twoStepEditor.execute({ type: 'set-full', x: 1, y: 0, color: 1 }).document;
+      const reversedMarkers = {
+        version: 1 as const,
+        document: twoStepEditor.exportHistory(),
+        trace: { undo: [], redo: [] },
+        undoOrder: [{ kind: 'document' as const, index: 1 }, { kind: 'document' as const, index: 0 }],
+        redoOrder: []
+      };
+      expect(await prepareSessionHistory(twoStep, reversedMarkers)).toBeUndefined();
+      expect(await prepareSessionHistory(twoStep, { ...reversedMarkers, undoOrder: [] })).toBeUndefined();
+
+      const aliased = twoStepEditor.exportHistory();
+      const aliasedEntry = aliased.undo[0] as unknown as { kind: 'delta'; delta: { cells: Record<string, unknown> } };
+      const sharedIndices = aliasedEntry.delta.cells.indices;
+      aliasedEntry.delta.cells.afterKind = sharedIndices;
+      expect(await prepareSessionHistory(twoStep, aliased)).toBeUndefined();
+    } finally {
+      await closeRepository(repo);
+    }
+  });
+
+  it('discards malformed or stale history without blocking the canonical document load', async () => {
+    const repo = await repository();
+    try {
+      const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+      const history = createEditor(document).exportHistory();
+      await repo.save('history-corrupt', metadata(document, 'history-corrupt'), document, undefined, { history });
+      const stored = await repo.db.documentHistories.get('history-corrupt');
+      if (!stored) throw new Error('missing history record');
+
+      await repo.db.documentHistories.put({ ...stored, checksum: '0'.repeat(64) });
+      expect((await repo.load('history-corrupt'))?.document.revision).toBe(document.revision);
+      expect((await repo.load('history-corrupt'))?.history).toBeUndefined();
+      expect(await repo.db.documentHistories.get('history-corrupt')).toBeUndefined();
+
+      const head = await repo.db.projectHeads.get('history-corrupt');
+      if (!head) throw new Error('missing project head');
+      await repo.db.documentHistories.put({ ...stored, revision: head.revision, checksum: head.checksum, history: { version: 99, undo: [], redo: [] } as never });
+      expect((await repo.load('history-corrupt'))?.document.revision).toBe(document.revision);
+      expect(await repo.db.documentHistories.get('history-corrupt')).toBeUndefined();
+
+      const malformed = { ...stored } as Record<string, unknown>;
+      delete malformed.generation;
+      await repo.db.documentHistories.put(malformed as never);
+      expect((await repo.load('history-corrupt'))?.document.revision).toBe(document.revision);
+      expect(await repo.db.documentHistories.get('history-corrupt')).toBeUndefined();
+    } finally {
+      await closeRepository(repo);
+    }
+  });
+
+  it('keeps canonical saves successful when a history write fails', async () => {
+    const repo = await repository();
+    try {
+      const base = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+      const editor = createEditor(base);
+      const document = editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 }).document;
+      const history = editor.exportHistory();
+      const historyPut = vi.spyOn(repo.db.documentHistories, 'put').mockRejectedValueOnce(new Error('quota'));
+
+      await expect(repo.save('history-fallback', metadata(document, 'history-fallback'), document, undefined, { history })).resolves.toMatchObject({ committed: true, stale: false });
+      historyPut.mockRestore();
+      expect((await repo.load('history-fallback'))?.document.revision).toBe(document.revision);
+      expect((await repo.load('history-fallback'))?.history).toBeUndefined();
+    } finally {
+      vi.restoreAllMocks();
+      await closeRepository(repo);
+    }
+  });
+
+  it('clears history when replacing, promoting recovery, importing, or deleting a project', async () => {
+    const repo = await repository();
+    try {
+      const base = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] });
+      const editor = createEditor(base);
+      const document = editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 }).document;
+      await repo.save('history-lifecycle', metadata(document, 'history-lifecycle'), document, undefined, { history: editor.exportHistory() });
+      expect(await repo.db.documentHistories.get('history-lifecycle')).toBeDefined();
+
+      const archive = await repo.exportProject('history-lifecycle');
+      await repo.importProject(archive, { collision: 'replace' });
+      expect(await repo.db.documentHistories.get('history-lifecycle')).toBeUndefined();
+
+      const replacement = applyCommand(document, { type: 'set-full', x: 1, y: 0, color: 1 }).document;
+      await repo.save('history-lifecycle', metadata(replacement, 'history-lifecycle'), replacement);
+      expect(await repo.db.documentHistories.get('history-lifecycle')).toBeUndefined();
+
+      const replacementEditor = createEditor(replacement);
+      const replacementWithHistory = replacementEditor.execute({ type: 'set-full', x: 1, y: 0, color: 2 }).document;
+      await repo.save('history-lifecycle', metadata(replacementWithHistory, 'history-lifecycle'), replacementWithHistory, undefined, { history: replacementEditor.exportHistory() });
+      expect(await repo.db.documentHistories.get('history-lifecycle')).toBeDefined();
+      await repo.promoteRecoveryRevision('history-lifecycle');
+      expect(await repo.db.documentHistories.get('history-lifecycle')).toBeUndefined();
+      await repo.deleteProject('history-lifecycle');
+      expect(await repo.db.documentHistories.get('history-lifecycle')).toBeUndefined();
+    } finally {
+      await closeRepository(repo);
+    }
+  });
+
+  it('round-trips a document-only envelope and rejects trace data after fingerprint drift', async () => {
+    const repo = await repository();
+    try {
+      const document = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+      const fixture = await traceHistoryFixture(document);
+      const projectMetadata = { ...metadata(document, 'history-envelope'), sourceImage: fixture.descriptor };
+      await repo.save('history-envelope', projectMetadata, document, [{ ...fixture.asset }], { history: fixture.history });
+      const loaded = await repo.load('history-envelope');
+      expect(loaded?.history?.trace.undo[0]?.label).toBe('import reference');
+      const stored = await repo.db.documentHistories.get('history-envelope');
+      expect(stored?.generation).toBe(1);
+      expect(stored?.traceFingerprint).toBe(await traceStateFingerprint(projectMetadata, loaded?.assets ?? []));
+
+      const disconnected = {
+        ...fixture.history,
+        trace: {
+          undo: [fixture.history.trace.undo[0], { ...fixture.history.trace.undo[0], sourceBefore: { ...fixture.descriptor, opacity: 0.1 } }],
+          redo: []
+        },
+        undoOrder: [{ kind: 'trace' as const, index: 0 }, { kind: 'trace' as const, index: 1 }]
+      };
+      expect(await prepareSessionHistory(document, disconnected, { metadata: projectMetadata, assets: [fixture.asset] })).toBeUndefined();
+      const staleEndpoint = {
+        ...fixture.history,
+        trace: { undo: [{ ...fixture.history.trace.undo[0], sourceAfter: { ...fixture.descriptor, opacity: 0.1 } }], redo: [] }
+      };
+      expect(await prepareSessionHistory(document, staleEndpoint, { metadata: projectMetadata, assets: [fixture.asset] })).toBeUndefined();
+
+      if (!stored) throw new Error('missing trace envelope');
+      const malformedTrace = {
+        ...stored.history,
+        trace: {
+          ...stored.history.trace,
+          undo: [{ ...stored.history.trace.undo[0], assetAfter: { kind: 'captured' as const, asset: { ...fixture.asset, data: new Uint8Array([1]), checksum: '0'.repeat(64) } } }]
+        }
+      };
+      await repo.db.documentHistories.put({ ...stored, history: malformedTrace });
+      expect((await repo.load('history-envelope'))?.history).toBeUndefined();
+      expect(await repo.db.documentHistories.get('history-envelope')).toBeUndefined();
+
+      await repo.save('history-envelope', projectMetadata, document, [{ ...fixture.asset }], { history: fixture.history });
+
+      const persistedMetadata = await repo.db.projects.get('history-envelope');
+      if (!persistedMetadata) throw new Error('missing envelope metadata');
+      await repo.db.projects.put({ ...persistedMetadata, sourceImage: { ...fixture.descriptor, opacity: 0.2 } });
+      expect((await repo.load('history-envelope'))?.history).toBeUndefined();
+      expect(await repo.db.documentHistories.get('history-envelope')).toBeUndefined();
+    } finally {
+      await closeRepository(repo);
+    }
+  });
+
+  it('uses the document-only fallback for warm history write failure and advances generation', async () => {
+    const repo = await repository();
+    try {
+      const base = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+      await repo.save('warm-history-fallback', metadata(base, 'warm-history-fallback'), base);
+      await repo.load('warm-history-fallback');
+      const editor = createEditor(base);
+      const next = editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 }).document;
+      const put = vi.spyOn(repo.db.documentHistories, 'put').mockRejectedValueOnce(new Error('history quota'));
+      await expect(repo.save('warm-history-fallback', metadata(next, 'warm-history-fallback'), next, undefined, { history: editor.exportHistory() })).resolves.toMatchObject({ committed: true, stale: false, head: { historyGeneration: 2 } });
+      put.mockRestore();
+      expect(await repo.db.documentHistories.get('warm-history-fallback')).toBeUndefined();
+      expect((await repo.load('warm-history-fallback'))?.document.revision).toBe(next.revision);
+    } finally {
+      vi.restoreAllMocks();
+      await closeRepository(repo);
+    }
+  });
+
+  it('keeps high-Unicode trace fingerprints distinct', async () => {
+    const document = createDocument({ width: 1, height: 1, palette: [] });
+    const data = new Uint8Array([1, 2, 3]);
+    const checksum = await sha256(data);
+    const first = [{ id: 'unicode', name: 'é', mimeType: 'application/octet-stream', data, checksum }];
+    const second = [{ id: 'unicode', name: String.fromCodePoint(0x100), mimeType: 'application/octet-stream', data, checksum }];
+    const firstFingerprint = await traceStateFingerprint(metadata(document, 'unicode'), first);
+    const secondFingerprint = await traceStateFingerprint(metadata(document, 'unicode'), second);
+    expect(firstFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(secondFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(secondFingerprint).not.toBe(firstFingerprint);
+  });
+
+  it('persists descriptor-only and mixed trace asset-state chains', async () => {
+    const repo = await repository();
+    try {
+      const document = createDocument({ width: 2, height: 2, palette: [] });
+      const fixture = await traceHistoryFixture(document);
+      const movedDescriptor = { ...fixture.descriptor, opacity: 0.4 };
+      const descriptorOnly: SessionHistoryEnvelope = {
+        version: 1,
+        document: createEditor(document).exportHistory(),
+        trace: {
+          undo: [{ label: 'move reference', sourceBefore: fixture.descriptor, sourceAfter: movedDescriptor, assetBefore: { kind: 'unchanged' }, assetAfter: { kind: 'unchanged' } }],
+          redo: []
+        },
+        undoOrder: [{ kind: 'trace', index: 0 }],
+        redoOrder: []
+      };
+      expect(await prepareSessionHistory(document, descriptorOnly, { metadata: { ...metadata(document, 'descriptor-only-trace'), sourceImage: movedDescriptor }, assets: [fixture.asset] })).toBeDefined();
+      const otherAsset = { ...fixture.asset, id: 'other-reference', data: fixture.asset.data.slice() };
+      const switchedDescriptor = { ...movedDescriptor, assetId: otherAsset.id };
+      const switchedAssetId = {
+        ...descriptorOnly,
+        trace: {
+          ...descriptorOnly.trace,
+          undo: [{ ...descriptorOnly.trace.undo[0], sourceAfter: switchedDescriptor }]
+        }
+      };
+      expect(await prepareSessionHistory(document, switchedAssetId, { metadata: { ...metadata(document, 'descriptor-only-trace'), sourceImage: switchedDescriptor }, assets: [fixture.asset, otherAsset] })).toBeUndefined();
+      await repo.save('descriptor-only-trace', { ...metadata(document, 'descriptor-only-trace'), sourceImage: movedDescriptor }, document, [{ ...fixture.asset }], { history: descriptorOnly } as never);
+      expect((await repo.load('descriptor-only-trace'))?.history?.trace.undo[0]?.assetAfter.kind).toBe('unchanged');
+
+      const removedMetadata = metadata(document, 'mixed-trace');
+      const addedDescriptor = fixture.descriptor;
+      const movedAgain = { ...addedDescriptor, opacity: 0.5 };
+      const mixed: SessionHistoryEnvelope = {
+        version: 1,
+        document: createEditor(document).exportHistory(),
+        trace: {
+          undo: [
+            { label: 'add reference', sourceBefore: null, sourceAfter: addedDescriptor, assetBefore: { kind: 'absent' }, assetAfter: { kind: 'captured', asset: fixture.asset } },
+            { label: 'move reference', sourceBefore: addedDescriptor, sourceAfter: movedAgain, assetBefore: { kind: 'unchanged' }, assetAfter: { kind: 'unchanged' } },
+            { label: 'remove reference', sourceBefore: movedAgain, sourceAfter: null, assetBefore: { kind: 'captured', asset: fixture.asset }, assetAfter: { kind: 'absent' } }
+          ],
+          redo: []
+        },
+        undoOrder: [{ kind: 'trace', index: 0 }, { kind: 'trace', index: 1 }, { kind: 'trace', index: 2 }],
+        redoOrder: []
+      };
+      await repo.save('mixed-trace', removedMetadata, document, [], { history: mixed } as never);
+      expect((await repo.load('mixed-trace'))?.history?.trace.undo).toHaveLength(3);
+
+      const malformed = { ...descriptorOnly, trace: { ...descriptorOnly.trace, undo: [{ ...descriptorOnly.trace.undo[0], assetBefore: { kind: 'mystery' } }] } };
+      expect(await prepareSessionHistory(document, malformed)).toBeUndefined();
+    } finally {
+      await closeRepository(repo);
+    }
+  });
+
+  it('validates oversized retain and prepared history before cloning and keeps canonical saves usable', async () => {
+    const repo = await repository();
+    const preparation = new PersistencePreparationWorkerClient({ workerFactory: () => new RepositoryPreparationWorker() });
+    try {
+      const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+      await repo.save('history-invalid-input', metadata(document, 'history-invalid-input'), document);
+      const oversized = {
+        version: 1,
+        undo: [{
+          kind: 'delta',
+          delta: {
+            cells: {
+              indices: new Uint8Array(MAX_SESSION_HISTORY_BYTES + 1),
+              beforeKind: new Uint8Array(),
+              beforeColors: new Uint16Array(),
+              beforeCompleted: new Uint8Array(),
+              afterKind: new Uint8Array(),
+              afterColors: new Uint16Array(),
+              afterCompleted: new Uint8Array()
+            }
+          },
+          bytes: 1,
+          progress: { cellIndices: new Uint32Array(), backstitchIds: new Uint32Array(), marked: 0, unmarked: 0 },
+          recalculateMetrics: false
+        }],
+        redo: []
+      };
+      await expect(repo.save('history-invalid-input', metadata(document, 'history-invalid-input'), { revision: document.revision } as PatternDocument, undefined, { mode: 'retain', expectedRevision: document.revision, history: oversized as never })).resolves.toMatchObject({ committed: true, stale: false });
+      expect(await repo.db.documentHistories.get('history-invalid-input')).toBeUndefined();
+
+      const prepared = await preparation.prepare({ projectId: 'history-prepared-invalid', revision: document.revision, document, requestId: 'history-prepared-invalid' });
+      await expect(repo.savePrepared('history-prepared-invalid', metadata(document, 'history-prepared-invalid'), prepared, undefined, { preparedRequestId: 'history-prepared-invalid', history: { version: 99, undo: [], redo: [] } as never })).resolves.toMatchObject({ committed: true, stale: false });
+      expect(await repo.db.documentHistories.get('history-prepared-invalid')).toBeUndefined();
+    } finally {
+      preparation.dispose();
+      await closeRepository(repo);
+    }
+  });
+
+  it('clears the previous generation after same-head replace and retain history fallbacks', async () => {
+    const repo = await repository();
+    try {
+      const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+      const editor = createEditor(document);
+      const history = editor.exportHistory();
+      await repo.save('same-head-history', metadata(document, 'same-head-history'), document, undefined, { history });
+      const firstHead = await repo.db.projectHeads.get('same-head-history');
+      if (!firstHead) throw new Error('missing same-head history head');
+
+      const replacePut = vi.spyOn(repo.db.documentHistories, 'put').mockRejectedValueOnce(new Error('same-head replace quota'));
+      await expect(repo.save('same-head-history', metadata(document, 'same-head-history'), document, undefined, { allowSameRevision: true, history })).resolves.toMatchObject({ committed: true, head: { historyGeneration: 2 } });
+      replacePut.mockRestore();
+      expect(await repo.db.documentHistories.get('same-head-history')).toBeUndefined();
+
+      const retainPut = vi.spyOn(repo.db.documentHistories, 'put').mockRejectedValueOnce(new Error('same-head retain quota'));
+      await expect(repo.save('same-head-history', metadata(document, 'same-head-history'), { revision: document.revision } as PatternDocument, undefined, { mode: 'retain', expectedHead: { ...firstHead, historyGeneration: 2 }, history })).resolves.toMatchObject({ committed: true, head: { historyGeneration: 3 } });
+      retainPut.mockRestore();
+      expect(await repo.db.documentHistories.get('same-head-history')).toBeUndefined();
+    } finally {
+      vi.restoreAllMocks();
+      await closeRepository(repo);
+    }
+  });
+});
+
+describe('session history lifecycle transaction rollback', () => {
+  it('rolls back recovery promotion, archive replacement, and deletion when history cleanup fails', async () => {
+    const repo = await repository();
+    try {
+      const revision0 = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+      const editor0 = createEditor(revision0);
+      const revision1 = editor0.execute({ type: 'set-full', x: 0, y: 0, color: 1 }).document;
+      await repo.save('rollback-target', metadata(revision0, 'rollback-target'), revision0, undefined, { history: editor0.exportHistory() });
+      const editor1 = createEditor(revision1);
+      const revision2 = editor1.execute({ type: 'set-full', x: 1, y: 0, color: 1 }).document;
+      await repo.save('rollback-target', metadata(revision2, 'rollback-target'), revision2, undefined, { history: editor1.exportHistory() });
+      const currentBeforePromotion = await repo.db.currentSnapshots.get('rollback-target');
+      const historyBeforePromotion = await repo.db.documentHistories.get('rollback-target');
+      const deleteForPromotion = vi.spyOn(repo.db.documentHistories, 'delete').mockRejectedValueOnce(new Error('promotion history cleanup failed'));
+      await expect(repo.promoteRecovery('rollback-target')).rejects.toBeInstanceOf(PersistenceError);
+      deleteForPromotion.mockRestore();
+      expect(await repo.db.currentSnapshots.get('rollback-target')).toEqual(currentBeforePromotion);
+      expect(await repo.db.documentHistories.get('rollback-target')).toEqual(historyBeforePromotion);
+
+      const archiveSource = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Blue', color: '#36c' }] });
+      const sourceRepo = await repository();
+      let archive: Uint8Array;
+      try {
+        await sourceRepo.save('rollback-source', metadata(archiveSource, 'rollback-source'), archiveSource);
+        archive = await sourceRepo.exportProject('rollback-source');
+      } finally {
+        await closeRepository(sourceRepo);
+      }
+      const currentBeforeImport = await repo.db.currentSnapshots.get('rollback-target');
+      const deleteForImport = vi.spyOn(repo.db.documentHistories, 'delete').mockRejectedValueOnce(new Error('import history cleanup failed'));
+      await expect(repo.importProject(archive, { targetProjectId: 'rollback-target', collision: 'replace' })).rejects.toBeInstanceOf(PersistenceError);
+      deleteForImport.mockRestore();
+      expect(await repo.db.currentSnapshots.get('rollback-target')).toEqual(currentBeforeImport);
+      expect(await repo.db.documentHistories.get('rollback-target')).toEqual(historyBeforePromotion);
+
+      const currentBeforeDelete = await repo.db.currentSnapshots.get('rollback-target');
+      const deleteForProject = vi.spyOn(repo.db.documentHistories, 'delete').mockRejectedValueOnce(new Error('project history cleanup failed'));
+      await expect(repo.deleteProject('rollback-target')).rejects.toBeDefined();
+      deleteForProject.mockRestore();
+      expect(await repo.db.currentSnapshots.get('rollback-target')).toEqual(currentBeforeDelete);
+      expect(await repo.db.documentHistories.get('rollback-target')).toBeDefined();
+    } finally {
+      vi.restoreAllMocks();
+      await closeRepository(repo);
+    }
+  });
+});
 
 describe('binary document persistence', () => {
   it('validates local PNG, JPEG, and WebP source image signatures and dimensions', () => {
@@ -1357,7 +1771,7 @@ describe('local project repository', () => {
       const head = await repo.db.projectHeads.get('promotion-head');
       expect(promoted.document.revision).toBe(revision0.revision);
       expect(promoted.metadata).toMatchObject({ width: revision0.width, height: revision0.height, thumbnail: deriveProjectSummary(revision0).thumbnail });
-      expect(head).toEqual({ projectId: 'promotion-head', revision: revision0.revision, checksum: current?.checksum });
+      expect(head).toMatchObject({ projectId: 'promotion-head', revision: revision0.revision, checksum: current?.checksum, historyGeneration: 3 });
     } finally {
       await closeRepository(repo);
     }
@@ -1687,14 +2101,32 @@ describe('archive migration and validation', () => {
     expect(parsed.metadata.aidaCount).toBeUndefined();
   });
 
-  it('keeps an old database project without Aida metadata during the database migration', async () => {
-    const repo = await repository();
+  it('migrates an existing v5 database project into the v6 history schema', async () => {
+    databaseCounter += 1;
+    const databaseName = `needlewise-v5-migration-${String(databaseCounter)}`;
+    const legacy = new Dexie(databaseName);
+    legacy.version(5).stores({
+      projects: 'id, aidaCount',
+      currentSnapshots: 'projectId',
+      recoverySnapshots: 'projectId',
+      projectHeads: 'projectId',
+      assets: '[projectId+id], projectId',
+      dailyActivity: '[projectId+date], projectId'
+    });
+    await legacy.open();
+    const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    const bytes = encodeDocument(document);
+    const checksum = await sha256(bytes);
+    await legacy.table('projects').put(metadata(document, 'old-database-project'));
+    await legacy.table('currentSnapshots').put({ projectId: 'old-database-project', revision: document.revision, bytes, checksum, savedAt: 10 });
+    await legacy.table('projectHeads').put({ projectId: 'old-database-project', revision: document.revision, checksum });
+    legacy.close();
+    const repo = new ProjectRepository(new NeedlewiseDatabase(databaseName), { now: () => 10 });
     try {
-      const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      await repo.save('old-database-project', metadata(document, 'old-database-project'), document);
       const loaded = await repo.load('old-database-project');
       expect(loaded?.metadata.aidaCount).toBeUndefined();
-      expect(repo.db.verno).toBe(5);
+      expect(repo.db.verno).toBe(6);
+      expect(await repo.db.documentHistories.get('old-database-project')).toBeUndefined();
     } finally {
       await closeRepository(repo);
     }

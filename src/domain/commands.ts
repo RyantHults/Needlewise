@@ -1110,6 +1110,49 @@ function completedComponentCountForCell(document: PatternDocument, index: number
   return count;
 }
 
+/** Reconstruct explicit completion activity from a validated before/after transition. */
+export function deriveExplicitCompletionProgress(
+  before: PatternDocument,
+  after: PatternDocument,
+  candidateCellIndices?: Uint32Array,
+  candidateBackstitchIds?: Uint32Array
+): ProgressChangeSet {
+  const cellIndices: number[] = [];
+  let marked = 0;
+  let unmarked = 0;
+  if (candidateCellIndices !== undefined && before.width === after.width && before.height === after.height) {
+    const candidates = [...new Set(candidateCellIndices)].sort((left, right) => left - right);
+    for (const index of candidates) {
+      if (index >= before.kind.length || index >= after.kind.length) continue;
+      const progress = progressForCell(index, completedComponentCountForCell(before, index), completedComponentCountForCell(after, index));
+      if (progress.marked > 0 || progress.unmarked > 0) {
+        cellIndices.push(index);
+        marked += progress.marked;
+        unmarked += progress.unmarked;
+      }
+    }
+  }
+  const candidates = candidateBackstitchIds === undefined
+    ? []
+    : [...new Set(candidateBackstitchIds)].sort((left, right) => left - right);
+  const backstitchIds: number[] = [];
+  for (const id of candidates) {
+    const beforePosition = before.backstitches.ids.findIndex((candidate) => candidate === id);
+    const afterPosition = after.backstitches.ids.findIndex((candidate) => candidate === id);
+    const progress = progressForBackstitch(
+      id,
+      beforePosition < 0 ? 0 : before.backstitches.completed[beforePosition],
+      afterPosition < 0 ? 0 : after.backstitches.completed[afterPosition]
+    );
+    if (progress.marked > 0 || progress.unmarked > 0) {
+      backstitchIds.push(id);
+      marked += progress.marked;
+      unmarked += progress.unmarked;
+    }
+  }
+  return { cellIndices: new Uint32Array(cellIndices), backstitchIds: new Uint32Array(backstitchIds), marked, unmarked };
+}
+
 function progressCountFromMask(mask: number): number {
   let count = 0;
   for (let bit = 1; bit <= 8; bit <<= 1) if ((mask & bit) !== 0) count += 1;

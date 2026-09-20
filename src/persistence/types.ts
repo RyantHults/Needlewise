@@ -1,11 +1,16 @@
 import { DOCUMENT_SCHEMA_VERSION } from '../domain';
-import type { DisplayUnits, NormalizedMaterialSettings, PatternDocument } from '../domain';
+import type { DisplayUnits, DocumentEditorHistoryDto, NormalizedMaterialSettings, PatternDocument } from '../domain';
 import type { ProgressActivity } from './activity';
 
 export const PERSISTENCE_SCHEMA_VERSION = 3 as const;
 export const LEGACY_PERSISTENCE_SCHEMA_VERSION = 1 as const;
 export const PRIOR_PERSISTENCE_SCHEMA_VERSION = 2 as const;
 export const ARCHIVE_FORMAT = 'needlewise-project' as const;
+export const SESSION_HISTORY_ENVELOPE_VERSION = 1 as const;
+export const MAX_SESSION_HISTORY_BYTES = 16 * 1024 * 1024;
+export const MAX_SESSION_HISTORY_DECODE_BYTES = 64 * 1024 * 1024;
+export const MAX_SESSION_HISTORY_ENTRIES = 100_000;
+export const MAX_SESSION_HISTORY_LABEL_CHARS = 4_000;
 
 export interface NormalizedSourceImageCrop {
   /** Normalized source-image coordinates, each in the closed interval [0, 1]. */
@@ -139,6 +144,8 @@ export interface ProjectRecord {
   document: PatternDocument;
   /** Exact durable current head, when supplied by a repository. */
   head?: StoredProjectHead;
+  /** Valid local session history anchored to the returned current head. */
+  history?: SessionHistoryEnvelope;
   recovery: {
     revision: number;
     document: PatternDocument;
@@ -206,7 +213,69 @@ export interface StoredProjectHead {
   projectId: string;
   revision: number;
   checksum: string;
+  /** Repository-owned monotonic counter for session-history generations. */
+  historyGeneration?: number;
 }
+
+export interface TraceHistoryAsset {
+  id: string;
+  name: string;
+  mimeType: string;
+  data: Uint8Array;
+  checksum: string;
+}
+
+export type TraceHistoryAssetState =
+  | { kind: 'unchanged' }
+  | { kind: 'absent' }
+  | { kind: 'captured'; asset: TraceHistoryAsset };
+
+export interface TraceHistoryEntry {
+  label: string;
+  sourceBefore: SourceImageDescriptor | null;
+  sourceAfter: SourceImageDescriptor | null;
+  assetBefore: TraceHistoryAssetState;
+  assetAfter: TraceHistoryAssetState;
+}
+
+export type SessionHistoryMarkerKind = 'document' | 'trace';
+
+export interface SessionHistoryMarker {
+  kind: SessionHistoryMarkerKind;
+  index: number;
+}
+
+export interface SessionHistoryMarkerStacks {
+  undo: readonly SessionHistoryMarker[];
+  redo: readonly SessionHistoryMarker[];
+}
+
+export interface SessionHistoryEnvelope {
+  version: typeof SESSION_HISTORY_ENVELOPE_VERSION;
+  document: DocumentEditorHistoryDto;
+  trace: {
+    undo: readonly TraceHistoryEntry[];
+    redo: readonly TraceHistoryEntry[];
+  };
+  /** Chronological unified stacks; indices refer to the matching document/trace stack. */
+  undoOrder: readonly SessionHistoryMarker[];
+  redoOrder: readonly SessionHistoryMarker[];
+}
+
+export type SessionHistoryInput = SessionHistoryEnvelope | DocumentEditorHistoryDto;
+
+/** Local-only session history for one exact document/trace state. */
+export interface StoredDocumentHistory {
+  projectId: string;
+  revision: number;
+  checksum: string;
+  generation: number;
+  traceFingerprint: string;
+  history: SessionHistoryEnvelope;
+  savedAt: number;
+}
+
+export type StoredSessionHistory = StoredDocumentHistory;
 
 /**
  * The head a retain commit is allowed to update. A checksum is optional so a
@@ -217,6 +286,7 @@ export interface ExpectedProjectHead {
   projectId?: string;
   revision: number;
   checksum?: string;
+  historyGeneration?: number;
 }
 
 export interface SaveOptions {
@@ -234,6 +304,8 @@ export interface SaveOptions {
   expectedHead?: number | ExpectedProjectHead;
   /** Replaces the project's durable activity snapshot when supplied. */
   activity?: ProgressActivity;
+  /** Replaces the local undo/redo history when supplied. */
+  history?: SessionHistoryInput;
   /** Explicitly permits copying already-normalized legacy asset IDs. */
   allowLegacyAssetIds?: boolean;
   /** Internal exact preparation request identity for a prepared commit. */

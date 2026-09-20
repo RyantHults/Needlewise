@@ -2805,7 +2805,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const changed = result.changedIndices && result.changedIndices.length > 0 ? result.changedIndices : requestedIndices;
     const cellRect = changed ? cellRectForIndices(changed, result.document.width, result.document.height) : undefined;
     const backstitchesChanged = result.changedBackstitchIds !== undefined && result.changedBackstitchIds.length > 0;
-    const invalidation: Invalidation = backstitchesChanged
+    const invalidation: Invalidation = result.requiresFullRedraw === true || backstitchesChanged
       ? { layer: 'base', full: true, reason: 'editor-command' }
       : cellRect
       ? { layer: 'base', cellRect, reason: 'editor-command' }

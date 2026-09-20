@@ -1,11 +1,12 @@
 import Dexie, { type Table } from 'dexie';
-import type { ProjectMetadata, StoredDocumentSnapshot, StoredProjectAsset, StoredDailyProgressAggregate, StoredProjectHead } from './types';
+import type { ProjectMetadata, StoredDocumentHistory, StoredDocumentSnapshot, StoredProjectAsset, StoredDailyProgressAggregate, StoredProjectHead } from './types';
 
 export class NeedlewiseDatabase extends Dexie {
   projects!: Table<ProjectMetadata, string>;
   currentSnapshots!: Table<StoredDocumentSnapshot, string>;
   recoverySnapshots!: Table<StoredDocumentSnapshot, string>;
   projectHeads!: Table<StoredProjectHead, string>;
+  documentHistories!: Table<StoredDocumentHistory, string>;
   assets!: Table<StoredProjectAsset, [string, string]>;
   dailyActivity!: Table<StoredDailyProgressAggregate, [string, string]>;
 
@@ -47,6 +48,15 @@ export class NeedlewiseDatabase extends Dexie {
       currentSnapshots: 'projectId',
       recoverySnapshots: 'projectId',
       projectHeads: 'projectId',
+      assets: '[projectId+id], projectId',
+      dailyActivity: '[projectId+date], projectId'
+    });
+    this.version(6).stores({
+      projects: 'id, aidaCount',
+      currentSnapshots: 'projectId',
+      recoverySnapshots: 'projectId',
+      projectHeads: 'projectId',
+      documentHistories: 'projectId',
       assets: '[projectId+id], projectId',
       dailyActivity: '[projectId+date], projectId'
     });

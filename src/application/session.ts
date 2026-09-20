@@ -19,6 +19,8 @@ import {
   recordDailyProgress,
   normalizeSourceImageDescriptor,
   normalizeSourceImageAsset,
+  validateSourceImageDescriptor,
+  MAX_SESSION_HISTORY_BYTES,
   type ProgressActivity,
   type ProjectAsset,
   type ProjectAssetInput,
@@ -27,6 +29,11 @@ import {
   type SaveResult,
   type SaveOptions,
   type PersistencePreparationClient,
+  SESSION_HISTORY_ENVELOPE_VERSION,
+  type SessionHistoryEnvelope,
+  type TraceHistoryAsset,
+  type TraceHistoryAssetState,
+  type TraceHistoryEntry as PersistedTraceHistoryEntry,
   type StoredProjectHead,
   type SourceImageDescriptor,
   type SourceImageReplacementInput,
@@ -76,6 +83,7 @@ interface SaveAttempt {
   revision: number;
   metadataVersion: number;
   assetsVersion: number;
+  historyVersion: number;
   mutationSequence: number;
 }
 
@@ -91,6 +99,134 @@ interface TraceHistoryEntry {
   afterDescriptor: SourceImageDescriptor | undefined;
   beforeAsset: ProjectAsset | undefined;
   afterAsset: ProjectAsset | undefined;
+}
+
+type HistoryKind = 'document' | 'trace';
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function cloneTraceAsset(asset: ProjectAsset): TraceHistoryAsset {
+  return { id: asset.id, name: asset.name, mimeType: asset.mimeType, data: new Uint8Array(asset.data), checksum: asset.checksum };
+}
+
+function toTraceAssetState(source: SourceImageDescriptor | undefined, asset: ProjectAsset | undefined, cloneAssetBytes = true): TraceHistoryAssetState {
+  if (source === undefined) return { kind: 'absent' };
+  if (asset === undefined) return { kind: 'unchanged' };
+  if (asset.id !== source.assetId) throw new Error('Trace history asset does not match its source descriptor.');
+  return {
+    kind: 'captured',
+    asset: cloneAssetBytes
+      ? cloneTraceAsset(asset)
+      : { id: asset.id, name: asset.name, mimeType: asset.mimeType, data: asset.data, checksum: asset.checksum }
+  };
+}
+
+function fromTraceAssetState(state: unknown, source: SourceImageDescriptor | undefined): ProjectAsset | undefined {
+  if (!isRecord(state) || typeof state.kind !== 'string') throw new Error('Trace history asset state is malformed.');
+  if (state.kind === 'absent') {
+    if (source !== undefined) throw new Error('Trace history absent asset has a source descriptor.');
+    return undefined;
+  }
+  if (state.kind === 'unchanged') {
+    if (source === undefined) throw new Error('Trace history unchanged asset has no source descriptor.');
+    return undefined;
+  }
+  if (state.kind !== 'captured' || !isRecord(state.asset) || !(state.asset.data instanceof Uint8Array)) throw new Error('Trace history captured asset is malformed.');
+  const asset = state.asset as unknown as TraceHistoryAsset;
+  if (source === undefined || asset.id !== source.assetId || typeof asset.id !== 'string' || typeof asset.name !== 'string' || typeof asset.mimeType !== 'string' || typeof asset.checksum !== 'string' || !(asset.data instanceof Uint8Array)) throw new Error('Trace history captured asset does not match its source descriptor.');
+  return { id: asset.id, name: asset.name, mimeType: asset.mimeType, data: new Uint8Array(asset.data), checksum: asset.checksum };
+}
+
+function toPersistedTraceEntry(entry: TraceHistoryEntry, cloneAssetBytes = true): PersistedTraceHistoryEntry {
+  return {
+    label: entry.label,
+    sourceBefore: entry.beforeDescriptor === undefined ? null : cloneAssetBytes ? cloneSourceImage(entry.beforeDescriptor) as SourceImageDescriptor : entry.beforeDescriptor,
+    sourceAfter: entry.afterDescriptor === undefined ? null : cloneAssetBytes ? cloneSourceImage(entry.afterDescriptor) as SourceImageDescriptor : entry.afterDescriptor,
+    assetBefore: toTraceAssetState(entry.beforeDescriptor, entry.beforeAsset, cloneAssetBytes),
+    assetAfter: toTraceAssetState(entry.afterDescriptor, entry.afterAsset, cloneAssetBytes)
+  };
+}
+
+function isTypedArray(value: unknown): value is Uint8Array | Uint16Array | Uint32Array {
+  if (!ArrayBuffer.isView(value)) return false;
+  const tag = Object.prototype.toString.call(value);
+  return tag === '[object Uint8Array]' || tag === '[object Uint16Array]' || tag === '[object Uint32Array]';
+}
+
+function estimateHistoryValueBytes(value: unknown, seen: WeakSet<object> = new WeakSet()): number {
+  if (typeof value === 'string') return 16 + value.length * 2;
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null || value === undefined) return 16;
+  if (isTypedArray(value) || value instanceof ArrayBuffer) return 24 + (value instanceof ArrayBuffer ? value.byteLength : value.byteLength);
+  if (typeof value !== 'object') throw new Error('Session history contains an unsupported value.');
+  if (seen.has(value)) throw new Error('Session history contains a cycle.');
+  seen.add(value);
+  let total: number;
+  if (Array.isArray(value)) {
+    total = 24 + value.length * 8;
+    for (const child of value) total += estimateHistoryValueBytes(child, seen);
+  } else {
+    total = 64 + Object.keys(value).length * 8;
+    for (const [key, child] of Object.entries(value)) total += key.length * 2 + estimateHistoryValueBytes(child, seen);
+  }
+  seen.delete(value);
+  return total;
+}
+
+function fromPersistedTraceEntry(entry: unknown): TraceHistoryEntry {
+  if (!isRecord(entry) || typeof entry.label !== 'string' || !('sourceBefore' in entry) || !('sourceAfter' in entry) || !('assetBefore' in entry) || !('assetAfter' in entry)) throw new Error('Trace history entry is malformed.');
+  const beforeDescriptor = entry.sourceBefore === null ? undefined : cloneSourceImage(validateSourceImageDescriptor(entry.sourceBefore));
+  const afterDescriptor = entry.sourceAfter === null ? undefined : cloneSourceImage(validateSourceImageDescriptor(entry.sourceAfter));
+  return {
+    label: entry.label,
+    beforeDescriptor,
+    afterDescriptor,
+    beforeAsset: fromTraceAssetState(entry.assetBefore, beforeDescriptor),
+    afterAsset: fromTraceAssetState(entry.assetAfter, afterDescriptor)
+  };
+}
+
+function markerKinds(value: unknown, documentDepth: number, traceDepth: number): HistoryKind[] {
+  if (!Array.isArray(value) || value.length !== documentDepth + traceDepth) throw new Error('Session history markers do not match their stacks.');
+  const result: HistoryKind[] = [];
+  let nextDocument = 0;
+  let nextTrace = 0;
+  for (const marker of value) {
+    if (!isRecord(marker) || (marker.kind !== 'document' && marker.kind !== 'trace') || typeof marker.index !== 'number' || !Number.isSafeInteger(marker.index) || marker.index < 0) throw new Error('Session history marker is malformed.');
+    if (marker.kind === 'document') {
+      if (marker.index !== nextDocument || marker.index >= documentDepth) throw new Error('Session history document markers are not chronological.');
+      nextDocument += 1;
+    } else {
+      if (marker.index !== nextTrace || marker.index >= traceDepth) throw new Error('Session history trace markers are not chronological.');
+      nextTrace += 1;
+    }
+    result.push(marker.kind);
+  }
+  if (nextDocument !== documentDepth || nextTrace !== traceDepth) throw new Error('Session history markers do not cover their stacks.');
+  return result;
+}
+
+function markersFromKinds(kinds: readonly HistoryKind[]): Array<{ kind: HistoryKind; index: number }> {
+  let documentIndex = 0;
+  let traceIndex = 0;
+  return kinds.map((kind) => kind === 'document'
+    ? { kind, index: documentIndex++ }
+    : { kind, index: traceIndex++ });
+}
+
+function reconcileMarkerKinds(kinds: readonly HistoryKind[], documentDepth: number, traceDepth: number): HistoryKind[] {
+  const result = [...kinds];
+  const trim = (kind: HistoryKind, depth: number): void => {
+    while (result.filter((entry) => entry === kind).length > depth) {
+      const index = result.indexOf(kind);
+      if (index < 0) break;
+      result.splice(index, 1);
+    }
+  };
+  trim('document', documentDepth);
+  trim('trace', traceDepth);
+  return result;
 }
 
 export class ProjectSession {
@@ -116,6 +252,8 @@ export class ProjectSession {
   private maxDirtyAgeTimer: ReturnType<typeof setTimeout> | undefined;
   private maxDirtyAgeDue = false;
   private saveQueue: Promise<void> = Promise.resolve();
+  private traceMutationQueue: Promise<void> = Promise.resolve();
+  private traceMutationQueueDepth = 0;
   private saveOperationPending = false;
   private mutationSequence = 0;
   private followUpMutationSequence: number | null = null;
@@ -127,6 +265,8 @@ export class ProjectSession {
   private savedMetadataVersion = 0;
   private assetsVersion = 0;
   private savedAssetsVersion = 0;
+  private historyVersion = 0;
+  private savedHistoryVersion = 0;
   private status: SaveState['status'] = 'idle';
   private saveError: Error | null = null;
   private disposed = false;
@@ -142,7 +282,7 @@ export class ProjectSession {
     this.preparationClient = options.preparationClient;
     this.clock = options.clock;
     this.debounceMs = Math.max(0, Math.floor(options.debounceMs));
-    this.editor = new DocumentEditor(options.document);
+    this.editor = new DocumentEditor(options.document, options.historyLimitBytes === undefined ? undefined : { historyLimitBytes: options.historyLimitBytes });
     const suppliedMaterialSettings = options.materialSettings ?? options.metadata.materialSettings;
     this.materialSettingsPersisted = suppliedMaterialSettings !== undefined;
     this.materialAssumptionsState = normalizeMaterialSettings(options.document, {
@@ -165,6 +305,119 @@ export class ProjectSession {
     this.sessionStartedAt = options.sessionStartedAt ?? this.clock.now();
     this.lastSavedRevision = options.document.revision;
     this.projectHead = options.head === undefined ? null : { ...options.head };
+    if (!this.recoverySession) this.restoreHistory(options.history);
+  }
+
+  private restoreHistory(history: SessionHistoryEnvelope | undefined): void {
+    if (history === undefined) return;
+    try {
+      if (history.version !== SESSION_HISTORY_ENVELOPE_VERSION || !isRecord(history.trace) || !Array.isArray(history.trace.undo) || !Array.isArray(history.trace.redo)) throw new Error('Session history envelope is malformed.');
+      const traceUndo = history.trace.undo.map(fromPersistedTraceEntry);
+      const traceRedo = history.trace.redo.map(fromPersistedTraceEntry);
+      this.editor.importHistory(history.document);
+      if (this.editor.undoDepth !== history.document.undo.length || this.editor.redoDepth !== history.document.redo.length) throw new Error('Document history depth changed during restore.');
+      const historyKindsUndo = markerKinds(history.undoOrder, history.document.undo.length, traceUndo.length);
+      const historyKindsRedo = markerKinds(history.redoOrder, history.document.redo.length, traceRedo.length);
+      this.traceUndoStack = traceUndo;
+      this.traceRedoStack = traceRedo;
+      this.historyKindsUndo = historyKindsUndo;
+      this.historyKindsRedo = historyKindsRedo;
+      this.reconcileHistoryMarkers();
+      if (this.historyKindsUndo.length !== this.editor.undoDepth + this.traceUndoStack.length || this.historyKindsRedo.length !== this.editor.redoDepth + this.traceRedoStack.length) throw new Error('Session history markers do not match restored stacks.');
+    } catch {
+      this.editor.clearHistory();
+      this.traceUndoStack = [];
+      this.traceRedoStack = [];
+      this.historyKindsUndo = [];
+      this.historyKindsRedo = [];
+    }
+  }
+
+  private reconcileHistoryMarkers(): void {
+    this.historyKindsUndo = reconcileMarkerKinds(this.historyKindsUndo, this.editor.undoDepth, this.traceUndoStack.length);
+    this.historyKindsRedo = reconcileMarkerKinds(this.historyKindsRedo, this.editor.redoDepth, this.traceRedoStack.length);
+  }
+
+  private exportHistoryEnvelope(extraTraceEntry?: TraceHistoryEntry): SessionHistoryEnvelope {
+    this.reconcileHistoryMarkers();
+    const exportedDocument = this.editor.exportHistory();
+    const documentUndo = [...exportedDocument.undo];
+    const documentRedo = extraTraceEntry === undefined ? [...exportedDocument.redo] : [];
+    const traceUndo = extraTraceEntry === undefined ? [...this.traceUndoStack] : [...this.traceUndoStack, extraTraceEntry];
+    const traceRedo = extraTraceEntry === undefined ? [...this.traceRedoStack] : [];
+    const historyKindsUndo: HistoryKind[] = extraTraceEntry === undefined ? [...this.historyKindsUndo] : [...this.historyKindsUndo, 'trace'];
+    const historyKindsRedo: HistoryKind[] = extraTraceEntry === undefined ? [...this.historyKindsRedo] : [];
+    const traceUndoShapes = traceUndo.map((entry) => toPersistedTraceEntry(entry, false));
+    const traceRedoShapes = traceRedo.map((entry) => toPersistedTraceEntry(entry, false));
+
+    const emptyDocument = { ...exportedDocument, undo: [], redo: [] };
+    const emptyEnvelope = {
+      version: SESSION_HISTORY_ENVELOPE_VERSION,
+      document: emptyDocument,
+      trace: { undo: [], redo: [] },
+      undoOrder: [],
+      redoOrder: []
+    };
+    const safeEstimate = (value: unknown): number => {
+      try {
+        const estimate = estimateHistoryValueBytes(value);
+        return Number.isFinite(estimate) ? Math.min(estimate, MAX_SESSION_HISTORY_BYTES + 1) : MAX_SESSION_HISTORY_BYTES + 1;
+      } catch {
+        return MAX_SESSION_HISTORY_BYTES + 1;
+      }
+    };
+    const arrayEntryCost = (value: unknown): number => safeEstimate(value) + 8;
+    const documentUndoCosts = documentUndo.map(arrayEntryCost);
+    const documentRedoCosts = documentRedo.map(arrayEntryCost);
+    const traceUndoCosts = traceUndoShapes.map(arrayEntryCost);
+    const traceRedoCosts = traceRedoShapes.map(arrayEntryCost);
+    const documentMarkerCosts = arrayEntryCost({ kind: 'document', index: 0 });
+    const traceMarkerCosts = arrayEntryCost({ kind: 'trace', index: 0 });
+    let total = safeEstimate(emptyEnvelope);
+    for (const cost of documentUndoCosts) total += cost;
+    for (const cost of documentRedoCosts) total += cost;
+    for (const cost of traceUndoCosts) total += cost;
+    for (const cost of traceRedoCosts) total += cost;
+    for (const kind of historyKindsUndo) total += kind === 'document' ? documentMarkerCosts : traceMarkerCosts;
+    for (const kind of historyKindsRedo) total += kind === 'document' ? documentMarkerCosts : traceMarkerCosts;
+
+    let undoOffset = 0;
+    let undoDocumentOffset = 0;
+    let undoTraceOffset = 0;
+    while (total > MAX_SESSION_HISTORY_BYTES && undoOffset < historyKindsUndo.length) {
+      const kind = historyKindsUndo[undoOffset++];
+      total -= kind === 'document' ? documentMarkerCosts + documentUndoCosts[undoDocumentOffset++] : traceMarkerCosts + traceUndoCosts[undoTraceOffset++];
+    }
+    let redoOffset = 0;
+    let redoDocumentOffset = 0;
+    let redoTraceOffset = 0;
+    while (total > MAX_SESSION_HISTORY_BYTES && redoOffset < historyKindsRedo.length) {
+      const kind = historyKindsRedo[redoOffset++];
+      total -= kind === 'document' ? documentMarkerCosts + documentRedoCosts[redoDocumentOffset++] : traceMarkerCosts + traceRedoCosts[redoTraceOffset++];
+    }
+
+    const selectedDocumentUndo = documentUndo.slice(undoDocumentOffset);
+    const selectedDocumentRedo = documentRedo.slice(redoDocumentOffset);
+    const selectedTraceUndo = traceUndo.slice(undoTraceOffset);
+    const selectedTraceRedo = traceRedo.slice(redoTraceOffset);
+    const selectedHistoryKindsUndo = historyKindsUndo.slice(undoOffset);
+    const selectedHistoryKindsRedo = historyKindsRedo.slice(redoOffset);
+
+    const buildEnvelope = (cloneAssetBytes: boolean): SessionHistoryEnvelope => {
+      const document = { ...exportedDocument, undo: selectedDocumentUndo, redo: selectedDocumentRedo };
+      if (selectedHistoryKindsUndo.filter((kind) => kind === 'document').length !== document.undo.length || selectedHistoryKindsUndo.filter((kind) => kind === 'trace').length !== selectedTraceUndo.length || selectedHistoryKindsRedo.filter((kind) => kind === 'document').length !== document.redo.length || selectedHistoryKindsRedo.filter((kind) => kind === 'trace').length !== selectedTraceRedo.length) throw new Error('Session history markers do not match their underlying stacks.');
+      return {
+        version: SESSION_HISTORY_ENVELOPE_VERSION,
+        document,
+        trace: {
+          undo: selectedTraceUndo.map((entry) => toPersistedTraceEntry(entry, cloneAssetBytes)),
+          redo: selectedTraceRedo.map((entry) => toPersistedTraceEntry(entry, cloneAssetBytes))
+        },
+        undoOrder: markersFromKinds(selectedHistoryKindsUndo),
+        redoOrder: markersFromKinds(selectedHistoryKindsRedo)
+      };
+    };
+    return buildEnvelope(true);
   }
 
   get metadata(): ProjectMetadata {
@@ -312,6 +565,16 @@ export class ProjectSession {
     return operation;
   }
 
+  private enqueueTraceMutation(task: () => Promise<void> | void): Promise<void> {
+    this.traceMutationQueueDepth += 1;
+    const operation = this.traceMutationQueue.catch(() => undefined).then(task).finally(() => {
+      this.traceMutationQueueDepth -= 1;
+    });
+    this.traceMutationQueue = operation;
+    void operation.catch(() => undefined);
+    return operation;
+  }
+
   private metadataDirty(): boolean {
     return this.metadataVersion !== this.savedMetadataVersion;
   }
@@ -320,12 +583,16 @@ export class ProjectSession {
     return this.assetsVersion !== this.savedAssetsVersion;
   }
 
+  private historyDirty(): boolean {
+    return this.historyVersion !== this.savedHistoryVersion;
+  }
+
   private hasSaveFailure(): boolean {
     return this.status === 'error' || this.status === 'conflict';
   }
 
   private isDirty(): boolean {
-    return this.document.revision !== this.lastSavedRevision || this.metadataDirty() || this.assetsDirty();
+    return this.document.revision !== this.lastSavedRevision || this.metadataDirty() || this.assetsDirty() || this.historyDirty();
   }
 
   private hasExactCurrentHead(): boolean {
@@ -381,6 +648,8 @@ export class ProjectSession {
       this.historyKindsUndo.push('document');
       this.historyKindsRedo = [];
       this.traceRedoStack = [];
+      this.historyVersion += 1;
+      this.reconcileHistoryMarkers();
       this.scheduleSave();
     }
     return result;
@@ -396,6 +665,8 @@ export class ProjectSession {
     this.historyKindsRedo = [];
     this.traceRedoStack = [];
     this.editor.clearRedo();
+    this.historyVersion += 1;
+    this.reconcileHistoryMarkers();
   }
 
   private restoreTraceSide(entry: TraceHistoryEntry, side: 'before' | 'after'): void {
@@ -448,6 +719,15 @@ export class ProjectSession {
 
   undo(): CommandResult {
     this.ensureWritable();
+    if (this.traceMutationQueueDepth > 0) {
+      void this.enqueueTraceMutation(() => { this.undoNow(); });
+      return this.unchangedResult();
+    }
+    return this.undoNow();
+  }
+
+  private undoNow(): CommandResult {
+    this.reconcileHistoryMarkers();
     const kind = this.historyKindsUndo.pop();
     if (kind === undefined) return this.unchangedResult();
     if (kind === 'document') {
@@ -457,6 +737,8 @@ export class ProjectSession {
         this.recordProgress(this.progressService.apply(previous, result));
         this.projectMetadata = { ...this.projectMetadata, revision: result.document.revision };
         this.historyKindsRedo.push('document');
+        this.historyVersion += 1;
+        this.reconcileHistoryMarkers();
         this.scheduleSave();
         return result;
       }
@@ -471,12 +753,23 @@ export class ProjectSession {
     this.traceRedoStack.push(entry);
     this.historyKindsRedo.push('trace');
     this.restoreTraceSide(entry, 'before');
+    this.historyVersion += 1;
+    this.reconcileHistoryMarkers();
     this.scheduleSave();
     return this.traceCommandResult();
   }
 
   redo(): CommandResult {
     this.ensureWritable();
+    if (this.traceMutationQueueDepth > 0) {
+      void this.enqueueTraceMutation(() => { this.redoNow(); });
+      return this.unchangedResult();
+    }
+    return this.redoNow();
+  }
+
+  private redoNow(): CommandResult {
+    this.reconcileHistoryMarkers();
     const kind = this.historyKindsRedo.pop();
     if (kind === undefined) return this.unchangedResult();
     if (kind === 'document') {
@@ -486,6 +779,8 @@ export class ProjectSession {
         this.recordProgress(this.progressService.apply(previous, result));
         this.projectMetadata = { ...this.projectMetadata, revision: result.document.revision };
         this.historyKindsUndo.push('document');
+        this.historyVersion += 1;
+        this.reconcileHistoryMarkers();
         this.scheduleSave();
         return result;
       }
@@ -500,6 +795,8 @@ export class ProjectSession {
     this.traceUndoStack.push(entry);
     this.historyKindsUndo.push('trace');
     this.restoreTraceSide(entry, 'after');
+    this.historyVersion += 1;
+    this.reconcileHistoryMarkers();
     this.scheduleSave();
     return this.traceCommandResult();
   }
@@ -603,46 +900,53 @@ export class ProjectSession {
    */
   applyTraceImageChange(next: SourceImageDescriptor | undefined, options?: TraceImageHistoryOptions): void {
     this.ensureWritable();
-    const label = options?.label ?? 'trace-image-change';
-    const before = cloneSourceImage(this.projectMetadata.sourceImage);
-    const beforeJson = before === undefined ? undefined : JSON.stringify(before);
-    const afterJson = next === undefined ? undefined : JSON.stringify(next);
-    if (beforeJson === afterJson) return;
-    if (next !== undefined) {
-      const asset = this.projectAssets.find((candidate) => candidate.id === next.assetId);
-      if (!asset) throw new PersistenceError('invalid-asset', `Source image asset ${next.assetId} was not found.`);
-      const normalized = normalizeSourceImageDescriptor(
-        {
-          assetId: next.assetId,
-          mimeType: next.mimeType,
-          width: next.width,
-          height: next.height,
-          ...(next.orientation === undefined ? {} : { orientation: next.orientation }),
-          crop: { ...next.crop },
-          chartBounds: { ...next.chartBounds },
-          traceVisible: next.traceVisible,
-          opacity: next.opacity
-        },
-        { width: this.document.width, height: this.document.height },
-        asset
-      );
-      if (before !== undefined && JSON.stringify(before) === JSON.stringify(normalized)) return;
-      this.projectMetadata = { ...this.projectMetadata, sourceImage: normalized };
-    } else {
-      const nextMetadata = { ...this.projectMetadata };
-      delete nextMetadata.sourceImage;
-      this.projectMetadata = nextMetadata;
-    }
-    this.metadataVersion += 1;
-    const entry: TraceHistoryEntry = {
-      label,
-      beforeDescriptor: before,
-      afterDescriptor: cloneSourceImage(this.projectMetadata.sourceImage),
-      beforeAsset: undefined,
-      afterAsset: undefined
+    const apply = (): void => {
+      const label = options?.label ?? 'trace-image-change';
+      const before = cloneSourceImage(this.projectMetadata.sourceImage);
+      const beforeJson = before === undefined ? undefined : JSON.stringify(before);
+      const afterJson = next === undefined ? undefined : JSON.stringify(next);
+      if (beforeJson === afterJson) return;
+      if (next !== undefined) {
+        const asset = this.projectAssets.find((candidate) => candidate.id === next.assetId);
+        if (!asset) throw new PersistenceError('invalid-asset', `Source image asset ${next.assetId} was not found.`);
+        const normalized = normalizeSourceImageDescriptor(
+          {
+            assetId: next.assetId,
+            mimeType: next.mimeType,
+            width: next.width,
+            height: next.height,
+            ...(next.orientation === undefined ? {} : { orientation: next.orientation }),
+            crop: { ...next.crop },
+            chartBounds: { ...next.chartBounds },
+            traceVisible: next.traceVisible,
+            opacity: next.opacity
+          },
+          { width: this.document.width, height: this.document.height },
+          asset
+        );
+        if (before !== undefined && JSON.stringify(before) === JSON.stringify(normalized)) return;
+        this.projectMetadata = { ...this.projectMetadata, sourceImage: normalized };
+      } else {
+        const nextMetadata = { ...this.projectMetadata };
+        delete nextMetadata.sourceImage;
+        this.projectMetadata = nextMetadata;
+      }
+      this.metadataVersion += 1;
+      const entry: TraceHistoryEntry = {
+        label,
+        beforeDescriptor: before,
+        afterDescriptor: cloneSourceImage(this.projectMetadata.sourceImage),
+        beforeAsset: undefined,
+        afterAsset: undefined
+      };
+      this.recordTraceEntry(entry);
+      this.scheduleSave();
     };
-    this.recordTraceEntry(entry);
-    this.scheduleSave();
+    if (this.traceMutationQueueDepth > 0) {
+      void this.enqueueTraceMutation(apply);
+      return;
+    }
+    apply();
   }
 
   async replaceSourceImage(input: SourceImageReplacementInput | ProjectAssetInput, settings?: SourceImageSettingsInput): Promise<void> {
@@ -655,71 +959,79 @@ export class ProjectSession {
       ...(sourceSettings.crop === undefined ? {} : { crop: { ...sourceSettings.crop } }),
       ...(sourceSettings.chartBounds === undefined ? {} : { chartBounds: { ...sourceSettings.chartBounds } })
     };
-    const nextAsset = await normalizeSourceImageAsset(assetInput);
-    const beforeDescriptor = cloneSourceImage(this.projectMetadata.sourceImage);
-    const previousSource = this.projectMetadata.sourceImage;
-    const beforeAsset = previousSource === undefined
-      ? undefined
-      : this.projectAssets.find((asset) => asset.id === previousSource.assetId) === undefined
-        ? undefined
-        : cloneAsset(this.projectAssets.find((asset) => asset.id === previousSource.assetId) as ProjectAsset);
-    return this.enqueuePersistence(async () => {
-      this.ensureWritable();
-      const nextDescriptor = normalizeSourceImageDescriptor(requestedSettings, { width: this.document.width, height: this.document.height }, nextAsset);
-      const previousSourceAssetId = this.projectMetadata.sourceImage?.assetId;
-      const nextAssets = this.projectAssets
-        .filter((asset) => asset.id !== previousSourceAssetId && asset.id !== nextAsset.id)
-        .map(cloneAsset);
-      nextAssets.push(cloneAsset(nextAsset));
-      const nextMetadata: ProjectMetadata = { ...this.projectMetadata, sourceImage: nextDescriptor };
-      const documentRevisionChanged = this.document.revision !== this.lastSavedRevision;
-      const mode = !documentRevisionChanged && this.hasExactCurrentHead() ? 'retain' : 'replace';
-      const document = this.document;
-      const candidateMetadataVersion = this.metadataVersion;
-      const candidateAssetsVersion = this.assetsVersion;
-      const result = await this.savePreparedOrLegacy(
-        nextMetadata,
-        document,
-        nextAssets,
-        {
-          mode,
-          allowSameRevision: !documentRevisionChanged,
-          ...(mode === 'retain' && this.projectHead !== null ? { expectedHead: { ...this.projectHead }, expectedRevision: document.revision } : {}),
-          activity: cloneProgressActivity(this.dailyProgressActivity)
-        }
-      );
-      if (!result.committed || result.stale) throw new PersistenceError('stale-save', `Source image replacement for ${this.projectId} was not committed.`);
-      this.projectHead = result.head === undefined ? null : { ...result.head };
+    const nextAssetPromise = normalizeSourceImageAsset(assetInput);
+    return this.enqueueTraceMutation(async () => {
+      const nextAsset = await nextAssetPromise;
+      await this.enqueuePersistence(async () => {
+        this.ensureWritable();
+        const beforeDescriptor = cloneSourceImage(this.projectMetadata.sourceImage);
+        const previousSource = this.projectMetadata.sourceImage;
+        const beforeAsset = previousSource === undefined
+          ? undefined
+          : this.projectAssets.find((asset) => asset.id === previousSource.assetId) === undefined
+            ? undefined
+            : cloneAsset(this.projectAssets.find((asset) => asset.id === previousSource.assetId) as ProjectAsset);
+        const nextDescriptor = normalizeSourceImageDescriptor(requestedSettings, { width: this.document.width, height: this.document.height }, nextAsset);
+        const previousSourceAssetId = this.projectMetadata.sourceImage?.assetId;
+        const nextAssets = this.projectAssets
+          .filter((asset) => asset.id !== previousSourceAssetId && asset.id !== nextAsset.id)
+          .map(cloneAsset);
+        nextAssets.push(cloneAsset(nextAsset));
+        const nextMetadata: ProjectMetadata = { ...this.projectMetadata, sourceImage: nextDescriptor };
+        const documentRevisionChanged = this.document.revision !== this.lastSavedRevision;
+        const mode = !documentRevisionChanged && this.hasExactCurrentHead() ? 'retain' : 'replace';
+        const document = this.document;
+        const candidateMetadataVersion = this.metadataVersion;
+        const candidateAssetsVersion = this.assetsVersion;
+        const traceEntry: TraceHistoryEntry = {
+          label: 'source-image-replace',
+          beforeDescriptor,
+          afterDescriptor: cloneSourceImage(nextDescriptor),
+          beforeAsset: beforeAsset === undefined ? undefined : cloneAsset(beforeAsset),
+          afterAsset: cloneAsset(nextAsset)
+        };
+        const historyVersionAtCapture = this.historyVersion;
+        const history = this.exportHistoryEnvelope(traceEntry);
+        const result = await this.savePreparedOrLegacy(
+          nextMetadata,
+          document,
+          nextAssets,
+          {
+            mode,
+            allowSameRevision: !documentRevisionChanged,
+            ...(mode === 'retain' && this.projectHead !== null ? { expectedHead: { ...this.projectHead }, expectedRevision: document.revision } : {}),
+            activity: cloneProgressActivity(this.dailyProgressActivity),
+            history
+          }
+        );
+        if (!result.committed || result.stale) throw new PersistenceError('stale-save', `Source image replacement for ${this.projectId} was not committed.`);
+        this.projectHead = result.head === undefined ? null : { ...result.head };
 
-      // Persistence can yield while ordinary commands, metadata edits, or an
-      // asset save are queued behind this operation. Merge only the source
-      // image change into the latest in-memory state so those newer changes
-      // remain dirty and are persisted by the following queued save.
-      const currentSourceAssetId = this.projectMetadata.sourceImage?.assetId;
-      const replacedAssetIds = new Set([previousSourceAssetId, currentSourceAssetId, nextAsset.id]);
-      this.projectAssets = this.projectAssets
-        .filter((asset) => !replacedAssetIds.has(asset.id))
-        .concat(cloneAsset(nextAsset));
-      this.projectMetadata = { ...this.projectMetadata, sourceImage: nextDescriptor };
-      this.metadataVersion += 1;
-      this.assetsVersion += 1;
-      this.savedMetadataVersion = candidateMetadataVersion + 1;
-      this.savedAssetsVersion = candidateAssetsVersion + 1;
-      // Retain the displaced bytes in the history entry so undo of an
-      // import/replace can restore the previous asset even though the live
-      // asset list (and repository) no longer holds it.
-      this.recordTraceEntry({
-        label: 'source-image-replace',
-        beforeDescriptor,
-        afterDescriptor: cloneSourceImage(nextDescriptor),
-        beforeAsset: beforeAsset === undefined ? undefined : cloneAsset(beforeAsset),
-        afterAsset: cloneAsset(nextAsset)
+        // Persistence can yield while ordinary commands, metadata edits, or an
+        // asset save are queued behind this operation. Merge only the source
+        // image change into the latest in-memory state so those newer changes
+        // remain dirty and are persisted by the following queued save.
+        const currentSourceAssetId = this.projectMetadata.sourceImage?.assetId;
+        const replacedAssetIds = new Set([previousSourceAssetId, currentSourceAssetId, nextAsset.id]);
+        this.projectAssets = this.projectAssets
+          .filter((asset) => !replacedAssetIds.has(asset.id))
+          .concat(cloneAsset(nextAsset));
+        this.projectMetadata = { ...this.projectMetadata, sourceImage: nextDescriptor };
+        this.metadataVersion += 1;
+        this.assetsVersion += 1;
+        this.savedMetadataVersion = candidateMetadataVersion + 1;
+        this.savedAssetsVersion = candidateAssetsVersion + 1;
+        // Retain the displaced bytes in the history entry so undo of an
+        // import/replace can restore the previous asset even though the live
+        // asset list (and repository) no longer holds it.
+        this.recordTraceEntry(traceEntry);
+        if (this.historyVersion === historyVersionAtCapture + 1) this.savedHistoryVersion = this.historyVersion;
+        this.lastSavedRevision = Math.max(this.lastSavedRevision, result.revision);
+        this.pendingRevision = this.isDirty() ? this.document.revision : null;
+        this.saveError = null;
+        this.status = this.isDirty() ? 'pending' : 'saved';
+        this.notify();
       });
-      this.lastSavedRevision = Math.max(this.lastSavedRevision, result.revision);
-      this.pendingRevision = this.isDirty() ? this.document.revision : null;
-      this.saveError = null;
-      this.status = this.isDirty() ? 'pending' : 'saved';
-      this.notify();
     });
   }
 
@@ -734,66 +1046,70 @@ export class ProjectSession {
   /** Commit removal of the source descriptor and retained asset together. */
   async removeSourceImage(): Promise<void> {
     this.ensureWritable();
-    if (this.projectMetadata.sourceImage === undefined) return;
-    const beforeDescriptor = cloneSourceImage(this.projectMetadata.sourceImage);
-    const removedSource = this.projectMetadata.sourceImage;
-    const beforeAsset = removedSource === undefined
-      ? undefined
-      : this.projectAssets.find((asset) => asset.id === removedSource.assetId) === undefined
-        ? undefined
-        : cloneAsset(this.projectAssets.find((asset) => asset.id === removedSource.assetId) as ProjectAsset);
-    return this.enqueuePersistence(async () => {
-      this.ensureWritable();
-      const sourceAssetId = this.projectMetadata.sourceImage?.assetId;
-      if (sourceAssetId === undefined) return;
-      const metadata = { ...this.projectMetadata };
-      delete metadata.sourceImage;
-      const nextAssets = this.projectAssets
-        .filter((asset) => asset.id !== sourceAssetId)
-        .map(cloneAsset);
-      const documentRevisionChanged = this.document.revision !== this.lastSavedRevision;
-      const mode = !documentRevisionChanged && this.hasExactCurrentHead() ? 'retain' : 'replace';
-      const document = this.document;
-      const candidateMetadataVersion = this.metadataVersion;
-      const candidateAssetsVersion = this.assetsVersion;
-      const result = await this.savePreparedOrLegacy(
-        metadata,
-        document,
-        nextAssets,
-        {
-          mode,
-          allowSameRevision: !documentRevisionChanged,
-          ...(mode === 'retain' && this.projectHead !== null ? { expectedHead: { ...this.projectHead }, expectedRevision: document.revision } : {}),
-          activity: cloneProgressActivity(this.dailyProgressActivity)
-        }
-      );
-      if (!result.committed || result.stale) throw new PersistenceError('stale-save', `Source image removal for ${this.projectId} was not committed.`);
-      this.projectHead = result.head === undefined ? null : { ...result.head };
+    return this.enqueueTraceMutation(async () => {
+      await this.enqueuePersistence(async () => {
+        this.ensureWritable();
+        const beforeDescriptor = cloneSourceImage(this.projectMetadata.sourceImage);
+        const removedSource = this.projectMetadata.sourceImage;
+        const sourceAssetId = removedSource?.assetId;
+        if (sourceAssetId === undefined) return;
+        const beforeAsset = this.projectAssets.find((asset) => asset.id === sourceAssetId) === undefined
+          ? undefined
+          : cloneAsset(this.projectAssets.find((asset) => asset.id === sourceAssetId) as ProjectAsset);
+        const metadata = { ...this.projectMetadata };
+        delete metadata.sourceImage;
+        const nextAssets = this.projectAssets
+          .filter((asset) => asset.id !== sourceAssetId)
+          .map(cloneAsset);
+        const documentRevisionChanged = this.document.revision !== this.lastSavedRevision;
+        const mode = !documentRevisionChanged && this.hasExactCurrentHead() ? 'retain' : 'replace';
+        const document = this.document;
+        const candidateMetadataVersion = this.metadataVersion;
+        const candidateAssetsVersion = this.assetsVersion;
+        const traceEntry: TraceHistoryEntry = {
+          label: 'source-image-remove',
+          beforeDescriptor,
+          afterDescriptor: undefined,
+          beforeAsset: beforeAsset === undefined ? undefined : cloneAsset(beforeAsset),
+          afterAsset: undefined
+        };
+        const historyVersionAtCapture = this.historyVersion;
+        const history = this.exportHistoryEnvelope(traceEntry);
+        const result = await this.savePreparedOrLegacy(
+          metadata,
+          document,
+          nextAssets,
+          {
+            mode,
+            allowSameRevision: !documentRevisionChanged,
+            ...(mode === 'retain' && this.projectHead !== null ? { expectedHead: { ...this.projectHead }, expectedRevision: document.revision } : {}),
+            activity: cloneProgressActivity(this.dailyProgressActivity),
+            history
+          }
+        );
+        if (!result.committed || result.stale) throw new PersistenceError('stale-save', `Source image removal for ${this.projectId} was not committed.`);
+        this.projectHead = result.head === undefined ? null : { ...result.head };
 
-      // Keep edits that happened while the transaction was in flight dirty;
-      // only merge the source removal itself into the latest session state.
-      this.projectAssets = this.projectAssets.filter((asset) => asset.id !== sourceAssetId).map(cloneAsset);
-      if (this.projectMetadata.sourceImage?.assetId === sourceAssetId) {
-        const nextMetadata = { ...this.projectMetadata };
-        delete nextMetadata.sourceImage;
-        this.projectMetadata = nextMetadata;
-      }
-      this.metadataVersion += 1;
-      this.assetsVersion += 1;
-      this.savedMetadataVersion = candidateMetadataVersion + 1;
-      this.savedAssetsVersion = candidateAssetsVersion + 1;
-      this.recordTraceEntry({
-        label: 'source-image-remove',
-        beforeDescriptor,
-        afterDescriptor: undefined,
-        beforeAsset: beforeAsset === undefined ? undefined : cloneAsset(beforeAsset),
-        afterAsset: undefined
+        // Keep edits that happened while the transaction was in flight dirty;
+        // only merge the source removal itself into the latest session state.
+        this.projectAssets = this.projectAssets.filter((asset) => asset.id !== sourceAssetId).map(cloneAsset);
+        if (this.projectMetadata.sourceImage?.assetId === sourceAssetId) {
+          const nextMetadata = { ...this.projectMetadata };
+          delete nextMetadata.sourceImage;
+          this.projectMetadata = nextMetadata;
+        }
+        this.metadataVersion += 1;
+        this.assetsVersion += 1;
+        this.savedMetadataVersion = candidateMetadataVersion + 1;
+        this.savedAssetsVersion = candidateAssetsVersion + 1;
+        this.recordTraceEntry(traceEntry);
+        if (this.historyVersion === historyVersionAtCapture + 1) this.savedHistoryVersion = this.historyVersion;
+        this.lastSavedRevision = Math.max(this.lastSavedRevision, result.revision);
+        this.pendingRevision = this.isDirty() ? this.document.revision : null;
+        this.saveError = null;
+        this.status = this.isDirty() ? 'pending' : 'saved';
+        this.notify();
       });
-      this.lastSavedRevision = Math.max(this.lastSavedRevision, result.revision);
-      this.pendingRevision = this.isDirty() ? this.document.revision : null;
-      this.saveError = null;
-      this.status = this.isDirty() ? 'pending' : 'saved';
-      this.notify();
     });
   }
 
@@ -894,10 +1210,12 @@ export class ProjectSession {
         const documentRevisionChanged = this.document.revision !== this.lastSavedRevision;
         const mode = !documentRevisionChanged && this.hasExactCurrentHead() ? 'retain' : 'replace';
         const snapshot = this.document;
+        const history = this.exportHistoryEnvelope();
         attempt = {
           revision: snapshot.revision,
           metadataVersion: this.metadataVersion,
           assetsVersion: this.assetsVersion,
+          historyVersion: this.historyVersion,
           mutationSequence: this.mutationSequence
         };
         this.activeSave = attempt;
@@ -916,7 +1234,8 @@ export class ProjectSession {
           // adopted the explicit mode yet.
           allowSameRevision: !documentRevisionChanged,
           ...(mode === 'retain' && this.projectHead !== null ? { expectedHead: { ...this.projectHead }, expectedRevision: attempt.revision } : {}),
-          activity: cloneProgressActivity(this.dailyProgressActivity)
+          activity: cloneProgressActivity(this.dailyProgressActivity),
+          history
         };
         this.notify();
         this.status = 'saving';
@@ -927,6 +1246,7 @@ export class ProjectSession {
         this.lastSavedRevision = Math.max(this.lastSavedRevision, saveResult.revision);
         if (this.metadataVersion === attempt.metadataVersion) this.savedMetadataVersion = attempt.metadataVersion;
         if (this.assetsVersion === attempt.assetsVersion) this.savedAssetsVersion = attempt.assetsVersion;
+        if (this.historyVersion === attempt.historyVersion) this.savedHistoryVersion = attempt.historyVersion;
         this.pendingRevision = this.isDirty() ? this.document.revision : null;
         this.saveError = null;
         this.status = this.isDirty() ? 'pending' : 'saved';
@@ -957,6 +1277,7 @@ export class ProjectSession {
 
   async retrySave(): Promise<void> {
     this.ensureActive();
+    await this.traceMutationQueue;
     if (this.recoverySession) return;
     if (!this.isDirty()) return;
     this.clearScheduledSaveTimers();
@@ -972,6 +1293,7 @@ export class ProjectSession {
 
   async flush(): Promise<void> {
     this.ensureActive();
+    await this.traceMutationQueue;
     if (this.recoverySession && !this.isDirty()) return;
     this.clearScheduledSaveTimers();
     while (this.isDirty()) {

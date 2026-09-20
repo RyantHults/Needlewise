@@ -17,6 +17,7 @@ import type {
   PreparedDocumentCapability,
   ProjectRecord,
   PersistencePreparationClient,
+  SessionHistoryEnvelope,
   StoredProjectHead,
   SourceImageDescriptor,
   SaveOptions,
@@ -146,7 +147,9 @@ export interface ProjectSessionOptions {
   usingRecovery?: boolean;
   activity?: ProgressActivity;
   materialSettings?: MaterialSettingsV2;
+  history?: SessionHistoryEnvelope;
   sessionStartedAt?: number;
+  historyLimitBytes?: number;
   clock: WorkspaceClock;
   debounceMs: number;
 }

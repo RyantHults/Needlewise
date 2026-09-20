@@ -357,6 +357,8 @@ export interface CommandResult {
   progress?: ProgressChangeSet;
   /** Signals that metrics should be rescanned because identities moved or were removed. */
   recalculateMetrics?: boolean;
+  /** Signals that the base renderer must be invalidated in full for a history delta. */
+  requiresFullRedraw?: boolean;
 }
 
 export interface ValidationResult {

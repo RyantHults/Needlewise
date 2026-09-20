@@ -9,6 +9,7 @@ export * from './repository';
 export * from './activity';
 export * from './source-image';
 export * from './project-thumbnail';
+export * from './session-history';
 export {
   PersistencePreparationClientError,
   PersistencePreparationTransportError,

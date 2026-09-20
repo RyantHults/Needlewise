@@ -324,6 +324,7 @@ export class ProjectWorkspace {
       preparationClient: this.preparationClient,
       assets: record.assets,
       activity: record.activity,
+      history: usingRecovery ? undefined : record.history,
       health: health ?? record.health ?? null,
       usingRecovery,
       clock: this.clock,
