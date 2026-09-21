@@ -576,6 +576,130 @@ describe('advanced headless editor tools', () => {
     controller.dispose();
   });
 
+  it('moves a completed rectangular selection through one floating command with undo and redo', () => {
+    const { controller, gateway, uiStore } = fixture();
+    controller.setTool({ tool: 'select' });
+    gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    gateway.execute({ type: 'set-completion', x: 0, y: 0, completed: true });
+    controller.setSelection({ x: 0, y: 0 });
+    expect(controller.moveSelection()).toBe(true);
+    expect(uiStore.getState().overlay.floatingPaste).toMatchObject({
+      mode: 'move',
+      destination: { x: 0, y: 0, width: 1, height: 1 },
+      sourceSelection: { kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } }
+    });
+    expect(Array.from(uiStore.getState().overlay.floatingPaste?.completion ?? [])).toEqual([1]);
+
+    controller.handlePointerDown(pointer(1, 8, 8));
+    controller.handlePointerMove(pointer(1, 40, 8));
+    controller.handlePointerUp(pointer(1, 40, 8));
+    expect(uiStore.getState().overlay.floatingPaste).toMatchObject({ destination: { x: 2, y: 0 } });
+    controller.handlePointerDown(pointer(2, 120, 120));
+    expect(gateway.commands.filter((command) => command.type === 'move-fragment')).toHaveLength(1);
+    expect(controller.getSelection()).toBeUndefined();
+    expect(uiStore.getState().overlay.floatingPaste).toBeUndefined();
+    expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
+    expect(gateway.getSnapshot().document?.kind[2]).toBe(CellKind.Full);
+    expect(gateway.getSnapshot().document?.completed[2]).toBe(1);
+
+    controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
+    expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Full);
+    expect(gateway.getSnapshot().document?.kind[2]).toBe(CellKind.Quarters);
+    controller.handleKeyDown({ key: 'y', ctrlKey: true, preventDefault: () => undefined });
+    expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
+    expect(gateway.getSnapshot().document?.completed[2]).toBe(1);
+    controller.dispose();
+  });
+
+  it('captures sparse move geometry and restores the source on cancel or recoverable failure', () => {
+    const cancelled = fixture();
+    cancelled.controller.setTool({ tool: 'lasso' });
+    cancelled.controller.handlePointerDown(pointer(1, 8, 8));
+    cancelled.controller.handlePointerUp(pointer(1, 8, 8));
+    cancelled.controller.handlePointerDown({ ...pointer(2, 40, 8), shiftKey: true });
+    cancelled.controller.handlePointerUp({ ...pointer(2, 40, 8), shiftKey: false });
+    expect(cancelled.controller.moveSelection()).toBe(true);
+    expect(cancelled.uiStore.getState().overlay.floatingPaste).toMatchObject({
+      mode: 'move',
+      copySelection: { kind: 'sparse', rect: { x: 0, y: 0, width: 3, height: 1 } },
+      sourceSelection: { kind: 'sparse', rect: { x: 0, y: 0, width: 3, height: 1 } }
+    });
+    cancelled.controller.handleKeyDown({ key: 'Escape', preventDefault: () => undefined });
+    expect(cancelled.controller.getSelectionIndices()).toEqual(new Uint32Array([0, 2]));
+    expect(cancelled.uiStore.getState().overlay.floatingPaste).toBeUndefined();
+    cancelled.controller.dispose();
+
+    const failed = fixture();
+    failed.controller.setTool({ tool: 'select' });
+    failed.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    failed.controller.setSelection({ x: 0, y: 0 });
+    expect(failed.controller.moveSelection()).toBe(true);
+    failed.gateway.getSnapshot().document!.palette.length = 0;
+    failed.controller.handlePointerDown(pointer(1, 120, 120));
+    expect(failed.uiStore.getState().overlay.floatingPaste).toBeDefined();
+    expect(failed.controller.getSelection()).toBeUndefined();
+    failed.controller.handleKeyDown({ key: 'Escape', preventDefault: () => undefined });
+    expect(failed.controller.getSelection()).toEqual({ x: 0, y: 0, width: 1, height: 1 });
+    failed.controller.dispose();
+  });
+
+  it('discards a stale move preview and restores its source selection', () => {
+    const { controller, gateway, uiStore } = fixture();
+    controller.setTool({ tool: 'select' });
+    controller.setSelection({ x: 0, y: 0 });
+    expect(controller.moveSelection()).toBe(true);
+    gateway.execute({ type: 'set-full', x: 7, y: 7, color: 1 });
+    expect(uiStore.getState().overlay.floatingPaste).toBeUndefined();
+    expect(controller.getSelection()).toEqual({ x: 0, y: 0, width: 1, height: 1 });
+    controller.dispose();
+  });
+
+  it('captures mixed cell/backstitch move state and restores a transparent no-op without changing clipboard/history', () => {
+    const mixed = fixture();
+    mixed.controller.setTool({ tool: 'select' });
+    mixed.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    mixed.gateway.execute({ type: 'set-completion', x: 0, y: 0, completed: true });
+    mixed.gateway.execute({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 2 });
+    mixed.gateway.execute({ type: 'set-backstitch-completion', id: 1, completed: true });
+    mixed.controller.setSelection({ x: 0, y: 0 });
+    mixed.controller.copySelection();
+    const clipboard = mixed.controller.getClipboard();
+    const historyBefore = mixed.gateway.undoDepth;
+    expect(mixed.controller.moveSelection()).toBe(true);
+    expect(mixed.uiStore.getState().overlay.floatingPaste).toMatchObject({ mode: 'move', completion: new Uint8Array([1]) });
+    expect(mixed.uiStore.getState().overlay.floatingPaste?.backstitches).toMatchObject({
+      ids: new Uint32Array([1]),
+      x1: new Uint32Array([0]),
+      x2: new Uint32Array([4]),
+      colors: new Uint16Array([2]),
+      completed: new Uint8Array([1])
+    });
+    mixed.controller.handlePointerDown(pointer(1, 8, 8));
+    mixed.controller.handlePointerMove(pointer(1, 40, 8));
+    mixed.controller.handlePointerUp(pointer(1, 40, 8));
+    mixed.controller.handlePointerDown(pointer(1, 120, 120));
+    expect(mixed.gateway.commands.filter((command) => command.type === 'move-fragment')).toHaveLength(1);
+    expect(mixed.gateway.undoDepth).toBe(historyBefore + 1);
+    expect(mixed.controller.getSelection()).toBeUndefined();
+    expect(mixed.controller.getClipboard()?.kind).toEqual(clipboard?.kind);
+    mixed.controller.dispose();
+
+    const noop = fixture();
+    noop.controller.setTool({ tool: 'select' });
+    noop.controller.setSelection({ x: 0, y: 0 });
+    noop.controller.copySelection();
+    const noopClipboard = noop.controller.getClipboard();
+    noop.controller.setSelection({ x: 4, y: 4 });
+    const noopHistory = noop.gateway.undoDepth;
+    expect(noop.controller.moveSelection()).toBe(true);
+    noop.controller.handlePointerDown(pointer(1, 120, 120));
+    expect(noop.gateway.undoDepth).toBe(noopHistory);
+    expect(noop.controller.getSelection()).toEqual({ x: 4, y: 4, width: 1, height: 1 });
+    expect(noop.controller.getClipboard()?.kind).toEqual(noopClipboard?.kind);
+    expect(noop.uiStore.getState().overlay.floatingPaste).toBeUndefined();
+    noop.controller.dispose();
+  });
+
   it('keeps floating paste out of document history until commit and supports replacement, cancel, and clamped anchors', () => {
     const { controller, gateway, uiStore } = fixture();
     controller.setTool({ tool: 'select' });

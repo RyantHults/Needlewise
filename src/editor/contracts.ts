@@ -241,8 +241,22 @@ export interface BrushPreviewOverlay {
 export interface FloatingPasteOverlay {
   readonly fragment: PatternFragment;
   readonly destination: GridRect;
+  readonly mode?: 'paste' | 'move';
   readonly copySelection?: FloatingPasteSelectionOverlay;
+  readonly sourceSelection?: FloatingPasteSelectionOverlay;
+  readonly completion?: ArrayLike<number>;
+  readonly backstitches?: FloatingPasteBackstitchOverlay;
   readonly color?: string;
+}
+
+export interface FloatingPasteBackstitchOverlay {
+  readonly ids: ArrayLike<number>;
+  readonly x1: ArrayLike<number>;
+  readonly y1: ArrayLike<number>;
+  readonly x2: ArrayLike<number>;
+  readonly y2: ArrayLike<number>;
+  readonly colors: ArrayLike<number>;
+  readonly completed: ArrayLike<number>;
 }
 
 export interface FloatingPasteSelectionOverlay {

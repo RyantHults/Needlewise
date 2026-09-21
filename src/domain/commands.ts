@@ -30,6 +30,8 @@ import {
   HalfDirection,
   QuarterCorner,
   PALETTE_ID_MAX,
+  FIXED_POINT_UNITS_PER_CELL,
+  MAX_PERSISTABLE_CELL_COUNT,
   type BackstitchRecord,
   type BackstitchStore,
   type CommandResult,
@@ -37,6 +39,8 @@ import {
   type DeleteCellSetCommand,
   type DeleteRegionCommand,
   type DomainCommand,
+  type FragmentSelection,
+  type MoveFragmentCommand,
   type MixedEraseCommand,
   type PaletteEntryInput,
   type PatternDocument,
@@ -70,6 +74,7 @@ export interface MutationInfo {
   /** A packed bulk delta, constructed once and reusable by history callers. */
   delta?: SparseMutationDelta;
   createdBackstitchIds?: Uint32Array;
+  movedBackstitchIds?: Uint32Array;
 }
 
 export interface PackedCellDelta {
@@ -491,6 +496,8 @@ function normalizeType(type: string): string {
     'bulk-toggle-backstitch-completion': 'bulk-backstitch-completion',
     paste: 'paste-fragment',
     'paste-fragment-command': 'paste-fragment',
+    move: 'move-fragment',
+    'move-fragment-command': 'move-fragment',
     'mixed-erase-command': 'mixed-erase',
     'delete-cell-set-command': 'delete-cell-set',
     'delete-cells': 'delete-cell-set',
@@ -1253,6 +1260,10 @@ export function isPasteFragmentCommand(command: DomainCommand): command is Paste
   return Boolean(command) && typeof command.type === 'string' && normalizeType(command.type) === 'paste-fragment';
 }
 
+export function isMoveFragmentCommand(command: DomainCommand): command is MoveFragmentCommand {
+  return Boolean(command) && typeof command.type === 'string' && normalizeType(command.type) === 'move-fragment';
+}
+
 export function isMixedEraseCommand(command: DomainCommand): command is MixedEraseCommand {
   return Boolean(command) && typeof command.type === 'string' && normalizeType(command.type) === 'mixed-erase';
 }
@@ -1267,7 +1278,7 @@ export function isDeleteCellSetCommand(command: DomainCommand): command is Delet
 
 function containsAtomicCommand(command: DomainCommand): boolean {
   if (!command || typeof command !== 'object') return false;
-  if (isBulkCellCommand(command) || isBulkRecolorCommand(command) || isBulkCompletionCommand(command) || isBulkBackstitchCompletionCommand(command) || isPasteFragmentCommand(command) || isMixedEraseCommand(command) || isDeleteRegionCommand(command) || isDeleteCellSetCommand(command)) return true;
+  if (isBulkCellCommand(command) || isBulkRecolorCommand(command) || isBulkCompletionCommand(command) || isBulkBackstitchCompletionCommand(command) || isPasteFragmentCommand(command) || isMoveFragmentCommand(command) || isMixedEraseCommand(command) || isDeleteRegionCommand(command) || isDeleteCellSetCommand(command)) return true;
   return isBatchCommand(command)
     && Array.isArray(command.commands)
     && command.commands.some((child) => containsAtomicCommand(child as DomainCommand));
@@ -1280,9 +1291,9 @@ function containsAtomicCommand(command: DomainCommand): boolean {
  */
 export function assertBulkBatchPolicy(commands: readonly DomainCommand[]): void {
   const hasBulk = commands.some((command) => containsAtomicCommand(command));
-  const isStandaloneBulk = commands.length === 1 && (isBulkCellCommand(commands[0]) || isBulkRecolorCommand(commands[0]) || isBulkCompletionCommand(commands[0]) || isBulkBackstitchCompletionCommand(commands[0]) || isPasteFragmentCommand(commands[0]) || isMixedEraseCommand(commands[0]) || isDeleteRegionCommand(commands[0]) || isDeleteCellSetCommand(commands[0]));
+  const isStandaloneBulk = commands.length === 1 && (isBulkCellCommand(commands[0]) || isBulkRecolorCommand(commands[0]) || isBulkCompletionCommand(commands[0]) || isBulkBackstitchCompletionCommand(commands[0]) || isPasteFragmentCommand(commands[0]) || isMoveFragmentCommand(commands[0]) || isMixedEraseCommand(commands[0]) || isDeleteRegionCommand(commands[0]) || isDeleteCellSetCommand(commands[0]));
   if (hasBulk && !isStandaloneBulk) {
-    throw new DomainError('bulk-batch-unsupported', 'Bulk cell, recolor, completion, backstitch completion, paste-fragment, mixed-erase, delete-region, and delete-cell-set commands must be executed as standalone commands, not in a multi-command batch.');
+    throw new DomainError('bulk-batch-unsupported', 'Bulk cell, recolor, completion, backstitch completion, paste-fragment, move-fragment, mixed-erase, delete-region, and delete-cell-set commands must be executed as standalone commands, not in a multi-command batch.');
   }
 }
 
@@ -2364,6 +2375,421 @@ export function applyPasteFragmentCommand(document: PatternDocument, command: Do
   return { changed: true, snapshot: false, changedIndices, createdBackstitchIds, progress: emptyProgressChangeSet(), delta };
 }
 
+export interface NormalizedMoveSelection {
+  readonly rect: CropRect;
+  readonly indices: Uint32Array;
+  readonly dense: boolean;
+  readonly count: number;
+}
+
+export interface MoveFragmentPreflight {
+  readonly selection: NormalizedMoveSelection;
+  readonly destinationX: number;
+  readonly destinationY: number;
+  readonly changedIndices: Uint32Array;
+  readonly changedKinds: Uint8Array;
+  readonly changedColors: Uint16Array;
+  readonly changedCompleted: Uint8Array;
+  readonly changedCellCount: number;
+  readonly movedBackstitchIds: Uint32Array;
+  readonly movedBackstitchCount: number;
+  readonly beforeBackstitches?: BackstitchStore;
+  readonly afterBackstitches?: BackstitchStore;
+  readonly backstitchesChanged: boolean;
+}
+
+function parseMoveRect(value: unknown, label: string): CropRect {
+  if (typeof value !== 'object' || value === null) throw new DomainError('invalid-selection', `${label} must be a rectangle.`);
+  const source = value as Record<string, unknown>;
+  return {
+    x: requiredNumber(source.x, `${label}.x`),
+    y: requiredNumber(source.y, `${label}.y`),
+    width: requiredNumber(source.width, `${label}.width`),
+    height: requiredNumber(source.height, `${label}.height`)
+  };
+}
+
+function parseMoveSelection(command: DomainCommand): NormalizedMoveSelection {
+  const raw = valueOf(command, 'selection', 'sourceSelection', 'source', 'footprint');
+  if (typeof raw !== 'object' || raw === null) throw new DomainError('invalid-selection', 'Move selection is required.');
+  const source = raw as Record<string, unknown>;
+  const kind = source.kind;
+  const rect = parseMoveRect(kind === 'rect' || kind === 'sparse' ? (source.rect ?? source.bounds ?? source) : source, 'move selection');
+  if (kind !== 'sparse') {
+    const count = rect.width * rect.height;
+    if (!Number.isSafeInteger(count) || count < 1 || count > MAX_PERSISTABLE_CELL_COUNT) throw new DomainError('invalid-selection', 'Move selection is too large.');
+    return { rect, indices: new Uint32Array(0), dense: true, count };
+  }
+  const rawIndices = source.indices ?? source.cellIndices;
+  if (!(rawIndices instanceof Uint32Array) || rawIndices.length === 0) throw new DomainError('invalid-selection', 'Sparse move selection indices are required.');
+  const indices = rawIndices.slice();
+  for (let position = 1; position < indices.length; position += 1) {
+    if (indices[position] <= indices[position - 1]) throw new DomainError('invalid-selection', 'Sparse move selection indices must be sorted and unique.');
+  }
+  return { rect, indices, dense: false, count: indices.length };
+}
+
+function validateMoveSelection(document: PatternDocument, selection: NormalizedMoveSelection, destinationX: number, destinationY: number): void {
+  const { rect, indices } = selection;
+  if (!Number.isSafeInteger(rect.x) || !Number.isSafeInteger(rect.y) || !Number.isSafeInteger(rect.width) || !Number.isSafeInteger(rect.height)
+    || rect.x < 0 || rect.y < 0 || rect.width < 1 || rect.height < 1
+    || rect.x + rect.width > document.width || rect.y + rect.height > document.height) {
+    throw new DomainError('invalid-selection', 'Move selection must be a non-empty footprint inside the document.');
+  }
+  if (destinationX < 0 || destinationY < 0 || destinationX + rect.width > document.width || destinationY + rect.height > document.height) {
+    throw new DomainError('move-out-of-bounds', 'The move destination footprint must fit entirely inside the document.');
+  }
+  let previous = -1;
+  for (const index of indices) {
+    if (!Number.isSafeInteger(index) || index <= previous || index >= document.kind.length) throw new DomainError('invalid-selection', 'Move selection indices must be sorted, unique, and inside the document.');
+    const x = index % document.width;
+    const y = Math.floor(index / document.width);
+    if (x < rect.x || x >= rect.x + rect.width || y < rect.y || y >= rect.y + rect.height) throw new DomainError('invalid-selection', 'Sparse move selection indices must lie inside its bounds.');
+    previous = index;
+  }
+}
+
+function moveSelectionContains(selection: NormalizedMoveSelection, index: number, documentWidth: number): boolean {
+  if (selection.dense) {
+    const x = index % documentWidth;
+    const y = Math.floor(index / documentWidth);
+    return x >= selection.rect.x && x < selection.rect.x + selection.rect.width
+      && y >= selection.rect.y && y < selection.rect.y + selection.rect.height;
+  }
+  let low = 0;
+  let high = selection.indices.length - 1;
+  while (low <= high) {
+    const middle = low + Math.floor((high - low) / 2);
+    const candidate = selection.indices[middle];
+    if (candidate === index) return true;
+    if (candidate < index) low = middle + 1;
+    else high = middle - 1;
+  }
+  return false;
+}
+
+function moveSelectionIndexAt(selection: NormalizedMoveSelection, position: number, documentWidth: number): number {
+  if (!selection.dense) return selection.indices[position];
+  const x = position % selection.rect.width;
+  const y = Math.floor(position / selection.rect.width);
+  return (selection.rect.y + y) * documentWidth + selection.rect.x + x;
+}
+
+function forEachMoveSourceIndex(selection: NormalizedMoveSelection, documentWidth: number, callback: (index: number) => void): void {
+  for (let position = 0; position < selection.count; position += 1) callback(moveSelectionIndexAt(selection, position, documentWidth));
+}
+
+function moveSourceIndexAt(selection: NormalizedMoveSelection, index: number, documentWidth: number): number {
+  return moveSelectionContains(selection, index, documentWidth) ? index : -1;
+}
+
+function moveTargetSourceIndexAt(
+  selection: NormalizedMoveSelection,
+  index: number,
+  documentWidth: number,
+  destinationX: number,
+  destinationY: number
+): number {
+  const x = index % documentWidth;
+  const y = Math.floor(index / documentWidth);
+  const sourceX = x - destinationX + selection.rect.x;
+  const sourceY = y - destinationY + selection.rect.y;
+  if (sourceX < selection.rect.x || sourceX >= selection.rect.x + selection.rect.width
+    || sourceY < selection.rect.y || sourceY >= selection.rect.y + selection.rect.height) return -1;
+  const sourceIndex = sourceY * documentWidth + sourceX;
+  return moveSelectionContains(selection, sourceIndex, documentWidth) ? sourceIndex : -1;
+}
+
+function forEachMoveUnion(
+  selection: NormalizedMoveSelection,
+  documentWidth: number,
+  destinationX: number,
+  destinationY: number,
+  callback: (index: number) => void
+): void {
+  const translation = (destinationY - selection.rect.y) * documentWidth + destinationX - selection.rect.x;
+  let sourcePosition = 0;
+  let targetPosition = 0;
+  while (sourcePosition < selection.count || targetPosition < selection.count) {
+    const sourceIndex = sourcePosition < selection.count ? moveSelectionIndexAt(selection, sourcePosition, documentWidth) : Number.POSITIVE_INFINITY;
+    const targetIndex = targetPosition < selection.count ? moveSelectionIndexAt(selection, targetPosition, documentWidth) + translation : Number.POSITIVE_INFINITY;
+    if (sourceIndex < targetIndex) {
+      callback(sourceIndex);
+      sourcePosition += 1;
+    } else if (targetIndex < sourceIndex) {
+      callback(targetIndex);
+      targetPosition += 1;
+    } else if (sourceIndex !== Number.POSITIVE_INFINITY) {
+      callback(sourceIndex);
+      sourcePosition += 1;
+      targetPosition += 1;
+    } else break;
+  }
+}
+
+function writeOrCompareFinalMoveCell(
+  document: PatternDocument,
+  selection: NormalizedMoveSelection,
+  destinationX: number,
+  destinationY: number,
+  index: number,
+  changedKinds?: Uint8Array,
+  changedColors?: Uint16Array,
+  changedCompleted?: Uint8Array,
+  position = 0
+): boolean {
+  const sourceIndex = moveSourceIndexAt(selection, index, document.width);
+  const targetSourceIndex = moveTargetSourceIndexAt(selection, index, document.width, destinationX, destinationY);
+  let kind = sourceIndex < 0 ? document.kind[index] : CellKind.Empty;
+  let completed = sourceIndex < 0 ? document.completed[index] : 0;
+  let color0 = sourceIndex < 0 ? document.colors[colorsOffset(index)] : 0;
+  let color1 = sourceIndex < 0 ? document.colors[colorsOffset(index) + 1] : 0;
+  let color2 = sourceIndex < 0 ? document.colors[colorsOffset(index) + 2] : 0;
+  let color3 = sourceIndex < 0 ? document.colors[colorsOffset(index) + 3] : 0;
+  if (targetSourceIndex >= 0 && document.kind[targetSourceIndex] !== CellKind.Empty) {
+    const sourceOffset = colorsOffset(targetSourceIndex);
+    kind = document.kind[targetSourceIndex];
+    completed = document.completed[targetSourceIndex];
+    color0 = document.colors[sourceOffset];
+    color1 = document.colors[sourceOffset + 1];
+    color2 = document.colors[sourceOffset + 2];
+    color3 = document.colors[sourceOffset + 3];
+  }
+  const documentOffset = colorsOffset(index);
+  const differs = document.kind[index] !== kind
+    || document.completed[index] !== completed
+    || document.colors[documentOffset] !== color0
+    || document.colors[documentOffset + 1] !== color1
+    || document.colors[documentOffset + 2] !== color2
+    || document.colors[documentOffset + 3] !== color3;
+  if (differs && changedKinds !== undefined && changedColors !== undefined && changedCompleted !== undefined) {
+    changedKinds[position] = kind;
+    changedCompleted[position] = completed;
+    const changedOffset = position * 4;
+    changedColors[changedOffset] = color0;
+    changedColors[changedOffset + 1] = color1;
+    changedColors[changedOffset + 2] = color2;
+    changedColors[changedOffset + 3] = color3;
+  }
+  return differs;
+}
+
+function moveBackstitchKey(x1: number, y1: number, x2: number, y2: number): string {
+  return `${String(x1)},${String(y1)},${String(x2)},${String(y2)}`;
+}
+
+function moveBackstitchContained(
+  selection: NormalizedMoveSelection,
+  document: PatternDocument,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number
+): boolean {
+  if (!selection.dense) return backstitchEndpointsContainedInCellUnion(x1, y1, x2, y2, document.width, document.height, selection.indices);
+  const units = FIXED_POINT_UNITS_PER_CELL;
+  const left = selection.rect.x * units;
+  const top = selection.rect.y * units;
+  const right = (selection.rect.x + selection.rect.width) * units;
+  const bottom = (selection.rect.y + selection.rect.height) * units;
+  return x1 >= left && x1 <= right && x2 >= left && x2 <= right && y1 >= top && y1 <= bottom && y2 >= top && y2 <= bottom;
+}
+
+interface MoveBackstitchPlan {
+  readonly movedCount: number;
+  readonly changed: boolean;
+  readonly retainedGeometries: ReadonlySet<string>;
+}
+
+function inspectMovedBackstitches(
+  document: PatternDocument,
+  selection: NormalizedMoveSelection,
+  destinationX: number,
+  destinationY: number
+): MoveBackstitchPlan {
+  const store = document.backstitches;
+  let movedCount = 0;
+  const retainedGeometries = new Set<string>();
+  for (let index = 0; index < store.ids.length; index += 1) {
+    if (moveBackstitchContained(selection, document, store.x1[index], store.y1[index], store.x2[index], store.y2[index])) {
+      requirePaletteEntry(document, store.colors[index]);
+      movedCount += 1;
+    } else {
+      retainedGeometries.add(moveBackstitchKey(store.x1[index], store.y1[index], store.x2[index], store.y2[index]));
+    }
+  }
+  const deltaX = (destinationX - selection.rect.x) * FIXED_POINT_UNITS_PER_CELL;
+  const deltaY = (destinationY - selection.rect.y) * FIXED_POINT_UNITS_PER_CELL;
+  if (movedCount > 0 && (deltaX !== 0 || deltaY !== 0)) {
+    for (let index = 0; index < store.ids.length; index += 1) {
+      if (!moveBackstitchContained(selection, document, store.x1[index], store.y1[index], store.x2[index], store.y2[index])) continue;
+      if (retainedGeometries.has(moveBackstitchKey(store.x1[index] + deltaX, store.y1[index] + deltaY, store.x2[index] + deltaX, store.y2[index] + deltaY))) throw new DomainError('backstitch-collision', 'The moved backstitch collides with retained geometry.');
+    }
+  }
+  return { movedCount, changed: movedCount > 0 && (deltaX !== 0 || deltaY !== 0), retainedGeometries };
+}
+
+function materializeMovedBackstitches(
+  document: PatternDocument,
+  selection: NormalizedMoveSelection,
+  destinationX: number,
+  destinationY: number,
+  plan: MoveBackstitchPlan
+): { readonly movedIds: Uint32Array; readonly before?: BackstitchStore; readonly after?: BackstitchStore } {
+  if (!plan.changed) return { movedIds: new Uint32Array(0) };
+  const store = document.backstitches;
+  const movedIds = new Uint32Array(plan.movedCount);
+  const before = cloneBackstitchStore(store);
+  const after = cloneBackstitchStore(store);
+  const deltaX = (destinationX - selection.rect.x) * FIXED_POINT_UNITS_PER_CELL;
+  const deltaY = (destinationY - selection.rect.y) * FIXED_POINT_UNITS_PER_CELL;
+  let movedPosition = 0;
+  for (let index = 0; index < store.ids.length; index += 1) {
+    if (!moveBackstitchContained(selection, document, store.x1[index], store.y1[index], store.x2[index], store.y2[index])) continue;
+    movedIds[movedPosition] = store.ids[index];
+    after.x1[index] = store.x1[index] + deltaX;
+    after.y1[index] = store.y1[index] + deltaY;
+    after.x2[index] = store.x2[index] + deltaX;
+    after.y2[index] = store.y2[index] + deltaY;
+    movedPosition += 1;
+  }
+  movedIds.sort();
+  return { movedIds, before, after };
+}
+
+export function preflightMoveFragmentCommand(document: PatternDocument, command: DomainCommand, historyLimitBytes?: number): MoveFragmentPreflight {
+  if (!command || normalizeType(command.type) !== 'move-fragment') throw new DomainError('invalid-command', 'A move fragment command must have type move-fragment.');
+  validateBulkRevision(document, command);
+  const selection = parseMoveSelection(command);
+  const destination = parsePasteDestination(command);
+  validateMoveSelection(document, selection, destination.x, destination.y);
+
+  forEachMoveSourceIndex(selection, document.width, (index) => {
+    if (document.kind[index] !== CellKind.Empty) {
+      const offset = colorsOffset(index);
+      if (document.kind[index] === CellKind.Quarters || isThreeQuarterPairKind(document.kind[index])) {
+        for (let slot = 0; slot < 4; slot += 1) if (document.colors[offset + slot] !== 0) requirePaletteEntry(document, document.colors[offset + slot]);
+      } else requirePaletteEntry(document, document.colors[offset]);
+    }
+  });
+  let changedCellCount = 0;
+  forEachMoveUnion(selection, document.width, destination.x, destination.y, (index) => {
+    if (writeOrCompareFinalMoveCell(document, selection, destination.x, destination.y, index)) changedCellCount += 1;
+  });
+  const backstitchPlan = inspectMovedBackstitches(document, selection, destination.x, destination.y);
+  const estimatedBytes = estimateMoveFragmentHistoryBytes(changedCellCount, document.backstitches.ids.length, backstitchPlan.changed ? backstitchPlan.movedCount : 0);
+  if (historyLimitBytes !== undefined) {
+    if (!Number.isSafeInteger(historyLimitBytes) || historyLimitBytes < 1) throw new DomainError('invalid-history-limit', 'Move history limit must be a positive integer.');
+    if (estimatedBytes > historyLimitBytes) throw new DomainError('history-entry-too-large', `History entry requires ${String(estimatedBytes)} bytes, exceeding the configured ${String(historyLimitBytes)} byte limit.`);
+  }
+  const changedIndices = new Uint32Array(changedCellCount);
+  const changedKinds = new Uint8Array(changedCellCount);
+  const changedColors = new Uint16Array(changedCellCount * 4);
+  const changedCompleted = new Uint8Array(changedCellCount);
+  let changedPosition = 0;
+  forEachMoveUnion(selection, document.width, destination.x, destination.y, (index) => {
+    if (!writeOrCompareFinalMoveCell(document, selection, destination.x, destination.y, index, changedKinds, changedColors, changedCompleted, changedPosition)) return;
+    changedIndices[changedPosition] = index;
+    changedPosition += 1;
+  });
+  const backstitches = materializeMovedBackstitches(document, selection, destination.x, destination.y, backstitchPlan);
+  return {
+    selection,
+    destinationX: destination.x,
+    destinationY: destination.y,
+    changedIndices,
+    changedKinds,
+    changedColors,
+    changedCompleted,
+    changedCellCount,
+    movedBackstitchIds: backstitches.movedIds,
+    movedBackstitchCount: backstitches.movedIds.length,
+    ...(backstitches.before === undefined ? {} : { beforeBackstitches: backstitches.before, afterBackstitches: backstitches.after }),
+    backstitchesChanged: backstitchPlan.changed
+  };
+}
+
+function backstitchStoreHistoryBytes(count: number): number {
+  return count * 23;
+}
+
+export function estimateMoveFragmentHistoryBytes(changedCellCount: number, existingBackstitchCount: number, changedBackstitchCount: number): number {
+  if (!Number.isSafeInteger(changedCellCount) || changedCellCount < 0 || !Number.isSafeInteger(existingBackstitchCount) || existingBackstitchCount < 0 || !Number.isSafeInteger(changedBackstitchCount) || changedBackstitchCount < 0) throw new DomainError('invalid-fragment', 'Move history counts are invalid.');
+  if (changedCellCount === 0 && changedBackstitchCount === 0) return 0;
+  const cells = changedCellCount * 24;
+  const backstitches = changedBackstitchCount === 0 ? 0 : backstitchStoreHistoryBytes(existingBackstitchCount) * 2;
+  return cells + backstitches + 32;
+}
+
+export function applyMoveFragmentCommand(document: PatternDocument, command: DomainCommand, preflight = preflightMoveFragmentCommand(document, command)): MutationInfo {
+  if (preflight.changedCellCount === 0 && !preflight.backstitchesChanged) {
+    return {
+      changed: false,
+      snapshot: false,
+      changedIndices: new Uint32Array(0),
+      movedBackstitchIds: new Uint32Array(0),
+      progress: emptyProgressChangeSet()
+    };
+  }
+  const changedIndices = preflight.changedIndices.slice();
+  const beforeKind = new Uint8Array(preflight.changedCellCount);
+  const beforeColors = new Uint16Array(preflight.changedCellCount * 4);
+  const beforeCompleted = new Uint8Array(preflight.changedCellCount);
+  for (let position = 0; position < preflight.changedCellCount; position += 1) {
+    const index = changedIndices[position];
+    const documentOffset = colorsOffset(index);
+    const packedOffset = position * 4;
+    beforeKind[position] = document.kind[index];
+    beforeCompleted[position] = document.completed[index];
+    for (let slot = 0; slot < 4; slot += 1) beforeColors[packedOffset + slot] = document.colors[documentOffset + slot];
+    document.kind[index] = preflight.changedKinds[position];
+    document.completed[index] = preflight.changedCompleted[position];
+    for (let slot = 0; slot < 4; slot += 1) {
+      document.colors[documentOffset + slot] = preflight.changedColors[packedOffset + slot];
+    }
+  }
+  if (preflight.backstitchesChanged && preflight.afterBackstitches) document.backstitches = cloneBackstitchStore(preflight.afterBackstitches);
+  const delta: SparseMutationDelta = {
+    cells: {
+      indices: changedIndices,
+      beforeKind,
+      beforeColors,
+      beforeCompleted,
+      afterKind: preflight.changedKinds,
+      afterColors: preflight.changedColors,
+      afterCompleted: preflight.changedCompleted
+    },
+    ...(preflight.beforeBackstitches === undefined ? {} : { beforeBackstitches: preflight.beforeBackstitches, afterBackstitches: preflight.afterBackstitches })
+  };
+  return {
+    changed: true,
+    snapshot: false,
+    changedIndices,
+    movedBackstitchIds: preflight.movedBackstitchIds,
+    progress: emptyProgressChangeSet(),
+    recalculateMetrics: true,
+    delta
+  };
+}
+
+export function moveFragmentCommand(selection: FragmentSelection, destination: Point, expectedRevision?: number): MoveFragmentCommand {
+  if (!Number.isSafeInteger(destination.x) || !Number.isSafeInteger(destination.y)) throw new DomainError('invalid-command', 'Move destination must contain integer x and y coordinates.');
+  if (expectedRevision !== undefined && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)) throw new DomainError('stale-command', 'Expected revision must be a non-negative integer.');
+  const clonedSelection: FragmentSelection = 'kind' in selection
+    ? selection.kind === 'sparse'
+      ? { kind: 'sparse', rect: { ...selection.rect }, indices: selection.indices.slice() }
+      : { kind: 'rect', rect: { ...selection.rect } }
+    : { ...selection };
+  return {
+    type: 'move-fragment',
+    selection: clonedSelection,
+    destination: { x: destination.x, y: destination.y },
+    ...(expectedRevision === undefined ? {} : { expectedRevision })
+  };
+}
+
+export const createMoveFragmentCommand = moveFragmentCommand;
+
 export function pasteFragmentCommand(fragment: PatternFragment, destination: Point, expectedRevision?: number): PasteFragmentCommand {
   assertValidPatternFragment(fragment);
   if (!Number.isSafeInteger(destination.x) || !Number.isSafeInteger(destination.y)) throw new DomainError('invalid-command', 'Paste destination must contain integer x and y coordinates.');
@@ -3270,6 +3696,7 @@ function applyOneToDraftInternal(document: PatternDocument, command: DomainComma
     case 'bulk-completion': return applyBulkCompletionCommand(document, command);
     case 'bulk-backstitch-completion': return applyBulkBackstitchCompletionCommand(document, command);
     case 'paste-fragment': return applyPasteFragmentCommand(document, command);
+    case 'move-fragment': return applyMoveFragmentCommand(document, command);
     case 'mixed-erase': return applyMixedEraseCommand(document, command);
     case 'delete-region': return applyDeleteRegionCommand(document, command);
     case 'delete-cell-set': return applyDeleteCellSetCommand(document, command);
@@ -3337,7 +3764,8 @@ export function applyCommand(document: PatternDocument, command: DomainCommand):
       ...(result.changedBackstitchIds === undefined ? {} : { changedBackstitchIds: result.changedBackstitchIds.slice() }),
       ...(result.progress === undefined ? {} : { progress: { cellIndices: result.progress.cellIndices.slice(), backstitchIds: result.progress.backstitchIds.slice(), marked: result.progress.marked, unmarked: result.progress.unmarked } }),
       ...(result.recalculateMetrics === undefined ? {} : { recalculateMetrics: result.recalculateMetrics }),
-      ...(result.createdBackstitchIds === undefined ? {} : { createdBackstitchIds: result.createdBackstitchIds.slice() })
+      ...(result.createdBackstitchIds === undefined ? {} : { createdBackstitchIds: result.createdBackstitchIds.slice() }),
+      ...(result.movedBackstitchIds === undefined ? {} : { movedBackstitchIds: result.movedBackstitchIds.slice() })
     };
   }
   draft.revision = document.revision + 1;
@@ -3354,7 +3782,8 @@ export function applyCommand(document: PatternDocument, command: DomainCommand):
     ...(result.changedBackstitchIds === undefined ? {} : { changedBackstitchIds: result.changedBackstitchIds.slice() }),
     ...(result.progress === undefined ? {} : { progress: { cellIndices: result.progress.cellIndices.slice(), backstitchIds: result.progress.backstitchIds.slice(), marked: result.progress.marked, unmarked: result.progress.unmarked } }),
     ...(result.recalculateMetrics === undefined ? {} : { recalculateMetrics: result.recalculateMetrics }),
-    ...(result.createdBackstitchIds === undefined ? {} : { createdBackstitchIds: result.createdBackstitchIds.slice() })
+    ...(result.createdBackstitchIds === undefined ? {} : { createdBackstitchIds: result.createdBackstitchIds.slice() }),
+    ...(result.movedBackstitchIds === undefined ? {} : { movedBackstitchIds: result.movedBackstitchIds.slice() })
   };
   if (result.delta !== undefined) attachDeleteMetricsImpactForDelta(commandResult, result.delta, 'after');
   return commandResult;

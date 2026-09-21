@@ -5,6 +5,7 @@ import {
   applyBulkCompletionCommand,
   applyBulkBackstitchCompletionCommand,
   applyPasteFragmentCommand,
+  applyMoveFragmentCommand,
   applyMixedEraseCommand,
   applyDeleteRegionCommand,
   applyDeleteCellSetCommand,
@@ -15,6 +16,7 @@ import {
   estimateBulkCompletionHistoryBytes,
   estimateBulkBackstitchCompletionHistoryBytes,
   estimatePasteFragmentHistoryBytes,
+  estimateMoveFragmentHistoryBytes,
   estimateMixedEraseHistoryBytes,
   estimateDeleteRegionHistoryBytes,
   estimateDeleteCellSetHistoryBytes,
@@ -24,11 +26,13 @@ import {
   isBulkCompletionCommand,
   isBulkBackstitchCompletionCommand,
   isPasteFragmentCommand,
+  isMoveFragmentCommand,
   isMixedEraseCommand,
   isDeleteRegionCommand,
   isDeleteCellSetCommand,
   MutationTracker,
   preflightPasteFragmentCommand,
+  preflightMoveFragmentCommand,
   preflightBulkCellCommand,
   preflightBulkRecolorCommand,
   preflightBulkCompletionCommand,
@@ -300,7 +304,8 @@ function result(document: PatternDocument, changed: boolean, backstitchId?: numb
     ...(details?.changedBackstitchIds === undefined ? {} : { changedBackstitchIds: details.changedBackstitchIds.slice() }),
     ...(details?.progress === undefined ? {} : { progress: { cellIndices: details.progress.cellIndices.slice(), backstitchIds: details.progress.backstitchIds.slice(), marked: details.progress.marked, unmarked: details.progress.unmarked } }),
     ...(details?.recalculateMetrics === undefined ? {} : { recalculateMetrics: details.recalculateMetrics }),
-    ...(details?.createdBackstitchIds === undefined ? {} : { createdBackstitchIds: details.createdBackstitchIds.slice() })
+    ...(details?.createdBackstitchIds === undefined ? {} : { createdBackstitchIds: details.createdBackstitchIds.slice() }),
+    ...(details?.movedBackstitchIds === undefined ? {} : { movedBackstitchIds: details.movedBackstitchIds.slice() })
   };
 }
 
@@ -1242,6 +1247,7 @@ export class DocumentEditor {
     if (isBulkCompletionCommand(command)) return this.executeBulkCompletionCommand(command);
     if (isBulkBackstitchCompletionCommand(command)) return this.executeBulkBackstitchCompletionCommand(command);
     if (isPasteFragmentCommand(command)) return this.executePasteFragmentCommand(command);
+    if (isMoveFragmentCommand(command)) return this.executeMoveFragmentCommand(command);
     if (isMixedEraseCommand(command)) return this.executeMixedEraseCommand(command);
     if (isDeleteRegionCommand(command)) return this.executeDeleteRegionCommand(command);
     if (isDeleteCellSetCommand(command)) return this.executeDeleteCellSetCommand(command);
@@ -1261,6 +1267,9 @@ export class DocumentEditor {
       }
       if (command.commands.length === 1 && isPasteFragmentCommand(command.commands[0] as DomainCommand)) {
         return this.executePasteFragmentCommand(command.commands[0] as DomainCommand);
+      }
+      if (command.commands.length === 1 && isMoveFragmentCommand(command.commands[0] as DomainCommand)) {
+        return this.executeMoveFragmentCommand(command.commands[0] as DomainCommand);
       }
       if (command.commands.length === 1 && isMixedEraseCommand(command.commands[0] as DomainCommand)) {
         return this.executeMixedEraseCommand(command.commands[0] as DomainCommand);
@@ -1444,6 +1453,41 @@ export class DocumentEditor {
     assertValidDocument(draft);
     if (mutation.delta === undefined) throw new DomainError('invalid-fragment', 'A changed paste did not produce a history delta.');
     const entry: DeltaEntry = { kind: 'delta', delta: mutation.delta, bytes: typedDeltaBytes(mutation.delta), progress: cloneProgress(mutation.progress), recalculateMetrics: mutation.recalculateMetrics === true };
+    ensureHistoryEntryFits(entry.bytes, this.historyLimit);
+    this.current = draft;
+    this.pushHistory(entry);
+    return result(this.current, true, undefined, undefined, mutation);
+  }
+
+  private executeMoveFragmentCommand(command: DomainCommand): CommandResult {
+    const preflight = preflightMoveFragmentCommand(this.current, command, this.historyLimit);
+    const estimatedBytes = estimateMoveFragmentHistoryBytes(
+      preflight.changedIndices.length,
+      this.current.backstitches.ids.length,
+      preflight.backstitchesChanged ? preflight.movedBackstitchIds.length : 0
+    );
+    ensureHistoryEntryFits(estimatedBytes, this.historyLimit);
+    if (estimatedBytes === 0) {
+      return result(this.current, false, undefined, undefined, {
+        changed: false,
+        snapshot: false,
+        changedIndices: preflight.changedIndices,
+        movedBackstitchIds: new Uint32Array(0),
+        progress: cloneProgress(undefined)
+      });
+    }
+    const draft = cloneDocument(this.current);
+    const mutation = applyMoveFragmentCommand(draft, command, preflight);
+    draft.revision = this.current.revision + 1;
+    assertValidDocument(draft);
+    if (mutation.delta === undefined) throw new DomainError('invalid-move-fragment', 'A changed move did not produce a history delta.');
+    const entry: DeltaEntry = {
+      kind: 'delta',
+      delta: mutation.delta,
+      bytes: typedDeltaBytes(mutation.delta),
+      progress: cloneProgress(mutation.progress),
+      recalculateMetrics: true
+    };
     ensureHistoryEntryFits(entry.bytes, this.historyLimit);
     this.current = draft;
     this.pushHistory(entry);

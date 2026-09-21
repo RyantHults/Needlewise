@@ -944,10 +944,13 @@ export function EditorSurface({
     surface?.copySelection?.();
     dismissTouchCopy();
   };
-  const runSelectionAction = (action: "copy" | "paste" | "delete") => {
+  const runSelectionAction = (action: "copy" | "paste" | "move" | "delete") => {
     if (action === "copy") copyTouchSelection();
     else if (action === "paste") {
       controllerRef.current?.pasteSelection();
+      dismissTouchCopy();
+    } else if (action === "move") {
+      controllerRef.current?.moveSelection();
       dismissTouchCopy();
     } else {
       controllerRef.current?.deleteSelection?.();
@@ -956,7 +959,7 @@ export function EditorSurface({
   };
   const handleSelectionActionKeyDown = (
     event: React.KeyboardEvent<HTMLButtonElement>,
-    action: "copy" | "paste" | "delete",
+    action: "copy" | "paste" | "move" | "delete",
   ) => {
     event.stopPropagation();
     if (event.key === "Escape") {
@@ -1281,8 +1284,9 @@ export function EditorSurface({
                       onClick={() => runSelectionAction("copy")}
                       onKeyDown={(event) => handleSelectionActionKeyDown(event, "copy")}
                       onKeyUp={(event) => event.stopPropagation()}
+                      aria-label="Copy selection"
                     >
-                      Copy selection
+                      Copy
                     </button>
                     <button
                       type="button"
@@ -1290,16 +1294,27 @@ export function EditorSurface({
                       onClick={() => runSelectionAction("paste")}
                       onKeyDown={(event) => handleSelectionActionKeyDown(event, "paste")}
                       onKeyUp={(event) => event.stopPropagation()}
+                      aria-label="Paste selection"
                     >
-                      Paste selection
+                      Paste
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => runSelectionAction("move")}
+                      onKeyDown={(event) => handleSelectionActionKeyDown(event, "move")}
+                      onKeyUp={(event) => event.stopPropagation()}
+                      aria-label="Move selection"
+                    >
+                      Move
                     </button>
                     <button
                       type="button"
                       onClick={() => runSelectionAction("delete")}
                       onKeyDown={(event) => handleSelectionActionKeyDown(event, "delete")}
                       onKeyUp={(event) => event.stopPropagation()}
+                      aria-label="Delete selection"
                     >
-                      Delete selection
+                      Delete
                     </button>
                   </div>
                 )}

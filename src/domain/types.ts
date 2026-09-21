@@ -237,7 +237,20 @@ export interface PatternFragment {
   readonly backstitches: PatternFragmentBackstitches;
 }
 
-export type FragmentSelection = CropRect;
+export interface RectangularFragmentSelection {
+  readonly kind: 'rect';
+  readonly rect: CropRect;
+}
+
+export interface SparseFragmentSelection {
+  readonly kind: 'sparse';
+  readonly rect: CropRect;
+  /** Absolute document cell indices, sorted and unique. */
+  readonly indices: Uint32Array;
+}
+
+/** A move/capture footprint. CropRect remains accepted as a rectangular shorthand. */
+export type FragmentSelection = CropRect | RectangularFragmentSelection | SparseFragmentSelection;
 
 export type BulkCellEdit =
   | { readonly kind: 'full'; readonly color: number }
@@ -310,6 +323,13 @@ export interface PasteFragmentCommand extends DomainCommand {
   readonly expectedRevision?: number;
 }
 
+export interface MoveFragmentCommand extends DomainCommand {
+  readonly type: 'move-fragment';
+  readonly selection: FragmentSelection;
+  readonly destination: Point;
+  readonly expectedRevision?: number;
+}
+
 /** A single component-mode eraser gesture over whole cells and quarter slots. */
 export interface MixedEraseCommand extends DomainCommand {
   readonly type: 'mixed-erase';
@@ -353,6 +373,8 @@ export interface CommandResult {
   changedBackstitchIds?: Uint32Array;
   /** Newly allocated backstitch IDs created by a fragment paste. */
   createdBackstitchIds?: Uint32Array;
+  /** Stable backstitch IDs whose geometry moved with a fragment. */
+  movedBackstitchIds?: Uint32Array;
   /** Completion targets changed by this operation; absent means legacy/unknown. */
   progress?: ProgressChangeSet;
   /** Signals that metrics should be rescanned because identities moved or were removed. */

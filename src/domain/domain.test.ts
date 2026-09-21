@@ -53,10 +53,12 @@ import {
   estimateBulkCompletionHistoryBytes,
   estimateBulkBackstitchCompletionHistoryBytes,
   estimatePasteFragmentHistoryBytes,
+  estimateMoveFragmentHistoryBytes,
   estimateMixedEraseHistoryBytes,
   estimateDeleteRegionHistoryBytes,
   estimateDeleteCellSetHistoryBytes,
   mergePaletteCommand,
+  moveFragmentCommand,
   PALETTE_SYMBOLS,
   type PatternDocument,
   type PatternFragment,
@@ -1808,6 +1810,276 @@ describe('typed-array pattern document', () => {
     expect(budgetEditor.undoDepth).toBe(0);
     expect(validatePatternFragment(invalidGeometry)).toBe(false);
     expect(() => assertValidPatternFragment(invalidGeometry)).toThrow(DomainError);
+  });
+
+  it('moves rectangular contents atomically across overlap while preserving completion and transparent holes', () => {
+    let pattern = document(6, 3);
+    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
+    pattern = apply(pattern, { type: 'set-completion', x: 0, y: 0, completed: true });
+    pattern = apply(pattern, { type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 2 });
+    pattern = apply(pattern, { type: 'set-completion', x: 1, y: 0, completed: true });
+    pattern = apply(pattern, { type: 'set-full', x: 1, y: 1, color: 3 });
+    pattern = apply(pattern, { type: 'set-full', x: 3, y: 1, color: 3 });
+    const before = documentContentSnapshot(pattern);
+    const editor = createEditor(pattern);
+
+    const result = editor.execute(moveFragmentCommand(
+      { kind: 'rect', rect: { x: 0, y: 0, width: 3, height: 1 } },
+      { x: 1, y: 1 }
+    ));
+
+    expect(result.changed).toBe(true);
+    expect(result.changedIndices).toEqual(new Uint32Array([0, 1, 7, 8]));
+    expect(result.movedBackstitchIds).toEqual(new Uint32Array(0));
+    expect(result.progress).toEqual({ cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0), marked: 0, unmarked: 0 });
+    expect(result.recalculateMetrics).toBe(true);
+    expect(editor.undoDepth).toBe(1);
+    expect(getCell(editor.document, 0, 0).kind).toBe(CellKind.Empty);
+    expect(getCell(editor.document, 1, 0).kind).toBe(CellKind.Empty);
+    expect(getCell(editor.document, 1, 1)).toMatchObject({ kind: CellKind.Full, color: 1, completed: true });
+    expect(getCell(editor.document, 2, 1)).toMatchObject({ kind: CellKind.HalfSlash, color: 2, completed: true });
+    expect(getCell(editor.document, 3, 1)).toMatchObject({ kind: CellKind.Full, color: 3 });
+
+    editor.undo();
+    expect(documentContentSnapshot(editor.document)).toEqual(before);
+    editor.redo();
+    expect(getCell(editor.document, 1, 1)).toMatchObject({ kind: CellKind.Full, color: 1, completed: true });
+    expect(editor.historyBytes).toBe(estimateMoveFragmentHistoryBytes(4, 0, 0));
+  });
+
+  it('clones rectangular and sparse footprints in the move factory', () => {
+    const rect = { kind: 'rect' as const, rect: { x: 0, y: 0, width: 2, height: 1 } };
+    const sparseIndices = new Uint32Array([0, 2]);
+    const sparse = { kind: 'sparse' as const, rect: { x: 0, y: 0, width: 3, height: 1 }, indices: sparseIndices };
+    const rectCommand = moveFragmentCommand(rect, { x: 1, y: 1 });
+    const sparseCommand = moveFragmentCommand(sparse, { x: 1, y: 1 });
+    rect.rect.x = 7;
+    sparse.rect.x = 7;
+    sparseIndices[0] = 7;
+    expect((rectCommand.selection as { rect: { x: number } }).rect.x).toBe(0);
+    expect((sparseCommand.selection as { rect: { x: number }; indices: Uint32Array }).rect.x).toBe(0);
+    expect((sparseCommand.selection as { rect: { x: number }; indices: Uint32Array }).indices).toEqual(new Uint32Array([0, 2]));
+  });
+
+  it('handles forward and reverse rectangular and sparse overlap from original captures', () => {
+    let forward = document(5, 1);
+    forward = apply(forward, { type: 'set-full', x: 0, y: 0, color: 1 });
+    forward = apply(forward, { type: 'set-full', x: 1, y: 0, color: 2 });
+    forward = apply(forward, { type: 'set-full', x: 2, y: 0, color: 3 });
+    const forwardEditor = createEditor(forward);
+    forwardEditor.execute(moveFragmentCommand({ kind: 'rect', rect: { x: 0, y: 0, width: 3, height: 1 } }, { x: 1, y: 0 }));
+    expect([0, 1, 2, 3, 4].map((x) => getCell(forwardEditor.document, x, 0).color)).toEqual([0, 1, 2, 3, 0]);
+
+    let reverse = document(5, 1);
+    reverse = apply(reverse, { type: 'set-full', x: 1, y: 0, color: 1 });
+    reverse = apply(reverse, { type: 'set-full', x: 2, y: 0, color: 2 });
+    reverse = apply(reverse, { type: 'set-full', x: 3, y: 0, color: 3 });
+    const reverseEditor = createEditor(reverse);
+    reverseEditor.execute(moveFragmentCommand({ kind: 'rect', rect: { x: 1, y: 0, width: 3, height: 1 } }, { x: 0, y: 0 }));
+    expect([0, 1, 2, 3, 4].map((x) => getCell(reverseEditor.document, x, 0).color)).toEqual([1, 2, 3, 0, 0]);
+
+    const sparseEditor = createEditor(forward);
+    sparseEditor.execute(moveFragmentCommand({ kind: 'sparse', rect: { x: 0, y: 0, width: 3, height: 1 }, indices: new Uint32Array([0, 2]) }, { x: 1, y: 0 }));
+    expect([0, 1, 2, 3, 4].map((x) => getCell(sparseEditor.document, x, 0).color)).toEqual([0, 1, 0, 3, 0]);
+
+    const reverseSparse = createEditor(reverse);
+    reverseSparse.execute(moveFragmentCommand({ kind: 'sparse', rect: { x: 1, y: 0, width: 3, height: 1 }, indices: new Uint32Array([1, 3]) }, { x: 0, y: 0 }));
+    expect([0, 1, 2, 3, 4].map((x) => getCell(reverseSparse.document, x, 0).color)).toEqual([1, 0, 3, 0, 0]);
+  });
+
+  it('moves sparse cells without overwriting destination holes or selected empties', () => {
+    let pattern = document(6, 3);
+    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
+    pattern = apply(pattern, { type: 'set-half', x: 2, y: 0, direction: HalfDirection.Backslash, color: 2 });
+    pattern = apply(pattern, { type: 'set-full', x: 4, y: 1, color: 3 });
+    const editor = createEditor(pattern);
+    const result = editor.execute(moveFragmentCommand(
+      { kind: 'sparse', rect: { x: 0, y: 0, width: 3, height: 1 }, indices: new Uint32Array([0, 2]) },
+      { x: 3, y: 1 }
+    ));
+
+    expect(result.changedIndices).toEqual(new Uint32Array([0, 2, 9, 11]));
+    expect(getCell(editor.document, 0, 0).kind).toBe(CellKind.Empty);
+    expect(getCell(editor.document, 2, 0).kind).toBe(CellKind.Empty);
+    expect(getCell(editor.document, 3, 1)).toMatchObject({ kind: CellKind.Full, color: 1 });
+    expect(getCell(editor.document, 4, 1)).toMatchObject({ kind: CellKind.Full, color: 3 });
+    expect(getCell(editor.document, 5, 1)).toMatchObject({ kind: CellKind.HalfBackslash, color: 2 });
+  });
+
+  it('moves contained backstitches with stable identity and retains boundary-crossing lines', () => {
+    let pattern = document(8, 4);
+    pattern = apply(pattern, { type: 'set-full', x: 1, y: 1, color: 1 });
+    pattern = apply(pattern, { type: 'set-full', x: 2, y: 1, color: 2 });
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 8, y: 4 }, color: 1 });
+    pattern = apply(pattern, { type: 'set-backstitch-completion', id: 1, completed: true });
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 4 }, end: { x: 8, y: 4 }, color: 2 });
+    pattern = apply(pattern, { type: 'set-backstitch-completion', id: 2, completed: true });
+    const nextId = pattern.nextBackstitchId;
+    const editor = createEditor(pattern);
+    const result = editor.execute(moveFragmentCommand(
+      { kind: 'rect', rect: { x: 1, y: 1, width: 2, height: 1 } },
+      { x: 4, y: 1 }
+    ));
+
+    expect(result.movedBackstitchIds).toEqual(new Uint32Array([1]));
+    expect(editor.document.nextBackstitchId).toBe(nextId);
+    expect(listBackstitches(editor.document)).toMatchObject([
+      { id: 1, x1: 16, y1: 4, x2: 20, y2: 4, color: 1, completed: true },
+      { id: 2, x1: 0, y1: 4, x2: 8, y2: 4, color: 2, completed: true }
+    ]);
+    editor.undo();
+    expect(listBackstitches(editor.document)).toMatchObject([
+      { id: 1, x1: 4, y1: 4, x2: 8, y2: 4, color: 1, completed: true },
+      { id: 2, x1: 0, y1: 4, x2: 8, y2: 4, color: 2, completed: true }
+    ]);
+    editor.redo();
+    expect(listBackstitches(editor.document)[0]).toMatchObject({ id: 1, x1: 16, x2: 20, completed: true });
+  });
+
+  it('rejects move collisions, bounds, palette, and history failures atomically', () => {
+    let pattern = document(6, 3);
+    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 });
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 12, y: 0 }, end: { x: 16, y: 0 }, color: 2 });
+    const collision = createEditor(pattern);
+    const collisionBefore = documentContentSnapshot(collision.document);
+    expect(() => collision.execute(moveFragmentCommand({ kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } }, { x: 3, y: 0 }))).toThrow(/collides/);
+    expect(documentContentSnapshot(collision.document)).toEqual(collisionBefore);
+    expect(collision.undoDepth).toBe(0);
+
+    const bounds = createEditor(pattern);
+    const boundsBefore = bounds.document;
+    expect(() => bounds.execute(moveFragmentCommand({ kind: 'rect', rect: { x: 0, y: 0, width: 2, height: 1 } }, { x: 5, y: 0 }))).toThrow(/fit entirely/);
+    expect(bounds.document).toBe(boundsBefore);
+
+    const palette = createEditor(pattern);
+    const paletteBefore = palette.document;
+    palette.document.palette.length = 0;
+    expect(() => palette.execute(moveFragmentCommand({ kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } }, { x: 1, y: 0 }))).toThrow(/Palette/);
+    expect(palette.document).toBe(paletteBefore);
+
+    const budget = createEditor(pattern, { historyLimitBytes: estimateMoveFragmentHistoryBytes(2, 2, 2) - 1 });
+    const budgetBefore = budget.document;
+    expect(() => budget.execute(moveFragmentCommand({ kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } }, { x: 1, y: 1 }))).toThrow(/exceeding/);
+    expect(budget.document).toBe(budgetBefore);
+    expect(budget.undoDepth).toBe(0);
+  });
+
+  it('treats same-position moves as no-ops without history', () => {
+    let pattern = document(4, 3);
+    pattern = apply(pattern, { type: 'set-full', x: 1, y: 1, color: 1 });
+    const editor = createEditor(pattern);
+    const before = editor.document;
+    const result = editor.execute(moveFragmentCommand({ kind: 'rect', rect: { x: 1, y: 1, width: 1, height: 1 } }, { x: 1, y: 1 }));
+    expect(result.changed).toBe(false);
+    expect(result.changedIndices).toEqual(new Uint32Array(0));
+    expect(result.movedBackstitchIds).toEqual(new Uint32Array(0));
+    expect(editor.document).toBe(before);
+    expect(editor.undoDepth).toBe(0);
+  });
+
+  it('treats a different-position transparent move as a no-op', () => {
+    const editor = createEditor(document(6, 4));
+    const before = editor.document;
+    const result = editor.execute(moveFragmentCommand({ kind: 'rect', rect: { x: 0, y: 0, width: 2, height: 2 } }, { x: 3, y: 2 }));
+    expect(result.changed).toBe(false);
+    expect(result.changedIndices).toEqual(new Uint32Array(0));
+    expect(result.progress).toEqual({ cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0), marked: 0, unmarked: 0 });
+    expect(result.recalculateMetrics).toBeUndefined();
+    expect(editor.document).toBe(before);
+    expect(editor.undoDepth).toBe(0);
+  });
+
+  it('accounts exactly for backstitch history and supports backstitch-only undo/redo', () => {
+    let pattern = document(8, 3);
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 });
+    const editor = createEditor(pattern);
+    const result = editor.execute(moveFragmentCommand({ kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } }, { x: 3, y: 0 }));
+    expect(result.changedIndices).toEqual(new Uint32Array(0));
+    expect(result.movedBackstitchIds).toEqual(new Uint32Array([1]));
+    expect(result.progress).toEqual({ cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0), marked: 0, unmarked: 0 });
+    expect(result.recalculateMetrics).toBe(true);
+    expect(editor.historyBytes).toBe(estimateMoveFragmentHistoryBytes(0, 1, 1));
+    const moved = listBackstitches(editor.document);
+    expect(moved[0]).toMatchObject({ x1: 12, y1: 0, x2: 16, y2: 0 });
+    const undo = editor.undo();
+    expect(undo.changedIndices).toEqual(new Uint32Array(0));
+    expect(undo.progress).toEqual({ cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0), marked: 0, unmarked: 0 });
+    expect(undo.recalculateMetrics).toBe(true);
+    expect(listBackstitches(editor.document)[0]).toMatchObject({ x1: 0, y1: 0, x2: 4, y2: 0 });
+    const redo = editor.redo();
+    expect(redo.changedIndices).toEqual(new Uint32Array(0));
+    expect(redo.recalculateMetrics).toBe(true);
+    expect(listBackstitches(editor.document)[0]).toMatchObject({ x1: 12, y1: 0, x2: 16, y2: 0 });
+  });
+
+  it('preserves completed overwrite metrics and zero activity across move undo and redo', () => {
+    let pattern = document(4, 2);
+    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
+    pattern = apply(pattern, { type: 'set-completion', x: 0, y: 0, completed: true });
+    pattern = apply(pattern, { type: 'set-full', x: 1, y: 0, color: 2 });
+    const editor = createEditor(pattern);
+    const metrics = (value: PatternDocument) => {
+      const computed = computePatternMetrics(value);
+      return {
+        totals: computed.totals,
+        progress: computed.progress,
+        materials: computed.materials.map((material) => ({ paletteId: material.paletteId, stitchUnits: material.stitchUnits, estimatedLength: material.estimatedLength }))
+      };
+    };
+    const beforeMetrics = metrics(editor.document);
+    const result = editor.execute(moveFragmentCommand({ kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } }, { x: 1, y: 0 }));
+    const afterMetrics = metrics(editor.document);
+    expect(result.changedIndices).toEqual(new Uint32Array([0, 1]));
+    expect(result.progress).toEqual({ cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0), marked: 0, unmarked: 0 });
+    expect(result.recalculateMetrics).toBe(true);
+    expect(afterMetrics.totals.full).toBe(1);
+    expect(afterMetrics.totals.completedComponents).toBe(1);
+    expect(afterMetrics.totals.remainingComponents).toBe(0);
+    expect(afterMetrics.materials).toEqual(expect.arrayContaining([
+      expect.objectContaining({ paletteId: 1, stitchUnits: 1 }),
+      expect.objectContaining({ paletteId: 2, stitchUnits: 0 })
+    ]));
+
+    const undo = editor.undo();
+    expect(undo.changedIndices).toEqual(new Uint32Array([0, 1]));
+    expect(undo.progress).toEqual({ cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0), marked: 0, unmarked: 0 });
+    expect(undo.recalculateMetrics).toBe(true);
+    expect(metrics(editor.document)).toEqual(beforeMetrics);
+    const redo = editor.redo();
+    expect(redo.changedIndices).toEqual(new Uint32Array([0, 1]));
+    expect(redo.progress).toEqual({ cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0), marked: 0, unmarked: 0 });
+    expect(redo.recalculateMetrics).toBe(true);
+    expect(metrics(editor.document)).toEqual(afterMetrics);
+  });
+
+  it('rejects representative large dense and sparse moves before packed history-state allocation', () => {
+    const side = 1000;
+    const densePattern = document(side, side);
+    densePattern.kind[0] = CellKind.Full;
+    densePattern.colors[0] = 1;
+    const denseEditor = createEditor(densePattern, { historyLimitBytes: 1 });
+    const denseBefore = denseEditor.document;
+    expect(() => denseEditor.execute(moveFragmentCommand(
+      { kind: 'rect', rect: { x: 0, y: 0, width: side - 1, height: side } },
+      { x: 1, y: 0 }
+    ))).toThrow(/exceeding/);
+    expect(denseEditor.document).toBe(denseBefore);
+    expect(denseEditor.undoDepth).toBe(0);
+
+    const sparseIndices = new Uint32Array(50_000);
+    for (let position = 0; position < sparseIndices.length; position += 1) sparseIndices[position] = position * 2;
+    const sparsePattern = document(side, side);
+    sparsePattern.kind[0] = CellKind.Full;
+    sparsePattern.colors[0] = 1;
+    const sparseEditor = createEditor(sparsePattern, { historyLimitBytes: 1 });
+    const sparseBefore = sparseEditor.document;
+    expect(() => sparseEditor.execute(moveFragmentCommand(
+      { kind: 'sparse', rect: { x: 0, y: 0, width: side, height: 100 }, indices: sparseIndices },
+      { x: 0, y: 1 }
+    ))).toThrow(/exceeding/);
+    expect(sparseEditor.document).toBe(sparseBefore);
+    expect(sparseEditor.undoDepth).toBe(0);
   });
 
   it('keeps a large sparse fragment paste within a bounded packed history entry', () => {

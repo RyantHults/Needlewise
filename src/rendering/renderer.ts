@@ -15,6 +15,7 @@ import {
   type CoalescedInvalidation,
   type FixedPoint,
   type FloatingPasteOverlay,
+  type FloatingPasteSelectionOverlay,
   type Invalidation,
   type InvalidationLayer,
   type LassoPathOverlay,
@@ -974,6 +975,25 @@ function drawPendingCellStates(
   return cells;
 }
 
+function drawFloatingSelectionContour(
+  context: CanvasContextAdapter,
+  document: PatternDocument,
+  selection: FloatingPasteSelectionOverlay,
+  originX: number,
+  originY: number,
+  viewport: Viewport,
+  style: RendererStyle,
+  bounds: Rect,
+  color: string | undefined,
+  dashed: boolean
+): void {
+  if (selection.kind === 'sparse' && selection.boundaries) {
+    drawSparseSelectionBoundaries(context, selection.boundaries, document, viewport, style, bounds, color, originX, originY);
+    return;
+  }
+  drawSelectionRect(context, { x: originX, y: originY, width: selection.rect.width, height: selection.rect.height }, viewport, style, bounds, color, dashed);
+}
+
 function drawFloatingPaste(
   context: CanvasContextAdapter,
   document: PatternDocument,
@@ -987,6 +1007,9 @@ function drawFloatingPaste(
   if (!preview) return;
   const destination = preview.destination;
   const chart = { x: 0, y: 0, width: document.width, height: document.height };
+  if (preview.mode === 'move' && preview.sourceSelection) {
+    drawFloatingSelectionContour(context, document, preview.sourceSelection, preview.sourceSelection.rect.x, preview.sourceSelection.rect.y, viewport, style, bounds, style.cursorColor, false);
+  }
   const visibleDestination = intersectCellRects(destination, intersectCellRects(visibleCellRect(viewport, metrics, document), chart));
   if (visibleDestination.width > 0 && visibleDestination.height > 0) {
     const sourceLeft = visibleDestination.x - destination.x;
@@ -1017,7 +1040,7 @@ function drawFloatingPaste(
           targetY,
           kind,
           preview.fragment.colors.subarray(offset, offset + 4),
-          0,
+          preview.completion?.[sourceIndex] ?? 0,
           style,
           viewport,
           lod
@@ -1027,47 +1050,37 @@ function drawFloatingPaste(
   }
 
   if (lod !== RenderLod.Overview && visibleDestination.width > 0 && visibleDestination.height > 0) {
+    const backstitches = preview.backstitches ?? {
+      ids: [],
+      x1: preview.fragment.backstitches.x1,
+      y1: preview.fragment.backstitches.y1,
+      x2: preview.fragment.backstitches.x2,
+      y2: preview.fragment.backstitches.y2,
+      colors: preview.fragment.backstitches.colors,
+      completed: []
+    };
     const offsetX = destination.x * 4;
     const offsetY = destination.y * 4;
-    for (let index = 0; index < preview.fragment.backstitches.x1.length; index += 1) {
+    for (let index = 0; index < backstitches.x1.length; index += 1) {
       const start = fixedToModel({
-        x: preview.fragment.backstitches.x1[index] + offsetX,
-        y: preview.fragment.backstitches.y1[index] + offsetY
+        x: backstitches.x1[index] + offsetX,
+        y: backstitches.y1[index] + offsetY
       });
       const end = fixedToModel({
-        x: preview.fragment.backstitches.x2[index] + offsetX,
-        y: preview.fragment.backstitches.y2[index] + offsetY
+        x: backstitches.x2[index] + offsetX,
+        y: backstitches.y2[index] + offsetY
       });
       const clippedModel = clipSegmentToRect(start, end, chart);
       if (!clippedModel) continue;
       const clippedScreen = clipSegmentToRect(modelToScreen(clippedModel.start, viewport), modelToScreen(clippedModel.end, viewport), bounds);
       if (!clippedScreen) continue;
-      drawBackstitchScreenSegment(context, document, viewport, style, clippedScreen.start, clippedScreen.end, preview.fragment.backstitches.colors[index], false);
+      drawBackstitchScreenSegment(context, document, viewport, style, clippedScreen.start, clippedScreen.end, backstitches.colors[index], (backstitches.completed[index] ?? 0) !== 0);
     }
   }
 
   const copySelection = preview.copySelection;
   if (copySelection) {
-    if (copySelection.kind === 'sparse' && copySelection.boundaries) {
-      drawSparseSelectionBoundaries(
-        context,
-        copySelection.boundaries,
-        document,
-        viewport,
-        style,
-        bounds,
-        preview.color,
-        destination.x,
-        destination.y
-      );
-    } else {
-      drawSelectionRect(context, {
-        x: destination.x,
-        y: destination.y,
-        width: copySelection.rect.width,
-        height: copySelection.rect.height
-      }, viewport, style, bounds, preview.color, false);
-    }
+    drawFloatingSelectionContour(context, document, copySelection, destination.x, destination.y, viewport, style, bounds, preview.color, false);
   }
   drawSelectionRect(context, destination, viewport, style, bounds, preview.color, true);
 }

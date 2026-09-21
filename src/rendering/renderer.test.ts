@@ -208,6 +208,50 @@ describe('Canvas 2D chart renderer', () => {
     renderer.dispose();
   });
 
+  it('renders move completion/backstitch state with source contour below destination preview', () => {
+    const document = chart(4, 2);
+    const source = chart(1, 1);
+    source.kind[0] = CellKind.Full;
+    source.colors[0] = 1;
+    const fragment = createPatternFragment(source, { x: 0, y: 0, width: 1, height: 1 });
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      metrics: getCanvasMetrics(40, 20),
+      viewport: { x: 0, y: 0, zoom: 10 },
+      style: { showGrid: false },
+      overlay: {
+        floatingPaste: {
+          mode: 'move',
+          fragment,
+          destination: { x: 2, y: 0, width: 1, height: 1 },
+          copySelection: { kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } },
+          sourceSelection: { kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } },
+          completion: new Uint8Array([1]),
+          backstitches: {
+            ids: new Uint32Array([4]),
+            x1: new Uint32Array([0]),
+            y1: new Uint32Array([0]),
+            x2: new Uint32Array([4]),
+            y2: new Uint32Array([0]),
+            colors: new Uint16Array([1]),
+            completed: new Uint8Array([1])
+          }
+        }
+      }
+    });
+    renderer.renderNow();
+
+    const sourceContour = overlay.records.findIndex((record) => record.name === 'moveTo' && record.args.join(',') === '0,0');
+    const destinationFill = overlay.records.findIndex((record) => record.name === 'fillRect' && record.args[0] === 20 && record.args[1] === 0);
+    expect(sourceContour).toBeGreaterThanOrEqual(0);
+    expect(destinationFill).toBeGreaterThan(sourceContour);
+    expect(overlay.records.some((record) => record.name === 'fillRect' && record.args[0] === 20 && record.globalAlpha < 1)).toBe(true);
+    expect(overlay.records.some((record) => record.name === 'lineTo' && record.args.join(',') === '30,0' && record.globalAlpha < 1)).toBe(true);
+    renderer.dispose();
+  });
+
   it('translates sparse exterior and interior copy-time contours at a legal clamped destination', () => {
     const document = chart(8, 8);
     const source = chart(3, 3);

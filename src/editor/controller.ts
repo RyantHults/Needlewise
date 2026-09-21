@@ -13,13 +13,16 @@ import {
   deleteCellSetCommand,
   pasteFragmentCommand,
   preflightPasteFragmentCommand,
+  moveFragmentCommand,
+  backstitchEndpointsContainedInCellUnion,
   preflightBulkCellCommand,
   QuarterCorner,
   type BulkCellEdit,
   type CommandResult,
   type DomainCommand,
   type PatternDocument,
-  type PatternFragment
+  type PatternFragment,
+  type FragmentSelection
 } from '../domain';
 import type {
   CanvasMetrics,
@@ -121,6 +124,7 @@ export interface EditorSurfaceControllerLifecycle {
   /** Configure whether touch input is restricted to movement-only behavior. */
   setTouchMovementOnly(enabled: boolean): void;
   pasteSelection(): boolean;
+  moveSelection(): boolean;
   dismissTouchCopyRequest(): void;
   /** Replace the rendered document without recreating editor interaction state. */
   setDocument(document: PatternDocument, invalidation?: Invalidation): void;
@@ -273,12 +277,27 @@ interface ResizeImageGesture {
 }
 
 interface FloatingPasteState {
+  readonly mode: 'paste' | 'move';
   readonly fragment: PatternFragment;
   readonly copySelection: ClipboardSelectionGeometry;
+  readonly sourceSelection?: ClipboardSelectionGeometry;
+  readonly moveSelection?: FragmentSelection;
+  readonly completion?: Uint8Array;
+  readonly backstitches?: FloatingPasteBackstitches;
   readonly destination: GridRect;
   readonly token: EditorRevisionToken;
   readonly previousSelection: FinalizedSelection | undefined;
   readonly previousSelectionAnchor: ModelPoint | undefined;
+}
+
+interface FloatingPasteBackstitches {
+  readonly ids: Uint32Array;
+  readonly x1: Uint32Array;
+  readonly y1: Uint32Array;
+  readonly x2: Uint32Array;
+  readonly y2: Uint32Array;
+  readonly colors: Uint16Array;
+  readonly completed: Uint8Array;
 }
 
 interface ClipboardSelectionGeometry {
@@ -1118,6 +1137,67 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return this.clipboard ? clonePatternFragment(this.clipboard) : undefined;
   }
 
+  private captureMoveSelection(document: PatternDocument, selection: FinalizedSelection): {
+    readonly fragment: PatternFragment;
+    readonly geometry: ClipboardSelectionGeometry;
+    readonly source: FragmentSelection;
+    readonly completion: Uint8Array;
+    readonly backstitches: FloatingPasteBackstitches;
+  } | undefined {
+    const bounds = finalizedSelectionBounds(selection);
+    const indices = finalizedSelectionIndices(selection, document);
+    if (!bounds || !indices || indices.length === 0) return undefined;
+    const fragment = clonePatternFragment(selection.kind === 'sparse'
+      ? createPatternFragmentFromCells(document, indices)
+      : createPatternFragment(document, bounds));
+    const completion = new Uint8Array(fragment.width * fragment.height);
+    for (const index of indices) {
+      const x = index % document.width;
+      const y = Math.floor(index / document.width);
+      completion[(y - bounds.y) * fragment.width + x - bounds.x] = document.completed[index];
+    }
+    let containedCount = 0;
+    for (let index = 0; index < document.backstitches.ids.length; index += 1) {
+      if (backstitchEndpointsContainedInCellUnion(document.backstitches.x1[index], document.backstitches.y1[index], document.backstitches.x2[index], document.backstitches.y2[index], document.width, document.height, indices)) containedCount += 1;
+    }
+    const backstitches: FloatingPasteBackstitches = {
+      ids: new Uint32Array(containedCount),
+      x1: new Uint32Array(containedCount),
+      y1: new Uint32Array(containedCount),
+      x2: new Uint32Array(containedCount),
+      y2: new Uint32Array(containedCount),
+      colors: new Uint16Array(containedCount),
+      completed: new Uint8Array(containedCount)
+    };
+    let backstitchPosition = 0;
+    for (let index = 0; index < document.backstitches.ids.length; index += 1) {
+      if (!backstitchEndpointsContainedInCellUnion(document.backstitches.x1[index], document.backstitches.y1[index], document.backstitches.x2[index], document.backstitches.y2[index], document.width, document.height, indices)) continue;
+      backstitches.ids[backstitchPosition] = document.backstitches.ids[index];
+      backstitches.x1[backstitchPosition] = document.backstitches.x1[index] - bounds.x * 4;
+      backstitches.y1[backstitchPosition] = document.backstitches.y1[index] - bounds.y * 4;
+      backstitches.x2[backstitchPosition] = document.backstitches.x2[index] - bounds.x * 4;
+      backstitches.y2[backstitchPosition] = document.backstitches.y2[index] - bounds.y * 4;
+      backstitches.colors[backstitchPosition] = document.backstitches.colors[index];
+      backstitches.completed[backstitchPosition] = document.backstitches.completed[index];
+      backstitchPosition += 1;
+    }
+    const geometry: ClipboardSelectionGeometry = selection.kind === 'sparse'
+      ? {
+        kind: 'sparse',
+        rect: { ...bounds },
+        boundaries: selection.boundaries.map((boundary) => ({
+          start: { x: boundary.start.x - bounds.x, y: boundary.start.y - bounds.y },
+          end: { x: boundary.end.x - bounds.x, y: boundary.end.y - bounds.y },
+          kind: boundary.kind
+        }))
+      }
+      : { kind: 'rect', rect: { ...bounds } };
+    const source: FragmentSelection = selection.kind === 'sparse'
+      ? { kind: 'sparse', rect: { ...bounds }, indices: indices.slice() }
+      : { kind: 'rect', rect: { ...bounds } };
+    return { fragment, geometry, source, completion, backstitches };
+  }
+
   copySelection(): PatternFragment | undefined {
     const snapshot = this.gateway.getSnapshot();
     this.reconcileSelectionDimensions(snapshot.document);
@@ -1148,6 +1228,40 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return clonePatternFragment(this.clipboard);
   }
 
+  moveSelection(): boolean {
+    const snapshot = this.gateway.getSnapshot();
+    this.reconcileSelectionDimensions(snapshot.document);
+    if (!snapshot.document || !snapshot.projectId || snapshot.revision === null || !this.selection) return false;
+    const captured = this.captureMoveSelection(snapshot.document, this.selection);
+    if (!captured) return false;
+    const destination = clampFloatingDestination(finalizedSelectionBounds(this.selection) ?? captured.geometry.rect, captured.fragment, snapshot.document);
+    const previousSelection = this.selection;
+    const previousSelectionAnchor = this.selectionAnchor;
+    this.floatingPasteMoveGesture = undefined;
+    this.floatingPasteTouchCandidate = undefined;
+    this.touchCopyCandidate = undefined;
+    this.clearTouchCopyRequest();
+    this.selection = undefined;
+    this.selectionAnchor = undefined;
+    this.floatingPaste = {
+      mode: 'move',
+      fragment: captured.fragment,
+      copySelection: captured.geometry,
+      sourceSelection: captured.geometry,
+      moveSelection: captured.source,
+      completion: captured.completion,
+      backstitches: captured.backstitches,
+      destination,
+      token: { projectId: snapshot.projectId, revision: snapshot.revision },
+      previousSelection,
+      previousSelectionAnchor
+    };
+    this.publishSelectionOverlay();
+    this.publishFloatingPasteOverlay();
+    this.setStatus('Move ready');
+    return true;
+  }
+
   pasteSelection(): boolean {
     const snapshot = this.gateway.getSnapshot();
     this.reconcileSelectionDimensions(snapshot.document);
@@ -1175,6 +1289,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.selection = undefined;
     this.selectionAnchor = undefined;
     this.floatingPaste = {
+      mode: 'paste',
       fragment,
       copySelection,
       destination,
@@ -1205,24 +1320,41 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.setStatus('Paste cancelled: project changed');
       return false;
     }
-    const command = pasteFragmentCommand(floating.fragment, { x: floating.destination.x, y: floating.destination.y }, snapshot.revision);
+    const command = floating.mode === 'move'
+      ? floating.moveSelection
+        ? moveFragmentCommand(floating.moveSelection, { x: floating.destination.x, y: floating.destination.y }, snapshot.revision)
+        : undefined
+      : pasteFragmentCommand(floating.fragment, { x: floating.destination.x, y: floating.destination.y }, snapshot.revision);
+    if (!command) {
+      this.discardFloatingPaste();
+      return false;
+    }
     try {
-      const preflight = preflightPasteFragmentCommand(snapshot.document, command);
-      if (preflight.changedCellCount === 0 && preflight.newBackstitchCount === 0) {
-        this.discardFloatingPaste();
-        this.setStatus('No change');
-        return true;
+      if (floating.mode === 'paste') {
+        const preflight = preflightPasteFragmentCommand(snapshot.document, command);
+        if (preflight.changedCellCount === 0 && preflight.newBackstitchCount === 0) {
+          this.discardFloatingPaste();
+          this.setStatus('No change');
+          return true;
+        }
       }
       this.commandInFlight = true;
       const result = this.gateway.execute(command, { projectId: snapshot.projectId, revision: snapshot.revision });
       this.commandInFlight = false;
+      if (!result.changed) {
+        this.discardFloatingPaste();
+        this.setStatus('No change');
+        return true;
+      }
       this.floatingPaste = undefined;
       this.floatingPasteMoveGesture = undefined;
       this.floatingPasteTouchCandidate = undefined;
       this.selection = undefined;
       this.selectionAnchor = undefined;
       this.publishFloatingPasteOverlay();
-      this.projectCommandResult(result, undefined, `Pasted ${String(floating.fragment.width)}×${String(floating.fragment.height)} cells`);
+      this.projectCommandResult(result, undefined, floating.mode === 'move'
+        ? `Moved ${String(floating.fragment.width)}×${String(floating.fragment.height)} cells`
+        : `Pasted ${String(floating.fragment.width)}×${String(floating.fragment.height)} cells`);
       this.publishSelectionOverlay();
       return true;
     } catch (error) {
@@ -2926,9 +3058,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       ...state.overlay,
       floatingPaste: this.floatingPaste
         ? {
+            mode: this.floatingPaste.mode,
             fragment: this.floatingPaste.fragment,
             destination: { ...this.floatingPaste.destination },
             copySelection: this.floatingPaste.copySelection,
+            sourceSelection: this.floatingPaste.sourceSelection,
+            completion: this.floatingPaste.completion,
+            backstitches: this.floatingPaste.backstitches,
             color: this.activePaletteColor()
           }
         : undefined
@@ -3429,7 +3565,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     const changed = result.changedIndices && result.changedIndices.length > 0 ? result.changedIndices : requestedIndices;
     const cellRect = changed ? cellRectForIndices(changed, result.document.width, result.document.height) : undefined;
-    const backstitchesChanged = result.changedBackstitchIds !== undefined && result.changedBackstitchIds.length > 0;
+    const backstitchesChanged = (result.changedBackstitchIds !== undefined && result.changedBackstitchIds.length > 0)
+      || (result.movedBackstitchIds !== undefined && result.movedBackstitchIds.length > 0);
     const invalidation: Invalidation = result.requiresFullRedraw === true || backstitchesChanged
       ? { layer: 'base', full: true, reason: 'editor-command' }
       : cellRect

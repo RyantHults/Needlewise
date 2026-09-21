@@ -3,9 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EditorSurface } from './EditorSurface';
 import { searchDmcColors } from '../../catalog';
 import { PALETTE_SYMBOLS } from '../../domain';
+import stylesText from '../../styles.css?inline';
 
 const f = vi.hoisted(() => ({
-  c: { start: vi.fn(), setMetrics: vi.fn(), setDocument: vi.fn(), dispose: vi.fn(), setBrush: vi.fn(), setTool: vi.fn(), setEraserMode: vi.fn(), selectPalette: vi.fn(), selectCreatedPalette: vi.fn(), setChartMode: vi.fn(), setGridVisible: vi.fn(), setBrushSize: vi.fn(), setTouchMovementOnly: vi.fn(), copySelection: vi.fn(), pasteSelection: vi.fn(), dismissTouchCopyRequest: vi.fn(), deleteSelection: vi.fn(), handleKeyDown: vi.fn(() => false), getTraceImage: vi.fn(() => undefined), setTraceImage: vi.fn(), setTraceImageSettings: vi.fn(), clearTraceImage: vi.fn() },
+  c: { start: vi.fn(), setMetrics: vi.fn(), setDocument: vi.fn(), dispose: vi.fn(), setBrush: vi.fn(), setTool: vi.fn(), setEraserMode: vi.fn(), selectPalette: vi.fn(), selectCreatedPalette: vi.fn(), setChartMode: vi.fn(), setGridVisible: vi.fn(), setBrushSize: vi.fn(), setTouchMovementOnly: vi.fn(), copySelection: vi.fn(), pasteSelection: vi.fn(), moveSelection: vi.fn(), dismissTouchCopyRequest: vi.fn(), deleteSelection: vi.fn(), handleKeyDown: vi.fn(() => false), getTraceImage: vi.fn(() => undefined), setTraceImage: vi.fn(), setTraceImageSettings: vi.fn(), clearTraceImage: vi.fn() },
   adapter: vi.fn(() => ({ dispose: vi.fn() })),
   r: { dispose: vi.fn() }, resize: undefined as (() => void) | undefined,
   uiState: { mode: 'color', gridVisible: true, overlay: {}, tool: { tool: 'paint' }, paletteId: 1, pendingPaletteId: null as number | null, canPaste: false }, createdUiState: null as unknown,
@@ -217,9 +218,11 @@ describe('EditorSurface', () => {
     const view = render(<EditorSurface workspace={ws} document={doc} />);
     const canvas = screen.getByRole('group', { name: 'Stitch chart canvas' });
     canvas.focus();
+    Object.defineProperty(canvas, 'clientWidth', { configurable: true, value: 320 });
+    Object.defineProperty(canvas, 'clientHeight', { configurable: true, value: 240 });
     act(() => {
       f.uiState.overlay = {
-        touchCopyRequest: { cell: { x: 12, y: 18 }, selection: { x: 12, y: 18, width: 2, height: 2 }, screenX: 320, screenY: 240 },
+        touchCopyRequest: { cell: { x: 12, y: 18 }, selection: { x: 12, y: 18, width: 2, height: 2 }, screenX: 160, screenY: 120 },
       };
       f.uiListener?.({ ...f.uiState });
     });
@@ -230,12 +233,19 @@ describe('EditorSurface', () => {
     expect(adapterOptions?.shouldExcludeTarget?.(document.querySelector('.canvas-frame'), 'pointerdown')).toBe(false);
     expect(within(menu).getByRole('button', { name: 'Copy selection' })).toHaveFocus();
     expect(within(menu).getByRole('button', { name: 'Copy selection' })).toHaveProperty('tabIndex', 0);
-    expect(menu).toHaveStyle({ left: '245px', top: '216px' });
+    expect(menu).toHaveStyle({ left: '85px', top: '96px' });
+    Object.defineProperty(menu, 'offsetWidth', { configurable: true, value: 260 });
+    Object.defineProperty(menu, 'offsetHeight', { configurable: true, value: 48 });
+    f.uiState.overlay = { touchCopyRequest: { cell: { x: 12, y: 18 }, selection: { x: 12, y: 18, width: 2, height: 2 }, screenX: 160, screenY: 120 } };
+    act(() => f.uiListener?.({ ...f.uiState }));
+    await waitFor(() => expect(menu).toHaveStyle({ left: '30px', top: '96px' }));
     expect(within(menu).getAllByRole('button').map((item) => item.textContent)).toEqual([
-      'Copy selection', 'Paste selection', 'Delete selection',
+      'Copy', 'Paste', 'Move', 'Delete',
     ]);
+    expect(stylesText).toMatch(/\.touch-copy-menu button \{[^}]*min-width:2\.75rem;[^}]*min-height:2\.75rem;/);
     const copy = within(menu).getByRole('button', { name: 'Copy selection' });
     const paste = within(menu).getByRole('button', { name: 'Paste selection' });
+    const move = within(menu).getByRole('button', { name: 'Move selection' });
     const del = within(menu).getByRole('button', { name: 'Delete selection' });
     expect(paste).toBeDisabled();
     fireEvent.keyDown(menu, { key: 'Enter' });
@@ -249,16 +259,18 @@ describe('EditorSurface', () => {
     });
     expect(paste).toBeEnabled();
     fireEvent.click(paste);
+    fireEvent.click(move);
     fireEvent.click(del);
     expect(f.c.pasteSelection).toHaveBeenCalledOnce();
+    expect(f.c.moveSelection).toHaveBeenCalledOnce();
     expect(f.c.deleteSelection).toHaveBeenCalledOnce();
     await waitFor(() => expect(document.activeElement).toBe(document.querySelector('.canvas-frame')));
     fireEvent.keyDown(copy, { key: 'Escape' });
     fireEvent.pointerDown(document.body);
     expect(f.c.dismissTouchCopyRequest).toHaveBeenCalled();
-    f.uiState.overlay = { touchCopyRequest: { cell: { x: 1, y: 1 }, selection: { x: 1, y: 1, width: 1, height: 1 }, screenX: 639, screenY: 479 } };
+    f.uiState.overlay = { touchCopyRequest: { cell: { x: 1, y: 1 }, selection: { x: 1, y: 1, width: 1, height: 1 }, screenX: 319, screenY: 239 } };
     act(() => f.uiListener?.({ ...f.uiState }));
-    await waitFor(() => expect(menu).toHaveStyle({ left: '490px', top: '432px' }));
+    await waitFor(() => expect(menu).toHaveStyle({ left: '60px', top: '192px' }));
     view.unmount();
   });
   it('marks top-level stitch tools with accessible pressed state and fill icons', () => { f.uiState.tool = { tool: 'paint', brush: { kind: 'half', paletteId: 1 } } as never; const view = render(<EditorSurface workspace={ws} document={doc} />); expect(screen.getByRole('button', { name: 'Full stitch' })).toHaveAttribute('aria-pressed', 'false'); expect(screen.getByRole('button', { name: 'Half stitch' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: '3/4 stitch' })).toHaveAttribute('aria-pressed', 'false'); expect(screen.getByRole('button', { name: 'Full stitch' }).querySelector('.stitch-brush-icon-full')).toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Half stitch' }).querySelector('.stitch-brush-icon-half')).toBeInTheDocument(); expect(screen.getByRole('button', { name: '3/4 stitch' }).querySelector('.stitch-brush-icon-three-quarter')).toBeInTheDocument(); view.unmount(); f.uiState.tool = { tool: 'backstitch' }; render(<EditorSurface workspace={ws} document={doc} />); expect(screen.getByRole('button', { name: 'Backstitch' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: 'Full stitch' })).toHaveAttribute('aria-pressed', 'false'); });

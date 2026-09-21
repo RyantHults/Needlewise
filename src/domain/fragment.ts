@@ -4,6 +4,7 @@ import {
   FIXED_POINT_UNITS_PER_CELL,
   MAX_PERSISTABLE_CELL_COUNT,
   PATTERN_FRAGMENT_VERSION,
+  type CropRect,
   type FragmentSelection,
   type PatternDocument,
   type PatternFragment,
@@ -163,7 +164,7 @@ export function assertValidPatternFragment(fragment: PatternFragment): void {
 
 export const assertFragmentValid = assertValidPatternFragment;
 
-function validateSelection(document: PatternDocument, selection: FragmentSelection): void {
+function validateSelection(document: PatternDocument, selection: CropRect): void {
   if (!isObject(selection) || !Number.isInteger(selection.x) || !Number.isInteger(selection.y) || !Number.isInteger(selection.width) || !Number.isInteger(selection.height) || selection.x < 0 || selection.y < 0 || selection.width < 1 || selection.height < 1 || selection.x + selection.width > document.width || selection.y + selection.height > document.height) {
     throw new DomainError('invalid-selection', 'Fragment selection must be a non-empty rectangle inside the document.');
   }
@@ -171,23 +172,25 @@ function validateSelection(document: PatternDocument, selection: FragmentSelecti
 
 export function createPatternFragment(document: PatternDocument, selection: FragmentSelection): PatternFragment {
   assertValidDocument(document);
-  validateSelection(document, selection);
-  const count = selection.width * selection.height;
+  if ('kind' in selection && selection.kind === 'sparse') return createPatternFragmentFromCells(document, selection.indices);
+  const rect = 'kind' in selection ? selection.rect : selection;
+  validateSelection(document, rect);
+  const count = rect.width * rect.height;
   const kind = new Uint8Array(count);
   const colors = new Uint16Array(count * 4);
-  for (let y = 0; y < selection.height; y += 1) {
-    const sourceCellOffset = (selection.y + y) * document.width + selection.x;
-    const targetCellOffset = y * selection.width;
-    kind.set(document.kind.subarray(sourceCellOffset, sourceCellOffset + selection.width), targetCellOffset);
+  for (let y = 0; y < rect.height; y += 1) {
+    const sourceCellOffset = (rect.y + y) * document.width + rect.x;
+    const targetCellOffset = y * rect.width;
+    kind.set(document.kind.subarray(sourceCellOffset, sourceCellOffset + rect.width), targetCellOffset);
     const sourceColorOffset = sourceCellOffset * 4;
     const targetColorOffset = targetCellOffset * 4;
-    colors.set(document.colors.subarray(sourceColorOffset, sourceColorOffset + selection.width * 4), targetColorOffset);
+    colors.set(document.colors.subarray(sourceColorOffset, sourceColorOffset + rect.width * 4), targetColorOffset);
   }
 
-  const left = selection.x * 4;
-  const top = selection.y * 4;
-  const right = (selection.x + selection.width) * 4;
-  const bottom = (selection.y + selection.height) * 4;
+  const left = rect.x * 4;
+  const top = rect.y * 4;
+  const right = (rect.x + rect.width) * 4;
+  const bottom = (rect.y + rect.height) * 4;
   let containedCount = 0;
   for (let index = 0; index < document.backstitches.ids.length; index += 1) {
     const store = document.backstitches;
@@ -211,7 +214,7 @@ export function createPatternFragment(document: PatternDocument, selection: Frag
     backstitches.colors[targetIndex] = store.colors[index];
     targetIndex += 1;
   }
-  return { version: PATTERN_FRAGMENT_VERSION, width: selection.width, height: selection.height, kind, colors, backstitches };
+  return { version: PATTERN_FRAGMENT_VERSION, width: rect.width, height: rect.height, kind, colors, backstitches };
 }
 
 function validateCellSetSelection(document: PatternDocument, indices: Uint32Array): void {
