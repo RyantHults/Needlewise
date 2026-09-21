@@ -22,9 +22,16 @@ vi.mock('../../rendering/trace', async () => {
 vi.mock('../../editor/coordinates', () => ({ getCanvasMetrics: vi.fn(() => ({ cssWidth: 640, cssHeight: 480, pixelWidth: 640, pixelHeight: 480, backingWidth: 640, backingHeight: 480, requestedDpr: 1, dpr: 1, maxDpr: 2, maxBackingPixels: 1e6 })), modelToScreen: vi.fn((point: { x: number; y: number }) => point) }));
 vi.mock('../../editor', () => ({ ChartPresentationMode: { Color: 'color', Symbol: 'symbol', Grayscale: 'grayscale', Combined: 'combined' }, createUiStore: vi.fn((initial: unknown) => { f.createdUiState = initial; return { getState: () => f.uiState, subscribe: vi.fn((listener: unknown) => { f.uiListener = listener as (state: unknown) => void; return () => undefined; }) }; }), createWorkspaceEditorGateway: vi.fn(() => ({ dispose: vi.fn() })), createPointerEventsAdapter: f.adapter, createEditorSurfaceController: vi.fn((options: unknown) => { f.capturedCallback = (options as { onTraceBoundsChange?: (b: { x: number; y: number; width: number; height: number }) => void }).onTraceBoundsChange ?? null; return f.c as never; }) }));
 const ws = { metadata: { title: 'Sampler', notes: '', aidaCount: 14 }, updateActiveMetadata: vi.fn(), updateActiveAidaCount: vi.fn(), execute: vi.fn(), getStateSnapshot: vi.fn(), setSourceImage: vi.fn(() => Promise.resolve()), applyTraceImageChange: vi.fn(() => Promise.resolve()), getAsset: vi.fn(), sourceImage: undefined as ({ chartBounds: { x: number; y: number; width: number; height: number } } | undefined) } as never;
+const executeMock = () => (ws as { execute: ReturnType<typeof vi.fn> }).execute;
 const doc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
 const two = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321' } }, { id: 2, name: 'Sky', color: '#48c', active: true }], backstitches: { ids: new Uint32Array() } } as never;
 const paletteDetailsDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: '✦', catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
+const customColorDocument = (palette: unknown[]) => ({ width: 16, height: 16, colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } }) as never;
+const openCustomColorDialog = () => {
+  fireEvent.click(screen.getByRole('button', { name: /Add new color/ }));
+  return screen.getByRole('dialog', { name: 'Add a thread color' });
+};
+const customColorAction = (dialog: HTMLElement) => dialog.querySelector('.custom-color-action') as HTMLButtonElement;
 // Mirrors the picker's render predicate: every pool symbol except those held by
 // another palette entry (the open entry's own symbol is always kept). Computed by
 // value so pool reordering or enrichment never hardcodes glyphs or indices.
@@ -460,12 +467,182 @@ describe('EditorSurface', () => {
   it('applies units immediately on toggle without waiting for save', () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); fireEvent.click(screen.getByRole('button', { name: 'Imperial' })); expect((ws as { updateActiveMetadata: ReturnType<typeof vi.fn> }).updateActiveMetadata).toHaveBeenCalledWith({ units: 'imperial' }); expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument(); });
   it('guides users without a thread while keeping Completion available', () => { const empty = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: false }], backstitches: { ids: new Uint32Array() } } as never; render(<EditorSurface workspace={ws} document={empty} />); expect(screen.queryByRole('button', { name: 'Paint' })).not.toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Fill' })).toBeDisabled(); expect(screen.getByRole('button', { name: 'Backstitch' })).toBeDisabled(); fireEvent.click(screen.getByRole('button', { name: 'Completion' })); expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'completion' }); });
   it('shows catalog code before the palette name and exposes command buttons', () => { render(<EditorSurface workspace={ws} document={doc} />); const ruby = screen.getByRole('button', { name: '321Ruby' }); expect(ruby).toBeInTheDocument(); for (const name of ['Undo', 'Redo', 'Zoom in', 'Zoom out', 'Fit']) expect(screen.getByRole('button', { name })).toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: 'Undo' })); expect(f.c.handleKeyDown).toHaveBeenCalledWith(expect.objectContaining({ key: 'z', ctrlKey: true })); fireEvent.click(screen.getByRole('button', { name: 'Redo' })); expect(f.c.handleKeyDown).toHaveBeenCalledWith(expect.objectContaining({ key: 'y', ctrlKey: true })); fireEvent.click(screen.getByRole('button', { name: 'Zoom out' })); expect(f.c.handleKeyDown).toHaveBeenCalledWith(expect.objectContaining({ key: '-' })); });
-  it('filters the thread-color grid, selects a swatch, and adds the summary color', () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: /Add new color/ })); const grid = screen.getByRole('list', { name: 'Available thread colors' }); expect(within(grid).getAllByRole('button').length).toBeGreaterThan(8); fireEvent.change(screen.getByLabelText('Search offline catalog'), { target: { value: '321' } }); const red = within(grid).getByRole('button', { name: /Red, color 321/ }); expect(within(grid).getAllByRole('button')).toHaveLength(1); expect(within(grid).queryByText('Red')).not.toBeInTheDocument(); expect(within(grid).queryByText('#321')).not.toBeInTheDocument(); fireEvent.click(red); expect(red).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: 'Add Red' })).toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: 'Add Red' })); expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).toHaveBeenCalledWith(expect.objectContaining({ type: 'palette-create', name: 'Red', color: '#C72B3B' })); });
+  it('filters the thread-color grid, selects a swatch, and adds the summary color', async () => {
+    const createdDocument = customColorDocument([
+      ...(doc as { palette: unknown[] }).palette,
+      { id: 2, name: 'Red', color: '#C72B3B', active: true, catalog: { code: '321' } },
+    ]);
+    executeMock().mockResolvedValueOnce({ document: createdDocument });
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.click(screen.getByRole('button', { name: /Add new color/ }));
+    const grid = screen.getByRole('list', { name: 'Available thread colors' });
+    expect(within(grid).getAllByRole('button').length).toBeGreaterThan(8);
+    fireEvent.change(screen.getByLabelText('Search offline catalog'), { target: { value: '321' } });
+    const red = within(grid).getByRole('button', { name: /Red, color 321/ });
+    expect(within(grid).getAllByRole('button')).toHaveLength(1);
+    expect(within(grid).queryByText('Red')).not.toBeInTheDocument();
+    expect(within(grid).queryByText('#321')).not.toBeInTheDocument();
+    fireEvent.click(red);
+    expect(red).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Add Red' }));
+    await waitFor(() => expect(executeMock()).toHaveBeenCalledWith(expect.objectContaining({ type: 'palette-create', name: 'Red', color: '#C72B3B' })));
+    await waitFor(() => expect(f.c.selectCreatedPalette).toHaveBeenCalledWith(2));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add a thread color' })).not.toBeInTheDocument());
+  });
+  it('validates and exposes accessible custom color controls', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.click(screen.getByRole('button', { name: /Add new color/ }));
+    const dialog = screen.getByRole('dialog', { name: 'Add a thread color' });
+    const picker = within(dialog).getByLabelText('Choose custom color');
+    const hex = within(dialog).getByLabelText('Hex color');
+    expect(picker).toHaveAttribute('type', 'color');
+    expect(hex).toHaveValue('');
+    expect(within(dialog).getByRole('button', { name: 'Add custom color' })).toBeDisabled();
+    fireEvent.change(hex, { target: { value: '#c72b3b' } });
+    expect(within(dialog).getByRole('button', { name: 'Add Red' })).toBeEnabled();
+    fireEvent.change(picker, { target: { value: '#123456' } });
+    expect(hex).toHaveValue('#123456');
+    fireEvent.change(hex, { target: { value: '#12' } });
+    expect(within(dialog).getByRole('button', { name: 'Add custom color' })).toBeDisabled();
+    expect(within(dialog).getByText(/enter a 3- or 6-digit hex color/i)).toBeInTheDocument();
+    expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).not.toHaveBeenCalled();
+  }, 10000);
+  it('canonicalizes optional-hash six-digit and three-digit custom input', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.click(screen.getByRole('button', { name: /Add new color/ }));
+    const dialog = screen.getByRole('dialog', { name: 'Add a thread color' });
+    const hex = within(dialog).getByLabelText('Hex color');
+
+    fireEvent.change(hex, { target: { value: 'c72b3b' } });
+    expect(within(dialog).getByRole('button', { name: 'Add Red' })).toBeEnabled();
+    fireEvent.change(hex, { target: { value: '#c7b' } });
+    expect(within(dialog).getByRole('button', { name: 'Add #CC77BB' })).toBeEnabled();
+  });
+  it('selects an active catalog match before an active custom match without executing', async () => {
+    const matchingDocument = customColorDocument([
+      { id: 2, name: 'Custom Ruby', color: '#BB4444', active: true },
+      { id: 1, name: 'Catalog Ruby', color: '#b44', active: true, catalog: { code: '321' } },
+    ]);
+    render(<EditorSurface workspace={ws} document={matchingDocument} />);
+    const dialog = openCustomColorDialog();
+    fireEvent.change(within(dialog).getByLabelText('Hex color'), { target: { value: '#b44' } });
+    expect(customColorAction(dialog)).toHaveAccessibleName('Select Catalog Ruby');
+    fireEvent.click(customColorAction(dialog));
+    await waitFor(() => expect(f.c.selectPalette).toHaveBeenCalledWith(1));
+    expect(f.c.selectPalette).not.toHaveBeenCalledWith(2);
+    expect(executeMock()).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog', { name: 'Add a thread color' })).not.toBeInTheDocument();
+  });
+  it('selects an active custom match after expanding a short hex without executing', async () => {
+    const matchingDocument = customColorDocument([
+      { id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321' } },
+      { id: 2, name: 'Sky', color: '#4488CC', active: true },
+    ]);
+    render(<EditorSurface workspace={ws} document={matchingDocument} />);
+    const dialog = openCustomColorDialog();
+    fireEvent.change(within(dialog).getByLabelText('Hex color'), { target: { value: '#48c' } });
+    expect(customColorAction(dialog)).toHaveAccessibleName('Select Sky');
+    fireEvent.click(customColorAction(dialog));
+    await waitFor(() => expect(f.c.selectPalette).toHaveBeenCalledWith(2));
+    expect(executeMock()).not.toHaveBeenCalled();
+  });
+  it('adds an absent exact DMC color with catalog metadata', async () => {
+    const createdDocument = customColorDocument([
+      { id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321' } },
+      { id: 2, name: 'Red', color: '#C72B3B', active: true, catalog: { code: '321' } },
+    ]);
+    (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockResolvedValueOnce({ document: createdDocument });
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const dialog = openCustomColorDialog();
+    fireEvent.change(within(dialog).getByLabelText('Hex color'), { target: { value: '#c72b3b' } });
+    expect(customColorAction(dialog)).toHaveAccessibleName('Add Red');
+    fireEvent.click(customColorAction(dialog));
+    await waitFor(() => expect(executeMock()).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'palette-create',
+      catalog: expect.objectContaining({ code: '321', hex: '#C72B3B' }),
+    })));
+    await waitFor(() => expect(f.c.selectCreatedPalette).toHaveBeenCalledWith(2));
+    expect(screen.queryByRole('dialog', { name: 'Add a thread color' })).not.toBeInTheDocument();
+  });
+  it('creates a novel custom color without catalog metadata', async () => {
+    const createdDocument = customColorDocument([
+      { id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321' } },
+      { id: 2, name: '#12AB34', color: '#12AB34', active: true },
+    ]);
+    (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockResolvedValueOnce({ document: createdDocument });
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const dialog = openCustomColorDialog();
+    fireEvent.change(within(dialog).getByLabelText('Hex color'), { target: { value: '#12ab34' } });
+    expect(customColorAction(dialog)).toHaveAccessibleName('Add #12AB34');
+    fireEvent.click(customColorAction(dialog));
+    await waitFor(() => expect(executeMock()).toHaveBeenCalledWith({
+      type: 'palette-create',
+      name: '#12AB34',
+      color: '#12AB34',
+    }));
+    await waitFor(() => expect(f.c.selectCreatedPalette).toHaveBeenCalledWith(2));
+    expect(screen.queryByRole('dialog', { name: 'Add a thread color' })).not.toBeInTheDocument();
+  });
+  it('ignores inactive matches and follows the creation path', async () => {
+    const inactiveDocument = customColorDocument([
+      { id: 1, name: 'Inactive custom', color: '#12AB34', active: false },
+    ]);
+    const createdDocument = customColorDocument([
+      { id: 1, name: 'Inactive custom', color: '#12AB34', active: false },
+      { id: 2, name: '#12AB34', color: '#12AB34', active: true },
+    ]);
+    executeMock().mockResolvedValueOnce({ document: createdDocument });
+    render(<EditorSurface workspace={ws} document={inactiveDocument} />);
+    const dialog = openCustomColorDialog();
+    fireEvent.change(within(dialog).getByLabelText('Hex color'), { target: { value: '#12ab34' } });
+    expect(customColorAction(dialog)).toHaveAccessibleName('Add #12AB34');
+    fireEvent.click(customColorAction(dialog));
+    await waitFor(() => expect(executeMock()).toHaveBeenCalledWith({
+      type: 'palette-create',
+      name: '#12AB34',
+      color: '#12AB34',
+    }));
+    expect(f.c.selectPalette).not.toHaveBeenCalled();
+    await waitFor(() => expect(f.c.selectCreatedPalette).toHaveBeenCalledWith(2));
+    expect(screen.queryByRole('dialog', { name: 'Add a thread color' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+  it('keeps the dialog open and shows the rejection when custom creation fails', async () => {
+    (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockRejectedValueOnce(new Error('Custom color rejected'));
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const dialog = openCustomColorDialog();
+    fireEvent.change(within(dialog).getByLabelText('Hex color'), { target: { value: '#12ab34' } });
+    fireEvent.click(customColorAction(dialog));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Custom color rejected'));
+    expect(screen.getByRole('dialog', { name: 'Add a thread color' })).toBeInTheDocument();
+  });
+  it('resets custom input and action state when the catalog dialog reopens', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.click(screen.getByRole('button', { name: /Add new color/ }));
+    const firstDialog = screen.getByRole('dialog', { name: 'Add a thread color' });
+    fireEvent.change(within(firstDialog).getByLabelText('Hex color'), { target: { value: '#c72b3b' } });
+    fireEvent.click(within(firstDialog).getByRole('button', { name: 'Close catalog dialog' }));
+    fireEvent.click(screen.getByRole('button', { name: /Add new color/ }));
+    const reopened = screen.getByRole('dialog', { name: 'Add a thread color' });
+    expect(within(reopened).getByLabelText('Hex color')).toHaveValue('');
+    expect(within(reopened).getByRole('button', { name: 'Add custom color' })).toBeDisabled();
+  });
   it('shows a clear empty state when no thread colors match', () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: /Add new color/ })); fireEvent.change(screen.getByLabelText('Search offline catalog'), { target: { value: 'not-a-real-thread-color' } }); expect(screen.getByText('No matching colors.')).toBeInTheDocument(); expect(within(screen.getByRole('list', { name: 'Available thread colors' })).queryAllByRole('button')).toHaveLength(0); });
   it('keeps query 31 results limited to matching names or codes', async () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: /Add new color/ })); const grid = screen.getByRole('list', { name: 'Available thread colors' }); fireEvent.change(screen.getByLabelText('Search offline catalog'), { target: { value: '31' } }); await waitFor(() => expect(within(grid).getAllByRole('button').length).toBeGreaterThan(0)); for (const button of within(grid).getAllByRole('button')) { const label = button.getAttribute('aria-label') ?? ''; const [name, code] = label.split(', color '); expect(name?.toLowerCase().includes('31') || code?.includes('31')).toBe(true); } expect(within(grid).queryByRole('button', { name: /Bright Red/ })).not.toBeInTheDocument(); });
   it('marks the pending palette color and clears it when not pending', () => { f.uiState.pendingPaletteId = 1; const first = render(<EditorSurface workspace={ws} document={doc} />); expect(screen.getByRole('button', { name: '321Ruby' })).toHaveClass('palette-pending'); first.unmount(); f.uiState.pendingPaletteId = null; render(<EditorSurface workspace={ws} document={doc} />); expect(screen.getByRole('button', { name: '321Ruby' })).not.toHaveClass('palette-pending'); });
   it('orders the pending palette color first in the palette roster', () => { f.uiState.pendingPaletteId = 2; render(<EditorSurface workspace={ws} document={two} />); const sky = screen.getByRole('button', { name: 'Sky' }); const ruby = screen.getByRole('button', { name: '321Ruby' }); expect(sky).toHaveClass('palette-pending'); expect(sky.compareDocumentPosition(ruby) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy(); });
   it('keeps the palette add action and swatches together in the palette rail', () => { f.uiState.pendingPaletteId = 2; render(<EditorSurface workspace={ws} document={two} />); const rail = screen.getByRole('complementary', { name: 'Editor controls' }); const dock = screen.getByRole('region', { name: 'Thread colors' }); const add = screen.getByRole('button', { name: /Add new color/ }); const sky = screen.getByRole('button', { name: 'Sky' }); const ruby = screen.getByRole('button', { name: '321Ruby' }); expect(rail).toContainElement(dock); expect(dock).toHaveClass('palette-rail'); expect(dock).toContainElement(add); expect(dock).toContainElement(sky); expect(dock).toContainElement(ruby); });
+  it('shows a normalized custom hex label in the palette rail', () => {
+    render(<EditorSurface workspace={ws} document={customColorDocument([{ id: 2, name: 'Custom Ruby', color: '#12AB34', active: true }])} />);
+    const number = screen.getByText('#12AB34', { selector: '.palette-number' });
+    expect(number).toHaveClass('palette-number-hex');
+  });
+  it('shows a normalized custom hex label in the palette details menu', () => {
+    render(<EditorSurface workspace={ws} document={customColorDocument([{ id: 2, name: 'Custom Ruby', color: '#12AB34', active: true }])} />);
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Custom Ruby' }), { key: 'ContextMenu' });
+    const menu = screen.getByRole('menu', { name: 'Details for Custom Ruby' });
+    expect(menu).toHaveTextContent('#12AB34');
+  });
   it('opens a color details menu from the accessible context-menu key', () => {
     render(<EditorSurface workspace={ws} document={paletteDetailsDoc} />);
     const color = screen.getByRole('button', { name: '321Ruby' });

@@ -326,12 +326,18 @@ export const DMC_CATALOG_VALIDATION = validateDmcCatalogBundle();
 if (!DMC_CATALOG_VALIDATION.valid) throw new Error(`Invalid committed DMC catalog bundle: ${DMC_CATALOG_VALIDATION.errors.join(' ')}`);
 
 const byCode = new Map(DMC_CATALOG.map((record) => [record.code.toUpperCase(), record]));
+const byHex = new Map<string, DmcCatalogColor>(DMC_CATALOG.map((record) => [record.hex, record]));
 
 /** Look up a code such as "09", "B5200", or "Ecru". Numeric callers cannot express leading zeroes. */
 export function getDmcColor(code: string | number): DmcCatalogColor | undefined {
   const value = String(code).trim().toUpperCase();
   const normalized = value.startsWith('DMC-') ? value.slice(4) : value;
   return normalized ? byCode.get(normalized) : undefined;
+}
+
+export function getDmcColorByHex(value: string): DmcCatalogColor | undefined {
+  const hex = value.trim().toUpperCase();
+  return /^#[0-9A-F]{6}$/.test(hex) ? byHex.get(hex) : undefined;
 }
 
 export interface NearestDmcColorInput {

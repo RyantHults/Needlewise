@@ -19,7 +19,7 @@ import {
 } from "../../domain";
 import type { DisplayUnits } from "../../domain";
 import { TraceImageControls } from "./TraceImageControls";
-import { searchDmcColors } from "../../catalog";
+import { getDmcColorByHex, searchDmcColors } from "../../catalog";
 import { useMemo } from "react";
 import { createPortal } from "react-dom";
 import backstitchIcon from "../../assets/editor-tools/backstitch.svg";
@@ -42,6 +42,14 @@ interface Props {
   onOpenMaterials?: () => void;
 }
 type CatalogColor = ReturnType<typeof searchDmcColors>[number];
+const normalizeHexColor = (value: string): string | undefined => {
+  const digits = value.trim().replace(/^#/, "");
+  if (!/^(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(digits)) return undefined;
+  const expanded = digits.length === 3
+    ? digits.split("").map((digit) => `${digit}${digit}`).join("")
+    : digits;
+  return `#${expanded.toUpperCase()}`;
+};
 type TouchCopyRequestWithScreen = {
   cell: { x: number; y: number };
   selection: { x: number; y: number; width: number; height: number };
@@ -190,6 +198,7 @@ export function EditorSurface({
   const [paletteQuery, setPaletteQuery] = useState("");
   const [selectedCatalogColor, setSelectedCatalogColor] =
     useState<CatalogColor | null>(null);
+  const [customColorInput, setCustomColorInput] = useState("");
   const [paletteNotice, setPaletteNotice] = useState("");
   const addTrigger = useRef<HTMLButtonElement>(null);
   const paletteDialog = useRef<HTMLDivElement>(null);
@@ -426,9 +435,25 @@ export function EditorSurface({
   const openPalettePicker = () => {
     setPaletteNotice("");
     setPaletteQuery("");
+    setCustomColorInput("");
     setSelectedCatalogColor(searchDmcColors("")[0] ?? null);
     setPaletteOpen(true);
   };
+  const customColor = normalizeHexColor(customColorInput);
+  const customPaletteMatch = customColor
+    ? palette.find(
+        (entry) =>
+          Boolean(entry.catalog) && normalizeHexColor(entry.color) === customColor,
+      ) ?? palette.find((entry) => normalizeHexColor(entry.color) === customColor)
+    : undefined;
+  const customDmcColor = customColor ? getDmcColorByHex(customColor) : undefined;
+  const customActionLabel = customPaletteMatch
+    ? `Select ${customPaletteMatch.name}`
+    : customDmcColor
+      ? `Add ${customDmcColor.name}`
+      : customColor
+        ? `Add ${customColor}`
+        : "Add custom color";
   const closePalettePicker = () => {
     setPaletteOpen(false);
     window.setTimeout(() => addTrigger.current?.focus(), 0);
@@ -454,6 +479,42 @@ export function EditorSurface({
       const createdDocument = result?.document ?? workspace.getStateSnapshot().document;
       const added = createdDocument?.palette.find(
         (entry) => entry.active && entry.catalog?.code === color.code && !previousIds.has(entry.id),
+      );
+      if (added) controllerRef.current?.selectCreatedPalette(added.id);
+      closePalettePicker();
+    } catch (error) {
+      setPaletteNotice(
+        error instanceof Error
+          ? error.message
+          : "This color could not be added.",
+      );
+    }
+  };
+  const addCustomColor = async (): Promise<void> => {
+    if (!customColor) return;
+    if (customPaletteMatch) {
+      controllerRef.current?.selectPalette(customPaletteMatch.id);
+      closePalettePicker();
+      return;
+    }
+    if (customDmcColor) {
+      await addPaletteColor(customDmcColor);
+      return;
+    }
+    try {
+      const previousIds = new Set(document.palette.map((entry) => entry.id));
+      const result = await workspace.execute({
+        type: "palette-create",
+        name: customColor,
+        color: customColor,
+      });
+      const createdDocument = result?.document ?? workspace.getStateSnapshot().document;
+      const added = createdDocument?.palette.find(
+        (entry) =>
+          entry.active &&
+          !entry.catalog &&
+          !previousIds.has(entry.id) &&
+          normalizeHexColor(entry.color) === customColor,
       );
       if (added) controllerRef.current?.selectCreatedPalette(added.id);
       closePalettePicker();
@@ -559,7 +620,11 @@ export function EditorSurface({
       >
         <span className="palette-swatch" style={{ backgroundColor: x.color }} aria-hidden="true">
           {paletteOptions.symbols && <span className="palette-swatch-symbol">{x.symbol}</span>}
-          {paletteOptions.numbers && <span className="palette-number">{x.catalog?.code ?? x.id}</span>}
+          {paletteOptions.numbers && (
+            <span className={`palette-number${x.catalog ? "" : " palette-number-hex"}`}>
+              {x.catalog?.code ?? normalizeHexColor(x.color) ?? x.color}
+            </span>
+          )}
         </span>
       </button>
       <button
@@ -585,7 +650,7 @@ export function EditorSurface({
       {paletteMenu === x.id && (
         <div className="palette-menu" role="menu" aria-label={`Details for ${x.name}`}>
           <strong>{x.name}</strong>
-          <span>{x.catalog?.code ?? `Color ${x.id}`}</span>
+           <span>{x.catalog?.code ?? normalizeHexColor(x.color) ?? x.color}</span>
           <span>Symbol {x.symbol}</span>
           <button type="button" role="menuitem" onClick={(event) => openSymbolPicker(x.id, event.currentTarget)}>Change symbol</button>
           {!(ui?.pendingPaletteId === x.id && !paletteActiveIds.has(x.id)) && (
@@ -1690,6 +1755,43 @@ export function EditorSurface({
                     </p>
                   )}
                 </div>
+                <section className="custom-color-section" aria-labelledby="custom-color-title">
+                  <h3 id="custom-color-title">Custom color</h3>
+                  <div className="custom-color-fields">
+                    <label htmlFor="custom-color-picker">Choose custom color</label>
+                    <input
+                      id="custom-color-picker"
+                      type="color"
+                      value={customColor ?? "#000000"}
+                      onChange={(e) => setCustomColorInput(normalizeHexColor(e.target.value) ?? e.target.value)}
+                    />
+                    <label htmlFor="custom-color-hex">Hex color</label>
+                    <input
+                      id="custom-color-hex"
+                      type="text"
+                      value={customColorInput}
+                      onChange={(e) => setCustomColorInput(e.target.value)}
+                      placeholder="#C72B3B"
+                      inputMode="text"
+                      autoComplete="off"
+                      aria-describedby="custom-color-help"
+                    />
+                  </div>
+                  <p id="custom-color-help" className="custom-color-help" aria-live="polite">
+                    {customColorInput && !customColor
+                      ? "Enter a 3- or 6-digit hex color."
+                      : "Use a three- or six-digit hex value."}
+                  </p>
+                  <button
+                    className="small-action custom-color-action"
+                    type="button"
+                    disabled={!customColor}
+                    aria-label={customActionLabel}
+                    onClick={() => void addCustomColor()}
+                  >
+                    {customActionLabel}
+                  </button>
+                </section>
               </div>
               {paletteNotice && (
                 <p className="modal-error" role="alert">

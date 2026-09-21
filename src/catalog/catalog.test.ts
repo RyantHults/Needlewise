@@ -6,6 +6,7 @@ import {
   DMC_CATALOG_PROVENANCE,
   DMC_CATALOG_RECORD_COUNT,
   getDmcColor,
+  getDmcColorByHex,
   nearestDmcColor,
   searchDmcColors,
   validateDmcCatalog,
@@ -91,6 +92,21 @@ describe('offline DMC-compatible catalog', () => {
     expect(getDmcColor('Ecru')).toMatchObject({ sourceId: 'dmc-ECRU' });
     expect(getDmcColor(3713)?.code).toBe('3713');
     expect(getDmcColor('missing')).toBeUndefined();
+    expect(getDmcColorByHex('#ffe2e2')).toMatchObject({
+      code: '3713',
+      hex: '#FFE2E2',
+    });
+    expect(getDmcColorByHex('#FFFFFF')).toMatchObject({
+      code: 'B5200',
+      hex: '#FFFFFF',
+    });
+    for (const record of DMC_CATALOG) {
+      expect(getDmcColorByHex(record.hex)).toBe(record);
+      expect(getDmcColorByHex(record.hex.toLowerCase())).toBe(record);
+    }
+    expect(getDmcColorByHex('#010203')).toBeUndefined();
+    expect(getDmcColorByHex('#GGGGGG')).toBeUndefined();
+    expect(getDmcColorByHex('#FFF')).toBeUndefined();
 
     const salmon = searchDmcColors('salmon');
     expect(salmon.length).toBeGreaterThan(1);
