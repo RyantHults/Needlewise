@@ -142,6 +142,7 @@ export function createPointerEventsAdapter(
     const next = sample(surface, pointer);
     const handled = isFinitePointerSample(next) ? controller.handlePointerUp(next) : false;
     if (pointer.pointerType === 'touch') debugTouchPointer('pointerup', pointer, { x: next.screenX, y: next.screenY }, next.timeStamp ?? null, handled);
+    if (pointer.pointerType === 'touch') event.preventDefault();
     surface.releasePointerCapture?.(pointer.pointerId);
   };
   const onPointerCancel = (event: Event): void => {

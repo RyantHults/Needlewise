@@ -258,8 +258,13 @@ describe('EditorSurface', () => {
       f.uiListener?.({ ...f.uiState });
     });
     expect(paste).toBeEnabled();
+    fireEvent.pointerDown(paste, { pointerType: 'touch' });
     fireEvent.click(paste);
-    fireEvent.click(move);
+    fireEvent.click(move, { detail: 1 });
+    expect(f.c.moveSelection).not.toHaveBeenCalled();
+    fireEvent.pointerDown(move, { pointerType: 'touch' });
+    fireEvent.click(move, { detail: 1 });
+    fireEvent.pointerDown(del, { pointerType: 'touch' });
     fireEvent.click(del);
     expect(f.c.pasteSelection).toHaveBeenCalledOnce();
     expect(f.c.moveSelection).toHaveBeenCalledOnce();

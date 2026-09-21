@@ -47,6 +47,7 @@ type TouchCopyRequestWithScreen = {
   selection: { x: number; y: number; width: number; height: number };
   screenX: number;
   screenY: number;
+  pointerType?: string;
 };
 const modes = [
   [ChartPresentationMode.Color, "Color"],
@@ -212,6 +213,7 @@ export function EditorSurface({
   const mobilePopover = useRef<HTMLDivElement>(null);
   const touchCopyMenu = useRef<HTMLDivElement>(null);
   const touchCopyAction = useRef<HTMLButtonElement>(null);
+  const touchActionPointerDown = useRef(false);
   const palettePress = useRef<number | null>(null);
   const paletteLongPressed = useRef(false);
   const touchCopyRequest = ui?.overlay.touchCopyRequest as
@@ -957,6 +959,18 @@ export function EditorSurface({
       dismissTouchCopy();
     }
   };
+  const handleSelectionActionPointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.pointerType === "touch") touchActionPointerDown.current = true;
+  };
+  const handleSelectionActionClick = (
+    action: "copy" | "paste" | "move" | "delete",
+    event: React.MouseEvent<HTMLButtonElement>,
+  ) => {
+    const openingPointerType = touchCopyRequest?.pointerType ?? "touch";
+    if (openingPointerType === "touch" && event.detail > 0 && !touchActionPointerDown.current) return;
+    touchActionPointerDown.current = false;
+    runSelectionAction(action);
+  };
   const handleSelectionActionKeyDown = (
     event: React.KeyboardEvent<HTMLButtonElement>,
     action: "copy" | "paste" | "move" | "delete",
@@ -978,6 +992,7 @@ export function EditorSurface({
     const surface = frame.current;
     const menu = touchCopyMenu.current;
     if (!surface || !menu) return;
+    touchActionPointerDown.current = false;
     const width = surface.clientWidth || 640;
     const height = surface.clientHeight || 480;
     const menuWidth = menu.offsetWidth || 150;
@@ -1281,7 +1296,8 @@ export function EditorSurface({
                     <button
                       ref={touchCopyAction}
                       type="button"
-                      onClick={() => runSelectionAction("copy")}
+                      onPointerDown={handleSelectionActionPointerDown}
+                      onClick={(event) => handleSelectionActionClick("copy", event)}
                       onKeyDown={(event) => handleSelectionActionKeyDown(event, "copy")}
                       onKeyUp={(event) => event.stopPropagation()}
                       aria-label="Copy selection"
@@ -1291,7 +1307,8 @@ export function EditorSurface({
                     <button
                       type="button"
                       disabled={!ui.canPaste}
-                      onClick={() => runSelectionAction("paste")}
+                      onPointerDown={handleSelectionActionPointerDown}
+                      onClick={(event) => handleSelectionActionClick("paste", event)}
                       onKeyDown={(event) => handleSelectionActionKeyDown(event, "paste")}
                       onKeyUp={(event) => event.stopPropagation()}
                       aria-label="Paste selection"
@@ -1300,7 +1317,8 @@ export function EditorSurface({
                     </button>
                     <button
                       type="button"
-                      onClick={() => runSelectionAction("move")}
+                      onPointerDown={handleSelectionActionPointerDown}
+                      onClick={(event) => handleSelectionActionClick("move", event)}
                       onKeyDown={(event) => handleSelectionActionKeyDown(event, "move")}
                       onKeyUp={(event) => event.stopPropagation()}
                       aria-label="Move selection"
@@ -1309,7 +1327,8 @@ export function EditorSurface({
                     </button>
                     <button
                       type="button"
-                      onClick={() => runSelectionAction("delete")}
+                      onPointerDown={handleSelectionActionPointerDown}
+                      onClick={(event) => handleSelectionActionClick("delete", event)}
                       onKeyDown={(event) => handleSelectionActionKeyDown(event, "delete")}
                       onKeyUp={(event) => event.stopPropagation()}
                       aria-label="Delete selection"

@@ -242,7 +242,8 @@ describe('DOM pointer event adapter', () => {
 
     surface.dispatchEvent(event('pointerdown', 15, 26, 100));
     surface.dispatchEvent(event('pointermove', 18, 29, 125));
-    surface.dispatchEvent(event('pointerup', 20, 31, 150));
+    const upEvent = event('pointerup', 20, 31, 150);
+    surface.dispatchEvent(upEvent);
     surface.dispatchEvent(event('lostpointercapture', 20, 31, 175));
     adapter.dispose();
     surface.remove();
@@ -256,7 +257,37 @@ describe('DOM pointer event adapter', () => {
     expect(lostAfterRelease).toBe(1);
     expect(captures).toEqual([11]);
     expect(releases).toEqual([11]);
+    expect(upEvent.defaultPrevented).toBe(true);
     debug.mockRestore();
+  });
+
+  it('prevents touch compatibility activation without changing mouse or pen pointer-up behavior', () => {
+    const surface = new FakeSurface();
+    const controller = {
+      handlePointerDown: () => true,
+      handlePointerMove: () => true,
+      handlePointerUp: () => true,
+      handlePointerCancel: () => true,
+      handlePointerLostCapture: () => true,
+      handleWheel: () => true,
+      handleKeyDown: () => true,
+      handleKeyUp: () => true,
+      handleBlur: () => undefined
+    };
+    const adapter = createPointerEventsAdapter(surface, controller);
+    const touchUp = pointerEvent(1, 15, 26);
+    Object.defineProperty(touchUp, 'pointerType', { value: 'touch' });
+    const touchPrevented = vi.fn();
+    Object.defineProperty(touchUp, 'preventDefault', { value: touchPrevented });
+    surface.dispatch('pointerup', touchUp);
+    const penUp = pointerEvent(2, 15, 26);
+    const penPrevented = vi.fn();
+    Object.defineProperty(penUp, 'preventDefault', { value: penPrevented });
+    surface.dispatch('pointerup', penUp);
+    expect(touchPrevented).toHaveBeenCalledOnce();
+    expect(penPrevented).not.toHaveBeenCalled();
+    expect(surface.releases).toEqual([1, 2]);
+    adapter.dispose();
   });
 
   it('diagnoses touch transport lifecycle events without logging pointer moves', () => {
