@@ -8,6 +8,7 @@ import { isCanvasImageSource } from './atlas';
 import { createCanvasRenderer } from './renderer';
 import { symbolForPaletteId } from './symbols';
 import { sparseSelectionGeometry } from '../editor/lasso';
+import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 
 interface RecordingContext extends CanvasContextAdapter {
   calls: string[];
@@ -151,7 +152,7 @@ class FakeOffscreenCanvas extends FakeCanvasImageSource {
 }
 
 function chart(width = 4, height = 4) {
-  return createDocument({
+  return createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
     width,
     height,
     palette: [
@@ -358,7 +359,7 @@ describe('Canvas 2D chart renderer', () => {
 
   it('bounds floating preview cell work to the visible source-coordinate intersection', () => {
     const document = chart(4, 4);
-    const source = createDocument({ width: 128, height: 128, palette: [{ id: 1, name: 'Red', color: '#f00' }] });
+    const source = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 128, height: 128, palette: [{ id: 1, name: 'Red', color: '#f00' }] });
     source.kind[2 * source.width + 2] = CellKind.Full;
     source.colors[(2 * source.width + 2) * 4] = 1;
     const fragment = createPatternFragment(source, { x: 0, y: 0, width: 128, height: 128 });

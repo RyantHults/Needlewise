@@ -2,7 +2,9 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { calculatePreviewSize, CreateModal, previewFinishedSize, previewLensGeometry, suggestConversionDimensions } from './CreateModal';
-import { MAX_CONVERSION_PALETTE_BUDGET } from '../conversion/image-to-pattern';
+import { DEFAULT_CATALOG_DEFINITION, type CatalogSnapshot } from '../catalog';
+
+const DEFAULT_CATALOG_COLOR_COUNT = DEFAULT_CATALOG_DEFINITION.snapshot.association.colorCount;
 
 const conversion = vi.hoisted(() => ({ convert: vi.fn() }));
 vi.mock('../conversion/image-conversion-client', () => ({
@@ -26,18 +28,18 @@ class MockImage {
   set src(_value: string) { images.push(this); }
 }
 
-function props(onClose: () => void = vi.fn()) {
+function props(onClose: () => void = vi.fn(), catalog: CatalogSnapshot = DEFAULT_CATALOG_DEFINITION.snapshot) {
   return {
-    mode: 'image' as const, title: 'Test', width: '100', height: '100', aida: '14', busy: false,
+    mode: 'image' as const, title: 'Test', width: '100', height: '100', aida: '14', busy: false, catalog,
     onMode: vi.fn(), onClose, onBlank: vi.fn(), onConversionCreate: vi.fn(), onTitle: vi.fn(), onWidth: vi.fn(), onHeight: vi.fn(), onAida: vi.fn()
   };
 }
 
-function ControlledModal(propsOverride: { onClose?: () => void } = {}) {
+function ControlledModal(propsOverride: { onClose?: () => void; catalog?: CatalogSnapshot } = {}) {
   const [width, setWidth] = useState('100');
   const [height, setHeight] = useState('100');
   const [aida, setAida] = useState('14');
-  return <CreateModal {...props(propsOverride.onClose)} width={width} height={height} onWidth={setWidth} onHeight={setHeight} aida={aida} onAida={setAida} />;
+  return <CreateModal {...props(propsOverride.onClose, propsOverride.catalog)} width={width} height={height} onWidth={setWidth} onHeight={setHeight} aida={aida} onAida={setAida} />;
 }
 
 beforeEach(() => {
@@ -58,7 +60,7 @@ describe('CreateModal image lifecycle', () => {
     expect(calculatePreviewSize(640, 480)).toEqual({ width: 760, height: 570 });
   });
 
-it('exposes the color budget as a keyboard-operable range with a live count', async () => {
+  it('exposes the color budget as a keyboard-operable range with a live count', async () => {
     render(<ControlledModal />);
     fireEvent.change(screen.getByLabelText(/Choose a PNG/), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } });
     act(() => { images[0].onload?.(); });
@@ -68,12 +70,26 @@ it('exposes the color budget as a keyboard-operable range with a live count', as
     act(() => { vi.advanceTimersByTime(300); });
     const slider = await vi.waitFor(() => screen.getByRole('slider', { name: 'Color budget, 24 colors' }));
     expect(slider).toHaveAttribute('min', '1');
-    expect(slider).toHaveAttribute('max', String(MAX_CONVERSION_PALETTE_BUDGET));
+    expect(slider).toHaveAttribute('max', String(DEFAULT_CATALOG_COLOR_COUNT));
     expect(slider).toHaveAttribute('step', '1');
     fireEvent.change(slider, { target: { value: '12' } });
     expect(screen.getByRole('slider', { name: 'Color budget, 12 colors' })).toHaveValue('12');
     expect(screen.getByLabelText('Color budget count')).toHaveValue('12');
     expect(screen.getByText('colors')).toBeInTheDocument();
+  });
+
+  it('passes the supplied catalog snapshot and bounds the budget by its color count', async () => {
+    const smallCatalog: CatalogSnapshot = {
+      association: { ...DEFAULT_CATALOG_DEFINITION.association, catalogId: 'small-catalog', colorCount: 2 },
+      records: DEFAULT_CATALOG_DEFINITION.records.slice(0, 2)
+    };
+    render(<ControlledModal catalog={smallCatalog} />);
+    fireEvent.change(screen.getByLabelText(/Choose a PNG/), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } });
+    act(() => { images[0].onload?.(); });
+    act(() => { vi.advanceTimersByTime(300); });
+    const slider = await vi.waitFor(() => screen.getByRole('slider', { name: 'Color budget, 2 colors' }));
+    expect(slider).toHaveAttribute('max', '2');
+    expect(conversion.convert.mock.calls[0][1]).toMatchObject({ catalog: smallCatalog, paletteBudget: 2 });
   });
 
   it('keeps the accepted preview visible while replacing it and retains it on failure', async () => {
@@ -123,6 +139,61 @@ it('exposes the color budget as a keyboard-operable range with a live count', as
     act(() => { vi.advanceTimersByTime(300); });
     expect(conversion.convert).toHaveBeenCalledOnce();
     expect(conversion.convert.mock.calls[0][1]).toMatchObject({ targetWidth: 160, targetHeight: 120 });
+  });
+
+  it('invalidates and reruns the preview when the catalog association changes', async () => {
+    const alternate: CatalogSnapshot = {
+      association: { ...DEFAULT_CATALOG_DEFINITION.association, catalogId: 'future-catalog-revision' },
+      records: DEFAULT_CATALOG_DEFINITION.records
+    };
+    const view = render(<ControlledModal catalog={DEFAULT_CATALOG_DEFINITION.snapshot} />);
+    fireEvent.change(screen.getByLabelText(/Choose a PNG/), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } });
+    act(() => { images[0].onload?.(); });
+    act(() => { vi.advanceTimersByTime(300); });
+    await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledOnce());
+
+    view.rerender(<ControlledModal catalog={alternate} />);
+    act(() => { vi.advanceTimersByTime(300); });
+    await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(2));
+  });
+
+  it('does not publish an old request after the catalog changes before it resolves', async () => {
+    let resolveOld!: (value: unknown) => void;
+    const staleDraft = {
+      draft: {
+        stats: { sourceWidth: 640, sourceHeight: 480, matchedColorCount: 1 },
+        document: { width: 2, height: 2, palette: [], colors: new Uint16Array(16) }
+      }
+    };
+    const replacementDraft = {
+      draft: {
+        stats: { sourceWidth: 640, sourceHeight: 480, matchedColorCount: 3 },
+        document: { width: 2, height: 2, palette: [], colors: new Uint16Array(16) }
+      }
+    };
+    conversion.convert.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }));
+    conversion.convert.mockResolvedValueOnce(replacementDraft);
+    const alternate: CatalogSnapshot = {
+      association: { ...DEFAULT_CATALOG_DEFINITION.association, catalogId: 'future-catalog-revision' },
+      records: DEFAULT_CATALOG_DEFINITION.records
+    };
+    const view = render(<ControlledModal catalog={DEFAULT_CATALOG_DEFINITION.snapshot} />);
+    fireEvent.change(screen.getByLabelText(/Choose a PNG/), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } });
+    act(() => { images[0].onload?.(); });
+    act(() => { vi.advanceTimersByTime(300); });
+    expect(conversion.convert).toHaveBeenCalledOnce();
+
+    view.rerender(<ControlledModal catalog={alternate} />);
+    await act(async () => {
+      resolveOld(staleDraft);
+      await Promise.resolve();
+    });
+    expect(screen.queryByLabelText('Color budget count')).not.toBeInTheDocument();
+    expect(conversion.convert).toHaveBeenCalledOnce();
+
+    act(() => { vi.advanceTimersByTime(300); });
+    await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(screen.getByLabelText('Color budget count')).toHaveValue('3'));
   });
 
   it('ignores an older decode and every decode after close', () => {
@@ -230,12 +301,12 @@ it('exposes the color budget as a keyboard-operable range with a live count', as
     act(() => { vi.advanceTimersByTime(300); });
     const slider = await vi.waitFor(() => screen.getByRole('slider', { name: /Color budget/ }));
     expect(slider).toHaveAttribute('min', '1');
-    expect(slider).toHaveAttribute('max', String(MAX_CONVERSION_PALETTE_BUDGET));
+    expect(slider).toHaveAttribute('max', String(DEFAULT_CATALOG_COLOR_COUNT));
     // The number input no longer exists; the slider alone drives the budget.
     expect(screen.queryByLabelText('Detected color count')).not.toBeInTheDocument();
-    fireEvent.change(slider, { target: { value: String(MAX_CONVERSION_PALETTE_BUDGET) } });
+    fireEvent.change(slider, { target: { value: String(DEFAULT_CATALOG_COLOR_COUNT) } });
     act(() => { vi.advanceTimersByTime(300); });
-    expect(conversion.convert.mock.calls[1][1]).toMatchObject({ paletteBudget: MAX_CONVERSION_PALETTE_BUDGET });
+    expect(conversion.convert.mock.calls[1][1]).toMatchObject({ paletteBudget: DEFAULT_CATALOG_COLOR_COUNT });
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 

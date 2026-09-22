@@ -1,4 +1,5 @@
 import { applyCommand, createDocument, QuarterCorner } from '../domain';
+import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { describe, expect, it } from 'vitest';
 import {
   deriveProjectThumbnail,
@@ -12,7 +13,7 @@ import {
 
 describe('project thumbnail summaries', () => {
   it('samples destination-cell centres and uses the first occupied slot', () => {
-    let document = createDocument({
+    let document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
       width: 256,
       height: 1,
       palette: [
@@ -29,7 +30,7 @@ describe('project thumbnail summaries', () => {
     expect(thumbnail.indices.slice(0, 2)).toEqual([1, 2]);
     expect(thumbnail.indices).toHaveLength(128);
 
-    let malformedPalette = createDocument({
+    let malformedPalette = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
       width: 1,
       height: 1,
       palette: [
@@ -44,18 +45,18 @@ describe('project thumbnail summaries', () => {
   });
 
   it('does not upscale and bounds both thumbnail axes', () => {
-    const small = deriveProjectThumbnail(createDocument({ width: 2, height: 3 }));
+    const small = deriveProjectThumbnail(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 3 }));
     expect(small).toMatchObject({ columns: 2, rows: 3 });
     expect(small.indices).toHaveLength(6);
 
     // Derivation is deliberately bounded to sampled cell colors and palette
     // lookup; unrelated document invariants are validated at their own
     // persistence boundary.
-    const unvalidated = createDocument({ width: 1, height: 1 });
+    const unvalidated = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 1, height: 1 });
     unvalidated.backstitches.ids = new Uint32Array([1]);
     expect(deriveProjectThumbnail(unvalidated).indices).toEqual([0]);
 
-    const large = deriveProjectThumbnail(createDocument({ width: 256, height: 192 }));
+    const large = deriveProjectThumbnail(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 256, height: 192 }));
     expect(large.columns).toBe(PROJECT_THUMBNAIL_MAX_AXIS);
     expect(large.rows).toBe(96);
     expect(large.indices).toHaveLength(128 * 96);

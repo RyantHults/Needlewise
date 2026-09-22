@@ -5,12 +5,10 @@ import {
   UnzipPassThrough,
   zipSync
 } from 'fflate';
-import { assertValidDocument, DOCUMENT_SCHEMA_VERSION, LEGACY_DOCUMENT_SCHEMA_VERSION, PENULTIMATE_DOCUMENT_SCHEMA_VERSION, PRIOR_DOCUMENT_SCHEMA_VERSION, normalizeAidaCount, normalizeDisplayUnits, normalizeMaterialAssumptions } from '../domain';
+import { assertValidDocument, DOCUMENT_SCHEMA_VERSION, PALETTE_ID_MAX, normalizeAidaCount, normalizeDisplayUnits, normalizeMaterialAssumptions, type CatalogAssociation } from '../domain';
 import { PersistenceError } from './errors';
 import {
   ARCHIVE_FORMAT,
-  LEGACY_PERSISTENCE_SCHEMA_VERSION,
-  PRIOR_PERSISTENCE_SCHEMA_VERSION,
   PERSISTENCE_SCHEMA_VERSION,
   type ArchiveAssetManifest,
   type ArchiveBundle,
@@ -200,12 +198,30 @@ function validateAssetInput(asset: ProjectAsset): void {
   }
 }
 
+function validateCatalogAssociation(value: unknown): CatalogAssociation {
+  if (
+    !isRecord(value)
+    || typeof value.catalogId !== 'string'
+    || value.catalogId.trim() === ''
+    || !isBoundedMetadataString(value.catalogId)
+    || typeof value.brandLabel !== 'string'
+    || value.brandLabel.trim() === ''
+    || !isBoundedMetadataString(value.brandLabel)
+    || typeof value.colorCount !== 'number'
+    || !Number.isSafeInteger(value.colorCount)
+    || value.colorCount < 1
+    || value.colorCount > PALETTE_ID_MAX
+  ) invalidManifest('Archive catalog association is invalid.');
+  return { catalogId: value.catalogId, brandLabel: value.brandLabel, colorCount: value.colorCount };
+}
+
 function validateManifestShape(value: unknown): ArchiveManifest {
-  if (!isRecord(value) || value.format !== ARCHIVE_FORMAT || (value.archiveVersion !== LEGACY_PERSISTENCE_SCHEMA_VERSION && value.archiveVersion !== PRIOR_PERSISTENCE_SCHEMA_VERSION && value.archiveVersion !== PERSISTENCE_SCHEMA_VERSION) || !isProjectId(value.projectId)) invalidManifest('Archive manifest identity or version is invalid.');
+  if (!isRecord(value) || value.format !== ARCHIVE_FORMAT || value.archiveVersion !== PERSISTENCE_SCHEMA_VERSION || !isProjectId(value.projectId)) invalidManifest('Archive manifest identity or version is invalid.');
   const metadata = value.metadata;
   const document = value.document;
   if (!isRecord(metadata) || metadata.path !== METADATA_PATH || !isNonNegativeInteger(metadata.byteLength) || metadata.byteLength > MAX_METADATA_BYTES || !isSha256(metadata.sha256)) invalidManifest('Archive metadata descriptor is invalid.');
-  if (!isRecord(document) || document.path !== DOCUMENT_PATH || (document.schemaVersion !== LEGACY_DOCUMENT_SCHEMA_VERSION && document.schemaVersion !== PENULTIMATE_DOCUMENT_SCHEMA_VERSION && document.schemaVersion !== PRIOR_DOCUMENT_SCHEMA_VERSION && document.schemaVersion !== DOCUMENT_SCHEMA_VERSION) || !isNonNegativeInteger(document.byteLength) || document.byteLength > MAX_DOCUMENT_BYTES || !isSha256(document.sha256)) invalidManifest('Archive document descriptor is invalid.');
+  if (!isRecord(document) || document.path !== DOCUMENT_PATH || document.schemaVersion !== DOCUMENT_SCHEMA_VERSION || !isNonNegativeInteger(document.byteLength) || document.byteLength > MAX_DOCUMENT_BYTES || !isSha256(document.sha256)) invalidManifest('Archive document path or version is invalid.');
+  const catalog = validateCatalogAssociation(document.catalog);
   if (!Array.isArray(value.assets) || value.assets.length > MAX_ARCHIVE_ENTRIES - 3 - (value.activity === undefined ? 0 : 1)) invalidManifest('Archive asset manifest is invalid.');
   const paths = new Set<string>([MANIFEST_PATH, METADATA_PATH, DOCUMENT_PATH]);
   const ids = new Set<string>();
@@ -241,27 +257,15 @@ function validateManifestShape(value: unknown): ArchiveManifest {
     archiveVersion: PERSISTENCE_SCHEMA_VERSION,
     projectId: value.projectId,
     metadata: { path: METADATA_PATH, byteLength: metadata.byteLength, sha256: metadata.sha256 },
-    document: { path: DOCUMENT_PATH, schemaVersion: DOCUMENT_SCHEMA_VERSION, byteLength: document.byteLength, sha256: document.sha256 },
+    document: { path: DOCUMENT_PATH, schemaVersion: DOCUMENT_SCHEMA_VERSION, catalog, byteLength: document.byteLength, sha256: document.sha256 },
     ...(activity === undefined ? {} : { activity }),
     assets
   };
 }
 
-/**
- * Migrations always receive and return separate values. v1 has no changes yet,
- * but this boundary prevents a future migration from mutating parsed input.
- */
-export function migrateArchiveManifest(input: unknown): ArchiveManifest {
-  let copy: unknown;
-  try {
-    copy = JSON.parse(JSON.stringify(input)) as unknown;
-  } catch (error) {
-    throw new PersistenceError('invalid-manifest', 'Archive manifest cannot be copied.', error);
-  }
-  return validateManifestShape(copy);
+export function validateArchiveManifest(input: unknown): ArchiveManifest {
+  return validateManifestShape(input);
 }
-
-export const migrateManifest = migrateArchiveManifest;
 
 function parseJson(bytes: Uint8Array, label: string, maxBytes: number): unknown {
   if (bytes.length > maxBytes) invalidArchive(`${label} exceeds the size limit.`);
@@ -299,62 +303,22 @@ function base64Url(bytes: Uint8Array): string {
   return result;
 }
 
-function legacyArchivePathForAsset(id: string): string {
+function opaqueArchivePathForAsset(id: string): string {
   const encoded = base64Url(utf16Bytes(id));
   const path = `assets/legacy~${encoded}`;
   if (path.length > 1024) invalidArchive('Archive asset path exceeds the size limit.');
   return path;
 }
 
-function legacyPercentArchivePathForAsset(id: string): string | undefined {
-  try {
-    return `assets/${encodeURIComponent(id)}`;
-  } catch {
-    // encodeURIComponent rejects lone surrogate code units. Such IDs use the
-    // binary-safe path encoding for new exports and cannot be old percent
-    // encoded archive names.
-    return undefined;
-  }
-}
-
-function decodeBase64Url(value: string): Uint8Array | undefined {
-  if (value.length % 4 === 1 || !/^[A-Za-z0-9_-]*$/.test(value)) return undefined;
-  const bytes: number[] = [];
-  for (let offset = 0; offset < value.length; offset += 4) {
-    const first = BASE64URL_ALPHABET.indexOf(value[offset]);
-    const second = BASE64URL_ALPHABET.indexOf(value[offset + 1] ?? '');
-    const third = value[offset + 2] === undefined ? 0 : BASE64URL_ALPHABET.indexOf(value[offset + 2]);
-    const fourth = value[offset + 3] === undefined ? 0 : BASE64URL_ALPHABET.indexOf(value[offset + 3]);
-    if (first < 0 || second < 0 || third < 0 || fourth < 0) return undefined;
-    bytes.push((first << 2) | (second >>> 4));
-    if (offset + 2 < value.length) bytes.push(((second & 0x0f) << 4) | (third >>> 2));
-    if (offset + 3 < value.length) bytes.push(((third & 0x03) << 6) | fourth);
-  }
-  return new Uint8Array(bytes);
-}
-
-function decodeLegacyArchiveAssetPath(path: string): string | undefined {
-  const prefix = 'assets/legacy~';
-  if (!path.startsWith(prefix)) return undefined;
-  const bytes = decodeBase64Url(path.slice(prefix.length));
-  if (!bytes || bytes.length === 0 || bytes.length % 2 !== 0) return undefined;
-  let result = '';
-  for (let offset = 0; offset < bytes.length; offset += 2) result += String.fromCharCode((bytes[offset] << 8) | bytes[offset + 1]);
-  return result;
-}
-
 function archivePathForAsset(id: string): string {
-  if (!isArchiveSafeAssetId(id)) return legacyArchivePathForAsset(id);
+  if (!isArchiveSafeAssetId(id)) return opaqueArchivePathForAsset(id);
   const path = `assets/${id}`;
   if (path.length > 1024) invalidArchive('Archive asset path exceeds the size limit.');
   return path;
 }
 
 function isArchivePathForAsset(id: string, path: string): boolean {
-  if (!isValidAssetId(id)) return false;
-  if (path === archivePathForAsset(id)) return true;
-  if (decodeLegacyArchiveAssetPath(path) === id && path === legacyArchivePathForAsset(id)) return true;
-  return legacyPercentArchivePathForAsset(id) === path;
+  return isValidAssetId(id) && path === archivePathForAsset(id);
 }
 
 function ensureArchiveEntryPath(path: string): void {
@@ -652,7 +616,7 @@ export async function exportArchive(bundle: Omit<ArchiveBundle, 'manifest'>, opt
     archiveVersion: PERSISTENCE_SCHEMA_VERSION,
     projectId: metadata.id,
     metadata: { path: METADATA_PATH, byteLength: metadataBytes.length, sha256: await sha256(metadataBytes) },
-    document: { path: DOCUMENT_PATH, schemaVersion: DOCUMENT_SCHEMA_VERSION, byteLength: documentBytes.length, sha256: await sha256(documentBytes) },
+    document: { path: DOCUMENT_PATH, schemaVersion: DOCUMENT_SCHEMA_VERSION, catalog: { ...bundle.document.catalog }, byteLength: documentBytes.length, sha256: await sha256(documentBytes) },
     assets: await Promise.all(assets.map(async (asset) => ({
       id: asset.id,
       path: archivePathForAsset(asset.id),
@@ -690,7 +654,7 @@ export async function parseArchive(input: Uint8Array | ArrayBuffer | Blob, optio
   // Read the manifest first. Unknown asset paths are never decompressed until
   // the manifest has made them part of the exact allowlist.
   const manifestFiles = extractEntries(bytes, preflight, new Set([MANIFEST_PATH]), options.signal);
-  const manifest = migrateArchiveManifest(parseJson(manifestFiles[MANIFEST_PATH], 'Archive manifest', MAX_MANIFEST_BYTES));
+  const manifest = validateArchiveManifest(parseJson(manifestFiles[MANIFEST_PATH], 'Archive manifest', MAX_MANIFEST_BYTES));
   const knownPaths = new Set([
     MANIFEST_PATH,
     manifest.metadata.path,
@@ -720,6 +684,11 @@ export async function parseArchive(input: Uint8Array | ArrayBuffer | Blob, optio
   const warnings = [...validatedMetadata.warnings];
   if (metadata.id !== manifest.projectId) invalidManifest('Archive project metadata does not match its manifest.');
   const document = decodeDocument(documentBytes);
+  if (
+    document.catalog.catalogId !== manifest.document.catalog.catalogId
+    || document.catalog.brandLabel !== manifest.document.catalog.brandLabel
+    || document.catalog.colorCount !== manifest.document.catalog.colorCount
+  ) invalidArchive('Archive manifest and document catalog associations do not match.');
   if (document.revision !== metadata.revision) invalidArchive('Archive metadata and document revisions do not match.');
   // Derived archive fields are never trusted. Rebuild dimensions from the
   // validated document and leave the thumbnail for repository persistence.

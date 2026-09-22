@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   CellKind,
   cloneDocument,
-  createDocument,
+  createDocument as createDomainDocument,
   defaultPaletteSymbol,
   type PatternDocument
 } from '../domain';
@@ -31,8 +31,13 @@ import { consumePreparedDocumentCapability } from '../persistence/preparation-cl
 import { createStarterDocument, ProjectWorkspace } from './index';
 import { ProjectSession } from './session';
 import type { WorkspaceRepository } from './types';
-import { acceptConversionDraft, convertRasterToPattern } from '../conversion/image-to-pattern';
+import { acceptConversionDraft, type AcceptedConversionDraft } from '../conversion/image-to-pattern';
 import { decodeTraceImage } from '../rendering/trace';
+import { DEFAULT_CATALOG_DEFINITION, createCatalogReference } from '../catalog';
+
+function createDocument(options: Omit<Parameters<typeof createDomainDocument>[0], 'catalog'>): PatternDocument {
+  return createDomainDocument({ ...options, catalog: DEFAULT_CATALOG_DEFINITION.association });
+}
 
 function copyRecord(record: ProjectRecord): ProjectRecord {
   return {
@@ -193,23 +198,54 @@ function pngBytes(width: number, height: number): Uint8Array {
   return bytes;
 }
 
+function createTestConversionDraft(options: {
+  width: number;
+  height: number;
+  sourceWidth?: number;
+  sourceHeight?: number;
+  assetId?: string;
+  mimeType?: string;
+  requestId: string;
+}): AcceptedConversionDraft {
+  const document = createStarterDocument({ width: options.width, height: options.height });
+  document.kind[0] = CellKind.Full;
+  document.colors[0] = 1;
+  const totalPixels = options.width * options.height;
+  const sourceWidth = options.sourceWidth ?? options.width;
+  const sourceHeight = options.sourceHeight ?? options.height;
+  return acceptConversionDraft({
+    token: { projectId: 'conversion', baseRevision: 0, requestId: options.requestId },
+    document,
+    stats: {
+      sourceWidth,
+      sourceHeight,
+      targetWidth: options.width,
+      targetHeight: options.height,
+      totalPixels,
+      transparentPixels: 0,
+      emptyPixels: totalPixels - 1,
+      stitchedPixels: 1,
+      matchedColorCount: 1,
+      paletteUsage: [{ paletteId: 1, catalogId: document.catalog.catalogId, count: 1 }]
+    },
+    sourceImage: {
+      ...(options.assetId === undefined ? {} : { assetId: options.assetId }),
+      ...(options.mimeType === undefined ? {} : { mimeType: options.mimeType }),
+      width: sourceWidth,
+      height: sourceHeight,
+      crop: { x: 0, y: 0, width: 1, height: 1 },
+      chartBounds: { x: 0, y: 0, width: options.width, height: options.height },
+      traceVisible: false,
+      opacity: 1
+    }
+  });
+}
+
 describe('headless project workspace', () => {
   it('creates an accepted converted project atomically with an optional retained source asset', async () => {
     const repository = new MemoryRepository();
     const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'converted' });
-    const draft = acceptConversionDraft(convertRasterToPattern({
-      width: 2,
-      height: 2,
-      pixels: new Uint8ClampedArray([
-        255, 0, 0, 255, 0, 0, 255, 255,
-        0, 0, 0, 255, 255, 255, 255, 255
-      ])
-    }, {
-      targetWidth: 2,
-      targetHeight: 2,
-      token: { projectId: 'conversion', baseRevision: 0, requestId: 'accepted' },
-      sourceImage: { assetId: 'source', mimeType: 'image/png' }
-    }));
+    const draft = createTestConversionDraft({ width: 2, height: 2, assetId: 'source', mimeType: 'image/png', requestId: 'accepted' });
     try {
       const asset: ProjectAssetInput = { id: 'source', name: 'source.png', mimeType: 'image/png', data: pngBytes(2, 2) };
       const session = await workspace.createProjectFromConversion({ id: 'converted', title: 'Converted', draft, sourceImageAsset: asset });
@@ -232,16 +268,7 @@ describe('headless project workspace', () => {
     const repository = new MemoryRepository();
     const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'immutable-conversion' });
     const sourceBytes = pngBytes(2, 2);
-    const draft = acceptConversionDraft(convertRasterToPattern({
-      width: 2,
-      height: 2,
-      pixels: new Uint8ClampedArray(16)
-    }, {
-      targetWidth: 2,
-      targetHeight: 2,
-      token: { projectId: 'conversion', baseRevision: 0, requestId: 'immutable' },
-      sourceImage: { assetId: 'source', mimeType: 'image/png' }
-    }));
+    const draft = createTestConversionDraft({ width: 2, height: 2, assetId: 'source', mimeType: 'image/png', requestId: 'immutable' });
     try {
       const sourceAsset: ProjectAssetInput = { id: 'source', name: 'source.png', mimeType: 'image/png', data: sourceBytes };
       const creation = workspace.createProjectFromConversion({ id: 'immutable-conversion', draft, sourceImageAsset: sourceAsset });
@@ -259,21 +286,7 @@ describe('headless project workspace', () => {
     const sourceBytes = pngBytes(8_000, 6_000);
     // The conversion draft reports the ORIGINAL (oversized) source dimensions;
     // the pre-scaled working raster is small because the decode path downscales.
-    const draft = acceptConversionDraft(convertRasterToPattern({
-      width: 2,
-      height: 2,
-      sourceWidth: 8_000,
-      sourceHeight: 6_000,
-      pixels: new Uint8ClampedArray([
-        255, 0, 0, 255, 0, 0, 255, 255,
-        255, 0, 0, 255, 0, 0, 255, 255
-      ])
-    }, {
-      targetWidth: 2,
-      targetHeight: 2,
-      token: { projectId: 'conversion', baseRevision: 0, requestId: 'large' },
-      sourceImage: { assetId: 'source', mimeType: 'image/png' }
-    }));
+    const draft = createTestConversionDraft({ width: 2, height: 2, sourceWidth: 8_000, sourceHeight: 6_000, assetId: 'source', mimeType: 'image/png', requestId: 'large' });
     try {
       const asset: ProjectAssetInput = { id: 'source', name: 'source.png', mimeType: 'image/png', data: sourceBytes };
       const session = await workspace.createProjectFromConversion({ id: 'large-converted', title: 'Large', draft, sourceImageAsset: asset });
@@ -300,7 +313,7 @@ describe('headless project workspace', () => {
     const repository = new MemoryRepository();
     repository.failSaves = true;
     const workspace = new ProjectWorkspace({ repository, projectIdFactory: () => 'failed-conversion' });
-    const draft = acceptConversionDraft(convertRasterToPattern({ width: 1, height: 1, pixels: new Uint8ClampedArray([0, 0, 0, 255]) }, { targetWidth: 1, targetHeight: 1 }));
+    const draft = createTestConversionDraft({ width: 1, height: 1, requestId: 'failed' });
     try {
       await expect(workspace.createProjectFromConversion({ id: 'failed-conversion', draft })).rejects.toThrow('Test storage failure.');
       expect(repository.records.has('failed-conversion')).toBe(false);
@@ -338,6 +351,45 @@ describe('headless project workspace', () => {
       expect(() => createStarterDocument({ width: 1.5, height: 1 })).toThrow();
       expect(() => createStarterDocument({ width: 1_000_001, height: 1 })).toThrow();
       expect(() => createStarterDocument({ width: 1_001, height: 1_000 })).toThrow();
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
+  it('seeds the default catalog association and Black 310 through the generic catalog APIs', () => {
+    const document = createStarterDocument({ width: 2, height: 2 });
+    const black = DEFAULT_CATALOG_DEFINITION.getByHex('#000000');
+    expect(black).toBeDefined();
+    expect(document.catalog).toEqual(DEFAULT_CATALOG_DEFINITION.association);
+    expect(document.palette[0].catalog).toEqual(createCatalogReference(DEFAULT_CATALOG_DEFINITION, black!));
+  });
+
+  it('resolves exact catalog associations without blocking unavailable saved documents', async () => {
+    const repository = new MemoryRepository();
+    const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'unavailable' });
+    const document = createStarterDocument({ width: 2, height: 2 });
+    const unavailable = {
+      ...document,
+      catalog: { ...document.catalog, catalogId: 'uninstalled-revision' },
+      palette: document.palette.map((entry) => entry.catalog === undefined
+        ? entry
+        : { ...entry, catalog: { ...entry.catalog, catalogId: 'uninstalled-revision' } })
+    };
+    repository.records.set('unavailable', {
+      metadata: { id: 'unavailable', title: 'Unavailable catalog', notes: '', createdAt: 100, updatedAt: 100, revision: unavailable.revision },
+      document: unavailable,
+      recovery: null,
+      assets: []
+    });
+    try {
+      expect(workspace.catalogFor(null)).toBeUndefined();
+      expect(workspace.catalogFor(document)).toBe(DEFAULT_CATALOG_DEFINITION);
+      expect(workspace.catalogFor({ ...document, catalog: { ...document.catalog, brandLabel: 'Other' } })).toBeUndefined();
+      expect(workspace.catalogFor({ ...document, catalog: { ...document.catalog, colorCount: 1 } })).toBeUndefined();
+      expect(workspace.catalogFor(unavailable)).toBeUndefined();
+      const session = await workspace.openProject('unavailable');
+      expect(session.document.catalog.catalogId).toBe('uninstalled-revision');
+      expect(workspace.error).toBeNull();
     } finally {
       await workspace.dispose();
     }

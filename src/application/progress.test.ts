@@ -5,6 +5,7 @@ import { attachDeleteMetricsImpactForDelta, registerDeleteMetricsImpact, type De
 import { ProjectSession } from './session';
 import { ProgressMetricsService } from './progress';
 import type { WorkspaceRepository } from './types';
+import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 
 function metadata(id: string, revision: number): ProjectMetadata {
   return { id, title: 'Progress test', notes: '', createdAt: 1, updatedAt: 1, revision };
@@ -27,7 +28,7 @@ function addBackstitch(editor: ReturnType<typeof createEditor>, start: { x: numb
 }
 
 function mixedDeleteFixture(): { editor: ReturnType<typeof createEditor>; rect: { x: number; y: number; width: number; height: number } } {
-  const editor = createEditor(createDocument({
+  const editor = createEditor(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
     width: 8,
     height: 6,
     palette: [
@@ -67,7 +68,7 @@ function mixedDeleteFixture(): { editor: ReturnType<typeof createEditor>; rect: 
 }
 
 function denseDocument(side: number): PatternDocument {
-  const document = createDocument({ width: side, height: side, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+  const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: side, height: side, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
   document.kind.fill(CellKind.Full);
   for (let index = 0; index < document.kind.length; index += 1) {
     document.colors[index * 4] = 1;
@@ -112,7 +113,7 @@ describe('application progress integration', () => {
       return { committed: true, stale: false, revision: document.revision };
     });
     const repository = { save } as unknown as WorkspaceRepository;
-    const document = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     const session = new ProjectSession({
       repository,
       metadata: metadata('progress', document.revision),
@@ -143,7 +144,7 @@ describe('application progress integration', () => {
 
   it('keeps weighted three-quarter metrics current through geometry and completion changes', async () => {
     const repository = { save: vi.fn(async (_id: string, _metadata: ProjectMetadata, next: PatternDocument): Promise<SaveResult> => ({ committed: true, stale: false, revision: next.revision })) } as unknown as WorkspaceRepository;
-    const document = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     const session = new ProjectSession({ repository, metadata: metadata('three-quarter-progress', document.revision), document, preparationClient: testPreparationClient, clock: { now: () => Date.UTC(2026, 7, 30) }, debounceMs: longDebounceMs });
     try {
       session.execute({ type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NE, color: 1 });
@@ -161,7 +162,7 @@ describe('application progress integration', () => {
   });
 
   it('supports three-quarter incremental metrics, completion activity, materials, and fallback rebuilds', () => {
-    let document = createDocument({ width: 3, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    let document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 3, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     document = (createEditor(document).execute({ type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 })).document;
     document = (createEditor(document).execute({ type: 'set-completion', x: 0, y: 0, completed: true })).document;
     const editor = createEditor(document);
@@ -190,7 +191,7 @@ describe('application progress integration', () => {
   });
 
   it('keeps masked completion progress and component totals exact across heterogeneous geometry', () => {
-    let document = createDocument({
+    let document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
       width: 3,
       height: 1,
       palette: [
@@ -224,7 +225,7 @@ describe('application progress integration', () => {
   });
 
   it('moves masked component counts and material between palettes without changing progress', () => {
-    const editor = createEditor(createDocument({
+    const editor = createEditor(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
       width: 5,
       height: 1,
       palette: [
@@ -273,7 +274,7 @@ describe('application progress integration', () => {
   });
 
   it('tracks distinct-color paired deletion through incremental metrics and undo/redo', () => {
-    let document = createDocument({
+    let document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
       width: 1,
       height: 1,
       palette: [
@@ -325,7 +326,7 @@ describe('application progress integration', () => {
 
   it('does not record activity for identity-preserving transforms, but does record undo progress', async () => {
     const repository = { save: vi.fn(async (_id: string, _metadata: ProjectMetadata, next: ReturnType<typeof createDocument>): Promise<SaveResult> => ({ committed: true, stale: false, revision: next.revision })) } as unknown as WorkspaceRepository;
-    const document = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     const session = new ProjectSession({
       repository,
       metadata: metadata('identity-progress', document.revision),
@@ -354,7 +355,7 @@ describe('application progress integration', () => {
 
   it('exposes stable-ID backstitch completion helpers backed by domain validation', async () => {
     const repository = { save: vi.fn(async (_id: string, _metadata: ProjectMetadata, next: ReturnType<typeof createDocument>): Promise<SaveResult> => ({ committed: true, stale: false, revision: next.revision })) } as unknown as WorkspaceRepository;
-    const document = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     const session = new ProjectSession({ repository, metadata: metadata('backstitch-progress', document.revision), document, preparationClient: testPreparationClient, clock: { now: () => Date.UTC(2026, 7, 30) }, debounceMs: 0 });
     try {
       const created = session.execute({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 4 }, color: 1 });
@@ -394,13 +395,13 @@ describe('application progress integration', () => {
   });
 
   it('uses exact impacts for cell-only, backstitch-only, and mixed deletes', () => {
-    const cellEditor = createEditor(createDocument({ width: 4, height: 3, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] }));
+    const cellEditor = createEditor(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 3, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] }));
     cellEditor.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
     cellEditor.execute({ type: 'set-half', x: 2, y: 1, direction: HalfDirection.Backslash, color: 2 });
     cellEditor.clearHistory();
     expectDeleteMetricsRoundTrip(cellEditor, { x: 1, y: 1, width: 2, height: 1 });
 
-    const backstitchEditor = createEditor(createDocument({ width: 4, height: 3, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] }));
+    const backstitchEditor = createEditor(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 3, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] }));
     addBackstitch(backstitchEditor, { x: 0, y: 0 }, { x: 8, y: 8 }, 1, true);
     addBackstitch(backstitchEditor, { x: 0, y: 12 }, { x: 16, y: 12 }, 2, false);
     backstitchEditor.clearHistory();
@@ -500,7 +501,7 @@ describe('application progress integration', () => {
   });
 
   it('keeps no-op and stale delete metrics, revision, history, and activity unchanged', () => {
-    const editor = createEditor(createDocument({ width: 3, height: 3, palette: [{ id: 1, name: 'Red', color: '#d33' }] }));
+    const editor = createEditor(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 3, height: 3, palette: [{ id: 1, name: 'Red', color: '#d33' }] }));
     const service = new ProgressMetricsService(editor.document);
     const before = editor.document;
     const beforeMetrics = service.metrics;
@@ -521,7 +522,7 @@ describe('application progress integration', () => {
   });
 
   it('reuses counts for palette-only execute, undo, and redo without reading planes', () => {
-    const editor = createEditor(createDocument({
+    const editor = createEditor(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
       width: 3,
       height: 2,
       palette: [{ id: 1, name: 'Red', color: '#d33' }]
@@ -588,7 +589,7 @@ describe('application progress integration', () => {
   });
 
   it('reconciles cached zero-count palettes across material rebuild, undo, and redo', () => {
-    const editor = createEditor(createDocument({
+    const editor = createEditor(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
       width: 2,
       height: 1,
       palette: [{ id: 1, name: 'Red', color: '#d33' }]

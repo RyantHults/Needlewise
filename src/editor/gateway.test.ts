@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { cloneDocument, createDocument, type CommandResult, type DomainCommand, type PatternDocument } from '../domain';
 import { createWorkspaceEditorGateway, StaleEditorTransactionError, type WorkspaceEditorBoundary } from './gateway';
+import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 
 function boundaryFixture() {
   let projectId: string | null = 'project-a';
-  let document: PatternDocument | null = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Thread', color: '#123' }] });
+  let document: PatternDocument | null = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [{ id: 1, name: 'Thread', color: '#123' }] });
   const listeners = new Set<() => void>();
   const boundary: WorkspaceEditorBoundary = {
     get activeProjectId() { return projectId; },
@@ -29,7 +30,7 @@ function boundaryFixture() {
     boundary,
     switchProject(id: string): void {
       projectId = id;
-      document = createDocument({ width: 3, height: 1, palette: [{ id: 1, name: 'Thread', color: '#123' }] });
+      document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 3, height: 1, palette: [{ id: 1, name: 'Thread', color: '#123' }] });
       listeners.forEach((listener) => listener());
     }
   };

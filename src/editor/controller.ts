@@ -82,7 +82,7 @@ import {
   type FillWorkerClient
 } from './fill';
 import { sampleTraceImage } from '../rendering/trace';
-import { nearestDmcColor } from '../catalog';
+import { createCatalogReference, resolveCatalogDefinition } from '../catalog';
 import {
   appendLassoPoint,
   appendLassoRasterPoint,
@@ -1564,9 +1564,15 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private activateSampledColor(rgb: TraceRgb): boolean {
     const snapshot = this.gateway.getSnapshot();
     const document = snapshot.document;
-    if (!document) return false;
-    const matched = nearestDmcColor({ r: rgb.r, g: rgb.g, b: rgb.b });
-    const existing = document.palette.find((entry) => entry.active && entry.catalog?.code === matched?.code);
+    const definition = document ? resolveCatalogDefinition(document.catalog) : undefined;
+    if (!document || !definition) {
+      this.traceSampleCallback?.(rgb);
+      return false;
+    }
+    const matched = definition.nearest({ r: rgb.r, g: rgb.g, b: rgb.b });
+    const existing = matched === undefined ? undefined : document.palette.find((entry) => entry.active
+      && entry.catalog?.catalogId === definition.association.catalogId
+      && entry.catalog.sourceId === matched.sourceId);
     const paletteId = existing?.id;
     if (paletteId === undefined) {
       if (!matched) {
@@ -1579,14 +1585,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
           name: matched.name,
           color: matched.hex,
           active: true,
-          catalog: {
-            catalogId: 'dmc-compatible-screen-approximation',
-            sourceId: matched.sourceId,
-            code: matched.code,
-            name: matched.name,
-            hex: matched.hex,
-            rgb: [matched.rgb[0], matched.rgb[1], matched.rgb[2]]
-          }
+          catalog: createCatalogReference(definition, matched)
         });
         if (result.paletteId === undefined) return false;
         this.selectCreatedPalette(result.paletteId);

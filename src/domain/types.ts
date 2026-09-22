@@ -56,10 +56,7 @@ export const FIXED_POINT_UNITS_PER_CELL = 4;
 /** The largest grid that can be allocated, iterated, and persisted by v1. */
 export const MAX_PERSISTABLE_CELL_COUNT = 1_000_000;
 export const PATTERN_FRAGMENT_VERSION = 1 as const;
-export const DOCUMENT_SCHEMA_VERSION = 4 as const;
-export const LEGACY_DOCUMENT_SCHEMA_VERSION = 1 as const;
-export const PENULTIMATE_DOCUMENT_SCHEMA_VERSION = 2 as const;
-export const PRIOR_DOCUMENT_SCHEMA_VERSION = 3 as const;
+export const DOCUMENT_SCHEMA_VERSION = 1 as const;
 export const PALETTE_ID_MAX = 0xfffe;
 export const PALETTE_ID_RESERVED = 0xffff;
 
@@ -77,6 +74,12 @@ export const MaterialUnit = {
 } as const;
 
 export type MaterialUnit = (typeof MaterialUnit)[keyof typeof MaterialUnit];
+
+export interface CatalogAssociation {
+  readonly catalogId: string;
+  readonly brandLabel: string;
+  readonly colorCount: number;
+}
 
 export interface PaletteCatalogReference {
   readonly catalogId: string;
@@ -157,6 +160,7 @@ export interface Point {
 
 export interface PatternDocument {
   readonly version: typeof DOCUMENT_SCHEMA_VERSION;
+  readonly catalog: CatalogAssociation;
   width: number;
   height: number;
   kind: Uint8Array;
@@ -172,30 +176,12 @@ export interface PatternDocument {
   nextPaletteId: number;
 }
 
-export interface LegacyPatternDocument {
-  readonly version: typeof LEGACY_DOCUMENT_SCHEMA_VERSION;
-  width: number;
-  height: number;
-  kind: Uint8Array;
-  colors: Uint16Array;
-  completed: Uint8Array;
-  backstitches: BackstitchStore;
-  palette: Array<{
-    readonly id: number;
-    readonly name: string;
-    readonly color: string;
-    readonly active: boolean;
-  }>;
-  revision: number;
-  nextBackstitchId: number;
-  nextPaletteId: number;
-}
-
 export type Pattern = PatternDocument;
 
 export interface CreateDocumentOptions {
   width: number;
   height: number;
+  catalog: CatalogAssociation;
   palette?: Array<PaletteEntryInput | PaletteEntry>;
   settings?: Partial<PatternSettings>;
 }

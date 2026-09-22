@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
-import { acceptConversionDraft, DEFAULT_CONVERSION_PALETTE_BUDGET, MAX_CONVERSION_PALETTE_BUDGET, type ConversionDraft } from '../conversion/image-to-pattern';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { acceptConversionDraft, DEFAULT_CONVERSION_PALETTE_BUDGET, type ConversionDraft } from '../conversion/image-to-pattern';
 import { ConversionCancelledError, convertImageToPattern } from '../conversion/image-conversion-client';
 import { deriveFinishedSize } from '../domain';
 import type { ProjectAssetInput } from '../persistence';
+import type { CatalogSnapshot } from '../catalog';
 
-type Props = { mode: 'blank' | 'image'; title: string; width: string; height: string; aida: string; busy: boolean; onMode: (mode: 'blank' | 'image') => void; onClose: () => void; onBlank: (event: React.FormEvent<HTMLFormElement>) => void; onConversionCreate: (draft: ReturnType<typeof acceptConversionDraft>, asset?: ProjectAssetInput) => Promise<string>; onCreated?: (projectId: string) => void; onDurableCreateChange?: (locked: boolean) => void; onTitle: (value: string) => void; onWidth: (value: string) => void; onHeight: (value: string) => void; onAida: (value: string) => void };
+type Props = { catalog: CatalogSnapshot; mode: 'blank' | 'image'; title: string; width: string; height: string; aida: string; busy: boolean; onMode: (mode: 'blank' | 'image') => void; onClose: () => void; onBlank: (event: React.FormEvent<HTMLFormElement>) => void; onConversionCreate: (draft: ReturnType<typeof acceptConversionDraft>, asset?: ProjectAssetInput) => Promise<string>; onCreated?: (projectId: string) => void; onDurableCreateChange?: (locked: boolean) => void; onTitle: (value: string) => void; onWidth: (value: string) => void; onHeight: (value: string) => void; onAida: (value: string) => void };
 const validTypes = new Set(['image/png', 'image/jpeg', 'image/webp']);
 
 /** Keep tiny patterns legible without changing their proportions. */
@@ -148,17 +149,29 @@ function updatePreviewLens(canvas: HTMLCanvasElement, lens: HTMLCanvasElement, f
 }
 
 export function CreateModal(props: Props) {
-  const { mode, title, width, height, aida, busy, onMode, onClose, onBlank, onConversionCreate, onCreated, onDurableCreateChange, onTitle, onWidth, onHeight, onAida } = props;
+  const { catalog, mode, title, width, height, aida, busy, onMode, onClose, onBlank, onConversionCreate, onCreated, onDurableCreateChange, onTitle, onWidth, onHeight, onAida } = props;
   const [file, setFile] = useState<File | null>(null); const draftRef = useRef<ConversionDraft | null>(null); const [draftInfo, setDraftInfo] = useState<ConversionDraft | null>(null);
-  const [budget, setBudget] = useState(String(DEFAULT_CONVERSION_PALETTE_BUDGET)); const [budgetDraft, setBudgetDraft] = useState(String(DEFAULT_CONVERSION_PALETTE_BUDGET)); const [keepReference, setKeepReference] = useState(true); const [lockAspect, setLockAspect] = useState(true); const [backgroundSourceId, setBackgroundSourceId] = useState<string | null>(null); const [autoCrop, setAutoCrop] = useState(false); const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null);
+  const initialBudget = Math.min(DEFAULT_CONVERSION_PALETTE_BUDGET, catalog.association.colorCount);
+  const [budget, setBudget] = useState(String(initialBudget)); const [budgetDraft, setBudgetDraft] = useState(String(initialBudget)); const [keepReference, setKeepReference] = useState(true); const [lockAspect, setLockAspect] = useState(true); const [backgroundSourceId, setBackgroundSourceId] = useState<string | null>(null); const [autoCrop, setAutoCrop] = useState(false); const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null);
   const [status, setStatus] = useState<'idle' | 'updating' | 'converting' | 'ready' | 'creating' | 'error'>('idle'); const statusRef = useRef(status); statusRef.current = status; const [error, setError] = useState('');
   const generation = useRef(0); const abort = useRef<AbortController | null>(null); const decodeGeneration = useRef(0); const fileRef = useRef<File | null>(null); const dimensionPrefillSuppressed = useRef(false); const mounted = useRef(true); const durableLock = useRef(false); const previewRef = useRef<HTMLCanvasElement>(null); const frameRef = useRef<HTMLDivElement>(null); const lensRef = useRef<HTMLCanvasElement>(null); const lensVisible = useRef(false); const dialogRef = useRef<HTMLDivElement>(null);
   const [decodeStatus, setDecodeStatus] = useState<'idle' | 'decoding' | 'ready' | 'error'>('idle');
-  type ConversionIdentity = { file: File; mode: 'blank' | 'image'; width: string; height: string; budget: string; backgroundSourceId: string | null; autoCrop: boolean };
+  type ConversionIdentity = { file: File; mode: 'blank' | 'image'; width: string; height: string; budget: string; backgroundSourceId: string | null; autoCrop: boolean; catalogId: string; brandLabel: string; colorCount: number };
   const acceptedIdentity = useRef<ConversionIdentity | null>(null);
-  const sameIdentity = (left: ConversionIdentity | null, right: ConversionIdentity | null) => Boolean(left && right && left.file === right.file && left.mode === right.mode && left.width === right.width && left.height === right.height && left.budget === right.budget && left.backgroundSourceId === right.backgroundSourceId && left.autoCrop === right.autoCrop);
+  const previousCatalogAssociation = useRef({ ...catalog.association });
+  const sameIdentity = (left: ConversionIdentity | null, right: ConversionIdentity | null) => Boolean(left && right && left.file === right.file && left.mode === right.mode && left.width === right.width && left.height === right.height && left.budget === right.budget && left.backgroundSourceId === right.backgroundSourceId && left.autoCrop === right.autoCrop && left.catalogId === right.catalogId && left.brandLabel === right.brandLabel && left.colorCount === right.colorCount);
   const cancelConversion = (preserveDraft = false) => { generation.current += 1; abort.current?.abort(); abort.current = null; if (!preserveDraft) { draftRef.current = null; acceptedIdentity.current = null; setDraftInfo(null); } setError(''); if (statusRef.current !== 'creating') setStatus(preserveDraft && draftRef.current ? 'updating' : 'idle'); };
   const cancelFileWork = () => { cancelConversion(); decodeGeneration.current += 1; fileRef.current = null; dimensionPrefillSuppressed.current = false; setDecodeStatus('idle'); setFile(null); setNaturalSize(null); setBackgroundSourceId(null); };
+  useLayoutEffect(() => {
+    const current = catalog.association;
+    const previous = previousCatalogAssociation.current;
+    if (previous.catalogId === current.catalogId && previous.brandLabel === current.brandLabel && previous.colorCount === current.colorCount) return;
+    previousCatalogAssociation.current = { ...current };
+    cancelConversion(true);
+    const cappedBudget = Math.max(1, Math.min(Number(budget) || DEFAULT_CONVERSION_PALETTE_BUDGET, current.colorCount));
+    setBudget(String(cappedBudget));
+    setBudgetDraft(String(cappedBudget));
+  }, [catalog.association.catalogId, catalog.association.brandLabel, catalog.association.colorCount]);
   const invalidatePendingDecode = () => {
     if (decodeStatus !== 'decoding') return;
     // Keep decoding the selected file. This only disables its automatic
@@ -217,7 +230,7 @@ export function CreateModal(props: Props) {
     if (String(next) === budget) { setBudgetDraft(String(next)); return; }
     setBudget(String(next)); setBudgetDraft(String(next)); cancelConversion(true);
   };
-  function validate() { const maxColors = Math.max(1, Math.min(MAX_CONVERSION_PALETTE_BUDGET, draftInfo?.stats.matchedColorCount ?? MAX_CONVERSION_PALETTE_BUDGET)); const w = Number(width), h = Number(height), colors = Number(budget); if (!Number.isInteger(w) || !Number.isInteger(h) || w < 1 || h < 1 || w > 1000 || h > 1000 || w * h > 1_000_000) { setError('Use whole-number dimensions from 1 to 1,000, with no more than 1,000,000 cells.'); return; } if (!Number.isInteger(colors) || colors < 1 || colors > maxColors) { setError(`Color budget must be a whole number from 1 to ${maxColors}.`); return; } return { w, h, colors }; }
+  function validate() { const maxColors = Math.max(1, Math.min(catalog.association.colorCount, draftInfo?.stats.matchedColorCount ?? catalog.association.colorCount)); const w = Number(width), h = Number(height), colors = Number(budget); if (!Number.isInteger(w) || !Number.isInteger(h) || w < 1 || h < 1 || w > 1000 || h > 1000 || w * h > 1_000_000) { setError('Use whole-number dimensions from 1 to 1,000, with no more than 1,000,000 cells.'); return; } if (!Number.isInteger(colors) || colors < 1 || colors > maxColors) { setError(`Color budget must be a whole number from 1 to ${maxColors}.`); return; } return { w, h, colors }; }
   function chooseFile(next?: File) {
     if (statusRef.current === 'creating') return;
     cancelFileWork();
@@ -237,7 +250,7 @@ export function CreateModal(props: Props) {
     image.onerror = () => { URL.revokeObjectURL(url); if (stillCurrent()) { setDecodeStatus('error'); setStatus('error'); setError('The image dimensions could not be read. Choose a different image.'); } };
     image.src = url;
   }
-  function convert() { if (!file || statusRef.current === 'creating') return; const config = validate(); if (!config) { setStatus('error'); return; } const identity: ConversionIdentity = { file, mode, width, height, budget, backgroundSourceId, autoCrop }; const id = ++generation.current; abort.current?.abort(); const signal = (abort.current = new AbortController()).signal; setError(''); setStatus('converting'); void convertImageToPattern(file, { projectId: 'new-pattern', baseRevision: 0, targetWidth: config.w, targetHeight: config.h, paletteBudget: config.colors, backgroundSourceId: backgroundSourceId ?? undefined, autoCrop: autoCrop || undefined, sourceImage: { mimeType: file.type } }, {}, { signal }).then(result => { const current: ConversionIdentity = { file, mode, width, height, budget, backgroundSourceId, autoCrop }; if (mounted.current && id === generation.current && sameIdentity(identity, current)) { draftRef.current = result.draft; acceptedIdentity.current = identity; setDraftInfo(result.draft); setStatus('ready'); const matchedMax = Math.max(1, Math.min(MAX_CONVERSION_PALETTE_BUDGET, result.draft.stats.matchedColorCount ?? MAX_CONVERSION_PALETTE_BUDGET)); if (Number(budget) > matchedMax) { setBudget(String(matchedMax)); setBudgetDraft(String(matchedMax)); } } }).catch(reason => { if (mounted.current && id === generation.current && !(reason instanceof ConversionCancelledError)) { setStatus('error'); setError(reason instanceof Error ? reason.message : 'The image could not be converted.'); } }); }
+  function convert() { if (!file || statusRef.current === 'creating') return; const config = validate(); if (!config) { setStatus('error'); return; } const identity: ConversionIdentity = { file, mode, width, height, budget, backgroundSourceId, autoCrop, catalogId: catalog.association.catalogId, brandLabel: catalog.association.brandLabel, colorCount: catalog.association.colorCount }; const id = ++generation.current; abort.current?.abort(); const signal = (abort.current = new AbortController()).signal; setError(''); setStatus('converting'); void convertImageToPattern(file, { projectId: 'new-pattern', baseRevision: 0, targetWidth: config.w, targetHeight: config.h, paletteBudget: config.colors, catalog, backgroundSourceId: backgroundSourceId ?? undefined, autoCrop: autoCrop || undefined, sourceImage: { mimeType: file.type } }, {}, { signal }).then(result => { const current: ConversionIdentity = { file, mode, width, height, budget, backgroundSourceId, autoCrop, catalogId: catalog.association.catalogId, brandLabel: catalog.association.brandLabel, colorCount: catalog.association.colorCount }; if (mounted.current && id === generation.current && sameIdentity(identity, current)) { draftRef.current = result.draft; acceptedIdentity.current = identity; setDraftInfo(result.draft); setStatus('ready'); const matchedMax = Math.max(1, Math.min(catalog.association.colorCount, result.draft.stats.matchedColorCount ?? catalog.association.colorCount)); if (Number(budget) > matchedMax) { setBudget(String(matchedMax)); setBudgetDraft(String(matchedMax)); } } }).catch(reason => { if (mounted.current && id === generation.current && !(reason instanceof ConversionCancelledError)) { setStatus('error'); setError(reason instanceof Error ? reason.message : 'The image could not be converted.'); } }); }
   // Status is deliberately not part of this effect.  A conversion changing from
   // converting -> ready/error is a result of the same request, not a new input.
   // Keeping the key to inputs also means each distinct input/config combination
@@ -248,8 +261,8 @@ export function CreateModal(props: Props) {
     if (mode !== 'image' || !file || decodeStatus !== 'ready' || statusRef.current === 'creating') return;
     const timer = window.setTimeout(() => convert(), 300);
     return () => window.clearTimeout(timer);
-  }, [mode, file, width, height, budget, backgroundSourceId, autoCrop, decodeStatus]);
-  async function create() { const draft = draftRef.current; const identity = file ? { file, mode, width, height, budget, backgroundSourceId, autoCrop } : null; if (!draft || status !== 'ready' || !sameIdentity(acceptedIdentity.current, identity)) return; const id = generation.current; setStatus('creating'); durableLock.current = true; onDurableCreateChange?.(true); try { const projectId = await onConversionCreate(acceptConversionDraft(draft), keepReference && file ? { id: `source-${Date.now().toString(36)}`, name: file.name, mimeType: file.type, data: file } : undefined); durableLock.current = false; onDurableCreateChange?.(false); if (mounted.current && id === generation.current) { onCreated?.(projectId); onClose(); } } catch (reason) { durableLock.current = false; onDurableCreateChange?.(false); if (mounted.current && id === generation.current) { setStatus('ready'); setError(reason instanceof Error ? reason.message : 'The pattern could not be saved locally.'); } } }
+  }, [mode, file, width, height, budget, backgroundSourceId, autoCrop, decodeStatus, catalog.association.catalogId, catalog.association.brandLabel, catalog.association.colorCount]);
+  async function create() { const draft = draftRef.current; const identity = file ? { file, mode, width, height, budget, backgroundSourceId, autoCrop, catalogId: catalog.association.catalogId, brandLabel: catalog.association.brandLabel, colorCount: catalog.association.colorCount } : null; if (!draft || status !== 'ready' || !sameIdentity(acceptedIdentity.current, identity)) return; const id = generation.current; setStatus('creating'); durableLock.current = true; onDurableCreateChange?.(true); try { const projectId = await onConversionCreate(acceptConversionDraft(draft), keepReference && file ? { id: `source-${Date.now().toString(36)}`, name: file.name, mimeType: file.type, data: file } : undefined); durableLock.current = false; onDurableCreateChange?.(false); if (mounted.current && id === generation.current) { onCreated?.(projectId); onClose(); } } catch (reason) { durableLock.current = false; onDurableCreateChange?.(false); if (mounted.current && id === generation.current) { setStatus('ready'); setError(reason instanceof Error ? reason.message : 'The pattern could not be saved locally.'); } } }
   function close() { if (statusRef.current === 'creating') return; cancelFileWork(); onClose(); }
   useEffect(() => {
     const el = dialogRef.current;
@@ -268,8 +281,8 @@ export function CreateModal(props: Props) {
     return () => { el.removeEventListener('keydown', key); };
   }, []);
   const palette = draftInfo?.document.palette ?? [];
-  const maxBudgetColors = Math.max(1, Math.min(MAX_CONVERSION_PALETTE_BUDGET, draftInfo?.stats.matchedColorCount ?? MAX_CONVERSION_PALETTE_BUDGET));
-  const currentIdentity: ConversionIdentity | null = file ? { file, mode, width, height, budget, backgroundSourceId, autoCrop } : null;
+  const maxBudgetColors = Math.max(1, Math.min(catalog.association.colorCount, draftInfo?.stats.matchedColorCount ?? catalog.association.colorCount));
+  const currentIdentity: ConversionIdentity | null = file ? { file, mode, width, height, budget, backgroundSourceId, autoCrop, catalogId: catalog.association.catalogId, brandLabel: catalog.association.brandLabel, colorCount: catalog.association.colorCount } : null;
   const previewIsCurrent = sameIdentity(acceptedIdentity.current, currentIdentity);
   const finishedSizePreview = previewFinishedSize(width, height, aida);
   return <div className="modal-backdrop" role="presentation" onClick={e=>{if(e.target===e.currentTarget)close()}}><div ref={dialogRef} className="create-modal conversion-modal" role="dialog" aria-modal="true" aria-labelledby="create-dialog-title" tabIndex={-1}>

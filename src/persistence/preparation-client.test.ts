@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyCommand, cloneDocument, createDocument, type PatternDocument } from '../domain';
+import { applyCommand, cloneDocument, createDocument as createDomainDocument, type CatalogAssociation, type CreateDocumentOptions, type PatternDocument } from '../domain';
 import { PersistenceError } from './errors';
 import {
   createPreparationError,
@@ -12,6 +12,12 @@ import {
   PersistencePreparationTransportError,
   PersistencePreparationWorkerClient
 } from './preparation-client';
+
+const TEST_CATALOG: CatalogAssociation = { catalogId: 'test-catalog-v1', brandLabel: 'Test catalog', colorCount: 32 };
+
+function createDocument(options: Omit<CreateDocumentOptions, 'catalog'> & { catalog?: CatalogAssociation }): PatternDocument {
+  return createDomainDocument({ ...options, catalog: options.catalog ?? TEST_CATALOG });
+}
 
 function document(): PatternDocument {
   const original = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
@@ -76,6 +82,7 @@ describe('persistence preparation worker client', () => {
     expect(worker.posted).toHaveLength(1);
     expect(worker.posted[0].transfer).toHaveLength(10);
     expect((worker.posted[0].message as { document: PatternDocument }).document).not.toBe(live);
+    expect((worker.posted[0].message as { document: PatternDocument }).document.catalog).toEqual(live.catalog);
     if (typeof structuredClone === 'function') {
       expect(worker.transferredDocuments[0]?.kind.byteLength).toBe(0);
       expect((worker.posted[0].message as { document: PatternDocument }).document.kind.byteLength).toBeGreaterThan(0);

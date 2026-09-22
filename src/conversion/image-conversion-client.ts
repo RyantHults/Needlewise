@@ -8,6 +8,7 @@ import {
   MAX_CONVERSION_TOKEN_BOOKKEEPING,
   conversionCancelled,
   conversionTokenKey,
+  cloneCatalogSnapshot,
   createConversionCancel,
   createConversionImageRequest,
   createConversionRequest,
@@ -227,7 +228,10 @@ function requestFromInput(input: ConversionRequestInput, requestIdFactory: () =>
 }
 
 function copyRequest(request: ConversionRequestMessage): ConversionRequestMessage {
-  return request.inputType === 'raster' ? { ...request, pixels: new Uint8ClampedArray(request.pixels) } : request;
+  const token = { ...request.token };
+  return request.inputType === 'raster'
+    ? { ...request, token, pixels: new Uint8ClampedArray(request.pixels), catalog: cloneCatalogSnapshot(request.catalog) }
+    : { ...request, token, catalog: cloneCatalogSnapshot(request.catalog) };
 }
 
 function requestKey(token: ConversionToken): string {
@@ -300,31 +304,33 @@ export class ConversionWorkerClient {
   }
 
   private createPending(request: ConversionRequestMessage, signal?: AbortSignal): { request: ConversionRequestMessage; pending: PendingConversion; promise: Promise<ConversionResultMessage> } {
-    const uniqueRequest = this.reserveToken(request);
-    const key = requestKey(uniqueRequest.token);
+    const uniqueRequest = this.reserveToken(copyRequest(request));
+    const internalRequest = copyRequest(uniqueRequest);
+    const key = requestKey(internalRequest.token);
     let resolvePromise!: (result: ConversionResultMessage) => void;
     let rejectPromise!: (error: unknown) => void;
     const promise = new Promise<ConversionResultMessage>((resolve, reject) => {
       resolvePromise = resolve;
       rejectPromise = reject;
     });
-    const pending: PendingConversion = { request: uniqueRequest, resolve: resolvePromise, reject: rejectPromise, signal, signalCleanup: () => undefined };
+    const pending: PendingConversion = { request: internalRequest, resolve: resolvePromise, reject: rejectPromise, signal, signalCleanup: () => undefined };
     this.pending.set(key, pending);
     if (signal) {
-      const abort = (): void => { this.cancel(uniqueRequest.token); };
+      const abort = (): void => { this.cancel(internalRequest.token); };
       signal.addEventListener('abort', abort, { once: true });
       pending.signalCleanup = () => signal.removeEventListener('abort', abort);
-      if (signal.aborted) this.cancel(uniqueRequest.token);
+      if (signal.aborted) this.cancel(internalRequest.token);
     }
-    return { request: uniqueRequest, pending, promise };
+    return { request: internalRequest, pending, promise };
   }
 
   submit(input: ConversionRequestInput, options: { readonly signal?: AbortSignal } = {}): ConversionJob {
     if (this.disposed) throw new Error('The conversion worker client has been disposed.');
     const requested = requestFromInput(input, this.requestIdFactory);
-    const { request, promise } = this.createPending(requested, options.signal);
-    this.dispatch(request, options.signal);
-    return { request, promise, cancel: () => this.cancel(request.token) };
+    const { request: internalRequest, promise } = this.createPending(requested, options.signal);
+    const cancellationToken = Object.freeze({ ...internalRequest.token });
+    this.dispatch(copyRequest(internalRequest), options.signal);
+    return { request: copyRequest(internalRequest), promise, cancel: () => this.cancel(cancellationToken) };
   }
 
   submitImage(source: Blob | File, input: ConversionImageInput, options: { readonly signal?: AbortSignal } = {}): ConversionJob {
@@ -340,9 +346,10 @@ export class ConversionWorkerClient {
         requestId: input.requestId ?? this.requestIdFactory()
       }
     });
-    const { request, promise } = this.createPending(requested, options.signal);
-    this.dispatch(request, options.signal);
-    return { request, promise, cancel: () => this.cancel(request.token) };
+    const { request: internalRequest, promise } = this.createPending(requested, options.signal);
+    const cancellationToken = Object.freeze({ ...internalRequest.token });
+    this.dispatch(copyRequest(internalRequest), options.signal);
+    return { request: copyRequest(internalRequest), promise, cancel: () => this.cancel(cancellationToken) };
   }
 
   request(input: ConversionRequestInput, options: { readonly signal?: AbortSignal } = {}): Promise<ConversionResultMessage> {
@@ -407,27 +414,28 @@ export class ConversionWorkerClient {
     const queueJob = mainThreadConversionQueue.enqueue(async () => {
       const cancellation: ConversionCancellation = { signal, isCancelled: () => !this.pending.has(key) || this.disposed };
       conversionCancelled(cancellation, request.token.requestId);
+      const workRequest = copyRequest(request);
       let result: ConversionResultMessage;
-      if (request.inputType === 'image') {
-        const raster = await rasterForConversion(request.image, request.targetWidth, request.targetHeight, this.rasterOptions, cancellation);
+      if (workRequest.inputType === 'image') {
+        const raster = await rasterForConversion(workRequest.image, workRequest.targetWidth, workRequest.targetHeight, this.rasterOptions, cancellation);
         conversionCancelled(cancellation, request.token.requestId);
         const rasterRequest = createConversionRequest(raster, {
-          targetWidth: request.targetWidth,
-          targetHeight: request.targetHeight,
-          paletteBudget: request.paletteBudget,
-          backgroundSourceId: request.backgroundSourceId,
-          autoCrop: request.autoCrop,
-          catalog: request.catalog,
-          token: request.token,
+          targetWidth: workRequest.targetWidth,
+          targetHeight: workRequest.targetHeight,
+          paletteBudget: workRequest.paletteBudget,
+          backgroundSourceId: workRequest.backgroundSourceId,
+          autoCrop: workRequest.autoCrop,
+          catalog: workRequest.catalog,
+          token: workRequest.token,
           sourceImage: {
-            ...(request.sourceAssetId === undefined ? {} : { assetId: request.sourceAssetId }),
-            ...(request.sourceMimeType === undefined ? {} : { mimeType: request.sourceMimeType })
+            ...(workRequest.sourceAssetId === undefined ? {} : { assetId: workRequest.sourceAssetId }),
+            ...(workRequest.sourceMimeType === undefined ? {} : { mimeType: workRequest.sourceMimeType })
           }
         });
-        conversionCancelled(cancellation, request.token.requestId);
+        conversionCancelled(cancellation, workRequest.token.requestId);
         result = await convertConversionRequestAsync(rasterRequest, cancellation);
       } else {
-        result = await convertConversionRequestAsync(request, cancellation);
+        result = await convertConversionRequestAsync(workRequest, cancellation);
       }
       conversionCancelled(cancellation, request.token.requestId);
       return result;

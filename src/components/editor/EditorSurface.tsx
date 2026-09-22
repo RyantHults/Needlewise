@@ -19,7 +19,7 @@ import {
 } from "../../domain";
 import type { DisplayUnits } from "../../domain";
 import { TraceImageControls } from "./TraceImageControls";
-import { getDmcColorByHex, searchDmcColors } from "../../catalog";
+import { createCatalogReference, type CatalogRecord } from "../../catalog";
 import { useMemo } from "react";
 import { createPortal } from "react-dom";
 import backstitchIcon from "../../assets/editor-tools/backstitch.svg";
@@ -41,7 +41,7 @@ interface Props {
   saveStatus?: import("../../application/types").SaveStatus;
   onOpenMaterials?: () => void;
 }
-type CatalogColor = ReturnType<typeof searchDmcColors>[number];
+type CatalogColor = CatalogRecord;
 const normalizeHexColor = (value: string): string | undefined => {
   const digits = value.trim().replace(/^#/, "");
   if (!/^(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(digits)) return undefined;
@@ -169,6 +169,7 @@ export function EditorSurface({
   saveStatus,
   onOpenMaterials,
 }: Props) {
+  const catalog = workspace.catalogFor(document);
   const frame = useRef<HTMLDivElement>(null),
     base = useRef<HTMLCanvasElement>(null),
     overlay = useRef<HTMLCanvasElement>(null),
@@ -199,6 +200,7 @@ export function EditorSurface({
   const [selectedCatalogColor, setSelectedCatalogColor] =
     useState<CatalogColor | null>(null);
   const [customColorInput, setCustomColorInput] = useState("");
+  const [rgbDraft, setRgbDraft] = useState({ red: "", green: "", blue: "" });
   const [paletteNotice, setPaletteNotice] = useState("");
   const addTrigger = useRef<HTMLButtonElement>(null);
   const paletteDialog = useRef<HTMLDivElement>(null);
@@ -412,16 +414,8 @@ export function EditorSurface({
     );
   };
   const catalogResults = useMemo(
-    () => {
-      const query = paletteQuery.trim().toLowerCase();
-      return searchDmcColors("").filter(
-        (color) =>
-          !query ||
-          color.code.toLowerCase().includes(query) ||
-          color.name.toLowerCase().includes(query),
-      );
-    },
-    [paletteQuery],
+    () => catalog?.search(paletteQuery, { limit: 12 }) ?? [],
+    [paletteQuery, catalog],
   );
   useEffect(() => {
     if (!paletteOpen) return;
@@ -436,21 +430,36 @@ export function EditorSurface({
     setPaletteNotice("");
     setPaletteQuery("");
     setCustomColorInput("");
-    setSelectedCatalogColor(searchDmcColors("")[0] ?? null);
+    setRgbDraft({ red: "", green: "", blue: "" });
+    setSelectedCatalogColor(catalog?.search("")[0] ?? null);
     setPaletteOpen(true);
   };
   const customColor = normalizeHexColor(customColorInput);
+  const rgbInvalid = Object.values(rgbDraft).some((value) => value !== "" && (!/^\d+$/.test(value) || Number(value) > 255));
+  const setColorFromHex = (value: string) => {
+    setCustomColorInput(value);
+    const normalized = normalizeHexColor(value);
+    if (normalized) setRgbDraft({ red: String(parseInt(normalized.slice(1, 3), 16)), green: String(parseInt(normalized.slice(3, 5), 16)), blue: String(parseInt(normalized.slice(5, 7), 16)) });
+  };
+  const setRgbChannel = (key: "red" | "green" | "blue", value: string) => {
+    const next = { ...rgbDraft, [key]: value };
+    setRgbDraft(next);
+    const values = [next.red, next.green, next.blue].map(Number);
+    if (values.every((channel, index) => next[["red", "green", "blue"][index] as "red" | "green" | "blue"] !== "" && Number.isInteger(channel) && channel >= 0 && channel <= 255)) {
+      setCustomColorInput(`#${values.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`.toUpperCase());
+    }
+  };
   const customPaletteMatch = customColor
     ? palette.find(
         (entry) =>
           Boolean(entry.catalog) && normalizeHexColor(entry.color) === customColor,
       ) ?? palette.find((entry) => normalizeHexColor(entry.color) === customColor)
     : undefined;
-  const customDmcColor = customColor ? getDmcColorByHex(customColor) : undefined;
+  const customCatalogColor = customColor ? catalog?.getByHex(customColor) : undefined;
   const customActionLabel = customPaletteMatch
     ? `Select ${customPaletteMatch.name}`
-    : customDmcColor
-      ? `Add ${customDmcColor.name}`
+    : customCatalogColor
+      ? `Add ${customCatalogColor.name}`
       : customColor
         ? `Add ${customColor}`
         : "Add custom color";
@@ -459,7 +468,7 @@ export function EditorSurface({
     window.setTimeout(() => addTrigger.current?.focus(), 0);
   };
   const addPaletteColor = async (
-    color: ReturnType<typeof searchDmcColors>[number],
+    color: CatalogColor,
   ) => {
     try {
       const previousIds = new Set(document.palette.map((entry) => entry.id));
@@ -467,14 +476,7 @@ export function EditorSurface({
         type: "palette-create",
         name: color.name,
         color: color.hex,
-        catalog: {
-          catalogId: "dmc-compatible-screen-approximation",
-          sourceId: color.sourceId,
-          code: color.code,
-          name: color.name,
-          hex: color.hex,
-          rgb: color.rgb,
-        },
+        catalog: createCatalogReference(catalog!, color),
       });
       const createdDocument = result?.document ?? workspace.getStateSnapshot().document;
       const added = createdDocument?.palette.find(
@@ -497,8 +499,8 @@ export function EditorSurface({
       closePalettePicker();
       return;
     }
-    if (customDmcColor) {
-      await addPaletteColor(customDmcColor);
+    if (customCatalogColor && catalog) {
+      await addPaletteColor(customCatalogColor);
       return;
     }
     try {
@@ -555,9 +557,9 @@ export function EditorSurface({
   const removeResults = useMemo(
     () =>
       removeTarget !== null && removeQuery.trim()
-        ? searchDmcColors(removeQuery, { limit: 8 })
+        ? (catalog?.search(removeQuery, { limit: 8 }) ?? [])
         : [],
-    [removeQuery, removeTarget],
+    [removeQuery, removeTarget, catalog],
   );
   const openRemove = (id: number, trigger: HTMLButtonElement) => {
     removeTrigger.current = trigger;
@@ -775,7 +777,7 @@ export function EditorSurface({
       );
     }
   };
-  const removeIntoNew = (color: ReturnType<typeof searchDmcColors>[number]) => {
+  const removeIntoNew = (color: CatalogColor) => {
     const target = removeTarget;
     if (target === null) return;
     try {
@@ -785,14 +787,7 @@ export function EditorSurface({
         createTo: {
           name: color.name,
           color: color.hex,
-          catalog: {
-            catalogId: "dmc-compatible-screen-approximation",
-            sourceId: color.sourceId,
-            code: color.code,
-            name: color.name,
-            hex: color.hex,
-            rgb: color.rgb,
-          },
+          catalog: createCatalogReference(catalog!, color),
         },
       });
       const added = workspace
@@ -1696,7 +1691,7 @@ export function EditorSurface({
               >
                 ×
               </button>
-              <p className="section-label">Offline catalog</p>
+               <p className="section-label">{catalog?.association.brandLabel ?? "Catalog"}</p>
               <h2 id="editor-catalog-title">Add a thread color</h2>
               <div className="catalog-box">
                 <div className="catalog-selection" aria-live="polite">
@@ -1715,7 +1710,8 @@ export function EditorSurface({
                         className="small-action"
                         type="button"
                         aria-label={`Add ${selectedCatalogColor.name}`}
-                        onClick={() => void addPaletteColor(selectedCatalogColor)}
+                         onClick={() => void addPaletteColor(selectedCatalogColor)}
+                        disabled={!catalog}
                       >
                         Add
                       </button>
@@ -1724,15 +1720,18 @@ export function EditorSurface({
                     <span className="catalog-selection-empty">No color selected</span>
                   )}
                 </div>
-                <label htmlFor="catalog-search">Search offline catalog</label>
-                <input
+                 <label htmlFor="catalog-search">Search {catalog?.association.brandLabel ? `${catalog.association.brandLabel} catalog` : "catalog"}</label>
+                 <input
                   id="catalog-search"
                   value={paletteQuery}
-                  onChange={(e) => setPaletteQuery(e.target.value)}
-                  placeholder="Name or DMC code"
-                />
+                   onChange={(e) => setPaletteQuery(e.target.value)}
+                   placeholder={`Name or ${catalog?.association.brandLabel ?? "catalog"} code`}
+                   disabled={!catalog}
+                   aria-label="Search catalog"
+                 />
+                 {!catalog && <p className="catalog-unavailable" role="status">Catalog unavailable</p>}
                 <div className="catalog-color-grid" role="list" aria-label="Available thread colors">
-                  {catalogResults.map((color) => (
+                   {catalog && catalogResults.map((color) => (
                     <div role="listitem" key={color.code}>
                       <button
                         className="catalog-color-button"
@@ -1759,23 +1758,31 @@ export function EditorSurface({
                   <h3 id="custom-color-title">Custom color</h3>
                   <div className="custom-color-fields">
                     <label htmlFor="custom-color-picker">Choose custom color</label>
-                    <input
+                     <input
                       id="custom-color-picker"
                       type="color"
                       value={customColor ?? "#000000"}
-                      onChange={(e) => setCustomColorInput(normalizeHexColor(e.target.value) ?? e.target.value)}
+                       onChange={(e) => setColorFromHex(e.target.value)}
                     />
                     <label htmlFor="custom-color-hex">Hex color</label>
                     <input
                       id="custom-color-hex"
                       type="text"
                       value={customColorInput}
-                      onChange={(e) => setCustomColorInput(e.target.value)}
+                       onChange={(e) => setColorFromHex(e.target.value)}
                       placeholder="#C72B3B"
                       inputMode="text"
                       autoComplete="off"
                       aria-describedby="custom-color-help"
-                    />
+                   />
+                    <div className="custom-color-rgb" role="group" aria-labelledby="custom-color-rgb-title" aria-describedby="custom-color-help">
+                      <span id="custom-color-rgb-title" className="custom-color-rgb-title">RGB</span>
+                      {([['red', 'Red'], ['green', 'Green'], ['blue', 'Blue']] as const).map(([key, label]) => {
+                        const value = rgbDraft[key];
+                        const invalid = value !== '' && (!/^\d+$/.test(value) || Number(value) > 255);
+                        return <label key={key} htmlFor={`custom-color-${key}`}>{label}<input id={`custom-color-${key}`} type="number" min="0" max="255" step="1" value={value} aria-invalid={invalid} onChange={(e) => setRgbChannel(key, e.target.value)} /></label>;
+                      })}
+                    </div>
                   </div>
                   <p id="custom-color-help" className="custom-color-help" aria-live="polite">
                     {customColorInput && !customColor
@@ -1785,7 +1792,7 @@ export function EditorSurface({
                   <button
                     className="small-action custom-color-action"
                     type="button"
-                    disabled={!customColor}
+                     disabled={!customColor || rgbInvalid || (Object.values(rgbDraft).some((value) => value !== "") && Object.values(rgbDraft).some((value) => value === ""))}
                     aria-label={customActionLabel}
                     onClick={() => void addCustomColor()}
                   >
@@ -1863,20 +1870,22 @@ export function EditorSurface({
                 {removalCandidates.length === 0 && (
                   <p className="control-note">
                     No other active palette colors yet. Add one, or search the
-                    offline catalog below.
+                    {catalog ? ` ${catalog.association.brandLabel} catalog` : " catalog"} below.
                   </p>
                 )}
               </div>
               <div className="catalog-box">
-                <label htmlFor="remove-search">
-                  Search offline catalog for a replacement
+                 <label htmlFor="remove-search">
+                   Search {catalog?.association.brandLabel ? `${catalog.association.brandLabel} catalog` : "catalog"} for a replacement
                 </label>
-                <input
-                  id="remove-search"
+               <input
+                 id="remove-search"
                   value={removeQuery}
                   onChange={(e) => setRemoveQuery(e.target.value)}
-                  placeholder="Name or DMC code"
-                />
+                  placeholder={`Name or ${catalog?.association.brandLabel ?? "catalog"} code`}
+                 disabled={!catalog}
+               />
+                {!catalog && <p className="catalog-unavailable" role="status">Catalog unavailable</p>}
                 <ul className="catalog-results">
                   {removeResults.map((color) => (
                     <li key={color.code}>
@@ -1887,10 +1896,11 @@ export function EditorSurface({
                       <span>
                         {color.name} <small>#{color.code}</small>
                       </span>
-                      <button
-                        className="small-action"
+                       <button
+                         className="small-action"
                         type="button"
-                        aria-label={`Replace with ${color.name} from the catalog`}
+                         aria-label={`Replace with ${color.name} from the catalog`}
+                         disabled={!catalog}
                         onClick={() => removeIntoNew(color)}
                       >
                         Replace

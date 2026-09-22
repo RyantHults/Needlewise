@@ -1,12 +1,15 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { applyCommand, computePatternMetrics, createDocument, QuarterCorner } from '../domain';
 import { Phase3Panel } from './Phase3Panel';
 
+type DocumentOptions = Omit<Parameters<typeof createDocument>[0], 'catalog'>;
+const makeDocument = (options: DocumentOptions) => createDocument({ ...options, catalog: DEFAULT_CATALOG_DEFINITION.association });
 function renderPanel(execute = vi.fn().mockResolvedValue(undefined), metadata: { units?: 'metric' | 'imperial' } | null = null) {
   const updateActiveMetadata = vi.fn().mockResolvedValue(undefined);
-  const workspace = { activeProjectId: 'test', metadata, materialSettings: null, updateActiveMaterialSettings: vi.fn().mockResolvedValue(undefined), updateActiveMetadata } as never;
-  render(<Phase3Panel document={createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Black', color: '#000000' }, { id: 2, name: 'White', color: '#FFFFFF' }] })} metrics={null} sessionStats={null} activity={null} execute={execute} workspace={workspace} open />);
+  const workspace = { activeProjectId: 'test', metadata, catalogFor: vi.fn(() => DEFAULT_CATALOG_DEFINITION), materialSettings: null, updateActiveMaterialSettings: vi.fn().mockResolvedValue(undefined), updateActiveMetadata } as never;
+  render(<Phase3Panel document={makeDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Black', color: '#000000' }, { id: 2, name: 'White', color: '#FFFFFF' }] })} metrics={null} sessionStats={null} activity={null} execute={execute} workspace={workspace} open />);
   return { execute, updateActiveMetadata };
 }
 
@@ -23,9 +26,9 @@ describe('Phase3Panel palette controls', () => {
     const plus = screen.getByRole('button', { name: 'Add a color to the palette' });
 
     fireEvent.click(plus);
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Search offline catalog')));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Search catalog')));
 
-    fireEvent.change(screen.getByLabelText('Search offline catalog'), { target: { value: '310' } });
+    fireEvent.change(screen.getByLabelText('Search catalog'), { target: { value: '310' } });
     fireEvent.click(await screen.findByRole('button', { name: 'Add Black' }));
     expect(execute).toHaveBeenCalledWith(expect.objectContaining({ type: 'palette-create', name: 'Black', color: '#000000' }));
     await waitFor(() => expect(document.activeElement).toBe(plus));
@@ -41,16 +44,16 @@ describe('Phase3Panel palette controls', () => {
     expect(shell).toHaveProperty('inert', true);
     expect(screen.getByRole('dialog', { name: 'Add a thread color' }).closest('[data-application]')).toBeNull();
     expect(screen.getByRole('dialog', { name: 'Plan the thread' })).toBeInTheDocument();
-    fireEvent.keyDown(screen.getByLabelText('Search offline catalog'), { key: 'Escape' });
+    fireEvent.keyDown(screen.getByLabelText('Search catalog'), { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add a thread color' })).not.toBeInTheDocument());
     expect(shell).toHaveProperty('inert', true);
     shell.remove();
   });
 
   it('shows finished size and per-color plus total physical estimates in metric by default', () => {
-    const pattern = createDocument({ width: 14, height: 14, palette: [{ id: 1, name: 'Ruby', color: '#AA0000' }] });
+    const pattern = makeDocument({ width: 14, height: 14, palette: [{ id: 1, name: 'Ruby', color: '#AA0000' }] });
     const computed = computePatternMetrics(pattern, { aidaCount: 14, strands: 2, waste: 0.2, skeinLengthMeters: 8 });
-    render(<Phase3Panel document={pattern} metrics={computed} sessionStats={null} activity={null} execute={vi.fn()} workspace={{ activeProjectId: 'one', materialSettings: computed.materialSettings, updateActiveMaterialSettings: vi.fn().mockResolvedValue(undefined), updateActiveMetadata: vi.fn().mockResolvedValue(undefined) } as never} />);
+    render(<Phase3Panel document={pattern} metrics={computed} sessionStats={null} activity={null} execute={vi.fn()} workspace={{ activeProjectId: 'one', catalogFor: vi.fn(() => DEFAULT_CATALOG_DEFINITION), materialSettings: computed.materialSettings, updateActiveMaterialSettings: vi.fn().mockResolvedValue(undefined), updateActiveMetadata: vi.fn().mockResolvedValue(undefined) } as never} />);
 
     // No units on the project: metric is the default single display.
     expect(screen.getByText(/2\.54 × 2\.54 cm/)).toBeInTheDocument();
@@ -66,10 +69,10 @@ describe('Phase3Panel palette controls', () => {
   });
 
   it('renders inches and skeins when the project prefers imperial', () => {
-    let pattern = createDocument({ width: 14, height: 14, palette: [{ id: 1, name: 'Ruby', color: '#AA0000' }] });
+    let pattern = makeDocument({ width: 14, height: 14, palette: [{ id: 1, name: 'Ruby', color: '#AA0000' }] });
     pattern = applyCommand(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
     const computed = computePatternMetrics(pattern, { aidaCount: 14, strands: 2, waste: 0.2, skeinLengthMeters: 8 });
-    render(<Phase3Panel document={pattern} metrics={computed} sessionStats={null} activity={null} execute={vi.fn()} workspace={{ activeProjectId: 'one', metadata: { units: 'imperial' }, materialSettings: computed.materialSettings, updateActiveMaterialSettings: vi.fn().mockResolvedValue(undefined), updateActiveMetadata: vi.fn().mockResolvedValue(undefined) } as never} />);
+    render(<Phase3Panel document={pattern} metrics={computed} sessionStats={null} activity={null} execute={vi.fn()} workspace={{ activeProjectId: 'one', catalogFor: vi.fn(() => DEFAULT_CATALOG_DEFINITION), metadata: { units: 'imperial' }, materialSettings: computed.materialSettings, updateActiveMaterialSettings: vi.fn().mockResolvedValue(undefined), updateActiveMetadata: vi.fn().mockResolvedValue(undefined) } as never} />);
 
     expect(screen.getByText(/1 × 1 in/)).toBeInTheDocument();
     expect(screen.queryByText(/2\.54 × 2\.54 cm/)).not.toBeInTheDocument();
@@ -95,10 +98,10 @@ describe('Phase3Panel palette controls', () => {
   });
 
   it('renders distinct skein bounds as a range', () => {
-    let pattern = createDocument({ width: 14, height: 14, palette: [{ id: 1, name: 'Ruby', color: '#AA0000' }] });
+    let pattern = makeDocument({ width: 14, height: 14, palette: [{ id: 1, name: 'Ruby', color: '#AA0000' }] });
     for (let x = 0; x < 10; x++) pattern = applyCommand(pattern, { type: 'set-full', x, y: 0, color: 1 }).document;
     const computed = computePatternMetrics(pattern, { aidaCount: 14, strands: 2, waste: 0.5, skeinLengthMeters: 8 });
-    render(<Phase3Panel document={pattern} metrics={computed} sessionStats={null} activity={null} execute={vi.fn()} workspace={{ activeProjectId: 'one', materialSettings: computed.materialSettings, updateActiveMaterialSettings: vi.fn().mockResolvedValue(undefined), updateActiveMetadata: vi.fn().mockResolvedValue(undefined) } as never} />);
+    render(<Phase3Panel document={pattern} metrics={computed} sessionStats={null} activity={null} execute={vi.fn()} workspace={{ activeProjectId: 'one', catalogFor: vi.fn(() => DEFAULT_CATALOG_DEFINITION), materialSettings: computed.materialSettings, updateActiveMaterialSettings: vi.fn().mockResolvedValue(undefined), updateActiveMetadata: vi.fn().mockResolvedValue(undefined) } as never} />);
 
     const format = (value: number) => Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
     const skeins = computed.totalMaterial?.estimateRange?.skeins;
@@ -114,20 +117,20 @@ describe('Phase3Panel palette controls', () => {
   });
 
   it('shows a palette made only of three-quarter stitches', () => {
-    let pattern = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Ruby', color: '#AA0000' }] });
+    let pattern = makeDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Ruby', color: '#AA0000' }] });
     pattern = applyCommand(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
     pattern = applyCommand(pattern, { type: 'set-three-quarter', x: 1, y: 0, corner: QuarterCorner.SE, color: 1 }).document;
     const computed = computePatternMetrics(pattern, { aidaCount: 14, strands: 1, waste: 0, skeinLengthMeters: 8 });
 
-    render(<Phase3Panel document={pattern} metrics={computed} sessionStats={null} activity={null} execute={vi.fn()} workspace={{ activeProjectId: 'one', materialSettings: computed.materialSettings, updateActiveMaterialSettings: vi.fn().mockResolvedValue(undefined), updateActiveMetadata: vi.fn().mockResolvedValue(undefined) } as never} />);
+    render(<Phase3Panel document={pattern} metrics={computed} sessionStats={null} activity={null} execute={vi.fn()} workspace={{ activeProjectId: 'one', catalogFor: vi.fn(() => DEFAULT_CATALOG_DEFINITION), materialSettings: computed.materialSettings, updateActiveMaterialSettings: vi.fn().mockResolvedValue(undefined), updateActiveMetadata: vi.fn().mockResolvedValue(undefined) } as never} />);
 
     expect(screen.getByText('0 full · 0 half · 0 quarter · 2 3/4 · 0 backstitch')).toBeInTheDocument();
   });
 
   it('leaves unit selection to project settings while following metadata units', () => {
-    const pattern = createDocument({ width: 14, height: 14, palette: [{ id: 1, name: 'Ruby', color: '#AA0000' }] });
+    const pattern = makeDocument({ width: 14, height: 14, palette: [{ id: 1, name: 'Ruby', color: '#AA0000' }] });
     const computed = computePatternMetrics(pattern, { aidaCount: 14, strands: 2, waste: 0.2, skeinLengthMeters: 8 });
-    const metricWorkspace = { activeProjectId: 'one', materialSettings: computed.materialSettings, updateActiveMaterialSettings: vi.fn().mockResolvedValue(undefined), updateActiveMetadata: vi.fn().mockResolvedValue(undefined) };
+    const metricWorkspace = { activeProjectId: 'one', catalogFor: vi.fn(() => DEFAULT_CATALOG_DEFINITION), materialSettings: computed.materialSettings, updateActiveMaterialSettings: vi.fn().mockResolvedValue(undefined), updateActiveMetadata: vi.fn().mockResolvedValue(undefined) };
     const view = render(<Phase3Panel document={pattern} metrics={computed} sessionStats={null} activity={null} execute={vi.fn()} workspace={metricWorkspace as never} />);
     // The estimate card renders no toggle of its own.
     expect(screen.queryByRole('button', { name: 'Metric' })).not.toBeInTheDocument();

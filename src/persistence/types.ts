@@ -1,11 +1,9 @@
 import { DOCUMENT_SCHEMA_VERSION } from '../domain';
-import type { DisplayUnits, DocumentEditorHistoryDto, NormalizedMaterialSettings, PatternDocument } from '../domain';
+import type { CatalogAssociation, DisplayUnits, DocumentEditorHistoryDto, NormalizedMaterialSettings, PatternDocument } from '../domain';
 import type { ProgressActivity } from './activity';
 
-export const PERSISTENCE_SCHEMA_VERSION = 3 as const;
-export const LEGACY_PERSISTENCE_SCHEMA_VERSION = 1 as const;
-export const PRIOR_PERSISTENCE_SCHEMA_VERSION = 2 as const;
-export const ARCHIVE_FORMAT = 'needlewise-project' as const;
+export const PERSISTENCE_SCHEMA_VERSION = 1 as const;
+export const ARCHIVE_FORMAT = 'needlewise-project-v2' as const;
 export const SESSION_HISTORY_ENVELOPE_VERSION = 1 as const;
 export const MAX_SESSION_HISTORY_BYTES = 16 * 1024 * 1024;
 export const MAX_SESSION_HISTORY_DECODE_BYTES = 64 * 1024 * 1024;
@@ -334,6 +332,7 @@ export interface ArchiveManifest {
   document: {
     path: 'document.bin';
     schemaVersion: typeof DOCUMENT_SCHEMA_VERSION;
+    catalog: CatalogAssociation;
     byteLength: number;
     sha256: string;
   };

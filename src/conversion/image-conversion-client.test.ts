@@ -6,11 +6,15 @@ import {
   type ConversionWorkerLike
 } from './image-conversion-client';
 import { convertConversionRequest, convertRasterToPattern, MAX_CONVERSION_TOKEN_BOOKKEEPING, type ConversionRequestMessage, type ConversionRasterRequestMessage, type ConversionWorkerResponse } from './image-to-pattern';
+import type { CatalogSnapshot } from '../catalog';
 
-const passthroughCatalog = [
-  { sourceId: 'red', code: '666', name: 'Red', hex: '#FF0000' as const, rgb: [255, 0, 0] as const },
-  { sourceId: 'blue', code: '797', name: 'Blue', hex: '#0000FF' as const, rgb: [0, 0, 255] as const }
-];
+const passthroughCatalog: CatalogSnapshot = {
+  association: { catalogId: 'passthrough-catalog', brandLabel: 'Passthrough', colorCount: 2 },
+  records: [
+    { sourceId: 'red', code: '666', name: 'Red', hex: '#FF0000' as const, rgb: [255, 0, 0] as const },
+    { sourceId: 'blue', code: '797', name: 'Blue', hex: '#0000FF' as const, rgb: [0, 0, 255] as const }
+  ]
+};
 
 function input(requestId = 'request') {
   return {
@@ -19,6 +23,7 @@ function input(requestId = 'request') {
     requestId,
     targetWidth: 2,
     targetHeight: 1,
+    catalog: passthroughCatalog,
     raster: { width: 2, height: 1, pixels: new Uint8ClampedArray([255, 0, 0, 255, 0, 0, 255, 255]) }
   };
 }
@@ -97,8 +102,31 @@ describe('image conversion worker client', () => {
     expect(worker.posted).toHaveLength(1);
     const request = worker.posted[0] as ConversionRasterRequestMessage;
     expect(request.pixels).not.toBe((job.request as ConversionRequestMessage & { readonly pixels: Uint8ClampedArray }).pixels);
-    worker.emit(convertConversionRequest(request));
-    await expect(job.promise).resolves.toMatchObject({ token: job.request.token });
+    expect(request.catalog).not.toBe(passthroughCatalog);
+    expect(request.catalog.records).not.toBe(passthroughCatalog.records);
+    expect(request.catalog).toEqual(passthroughCatalog);
+    worker.emit(convertConversionRequest(job.request));
+    await expect(job.promise).resolves.toMatchObject({ token: job.request.token, draft: { document: { catalog: passthroughCatalog.association } } });
+    client.dispose();
+  });
+
+  it('keeps deferred fallback conversion detached from the exposed request', async () => {
+    const client = createConversionWorkerClient({ useWorker: false });
+    const job = client.submit(input('detached-catalog'));
+    const exposed = job.request as unknown as { catalog: { records: Array<{ sourceId: string }> } };
+    exposed.catalog.records[0].sourceId = 'mutated-exposed-record';
+    const result = await job.promise;
+    expect(result.draft.document.palette.map((entry) => entry.catalog?.sourceId)).toEqual(['red', 'blue']);
+    client.dispose();
+  });
+
+  it('cancels with the internal token when the exposed token is mutated', async () => {
+    const client = createConversionWorkerClient({ useWorker: false });
+    const job = client.submit(input('detached-token'));
+    const exposed = job.request as unknown as { token: { requestId: string } };
+    exposed.token.requestId = 'mutated-exposed-token';
+    job.cancel();
+    await expect(job.promise).rejects.toBeInstanceOf(ConversionCancelledError);
     client.dispose();
   });
 
@@ -123,6 +151,7 @@ describe('image conversion worker client', () => {
       backgroundSourceId: 'blue'
     });
     expect(result.draft.document.palette.map((entry) => entry.catalog?.sourceId)).toEqual(['red']);
+    expect(result.draft.document.catalog).toEqual(passthroughCatalog.association);
     client.dispose();
   });
 
@@ -298,9 +327,10 @@ describe('image conversion worker client', () => {
       surfaceFactory
     } });
     const result = await client.requestImage(imageBlob(), { ...input(), targetWidth: 1, targetHeight: 1, requestId: 'fallback-parity' });
-    const expected = convertRasterToPattern({ width: 1, height: 1, pixels }, { targetWidth: 1, targetHeight: 1, token: result.token });
+    const expected = convertRasterToPattern({ width: 1, height: 1, pixels }, { targetWidth: 1, targetHeight: 1, catalog: passthroughCatalog, token: result.token });
     expect(result.draft.document.kind).toEqual(expected.document.kind);
     expect(result.draft.document.colors).toEqual(expected.document.colors);
+    expect(result.draft.document.catalog).toEqual(passthroughCatalog.association);
     client.dispose();
   });
 

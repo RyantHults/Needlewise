@@ -28,7 +28,7 @@ import {
 import { validateAcceptedConversionDraft, type AcceptedConversionDraft } from '../conversion/image-to-pattern';
 import type { ProgressActivity } from '../persistence';
 import type { PatternMetrics } from '../domain';
-import { DMC_CATALOG_METADATA, getDmcColor } from '../catalog';
+import { createCatalogReference, DEFAULT_CATALOG_DEFINITION, resolveCatalogDefinition, type CatalogDefinition } from '../catalog';
 import { WorkspaceError } from './errors';
 import { ProjectSession } from './session';
 import type {
@@ -97,18 +97,20 @@ function cloneHealth(health: ProjectHealth): ProjectHealth {
 }
 
 export function createStarterDocument(options: Pick<StarterProjectOptions, 'width' | 'height'> = {}): PatternDocument {
-  // New projects seed their palette with DMC Black 310 so there is always a usable color.
+  // New projects seed their palette with catalog Black 310 so there is always a usable color.
   // `createDocument` seeds `nextPaletteId` at 2 for that single entry.
-  const black = getDmcColor('310');
+  const definition = DEFAULT_CATALOG_DEFINITION;
+  const black = definition.getByHex('#000000');
   return createDocument({
     width: options.width ?? DEFAULT_WIDTH,
     height: options.height ?? DEFAULT_HEIGHT,
+    catalog: definition.association,
     palette: black
       ? [{
           id: 1,
           name: black.name,
           color: black.hex,
-          catalog: { catalogId: DMC_CATALOG_METADATA.catalogId, sourceId: black.sourceId, code: black.code, name: black.name, hex: black.hex, rgb: [...black.rgb] as [number, number, number] }
+          catalog: createCatalogReference(definition, black)
         }]
       : []
   });
@@ -197,6 +199,10 @@ export class ProjectWorkspace {
 
   getSourceImage(): SourceImageDescriptor | undefined {
     return this.sourceImage;
+  }
+
+  catalogFor(document: PatternDocument | null | undefined): CatalogDefinition | undefined {
+    return document === null || document === undefined ? undefined : resolveCatalogDefinition(document.catalog);
   }
 
   getAsset(assetId: string) {

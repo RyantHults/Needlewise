@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { useProjectWorkspace } from './application/react';
+import { DEFAULT_CATALOG_DEFINITION } from './catalog';
 
 vi.mock('./application/react', () => ({ useProjectWorkspace: vi.fn() }));
 const conversion = vi.hoisted(() => ({ convert: vi.fn() }));
@@ -38,7 +39,7 @@ const exportProject = vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3]));
 const openProject = vi.fn().mockResolvedValue(undefined);
 const flush = vi.fn().mockResolvedValue(undefined);
 const deleteProject = vi.fn().mockResolvedValue(undefined);
-const editorWorkspace = { metadata: { title: 'Garden sampler', notes: '', aidaCount: 14 } };
+const editorWorkspace = { metadata: { title: 'Garden sampler', notes: '', aidaCount: 14 }, catalogFor: () => DEFAULT_CATALOG_DEFINITION };
 
 const baseWorkspace = {
   initialized: true,

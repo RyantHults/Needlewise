@@ -473,11 +473,19 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .catalog-dialog .custom-color-fields label { margin:0; white-space:nowrap; }
 .catalog-dialog .custom-color-fields input { margin:0; }
 .catalog-dialog .custom-color-fields input[type="color"] { width:3rem; height:2rem; padding:.15rem; cursor:pointer; }
+.custom-color-rgb { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:.45rem; margin-top:.65rem; }
+.custom-color-rgb-title { grid-column:1 / -1; color:#687568; font-size:.7rem; font-weight:700; text-transform:uppercase; }
+.custom-color-rgb label { min-width:0; }
+.custom-color-rgb input { width:100%; }
+.custom-color-rgb input[aria-invalid="true"] { border-color:#a94e34; box-shadow:0 0 0 2px rgba(169,78,52,.16); }
+.catalog-unavailable { margin:.65rem 0 0; color:#687568; font-size:.75rem; }
 .catalog-dialog .custom-color-help { min-height:1.1rem; margin:.4rem 0 .5rem; color:#687568; font-size:.7rem; }
 .catalog-dialog .custom-color-section .custom-color-action { min-height:2.25rem; }
 @media (max-width: 30rem) {
   .catalog-dialog .custom-color-fields { grid-template-columns:minmax(0,1fr) minmax(0,1.2fr); }
   .catalog-dialog .custom-color-fields label { overflow:hidden; text-overflow:ellipsis; }
+  .custom-color-rgb { grid-template-columns:1fr; }
+  .custom-color-rgb-title { grid-column:auto; }
 }
 .catalog-results { list-style:none; margin:.6rem 0 0; padding:0; }
 .catalog-results li { display:flex; align-items:center; gap:.45rem; border-top:1px solid #d0dacf; padding:.5rem 0; font-size:.75rem; }

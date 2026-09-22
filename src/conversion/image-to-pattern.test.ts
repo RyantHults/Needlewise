@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CellKind, createDocument } from '../domain';
+import { DMC_CATALOG_DEFINITION, type CatalogSnapshot } from '../catalog';
 import {
   ConversionError,
   ConversionCancelledError,
@@ -16,14 +17,14 @@ import {
   type ConversionRaster
 } from './image-to-pattern';
 
-const catalog = [
+const catalogRecords = [
   { sourceId: 'black', code: '310', name: 'Black', hex: '#000000' as const, rgb: [0, 0, 0] as const },
   { sourceId: 'white', code: 'B5200', name: 'White', hex: '#FFFFFF' as const, rgb: [255, 255, 255] as const },
   { sourceId: 'red', code: '666', name: 'Red', hex: '#FF0000' as const, rgb: [255, 0, 0] as const },
   { sourceId: 'blue', code: '797', name: 'Blue', hex: '#0000FF' as const, rgb: [0, 0, 255] as const }
 ];
 
-const orderingCatalog = [
+const orderingCatalogRecords = [
   { sourceId: 'black', code: '310', name: 'Black', hex: '#000000' as const, rgb: [0, 0, 0] as const },
   { sourceId: 'white', code: 'B5200', name: 'White', hex: '#FFFFFF' as const, rgb: [255, 255, 255] as const },
   { sourceId: 'red', code: '666', name: 'Red', hex: '#FF0000' as const, rgb: [255, 0, 0] as const },
@@ -31,6 +32,16 @@ const orderingCatalog = [
   { sourceId: 'blue', code: '797', name: 'Blue', hex: '#0000FF' as const, rgb: [0, 0, 255] as const },
   { sourceId: 'magenta', code: '800', name: 'Magenta', hex: '#FF00FF' as const, rgb: [255, 0, 255] as const }
 ];
+
+const catalog: CatalogSnapshot = {
+  association: { catalogId: 'synthetic-catalog', brandLabel: 'Synthetic', colorCount: catalogRecords.length },
+  records: catalogRecords
+};
+
+const orderingCatalog: CatalogSnapshot = {
+  association: { catalogId: 'ordered-catalog', brandLabel: 'Ordered', colorCount: orderingCatalogRecords.length },
+  records: orderingCatalogRecords
+};
 
 /** Eight pixels: red x4, blue x2, green x1, magenta x1. */
 const orderedPixels = [
@@ -68,9 +79,46 @@ describe('deterministic image conversion core', () => {
     expect(first.document.colors).toEqual(second.document.colors);
     expect(first.document.palette).toEqual(second.document.palette);
     expect(second.sourceImage.traceVisible).toBe(false);
+    expect(first.document.catalog).toEqual(catalog.association);
+    expect(first.document.palette.every((entry) => entry.catalog?.catalogId === catalog.association.catalogId)).toBe(true);
     const accepted = acceptConversionDraft(first);
     expect(accepted.sourceImage.traceVisible).toBe(false);
     expect(() => validateAcceptedConversionDraft(accepted)).not.toThrow();
+  });
+
+  it('rejects inconsistent snapshots and budgets above the supplied catalog count', () => {
+    const inconsistent: CatalogSnapshot = {
+      ...catalog,
+      association: { ...catalog.association, colorCount: catalog.records.length + 1 }
+    };
+    expect(() => convertRasterToPattern(raster(1, 1, [255, 0, 0, 255]), {
+      targetWidth: 1,
+      targetHeight: 1,
+      catalog: inconsistent
+    })).toThrow(/catalog/i);
+    expect(() => convertRasterToPattern(raster(1, 1, [255, 0, 0, 255]), {
+      targetWidth: 1,
+      targetHeight: 1,
+      catalog,
+      paletteBudget: catalog.association.colorCount + 1
+    })).toThrow(/palette budget/i);
+  });
+
+  it('rejects catalog definitions but accepts their plain snapshots', () => {
+    expect(() => convertRasterToPattern(raster(1, 1, [255, 0, 0, 255]), {
+      targetWidth: 1,
+      targetHeight: 1,
+      paletteBudget: 1,
+      catalog: DMC_CATALOG_DEFINITION
+    })).toThrow(/plain.*snapshot|catalog.*snapshot/i);
+
+    const draft = convertRasterToPattern(raster(1, 1, [255, 0, 0, 255]), {
+      targetWidth: 1,
+      targetHeight: 1,
+      paletteBudget: 1,
+      catalog: DMC_CATALOG_DEFINITION.snapshot
+    });
+    expect(draft.document.catalog).toEqual(DMC_CATALOG_DEFINITION.association);
   });
 
   it('includes Black and White only when the image actually contains them', () => {
@@ -82,12 +130,15 @@ describe('deterministic image conversion core', () => {
   });
 
   it('uses catalog order for exact squared-RGB ties', () => {
-    const tieCatalog = [
-      catalog[0],
-      catalog[1],
-      { sourceId: 'near-a', code: 'a', name: 'A', hex: '#00000A' as const, rgb: [0, 0, 10] as const },
-      { sourceId: 'near-b', code: 'b', name: 'B', hex: '#000014' as const, rgb: [0, 0, 20] as const }
-    ];
+    const tieCatalog: CatalogSnapshot = {
+      association: { catalogId: 'tie-catalog', brandLabel: 'Tie', colorCount: 4 },
+      records: [
+        catalog.records[0],
+        catalog.records[1],
+        { sourceId: 'near-a', code: 'a', name: 'A', hex: '#00000A' as const, rgb: [0, 0, 10] as const },
+        { sourceId: 'near-b', code: 'b', name: 'B', hex: '#000014' as const, rgb: [0, 0, 20] as const }
+      ]
+    };
     const draft = convertRasterToPattern(raster(1, 1, [0, 0, 15, 255]), { targetWidth: 1, targetHeight: 1, paletteBudget: 4, catalog: tieCatalog });
     expect(draft.document.colors[0]).toBe(1);
     expect(draft.document.palette[0].catalog?.sourceId).toBe('near-a');
@@ -116,7 +167,7 @@ describe('deterministic image conversion core', () => {
 
   it('copies raster data into the worker request and validates its bounds', () => {
     const input = raster(1, 1, [1, 2, 3, 255]);
-    const request = createConversionRequest(input, { targetWidth: 1, targetHeight: 1, token: { projectId: 'p', baseRevision: 0, requestId: 'r' } });
+    const request = createConversionRequest(input, { targetWidth: 1, targetHeight: 1, catalog, token: { projectId: 'p', baseRevision: 0, requestId: 'r' } });
     expect(request.pixels).not.toBe(input.pixels);
     expect(() => validateConversionRequest(request)).not.toThrow();
     expect(() => validateConversionRequest({ ...request, pixels: new Uint8ClampedArray(3) })).toThrow(ConversionError);
@@ -141,14 +192,14 @@ describe('deterministic image conversion core', () => {
     expect(draft.stats.sourceHeight).toBe(4_000);
     const accepted = acceptConversionDraft(draft);
     expect(() => validateAcceptedConversionDraft(accepted)).not.toThrow();
-    const request = createConversionRequest({ ...input, sourceWidth: 8_000, sourceHeight: 6_000 }, { targetWidth: 2, targetHeight: 2, token: { projectId: 'p', baseRevision: 0, requestId: 'large-source' } });
+    const request = createConversionRequest({ ...input, sourceWidth: 8_000, sourceHeight: 6_000 }, { targetWidth: 2, targetHeight: 2, catalog, token: { projectId: 'p', baseRevision: 0, requestId: 'large-source' } });
     expect(() => validateConversionRequest(request)).not.toThrow();
   });
 
   it('still rejects genuinely invalid recorded source dimensions', () => {
     const invalid = { width: 1, height: 1, sourceWidth: 0, sourceHeight: 1, pixels: new Uint8ClampedArray([1, 2, 3, 255]) };
     expect(() => convertRasterToPattern(invalid, { targetWidth: 1, targetHeight: 1, catalog })).toThrow(ConversionError);
-    expect(() => createConversionRequest(invalid, { targetWidth: 1, targetHeight: 1 })).toThrow(ConversionError);
+    expect(() => createConversionRequest(invalid, { targetWidth: 1, targetHeight: 1, catalog })).toThrow(ConversionError);
   });
 
   it('selects palette colors in descending pixel usage, preferring lower catalog indices on exact ties', () => {
@@ -352,7 +403,7 @@ describe('auto-crop to content', () => {
   });
 
   it('preserves backstitch-only edge cells when trimming a document', () => {
-    const document = createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Red', color: '#FF0000' }] });
+    const document = createDocument({ width: 4, height: 4, catalog: catalog.association, palette: [{ id: 1, name: 'Red', color: '#FF0000' }] });
     document.kind[1 * 4 + 1] = CellKind.Full;
     document.colors[(1 * 4 + 1) * 4] = 1;
     document.backstitches.ids = new Uint32Array([7]);
@@ -378,12 +429,12 @@ describe('auto-crop to content', () => {
   });
 
   it('leaves full and fully-empty documents untouched', () => {
-    const full = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#FF0000' }] });
+    const full = createDocument({ width: 2, height: 2, catalog: catalog.association, palette: [{ id: 1, name: 'Red', color: '#FF0000' }] });
     full.kind.fill(CellKind.Full);
     expect(trimDocumentToContent(full)).toBeNull();
     expect(full.width).toBe(2);
     expect(full.height).toBe(2);
-    const empty = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#FF0000' }] });
+    const empty = createDocument({ width: 2, height: 2, catalog: catalog.association, palette: [{ id: 1, name: 'Red', color: '#FF0000' }] });
     expect(trimDocumentToContent(empty)).toBeNull();
     expect(empty.width).toBe(2);
     expect(empty.height).toBe(2);
@@ -406,9 +457,9 @@ describe('auto-crop to content', () => {
 
   it('carries autoCrop through the request builders', () => {
     const source = new Blob(['x'], { type: 'image/png' });
-    const withFlag = createConversionImageRequest({ source, targetWidth: 2, targetHeight: 2, autoCrop: true });
+    const withFlag = createConversionImageRequest({ source, targetWidth: 2, targetHeight: 2, autoCrop: true, catalog });
     expect(withFlag.autoCrop).toBe(true);
-    const withoutFlag = createConversionRequest(raster(1, 1, [1, 2, 3, 255]), { targetWidth: 1, targetHeight: 1 });
+    const withoutFlag = createConversionRequest(raster(1, 1, [1, 2, 3, 255]), { targetWidth: 1, targetHeight: 1, catalog });
     expect(withoutFlag.autoCrop).toBeUndefined();
   });
 });

@@ -10,6 +10,7 @@ import {
   type PaletteMaterial,
   type PatternSettings,
   type PatternDocument,
+  type CatalogAssociation,
   type Point,
   type QuarterCorner,
   DEFAULT_PATTERN_SETTINGS,
@@ -19,16 +20,13 @@ import {
   PALETTE_ID_MAX,
   MAX_PERSISTABLE_CELL_COUNT
 } from './types';
-import { DMC_CATALOG_RECORD_COUNT } from '../catalog';
+import { assertValidDocument } from './validation';
 
 const UINT16_MAX = 0xffff;
 const UINT32_MAX = 0xffffffff;
 
 /** Symbol pool ceiling for a single printable symbol: 4 UTF-16 code units. */
 export const MAX_PALETTE_SYMBOL_LENGTH = 4;
-
-/** Brand palette ceiling — equal to the DMC catalog record count (489). */
-export const MAX_PALETTE_COLORS = DMC_CATALOG_RECORD_COUNT;
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -659,8 +657,8 @@ export const PALETTE_SYMBOLS: readonly string[] = [
 
 export function defaultPaletteSymbol(id: number): string {
   if (!Number.isSafeInteger(id) || id < 1) throw new DomainError('invalid-palette-id', `Palette ID ${String(id)} is invalid.`);
-  // Palette IDs start at 1. The symbol pool is larger than the brand palette
-  // ceiling (MAX_PALETTE_COLORS), so every valid palette ID maps to a unique
+  // Palette IDs start at 1. The symbol pool is larger than the usual catalog
+  // palette ceiling, so every valid palette ID maps to a unique
   // glyph. Past the end of the list the assignment cycles deterministically as
   // a safety tail (id > PALETTE_SYMBOLS.length reuses the id-1 glyph); that
   // tail is unreachable for palettes within the business ceiling.
@@ -715,6 +713,10 @@ function normalizeCatalogReference(value: unknown): PaletteCatalogReference | un
   return { catalogId: candidate.catalogId, sourceId: candidate.sourceId, code: candidate.code, name: candidate.name, hex: candidate.hex.toUpperCase(), rgb: [...rgb] as [number, number, number] };
 }
 
+export function paletteLimit(document: Pick<PatternDocument, 'catalog'>): number {
+  return Math.min(document.catalog.colorCount, PALETTE_ID_MAX);
+}
+
 function normalizeMaterial(value: unknown, fallbackName: string, catalog?: PaletteCatalogReference): PaletteMaterial {
   if (value === undefined) return defaultPaletteMaterial(fallbackName, catalog);
   if (typeof value !== 'object' || value === null) throw new DomainError('invalid-material', 'Palette materials must be objects.');
@@ -759,18 +761,26 @@ export function emptyBackstitches(): BackstitchStore {
 }
 
 function normalizePalette(
-  entries: Array<PaletteEntryInput | PaletteEntry> | undefined
+  entries: Array<PaletteEntryInput | PaletteEntry> | undefined,
+  catalog: CatalogAssociation
 ): { palette: PaletteEntry[]; nextPaletteId: number } {
   const palette: PaletteEntry[] = [];
   const ids = new Set<number>();
   let nextId = 1;
+  const limit = Math.min(catalog.colorCount, PALETTE_ID_MAX);
 
   for (const input of entries ?? []) {
     const id = input.id === undefined ? nextId : input.id;
-    if (!Number.isInteger(id) || id < 1 || id > PALETTE_ID_MAX || ids.has(id)) {
+    if (typeof id === 'number' && id > limit) {
+      throw new DomainError('invalid-palette-id', `The palette cannot exceed the brand's color count (${String(limit)}).`);
+    }
+    if (!Number.isInteger(id) || id < 1 || id > limit || ids.has(id)) {
       throw new DomainError('invalid-palette-id', `Palette ID ${String(id)} is invalid or duplicated.`);
     }
     const entry = normalizePaletteEntry(input, id);
+    if (entry.catalog !== undefined && entry.catalog.catalogId !== catalog.catalogId) {
+      throw new DomainError('invalid-catalog-reference', `Palette ID ${String(entry.id)} belongs to a different catalog.`);
+    }
     if (palette.some((candidate) => candidate.symbol === entry.symbol)) throw new DomainError('invalid-palette-symbol', `Palette symbol ${entry.symbol} is duplicated.`);
     ids.add(id);
     palette.push(entry);
@@ -784,21 +794,7 @@ function normalizePalette(
 }
 
 export function createDocument(options: CreateDocumentOptions): PatternDocument;
-export function createDocument(
-  width: number,
-  height: number,
-  palette?: Array<PaletteEntryInput | PaletteEntry>
-): PatternDocument;
-export function createDocument(
-  optionsOrWidth: CreateDocumentOptions | number,
-  height?: number,
-  paletteEntries?: Array<PaletteEntryInput | PaletteEntry>
-): PatternDocument {
-  const options: CreateDocumentOptions =
-    typeof optionsOrWidth === 'number'
-      ? { width: optionsOrWidth, height: height as number, palette: paletteEntries }
-      : optionsOrWidth;
-
+export function createDocument(options: CreateDocumentOptions): PatternDocument {
   if (
     !Number.isInteger(options.width) ||
     !Number.isInteger(options.height) ||
@@ -812,9 +808,18 @@ export function createDocument(
     throw new DomainError('invalid-dimensions', 'Pattern dimensions are too large.');
   }
 
-  const { palette, nextPaletteId } = normalizePalette(options.palette);
-  return {
+  if (typeof options.catalog !== 'object' || options.catalog === null) {
+    throw new DomainError('invalid-catalog', 'A catalog association is required.');
+  }
+  const catalog = {
+    catalogId: options.catalog.catalogId,
+    brandLabel: options.catalog.brandLabel,
+    colorCount: options.catalog.colorCount
+  };
+  const { palette, nextPaletteId } = normalizePalette(options.palette, catalog);
+  const document: PatternDocument = {
     version: DOCUMENT_SCHEMA_VERSION,
+    catalog,
     width: options.width,
     height: options.height,
     kind: new Uint8Array(cellCount),
@@ -827,6 +832,8 @@ export function createDocument(
     nextBackstitchId: 1,
     nextPaletteId
   };
+  assertValidDocument(document);
+  return document;
 }
 
 export const createPatternDocument = createDocument;
@@ -835,6 +842,11 @@ export const createPattern = createDocument;
 export function cloneDocument(document: PatternDocument): PatternDocument {
   return {
     version: DOCUMENT_SCHEMA_VERSION,
+    catalog: {
+      catalogId: document.catalog.catalogId,
+      brandLabel: document.catalog.brandLabel,
+      colorCount: document.catalog.colorCount
+    },
     width: document.width,
     height: document.height,
     kind: document.kind.slice(),

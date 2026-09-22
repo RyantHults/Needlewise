@@ -8,6 +8,15 @@ import {
   type ConversionWorkerResponse
 } from '../conversion/image-to-pattern';
 import { handleImageConversionWorkerMessage } from './image-conversion.worker';
+import type { CatalogSnapshot } from '../catalog';
+
+const catalog: CatalogSnapshot = {
+  association: { catalogId: 'worker-catalog', brandLabel: 'Worker', colorCount: 2 },
+  records: [
+    { sourceId: 'red', code: '666', name: 'Red', hex: '#FF0000' as const, rgb: [255, 0, 0] as const },
+    { sourceId: 'blue', code: '797', name: 'Blue', hex: '#0000FF' as const, rgb: [0, 0, 255] as const }
+  ]
+};
 
 const request = createConversionRequest({
   width: 1,
@@ -16,6 +25,7 @@ const request = createConversionRequest({
 }, {
   targetWidth: 1,
   targetHeight: 1,
+  catalog,
   token: { projectId: 'worker-project', baseRevision: 2, requestId: 'worker-request' }
 });
 
@@ -44,6 +54,7 @@ describe('image conversion worker handler', () => {
     if (responses[0]?.type === 'conversion-result') {
       expect(responses[0].draft.document.kind).toBeInstanceOf(Uint8Array);
       expect(responses[0].draft.document.colors).toBeInstanceOf(Uint16Array);
+      expect(responses[0].draft.document.catalog).toEqual(catalog.association);
     }
     expect(active.size).toBe(0);
   });
@@ -91,6 +102,7 @@ describe('image conversion worker handler', () => {
         source: new Blob([pngBytes(1, 1).buffer as ArrayBuffer], { type: 'image/png' }),
         targetWidth: 1,
         targetHeight: 1,
+        catalog,
         token: { projectId: 'worker-project', baseRevision: 2, requestId: 'decode-cancel' }
       });
       const responses: ConversionWorkerResponse[] = [];
@@ -116,11 +128,13 @@ describe('image conversion worker handler', () => {
     const first = createConversionRequest({ width: 1, height: 1, pixels: new Uint8ClampedArray([1, 2, 3, 255]) }, {
       targetWidth: 1,
       targetHeight: 1,
+      catalog,
       token: { projectId: 'first-project', baseRevision: 1, requestId: 'reused' }
     });
     const second = createConversionRequest({ width: 1, height: 1, pixels: new Uint8ClampedArray([4, 5, 6, 255]) }, {
       targetWidth: 1,
       targetHeight: 1,
+      catalog,
       token: { projectId: 'second-project', baseRevision: 2, requestId: 'reused' }
     });
     const responses: ConversionWorkerResponse[] = [];
@@ -157,6 +171,7 @@ describe('image conversion worker handler', () => {
         targetWidth: 4,
         targetHeight: 2,
         autoCrop: true,
+        catalog,
         token: { projectId: 'worker-project', baseRevision: 2, requestId: 'worker-autocrop' }
       });
       expect(imageRequest.autoCrop).toBe(true);

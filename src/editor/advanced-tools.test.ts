@@ -7,6 +7,7 @@ import {
   type DomainCommand,
   type PatternDocument
 } from '../domain';
+import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { createFillWorkerClient, createFillResult, type FillWorkerClient, type FillWorkerLike } from './fill';
 import { EditorSurfaceController } from './controller';
 import { createUiStore } from './ui-store';
@@ -96,7 +97,7 @@ class FakeGateway implements WorkspaceEditorGateway {
 
   switchProject(): void {
     this.projectId = 'project-b';
-    this.editor = createEditor(createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
+    this.editor = createEditor(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
     this.emit();
   }
 
@@ -167,7 +168,7 @@ function pointer(pointerId: number, screenX: number, screenY: number): PointerSa
 }
 
 function documentWithStitches(): PatternDocument {
-  const editor = createEditor(createDocument({ width: 8, height: 8, palette: [
+  const editor = createEditor(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 8, height: 8, palette: [
     { id: 1, name: 'Red', color: '#d33' },
     { id: 2, name: 'Blue', color: '#36c' }
   ] }));
@@ -214,7 +215,7 @@ describe('advanced headless editor tools', () => {
   });
 
   it('uses every configured corner for keyboard component erasing and publishes the corner status', () => {
-    const editor = createEditor(createDocument({ width: 2, height: 2, palette: [
+    const editor = createEditor(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [
       { id: 1, name: 'Red', color: '#d33' },
       { id: 2, name: 'Blue', color: '#36c' },
       { id: 3, name: 'Gold', color: '#da2' },
@@ -514,7 +515,7 @@ describe('advanced headless editor tools', () => {
     sparse.controller.handlePointerUp(pointer(1, 8, 8));
     expect(sparse.controller.getSelectionIndices()).toEqual(new Uint32Array([0]));
 
-    sparse.gateway.replaceDocument(createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
+    sparse.gateway.replaceDocument(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
     expect(sparse.controller.getSelection()).toBeUndefined();
     expect(sparse.controller.getSelectionIndices()).toBeUndefined();
     expect(sparse.uiStore.getState().overlay.selection).toBeUndefined();
@@ -525,7 +526,7 @@ describe('advanced headless editor tools', () => {
     const legacy = fixture();
     legacy.controller.setSelection({ x: 1, y: 1 }, { x: 2, y: 2 });
     expect(legacy.controller.getSelection()).toEqual({ x: 1, y: 1, width: 2, height: 2 });
-    legacy.gateway.replaceDocument(createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
+    legacy.gateway.replaceDocument(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
     expect(legacy.controller.getSelection()).toBeUndefined();
     expect(legacy.uiStore.getState().overlay.selection).toBeUndefined();
     expect(legacy.controller.deleteSelection()).toBe(false);
@@ -533,7 +534,7 @@ describe('advanced headless editor tools', () => {
 
     const direct = fixture();
     direct.controller.setSelection({ x: 1, y: 1 });
-    direct.controller.setDocument(createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
+    direct.controller.setDocument(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
     expect(direct.controller.getSelection()).toBeUndefined();
     expect(direct.uiStore.getState().overlay.selection).toBeUndefined();
     direct.controller.dispose();
@@ -544,7 +545,7 @@ describe('advanced headless editor tools', () => {
     expect(cropped.controller.getSelection()).toBeUndefined();
     cropped.controller.dispose();
 
-    const rotated = fixture(createDocument({ width: 8, height: 4, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
+    const rotated = fixture(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 8, height: 4, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
     rotated.controller.setSelection({ x: 1, y: 1 });
     rotated.gateway.execute({ type: 'rotate-cw' });
     expect(rotated.controller.getSelection()).toBeUndefined();
@@ -1070,7 +1071,7 @@ describe('advanced headless editor tools', () => {
   });
 
   it('recolors a Full region to the selected palette as one undoable operation', async () => {
-    const document = createDocument({ width: 2, height: 1, palette: [
+    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 1, palette: [
       { id: 1, name: 'Red', color: '#d33' },
       { id: 2, name: 'Blue', color: '#36c' }
     ] });
@@ -1143,7 +1144,7 @@ describe('advanced headless editor tools', () => {
       controller.dispose();
     };
 
-    const legacy = createDocument({ width: 1, height: 1, palette: [
+    const legacy = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 1, height: 1, palette: [
       { id: 1, name: 'Red', color: '#d33' },
       { id: 2, name: 'Blue', color: '#36c' },
       { id: 3, name: 'Gold', color: '#da2' }
@@ -1153,7 +1154,7 @@ describe('advanced headless editor tools', () => {
     legacy.completed[0] = 13;
     await exercise(legacy, 12, 4, 2, 2, [1, 2, 1, 2], [1, 3, 1, 2], 13);
 
-    const northwestSoutheast = createDocument({ width: 1, height: 1, palette: [
+    const northwestSoutheast = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 1, height: 1, palette: [
       { id: 1, name: 'Red', color: '#d33' },
       { id: 2, name: 'Blue', color: '#36c' },
       { id: 3, name: 'Gold', color: '#da2' }
@@ -1163,7 +1164,7 @@ describe('advanced headless editor tools', () => {
     northwestSoutheast.completed[0] = 5;
     await exercise(northwestSoutheast, 4, 4, 1, 1, [1, 0, 2, 0], [3, 0, 2, 0], 5);
 
-    const northeastSouthwest = createDocument({ width: 1, height: 1, palette: [
+    const northeastSouthwest = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 1, height: 1, palette: [
       { id: 1, name: 'Red', color: '#d33' },
       { id: 2, name: 'Blue', color: '#36c' },
       { id: 3, name: 'Gold', color: '#da2' }
@@ -1187,7 +1188,7 @@ describe('advanced headless editor tools', () => {
   });
 
   it('treats an empty fill hit as an immediate no-op', () => {
-    const document = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     const { controller, gateway, worker, uiStore } = fixture(document);
     uiStore.setPaletteId(1);
     controller.setTool({ tool: 'fill' });
@@ -1333,7 +1334,7 @@ describe('advanced headless editor tools', () => {
   });
 
   it('keeps bounded selection interactions practical on a 500×500 document', () => {
-    const document = createDocument({ width: 500, height: 500, palette: [{ id: 1, name: 'Thread', color: '#123456' }] });
+    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 500, height: 500, palette: [{ id: 1, name: 'Thread', color: '#123456' }] });
     const { controller } = fixture(document);
     controller.setSelection({ x: 499, y: 499 }, { x: 0, y: 0 });
     expect(controller.getSelection()).toEqual({ x: 0, y: 0, width: 500, height: 500 });

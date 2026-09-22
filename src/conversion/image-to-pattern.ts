@@ -6,7 +6,7 @@ import {
   type PaletteEntryInput,
   type PatternDocument
 } from '../domain';
-import { DMC_CATALOG, DMC_CATALOG_METADATA, type DmcCatalogColor } from '../catalog';
+import type { CatalogRecord, CatalogSnapshot } from '../catalog';
 import { MAX_IMAGE_DECODE_BYTES, MAX_IMAGE_DECODE_DIMENSION, MAX_IMAGE_DECODE_PIXELS } from '../shared/limits';
 import { MAX_WORKING_IMAGE_DIMENSION, MAX_WORKING_IMAGE_PIXELS } from '../shared/image-sizing';
 
@@ -17,7 +17,6 @@ export const CONVERSION_CANCEL_TYPE = 'conversion-cancel' as const;
 export const CONVERSION_CANCELLED_TYPE = 'conversion-cancelled' as const;
 export const CONVERSION_ERROR_TYPE = 'conversion-error' as const;
 export const DEFAULT_CONVERSION_PALETTE_BUDGET = 24;
-export const MAX_CONVERSION_PALETTE_BUDGET = DMC_CATALOG.length;
 export const MAX_CONVERSION_DIMENSION = 1_000;
 export const MAX_CONVERSION_SOURCE_DIMENSION = MAX_WORKING_IMAGE_DIMENSION;
 export const MAX_CONVERSION_SOURCE_PIXELS = MAX_WORKING_IMAGE_PIXELS;
@@ -97,7 +96,7 @@ export interface ConversionOptions {
   /** Trim empty borders off the source raster before the target mapping. */
   readonly autoCrop?: boolean;
   readonly token?: ConversionToken;
-  readonly catalog?: readonly DmcCatalogColor[];
+  readonly catalog: CatalogSnapshot;
   readonly sourceImage?: Partial<Pick<ConversionSourceImageCandidate, 'assetId' | 'mimeType'>>;
 }
 
@@ -110,7 +109,7 @@ export interface ConversionRequestBase {
   readonly paletteBudget?: number;
   readonly backgroundSourceId?: string;
   readonly autoCrop?: boolean;
-  readonly catalog?: readonly DmcCatalogColor[];
+  readonly catalog: CatalogSnapshot;
   readonly sourceAssetId?: string;
   readonly sourceMimeType?: string;
 }
@@ -164,7 +163,7 @@ export type ConversionWorkerRequest = ConversionRequestMessage | ConversionCance
 export type ConversionWorkerResponse = ConversionResultMessage | ConversionCancelledMessage | ConversionErrorMessage;
 
 export class ConversionError extends Error {
-  constructor(readonly code: 'invalid-raster' | 'invalid-target' | 'invalid-palette-budget' | 'invalid-token' | 'invalid-draft' | 'conversion-failed' | 'unavailable', message: string) {
+  constructor(readonly code: 'invalid-raster' | 'invalid-target' | 'invalid-palette-budget' | 'invalid-catalog' | 'invalid-token' | 'invalid-draft' | 'conversion-failed' | 'unavailable', message: string) {
     super(message);
     this.name = 'ConversionError';
   }
@@ -185,7 +184,82 @@ export interface ConversionCancellation {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function hasOnlyOwnKeys(value: object, allowed: readonly string[]): boolean {
+  return Reflect.ownKeys(value).every((key) => typeof key === 'string' && allowed.includes(key));
+}
+
+function catalogFailure(message: string): never {
+  throw new ConversionError('invalid-catalog', message);
+}
+
+function validRgb(value: unknown): value is readonly [number, number, number] {
+  return Array.isArray(value)
+    && value.length === 3
+    && value.every((channel) => Number.isInteger(channel) && channel >= 0 && channel <= 255);
+}
+
+function assertCatalogRecord(value: unknown, index: number): asserts value is CatalogRecord {
+  if (!isPlainObject(value) || !hasOnlyOwnKeys(value, ['sourceId', 'code', 'name', 'hex', 'rgb'])) catalogFailure(`Catalog record ${String(index)} is malformed.`);
+  if (typeof value.sourceId !== 'string' || !value.sourceId.trim()) catalogFailure(`Catalog record ${String(index)} has an empty source ID.`);
+  if (typeof value.code !== 'string' || !value.code.trim()) catalogFailure(`Catalog record ${String(index)} has an empty code.`);
+  if (typeof value.name !== 'string' || !value.name.trim()) catalogFailure(`Catalog record ${String(index)} has an empty name.`);
+  if (typeof value.hex !== 'string' || !/^#[0-9A-Fa-f]{6}$/.test(value.hex)) catalogFailure(`Catalog record ${String(index)} has an invalid HEX value.`);
+  if (!validRgb(value.rgb)) catalogFailure(`Catalog record ${String(index)} has invalid RGB data.`);
+  const expected = [
+    Number.parseInt(value.hex.slice(1, 3), 16),
+    Number.parseInt(value.hex.slice(3, 5), 16),
+    Number.parseInt(value.hex.slice(5, 7), 16)
+  ];
+  if (value.rgb.some((channel, channelIndex) => channel !== expected[channelIndex])) catalogFailure(`Catalog record ${String(index)} has inconsistent HEX/RGB data.`);
+}
+
+function assertCatalogSnapshot(value: unknown): asserts value is CatalogSnapshot {
+  if (!isPlainObject(value) || !hasOnlyOwnKeys(value, ['association', 'records']) || !isPlainObject(value.association) || !hasOnlyOwnKeys(value.association, ['catalogId', 'brandLabel', 'colorCount']) || !Array.isArray(value.records)) catalogFailure('The catalog snapshot must be a plain serialized snapshot.');
+  const association = value.association as Record<string, unknown>;
+  const records = value.records as unknown[];
+  if (typeof association.catalogId !== 'string' || !association.catalogId.trim()) catalogFailure('The catalog association ID must be non-empty.');
+  if (typeof association.brandLabel !== 'string' || !association.brandLabel.trim()) catalogFailure('The catalog association brand label must be non-empty.');
+  const colorCount = association.colorCount;
+  if (typeof colorCount !== 'number' || !Number.isSafeInteger(colorCount) || colorCount < 1) catalogFailure('The catalog association color count must be a positive safe integer.');
+  if (colorCount !== records.length) catalogFailure('The catalog association color count must match the records.');
+  records.forEach((record, index) => assertCatalogRecord(record, index));
+}
+
+/** Validate and defensively clone the serializable catalog data used by conversion. */
+export function cloneCatalogSnapshot(value: CatalogSnapshot): CatalogSnapshot {
+  assertCatalogSnapshot(value);
+  return {
+    association: {
+      catalogId: value.association.catalogId,
+      brandLabel: value.association.brandLabel,
+      colorCount: value.association.colorCount
+    },
+    records: value.records.map((record) => ({
+      sourceId: record.sourceId,
+      code: record.code,
+      name: record.name,
+      hex: record.hex,
+      rgb: [record.rgb[0], record.rgb[1], record.rgb[2]] as [number, number, number]
+    }))
+  };
+}
+
+export function validateCatalogSnapshot(value: unknown): value is CatalogSnapshot {
+  try {
+    assertCatalogSnapshot(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function conversionCancelled(cancellation?: ConversionCancellation, requestId?: string): void {
@@ -253,7 +327,7 @@ function rgbDistance(left: readonly [number, number, number], right: readonly [n
   return red * red + green * green + blue * blue;
 }
 
-function nearestCatalogIndex(rgb: readonly [number, number, number], catalog: readonly DmcCatalogColor[]): number {
+function nearestCatalogIndex(rgb: readonly [number, number, number], catalog: readonly CatalogRecord[]): number {
   let best = 0;
   let bestDistance = Number.POSITIVE_INFINITY;
   for (let index = 0; index < catalog.length; index += 1) {
@@ -282,7 +356,7 @@ function rankCatalogIndices(counts: ReadonlyMap<number, number>, budget: number)
 }
 
 /** Catalog index matching the background sourceId, or -1 when there is none. */
-function backgroundCatalogIndex(options: ConversionOptions, catalog: readonly DmcCatalogColor[]): number {
+function backgroundCatalogIndex(options: ConversionOptions, catalog: readonly CatalogRecord[]): number {
   if (options.backgroundSourceId === undefined || typeof options.backgroundSourceId !== 'string') return -1;
   return catalog.findIndex((color) => color.sourceId === options.backgroundSourceId);
 }
@@ -381,7 +455,7 @@ export function trimDocumentToContent(document: PatternDocument): DocumentConten
   return { left, top, right, bottom };
 }
 
-function paletteEntry(id: number, color: DmcCatalogColor): PaletteEntryInput {
+function paletteEntry(association: CatalogSnapshot['association'], id: number, color: CatalogRecord): PaletteEntryInput {
   // `symbol` is intentionally omitted: `normalizePaletteEntry` auto-assigns a
   // curated Unicode glyph via `defaultPaletteSymbol(id)` (cycled past 28),
   // and `isAutoOverflowEntry` flags any cycled-default duplicate so the
@@ -392,7 +466,7 @@ function paletteEntry(id: number, color: DmcCatalogColor): PaletteEntryInput {
     color: color.hex,
     active: true,
     catalog: {
-      catalogId: DMC_CATALOG_METADATA.catalogId,
+      catalogId: association.catalogId,
       sourceId: color.sourceId,
       code: color.code,
       name: color.name,
@@ -414,15 +488,16 @@ function defaultToken(): ConversionToken {
 export function convertRasterToPattern(raster: ConversionRaster, options: ConversionOptions): ConversionDraft {
   assertRaster(raster);
   assertPositiveDimensions(options.targetWidth, options.targetHeight, 'target');
-  const catalog = options.catalog ?? DMC_CATALOG;
-  const backgroundIndex = backgroundCatalogIndex(options, catalog);
+  const catalog = cloneCatalogSnapshot(options.catalog);
+  const records = catalog.records;
+  const backgroundIndex = backgroundCatalogIndex(options, records);
   const sampled = resampleRaster(raster, options.targetWidth, options.targetHeight);
   const sourceWidth = raster.sourceWidth ?? raster.width;
   const sourceHeight = raster.sourceHeight ?? raster.height;
   const token = options.token ?? defaultToken();
   assertToken(token);
-  const budget = options.paletteBudget ?? DEFAULT_CONVERSION_PALETTE_BUDGET;
-  if (!Number.isSafeInteger(budget) || budget < 1 || budget > MAX_CONVERSION_PALETTE_BUDGET) throw new ConversionError('invalid-palette-budget', 'The palette budget must fit within the supported catalog bound.');
+  const budget = options.paletteBudget ?? Math.min(DEFAULT_CONVERSION_PALETTE_BUDGET, catalog.association.colorCount);
+  if (!Number.isSafeInteger(budget) || budget < 1 || budget > catalog.association.colorCount) throw new ConversionError('invalid-palette-budget', 'The palette budget must fit within the supplied catalog bound.');
   const counts = new Map<number, number>();
   const matchedColors = new Set<number>();
   let transparentPixels = 0;
@@ -432,7 +507,7 @@ export function convertRasterToPattern(raster: ConversionRaster, options: Conver
       transparentPixels += 1;
       continue;
     }
-    const catalogIndex = nearestCatalogIndex(sourceRgb(sampled.pixels, offset), catalog);
+    const catalogIndex = nearestCatalogIndex(sourceRgb(sampled.pixels, offset), records);
     if (catalogIndex === backgroundIndex) {
       continue;
     }
@@ -440,12 +515,12 @@ export function convertRasterToPattern(raster: ConversionRaster, options: Conver
     matchedColors.add(catalogIndex);
   }
   const selectedIndices = rankCatalogIndices(counts, budget);
-  const selected = [...selectedIndices].sort((left, right) => left - right).map((index) => catalog[index]);
+  const selected = [...selectedIndices].sort((left, right) => left - right).map((index) => records[index]);
   const selectedCatalogIndices = [...selectedIndices].sort((left, right) => left - right);
   const selectedOrder = selectedIndices.map((catalogIndex, paletteOffset) => ({ catalogIndex, paletteId: paletteOffset + 1 }));
-  const paletteInputs: PaletteEntryInput[] = selectedOrder.map(({ catalogIndex, paletteId }) => paletteEntry(paletteId, catalog[catalogIndex]));
+  const paletteInputs: PaletteEntryInput[] = selectedOrder.map(({ catalogIndex, paletteId }) => paletteEntry(catalog.association, paletteId, records[catalogIndex]));
   const paletteIdByCatalogIndex = new Map(selectedOrder.map(({ catalogIndex, paletteId }) => [catalogIndex, paletteId]));
-  const document = createDocument({ width: options.targetWidth, height: options.targetHeight, palette: paletteInputs });
+  const document = createDocument({ width: options.targetWidth, height: options.targetHeight, catalog: catalog.association, palette: paletteInputs });
   const usage = new Map<number, number>();
   let stitchedPixels = 0;
   for (let targetIndex = 0; targetIndex < document.width * document.height; targetIndex += 1) {
@@ -458,7 +533,7 @@ export function convertRasterToPattern(raster: ConversionRaster, options: Conver
     // The background color is skipped before selection, so it can never be in
     // the palette; check each pixel's true catalog match against it so
     // background pixels stay unstitched instead of remapping to a kept color.
-    if (backgroundIndex >= 0 && nearestCatalogIndex(pixel, catalog) === backgroundIndex) {
+    if (backgroundIndex >= 0 && nearestCatalogIndex(pixel, records) === backgroundIndex) {
       continue;
     }
     const sourceCatalogIndex = nearestCatalogIndex(pixel, selected);
@@ -486,7 +561,7 @@ export function convertRasterToPattern(raster: ConversionRaster, options: Conver
     }
   }
   const paletteUsage = selectedOrder
-    .map(({ catalogIndex, paletteId }) => ({ paletteId, catalogId: catalog[catalogIndex].sourceId, count: usage.get(paletteId) ?? 0 }))
+    .map(({ catalogIndex, paletteId }) => ({ paletteId, catalogId: records[catalogIndex].sourceId, count: usage.get(paletteId) ?? 0 }))
     .filter((entry) => entry.count > 0);
   return {
     token,
@@ -528,6 +603,8 @@ export async function convertRasterToPatternAsync(
 ): Promise<ConversionDraft> {
   assertRaster(raster);
   assertPositiveDimensions(options.targetWidth, options.targetHeight, 'target');
+  const catalog = cloneCatalogSnapshot(options.catalog);
+  const records = catalog.records;
   const token = options.token ?? defaultToken();
   assertToken(token);
   conversionCancelled(cancellation, token.requestId);
@@ -535,10 +612,9 @@ export async function convertRasterToPatternAsync(
   conversionCancelled(cancellation, token.requestId);
   const sourceWidth = raster.sourceWidth ?? raster.width;
   const sourceHeight = raster.sourceHeight ?? raster.height;
-  const budget = options.paletteBudget ?? DEFAULT_CONVERSION_PALETTE_BUDGET;
-  if (!Number.isSafeInteger(budget) || budget < 1 || budget > MAX_CONVERSION_PALETTE_BUDGET) throw new ConversionError('invalid-palette-budget', 'The palette budget must fit within the supported catalog bound.');
-  const catalog = options.catalog ?? DMC_CATALOG;
-  const backgroundIndex = backgroundCatalogIndex(options, catalog);
+  const budget = options.paletteBudget ?? Math.min(DEFAULT_CONVERSION_PALETTE_BUDGET, catalog.association.colorCount);
+  if (!Number.isSafeInteger(budget) || budget < 1 || budget > catalog.association.colorCount) throw new ConversionError('invalid-palette-budget', 'The palette budget must fit within the supplied catalog bound.');
+  const backgroundIndex = backgroundCatalogIndex(options, records);
   const counts = new Map<number, number>();
   const matchedColors = new Set<number>();
   let transparentPixels = 0;
@@ -547,7 +623,7 @@ export async function convertRasterToPatternAsync(
     if (sampled.pixels[offset + 3] === 0) {
       transparentPixels += 1;
     } else {
-      const catalogIndex = nearestCatalogIndex(sourceRgb(sampled.pixels, offset), catalog);
+      const catalogIndex = nearestCatalogIndex(sourceRgb(sampled.pixels, offset), records);
       if (catalogIndex !== backgroundIndex) {
         counts.set(catalogIndex, (counts.get(catalogIndex) ?? 0) + 1);
         matchedColors.add(catalogIndex);
@@ -561,13 +637,13 @@ export async function convertRasterToPatternAsync(
   }
   conversionCancelled(cancellation, token.requestId);
   const selectedIndices = rankCatalogIndices(counts, budget);
-  const selected = [...selectedIndices].sort((left, right) => left - right).map((index) => catalog[index]);
+  const selected = [...selectedIndices].sort((left, right) => left - right).map((index) => records[index]);
   const selectedCatalogIndices = [...selectedIndices].sort((left, right) => left - right);
   const selectedOrder = selectedIndices.map((catalogIndex, paletteOffset) => ({ catalogIndex, paletteId: paletteOffset + 1 }));
-  const paletteInputs: PaletteEntryInput[] = selectedOrder.map(({ catalogIndex, paletteId }) => paletteEntry(paletteId, catalog[catalogIndex]));
+  const paletteInputs: PaletteEntryInput[] = selectedOrder.map(({ catalogIndex, paletteId }) => paletteEntry(catalog.association, paletteId, records[catalogIndex]));
   const paletteIdByCatalogIndex = new Map(selectedOrder.map(({ catalogIndex, paletteId }) => [catalogIndex, paletteId]));
   conversionCancelled(cancellation, token.requestId);
-  const document = createDocument({ width: options.targetWidth, height: options.targetHeight, palette: paletteInputs });
+  const document = createDocument({ width: options.targetWidth, height: options.targetHeight, catalog: catalog.association, palette: paletteInputs });
   conversionCancelled(cancellation, token.requestId);
   const usage = new Map<number, number>();
   let stitchedPixels = 0;
@@ -580,7 +656,7 @@ export async function convertRasterToPatternAsync(
       // The background color is skipped before selection, so it can never be
       // in the palette; check each pixel's true catalog match against it so
       // background pixels stay unstitched instead of remapping to a kept color.
-      if (backgroundIndex >= 0 && nearestCatalogIndex(pixel, catalog) === backgroundIndex) {
+      if (backgroundIndex >= 0 && nearestCatalogIndex(pixel, records) === backgroundIndex) {
         // Background pixels are left empty in the assignment pass as well.
       } else {
         const sourceCatalogIndex = nearestCatalogIndex(pixel, selected);
@@ -624,7 +700,7 @@ export async function convertRasterToPatternAsync(
     }
   }
   const paletteUsage = selectedOrder
-    .map(({ catalogIndex, paletteId }) => ({ paletteId, catalogId: catalog[catalogIndex].sourceId, count: usage.get(paletteId) ?? 0 }))
+    .map(({ catalogIndex, paletteId }) => ({ paletteId, catalogId: records[catalogIndex].sourceId, count: usage.get(paletteId) ?? 0 }))
     .filter((entry) => entry.count > 0);
   return {
     token,
@@ -806,7 +882,7 @@ export function createConversionRequest(
     ...(options.paletteBudget === undefined ? {} : { paletteBudget: options.paletteBudget }),
     ...(options.backgroundSourceId === undefined ? {} : { backgroundSourceId: options.backgroundSourceId }),
     ...(options.autoCrop === undefined ? {} : { autoCrop: options.autoCrop }),
-    ...(options.catalog === undefined ? {} : { catalog: options.catalog.map((color) => ({ ...color, rgb: [...color.rgb] as [number, number, number] })) }),
+    catalog: cloneCatalogSnapshot(options.catalog),
     ...(options.sourceImage?.assetId === undefined ? {} : { sourceAssetId: options.sourceImage.assetId }),
     ...(options.sourceImage?.mimeType === undefined ? {} : { sourceMimeType: options.sourceImage.mimeType })
   };
@@ -853,7 +929,7 @@ export function createConversionImageRequest(options: ConversionImageRequestOpti
     ...(options.paletteBudget === undefined ? {} : { paletteBudget: options.paletteBudget }),
     ...(options.backgroundSourceId === undefined ? {} : { backgroundSourceId: options.backgroundSourceId }),
     ...(options.autoCrop === undefined ? {} : { autoCrop: options.autoCrop }),
-    ...(options.catalog === undefined ? {} : { catalog: options.catalog.map((color) => ({ ...color, rgb: [...color.rgb] as [number, number, number] })) }),
+    catalog: cloneCatalogSnapshot(options.catalog),
     ...(options.sourceImage?.assetId === undefined ? {} : { sourceAssetId: options.sourceImage.assetId }),
     ...(options.sourceImage?.mimeType === undefined ? {} : { sourceMimeType: options.sourceImage.mimeType })
   };
@@ -868,6 +944,7 @@ export function validateConversionRequest(request: ConversionRequestMessage): vo
     throw new ConversionError('invalid-raster', 'The conversion request protocol is malformed.');
   }
   assertToken(request.token);
+  assertCatalogSnapshot(request.catalog);
   assertPositiveDimensions(request.targetWidth, request.targetHeight, 'target');
   if (isRasterRequest(request)) {
     assertPositiveDimensions(request.width, request.height, 'raster');

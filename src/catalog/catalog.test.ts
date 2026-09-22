@@ -1,13 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  DMC_CATALOG_DEFINITION,
+  DEFAULT_CATALOG_DEFINITION,
   DMC_CATALOG,
   DMC_CATALOG_IS_OFFLINE_ONLY,
   DMC_CATALOG_METADATA,
   DMC_CATALOG_PROVENANCE,
   DMC_CATALOG_RECORD_COUNT,
+  createCatalogReference,
   getDmcColor,
   getDmcColorByHex,
   nearestDmcColor,
+  resolveCatalogDefinition,
   searchDmcColors,
   validateDmcCatalog,
   validateDmcCatalogBundle,
@@ -21,11 +25,48 @@ describe('offline DMC-compatible catalog', () => {
     records: DMC_CATALOG
   };
 
+  it('resolves the DMC definition and performs generic search, exact hex, and nearest RGB lookup', () => {
+    const definition = resolveCatalogDefinition(DMC_CATALOG_DEFINITION.association);
+    expect(definition).toBe(DMC_CATALOG_DEFINITION);
+    expect(definition?.getByHex('#FFE2E2')?.code).toBe('3713');
+    expect(definition?.search('salmon', { limit: 1 })).toHaveLength(1);
+    expect(definition?.nearest({ r: 0, g: 0, b: 0 })?.code).toBe('310');
+  });
+
+  it('creates a serializable snapshot and matching palette reference', () => {
+    const record = DMC_CATALOG_DEFINITION.records.at(0);
+    expect(record).toBeDefined();
+    expect(DMC_CATALOG_DEFINITION.snapshot).toEqual({
+      association: DMC_CATALOG_DEFINITION.association,
+      records: DMC_CATALOG_DEFINITION.records,
+    });
+    expect(createCatalogReference(DMC_CATALOG_DEFINITION, record!)).toMatchObject({
+      catalogId: DMC_CATALOG_DEFINITION.association.catalogId,
+      sourceId: record!.sourceId,
+    });
+  });
+
+  it('resolves only the registered immutable catalog association', () => {
+    expect(DEFAULT_CATALOG_DEFINITION).toBe(DMC_CATALOG_DEFINITION);
+    expect(resolveCatalogDefinition({ ...DMC_CATALOG_DEFINITION.association })).toBe(DMC_CATALOG_DEFINITION);
+    expect(resolveCatalogDefinition({ ...DMC_CATALOG_DEFINITION.association, catalogId: 'future-revision' })).toBeUndefined();
+    expect(resolveCatalogDefinition({ ...DMC_CATALOG_DEFINITION.association, brandLabel: 'Other' })).toBeUndefined();
+    expect(resolveCatalogDefinition({ ...DMC_CATALOG_DEFINITION.association, colorCount: 1 })).toBeUndefined();
+    expect(Object.isFrozen(DMC_CATALOG_DEFINITION)).toBe(true);
+    expect(Object.isFrozen(DMC_CATALOG_DEFINITION.association)).toBe(true);
+    expect(Object.isFrozen(DMC_CATALOG_DEFINITION.snapshot)).toBe(true);
+    expect(Object.isFrozen(DMC_CATALOG_DEFINITION.records)).toBe(true);
+    expect(Object.isFrozen(DMC_CATALOG_DEFINITION.records[0])).toBe(true);
+    expect(Object.isFrozen(DMC_CATALOG_DEFINITION.records[0].rgb)).toBe(true);
+  });
+
   it('contains a validated, unique normalized dataset', () => {
     const validation = validateDmcCatalog(DMC_CATALOG);
     expect(validation.valid).toBe(true);
     expect(validation.errors).toEqual([]);
     expect(DMC_CATALOG_RECORD_COUNT).toBe(489);
+    expect(DMC_CATALOG_DEFINITION.association.colorCount).toBe(DMC_CATALOG_DEFINITION.records.length);
+    expect(DMC_CATALOG_DEFINITION.records.length).toBe(DMC_CATALOG_RECORD_COUNT);
     expect(new Set(DMC_CATALOG.map((record) => record.sourceId)).size).toBe(DMC_CATALOG.length);
     expect(new Set(DMC_CATALOG.map((record) => record.code.toUpperCase())).size).toBe(DMC_CATALOG.length);
     expect(new Set(DMC_CATALOG.map((record) => record.hex)).size).toBe(DMC_CATALOG.length);
@@ -92,15 +133,18 @@ describe('offline DMC-compatible catalog', () => {
     expect(getDmcColor('Ecru')).toMatchObject({ sourceId: 'dmc-ECRU' });
     expect(getDmcColor(3713)?.code).toBe('3713');
     expect(getDmcColor('missing')).toBeUndefined();
-    expect(getDmcColorByHex('#ffe2e2')).toMatchObject({
+    expect(DMC_CATALOG_DEFINITION.getByHex('#ffe2e2')).toMatchObject({
       code: '3713',
       hex: '#FFE2E2',
     });
+    expect(getDmcColorByHex('#ffe2e2')).toBe(DMC_CATALOG_DEFINITION.getByHex('#ffe2e2'));
     expect(getDmcColorByHex('#FFFFFF')).toMatchObject({
       code: 'B5200',
       hex: '#FFFFFF',
     });
     for (const record of DMC_CATALOG) {
+      expect(DMC_CATALOG_DEFINITION.getByHex(record.hex)).toBe(record);
+      expect(DMC_CATALOG_DEFINITION.getByHex(record.hex.toLowerCase())).toBe(record);
       expect(getDmcColorByHex(record.hex)).toBe(record);
       expect(getDmcColorByHex(record.hex.toLowerCase())).toBe(record);
     }
@@ -108,12 +152,13 @@ describe('offline DMC-compatible catalog', () => {
     expect(getDmcColorByHex('#GGGGGG')).toBeUndefined();
     expect(getDmcColorByHex('#FFF')).toBeUndefined();
 
-    const salmon = searchDmcColors('salmon');
+    const salmon = DMC_CATALOG_DEFINITION.search('salmon');
     expect(salmon.length).toBeGreaterThan(1);
     expect(salmon[0].name).toContain('Salmon');
-    expect(searchDmcColors('#FFE2E2')).toHaveLength(1);
-    expect(searchDmcColors('DMC-09')).toHaveLength(1);
-    expect(searchDmcColors('', 3)).toHaveLength(3);
+    expect(DMC_CATALOG_DEFINITION.search('#FFE2E2')).toHaveLength(1);
+    expect(DMC_CATALOG_DEFINITION.search('DMC-09')).toHaveLength(1);
+    expect(DMC_CATALOG_DEFINITION.search('', { limit: 3 })).toHaveLength(3);
+    expect(searchDmcColors('salmon')).toEqual(salmon);
   });
 
   it('exposes approximation provenance and never calls network APIs', () => {
@@ -139,14 +184,15 @@ describe('offline DMC-compatible catalog', () => {
 
   it('matches an RGB sample to the closest catalog color by squared Euclidean distance', () => {
     const exact = getDmcColor('3713');
-    const nearest = nearestDmcColor({ r: 255, g: 226, b: 226 });
+    const nearest = DMC_CATALOG_DEFINITION.nearest({ r: 255, g: 226, b: 226 });
     expect(nearest?.code).toBe(exact!.code);
+    expect(nearestDmcColor({ r: 255, g: 226, b: 226 })).toBe(nearest);
 
-    const white = nearestDmcColor({ r: 255, g: 255, b: 255 });
+    const white = DMC_CATALOG_DEFINITION.nearest({ r: 255, g: 255, b: 255 });
     expect(white).toBeDefined();
     expect(white!.rgb).toEqual([255, 255, 255]);
 
-    const black = nearestDmcColor({ r: 0, g: 0, b: 0 });
+    const black = DMC_CATALOG_DEFINITION.nearest({ r: 0, g: 0, b: 0 });
     expect(black).toBeDefined();
     expect(Math.min(...black!.rgb)).toBeLessThan(40);
   });

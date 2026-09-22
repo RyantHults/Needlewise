@@ -5,6 +5,7 @@ import { EditorSurface } from './components/editor/EditorSurface';
 import { Phase3Panel } from './components/Phase3Panel';
 import { CreateModal } from './components/CreateModal';
 import { ProjectGallery } from './components/ProjectGallery';
+import { DEFAULT_CATALOG_DEFINITION } from './catalog';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 
 const projectPath = (id: string) => `/patterns/${encodeURIComponent(id)}/edit`;
@@ -255,7 +256,7 @@ function WorkspaceApp() {
       <footer className="footer-note"><span aria-hidden="true">⌁</span> Local archives are your backup path <span className="footer-divider" aria-hidden="true">·</span> Keep a copy somewhere safe</footer>
     </div>
     </div>
-    {createOpen && <div ref={createDialogRef}><CreateModal mode={createMode} title={createTitle} width={createWidth} height={createHeight} aida={createAida} busy={busy} onMode={(next) => { if (!createLockedRef.current) setCreateMode(next); }} onClose={() => { if (!createLockedRef.current) setCreateOpen(false); }} onBlank={(event) => void submitCreate(event)} onDurableCreateChange={(locked) => { createLockedRef.current = locked; }} onConversionCreate={(draft, asset) => createProjectFromConversion({ title: createTitle.trim() || 'Untitled sampler', draft, aidaCount: Number(createAida), ...(asset ? { sourceImageAsset: asset } : {}) }).then((session) => session.projectId)} onCreated={(projectId) => { if (appMounted.current) navigate(projectPath(projectId)); }} onTitle={setCreateTitle} onWidth={setCreateWidth} onHeight={setCreateHeight} onAida={setCreateAida} /></div>}
+    {createOpen && <div ref={createDialogRef}><CreateModal catalog={DEFAULT_CATALOG_DEFINITION.snapshot} mode={createMode} title={createTitle} width={createWidth} height={createHeight} aida={createAida} busy={busy} onMode={(next) => { if (!createLockedRef.current) setCreateMode(next); }} onClose={() => { if (!createLockedRef.current) setCreateOpen(false); }} onBlank={(event) => void submitCreate(event)} onDurableCreateChange={(locked) => { createLockedRef.current = locked; }} onConversionCreate={(draft, asset) => createProjectFromConversion({ title: createTitle.trim() || 'Untitled sampler', draft, aidaCount: Number(createAida), ...(asset ? { sourceImageAsset: asset } : {}) }).then((session) => session.projectId)} onCreated={(projectId) => { if (appMounted.current) navigate(projectPath(projectId)); }} onTitle={setCreateTitle} onWidth={setCreateWidth} onHeight={setCreateHeight} onAida={setCreateAida} /></div>}
     </>
   );
 }

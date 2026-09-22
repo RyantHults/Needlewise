@@ -20,6 +20,7 @@ import {
 } from '../persistence';
 import { ProjectSession, ProjectWorkspace } from './index';
 import type { WorkspaceRepository } from './types';
+import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 
 function copyRecord(record: ProjectRecord): ProjectRecord {
   return {
@@ -120,7 +121,7 @@ async function openTracedWorkspace(id: string): Promise<ProjectWorkspace> {
     id,
     width: 4,
     height: 4,
-    document: createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }),
+    document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }),
     assets: [{ id: 'reference', name: 'reference.png', mimeType: 'image/png', data: pngBytes(2, 2) }],
     sourceImage: { ...TRACE_DESCRIPTOR }
   });
@@ -131,7 +132,7 @@ describe('trace image unified history', () => {
   it('restores paint undo/redo across refresh and clears restored redo on a new action', async () => {
     const repository = new MemoryRepository();
     const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'refresh-paint', debounceMs: 0 });
-    await workspace.createProject({ id: 'refresh-paint', width: 4, height: 4, document: createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }) });
+    await workspace.createProject({ id: 'refresh-paint', width: 4, height: 4, document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }) });
     const session = workspace.session;
     if (!session) throw new Error('Missing session.');
     session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
@@ -162,7 +163,7 @@ describe('trace image unified history', () => {
       id: 'refresh-interleave',
       width: 4,
       height: 4,
-      document: createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }),
+      document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }),
       assets: [{ id: 'reference', name: 'reference.png', mimeType: 'image/png', data: pngBytes(2, 2) }],
       sourceImage: { ...TRACE_DESCRIPTOR }
     });
@@ -203,7 +204,7 @@ describe('trace image unified history', () => {
       id: 'refresh-assets',
       width: 4,
       height: 4,
-      document: createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }),
+      document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }),
       assets: [{ id: 'reference', name: 'reference.png', mimeType: 'image/png', data: pngBytes(2, 2) }],
       sourceImage: { ...TRACE_DESCRIPTOR }
     });
@@ -247,7 +248,7 @@ describe('trace image unified history', () => {
       id: 'serialized-trace',
       width: 4,
       height: 4,
-      document: createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }),
+      document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }),
       assets: [{ id: 'reference', name: 'reference.png', mimeType: 'image/png', data: pngBytes(2, 2) }],
       sourceImage: { ...TRACE_DESCRIPTOR }
     });
@@ -305,7 +306,7 @@ describe('trace image unified history', () => {
       id: 'queued-removal',
       width: 4,
       height: 4,
-      document: createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }),
+      document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }),
       assets: [{ id: 'reference', name: 'reference.png', mimeType: 'image/png', data: pngBytes(2, 2) }],
       sourceImage: { ...TRACE_DESCRIPTOR }
     });
@@ -355,7 +356,7 @@ describe('trace image unified history', () => {
     const session = new ProjectSession({
       repository,
       metadata: { id: 'bounded-trace-export', title: 'Bounded', notes: '', createdAt: 100, updatedAt: 100, revision: 0 },
-      document: createDocument({ width: 2, height: 2, palette: [] }),
+      document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [] }),
       preparationClient: {
         prepare: async () => { throw new Error('not used'); },
         getRequestId: () => 'bounded',
@@ -394,7 +395,7 @@ describe('trace image unified history', () => {
   it('discards rejected restored history without losing the canonical project', async () => {
     const repository = new MemoryRepository();
     const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'rejected-history', debounceMs: 0 });
-    await workspace.createProject({ id: 'rejected-history', width: 4, height: 4, document: createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }) });
+    await workspace.createProject({ id: 'rejected-history', width: 4, height: 4, document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }) });
     const session = workspace.session;
     if (!session) throw new Error('Missing session.');
     session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
@@ -420,7 +421,7 @@ describe('trace image unified history', () => {
     const session = new ProjectSession({
       repository,
       metadata: { id: 'eviction', title: 'Eviction', notes: '', createdAt: 100, updatedAt: 100, revision: 0 },
-      document: createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }),
+      document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }),
       preparationClient: createPersistencePreparationClient({ useWorker: false }),
       clock: { now: () => 100 },
       debounceMs: 0,
@@ -623,7 +624,7 @@ describe('trace image unified history', () => {
         id: 'trace-persist',
         width: 4,
         height: 4,
-        document: createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }),
+        document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }),
         assets: [{ id: 'reference', name: 'reference.png', mimeType: 'image/png', data: pngBytes(2, 2) }],
         sourceImage: { ...TRACE_DESCRIPTOR }
       });

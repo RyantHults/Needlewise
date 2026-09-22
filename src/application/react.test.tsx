@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createDocument, CellKind } from '../domain';
 import { NeedlewiseDatabase, ProjectRepository, type ProjectMetadata } from '../persistence';
 import { ProjectWorkspace, useProjectWorkspace } from './index';
+import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 
 let databaseCounter = 1000;
 
@@ -26,7 +27,7 @@ async function deleteRepository(repository: ProjectRepository): Promise<void> {
 describe('ProjectWorkspace observable adapter', () => {
   it('initializes with the newest valid project and disposes once under Strict Mode replay', async () => {
     const repository = makeRepository();
-    const document = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     await repository.save('older', projectMetadata('older', 0, 10), document);
     await repository.save('newer', projectMetadata('newer', 0, 20), document);
     const listProjects = vi.spyOn(repository, 'listProjects');
@@ -54,7 +55,7 @@ describe('ProjectWorkspace observable adapter', () => {
 
   it('can defer most-recent startup selection so a route can open its project ID explicitly', async () => {
     const repository = makeRepository();
-    const document = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     await repository.save('older', projectMetadata('older', 0, 10), document);
     await repository.save('newer', projectMetadata('newer', 0, 20), document);
     const rendered = renderHook(() => useProjectWorkspace({ repository, autoOpenMostRecent: false }));
@@ -79,7 +80,7 @@ describe('ProjectWorkspace observable adapter', () => {
     try {
       await waitFor(() => expect(rendered.result.current.initialized).toBe(true));
       await act(async () => {
-        await rendered.result.current.createProject({ width: 2, height: 2, document: createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] }) });
+        await rendered.result.current.createProject({ width: 2, height: 2, document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] }) });
       });
       expect(rendered.result.current.state.projectId).toBe('created');
       await act(async () => {
@@ -132,7 +133,7 @@ describe('ProjectWorkspace observable adapter', () => {
 
   it('does not let lifecycle flushes cancel a delayed startup open', async () => {
     const repository = makeRepository();
-    const patternDocument = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    const patternDocument = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     await repository.save('delayed', projectMetadata('delayed', 0, 10), patternDocument);
     const originalLoad = repository.load.bind(repository);
     let releaseLoad!: () => void;
@@ -191,7 +192,7 @@ describe('ProjectWorkspace observable adapter', () => {
     try {
       await waitFor(() => expect(rendered.result.current.initialized).toBe(true));
       await act(async () => {
-        await rendered.result.current.createProject({ width: 2, height: 2, document: createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] }) });
+        await rendered.result.current.createProject({ width: 2, height: 2, document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] }) });
       });
       await act(async () => {
         await expect(rendered.result.current.importProject(new Uint8Array([1, 2, 3]))).rejects.toMatchObject({ code: 'invalid-archive' });
@@ -224,7 +225,7 @@ describe('ProjectWorkspace observable adapter', () => {
     try {
       await waitFor(() => expect(rendered.result.current.initialized).toBe(true));
       await act(async () => {
-        await rendered.result.current.createProject({ width: 2, height: 2, document: createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] }) });
+        await rendered.result.current.createProject({ width: 2, height: 2, document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] }) });
       });
       let resultRevision = 0;
       await act(async () => {

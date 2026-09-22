@@ -5,7 +5,7 @@ import {
   defaultPaletteSymbol,
   findPaletteEntry,
   listBackstitches,
-  MAX_PALETTE_COLORS,
+  paletteLimit,
   requirePaletteEntry,
   normalizePaletteEntry,
   clonePaletteEntry,
@@ -3221,7 +3221,7 @@ function paletteCreate(document: PatternDocument, command: DomainCommand): Mutat
   const name = source.name;
   const color = source.color;
   if (typeof name !== 'string' || name.trim() === '' || typeof color !== 'string' || color.trim() === '') throw new DomainError('invalid-palette', 'Palette name and color are required.');
-  if (id > MAX_PALETTE_COLORS) throw new DomainError('invalid-palette-id', `The palette cannot exceed the brand's color count (${String(MAX_PALETTE_COLORS)}).`);
+  if (id > paletteLimit(document)) throw new DomainError('invalid-palette-id', `The palette cannot exceed the brand's color count (${String(paletteLimit(document))}).`);
   if (id < 1 || id > PALETTE_ID_MAX || id < document.nextPaletteId || findPaletteEntry(document, id)) throw new DomainError('invalid-palette-id', `Palette ID ${String(id)} cannot be allocated.`);
   // Auto-assignment takes the first glyph not already used in the document so
   // growing palettes never collide. Only once every glyph is taken does it
@@ -3251,6 +3251,9 @@ function paletteCreate(document: PatternDocument, command: DomainCommand): Mutat
     ...(source.material === undefined ? {} : { material: source.material as PaletteEntry['material'] }),
     ...(source.catalog === undefined ? {} : { catalog: source.catalog as PaletteEntry['catalog'] })
   });
+  if (entry.catalog !== undefined && entry.catalog.catalogId !== document.catalog.catalogId) {
+    throw new DomainError('invalid-catalog-reference', `Palette ID ${String(entry.id)} belongs to a different catalog.`);
+  }
   if (!autoOverflow && document.palette.some((candidate) => candidate.symbol === entry.symbol)) throw new DomainError('invalid-palette-symbol', `Palette symbol ${entry.symbol} is duplicated.`);
   document.palette.push(entry);
   document.nextPaletteId = id === PALETTE_ID_MAX ? PALETTE_ID_MAX + 1 : id + 1;
@@ -3285,6 +3288,9 @@ function paletteUpdate(document: PatternDocument, command: DomainCommand): Mutat
     material: nextMaterial === undefined ? entry.material : nextMaterial as PaletteEntry['material'],
     catalog: nextCatalog === undefined ? entry.catalog : nextCatalog as PaletteEntry['catalog']
   });
+  if (next.catalog !== undefined && next.catalog.catalogId !== document.catalog.catalogId) {
+    throw new DomainError('invalid-catalog-reference', `Palette ID ${String(next.id)} belongs to a different catalog.`);
+  }
   if (document.palette.some((candidate) => candidate.id !== id && candidate.symbol === next.symbol)) throw new DomainError('invalid-palette-symbol', `Palette symbol ${next.symbol} is duplicated.`);
   if (nextActive === false && entry.active && paletteIsReferenced(document, id)) throw new DomainError('palette-in-use', `Palette ID ${String(id)} is referenced by the document.`);
   const changedEntry = !samePalette([entry], [next]);

@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import { unzipSync, zipSync, strFromU8, strToU8 } from 'fflate';
-import { applyCommand, CellKind, cloneDocument, computePatternMetrics, createDocument, createEditor, migratePatternDocument, QuarterCorner, type PatternDocument } from '../domain';
+import { applyCommand, CellKind, cloneDocument, computePatternMetrics, createDocument as createDomainDocument, createEditor, QuarterCorner, type CatalogAssociation, type CreateDocumentOptions, type PatternDocument } from '../domain';
 import * as binaryModule from './binary';
 import * as hashModule from './hash';
 import { prepareDocumentSnapshot, type PersistencePreparationResponse } from './preparation';
@@ -10,7 +10,7 @@ import {
   decodeDocument,
   encodeDocument,
   exportArchive,
-  migrateArchiveManifest,
+  validateArchiveManifest,
   MAX_ARCHIVE_BYTES,
   MAX_ASSET_BYTES,
   MAX_DOCUMENT_CELLS,
@@ -39,6 +39,12 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 
 let databaseCounter = 0;
+
+const TEST_CATALOG: CatalogAssociation = { catalogId: 'test-catalog-v1', brandLabel: 'Test catalog', colorCount: 32 };
+
+function createDocument(options: Omit<CreateDocumentOptions, 'catalog'> & { catalog?: CatalogAssociation }): PatternDocument {
+  return createDomainDocument({ ...options, catalog: options.catalog ?? TEST_CATALOG });
+}
 
 function makeDocument(): PatternDocument {
   let document = createDocument({
@@ -697,6 +703,7 @@ describe('binary document persistence', () => {
     expect(decoded.backstitches.x1).toEqual(original.backstitches.x1);
     expect(decoded.backstitches.colors).toEqual(original.backstitches.colors);
     expect(decoded.revision).toBe(original.revision);
+    expect(decoded.catalog).toEqual(original.catalog);
   });
 
   it('round-trips directional three-quarter kinds as compact single-slot cells', () => {
@@ -708,7 +715,7 @@ describe('binary document persistence', () => {
     expect(decoded.kind[0]).toBe(CellKind.ThreeQuarterSW);
     expect(decoded.colors).toEqual(new Uint16Array([1, 0, 0, 0]));
     expect(decoded.completed[0]).toBe(1);
-    expect(decoded.version).toBe(4);
+    expect(decoded.version).toBe(1);
     expect(encodeDocument(decoded)).toEqual(encodeDocument(original));
   });
 
@@ -723,67 +730,31 @@ describe('binary document persistence', () => {
     expect(decoded.kind[0]).toBe(CellKind.ThreeQuarterPair);
     expect(decoded.colors).toEqual(new Uint16Array([1, 0, 2, 0]));
     expect(decoded.completed[0]).toBe(5);
-    expect(decoded.version).toBe(4);
+    expect(decoded.version).toBe(1);
     expect(encodeDocument(decoded)).toEqual(encodeDocument(original));
   });
 
-  it('migrates prior v2 binary documents containing directional three-quarter kinds', () => {
-    let original = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    original = applyCommand(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NE, color: 1 }).document;
-    original = applyCommand(original, { type: 'set-completion', x: 0, y: 0, completed: true }).document;
-    const priorBytes = encodeDocument(original);
-    new DataView(priorBytes.buffer).setUint16(8, 2, true);
+  it('rejects incompatible binary discriminators and versions before loading counts', () => {
+    const original = encodeDocument(createDocument({ width: 1, height: 1, palette: [] }));
+    const oldMagic = new Uint8Array([0x53, 0x54, 0x59, 0x44, 0x4f, 0x43, 0x01, 0x00]);
+    const oldPayload = original.slice();
+    oldPayload.set(oldMagic, 0);
+    expect(() => decodeDocument(oldPayload)).toThrow(/magic is invalid/i);
 
-    const decoded = decodeDocument(priorBytes);
-    expect(decoded.version).toBe(4);
-    expect(decoded.kind).toEqual(original.kind);
-    expect(decoded.colors).toEqual(original.colors);
-    expect(decoded.completed).toEqual(original.completed);
-    expect(migratePatternDocument({ ...original, version: 2 })).toEqual(decoded);
+    const wrongMagic = original.slice();
+    wrongMagic[0] ^= 0xff;
+    expect(() => decodeDocument(wrongMagic)).toThrow(/magic is invalid/i);
 
-    const priorV3Bytes = encodeDocument(original);
-    new DataView(priorV3Bytes.buffer).setUint16(8, 3, true);
-    const priorV3 = decodeDocument(priorV3Bytes);
-    expect(priorV3.version).toBe(4);
-    expect(priorV3.kind).toEqual(original.kind);
-    expect(migratePatternDocument({ ...original, version: 3 })).toEqual(priorV3);
+    const wrongVersion = original.slice();
+    const wrongVersionView = new DataView(wrongVersion.buffer);
+    wrongVersionView.setUint16(8, 2, true);
+    wrongVersionView.setUint32(32, 0xffffffff, true);
+    expect(() => decodeDocument(wrongVersion)).toThrow(/schema is unsupported/i);
   });
 
-  it('rejects a v1-v3 payload relabeled with a paired three-quarter kind', () => {
-    let original = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] });
-    original = applyCommand(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
-    original = applyCommand(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 }).document;
-    const relabeled = encodeDocument(original);
-    new DataView(relabeled.buffer).setUint16(8, 3, true);
-
-    expect(() => migratePatternDocument({ ...original, version: 3 })).toThrowError(/not valid in document versions 1 through 3/);
-    try {
-      decodeDocument(relabeled);
-      throw new Error('Expected relabeled legacy pair payload to be rejected.');
-    } catch (error) {
-      expect(error).toBeInstanceOf(PersistenceError);
-      expect(error).toMatchObject({ code: 'invalid-document' });
-    }
-  });
-
-  it('migrates an archive carrying a prior v2 document descriptor and binary', async () => {
-    let document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    document = applyCommand(document, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SW, color: 1 }).document;
-    const archive = await exportArchive({ metadata: metadata(document, 'prior-archive'), document, assets: [] });
-    const files = unzipSync(archive);
-    const priorDocument = files['document.bin'].slice();
-    new DataView(priorDocument.buffer).setUint16(8, 2, true);
-    files['document.bin'] = priorDocument;
-    const manifest = JSON.parse(strFromU8(files['manifest.json'])) as { document: { schemaVersion: number; sha256: string } };
-    manifest.document.schemaVersion = 2;
-    manifest.document.sha256 = await sha256(priorDocument);
-    files['manifest.json'] = strToU8(JSON.stringify(manifest));
-
-    const parsed = await parseArchive(zipSync(files));
-    expect(parsed.manifest.document.schemaVersion).toBe(4);
-    expect(parsed.document.version).toBe(4);
-    expect(parsed.document.kind).toEqual(document.kind);
-    expect(parsed.document.colors).toEqual(document.colors);
+  it('round-trips the exact catalog association through the clean binary format', () => {
+    const original = createDocument({ width: 2, height: 3, palette: [] });
+    expect(decodeDocument(encodeDocument(original)).catalog).toEqual(TEST_CATALOG);
   });
 
   it('matches the domain one-million-cell persistence boundary', () => {
@@ -811,11 +782,11 @@ describe('binary document persistence', () => {
         color: '#000',
         symbol: '✚',
         material: { kind: 'floss', label: 'Cotton', unit: 'meters', amount: 2.5 },
-        catalog: { catalogId: 'dmc', sourceId: 'dmc', code: '310', name: 'Black', hex: '#000000', rgb: [0, 0, 0] }
+        catalog: { catalogId: TEST_CATALOG.catalogId, sourceId: 'test-black', code: '310', name: 'Black', hex: '#000000', rgb: [0, 0, 0] }
       }]
     });
     const decoded = decodeDocument(encodeDocument(original));
-    expect(decoded.version).toBe(4);
+    expect(decoded.version).toBe(1);
     expect(decoded.settings).toEqual({ symbolSet: 'letters', materialUnit: 'meters' });
     expect(decoded.palette[0]).toEqual(original.palette[0]);
   });
@@ -987,35 +958,6 @@ describe('binary document persistence', () => {
     expect((await parseArchive(descriptorArchive)).metadata.sourceImage).toBeUndefined();
   });
 
-  it('decodes legacy binary v1 documents through the current migration defaults', () => {
-    const bytes = new Uint8Array(40 + 18 + 10);
-    const view = new DataView(bytes.buffer);
-    bytes.set(new Uint8Array([0x53, 0x54, 0x59, 0x44, 0x4f, 0x43, 0x01, 0x00]), 0);
-    view.setUint16(8, 1, true);
-    view.setUint8(10, 1);
-    view.setUint32(12, 1, true);
-    view.setUint32(16, 1, true);
-    view.setUint32(24, 1, true);
-    view.setUint32(28, 2, true);
-    view.setUint32(32, 1, true);
-    let offset = 40;
-    view.setUint16(offset, 1, true);
-    offset += 2;
-    view.setUint8(offset, 1);
-    offset += 1;
-    view.setUint32(offset, 3, true);
-    offset += 4;
-    bytes.set(new TextEncoder().encode('Red'), offset);
-    offset += 3;
-    view.setUint32(offset, 4, true);
-    offset += 4;
-    bytes.set(new TextEncoder().encode('#d33'), offset);
-    const decoded = decodeDocument(bytes);
-    expect(decoded.version).toBe(4);
-    expect(decoded.settings.symbolSet).toBe('default');
-    expect(decoded.palette[0].symbol).toBe('●');
-    expect(decoded.palette[0].material).toMatchObject({ kind: 'custom', label: 'Red', unit: 'skeins' });
-  });
 });
 
 describe('local project repository', () => {
@@ -1937,11 +1879,14 @@ describe('local project repository', () => {
       const asset = new Uint8Array([1, 2, 3, 4, 5]);
       const projectMetadata = metadata(document);
       await repo.save('project-1', projectMetadata, document, [{ id: 'reference', name: 'reference.bin', mimeType: 'application/octet-stream', data: asset }]);
+      expect((await repo.load('project-1'))?.document.catalog).toEqual(document.catalog);
       expect((await repo.load('project-1'))?.metadata).toMatchObject({ width: document.width, height: document.height, thumbnail: deriveProjectSummary(document).thumbnail });
       const archive = await repo.exportProject('project-1');
       const archivedMetadata = JSON.parse(strFromU8(unzipSync(archive)['metadata.json'])) as Record<string, unknown>;
       expect(archivedMetadata).not.toHaveProperty('thumbnail');
       const parsed = await parseArchive(archive);
+      expect(parsed.manifest.document.catalog).toEqual(document.catalog);
+      expect(parsed.document.catalog).toEqual(document.catalog);
       expect(parsed.metadata).not.toHaveProperty('thumbnail');
       expect(parsed.metadata).toMatchObject({ width: document.width, height: document.height });
       const imported = await importedRepo.importProject(archive);
@@ -1949,6 +1894,7 @@ describe('local project repository', () => {
       expect(imported.metadata).toMatchObject({ width: document.width, height: document.height, thumbnail: deriveProjectSummary(document).thumbnail });
       expect(imported.document.kind).toEqual(document.kind);
       expect(imported.document.colors).toEqual(document.colors);
+      expect(imported.document.catalog).toEqual(document.catalog);
       expect(imported.head).toMatchObject({ projectId: 'project-1', revision: document.revision, checksum: (await importedRepo.db.currentSnapshots.get('project-1'))?.checksum });
       expect(imported.assets).toHaveLength(1);
       expect(imported.assets[0].data).toEqual(asset);
@@ -2060,45 +2006,46 @@ describe('local project repository', () => {
   });
 });
 
-describe('archive migration and validation', () => {
-  it('uses copy-on-write identity migration and rejects invalid decoded documents', async () => {
+describe('archive validation', () => {
+  it('validates only the clean archive identity, schema, and catalog association', async () => {
     const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     const archive = await exportArchive({ metadata: metadata(document), document, assets: [] });
     const parsed = await parseArchive(archive);
-    const migrated = migrateArchiveManifest(parsed.manifest);
-    expect(migrated).toEqual(parsed.manifest);
-    expect(migrated).not.toBe(parsed.manifest);
+    const validated = validateArchiveManifest(parsed.manifest);
+    expect(validated).toEqual(parsed.manifest);
+    expect(validated).not.toBe(parsed.manifest);
+    expect(validated.document.catalog).toEqual(document.catalog);
+
+    expect(() => validateArchiveManifest({ ...parsed.manifest, format: 'needlewise-project' } as never)).toThrow(/identity or version is invalid/i);
+    expect(() => validateArchiveManifest({ ...parsed.manifest, archiveVersion: 2 } as never)).toThrow(/identity or version is invalid/i);
+    expect(() => validateArchiveManifest({
+      ...parsed.manifest,
+      document: { ...parsed.manifest.document, schemaVersion: 0 }
+    } as never)).toThrow(/version is invalid/i);
+    expect(() => validateArchiveManifest({
+      ...parsed.manifest,
+      document: { ...parsed.manifest.document, catalog: { ...parsed.manifest.document.catalog, colorCount: 0 } }
+    } as never)).toThrow(/catalog association is invalid/i);
 
     const invalid = encodeDocument(document);
-    invalid[58] = 1;
+    new DataView(invalid.buffer).setUint32(40, 0xffffffff, true);
     expect(() => decodeDocument(invalid)).toThrow();
   });
 
-  it('migrates v1 archive manifests to the current version with no source image default', async () => {
-    const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    const archive = await exportArchive({ metadata: metadata(document), document, assets: [] });
+  it('rejects a valid manifest catalog that differs from the decoded document', async () => {
+    const document = createDocument({ width: 1, height: 1, palette: [] });
+    const archive = await exportArchive({ metadata: metadata(document, 'catalog-mismatch'), document, assets: [] });
     const files = unzipSync(archive);
-    const manifest = JSON.parse(strFromU8(files['manifest.json'])) as { archiveVersion: number; document: { schemaVersion: number } };
-    manifest.archiveVersion = 1;
-    manifest.document.schemaVersion = 1;
+    const manifest = JSON.parse(strFromU8(files['manifest.json'])) as { document: { catalog: CatalogAssociation } };
+    manifest.document.catalog = {
+      catalogId: 'other-catalog-v1',
+      brandLabel: 'Other catalog',
+      colorCount: document.catalog.colorCount
+    };
+    expect(manifest.document.catalog).not.toEqual(document.catalog);
     files['manifest.json'] = strToU8(JSON.stringify(manifest));
-    const parsed = await parseArchive(zipSync(files));
-    expect(parsed.manifest.archiveVersion).toBe(PERSISTENCE_SCHEMA_VERSION);
-    expect(parsed.manifest.document.schemaVersion).toBe(4);
-    expect(parsed.metadata.sourceImage).toBeUndefined();
-    expect(parsed.document.version).toBe(4);
-  });
 
-  it('migrates a v2 archive manifest to the current archive version and preserves old metadata omission', async () => {
-    const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    const archive = await exportArchive({ metadata: metadata(document, 'old-aida'), document, assets: [] });
-    const files = unzipSync(archive);
-    const manifest = JSON.parse(strFromU8(files['manifest.json'])) as { archiveVersion: number };
-    manifest.archiveVersion = 2;
-    files['manifest.json'] = strToU8(JSON.stringify(manifest));
-    const parsed = await parseArchive(zipSync(files));
-    expect(parsed.manifest.archiveVersion).toBe(PERSISTENCE_SCHEMA_VERSION);
-    expect(parsed.metadata.aidaCount).toBeUndefined();
+    await expect(parseArchive(zipSync(files))).rejects.toMatchObject({ code: 'invalid-archive' });
   });
 
   it('migrates an existing v5 database project into the v6 history schema', async () => {
@@ -2151,7 +2098,7 @@ describe('archive migration and validation', () => {
     expect(parsed.assets.map((asset) => [...asset.data])).toEqual(assets.map((asset) => [...asset.data]));
   });
 
-  it('imports existing v2 percent-encoded asset paths while rejecting traversal', async () => {
+  it('rejects noncanonical percent-encoded asset paths while rejecting traversal', async () => {
     const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     const id = 'legacy image/%/reference';
     const data = new Uint8Array([1, 2, 3]);
@@ -2163,16 +2110,13 @@ describe('archive migration and validation', () => {
     const files = unzipSync(archive);
     const manifest = JSON.parse(strFromU8(files['manifest.json'])) as { assets: Array<{ id: string; path: string }> };
     const currentPath = manifest.assets[0].path;
-    const oldPath = `assets/${encodeURIComponent(id)}`;
-    files[oldPath] = files[currentPath];
-    delete files[currentPath];
-    manifest.assets[0].path = oldPath;
+    const noncanonicalPath = `assets/${encodeURIComponent(id)}`;
+    expect(noncanonicalPath).not.toBe(currentPath);
+    manifest.assets[0].path = noncanonicalPath;
     files['manifest.json'] = strToU8(JSON.stringify(manifest));
-    const parsed = await parseArchive(zipSync(files));
-    expect(parsed.assets[0].id).toBe(id);
-    expect(parsed.assets[0].data).toEqual(data);
+    await expect(parseArchive(zipSync(files))).rejects.toMatchObject({ code: 'invalid-manifest' });
 
-    const traversal = zipSync({ ...files, 'assets/../escape': new Uint8Array([9]) });
+    const traversal = zipSync({ ...unzipSync(archive), 'assets/../escape': new Uint8Array([9]) });
     await expect(parseArchive(traversal)).rejects.toMatchObject({ code: 'invalid-archive' });
   });
 

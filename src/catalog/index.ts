@@ -1,12 +1,28 @@
 import catalogAsset from '../../catalog/dmc-colors.json';
 import provenanceAsset from '../../catalog/provenance.json';
+import type { CatalogAssociation, PaletteCatalogReference } from '../domain/types';
 
-export interface DmcCatalogColor {
+export interface CatalogRecord {
   readonly sourceId: string;
   readonly code: string;
   readonly name: string;
   readonly hex: `#${string}`;
   readonly rgb: readonly [number, number, number];
+}
+
+export type DmcCatalogColor = CatalogRecord;
+
+export interface CatalogSnapshot {
+  readonly association: CatalogAssociation;
+  readonly records: readonly CatalogRecord[];
+}
+
+export interface CatalogDefinition extends CatalogSnapshot {
+  readonly compatibilityLabel: string;
+  readonly snapshot: CatalogSnapshot;
+  search(query: string, options?: { readonly limit?: number }): readonly CatalogRecord[];
+  getByHex(hex: string): CatalogRecord | undefined;
+  nearest(rgb: { readonly r: number; readonly g: number; readonly b: number }): CatalogRecord | undefined;
 }
 
 export interface DmcCatalogProvenance {
@@ -325,19 +341,95 @@ export const validateCatalogBundle = validateDmcCatalogBundle;
 export const DMC_CATALOG_VALIDATION = validateDmcCatalogBundle();
 if (!DMC_CATALOG_VALIDATION.valid) throw new Error(`Invalid committed DMC catalog bundle: ${DMC_CATALOG_VALIDATION.errors.join(' ')}`);
 
-const byCode = new Map(DMC_CATALOG.map((record) => [record.code.toUpperCase(), record]));
-const byHex = new Map<string, DmcCatalogColor>(DMC_CATALOG.map((record) => [record.hex, record]));
+const dmcByCode = new Map<string, CatalogRecord>(DMC_CATALOG.map((record) => [record.code.toUpperCase(), record]));
+const dmcByHex = new Map<string, CatalogRecord>(DMC_CATALOG.map((record) => [record.hex.toUpperCase(), record]));
+
+function validateSearchLimit(limit: number | undefined, message = 'Catalog search limit must be a non-negative integer.'): void {
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0)) throw new RangeError(message);
+}
+
+function searchCatalogRecords(records: readonly CatalogRecord[], query: string, limit: number | undefined): readonly CatalogRecord[] {
+  validateSearchLimit(limit);
+  const needle = query.trim().toLowerCase();
+  const matches = needle.length === 0
+    ? [...records]
+    : records.filter((record) => [record.code, record.name, record.hex, record.sourceId].some((field) => field.toLowerCase().includes(needle)));
+  return Object.freeze(limit === undefined ? matches : matches.slice(0, limit));
+}
+
+function getCatalogRecordByHex(recordsByHex: ReadonlyMap<string, CatalogRecord>, value: string): CatalogRecord | undefined {
+  const hex = value.trim().toUpperCase();
+  return /^#[0-9A-F]{6}$/.test(hex) ? recordsByHex.get(hex) : undefined;
+}
+
+function nearestCatalogRecord(records: readonly CatalogRecord[], input: { readonly r: number; readonly g: number; readonly b: number }): CatalogRecord | undefined {
+  let best: CatalogRecord | undefined;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const record of records) {
+    const [r, g, b] = record.rgb;
+    const distance = (r - input.r) ** 2 + (g - input.g) ** 2 + (b - input.b) ** 2;
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = record;
+    }
+  }
+  return best;
+}
+
+const dmcAssociation: CatalogAssociation = Object.freeze({
+  catalogId: rawCatalog.catalogId,
+  brandLabel: 'DMC',
+  colorCount: DMC_CATALOG_RECORD_COUNT
+});
+
+const dmcSnapshot: CatalogSnapshot = Object.freeze({
+  association: dmcAssociation,
+  records: DMC_CATALOG
+});
+
+export const DMC_CATALOG_DEFINITION: CatalogDefinition = Object.freeze({
+  association: dmcAssociation,
+  records: DMC_CATALOG,
+  compatibilityLabel: 'DMC-compatible',
+  snapshot: dmcSnapshot,
+  search: (query: string, options: { readonly limit?: number } = {}) => searchCatalogRecords(DMC_CATALOG, query, options.limit),
+  getByHex: (hex: string) => getCatalogRecordByHex(dmcByHex, hex),
+  nearest: (rgb: { readonly r: number; readonly g: number; readonly b: number }) => nearestCatalogRecord(DMC_CATALOG, rgb)
+});
+
+export const DEFAULT_CATALOG_DEFINITION = DMC_CATALOG_DEFINITION;
+
+const registeredDefinitions = new Map<string, CatalogDefinition>([[dmcAssociation.catalogId, DMC_CATALOG_DEFINITION]]);
+
+export function resolveCatalogDefinition(association: CatalogAssociation): CatalogDefinition | undefined {
+  const definition = registeredDefinitions.get(association.catalogId);
+  if (definition === undefined || definition.association.brandLabel !== association.brandLabel || definition.association.colorCount !== association.colorCount) return undefined;
+  return definition;
+}
+
+export function createCatalogReference(
+  definition: Pick<CatalogDefinition, 'association'>,
+  record: CatalogRecord,
+): PaletteCatalogReference {
+  return {
+    catalogId: definition.association.catalogId,
+    sourceId: record.sourceId,
+    code: record.code,
+    name: record.name,
+    hex: record.hex,
+    rgb: [record.rgb[0], record.rgb[1], record.rgb[2]],
+  };
+}
 
 /** Look up a code such as "09", "B5200", or "Ecru". Numeric callers cannot express leading zeroes. */
 export function getDmcColor(code: string | number): DmcCatalogColor | undefined {
   const value = String(code).trim().toUpperCase();
   const normalized = value.startsWith('DMC-') ? value.slice(4) : value;
-  return normalized ? byCode.get(normalized) : undefined;
+  return normalized ? dmcByCode.get(normalized) : undefined;
 }
 
 export function getDmcColorByHex(value: string): DmcCatalogColor | undefined {
-  const hex = value.trim().toUpperCase();
-  return /^#[0-9A-F]{6}$/.test(hex) ? byHex.get(hex) : undefined;
+  return DMC_CATALOG_DEFINITION.getByHex(value);
 }
 
 export interface NearestDmcColorInput {
@@ -348,17 +440,7 @@ export interface NearestDmcColorInput {
 
 /** Return the catalog color whose RGB is closest (squared Euclidean distance) to the input. */
 export function nearestDmcColor(input: NearestDmcColorInput): DmcCatalogColor | undefined {
-  let best: DmcCatalogColor | undefined;
-  let bestDistance = Number.POSITIVE_INFINITY;
-  for (const record of DMC_CATALOG) {
-    const [r, g, b] = record.rgb;
-    const d = (r - input.r) ** 2 + (g - input.g) ** 2 + (b - input.b) ** 2;
-    if (d < bestDistance) {
-      bestDistance = d;
-      best = record;
-    }
-  }
-  return best;
+  return DMC_CATALOG_DEFINITION.nearest(input);
 }
 
 export interface DmcSearchOptions {
@@ -368,10 +450,6 @@ export interface DmcSearchOptions {
 /** Search the committed code, name, HEX, and stable source ID fields without network access. */
 export function searchDmcColors(query: string, options: DmcSearchOptions | number = {}): readonly DmcCatalogColor[] {
   const limit = typeof options === 'number' ? options : options.limit;
-  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0)) throw new RangeError('DMC search limit must be a non-negative integer.');
-  const needle = query.trim().toLowerCase();
-  const matches = needle.length === 0
-    ? [...DMC_CATALOG]
-    : DMC_CATALOG.filter((record) => [record.code, record.name, record.hex, record.sourceId].some((field) => field.toLowerCase().includes(needle)));
-  return Object.freeze(limit === undefined ? matches : matches.slice(0, limit));
+  validateSearchLimit(limit, 'DMC search limit must be a non-negative integer.');
+  return DMC_CATALOG_DEFINITION.search(query, { limit });
 }

@@ -1,8 +1,18 @@
 import { CellKind, DOCUMENT_SCHEMA_VERSION, DomainError, MaterialKind, MaterialUnit, MAX_PERSISTABLE_CELL_COUNT, PALETTE_ID_MAX, type PatternDocument, type ValidationResult } from './types';
-import { UINT32_MAX, isAutoOverflowEntry, isThreeQuarterKind, isThreeQuarterPairKind, MAX_PALETTE_COLORS } from './model';
+import { UINT32_MAX, isAutoOverflowEntry, isThreeQuarterKind, isThreeQuarterPairKind, paletteLimit } from './model';
 
 function isPositiveInteger(value: number): boolean {
   return Number.isInteger(value) && value > 0;
+}
+
+function isKnownCellKind(kind: number): boolean {
+  return kind === CellKind.Empty
+    || kind === CellKind.Full
+    || kind === CellKind.HalfBackslash
+    || kind === CellKind.HalfSlash
+    || kind === CellKind.Quarters
+    || isThreeQuarterKind(kind)
+    || isThreeQuarterPairKind(kind);
 }
 
 export function collectValidationErrors(document: PatternDocument): string[] {
@@ -10,6 +20,15 @@ export function collectValidationErrors(document: PatternDocument): string[] {
   if (!document || document.version !== DOCUMENT_SCHEMA_VERSION) {
     errors.push(`Document version must be ${String(DOCUMENT_SCHEMA_VERSION)}.`);
     return errors;
+  }
+  const catalog = document.catalog;
+  const validCatalog = typeof catalog === 'object' && catalog !== null;
+  if (!validCatalog) {
+    errors.push('Document catalog association is required.');
+  } else {
+    if (typeof catalog.catalogId !== 'string' || catalog.catalogId.trim() === '') errors.push('Document catalog ID must be a non-empty string.');
+    if (typeof catalog.brandLabel !== 'string' || catalog.brandLabel.trim() === '') errors.push('Document catalog brand label must be a non-empty string.');
+    if (!Number.isSafeInteger(catalog.colorCount) || catalog.colorCount < 1 || catalog.colorCount > PALETTE_ID_MAX) errors.push(`Document catalog color count must be a positive safe integer no larger than ${String(PALETTE_ID_MAX)}.`);
   }
   if (!isPositiveInteger(document.width) || !isPositiveInteger(document.height)) {
     errors.push('Document dimensions must be positive integers.');
@@ -37,12 +56,13 @@ export function collectValidationErrors(document: PatternDocument): string[] {
 
   const paletteIds = new Set<number>();
   const activePaletteIds = new Set<number>();
-  if (document.palette.length > MAX_PALETTE_COLORS) {
-    errors.push(`The palette cannot exceed the brand's color count (${String(MAX_PALETTE_COLORS)}).`);
+  const limit = validCatalog ? paletteLimit(document) : PALETTE_ID_MAX;
+  if (document.palette.length > limit) {
+    errors.push(`The palette cannot exceed the brand's color count (${String(limit)}).`);
   }
   for (const entry of document.palette) {
-    if (entry.id > MAX_PALETTE_COLORS) {
-      errors.push(`Palette ID ${String(entry.id)} is above the brand's color count (${String(MAX_PALETTE_COLORS)}).`);
+    if (entry.id > limit) {
+      errors.push(`Palette ID ${String(entry.id)} is above the brand's color count (${String(limit)}).`);
     }
     if (
       !Number.isInteger(entry.id) ||
@@ -74,6 +94,9 @@ export function collectValidationErrors(document: PatternDocument): string[] {
     }
     if (entry.catalog !== undefined) {
       const catalog = entry.catalog;
+      if (validCatalog && catalog.catalogId !== document.catalog.catalogId) {
+        errors.push(`Palette ID ${String(entry.id)} belongs to a different catalog.`);
+      }
       const expectedRgb = typeof catalog.hex === 'string' && /^#[0-9a-f]{6}$/i.test(catalog.hex)
         ? [Number.parseInt(catalog.hex.slice(1, 3), 16), Number.parseInt(catalog.hex.slice(3, 5), 16), Number.parseInt(catalog.hex.slice(5, 7), 16)]
         : undefined;
@@ -115,11 +138,14 @@ export function collectValidationErrors(document: PatternDocument): string[] {
     errors.push('nextPaletteId must be greater than every allocated palette ID.');
   }
 
-  for (let index = 0; index < cellCount; index += 1) {
+  const hasCellData = document.kind.some((value) => value !== CellKind.Empty)
+    || document.colors.some((value) => value !== 0)
+    || document.completed.some((value) => value !== 0);
+  if (hasCellData) for (let index = 0; index < cellCount; index += 1) {
     const kind = document.kind[index];
     const offset = index * 4;
     const completion = document.completed[index];
-    if (![CellKind.Empty, CellKind.Full, CellKind.HalfBackslash, CellKind.HalfSlash, CellKind.Quarters].some((value) => value === kind) && !isThreeQuarterKind(kind) && !isThreeQuarterPairKind(kind)) {
+    if (!isKnownCellKind(kind)) {
       errors.push(`Cell ${String(index)} has an unknown kind.`);
       continue;
     }

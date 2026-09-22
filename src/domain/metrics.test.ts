@@ -13,10 +13,11 @@ import {
   normalizeMaterialAssumptions,
   QuarterCorner
 } from './index';
+import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 
 describe('derived pattern metrics', () => {
   it('counts every component by stable palette ID and calculates material/progress exactly', () => {
-    let pattern = createDocument({
+    let pattern = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
       width: 3,
       height: 2,
       palette: [
@@ -103,7 +104,7 @@ describe('derived pattern metrics', () => {
   });
 
   it('counts directional three-quarter cells as whole components while weighting material at 0.75', () => {
-    let pattern = createDocument({
+    let pattern = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
       width: 2,
       height: 1,
       palette: [{ id: 1, name: 'Red', color: '#d33' }]
@@ -133,7 +134,7 @@ describe('derived pattern metrics', () => {
   });
 
   it('counts paired three-quarter cells as two components with independently weighted materials', () => {
-    let pattern = createDocument({
+    let pattern = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
       width: 1,
       height: 1,
       palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }]
@@ -151,7 +152,7 @@ describe('derived pattern metrics', () => {
 
   it('scans bounded 500 by 500 and 1000 by 1000 documents without adding derived state', () => {
     for (const side of [500, 1000]) {
-      const pattern = createDocument({
+      const pattern = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
         width: side,
         height: side,
         palette: [{ id: 1, name: 'Red', color: '#d33' }]
@@ -171,7 +172,7 @@ describe('derived pattern metrics', () => {
   });
 
   it('keeps default material results abstract and only emits physical units when calibrated', () => {
-    let pattern = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    let pattern = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     pattern = applyCommand(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
     const abstract = computePatternMetrics(pattern);
     expect(abstract.palettes[0].material).toMatchObject({ stitchUnits: 1, strandLength: 1, estimatedLength: 1 });
@@ -196,7 +197,7 @@ describe('derived pattern metrics', () => {
   });
 
   it('derives finished size and estimates Aida thread by stitch geometry', () => {
-    let pattern = createDocument({ width: 14, height: 7, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    let pattern = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 14, height: 7, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     pattern = applyCommand(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
     pattern = applyCommand(pattern, { type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 1 }).document;
     pattern = applyCommand(pattern, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 }).document;
@@ -218,7 +219,7 @@ describe('derived pattern metrics', () => {
 
   it('falls back to an 8.7-yard skein when no skein length is calibrated', () => {
     expect(DEFAULT_SKEIN_LENGTH_METERS).toBeCloseTo(7.95528);
-    let pattern = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    let pattern = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     pattern = applyCommand(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
     const metrics = computePatternMetrics(pattern, { aidaCount: 14 });
     const material = metrics.palettes[0].material;
@@ -227,7 +228,7 @@ describe('derived pattern metrics', () => {
   });
 
   it('uses manual thread calibration for metres and falls back to the standard skein', () => {
-    let pattern = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    let pattern = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     pattern = applyCommand(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
 
     const calibrated = computePatternMetrics(pattern, { aidaCount: 14, stitchLengthMeters: 0.1 });
@@ -256,7 +257,7 @@ describe('derived pattern metrics', () => {
     expect(normalizeMaterialAssumptions(canonical)).toEqual(canonical);
     expect(normalizeMaterialAssumptions({ wastePercent: 125 })).toEqual(canonical);
 
-    let pattern = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    let pattern = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     pattern = applyCommand(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
     const first = computePatternMetrics(pattern, { aidaCount: 14, strands: canonical.strands, waste: canonical.waste });
     const second = computePatternMetrics(pattern, { aidaCount: 14, ...canonical });

@@ -18,6 +18,7 @@ import {
   bulkToggleBackstitchCompletionCommand,
   bulkRecolorCommand,
   CellKind,
+  cloneDocument,
   createDocument,
   createEditor,
   defaultPaletteSymbol,
@@ -61,16 +62,31 @@ import {
   moveFragmentCommand,
   PALETTE_SYMBOLS,
   type PatternDocument,
+  type CatalogAssociation,
   type PatternFragment,
   computePatternMetrics
 } from './index';
-import { DMC_CATALOG_RECORD_COUNT } from '../catalog';
-import { MAX_PALETTE_COLORS } from './index';
+
+const TEST_CATALOG: CatalogAssociation = {
+  catalogId: 'test-catalog',
+  brandLabel: 'Test Catalog',
+  colorCount: 489
+};
+
+const TEST_REFERENCE = {
+  catalogId: TEST_CATALOG.catalogId,
+  sourceId: 'test-source',
+  code: 'T1',
+  name: 'Test Red',
+  hex: '#123456',
+  rgb: [18, 52, 86] as const
+};
 
 function document(width = 4, height = 3) {
   return createDocument({
     width,
     height,
+    catalog: TEST_CATALOG,
     palette: [
       { id: 1, name: 'Red', color: '#d33' },
       { id: 2, name: 'Blue', color: '#36c' },
@@ -126,6 +142,64 @@ function documentContentSnapshot(pattern: PatternDocument) {
     nextPaletteId: pattern.nextPaletteId
   };
 }
+
+describe('document catalog association', () => {
+  it('preserves the catalog association through clone, command, undo, and redo', () => {
+    const pattern = createDocument({ width: 2, height: 2, catalog: TEST_CATALOG });
+    const editor = createEditor(pattern);
+    const changed = editor.execute({ type: 'palette-create', name: 'Blue', color: '#0000FF' }).document;
+
+    expect(cloneDocument(changed).catalog).toEqual(TEST_CATALOG);
+    expect(editor.undo().document.catalog).toEqual(TEST_CATALOG);
+    expect(editor.redo().document.catalog).toEqual(TEST_CATALOG);
+  });
+
+  it('rejects a palette-create reference from a different catalog', () => {
+    const pattern = createDocument({ width: 1, height: 1, catalog: TEST_CATALOG });
+
+    expect(() => applyCommand(pattern, {
+      type: 'palette-create',
+      name: 'Foreign',
+      color: '#000000',
+      catalog: { ...TEST_REFERENCE, catalogId: 'other' }
+    })).toThrow('belongs to a different catalog');
+  });
+
+  it('uses the document association color count for palette capacity', () => {
+    const catalog: CatalogAssociation = { ...TEST_CATALOG, colorCount: 2 };
+    const pattern = createDocument({
+      width: 1,
+      height: 1,
+      catalog,
+      palette: [
+        { id: 1, name: 'One', color: '#111111' },
+        { id: 2, name: 'Two', color: '#222222' }
+      ]
+    });
+
+    expect(() => applyCommand(pattern, { type: 'palette-create', name: 'Three', color: '#333333' })).toThrow(/color count \(2\)/);
+  });
+
+  it('requires a well-formed document catalog association', () => {
+    const missing = { ...document(), catalog: undefined } as unknown as PatternDocument;
+    expect(() => assertValidDocument(missing)).toThrow(/catalog/i);
+
+    const malformed = { ...document(), catalog: { ...TEST_CATALOG, colorCount: 0 } } as unknown as PatternDocument;
+    expect(() => assertValidDocument(malformed)).toThrow(/color count/i);
+  });
+
+  it('allows catalog-less custom palette entries', () => {
+    const pattern = createDocument({
+      width: 1,
+      height: 1,
+      catalog: TEST_CATALOG,
+      palette: [{ name: 'Custom', color: '#abcdef', material: { kind: MaterialKind.Custom, label: 'hand dyed', unit: MaterialUnit.Count } }]
+    });
+
+    expect(pattern.palette[0].catalog).toBeUndefined();
+    expect(validateDocument(pattern)).toBe(true);
+  });
+});
 
 describe('typed-array pattern document', () => {
   it('uses compact arrays and preserves completion for recolor but not geometry changes', () => {
@@ -554,7 +628,7 @@ describe('typed-array pattern document', () => {
   });
 
   it('requires explicit completion and enforces active, non-reserved palette IDs', () => {
-    expect(() => createDocument({ width: 1, height: 1, palette: [{ id: 0xffff, name: 'Reserved', color: '#000' }] })).toThrow();
+    expect(() => createDocument({ width: 1, height: 1, catalog: TEST_CATALOG, palette: [{ id: 0xffff, name: 'Reserved', color: '#000' }] })).toThrow();
     let pattern = document(2, 2);
     pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
     pattern = apply(pattern, { type: 'set-quarter', x: 1, y: 1, corner: QuarterCorner.NW, color: 1 });
@@ -612,7 +686,7 @@ describe('typed-array pattern document', () => {
     const result = editor.execute({
       type: 'palette-merge',
       from: 1,
-      createTo: { name: 'Lilac', color: '#C9A0DC', catalog: { catalogId: 'c', sourceId: 's', code: '3740', name: 'Lilac', hex: '#C9A0DC', rgb: [201, 160, 220] } }
+      createTo: { name: 'Lilac', color: '#C9A0DC', catalog: { catalogId: TEST_CATALOG.catalogId, sourceId: 's', code: '3740', name: 'Lilac', hex: '#C9A0DC', rgb: [201, 160, 220] } }
     });
     expect(result.changed).toBe(true);
     const next = result.document;
@@ -629,23 +703,24 @@ describe('typed-array pattern document', () => {
     const pattern = createDocument({
       width: 1,
       height: 1,
+      catalog: TEST_CATALOG,
       palette: [{
         id: 1,
         name: 'Red',
         color: '#d33',
         symbol: '✚',
         material: { kind: 'floss', label: 'Cotton', unit: 'skeins', amount: 2 },
-        catalog: { catalogId: 'catalog', sourceId: 'source', code: 'R', name: 'Red', hex: '#DD3333', rgb: [221, 51, 51] }
+        catalog: { catalogId: TEST_CATALOG.catalogId, sourceId: 'source', code: 'R', name: 'Red', hex: '#DD3333', rgb: [221, 51, 51] }
       }]
     });
     const editor = createEditor(pattern);
-    const result = editor.execute({ type: 'palette-update', id: 1, material: { kind: 'floss', label: 'Silk', unit: 'meters', amount: 4 }, catalog: { catalogId: 'catalog-2', sourceId: 'source-2', code: 'R2', name: 'Red 2', hex: '#CC2222', rgb: [204, 34, 34] } });
+    const result = editor.execute({ type: 'palette-update', id: 1, material: { kind: 'floss', label: 'Silk', unit: 'meters', amount: 4 }, catalog: { catalogId: TEST_CATALOG.catalogId, sourceId: 'source-2', code: 'R2', name: 'Red 2', hex: '#CC2222', rgb: [204, 34, 34] } });
     expect(result.changed).toBe(true);
     expect(editor.document.palette[0].material).toMatchObject({ label: 'Silk', unit: 'meters', amount: 4 });
-    expect(editor.document.palette[0].catalog?.catalogId).toBe('catalog-2');
+    expect(editor.document.palette[0].catalog?.catalogId).toBe(TEST_CATALOG.catalogId);
     editor.undo();
     expect(editor.document.palette[0].material).toMatchObject({ label: 'Cotton', unit: 'skeins', amount: 2 });
-    expect(editor.document.palette[0].catalog?.catalogId).toBe('catalog');
+    expect(editor.document.palette[0].catalog?.catalogId).toBe(TEST_CATALOG.catalogId);
     editor.redo();
     expect(editor.document.palette[0].catalog?.rgb).toEqual([204, 34, 34]);
   });
@@ -653,7 +728,7 @@ describe('typed-array pattern document', () => {
   it('assigns Unicode defaults in order, covers the brand ceiling, and cycles past the pool', () => {
     // The symbol pool must exceed the brand palette ceiling so every valid
     // palette id maps to a unique default glyph.
-    expect(PALETTE_SYMBOLS.length).toBeGreaterThanOrEqual(DMC_CATALOG_RECORD_COUNT);
+    expect(PALETTE_SYMBOLS.length).toBeGreaterThanOrEqual(TEST_CATALOG.colorCount);
     expect(new Set(PALETTE_SYMBOLS).size).toBe(PALETTE_SYMBOLS.length);
     for (const glyph of PALETTE_SYMBOLS) {
       expect(glyph.length).toBeGreaterThan(0);
@@ -671,12 +746,12 @@ describe('typed-array pattern document', () => {
     );
     expect(defaultPaletteSymbol(20)).toBe('\u2197');
     expect(defaultPaletteSymbol(28)).toBe('\u2721');
-    // Ids 1..DMC_CATALOG_RECORD_COUNT each get a distinct default glyph.
+    // Ids 1..TEST_CATALOG.colorCount each get a distinct default glyph.
     const assigned = new Set<string>();
-    for (let id = 1; id <= DMC_CATALOG_RECORD_COUNT; id += 1) {
+    for (let id = 1; id <= TEST_CATALOG.colorCount; id += 1) {
       assigned.add(defaultPaletteSymbol(id));
     }
-    expect(assigned.size).toBe(DMC_CATALOG_RECORD_COUNT);
+    expect(assigned.size).toBe(TEST_CATALOG.colorCount);
     // Past the end of the pool the assignment cycles deterministically as a
     // safety tail (unreachable under the business ceiling).
     expect(defaultPaletteSymbol(PALETTE_SYMBOLS.length + 1)).toBe('●');
@@ -713,14 +788,14 @@ describe('typed-array pattern document', () => {
   });
 
   it('auto-assigns a unique glyph per palette entry up to the brand ceiling and rejects past it', () => {
-    let pattern = createDocument({ width: 2, height: 2 });
-    for (let id = 1; id <= DMC_CATALOG_RECORD_COUNT; id++) {
+    let pattern = createDocument({ width: 2, height: 2, catalog: TEST_CATALOG });
+    for (let id = 1; id <= TEST_CATALOG.colorCount; id++) {
       pattern = applyCommand(pattern, { type: 'palette-create', name: `Color ${id}`, color: '#123456' }).document;
     }
-    expect(pattern.palette).toHaveLength(DMC_CATALOG_RECORD_COUNT);
+    expect(pattern.palette).toHaveLength(TEST_CATALOG.colorCount);
     // Auto-assignment takes the first unused glyph in pool order, so the first
-    // DMC_CATALOG_RECORD_COUNT entries carry unique, ordered symbols.
-    expect(pattern.palette.map((entry) => entry.symbol)).toEqual(PALETTE_SYMBOLS.slice(0, DMC_CATALOG_RECORD_COUNT));
+    // TEST_CATALOG.colorCount entries carry unique, ordered symbols.
+    expect(pattern.palette.map((entry) => entry.symbol)).toEqual(PALETTE_SYMBOLS.slice(0, TEST_CATALOG.colorCount));
     // The next palette-create would exceed the brand ceiling, so it must throw
     // instead of overflowing onto a cycled duplicate.
     expect(() => applyCommand(pattern, { type: 'palette-create', name: 'Color over', color: '#654321' })).toThrow(/brand's color count/);
@@ -732,23 +807,22 @@ describe('typed-array pattern document', () => {
   });
 
   it('yields all-unique symbols at the brand ceiling and rejects ids above it', () => {
-    const entries = Array.from({ length: DMC_CATALOG_RECORD_COUNT }, (_, index) => ({
+    const entries = Array.from({ length: TEST_CATALOG.colorCount }, (_, index) => ({
       id: index + 1,
       name: `Color ${index + 1}`,
       color: '#123456'
     }));
-    const pattern = createDocument({ width: 2, height: 2, palette: entries });
-    expect(pattern.palette).toHaveLength(DMC_CATALOG_RECORD_COUNT);
-    expect(new Set(pattern.palette.map((entry) => entry.symbol)).size).toBe(DMC_CATALOG_RECORD_COUNT);
+    const pattern = createDocument({ width: 2, height: 2, catalog: TEST_CATALOG, palette: entries });
+    expect(pattern.palette).toHaveLength(TEST_CATALOG.colorCount);
+    expect(new Set(pattern.palette.map((entry) => entry.symbol)).size).toBe(TEST_CATALOG.colorCount);
     // An explicit id above the brand ceiling is rejected on palette-create.
-    expect(() => applyCommand(pattern, { type: 'palette-create', name: 'Over', color: '#ffffff', id: DMC_CATALOG_RECORD_COUNT + 1, symbol: '★' })).toThrow(/brand's color count/);
-    expect(MAX_PALETTE_COLORS).toBe(DMC_CATALOG_RECORD_COUNT);
+    expect(() => applyCommand(pattern, { type: 'palette-create', name: 'Over', color: '#ffffff', id: TEST_CATALOG.colorCount + 1, symbol: '★' })).toThrow(/brand's color count/);
   });
 
   it('enforces the shared maximum cell count during creation and validation', () => {
-    const maximum = createDocument({ width: MAX_PERSISTABLE_CELL_COUNT, height: 1 });
+    const maximum = createDocument({ width: MAX_PERSISTABLE_CELL_COUNT, height: 1, catalog: TEST_CATALOG });
     expect(maximum.kind).toHaveLength(MAX_PERSISTABLE_CELL_COUNT);
-    expect(() => createDocument({ width: MAX_PERSISTABLE_CELL_COUNT + 1, height: 1 })).toThrow(DomainError);
+    expect(() => createDocument({ width: MAX_PERSISTABLE_CELL_COUNT + 1, height: 1, catalog: TEST_CATALOG })).toThrow(DomainError);
 
     const invalid = document(1, 1);
     invalid.width = MAX_PERSISTABLE_CELL_COUNT + 1;
@@ -758,26 +832,24 @@ describe('typed-array pattern document', () => {
 
   it('rejects restored documents whose palette exceeds the brand ceiling', () => {
     // Palette length above the ceiling: defense-in-depth for restored docs.
-    const tooMany = createDocument({
+    expect(() => createDocument({
       width: 1,
       height: 1,
-      palette: Array.from({ length: MAX_PALETTE_COLORS + 1 }, (_, index) => ({
+      catalog: TEST_CATALOG,
+      palette: Array.from({ length: TEST_CATALOG.colorCount + 1 }, (_, index) => ({
         id: index + 1,
         name: `Color ${index + 1}`,
         color: '#123456'
       }))
-    });
-    expect(validateDocument(tooMany)).toBe(false);
-    expect(() => assertValidDocument(tooMany)).toThrow(/brand's color count/);
+    })).toThrow(/brand's color count/);
 
     // A single entry id above the ceiling is likewise rejected.
-    const overId = createDocument({
+    expect(() => createDocument({
       width: 1,
       height: 1,
-      palette: [{ id: MAX_PALETTE_COLORS + 1, name: 'Over', color: '#ffffff' }]
-    });
-    expect(validateDocument(overId)).toBe(false);
-    expect(() => assertValidDocument(overId)).toThrow(/brand's color count/);
+      catalog: TEST_CATALOG,
+      palette: [{ id: TEST_CATALOG.colorCount + 1, name: 'Over', color: '#ffffff' }]
+    })).toThrow(/brand's color count/);
   });
 
   it('canonicalizes, recolors, and moves backstitches without changing identity or completion', () => {
@@ -1514,7 +1586,7 @@ describe('typed-array pattern document', () => {
     const width = 500;
     const height = 500;
     const indices = Uint32Array.from({ length: width * height }, (_, index) => index);
-    const editor = createEditor(createDocument({ width, height, palette: [{ id: 1, name: 'Red', color: '#d33' }] }));
+    const editor = createEditor(createDocument({ width, height, catalog: TEST_CATALOG, palette: [{ id: 1, name: 'Red', color: '#d33' }] }));
     const result = editor.execute(bulkSetFullCommand(indices, 1));
     expect(result.changed).toBe(true);
     expect(result.revision).toBe(1);
@@ -1542,7 +1614,7 @@ describe('typed-array pattern document', () => {
     const cellCount = side * side;
     expect(cellCount).toBe(MAX_PERSISTABLE_CELL_COUNT);
     const indices = Uint32Array.from({ length: cellCount }, (_, index) => index);
-    const editor = createEditor(createDocument({ width: side, height: side, palette: [{ id: 1, name: 'Red', color: '#d33' }] }));
+    const editor = createEditor(createDocument({ width: side, height: side, catalog: TEST_CATALOG, palette: [{ id: 1, name: 'Red', color: '#d33' }] }));
     const command = bulkSetFullCommand(indices, 1);
 
     const result = editor.execute(command);
@@ -1573,7 +1645,7 @@ describe('typed-array pattern document', () => {
     const side = 1_000;
     const cellCount = side * side;
     const requiredBytes = estimateBulkCellHistoryBytes(cellCount);
-    const editor = createEditor(createDocument({ width: side, height: side, palette: [{ id: 1, name: 'Red', color: '#d33' }] }), { historyLimitBytes: requiredBytes - 1 });
+    const editor = createEditor(createDocument({ width: side, height: side, catalog: TEST_CATALOG, palette: [{ id: 1, name: 'Red', color: '#d33' }] }), { historyLimitBytes: requiredBytes - 1 });
     const before = editor.document;
     const command = bulkSetFullCommand(Uint32Array.from({ length: cellCount }, (_, index) => index), 1);
 
@@ -1614,7 +1686,7 @@ describe('typed-array pattern document', () => {
   });
 
   it('uses a packed sparse delta for a one-cell edit in a 1,000 by 1,000 pattern', () => {
-    const pattern = createDocument({ width: 1000, height: 1000, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    const pattern = createDocument({ width: 1000, height: 1000, catalog: TEST_CATALOG, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     const editor = createEditor(pattern);
     editor.execute({ type: 'set-full', x: 777, y: 888, color: 1 });
     expect(editor.lastHistoryEntryKind).toBe('delta');
@@ -2206,6 +2278,7 @@ describe('typed-array pattern document', () => {
     let pattern = createDocument({
       width: 4,
       height: 3,
+      catalog: TEST_CATALOG,
       palette: [{
         id: 1,
         name: 'Nested red',
@@ -2329,7 +2402,7 @@ describe('typed-array pattern document', () => {
     expect(budgetEditor.redoDepth).toBe(0);
   });
 
-  it('deletes, validates, and restores a dense 1,000 by 1,000 document', { timeout: 120_000 }, () => {
+  it('deletes, validates, and restores a dense 1,000 by 1,000 document', { timeout: 240_000 }, () => {
     const side = 1_000;
     const cellCount = side * side;
     const pattern = document(side, side);

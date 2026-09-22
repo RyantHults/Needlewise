@@ -1,7 +1,6 @@
 import {
   assertValidDocument,
-  migratePatternDocument,
-  type LegacyPatternDocument,
+  DOCUMENT_SCHEMA_VERSION,
   PALETTE_ID_RESERVED,
   type PaletteCatalogReference,
   type PaletteEntry,
@@ -18,11 +17,8 @@ import {
   MAX_PALETTE_ENTRIES
 } from './limits';
 
-const MAGIC = new Uint8Array([0x53, 0x54, 0x59, 0x44, 0x4f, 0x43, 0x01, 0x00]);
-const BINARY_SCHEMA_VERSION = 4;
-const PRIOR_BINARY_SCHEMA_VERSION = 3;
-const PENULTIMATE_BINARY_SCHEMA_VERSION = 2;
-const LEGACY_BINARY_SCHEMA_VERSION = 1;
+const MAGIC = new Uint8Array([0x4e, 0x57, 0x44, 0x4f, 0x43, 0x31, 0x01, 0x00]);
+export const BINARY_SCHEMA_VERSION = 1 as const;
 const LITTLE_ENDIAN_MARKER = 1;
 const HEADER_BYTES = 40;
 
@@ -69,7 +65,11 @@ function sameMagic(bytes: Uint8Array): boolean {
 }
 
 function byteLengthFor(document: PatternDocument): number {
-  let length = BigInt(HEADER_BYTES) + BigInt(document.kind.length) + BigInt(document.colors.length) * 2n + BigInt(document.completed.length);
+  let length = BigInt(HEADER_BYTES);
+  const catalogId = stringBytes(document.catalog.catalogId, 'Document catalog ID');
+  const brandLabel = stringBytes(document.catalog.brandLabel, 'Document catalog brand label');
+  length += 4n + BigInt(catalogId.length) + 4n + BigInt(brandLabel.length) + 4n;
+  length += BigInt(document.kind.length) + BigInt(document.colors.length) * 2n + BigInt(document.completed.length);
   for (const entry of document.palette) {
     const name = stringBytes(entry.name, 'Palette name');
     const color = stringBytes(entry.color, 'Palette color');
@@ -122,6 +122,10 @@ export function encodeDocument(document: PatternDocument): Uint8Array {
   view.setUint32(32, document.palette.length, true);
   view.setUint32(36, document.backstitches.ids.length, true);
   let offset = HEADER_BYTES;
+  offset = writeString(view, bytes, offset, document.catalog.catalogId, 'Document catalog ID');
+  offset = writeString(view, bytes, offset, document.catalog.brandLabel, 'Document catalog brand label');
+  view.setUint32(offset, document.catalog.colorCount, true);
+  offset += 4;
   for (const entry of document.palette) {
     view.setUint16(offset, entry.id, true);
     offset += 2;
@@ -206,7 +210,7 @@ export function decodeDocument(input: Uint8Array | ArrayBuffer): PatternDocument
   if (bytes.length < HEADER_BYTES || !sameMagic(bytes)) fail('Document binary magic is invalid.');
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const binaryVersion = view.getUint16(8, true);
-  if (binaryVersion !== BINARY_SCHEMA_VERSION && binaryVersion !== PRIOR_BINARY_SCHEMA_VERSION && binaryVersion !== PENULTIMATE_BINARY_SCHEMA_VERSION && binaryVersion !== LEGACY_BINARY_SCHEMA_VERSION) throw new PersistenceError('unsupported-version', 'Document binary schema is unsupported.');
+  if (binaryVersion !== BINARY_SCHEMA_VERSION) throw new PersistenceError('unsupported-version', 'Document binary schema is unsupported.');
   if (view.getUint8(10) !== LITTLE_ENDIAN_MARKER) fail('Document byte order is unsupported.');
   if (view.getUint8(11) !== 0) fail('Document header flags are invalid.');
   const width = view.getUint32(12, true);
@@ -224,14 +228,22 @@ export function decodeDocument(input: Uint8Array | ArrayBuffer): PatternDocument
   // Validate all count-derived minimum sizes before allocating any typed
   // arrays. In particular, a forged backstitch count must not reach the
   // constructors below merely because the count fits in a uint32.
-  const minimumPayload = BigInt(paletteCount) * 11n
+  const minimumPayload = 12n
+    + BigInt(paletteCount) * 29n
     + BigInt(cellCount) * 10n
     + BigInt(backstitchCount) * 23n
-    + (binaryVersion >= PENULTIMATE_BINARY_SCHEMA_VERSION ? 8n : 0n);
+    + 8n;
   if (minimumPayload > BigInt(bytes.length - HEADER_BYTES)) fail('Document counts exceed the remaining payload.');
 
   let offset = HEADER_BYTES;
-  const legacyPalette: LegacyPatternDocument['palette'] = [];
+  const catalogIdResult = readString(bytes, view, offset, 'Document catalog ID');
+  offset = catalogIdResult.offset;
+  const brandLabelResult = readString(bytes, view, offset, 'Document catalog brand label');
+  offset = brandLabelResult.offset;
+  if (offset + 4 > bytes.length) fail('Document ended while reading catalog color count.');
+  const colorCount = view.getUint32(offset, true);
+  offset += 4;
+  const catalog = { catalogId: catalogIdResult.value, brandLabel: brandLabelResult.value, colorCount };
   const palette: PaletteEntry[] = [];
   for (let index = 0; index < paletteCount; index += 1) {
     if (offset + 7 > bytes.length) fail('Document ended while reading the palette.');
@@ -245,10 +257,6 @@ export function decodeDocument(input: Uint8Array | ArrayBuffer): PatternDocument
     offset = nameResult.offset;
     const colorResult = readString(bytes, view, offset, 'Palette color');
     offset = colorResult.offset;
-    if (binaryVersion === LEGACY_BINARY_SCHEMA_VERSION) {
-      legacyPalette.push({ id, name: nameResult.value, color: colorResult.value, active: activeValue === 1 });
-      continue;
-    }
     const symbolResult = readString(bytes, view, offset, 'Palette symbol');
     offset = symbolResult.offset;
     const materialKindResult = readString(bytes, view, offset, 'Palette material kind');
@@ -297,14 +305,11 @@ export function decodeDocument(input: Uint8Array | ArrayBuffer): PatternDocument
       ...(catalog === undefined ? {} : { catalog })
     });
   }
-  let settings: PatternSettings | undefined;
-  if (binaryVersion >= PENULTIMATE_BINARY_SCHEMA_VERSION) {
-    const symbolSet = readString(bytes, view, offset, 'Document symbol set');
-    offset = symbolSet.offset;
-    const materialUnit = readString(bytes, view, offset, 'Document material unit');
-    offset = materialUnit.offset;
-    settings = { symbolSet: symbolSet.value, materialUnit: materialUnit.value as PatternSettings['materialUnit'] };
-  }
+  const symbolSet = readString(bytes, view, offset, 'Document symbol set');
+  offset = symbolSet.offset;
+  const materialUnit = readString(bytes, view, offset, 'Document material unit');
+  offset = materialUnit.offset;
+  const settings: PatternSettings = { symbolSet: symbolSet.value, materialUnit: materialUnit.value as PatternSettings['materialUnit'] };
   const kindBytes = take(bytes, offset, cellCount, 'cell kinds');
   offset += cellCount;
   const colorsByteLength = cellCount * 4 * 2;
@@ -344,7 +349,9 @@ export function decodeDocument(input: Uint8Array | ArrayBuffer): PatternDocument
   const decodedColors = new Uint16Array(cellCount * 4);
   const colorView = new DataView(colorsBytes.buffer, colorsBytes.byteOffset, colorsBytes.byteLength);
   for (let index = 0; index < decodedColors.length; index += 1) decodedColors[index] = colorView.getUint16(index * 2, true);
-  const rawDocument = {
+  const document: PatternDocument = {
+    version: DOCUMENT_SCHEMA_VERSION,
+    catalog,
     width,
     height,
     kind: new Uint8Array(kindBytes),
@@ -353,16 +360,11 @@ export function decodeDocument(input: Uint8Array | ArrayBuffer): PatternDocument
     backstitches: { ids, x1, y1, x2, y2, colors, completed },
     revision,
     nextBackstitchId,
-    nextPaletteId
+    nextPaletteId,
+    palette,
+    settings
   };
-  let document: PatternDocument;
   try {
-    document = migratePatternDocument({
-      ...rawDocument,
-      version: binaryVersion,
-      palette: binaryVersion === LEGACY_BINARY_SCHEMA_VERSION ? legacyPalette : palette,
-      ...(settings === undefined ? {} : { settings })
-    });
     assertValidDocument(document);
   } catch (error) {
     throw new PersistenceError('invalid-document', 'Decoded document failed domain validation.', error);

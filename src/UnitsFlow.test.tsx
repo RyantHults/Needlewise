@@ -3,6 +3,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import App from './App';
 import { applyCommand, createDocument } from './domain';
+import { DEFAULT_CATALOG_DEFINITION } from './catalog';
 import { ProjectWorkspace } from './application/workspace';
 import { NeedlewiseDatabase, ProjectRepository } from './persistence';
 
@@ -18,7 +19,7 @@ describe('measurement units end-to-end', () => {
     const seedDb = new NeedlewiseDatabase('needlewise-local');
     const seedRepo = new ProjectRepository(seedDb, { now: () => 10 });
     const seedWorkspace = new ProjectWorkspace({ repository: seedRepo, clock: { now: () => 100 }, projectIdFactory: () => 'units-flow' });
-    let pattern = createDocument({ width: 14, height: 14, palette: [{ id: 1, name: 'Ruby', color: '#AA0000' }] });
+    let pattern = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 14, height: 14, palette: [{ id: 1, name: 'Ruby', color: '#AA0000' }] });
     pattern = applyCommand(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
     await seedWorkspace.createProject({ title: 'Units quilt', document: pattern, materialSettings: { strands: 2, waste: 0.2, skeinLengthMeters: 8 } });
     await seedWorkspace.dispose();

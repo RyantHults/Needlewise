@@ -5,7 +5,7 @@ import { EditorSurfaceController, selectedCellSemantics, type EditorSurfaceContr
 import { StaleEditorTransactionError, type EditorRevisionToken, type EditorTransaction, type WorkspaceEditorGateway, type WorkspaceEditorSnapshot } from './gateway';
 import { createUiStore } from './ui-store';
 import { ThreeQuarterPair } from './cell-kinds';
-import { nearestDmcColor } from '../catalog';
+import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import type { CanvasRenderer, Invalidation, OverlayState, RendererStyle, RenderStats, TraceImage, TraceRgb, Viewport } from './contracts';
 import type { PointerSample } from './input';
 
@@ -15,7 +15,7 @@ class FakeGateway implements WorkspaceEditorGateway {
   private readonly listeners = new Set<(snapshot: WorkspaceEditorSnapshot) => void>();
   readonly commands: DomainCommand[] = [];
 
-  constructor(document = createDocument({ width: 8, height: 8, palette: [{ id: 1, name: 'Thread', color: '#123456' }] })) {
+  constructor(document = createDocument({ width: 8, height: 8, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Thread', color: '#123456' }] })) {
     this.editor = createEditor(document);
   }
 
@@ -87,7 +87,7 @@ class FakeGateway implements WorkspaceEditorGateway {
 
   switchProject(): void {
     this.project = 'project-b';
-    this.editor = createEditor(createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
+    this.editor = createEditor(createDocument({ width: 4, height: 4, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
     this.emit();
   }
 
@@ -180,18 +180,124 @@ describe('EditorSurfaceController', () => {
       onTraceSample: (value) => sampled.push(value)
     });
     controller.setTool({ tool: 'eyedropper' });
-    const matched = nearestDmcColor(rgb);
+    const matched = DEFAULT_CATALOG_DEFINITION.nearest(rgb);
     expect(matched).toBeDefined();
     expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
     expect(sampled).toEqual([{ ...rgb }]);
     const create = gateway.commands.find((command) => command.type === 'palette-create');
     expect(create).toMatchObject({ type: 'palette-create', name: matched!.name, color: matched!.hex, active: true });
+    expect(create).toMatchObject({ catalog: { catalogId: DEFAULT_CATALOG_DEFINITION.association.catalogId, sourceId: matched!.sourceId } });
     const added = gateway.getSnapshot().document?.palette.find((entry) => entry.catalog?.code === matched!.code);
     expect(added).toBeDefined();
     expect(uiStore.getState().paletteId).toBe(added!.id);
     expect(uiStore.getState().tool).toEqual({ tool: 'paint', brush: { kind: 'full', paletteId: added!.id } });
     expect(gateway.getSnapshot().document?.kind.every((kind) => kind === 0)).toBe(true);
     controller.dispose();
+  });
+
+  it('reports the raw trace sample without changing state when the document catalog is unavailable', () => {
+    const sampled: TraceRgb[] = [];
+    const document = createDocument({
+      width: 8,
+      height: 8,
+      catalog: { catalogId: 'missing-catalog', brandLabel: 'Missing', colorCount: 1 },
+      palette: [{ id: 1, name: 'Custom', color: '#123456', active: true }]
+    });
+    const { gateway, uiStore, controller } = controllerFixture({
+      traceImage: { source: {}, width: 4, height: 4 },
+      traceSampler: () => ({ r: 12, g: 34, b: 56 }),
+      onTraceSample: (value) => sampled.push(value)
+    }, document);
+    controller.setTool({ tool: 'eyedropper' });
+    uiStore.setPendingPaletteId(1);
+    const beforePalette = document.palette.map((entry) => ({ ...entry }));
+    const beforeState = uiStore.getState();
+    const commandCount = gateway.commands.length;
+
+    expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(false);
+    expect(sampled).toEqual([{ r: 12, g: 34, b: 56 }]);
+    expect(gateway.commands).toHaveLength(commandCount);
+    expect(document.palette).toEqual(beforePalette);
+    expect(uiStore.getState().paletteId).toBe(beforeState.paletteId);
+    expect(uiStore.getState().pendingPaletteId).toBe(beforeState.pendingPaletteId);
+    expect(uiStore.getState().tool).toEqual(beforeState.tool);
+    controller.dispose();
+  });
+
+  it('creates a catalog reference instead of selecting custom or cross-catalog same-code entries', () => {
+    const rgb = { r: 12, g: 34, b: 56 };
+    const matched = DEFAULT_CATALOG_DEFINITION.nearest(rgb)!;
+    const cases = [
+      {
+        name: 'catalog-less custom entry',
+        catalog: undefined
+      },
+      {
+        name: 'same-code entry with another source ID',
+        catalog: {
+          catalogId: DEFAULT_CATALOG_DEFINITION.association.catalogId,
+          sourceId: 'other-source',
+          code: matched.code,
+          name: matched.name,
+          hex: matched.hex,
+          rgb: [...matched.rgb] as [number, number, number]
+        }
+      }
+    ] as const;
+
+    for (const testCase of cases) {
+      const document = createDocument({
+        width: 8,
+        height: 8,
+        catalog: DEFAULT_CATALOG_DEFINITION.association,
+        palette: [{ id: 1, name: matched.name, color: matched.hex, active: true }]
+      });
+      if (testCase.catalog !== undefined) document.palette[0] = { ...document.palette[0], catalog: testCase.catalog };
+      const fixture = controllerFixture({
+        traceImage: { source: {}, width: 4, height: 4 },
+        traceSampler: () => ({ ...rgb })
+      }, document);
+      fixture.controller.setTool({ tool: 'eyedropper' });
+
+      expect(fixture.controller.handlePointerDown(pointer(1, 8, 8)), testCase.name).toBe(true);
+      const created = fixture.gateway.getSnapshot().document?.palette.find((entry) => entry.id !== 1);
+      expect(created, testCase.name).toMatchObject({ catalog: { catalogId: DEFAULT_CATALOG_DEFINITION.association.catalogId, sourceId: matched.sourceId } });
+      expect(fixture.uiStore.getState().paletteId, testCase.name).toBe(created?.id);
+      fixture.controller.dispose();
+    }
+  });
+
+  it('rejects a same-code entry whose catalog association differs from the document definition', () => {
+    const rgb = { r: 12, g: 34, b: 56 };
+    const matched = DEFAULT_CATALOG_DEFINITION.nearest(rgb)!;
+    const fixture = controllerFixture({
+      traceImage: { source: {}, width: 4, height: 4 },
+      traceSampler: () => ({ ...rgb })
+    });
+    const document = fixture.gateway.getSnapshot().document!;
+    document.palette[0] = {
+      ...document.palette[0],
+      name: matched.name,
+      color: matched.hex,
+      catalog: {
+        catalogId: 'other-catalog',
+        sourceId: matched.sourceId,
+        code: matched.code,
+        name: matched.name,
+        hex: matched.hex,
+        rgb: [...matched.rgb] as [number, number, number]
+      }
+    };
+    fixture.controller.setTool({ tool: 'eyedropper' });
+
+    expect(fixture.controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
+    expect(fixture.gateway.commands).toHaveLength(1);
+    expect(fixture.gateway.commands[0]).toMatchObject({
+      type: 'palette-create',
+      catalog: { catalogId: DEFAULT_CATALOG_DEFINITION.association.catalogId, sourceId: matched.sourceId }
+    });
+    expect(fixture.uiStore.getState().paletteId).toBe(2);
+    fixture.controller.dispose();
   });
 
   it('activates the eyedropper at the keyboard cursor and adds the matched color to the palette', () => {
@@ -212,7 +318,7 @@ describe('EditorSurfaceController', () => {
     expect(points).toEqual([{ x: 40, y: 56 }]);
     expect(sampled).toEqual([{ ...rgb }]);
     expect(gateway.commands.some((command) => command.type === 'palette-create')).toBe(true);
-    const added = gateway.getSnapshot().document?.palette.find((entry) => entry.catalog?.code === nearestDmcColor(rgb)!.code);
+    const added = gateway.getSnapshot().document?.palette.find((entry) => entry.catalog?.code === DEFAULT_CATALOG_DEFINITION.nearest(rgb)!.code);
     expect(added).toBeDefined();
     expect(uiStore.getState().paletteId).toBe(added!.id);
     expect(gateway.getSnapshot().document?.kind.every((kind) => kind === 0)).toBe(true);
@@ -232,7 +338,7 @@ describe('EditorSurfaceController', () => {
     expect(controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined })).toBe(true);
     expect(sampled).toEqual([{ ...rgb }]);
     expect(gateway.commands.some((command) => command.type === 'palette-create')).toBe(true);
-    const added = gateway.getSnapshot().document?.palette.find((entry) => entry.catalog?.code === nearestDmcColor(rgb)!.code);
+    const added = gateway.getSnapshot().document?.palette.find((entry) => entry.catalog?.code === DEFAULT_CATALOG_DEFINITION.nearest(rgb)!.code);
     expect(added).toBeDefined();
     expect(uiStore.getState().paletteId).toBe(added!.id);
     expect(uiStore.getState().tool).toEqual({ tool: 'paint', brush: { kind: 'full', paletteId: added!.id } });
@@ -252,6 +358,30 @@ describe('EditorSurfaceController', () => {
     controller.dispose();
   });
 
+  it('gives a chart-cell custom color precedence over trace sampling', () => {
+    const sampled: TraceRgb[] = [];
+    const document = createDocument({
+      width: 8,
+      height: 8,
+      catalog: DEFAULT_CATALOG_DEFINITION.association,
+      palette: [{ id: 1, name: 'Custom', color: '#123456', active: true }]
+    });
+    const { gateway, uiStore, controller } = controllerFixture({
+      traceImage: { source: {}, width: 4, height: 4 },
+      traceSampler: () => ({ r: 1, g: 2, b: 3 }),
+      onTraceSample: (value) => sampled.push(value)
+    }, document);
+    gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    controller.setTool({ tool: 'eyedropper' });
+
+    expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
+    expect(sampled).toHaveLength(0);
+    expect(gateway.commands.filter((command) => command.type === 'palette-create')).toHaveLength(0);
+    expect(uiStore.getState().paletteId).toBe(1);
+    expect(uiStore.getState().tool).toEqual({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
+    controller.dispose();
+  });
+
   it('eyedroppers an empty cell of the reference image and adds the closest DMC color to the palette', () => {
     const sampled: TraceRgb[] = [];
     const rgb = { r: 18, g: 52, b: 86 };
@@ -264,7 +394,7 @@ describe('EditorSurfaceController', () => {
     expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
     expect(sampled).toEqual([{ ...rgb }]);
     expect(gateway.commands.some((command) => command.type === 'palette-create')).toBe(true);
-    const added = gateway.getSnapshot().document?.palette.find((entry) => entry.catalog?.code === nearestDmcColor(rgb)!.code);
+    const added = gateway.getSnapshot().document?.palette.find((entry) => entry.catalog?.code === DEFAULT_CATALOG_DEFINITION.nearest(rgb)!.code);
     expect(added).toBeDefined();
     expect(uiStore.getState().paletteId).toBe(added!.id);
     expect(uiStore.getState().tool).toEqual({ tool: 'paint', brush: { kind: 'full', paletteId: added!.id } });
@@ -282,7 +412,7 @@ describe('EditorSurfaceController', () => {
     const pending = uiStore.getState().pendingPaletteId;
     expect(pending).not.toBeNull();
 
-    gateway.execute({ type: 'palette-create', name: 'Purple', color: '#66AA22', catalog: { catalogId: 'c', sourceId: 's', code: 'P9', name: 'Purple', hex: '#66AA22', rgb: [102, 170, 34] } });
+    gateway.execute({ type: 'palette-create', name: 'Purple', color: '#66AA22', catalog: { catalogId: DEFAULT_CATALOG_DEFINITION.association.catalogId, sourceId: 's', code: 'P9', name: 'Purple', hex: '#66AA22', rgb: [102, 170, 34] } });
     const created = gateway.getSnapshot().document?.palette.find((entry) => entry.catalog?.code === 'P9');
     expect(created).toBeDefined();
 
@@ -413,6 +543,7 @@ describe('EditorSurfaceController', () => {
     const document = createDocument({
       width: 8,
       height: 8,
+      catalog: DEFAULT_CATALOG_DEFINITION.association,
       palette: [
         { id: 1, name: 'Thread', color: '#123456' },
         { id: 2, name: 'Unused active thread', color: '#abcdef', active: true }
@@ -998,7 +1129,7 @@ describe('EditorSurfaceController', () => {
     controller.setBrushSize(4);
     controller.setAuthoringBrush(brush);
     uiStore.setKeyboardCursor({ x: 2, y: 3 });
-    const next = createDocument({ width: 12, height: 6, palette: [{ id: 1, name: 'Thread', color: '#123456' }] });
+    const next = createDocument({ width: 12, height: 6, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Thread', color: '#123456' }] });
     next.revision = gateway.getSnapshot().revision! + 1;
 
     controller.setDocument(next);
@@ -1045,6 +1176,7 @@ describe('EditorSurfaceController', () => {
     const externalDocument = createDocument({
       width: 4,
       height: 4,
+      catalog: DEFAULT_CATALOG_DEFINITION.association,
       palette: [{ id: 1, name: 'Thread', color: '#123456' }]
     });
     externalDocument.revision = completedDocument.revision + 1;
@@ -1268,7 +1400,7 @@ describe('EditorSurfaceController', () => {
   });
 
   it('reports each directional three-quarter as one selected completion slot', () => {
-    const document = createDocument({ width: 4, height: 1, palette: [{ id: 1, name: 'Thread', color: '#123456' }] });
+    const document = createDocument({ width: 4, height: 1, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Thread', color: '#123456' }] });
     const kinds = [
       ['three-quarter-nw', CellKind.ThreeQuarterNW],
       ['three-quarter-ne', CellKind.ThreeQuarterNE],
@@ -1354,6 +1486,7 @@ describe('EditorSurfaceController', () => {
     const selectedDocument = createDocument({
       width: 1,
       height: 1,
+      catalog: DEFAULT_CATALOG_DEFINITION.association,
       palette: [
         { id: 1, name: 'Red', color: '#f00' },
         { id: 2, name: 'Blue', color: '#00f' }
@@ -1393,7 +1526,7 @@ describe('EditorSurfaceController', () => {
   });
 
   it.skipIf(!(() => {
-    const probe = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Thread', color: '#123456' }] });
+    const probe = createDocument({ width: 1, height: 1, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Thread', color: '#123456' }] });
     probe.kind[0] = ThreeQuarterPair;
     probe.colors.set([1, 0, 1, 0]);
     return collectValidationErrors(probe).length === 0;
@@ -1477,6 +1610,7 @@ describe('EditorSurfaceController', () => {
     const gateway = new FakeGateway(createDocument({
       width: 8,
       height: 8,
+      catalog: DEFAULT_CATALOG_DEFINITION.association,
       palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true }, { id: 2, name: 'Sky', color: '#48c', active: true }]
     }));
     const uiStore = createUiStore({ tool: { tool: 'pan' }, paletteId: null });
@@ -1500,6 +1634,7 @@ describe('EditorSurfaceController', () => {
     const gateway = new FakeGateway(createDocument({
       width: 8,
       height: 8,
+      catalog: DEFAULT_CATALOG_DEFINITION.association,
       palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true }, { id: 2, name: 'Sky', color: '#48c', active: true }]
     }));
     const { uiStore, controller } = controllerFixture({ gateway });

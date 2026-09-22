@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { DMC_CATALOG_PROVENANCE, searchDmcColors } from '../catalog';
+import { createCatalogReference, type CatalogRecord } from '../catalog';
 import type { DisplayUnits, PatternDocument, PatternMetrics, PaletteMetrics } from '../domain';
 import type { ProgressActivity } from '../persistence';
 import type { SessionProgressStats } from '../application/progress';
@@ -42,7 +42,8 @@ export function Phase3Panel({ document, metrics, execute, workspace, open: contr
   const settings = workspace.materialSettings ?? { strands: 1, waste: 0 };
   const [form, setForm] = useState({ strands: String(settings.strands), waste: String(settings.waste * 100) });
   const active = document.palette.filter((entry) => entry.active);
-  const results = useMemo(() => searchDmcColors(query, { limit: 8 }), [query]);
+  const catalogDefinition = workspace.catalogFor(document);
+  const results = useMemo(() => catalogDefinition?.search(query, { limit: 8 }) ?? [], [query, catalogDefinition]);
 
   // Material inputs belong to the active project. Do not carry a previous
   // project's draft form into this panel while the workspace is switching.
@@ -74,9 +75,10 @@ export function Phase3Panel({ document, metrics, execute, workspace, open: contr
   }, [open]);
 
   const close = () => { setOpen(false); window.setTimeout(() => launcher.current?.focus(), 0); };
-  const add = async (color: ReturnType<typeof searchDmcColors>[number]) => {
+  const add = async (color: CatalogRecord) => {
     try {
-      await execute({ type: 'palette-create', name: color.name, color: color.hex, catalog: { catalogId: 'dmc-compatible-screen-approximation', sourceId: color.sourceId, code: color.code, name: color.name, hex: color.hex, rgb: color.rgb } });
+      if (!catalogDefinition) return;
+      await execute({ type: 'palette-create', name: color.name, color: color.hex, catalog: createCatalogReference(catalogDefinition, color) });
       close();
     } catch (error) { setNotice(error instanceof Error ? error.message : 'This color could not be added.'); }
   };
@@ -98,11 +100,11 @@ export function Phase3Panel({ document, metrics, execute, workspace, open: contr
     <div className="modal-backdrop" role="presentation">
       <div ref={dialog} className="catalog-dialog create-modal" role="dialog" aria-modal="true" aria-labelledby="catalog-title" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); close(); } }}>
         <button className="modal-close" type="button" aria-label="Close catalog dialog" onClick={close}>×</button>
-        <p className="section-label">Offline catalog</p><h2 id="catalog-title">Add a thread color</h2>
-        <div className="catalog-box"><label htmlFor="catalog-search">Search offline catalog</label><input id="catalog-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Name or DMC code" />
-          <ul className="catalog-results">{results.map((color) => <li key={color.code}><span className="swatch" style={{ background: color.hex }} /><span>{color.name} <small>#{color.code}</small></span><button className="small-action" type="button" aria-label={`Add ${color.name}`} onClick={() => void add(color)}>Add</button></li>)}</ul>
+        <p className="section-label">{catalogDefinition?.association.brandLabel ?? 'Catalog'}</p><h2 id="catalog-title">Add a thread color</h2>
+        <div className="catalog-box"><label htmlFor="catalog-search">Search {catalogDefinition?.association.brandLabel ? `${catalogDefinition.association.brandLabel} catalog` : 'catalog'}</label><input id="catalog-search" aria-label="Search catalog" disabled={!catalogDefinition} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Name or ${catalogDefinition?.association.brandLabel ?? 'catalog'} code`} />
+          {!catalogDefinition ? <p className="catalog-unavailable" role="status">Catalog unavailable</p> : <ul className="catalog-results">{results.map((color) => <li key={color.code}><span className="swatch" style={{ background: color.hex }} /><span>{color.name} <small>#{color.code}</small></span><button className="small-action" type="button" aria-label={`Add ${color.name}`} onClick={() => void add(color)}>Add</button></li>)}</ul>}
         </div>
-        <p className="catalog-helper">{DMC_CATALOG_PROVENANCE.status.description} This catalog stays on your device.</p>{notice && <p className="modal-error" role="alert">{notice}</p>}
+        {notice && <p className="modal-error" role="alert">{notice}</p>}
       </div>
     </div>, globalThis.document.body) : null;
 
@@ -111,8 +113,8 @@ export function Phase3Panel({ document, metrics, execute, workspace, open: contr
     <div ref={dialog} className="create-modal materials-dialog" role="dialog" aria-modal="true" aria-labelledby="materials-title">
     <button className="modal-close" type="button" aria-label="Close materials and progress" onClick={() => onClose?.()}>×</button>
     <section className="phase3-panel" aria-labelledby="materials-title">
-    <div className="phase3-heading"><div><p className="section-label">Materials &amp; progress</p><h2 id="materials-title">Plan the thread</h2></div><p className="catalog-disclaimer">Offline DMC-compatible colors are screen approximations. Confirm a real skein before buying.</p></div>
-    <div className="phase3-grid"><section className="palette-manager" aria-labelledby="palette-title"><div className="palette-title-row"><h3 id="palette-title">{active.length ? active.map((entry) => entry.name).join(' and ') : 'Palette'} </h3><button ref={launcher} className="add-palette-button" type="button" aria-label="Add a color to the palette" onClick={() => { setNotice(''); setOpen(true); }}>+</button></div>
+     <div className="phase3-heading"><div><p className="section-label">Materials &amp; progress</p><h2 id="materials-title">Plan the thread</h2></div><p className="catalog-disclaimer">{catalogDefinition ? `${catalogDefinition.association.brandLabel}-compatible colors are available in this pattern.` : 'Catalog unavailable'}</p></div>
+     <div className="phase3-grid"><section className="palette-manager" aria-labelledby="palette-title"><div className="palette-title-row"><h3 id="palette-title">{active.length ? active.map((entry) => entry.name).join(' and ') : 'Palette'} </h3><button ref={launcher} className="add-palette-button" type="button" aria-label="Add a color to the palette" disabled={!catalogDefinition} onClick={() => { setNotice(''); setOpen(true); }}>+</button></div>
       {active.map((entry) => { const item = paletteMetrics.get(entry.id); const yards = materialYardage(item?.material); return <div className="material-row" key={entry.id}><span className="swatch" style={{ background: entry.color }} /><span className="material-main"><strong>{entry.name}</strong><span>{item ? `${item.full} full · ${item.half} half · ${item.quarter} quarter · ${item.threeQuarter ?? 0} 3/4 · ${item.backstitch} backstitch` : 'No stitches yet'}</span></span><span className="material-estimate">{materialLine(item?.material)}{yards !== null && <span className="material-yards">{yards}</span>}</span></div>; })}
     </section><aside className="catalog-box"><h3>Material model</h3><form onSubmit={(event) => void save(event)}><label htmlFor="material-strands">Strands per stitch</label><input id="material-strands" type="number" min="1" step="1" value={form.strands} onChange={(event) => setForm({ ...form, strands: event.target.value })} /><label htmlFor="material-waste">Waste allowance (%)</label><input id="material-waste" type="number" min="0" step="1" value={form.waste} onChange={(event) => setForm({ ...form, waste: event.target.value })} /><button className="button button-secondary" type="submit">Save material settings</button></form></aside></div>
     <div className="estimate-card"><strong>Finished size and thread total</strong><p>{finishedSize ?? 'Finished size unavailable — no Aida count is set.'}</p><p>Total: {materialLine(total)}{totalYards !== null && <span className="material-yards">{totalYards}</span>}</p><p className="material-note">{modelNote}</p></div>

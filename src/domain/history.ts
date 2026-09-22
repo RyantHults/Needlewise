@@ -57,7 +57,7 @@ import type {
   QuarterCorner,
   ProgressChangeSet
 } from './types';
-import { DomainError, MAX_PERSISTABLE_CELL_COUNT } from './types';
+import { DomainError, MAX_PERSISTABLE_CELL_COUNT, PALETTE_ID_MAX } from './types';
 import { assertValidDocument } from './validation';
 import {
   attachDeleteMetricsImpactForDelta
@@ -288,7 +288,7 @@ function typedDeltaBytes(delta: SparseMutationDelta): number {
 
 function snapshotBytes(document: PatternDocument): number {
   const store = document.backstitches;
-  return document.kind.byteLength + document.colors.byteLength + document.completed.byteLength + store.ids.byteLength + store.x1.byteLength + store.y1.byteLength + store.x2.byteLength + store.y2.byteLength + store.colors.byteLength + store.completed.byteLength + JSON.stringify(document.palette).length * 2 + 64;
+  return document.kind.byteLength + document.colors.byteLength + document.completed.byteLength + store.ids.byteLength + store.x1.byteLength + store.y1.byteLength + store.x2.byteLength + store.y2.byteLength + store.colors.byteLength + store.completed.byteLength + JSON.stringify(document.catalog).length * 2 + JSON.stringify(document.palette).length * 2 + 64;
 }
 
 function result(document: PatternDocument, changed: boolean, backstitchId?: number, paletteId?: number, details?: MutationInfo): CommandResult {
@@ -426,6 +426,15 @@ function historyPalette(value: unknown, label: string): asserts value is Palette
   for (let index = 0; index < entries.length; index += 1) historyPaletteEntry(entries[index], `${label}[${String(index)}]`);
 }
 
+function historyCatalog(value: unknown, label: string): void {
+  const catalog = historyRecord(value, label);
+  historyKeys(catalog, ['catalogId', 'brandLabel', 'colorCount'], [], label);
+  historyBoundedString(catalog.catalogId, `${label}.catalogId`);
+  historyBoundedString(catalog.brandLabel, `${label}.brandLabel`);
+  const colorCount = historySafeInteger(catalog.colorCount, `${label}.colorCount`, 1);
+  if (colorCount > PALETTE_ID_MAX) throw new DomainError('invalid-history-state', `${label}.colorCount exceeds the palette ID limit.`);
+}
+
 function historyBackstitches(value: unknown, label: string): asserts value is BackstitchStore {
   const store = historyRecord(value, label);
   historyKeys(store, ['ids', 'x1', 'y1', 'x2', 'y2', 'colors', 'completed'], [], label);
@@ -447,7 +456,7 @@ function historyBackstitches(value: unknown, label: string): asserts value is Ba
 
 function historyDocument(value: unknown, label: string): asserts value is PatternDocument {
   const document = historyRecord(value, label) as unknown as PatternDocument;
-  historyKeys(document as unknown as HistoryRecord, ['version', 'width', 'height', 'kind', 'colors', 'completed', 'backstitches', 'palette', 'settings', 'revision', 'nextBackstitchId', 'nextPaletteId'], [], label);
+  historyKeys(document as unknown as HistoryRecord, ['version', 'catalog', 'width', 'height', 'kind', 'colors', 'completed', 'backstitches', 'palette', 'settings', 'revision', 'nextBackstitchId', 'nextPaletteId'], [], label);
   historySafeInteger(document.width, `${label}.width`, 1);
   historySafeInteger(document.height, `${label}.height`, 1);
   const cellCount = document.width * document.height;
@@ -458,6 +467,7 @@ function historyDocument(value: unknown, label: string): asserts value is Patter
   historyLength(document.kind, cellCount, `${label}.kind`);
   historyLength(document.colors, cellCount * 4, `${label}.colors`);
   historyLength(document.completed, cellCount, `${label}.completed`);
+  historyCatalog(document.catalog, `${label}.catalog`);
   historyBackstitches(document.backstitches, `${label}.backstitches`);
   historyPalette(document.palette, `${label}.palette`);
   const settings = historyRecord(document.settings, `${label}.settings`);
@@ -478,6 +488,7 @@ function historyTypedArraysEqual(left: ArrayLike<number>, right: ArrayLike<numbe
 
 function documentsContentEqual(left: PatternDocument, right: PatternDocument): boolean {
   return left.version === right.version
+    && JSON.stringify(left.catalog) === JSON.stringify(right.catalog)
     && left.width === right.width
     && left.height === right.height
     && historyTypedArraysEqual(left.kind, right.kind)
@@ -680,8 +691,12 @@ function historyRawStore(total: number, store: BackstitchStore): number {
 }
 
 function historyRawDocument(total: number, document: PatternDocument): number {
-  let next = historyRawObject(total, 12);
-  next = historyRawAdd(next, 7 * 8);
+  let next = historyRawObject(total, 13);
+  next = historyRawAdd(next, 8 * 8);
+  next = historyRawObject(next, 3);
+  next = historyRawString(next, document.catalog.catalogId);
+  next = historyRawString(next, document.catalog.brandLabel);
+  next = historyRawAdd(next, 8);
   next = historyRawTyped(next, document.kind);
   next = historyRawTyped(next, document.colors);
   next = historyRawTyped(next, document.completed);
@@ -762,6 +777,7 @@ function historyStoreEqual(left: BackstitchStore, right: BackstitchStore): boole
 
 function historyDocumentCompatible(actual: PatternDocument, expected: PatternDocument): boolean {
   return actual.version === expected.version
+    && JSON.stringify(actual.catalog) === JSON.stringify(expected.catalog)
     && actual.width === expected.width
     && actual.height === expected.height
     && historyTypedArraysEqual(actual.kind, expected.kind)

@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
-import { createDocument } from '../domain';
+import { createDocument as createDomainDocument, type CatalogAssociation, type CreateDocumentOptions, type PatternDocument } from '../domain';
 import {
   exportArchive,
   importArchive,
@@ -12,6 +12,12 @@ import {
 } from './index';
 
 let databaseCounter = 20_000;
+
+const TEST_CATALOG: CatalogAssociation = { catalogId: 'test-catalog-v1', brandLabel: 'Test catalog', colorCount: 32 };
+
+function createDocument(options: Omit<CreateDocumentOptions, 'catalog'> & { catalog?: CatalogAssociation }): PatternDocument {
+  return createDomainDocument({ ...options, catalog: options.catalog ?? TEST_CATALOG });
+}
 
 function nextRepository(): ProjectRepository {
   databaseCounter += 1;
@@ -36,11 +42,14 @@ describe('durable progress activity', () => {
       await repo.save('activity', metadata('activity', document.revision), document, undefined, { activity, allowSameRevision: true });
 
       const loaded = await repo.load('activity');
+      expect(loaded?.document.catalog).toEqual(document.catalog);
       expect(loaded?.activity).toEqual({ daily: [{ date: '2026-08-30', marked: 6, unmarked: 4 }] });
       const archive = await repo.exportProject('activity');
       const parsed = await parseArchive(archive);
+      expect(parsed.document.catalog).toEqual(document.catalog);
       expect(parsed.activity).toEqual(loaded?.activity);
       const imported = await importedRepo.importProject(archive);
+      expect(imported.document.catalog).toEqual(document.catalog);
       expect(imported.activity).toEqual(loaded?.activity);
 
       const directArchive = await exportArchive({ metadata: metadata('direct', 0), document, assets: [] });

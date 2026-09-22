@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyCommand, cloneDocument, createDocument, type PatternDocument } from '../domain';
+import { applyCommand, cloneDocument, createDocument as createDomainDocument, type CatalogAssociation, type CreateDocumentOptions, type PatternDocument } from '../domain';
 import { sha256 } from './hash';
 import {
   createPreparationRequest,
@@ -9,7 +9,14 @@ import {
   type PersistencePreparationResponse,
   type PersistencePreparationToken
 } from './preparation';
+import { decodeDocument } from './binary';
 import { handlePersistencePreparationWorkerMessage } from '../workers/persistence-preparation.worker';
+
+const TEST_CATALOG: CatalogAssociation = { catalogId: 'test-catalog-v1', brandLabel: 'Test catalog', colorCount: 32 };
+
+function createDocument(options: Omit<CreateDocumentOptions, 'catalog'> & { catalog?: CatalogAssociation }): PatternDocument {
+  return createDomainDocument({ ...options, catalog: options.catalog ?? TEST_CATALOG });
+}
 
 function document(): PatternDocument {
   const original = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
@@ -38,6 +45,7 @@ describe('persistence preparation protocol and worker', () => {
     if (response.type !== 'prepared-document') throw new Error('missing prepared response');
     const expectedBytes = (await prepareDocumentSnapshot(live, token)).bytes;
     expect(response.bytes).toEqual(expectedBytes);
+    expect(decodeDocument(response.bytes).catalog).toEqual(live.catalog);
     expect(response.checksum).toBe(await sha256(expectedBytes));
     expect(responses[0].transfer).toEqual([response.bytes.buffer]);
     expect(live.kind.byteLength).toBeGreaterThan(0);
