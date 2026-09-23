@@ -3251,9 +3251,6 @@ function paletteCreate(document: PatternDocument, command: DomainCommand): Mutat
     ...(source.material === undefined ? {} : { material: source.material as PaletteEntry['material'] }),
     ...(source.catalog === undefined ? {} : { catalog: source.catalog as PaletteEntry['catalog'] })
   });
-  if (entry.catalog !== undefined && entry.catalog.catalogId !== document.catalog.catalogId) {
-    throw new DomainError('invalid-catalog-reference', `Palette ID ${String(entry.id)} belongs to a different catalog.`);
-  }
   if (!autoOverflow && document.palette.some((candidate) => candidate.symbol === entry.symbol)) throw new DomainError('invalid-palette-symbol', `Palette symbol ${entry.symbol} is duplicated.`);
   document.palette.push(entry);
   document.nextPaletteId = id === PALETTE_ID_MAX ? PALETTE_ID_MAX + 1 : id + 1;
@@ -3288,9 +3285,6 @@ function paletteUpdate(document: PatternDocument, command: DomainCommand): Mutat
     material: nextMaterial === undefined ? entry.material : nextMaterial as PaletteEntry['material'],
     catalog: nextCatalog === undefined ? entry.catalog : nextCatalog as PaletteEntry['catalog']
   });
-  if (next.catalog !== undefined && next.catalog.catalogId !== document.catalog.catalogId) {
-    throw new DomainError('invalid-catalog-reference', `Palette ID ${String(next.id)} belongs to a different catalog.`);
-  }
   if (document.palette.some((candidate) => candidate.id !== id && candidate.symbol === next.symbol)) throw new DomainError('invalid-palette-symbol', `Palette symbol ${next.symbol} is duplicated.`);
   if (nextActive === false && entry.active && paletteIsReferenced(document, id)) throw new DomainError('palette-in-use', `Palette ID ${String(id)} is referenced by the document.`);
   const changedEntry = !samePalette([entry], [next]);

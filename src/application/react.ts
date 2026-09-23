@@ -83,7 +83,8 @@ function workspaceOptionsFrom(options: UseProjectWorkspaceOptions): WorkspaceOpt
     repository: options.repository,
     clock: options.clock,
     debounceMs: options.debounceMs,
-    projectIdFactory: options.projectIdFactory
+    projectIdFactory: options.projectIdFactory,
+    catalogRegistry: options.catalogRegistry
   };
 }
 

@@ -20,7 +20,7 @@ import {
 } from '../persistence';
 import { ProjectSession, ProjectWorkspace } from './index';
 import type { WorkspaceRepository } from './types';
-import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
+import { createInstalledCatalogRegistry, DEFAULT_CATALOG_DEFINITION } from '../catalog';
 
 function copyRecord(record: ProjectRecord): ProjectRecord {
   return {
@@ -129,6 +129,67 @@ async function openTracedWorkspace(id: string): Promise<ProjectWorkspace> {
 }
 
 describe('trace image unified history', () => {
+  it('preserves a palette reference whose Brand B runtime definition is unavailable', async () => {
+    const repository = new MemoryRepository();
+    const brandBReference = {
+      catalogId: 'brand-b-v1',
+      sourceId: 'brand-b-blue-17',
+      code: 'B17',
+      name: 'Brand B Blue',
+      hex: '#336699',
+      rgb: [51, 102, 153] as [number, number, number]
+    };
+    const document = createDocument({
+      catalog: DEFAULT_CATALOG_DEFINITION.association,
+      width: 2,
+      height: 2,
+      palette: [
+        { id: 1, name: 'DMC Red', color: '#CC3333' },
+        { id: 2, name: brandBReference.name, color: brandBReference.hex, catalog: brandBReference },
+        { id: 3, name: 'Custom Violet', color: '#AABBCC' }
+      ]
+    });
+    const installedDmcOnly = createInstalledCatalogRegistry([DEFAULT_CATALOG_DEFINITION]);
+    const workspace = new ProjectWorkspace({
+      repository,
+      clock: { now: () => 100 },
+      projectIdFactory: () => 'unavailable-brand-b',
+      debounceMs: 0,
+      catalogRegistry: installedDmcOnly
+    });
+    await workspace.createProject({ id: 'unavailable-brand-b', width: 2, height: 2, document });
+    await workspace.flush();
+    const resolvedDmc = workspace.catalogFor(document);
+    expect(resolvedDmc).toMatchObject({ association: DEFAULT_CATALOG_DEFINITION.association });
+    expect(resolvedDmc?.records).toEqual(DEFAULT_CATALOG_DEFINITION.records);
+    expect(resolvedDmc).not.toBe(DEFAULT_CATALOG_DEFINITION);
+    expect(workspace.catalogById(brandBReference.catalogId)).toBeUndefined();
+    expect(workspace.document?.catalog).toEqual(DEFAULT_CATALOG_DEFINITION.association);
+    expect(workspace.document?.palette[1].catalog).toEqual(brandBReference);
+    await workspace.dispose();
+
+    const reopened = new ProjectWorkspace({
+      repository,
+      clock: { now: () => 100 },
+      projectIdFactory: () => 'unavailable-brand-b',
+      debounceMs: 0,
+      catalogRegistry: installedDmcOnly
+    });
+    try {
+      const session = await reopened.openProject('unavailable-brand-b');
+      const reopenedDmc = reopened.catalogFor(session.document);
+      expect(reopenedDmc).toMatchObject({ association: DEFAULT_CATALOG_DEFINITION.association });
+      expect(reopenedDmc?.records).toEqual(DEFAULT_CATALOG_DEFINITION.records);
+      expect(reopenedDmc).not.toBe(DEFAULT_CATALOG_DEFINITION);
+      expect(reopened.catalogById(brandBReference.catalogId)).toBeUndefined();
+      expect(session.document.catalog).toEqual(DEFAULT_CATALOG_DEFINITION.association);
+      expect(session.document.palette[1].catalog).toEqual(brandBReference);
+      expect(session.document.palette[2].catalog).toBeUndefined();
+    } finally {
+      await reopened.dispose();
+    }
+  });
+
   it('restores paint undo/redo across refresh and clears restored redo on a new action', async () => {
     const repository = new MemoryRepository();
     const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'refresh-paint', debounceMs: 0 });

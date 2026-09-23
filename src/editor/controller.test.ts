@@ -5,7 +5,7 @@ import { EditorSurfaceController, selectedCellSemantics, type EditorSurfaceContr
 import { StaleEditorTransactionError, type EditorRevisionToken, type EditorTransaction, type WorkspaceEditorGateway, type WorkspaceEditorSnapshot } from './gateway';
 import { createUiStore } from './ui-store';
 import { ThreeQuarterPair } from './cell-kinds';
-import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
+import { DEFAULT_CATALOG_DEFINITION, type CatalogDefinition, type CatalogRecord } from '../catalog';
 import type { CanvasRenderer, Invalidation, OverlayState, RendererStyle, RenderStats, TraceImage, TraceRgb, Viewport } from './contracts';
 import type { PointerSample } from './input';
 
@@ -177,6 +177,7 @@ describe('EditorSurfaceController', () => {
     const { gateway, uiStore, controller } = controllerFixture({
       traceImage: trace,
       traceSampler: () => ({ ...rgb }),
+      catalogDefinition: DEFAULT_CATALOG_DEFINITION,
       onTraceSample: (value) => sampled.push(value)
     });
     controller.setTool({ tool: 'eyedropper' });
@@ -224,6 +225,81 @@ describe('EditorSurfaceController', () => {
     controller.dispose();
   });
 
+  it('uses the supplied primary catalog definition for Brand B trace samples', () => {
+    const rgb = { r: 12, g: 34, b: 56 };
+    const association = { catalogId: 'brand-b-primary-v1', brandLabel: 'Brand B', colorCount: 1 };
+    const matched: CatalogRecord = {
+      sourceId: 'brand-b:primary:scarlet',
+      code: 'BB-01',
+      name: 'Brand B Scarlet',
+      hex: '#D42335',
+      rgb: [212, 35, 53]
+    };
+    const nearest = vi.fn(() => matched);
+    const suppliedDefinition: CatalogDefinition = {
+      ...DEFAULT_CATALOG_DEFINITION,
+      association,
+      records: [matched],
+      snapshot: { association, records: [matched] },
+      nearest
+    };
+    const document = createDocument({
+      width: 8,
+      height: 8,
+      catalog: association,
+      palette: []
+    });
+    const fixture = controllerFixture({
+      traceImage: { source: {}, width: 4, height: 4 },
+      traceSampler: () => ({ ...rgb }),
+      catalogDefinition: suppliedDefinition
+    }, document);
+    fixture.controller.setTool({ tool: 'eyedropper' });
+
+    expect(fixture.controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
+    expect(nearest).toHaveBeenCalledWith(rgb);
+    const create = fixture.gateway.commands.find((command) => command.type === 'palette-create');
+    expect(create).toMatchObject({
+      type: 'palette-create',
+      name: matched.name,
+      color: matched.hex,
+      catalog: { catalogId: association.catalogId, sourceId: matched.sourceId }
+    });
+    const created = fixture.gateway.getSnapshot().document?.palette.find((entry) => entry.catalog?.sourceId === matched.sourceId);
+    expect(created?.catalog).toMatchObject({ catalogId: association.catalogId, sourceId: matched.sourceId });
+    expect(fixture.uiStore.getState().paletteId).toBe(created?.id);
+    fixture.controller.dispose();
+  });
+
+  it('reports raw samples without mutation when the supplied definition is not the document primary', () => {
+    const rgb = { r: 12, g: 34, b: 56 };
+    const document = createDocument({
+      width: 8,
+      height: 8,
+      catalog: { catalogId: 'brand-b-primary-v1', brandLabel: 'Brand B', colorCount: 1 },
+      palette: []
+    });
+    const sampled: TraceRgb[] = [];
+    const fixture = controllerFixture({
+      traceImage: { source: {}, width: 4, height: 4 },
+      traceSampler: () => ({ ...rgb }),
+      catalogDefinition: DEFAULT_CATALOG_DEFINITION,
+      onTraceSample: (value) => sampled.push(value)
+    }, document);
+    fixture.controller.setTool({ tool: 'eyedropper' });
+    const beforeState = fixture.uiStore.getState();
+    const commandCount = fixture.gateway.commands.length;
+
+    expect(fixture.controller.handlePointerDown(pointer(1, 8, 8))).toBe(false);
+    expect(sampled).toEqual([rgb]);
+    expect(fixture.gateway.commands).toHaveLength(commandCount);
+    expect(fixture.gateway.getSnapshot().document?.palette).toEqual([]);
+    expect(fixture.uiStore.getState().paletteId).toBe(beforeState.paletteId);
+    expect(fixture.uiStore.getState().pendingPaletteId).toBe(beforeState.pendingPaletteId);
+    expect(fixture.uiStore.getState().tool).toEqual(beforeState.tool);
+    fixture.controller.dispose();
+  });
+
   it('creates a catalog reference instead of selecting custom or cross-catalog same-code entries', () => {
     const rgb = { r: 12, g: 34, b: 56 };
     const matched = DEFAULT_CATALOG_DEFINITION.nearest(rgb)!;
@@ -255,7 +331,8 @@ describe('EditorSurfaceController', () => {
       if (testCase.catalog !== undefined) document.palette[0] = { ...document.palette[0], catalog: testCase.catalog };
       const fixture = controllerFixture({
         traceImage: { source: {}, width: 4, height: 4 },
-        traceSampler: () => ({ ...rgb })
+        traceSampler: () => ({ ...rgb }),
+        catalogDefinition: DEFAULT_CATALOG_DEFINITION
       }, document);
       fixture.controller.setTool({ tool: 'eyedropper' });
 
@@ -267,12 +344,13 @@ describe('EditorSurfaceController', () => {
     }
   });
 
-  it('rejects a same-code entry whose catalog association differs from the document definition', () => {
+  it('matches trace samples against DMC without mistaking a Brand B entry for the same DMC source', () => {
     const rgb = { r: 12, g: 34, b: 56 };
     const matched = DEFAULT_CATALOG_DEFINITION.nearest(rgb)!;
     const fixture = controllerFixture({
       traceImage: { source: {}, width: 4, height: 4 },
-      traceSampler: () => ({ ...rgb })
+      traceSampler: () => ({ ...rgb }),
+      catalogDefinition: DEFAULT_CATALOG_DEFINITION
     });
     const document = fixture.gateway.getSnapshot().document!;
     document.palette[0] = {
@@ -280,7 +358,7 @@ describe('EditorSurfaceController', () => {
       name: matched.name,
       color: matched.hex,
       catalog: {
-        catalogId: 'other-catalog',
+        catalogId: 'brand-b-v1',
         sourceId: matched.sourceId,
         code: matched.code,
         name: matched.name,
@@ -296,6 +374,9 @@ describe('EditorSurfaceController', () => {
       type: 'palette-create',
       catalog: { catalogId: DEFAULT_CATALOG_DEFINITION.association.catalogId, sourceId: matched.sourceId }
     });
+    const mixedPalette = fixture.gateway.getSnapshot().document?.palette;
+    expect(mixedPalette?.[0].catalog).toMatchObject({ catalogId: 'brand-b-v1', sourceId: matched.sourceId, code: matched.code });
+    expect(mixedPalette?.[1].catalog).toMatchObject({ catalogId: DEFAULT_CATALOG_DEFINITION.association.catalogId, sourceId: matched.sourceId, code: matched.code });
     expect(fixture.uiStore.getState().paletteId).toBe(2);
     fixture.controller.dispose();
   });
@@ -310,6 +391,7 @@ describe('EditorSurfaceController', () => {
         points.push(point);
         return { ...rgb };
       },
+      catalogDefinition: DEFAULT_CATALOG_DEFINITION,
       onTraceSample: (value) => sampled.push(value)
     });
     uiStore.setKeyboardCursor({ x: 2, y: 3 });
@@ -331,6 +413,7 @@ describe('EditorSurfaceController', () => {
     const { gateway, uiStore, controller } = controllerFixture({
       traceImage: { source: {}, width: 4, height: 4 },
       traceSampler: () => ({ ...rgb }),
+      catalogDefinition: DEFAULT_CATALOG_DEFINITION,
       onTraceSample: (value) => sampled.push(value)
     });
     uiStore.setKeyboardCursor({ x: 3, y: 4 });
@@ -388,6 +471,7 @@ describe('EditorSurfaceController', () => {
     const { gateway, uiStore, controller } = controllerFixture({
       traceImage: { source: {}, width: 4, height: 4 },
       traceSampler: () => ({ ...rgb }),
+      catalogDefinition: DEFAULT_CATALOG_DEFINITION,
       onTraceSample: (value) => sampled.push(value)
     });
     controller.setTool({ tool: 'eyedropper' });
@@ -405,7 +489,8 @@ describe('EditorSurfaceController', () => {
     const rgb1 = { r: 18, g: 52, b: 86 };
     const { gateway, uiStore, controller } = controllerFixture({
       traceImage: { source: {}, width: 4, height: 4 },
-      traceSampler: () => ({ ...rgb1 })
+      traceSampler: () => ({ ...rgb1 }),
+      catalogDefinition: DEFAULT_CATALOG_DEFINITION
     });
     controller.setTool({ tool: 'eyedropper' });
     expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);

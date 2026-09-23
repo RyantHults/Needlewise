@@ -82,7 +82,7 @@ import {
   type FillWorkerClient
 } from './fill';
 import { sampleTraceImage } from '../rendering/trace';
-import { createCatalogReference, resolveCatalogDefinition } from '../catalog';
+import { createCatalogReference, type CatalogDefinition } from '../catalog';
 import {
   appendLassoPoint,
   appendLassoRasterPoint,
@@ -114,6 +114,7 @@ export interface EditorSurfaceControllerOptions {
   readonly fillClient?: FillWorkerClient;
   readonly traceImage?: TraceImage;
   readonly traceSampler?: TraceImageSampler;
+  readonly catalogDefinition?: CatalogDefinition;
   readonly onTraceSample?: TraceSampleCallback;
   readonly onTraceBoundsChange?: TraceBoundsChangeCallback;
 }
@@ -930,6 +931,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private readonly ownsFillClient: boolean;
   private traceImage: TraceImage | undefined;
   private readonly traceSampler: TraceImageSampler;
+  private readonly catalogDefinition: CatalogDefinition | undefined;
   private traceSampleCallback: TraceSampleCallback | undefined;
   private traceBoundsChangeCallback: TraceBoundsChangeCallback | undefined;
   /** Tool to restore when leaving move/resize-image mode via Escape or a toggle click. */
@@ -976,6 +978,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.ownsFillClient = options.fillClient === undefined;
     this.traceImage = options.traceImage;
     this.traceSampler = options.traceSampler ?? ((trace, document, viewport, metrics, point) => sampleTraceImage(trace, document, viewport, metrics, point));
+    this.catalogDefinition = options.catalogDefinition;
     this.traceSampleCallback = options.onTraceSample;
     this.traceBoundsChangeCallback = options.onTraceBoundsChange;
     if (this.traceImage) this.renderer.setTraceImage?.(this.traceImage);
@@ -1564,7 +1567,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private activateSampledColor(rgb: TraceRgb): boolean {
     const snapshot = this.gateway.getSnapshot();
     const document = snapshot.document;
-    const definition = document ? resolveCatalogDefinition(document.catalog) : undefined;
+    const suppliedDefinition = this.catalogDefinition;
+    const definition = document
+      && suppliedDefinition?.association.catalogId === document.catalog.catalogId
+      && suppliedDefinition.association.brandLabel === document.catalog.brandLabel
+      && suppliedDefinition.association.colorCount === document.catalog.colorCount
+      ? suppliedDefinition
+      : undefined;
     if (!document || !definition) {
       this.traceSampleCallback?.(rgb);
       return false;

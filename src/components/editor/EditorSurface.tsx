@@ -170,6 +170,10 @@ export function EditorSurface({
   onOpenMaterials,
 }: Props) {
   const catalog = workspace.catalogFor(document);
+  const availableCatalogs = workspace.availableCatalogs();
+  const defaultCatalogId = availableCatalogs.some((item) => item.association.catalogId === catalog?.association.catalogId)
+    ? catalog!.association.catalogId
+    : availableCatalogs[0]?.association.catalogId ?? "";
   const frame = useRef<HTMLDivElement>(null),
     base = useRef<HTMLCanvasElement>(null),
     overlay = useRef<HTMLCanvasElement>(null),
@@ -197,15 +201,18 @@ export function EditorSurface({
   const dialog = useRef<HTMLDivElement>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
+  const [selectedCatalogId, setSelectedCatalogId] = useState(defaultCatalogId);
   const [selectedCatalogColor, setSelectedCatalogColor] =
     useState<CatalogColor | null>(null);
   const [customColorInput, setCustomColorInput] = useState("");
+  const [canonicalCustomColor, setCanonicalCustomColor] = useState("#000000");
   const [rgbDraft, setRgbDraft] = useState({ red: "", green: "", blue: "" });
   const [paletteNotice, setPaletteNotice] = useState("");
   const addTrigger = useRef<HTMLButtonElement>(null);
   const paletteDialog = useRef<HTMLDivElement>(null);
   const [removeOpen, setRemoveOpen] = useState(false);
   const [removeQuery, setRemoveQuery] = useState("");
+  const [removeCatalogId, setRemoveCatalogId] = useState(defaultCatalogId);
   const [removeNotice, setRemoveNotice] = useState("");
   const [removeTarget, setRemoveTarget] = useState<number | null>(null);
   const removeDialog = useRef<HTMLDivElement>(null);
@@ -263,6 +270,7 @@ export function EditorSurface({
         renderer,
         uiStore: store,
         metrics,
+        catalogDefinition: catalog,
         onTraceBoundsChange: (bounds) => {
           const current = workspace.sourceImage;
           if (!current) return;
@@ -413,25 +421,47 @@ export function EditorSurface({
       () => undefined,
     );
   };
+  const pickerCatalog = availableCatalogs.find((item) => item.association.catalogId === selectedCatalogId);
+  const replacementCatalog = availableCatalogs.find((item) => item.association.catalogId === removeCatalogId);
   const catalogResults = useMemo(
-    () => catalog?.search(paletteQuery, { limit: 12 }) ?? [],
-    [paletteQuery, catalog],
+    () => pickerCatalog?.search(paletteQuery, { limit: 12 }) ?? [],
+    [paletteQuery, pickerCatalog],
   );
+  const installedCatalogIds = availableCatalogs.map((item) => item.association.catalogId).join("\u0000");
+  useEffect(() => {
+    setSelectedCatalogId((current) => availableCatalogs.some((item) => item.association.catalogId === current) ? current : defaultCatalogId);
+    setRemoveCatalogId((current) => availableCatalogs.some((item) => item.association.catalogId === current) ? current : defaultCatalogId);
+    setPaletteQuery((current) => availableCatalogs.some((item) => item.association.catalogId === selectedCatalogId) ? current : "");
+    setRemoveQuery((current) => availableCatalogs.some((item) => item.association.catalogId === removeCatalogId) ? current : "");
+  }, [installedCatalogIds, defaultCatalogId, selectedCatalogId, removeCatalogId]);
+  useEffect(() => {
+    setSelectedCatalogId(defaultCatalogId);
+    setRemoveCatalogId(defaultCatalogId);
+    setPaletteQuery("");
+    setRemoveQuery("");
+    setSelectedCatalogColor(null);
+  }, [workspace.activeProjectId, defaultCatalogId]);
   useEffect(() => {
     if (!paletteOpen) return;
     if (
       selectedCatalogColor &&
-      catalogResults.some((color) => color.code === selectedCatalogColor.code)
+      catalogResults.some((color) => color.sourceId === selectedCatalogColor.sourceId)
     )
       return;
     setSelectedCatalogColor(catalogResults[0] ?? null);
-  }, [catalogResults, paletteOpen, selectedCatalogColor]);
+  }, [catalogResults, paletteOpen, selectedCatalogColor, selectedCatalogId]);
+  useEffect(() => {
+    setPaletteQuery("");
+    setSelectedCatalogColor(pickerCatalog?.search("", { limit: 1 })[0] ?? null);
+  }, [selectedCatalogId]);
   const openPalettePicker = () => {
     setPaletteNotice("");
     setPaletteQuery("");
     setCustomColorInput("");
+    setCanonicalCustomColor("#000000");
     setRgbDraft({ red: "", green: "", blue: "" });
-    setSelectedCatalogColor(catalog?.search("")[0] ?? null);
+    setSelectedCatalogId(defaultCatalogId);
+    setSelectedCatalogColor(availableCatalogs.find((item) => item.association.catalogId === defaultCatalogId)?.search("", { limit: 1 })[0] ?? null);
     setPaletteOpen(true);
   };
   const customColor = normalizeHexColor(customColorInput);
@@ -439,23 +469,30 @@ export function EditorSurface({
   const setColorFromHex = (value: string) => {
     setCustomColorInput(value);
     const normalized = normalizeHexColor(value);
-    if (normalized) setRgbDraft({ red: String(parseInt(normalized.slice(1, 3), 16)), green: String(parseInt(normalized.slice(3, 5), 16)), blue: String(parseInt(normalized.slice(5, 7), 16)) });
+    if (normalized) {
+      setCanonicalCustomColor(normalized);
+      setRgbDraft({ red: String(parseInt(normalized.slice(1, 3), 16)), green: String(parseInt(normalized.slice(3, 5), 16)), blue: String(parseInt(normalized.slice(5, 7), 16)) });
+    }
   };
   const setRgbChannel = (key: "red" | "green" | "blue", value: string) => {
     const next = { ...rgbDraft, [key]: value };
     setRgbDraft(next);
     const values = [next.red, next.green, next.blue].map(Number);
     if (values.every((channel, index) => next[["red", "green", "blue"][index] as "red" | "green" | "blue"] !== "" && Number.isInteger(channel) && channel >= 0 && channel <= 255)) {
-      setCustomColorInput(`#${values.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`.toUpperCase());
+      const nextHex = `#${values.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`.toUpperCase();
+      setCustomColorInput(nextHex);
+      setCanonicalCustomColor(nextHex);
     }
   };
-  const customPaletteMatch = customColor
-    ? palette.find(
-        (entry) =>
-          Boolean(entry.catalog) && normalizeHexColor(entry.color) === customColor,
-      ) ?? palette.find((entry) => normalizeHexColor(entry.color) === customColor)
+  const customCatalogColor = customColor ? pickerCatalog?.getByHex(customColor) : undefined;
+  const selectedCatalogPaletteMatch = customColor && pickerCatalog && customCatalogColor
+    ? palette.find((entry) => entry.active && entry.catalog?.catalogId === pickerCatalog.association.catalogId && entry.catalog.sourceId === customCatalogColor.sourceId && normalizeHexColor(entry.color) === customColor)
+    : customColor && pickerCatalog
+      ? palette.find((entry) => entry.active && entry.catalog?.catalogId === pickerCatalog.association.catalogId && normalizeHexColor(entry.color) === customColor)
     : undefined;
-  const customCatalogColor = customColor ? catalog?.getByHex(customColor) : undefined;
+  const customPaletteMatch = customColor
+    ? selectedCatalogPaletteMatch ?? palette.find((entry) => entry.active && !entry.catalog && normalizeHexColor(entry.color) === customColor)
+    : undefined;
   const customActionLabel = customPaletteMatch
     ? `Select ${customPaletteMatch.name}`
     : customCatalogColor
@@ -472,15 +509,17 @@ export function EditorSurface({
   ) => {
     try {
       const previousIds = new Set(document.palette.map((entry) => entry.id));
+      const definition = pickerCatalog;
+      if (!definition) return;
       const result = await workspace.execute({
         type: "palette-create",
         name: color.name,
         color: color.hex,
-        catalog: createCatalogReference(catalog!, color),
+        catalog: createCatalogReference(definition, color),
       });
       const createdDocument = result?.document ?? workspace.getStateSnapshot().document;
       const added = createdDocument?.palette.find(
-        (entry) => entry.active && entry.catalog?.code === color.code && !previousIds.has(entry.id),
+        (entry) => entry.active && entry.catalog?.catalogId === definition.association.catalogId && entry.catalog.sourceId === color.sourceId && !previousIds.has(entry.id),
       );
       if (added) controllerRef.current?.selectCreatedPalette(added.id);
       closePalettePicker();
@@ -499,7 +538,7 @@ export function EditorSurface({
       closePalettePicker();
       return;
     }
-    if (customCatalogColor && catalog) {
+    if (customCatalogColor && pickerCatalog) {
       await addPaletteColor(customCatalogColor);
       return;
     }
@@ -554,17 +593,32 @@ export function EditorSurface({
       : (palette.find((x) => x.id === removeTarget) ?? null);
   const removalCandidates =
     removeTarget === null ? [] : palette.filter((x) => x.id !== removeTarget);
+  const catalogIdsByCode = new Map<string, Set<string>>();
+  for (const entry of palette) {
+    if (!entry.catalog) continue;
+    const catalogIds = catalogIdsByCode.get(entry.catalog.code) ?? new Set<string>();
+    catalogIds.add(entry.catalog.catalogId);
+    catalogIdsByCode.set(entry.catalog.code, catalogIds);
+  }
+  const duplicateCatalogCodes = new Set([...catalogIdsByCode].filter(([, ids]) => ids.size > 1).map(([code]) => code));
+  const catalogEntryBrand = (entry: (typeof palette)[number]) => {
+    return entry.catalog && duplicateCatalogCodes.has(entry.catalog.code)
+      ? availableCatalogs.find((item) => item.association.catalogId === entry.catalog?.catalogId)?.association.brandLabel
+      : undefined;
+  };
+  const catalogEntryLabel = (entry: (typeof palette)[number]) => `${catalogEntryBrand(entry) ? `${catalogEntryBrand(entry)} ` : ""}${entry.catalog?.code ?? normalizeHexColor(entry.color) ?? entry.color}`;
   const removeResults = useMemo(
     () =>
       removeTarget !== null && removeQuery.trim()
-        ? (catalog?.search(removeQuery, { limit: 8 }) ?? [])
+        ? (replacementCatalog?.search(removeQuery, { limit: 8 }) ?? [])
         : [],
-    [removeQuery, removeTarget, catalog],
+    [removeQuery, removeTarget, replacementCatalog],
   );
   const openRemove = (id: number, trigger: HTMLButtonElement) => {
     removeTrigger.current = trigger;
     setRemoveTarget(id);
     setRemoveQuery("");
+    setRemoveCatalogId(defaultCatalogId);
     setRemoveNotice("");
     setRemoveOpen(true);
   };
@@ -598,7 +652,7 @@ export function EditorSurface({
             : "palette-button"
         }
         type="button"
-        aria-label={`${x.catalog?.code ? x.catalog.code : ""}${x.name}`}
+        aria-label={`${x.catalog?.code ? `${duplicateCatalogCodes.has(x.catalog.code) ? `${availableCatalogs.find((item) => item.association.catalogId === x.catalog?.catalogId)?.association.brandLabel ?? ""} ` : ""}${x.catalog.code}` : ""}${x.name}`}
         aria-pressed={ui?.paletteId === x.id}
         onPointerDown={() => startPalettePress(x.id)}
         onPointerUp={endPalettePress}
@@ -624,7 +678,7 @@ export function EditorSurface({
           {paletteOptions.symbols && <span className="palette-swatch-symbol">{x.symbol}</span>}
           {paletteOptions.numbers && (
             <span className={`palette-number${x.catalog ? "" : " palette-number-hex"}`}>
-              {x.catalog?.code ?? normalizeHexColor(x.color) ?? x.color}
+              {catalogEntryBrand(x) ? <><span className="palette-brand-label">{catalogEntryBrand(x)}</span><span className="palette-code-label">{x.catalog?.code}</span></> : catalogEntryLabel(x)}
             </span>
           )}
         </span>
@@ -652,7 +706,7 @@ export function EditorSurface({
       {paletteMenu === x.id && (
         <div className="palette-menu" role="menu" aria-label={`Details for ${x.name}`}>
           <strong>{x.name}</strong>
-           <span>{x.catalog?.code ?? normalizeHexColor(x.color) ?? x.color}</span>
+            <span>{catalogEntryLabel(x)}</span>
           <span>Symbol {x.symbol}</span>
           <button type="button" role="menuitem" onClick={(event) => openSymbolPicker(x.id, event.currentTarget)}>Change symbol</button>
           {!(ui?.pendingPaletteId === x.id && !paletteActiveIds.has(x.id)) && (
@@ -787,13 +841,13 @@ export function EditorSurface({
         createTo: {
           name: color.name,
           color: color.hex,
-          catalog: createCatalogReference(catalog!, color),
+           catalog: createCatalogReference(replacementCatalog!, color),
         },
       });
       const added = workspace
         .getStateSnapshot()
         .document?.palette.find(
-          (x) => x.active && x.catalog?.code === color.code && x.id !== target,
+          (x) => x.active && x.catalog?.catalogId === replacementCatalog?.association.catalogId && x.catalog?.sourceId === color.sourceId && x.id !== target,
         );
       controllerRef.current?.selectPalette(added?.id ?? null);
       closeRemove();
@@ -857,9 +911,11 @@ export function EditorSurface({
       globalThis.document.querySelector<HTMLElement>("[data-application]");
     const wasInert = root?.inert ?? false;
     if (root) root.inert = true;
-    el.querySelector<HTMLInputElement>("#catalog-search")?.focus();
+    const search = el.querySelector<HTMLInputElement>("#catalog-search");
+    if (search && !search.disabled) search.focus();
+    else (el.querySelector<HTMLSelectElement>("#editor-catalog-choice") ?? el.querySelector<HTMLButtonElement>(".modal-close"))?.focus();
     const all = () =>
-      [...el.querySelectorAll<HTMLElement>("button,input")].filter(
+      [...el.querySelectorAll<HTMLElement>("button,input,select")].filter(
         (item) => !item.hasAttribute("disabled") && item.tabIndex >= 0,
       );
     const key = (e: KeyboardEvent) => {
@@ -894,9 +950,11 @@ export function EditorSurface({
       globalThis.document.querySelector<HTMLElement>("[data-application]");
     const wasInert = root?.inert ?? false;
     if (root) root.inert = true;
-    el.querySelector<HTMLInputElement>("#remove-search")?.focus();
+    const search = el.querySelector<HTMLInputElement>("#remove-search");
+    if (search && !search.disabled) search.focus();
+    else (el.querySelector<HTMLSelectElement>("#remove-catalog-choice") ?? el.querySelector<HTMLButtonElement>(".modal-close"))?.focus();
     const all = () =>
-      [...el.querySelectorAll<HTMLElement>("button,input")].filter(
+      [...el.querySelectorAll<HTMLElement>("button,input,select")].filter(
         (item) => !item.hasAttribute("disabled") && item.tabIndex >= 0,
       );
     const key = (e: KeyboardEvent) => {
@@ -1691,10 +1749,11 @@ export function EditorSurface({
               >
                 ×
               </button>
-               <p className="section-label">{catalog?.association.brandLabel ?? "Catalog"}</p>
-              <h2 id="editor-catalog-title">Add a thread color</h2>
-              <div className="catalog-box">
-                <div className="catalog-selection" aria-live="polite">
+                 <p className="section-label">{pickerCatalog?.association.brandLabel ?? "Catalog"}</p>
+               <h2 id="editor-catalog-title">Add a thread color</h2>
+               <div className="catalog-box">
+                 {availableCatalogs.length > 1 && <label className="catalog-choice-label" htmlFor="editor-catalog-choice">Catalog<select id="editor-catalog-choice" value={selectedCatalogId} onChange={(event) => { setSelectedCatalogId(event.target.value); setPaletteQuery(""); setSelectedCatalogColor(null); }}><option value="" disabled>Select catalog</option>{availableCatalogs.map((item) => <option key={item.association.catalogId} value={item.association.catalogId}>{item.association.brandLabel}</option>)}</select></label>}
+                 <div className="catalog-selection" aria-live="polite">
                   {selectedCatalogColor ? (
                     <>
                       <span
@@ -1704,14 +1763,14 @@ export function EditorSurface({
                       />
                       <span className="catalog-selection-details">
                         <strong>{selectedCatalogColor.name}</strong>
-                        <span>#{selectedCatalogColor.code}</span>
+                         <span>{pickerCatalog?.association.brandLabel} · #{selectedCatalogColor.code}</span>
                       </span>
                       <button
                         className="small-action"
                         type="button"
                         aria-label={`Add ${selectedCatalogColor.name}`}
-                         onClick={() => void addPaletteColor(selectedCatalogColor)}
-                        disabled={!catalog}
+                          onClick={() => void addPaletteColor(selectedCatalogColor)}
+                        disabled={!pickerCatalog}
                       >
                         Add
                       </button>
@@ -1720,24 +1779,24 @@ export function EditorSurface({
                     <span className="catalog-selection-empty">No color selected</span>
                   )}
                 </div>
-                 <label htmlFor="catalog-search">Search {catalog?.association.brandLabel ? `${catalog.association.brandLabel} catalog` : "catalog"}</label>
+                 <label htmlFor="catalog-search">Search {pickerCatalog?.association.brandLabel ? `${pickerCatalog.association.brandLabel} catalog` : "catalog"}</label>
                  <input
                   id="catalog-search"
                   value={paletteQuery}
                    onChange={(e) => setPaletteQuery(e.target.value)}
-                   placeholder={`Name or ${catalog?.association.brandLabel ?? "catalog"} code`}
-                   disabled={!catalog}
-                   aria-label="Search catalog"
+                   placeholder={`Name or ${pickerCatalog?.association.brandLabel ?? "catalog"} code`}
+                   disabled={!pickerCatalog}
+                   aria-label={`Search ${pickerCatalog?.association.brandLabel ? `${pickerCatalog.association.brandLabel} catalog` : "catalog"}`}
                  />
-                 {!catalog && <p className="catalog-unavailable" role="status">Catalog unavailable</p>}
+                 {!pickerCatalog && <p className="catalog-unavailable" role="status">Catalog unavailable</p>}
                 <div className="catalog-color-grid" role="list" aria-label="Available thread colors">
-                   {catalog && catalogResults.map((color) => (
-                    <div role="listitem" key={color.code}>
+                    {pickerCatalog && catalogResults.map((color) => (
+                     <div role="listitem" key={`${pickerCatalog.association.catalogId}:${color.sourceId}`}>
                       <button
                         className="catalog-color-button"
                         type="button"
-                        aria-label={`${color.name}, color ${color.code}`}
-                        aria-pressed={selectedCatalogColor?.code === color.code}
+                         aria-label={`${color.name}, color ${color.code}`}
+                         aria-pressed={selectedCatalogColor?.sourceId === color.sourceId}
                         onClick={() => setSelectedCatalogColor(color)}
                       >
                         <span
@@ -1761,7 +1820,7 @@ export function EditorSurface({
                      <input
                       id="custom-color-picker"
                       type="color"
-                      value={customColor ?? "#000000"}
+                       value={canonicalCustomColor}
                        onChange={(e) => setColorFromHex(e.target.value)}
                     />
                     <label htmlFor="custom-color-hex">Hex color</label>
@@ -1779,13 +1838,16 @@ export function EditorSurface({
                       <span id="custom-color-rgb-title" className="custom-color-rgb-title">RGB</span>
                       {([['red', 'Red'], ['green', 'Green'], ['blue', 'Blue']] as const).map(([key, label]) => {
                         const value = rgbDraft[key];
-                        const invalid = value !== '' && (!/^\d+$/.test(value) || Number(value) > 255);
+                        const hasRgbDraft = Object.values(rgbDraft).some((channel) => channel !== '');
+                        const invalid = (hasRgbDraft && value === '') || (value !== '' && (!/^\d+$/.test(value) || Number(value) > 255));
                         return <label key={key} htmlFor={`custom-color-${key}`}>{label}<input id={`custom-color-${key}`} type="number" min="0" max="255" step="1" value={value} aria-invalid={invalid} onChange={(e) => setRgbChannel(key, e.target.value)} /></label>;
                       })}
                     </div>
                   </div>
                   <p id="custom-color-help" className="custom-color-help" aria-live="polite">
-                    {customColorInput && !customColor
+                    {rgbInvalid || (Object.values(rgbDraft).some((value) => value !== "") && Object.values(rgbDraft).some((value) => value === ""))
+                      ? "Enter whole-number RGB values from 0 to 255."
+                      : customColorInput && !customColor
                       ? "Enter a 3- or 6-digit hex color."
                       : "Use a three- or six-digit hex value."}
                   </p>
@@ -1852,9 +1914,7 @@ export function EditorSurface({
                       />
                       <span>
                         {x.name}
-                        {x.catalog?.code ? (
-                          <small> #{x.catalog.code}</small>
-                        ) : null}
+                        {x.catalog ? <small> {catalogEntryLabel(x)}</small> : null}
                       </span>
                       <button
                         className="small-action"
@@ -1870,37 +1930,38 @@ export function EditorSurface({
                 {removalCandidates.length === 0 && (
                   <p className="control-note">
                     No other active palette colors yet. Add one, or search the
-                    {catalog ? ` ${catalog.association.brandLabel} catalog` : " catalog"} below.
+                    {replacementCatalog ? ` ${replacementCatalog.association.brandLabel} catalog` : " catalog"} below.
                   </p>
                 )}
               </div>
               <div className="catalog-box">
-                 <label htmlFor="remove-search">
-                   Search {catalog?.association.brandLabel ? `${catalog.association.brandLabel} catalog` : "catalog"} for a replacement
+                {availableCatalogs.length > 1 && <label className="catalog-choice-label" htmlFor="remove-catalog-choice">Catalog<select id="remove-catalog-choice" value={removeCatalogId} onChange={(event) => { setRemoveCatalogId(event.target.value); setRemoveQuery(""); }}><option value="" disabled>Select catalog</option>{availableCatalogs.map((item) => <option key={item.association.catalogId} value={item.association.catalogId}>{item.association.brandLabel}</option>)}</select></label>}
+                <label htmlFor="remove-search">
+                   Search {replacementCatalog?.association.brandLabel ? `${replacementCatalog.association.brandLabel} catalog` : "catalog"} for a replacement
                 </label>
                <input
                  id="remove-search"
                   value={removeQuery}
                   onChange={(e) => setRemoveQuery(e.target.value)}
-                  placeholder={`Name or ${catalog?.association.brandLabel ?? "catalog"} code`}
-                 disabled={!catalog}
-               />
-                {!catalog && <p className="catalog-unavailable" role="status">Catalog unavailable</p>}
+                   placeholder={`Name or ${replacementCatalog?.association.brandLabel ?? "catalog"} code`}
+                  disabled={!replacementCatalog}
+                />
+                 {!replacementCatalog && <p className="catalog-unavailable" role="status">Catalog unavailable</p>}
                 <ul className="catalog-results">
                   {removeResults.map((color) => (
-                    <li key={color.code}>
+                    <li key={`${replacementCatalog?.association.catalogId}:${color.sourceId}`}>
                       <span
                         className="swatch"
                         style={{ background: color.hex }}
                       />
                       <span>
-                        {color.name} <small>#{color.code}</small>
+                         {color.name} <small>{replacementCatalog?.association.brandLabel} #{color.code}</small>
                       </span>
                        <button
                          className="small-action"
                         type="button"
-                         aria-label={`Replace with ${color.name} from the catalog`}
-                         disabled={!catalog}
+                          aria-label={`Replace with ${color.name} from ${replacementCatalog?.association.brandLabel ?? "the catalog"}`}
+                          disabled={!replacementCatalog}
                         onClick={() => removeIntoNew(color)}
                       >
                         Replace

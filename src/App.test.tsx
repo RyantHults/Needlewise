@@ -39,7 +39,7 @@ const exportProject = vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3]));
 const openProject = vi.fn().mockResolvedValue(undefined);
 const flush = vi.fn().mockResolvedValue(undefined);
 const deleteProject = vi.fn().mockResolvedValue(undefined);
-const editorWorkspace = { metadata: { title: 'Garden sampler', notes: '', aidaCount: 14 }, catalogFor: () => DEFAULT_CATALOG_DEFINITION };
+const editorWorkspace = { metadata: { title: 'Garden sampler', notes: '', aidaCount: 14 }, catalogFor: () => DEFAULT_CATALOG_DEFINITION, availableCatalogs: () => [DEFAULT_CATALOG_DEFINITION], catalogById: (id: string) => id === DEFAULT_CATALOG_DEFINITION.association.catalogId ? DEFAULT_CATALOG_DEFINITION : undefined };
 
 const baseWorkspace = {
   initialized: true,

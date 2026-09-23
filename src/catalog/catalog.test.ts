@@ -7,6 +7,7 @@ import {
   DMC_CATALOG_METADATA,
   DMC_CATALOG_PROVENANCE,
   DMC_CATALOG_RECORD_COUNT,
+  createInstalledCatalogRegistry,
   createCatalogReference,
   getDmcColor,
   getDmcColorByHex,
@@ -15,8 +16,18 @@ import {
   searchDmcColors,
   validateDmcCatalog,
   validateDmcCatalogBundle,
+  type CatalogDefinition,
   type DmcCatalogColor
 } from './index';
+
+function syntheticDefinition(catalogId: string, brandLabel: string): CatalogDefinition {
+  const association = Object.freeze({ catalogId, brandLabel, colorCount: DMC_CATALOG_DEFINITION.records.length });
+  return Object.freeze({
+    ...DMC_CATALOG_DEFINITION,
+    association,
+    snapshot: Object.freeze({ association, records: DMC_CATALOG_DEFINITION.records })
+  });
+}
 
 describe('offline DMC-compatible catalog', () => {
   const catalogAsset = {
@@ -27,7 +38,8 @@ describe('offline DMC-compatible catalog', () => {
 
   it('resolves the DMC definition and performs generic search, exact hex, and nearest RGB lookup', () => {
     const definition = resolveCatalogDefinition(DMC_CATALOG_DEFINITION.association);
-    expect(definition).toBe(DMC_CATALOG_DEFINITION);
+    expect(definition).toMatchObject({ association: DMC_CATALOG_DEFINITION.association, compatibilityLabel: DMC_CATALOG_DEFINITION.compatibilityLabel });
+    expect(resolveCatalogDefinition(DMC_CATALOG_DEFINITION.association)).toBe(definition);
     expect(definition?.getByHex('#FFE2E2')?.code).toBe('3713');
     expect(definition?.search('salmon', { limit: 1 })).toHaveLength(1);
     expect(definition?.nearest({ r: 0, g: 0, b: 0 })?.code).toBe('310');
@@ -48,7 +60,10 @@ describe('offline DMC-compatible catalog', () => {
 
   it('resolves only the registered immutable catalog association', () => {
     expect(DEFAULT_CATALOG_DEFINITION).toBe(DMC_CATALOG_DEFINITION);
-    expect(resolveCatalogDefinition({ ...DMC_CATALOG_DEFINITION.association })).toBe(DMC_CATALOG_DEFINITION);
+    const registered = resolveCatalogDefinition({ ...DMC_CATALOG_DEFINITION.association });
+    expect(registered).toBeDefined();
+    expect(resolveCatalogDefinition({ ...DMC_CATALOG_DEFINITION.association })).toBe(registered);
+    expect(registered).toBe(DMC_CATALOG_DEFINITION);
     expect(resolveCatalogDefinition({ ...DMC_CATALOG_DEFINITION.association, catalogId: 'future-revision' })).toBeUndefined();
     expect(resolveCatalogDefinition({ ...DMC_CATALOG_DEFINITION.association, brandLabel: 'Other' })).toBeUndefined();
     expect(resolveCatalogDefinition({ ...DMC_CATALOG_DEFINITION.association, colorCount: 1 })).toBeUndefined();
@@ -58,6 +73,76 @@ describe('offline DMC-compatible catalog', () => {
     expect(Object.isFrozen(DMC_CATALOG_DEFINITION.records)).toBe(true);
     expect(Object.isFrozen(DMC_CATALOG_DEFINITION.records[0])).toBe(true);
     expect(Object.isFrozen(DMC_CATALOG_DEFINITION.records[0].rgb)).toBe(true);
+  });
+
+  it('creates an immutable installed-catalog registry with association and ID lookup', () => {
+    const first = syntheticDefinition('catalog-a', 'Catalog A');
+    const second = syntheticDefinition('catalog-b', 'Catalog B');
+    const definitions = [first, second];
+    const registry = createInstalledCatalogRegistry(definitions);
+    definitions.pop();
+
+    expect(registry.definitions.map((definition) => definition.association)).toEqual([first.association, second.association]);
+    expect(Object.isFrozen(registry)).toBe(true);
+    expect(Object.isFrozen(registry.definitions)).toBe(true);
+    expect(registry.resolve(first.association)).toBe(registry.definitions[0]);
+    expect(registry.definitions[0]).not.toBe(first);
+    expect(registry.resolve({ ...first.association, brandLabel: 'Other' })).toBeUndefined();
+    expect(registry.resolve({ ...first.association, colorCount: 1 })).toBeUndefined();
+    expect(registry.getById('catalog-b')).toBe(registry.definitions[1]);
+    expect(registry.getById('missing')).toBeUndefined();
+    expect(() => (registry.definitions as CatalogDefinition[]).push(second)).toThrow();
+  });
+
+  it('snapshots caller-owned catalog data and methods when registering a definition', () => {
+    const association = { catalogId: 'mutable-catalog', brandLabel: 'Mutable Catalog', colorCount: 1 };
+    const record = { sourceId: 'mutable-1', code: '01', name: 'Original', hex: '#010203' as `#${string}`, rgb: [1, 2, 3] as [number, number, number] };
+    const records = [record];
+    const definition = {
+      association,
+      records,
+      compatibilityLabel: 'Mutable',
+      snapshot: { association, records },
+      search: (query: string) => records.filter((candidate) => candidate.name.includes(query)),
+      getByHex: (hex: string) => records.find((candidate) => candidate.hex === hex),
+      nearest: () => records[0]
+    } as CatalogDefinition;
+    const registry = createInstalledCatalogRegistry([definition]);
+    const registered = registry.getById('mutable-catalog')!;
+
+    association.catalogId = 'changed-catalog';
+    association.brandLabel = 'Changed Catalog';
+    association.colorCount = 9;
+    record.code = '99';
+    record.name = 'Changed';
+    record.hex = '#FFFFFF';
+    record.rgb[0] = 255;
+    records.splice(0, 1);
+
+    expect(registry.resolve({ catalogId: 'mutable-catalog', brandLabel: 'Mutable Catalog', colorCount: 1 })).toBe(registered);
+    expect(registry.getById('mutable-catalog')).toBe(registered);
+    expect(registry.getById('changed-catalog')).toBeUndefined();
+    expect(registered).not.toBe(definition);
+    expect(registered.association).toEqual({ catalogId: 'mutable-catalog', brandLabel: 'Mutable Catalog', colorCount: 1 });
+    expect(registered.records).toEqual([{ sourceId: 'mutable-1', code: '01', name: 'Original', hex: '#010203', rgb: [1, 2, 3] }]);
+    expect(registered.snapshot.association).toBe(registered.association);
+    expect(registered.snapshot.records).toBe(registered.records);
+    expect(registered.search('Original')).toEqual(registered.records);
+    expect(registered.getByHex('#010203')).toBe(registered.records[0]);
+    expect(registered.nearest({ r: 1, g: 2, b: 3 })).toBe(registered.records[0]);
+    expect(Object.isFrozen(registered)).toBe(true);
+    expect(Object.isFrozen(registered.association)).toBe(true);
+    expect(Object.isFrozen(registered.snapshot)).toBe(true);
+    expect(Object.isFrozen(registered.records)).toBe(true);
+    expect(Object.isFrozen(registered.records[0])).toBe(true);
+    expect(Object.isFrozen(registered.records[0].rgb)).toBe(true);
+  });
+
+  it('rejects duplicate installed catalog IDs', () => {
+    const first = syntheticDefinition('duplicate-id', 'Catalog A');
+    const second = syntheticDefinition('duplicate-id', 'Catalog B');
+
+    expect(() => createInstalledCatalogRegistry([first, second])).toThrow(/duplicate.*catalog ID/i);
   });
 
   it('contains a validated, unique normalized dataset', () => {

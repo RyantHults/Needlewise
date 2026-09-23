@@ -94,9 +94,6 @@ export function collectValidationErrors(document: PatternDocument): string[] {
     }
     if (entry.catalog !== undefined) {
       const catalog = entry.catalog;
-      if (validCatalog && catalog.catalogId !== document.catalog.catalogId) {
-        errors.push(`Palette ID ${String(entry.id)} belongs to a different catalog.`);
-      }
       const expectedRgb = typeof catalog.hex === 'string' && /^#[0-9a-f]{6}$/i.test(catalog.hex)
         ? [Number.parseInt(catalog.hex.slice(1, 3), 16), Number.parseInt(catalog.hex.slice(3, 5), 16), Number.parseInt(catalog.hex.slice(5, 7), 16)]
         : undefined;

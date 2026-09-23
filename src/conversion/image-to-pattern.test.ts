@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CellKind, createDocument } from '../domain';
+import { applyCommand, CellKind, createDocument } from '../domain';
 import { DMC_CATALOG_DEFINITION, type CatalogSnapshot } from '../catalog';
 import {
   ConversionError,
@@ -119,6 +119,41 @@ describe('deterministic image conversion core', () => {
       catalog: DMC_CATALOG_DEFINITION.snapshot
     });
     expect(draft.document.catalog).toEqual(DMC_CATALOG_DEFINITION.association);
+  });
+
+  it('keeps conversion on its single DMC snapshot when a Brand B entry is later added', () => {
+    const dmcRecord = DMC_CATALOG_DEFINITION.records[0]!;
+    const draft = convertRasterToPattern(raster(1, 1, [...dmcRecord.rgb, 255]), {
+      targetWidth: 1,
+      targetHeight: 1,
+      paletteBudget: 1,
+      catalog: DMC_CATALOG_DEFINITION.snapshot
+    });
+    expect(draft.document.catalog).toEqual(DMC_CATALOG_DEFINITION.association);
+    expect(draft.document.palette).toHaveLength(1);
+    expect(draft.document.palette[0].catalog?.catalogId).toBe(DMC_CATALOG_DEFINITION.association.catalogId);
+
+    const brandBReference = {
+      catalogId: 'brand-b-v1',
+      sourceId: 'brand-b-blue-17',
+      code: 'B17',
+      name: 'Brand B Blue',
+      hex: '#336699',
+      rgb: [51, 102, 153] as [number, number, number]
+    };
+    const mixed = applyCommand(draft.document, {
+      type: 'palette-create',
+      name: brandBReference.name,
+      color: brandBReference.hex,
+      catalog: brandBReference
+    }).document;
+
+    expect(mixed.catalog).toEqual(DMC_CATALOG_DEFINITION.association);
+    expect(mixed.palette.map((entry) => entry.catalog?.catalogId)).toEqual([
+      DMC_CATALOG_DEFINITION.association.catalogId,
+      brandBReference.catalogId
+    ]);
+    expect(mixed.palette[1].catalog).toEqual(brandBReference);
   });
 
   it('includes Black and White only when the image actually contains them', () => {

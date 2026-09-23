@@ -778,9 +778,6 @@ function normalizePalette(
       throw new DomainError('invalid-palette-id', `Palette ID ${String(id)} is invalid or duplicated.`);
     }
     const entry = normalizePaletteEntry(input, id);
-    if (entry.catalog !== undefined && entry.catalog.catalogId !== catalog.catalogId) {
-      throw new DomainError('invalid-catalog-reference', `Palette ID ${String(entry.id)} belongs to a different catalog.`);
-    }
     if (palette.some((candidate) => candidate.symbol === entry.symbol)) throw new DomainError('invalid-palette-symbol', `Palette symbol ${entry.symbol} is duplicated.`);
     ids.add(id);
     palette.push(entry);

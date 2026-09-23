@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createDocument, CellKind } from '../domain';
 import { NeedlewiseDatabase, ProjectRepository, type ProjectMetadata } from '../persistence';
 import { ProjectWorkspace, useProjectWorkspace } from './index';
-import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
+import { createInstalledCatalogRegistry, DEFAULT_CATALOG_DEFINITION } from '../catalog';
 
 let databaseCounter = 1000;
 
@@ -25,6 +25,27 @@ async function deleteRepository(repository: ProjectRepository): Promise<void> {
 }
 
 describe('ProjectWorkspace observable adapter', () => {
+  it('forwards the injected catalog registry to the workspace factory unchanged', async () => {
+    const repository = makeRepository();
+    const catalogRegistry = createInstalledCatalogRegistry([DEFAULT_CATALOG_DEFINITION]);
+    let createdWorkspace: ProjectWorkspace | undefined;
+    const factory = vi.fn((options: ConstructorParameters<typeof ProjectWorkspace>[0]) => {
+      const workspace = new ProjectWorkspace(options);
+      createdWorkspace = workspace;
+      return workspace;
+    });
+    const rendered = renderHook(() => useProjectWorkspace({ repository, catalogRegistry, workspaceFactory: factory, autoOpenMostRecent: false }));
+    try {
+      await waitFor(() => expect(rendered.result.current.initialized).toBe(true));
+      expect(factory).toHaveBeenCalledOnce();
+      expect(factory.mock.calls[0]?.[0]?.catalogRegistry).toBe(catalogRegistry);
+    } finally {
+      rendered.unmount();
+      await waitFor(() => expect(createdWorkspace?.isDisposed).toBe(true));
+      await deleteRepository(repository);
+    }
+  });
+
   it('initializes with the newest valid project and disposes once under Strict Mode replay', async () => {
     const repository = makeRepository();
     const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });

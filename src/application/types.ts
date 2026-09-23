@@ -26,6 +26,7 @@ import type {
 import type { ProgressActivity } from '../persistence';
 import type { SessionProgressStats } from './progress';
 import type { AcceptedConversionDraft } from '../conversion/image-to-pattern';
+import type { InstalledCatalogRegistry } from '../catalog';
 
 export type SaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error' | 'conflict' | 'disposed';
 
@@ -111,6 +112,7 @@ export interface WorkspaceOptions {
   clock?: WorkspaceClock | (() => number);
   debounceMs?: number;
   projectIdFactory?: () => string;
+  catalogRegistry?: InstalledCatalogRegistry;
 }
 
 export interface WorkspaceInitializationOptions {

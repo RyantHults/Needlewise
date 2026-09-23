@@ -33,10 +33,35 @@ import { ProjectSession } from './session';
 import type { WorkspaceRepository } from './types';
 import { acceptConversionDraft, type AcceptedConversionDraft } from '../conversion/image-to-pattern';
 import { decodeTraceImage } from '../rendering/trace';
-import { DEFAULT_CATALOG_DEFINITION, createCatalogReference } from '../catalog';
+import { createInstalledCatalogRegistry, DEFAULT_CATALOG_DEFINITION, createCatalogReference, type CatalogDefinition, type CatalogRecord } from '../catalog';
 
 function createDocument(options: Omit<Parameters<typeof createDomainDocument>[0], 'catalog'>): PatternDocument {
   return createDomainDocument({ ...options, catalog: DEFAULT_CATALOG_DEFINITION.association });
+}
+
+function syntheticCatalogDefinition(catalogId: string, brandLabel: string): CatalogDefinition {
+  const record: CatalogRecord = Object.freeze({
+    sourceId: `${catalogId}-blue`,
+    code: 'B1',
+    name: `${brandLabel} Blue`,
+    hex: '#123456',
+    rgb: Object.freeze([18, 52, 86]) as readonly [number, number, number]
+  });
+  const records = Object.freeze([record]);
+  const association = Object.freeze({ catalogId, brandLabel, colorCount: records.length });
+  return Object.freeze({
+    association,
+    records,
+    compatibilityLabel: `${brandLabel} compatible`,
+    snapshot: Object.freeze({ association, records }),
+    search: (query: string, options: { readonly limit?: number } = {}) => {
+      const needle = query.trim().toLowerCase();
+      const matches = needle === '' ? [record] : [record].filter((candidate) => [candidate.sourceId, candidate.code, candidate.name, candidate.hex].some((value) => value.toLowerCase().includes(needle)));
+      return Object.freeze(options.limit === undefined ? matches : matches.slice(0, options.limit));
+    },
+    getByHex: (hex: string) => hex.trim().toUpperCase() === record.hex ? record : undefined,
+    nearest: () => record
+  });
 }
 
 function copyRecord(record: ProjectRecord): ProjectRecord {
@@ -383,13 +408,75 @@ describe('headless project workspace', () => {
     });
     try {
       expect(workspace.catalogFor(null)).toBeUndefined();
-      expect(workspace.catalogFor(document)).toBe(DEFAULT_CATALOG_DEFINITION);
+      const resolvedDmc = workspace.catalogFor(document);
+      expect(resolvedDmc).toMatchObject({ association: DEFAULT_CATALOG_DEFINITION.association });
+      expect(resolvedDmc?.records).toEqual(DEFAULT_CATALOG_DEFINITION.records);
+      expect(resolvedDmc).not.toBe(DEFAULT_CATALOG_DEFINITION);
+      expect(resolvedDmc?.getByHex('#000000')?.code).toBe('310');
       expect(workspace.catalogFor({ ...document, catalog: { ...document.catalog, brandLabel: 'Other' } })).toBeUndefined();
       expect(workspace.catalogFor({ ...document, catalog: { ...document.catalog, colorCount: 1 } })).toBeUndefined();
       expect(workspace.catalogFor(unavailable)).toBeUndefined();
       const session = await workspace.openProject('unavailable');
       expect(session.document.catalog.catalogId).toBe('uninstalled-revision');
       expect(workspace.error).toBeNull();
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
+  it('exposes installed catalogs independently of the document primary catalog', async () => {
+    const repository = new MemoryRepository();
+    const catalogB = syntheticCatalogDefinition('catalog-b', 'Catalog B');
+    const catalogRegistry = createInstalledCatalogRegistry([DEFAULT_CATALOG_DEFINITION, catalogB]);
+    const workspace = new ProjectWorkspace({ repository, catalogRegistry });
+    const primaryDmc = createStarterDocument({ width: 2, height: 2 });
+    const unavailablePrimary: PatternDocument = {
+      ...primaryDmc,
+      catalog: { ...primaryDmc.catalog, catalogId: 'not-installed' }
+    };
+
+    try {
+      const resolvedDmc = workspace.catalogFor(primaryDmc);
+      expect(resolvedDmc).toMatchObject({ association: DEFAULT_CATALOG_DEFINITION.association });
+      expect(resolvedDmc?.records).toEqual(DEFAULT_CATALOG_DEFINITION.records);
+      expect(resolvedDmc).not.toBe(DEFAULT_CATALOG_DEFINITION);
+
+      const availableCatalogs = workspace.availableCatalogs();
+      expect(availableCatalogs.map((definition) => definition.association)).toEqual([DEFAULT_CATALOG_DEFINITION.association, catalogB.association]);
+      expect(availableCatalogs.map((definition) => definition.records)).toEqual([DEFAULT_CATALOG_DEFINITION.records, catalogB.records]);
+      expect(availableCatalogs[1]).not.toBe(catalogB);
+
+      const resolvedCatalogB = workspace.catalogById('catalog-b');
+      expect(resolvedCatalogB).toMatchObject({ association: catalogB.association, records: catalogB.records });
+      expect(resolvedCatalogB).not.toBe(catalogB);
+      expect(resolvedCatalogB).toBe(availableCatalogs[1]);
+      const bRecord = catalogB.records[0];
+      expect(resolvedCatalogB?.search('catalog b blue')).toEqual([bRecord]);
+      expect(resolvedCatalogB?.getByHex('#123456')).toEqual(bRecord);
+      expect(resolvedCatalogB?.records[0]).not.toBe(bRecord);
+      expect(DEFAULT_CATALOG_DEFINITION.getByHex('#123456')).toBeUndefined();
+      expect(createCatalogReference(catalogB, bRecord)).toMatchObject({ catalogId: 'catalog-b', sourceId: 'catalog-b-blue', hex: '#123456' });
+
+      expect(workspace.catalogFor(unavailablePrimary)).toBeUndefined();
+      const availableAfterUnavailablePrimary = workspace.availableCatalogs();
+      expect(availableAfterUnavailablePrimary.map((definition) => definition.association)).toEqual([DEFAULT_CATALOG_DEFINITION.association, catalogB.association]);
+      expect(availableAfterUnavailablePrimary.map((definition) => definition.records)).toEqual([DEFAULT_CATALOG_DEFINITION.records, catalogB.records]);
+      expect(workspace.catalogById('catalog-b')).toMatchObject({ association: catalogB.association, records: catalogB.records });
+      expect(workspace.catalogById('catalog-b')).not.toBe(catalogB);
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
+  it('does not save a DMC starter when the injected registry does not install DMC', async () => {
+    const repository = new MemoryRepository();
+    const catalogB = syntheticCatalogDefinition('catalog-b', 'Catalog B');
+    const workspace = new ProjectWorkspace({ repository, catalogRegistry: createInstalledCatalogRegistry([catalogB]) });
+
+    try {
+      await expect(workspace.createProject({ id: 'missing-default-catalog' })).rejects.toThrow(/default catalog.*not installed|explicit document/i);
+      expect(repository.saveCalls).toHaveLength(0);
+      expect(repository.records.has('missing-default-catalog')).toBe(false);
     } finally {
       await workspace.dispose();
     }

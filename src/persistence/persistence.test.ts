@@ -2,6 +2,7 @@ import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import { unzipSync, zipSync, strFromU8, strToU8 } from 'fflate';
 import { applyCommand, CellKind, cloneDocument, computePatternMetrics, createDocument as createDomainDocument, createEditor, QuarterCorner, type CatalogAssociation, type CreateDocumentOptions, type PatternDocument } from '../domain';
+import { DMC_CATALOG_DEFINITION } from '../catalog';
 import * as binaryModule from './binary';
 import * as hashModule from './hash';
 import { prepareDocumentSnapshot, type PersistencePreparationResponse } from './preparation';
@@ -789,6 +790,87 @@ describe('binary document persistence', () => {
     expect(decoded.version).toBe(1);
     expect(decoded.settings).toEqual({ symbolSet: 'letters', materialUnit: 'meters' });
     expect(decoded.palette[0]).toEqual(original.palette[0]);
+  });
+
+  it('preserves mixed-catalog and custom palette entries through binary, archive, repository, and history round trips', async () => {
+    const dmcRecord = DMC_CATALOG_DEFINITION.records[0]!;
+    const dmcReference = {
+      catalogId: DMC_CATALOG_DEFINITION.association.catalogId,
+      sourceId: dmcRecord.sourceId,
+      code: dmcRecord.code,
+      name: dmcRecord.name,
+      hex: dmcRecord.hex,
+      rgb: [...dmcRecord.rgb] as [number, number, number]
+    };
+    const brandBReference = {
+      catalogId: 'brand-b-v1',
+      sourceId: 'brand-b-blue-17',
+      code: 'B17',
+      name: 'Brand B Blue',
+      hex: '#336699',
+      rgb: [51, 102, 153] as [number, number, number]
+    };
+    const original = createDocument({
+      width: 1,
+      height: 1,
+      catalog: DMC_CATALOG_DEFINITION.association,
+      palette: [
+        { id: 1, name: dmcRecord.name, color: dmcRecord.hex, catalog: dmcReference },
+        { id: 2, name: 'Brand B Blue', color: '#336699', catalog: brandBReference },
+        { id: 3, name: 'Custom Violet', color: '#AABBCC' }
+      ]
+    });
+
+    const decoded = decodeDocument(encodeDocument(original));
+    expect(decoded.catalog).toEqual(DMC_CATALOG_DEFINITION.association);
+    expect(decoded.catalog.catalogId).not.toBe(brandBReference.catalogId);
+    expect(decoded.palette).toEqual(original.palette);
+    expect(decoded.palette[1].catalog).toEqual(brandBReference);
+    expect(decoded.palette[2].catalog).toBeUndefined();
+
+    const archive = await exportArchive({ metadata: metadata(original, 'mixed-catalog'), document: original, assets: [] });
+    const parsed = await parseArchive(archive);
+    expect(parsed.document.catalog).toEqual(DMC_CATALOG_DEFINITION.association);
+    expect(parsed.document.catalog.catalogId).not.toBe(brandBReference.catalogId);
+    expect(parsed.document.palette).toEqual(original.palette);
+
+    const repo = await repository();
+    try {
+      const editor = createEditor(original);
+      const brandBAddition = {
+        catalogId: brandBReference.catalogId,
+        sourceId: 'brand-b-green-29',
+        code: 'B29',
+        name: 'Brand B Green',
+        hex: '#228844',
+        rgb: [34, 136, 68] as [number, number, number]
+      };
+      const savedDocument = editor.execute({
+        type: 'palette-create',
+        name: brandBAddition.name,
+        color: brandBAddition.hex,
+        catalog: brandBAddition
+      }).document;
+      await repo.save('mixed-catalog-history', metadata(savedDocument, 'mixed-catalog-history'), savedDocument, undefined, { history: editor.exportHistory() });
+
+      const loaded = await repo.load('mixed-catalog-history');
+      expect(loaded?.document.catalog).toEqual(DMC_CATALOG_DEFINITION.association);
+      expect(loaded?.document.catalog.catalogId).not.toBe(brandBReference.catalogId);
+      expect(loaded?.document.palette).toEqual(savedDocument.palette);
+      expect(loaded?.document.palette.find((entry) => entry.catalog?.catalogId === brandBReference.catalogId)?.catalog).toEqual(brandBReference);
+      expect(loaded?.document.palette.find((entry) => entry.catalog?.catalogId === brandBReference.catalogId && entry.catalog.sourceId === brandBAddition.sourceId)?.catalog).toEqual(brandBAddition);
+      expect(loaded?.document.palette.find((entry) => entry.id === 3)?.catalog).toBeUndefined();
+
+      expect(loaded?.history).toBeDefined();
+      if (!loaded?.history) throw new Error('Missing persisted document history.');
+      const restoredEditor = createEditor(loaded.document);
+      restoredEditor.importHistory(loaded.history.document);
+      expect(restoredEditor.undo().document.palette).toEqual(original.palette);
+      expect(restoredEditor.redo().document.palette).toEqual(savedDocument.palette);
+      expect(restoredEditor.document.catalog).toEqual(DMC_CATALOG_DEFINITION.association);
+    } finally {
+      await closeRepository(repo);
+    }
   });
 
   it('round-trips calibrated material assumptions in project metadata', async () => {

@@ -154,15 +154,78 @@ describe('document catalog association', () => {
     expect(editor.redo().document.catalog).toEqual(TEST_CATALOG);
   });
 
-  it('rejects a palette-create reference from a different catalog', () => {
+  it('accepts references from another catalog while rejecting malformed references', () => {
     const pattern = createDocument({ width: 1, height: 1, catalog: TEST_CATALOG });
+    const foreignReference = { ...TEST_REFERENCE, catalogId: 'other-catalog' };
 
-    expect(() => applyCommand(pattern, {
+    const created = applyCommand(pattern, {
       type: 'palette-create',
       name: 'Foreign',
       color: '#000000',
-      catalog: { ...TEST_REFERENCE, catalogId: 'other' }
-    })).toThrow('belongs to a different catalog');
+      catalog: foreignReference
+    }).document;
+    expect(created.catalog).toEqual(TEST_CATALOG);
+    expect(created.palette[0].catalog).toEqual(foreignReference);
+    expect(validateDocument(created)).toBe(true);
+
+    expect(() => applyCommand(pattern, {
+      type: 'palette-create',
+      name: 'Malformed',
+      color: '#000000',
+      catalog: { ...foreignReference, rgb: [0, 0, 0] }
+    })).toThrow(/HEX and RGB values must agree/);
+
+    const invalidDocument = {
+      ...created,
+      palette: [{ ...created.palette[0], catalog: { ...foreignReference, sourceId: ' ' } }]
+    } as unknown as PatternDocument;
+    expect(() => assertValidDocument(invalidDocument)).toThrow(/invalid catalog data/i);
+  });
+
+  it('accepts a foreign catalog reference on initial palette creation', () => {
+    const foreignReference = { ...TEST_REFERENCE, catalogId: 'catalog-b' };
+    const pattern = createDocument({
+      width: 1,
+      height: 1,
+      catalog: TEST_CATALOG,
+      palette: [{ id: 1, name: 'B Red', color: '#123456', catalog: foreignReference }]
+    });
+
+    expect(pattern.catalog).toEqual(TEST_CATALOG);
+    expect(pattern.palette[0].catalog).toEqual(foreignReference);
+    expect(validateDocument(pattern)).toBe(true);
+  });
+
+  it('preserves a foreign catalog palette addition through clone, undo, and redo', () => {
+    const pattern = createDocument({ width: 1, height: 1, catalog: TEST_CATALOG });
+    const editor = createEditor(pattern);
+    const foreignReference = { ...TEST_REFERENCE, catalogId: 'catalog-b' };
+
+    editor.execute({ type: 'palette-create', name: 'B Red', color: '#123456', catalog: foreignReference });
+    expect(cloneDocument(editor.document).palette[0].catalog).toEqual(foreignReference);
+    expect(editor.undo().document.palette).toHaveLength(0);
+    expect(editor.document.catalog).toEqual(TEST_CATALOG);
+    expect(editor.redo().document.palette[0].catalog).toEqual(foreignReference);
+    expect(editor.document.catalog).toEqual(TEST_CATALOG);
+    expect(validateDocument(editor.document)).toBe(true);
+  });
+
+  it('accepts foreign references on palette update and merge-created entries', () => {
+    const foreignReference = { ...TEST_REFERENCE, catalogId: 'catalog-b' };
+    const pattern = createDocument({ width: 1, height: 1, catalog: TEST_CATALOG, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    const updated = applyCommand(pattern, { type: 'palette-update', id: 1, catalog: foreignReference }).document;
+    expect(updated.catalog).toEqual(TEST_CATALOG);
+    expect(updated.palette[0].catalog).toEqual(foreignReference);
+    expect(validateDocument(updated)).toBe(true);
+
+    const merged = applyCommand(pattern, {
+      type: 'palette-merge',
+      from: 1,
+      createTo: { name: 'B Red', color: '#123456', catalog: foreignReference }
+    }).document;
+    expect(merged.catalog).toEqual(TEST_CATALOG);
+    expect(merged.palette.find((entry) => entry.catalog?.catalogId === 'catalog-b')?.catalog).toEqual(foreignReference);
+    expect(validateDocument(merged)).toBe(true);
   });
 
   it('uses the document association color count for palette capacity', () => {

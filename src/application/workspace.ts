@@ -28,7 +28,7 @@ import {
 import { validateAcceptedConversionDraft, type AcceptedConversionDraft } from '../conversion/image-to-pattern';
 import type { ProgressActivity } from '../persistence';
 import type { PatternMetrics } from '../domain';
-import { createCatalogReference, DEFAULT_CATALOG_DEFINITION, resolveCatalogDefinition, type CatalogDefinition } from '../catalog';
+import { createCatalogReference, DEFAULT_CATALOG_DEFINITION, INSTALLED_CATALOG_REGISTRY, type CatalogDefinition, type InstalledCatalogRegistry } from '../catalog';
 import { WorkspaceError } from './errors';
 import { ProjectSession } from './session';
 import type {
@@ -128,6 +128,7 @@ export class ProjectWorkspace {
   private readonly clock: WorkspaceClock;
   private readonly debounceMs: number;
   private readonly projectIdFactory: () => string;
+  private readonly catalogRegistry: InstalledCatalogRegistry;
   private active: ProjectSession | null = null;
   private operationError: Error | null = null;
   private disposed = false;
@@ -142,6 +143,7 @@ export class ProjectWorkspace {
     this.clock = asClock(options.clock);
     this.debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
     this.projectIdFactory = options.projectIdFactory ?? createBrowserProjectId;
+    this.catalogRegistry = options.catalogRegistry ?? INSTALLED_CATALOG_REGISTRY;
   }
 
   get session(): ProjectSession | null {
@@ -202,7 +204,15 @@ export class ProjectWorkspace {
   }
 
   catalogFor(document: PatternDocument | null | undefined): CatalogDefinition | undefined {
-    return document === null || document === undefined ? undefined : resolveCatalogDefinition(document.catalog);
+    return document === null || document === undefined ? undefined : this.catalogRegistry.resolve(document.catalog);
+  }
+
+  availableCatalogs(): readonly CatalogDefinition[] {
+    return this.catalogRegistry.definitions;
+  }
+
+  catalogById(catalogId: string): CatalogDefinition | undefined {
+    return this.catalogRegistry.getById(catalogId);
   }
 
   getAsset(assetId: string) {
@@ -358,6 +368,9 @@ export class ProjectWorkspace {
     const token = this.startOperation();
     if (flushExisting) await this.flushActiveBeforeSwitch(token);
     this.ensureOperation(token);
+    if (options.document === undefined && this.catalogRegistry.resolve(DEFAULT_CATALOG_DEFINITION.association) === undefined) {
+      throw new WorkspaceError('save-failed', 'The default catalog is not installed; an explicit document is required to create a project.');
+    }
     const projectId = options.id ?? this.projectIdFactory();
     if (!isProjectId(projectId)) throw new WorkspaceError('save-failed', 'Generated project ID is invalid.');
     const document = cloneDocument(options.document ?? createStarterDocument(options));
