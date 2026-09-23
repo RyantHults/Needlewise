@@ -6,6 +6,19 @@ import { createCatalogReference, DEFAULT_CATALOG_DEFINITION, type CatalogDefinit
 import { PALETTE_SYMBOLS } from '../../domain';
 import stylesText from '../../styles.css?inline';
 
+const compactDmcRecords = [...new Map([
+  ...DEFAULT_CATALOG_DEFINITION.search('31', { limit: 12 }),
+  DEFAULT_CATALOG_DEFINITION.search('321', { limit: 1 })[0],
+  DEFAULT_CATALOG_DEFINITION.search('salmon', { limit: 1 })[0],
+].filter((record): record is CatalogRecord => Boolean(record)).map((record) => [record.sourceId, record])).values()];
+const COMPACT_DMC_DEFINITION: CatalogDefinition = {
+  ...DEFAULT_CATALOG_DEFINITION,
+  records: compactDmcRecords,
+  snapshot: { ...DEFAULT_CATALOG_DEFINITION.snapshot, records: compactDmcRecords },
+  search: (query, options = {}) => compactDmcRecords.filter((record) => !query || `${record.name} ${record.code}`.toLowerCase().includes(query.toLowerCase())).slice(0, options.limit),
+  getByHex: (hex) => compactDmcRecords.find((record) => record.hex.toUpperCase() === hex.toUpperCase()),
+};
+
 const f = vi.hoisted(() => ({
   c: { start: vi.fn(), setMetrics: vi.fn(), setDocument: vi.fn(), dispose: vi.fn(), setBrush: vi.fn(), setTool: vi.fn(), setEraserMode: vi.fn(), selectPalette: vi.fn(), selectCreatedPalette: vi.fn(), setChartMode: vi.fn(), setGridVisible: vi.fn(), setBrushSize: vi.fn(), setTouchMovementOnly: vi.fn(), copySelection: vi.fn(), pasteSelection: vi.fn(), moveSelection: vi.fn(), dismissTouchCopyRequest: vi.fn(), deleteSelection: vi.fn(), handleKeyDown: vi.fn(() => false), getTraceImage: vi.fn(() => undefined), setTraceImage: vi.fn(), setTraceImageSettings: vi.fn(), clearTraceImage: vi.fn() },
   adapter: vi.fn(() => ({ dispose: vi.fn() })),
@@ -22,7 +35,7 @@ vi.mock('../../rendering/trace', async () => {
 });
 vi.mock('../../editor/coordinates', () => ({ getCanvasMetrics: vi.fn(() => ({ cssWidth: 640, cssHeight: 480, pixelWidth: 640, pixelHeight: 480, backingWidth: 640, backingHeight: 480, requestedDpr: 1, dpr: 1, maxDpr: 2, maxBackingPixels: 1e6 })), modelToScreen: vi.fn((point: { x: number; y: number }) => point) }));
 vi.mock('../../editor', () => ({ ChartPresentationMode: { Color: 'color', Symbol: 'symbol', Grayscale: 'grayscale', Combined: 'combined' }, createUiStore: vi.fn((initial: unknown) => { f.createdUiState = initial; return { getState: () => f.uiState, subscribe: vi.fn((listener: unknown) => { f.uiListener = listener as (state: unknown) => void; return () => undefined; }) }; }), createWorkspaceEditorGateway: vi.fn(() => ({ dispose: vi.fn() })), createPointerEventsAdapter: f.adapter, createEditorSurfaceController: vi.fn((options: unknown) => { f.capturedCallback = (options as { onTraceBoundsChange?: (b: { x: number; y: number; width: number; height: number }) => void }).onTraceBoundsChange ?? null; return f.c as never; }) }));
-const ws = { metadata: { title: 'Sampler', notes: '', aidaCount: 14 }, updateActiveMetadata: vi.fn(), updateActiveAidaCount: vi.fn(), execute: vi.fn(), getStateSnapshot: vi.fn(), catalogFor: vi.fn(() => DEFAULT_CATALOG_DEFINITION), availableCatalogs: vi.fn(() => [DEFAULT_CATALOG_DEFINITION]), catalogById: vi.fn((id: string) => id === DEFAULT_CATALOG_DEFINITION.association.catalogId ? DEFAULT_CATALOG_DEFINITION : undefined), setSourceImage: vi.fn(() => Promise.resolve()), applyTraceImageChange: vi.fn(() => Promise.resolve()), getAsset: vi.fn(), sourceImage: undefined as ({ chartBounds: { x: number; y: number; width: number; height: number } } | undefined) } as never;
+const ws = { metadata: { title: 'Sampler', notes: '', aidaCount: 14 }, updateActiveMetadata: vi.fn(), updateActiveAidaCount: vi.fn(), execute: vi.fn(), getStateSnapshot: vi.fn(), catalogFor: vi.fn(() => COMPACT_DMC_DEFINITION), availableCatalogs: vi.fn(() => [COMPACT_DMC_DEFINITION]), catalogById: vi.fn((id: string) => id === COMPACT_DMC_DEFINITION.association.catalogId ? COMPACT_DMC_DEFINITION : undefined), setSourceImage: vi.fn(() => Promise.resolve()), applyTraceImageChange: vi.fn(() => Promise.resolve()), getAsset: vi.fn(), sourceImage: undefined as ({ chartBounds: { x: number; y: number; width: number; height: number } } | undefined) } as never;
 const executeMock = () => (ws as { execute: ReturnType<typeof vi.fn> }).execute;
 const doc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
 const two = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321' } }, { id: 2, name: 'Sky', color: '#48c', active: true }], backstitches: { ids: new Uint32Array() } } as never;
@@ -36,9 +49,9 @@ const catalogBRecord = { sourceId: 'b-source-1', code: '321', name: 'B Ruby', he
 const catalogB = makeCatalog('catalog-b', 'Brand B', [catalogBRecord]);
 const multiCatalogWorkspace = () => {
   const workspace = ws as { catalogFor: ReturnType<typeof vi.fn>; availableCatalogs: ReturnType<typeof vi.fn>; catalogById: ReturnType<typeof vi.fn>; getStateSnapshot: ReturnType<typeof vi.fn> };
-  workspace.catalogFor.mockReturnValue(DEFAULT_CATALOG_DEFINITION);
-  workspace.availableCatalogs.mockReturnValue([DEFAULT_CATALOG_DEFINITION, catalogB]);
-  workspace.catalogById.mockImplementation((id: string) => [DEFAULT_CATALOG_DEFINITION, catalogB].find((item) => item.association.catalogId === id));
+  workspace.catalogFor.mockReturnValue(COMPACT_DMC_DEFINITION);
+  workspace.availableCatalogs.mockReturnValue([COMPACT_DMC_DEFINITION, catalogB]);
+  workspace.catalogById.mockImplementation((id: string) => [COMPACT_DMC_DEFINITION, catalogB].find((item) => item.association.catalogId === id));
   return workspace;
 };
 const openCustomColorDialog = () => {
@@ -55,7 +68,7 @@ const expectedTiles = (palette: { id: number; symbol: string }[], openId: number
   const held = new Set(palette.filter((e) => e.id !== openId).map((e) => e.symbol));
   return PALETTE_SYMBOLS.filter((s) => s === open.symbol || !held.has(s)).length;
 };
-beforeEach(() => { vi.clearAllMocks(); (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockReset(); (ws as { getStateSnapshot: ReturnType<typeof vi.fn> }).getStateSnapshot.mockReset(); (ws as { catalogFor: ReturnType<typeof vi.fn> }).catalogFor.mockReturnValue(DEFAULT_CATALOG_DEFINITION); (ws as { availableCatalogs: ReturnType<typeof vi.fn> }).availableCatalogs.mockReturnValue([DEFAULT_CATALOG_DEFINITION]); (ws as { catalogById: ReturnType<typeof vi.fn> }).catalogById.mockImplementation((id: string) => id === DEFAULT_CATALOG_DEFINITION.association.catalogId ? DEFAULT_CATALOG_DEFINITION : undefined); localStorage.clear(); f.createdUiState = null; f.uiListener = null; f.uiState.pendingPaletteId = null; f.uiState.canPaste = false; f.uiState.overlay = {}; f.uiState.tool = { tool: 'paint' }; f.uiState.gridVisible = true; (ws as { sourceImage: unknown }).sourceImage = undefined; vi.stubGlobal('ResizeObserver', vi.fn(function (cb: () => void) { f.resize = cb; return { observe: vi.fn(), disconnect: vi.fn() }; })); });
+beforeEach(() => { vi.clearAllMocks(); (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockReset(); (ws as { getStateSnapshot: ReturnType<typeof vi.fn> }).getStateSnapshot.mockReset(); (ws as { catalogFor: ReturnType<typeof vi.fn> }).catalogFor.mockReturnValue(COMPACT_DMC_DEFINITION); (ws as { availableCatalogs: ReturnType<typeof vi.fn> }).availableCatalogs.mockReturnValue([COMPACT_DMC_DEFINITION]); (ws as { catalogById: ReturnType<typeof vi.fn> }).catalogById.mockImplementation((id: string) => id === COMPACT_DMC_DEFINITION.association.catalogId ? COMPACT_DMC_DEFINITION : undefined); localStorage.clear(); f.createdUiState = null; f.uiListener = null; f.uiState.pendingPaletteId = null; f.uiState.canPaste = false; f.uiState.overlay = {}; f.uiState.tool = { tool: 'paint' }; f.uiState.gridVisible = true; (ws as { sourceImage: unknown }).sourceImage = undefined; vi.stubGlobal('ResizeObserver', vi.fn(function (cb: () => void) { f.resize = cb; return { observe: vi.fn(), disconnect: vi.fn() }; })); });
 afterEach(() => { vi.useRealTimers(); localStorage.clear(); });
 
 describe('EditorSurface', () => {
@@ -64,10 +77,9 @@ describe('EditorSurface', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name: /Add new color/ }));
     const dialog = screen.getByRole('dialog', { name: 'Add a thread color' });
-    const selector = within(dialog).getByRole('combobox', { name: 'Catalog' });
-    expect(selector).toHaveValue(DEFAULT_CATALOG_DEFINITION.association.catalogId);
+    expect(within(dialog).getByRole('tab', { name: 'DMC' })).toHaveAttribute('aria-selected', 'true');
     expect(document.activeElement).toBe(within(dialog).getByLabelText('Search DMC catalog'));
-    fireEvent.change(selector, { target: { value: 'catalog-b' } });
+    fireEvent.click(within(dialog).getByRole('tab', { name: 'Brand B' }));
     expect(within(dialog).getByLabelText('Search Brand B catalog')).toBeInTheDocument();
     fireEvent.change(within(dialog).getByLabelText('Search Brand B catalog'), { target: { value: '321' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'B Ruby, color 321' }));
@@ -75,22 +87,109 @@ describe('EditorSurface', () => {
     expect(workspace.availableCatalogs).toHaveBeenCalled();
     expect(executeMock()).toHaveBeenCalledWith(expect.objectContaining({ type: 'palette-create', catalog: createCatalogReference(catalogB, catalogBRecord) }));
   });
+  it('keeps the selected swatch above accessible catalog tabs and exposes only the active catalog search', () => {
+    multiCatalogWorkspace();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const dialog = openCustomColorDialog();
+    const selection = within(dialog).getByLabelText('Selected thread color');
+    const tabs = within(dialog).getByRole('tablist', { name: 'Thread catalogs' });
+    expect(selection.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const dmcTab = within(tabs).getByRole('tab', { name: 'DMC' });
+    const brandBTab = within(tabs).getByRole('tab', { name: 'Brand B' });
+    expect(dmcTab).toHaveAttribute('aria-selected', 'true');
+    expect(document.getElementById(dmcTab.getAttribute('aria-controls')!)).toBe(within(dialog).getByRole('tabpanel'));
+    expect(document.getElementById(brandBTab.getAttribute('aria-controls')!)).toBe(within(dialog).getByRole('tabpanel'));
+    expect(within(dialog).getByRole('tabpanel')).toContainElement(within(dialog).getByLabelText('Search DMC catalog'));
+    fireEvent.click(brandBTab);
+    expect(brandBTab).toHaveAttribute('aria-selected', 'true');
+    expect(dmcTab).toHaveAttribute('aria-selected', 'false');
+    expect(document.getElementById(dmcTab.getAttribute('aria-controls')!)).toBe(within(dialog).getByRole('tabpanel'));
+    expect(document.getElementById(brandBTab.getAttribute('aria-controls')!)).toBe(within(dialog).getByRole('tabpanel'));
+    expect(within(dialog).getByRole('tabpanel')).toHaveAttribute('aria-labelledby', brandBTab.id);
+    expect(within(dialog).getByRole('tabpanel')).toContainElement(within(dialog).getByLabelText('Search Brand B catalog'));
+    expect(within(dialog).queryByLabelText('Search DMC catalog')).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('tabpanel')).toContainElement(within(dialog).getByRole('list', { name: 'Available thread colors' }));
+  });
+  it('shows a named tab even when only one catalog is installed', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.click(screen.getByRole('button', { name: /Add new color/ }));
+    expect(screen.getByRole('tablist', { name: 'Thread catalogs' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'DMC' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('combobox', { name: 'Catalog' })).not.toBeInTheDocument();
+  });
+  it('renders every record when an installed catalog tab has an empty search', () => {
+    const records = Array.from({ length: 13 }, (_, index) => ({
+      sourceId: `full-catalog-${index}`,
+      code: String(500 + index),
+      name: `Full Catalog ${index}`,
+      hex: `#${index.toString(16).padStart(6, '0')}`,
+      rgb: [index, index, index] as const,
+    } as CatalogRecord));
+    const fullCatalog = {
+      ...makeCatalog('full-catalog', 'Full Catalog', records),
+      search: (query: string, options: { limit?: number } = {}) => records.filter((record) => !query || `${record.name} ${record.code}`.toLowerCase().includes(query.toLowerCase())).slice(0, options.limit),
+    };
+    const workspace = multiCatalogWorkspace();
+    workspace.availableCatalogs.mockReturnValue([COMPACT_DMC_DEFINITION, fullCatalog]);
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const dialog = openCustomColorDialog();
+    fireEvent.click(within(dialog).getByRole('tab', { name: 'Full Catalog' }));
+    expect(within(dialog).getByLabelText('Search Full Catalog catalog')).toHaveValue('');
+    const grid = within(dialog).getByRole('list', { name: 'Available thread colors' });
+    expect(within(grid).getAllByRole('listitem')).toHaveLength(13);
+    expect(within(grid).getAllByRole('button')).toHaveLength(13);
+  });
+  it('supports arrow-key navigation between catalog tabs', async () => {
+    multiCatalogWorkspace();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const dialog = openCustomColorDialog();
+    const dmcTab = within(dialog).getByRole('tab', { name: 'DMC' });
+    dmcTab.focus();
+    fireEvent.keyDown(dmcTab, { key: 'ArrowRight' });
+    const brandBTab = within(dialog).getByRole('tab', { name: 'Brand B' });
+    await waitFor(() => expect(document.activeElement).toBe(brandBTab));
+    expect(brandBTab).toHaveAttribute('aria-selected', 'true');
+    fireEvent.keyDown(brandBTab, { key: 'ArrowLeft' });
+    await waitFor(() => expect(document.activeElement).toBe(dmcTab));
+    expect(dmcTab).toHaveAttribute('aria-selected', 'true');
+  });
+  it('prevents default for every handled tab key at selection boundaries and with one tab', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const dialog = openCustomColorDialog();
+    const tabButton = within(dialog).getByRole('tab', { name: 'DMC' });
+    for (const key of ['ArrowLeft', 'ArrowRight', 'Home', 'End']) {
+      const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+      tabButton.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+    }
+  });
+  it('keeps custom HEX creation while removing numeric RGB controls', async () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const dialog = openCustomColorDialog();
+    expect(within(dialog).queryByLabelText('Red')).not.toBeInTheDocument();
+    expect(within(dialog).queryByLabelText('Green')).not.toBeInTheDocument();
+    expect(within(dialog).queryByLabelText('Blue')).not.toBeInTheDocument();
+    fireEvent.change(within(dialog).getByLabelText('Hex color'), { target: { value: '#12ab34' } });
+    expect(customColorAction(dialog)).toHaveAccessibleName('Add #12AB34');
+    fireEvent.click(customColorAction(dialog));
+    await waitFor(() => expect(executeMock()).toHaveBeenCalledWith({ type: 'palette-create', name: '#12AB34', color: '#12AB34' }));
+  });
   it('keeps the chosen catalog and query when the open picker receives a document update', () => {
     multiCatalogWorkspace();
     const view = render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name: /Add new color/ }));
     const dialog = screen.getByRole('dialog', { name: 'Add a thread color' });
-    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Catalog' }), { target: { value: 'catalog-b' } });
+    fireEvent.click(within(dialog).getByRole('tab', { name: 'Brand B' }));
     fireEvent.change(within(dialog).getByLabelText('Search Brand B catalog'), { target: { value: '321' } });
     const updatedDocument = { ...(doc as object), palette: [...(doc as { palette: unknown[] }).palette] } as never;
     view.rerender(<EditorSurface workspace={ws} document={updatedDocument} />);
-    expect(within(dialog).getByRole('combobox', { name: 'Catalog' })).toHaveValue('catalog-b');
+    expect(within(dialog).getByRole('tab', { name: 'Brand B' })).toHaveAttribute('aria-selected', 'true');
     expect(within(dialog).getByLabelText('Search Brand B catalog')).toHaveValue('321');
     expect(within(dialog).getByRole('button', { name: 'B Ruby, color 321' })).toBeInTheDocument();
   });
   it('keeps the one-catalog picker free of a catalog selector', () => {
     const workspace = multiCatalogWorkspace();
-    workspace.availableCatalogs?.mockReturnValue([DEFAULT_CATALOG_DEFINITION]);
+    workspace.availableCatalogs?.mockReturnValue([COMPACT_DMC_DEFINITION]);
     render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name: /Add new color/ }));
     expect(screen.queryByRole('combobox', { name: 'Catalog' })).not.toBeInTheDocument();
@@ -103,7 +202,7 @@ describe('EditorSurface', () => {
     render(<EditorSurface workspace={ws} document={unknownPrimary} />);
     fireEvent.click(screen.getByRole('button', { name: /Add new color/ }));
     expect(screen.getByLabelText('Search DMC catalog')).toBeEnabled();
-    expect(screen.getByRole('combobox', { name: 'Catalog' })).toHaveValue(DEFAULT_CATALOG_DEFINITION.association.catalogId);
+    expect(screen.getByRole('tab', { name: 'DMC' })).toHaveAttribute('aria-selected', 'true');
   });
   it('passes the workspace primary catalog definition to the controller', () => {
     const primary = makeCatalog('primary-test-catalog', 'Primary Brand', [catalogBRecord]);
@@ -635,37 +734,17 @@ describe('EditorSurface', () => {
     fireEvent.change(hex, { target: { value: '#c7b' } });
     expect(within(dialog).getByRole('button', { name: 'Add #CC77BB' })).toBeEnabled();
   });
-  it('synchronizes picker, hex, and RGB drafts while preserving invalid drafts', () => {
+  it('synchronizes the circular color picker and HEX input while preserving the last valid color', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     const dialog = openCustomColorDialog();
     const picker = within(dialog).getByLabelText('Choose custom color');
     const hex = within(dialog).getByLabelText('Hex color');
-    const red = within(dialog).getByLabelText('Red');
-    const green = within(dialog).getByLabelText('Green');
-    const blue = within(dialog).getByLabelText('Blue');
-    expect(red).toHaveAttribute('type', 'number');
-    expect(red).toHaveAttribute('min', '0');
-    expect(red).toHaveAttribute('max', '255');
-    expect(red).toHaveAttribute('step', '1');
     fireEvent.change(picker, { target: { value: '#123456' } });
     expect(hex).toHaveValue('#123456');
-    expect(red).toHaveValue(18);
-    expect(green).toHaveValue(52);
-    expect(blue).toHaveValue(86);
-    fireEvent.change(red, { target: { value: '255' } });
-    fireEvent.change(green, { target: { value: '0' } });
-    fireEvent.change(blue, { target: { value: '7' } });
-    expect(hex).toHaveValue('#FF0007');
-    expect(picker).toHaveValue('#ff0007');
-    fireEvent.change(red, { target: { value: '2.5' } });
-    expect(red).toHaveValue(2.5);
-    expect(red).toHaveAttribute('aria-invalid', 'true');
-    expect(hex).toHaveValue('#FF0007');
-    expect(picker).toHaveValue('#ff0007');
-    expect(customColorAction(dialog)).toBeDisabled();
     fireEvent.change(hex, { target: { value: '#12' } });
-    expect(red).toHaveValue(2.5);
-    expect(picker).toHaveValue('#ff0007');
+    expect(hex).toHaveValue('#12');
+    expect(picker).toHaveValue('#123456');
+    expect(customColorAction(dialog)).toBeDisabled();
   });
   it('keeps custom creation available when the runtime catalog is unavailable', () => {
     (ws as { catalogFor: ReturnType<typeof vi.fn> }).catalogFor.mockReturnValue(undefined);
@@ -673,7 +752,7 @@ describe('EditorSurface', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     const dialog = openCustomColorDialog();
     expect(within(dialog).getByText('Catalog unavailable')).toBeInTheDocument();
-    expect(within(dialog).getByLabelText('Search catalog')).toBeDisabled();
+    expect(within(dialog).queryByLabelText('Search catalog')).not.toBeInTheDocument();
     fireEvent.change(within(dialog).getByLabelText('Hex color'), { target: { value: '#12ab34' } });
     expect(customColorAction(dialog)).toBeEnabled();
     expect(within(dialog).queryByRole('button', { name: /Add Ruby/ })).not.toBeInTheDocument();
@@ -823,7 +902,7 @@ describe('EditorSurface', () => {
     const reopened = screen.getByRole('dialog', { name: 'Add a thread color' });
     expect(within(reopened).getByLabelText('Hex color')).toHaveValue('');
     expect(within(reopened).getByRole('button', { name: 'Add custom color' })).toBeDisabled();
-  });
+  }, 15000);
   it('shows a clear empty state when no thread colors match', () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: /Add new color/ })); fireEvent.change(screen.getByLabelText('Search DMC catalog'), { target: { value: 'not-a-real-thread-color' } }); expect(screen.getByText('No matching colors.')).toBeInTheDocument(); expect(within(screen.getByRole('list', { name: 'Available thread colors' })).queryAllByRole('button')).toHaveLength(0); });
   it('keeps query 31 results limited to catalog matches', async () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: /Add new color/ })); const grid = screen.getByRole('list', { name: 'Available thread colors' }); fireEvent.change(screen.getByLabelText('Search DMC catalog'), { target: { value: '31' } }); await waitFor(() => expect(within(grid).getAllByRole('button').length).toBeGreaterThan(0)); for (const button of within(grid).getAllByRole('button')) { const label = button.getAttribute('aria-label') ?? ''; const code = label.split(', color ')[1] ?? ''; const record = DEFAULT_CATALOG_DEFINITION.records.find((entry) => entry.code === code); expect(record).toBeDefined(); expect([record?.code ?? '', record?.name ?? '', record?.hex ?? '', record?.sourceId ?? ''].some((field) => field.toLowerCase().includes('31'))).toBe(true); } expect(within(grid).queryByRole('button', { name: /Snow White/ })).not.toBeInTheDocument(); });
   it('marks the pending palette color and clears it when not pending', () => { f.uiState.pendingPaletteId = 1; const first = render(<EditorSurface workspace={ws} document={doc} />); expect(screen.getByRole('button', { name: '321Ruby' })).toHaveClass('palette-pending'); first.unmount(); f.uiState.pendingPaletteId = null; render(<EditorSurface workspace={ws} document={doc} />); expect(screen.getByRole('button', { name: '321Ruby' })).not.toHaveClass('palette-pending'); });

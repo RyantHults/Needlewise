@@ -206,7 +206,6 @@ export function EditorSurface({
     useState<CatalogColor | null>(null);
   const [customColorInput, setCustomColorInput] = useState("");
   const [canonicalCustomColor, setCanonicalCustomColor] = useState("#000000");
-  const [rgbDraft, setRgbDraft] = useState({ red: "", green: "", blue: "" });
   const [paletteNotice, setPaletteNotice] = useState("");
   const addTrigger = useRef<HTMLButtonElement>(null);
   const paletteDialog = useRef<HTMLDivElement>(null);
@@ -424,7 +423,7 @@ export function EditorSurface({
   const pickerCatalog = availableCatalogs.find((item) => item.association.catalogId === selectedCatalogId);
   const replacementCatalog = availableCatalogs.find((item) => item.association.catalogId === removeCatalogId);
   const catalogResults = useMemo(
-    () => pickerCatalog?.search(paletteQuery, { limit: 12 }) ?? [],
+    () => pickerCatalog?.search(paletteQuery) ?? [],
     [paletteQuery, pickerCatalog],
   );
   const installedCatalogIds = availableCatalogs.map((item) => item.association.catalogId).join("\u0000");
@@ -459,29 +458,16 @@ export function EditorSurface({
     setPaletteQuery("");
     setCustomColorInput("");
     setCanonicalCustomColor("#000000");
-    setRgbDraft({ red: "", green: "", blue: "" });
     setSelectedCatalogId(defaultCatalogId);
     setSelectedCatalogColor(availableCatalogs.find((item) => item.association.catalogId === defaultCatalogId)?.search("", { limit: 1 })[0] ?? null);
     setPaletteOpen(true);
   };
   const customColor = normalizeHexColor(customColorInput);
-  const rgbInvalid = Object.values(rgbDraft).some((value) => value !== "" && (!/^\d+$/.test(value) || Number(value) > 255));
   const setColorFromHex = (value: string) => {
     setCustomColorInput(value);
     const normalized = normalizeHexColor(value);
     if (normalized) {
       setCanonicalCustomColor(normalized);
-      setRgbDraft({ red: String(parseInt(normalized.slice(1, 3), 16)), green: String(parseInt(normalized.slice(3, 5), 16)), blue: String(parseInt(normalized.slice(5, 7), 16)) });
-    }
-  };
-  const setRgbChannel = (key: "red" | "green" | "blue", value: string) => {
-    const next = { ...rgbDraft, [key]: value };
-    setRgbDraft(next);
-    const values = [next.red, next.green, next.blue].map(Number);
-    if (values.every((channel, index) => next[["red", "green", "blue"][index] as "red" | "green" | "blue"] !== "" && Number.isInteger(channel) && channel >= 0 && channel <= 255)) {
-      const nextHex = `#${values.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`.toUpperCase();
-      setCustomColorInput(nextHex);
-      setCanonicalCustomColor(nextHex);
     }
   };
   const customCatalogColor = customColor ? pickerCatalog?.getByHex(customColor) : undefined;
@@ -913,7 +899,7 @@ export function EditorSurface({
     if (root) root.inert = true;
     const search = el.querySelector<HTMLInputElement>("#catalog-search");
     if (search && !search.disabled) search.focus();
-    else (el.querySelector<HTMLSelectElement>("#editor-catalog-choice") ?? el.querySelector<HTMLButtonElement>(".modal-close"))?.focus();
+    else (el.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]') ?? el.querySelector<HTMLButtonElement>(".modal-close"))?.focus();
     const all = () =>
       [...el.querySelectorAll<HTMLElement>("button,input,select")].filter(
         (item) => !item.hasAttribute("disabled") && item.tabIndex >= 0,
@@ -1751,9 +1737,8 @@ export function EditorSurface({
               </button>
                  <p className="section-label">{pickerCatalog?.association.brandLabel ?? "Catalog"}</p>
                <h2 id="editor-catalog-title">Add a thread color</h2>
-               <div className="catalog-box">
-                 {availableCatalogs.length > 1 && <label className="catalog-choice-label" htmlFor="editor-catalog-choice">Catalog<select id="editor-catalog-choice" value={selectedCatalogId} onChange={(event) => { setSelectedCatalogId(event.target.value); setPaletteQuery(""); setSelectedCatalogColor(null); }}><option value="" disabled>Select catalog</option>{availableCatalogs.map((item) => <option key={item.association.catalogId} value={item.association.catalogId}>{item.association.brandLabel}</option>)}</select></label>}
-                 <div className="catalog-selection" aria-live="polite">
+                <div className="catalog-box">
+                  <div className="catalog-selection" aria-label="Selected thread color" role="group" aria-live="polite">
                   {selectedCatalogColor ? (
                     <>
                       <span
@@ -1779,17 +1764,46 @@ export function EditorSurface({
                     <span className="catalog-selection-empty">No color selected</span>
                   )}
                 </div>
-                 <label htmlFor="catalog-search">Search {pickerCatalog?.association.brandLabel ? `${pickerCatalog.association.brandLabel} catalog` : "catalog"}</label>
-                 <input
-                  id="catalog-search"
-                  value={paletteQuery}
-                   onChange={(e) => setPaletteQuery(e.target.value)}
-                   placeholder={`Name or ${pickerCatalog?.association.brandLabel ?? "catalog"} code`}
-                   disabled={!pickerCatalog}
-                   aria-label={`Search ${pickerCatalog?.association.brandLabel ? `${pickerCatalog.association.brandLabel} catalog` : "catalog"}`}
-                 />
-                 {!pickerCatalog && <p className="catalog-unavailable" role="status">Catalog unavailable</p>}
-                <div className="catalog-color-grid" role="list" aria-label="Available thread colors">
+                {availableCatalogs.length > 0 ? <div className="catalog-tabs-area">
+                  <div className="catalog-tabs" role="tablist" aria-label="Thread catalogs">
+                    {availableCatalogs.map((item) => <button
+                      key={item.association.catalogId}
+                      id={`editor-catalog-tab-${item.association.catalogId}`}
+                      className="catalog-tab"
+                      type="button"
+                      role="tab"
+                      aria-selected={selectedCatalogId === item.association.catalogId}
+                      aria-controls="editor-catalog-panel"
+                      tabIndex={selectedCatalogId === item.association.catalogId ? 0 : -1}
+                      onClick={() => setSelectedCatalogId(item.association.catalogId)}
+                      onKeyDown={(event) => {
+                        if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) return;
+                        event.preventDefault();
+                        const index = availableCatalogs.findIndex((catalog) => catalog.association.catalogId === item.association.catalogId);
+                        const nextIndex = event.key === "ArrowRight" ? (index + 1) % availableCatalogs.length : event.key === "ArrowLeft" ? (index - 1 + availableCatalogs.length) % availableCatalogs.length : event.key === "Home" ? 0 : event.key === "End" ? availableCatalogs.length - 1 : index;
+                        if (nextIndex === index) return;
+                        const nextCatalog = availableCatalogs[nextIndex];
+                        setSelectedCatalogId(nextCatalog.association.catalogId);
+                        window.setTimeout(() => globalThis.document.getElementById(`editor-catalog-tab-${nextCatalog.association.catalogId}`)?.focus(), 0);
+                      }}
+                    >{item.association.brandLabel}</button>)}
+                  </div>
+                  {pickerCatalog && <div
+                    id="editor-catalog-panel"
+                    className="catalog-tabpanel"
+                    role="tabpanel"
+                    aria-labelledby={`editor-catalog-tab-${pickerCatalog.association.catalogId}`}
+                  >
+                    <label htmlFor="catalog-search">Search {pickerCatalog?.association.brandLabel ? `${pickerCatalog.association.brandLabel} catalog` : "catalog"}</label>
+                    <input
+                      id="catalog-search"
+                      value={paletteQuery}
+                      onChange={(e) => setPaletteQuery(e.target.value)}
+                      placeholder={`Name or ${pickerCatalog?.association.brandLabel ?? "catalog"} code`}
+                      disabled={!pickerCatalog}
+                      aria-label={`Search ${pickerCatalog?.association.brandLabel ? `${pickerCatalog.association.brandLabel} catalog` : "catalog"}`}
+                    />
+                    <div className="catalog-color-grid" role="list" aria-label="Available thread colors">
                     {pickerCatalog && catalogResults.map((color) => (
                      <div role="listitem" key={`${pickerCatalog.association.catalogId}:${color.sourceId}`}>
                       <button
@@ -1812,7 +1826,9 @@ export function EditorSurface({
                       No matching colors.
                     </p>
                   )}
-                </div>
+                    </div>
+                  </div>}
+                </div> : <p className="catalog-unavailable" role="status">Catalog unavailable</p>}
                 <section className="custom-color-section" aria-labelledby="custom-color-title">
                   <h3 id="custom-color-title">Custom color</h3>
                   <div className="custom-color-fields">
@@ -1834,27 +1850,16 @@ export function EditorSurface({
                       autoComplete="off"
                       aria-describedby="custom-color-help"
                    />
-                    <div className="custom-color-rgb" role="group" aria-labelledby="custom-color-rgb-title" aria-describedby="custom-color-help">
-                      <span id="custom-color-rgb-title" className="custom-color-rgb-title">RGB</span>
-                      {([['red', 'Red'], ['green', 'Green'], ['blue', 'Blue']] as const).map(([key, label]) => {
-                        const value = rgbDraft[key];
-                        const hasRgbDraft = Object.values(rgbDraft).some((channel) => channel !== '');
-                        const invalid = (hasRgbDraft && value === '') || (value !== '' && (!/^\d+$/.test(value) || Number(value) > 255));
-                        return <label key={key} htmlFor={`custom-color-${key}`}>{label}<input id={`custom-color-${key}`} type="number" min="0" max="255" step="1" value={value} aria-invalid={invalid} onChange={(e) => setRgbChannel(key, e.target.value)} /></label>;
-                      })}
-                    </div>
                   </div>
                   <p id="custom-color-help" className="custom-color-help" aria-live="polite">
-                    {rgbInvalid || (Object.values(rgbDraft).some((value) => value !== "") && Object.values(rgbDraft).some((value) => value === ""))
-                      ? "Enter whole-number RGB values from 0 to 255."
-                      : customColorInput && !customColor
+                    {customColorInput && !customColor
                       ? "Enter a 3- or 6-digit hex color."
                       : "Use a three- or six-digit hex value."}
                   </p>
                   <button
                     className="small-action custom-color-action"
                     type="button"
-                     disabled={!customColor || rgbInvalid || (Object.values(rgbDraft).some((value) => value !== "") && Object.values(rgbDraft).some((value) => value === ""))}
+                     disabled={!customColor}
                     aria-label={customActionLabel}
                     onClick={() => void addCustomColor()}
                   >
