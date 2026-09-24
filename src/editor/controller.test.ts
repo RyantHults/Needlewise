@@ -624,6 +624,230 @@ describe('EditorSurfaceController', () => {
     controller.dispose();
   });
 
+  it('keeps shape previews transient, replaces preview cells, commits once, and supports one-step undo and redo', () => {
+    const document = createDocument({
+      width: 8,
+      height: 8,
+      catalog: DEFAULT_CATALOG_DEFINITION.association,
+      palette: [
+        { id: 1, name: 'Thread', color: '#123456', active: true },
+        { id: 2, name: 'Shape thread', color: '#abcdef', active: true }
+      ]
+    });
+    const { gateway, uiStore, controller, calls } = controllerFixture({}, document);
+    uiStore.setPaletteId(2);
+    controller.setTool({ tool: 'shape', shape: 'line' });
+
+    expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
+    expect(uiStore.getState().overlay.pendingCells).toEqual([{ x: 0, y: 0 }]);
+    expect(uiStore.getState().overlay.pendingCellStates).toMatchObject([
+      { index: 0, kind: CellKind.Full, colors: [2, 0, 0, 0], completed: 0 }
+    ]);
+    controller.handlePointerMove(pointer(1, 72, 8));
+    expect(uiStore.getState().overlay.pendingCells).toHaveLength(5);
+    expect(gateway.getSnapshot().document?.kind.every((kind) => kind === CellKind.Empty)).toBe(true);
+    controller.handlePointerMove(pointer(1, 24, 8));
+    expect(uiStore.getState().overlay.pendingCells).toEqual([{ x: 0, y: 0 }, { x: 1, y: 0 }]);
+
+    controller.handlePointerUp(pointer(1, 24, 8));
+    expect(gateway.commands).toHaveLength(1);
+    expect(gateway.commands[0]).toMatchObject({
+      type: 'bulk-cell',
+      indices: new Uint32Array([0, 1]),
+      edit: { kind: 'full', color: 2 }
+    });
+    expect(gateway.getSnapshot().document?.kind.slice(0, 2)).toEqual(new Uint8Array([CellKind.Full, CellKind.Full]));
+    expect(gateway.getSnapshot().document?.colors[0]).toBe(2);
+    expect(gateway.undoDepth).toBe(1);
+    expect(uiStore.getState().overlay.pendingCells).toBeUndefined();
+    expect(calls.setDocument.at(-1)?.invalidation).toMatchObject({
+      layer: 'base',
+      cellRect: { x: 0, y: 0, width: 2, height: 1 },
+      reason: 'editor-command'
+    });
+
+    controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
+    expect(gateway.getSnapshot().document?.kind.slice(0, 2)).toEqual(new Uint8Array([CellKind.Empty, CellKind.Empty]));
+    expect(gateway.undoDepth).toBe(0);
+    controller.handleKeyDown({ key: 'y', ctrlKey: true, preventDefault: () => undefined });
+    expect(gateway.getSnapshot().document?.kind.slice(0, 2)).toEqual(new Uint8Array([CellKind.Full, CellKind.Full]));
+    expect(gateway.undoDepth).toBe(1);
+    controller.dispose();
+  });
+
+  it('uses the active palette as full stitches and applies the current brush size as outline thickness', () => {
+    const document = createDocument({
+      width: 8,
+      height: 8,
+      catalog: DEFAULT_CATALOG_DEFINITION.association,
+      palette: [
+        { id: 1, name: 'Thread', color: '#123456', active: true },
+        { id: 2, name: 'Shape thread', color: '#abcdef', active: true }
+      ]
+    });
+    const fixture = controllerFixture({}, document);
+    fixture.uiStore.setPaletteId(2);
+    fixture.controller.setBrushSize(2);
+    fixture.controller.setTool({ tool: 'shape', shape: 'line' });
+    fixture.controller.handlePointerDown(pointer(1, 40, 40));
+    fixture.controller.handlePointerMove(pointer(1, 72, 40));
+
+    const states = fixture.uiStore.getState().overlay.pendingCellStates ?? [];
+    expect(states.map((state) => state.index)).toEqual([10, 11, 12, 17, 18, 19, 20, 21, 26, 27, 28]);
+    expect(states.every((state) => state.kind === CellKind.Full && state.colors[0] === 2)).toBe(true);
+    fixture.controller.handlePointerUp(pointer(1, 72, 40));
+    expect(fixture.gateway.commands[0]).toMatchObject({
+      type: 'bulk-cell',
+      indices: new Uint32Array([10, 11, 12, 17, 18, 19, 20, 21, 26, 27, 28]),
+      edit: { kind: 'full', color: 2 }
+    });
+    fixture.controller.dispose();
+  });
+
+  it('constrains square and circle tools while leaving rectangles freeform', () => {
+    const square = controllerFixture();
+    square.controller.setTool({ tool: 'shape', shape: 'square' });
+    square.controller.handlePointerDown(pointer(1, 24, 24));
+    square.controller.handlePointerUp(pointer(1, 56, 40));
+    expect(square.gateway.commands[0]).toMatchObject({
+      type: 'bulk-cell',
+      indices: new Uint32Array([9, 10, 11, 17, 19, 25, 26, 27])
+    });
+    square.controller.dispose();
+
+    const circle = controllerFixture();
+    circle.controller.setTool({ tool: 'shape', shape: 'circle' });
+    circle.controller.handlePointerDown(pointer(1, 24, 24));
+    circle.controller.handlePointerUp(pointer(1, 56, 40));
+    expect(circle.gateway.commands[0]).toMatchObject({
+      type: 'bulk-cell',
+      indices: new Uint32Array([10, 17, 19, 26])
+    });
+    circle.controller.dispose();
+
+    const rectangle = controllerFixture();
+    rectangle.controller.setTool({ tool: 'shape', shape: 'rectangle' });
+    rectangle.controller.handlePointerDown(pointer(1, 24, 24));
+    rectangle.controller.handlePointerUp(pointer(1, 56, 40));
+    expect(rectangle.gateway.commands[0]).toMatchObject({
+      type: 'bulk-cell',
+      indices: new Uint32Array([9, 10, 11, 17, 18, 19])
+    });
+    rectangle.controller.dispose();
+
+    const clamped = controllerFixture();
+    clamped.controller.setTool({ tool: 'shape', shape: 'line' });
+    clamped.controller.handlePointerDown(pointer(2, 104, 104));
+    clamped.controller.handlePointerMove(pointer(2, 300, 300));
+    expect(clamped.uiStore.getState().overlay.pendingCells?.every(({ x, y }) => x >= 0 && x < 8 && y >= 0 && y < 8)).toBe(true);
+    clamped.controller.handlePointerUp(pointer(2, 300, 300));
+    expect(clamped.gateway.commands[0]).toMatchObject({
+      type: 'bulk-cell',
+      indices: new Uint32Array([54, 63])
+    });
+    clamped.controller.dispose();
+  });
+
+  it('keeps square and circle bounds square and chart-bounded at the bottom edge', () => {
+    for (const shape of ['square', 'circle'] as const) {
+      const fixture = controllerFixture();
+      fixture.controller.setTool({ tool: 'shape', shape });
+      fixture.controller.handlePointerDown(pointer(1, 72, 120)); // cell (4, 7)
+      fixture.controller.handlePointerMove(pointer(1, 104, 120)); // cell (6, 7); locking would extend below the chart
+
+      const cells = fixture.uiStore.getState().overlay.pendingCells ?? [];
+      expect(cells.length, `${shape} preview should not be empty`).toBeGreaterThan(0);
+      const minX = Math.min(...cells.map(({ x }) => x));
+      const maxX = Math.max(...cells.map(({ x }) => x));
+      const minY = Math.min(...cells.map(({ y }) => y));
+      const maxY = Math.max(...cells.map(({ y }) => y));
+      expect({ minX, maxX, minY, maxY }, shape).toEqual({ minX: 4, maxX: 6, minY: 5, maxY: 7 });
+      expect(maxX - minX + 1, shape).toBe(maxY - minY + 1);
+      expect(cells.every(({ x, y }) => x >= 0 && x < 8 && y >= 0 && y < 8), shape).toBe(true);
+
+      fixture.controller.handlePointerUp(pointer(1, 104, 120));
+      const committed = fixture.gateway.commands.at(-1);
+      expect(committed, shape).toMatchObject({ type: 'bulk-cell' });
+      const committedIndices = committed?.type === 'bulk-cell'
+        ? Array.from((committed as BulkCellCommand).indices)
+        : [];
+      expect(committedIndices.every((index) => index >= 0 && index < 64), `${shape} commit should stay on chart`).toBe(true);
+      fixture.controller.dispose();
+    }
+  });
+
+  it('supports touch shapes and clears shape previews on cancel, lost capture, or tool switch', () => {
+    const touch = controllerFixture();
+    touch.controller.setTool({ tool: 'shape', shape: 'rectangle' });
+    touch.controller.handlePointerDown(pointer(1, 8, 8, 'touch'));
+    touch.controller.handlePointerMove(pointer(1, 40, 24, 'touch'));
+    expect(touch.uiStore.getState().overlay.pendingCells?.length).toBeGreaterThan(1);
+    touch.controller.handlePointerUp(pointer(1, 40, 24, 'touch'));
+    expect(touch.gateway.commands).toHaveLength(1);
+    expect(touch.gateway.commands[0].type).toBe('bulk-cell');
+    touch.controller.dispose();
+
+    const cancelled = controllerFixture();
+    cancelled.controller.setTool({ tool: 'shape', shape: 'line' });
+    cancelled.controller.handlePointerDown(pointer(2, 8, 8, 'pen'));
+    cancelled.controller.handlePointerMove(pointer(2, 40, 8, 'pen'));
+    expect(cancelled.controller.handlePointerCancel(pointer(2, 40, 8, 'pen'))).toBe(true);
+    expect(cancelled.uiStore.getState().overlay.pendingCells).toBeUndefined();
+    expect(cancelled.gateway.commands).toHaveLength(0);
+
+    cancelled.controller.handlePointerDown(pointer(3, 8, 8));
+    cancelled.controller.handlePointerMove(pointer(3, 40, 8));
+    expect(cancelled.controller.handlePointerLostCapture(pointer(3, 40, 8))).toBe(true);
+    expect(cancelled.uiStore.getState().overlay.pendingCellStates).toBeUndefined();
+    expect(cancelled.gateway.commands).toHaveLength(0);
+
+    cancelled.controller.handlePointerDown(pointer(4, 8, 8));
+    cancelled.controller.setTool({ tool: 'pan' });
+    expect(cancelled.uiStore.getState().overlay.pendingCells).toBeUndefined();
+    cancelled.controller.handlePointerUp(pointer(4, 8, 8));
+    expect(cancelled.gateway.commands).toHaveLength(0);
+    cancelled.controller.dispose();
+  });
+
+  it('rejects stale and no-op shape commits and requires an active palette entry', () => {
+    const stale = controllerFixture();
+    stale.controller.setTool({ tool: 'shape', shape: 'rectangle' });
+    stale.controller.handlePointerDown(pointer(1, 8, 8));
+    stale.controller.handlePointerMove(pointer(1, 40, 40));
+    stale.gateway.execute({ type: 'bulk-cell', indices: new Uint32Array([63]), edit: { kind: 'full', color: 1 } });
+    expect(stale.uiStore.getState().overlay.pendingCells).toBeUndefined();
+    expect(stale.uiStore.getState().status).toBe('Stroke cancelled: project changed');
+    stale.controller.handlePointerUp(pointer(1, 40, 40));
+    expect(stale.gateway.commands.filter((command) => command.type === 'bulk-cell')).toHaveLength(1);
+    stale.controller.dispose();
+
+    const noop = controllerFixture();
+    noop.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    noop.controller.setTool({ tool: 'shape', shape: 'line' });
+    const commandCount = noop.gateway.commands.length;
+    const undoDepth = noop.gateway.undoDepth;
+    noop.controller.handlePointerDown(pointer(1, 8, 8));
+    noop.controller.handlePointerUp(pointer(1, 8, 8));
+    expect(noop.gateway.commands).toHaveLength(commandCount);
+    expect(noop.gateway.undoDepth).toBe(undoDepth);
+    expect(noop.uiStore.getState().status).toBe('No change');
+    noop.controller.dispose();
+
+    const noPaletteDocument = createDocument({
+      width: 8,
+      height: 8,
+      catalog: DEFAULT_CATALOG_DEFINITION.association,
+      palette: [{ id: 1, name: 'Inactive thread', color: '#123456', active: false }]
+    });
+    const noPalette = controllerFixture({}, noPaletteDocument);
+    noPalette.uiStore.setPaletteId(null);
+    noPalette.controller.setTool({ tool: 'shape', shape: 'line' });
+    expect(noPalette.controller.handlePointerDown(pointer(1, 8, 8))).toBe(false);
+    expect(noPalette.uiStore.getState().overlay.pendingCells).toBeUndefined();
+    expect(noPalette.gateway.commands).toHaveLength(0);
+    noPalette.controller.dispose();
+  });
+
   it('uses bounded invalidation when undoing and redoing paint with an unused active palette color', () => {
     const document = createDocument({
       width: 8,

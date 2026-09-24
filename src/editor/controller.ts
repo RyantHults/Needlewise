@@ -38,6 +38,7 @@ import type {
   ModelPoint,
   OverlayState,
   PendingCellState,
+  ShapeKind,
   SelectedCellSemantics,
   ScreenPoint,
   TraceBoundsChangeCallback,
@@ -56,6 +57,7 @@ import {
   isFiniteScreenPoint,
   isFiniteViewport,
   normalizeViewport,
+  screenToCell,
   screenToModel,
   zoomAt,
   zoomBy,
@@ -63,6 +65,7 @@ import {
   type ViewportClampOptions
 } from './coordinates';
 import { cellKey, supercoverLine } from './interpolation';
+import { constrainShapeEndpoint, rasterizeShapeOutline } from './shapes';
 import {
   type EditorRevisionToken,
   type EditorTransaction,
@@ -136,7 +139,7 @@ export interface EditorSurfaceControllerLifecycle {
   dispose(): void;
 }
 
-type Gesture = PaintGesture | EraserGesture | CompletionGesture | SelectionGesture | LassoGesture | BackstitchGesture | TouchActionGesture | PanGesture | PinchGesture | MoveImageGesture | ResizeImageGesture;
+type Gesture = PaintGesture | ShapeGesture | EraserGesture | CompletionGesture | SelectionGesture | LassoGesture | BackstitchGesture | TouchActionGesture | PanGesture | PinchGesture | MoveImageGesture | ResizeImageGesture;
 
 interface PaintGesture {
   readonly kind: 'paint';
@@ -148,6 +151,17 @@ interface PaintGesture {
   readonly brushSize: number;
   readonly cells: Map<string, ModelPoint>;
   lastCell: ModelPoint | undefined;
+}
+
+interface ShapeGesture {
+  readonly kind: 'shape';
+  readonly pointerId: number;
+  readonly transaction: EditorTransaction;
+  readonly shape: ShapeKind;
+  readonly anchor: ModelPoint;
+  readonly edit: BulkCellEdit;
+  readonly brushSize: number;
+  readonly cells: Map<string, ModelPoint>;
 }
 
 interface EraserGesture {
@@ -452,6 +466,12 @@ function brushCells(center: ModelPoint, size: number, document: PatternDocument)
 
 function stampBrush(cells: Map<string, ModelPoint>, center: ModelPoint, size: number, document: PatternDocument): void {
   for (const cell of brushCells(center, size, document)) cells.set(cellKey(cell), cell);
+}
+
+function boundedSquareOrigin(origin: number, anchor: number, side: number, extent: number): number {
+  const min = Math.max(0, anchor - side + 1);
+  const max = Math.min(anchor, extent - side);
+  return Math.max(min, Math.min(max, origin));
 }
 
 function stampCompletionTargets(
@@ -2121,6 +2141,29 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.publishLassoPath([point]);
       return true;
     }
+    if (selectedTool.tool === 'shape') {
+      const cell = this.paintHitCell(sample, snapshot.document);
+      const paletteId = this.uiStore.getState().paletteId;
+      const paletteEntry = paletteId === null
+        ? undefined
+        : snapshot.document.palette.find((entry) => entry.id === paletteId && entry.active);
+      if (!cell || !paletteEntry) return false;
+      const transaction = this.gateway.beginTransaction();
+      const gesture: ShapeGesture = {
+        kind: 'shape',
+        pointerId: sample.pointerId,
+        transaction,
+        shape: selectedTool.shape,
+        anchor: cell,
+        edit: { kind: 'full', color: paletteEntry.id },
+        brushSize: this.getBrushSize(),
+        cells: new Map<string, ModelPoint>()
+      };
+      this.gesture = gesture;
+      this.updateShapeCells(gesture, cell, snapshot.document);
+      this.publishPendingCells(gesture.cells, this.pendingPaintStates(gesture.cells, gesture.edit, transaction.token.revision, snapshot.document));
+      return true;
+    }
     if (selectedTool.tool === 'fill') {
       const cell = this.paintHitCell(sample, snapshot.document);
       const local = normalizedPointerPosition(sample, this.uiStore.getState().viewport);
@@ -2233,6 +2276,19 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if (gesture.kind === 'resize-image') {
       this.updateResizeImage(sample);
+      return true;
+    }
+    if (gesture.kind === 'shape') {
+      const snapshot = this.gateway.getSnapshot();
+      if (!this.isCurrentTransaction(gesture.transaction.token, snapshot)) {
+        this.cancelGesture();
+        this.setStatus('Stroke cancelled: project changed');
+        return true;
+      }
+      const document = snapshot.document;
+      if (!document) return false;
+      this.appendShapeSample(gesture, sample, document);
+      this.publishPendingCells(gesture.cells, this.pendingPaintStates(gesture.cells, gesture.edit, gesture.transaction.token.revision, document));
       return true;
     }
     if (gesture.kind === 'paint') {
@@ -2380,7 +2436,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       if (touchPointerReleased && this.touchPointers.size === 0) this.finishTouchHistoryCandidate();
       return touchPointerReleased;
     }
-    if (gesture.kind === 'paint') {
+    if (gesture.kind === 'shape') {
+      const document = this.gateway.getSnapshot().document;
+      if (document) this.appendShapeSample(gesture, sample, document);
+      this.finishShape(true);
+    } else if (gesture.kind === 'paint') {
       const document = this.gateway.getSnapshot().document;
       if (document) this.appendPaintSample(gesture, sample, document);
       this.finishPaint(true);
@@ -2458,7 +2518,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     const gesture = this.gesture;
     if (!gesture || gesture.kind === 'pinch' || gesture.pointerId !== sample.pointerId) return false;
-    if (gesture.kind === 'paint') this.finishPaint(false);
+    if (gesture.kind === 'shape') this.finishShape(false);
+    else if (gesture.kind === 'paint') this.finishPaint(false);
     else if (gesture.kind === 'completion') this.finishCompletion(false);
     else if (gesture.kind === 'eraser') this.finishEraser(false);
     else if (gesture.kind === 'lasso') {
@@ -2846,6 +2907,51 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     gesture.lastCell = nextCell;
   }
 
+  private shapeEndpoint(sample: PointerSample, document: PatternDocument): ModelPoint | undefined {
+    if (!validScreenSample(sample) || !isFiniteViewport(this.uiStore.getState().viewport)) return undefined;
+    return screenToCell(
+      { x: sample.screenX, y: sample.screenY },
+      this.uiStore.getState().viewport,
+      document
+    );
+  }
+
+  private updateShapeCells(gesture: ShapeGesture, endpoint: ModelPoint, document: PatternDocument): void {
+    let shapeStart = gesture.anchor;
+    let shapeEnd = endpoint;
+    if (gesture.shape === 'square' || gesture.shape === 'circle') {
+      const constrainedEndpoint = constrainShapeEndpoint(gesture.anchor, endpoint);
+      const side = Math.min(
+        Math.max(Math.abs(constrainedEndpoint.x - gesture.anchor.x), Math.abs(constrainedEndpoint.y - gesture.anchor.y)) + 1,
+        document.width,
+        document.height
+      );
+      const left = boundedSquareOrigin(
+        Math.min(gesture.anchor.x, constrainedEndpoint.x),
+        gesture.anchor.x,
+        side,
+        document.width
+      );
+      const top = boundedSquareOrigin(
+        Math.min(gesture.anchor.y, constrainedEndpoint.y),
+        gesture.anchor.y,
+        side,
+        document.height
+      );
+      shapeStart = { x: left, y: top };
+      shapeEnd = { x: left + side - 1, y: top + side - 1 };
+    }
+    gesture.cells.clear();
+    for (const outlineCell of rasterizeShapeOutline(gesture.shape, shapeStart, shapeEnd)) {
+      stampBrush(gesture.cells, outlineCell, gesture.brushSize, document);
+    }
+  }
+
+  private appendShapeSample(gesture: ShapeGesture, sample: PointerSample, document: PatternDocument): void {
+    const endpoint = this.shapeEndpoint(sample, document);
+    if (endpoint) this.updateShapeCells(gesture, endpoint, document);
+  }
+
   private appendCompletionSample(gesture: CompletionGesture, sample: PointerSample, document: PatternDocument): void {
     const nextCell = this.paintHitCell(sample, document);
     const local = normalizedPointerPosition(sample, this.uiStore.getState().viewport);
@@ -2901,13 +3007,22 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private finishPaint(commit: boolean): void {
     const gesture = this.gesture;
     if (!gesture || gesture.kind !== 'paint') return;
+    this.finishBulkCellGesture(gesture, commit);
+  }
+
+  private finishShape(commit: boolean): void {
+    const gesture = this.gesture;
+    if (!gesture || gesture.kind !== 'shape') return;
+    this.finishBulkCellGesture(gesture, commit);
+  }
+
+  private finishBulkCellGesture(gesture: PaintGesture | ShapeGesture, commit: boolean): void {
     this.gesture = undefined;
     this.clearPendingCells();
     if (!commit || gesture.cells.size === 0) return;
     const snapshot = this.gateway.getSnapshot();
     if (!snapshot.document) return;
-    const cells = [...gesture.cells.values()];
-    const indices = indicesForCells(cells, snapshot.document.width);
+    const indices = indicesForCells([...gesture.cells.values()], snapshot.document.width);
     const command: DomainCommand = {
       type: 'bulk-cell',
       indices,
@@ -2920,14 +3035,16 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         return;
       }
       const preflight = preflightBulkCellCommand(snapshot.document, command);
-      const changedIndices = gesture.edit.kind === 'three-quarter'
+      const changedIndices = gesture.kind === 'paint' && gesture.edit.kind === 'three-quarter'
         ? new Uint32Array(
             Array.from(preflight.changedIndices)
               .map((index) => cellState(snapshot.document!, index, preflight.edit))
               .filter((state) => cellStateChanged(snapshot.document!, state))
               .map((state) => state.index)
           )
-        : indices;
+        : gesture.kind === 'shape'
+          ? preflight.changedIndices
+          : indices;
       if (preflight.changedIndices.length === 0 || changedIndices.length === 0) {
         this.setStatus('No change');
         return;
@@ -3591,6 +3708,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const previous = this.lastGatewaySnapshot;
     const projectChanged = previous.projectId !== snapshot.projectId;
     const documentChanged = previous.document !== snapshot.document || previous.revision !== snapshot.revision;
+    let staleGestureStatus: string | undefined;
     this.lastGatewaySnapshot = snapshot;
     if (!force && !projectChanged && !documentChanged) return;
     if (projectChanged || documentChanged) this.discardFloatingPaste();
@@ -3603,7 +3721,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.clearTouchCopyRequest();
     }
     if (projectChanged) this.resetForProjectSwitch(snapshot);
-    else if (this.gesture && ((this.gesture.kind === 'paint' || this.gesture.kind === 'eraser' || this.gesture.kind === 'completion')
+    else if (this.gesture && ((this.gesture.kind === 'paint' || this.gesture.kind === 'shape' || this.gesture.kind === 'eraser' || this.gesture.kind === 'completion')
       ? (this.gesture.transaction.token.revision !== snapshot.revision || this.gesture.transaction.token.projectId !== snapshot.projectId)
       : (this.gesture.kind === 'backstitch' || this.gesture.kind === 'lasso' || this.gesture.kind === 'touch-action')
         ? (this.gesture.token.revision !== snapshot.revision || this.gesture.token.projectId !== snapshot.projectId)
@@ -3613,7 +3731,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         : this.gesture.kind === 'lasso' ? 'Lasso cancelled: project changed'
           : this.gesture.kind === 'touch-action' ? 'Action cancelled: project changed' : 'Stroke cancelled: project changed';
       this.cancelGesture();
-      this.setStatus(staleStatus);
+      staleGestureStatus = staleStatus;
     }
     if (!projectChanged && this.fillJob && this.fillToken
       && (this.fillToken.projectId !== snapshot.projectId || this.fillToken.revision !== snapshot.revision)) this.cancelFill(false);
@@ -3624,6 +3742,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.renderer.setOverlay({});
       this.uiStore.setSelectedCell(null);
     }
+    if (staleGestureStatus) this.setStatus(staleGestureStatus);
   }
 
   private resetForProjectSwitch(snapshot: WorkspaceEditorSnapshot): void {

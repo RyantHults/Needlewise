@@ -522,10 +522,13 @@ export const EditorToolKind = {
   Fill: 'fill',
   Completion: 'completion',
   Backstitch: 'backstitch',
-  Eyedropper: 'eyedropper'
+  Eyedropper: 'eyedropper',
+  Shape: 'shape'
 } as const;
 
 export type EditorToolKind = (typeof EditorToolKind)[keyof typeof EditorToolKind];
+
+export type ShapeKind = 'line' | 'rectangle' | 'square' | 'circle' | 'triangle' | 'right-triangle';
 
 export const StitchBrushKind = {
   Full: 'full',
@@ -615,6 +618,11 @@ export interface EyedropperToolState {
   readonly tool: 'eyedropper';
 }
 
+export interface ShapeToolState {
+  readonly tool: 'shape';
+  readonly shape: ShapeKind;
+}
+
 /** Reposition the reference image with pointer drags. No brush or chart edits. */
 export interface MoveImageToolState {
   readonly tool: 'move-image';
@@ -625,7 +633,7 @@ export interface ResizeImageToolState {
   readonly tool: 'resize-image';
 }
 
-export type EditorToolState = PaintToolState | PanToolState | EraserToolState | SelectToolState | LassoToolState | FillToolState | CompletionToolState | BackstitchToolState | EyedropperToolState | MoveImageToolState | ResizeImageToolState;
+export type EditorToolState = PaintToolState | PanToolState | EraserToolState | SelectToolState | LassoToolState | FillToolState | CompletionToolState | BackstitchToolState | EyedropperToolState | ShapeToolState | MoveImageToolState | ResizeImageToolState;
 export type ToolState = EditorToolState;
 export type ActiveStitchBrush = StitchBrush;
 

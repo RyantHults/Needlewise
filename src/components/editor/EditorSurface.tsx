@@ -30,6 +30,7 @@ import lassoIcon from "../../assets/editor-tools/lasso.svg";
 import eyedropperIcon from "../../assets/editor-tools/eyedropper.svg";
 import panIcon from "../../assets/editor-tools/pan.svg";
 import stitchIcon from "../../assets/editor-tools/stitch.svg";
+import type { ShapeKind } from "../../editor/contracts";
 interface Props {
   workspace: ProjectWorkspace;
   document: NonNullable<
@@ -185,6 +186,15 @@ export function EditorSurface({
   const [ui, setUi] = useState<EditorUiState | null>(null);
   const [fallback, setFallback] = useState(false);
   const [size, setSize] = useState(1);
+  const [selectedShape, setSelectedShape] = useState<ShapeKind>("line");
+  const [shapeMenuOpen, setShapeMenuOpen] = useState(false);
+  const [shapeMenuPosition, setShapeMenuPosition] = useState({ left: 8, top: 8 });
+  const shapeTrigger = useRef<HTMLButtonElement>(null);
+  const shapeMenu = useRef<HTMLDivElement>(null);
+  const shapeItems = useRef<Array<HTMLButtonElement | null>>([]);
+  const shapePress = useRef<number | null>(null);
+  const shapeLongPressed = useRef(false);
+  const shapePointerId = useRef<number | null>(null);
   const [open, setOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<"project" | "aida" | "editor">("project");
   const [title, setTitle] = useState(workspace.metadata?.title ?? "");
@@ -323,7 +333,8 @@ export function EditorSurface({
         {
           keyboardSurface: root,
           shouldExcludeTarget: (target: unknown) =>
-            target instanceof Element && Boolean(target.closest(".touch-copy-menu")),
+            target instanceof Element &&
+            Boolean(target.closest('.touch-copy-menu, button[aria-label="Shape"]')),
         },
       );
       const observer =
@@ -1083,6 +1094,7 @@ export function EditorSurface({
     if (!mobilePanel) return;
     mobilePopover.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && globalThis.document.querySelector(".shape-picker-menu")) return;
       if (event.key === "Escape") {
         event.preventDefault();
         setMobilePanel(null);
@@ -1219,6 +1231,59 @@ export function EditorSurface({
   const threeQuarterActive =
     (selectedBrush as { kind?: string } | undefined)?.kind === "three-quarter";
   const backstitchActive = ui?.tool.tool === "backstitch";
+  const positionShapeMenu = (anchor: HTMLElement) => {
+    const rect = anchor.getBoundingClientRect();
+    setShapeMenuPosition({ left: Math.max(8, Math.min(rect.left, window.innerWidth - 280)), top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 110)) });
+  };
+  const openShapeMenu = (anchor: HTMLElement) => {
+    window.clearTimeout(shapePress.current ?? undefined);
+    shapePress.current = null;
+    shapeTrigger.current = anchor as HTMLButtonElement;
+    positionShapeMenu(anchor);
+    setShapeMenuOpen(true);
+  };
+  const closeShapeMenu = (restoreFocus = true) => {
+    setShapeMenuOpen(false);
+    if (restoreFocus) shapeTrigger.current?.focus();
+  };
+  const shapeToolDisabled = noThread || ui?.paletteId == null || !palette.some((entry) => entry.id === ui.paletteId);
+  const applyShapeTool = (shape: ShapeKind) => {
+    if (shapeToolDisabled) return;
+    controllerRef.current?.setTool({ tool: "shape", shape } as never);
+  };
+  const shapeIcon = (kind: ShapeKind) => <svg data-shape-icon={kind} viewBox="0 0 24 24" aria-hidden="true"><path d={kind === "line" ? "M5 19 19 5" : kind === "rectangle" ? "M5 6h14v12H5z" : (kind as string) === "square" ? "M5 5h14v14H5z" : kind === "circle" ? "M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16" : (kind as string) === "right-triangle" ? "M5 5V19H19Z M8 16V13H11V16Z" : "M12 4 20 19H4z"} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+  useEffect(() => {
+    if (!shapeMenuOpen) return;
+    shapeItems.current[( ["line", "rectangle", "square", "circle", "triangle", "right-triangle"] as string[]).indexOf(selectedShape)]?.focus();
+    const outside = (event: PointerEvent) => { if (event.target instanceof Node && !shapeMenu.current?.contains(event.target) && !shapeTrigger.current?.contains(event.target)) closeShapeMenu(); };
+    const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeShapeMenu(); return; }
+      const current = shapeItems.current.findIndex((item) => item === globalThis.document.activeElement);
+      if (current < 0) return;
+      let next: number | undefined;
+      if (event.key === "ArrowDown" || event.key === "ArrowRight") next = (current + 1) % 6;
+      else if (event.key === "ArrowUp" || event.key === "ArrowLeft") next = (current + 5) % 6;
+      else if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = 5;
+      else if (event.key === "Enter" || event.key === " ") { event.preventDefault(); shapeItems.current[current]?.click(); return; }
+      if (next !== undefined) { event.preventDefault(); shapeItems.current[next]?.focus(); }
+    };
+    globalThis.document.addEventListener("pointerdown", outside);
+    globalThis.document.addEventListener("keydown", key);
+    return () => { globalThis.document.removeEventListener("pointerdown", outside); globalThis.document.removeEventListener("keydown", key); };
+  }, [shapeMenuOpen, selectedShape]);
+  useEffect(() => {
+    const releaseOutside = (event: PointerEvent) => {
+      if (shapePointerId.current !== null && event.pointerId === shapePointerId.current && !(event.target instanceof Node && shapeTrigger.current?.contains(event.target))) {
+        window.clearTimeout(shapePress.current ?? undefined);
+        shapePress.current = null;
+        shapePointerId.current = null;
+        shapeLongPressed.current = false;
+      }
+    };
+    globalThis.document.addEventListener("pointerup", releaseOutside, true);
+    return () => globalThis.document.removeEventListener("pointerup", releaseOutside, true);
+  }, []);
   return (
     <section ref={workspaceRoot} className="editor-workspace" aria-labelledby="editor-title">
       <header className="editor-heading">
@@ -1347,6 +1412,32 @@ export function EditorSurface({
             <button
               className="rail-button"
               type="button"
+              disabled={shapeToolDisabled}
+              aria-label="Shape"
+              title="Shape · hold for options"
+              aria-pressed={ui?.tool.tool === "shape"}
+              onPointerDown={(event) => {
+                const anchor = event.currentTarget;
+                shapePointerId.current = event.pointerId;
+                shapeLongPressed.current = false;
+                window.clearTimeout(shapePress.current ?? undefined);
+                shapePress.current = window.setTimeout(() => { shapeLongPressed.current = true; openShapeMenu(anchor); }, 500);
+              }}
+              onPointerUp={() => { window.clearTimeout(shapePress.current ?? undefined); shapePress.current = null; shapePointerId.current = null; }}
+              onPointerLeave={() => { if (shapePress.current !== null) { window.clearTimeout(shapePress.current); shapePress.current = null; shapePointerId.current = null; } }}
+              onPointerCancel={() => { window.clearTimeout(shapePress.current ?? undefined); shapePress.current = null; shapePointerId.current = null; }}
+              onContextMenu={(event) => { event.preventDefault(); openShapeMenu(event.currentTarget); }}
+              onKeyDown={(event) => {
+                if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) { event.preventDefault(); event.stopPropagation(); openShapeMenu(event.currentTarget); }
+                else if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); applyShapeTool(selectedShape); }
+              }}
+              onClick={() => { if (shapeLongPressed.current) { shapeLongPressed.current = false; return; } applyShapeTool(selectedShape); }}
+            >
+              {shapeIcon(selectedShape)}
+            </button>
+            <button
+              className="rail-button"
+              type="button"
               disabled={noThread}
               aria-label="Backstitch"
               title="Backstitch"
@@ -1407,6 +1498,13 @@ export function EditorSurface({
             </button>
           </nav>
           </div>
+          {shapeMenuOpen && createPortal(<div ref={shapeMenu} className="shape-picker-menu" role="menu" aria-label="Choose shape" style={{ position: "fixed", left: shapeMenuPosition.left, top: shapeMenuPosition.top, zIndex: 1000 }} onPointerDown={(event) => event.stopPropagation()}>
+            {(["line", "rectangle", "square", "circle", "triangle", "right-triangle"] as string[]).map((kind, index) => {
+              const shape = kind as ShapeKind;
+              const label = kind === "right-triangle" ? "Right triangle" : kind[0]!.toUpperCase() + kind.slice(1);
+              return <button key={kind} ref={(element) => { shapeItems.current[index] = element; }} type="button" role="menuitemradio" aria-label={label} title={label} aria-checked={selectedShape === shape} onClick={() => { setSelectedShape(shape); if (ui?.tool.tool === "shape") applyShapeTool(shape); shapeLongPressed.current = false; closeShapeMenu(); }}>{shapeIcon(shape)}</button>;
+            })}
+          </div>, globalThis.document.body)}
           <div ref={mobilePanel === "colors" ? mobilePopover : undefined} id="mobile-colors-popover" className={`editor-rail-popover mobile-colors-popover${mobilePanel === "colors" ? " mobile-popover-open" : ""}`} role={mobilePanel === "colors" ? "dialog" : undefined} aria-label="Colors" tabIndex={-1}>
           <div className="palette-rail" role="region" aria-label="Thread colors">
             <button

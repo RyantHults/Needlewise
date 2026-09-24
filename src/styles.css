@@ -351,6 +351,15 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .palette-menu button { border:1px solid #d5cec3; border-radius:.3rem; padding:.3rem; background:#fffdf9; color:#4e4842; font-size:.7rem; text-align:left; }
 .palette-menu button:hover { border-color:#bc5a3d; color:#88452f; }
 .palette-menu .palette-menu-delete { color:#a94e34; }
+.shape-picker-menu { display:grid; grid-template-columns:repeat(6,2.5rem); gap:.25rem; width:max-content; max-width:calc(100vw - 1rem); padding:.45rem; border:1px solid #d5cec3; border-radius:.55rem; background:#fffdf9; box-shadow:0 .5rem 1.2rem rgba(67,55,42,.2); color:#4e4842; font-size:.75rem; }
+.shape-picker-menu button { display:grid; place-items:center; width:2.5rem; min-width:0; min-height:2.5rem; padding:.35rem; border:1px solid transparent; border-radius:.35rem; background:transparent; color:inherit; cursor:pointer; }
+.shape-picker-menu button:hover,.shape-picker-menu button[aria-checked="true"],.shape-picker-menu label:hover { border-color:#d5cec3; background:#f7f2ea; }
+.shape-picker-menu svg { width:1.1rem; height:1.1rem; flex:none; }
+.shape-picker-menu input { accent-color:#a95137; }
+@media (max-width: 300px) {
+  .shape-picker-menu { grid-template-columns:repeat(6,2rem); gap:.125rem; padding:.3rem; }
+  .shape-picker-menu button { width:2rem; min-height:2rem; padding:.2rem; }
+}
 .touch-copy-menu { position:absolute; z-index:120; display:flex; flex-wrap:nowrap; gap:.15rem; width:max-content; padding:.2rem; border:1px solid #d5cec3; border-radius:.55rem; background:#fffdf9; box-shadow:0 .5rem 1.2rem rgba(67,55,42,.2); }
 .touch-copy-menu button { flex:0 0 auto; min-width:2.75rem; min-height:2.75rem; border:1px solid #d5cec3; border-radius:.3rem; padding:.3rem .45rem; background:#fffdf9; color:#4e4842; font-size:.72rem; text-align:left; white-space:nowrap; }
 .touch-copy-menu button:disabled { opacity:.45; cursor:not-allowed; }

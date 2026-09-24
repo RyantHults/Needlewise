@@ -467,14 +467,223 @@ describe('EditorSurface', () => {
     expect(options.keyboardSurface).toBe(document.querySelector('.editor-workspace'));
     expect(pointerSurface).not.toBe(options.keyboardSurface);
   });
+  it('excludes the Shape toolbar and its SVG descendants from native keyboard routing', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const adapterOptions = (f.adapter.mock.calls[0] as unknown as [unknown, unknown, {
+      shouldExcludeTarget: (target: unknown, eventType: string) => boolean;
+    }])[2];
+    const shape = screen.getByRole('button', { name: 'Shape' });
+    const path = shape.querySelector('path')!;
+    expect(adapterOptions.shouldExcludeTarget(shape, 'keydown')).toBe(true);
+    expect(adapterOptions.shouldExcludeTarget(path, 'keydown')).toBe(true);
+    expect(adapterOptions.shouldExcludeTarget(document.querySelector('.canvas-frame'), 'keydown')).toBe(false);
+    const touchCopyTarget = document.createElement('button');
+    touchCopyTarget.className = 'touch-copy-menu';
+    expect(adapterOptions.shouldExcludeTarget(touchCopyTarget, 'pointerdown')).toBe(true);
+  });
   it('wires the top-level stitch tools and relocated brush size control', () => { render(<EditorSurface workspace={ws} document={doc} />); f.resize?.(); expect(f.c.setMetrics).toHaveBeenCalled(); const brushSettings = screen.getByRole('heading', { name: 'Brush settings' }).parentElement as HTMLElement; const size = within(brushSettings).getByRole('slider', { name: /Brush size/ }); fireEvent.change(size, { target: { value: '7' } }); expect(f.c.setBrushSize).toHaveBeenCalledWith(7); fireEvent.click(screen.getByRole('button', { name: 'Full stitch' })); expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'full', paletteId: 1 }); fireEvent.click(screen.getByRole('button', { name: 'Half stitch' })); expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'half', paletteId: 1 }); fireEvent.click(screen.getByRole('button', { name: '3/4 stitch' })); expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'three-quarter', paletteId: 1 }); expect(screen.queryByRole('button', { name: 'Stitch' })).not.toBeInTheDocument(); });
   it('orders movement and selection tools first without reordering the remaining tools', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     const rail = within(screen.getByRole('navigation', { name: 'Editor sections' }));
     expect(rail.getAllByRole('button').map((button) => button.getAttribute('aria-label'))).toEqual([
       'Pan', 'Select', 'Lasso select', 'Full stitch', 'Half stitch', '3/4 stitch',
-      'Backstitch', 'Completion', 'Eraser', 'Fill', 'Eyedropper',
+      'Shape', 'Backstitch', 'Completion', 'Eraser', 'Fill', 'Eyedropper',
     ]);
+  });
+  it('offers a default line shape tool and a long-press shape picker', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const shape = screen.getByRole('button', { name: 'Shape' });
+    expect(shape.querySelector('[data-shape-icon="line"]')).toBeInTheDocument();
+    expect(shape).toBeEnabled();
+    fireEvent.pointerDown(shape, { pointerId: 1, pointerType: 'touch' });
+    act(() => vi.advanceTimersByTime(499));
+    expect(screen.queryByRole('menu', { name: 'Choose shape' })).not.toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(1));
+    const menu = screen.getByRole('menu', { name: 'Choose shape' });
+    expect(menu.parentElement).toBe(document.body);
+    expect(within(menu).getAllByRole('menuitemradio')).toHaveLength(6);
+    expect(f.c.setTool).not.toHaveBeenCalled();
+    fireEvent.click(within(menu).getByRole('menuitemradio', { name: 'Circle' }));
+    expect(shape.querySelector('[data-shape-icon="circle"]')).toBeInTheDocument();
+    expect(shape).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(shape);
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'circle' });
+    vi.useRealTimers();
+  });
+  it('presents six icon-only shape choices with accessible names and distinct icons', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const shape = screen.getByRole('button', { name: 'Shape' });
+    fireEvent.contextMenu(shape);
+    const menu = screen.getByRole('menu', { name: 'Choose shape' });
+    for (const [name, icon] of [['Line', 'line'], ['Rectangle', 'rectangle'], ['Square', 'square'], ['Circle', 'circle'], ['Triangle', 'triangle'], ['Right triangle', 'right-triangle']]) {
+      const choice = within(menu).getByRole('menuitemradio', { name });
+      expect(choice.querySelector(`[data-shape-icon="${icon}"]`)).toBeInTheDocument();
+      expect(choice).toHaveAttribute('title', name);
+      expect(choice.textContent?.trim()).toBe('');
+    }
+    expect(within(menu).queryByRole('menuitemcheckbox')).not.toBeInTheDocument();
+    expect(menu.querySelector('[data-shape-icon="right-triangle"] path')?.getAttribute('d')).toMatch(/M\d+ \d+V\d+H\d+/);
+    expect(stylesText).toMatch(/\.shape-picker-menu\s*\{[^}]*grid-template-columns:\s*repeat\(6,/s);
+  });
+  it('opens shape menu from context-menu keys and restores focus when dismissed', async () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const shape = screen.getByRole('button', { name: 'Shape' });
+    fireEvent.keyDown(shape, { key: 'F10', shiftKey: true });
+    expect(screen.getByRole('menu', { name: 'Choose shape' })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(document.activeElement).toBe(shape));
+    fireEvent.contextMenu(shape);
+    fireEvent.pointerDown(document.body);
+    await waitFor(() => expect(document.activeElement).toBe(shape));
+    fireEvent.click(shape);
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'line' });
+  });
+  it('disables shape without an active thread', () => {
+    const empty = { ...(doc as object), palette: [] } as never;
+    render(<EditorSurface workspace={ws} document={empty} />);
+    expect(screen.getByRole('button', { name: 'Shape' })).toBeDisabled();
+  });
+  it('updates the active shape tool when its selected shape changes', () => {
+    f.uiState.tool = { tool: 'shape', shape: 'line' } as never;
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const shape = screen.getByRole('button', { name: 'Shape' });
+    fireEvent.contextMenu(shape);
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Circle' }));
+    expect(f.c.setTool).toHaveBeenLastCalledWith({ tool: 'shape', shape: 'circle' });
+  });
+  it('supports menu keyboard navigation and keeps the mobile Tools popover open on Escape', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const tools = screen.getByRole('button', { name: 'Tools', hidden: true });
+    fireEvent.click(tools);
+    const shape = screen.getByRole('button', { name: 'Shape' });
+    fireEvent.keyDown(shape, { key: 'ContextMenu' });
+    const menu = screen.getByRole('menu', { name: 'Choose shape' });
+    const line = within(menu).getByRole('menuitemradio', { name: 'Line' });
+    const rectangle = within(menu).getByRole('menuitemradio', { name: 'Rectangle' });
+    expect(line).toHaveFocus();
+    fireEvent.keyDown(line, { key: 'ArrowDown' });
+    expect(rectangle).toHaveFocus();
+    fireEvent.keyDown(rectangle, { key: 'End' });
+    const rightTriangle = within(menu).getByRole('menuitemradio', { name: 'Right triangle' });
+    expect(rightTriangle).toHaveFocus();
+    fireEvent.keyDown(rightTriangle, { key: 'Home' });
+    expect(line).toHaveFocus();
+    fireEvent.keyDown(line, { key: ' ' });
+    expect(f.c.setTool).not.toHaveBeenCalled();
+    fireEvent.keyDown(line, { key: 'Escape' });
+    expect(screen.queryByRole('menu', { name: 'Choose shape' })).not.toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Tools' })).toBeInTheDocument();
+    expect(shape).toHaveFocus();
+  });
+  it('supports arrow-key navigation across the six shape choices', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Shape' }), { key: 'ContextMenu' });
+    const menu = screen.getByRole('menu', { name: 'Choose shape' });
+    const line = within(menu).getByRole('menuitemradio', { name: 'Line' });
+    const rightTriangle = within(menu).getByRole('menuitemradio', { name: 'Right triangle' });
+    fireEvent.keyDown(line, { key: 'ArrowRight' });
+    expect(within(menu).getByRole('menuitemradio', { name: 'Rectangle' })).toHaveFocus();
+    fireEvent.keyDown(line, { key: 'End' });
+    expect(rightTriangle).toHaveFocus();
+    fireEvent.keyDown(rightTriangle, { key: 'ArrowRight' });
+    expect(line).toHaveFocus();
+  });
+  it('activates Shape from a nested SVG target and remains activatable after outside release', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const shape = screen.getByRole('button', { name: 'Shape' });
+    fireEvent.click(shape.querySelector('path')!);
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'line' });
+    f.c.setTool.mockClear();
+    fireEvent.pointerDown(shape, { pointerId: 12, pointerType: 'touch' });
+    fireEvent.pointerUp(document.body, { pointerId: 12 });
+    act(() => vi.advanceTimersByTime(500));
+    expect(screen.queryByRole('menu', { name: 'Choose shape' })).not.toBeInTheDocument();
+    fireEvent.keyDown(shape, { key: 'Enter' });
+    fireEvent.click(shape);
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'line' });
+    vi.useRealTimers();
+  });
+  it('does not let an outside release after opening the long-press menu suppress the next Shape activation', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const shape = screen.getByRole('button', { name: 'Shape' });
+    fireEvent.pointerDown(shape, { pointerId: 19, pointerType: 'touch' });
+    act(() => vi.advanceTimersByTime(500));
+    expect(screen.getByRole('menu', { name: 'Choose shape' })).toBeInTheDocument();
+    fireEvent.pointerUp(document.body, { pointerId: 19 });
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('menu', { name: 'Choose shape' })).not.toBeInTheDocument();
+    fireEvent.keyDown(shape, { key: 'Enter' });
+    fireEvent.click(shape);
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'line' });
+    vi.useRealTimers();
+  });
+  it('keeps the long-press click suppressed when Escape closes the menu before release', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const shape = screen.getByRole('button', { name: 'Shape' });
+    fireEvent.pointerDown(shape, { pointerId: 21, pointerType: 'touch' });
+    act(() => vi.advanceTimersByTime(500));
+    expect(screen.getByRole('menu', { name: 'Choose shape' })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('menu', { name: 'Choose shape' })).not.toBeInTheDocument();
+    fireEvent.pointerUp(shape, { pointerId: 21 });
+    fireEvent.click(shape);
+    expect(f.c.setTool).not.toHaveBeenCalled();
+    fireEvent.click(shape);
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'line' });
+    vi.useRealTimers();
+  });
+  it('clears long-press suppression after release outside before Escape', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const shape = screen.getByRole('button', { name: 'Shape' });
+    fireEvent.pointerDown(shape, { pointerId: 22, pointerType: 'touch' });
+    act(() => vi.advanceTimersByTime(500));
+    expect(screen.getByRole('menu', { name: 'Choose shape' })).toBeInTheDocument();
+    fireEvent.pointerUp(document.body, { pointerId: 22 });
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.click(shape);
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'line' });
+    vi.useRealTimers();
+  });
+  it('cancels long press when the pointer leaves and ignores an outside release', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const shape = screen.getByRole('button', { name: 'Shape' });
+    fireEvent.pointerDown(shape, { pointerId: 4, pointerType: 'touch' });
+    fireEvent.pointerLeave(shape, { pointerId: 4 });
+    fireEvent.pointerUp(document.body, { pointerId: 4 });
+    act(() => vi.advanceTimersByTime(500));
+    expect(screen.queryByRole('menu', { name: 'Choose shape' })).not.toBeInTheDocument();
+    expect(f.c.setTool).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+  it('disables Shape when the selected palette id is missing', () => {
+    (f.uiState as { paletteId: number | null }).paletteId = null;
+    render(<EditorSurface workspace={ws} document={two} />);
+    const shape = screen.getByRole('button', { name: 'Shape' });
+    expect(shape).toBeDisabled();
+    fireEvent.click(shape);
+    expect(f.c.setTool).not.toHaveBeenCalled();
+  });
+  it.each(['Enter', ' '])('activates the selected Shape from the toolbar with %s without canvas keyboard editing', (key) => {
+    f.uiState.paletteId = 1;
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const shape = screen.getByRole('button', { name: 'Shape' });
+    f.c.handleKeyDown.mockClear();
+    fireEvent.keyDown(shape, { key });
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'line' });
+    expect(f.c.handleKeyDown).not.toHaveBeenCalled();
+  });
+  it('marks the current choice selected and exposes all six menu items', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Shape' }));
+    const menu = screen.getByRole('menu', { name: 'Choose shape' });
+    expect(within(menu).getAllByRole('menuitemradio')).toHaveLength(6);
+    expect(within(menu).getByRole('menuitemradio', { name: 'Line' })).toHaveAttribute('aria-checked', 'true');
   });
   it('keeps selection actions out of the rail', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
