@@ -72,6 +72,51 @@ beforeEach(() => { vi.clearAllMocks(); (ws as { execute: ReturnType<typeof vi.fn
 afterEach(() => { vi.useRealTimers(); localStorage.clear(); });
 
 describe('EditorSurface', () => {
+  it('portals palette details outside the workspace and offers separate swap and delete actions', () => {
+    render(<EditorSurface workspace={ws} document={paletteDetailsDoc} />);
+    const swatch = document.querySelector<HTMLButtonElement>('.palette-button')!;
+    fireEvent.contextMenu(swatch);
+    const menu = screen.getByRole('menu', { name: 'Details for Ruby' });
+    expect(menu.parentElement).toBe(document.body);
+    expect(menu.closest('.editor-workspace')).toBeNull();
+    expect(within(menu).getByRole('menuitem', { name: 'Change symbol' })).toBeInTheDocument();
+    fireEvent.pointerDown(within(menu).getByRole('menuitem', { name: 'Swap color' }));
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Swap color' }));
+    expect(screen.getByRole('dialog', { name: 'Remove Ruby' })).toBeInTheDocument();
+  });
+  it('cancels palette deletion without changing the document', () => {
+    render(<EditorSurface workspace={ws} document={paletteDetailsDoc} />);
+    fireEvent.keyDown(document.querySelector('.palette-button')!, { key: 'ContextMenu' });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete color' }));
+    const dialog = screen.getByRole('dialog', { name: 'Delete Ruby?' });
+    expect(within(dialog).getByText(/every stitch.*including backstitches/i)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(executeMock()).not.toHaveBeenCalled();
+  });
+  it('confirms palette deletion with the target id and returns focus to its swatch', async () => {
+    render(<EditorSurface workspace={ws} document={paletteDetailsDoc} />);
+    const swatch = document.querySelector<HTMLButtonElement>('.palette-button')!;
+    fireEvent.contextMenu(swatch);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete color' }));
+    const dialog = screen.getByRole('dialog', { name: 'Delete Ruby?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete color' }));
+    expect(executeMock()).toHaveBeenCalledWith({ type: 'palette-delete', id: 1 });
+    expect(f.c.selectPalette).toHaveBeenCalledWith(null);
+    await waitFor(() => expect(document.activeElement).toBe(swatch));
+  });
+  it('traps Tab navigation inside the palette-delete confirmation dialog', () => {
+    render(<EditorSurface workspace={ws} document={paletteDetailsDoc} />);
+    fireEvent.contextMenu(document.querySelector('.palette-button')!);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Delete color' }));
+    const dialog = screen.getByRole('dialog', { name: 'Delete Ruby?' });
+    const cancel = within(dialog).getByRole('button', { name: 'Cancel' });
+    const confirm = within(dialog).getByRole('button', { name: 'Delete color' });
+    confirm.focus();
+    fireEvent.keyDown(confirm, { key: 'Tab' });
+    expect(cancel).toHaveFocus();
+    fireEvent.keyDown(cancel, { key: 'Tab', shiftKey: true });
+    expect(confirm).toHaveFocus();
+  });
   it('switches catalog and creates the selected catalog record by catalog identity', async () => {
     const workspace = multiCatalogWorkspace();
     render(<EditorSurface workspace={ws} document={doc} />);
@@ -576,13 +621,115 @@ describe('EditorSurface', () => {
     expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'lasso' });
   });
   it('auto-fits the pattern once on init with the Fit-button routine', () => { render(<EditorSurface workspace={ws} document={doc} />); expect(f.c.setMetrics).toHaveBeenCalled(); const fits = () => (f.c.handleKeyDown as ReturnType<typeof vi.fn>).mock.calls.filter(([event]) => (event as { key: string }).key === '0'); expect(fits()).toHaveLength(1); fireEvent.click(screen.getByRole('button', { name: 'Fit' })); expect(fits()).toHaveLength(2); });
-  it('renders settings sections and immediate rail placement', () => { render(<EditorSurface workspace={ws} document={doc} />); expect(screen.queryByRole('button', { name: 'Delete selection' })).not.toBeInTheDocument(); expect(screen.queryByRole('button', { name: 'Paste selection' })).not.toBeInTheDocument(); expect(screen.queryByRole('button', { name: /Move controls/ })).not.toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument(); expect(screen.getByRole('heading', { name: 'Project' })).toBeInTheDocument(); expect(screen.getByRole('heading', { name: 'Editor' })).toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: 'Right' })); expect(screen.getByRole('button', { name: 'Right' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: 'Left' })).toHaveAttribute('aria-pressed', 'false'); expect(document.querySelector('.editor-layout')).toHaveClass('rail-right'); fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' }); expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
+  it('renders settings sections and immediate rail placement', () => { render(<EditorSurface workspace={ws} document={doc} />); expect(screen.queryByRole('button', { name: 'Delete selection' })).not.toBeInTheDocument(); expect(screen.queryByRole('button', { name: 'Paste selection' })).not.toBeInTheDocument(); expect(screen.queryByRole('button', { name: /Move controls/ })).not.toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); const settings = screen.getByRole('dialog', { name: 'Settings' }); expect(within(settings).getByRole('heading', { name: 'Project' })).toBeInTheDocument(); fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' })); expect(within(settings).getByRole('heading', { name: 'Editor' })).toBeInTheDocument(); fireEvent.click(within(settings).getByRole('button', { name: 'Right' })); expect(within(settings).getByRole('button', { name: 'Right' })).toHaveAttribute('aria-pressed', 'true'); expect(within(settings).getByRole('button', { name: 'Left' })).toHaveAttribute('aria-pressed', 'false'); expect(document.querySelector('.editor-layout')).toHaveClass('rail-right'); fireEvent.keyDown(settings, { key: 'Escape' }); expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
+  it('synchronizes and saves the pattern background color in Settings', async () => {
+    const pattern = { ...(doc as object), settings: { backgroundColor: '#F3EEE5' } } as never;
+    render(<EditorSurface workspace={ws} document={pattern} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    const settings = screen.getByRole('dialog', { name: 'Settings' });
+    const picker = within(settings).getByLabelText('Background color');
+    const hex = within(settings).getByLabelText('HEX Code');
+    expect(picker).toHaveValue('#f3eee5');
+    fireEvent.change(picker, { target: { value: '#12ab34' } });
+    expect(hex).toHaveValue('#12AB34');
+    fireEvent.change(hex, { target: { value: 'abc' } });
+    expect(picker).toHaveValue('#aabbcc');
+    fireEvent.click(within(settings).getByRole('button', { name: 'Save settings' }));
+    await waitFor(() => expect(executeMock()).toHaveBeenCalledWith({ type: 'document-settings-update', settings: { backgroundColor: '#AABBCC' } }));
+  });
+  it('groups Aida count and background color controls in Aida Settings', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    const dialog = screen.getByRole('dialog', { name: 'Settings' });
+    fireEvent.click(within(dialog).getByRole('tab', { name: 'Aida' }));
+    const section = within(dialog).getByRole('region', { name: 'Aida Settings' });
+    expect(within(section).getByLabelText('Aida count')).toBeInTheDocument();
+    expect(within(section).getByLabelText('Background color')).toBeInTheDocument();
+    expect(within(section).getByLabelText('HEX Code')).toBeInTheDocument();
+    expect(within(section).getByText(/three- or six-digit hex value/)).toBeInTheDocument();
+  });
+  it('opens Settings on Project and exposes accessible Project, Aida, and Editor tabs', async () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    const dialog = screen.getByRole('dialog', { name: 'Settings' });
+    const tabs = within(dialog).getByRole('tablist', { name: 'Settings sections' });
+    const project = within(tabs).getByRole('tab', { name: 'Project' });
+    const aidaTab = within(tabs).getByRole('tab', { name: 'Aida' });
+    const editor = within(tabs).getByRole('tab', { name: 'Editor' });
+    expect(project).toHaveAttribute('aria-selected', 'true');
+    expect(within(dialog).getByRole('tabpanel')).toHaveAttribute('aria-labelledby', project.id);
+    expect(within(dialog).getByLabelText('Title')).toBeInTheDocument();
+    fireEvent.change(within(dialog).getByLabelText('Title'), { target: { value: 'Draft title' } });
+    fireEvent.click(aidaTab);
+    fireEvent.click(project);
+    expect(within(dialog).getByLabelText('Title')).toHaveValue('Draft title');
+    fireEvent.click(aidaTab);
+    let panel = within(dialog).getByRole('tabpanel');
+    expect(panel).toHaveAttribute('aria-labelledby', aidaTab.id);
+    expect(within(panel).getByLabelText('Aida count')).toBeInTheDocument();
+    expect(within(panel).getByLabelText('Background color')).toBeInTheDocument();
+    fireEvent.click(editor);
+    panel = within(dialog).getByRole('tabpanel');
+    expect(panel).toHaveAttribute('aria-labelledby', editor.id);
+    expect(within(panel).getByRole('checkbox', { name: 'Show palette symbols' })).toBeInTheDocument();
+    editor.focus();
+    fireEvent.keyDown(editor, { key: 'Home' });
+    await waitFor(() => expect(project).toHaveFocus());
+    expect(project).toHaveAttribute('aria-selected', 'true');
+    fireEvent.keyDown(project, { key: 'ArrowRight' });
+    await waitFor(() => expect(aidaTab).toHaveFocus());
+    expect(aidaTab).toHaveAttribute('aria-selected', 'true');
+    fireEvent.keyDown(aidaTab, { key: 'End' });
+    await waitFor(() => expect(editor).toHaveFocus());
+    expect(editor).toHaveAttribute('aria-selected', 'true');
+  });
+  it('refreshes pristine settings color from document updates and reopened settings', () => {
+    const first = { ...(doc as object), settings: { backgroundColor: '#F3EEE5' } } as never;
+    const view = render(<EditorSurface workspace={ws} document={first} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    const dialog = screen.getByRole('dialog', { name: 'Settings' });
+    const hex = within(dialog).getByLabelText('HEX Code');
+    fireEvent.change(hex, { target: { value: '#abc' } });
+    const updated = { ...(doc as object), settings: { backgroundColor: '#123456' } } as never;
+    view.rerender(<EditorSurface workspace={ws} document={updated} />);
+    expect(hex).toHaveValue('#AABBCC');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    expect(within(screen.getByRole('dialog', { name: 'Settings' })).getByLabelText('HEX Code')).toHaveValue('#123456');
+  });
+  it('keeps Settings open and does not save metadata for invalid background HEX', async () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    const dialog = screen.getByRole('dialog', { name: 'Settings' });
+    fireEvent.change(within(dialog).getByLabelText('HEX Code'), { target: { value: '#12' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save settings' }));
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
+    expect((ws as { updateActiveMetadata: ReturnType<typeof vi.fn> }).updateActiveMetadata).not.toHaveBeenCalled();
+  });
+  it('returns to Aida and exposes invalid HEX help when Save is submitted from another tab', async () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    const dialog = screen.getByRole('dialog', { name: 'Settings' });
+    fireEvent.click(within(dialog).getByRole('tab', { name: 'Aida' }));
+    const hex = within(dialog).getByLabelText('HEX Code');
+    fireEvent.change(hex, { target: { value: '#12' } });
+    expect(within(dialog).getByText('Enter a 3- or 6-digit hex color.')).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('tab', { name: 'Project' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save settings' }));
+    expect(within(dialog).getByRole('tab', { name: 'Aida' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(dialog).getByText('Enter a 3- or 6-digit hex color.')).toBeVisible();
+    await waitFor(() => expect(hex).toHaveFocus());
+    expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).not.toHaveBeenCalled();
+    expect((ws as { updateActiveMetadata: ReturnType<typeof vi.fn> }).updateActiveMetadata).not.toHaveBeenCalled();
+    expect(dialog).toBeInTheDocument();
+  });
   it('hydrates global editor preferences across workspace changes', () => {
     localStorage.setItem('needlewise-editor-preferences:v1', JSON.stringify({ version: 1, railSide: 'right', paletteDisplay: { symbols: false, numbers: false } }));
     const view = render(<EditorSurface workspace={ws} document={doc} />);
     expect(document.querySelector('.editor-layout')).toHaveClass('rail-right');
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
     let settings = screen.getByRole('dialog', { name: 'Settings' });
+    fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' }));
     expect(within(settings).getByRole('button', { name: 'Right' })).toHaveAttribute('aria-pressed', 'true');
     expect(within(settings).getByRole('checkbox', { name: 'Show palette symbols' })).not.toBeChecked();
     expect(within(settings).getByRole('checkbox', { name: 'Show palette numbers' })).not.toBeChecked();
@@ -593,6 +740,7 @@ describe('EditorSurface', () => {
     expect(document.querySelector('.editor-layout')).toHaveClass('rail-right');
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
     settings = screen.getByRole('dialog', { name: 'Settings' });
+    fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' }));
     expect(within(settings).getByRole('button', { name: 'Right' })).toHaveAttribute('aria-pressed', 'true');
     expect(within(settings).getByRole('checkbox', { name: 'Show palette symbols' })).not.toBeChecked();
     expect(within(settings).getByRole('checkbox', { name: 'Show palette numbers' })).not.toBeChecked();
@@ -600,6 +748,7 @@ describe('EditorSurface', () => {
   it('writes the complete global editor preferences envelope immediately', async () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Editor' }));
     fireEvent.click(screen.getByRole('button', { name: 'Right' }));
     fireEvent.click(within(screen.getByRole('dialog', { name: 'Settings' })).getByRole('checkbox', { name: 'Show palette symbols' }));
     await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'right', paletteDisplay: { symbols: false, numbers: true }, pencilModeEnabled: false }));
@@ -610,6 +759,7 @@ describe('EditorSurface', () => {
     expect(document.querySelector('.editor-layout')).toHaveClass('rail-left');
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
     const settings = screen.getByRole('dialog', { name: 'Settings' });
+    fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' }));
     expect(within(settings).getByRole('button', { name: 'Left' })).toHaveAttribute('aria-pressed', 'true');
     expect(within(settings).getByRole('checkbox', { name: 'Show palette symbols' })).toBeChecked();
     expect(within(settings).getByRole('checkbox', { name: 'Show palette numbers' })).toBeChecked();
@@ -620,6 +770,7 @@ describe('EditorSurface', () => {
     expect(document.querySelector('.editor-layout')).toHaveClass('rail-left');
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
     const settings = screen.getByRole('dialog', { name: 'Settings' });
+    fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' }));
     expect(within(settings).getByRole('button', { name: 'Left' })).toHaveAttribute('aria-pressed', 'true');
     expect(within(settings).getByRole('checkbox', { name: 'Show palette symbols' })).toBeChecked();
     expect(within(settings).getByRole('checkbox', { name: 'Show palette numbers' })).toBeChecked();
@@ -629,6 +780,7 @@ describe('EditorSurface', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
     const settings = screen.getByRole('dialog', { name: 'Settings' });
+    fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' }));
     expect(within(settings).getByRole('button', { name: 'Left' })).toHaveAttribute('aria-pressed', 'true');
     expect(within(settings).getByRole('checkbox', { name: 'Show palette symbols' })).not.toBeChecked();
     expect(within(settings).getByRole('checkbox', { name: 'Show palette numbers' })).toBeChecked();
@@ -639,6 +791,7 @@ describe('EditorSurface', () => {
     expect(f.c.setTouchMovementOnly).toHaveBeenCalledWith(false);
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
     const settings = screen.getByRole('dialog', { name: 'Settings' });
+    fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' }));
     const pencil = within(settings).getByRole('checkbox', { name: 'Enable pencil mode' });
     expect(pencil).not.toBeChecked();
     fireEvent.click(pencil);
@@ -649,7 +802,9 @@ describe('EditorSurface', () => {
     localStorage.setItem('needlewise-editor-preferences:v1', JSON.stringify({ version: 1, railSide: 'left', paletteDisplay: { symbols: true, numbers: true }, touchEditingEnabled: false }));
     render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
-    expect(within(screen.getByRole('dialog', { name: 'Settings' })).getByRole('checkbox', { name: 'Enable pencil mode' })).toBeChecked();
+    const settings = screen.getByRole('dialog', { name: 'Settings' });
+    fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' }));
+    expect(within(settings).getByRole('checkbox', { name: 'Enable pencil mode' })).toBeChecked();
     expect(f.c.setTouchMovementOnly).toHaveBeenCalledWith(true);
     await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'left', paletteDisplay: { symbols: true, numbers: true }, pencilModeEnabled: true }));
   });
@@ -657,6 +812,7 @@ describe('EditorSurface', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
     const settings = screen.getByRole('dialog', { name: 'Settings' });
+    fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' }));
     const info = within(settings).getByRole('button', { name: 'Pencil mode information' });
     const tooltip = within(settings).getByRole('tooltip');
     expect(info).toHaveAttribute('aria-describedby', 'pencil-mode-tooltip');
@@ -667,6 +823,7 @@ describe('EditorSurface', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
     const settings = screen.getByRole('dialog', { name: 'Settings' });
+    fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' }));
     const symbols = within(settings).getByRole('checkbox', { name: 'Show palette symbols' });
     const numbers = within(settings).getByRole('checkbox', { name: 'Show palette numbers' });
     expect(symbols).toBeChecked();

@@ -45,6 +45,7 @@ function WorkspaceApp() {
   const [createWidth, setCreateWidth] = useState('100');
   const [createHeight, setCreateHeight] = useState('100');
   const [createAida, setCreateAida] = useState('14');
+  const [createBackgroundColor, setCreateBackgroundColor] = useState('#F3EEE5');
   const [, setCreateError] = useState('');
   const [routeIssue, setRouteIssue] = useState('');
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
@@ -155,7 +156,7 @@ function WorkspaceApp() {
     if (createMode === 'image') return;
     if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width * height > 1_000_000) { setCreateError('Use whole numbers from 1 upward, with no more than 1,000,000 cells total.'); return; }
     setCreateError(''); setMessage('Creating and saving your blank pattern…');
-    try { const session = await createProject({ title: createTitle.trim() || 'Untitled sampler', width, height, aidaCount: Number(createAida) }); setCreateOpen(false); navigate(projectPath(session.projectId)); } catch { setCreateError('The pattern could not be saved locally.'); }
+    try { const session = await createProject({ title: createTitle.trim() || 'Untitled sampler', width, height, aidaCount: Number(createAida), settings: { backgroundColor: createBackgroundColor } }); setCreateOpen(false); navigate(projectPath(session.projectId)); } catch { setCreateError('The pattern could not be saved locally.'); }
   }
 
   async function handleImport(file: File) {
@@ -256,7 +257,7 @@ function WorkspaceApp() {
       <footer className="footer-note"><span aria-hidden="true">⌁</span> Local archives are your backup path <span className="footer-divider" aria-hidden="true">·</span> Keep a copy somewhere safe</footer>
     </div>
     </div>
-    {createOpen && <div ref={createDialogRef}><CreateModal catalog={DEFAULT_CATALOG_DEFINITION.snapshot} mode={createMode} title={createTitle} width={createWidth} height={createHeight} aida={createAida} busy={busy} onMode={(next) => { if (!createLockedRef.current) setCreateMode(next); }} onClose={() => { if (!createLockedRef.current) setCreateOpen(false); }} onBlank={(event) => void submitCreate(event)} onDurableCreateChange={(locked) => { createLockedRef.current = locked; }} onConversionCreate={(draft, asset) => createProjectFromConversion({ title: createTitle.trim() || 'Untitled sampler', draft, aidaCount: Number(createAida), ...(asset ? { sourceImageAsset: asset } : {}) }).then((session) => session.projectId)} onCreated={(projectId) => { if (appMounted.current) navigate(projectPath(projectId)); }} onTitle={setCreateTitle} onWidth={setCreateWidth} onHeight={setCreateHeight} onAida={setCreateAida} /></div>}
+    {createOpen && <div ref={createDialogRef}><CreateModal catalog={DEFAULT_CATALOG_DEFINITION.snapshot} mode={createMode} title={createTitle} width={createWidth} height={createHeight} aida={createAida} backgroundColor={createBackgroundColor} onBackgroundColor={setCreateBackgroundColor} busy={busy} onMode={(next) => { if (!createLockedRef.current) setCreateMode(next); }} onClose={() => { if (!createLockedRef.current) setCreateOpen(false); }} onBlank={(event) => void submitCreate(event)} onDurableCreateChange={(locked) => { createLockedRef.current = locked; }} onConversionCreate={(draft, asset) => createProjectFromConversion({ title: createTitle.trim() || 'Untitled sampler', draft, aidaCount: Number(createAida), settings: { backgroundColor: createBackgroundColor }, ...(asset ? { sourceImageAsset: asset } : {}) }).then((session) => session.projectId)} onCreated={(projectId) => { if (appMounted.current) navigate(projectPath(projectId)); }} onTitle={setCreateTitle} onWidth={setCreateWidth} onHeight={setCreateHeight} onAida={setCreateAida} /></div>}
     </>
   );
 }

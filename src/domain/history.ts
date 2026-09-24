@@ -44,7 +44,7 @@ import {
   type MutationInfo,
   type SparseMutationDelta
 } from './commands';
-import { cloneDocument, clonePaletteEntry } from './model';
+import { cloneDocument, clonePaletteEntry, clonePatternSettings } from './model';
 import type {
   BackstitchStore,
   CommandResult,
@@ -52,12 +52,13 @@ import type {
   DomainCommand,
   HalfDirection,
   PaletteEntry,
+  PatternSettings,
   PatternDocument,
   Point,
   QuarterCorner,
   ProgressChangeSet
 } from './types';
-import { DomainError, MAX_PERSISTABLE_CELL_COUNT, PALETTE_ID_MAX } from './types';
+import { DEFAULT_PATTERN_SETTINGS, DomainError, MaterialUnit, MAX_PERSISTABLE_CELL_COUNT, PALETTE_ID_MAX } from './types';
 import { assertValidDocument } from './validation';
 import {
   attachDeleteMetricsImpactForDelta
@@ -121,6 +122,8 @@ export interface HistoryDeltaDto {
   readonly afterNextBackstitchId?: number;
   readonly beforeNextPaletteId?: number;
   readonly afterNextPaletteId?: number;
+  readonly beforeSettings?: PatternSettings;
+  readonly afterSettings?: PatternSettings;
 }
 
 export interface HistoryDeltaEntryDto {
@@ -271,6 +274,8 @@ function applyDelta(document: PatternDocument, delta: SparseMutationDelta, useAf
   const nextPaletteId = useAfter ? delta.afterNextPaletteId : delta.beforeNextPaletteId;
   if (nextBackstitchId !== undefined) next.nextBackstitchId = nextBackstitchId;
   if (nextPaletteId !== undefined) next.nextPaletteId = nextPaletteId;
+  const settings = useAfter ? delta.afterSettings : delta.beforeSettings;
+  if (settings !== undefined) next.settings = clonePatternSettings(settings);
   return next;
 }
 
@@ -283,12 +288,49 @@ function typedDeltaBytes(delta: SparseMutationDelta): number {
   if (delta.cellCompletions) bytes += delta.cellCompletions.indices.byteLength + delta.cellCompletions.beforeCompleted.byteLength + delta.cellCompletions.afterCompleted.byteLength;
   if (delta.backstitchCompletions) bytes += delta.backstitchCompletions.ids.byteLength + delta.backstitchCompletions.beforeCompleted.byteLength + delta.backstitchCompletions.afterCompleted.byteLength;
   for (const palette of [delta.beforePalette, delta.afterPalette]) if (palette) bytes += JSON.stringify(palette).length * 2;
+  for (const settings of [delta.beforeSettings, delta.afterSettings]) if (settings) bytes += JSON.stringify(settings).length * 2;
   return bytes + 32;
 }
 
 function snapshotBytes(document: PatternDocument): number {
   const store = document.backstitches;
+  return document.kind.byteLength + document.colors.byteLength + document.completed.byteLength + store.ids.byteLength + store.x1.byteLength + store.y1.byteLength + store.x2.byteLength + store.y2.byteLength + store.colors.byteLength + store.completed.byteLength + JSON.stringify(document.catalog).length * 2 + JSON.stringify(document.palette).length * 2 + JSON.stringify(document.settings).length * 2 + 64;
+}
+
+function legacySnapshotBytes(document: PatternDocument): number {
+  const store = document.backstitches;
   return document.kind.byteLength + document.colors.byteLength + document.completed.byteLength + store.ids.byteLength + store.x1.byteLength + store.y1.byteLength + store.x2.byteLength + store.y2.byteLength + store.colors.byteLength + store.completed.byteLength + JSON.stringify(document.catalog).length * 2 + JSON.stringify(document.palette).length * 2 + 64;
+}
+
+function isLegacySnapshotEntry(entry: DocumentEditorHistoryEntryDto): entry is HistorySnapshotEntryDto {
+  return entry.kind === 'snapshot'
+    && isLegacyPatternSettings(entry.before.settings as unknown as HistoryRecord)
+    && isLegacyPatternSettings(entry.after.settings as unknown as HistoryRecord);
+}
+
+function documentWithUpgradedHistorySettings(document: PatternDocument, allowLegacy: boolean): PatternDocument {
+  const settings = document.settings as unknown as HistoryRecord;
+  if (!allowLegacy || !isLegacyPatternSettings(settings)) return document;
+  return {
+    ...document,
+    settings: {
+      symbolSet: settings.symbolSet as string,
+      materialUnit: settings.materialUnit as PatternSettings['materialUnit'],
+      backgroundColor: DEFAULT_PATTERN_SETTINGS.backgroundColor
+    }
+  };
+}
+
+function cloneHistoryDocument(document: PatternDocument, allowLegacy: boolean): PatternDocument {
+  const clone = cloneDocument(document);
+  if (allowLegacy && isLegacyPatternSettings(document.settings as unknown as HistoryRecord)) {
+    clone.settings = {
+      symbolSet: document.settings.symbolSet,
+      materialUnit: document.settings.materialUnit,
+      backgroundColor: DEFAULT_PATTERN_SETTINGS.backgroundColor
+    };
+  }
+  return clone;
 }
 
 function result(document: PatternDocument, changed: boolean, backstitchId?: number, paletteId?: number, details?: MutationInfo): CommandResult {
@@ -322,9 +364,17 @@ function cloneProgress(progress: ProgressChangeSet | undefined): ProgressChangeS
 function deltaRequiresFullRedraw(delta: SparseMutationDelta): boolean {
   return delta.beforePalette !== undefined
     || delta.afterPalette !== undefined
+    || delta.beforeSettings !== undefined
+    || delta.afterSettings !== undefined
     || delta.beforeBackstitches !== undefined
     || delta.afterBackstitches !== undefined
     || (delta.backstitchCompletions?.ids.length ?? 0) > 0;
+}
+
+function snapshotSettingsChanged(entry: SnapshotEntry): boolean {
+  return entry.before.settings.symbolSet !== entry.after.settings.symbolSet
+    || entry.before.settings.materialUnit !== entry.after.settings.materialUnit
+    || entry.before.settings.backgroundColor !== entry.after.settings.backgroundColor;
 }
 
 type HistoryRecord = Record<string, unknown>;
@@ -454,6 +504,13 @@ function historyBackstitches(value: unknown, label: string): asserts value is Ba
   historyLength(store.completed, length, `${label}.completed`);
 }
 
+function isLegacyPatternSettings(value: Record<string, unknown>): boolean {
+  return Object.keys(value).length === 2
+    && Object.prototype.hasOwnProperty.call(value, 'symbolSet')
+    && Object.prototype.hasOwnProperty.call(value, 'materialUnit')
+    && !Object.prototype.hasOwnProperty.call(value, 'backgroundColor');
+}
+
 function historyDocument(value: unknown, label: string): asserts value is PatternDocument {
   const document = historyRecord(value, label) as unknown as PatternDocument;
   historyKeys(document as unknown as HistoryRecord, ['version', 'catalog', 'width', 'height', 'kind', 'colors', 'completed', 'backstitches', 'palette', 'settings', 'revision', 'nextBackstitchId', 'nextPaletteId'], [], label);
@@ -471,10 +528,16 @@ function historyDocument(value: unknown, label: string): asserts value is Patter
   historyBackstitches(document.backstitches, `${label}.backstitches`);
   historyPalette(document.palette, `${label}.palette`);
   const settings = historyRecord(document.settings, `${label}.settings`);
-  historyKeys(settings, ['symbolSet', 'materialUnit'], [], `${label}.settings`);
+  const legacySettings = isLegacyPatternSettings(settings);
+  historyKeys(settings, legacySettings ? ['symbolSet', 'materialUnit'] : ['symbolSet', 'materialUnit', 'backgroundColor'], [], `${label}.settings`);
   if (typeof settings.symbolSet !== 'string' || typeof settings.materialUnit !== 'string') throw new DomainError('invalid-history-state', `${label}.settings is invalid.`);
   historyBoundedString(settings.symbolSet, `${label}.settings.symbolSet`);
   historyBoundedString(settings.materialUnit, `${label}.settings.materialUnit`);
+  if (!legacySettings) {
+    if (typeof settings.backgroundColor !== 'string') throw new DomainError('invalid-history-state', `${label}.settings.backgroundColor is invalid.`);
+    historyBoundedString(settings.backgroundColor, `${label}.settings.backgroundColor`);
+    if (!/^#[0-9A-F]{6}$/.test(settings.backgroundColor)) throw new DomainError('invalid-history-state', `${label}.settings.backgroundColor is invalid.`);
+  }
   historySafeInteger(document.revision, `${label}.revision`);
   historySafeInteger(document.nextBackstitchId, `${label}.nextBackstitchId`, 1);
   historySafeInteger(document.nextPaletteId, `${label}.nextPaletteId`, 1);
@@ -497,6 +560,7 @@ function documentsContentEqual(left: PatternDocument, right: PatternDocument): b
     && historyPaletteEqual(left.palette, right.palette)
     && left.settings.symbolSet === right.settings.symbolSet
     && left.settings.materialUnit === right.settings.materialUnit
+    && left.settings.backgroundColor === right.settings.backgroundColor
     && left.nextBackstitchId === right.nextBackstitchId
     && left.nextPaletteId === right.nextPaletteId
     && historyTypedArraysEqual(left.backstitches.ids, right.backstitches.ids)
@@ -572,9 +636,17 @@ function historyBackstitchCompletions(value: unknown, label: string): asserts va
   }
 }
 
+function historyPatternSettings(value: unknown, label: string): asserts value is PatternSettings {
+  const settings = historyRecord(value, label);
+  historyKeys(settings, ['symbolSet', 'materialUnit', 'backgroundColor'], [], label);
+  if (typeof settings.symbolSet !== 'string' || settings.symbolSet.trim() === '') throw new DomainError('invalid-history-state', `${label}.symbolSet is invalid.`);
+  if (settings.materialUnit !== MaterialUnit.Skeins && settings.materialUnit !== MaterialUnit.Meters && settings.materialUnit !== MaterialUnit.Count) throw new DomainError('invalid-history-state', `${label}.materialUnit is invalid.`);
+  if (typeof settings.backgroundColor !== 'string' || !/^#[0-9A-F]{6}$/.test(settings.backgroundColor)) throw new DomainError('invalid-history-state', `${label}.backgroundColor is invalid.`);
+}
+
 function historyDelta(value: unknown, cellCount: number, label: string): asserts value is HistoryDeltaDto {
   const delta = historyRecord(value, label);
-  historyKeys(delta, ['cells'], ['cellCompletions', 'backstitchCompletions', 'beforePalette', 'afterPalette', 'beforeBackstitches', 'afterBackstitches', 'beforeNextBackstitchId', 'afterNextBackstitchId', 'beforeNextPaletteId', 'afterNextPaletteId'], label);
+  historyKeys(delta, ['cells'], ['cellCompletions', 'backstitchCompletions', 'beforePalette', 'afterPalette', 'beforeBackstitches', 'afterBackstitches', 'beforeNextBackstitchId', 'afterNextBackstitchId', 'beforeNextPaletteId', 'afterNextPaletteId', 'beforeSettings', 'afterSettings'], label);
   const cells = historyRecord(delta.cells, `${label}.cells`);
   const cellIndices = cells.indices;
   historyUniqueIndices(cellIndices, cellCount, `${label}.cells.indices`);
@@ -587,6 +659,9 @@ function historyDelta(value: unknown, cellCount: number, label: string): asserts
   if (delta.beforeBackstitches !== undefined) historyBackstitches(delta.beforeBackstitches, `${label}.beforeBackstitches`);
   if (delta.afterBackstitches !== undefined) historyBackstitches(delta.afterBackstitches, `${label}.afterBackstitches`);
   if ((delta.beforeBackstitches === undefined) !== (delta.afterBackstitches === undefined)) throw new DomainError('invalid-history-state', `${label} backstitch sides must be paired.`);
+  if (delta.beforeSettings !== undefined) historyPatternSettings(delta.beforeSettings, `${label}.beforeSettings`);
+  if (delta.afterSettings !== undefined) historyPatternSettings(delta.afterSettings, `${label}.afterSettings`);
+  if ((delta.beforeSettings === undefined) !== (delta.afterSettings === undefined)) throw new DomainError('invalid-history-state', `${label} settings sides must be paired.`);
   if ((delta.beforeNextBackstitchId === undefined) !== (delta.afterNextBackstitchId === undefined)) throw new DomainError('invalid-history-state', `${label} backstitch allocator sides must be paired.`);
   if ((delta.beforeNextPaletteId === undefined) !== (delta.afterNextPaletteId === undefined)) throw new DomainError('invalid-history-state', `${label} palette allocator sides must be paired.`);
   if (delta.beforeNextBackstitchId !== undefined) {
@@ -690,6 +765,14 @@ function historyRawStore(total: number, store: BackstitchStore): number {
   return historyRawTyped(next, store.completed);
 }
 
+function historyRawSettings(total: number, settings: Record<string, unknown>): number {
+  let next = historyRawObject(total, Object.keys(settings).length);
+  next = historyRawString(next, settings.symbolSet as string);
+  next = historyRawString(next, settings.materialUnit as string);
+  if (Object.prototype.hasOwnProperty.call(settings, 'backgroundColor')) next = historyRawString(next, settings.backgroundColor as string);
+  return next;
+}
+
 function historyRawDocument(total: number, document: PatternDocument): number {
   let next = historyRawObject(total, 13);
   next = historyRawAdd(next, 8 * 8);
@@ -702,10 +785,7 @@ function historyRawDocument(total: number, document: PatternDocument): number {
   next = historyRawTyped(next, document.completed);
   next = historyRawStore(next, document.backstitches);
   next = historyRawPalette(next, document.palette);
-  next = historyRawObject(next, 2);
-  next = historyRawString(next, document.settings.symbolSet);
-  next = historyRawString(next, document.settings.materialUnit);
-  return next;
+  return historyRawSettings(next, document.settings as unknown as Record<string, unknown>);
 }
 
 function historyRawProgress(total: number, progress: HistoryProgressDto): number {
@@ -716,7 +796,7 @@ function historyRawProgress(total: number, progress: HistoryProgressDto): number
 }
 
 function historyRawDelta(total: number, delta: HistoryDeltaDto): number {
-  let next = historyRawObject(total, 10);
+  let next = historyRawObject(total, 12);
   const cells = delta.cells;
   next = historyRawObject(next, 7);
   next = historyRawTyped(next, cells.indices);
@@ -742,6 +822,8 @@ function historyRawDelta(total: number, delta: HistoryDeltaDto): number {
   if (delta.afterPalette !== undefined) next = historyRawPalette(next, delta.afterPalette);
   if (delta.beforeBackstitches !== undefined) next = historyRawStore(next, delta.beforeBackstitches);
   if (delta.afterBackstitches !== undefined) next = historyRawStore(next, delta.afterBackstitches);
+  if (delta.beforeSettings !== undefined) next = historyRawSettings(next, delta.beforeSettings as unknown as Record<string, unknown>);
+  if (delta.afterSettings !== undefined) next = historyRawSettings(next, delta.afterSettings as unknown as Record<string, unknown>);
   return historyRawAdd(next, 4 * 8);
 }
 
@@ -829,8 +911,10 @@ function historyDeltaSideMatches(document: PatternDocument, delta: SparseMutatio
   }
   const nextBackstitchId = useAfter ? delta.afterNextBackstitchId : delta.beforeNextBackstitchId;
   const nextPaletteId = useAfter ? delta.afterNextPaletteId : delta.beforeNextPaletteId;
+  const settings = useAfter ? delta.afterSettings : delta.beforeSettings;
   if (nextBackstitchId !== undefined && document.nextBackstitchId < nextBackstitchId) historyStateMismatch(`${label}.nextBackstitchId`);
   if (nextPaletteId !== undefined && document.nextPaletteId < nextPaletteId) historyStateMismatch(`${label}.nextPaletteId`);
+  if (settings !== undefined && (document.settings.symbolSet !== settings.symbolSet || document.settings.materialUnit !== settings.materialUnit || document.settings.backgroundColor !== settings.backgroundColor)) historyStateMismatch(`${label}.settings`);
 }
 
 function applyHistoryEntryForValidation(document: PatternDocument, entry: HistoryEntry, useAfter: boolean): PatternDocument {
@@ -947,16 +1031,19 @@ function historyDeltaToInternal(delta: HistoryDeltaDto): SparseMutationDelta {
     ...(delta.beforeNextBackstitchId === undefined ? {} : { beforeNextBackstitchId: delta.beforeNextBackstitchId }),
     ...(delta.afterNextBackstitchId === undefined ? {} : { afterNextBackstitchId: delta.afterNextBackstitchId }),
     ...(delta.beforeNextPaletteId === undefined ? {} : { beforeNextPaletteId: delta.beforeNextPaletteId }),
-    ...(delta.afterNextPaletteId === undefined ? {} : { afterNextPaletteId: delta.afterNextPaletteId })
+    ...(delta.afterNextPaletteId === undefined ? {} : { afterNextPaletteId: delta.afterNextPaletteId }),
+    ...(delta.beforeSettings === undefined ? {} : { beforeSettings: clonePatternSettings(delta.beforeSettings) }),
+    ...(delta.afterSettings === undefined ? {} : { afterSettings: clonePatternSettings(delta.afterSettings) })
   };
 }
 
 function historyEntryToInternal(entry: DocumentEditorHistoryEntryDto): HistoryEntry {
   if (entry.kind === 'snapshot') {
+    const allowLegacySettings = isLegacySnapshotEntry(entry);
     return {
       kind: 'snapshot',
-      before: cloneDocument(entry.before),
-      after: cloneDocument(entry.after),
+      before: cloneHistoryDocument(entry.before, allowLegacySettings),
+      after: cloneHistoryDocument(entry.after, allowLegacySettings),
       bytes: entry.bytes,
       progress: cloneHistoryProgress(entry.progress),
       recalculateMetrics: true
@@ -1018,7 +1105,9 @@ function historyDeltaToDto(delta: SparseMutationDelta): HistoryDeltaDto {
     ...(delta.beforeNextBackstitchId === undefined ? {} : { beforeNextBackstitchId: delta.beforeNextBackstitchId }),
     ...(delta.afterNextBackstitchId === undefined ? {} : { afterNextBackstitchId: delta.afterNextBackstitchId }),
     ...(delta.beforeNextPaletteId === undefined ? {} : { beforeNextPaletteId: delta.beforeNextPaletteId }),
-    ...(delta.afterNextPaletteId === undefined ? {} : { afterNextPaletteId: delta.afterNextPaletteId })
+    ...(delta.afterNextPaletteId === undefined ? {} : { afterNextPaletteId: delta.afterNextPaletteId }),
+    ...(delta.beforeSettings === undefined ? {} : { beforeSettings: clonePatternSettings(delta.beforeSettings) }),
+    ...(delta.afterSettings === undefined ? {} : { afterSettings: clonePatternSettings(delta.afterSettings) })
   };
 }
 
@@ -1054,19 +1143,26 @@ function historyDeltaChanged(delta: HistoryDeltaDto): boolean {
   const changedPalette = delta.beforePalette !== undefined && !historyPaletteEqual(delta.beforePalette, delta.afterPalette ?? []);
   const changedBackstitches = delta.beforeBackstitches !== undefined && !historyStoreEqual(delta.beforeBackstitches, delta.afterBackstitches as BackstitchStore);
   const changedAllocators = delta.beforeNextBackstitchId !== delta.afterNextBackstitchId || delta.beforeNextPaletteId !== delta.afterNextPaletteId;
-  return changedCells || changedCompletions || changedBackstitchCompletions || changedPalette || changedBackstitches || changedAllocators;
+  const changedSettings = delta.beforeSettings !== undefined
+    && (delta.beforeSettings.symbolSet !== delta.afterSettings?.symbolSet
+      || delta.beforeSettings.materialUnit !== delta.afterSettings?.materialUnit
+      || delta.beforeSettings.backgroundColor !== delta.afterSettings?.backgroundColor);
+  return changedCells || changedCompletions || changedBackstitchCompletions || changedPalette || changedBackstitches || changedAllocators || changedSettings;
 }
 
 function validateHistoryEntryContent(entry: DocumentEditorHistoryEntryDto, label: string): void {
   if (entry.kind === 'snapshot') {
+    const allowLegacySettings = isLegacySnapshotEntry(entry);
     try {
-      assertValidDocument(entry.before);
-      assertValidDocument(entry.after);
+      const before = documentWithUpgradedHistorySettings(entry.before, allowLegacySettings);
+      const after = documentWithUpgradedHistorySettings(entry.after, allowLegacySettings);
+      assertValidDocument(before);
+      assertValidDocument(after);
+      if (documentsContentEqual(before, after)) throw new DomainError('invalid-history-state', `${label} snapshot does not change document content.`);
     } catch (error) {
       if (error instanceof DomainError) throw new DomainError('invalid-history-state', `${label} document is invalid: ${error.message}`);
       throw error;
     }
-    if (documentsContentEqual(entry.before, entry.after)) throw new DomainError('invalid-history-state', `${label} snapshot does not change document content.`);
   } else if (!historyDeltaChanged(entry.delta)) {
     throw new DomainError('invalid-history-state', `${label} contains no mutation.`);
   }
@@ -1106,6 +1202,11 @@ function hydrateHistoryState(value: unknown, current: PatternDocument, configure
     for (let index = 0; index < entries.length; index += 1) {
       const entryLabel = `${label}[${String(index)}]`;
       historyEntry(entries[index], MAX_PERSISTABLE_CELL_COUNT, entryLabel);
+      const entry = entries[index];
+      if (isLegacySnapshotEntry(entry)) {
+        const legacyBytes = legacySnapshotBytes(entry.before) + legacySnapshotBytes(entry.after);
+        if (entry.bytes !== legacyBytes) throw new DomainError('invalid-history-state', `${entryLabel} legacy snapshot byte accounting is not canonical.`);
+      }
       validateHistoryEntryContent(entries[index], entryLabel);
     }
   };
@@ -1113,14 +1214,16 @@ function hydrateHistoryState(value: unknown, current: PatternDocument, configure
   validateStack(state.redo, 'history.redo');
   const undo = state.undo.map(historyEntryToInternal);
   const redo = state.redo.map(historyEntryToInternal);
+  const legacyUndo = state.undo.map(isLegacySnapshotEntry);
+  const legacyRedo = state.redo.map(isLegacySnapshotEntry);
   for (let index = 0; index < undo.length; index += 1) {
     const canonical = historyCanonicalBytes(undo[index]);
-    if (state.undo[index].bytes !== canonical) throw new DomainError('invalid-history-state', 'Undo entry byte accounting is not canonical.');
+    if (state.undo[index].bytes !== canonical && !legacyUndo[index]) throw new DomainError('invalid-history-state', 'Undo entry byte accounting is not canonical.');
     undo[index].bytes = canonical;
   }
   for (let index = 0; index < redo.length; index += 1) {
     const canonical = historyCanonicalBytes(redo[index]);
-    if (state.redo[index].bytes !== canonical) throw new DomainError('invalid-history-state', 'Redo entry byte accounting is not canonical.');
+    if (state.redo[index].bytes !== canonical && !legacyRedo[index]) throw new DomainError('invalid-history-state', 'Redo entry byte accounting is not canonical.');
     redo[index].bytes = canonical;
   }
   const undoBytes = undo.reduce((total, entry) => historySumBytes(total, entry.bytes, 'undo'), 0);
@@ -1301,6 +1404,9 @@ export class DocumentEditor {
     if (commandRequiresSnapshot(command)) return this.executeSnapshotCommand(command);
 
     const draft = cloneDocument(this.current);
+    // Settings are immutable across current command paths. Reuse the object so
+    // sparse edits and their undo/redo transitions preserve settings identity.
+    draft.settings = this.current.settings;
     const tracker = new MutationTracker();
     let mutation: MutationInfo;
     try {
@@ -1320,7 +1426,9 @@ export class DocumentEditor {
     ensureHistoryEntryFits(entry.bytes, this.historyLimit);
     this.current = draft;
     this.pushHistory(entry);
-    return result(this.current, true, mutation.backstitchId, mutation.paletteId, mutation);
+    const commandResult = result(this.current, true, mutation.backstitchId, mutation.paletteId, mutation);
+    if (delta.beforeSettings !== undefined) commandResult.requiresFullRedraw = true;
+    return commandResult;
   }
 
   private executePaletteMetadataCommand(command: DomainCommand): CommandResult {
@@ -1609,13 +1717,18 @@ export class DocumentEditor {
     const draft = cloneDocument(this.current);
     const mutation: MutationInfo = applyOneToDraft(draft, command);
     if (!mutation.changed) return result(this.current, false);
+    const settingsChanged = before.settings.symbolSet !== draft.settings.symbolSet
+      || before.settings.materialUnit !== draft.settings.materialUnit
+      || before.settings.backgroundColor !== draft.settings.backgroundColor;
     draft.revision = this.current.revision + 1;
     assertValidDocument(draft);
     const entry: SnapshotEntry = { kind: 'snapshot', before, after: cloneDocument(draft), bytes: snapshotBytes(draft) + snapshotBytes(before), progress: cloneProgress(mutation.progress), recalculateMetrics: mutation.recalculateMetrics === true };
     ensureHistoryEntryFits(entry.bytes, this.historyLimit);
     this.current = draft;
     this.pushHistory(entry);
-    return result(this.current, true, mutation.backstitchId, mutation.paletteId, mutation);
+    const commandResult = result(this.current, true, mutation.backstitchId, mutation.paletteId, mutation);
+    if (settingsChanged) commandResult.requiresFullRedraw = true;
+    return commandResult;
   }
 
   private pushHistory(entry: HistoryEntry): void {
@@ -1756,7 +1869,7 @@ export class DocumentEditor {
     if (entry.kind === 'delta') {
       if (deltaRequiresFullRedraw(entry.delta)) commandResult.requiresFullRedraw = true;
       attachDeleteMetricsImpactForDelta(commandResult, entry.delta, 'before');
-    }
+    } else if (snapshotSettingsChanged(entry)) commandResult.requiresFullRedraw = true;
     return commandResult;
   }
 
@@ -1784,7 +1897,7 @@ export class DocumentEditor {
     if (entry.kind === 'delta') {
       if (deltaRequiresFullRedraw(entry.delta)) commandResult.requiresFullRedraw = true;
       attachDeleteMetricsImpactForDelta(commandResult, entry.delta, 'after');
-    }
+    } else if (snapshotSettingsChanged(entry)) commandResult.requiresFullRedraw = true;
     return commandResult;
   }
 

@@ -289,6 +289,44 @@ describe('headless project workspace', () => {
     }
   });
 
+  it('applies a requested background color to a converted draft before persistence', async () => {
+    const repository = new MemoryRepository();
+    const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'converted-background' });
+    const draft = createTestConversionDraft({ width: 2, height: 2, requestId: 'converted-background' });
+    try {
+      const session = await workspace.createProjectFromConversion({
+        id: 'converted-background',
+        draft,
+        settings: { backgroundColor: '#aabbcc' }
+      });
+
+      expect(session.document.settings.backgroundColor).toBe('#AABBCC');
+      expect(repository.saveDocuments[0]?.settings.backgroundColor).toBe('#AABBCC');
+      expect(repository.records.get('converted-background')?.document.settings.backgroundColor).toBe('#AABBCC');
+      expect(draft.document.settings.backgroundColor).toBe('#F3EEE5');
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
+  it('leaves a fully supplied document authoritative when project settings are omitted from the document', async () => {
+    const repository = new MemoryRepository();
+    const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'supplied-background' });
+    const supplied = createDocument({ width: 1, height: 1, palette: [], settings: { backgroundColor: '#123456' } });
+    try {
+      const session = await workspace.createProject({
+        id: 'supplied-background',
+        document: supplied,
+        settings: { backgroundColor: '#aabbcc' }
+      });
+
+      expect(session.document.settings.backgroundColor).toBe('#123456');
+      expect(repository.records.get('supplied-background')?.document.settings.backgroundColor).toBe('#123456');
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
   it('detaches the retained conversion source bytes before the create save', async () => {
     const repository = new MemoryRepository();
     const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'immutable-conversion' });
@@ -376,6 +414,25 @@ describe('headless project workspace', () => {
       expect(() => createStarterDocument({ width: 1.5, height: 1 })).toThrow();
       expect(() => createStarterDocument({ width: 1_000_001, height: 1 })).toThrow();
       expect(() => createStarterDocument({ width: 1_001, height: 1_000 })).toThrow();
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
+  it('persists the requested background color for a blank starter project', async () => {
+    const repository = new MemoryRepository();
+    const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'blank-background' });
+    try {
+      const session = await workspace.createProject({
+        id: 'blank-background',
+        width: 2,
+        height: 2,
+        settings: { backgroundColor: '#abcdef' }
+      });
+
+      expect(session.document.settings.backgroundColor).toBe('#ABCDEF');
+      expect(repository.saveDocuments[0]?.settings.backgroundColor).toBe('#ABCDEF');
+      expect(repository.records.get('blank-background')?.document.settings.backgroundColor).toBe('#ABCDEF');
     } finally {
       await workspace.dispose();
     }

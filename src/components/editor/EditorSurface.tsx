@@ -186,9 +186,14 @@ export function EditorSurface({
   const [fallback, setFallback] = useState(false);
   const [size, setSize] = useState(1);
   const [open, setOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<"project" | "aida" | "editor">("project");
   const [title, setTitle] = useState(workspace.metadata?.title ?? "");
   const [notes, setNotes] = useState(workspace.metadata?.notes ?? "");
   const [aida, setAida] = useState(String(workspace.metadata?.aidaCount ?? 14));
+  const [backgroundColor, setBackgroundColor] = useState(() => normalizeHexColor((document as typeof document & { settings?: { backgroundColor?: string } }).settings?.backgroundColor ?? "") ?? "#F3EEE5");
+  const [backgroundColorInput, setBackgroundColorInput] = useState(() => normalizeHexColor((document as typeof document & { settings?: { backgroundColor?: string } }).settings?.backgroundColor ?? "") ?? "#F3EEE5");
+  const backgroundColorDirty = useRef(false);
+  const documentBackgroundColor = normalizeHexColor((document as typeof document & { settings?: { backgroundColor?: string } }).settings?.backgroundColor ?? "") ?? "#F3EEE5";
   const [units, setUnits] = useState<DisplayUnits>(
     workspace.metadata?.units ?? "metric",
   );
@@ -223,6 +228,12 @@ export function EditorSurface({
   const symbolDialog = useRef<HTMLDivElement>(null);
   const symbolTrigger = useRef<HTMLButtonElement | null>(null);
   const [paletteMenu, setPaletteMenu] = useState<number | null>(null);
+  const [paletteMenuPosition, setPaletteMenuPosition] = useState({ left: 8, top: 8 });
+  const menuAnchor = useRef<HTMLElement | null>(null);
+  const menuElement = useRef<HTMLDivElement>(null);
+  const [deleteTarget, setDeleteTarget] = useState<number | null>(null);
+  const deleteTrigger = useRef<HTMLButtonElement | null>(null);
+  const deleteDialog = useRef<HTMLDivElement>(null);
   const [mobilePanel, setMobilePanel] = useState<"tools" | "colors" | null>(null);
   const mobileDock = useRef<HTMLElement>(null);
   const mobileToolsTrigger = useRef<HTMLButtonElement>(null);
@@ -379,6 +390,11 @@ export function EditorSurface({
     workspace.metadata?.units,
   ]);
   useEffect(() => {
+    if (backgroundColorDirty.current) return;
+    setBackgroundColor(documentBackgroundColor);
+    setBackgroundColorInput(documentBackgroundColor);
+  }, [documentBackgroundColor]);
+  useEffect(() => {
     try {
       globalThis.localStorage.setItem(
         EDITOR_PREFERENCES_KEY,
@@ -406,13 +422,30 @@ export function EditorSurface({
   };
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
+    const settingsColor = normalizeHexColor(backgroundColorInput);
+    if (!settingsColor) {
+      setSettingsTab("aida");
+      window.setTimeout(() => globalThis.document.getElementById("background-color-hex")?.focus(), 0);
+      return;
+    }
+    workspace.execute({ type: "document-settings-update", settings: { backgroundColor: settingsColor } } as never);
     await workspace.updateActiveMetadata({
       title: title.trim() || "Untitled sampler",
       notes,
       units,
     });
     await workspace.updateActiveAidaCount?.(Number(aida));
+    backgroundColorDirty.current = false;
     setOpen(false);
+  };
+  const setBackgroundFromHex = (value: string) => {
+    backgroundColorDirty.current = true;
+    setBackgroundColorInput(value);
+    const normalized = normalizeHexColor(value);
+    if (normalized) {
+      setBackgroundColor(normalized);
+      setBackgroundColorInput(normalized);
+    }
   };
   const applyUnits = (next: DisplayUnits) => {
     setUnits(next);
@@ -608,17 +641,23 @@ export function EditorSurface({
     setRemoveNotice("");
     setRemoveOpen(true);
   };
-  const openPaletteMenu = (id: number) => {
+  const positionPaletteMenu = (anchor: HTMLElement) => {
+    const rect = anchor.getBoundingClientRect();
+    setPaletteMenuPosition({ left: Math.max(8, Math.min(rect.right + 6, window.innerWidth - 188)), top: Math.max(8, Math.min(rect.top, window.innerHeight - 158)) });
+  };
+  const openPaletteMenu = (id: number, anchor: HTMLElement) => {
     window.clearTimeout(palettePress.current ?? undefined);
     palettePress.current = null;
+    menuAnchor.current = anchor;
+    positionPaletteMenu(anchor);
     setPaletteMenu(id);
   };
-  const startPalettePress = (id: number) => {
+  const startPalettePress = (id: number, anchor: HTMLElement) => {
     paletteLongPressed.current = false;
     window.clearTimeout(palettePress.current ?? undefined);
     palettePress.current = window.setTimeout(() => {
       paletteLongPressed.current = true;
-      openPaletteMenu(id);
+      openPaletteMenu(id, anchor);
     }, 500);
   };
   const endPalettePress = () => {
@@ -640,13 +679,13 @@ export function EditorSurface({
         type="button"
         aria-label={`${x.catalog?.code ? `${duplicateCatalogCodes.has(x.catalog.code) ? `${availableCatalogs.find((item) => item.association.catalogId === x.catalog?.catalogId)?.association.brandLabel ?? ""} ` : ""}${x.catalog.code}` : ""}${x.name}`}
         aria-pressed={ui?.paletteId === x.id}
-        onPointerDown={() => startPalettePress(x.id)}
+        onPointerDown={(event) => startPalettePress(x.id, event.currentTarget)}
         onPointerUp={endPalettePress}
         onPointerCancel={endPalettePress}
-        onContextMenu={(event) => { event.preventDefault(); openPaletteMenu(x.id); }}
+        onContextMenu={(event) => { event.preventDefault(); openPaletteMenu(x.id, event.currentTarget); }}
         onKeyDown={(event) => {
           if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
-            event.preventDefault(); openPaletteMenu(x.id);
+            event.preventDefault(); openPaletteMenu(x.id, event.currentTarget);
           }
         }}
         onClick={() => {
@@ -689,16 +728,19 @@ export function EditorSurface({
           ×
         </button>
       )}
-      {paletteMenu === x.id && (
-        <div className="palette-menu" role="menu" aria-label={`Details for ${x.name}`}>
+      {paletteMenu === x.id && createPortal(
+        <div ref={menuElement} className="palette-menu" role="menu" aria-label={`Details for ${x.name}`} style={{ position: 'fixed', left: paletteMenuPosition.left, top: paletteMenuPosition.top, zIndex: 1000 }} onPointerDown={(event) => event.stopPropagation()}>
           <strong>{x.name}</strong>
             <span>{catalogEntryLabel(x)}</span>
           <span>Symbol {x.symbol}</span>
-          <button type="button" role="menuitem" onClick={(event) => openSymbolPicker(x.id, event.currentTarget)}>Change symbol</button>
+          <button type="button" role="menuitem" onClick={() => { const anchor = menuAnchor.current as HTMLButtonElement; openSymbolPicker(x.id, anchor); setPaletteMenu(null); }}>Change symbol</button>
           {!(ui?.pendingPaletteId === x.id && !paletteActiveIds.has(x.id)) && (
-            <button type="button" role="menuitem" className="palette-menu-delete" onClick={(event) => { openRemove(x.id, event.currentTarget); setPaletteMenu(null); }}>Delete color</button>
+            <>
+            <button type="button" role="menuitem" onClick={() => { const anchor = menuAnchor.current as HTMLButtonElement; openRemove(x.id, anchor); setPaletteMenu(null); }}>Swap color</button>
+            <button type="button" role="menuitem" className="palette-menu-delete" onClick={() => { deleteTrigger.current = menuAnchor.current as HTMLButtonElement; setDeleteTarget(x.id); setPaletteMenu(null); }}>Delete color</button>
+            </>
           )}
-        </div>
+        </div>, globalThis.document.body
       )}
     </div>
   );
@@ -863,7 +905,7 @@ export function EditorSurface({
     if (root) root.inert = true;
     const all = () => [
       ...el.querySelectorAll<HTMLElement>("button,input,textarea,select"),
-    ];
+    ].filter((item) => !item.closest("[hidden]"));
     all()[0]?.focus();
     const key = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -1007,14 +1049,36 @@ export function EditorSurface({
   useEffect(() => {
     if (paletteMenu === null) return;
     const close = (event: PointerEvent) => {
+      if (event.target instanceof Node && menuElement.current?.contains(event.target)) return;
       if (event.target instanceof Element && event.target.closest(".palette-row")) return;
       setPaletteMenu(null);
     };
-    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") setPaletteMenu(null); };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") { setPaletteMenu(null); menuAnchor.current?.focus(); } };
     globalThis.document.addEventListener("pointerdown", close);
     globalThis.document.addEventListener("keydown", escape);
     return () => { globalThis.document.removeEventListener("pointerdown", close); globalThis.document.removeEventListener("keydown", escape); };
   }, [paletteMenu]);
+  useEffect(() => {
+    if (deleteTarget === null) return;
+    const dialog = deleteDialog.current;
+    if (!dialog) return;
+    const root = globalThis.document.querySelector<HTMLElement>("[data-application]");
+    const wasInert = root?.inert ?? false;
+    if (root) root.inert = true;
+    dialog.querySelector<HTMLButtonElement>("[data-delete-cancel]")?.focus();
+    const close = () => { setDeleteTarget(null); window.setTimeout(() => deleteTrigger.current?.focus(), 0); };
+    const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); close(); return; }
+      if (event.key !== "Tab") return;
+      const controls = [...dialog.querySelectorAll<HTMLElement>("button,input,select,textarea,[tabindex]:not([tabindex='-1'])")]
+        .filter((item) => !item.hasAttribute("disabled") && !item.closest("[hidden]") && item.tabIndex >= 0);
+      const first = controls[0], last = controls.at(-1);
+      if (event.shiftKey && globalThis.document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && globalThis.document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    };
+    dialog.addEventListener("keydown", key);
+    return () => { dialog.removeEventListener("keydown", key); if (root) root.inert = wasInert; };
+  }, [deleteTarget]);
   useEffect(() => {
     if (!mobilePanel) return;
     mobilePopover.current?.focus();
@@ -1213,7 +1277,7 @@ export function EditorSurface({
             type="button"
             aria-label="Open settings"
             title="Settings"
-            onClick={() => setOpen(true)}
+            onClick={() => { backgroundColorDirty.current = false; setBackgroundColor(documentBackgroundColor); setBackgroundColorInput(documentBackgroundColor); setSettingsTab("project"); setOpen(true); }}
           >
             ⚙
           </button>
@@ -1543,6 +1607,30 @@ export function EditorSurface({
               </button>
               <h2 id="settings-heading">Settings</h2>
               <form onSubmit={save}>
+                <div className="settings-tabs" role="tablist" aria-label="Settings sections">
+                  {([['project', 'Project'], ['aida', 'Aida'], ['editor', 'Editor']] as const).map(([key, label]) => <button
+                    key={key}
+                    id={`settings-tab-${key}`}
+                    className="settings-tab"
+                    type="button"
+                    role="tab"
+                    aria-selected={settingsTab === key}
+                    aria-controls={`settings-panel-${key}`}
+                    tabIndex={settingsTab === key ? 0 : -1}
+                    onClick={() => setSettingsTab(key)}
+                    onKeyDown={(event) => {
+                      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+                      event.preventDefault();
+                      const keys = ['project', 'aida', 'editor'] as const;
+                      const current = keys.indexOf(key);
+                      const target = event.key === 'Home' ? 0 : event.key === 'End' ? keys.length - 1 : (current + (event.key === 'ArrowRight' ? 1 : -1) + keys.length) % keys.length;
+                      const next = keys[target];
+                      setSettingsTab(next);
+                      window.setTimeout(() => globalThis.document.getElementById(`settings-tab-${next}`)?.focus(), 0);
+                    }}
+                  >{label}</button>)}
+                </div>
+                <div id="settings-panel-project" className="settings-tabpanel" role="tabpanel" aria-labelledby="settings-tab-project" hidden={settingsTab !== 'project'}>
                 <section
                   className="settings-section"
                   aria-labelledby="project-settings-heading"
@@ -1563,18 +1651,6 @@ export function EditorSurface({
                       value={notes}
                       onChange={(e) => setNotes(e.target.value)}
                     />
-                  </label>
-                  <label htmlFor="details-aida">
-                    Aida count
-                    <select
-                      id="details-aida"
-                      value={aida}
-                      onChange={(e) => setAida(e.target.value)}
-                    >
-                      {[11, 14, 16, 18, 22].map((x) => (
-                        <option key={x}>{x}</option>
-                      ))}
-                    </select>
                   </label>
                   <div
                     className="trace-mode-row"
@@ -1599,6 +1675,29 @@ export function EditorSurface({
                     </button>
                   </div>
                 </section>
+                </div>
+                <div id="settings-panel-aida" className="settings-tabpanel" role="tabpanel" aria-labelledby="settings-tab-aida" hidden={settingsTab !== 'aida'}>
+                <section className="settings-section aida-settings-section" aria-labelledby="aida-settings-heading">
+                  <h3 id="aida-settings-heading">Aida Settings</h3>
+                  <label htmlFor="details-aida">
+                    Aida count
+                    <select id="details-aida" value={aida} onChange={(e) => setAida(e.target.value)}>
+                      {[11, 14, 16, 18, 22].map((x) => <option key={x}>{x}</option>)}
+                    </select>
+                  </label>
+                  <section className="custom-color-section settings-background-color" aria-labelledby="background-color-title">
+                    <h4 id="background-color-title">Aida background</h4>
+                    <div className="custom-color-fields">
+                      <label htmlFor="background-color-picker">Background color</label>
+                      <input id="background-color-picker" type="color" value={backgroundColor.toLowerCase()} onChange={(event) => setBackgroundFromHex(event.target.value)} />
+                      <label htmlFor="background-color-hex">HEX Code</label>
+                      <input id="background-color-hex" type="text" value={backgroundColorInput} onChange={(event) => setBackgroundFromHex(event.target.value)} placeholder="#F3EEE5" autoComplete="off" aria-describedby="background-color-help" />
+                    </div>
+                    <p id="background-color-help" className="custom-color-help background-color-help" aria-live="polite">{backgroundColorInput && !normalizeHexColor(backgroundColorInput) ? "Enter a 3- or 6-digit hex color." : "Use a three- or six-digit hex value."}</p>
+                  </section>
+                </section>
+                </div>
+                <div id="settings-panel-editor" className="settings-tabpanel" role="tabpanel" aria-labelledby="settings-tab-editor" hidden={settingsTab !== 'editor'}>
                 <section
                   className="settings-section"
                   aria-labelledby="editor-settings-heading"
@@ -1703,6 +1802,7 @@ export function EditorSurface({
                     />
                   </label>
                 </section>
+                </div>
                 <button className="button button-primary" type="submit">
                   Save settings
                 </button>
@@ -1984,6 +2084,19 @@ export function EditorSurface({
           </div>,
           globalThis.document.body,
         )}{" "}
+      {deleteTarget !== null && createPortal(
+        <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) { setDeleteTarget(null); window.setTimeout(() => deleteTrigger.current?.focus(), 0); } }}>
+          <div ref={deleteDialog} className="catalog-dialog create-modal palette-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="palette-delete-title">
+            <p className="section-label">Palette</p>
+            <h2 id="palette-delete-title">Delete {palette.find((entry) => entry.id === deleteTarget)?.name ?? 'color'}?</h2>
+            <p className="modal-hint">Every stitch using this color, including backstitches, will be deleted.</p>
+            <div className="actions">
+              <button className="button button-secondary" data-delete-cancel type="button" onClick={() => { setDeleteTarget(null); window.setTimeout(() => deleteTrigger.current?.focus(), 0); }}>Cancel</button>
+              <button className="button button-primary" type="button" onClick={() => { const id = deleteTarget; if (id === null) return; workspace.execute({ type: 'palette-delete', id } as never); if (ui?.paletteId === id) controllerRef.current?.selectPalette(null); setDeleteTarget(null); window.setTimeout(() => deleteTrigger.current?.focus(), 0); }}>Delete color</button>
+            </div>
+          </div>
+        </div>, globalThis.document.body
+      )}{" "}
       {symbolTarget !== null &&
         symbolEntry &&
         createPortal(

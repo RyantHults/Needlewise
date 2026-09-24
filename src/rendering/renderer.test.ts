@@ -163,6 +163,85 @@ function chart(width = 4, height = 4) {
 }
 
 describe('Canvas 2D chart renderer', () => {
+  it('uses the neutral Aida background when a legacy runtime document has no background setting', () => {
+    const document = chart(1, 1);
+    document.settings = { ...document.settings, backgroundColor: undefined } as unknown as typeof document.settings;
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(16, 16),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      style: { backgroundColor: '#123456' }
+    });
+    renderer.renderNow();
+
+    expect(base.records.some((call) => call.name === 'fillRect' && call.args.join(',') === '0,0,16,16' && call.fillStyle === '#F3EEE5')).toBe(true);
+    renderer.dispose();
+  });
+
+  it('uses the document Aida background for pattern fills and keys overview atlases by it', () => {
+    const document = chart(2, 1);
+    document.settings = Object.assign({}, document.settings, { backgroundColor: '#aabbcc' });
+    const sourceDocument = chart(1, 1);
+    sourceDocument.kind[0] = CellKind.Full;
+    sourceDocument.colors[0] = 1;
+    const fragment = createPatternFragment(sourceDocument, { x: 0, y: 0, width: 1, height: 1 });
+    const base = recordingContext();
+    const overlay = recordingContext();
+    const detailRenderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(overlay) },
+      metrics: getCanvasMetrics(32, 16),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      style: { backgroundColor: '#010203', showGrid: false },
+      overlay: {
+        pendingCellStates: [{ index: 0, cell: { x: 0, y: 0 }, kind: CellKind.Empty, colors: [0, 0, 0, 0], completed: 0 }],
+        floatingPaste: { fragment, destination: { x: 1, y: 0, width: 1, height: 1 } }
+      }
+    });
+    detailRenderer.renderNow();
+
+    expect(base.records.some((call) => call.name === 'fillRect' && call.args.join(',') === '0,0,32,16' && call.fillStyle === '#aabbcc')).toBe(true);
+    expect(overlay.records.some((call) => call.name === 'fillRect' && call.args.join(',') === '0,0,16,16' && call.fillStyle === '#aabbcc')).toBe(true);
+    expect(overlay.records.some((call) => call.name === 'fillRect' && call.args.join(',') === '16,0,16,16' && call.fillStyle === '#aabbcc')).toBe(true);
+    detailRenderer.dispose();
+
+    for (const mode of ['color', 'symbol'] as const) {
+      const overviewDocument = chart(2, 1);
+      overviewDocument.settings = Object.assign({}, overviewDocument.settings, { backgroundColor: '#aabbcc' });
+      const atlasSources: RecordingContext[] = [];
+      let atlasBuilds = 0;
+      const overviewRenderer = createCanvasRenderer({
+        document: overviewDocument,
+        targets: { base: target(recordingContext()), overlay: target(recordingContext()) },
+        metrics: getCanvasMetrics(2, 1),
+        viewport: { x: 0, y: 0, zoom: 1 },
+        style: { mode },
+        atlasTargetFactory: (width, height) => {
+          atlasBuilds += 1;
+          const atlasSource = recordingContext();
+          atlasSources.push(atlasSource);
+          return target(atlasSource, new FakeCanvasImageSource(width, height));
+        }
+      });
+      overviewRenderer.renderNow();
+      expect(atlasBuilds).toBe(1);
+      expect(atlasSources[0].records.some((call) => call.name === 'fillRect' && call.fillStyle === '#aabbcc')).toBe(true);
+      const changedBackground = {
+        ...overviewDocument,
+        settings: Object.assign({}, overviewDocument.settings, { backgroundColor: '#ddeeff' }),
+        revision: overviewDocument.revision + 1
+      };
+      overviewRenderer.setDocument(changedBackground);
+      overviewRenderer.renderNow();
+      expect(atlasBuilds).toBe(2);
+      expect(atlasSources[1].records.some((call) => call.name === 'fillRect' && call.fillStyle === '#ddeeff')).toBe(true);
+      expect(overviewRenderer.lastStats.baseRendered).toBe(true);
+      overviewRenderer.dispose();
+    }
+  });
+
   it('uses deterministic base-36 symbols', () => {
     expect(symbolForPaletteId(1)).toBe('1');
     expect(symbolForPaletteId(35)).toBe('z');
@@ -202,7 +281,7 @@ describe('Canvas 2D chart renderer', () => {
     renderer.setOverlay({ floatingPaste: { fragment, destination: { x: -1, y: 0, width: 2, height: 1 } } });
     renderer.renderNow();
 
-    expect(overlay.records.some((record) => record.name === 'fillRect' && record.fillStyle === '#ffffff')).toBe(true);
+    expect(overlay.records.some((record) => record.name === 'fillRect' && record.fillStyle === document.settings.backgroundColor)).toBe(true);
     expect(overlay.records.some((record) => record.name === 'strokeRect')).toBe(false);
     expect(overlay.records.some((record) => record.name === 'lineTo')).toBe(true);
     expect(overlay.records.some((record) => record.name === 'fillRect' && record.args[0] === 16)).toBe(false);
@@ -1617,7 +1696,7 @@ describe('Canvas 2D chart renderer', () => {
     expect(paths.some((call) => call.name === 'lineTo' && call.args[0] === 16 - halfLeg + 16 && call.args[1] === 0 && call.fillStyle === '#f00')).toBe(true);
     expect(paths.some((call) => call.name === 'moveTo' && call.args[0] === 32 + halfLeg && call.args[1] === 0 && call.fillStyle === '#00f')).toBe(true);
     expect(paths.some((call) => call.name === 'lineTo' && call.args.join(',') === '32,16' && call.fillStyle === '#00f')).toBe(true);
-    expect(fillRects.some((call) => call.args.join(',') === '48,0,16,16' && call.fillStyle === '#ffffff')).toBe(true);
+    expect(fillRects.some((call) => call.args.join(',') === '48,0,16,16' && call.fillStyle === document.settings.backgroundColor)).toBe(true);
     expect(paths.some((call) => call.name === 'moveTo' && call.args[0] === 48 && (call.strokeStyle === '#f00' || call.strokeStyle === '#00f'))).toBe(false);
     expect(paths.some((call) => call.name === 'moveTo' && call.args.join(',') === '64,0' && call.fillStyle === '#f00')).toBe(true);
     expect(paths.some((call) => call.name === 'moveTo' && call.args.join(',') === '80,16' && call.fillStyle === '#f00')).toBe(true);
@@ -1653,7 +1732,7 @@ describe('Canvas 2D chart renderer', () => {
     });
     renderer.renderNow();
 
-    const maskIndex = overlay.records.findIndex((call) => call.name === 'fillRect' && call.args.join(',') === '20,0,20,20' && call.fillStyle === '#ffffff');
+    const maskIndex = overlay.records.findIndex((call) => call.name === 'fillRect' && call.args.join(',') === '20,0,20,20' && call.fillStyle === document.settings.backgroundColor);
     const stateIndex = overlay.records.findIndex((call) => call.name === 'fillRect' && call.args.join(',') === '20,0,20,20' && call.fillStyle === '#f00');
     const gridIndices = overlay.records
       .map((call, index, records) => call.name === 'moveTo' && call.strokeStyle === '#00aa00' && records[index + 1]?.name === 'lineTo' && records[index + 2]?.name === 'stroke' ? index : -1)
@@ -1809,7 +1888,8 @@ describe('Canvas 2D chart renderer', () => {
     expect(sourceContext.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(true);
     expect(sourceContext.records.some((call) => call.name === 'fillText' && call.fillStyle === '#123456')).toBe(true);
     expect(sourceContext.records.some((call) => call.name === 'fillRect' && call.fillStyle === '#abcdef')).toBe(true);
-    expect(sourceContext.records.some((call) => call.name === 'fillRect' && call.fillStyle !== '#abcdef')).toBe(false);
+    expect(sourceContext.records.some((call) => call.name === 'fillRect' && call.fillStyle === document.settings.backgroundColor)).toBe(true);
+    expect(sourceContext.records.some((call) => call.name === 'fillRect' && call.fillStyle !== '#abcdef' && call.fillStyle !== document.settings.backgroundColor)).toBe(false);
     symbolRenderer.dispose();
   });
 
@@ -2011,7 +2091,7 @@ describe('Canvas 2D chart renderer', () => {
     expect(() => renderer.renderNow()).not.toThrow();
     expect(base.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(true);
     expect(base.records.some((call) => call.name === 'fillRect' && call.fillStyle === '#abcdef')).toBe(true);
-    expect(base.records.filter((call) => call.name === 'fillRect').every((call) => call.fillStyle === '#ffffff' || call.fillStyle === '#abcdef')).toBe(true);
+    expect(base.records.filter((call) => call.name === 'fillRect').every((call) => call.fillStyle === document.settings.backgroundColor || call.fillStyle === '#abcdef')).toBe(true);
     renderer.dispose();
   });
 
@@ -2055,7 +2135,7 @@ describe('Canvas 2D chart renderer', () => {
     expect(() => renderer.renderNow()).not.toThrow();
     expect(base.records.some((call) => call.name === 'fillText')).toBe(false);
     expect(base.records.some((call) => call.name === 'fillRect' && call.fillStyle === '#abcdef')).toBe(true);
-    expect(base.records.filter((call) => call.name === 'fillRect').every((call) => call.fillStyle === '#ffffff' || call.fillStyle === '#abcdef')).toBe(true);
+    expect(base.records.filter((call) => call.name === 'fillRect').every((call) => call.fillStyle === document.settings.backgroundColor || call.fillStyle === '#abcdef')).toBe(true);
     renderer.dispose();
   });
 
@@ -2192,8 +2272,9 @@ describe('Canvas 2D chart renderer', () => {
     expect(images).toHaveLength(2);
     expect(images[0].args[0]).toBeInstanceOf(FakeCanvasImageSource);
     expect(images[1].args[0]).toBe(traceSource);
-    expect(atlas.records.some((call) => call.name === 'fillRect')).toBe(false);
-    expect(base.records.some((call) => call.name === 'fillRect' && call.fillStyle === '#ffffff' && call.args.join(',') === '0,0,20,10')).toBe(true);
+    const document = renderer.getDocument();
+    expect(atlas.records.some((call) => call.name === 'fillRect' && call.fillStyle === document.settings.backgroundColor && call.args.join(',') === '0,0,2,1')).toBe(true);
+    expect(base.records.some((call) => call.name === 'fillRect' && call.fillStyle === document.settings.backgroundColor && call.args.join(',') === '0,0,20,10')).toBe(true);
     renderer.dispose();
   });
 

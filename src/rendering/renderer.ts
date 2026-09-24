@@ -45,7 +45,8 @@ import {
   ColorAtlasCache,
   SymbolAtlasCache,
   isCanvasImageSource,
-  overviewColorForPaletteId
+  overviewColorForPaletteId,
+  patternBackgroundColor
 } from './atlas';
 import { clearTarget, defaultAtlasTargetFactory, drawImage, prepareTarget, restore, save } from './context';
 import { grayscaleColor } from './symbols';
@@ -949,7 +950,7 @@ function drawPendingCellState(
   // The overlay sits above the committed layer. Mask the old cell first so an
   // erase or a legacy-quarter edit presents the exact sparse after-state.
   save(context);
-  context.fillStyle = style.backgroundColor;
+  context.fillStyle = patternBackgroundColor(document);
   setAlpha(context, 1);
   context.fillRect(clippedCellRect.x, clippedCellRect.y, clippedCellRect.width, clippedCellRect.height);
   restore(context);
@@ -1029,7 +1030,7 @@ function drawFloatingPaste(
         if (!clipped) continue;
         const offset = sourceIndex * 4;
         save(context);
-        context.fillStyle = style.mode === ChartPresentationMode.Symbol ? style.symbolBackgroundColor : style.backgroundColor;
+        context.fillStyle = style.mode === ChartPresentationMode.Symbol ? style.symbolBackgroundColor : patternBackgroundColor(document);
         setAlpha(context, 1);
         context.fillRect(clipped.x, clipped.y, clipped.width, clipped.height);
         restore(context);
@@ -1141,7 +1142,7 @@ function drawBrushPreview(
     if (!rect) continue;
     const index = y * document.width + x;
     const paletteId = document.colors[index * 4] ?? 0;
-    const background = paletteId === 0 ? style.backgroundColor : styleColor(document, paletteId, style);
+    const background = paletteId === 0 ? patternBackgroundColor(document) : styleColor(document, paletteId, style);
     context.strokeStyle = preview.color ?? contrastSymbolInk(background, style.symbolColor);
     context.beginPath();
     const left = modelToScreen({ x, y }, viewport);
@@ -1489,17 +1490,18 @@ export class Canvas2DRenderer implements CanvasRenderer {
     const target = this.options.targets.base;
     prepareTarget(target, this.metrics);
     const context = target.context;
+    const patternBackground = patternBackgroundColor(this.document);
     const cellInvalidationRect = invalidation.cellRect ? cellToScreenRect(invalidation.cellRect, this.viewport) : undefined;
     const invalidationRect = unionRect(invalidation.rect, cellInvalidationRect);
     const partial = !fullInvalidation && lod !== RenderLod.Overview && invalidationRect !== undefined && clipToRect(context, invalidationRect);
     if (!partial) {
       clearTarget(target, this.metrics);
-      context.fillStyle = this.style.backgroundColor;
+      context.fillStyle = patternBackground;
       context.globalAlpha = 1;
       context.fillRect(0, 0, this.metrics.cssWidth, this.metrics.cssHeight);
     } else {
       context.clearRect(invalidationRect.x, invalidationRect.y, invalidationRect.width, invalidationRect.height);
-      context.fillStyle = this.style.backgroundColor;
+      context.fillStyle = patternBackground;
       context.globalAlpha = 1;
       context.fillRect(invalidationRect.x, invalidationRect.y, invalidationRect.width, invalidationRect.height);
     }

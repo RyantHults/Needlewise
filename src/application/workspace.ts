@@ -6,6 +6,7 @@ import {
   normalizeAidaCount,
   normalizeDisplayUnits,
   normalizeMaterialSettings,
+  normalizePatternSettings,
   type DomainCommand,
   type PatternDocument
 } from '../domain';
@@ -37,7 +38,6 @@ import type {
   CreateProjectOptions,
   CreateConvertedProjectOptions,
   SaveState,
-  StarterProjectOptions,
   WorkspaceClock,
   WorkspaceInitializationOptions,
   WorkspaceOptions,
@@ -96,7 +96,7 @@ function cloneHealth(health: ProjectHealth): ProjectHealth {
   };
 }
 
-export function createStarterDocument(options: Pick<StarterProjectOptions, 'width' | 'height'> = {}): PatternDocument {
+export function createStarterDocument(options: Pick<CreateProjectOptions, 'width' | 'height' | 'settings'> = {}): PatternDocument {
   // New projects seed their palette with catalog Black 310 so there is always a usable color.
   // `createDocument` seeds `nextPaletteId` at 2 for that single entry.
   const definition = DEFAULT_CATALOG_DEFINITION;
@@ -112,7 +112,8 @@ export function createStarterDocument(options: Pick<StarterProjectOptions, 'widt
           color: black.hex,
           catalog: createCatalogReference(definition, black)
         }]
-      : []
+      : [],
+    settings: options.settings
   });
 }
 
@@ -433,6 +434,9 @@ export class ProjectWorkspace {
         chartBounds: { ...options.draft.sourceImage.chartBounds }
       }
     };
+    if (options.settings !== undefined) {
+      draft.document.settings = normalizePatternSettings({ ...draft.document.settings, ...options.settings });
+    }
     const assets = [...(options.assets ?? [])];
     let sourceImage: SourceImageDescriptor | undefined;
     const sourceInput = options.sourceImageAsset

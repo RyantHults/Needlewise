@@ -1,6 +1,7 @@
 import {
   assertValidDocument,
   DOCUMENT_SCHEMA_VERSION,
+  DEFAULT_PATTERN_SETTINGS,
   PALETTE_ID_RESERVED,
   type PaletteCatalogReference,
   type PaletteEntry,
@@ -18,7 +19,7 @@ import {
 } from './limits';
 
 const MAGIC = new Uint8Array([0x4e, 0x57, 0x44, 0x4f, 0x43, 0x31, 0x01, 0x00]);
-export const BINARY_SCHEMA_VERSION = 1 as const;
+export const BINARY_SCHEMA_VERSION = 2 as const;
 const LITTLE_ENDIAN_MARKER = 1;
 const HEADER_BYTES = 40;
 
@@ -89,6 +90,7 @@ function byteLengthFor(document: PatternDocument): number {
   }
   length += 4n + BigInt(stringBytes(document.settings.symbolSet, 'Document symbol set').length);
   length += 4n + BigInt(stringBytes(document.settings.materialUnit, 'Document material unit').length);
+  length += 4n + BigInt(stringBytes(document.settings.backgroundColor, 'Document background color').length);
   length += BigInt(document.backstitches.ids.length) * 23n;
   if (length > BigInt(MAX_DOCUMENT_BYTES) || length > BigInt(Number.MAX_SAFE_INTEGER)) fail('Document snapshot exceeds the size limit.');
   return Number(length);
@@ -162,6 +164,7 @@ export function encodeDocument(document: PatternDocument): Uint8Array {
   }
   offset = writeString(view, bytes, offset, document.settings.symbolSet, 'Document symbol set');
   offset = writeString(view, bytes, offset, document.settings.materialUnit, 'Document material unit');
+  offset = writeString(view, bytes, offset, document.settings.backgroundColor, 'Document background color');
   bytes.set(document.kind, offset);
   offset += document.kind.length;
   for (const color of document.colors) {
@@ -210,7 +213,7 @@ export function decodeDocument(input: Uint8Array | ArrayBuffer): PatternDocument
   if (bytes.length < HEADER_BYTES || !sameMagic(bytes)) fail('Document binary magic is invalid.');
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const binaryVersion = view.getUint16(8, true);
-  if (binaryVersion !== BINARY_SCHEMA_VERSION) throw new PersistenceError('unsupported-version', 'Document binary schema is unsupported.');
+  if (binaryVersion !== 1 && binaryVersion !== BINARY_SCHEMA_VERSION) throw new PersistenceError('unsupported-version', 'Document binary schema is unsupported.');
   if (view.getUint8(10) !== LITTLE_ENDIAN_MARKER) fail('Document byte order is unsupported.');
   if (view.getUint8(11) !== 0) fail('Document header flags are invalid.');
   const width = view.getUint32(12, true);
@@ -232,7 +235,7 @@ export function decodeDocument(input: Uint8Array | ArrayBuffer): PatternDocument
     + BigInt(paletteCount) * 29n
     + BigInt(cellCount) * 10n
     + BigInt(backstitchCount) * 23n
-    + 8n;
+    + (binaryVersion === 1 ? 8n : 12n);
   if (minimumPayload > BigInt(bytes.length - HEADER_BYTES)) fail('Document counts exceed the remaining payload.');
 
   let offset = HEADER_BYTES;
@@ -309,7 +312,13 @@ export function decodeDocument(input: Uint8Array | ArrayBuffer): PatternDocument
   offset = symbolSet.offset;
   const materialUnit = readString(bytes, view, offset, 'Document material unit');
   offset = materialUnit.offset;
-  const settings: PatternSettings = { symbolSet: symbolSet.value, materialUnit: materialUnit.value as PatternSettings['materialUnit'] };
+  let backgroundColor = DEFAULT_PATTERN_SETTINGS.backgroundColor;
+  if (binaryVersion >= 2) {
+    const decodedBackgroundColor = readString(bytes, view, offset, 'Document background color');
+    backgroundColor = decodedBackgroundColor.value;
+    offset = decodedBackgroundColor.offset;
+  }
+  const settings: PatternSettings = { symbolSet: symbolSet.value, materialUnit: materialUnit.value as PatternSettings['materialUnit'], backgroundColor };
   const kindBytes = take(bytes, offset, cellCount, 'cell kinds');
   offset += cellCount;
   const colorsByteLength = cellCount * 4 * 2;

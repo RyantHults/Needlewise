@@ -493,6 +493,42 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .catalog-dialog .custom-color-fields input[type="color"]::-webkit-color-swatch-wrapper { padding:0; border-radius:50%; }
 .catalog-dialog .custom-color-fields input[type="color"]::-webkit-color-swatch { border:0; border-radius:50%; }
 .catalog-dialog .custom-color-fields input[type="color"]::-moz-color-swatch { border:0; border-radius:50%; }
+.details-dialog .settings-background-color { margin:.8rem 0 0; border-top:1px solid #c5d0c2; padding-top:.8rem; }
+.details-dialog .settings-background-color h3 { margin:0 0 .55rem; color:#3e493e; font-size:.78rem; }
+.details-dialog .settings-background-color h4 { margin:0 0 .55rem; color:#3e493e; font-size:.78rem; }
+.background-color-help { font-size:x-small; justify-content:right; display:flex; color:gray; }
+.settings-tabs { display:flex; gap:.3rem; margin:0 0 .85rem; border-bottom:1px solid #c5d0c2; }
+.settings-tab { flex:1; min-width:0; padding:.55rem .35rem; border:0; border-bottom:3px solid transparent; border-radius:.35rem .35rem 0 0; background:transparent; color:#3e493e; font:inherit; font-weight:600; cursor:pointer; }
+.settings-tab[aria-selected="true"] { border-bottom-color:#bc5a3d; color:#7b3828; background:#f6f0e8; }
+.settings-tab:focus-visible { outline:3px solid #bc5a3d; outline-offset:2px; }
+.settings-tabpanel[hidden] { display:none; }
+@media (max-width: 420px) { .settings-tab { font-size:.9rem; padding-inline:.2rem; } }
+.details-dialog .custom-color-fields { display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:.45rem .65rem; }
+.details-dialog .custom-color-fields label { margin:0; white-space:nowrap; }
+.details-dialog .custom-color-fields input { margin:0; }
+.details-dialog .custom-color-fields input[type="color"] { width:2rem; height:2rem; justify-self:start; border:2px solid #fffdf9; border-radius:50%; padding:0; background:transparent; box-shadow:0 0 0 1px #c5d0c2; cursor:pointer; overflow:hidden; }
+.details-dialog .custom-color-fields input[type="color"]:focus-visible { outline:3px solid #bc5a3d; outline-offset:3px; }
+.details-dialog .custom-color-fields input[type="color"]::-webkit-color-swatch-wrapper { padding:0; border-radius:50%; }
+.details-dialog .custom-color-fields input[type="color"]::-webkit-color-swatch { border:0; border-radius:50%; }
+.details-dialog .custom-color-fields input[type="color"]::-moz-color-swatch { border:0; border-radius:50%; }
+.create-modal .custom-color-section { margin:.8rem 0; border-top:1px solid #c5d0c2; padding-top:.8rem; }
+.create-modal .custom-color-section h3 { margin:0 0 .55rem; color:#3e493e; font-size:.78rem; }
+.create-modal .custom-color-fields { display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:.45rem .65rem; }
+.create-modal .custom-color-fields label { margin:0; white-space:nowrap; }
+.create-modal .custom-color-fields input { margin:0; }
+.create-modal .custom-color-fields input[type="color"] { width:2rem; height:2rem; justify-self:start; border:2px solid #fffdf9; border-radius:50%; padding:0; background:transparent; box-shadow:0 0 0 1px #c5d0c2; cursor:pointer; overflow:hidden; }
+.create-modal .custom-color-fields input[type="color"]:focus-visible { outline:3px solid #bc5a3d; outline-offset:3px; }
+.create-modal .custom-color-fields input[type="color"]::-webkit-color-swatch-wrapper { padding:0; border-radius:50%; }
+.create-modal .custom-color-fields input[type="color"]::-webkit-color-swatch { border:0; border-radius:50%; }
+.create-modal .custom-color-fields input[type="color"]::-moz-color-swatch { border:0; border-radius:50%; }
+@media (max-width: 520px) {
+  .create-modal .custom-color-fields { grid-template-columns:minmax(0,1fr) auto; }
+  .create-modal .custom-color-fields label { overflow:hidden; text-overflow:ellipsis; }
+}
+@media (max-width: 520px) {
+  .details-dialog .custom-color-fields { grid-template-columns:minmax(0,1fr) auto; }
+  .details-dialog .custom-color-fields label { overflow:hidden; text-overflow:ellipsis; }
+}
 .catalog-unavailable { margin:.65rem 0 0; color:#687568; font-size:.75rem; }
 .catalog-dialog .custom-color-help { min-height:1.1rem; margin:.4rem 0 .5rem; color:#687568; font-size:.7rem; }
 .catalog-dialog .custom-color-section .custom-color-action { min-height:2.25rem; }

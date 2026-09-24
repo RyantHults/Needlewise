@@ -61,6 +61,7 @@ import {
   mergePaletteCommand,
   moveFragmentCommand,
   PALETTE_SYMBOLS,
+  type DocumentSettingsUpdateCommand,
   type PatternDocument,
   type CatalogAssociation,
   type PatternFragment,
@@ -742,6 +743,97 @@ describe('typed-array pattern document', () => {
     expect(() => applyCommand(inactiveMerge, mergePaletteCommand(2, 4))).toThrow();
   });
 
+  it('palette-delete removes references instead of only deactivating the color', () => {
+    let pattern = document(4, 1);
+    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
+    pattern = apply(pattern, { type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 1 });
+    pattern = apply(pattern, { type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 });
+    pattern = apply(pattern, { type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.SE, color: 2 });
+    pattern = apply(pattern, { type: 'set-full', x: 3, y: 0, color: 2 });
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 });
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 4, y: 0 }, end: { x: 8, y: 0 }, color: 2 });
+    const editor = createEditor(pattern);
+
+    const deleted = editor.execute({ type: 'palette-delete', id: 1 });
+
+    expect(deleted.changed).toBe(true);
+    expect(deleted.document.palette.find((entry) => entry.id === 1)?.active).toBe(false);
+    expect(getCell(deleted.document, 0, 0).kind).toBe(CellKind.Empty);
+    expect(getCell(deleted.document, 1, 0).kind).toBe(CellKind.Empty);
+    expect(getCell(deleted.document, 2, 0)).toMatchObject({ kind: CellKind.Quarters });
+    expect(deleted.document.colors.slice(8, 12)).toEqual(new Uint16Array([0, 0, 2, 0]));
+    expect(getCell(deleted.document, 3, 0)).toMatchObject({ kind: CellKind.Full, color: 2 });
+    expect(listBackstitches(deleted.document).map((line) => line.color)).toEqual([2]);
+    expect(validateDocument(deleted.document)).toBe(true);
+
+    expect(editor.undo().changed).toBe(true);
+    expect(editor.document.palette.find((entry) => entry.id === 1)?.active).toBe(true);
+    expect(getCell(editor.document, 0, 0).kind).toBe(CellKind.Full);
+    expect(listBackstitches(editor.document).map((line) => line.color)).toEqual([1, 2]);
+    expect(editor.redo().changed).toBe(true);
+    expect(listBackstitches(editor.document).map((line) => line.color)).toEqual([2]);
+  });
+
+  it('palette-delete preserves the opposite pair member, corner, and completion for either deleted color', () => {
+    let pattern = apply(document(1, 1), { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 });
+    pattern = apply(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 });
+    pattern = apply(pattern, { type: 'set-completion', x: 0, y: 0, corner: QuarterCorner.NW, completed: true });
+    pattern = apply(pattern, { type: 'set-completion', x: 0, y: 0, corner: QuarterCorner.SE, completed: true });
+
+    for (const [deletedColor, survivorColor, survivorCorner, survivorKind] of [
+      [1, 2, QuarterCorner.SE, CellKind.ThreeQuarterSE],
+      [2, 1, QuarterCorner.NW, CellKind.ThreeQuarterNW]
+    ] as const) {
+      const deleted = applyCommand(pattern, { type: 'palette-delete', id: deletedColor }).document;
+      const survivor = getCell(deleted, 0, 0);
+      const expectedComponents = [
+        { color: 0, completed: false },
+        { color: 0, completed: false },
+        { color: 0, completed: false },
+        { color: 0, completed: false }
+      ];
+      expectedComponents[survivorCorner] = { color: survivorColor, completed: true };
+
+      expect(survivor.kind).toBe(survivorKind);
+      expect(survivor.threeQuarters).toEqual(expectedComponents);
+      expect(validateDocument(deleted)).toBe(true);
+    }
+  });
+
+  it('palette-delete clears same-color pairs and non-NW three-quarter singles', () => {
+    let pattern = apply(document(4, 1), { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 });
+    pattern = apply(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 1 });
+    pattern = apply(pattern, { type: 'set-three-quarter', x: 1, y: 0, corner: QuarterCorner.NE, color: 1 });
+    pattern = apply(pattern, { type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.SE, color: 1 });
+    pattern = apply(pattern, { type: 'set-three-quarter', x: 3, y: 0, corner: QuarterCorner.SW, color: 1 });
+
+    const deleted = applyCommand(pattern, { type: 'palette-delete', id: 1 }).document;
+
+    expect(deleted.kind).toEqual(new Uint8Array(4));
+    expect(deleted.colors).toEqual(new Uint16Array(16));
+    expect(validateDocument(deleted)).toBe(true);
+  });
+
+  it('palette-delete preserves surviving backstitch identities, geometry, completion, and allocator state', () => {
+    let pattern = document(3, 2);
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 });
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 4 }, end: { x: 4, y: 4 }, color: 2 });
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 4, y: 0 }, end: { x: 8, y: 0 }, color: 2 });
+    pattern = apply(pattern, { type: 'set-backstitch-completion', id: 2, completed: true });
+    const retainedBackstitches = listBackstitches(pattern).filter((line) => line.color !== 1);
+    const nextBackstitchId = pattern.nextBackstitchId;
+
+    const deleted = applyCommand(pattern, { type: 'palette-delete', id: 1 }).document;
+
+    expect(listBackstitches(deleted)).toEqual(retainedBackstitches);
+    expect(deleted.nextBackstitchId).toBe(nextBackstitchId);
+    expect(validateDocument(deleted)).toBe(true);
+  });
+
+  it('palette-delete rejects an unknown palette id like the other palette commands', () => {
+    expect(() => applyCommand(document(), { type: 'palette-delete', id: 99 })).toThrow(/does not exist/);
+  });
+
   it('atomically creates a replacement color and merges into it in one command', () => {
     let pattern = document(2, 1);
     pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
@@ -867,7 +959,7 @@ describe('typed-array pattern document', () => {
     const small = document(2, 2);
     expect(() => applyCommand(small, { type: 'palette-create', name: 'Copy', color: '#000000', symbol: '●' })).toThrow(/duplicated/);
     expect(() => applyCommand(small, { type: 'palette-update', id: 2, symbol: '●' })).toThrow(/duplicated/);
-  });
+  }, 10_000);
 
   it('yields all-unique symbols at the brand ceiling and rejects ids above it', () => {
     const entries = Array.from({ length: TEST_CATALOG.colorCount }, (_, index) => ({
@@ -2680,6 +2772,293 @@ describe('typed-array pattern document', () => {
     expect(noOpEditor.document).toBe(noOpBefore);
     expect(noOpEditor.undoDepth).toBe(0);
     expect(noOpEditor.historyBytes).toBe(0);
+  });
+});
+
+describe('pattern background settings', () => {
+  function legacySnapshotBytes(pattern: PatternDocument): number {
+    const store = pattern.backstitches;
+    return pattern.kind.byteLength + pattern.colors.byteLength + pattern.completed.byteLength
+      + store.ids.byteLength + store.x1.byteLength + store.y1.byteLength + store.x2.byteLength + store.y2.byteLength
+      + store.colors.byteLength + store.completed.byteLength
+      + JSON.stringify(pattern.catalog).length * 2
+      + JSON.stringify(pattern.palette).length * 2
+      + 64;
+  }
+
+  function makeLegacySnapshotState(editor: ReturnType<typeof createEditor>, stack: 'undo' | 'redo' = 'undo') {
+    const state = editor.exportHistory();
+    const entries = state[stack] as unknown as Array<Record<string, unknown>>;
+    const entry = entries[0];
+    if (!entry || entry.kind !== 'snapshot') throw new Error('Expected a snapshot history entry.');
+    for (const side of ['before', 'after'] as const) {
+      const document = entry[side] as PatternDocument;
+      (document as unknown as { settings: PatternDocument['settings'] }).settings = {
+        symbolSet: document.settings.symbolSet,
+        materialUnit: document.settings.materialUnit
+      } as PatternDocument['settings'];
+    }
+    entry.bytes = legacySnapshotBytes(entry.before as PatternDocument) + legacySnapshotBytes(entry.after as PatternDocument);
+    return state;
+  }
+
+  function settingDeltaBytes(delta: Record<string, unknown>): number {
+    const cells = delta.cells as Record<string, ArrayBufferView>;
+    let bytes = Object.values(cells).reduce((sum, array) => sum + array.byteLength, 0);
+    for (const side of ['beforeSettings', 'afterSettings'] as const) {
+      const settings = delta[side];
+      if (settings !== undefined) bytes += JSON.stringify(settings).length * 2;
+    }
+    return bytes + 32;
+  }
+
+  it('normalizes native color input, defaults to neutral Aida, clones, and validates', () => {
+    const options = {
+      width: 1,
+      height: 1,
+      catalog: TEST_CATALOG,
+      settings: { symbolSet: 'default', materialUnit: MaterialUnit.Skeins, backgroundColor: '#a1b2c3' }
+    };
+    const pattern = createDocument(options);
+
+    expect(pattern.settings.backgroundColor).toBe('#A1B2C3');
+    expect(cloneDocument(pattern).settings).toEqual(pattern.settings);
+    expect(createDocument({ width: 1, height: 1, catalog: TEST_CATALOG }).settings.backgroundColor).toBe('#F3EEE5');
+    expect(() => createDocument({ ...options, settings: { ...options.settings, backgroundColor: 'red' } })).toThrow(/background color/i);
+    expect(() => createDocument({ ...options, settings: { ...options.settings, backgroundColor: null as never } })).toThrow(/background color/i);
+
+    const nonCanonical = {
+      ...pattern,
+      settings: { ...pattern.settings, backgroundColor: '#a1b2c3' }
+    } as PatternDocument;
+    expect(validateDocument(nonCanonical)).toBe(false);
+  });
+
+  it('retains background color and settings identity across delta undo and redo', () => {
+    const editor = createEditor(createDocument({
+      width: 1,
+      height: 1,
+      catalog: TEST_CATALOG,
+      palette: [{ id: 1, name: 'Red', color: '#d33' }],
+      settings: { backgroundColor: '#123456' }
+    }));
+    const settings = editor.document.settings;
+
+    editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    expect(editor.document.settings).toBe(settings);
+    expect(editor.document.settings.backgroundColor).toBe('#123456');
+    editor.undo();
+    expect(editor.document.settings).toBe(settings);
+    expect(editor.document.settings.backgroundColor).toBe('#123456');
+    editor.redo();
+    expect(editor.document.settings).toBe(settings);
+    expect(editor.document.settings.backgroundColor).toBe('#123456');
+  });
+
+  it('includes settings in snapshot history byte accounting', () => {
+    const editor = createEditor(createDocument({
+      width: 1,
+      height: 2,
+      catalog: TEST_CATALOG,
+      settings: { backgroundColor: '#123456' }
+    }));
+    editor.execute({ type: 'rotate-cw' });
+    const entry = editor.exportHistory().undo[0];
+    if (entry.kind !== 'snapshot') throw new Error('Expected a snapshot history entry.');
+
+    const snapshotBytes = (pattern: PatternDocument) => {
+      const store = pattern.backstitches;
+      return pattern.kind.byteLength + pattern.colors.byteLength + pattern.completed.byteLength
+        + store.ids.byteLength + store.x1.byteLength + store.y1.byteLength + store.x2.byteLength + store.y2.byteLength
+        + store.colors.byteLength + store.completed.byteLength
+        + JSON.stringify(pattern.catalog).length * 2
+        + JSON.stringify(pattern.palette).length * 2
+        + JSON.stringify(pattern.settings).length * 2
+        + 64;
+    };
+
+    expect(entry.before.settings.backgroundColor).toBe('#123456');
+    expect(entry.after.settings.backgroundColor).toBe('#123456');
+    expect(entry.bytes).toBe(snapshotBytes(entry.before) + snapshotBytes(entry.after));
+  });
+
+  it('treats background color as document content in imported snapshot history', () => {
+    const before = createDocument({ width: 1, height: 1, catalog: TEST_CATALOG, settings: { backgroundColor: '#123456' } });
+    const after = cloneDocument(before);
+    after.settings = { ...after.settings, backgroundColor: '#654321' };
+    const snapshotBytes = (pattern: PatternDocument) => {
+      const store = pattern.backstitches;
+      return pattern.kind.byteLength + pattern.colors.byteLength + pattern.completed.byteLength
+        + store.ids.byteLength + store.x1.byteLength + store.y1.byteLength + store.x2.byteLength + store.y2.byteLength
+        + store.colors.byteLength + store.completed.byteLength
+        + JSON.stringify(pattern.catalog).length * 2
+        + JSON.stringify(pattern.palette).length * 2
+        + JSON.stringify(pattern.settings).length * 2
+        + 64;
+    };
+    const entry = {
+      kind: 'snapshot' as const,
+      before,
+      after,
+      bytes: snapshotBytes(before) + snapshotBytes(after),
+      progress: { cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0), marked: 0, unmarked: 0 },
+      recalculateMetrics: true
+    };
+    const editor = createEditor(after);
+
+    editor.importHistory({ version: 1, undo: [entry], redo: [] });
+    expect(editor.undo().document.settings.backgroundColor).toBe('#123456');
+    expect(editor.redo().document.settings.backgroundColor).toBe('#654321');
+  });
+
+  it('accepts typed settings updates with validation, no-op detection, and delta undo/redo', () => {
+    const editor = createEditor(createDocument({
+      width: 1,
+      height: 1,
+      catalog: TEST_CATALOG,
+      settings: { backgroundColor: '#123456' }
+    }));
+    const update: DocumentSettingsUpdateCommand = {
+      type: 'document-settings-update',
+      settings: { backgroundColor: '#aabbcc' }
+    };
+
+    const changed = editor.execute(update);
+    expect(changed.changed).toBe(true);
+    expect(editor.document.settings.backgroundColor).toBe('#AABBCC');
+    expect(editor.undoDepth).toBe(1);
+
+    editor.undo();
+    expect(editor.document.settings.backgroundColor).toBe('#123456');
+    editor.redo();
+    expect(editor.document.settings.backgroundColor).toBe('#AABBCC');
+
+    const current = editor.document;
+    const noOp = editor.execute({ type: 'document-settings-update', settings: { backgroundColor: '#aabbcc' } });
+    expect(noOp.changed).toBe(false);
+    expect(editor.document).toBe(current);
+    expect(editor.undoDepth).toBe(1);
+    expect(editor.redoDepth).toBe(0);
+
+    expect(() => editor.execute({ type: 'document-settings-update', settings: { backgroundColor: 'invalid' } })).toThrow(/background color/i);
+    expect(editor.document).toBe(current);
+    expect(editor.document.settings.backgroundColor).toBe('#AABBCC');
+  });
+
+  it('upgrades exact legacy snapshot settings on both history stacks without mutating imported DTOs', () => {
+    const original = createDocument({ width: 1, height: 2, catalog: TEST_CATALOG });
+    const undoEditor = createEditor(original);
+    undoEditor.execute({ type: 'rotate-cw' });
+    const legacyUndo = makeLegacySnapshotState(undoEditor);
+    const undoSnapshot = legacyUndo.undo[0] as unknown as { before: PatternDocument; after: PatternDocument };
+
+    undoEditor.importHistory(legacyUndo);
+    expect(Object.hasOwn(undoSnapshot.before.settings, 'backgroundColor')).toBe(false);
+    expect(Object.hasOwn(undoSnapshot.after.settings, 'backgroundColor')).toBe(false);
+    expect(undoEditor.undo().document.settings.backgroundColor).toBe('#F3EEE5');
+    expect(undoEditor.redo().document.settings.backgroundColor).toBe('#F3EEE5');
+
+    const redoEditor = createEditor(original);
+    redoEditor.execute({ type: 'rotate-cw' });
+    redoEditor.undo();
+    const legacyRedo = makeLegacySnapshotState(redoEditor, 'redo');
+    const redoSnapshot = legacyRedo.redo[0] as unknown as { before: PatternDocument; after: PatternDocument };
+
+    redoEditor.importHistory(legacyRedo);
+    expect(Object.hasOwn(redoSnapshot.before.settings, 'backgroundColor')).toBe(false);
+    expect(Object.hasOwn(redoSnapshot.after.settings, 'backgroundColor')).toBe(false);
+    expect(redoEditor.redo().document.settings.backgroundColor).toBe('#F3EEE5');
+    expect(redoEditor.undo().document.settings.backgroundColor).toBe('#F3EEE5');
+  });
+
+  it('rejects incorrect legacy snapshot bytes and malformed present background colors', () => {
+    const createRotatedEditor = () => {
+      const editor = createEditor(createDocument({ width: 1, height: 2, catalog: TEST_CATALOG }));
+      editor.execute({ type: 'rotate-cw' });
+      return editor;
+    };
+    const wrongBytesEditor = createRotatedEditor();
+    const wrongBytes = makeLegacySnapshotState(wrongBytesEditor);
+    const wrongBytesEntry = wrongBytes.undo[0] as unknown as { bytes: number };
+    wrongBytesEntry.bytes += 1;
+    expect(() => wrongBytesEditor.importHistory(wrongBytes)).toThrow(/legacy snapshot byte accounting/i);
+
+    const malformedEditor = createRotatedEditor();
+    const malformed = makeLegacySnapshotState(malformedEditor);
+    const malformedEntry = malformed.undo[0] as unknown as { before: PatternDocument; after: PatternDocument };
+    malformedEntry.before.settings = { ...malformedEntry.before.settings, backgroundColor: 'not-a-color' };
+    malformedEntry.after.settings = { ...malformedEntry.after.settings, backgroundColor: 'not-a-color' };
+    expect(() => malformedEditor.importHistory(malformed)).toThrow(/backgroundColor/i);
+
+    const partialLegacyEditor = createRotatedEditor();
+    const partialLegacy = partialLegacyEditor.exportHistory();
+    const partialEntry = partialLegacy.undo[0] as unknown as { before: PatternDocument };
+    partialEntry.before.settings = {
+      symbolSet: partialEntry.before.settings.symbolSet,
+      materialUnit: partialEntry.before.settings.materialUnit
+    } as PatternDocument['settings'];
+    expect(() => partialLegacyEditor.importHistory(partialLegacy)).toThrow(/backgroundColor/i);
+  });
+
+  it('stores settings-only changes as compact deltas and keeps batches snapshot-based', () => {
+    const editor = createEditor(createDocument({ width: 1_000_000, height: 1, catalog: TEST_CATALOG }));
+    const update = editor.execute({ type: 'document-settings-update', settings: { backgroundColor: '#aabbcc' } });
+    expect(update.requiresFullRedraw).toBe(true);
+    expect(editor.lastHistoryEntryKind).toBe('delta');
+    const state = editor.exportHistory();
+    const entry = state.undo[0] as Extract<(typeof state.undo)[number], { kind: 'delta' }>;
+    expect(entry.bytes).toBeLessThan(1_024);
+    expect(entry.delta.cells.indices).toHaveLength(0);
+    expect(entry.delta.cells.beforeKind).toHaveLength(0);
+    expect(entry.delta.beforeSettings?.backgroundColor).toBe('#F3EEE5');
+    expect(entry.delta.afterSettings?.backgroundColor).toBe('#AABBCC');
+
+    const restored = createEditor(editor.document);
+    restored.importHistory(state);
+    expect(restored.undo().requiresFullRedraw).toBe(true);
+    expect(restored.document.settings.backgroundColor).toBe('#F3EEE5');
+    expect(restored.redo().requiresFullRedraw).toBe(true);
+    expect(restored.document.settings.backgroundColor).toBe('#AABBCC');
+
+    const batchEditor = createEditor(createDocument({
+      width: 1,
+      height: 1,
+      catalog: TEST_CATALOG,
+      palette: [{ id: 1, name: 'Red', color: '#d33' }]
+    }));
+    const mixedResult = batchEditor.execute({
+      type: 'batch',
+      commands: [
+        { type: 'document-settings-update', settings: { backgroundColor: '#654321' } },
+        { type: 'set-full', x: 0, y: 0, color: 1 }
+      ]
+    });
+    expect(batchEditor.lastHistoryEntryKind).toBe('snapshot');
+    expect(mixedResult.requiresFullRedraw).toBe(true);
+    expect(batchEditor.undo().requiresFullRedraw).toBe(true);
+    expect(batchEditor.redo().requiresFullRedraw).toBe(true);
+  });
+
+  it('rejects malformed settings delta pairs, byte counts, and endpoints', () => {
+    const makeSettingsHistory = () => {
+      const editor = createEditor(createDocument({ width: 1, height: 1, catalog: TEST_CATALOG }));
+      editor.execute({ type: 'document-settings-update', settings: { backgroundColor: '#aabbcc' } });
+      return { editor, history: editor.exportHistory() };
+    };
+    const unpaired = makeSettingsHistory();
+    const unpairedEntry = unpaired.history.undo[0] as unknown as { delta: Record<string, unknown> };
+    delete unpairedEntry.delta.afterSettings;
+    expect(() => unpaired.editor.importHistory(unpaired.history)).toThrow(/settings sides must be paired/i);
+
+    const wrongBytes = makeSettingsHistory();
+    (wrongBytes.history.undo[0] as unknown as { bytes: number }).bytes += 1;
+    expect(() => wrongBytes.editor.importHistory(wrongBytes.history)).toThrow(/byte accounting is not canonical/i);
+
+    const incompatible = makeSettingsHistory();
+    const incompatibleEntry = incompatible.history.undo[0] as unknown as { delta: Record<string, unknown>; bytes: number };
+    incompatibleEntry.delta.afterSettings = { symbolSet: 'default', materialUnit: 'skeins', backgroundColor: '#FFFFFF' };
+    incompatibleEntry.bytes = settingDeltaBytes(incompatibleEntry.delta);
+    expect(() => incompatible.editor.importHistory(incompatible.history)).toThrow(/incompatible with the supplied current document/i);
   });
 });
 

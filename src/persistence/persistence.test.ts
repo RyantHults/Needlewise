@@ -63,6 +63,38 @@ function makeDocument(): PatternDocument {
   return document;
 }
 
+function legacyV1Snapshot(): Uint8Array {
+  const text = new TextEncoder();
+  const strings = ['test-catalog', 'Test catalog', 'default', 'skeins'].map((value) => text.encode(value));
+  const payloadLength = strings.reduce((length, value) => length + 4 + value.length, 0) + 4 + 10;
+  const bytes = new Uint8Array(40 + payloadLength);
+  const view = new DataView(bytes.buffer);
+  bytes.set([0x4e, 0x57, 0x44, 0x4f, 0x43, 0x31, 0x01, 0x00], 0);
+  view.setUint16(8, 1, true);
+  view.setUint8(10, 1);
+  view.setUint32(12, 1, true);
+  view.setUint32(16, 1, true);
+  view.setUint32(24, 1, true);
+  view.setUint32(28, 1, true);
+  let offset = 40;
+  for (const value of strings.slice(0, 2)) {
+    view.setUint32(offset, value.length, true);
+    offset += 4;
+    bytes.set(value, offset);
+    offset += value.length;
+  }
+  view.setUint32(offset, TEST_CATALOG.colorCount, true);
+  offset += 4;
+  for (const value of strings.slice(2)) {
+    view.setUint32(offset, value.length, true);
+    offset += 4;
+    bytes.set(value, offset);
+    offset += value.length;
+  }
+  // Empty cell kind, four empty color slots, and empty completion plane.
+  return bytes;
+}
+
 function pngBytes(width: number, height: number): Uint8Array {
   const bytes = new Uint8Array(24);
   bytes.set([137, 80, 78, 71, 13, 10, 26, 10], 0);
@@ -265,6 +297,53 @@ describe('durable document history persistence', () => {
     } finally {
       await closeRepository(repo);
     }
+  });
+
+  it('keeps settings-only history for a maximum-size document within the session persistence budget', async () => {
+    const document = createDocument({ width: 1_000_000, height: 1, palette: [] });
+    const editor = createEditor(document);
+    const changed = editor.execute({ type: 'document-settings-update', settings: { backgroundColor: '#aabbcc' } }).document;
+    const prepared = await prepareSessionHistory(changed, editor.exportHistory());
+
+    expect(editor.historyBytes).toBeLessThan(MAX_SESSION_HISTORY_BYTES);
+    expect(prepared).toBeDefined();
+    const entry = prepared?.document.undo[0];
+    expect(entry?.kind).toBe('delta');
+    if (entry?.kind === 'delta') expect(entry.delta.cells.indices).toHaveLength(0);
+  });
+
+  it('accepts legacy session snapshots after validating their old accounting', async () => {
+    const original = createDocument({ width: 1, height: 2, palette: [] });
+    const editor = createEditor(original);
+    const document = editor.execute({ type: 'rotate-cw' }).document;
+    const documentHistory = editor.exportHistory();
+    const entry = documentHistory.undo[0] as unknown as { before: PatternDocument; after: PatternDocument; bytes: number };
+    const oldSnapshotBytes = (snapshot: PatternDocument) => {
+      const store = snapshot.backstitches;
+      return snapshot.kind.byteLength + snapshot.colors.byteLength + snapshot.completed.byteLength
+        + store.ids.byteLength + store.x1.byteLength + store.y1.byteLength + store.x2.byteLength + store.y2.byteLength
+        + store.colors.byteLength + store.completed.byteLength
+        + JSON.stringify(snapshot.catalog).length * 2
+        + JSON.stringify(snapshot.palette).length * 2
+        + 64;
+    };
+    for (const snapshot of [entry.before, entry.after]) {
+      snapshot.settings = { symbolSet: snapshot.settings.symbolSet, materialUnit: snapshot.settings.materialUnit } as PatternDocument['settings'];
+    }
+    entry.bytes = oldSnapshotBytes(entry.before) + oldSnapshotBytes(entry.after);
+    const envelope = {
+      version: 1 as const,
+      document: documentHistory,
+      trace: { undo: [], redo: [] },
+      undoOrder: [{ kind: 'document' as const, index: 0 }],
+      redoOrder: []
+    };
+
+    const prepared = await prepareSessionHistory(document, envelope);
+
+    expect(prepared).toBeDefined();
+    expect(Object.hasOwn(entry.before.settings, 'backgroundColor')).toBe(false);
+    expect(Object.hasOwn(entry.after.settings, 'backgroundColor')).toBe(false);
   });
 
   it('discards malformed or stale history without blocking the canonical document load', async () => {
@@ -707,6 +786,29 @@ describe('binary document persistence', () => {
     expect(decoded.catalog).toEqual(original.catalog);
   });
 
+  it('round-trips canonical background color using binary schema v2', () => {
+    const original = createDocument({
+      width: 1,
+      height: 1,
+      settings: { backgroundColor: '#a1b2c3' }
+    });
+    const bytes = encodeDocument(original);
+    const decoded = decodeDocument(bytes);
+
+    expect(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint16(8, true)).toBe(2);
+    expect(decoded.settings.backgroundColor).toBe('#A1B2C3');
+    expect(decoded.settings).toEqual(original.settings);
+  });
+
+  it('upgrades legacy binary schema v1 documents with the neutral Aida background', () => {
+    const decoded = decodeDocument(legacyV1Snapshot());
+
+    expect(decoded.settings).toEqual({ symbolSet: 'default', materialUnit: 'skeins', backgroundColor: '#F3EEE5' });
+    expect(decoded.width).toBe(1);
+    expect(decoded.height).toBe(1);
+    expect(decoded.kind).toEqual(new Uint8Array([0]));
+  });
+
   it('round-trips directional three-quarter kinds as compact single-slot cells', () => {
     let original = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     original = applyCommand(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SW, color: 1 }).document;
@@ -748,7 +850,7 @@ describe('binary document persistence', () => {
 
     const wrongVersion = original.slice();
     const wrongVersionView = new DataView(wrongVersion.buffer);
-    wrongVersionView.setUint16(8, 2, true);
+    wrongVersionView.setUint16(8, 3, true);
     wrongVersionView.setUint32(32, 0xffffffff, true);
     expect(() => decodeDocument(wrongVersion)).toThrow(/schema is unsupported/i);
   });
@@ -788,7 +890,7 @@ describe('binary document persistence', () => {
     });
     const decoded = decodeDocument(encodeDocument(original));
     expect(decoded.version).toBe(1);
-    expect(decoded.settings).toEqual({ symbolSet: 'letters', materialUnit: 'meters' });
+    expect(decoded.settings).toEqual({ symbolSet: 'letters', materialUnit: 'meters', backgroundColor: '#F3EEE5' });
     expect(decoded.palette[0]).toEqual(original.palette[0]);
   });
 

@@ -9,6 +9,8 @@ import {
   requirePaletteEntry,
   normalizePaletteEntry,
   clonePaletteEntry,
+  clonePatternSettings,
+  normalizePatternSettings,
   PALETTE_SYMBOLS,
   UINT32_MAX,
   isThreeQuarterKind,
@@ -44,6 +46,7 @@ import {
   type MixedEraseCommand,
   type PaletteEntryInput,
   type PatternDocument,
+  type PatternSettings,
   type PaletteEntry,
   type PasteFragmentCommand,
   type Point,
@@ -75,6 +78,11 @@ export interface MutationInfo {
   delta?: SparseMutationDelta;
   createdBackstitchIds?: Uint32Array;
   movedBackstitchIds?: Uint32Array;
+}
+
+export interface DocumentSettingsUpdateCommand extends DomainCommand {
+  readonly type: 'document-settings-update';
+  readonly settings: Partial<PatternSettings>;
 }
 
 export interface PackedCellDelta {
@@ -113,6 +121,8 @@ export interface SparseMutationDelta {
   afterNextBackstitchId?: number;
   beforeNextPaletteId?: number;
   afterNextPaletteId?: number;
+  beforeSettings?: PatternSettings;
+  afterSettings?: PatternSettings;
 }
 
 function cloneBackstitchStore(store: BackstitchStore): BackstitchStore {
@@ -265,6 +275,7 @@ export class MutationTracker {
   private beforePalette: PaletteEntry[] | undefined;
   private beforeNextBackstitchId: number | undefined;
   private beforeNextPaletteId: number | undefined;
+  private beforeSettings: PatternSettings | undefined;
 
   touchCell(document: PatternDocument, index: number): void {
     if (this.cells.has(index)) return;
@@ -288,6 +299,11 @@ export class MutationTracker {
     this.beforeNextPaletteId = document.nextPaletteId;
   }
 
+  touchSettings(document: PatternDocument): void {
+    if (this.beforeSettings !== undefined) return;
+    this.beforeSettings = clonePatternSettings(document.settings);
+  }
+
   rollback(document: PatternDocument): void {
     for (const [index, before] of this.cells) {
       const offset = colorsOffset(index);
@@ -300,6 +316,7 @@ export class MutationTracker {
     }
     if (this.beforeBackstitches !== undefined) document.backstitches = cloneBackstitchStore(this.beforeBackstitches);
     if (this.beforePalette !== undefined) document.palette = this.beforePalette.map(clonePaletteEntry);
+    if (this.beforeSettings !== undefined) document.settings = clonePatternSettings(this.beforeSettings);
     if (this.beforeNextBackstitchId !== undefined) document.nextBackstitchId = this.beforeNextBackstitchId;
     if (this.beforeNextPaletteId !== undefined) document.nextPaletteId = this.beforeNextPaletteId;
   }
@@ -351,12 +368,19 @@ export class MutationTracker {
       delta.beforeNextBackstitchId = this.beforeNextBackstitchId;
       delta.afterNextBackstitchId = document.nextBackstitchId;
     }
+    if (this.beforeSettings !== undefined
+      && (this.beforeSettings.symbolSet !== document.settings.symbolSet
+        || this.beforeSettings.materialUnit !== document.settings.materialUnit
+        || this.beforeSettings.backgroundColor !== document.settings.backgroundColor)) {
+      delta.beforeSettings = clonePatternSettings(this.beforeSettings);
+      delta.afterSettings = clonePatternSettings(document.settings);
+    }
     return delta;
   }
 
   hasChanges(document: PatternDocument): boolean {
     const delta = this.toDelta(document);
-    return delta.cells.indices.length > 0 || delta.beforePalette !== undefined || delta.beforeBackstitches !== undefined || delta.beforeNextBackstitchId !== undefined || delta.beforeNextPaletteId !== undefined;
+    return delta.cells.indices.length > 0 || delta.beforePalette !== undefined || delta.beforeBackstitches !== undefined || delta.beforeNextBackstitchId !== undefined || delta.beforeNextPaletteId !== undefined || delta.beforeSettings !== undefined;
   }
 }
 
@@ -512,8 +536,11 @@ function normalizeType(type: string): string {
 export function commandRequiresSnapshot(command: DomainCommand): boolean {
   if (!command || typeof command.type !== 'string') return false;
   const type = normalizeType(command.type);
-  if (type === 'batch') return Array.isArray(command.commands) && command.commands.some((child) => commandRequiresSnapshot(child as DomainCommand));
-  return type === 'crop' || type === 'rotate' || type === 'rotate-cw' || type === 'rotate-ccw' || type === 'mirror' || type === 'mirror-horizontal' || type === 'mirror-vertical' || type === 'mirror-left-right' || type === 'mirror-top-bottom' || type === 'palette-merge';
+  if (type === 'batch') return Array.isArray(command.commands) && command.commands.some((child) => {
+    const childCommand = child as DomainCommand;
+    return (typeof childCommand?.type === 'string' && normalizeType(childCommand.type) === 'document-settings-update') || commandRequiresSnapshot(childCommand);
+  });
+  return type === 'crop' || type === 'rotate' || type === 'rotate-cw' || type === 'rotate-ccw' || type === 'mirror' || type === 'mirror-horizontal' || type === 'mirror-vertical' || type === 'mirror-left-right' || type === 'mirror-top-bottom' || type === 'palette-merge' || type === 'palette-delete';
 }
 
 function touchCommandTargets(document: PatternDocument, command: DomainCommand, tracker: MutationTracker): void {
@@ -528,6 +555,7 @@ function touchCommandTargets(document: PatternDocument, command: DomainCommand, 
   const backstitchTypes = new Set(['add-backstitch', 'remove-backstitch', 'move-backstitch', 'recolor-backstitch', 'set-backstitch-completion', 'toggle-backstitch-completion', 'update-backstitch']);
   if (backstitchTypes.has(type)) tracker.touchBackstitches(document);
   if (type === 'palette-create' || type === 'palette-update' || type === 'palette-deactivate') tracker.touchPalette(document);
+  if (type === 'document-settings-update') tracker.touchSettings(document);
 }
 
 function parseColor(command: DomainCommand): number {
@@ -3326,6 +3354,37 @@ function paletteMerge(document: PatternDocument, command: DomainCommand): Mutati
   return sameContent(before, document) ? noChange() : changed(true);
 }
 
+function paletteDelete(document: PatternDocument, command: DomainCommand): MutationInfo {
+  const id = requiredNumber(valueOf(command, 'id', 'paletteId', 'colorId'), 'id');
+  const entry = findPaletteEntry(document, id);
+  if (!entry) throw new DomainError('unknown-palette', `Palette ID ${String(id)} does not exist.`);
+  if (!entry.active) return noChange();
+
+  for (let index = 0; index < document.kind.length; index += 1) {
+    const offset = colorsOffset(index);
+    const kind = document.kind[index];
+    if (kind === CellKind.Quarters) {
+      for (const corner of [QuarterCorner.NW, QuarterCorner.NE, QuarterCorner.SE, QuarterCorner.SW]) {
+        if (document.colors[offset + corner] === id) removeQuarterAtIndex(document, index, corner);
+      }
+    } else if (isThreeQuarterSingleKind(kind) || isThreeQuarterPairKind(kind)) {
+      for (const corner of [QuarterCorner.NW, QuarterCorner.NE, QuarterCorner.SE, QuarterCorner.SW]) {
+        const currentKind = document.kind[index];
+        const singleCorner = threeQuarterCornerForKind(currentKind);
+        const color = singleCorner === undefined ? document.colors[offset + corner] : document.colors[offset];
+        if (color === id) removeQuarterAtIndex(document, index, corner);
+      }
+    } else if (kind !== CellKind.Empty && document.colors[offset] === id) {
+      clearCell(document, index);
+    }
+  }
+
+  const retainedBackstitches = listBackstitches(document).filter((record) => record.color !== id);
+  if (retainedBackstitches.length !== document.backstitches.ids.length) replaceBackstitches(document, retainedBackstitches);
+  document.palette = document.palette.map((candidate) => candidate.id === id ? { ...candidate, active: false } : candidate);
+  return changed(true);
+}
+
 function mapCornerCW(corner: QuarterCorner): QuarterCorner {
   return [QuarterCorner.NE, QuarterCorner.SE, QuarterCorner.SW, QuarterCorner.NW][corner] as QuarterCorner;
 }
@@ -3487,6 +3546,7 @@ function parseTurns(command: DomainCommand, clockwiseDefault: boolean): number {
 
 function sameContent(left: PatternDocument, right: PatternDocument): boolean {
   if (left.width !== right.width || left.height !== right.height || left.palette.length !== right.palette.length || left.backstitches.ids.length !== right.backstitches.ids.length || left.nextBackstitchId !== right.nextBackstitchId || left.nextPaletteId !== right.nextPaletteId) return false;
+  if (left.settings.symbolSet !== right.settings.symbolSet || left.settings.materialUnit !== right.settings.materialUnit || left.settings.backgroundColor !== right.settings.backgroundColor) return false;
   for (let index = 0; index < left.kind.length; index += 1) {
     if (left.kind[index] !== right.kind[index] || left.completed[index] !== right.completed[index]) return false;
     const offset = index * 4;
@@ -3700,6 +3760,18 @@ function applyOneToDraftInternal(document: PatternDocument, command: DomainComma
     case 'mixed-erase': return applyMixedEraseCommand(document, command);
     case 'delete-region': return applyDeleteRegionCommand(document, command);
     case 'delete-cell-set': return applyDeleteCellSetCommand(document, command);
+    case 'document-settings-update': {
+      const suppliedSettings = command.settings;
+      if (typeof suppliedSettings !== 'object' || suppliedSettings === null || Array.isArray(suppliedSettings)) {
+        throw new DomainError('invalid-settings', 'Document settings updates must provide a settings object.');
+      }
+      const normalized = normalizePatternSettings({ ...document.settings, ...suppliedSettings as Partial<PatternSettings> });
+      if (normalized.symbolSet === document.settings.symbolSet
+        && normalized.materialUnit === document.settings.materialUnit
+        && normalized.backgroundColor === document.settings.backgroundColor) return noChange();
+      document.settings = normalized;
+      return changed();
+    }
     case 'erase-cell': {
       const x = requiredNumber(valueOf(command, 'x', 'column'), 'x');
       const y = requiredNumber(valueOf(command, 'y', 'row'), 'y');
@@ -3725,6 +3797,7 @@ function applyOneToDraftInternal(document: PatternDocument, command: DomainComma
     case 'palette-update': return paletteUpdate(document, command);
     case 'palette-deactivate': return paletteDeactivate(document, command);
     case 'palette-merge': return paletteMerge(document, command);
+    case 'palette-delete': return paletteDelete(document, command);
     case 'rotate-cw':
     case 'rotate-ccw':
     case 'rotate':

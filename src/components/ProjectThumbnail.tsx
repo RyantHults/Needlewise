@@ -9,8 +9,7 @@ interface Props {
 }
 
 const MAX_SAMPLE_CELLS = PROJECT_THUMBNAIL_MAX_AXIS * PROJECT_THUMBNAIL_MAX_AXIS;
-const fabricColor = '#f3eee5';
-const colorPattern = /^#[\da-f]{6}$/;
+const colorPattern = /^#[\da-f]{6}$/i;
 
 function colorValue(value: string | undefined): string | null {
   if (typeof value !== 'string' || !colorPattern.test(value)) return null;
@@ -26,7 +25,7 @@ function isUsableThumbnail(value: ProjectThumbnailSummary | undefined): value is
   if (!Number.isSafeInteger(value.columns) || !Number.isSafeInteger(value.rows) || value.columns < 1 || value.rows < 1) return false;
   if (value.columns > PROJECT_THUMBNAIL_MAX_AXIS || value.rows > PROJECT_THUMBNAIL_MAX_AXIS || value.columns * value.rows > MAX_SAMPLE_CELLS) return false;
   if (!isPlainArray(value.palette) || !isPlainArray(value.indices) || value.indices.length !== value.columns * value.rows) return false;
-  if (value.palette.length < 1 || colorValue(value.palette[0]) !== fabricColor) return false;
+  if (value.palette.length < 1 || colorValue(value.palette[0]) === null) return false;
   return value.palette.every((entry) => Boolean(colorValue(entry)))
     && value.indices.every((index) => Number.isInteger(index) && index >= 0 && index < value.palette.length);
 }

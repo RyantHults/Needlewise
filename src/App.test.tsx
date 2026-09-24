@@ -286,12 +286,13 @@ describe('application shell', () => {
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: 'New pattern' }));
     const select = screen.getByLabelText('Aida count');
+    fireEvent.change(screen.getByLabelText('Background color', { selector: 'input[type="color"]' }), { target: { value: '#aabbcc' } });
     expect(select).toHaveValue('14');
     fireEvent.change(select, { target: { value: '18' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create blank pattern' }));
 
     await waitFor(() => expect(createProject).toHaveBeenCalledOnce());
-    expect(createProject.mock.calls[0][0]).toMatchObject({ aidaCount: 18, title: 'Untitled sampler' });
+    expect(createProject.mock.calls[0][0]).toMatchObject({ aidaCount: 18, title: 'Untitled sampler', settings: { backgroundColor: '#AABBCC' } });
   });
 
   it('passes the selected aida count when creating from an image', async () => {
@@ -314,6 +315,7 @@ describe('application shell', () => {
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: 'New pattern' }));
     fireEvent.click(screen.getByRole('radio', { name: /From image/ }));
+    fireEvent.change(screen.getByLabelText('Background color', { selector: 'input[type="color"]' }), { target: { value: '#aabbcc' } });
     fireEvent.change(screen.getByLabelText(/Choose a PNG/), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } });
     act(() => { images[0].onload?.(); });
     await screen.findByLabelText('Width');
@@ -322,7 +324,7 @@ describe('application shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create from image' }));
 
     await waitFor(() => expect(createProjectFromConversion).toHaveBeenCalledOnce());
-    expect(createProjectFromConversion.mock.calls[0][0]).toMatchObject({ aidaCount: 22, title: 'Untitled sampler' });
+    expect(createProjectFromConversion.mock.calls[0][0]).toMatchObject({ aidaCount: 22, title: 'Untitled sampler', settings: { backgroundColor: '#AABBCC' } });
     expect(createProjectFromConversion.mock.calls[0][0].draft).toBeDefined();
     expect(createProjectFromConversion.mock.calls[0][0].draft.sourceImage).toMatchObject({ traceVisible: false });
     expect(createProjectFromConversion.mock.calls[0][0].sourceImageAsset).toMatchObject({ name: 'one.png', mimeType: 'image/png' });

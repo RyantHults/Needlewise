@@ -100,11 +100,14 @@ export interface PaletteMaterial {
 export interface PatternSettings {
   readonly symbolSet: string;
   readonly materialUnit: MaterialUnit;
+  /** Canonical uppercase #RRGGBB fabric/chart background color. */
+  readonly backgroundColor: string;
 }
 
 export const DEFAULT_PATTERN_SETTINGS: PatternSettings = {
   symbolSet: 'default',
-  materialUnit: MaterialUnit.Skeins
+  materialUnit: MaterialUnit.Skeins,
+  backgroundColor: '#F3EEE5'
 };
 
 export interface PaletteEntry {

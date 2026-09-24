@@ -30,8 +30,8 @@ class MockImage {
 
 function props(onClose: () => void = vi.fn(), catalog: CatalogSnapshot = DEFAULT_CATALOG_DEFINITION.snapshot) {
   return {
-    mode: 'image' as const, title: 'Test', width: '100', height: '100', aida: '14', busy: false, catalog,
-    onMode: vi.fn(), onClose, onBlank: vi.fn(), onConversionCreate: vi.fn(), onTitle: vi.fn(), onWidth: vi.fn(), onHeight: vi.fn(), onAida: vi.fn()
+    mode: 'image' as const, title: 'Test', width: '100', height: '100', aida: '14', backgroundColor: '#F3EEE5', busy: false, catalog,
+    onMode: vi.fn(), onClose, onBlank: vi.fn(), onConversionCreate: vi.fn(), onTitle: vi.fn(), onWidth: vi.fn(), onHeight: vi.fn(), onAida: vi.fn(), onBackgroundColor: vi.fn()
   };
 }
 
@@ -39,7 +39,8 @@ function ControlledModal(propsOverride: { onClose?: () => void; catalog?: Catalo
   const [width, setWidth] = useState('100');
   const [height, setHeight] = useState('100');
   const [aida, setAida] = useState('14');
-  return <CreateModal {...props(propsOverride.onClose, propsOverride.catalog)} width={width} height={height} onWidth={setWidth} onHeight={setHeight} aida={aida} onAida={setAida} />;
+  const [backgroundColor, setBackgroundColor] = useState('#F3EEE5');
+  return <CreateModal {...props(propsOverride.onClose, propsOverride.catalog)} width={width} height={height} onWidth={setWidth} onHeight={setHeight} aida={aida} onAida={setAida} backgroundColor={backgroundColor} onBackgroundColor={setBackgroundColor} />;
 }
 
 beforeEach(() => {
@@ -54,6 +55,39 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('CreateModal image lifecycle', () => {
+  it('shows a synchronized background color picker and editable hex field', () => {
+    render(<ControlledModal />);
+    const picker = screen.getByRole('textbox', { name: 'HEX Code' });
+    expect(picker).toHaveValue('#F3EEE5');
+    expect(screen.getByLabelText('Background color', { selector: 'input[type="color"]' })).toHaveValue('#f3eee5');
+    fireEvent.change(picker, { target: { value: '#abc' } });
+    expect(screen.getByLabelText('Background color', { selector: 'input[type="color"]' })).toHaveValue('#aabbcc');
+  });
+
+  it('keeps incomplete HEX drafts editable without changing the selected color and uses the shared circular picker styles', () => {
+    render(<ControlledModal />);
+    const picker = screen.getByLabelText('Background color', { selector: 'input[type="color"]' });
+    const hex = screen.getByRole('textbox', { name: 'HEX Code' });
+    expect(picker.closest('section')).toHaveClass('custom-color-section');
+    expect(picker).toHaveClass('custom-color-picker');
+    fireEvent.change(hex, { target: { value: '#12' } });
+    expect(hex).toHaveValue('#12');
+    expect(picker).toHaveValue('#f3eee5');
+    fireEvent.change(hex, { target: { value: '#abc' } });
+    expect(hex).toHaveValue('#AABBCC');
+    expect(picker).toHaveValue('#aabbcc');
+  });
+
+  it('blocks blank creation and explains how to fix an incomplete background HEX value', () => {
+    const p = props();
+    render(<CreateModal {...p} mode="blank" />);
+    fireEvent.change(screen.getByRole('textbox', { name: 'HEX Code' }), { target: { value: '#12' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create blank pattern' }));
+    expect(p.onBlank).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent(/enter a valid 3- or 6-digit hex background color/i);
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
   it('uses the smallest power-of-two enlargement needed for a minimum preview', () => {
     expect(calculatePreviewSize(50, 50)).toEqual({ width: 400, height: 400 });
     expect(calculatePreviewSize(2, 4)).toEqual({ width: 512, height: 1024 });
@@ -323,8 +357,11 @@ describe('CreateModal image lifecycle', () => {
     await vi.waitFor(() => expect(screen.getByRole('slider', { name: /Color budget/ })).toHaveAttribute('max', '3'));
     expect(conversion.convert).toHaveBeenCalledTimes(1);
     expect(conversion.convert.mock.calls[0][1]).toMatchObject({ paletteBudget: 24 });
-    act(() => { vi.advanceTimersByTime(300); });
-    expect(conversion.convert).toHaveBeenCalledTimes(2);
+    // The matched-count result updates budget state first; React must then
+    // commit the render and run the debounce effect before the next timer
+    // exists. Wait on the observable conversion call instead of advancing a
+    // timer that may not have been scheduled yet.
+    await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(2));
     expect(conversion.convert.mock.calls[1][1]).toMatchObject({ paletteBudget: 3 });
     // Already at the cap: the clamped budget settles without further churn.
     act(() => { vi.advanceTimersByTime(600); });

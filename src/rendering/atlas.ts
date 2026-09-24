@@ -1,9 +1,15 @@
-import { CellKind, type PatternDocument } from '../domain';
+import { CellKind, DEFAULT_PATTERN_SETTINGS, type PatternDocument } from '../domain';
 import type { CanvasTarget, RendererStyle } from '../editor/contracts';
 import { MAX_ATLAS_PIXELS, restore, save } from './context';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
 import { isLegacyQuarterKind, isThreeQuarterPairKind, threeQuarterPairComponents } from '../editor/cell-kinds';
 import { symbolForPaletteId } from './symbols';
+
+/** Document-owned Aida color, with the renderer's neutral default for legacy runtime documents. */
+export function patternBackgroundColor(document: PatternDocument): string {
+  const settings = (document as PatternDocument & { settings?: { backgroundColor?: string } }).settings;
+  return settings?.backgroundColor ?? DEFAULT_PATTERN_SETTINGS.backgroundColor;
+}
 
 export interface ColorAtlas {
   /** Undefined means the environment cannot provide a CanvasImageSource. */
@@ -23,7 +29,7 @@ interface AtlasCacheEntry extends ColorAtlas {
   readonly paletteIds: readonly number[];
   readonly paletteProjection: string;
   readonly mode: RendererStyle['mode'];
-  readonly background: string;
+  readonly patternBackground: string;
   readonly missingColor: string;
 }
 
@@ -199,6 +205,7 @@ export class ColorAtlasCache {
     targetFactory?: (width: number, height: number) => CanvasTarget | undefined
   ): ColorAtlas {
     const current = this.entry;
+    const patternBackground = patternBackgroundColor(document);
     const reusablePlanesAndStyle = Boolean(
       current &&
       current.documentWidth === document.width &&
@@ -206,7 +213,7 @@ export class ColorAtlasCache {
       current.kindPlane === document.kind &&
       current.colorsPlane === document.colors &&
       current.mode === style.mode &&
-      current.background === style.backgroundColor &&
+      current.patternBackground === patternBackground &&
       current.missingColor === style.missingPaletteColor
     );
     if (reusablePlanesAndStyle && current) {
@@ -235,6 +242,8 @@ export class ColorAtlasCache {
       save(context);
       if (context.imageSmoothingEnabled !== undefined) context.imageSmoothingEnabled = false;
       context.clearRect(0, 0, atlasWidth, atlasHeight);
+      context.fillStyle = patternBackground;
+      context.fillRect(0, 0, atlasWidth, atlasHeight);
       for (let y = 0; y < document.height; y += 1) {
         for (let x = 0; x < document.width; x += 1) {
           const cellRect = { x: x * pixelsPerCell, y: y * pixelsPerCell, width: pixelsPerCell, height: pixelsPerCell };
@@ -287,7 +296,7 @@ export class ColorAtlasCache {
       paletteIds,
       paletteProjection,
       mode: style.mode,
-      background: style.backgroundColor,
+      patternBackground,
       missingColor: style.missingPaletteColor
     };
     return this.entry;
@@ -315,6 +324,7 @@ interface SymbolAtlasCacheEntry extends SymbolAtlas {
   readonly symbolFont: string;
   readonly symbolColor: string;
   readonly symbolBackgroundColor: string;
+  readonly patternBackground: string;
   readonly missingColor: string;
   readonly showSymbols: boolean;
   readonly ppc: number;
@@ -368,6 +378,7 @@ export class SymbolAtlasCache {
     targetFactory?: (width: number, height: number) => CanvasTarget | undefined
   ): SymbolAtlas {
     const ppc = symbolAtlasPixelsPerCell(document);
+    const patternBackground = patternBackgroundColor(document);
     const current = this.entry;
     const reusablePlanesAndStyle = Boolean(
       current &&
@@ -379,6 +390,7 @@ export class SymbolAtlasCache {
       current.symbolFont === style.symbolFont &&
       current.symbolColor === style.symbolColor &&
       current.symbolBackgroundColor === style.symbolBackgroundColor &&
+      current.patternBackground === patternBackground &&
       current.missingColor === style.missingPaletteColor &&
       current.showSymbols === style.showSymbols &&
       current.ppc === ppc
@@ -412,6 +424,7 @@ export class SymbolAtlasCache {
         symbolFont: style.symbolFont,
         symbolColor: style.symbolColor,
         symbolBackgroundColor: style.symbolBackgroundColor,
+        patternBackground,
         missingColor: style.missingPaletteColor,
         showSymbols: style.showSymbols,
         ppc,
@@ -431,6 +444,8 @@ export class SymbolAtlasCache {
         const context = target.context;
         save(context);
         context.clearRect(0, 0, dimensions.width, dimensions.height);
+        context.fillStyle = patternBackground;
+        context.fillRect(0, 0, dimensions.width, dimensions.height);
         textAvailable = !style.showSymbols || typeof context.fillText === 'function';
         for (let y = 0; y < document.height; y += 1) {
           for (let x = 0; x < document.width; x += 1) {
@@ -493,6 +508,7 @@ export class SymbolAtlasCache {
       symbolFont: style.symbolFont,
       symbolColor: style.symbolColor,
       symbolBackgroundColor: style.symbolBackgroundColor,
+      patternBackground,
       missingColor: style.missingPaletteColor,
       showSymbols: style.showSymbols,
       ppc,

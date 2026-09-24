@@ -123,6 +123,7 @@ export function collectValidationErrors(document: PatternDocument): string[] {
   } else {
     if (typeof document.settings.symbolSet !== 'string' || document.settings.symbolSet.trim() === '') errors.push('Document symbolSet must be a non-empty string.');
     if (![MaterialUnit.Skeins, MaterialUnit.Meters, MaterialUnit.Count].includes(document.settings.materialUnit)) errors.push('Document materialUnit is invalid.');
+    if (typeof document.settings.backgroundColor !== 'string' || !/^#[0-9A-F]{6}$/.test(document.settings.backgroundColor)) errors.push('Document backgroundColor must be a canonical #RRGGBB color.');
   }
 
   if (

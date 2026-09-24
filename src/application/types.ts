@@ -6,7 +6,8 @@ import type {
   MaterialSettingsUpdate,
   NormalizedMaterialSettings,
   PatternMetrics,
-  PatternDocument
+  PatternDocument,
+  PatternSettings
 } from '../domain';
 import type {
   ArchiveImportOptions,
@@ -85,6 +86,7 @@ export interface StarterProjectOptions {
 
 export interface CreateProjectOptions extends StarterProjectOptions {
   document?: PatternDocument;
+  settings?: Partial<PatternSettings>;
   assets?: readonly ProjectAssetInput[];
   materialSettings?: MaterialSettingsV2;
   sourceImage?: SourceImageDescriptor;
@@ -92,6 +94,7 @@ export interface CreateProjectOptions extends StarterProjectOptions {
 
 export interface CreateConvertedProjectOptions extends StarterProjectOptions {
   readonly draft: AcceptedConversionDraft;
+  readonly settings?: Partial<PatternSettings>;
   readonly assets?: readonly ProjectAssetInput[];
   readonly sourceImageAsset?: ProjectAssetInput;
   readonly materialSettings?: MaterialSettingsV2;

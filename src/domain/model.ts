@@ -691,15 +691,19 @@ export function defaultPaletteMaterial(name: string, catalog?: PaletteCatalogRef
 }
 
 export function clonePatternSettings(settings: PatternSettings): PatternSettings {
-  return { symbolSet: settings.symbolSet, materialUnit: settings.materialUnit };
+  return { symbolSet: settings.symbolSet, materialUnit: settings.materialUnit, backgroundColor: settings.backgroundColor };
 }
 
 export function normalizePatternSettings(settings: Partial<PatternSettings> | undefined): PatternSettings {
   const symbolSet = settings?.symbolSet ?? DEFAULT_PATTERN_SETTINGS.symbolSet;
   const materialUnit = settings?.materialUnit ?? DEFAULT_PATTERN_SETTINGS.materialUnit;
+  const suppliedBackgroundColor = settings?.backgroundColor === undefined
+    ? DEFAULT_PATTERN_SETTINGS.backgroundColor
+    : settings.backgroundColor;
   if (typeof symbolSet !== 'string' || symbolSet.trim() === '') throw new DomainError('invalid-settings', 'The symbol set must be a non-empty string.');
   if (![MaterialUnit.Skeins, MaterialUnit.Meters, MaterialUnit.Count].includes(materialUnit)) throw new DomainError('invalid-settings', `Material unit ${String(materialUnit)} is invalid.`);
-  return { symbolSet, materialUnit };
+  if (typeof suppliedBackgroundColor !== 'string' || !/^#[0-9A-Fa-f]{6}$/.test(suppliedBackgroundColor)) throw new DomainError('invalid-settings', 'The background color must be a 6-digit HEX color.');
+  return { symbolSet, materialUnit, backgroundColor: suppliedBackgroundColor.toUpperCase() };
 }
 
 function normalizeCatalogReference(value: unknown): PaletteCatalogReference | undefined {

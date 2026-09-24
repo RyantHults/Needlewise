@@ -12,6 +12,20 @@ import {
 } from './project-thumbnail';
 
 describe('project thumbnail summaries', () => {
+  it('uses the document background for empty thumbnail cells and preserves it when sanitizing', () => {
+    const document = createDocument({
+      catalog: DEFAULT_CATALOG_DEFINITION.association,
+      width: 2,
+      height: 1,
+      settings: { backgroundColor: '#123456' }
+    });
+    const thumbnail = deriveProjectThumbnail(document);
+
+    expect(thumbnail.palette).toEqual(['#123456']);
+    expect(thumbnail.indices).toEqual([0, 0]);
+    expect(sanitizeProjectThumbnail(thumbnail, document.revision)).toEqual(thumbnail);
+  });
+
   it('samples destination-cell centres and uses the first occupied slot', () => {
     let document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
       width: 256,

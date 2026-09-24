@@ -1,4 +1,4 @@
-import { MAX_PERSISTABLE_CELL_COUNT, type PatternDocument } from '../domain';
+import { DEFAULT_PATTERN_SETTINGS, MAX_PERSISTABLE_CELL_COUNT, type PatternDocument } from '../domain';
 import type { ProjectMetadata, ProjectThumbnailSummary } from './types';
 
 export const PROJECT_THUMBNAIL_VERSION = 1 as const;
@@ -82,8 +82,6 @@ export function sanitizeProjectThumbnail(value: unknown, expectedRevision?: numb
     if (normalized === undefined) return undefined;
     palette.push(normalized);
   }
-  if (palette[0] !== PROJECT_THUMBNAIL_FABRIC_COLOR) return undefined;
-
   const indices: number[] = [];
   for (const index of value.indices) {
     if (!isNonNegativeSafeInteger(index) || index >= palette.length) return undefined;
@@ -118,15 +116,18 @@ function thumbnailDimensions(document: PatternDocument): { columns: number; rows
  */
 export function deriveProjectThumbnail(document: PatternDocument): ProjectThumbnailSummary {
   const { columns, rows } = thumbnailDimensions(document);
+  const fabricColor = normalizeThumbnailColor(document.settings?.backgroundColor)
+    ?? normalizeThumbnailColor(DEFAULT_PATTERN_SETTINGS.backgroundColor)
+    ?? PROJECT_THUMBNAIL_FABRIC_COLOR;
   const paletteById = new Map<number, string>();
   for (const entry of document.palette) {
     const normalized = normalizeThumbnailColor(entry.color);
     if (normalized !== undefined) paletteById.set(entry.id, normalized);
   }
 
-  const palette = [PROJECT_THUMBNAIL_FABRIC_COLOR];
+  const palette = [fabricColor];
   const paletteIndices = new Map<string, number>();
-  paletteIndices.set(PROJECT_THUMBNAIL_FABRIC_COLOR, 0);
+  paletteIndices.set(fabricColor, 0);
   const indices: number[] = [];
   for (let row = 0; row < rows; row += 1) {
     // Sampling the center of a destination cell chooses the source cell that
@@ -135,7 +136,7 @@ export function deriveProjectThumbnail(document: PatternDocument): ProjectThumbn
     for (let column = 0; column < columns; column += 1) {
       const sourceX = Math.min(document.width - 1, Math.floor((column + 0.5) * document.width / columns));
       const offset = (sourceY * document.width + sourceX) * 4;
-      let color = PROJECT_THUMBNAIL_FABRIC_COLOR;
+      let color = fabricColor;
       let firstNonZeroColorId = 0;
       for (let slot = 0; slot < 4; slot += 1) {
         const colorId = document.colors[offset + slot];
@@ -148,7 +149,7 @@ export function deriveProjectThumbnail(document: PatternDocument): ProjectThumbn
       // a palette entry with an invalid color) means fabric for this sample;
       // do not let a later physical slot change the result.
       if (firstNonZeroColorId !== 0) {
-        color = paletteById.get(firstNonZeroColorId) ?? PROJECT_THUMBNAIL_FABRIC_COLOR;
+        color = paletteById.get(firstNonZeroColorId) ?? fabricColor;
       }
       let paletteIndex = paletteIndices.get(color);
       if (paletteIndex === undefined) {
