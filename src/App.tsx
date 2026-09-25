@@ -5,6 +5,7 @@ import { EditorSurface } from './components/editor/EditorSurface';
 import { Phase3Panel } from './components/Phase3Panel';
 import { CreateModal } from './components/CreateModal';
 import { ProjectGallery } from './components/ProjectGallery';
+import { installModalScrollLock } from './components/modal-scroll-lock';
 import { DEFAULT_CATALOG_DEFINITION } from './catalog';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 
@@ -63,6 +64,7 @@ function WorkspaceApp() {
     appMounted.current = true;
     return () => { appMounted.current = false; clearConfirmDeleteTimer(); };
   }, []);
+  useEffect(() => installModalScrollLock(), []);
   const applicationRef = useRef<HTMLDivElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
   const dialogWasOpen = useRef(false);
