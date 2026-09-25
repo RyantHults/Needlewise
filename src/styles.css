@@ -148,7 +148,7 @@ html:has([aria-modal="true"]), html:has([aria-modal="true"]) body { overflow:hid
 .creation-modes span { display:block; margin-top:.2rem; color:#8a837a; font-size:.65rem; font-weight:400; }
 .create-modal form > label, .conversion-controls > label:not(.check-row), .dimension-fields label { display:block; color:#8a837a; font-size:.72rem; font-weight:700; letter-spacing:.05em; text-transform:uppercase; }
 .create-modal input, .create-modal select { display:block; width:100%; margin-top:.3rem; border:1px solid #d1c9bd; border-radius:.4rem; padding:.6rem; background:#fffdf9; color:#272321; font:inherit; }
-.conversion-modal { width:min(100%, 40rem); max-height:calc(100vh - 2rem); overflow:auto; }
+.conversion-modal { width:min(100%, 40rem); max-height:calc(100vh - 2rem); overflow-x:hidden; overflow-y:auto; }
 .budget-control { margin-top:.8rem; }
 .budget-control > label:first-child { display:flex; align-items:center; justify-content:space-between; color:#8a837a; font-size:.72rem; font-weight:700; letter-spacing:.05em; text-transform:uppercase; }
 .budget-control .budget-stepper { display:inline-flex; align-items:center; gap:.35rem; letter-spacing:0; text-transform:none; }
@@ -178,7 +178,7 @@ html:has([aria-modal="true"]), html:has([aria-modal="true"]) body { overflow:hid
 .review { margin-top:1.1rem; border-top:1px solid #e4ddd3; padding-top:1rem; }
 .review h3 { margin:0 0 .5rem; }
 .review p { margin:.35rem 0; color:#625c55; font-size:.8rem; }
-.review-swatches { display:flex; flex-wrap:wrap; gap:.4rem; margin:.8rem 0; max-block-size:12rem; overflow:auto; }
+.review-swatches { display:flex; flex-wrap:wrap; gap:.4rem; margin:.8rem 0; max-block-size:12rem; overflow-x:hidden; overflow-y:auto; }
 .review-swatches-label { margin:.8rem 0 .15rem; color:#8a837a; font-size:.72rem; font-weight:700; letter-spacing:.05em; text-transform:uppercase; }
 .review-swatches-hint { margin:0 0 .1rem; color:#777169; font-size:.7rem; }
 .review-swatches .swatch { width:1.35rem; height:1.35rem; padding:0; }
@@ -449,7 +449,7 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .canvas-actions .chart-view button small, .canvas-actions .chart-view .trace-toggle small { color:#625c55; font-size:.56rem; font-weight:700; line-height:1; }
 .canvas-actions .chart-view button span { font-size:1.1rem; }
 .canvas-actions .chart-view .trace-toggle { margin:0; padding:0 .35rem; }
-.materials-dialog { width:min(58rem, calc(100vw - 2rem)); max-height:calc(100vh - 2rem); overflow:auto; padding:0; }
+.materials-dialog { width:min(58rem, calc(100vw - 2rem)); max-height:calc(100vh - 2rem); overflow-x:hidden; overflow-y:auto; padding:0; }
 .materials-dialog > .modal-close { position:absolute; top:.8rem; right:.8rem; z-index:1; }
 .materials-dialog .phase3-panel { margin:0; border:0; }
 @media (min-width: 800px) {
@@ -560,7 +560,7 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .material-note, .phase3-feedback { margin:.9rem 0 0; color:#777169; font-size:.72rem; }
 .phase3-feedback { color:#687a68; }
 .dashed-swatch { border-style:dashed; background:#fffdf9; color:#bc5a3d; }
-.catalog-dialog { width:min(100%,32rem); max-height:calc(100vh - 2rem); overflow:auto; color:#272321; }
+.catalog-dialog { width:min(100%,32rem); max-height:calc(100vh - 2rem); overflow-x:hidden; overflow-y:auto; color:#272321; }
 .catalog-dialog .custom-color-action:disabled { cursor:not-allowed; opacity:.55; }
 .catalog-dialog input, .catalog-dialog select, .details-dialog input, .details-dialog textarea, .details-dialog select { display:block; width:100%; margin:.3rem 0 .8rem; border:1px solid #c5d0c2; border-radius:.35rem; padding:.55rem; background:#fffdf9; font:inherit; }
 .details-dialog .check-row.palette-display-toggle input { width:auto; margin:0; flex:0 0 auto; }
