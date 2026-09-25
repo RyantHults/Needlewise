@@ -693,26 +693,6 @@ export function EditorSurface({
       );
     }
   };
-  const paletteActiveIds = useMemo(() => {
-    const set = new Set<number>();
-    for (let i = 0; i < document.colors.length; i += 1) {
-      const c = document.colors[i];
-      if (c) set.add(c);
-    }
-    const backstitchColors = (
-      document.backstitches as { colors?: ArrayLike<number> } | undefined
-    )?.colors;
-    if (backstitchColors)
-      for (let i = 0; i < backstitchColors.length; i += 1) {
-        const c = backstitchColors[i];
-        if (c) set.add(c);
-      }
-    return set;
-  }, [document.colors, document.backstitches.colors]);
-  const pendingEntry =
-    ui?.pendingPaletteId != null && !paletteActiveIds.has(ui.pendingPaletteId)
-      ? palette.find((x) => x.id === ui.pendingPaletteId)
-      : undefined;
   const removeEntry =
     removeTarget === null
       ? null
@@ -778,11 +758,7 @@ export function EditorSurface({
       title={x.name}
     >
       <button
-        className={
-          ui?.pendingPaletteId === x.id && !paletteActiveIds.has(x.id)
-            ? "palette-button palette-pending"
-            : "palette-button"
-        }
+        className="palette-button"
         type="button"
         aria-label={`${x.catalog?.code ? `${duplicateCatalogCodes.has(x.catalog.code) ? `${availableCatalogs.find((item) => item.association.catalogId === x.catalog?.catalogId)?.association.brandLabel ?? ""} ` : ""}${x.catalog.code}` : ""}${x.name}`}
         aria-pressed={ui?.paletteId === x.id}
@@ -824,29 +800,23 @@ export function EditorSurface({
       >
         {x.symbol}
       </button>
-      {ui?.pendingPaletteId === x.id && !paletteActiveIds.has(x.id) ? null : (
-        <button
-          className="palette-remove"
-          type="button"
-          aria-label={`Remove ${x.name}`}
-          title="Remove or replace this color"
-          onClick={(e) => openRemove(x.id, e.currentTarget)}
-        >
-          ×
-        </button>
-      )}
+      <button
+        className="palette-remove"
+        type="button"
+        aria-label={`Remove ${x.name}`}
+        title="Remove or replace this color"
+        onClick={(e) => openRemove(x.id, e.currentTarget)}
+      >
+        ×
+      </button>
       {paletteMenu === x.id && createPortal(
         <div ref={menuElement} className="palette-menu" role="menu" aria-label={`Details for ${x.name}`} style={{ position: 'fixed', left: paletteMenuPosition.left, top: paletteMenuPosition.top, zIndex: 1000 }} onPointerDown={(event) => event.stopPropagation()}>
           <strong>{x.name}</strong>
             <span>{catalogEntryLabel(x)}</span>
           <span>Symbol {x.symbol}</span>
           <button type="button" role="menuitem" onClick={() => { const anchor = menuAnchor.current as HTMLButtonElement; openSymbolPicker(x.id, anchor); setPaletteMenu(null); }}>Change symbol</button>
-          {!(ui?.pendingPaletteId === x.id && !paletteActiveIds.has(x.id)) && (
-            <>
-             <button type="button" role="menuitem" onClick={() => { openSwapPicker(x.id, menuAnchor.current as HTMLButtonElement); setPaletteMenu(null); }}>Swap color</button>
-            <button type="button" role="menuitem" className="palette-menu-delete" onClick={() => { deleteTrigger.current = menuAnchor.current as HTMLButtonElement; setDeleteTarget(x.id); setPaletteMenu(null); }}>Delete color</button>
-            </>
-          )}
+          <button type="button" role="menuitem" onClick={() => { openSwapPicker(x.id, menuAnchor.current as HTMLButtonElement); setPaletteMenu(null); }}>Swap color</button>
+          <button type="button" role="menuitem" className="palette-menu-delete" onClick={() => { deleteTrigger.current = menuAnchor.current as HTMLButtonElement; setDeleteTarget(x.id); setPaletteMenu(null); }}>Delete color</button>
         </div>, globalThis.document.body
       )}
     </div>
@@ -1864,8 +1834,7 @@ export function EditorSurface({
               onClick={openPalettePicker}
             ><span className="palette-add-glyph">+</span></button>
             <div className="palette-rail-items">
-              {pendingEntry && paletteRow(pendingEntry)}
-              {palette.filter((x) => x.id !== pendingEntry?.id).map(paletteRow)}
+              {palette.map(paletteRow)}
             </div>
           </div>
           </div>

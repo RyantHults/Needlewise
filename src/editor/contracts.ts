@@ -482,8 +482,6 @@ export interface EditorUiState {
   readonly keyboardCursor: ModelPoint | null;
   readonly selectedCell: SelectedCellSemantics | null;
   readonly status: string | null;
-  /** Active palette entry added by the eyedropper but not yet referenced by a stitch or backstitch. */
-  readonly pendingPaletteId: number | null;
   /** True when the controller has a cloned in-app fragment available to paste. */
   readonly canPaste: boolean;
 }
@@ -662,7 +660,6 @@ export interface EditorUiStore {
   setBrush(brush: StitchBrush): void;
   setAuthoringBrush(brush: AuthoringStitchBrush): void;
   setPaletteId(paletteId: number | null): void;
-  setPendingPaletteId(paletteId: number | null): void;
   setKeyboardCursor(cursor: ModelPoint | null): void;
   setSelectedCell(selectedCell: SelectedCellSemantics | null): void;
   setStatus(status: string | null): void;

@@ -210,7 +210,6 @@ describe('EditorSurfaceController', () => {
       onTraceSample: (value) => sampled.push(value)
     }, document);
     controller.setTool({ tool: 'eyedropper' });
-    uiStore.setPendingPaletteId(1);
     const beforePalette = document.palette.map((entry) => ({ ...entry }));
     const beforeState = uiStore.getState();
     const commandCount = gateway.commands.length;
@@ -220,7 +219,6 @@ describe('EditorSurfaceController', () => {
     expect(gateway.commands).toHaveLength(commandCount);
     expect(document.palette).toEqual(beforePalette);
     expect(uiStore.getState().paletteId).toBe(beforeState.paletteId);
-    expect(uiStore.getState().pendingPaletteId).toBe(beforeState.pendingPaletteId);
     expect(uiStore.getState().tool).toEqual(beforeState.tool);
     controller.dispose();
   });
@@ -295,7 +293,6 @@ describe('EditorSurfaceController', () => {
     expect(fixture.gateway.commands).toHaveLength(commandCount);
     expect(fixture.gateway.getSnapshot().document?.palette).toEqual([]);
     expect(fixture.uiStore.getState().paletteId).toBe(beforeState.paletteId);
-    expect(fixture.uiStore.getState().pendingPaletteId).toBe(beforeState.pendingPaletteId);
     expect(fixture.uiStore.getState().tool).toEqual(beforeState.tool);
     fixture.controller.dispose();
   });
@@ -485,7 +482,7 @@ describe('EditorSurfaceController', () => {
     controller.dispose();
   });
 
-  it('supersedes a pending eyedropper color when another unused color is activated', () => {
+  it('keeps an earlier unused eyedropper color active when another unused color is selected', () => {
     const rgb1 = { r: 18, g: 52, b: 86 };
     const { gateway, uiStore, controller } = controllerFixture({
       traceImage: { source: {}, width: 4, height: 4 },
@@ -494,33 +491,33 @@ describe('EditorSurfaceController', () => {
     });
     controller.setTool({ tool: 'eyedropper' });
     expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
-    const pending = uiStore.getState().pendingPaletteId;
-    expect(pending).not.toBeNull();
+    const firstAddedId = uiStore.getState().paletteId;
+    expect(firstAddedId).not.toBeNull();
 
     gateway.execute({ type: 'palette-create', name: 'Purple', color: '#66AA22', catalog: { catalogId: DEFAULT_CATALOG_DEFINITION.association.catalogId, sourceId: 's', code: 'P9', name: 'Purple', hex: '#66AA22', rgb: [102, 170, 34] } });
     const created = gateway.getSnapshot().document?.palette.find((entry) => entry.catalog?.code === 'P9');
     expect(created).toBeDefined();
 
     controller.selectPalette(created!.id);
-    expect(gateway.getSnapshot().document?.palette.find((entry) => entry.id === pending)?.active).toBe(false);
-    expect(uiStore.getState().pendingPaletteId).toBe(created!.id);
+    expect(gateway.getSnapshot().document?.palette.find((entry) => entry.id === firstAddedId)?.active).toBe(true);
+    expect(gateway.commands.some((command) => command.type === 'palette-deactivate')).toBe(false);
     expect(uiStore.getState().paletteId).toBe(created!.id);
     controller.dispose();
   });
 
-  it('highlights an already-referenced palette color without disturbing the pending entry', () => {
+  it('highlights an already-referenced palette color without deactivating an unused entry', () => {
     const rgb = { r: 18, g: 52, b: 86 };
     const { gateway, uiStore, controller } = controllerFixture({ traceImage: { source: {}, width: 4, height: 4 }, traceSampler: () => ({ ...rgb }) });
     gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
     controller.setTool({ tool: 'eyedropper' });
     expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
-    const pending = uiStore.getState().pendingPaletteId;
+    const unusedId = uiStore.getState().paletteId;
     const commands = gateway.commands.slice();
 
     controller.selectPalette(1);
     expect(uiStore.getState().paletteId).toBe(1);
     expect(gateway.commands.slice()).toEqual(commands);
-    expect(uiStore.getState().pendingPaletteId).toBe(pending);
+    expect(gateway.getSnapshot().document?.palette.find((entry) => entry.id === unusedId)?.active).toBe(true);
     controller.dispose();
   });
 
@@ -2231,22 +2228,19 @@ describe('EditorSurfaceController', () => {
     expect(visualReads).toBe(0);
     expect(uiStore.getState().paletteId).toBe(2);
     expect(uiStore.getState().tool).toMatchObject({ tool: 'paint', brush: { paletteId: 2 } });
-    expect(uiStore.getState().pendingPaletteId).toBe(2);
     controller.dispose();
   });
 
-  it('safely supersedes an older pending palette when selecting a created entry', () => {
+  it('keeps an earlier unused palette entry active when selecting a newly created entry', () => {
     const { gateway, uiStore, controller } = controllerFixture();
     const document = gateway.getSnapshot().document!;
     document.palette.push({ ...document.palette[0], id: 2, name: 'Created' });
-    uiStore.setPendingPaletteId(1);
 
     controller.selectCreatedPalette(2);
 
-    expect(gateway.commands.at(-1)).toMatchObject({ type: 'palette-deactivate', id: 1 });
-    expect(gateway.getSnapshot().document?.palette.find((entry) => entry.id === 1)?.active).toBe(false);
+    expect(gateway.commands.some((command) => command.type === 'palette-deactivate')).toBe(false);
+    expect(gateway.getSnapshot().document?.palette.find((entry) => entry.id === 1)?.active).toBe(true);
     expect(uiStore.getState().paletteId).toBe(2);
-    expect(uiStore.getState().pendingPaletteId).toBe(2);
     controller.dispose();
   });
 

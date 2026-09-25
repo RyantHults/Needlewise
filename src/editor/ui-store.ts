@@ -53,7 +53,6 @@ export const DEFAULT_EDITOR_UI_STATE: EditorUiState = {
   keyboardCursor: null,
   selectedCell: null,
   status: null,
-  pendingPaletteId: null,
   canPaste: false
 };
 
@@ -69,7 +68,6 @@ function sameState(left: EditorUiState, right: EditorUiState): boolean {
     && left.keyboardCursor === right.keyboardCursor
     && left.selectedCell === right.selectedCell
     && left.status === right.status
-    && left.pendingPaletteId === right.pendingPaletteId
     && left.canPaste === right.canPaste;
 }
 
@@ -177,10 +175,6 @@ export function createUiStore(initial: Partial<EditorUiState> = {}): EditorUiSto
 
     setPaletteId(paletteId: number | null): void {
       store.setState({ paletteId });
-    },
-
-    setPendingPaletteId(paletteId: number | null): void {
-      store.setState({ pendingPaletteId: paletteId });
     },
 
     setKeyboardCursor(cursor: ModelPoint | null): void {

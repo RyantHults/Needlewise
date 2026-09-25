@@ -269,15 +269,7 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .symbol-option:hover { border-color:#bc5a3d; color:#88452f; }
 .symbol-option[aria-pressed="true"] { border-color:#bc5a3d; background:#f1e4da; color:#88452f; }
 .symbol-option:focus-visible { outline:3px solid #bc5a3d; outline-offset:1px; }
-.palette-button.palette-pending { border-style:dashed; border-color:#c9c1b6; background:#f8f5ef; color:#6f6a63; }
-/* Selected takes the full tint over the draft tint. The combined selector beats .palette-pending
-   by specificity, so this precedence holds regardless of source order. */
 .palette-button[aria-pressed="true"] { background:#f3eee5; }
-.palette-button.palette-pending[aria-pressed="true"] { background:#f3eee5; }
-/* Draft separator: the pending color leads the roster; the hairline is the draft zone's
-   bottom edge, holding it apart from the add affordance and settled colors below
-   without reading as a fieldset section break. */
-.palette-row:has(> .palette-button.palette-pending) { margin-bottom:.55rem; padding-bottom:.55rem; border-bottom:1px dashed #c9c1b6; }
 .canvas-column { min-width:0; }
 .canvas-frame { min-height:42rem; }
 .canvas-fallback { min-height:42rem; }
@@ -408,8 +400,6 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .palette-dock-heading .section-label { margin-bottom:.2rem; }
 .palette-swatches { display:grid; grid-template-columns:repeat(auto-fill,minmax(12rem,1fr)); gap:.45rem; margin-top:.7rem; }
 .palette-swatches .palette-row { min-width:0; margin:0; padding:0 0 0 25%; border:1px solid #e1dbd1; border-radius:.55rem; background:#fffdf9; overflow:hidden; }
-.palette-swatches .palette-row:has(> .palette-button.palette-pending) { margin:0; padding:0 0 0 25%; border:1px solid #e1dbd1; }
-.palette-swatches .palette-row:has(> .palette-button.palette-pending) { margin:0; padding:0 0 0 25%; border:0; }
 .palette-swatches .palette-button { min-height:2.55rem; grid-template-columns:1fr; border:0; border-radius:0; background:transparent; padding:.25rem .3rem; }
 .palette-swatches .palette-button .swatch { position:absolute; inset:0 auto 0 0; align-self:stretch; width:25%; height:auto; min-height:0; border:0; border-radius:0; }
 .palette-swatches .palette-name { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }

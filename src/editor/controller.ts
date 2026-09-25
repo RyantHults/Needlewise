@@ -1950,81 +1950,17 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return this.handleKeyUp(sample);
   }
 
-  /** True when any stitch or backstitch uses the palette id. */
-  private isPaletteReferenced(document: PatternDocument, id: number): boolean {
-    const cellCount = Math.min(document.kind.length, Math.floor(document.colors.length / 4));
-    for (let index = 0; index < cellCount; index += 1) {
-      const offset = index * 4;
-      const kind = document.kind[index];
-      const slots: readonly number[] = isLegacyQuarterKind(kind)
-        ? [0, 1, 2, 3]
-        : isThreeQuarterPairKind(kind)
-          ? threeQuarterPairComponents(document.colors.subarray(offset, offset + 4)).map((component) => component.slot)
-          : [0];
-      for (const slot of slots) if (document.colors[offset + slot] === id) return true;
-    }
-    for (let index = 0; index < document.backstitches.colors.length; index += 1) if (document.backstitches.colors[index] === id) return true;
-    return false;
-  }
-
-  /**
-   * Enforce at most one "pending" (added-but-unused) palette entry. Activating
-   * an unused color supersedes the current pending entry; activating a color
-   * already on the pattern just highlights it (pending is left untouched).
-   */
-  private reconcilePendingPalette(targetId: number | null): void {
-    if (targetId === null) return;
-    const snapshot = this.gateway.getSnapshot();
-    const document = snapshot.document;
-    if (!document) return;
-    const state = this.uiStore.getState();
-    const targetReferenced = this.isPaletteReferenced(document, targetId);
-    if (targetReferenced) return;
-    const pending = state.pendingPaletteId;
-    if (pending !== null && pending !== targetId) {
-      const pendingEntry = document.palette.find((entry) => entry.id === pending);
-      if (pendingEntry?.active && !this.isPaletteReferenced(document, pending)) {
-        try {
-          this.gateway.execute({ type: 'palette-deactivate', id: pending });
-        } catch {
-          // The pending color may have been removed concurrently; ignore.
-        }
-      }
-    }
-    this.uiStore.setPendingPaletteId(targetId);
-  }
-
   /** Select a palette entry returned by a successful palette-create command. */
   selectCreatedPalette(paletteId: number): void {
     this.setPaletteSelection(paletteId);
-    const snapshot = this.gateway.getSnapshot();
-    const document = snapshot.document;
-    if (!document) return;
-    const pending = this.uiStore.getState().pendingPaletteId;
-    if (pending !== null && pending !== paletteId) {
-      const pendingEntry = document.palette.find((entry) => entry.id === pending);
-      if (pendingEntry?.active) {
-        try {
-          // The create result proves the new entry is unreferenced. Let the
-          // domain command safely validate an older pending entry without
-          // scanning the chart here.
-          this.gateway.execute({ type: 'palette-deactivate', id: pending });
-        } catch {
-          // The pending color may have been removed or referenced concurrently.
-        }
-      }
-    }
-    this.uiStore.setPendingPaletteId(paletteId);
   }
 
   selectPalette(paletteId: number | null): void {
     if (paletteId === null) {
       this.uiStore.setPaletteId(paletteId);
-      this.reconcilePendingPalette(paletteId);
       return;
     }
     this.setPaletteSelection(paletteId);
-    this.reconcilePendingPalette(paletteId);
   }
 
   private setPaletteSelection(paletteId: number): void {
