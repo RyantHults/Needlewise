@@ -760,24 +760,57 @@ describe('CreateModal image lifecycle', () => {
     expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 0'));
   });
 
-  it('ignores touch pointers and never shows the lens for them', async () => {
-    render(<ControlledModal />);
-    fireEvent.change(screen.getByLabelText(/Choose a PNG/), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } });
-    act(() => { images[0].onload?.(); });
-    act(() => { vi.advanceTimersByTime(300); });
-    const preview = await vi.waitFor(() => screen.getByLabelText('Converted pattern preview'));
-    const lens = preview.parentElement!.querySelector('.preview-lens') as HTMLCanvasElement;
+  describe('touch support for the preview lens', () => {
+    async function setUpPreview() {
+      render(<ControlledModal />);
+      fireEvent.change(screen.getByLabelText(/Choose a PNG/), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } });
+      act(() => { images[0].onload?.(); });
+      act(() => { vi.advanceTimersByTime(300); });
+      const preview = await vi.waitFor(() => screen.getByLabelText('Converted pattern preview'));
+      const lens = preview.parentElement!.querySelector('.preview-lens') as HTMLCanvasElement;
+      vi.spyOn(preview, 'getBoundingClientRect').mockReturnValue({ left: 10, top: 20, width: 100, height: 80, right: 110, bottom: 100, toJSON: () => undefined } as DOMRect);
+      vi.spyOn(preview.parentElement!, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 200, height: 200, right: 200, bottom: 200, toJSON: () => undefined } as DOMRect);
+      return { preview, lens };
+    }
 
-    vi.spyOn(preview, 'getBoundingClientRect').mockReturnValue({ left: 10, top: 20, width: 100, height: 80, right: 110, bottom: 100, toJSON: () => undefined } as DOMRect);
-    vi.spyOn(preview.parentElement!, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 200, height: 200, right: 200, bottom: 200, toJSON: () => undefined } as DOMRect);
-    fireEvent.pointerEnter(preview, { pointerType: 'touch', clientX: 30, clientY: 40 });
-    fireEvent.pointerMove(preview, { pointerType: 'touch', clientX: 60, clientY: 70 });
-    expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 0'));
-    // A mouse pointer still works afterwards (reset the position mocks the
-    // component refetches on every event).
-    fireEvent.pointerEnter(preview, { pointerType: 'mouse', clientX: 30, clientY: 40 });
-    fireEvent.pointerMove(preview, { pointerType: 'mouse', clientX: 40, clientY: 50 });
-    expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 1'));
+    it('shows the lens on a touch tap and keeps it visible through pointerup and pointerleave', async () => {
+      const { preview, lens } = await setUpPreview();
+      fireEvent.pointerDown(preview, { pointerType: 'touch', clientX: 30, clientY: 40 });
+      expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 1'));
+      // A tap-drag still follows, same as hover does for mouse.
+      fireEvent.pointerMove(preview, { pointerType: 'touch', clientX: 60, clientY: 70 });
+      expect(lens.style.left).not.toBe('');
+      // Neither pointerup nor pointerleave hides a touch-shown lens.
+      fireEvent.pointerUp(preview, { pointerType: 'touch', clientX: 60, clientY: 70 });
+      expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 1'));
+      fireEvent.pointerLeave(preview, { pointerType: 'touch' });
+      expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 1'));
+    });
+
+    it('hides the lens on pointercancel', async () => {
+      const { preview, lens } = await setUpPreview();
+      fireEvent.pointerDown(preview, { pointerType: 'touch', clientX: 30, clientY: 40 });
+      expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 1'));
+      fireEvent.pointerCancel(preview, { pointerType: 'touch' });
+      expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 0'));
+    });
+
+    it('hides a touch-shown lens when a pointer goes down outside the preview canvas', async () => {
+      const { preview, lens } = await setUpPreview();
+      fireEvent.pointerDown(preview, { pointerType: 'touch', clientX: 30, clientY: 40 });
+      expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 1'));
+      fireEvent.pointerDown(document.body, { pointerType: 'touch' });
+      expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 0'));
+    });
+
+    it('leaves mouse hover behavior unchanged', async () => {
+      const { preview, lens } = await setUpPreview();
+      fireEvent.pointerEnter(preview, { pointerType: 'mouse', clientX: 30, clientY: 40 });
+      fireEvent.pointerMove(preview, { pointerType: 'mouse', clientX: 40, clientY: 50 });
+      expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 1'));
+      fireEvent.pointerLeave(preview, { pointerType: 'mouse' });
+      expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 0'));
+    });
   });
 
   it('closes via the × button in blank mode', () => {

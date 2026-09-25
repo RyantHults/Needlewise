@@ -1,5 +1,5 @@
 import { StrictMode } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { TraceImageControls } from './TraceImageControls';
 
@@ -163,5 +163,37 @@ describe('TraceImageControls reference image tools', () => {
     await waitFor(() => expect(applyTraceImageChange).toHaveBeenCalledTimes(1));
     expect(applyTraceImageChange).toHaveBeenCalledWith(expect.objectContaining({ traceVisible: false }), expect.objectContaining({ label: 'trace-image-visibility' }));
     unmount();
+  });
+
+  it('renders the Remove button after Resize and requires confirmation before removing', async () => {
+    const removeSourceImage = vi.fn(async () => undefined);
+    const workspace = { sourceImage: descriptor, getAsset: () => undefined, removeSourceImage } as never;
+    render(<TraceImageControls workspace={workspace} document={{ width: 2, height: 2 } as never} controller={null} />);
+    const toolbar = screen.getByRole('toolbar', { name: 'Reference image' });
+    const labels = within(toolbar).getAllByRole('button').map((button) => button.getAttribute('aria-label'));
+    expect(labels.indexOf('Remove image')).toBeGreaterThan(labels.indexOf('Resize image'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove image' }));
+    const dialog = screen.getByRole('dialog', { name: 'Remove reference image?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(removeSourceImage).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove image' }));
+    const reopened = screen.getByRole('dialog', { name: 'Remove reference image?' });
+    fireEvent.click(within(reopened).getByRole('button', { name: 'Remove image' }));
+    await waitFor(() => expect(removeSourceImage).toHaveBeenCalledTimes(1));
+  });
+
+  it('switches the show-toggle icon between visible and hidden', () => {
+    const hidden = { ...descriptor, traceVisible: false, opacity: 0 };
+    const workspace = { sourceImage: hidden, getAsset: () => undefined } as never;
+    const { rerender } = render(<TraceImageControls workspace={workspace} document={{ width: 2, height: 2 } as never} controller={null} />);
+    const icon = screen.getByRole('checkbox', { name: 'Show image' }).closest('label')?.querySelector('span[aria-hidden]');
+    expect(icon).toHaveTextContent('○');
+
+    const visibleWorkspace = { sourceImage: descriptor, getAsset: () => undefined } as never;
+    rerender(<TraceImageControls workspace={visibleWorkspace} document={{ width: 2, height: 2 } as never} controller={null} />);
+    expect(screen.getByRole('checkbox', { name: 'Show image' }).closest('label')?.querySelector('span[aria-hidden]')).toHaveTextContent('◉');
   });
 });
