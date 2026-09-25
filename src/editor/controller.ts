@@ -27,6 +27,7 @@ import {
 import type {
   CanvasMetrics,
   CanvasRenderer,
+  BrushSizeTool,
   CellRect,
   AuthoringStitchBrush,
   EditorToolState,
@@ -133,6 +134,7 @@ export interface EditorSurfaceControllerLifecycle {
   /** Replace the rendered document without recreating editor interaction state. */
   setDocument(document: PatternDocument, invalidation?: Invalidation): void;
   setMetrics(metrics: CanvasMetrics): void;
+  setToolBrushSize(tool: BrushSizeTool, size: number): void;
   setTraceImage(trace: TraceImage | undefined): void;
   clearTraceImage(): void;
   setTraceSampleCallback(callback: TraceSampleCallback | undefined): void;
@@ -179,7 +181,6 @@ interface CompletionGesture {
   readonly kind: 'completion';
   readonly pointerId: number;
   readonly transaction: EditorTransaction;
-  readonly brushSize: number;
   readonly operation: CompletionOperation;
   readonly targets: Map<number, CompletionTarget>;
   lastCell: ModelPoint | undefined;
@@ -192,10 +193,9 @@ interface CompletionTarget {
   readonly mask: number;
 }
 
-interface FillRecolorSnapshot {
-  readonly fromColor: number;
-  readonly toColor: number;
-}
+type FillRecolorSnapshot =
+  | { readonly kind: 'recolor'; readonly fromColor: number; readonly toColor: number }
+  | { readonly kind: 'empty-region'; readonly toColor: number };
 
 interface SelectionGesture {
   readonly kind: 'selection';
@@ -477,11 +477,10 @@ function boundedSquareOrigin(origin: number, anchor: number, side: number, exten
 function stampCompletionTargets(
   targets: Map<number, CompletionTarget>,
   center: ModelPoint,
-  size: number,
   document: PatternDocument,
   local: ModelPoint
 ): void {
-  for (const cell of brushCells(center, size, document)) {
+  for (const cell of brushCells(center, 1, document)) {
     const mask = completionTargetForCell(document, cell, local);
     if (mask === 0) continue;
     const index = cell.y * document.width + cell.x;
@@ -572,6 +571,48 @@ function masksForChangedIndices(indices: Uint32Array, masks: Uint8Array, changed
   return changedMasks;
 }
 
+function isExactEmptyRegionFillResult(
+  document: PatternDocument,
+  startIndex: number,
+  indices: Uint32Array,
+  masks: Uint8Array
+): boolean {
+  if (indices.length === 0 || indices.length !== masks.length || document.kind[startIndex] !== CellKind.Empty) return false;
+  const included = new Uint8Array(document.kind.length);
+  for (let position = 0; position < indices.length; position += 1) {
+    const index = indices[position];
+    if (masks[position] !== 1 || document.kind[index] !== CellKind.Empty) return false;
+    included[index] = 1;
+  }
+  if (included[startIndex] === 0) return false;
+
+  const visited = new Uint8Array(document.kind.length);
+  const queue = new Uint32Array(indices.length);
+  let head = 0;
+  let tail = 0;
+  const visit = (neighbor: number): boolean => {
+    if (document.kind[neighbor] !== CellKind.Empty) return true;
+    if (included[neighbor] === 0) return false;
+    if (visited[neighbor] === 0) {
+      visited[neighbor] = 1;
+      queue[tail++] = neighbor;
+    }
+    return true;
+  };
+  queue[tail++] = startIndex;
+  visited[startIndex] = 1;
+  while (head < tail) {
+    const index = queue[head++];
+    const x = index % document.width;
+    const y = Math.floor(index / document.width);
+    if (x > 0 && !visit(index - 1)) return false;
+    if (x + 1 < document.width && !visit(index + 1)) return false;
+    if (y > 0 && !visit(index - document.width)) return false;
+    if (y + 1 < document.height && !visit(index + document.width)) return false;
+  }
+  return tail === indices.length;
+}
+
 function completionPendingState(
   document: PatternDocument,
   index: number,
@@ -600,6 +641,18 @@ function normalizedPointerPosition(sample: PointerSample, viewport: Viewport): M
     x: point.x - Math.floor(point.x),
     y: point.y - Math.floor(point.y)
   };
+}
+
+/** How far past the crossed edge a drag must reach before a full-stitch stroke claims a new cell. */
+const PAINT_CELL_ENTRY_DEPTH = 0.25;
+
+function reachedPaintEntryDepth(from: ModelPoint, to: ModelPoint, local: ModelPoint | undefined): boolean {
+  if (!local) return true;
+  if (to.x > from.x && local.x < PAINT_CELL_ENTRY_DEPTH) return false;
+  if (to.x < from.x && local.x > 1 - PAINT_CELL_ENTRY_DEPTH) return false;
+  if (to.y > from.y && local.y < PAINT_CELL_ENTRY_DEPTH) return false;
+  if (to.y < from.y && local.y > 1 - PAINT_CELL_ENTRY_DEPTH) return false;
+  return true;
 }
 
 function completionTargetForCell(
@@ -1476,6 +1529,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.uiStore.setBrushSize(normalizeBrushSize(size));
   }
 
+  setToolBrushSize(tool: BrushSizeTool, size: number): void {
+    this.uiStore.setToolBrushSize(tool, normalizeBrushSize(size));
+  }
+
   setAuthoringBrush(brush: AuthoringStitchBrush): void {
     this.setBrush(brush);
   }
@@ -2168,8 +2225,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const cell = this.paintHitCell(sample, snapshot.document);
       const local = normalizedPointerPosition(sample, this.uiStore.getState().viewport);
       const mask = cell && local ? completionTargetForCell(snapshot.document, cell, local) : 0;
+      const isEmpty = cell !== undefined
+        && snapshot.document.kind[cell.y * snapshot.document.width + cell.x] === CellKind.Empty;
       if (sample.pointerType === 'touch') {
-        if (!cell || mask === 0) return false;
+        if (!cell || (mask === 0 && !isEmpty)) return false;
         this.gesture = {
           kind: 'touch-action',
           pointerId: sample.pointerId,
@@ -2180,7 +2239,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         };
         return true;
       }
-      return cell && mask !== 0 ? this.startFillAt(cell, mask) : false;
+      return cell && (mask !== 0 || isEmpty) ? this.startFillAt(cell, mask || undefined) : false;
     }
     if (selectedTool.tool === 'backstitch') return this.beginBackstitch(sample, snapshot);
     if (selectedTool.tool === 'completion') {
@@ -2190,11 +2249,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const mask = completionTargetForCell(snapshot.document, cell, local);
       if (mask === 0) return false;
       const transaction = this.gateway.beginTransaction();
-      const brushSize = this.getBrushSize();
       const operation: CompletionOperation = (snapshot.document.completed[cell.y * snapshot.document.width + cell.x] & mask) === mask ? 'clear' : 'set';
       const targets = new Map<number, CompletionTarget>();
-      stampCompletionTargets(targets, cell, brushSize, snapshot.document, local);
-      this.gesture = { kind: 'completion', pointerId: sample.pointerId, transaction, brushSize, operation, targets, lastCell: cell };
+      stampCompletionTargets(targets, cell, snapshot.document, local);
+      this.gesture = { kind: 'completion', pointerId: sample.pointerId, transaction, operation, targets, lastCell: cell };
       this.publishPendingCells(completionTargetCells(targets), this.pendingCompletionStates(targets, operation, snapshot.document));
       return true;
     }
@@ -2839,7 +2897,9 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const cell = this.paintHitCell(sample, snapshot.document);
     const local = normalizedPointerPosition(sample, this.uiStore.getState().viewport);
     const mask = cell && local ? completionTargetForCell(snapshot.document, cell, local) : 0;
-    if (cell && mask !== 0) this.startFillAt(cell, mask);
+    const isEmpty = cell !== undefined
+      && snapshot.document.kind[cell.y * snapshot.document.width + cell.x] === CellKind.Empty;
+    if (cell && (mask !== 0 || isEmpty)) this.startFillAt(cell, mask || undefined);
   }
 
   private paintHitCell(sample: PointerSample, document: PatternDocument): ModelPoint | undefined {
@@ -2897,6 +2957,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       // Off-chart travel is a discontinuity. Re-entry is a new stroke origin,
       // not a line segment from the last in-chart sample.
       gesture.lastCell = undefined;
+      return;
+    }
+    if (gesture.lastCell && gesture.brush.kind === 'full' && !reachedPaintEntryDepth(gesture.lastCell, nextCell, normalizedPointerPosition(sample, this.uiStore.getState().viewport))) {
+      // The pointer only grazed the new cell; wait for a deeper sample so the
+      // stroke does not spill into neighbours along its edges.
       return;
     }
     if (gesture.lastCell) {
@@ -2960,9 +3025,9 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       return;
     }
     if (gesture.lastCell) {
-      for (const cell of supercoverLine(gesture.lastCell, nextCell)) stampCompletionTargets(gesture.targets, cell, gesture.brushSize, document, local);
+      for (const cell of supercoverLine(gesture.lastCell, nextCell)) stampCompletionTargets(gesture.targets, cell, document, local);
     } else {
-      stampCompletionTargets(gesture.targets, nextCell, gesture.brushSize, document, local);
+      stampCompletionTargets(gesture.targets, nextCell, document, local);
     }
     gesture.lastCell = nextCell;
   }
@@ -3433,14 +3498,15 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.cancelFill(false);
     const selectedPaletteId = this.uiStore.getState().paletteId;
     const startIndex = cellY * snapshot.document.width + cellX;
-    const targetMask = startMask ?? deterministicFillMask(snapshot.document, startIndex);
+    const isEmptyStart = snapshot.document.kind[startIndex] === CellKind.Empty;
+    const targetMask = isEmptyStart ? 1 : startMask ?? deterministicFillMask(snapshot.document, startIndex);
     if (selectedPaletteId === null || targetMask === 0) {
       this.setStatus('No change');
       return true;
     }
     const sourceSlot = Math.log2(targetMask);
     const sourceColor = snapshot.document.colors[startIndex * MAX_FILL_COLOR_SLOTS + sourceSlot];
-    if (sourceColor === 0 || sourceColor === selectedPaletteId) {
+    if (!isEmptyStart && (sourceColor === 0 || sourceColor === selectedPaletteId)) {
       this.setStatus('No change');
       return true;
     }
@@ -3463,7 +3529,9 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     this.fillJob = job;
     this.fillToken = token;
-    this.fillRecolorSnapshot = { fromColor: sourceColor, toColor: selectedPaletteId };
+    this.fillRecolorSnapshot = isEmptyStart
+      ? { kind: 'empty-region', toColor: selectedPaletteId }
+      : { kind: 'recolor', fromColor: sourceColor, toColor: selectedPaletteId };
     this.setFillPending(true);
     this.setStatus('Filling…');
     void job.promise.then((result) => this.finishFill(job, token, result)).catch((error: unknown) => {
@@ -3497,7 +3565,34 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.setStatus('Fill discarded: project changed');
       return;
     }
-    if (capturedRecolor) {
+    if (capturedRecolor?.kind === 'empty-region') {
+      try {
+        if (!isExactEmptyRegionFillResult(current.document, result.startIndex, result.indices, result.masks)) {
+          this.setStatus('Fill discarded: invalid result');
+          return;
+        }
+        const command: DomainCommand = {
+          type: 'bulk-cell',
+          indices: result.indices,
+          edit: { kind: 'full', color: capturedRecolor.toColor },
+          expectedRevision: token.revision
+        };
+        const preflight = preflightBulkCellCommand(current.document, command);
+        if (preflight.changedIndices.length === 0) {
+          this.setStatus('No change');
+          return;
+        }
+        this.executeCommandWithToken({ ...command, indices: preflight.changedIndices }, 'Filled region', token);
+      } catch (error) {
+        if (error instanceof DomainError) {
+          this.setStatus(error.message);
+          return;
+        }
+        throw error;
+      }
+      return;
+    }
+    if (capturedRecolor?.kind === 'recolor') {
       try {
         const command = fillRecolorCommand(result.indices, result.masks, capturedRecolor.fromColor, capturedRecolor.toColor, token.revision);
         const preflight = preflightBulkRecolorCommand(current.document, command);
@@ -3553,7 +3648,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const snapshot = this.gateway.getSnapshot();
     const cursor = state.keyboardCursor ?? { x: 0, y: 0 };
     if (!snapshot.document || !snapshot.projectId || snapshot.revision === null || !isFiniteModelPoint(cursor)) return;
-    const cells = brushCells(cloneCell(cursor), this.getBrushSize(), snapshot.document);
+    const cells = brushCells(cloneCell(cursor), 1, snapshot.document);
     this.executeCompletion(cells, `Completed cell (${String(Math.floor(cursor.x))}, ${String(Math.floor(cursor.y))})`);
   }
 
@@ -3936,19 +4031,22 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.clearBrushPreview();
       return;
     }
-    const brushSize = this.getBrushSize();
+    const brushSize = tool.tool === 'completion' ? 1 : this.getBrushSize();
     let states: PendingCellState[];
     const kind: 'paint' | 'completion' | 'eraser' = tool.tool === 'paint' ? 'paint' : tool.tool === 'completion' ? 'completion' : 'eraser';
     if (tool.tool === 'paint') {
       const cells = new Map<string, ModelPoint>();
       stampBrush(cells, cell, brushSize, document);
-      states = this.pendingPaintStates(cells, editForBrush(tool.brush, this.paintCorner(sample)), snapshot.revision ?? 0, document);
+      // The hover outline marks the brush footprint, so keep cells the stroke
+      // would leave unchanged (e.g. stitches already in the selected color).
+      const edit = editForBrush(tool.brush, this.paintCorner(sample));
+      states = Array.from(indicesForCells([...cells.values()], document.width), (index) => cellState(document, index, edit));
     } else if (tool.tool === 'completion') {
       const local = normalizedPointerPosition(sample, state.viewport);
       const mask = local ? completionTargetForCell(document, cell, local) : 0;
       if (mask === 0) { this.clearBrushPreview(); return; }
       const targets = new Map<number, CompletionTarget>();
-      stampCompletionTargets(targets, cell, brushSize, document, local!);
+      stampCompletionTargets(targets, cell, document, local!);
       const operation: CompletionOperation = (document.completed[cell.y * document.width + cell.x] & mask) === mask ? 'clear' : 'set';
       states = this.pendingCompletionStates(targets, operation, document);
     } else {

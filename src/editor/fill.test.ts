@@ -154,9 +154,7 @@ describe('component-graph fill protocol and traversal', () => {
     expect(result.masks).toEqual(new Uint8Array([1, 1, 1]));
   });
 
-  it('rejects an empty start component and malformed masks', () => {
-    const empty = input(2, 1, 0, new Uint8Array([CellKind.Empty, CellKind.Empty]), new Uint16Array(8));
-    expect(() => createFillRequest(empty)).toThrow(FillProtocolError);
+  it('rejects malformed masks and protocol payloads', () => {
     const request = createFillRequest(input(2, 1, 0));
     expect(validateFillRequest({ ...request, startMask: 3 })).toBe(false);
     expect(validateFillRequest({ ...request, protocol: 'needlewise.fill.v1' })).toBe(false);
@@ -175,6 +173,20 @@ describe('component-graph fill protocol and traversal', () => {
     })).toThrow(FillProtocolError);
     expect(() => createFillResult(request, new Uint32Array([0]), undefined as unknown as Uint8Array)).toThrow(FillProtocolError);
     expect(() => createFillResult(request, new Uint32Array([0]), new Uint8Array())).toThrow(FillProtocolError);
+  });
+
+  it('fills only the four-connected empty region and stops at occupied neighbors', () => {
+    const kind = new Uint8Array(12).fill(CellKind.Empty);
+    const colors = new Uint16Array(12 * 4);
+    for (const index of [2, 7, 8]) {
+      kind[index] = CellKind.Full;
+      colors[index * 4] = 1;
+    }
+    const request = createFillRequest(input(4, 3, 0, kind, colors));
+    const result = runExactFloodFill(request);
+
+    expect(result.indices).toEqual(new Uint32Array([0, 1, 4, 5, 6, 9, 10, 11]));
+    expect(result.masks).toEqual(new Uint8Array(8).fill(1));
   });
 
   it('follows compatible components across vertical edges and rejects endpoint-only topology', () => {

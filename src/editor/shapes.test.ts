@@ -64,6 +64,23 @@ describe('shape outline geometry', () => {
     ]);
   });
 
+  it('draws a thin freeform oval across its full rectangular bounds', () => {
+    const points = rasterizeShapeOutline('oval', { x: 0, y: 0 }, { x: 6, y: 4 });
+    const keys = new Set(points.map(pointKey));
+
+    expect(keys).toContain('3,0');
+    expect(keys).toContain('3,4');
+    expect(keys).toContain('0,2');
+    expect(keys).toContain('6,2');
+    expect(keys).not.toContain('0,0');
+    expect(keys).not.toContain('6,0');
+    expect(keys).not.toContain('0,4');
+    expect(keys).not.toContain('6,4');
+    expect(keys).not.toContain('3,2');
+    expect(points.every(({ x, y }) => x >= 0 && x <= 6 && y >= 0 && y <= 4)).toBe(true);
+    expectRowMajorUnique(points);
+  });
+
   it('draws an upward triangle with thin diagonal sides and an inclusive base', () => {
     const points = rasterizeShapeOutline('triangle', { x: 0, y: 0 }, { x: 4, y: 4 });
 
@@ -77,24 +94,32 @@ describe('shape outline geometry', () => {
     expectRowMajorUnique(points);
   });
 
-  it('draws a right triangle whose right angle follows the drag endpoint', () => {
-    const forward = rasterizeShapeOutline('right-triangle', { x: 1, y: 1 }, { x: 5, y: 4 });
-    const reversed = rasterizeShapeOutline('right-triangle', { x: 5, y: 4 }, { x: 1, y: 1 });
+  it('keeps the right-angle vertex at the drag start in all four drag quadrants', () => {
+    const cases = [
+      {
+        start: { x: 0, y: 0 }, end: { x: 2, y: 2 },
+        expected: ['0,0', '1,0', '2,0', '0,1', '1,1', '0,2']
+      },
+      {
+        start: { x: 2, y: 0 }, end: { x: 0, y: 2 },
+        expected: ['0,0', '1,0', '2,0', '1,1', '2,1', '2,2']
+      },
+      {
+        start: { x: 0, y: 2 }, end: { x: 2, y: 0 },
+        expected: ['0,0', '0,1', '1,1', '0,2', '1,2', '2,2']
+      },
+      {
+        start: { x: 2, y: 2 }, end: { x: 0, y: 0 },
+        expected: ['2,0', '1,1', '2,1', '0,2', '1,2', '2,2']
+      }
+    ] as const;
 
-    expect(forward.map(pointKey)).toEqual([
-      '5,1',
-      '4,2', '5,2',
-      '2,3', '3,3', '5,3',
-      '1,4', '2,4', '3,4', '4,4', '5,4'
-    ]);
-    expect(reversed.map(pointKey)).toEqual([
-      '1,1', '2,1', '3,1', '4,1', '5,1',
-      '1,2', '3,2', '4,2',
-      '1,3', '2,3',
-      '1,4'
-    ]);
-    expectRowMajorUnique(forward);
-    expectRowMajorUnique(reversed);
+    for (const { start, end, expected } of cases) {
+      const points = rasterizeShapeOutline('right-triangle', start, end);
+      expect(points.map(pointKey)).toEqual(expected);
+      expect(points).toContainEqual(start);
+      expectRowMajorUnique(points);
+    }
   });
 
   it('retains continuous degenerate rectangle and upward-triangle outlines', () => {

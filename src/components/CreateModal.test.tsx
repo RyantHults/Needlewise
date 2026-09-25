@@ -373,6 +373,45 @@ describe('CreateModal image lifecycle', () => {
     expect(slider.compareDocumentPosition(swatchRow) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 
+  it('grows a clamped color budget back to the default when the stitch count increases', async () => {
+    const makeDraft = (count: number) => ({ draft: { stats: { sourceWidth: 2, sourceHeight: 1, matchedColorCount: count }, document: { width: 2, height: 1, palette: [], colors: new Uint16Array(4) } } });
+    conversion.convert.mockResolvedValue(makeDraft(3));
+    render(<ControlledModal />);
+    fireEvent.change(screen.getByLabelText(/Choose a PNG/), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } });
+    act(() => { images[0].onload?.(); });
+    act(() => { vi.advanceTimersByTime(300); });
+    await vi.waitFor(() => expect(screen.getByLabelText('Color budget count')).toHaveValue('3'));
+    await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(2));
+
+    conversion.convert.mockResolvedValue(makeDraft(40));
+    fireEvent.change(screen.getByLabelText('Width'), { target: { value: '200' } });
+    expect(screen.getByLabelText('Color budget count')).toHaveValue('24');
+    act(() => { vi.advanceTimersByTime(300); });
+    expect(conversion.convert.mock.calls.at(-1)?.[1]).toMatchObject({ targetWidth: 200, paletteBudget: 24 });
+    await vi.waitFor(() => expect(screen.getByRole('slider', { name: 'Color budget, 24 colors' })).toHaveAttribute('max', '40'));
+  });
+
+  it('spends one color of the budget on a chosen background and refunds it when cleared', async () => {
+    const withRed = { draft: { stats: { sourceWidth: 2, sourceHeight: 1 }, document: { width: 2, height: 1, palette: ['red', 'blue'].map((id, index) => ({ id: index + 1, name: id, color: '#ff0000', active: true, symbol: `S${index + 1}`, catalog: { catalogId: 'dmc', sourceId: id, code: id, name: id, hex: '#ff0000', rgb: [255, 0, 0] } })), colors: new Uint16Array(4) } } };
+    conversion.convert.mockResolvedValue(withRed);
+    render(<ControlledModal />);
+    fireEvent.change(screen.getByLabelText(/Choose a PNG/), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } });
+    act(() => { images[0].onload?.(); });
+    act(() => { vi.advanceTimersByTime(300); });
+    fireEvent.click(await vi.waitFor(() => screen.getByRole('button', { name: 'Use red as background' })));
+    expect(screen.getByLabelText('Color budget count')).toHaveValue('23');
+    act(() => { vi.advanceTimersByTime(300); });
+    expect(conversion.convert.mock.calls.at(-1)?.[1]).toMatchObject({ backgroundSourceId: 'red', paletteBudget: 23 });
+
+    // Switching to another background keeps the one-color spend.
+    fireEvent.click(await vi.waitFor(() => screen.getByRole('button', { name: 'Use blue as background' })));
+    expect(screen.getByLabelText('Color budget count')).toHaveValue('23');
+    act(() => { vi.advanceTimersByTime(300); });
+
+    fireEvent.click(await vi.waitFor(() => screen.getByRole('button', { name: 'Clear background selection' })));
+    expect(screen.getByLabelText('Color budget count')).toHaveValue('24');
+  });
+
   it('steps the color budget down and up through debounced conversions', async () => {
     render(<ControlledModal />);
     fireEvent.change(screen.getByLabelText(/Choose a PNG/), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } });

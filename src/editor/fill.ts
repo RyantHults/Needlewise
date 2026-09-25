@@ -32,7 +32,7 @@ export interface FillRequestInput {
   readonly width: number;
   readonly height: number;
   readonly startIndex: number;
-  /** One occupied component bit in the starting cell. */
+  /** One occupied component bit, or 1 when the starting cell is empty. */
   readonly startMask: number;
   readonly kind: Uint8Array;
   readonly colors: Uint16Array;
@@ -47,7 +47,7 @@ export interface FillRequestMessage {
   readonly width: number;
   readonly height: number;
   readonly startIndex: number;
-  /** One occupied component bit in the starting cell. */
+  /** One occupied component bit, or 1 when the starting cell is empty. */
   readonly startMask: number;
   /** A copied one-byte geometry plane. */
   readonly kind: Uint8Array;
@@ -301,6 +301,9 @@ function isSingleComponentMask(mask: number): boolean {
 
 function startComponentForRequest(request: FillRequestMessage): FillComponent {
   if (!isSingleComponentMask(request.startMask)) throw new FillProtocolError('startMask must contain exactly one component bit.');
+  if (request.kind[request.startIndex] === CellKind.Empty && request.startMask === 1) {
+    return { mask: 1, slot: 0, color: 0, edges: [EMPTY_EDGE, EMPTY_EDGE, EMPTY_EDGE, EMPTY_EDGE] };
+  }
   const component = componentsForCell(request, request.startIndex).find((candidate) => candidate.mask === request.startMask);
   if (!component) throw new FillProtocolError('startMask does not identify an occupied component.');
   return component;
@@ -507,6 +510,7 @@ function cancellationRequested(cancellation?: FillCancellation): boolean {
 interface FillRunState {
   readonly request: FillRequestMessage;
   readonly targetColor: number;
+  readonly fillEmptyRegion: boolean;
   readonly queue: Uint32Array;
   readonly visited: Uint8Array;
   readonly output: Uint32Array;
@@ -520,10 +524,12 @@ function createFillRunState(request: FillRequestMessage, cancellation?: FillCanc
   assertValidFillRequest(request);
   if (cancellationRequested(cancellation)) throw new FillCancelledError(request.requestId);
   const start = startComponentForRequest(request);
+  const fillEmptyRegion = request.kind[request.startIndex] === CellKind.Empty;
   const startNode = request.startIndex * MAX_FILL_COLOR_SLOTS + start.slot;
   const state: FillRunState = {
     request,
     targetColor: start.color,
+    fillEmptyRegion,
     queue: new Uint32Array(request.width * request.height * MAX_FILL_COLOR_SLOTS),
     visited: new Uint8Array(request.width * request.height * MAX_FILL_COLOR_SLOTS),
     output: new Uint32Array(request.width * request.height),
@@ -532,8 +538,8 @@ function createFillRunState(request: FillRequestMessage, cancellation?: FillCanc
     tail: 1,
     outputLength: 0
   };
-  state.queue[0] = startNode;
-  state.visited[startNode] = 1;
+  state.queue[0] = fillEmptyRegion ? request.startIndex : startNode;
+  state.visited[fillEmptyRegion ? request.startIndex : startNode] = 1;
   return state;
 }
 
@@ -564,6 +570,24 @@ function processFillBatch(state: FillRunState, cancellation: FillCancellation | 
   while (state.head < state.tail && processed < batchSize) {
     if (cancellationRequested(cancellation)) throw new FillCancelledError(state.request.requestId);
     const node = state.queue[state.head++];
+    if (state.fillEmptyRegion) {
+      const index = node;
+      state.output[state.outputLength++] = index;
+      state.outputMasks[index] = 1;
+      const x = index % width;
+      const y = Math.floor(index / width);
+      const visitEmptyNeighbor = (neighbor: number): void => {
+        if (state.request.kind[neighbor] !== CellKind.Empty || state.visited[neighbor] !== 0) return;
+        state.visited[neighbor] = 1;
+        state.queue[state.tail++] = neighbor;
+      };
+      if (x > 0) visitEmptyNeighbor(index - 1);
+      if (x + 1 < width) visitEmptyNeighbor(index + 1);
+      if (y > 0) visitEmptyNeighbor(index - width);
+      if (y + 1 < height) visitEmptyNeighbor(index + width);
+      processed += 1;
+      continue;
+    }
     const index = Math.floor(node / MAX_FILL_COLOR_SLOTS);
     const slot = node % MAX_FILL_COLOR_SLOTS;
     const component = componentsForCell(state.request, index).find((candidate) => candidate.slot === slot);

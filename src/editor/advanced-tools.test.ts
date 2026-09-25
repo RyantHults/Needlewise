@@ -1070,6 +1070,110 @@ describe('advanced headless editor tools', () => {
     controller.dispose();
   });
 
+  it('fills a contiguous empty region with full stitches as one undoable bulk-cell command', async () => {
+    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 3, palette: [
+      { id: 1, name: 'Red', color: '#d33' },
+      { id: 2, name: 'Blue', color: '#36c' }
+    ] });
+    for (const index of [2, 7, 8]) {
+      document.kind[index] = CellKind.Full;
+      document.colors[index * 4] = 2;
+    }
+    const fillClient = createFillWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'empty-region-fallback' });
+    const { controller, gateway, uiStore } = fixture(document, fillClient);
+    uiStore.setPaletteId(1);
+    controller.setTool({ tool: 'fill' });
+    const undoDepthBefore = gateway.undoDepth;
+
+    expect(controller.fillAt({ x: 0, y: 0 })).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(gateway.commands.at(-1)).toMatchObject({
+      type: 'bulk-cell',
+      indices: new Uint32Array([0, 1, 4, 5, 6, 9, 10, 11]),
+      edit: { kind: 'full', color: 1 }
+    });
+    const filled = gateway.getSnapshot().document!;
+    expect(Array.from(filled.kind)).toEqual([1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1]);
+    expect(filled.colors[2 * 4]).toBe(2);
+    expect(filled.colors[7 * 4]).toBe(2);
+    expect(filled.colors[8 * 4]).toBe(2);
+    expect(gateway.undoDepth).toBe(undoDepthBefore + 1);
+
+    controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
+    expect(gateway.getSnapshot().document?.kind).toEqual(new Uint8Array([0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0]));
+    expect(gateway.undoDepth).toBe(undoDepthBefore);
+    controller.handleKeyDown({ key: 'y', ctrlKey: true, preventDefault: () => undefined });
+    expect(gateway.getSnapshot().document?.kind).toEqual(new Uint8Array([1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1]));
+    expect(gateway.undoDepth).toBe(undoDepthBefore + 1);
+    controller.dispose();
+    fillClient.dispose();
+  });
+
+  it('rejects a protocol-valid empty-fill result that crosses an occupied boundary', async () => {
+    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 3, height: 1, palette: [
+      { id: 1, name: 'Red', color: '#d33' }
+    ] });
+    document.kind[1] = CellKind.Full;
+    document.colors[4] = 1;
+    const { controller, gateway, worker, uiStore } = fixture(document);
+    uiStore.setPaletteId(1);
+    controller.setTool({ tool: 'fill' });
+
+    expect(controller.fillAt({ x: 0, y: 0 })).toBe(true);
+    const request = worker.posted.find((message) => (message as { type?: string }).type === 'fill-request') as Parameters<typeof createFillResult>[0];
+    const disconnectedResult = createFillResult(request, new Uint32Array([0, 2]), new Uint8Array([1, 1]));
+    expect(disconnectedResult.indices).toEqual(new Uint32Array([0, 2]));
+    worker.emit(disconnectedResult);
+    await Promise.resolve();
+
+    expect(gateway.commands).toHaveLength(0);
+    expect(gateway.getSnapshot().document?.kind).toEqual(new Uint8Array([CellKind.Empty, CellKind.Full, CellKind.Empty]));
+    expect(uiStore.getState().status).toBe('Fill discarded: invalid result');
+    controller.dispose();
+  });
+
+  it('rejects a protocol-valid empty-fill result that omits a connected empty neighbor', async () => {
+    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 3, height: 1, palette: [
+      { id: 1, name: 'Red', color: '#d33' }
+    ] });
+    const { controller, gateway, worker, uiStore } = fixture(document);
+    uiStore.setPaletteId(1);
+    controller.setTool({ tool: 'fill' });
+
+    expect(controller.fillAt({ x: 0, y: 0 })).toBe(true);
+    const request = worker.posted.find((message) => (message as { type?: string }).type === 'fill-request') as Parameters<typeof createFillResult>[0];
+    const incompleteResult = createFillResult(request, new Uint32Array([0]), new Uint8Array([1]));
+    expect(incompleteResult.indices).toEqual(new Uint32Array([0]));
+    worker.emit(incompleteResult);
+    await Promise.resolve();
+
+    expect(gateway.commands).toHaveLength(0);
+    expect(gateway.getSnapshot().document?.kind).toEqual(new Uint8Array([CellKind.Empty, CellKind.Empty, CellKind.Empty]));
+    expect(uiStore.getState().status).toBe('Fill discarded: invalid result');
+    controller.dispose();
+  });
+
+  it('starts an empty-region Fill from a touch tap on release', async () => {
+    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 1, palette: [
+      { id: 1, name: 'Red', color: '#d33' }
+    ] });
+    const { controller, gateway, worker, uiStore } = fixture(document);
+    uiStore.setPaletteId(1);
+    controller.setTool({ tool: 'fill' });
+
+    expect(controller.handlePointerDown({ ...pointer(1, 8, 8), pointerType: 'touch' })).toBe(true);
+    expect(controller.handlePointerUp({ ...pointer(1, 8, 8), pointerType: 'touch' })).toBe(true);
+    const request = worker.posted.find((message) => (message as { type?: string }).type === 'fill-request') as Parameters<typeof createFillResult>[0];
+    expect(request).toMatchObject({ startIndex: 0, startMask: 1 });
+    worker.emit(createFillResult(request, new Uint32Array([0, 1]), new Uint8Array([1, 1])));
+    await Promise.resolve();
+
+    expect(gateway.getSnapshot().document?.kind).toEqual(new Uint8Array([CellKind.Full, CellKind.Full]));
+    controller.dispose();
+  });
+
   it('recolors a Full region to the selected palette as one undoable operation', async () => {
     const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 1, palette: [
       { id: 1, name: 'Red', color: '#d33' },
@@ -1187,13 +1291,13 @@ describe('advanced headless editor tools', () => {
     controller.dispose();
   });
 
-  it('treats an empty fill hit as an immediate no-op', () => {
+  it('starts an empty-region fill request when the bucket hits an empty cell', () => {
     const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     const { controller, gateway, worker, uiStore } = fixture(document);
     uiStore.setPaletteId(1);
     controller.setTool({ tool: 'fill' });
-    expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(false);
-    expect(worker.posted).toHaveLength(0);
+    expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
+    expect(worker.posted).toMatchObject([{ type: 'fill-request', startIndex: 0, startMask: 1 }]);
     expect(gateway.commands).toHaveLength(0);
     controller.dispose();
   });

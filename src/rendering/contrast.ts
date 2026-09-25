@@ -5,9 +5,17 @@
  * in isolation.
  */
 
-/** `#rrggbb` → `[r, g, b]` 8-bit channels, or `undefined` when unparseable. */
+/** `#rgb` or `#rrggbb` → `[r, g, b]` 8-bit channels, or `undefined` when unparseable. */
 function parseHexColor(hex: string): [number, number, number] | undefined {
   if (typeof hex !== 'string') return undefined;
+  const shorthand = /^#([0-9a-fA-F])([0-9a-fA-F])([0-9a-fA-F])$/.exec(hex);
+  if (shorthand !== null) {
+    return [
+      parseInt(shorthand[1] + shorthand[1], 16),
+      parseInt(shorthand[2] + shorthand[2], 16),
+      parseInt(shorthand[3] + shorthand[3], 16)
+    ];
+  }
   const match = /^#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/.exec(hex);
   if (match === null) return undefined;
   return [
@@ -24,8 +32,8 @@ function linearChannel(channel: number): number {
 }
 
 /**
- * WCAG 2.x relative luminance for an `#rrggbb` color, or `undefined` for any
- * input that is not a 6-digit hex color.
+ * WCAG 2.x relative luminance for an `#rgb` or `#rrggbb` color, or `undefined`
+ * for any input that is not a 3- or 6-digit hex color.
  */
 export function relativeLuminance(hex: string): number | undefined {
   const rgb = parseHexColor(hex);

@@ -12,3 +12,5 @@ pnpm-debug.log*
 .cache/
 .slim/deepwork/
 AGENTS.md
+.omc/
+.opencode/

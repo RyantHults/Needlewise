@@ -20,10 +20,10 @@ const COMPACT_DMC_DEFINITION: CatalogDefinition = {
 };
 
 const f = vi.hoisted(() => ({
-  c: { start: vi.fn(), setMetrics: vi.fn(), setDocument: vi.fn(), dispose: vi.fn(), setBrush: vi.fn(), setTool: vi.fn(), setEraserMode: vi.fn(), selectPalette: vi.fn(), selectCreatedPalette: vi.fn(), setChartMode: vi.fn(), setGridVisible: vi.fn(), setBrushSize: vi.fn(), setTouchMovementOnly: vi.fn(), copySelection: vi.fn(), pasteSelection: vi.fn(), moveSelection: vi.fn(), dismissTouchCopyRequest: vi.fn(), deleteSelection: vi.fn(), handleKeyDown: vi.fn(() => false), getTraceImage: vi.fn(() => undefined), setTraceImage: vi.fn(), setTraceImageSettings: vi.fn(), clearTraceImage: vi.fn() },
+  c: { start: vi.fn(), setMetrics: vi.fn(), setDocument: vi.fn(), dispose: vi.fn(), setBrush: vi.fn(), setTool: vi.fn(), setEraserMode: vi.fn(), selectPalette: vi.fn(), selectCreatedPalette: vi.fn(), setChartMode: vi.fn(), setGridVisible: vi.fn(), setBrushSize: vi.fn(), setToolBrushSize: vi.fn(), setTouchMovementOnly: vi.fn(), copySelection: vi.fn(), pasteSelection: vi.fn(), moveSelection: vi.fn(), dismissTouchCopyRequest: vi.fn(), deleteSelection: vi.fn(), handleKeyDown: vi.fn(() => false), getTraceImage: vi.fn(() => undefined), setTraceImage: vi.fn(), setTraceImageSettings: vi.fn(), clearTraceImage: vi.fn() },
   adapter: vi.fn(() => ({ dispose: vi.fn() })),
   r: { dispose: vi.fn() }, resize: undefined as (() => void) | undefined,
-  uiState: { mode: 'color', gridVisible: true, overlay: {}, tool: { tool: 'paint' }, paletteId: 1, pendingPaletteId: null as number | null, canPaste: false }, createdUiState: null as unknown,
+  uiState: { mode: 'color', gridVisible: true, overlay: {}, tool: { tool: 'paint' }, paletteId: 1, pendingPaletteId: null as number | null, canPaste: false, toolBrushSizes: { full: 1, half: 1, 'three-quarter': 1, eraser: 1 } }, createdUiState: null as unknown,
   uiListener: null as ((state: unknown) => void) | null,
   capturedCallback: null as ((bounds: { x: number; y: number; width: number; height: number }) => void) | null
 }));
@@ -68,6 +68,16 @@ const expectedTiles = (palette: { id: number; symbol: string }[], openId: number
   const held = new Set(palette.filter((e) => e.id !== openId).map((e) => e.symbol));
   return PALETTE_SYMBOLS.filter((s) => s === open.symbol || !held.has(s)).length;
 };
+const dispatchPointerClick = (target: Element, pointerId: number) => {
+  const click = new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 });
+  Object.defineProperty(click, 'pointerId', { value: pointerId });
+  target.dispatchEvent(click);
+};
+const dispatchContextMenu = (target: Element, pointerType: 'mouse' | 'touch', button: number) => {
+  const contextMenu = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button });
+  Object.defineProperty(contextMenu, 'pointerType', { value: pointerType });
+  act(() => target.dispatchEvent(contextMenu));
+};
 beforeEach(() => { vi.clearAllMocks(); (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockReset(); (ws as { getStateSnapshot: ReturnType<typeof vi.fn> }).getStateSnapshot.mockReset(); (ws as { catalogFor: ReturnType<typeof vi.fn> }).catalogFor.mockReturnValue(COMPACT_DMC_DEFINITION); (ws as { availableCatalogs: ReturnType<typeof vi.fn> }).availableCatalogs.mockReturnValue([COMPACT_DMC_DEFINITION]); (ws as { catalogById: ReturnType<typeof vi.fn> }).catalogById.mockImplementation((id: string) => id === COMPACT_DMC_DEFINITION.association.catalogId ? COMPACT_DMC_DEFINITION : undefined); localStorage.clear(); f.createdUiState = null; f.uiListener = null; f.uiState.pendingPaletteId = null; f.uiState.canPaste = false; f.uiState.overlay = {}; f.uiState.tool = { tool: 'paint' }; f.uiState.gridVisible = true; (ws as { sourceImage: unknown }).sourceImage = undefined; vi.stubGlobal('ResizeObserver', vi.fn(function (cb: () => void) { f.resize = cb; return { observe: vi.fn(), disconnect: vi.fn() }; })); });
 afterEach(() => { vi.useRealTimers(); localStorage.clear(); });
 
@@ -82,7 +92,19 @@ describe('EditorSurface', () => {
     expect(within(menu).getByRole('menuitem', { name: 'Change symbol' })).toBeInTheDocument();
     fireEvent.pointerDown(within(menu).getByRole('menuitem', { name: 'Swap color' }));
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Swap color' }));
-    expect(screen.getByRole('dialog', { name: 'Remove Ruby' })).toBeInTheDocument();
+    const dialog = screen.getByRole('dialog', { name: 'Swap Ruby for a thread color' });
+    expect(within(dialog).getByText(/stitches and backstitches using Ruby will be changed/i)).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Swap Bright Red' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('tablist', { name: 'Thread catalogs' })).toBeInTheDocument();
+  });
+  it('returns focus to the swatch that opened the swap picker', async () => {
+    render(<EditorSurface workspace={ws} document={paletteDetailsDoc} />);
+    const swatch = document.querySelector<HTMLButtonElement>('.palette-button')!;
+    fireEvent.contextMenu(swatch);
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Swap color' }));
+    const dialog = screen.getByRole('dialog', { name: 'Swap Ruby for a thread color' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close catalog dialog' }));
+    await waitFor(() => expect(document.activeElement).toBe(swatch));
   });
   it('cancels palette deletion without changing the document', () => {
     render(<EditorSurface workspace={ws} document={paletteDetailsDoc} />);
@@ -219,6 +241,13 @@ describe('EditorSurface', () => {
     fireEvent.click(customColorAction(dialog));
     await waitFor(() => expect(executeMock()).toHaveBeenCalledWith({ type: 'palette-create', name: '#12AB34', color: '#12AB34' }));
   });
+  it('shows the default custom hex value and keeps it synchronized with the picker', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const dialog = openCustomColorDialog();
+    expect(within(dialog).getByLabelText('Hex color')).toHaveValue('#000000');
+    fireEvent.change(within(dialog).getByLabelText('Choose custom color'), { target: { value: '#123456' } });
+    expect(within(dialog).getByLabelText('Hex color')).toHaveValue('#123456');
+  });
   it('keeps the chosen catalog and query when the open picker receives a document update', () => {
     multiCatalogWorkspace();
     const view = render(<EditorSurface workspace={ws} document={doc} />);
@@ -310,13 +339,38 @@ describe('EditorSurface', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     expect(f.createdUiState).toEqual({ paletteId: 1, tool: { tool: 'pan' } });
   });
+  it('defaults Shape to Triangle and marks Shape as configurable', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const shape = screen.getByRole('button', { name: 'Shape' });
+    expect(shape.querySelector('[data-shape-icon="triangle"]')).toBeInTheDocument();
+    expect(shape.querySelector('.brush-size-corner')).toHaveAttribute('aria-hidden', 'true');
+  });
+  it('keeps Completion a normal one-cell tool without hold settings', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const completion = screen.getByRole('button', { name: 'Completion' });
+    expect(completion).not.toHaveAttribute('aria-haspopup');
+    expect(completion).not.toHaveAttribute('aria-controls');
+    expect(completion).not.toHaveAttribute('title', expect.stringContaining('hold'));
+    expect(completion.querySelector('.brush-size-corner')).toBeNull();
+    vi.useFakeTimers();
+    fireEvent.pointerDown(completion, { pointerId: 88, pointerType: 'touch', isPrimary: true });
+    act(() => vi.advanceTimersByTime(600));
+    expect(screen.queryByRole('dialog', { name: /Completion brush size/i })).not.toBeInTheDocument();
+  });
+  it('draws the settings marker as a bottom-right right-angle triangle', () => {
+    const markerRule = stylesText.match(/\.brush-size-corner\s*\{([^}]*)\}/)?.[1] ?? '';
+    expect(markerRule).toContain('clip-path:polygon(0 100%,100% 0,100% 100%)');
+    expect(markerRule).toContain('right:0');
+    expect(markerRule).toContain('bottom:0');
+    expect(markerRule).not.toContain('border-radius:50%');
+  });
   it('preserves UI state when the document changes', () => {
     const view = render(<EditorSurface workspace={ws} document={doc} />);
-    fireEvent.change(screen.getByRole('slider', { name: /Brush size/ }), { target: { value: '7' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Full stitch' }));
     const next = { width: 20, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true }], backstitches: { ids: new Uint32Array() } } as never;
     view.rerender(<EditorSurface workspace={ws} document={next} />);
     expect(f.c.start).toHaveBeenCalledOnce(); expect(f.c.dispose).not.toHaveBeenCalled(); expect(f.c.setDocument).toHaveBeenCalledWith(next, expect.objectContaining({ reason: 'external-document' }));
-    expect(screen.getByText(/20 × 16 stitches/)).toBeInTheDocument(); expect(screen.getByRole('slider', { name: /Brush size/ })).toHaveValue('7');
+    expect(screen.getByText(/20 × 16 stitches/)).toBeInTheDocument();
   });
   it('reuses palette activity when completion changes only the completion plane', () => {
     let colorReads = 0;
@@ -467,21 +521,226 @@ describe('EditorSurface', () => {
     expect(options.keyboardSurface).toBe(document.querySelector('.editor-workspace'));
     expect(pointerSurface).not.toBe(options.keyboardSurface);
   });
-  it('excludes the Shape toolbar and its SVG descendants from native keyboard routing', () => {
+  it('excludes Shape and brush controls and the brush dialog from native keyboard routing', () => {
+    vi.useFakeTimers();
     render(<EditorSurface workspace={ws} document={doc} />);
     const adapterOptions = (f.adapter.mock.calls[0] as unknown as [unknown, unknown, {
       shouldExcludeTarget: (target: unknown, eventType: string) => boolean;
     }])[2];
     const shape = screen.getByRole('button', { name: 'Shape' });
     const path = shape.querySelector('path')!;
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+    const brushDescendant = full.querySelector('.stitch-brush-icon-full')!;
     expect(adapterOptions.shouldExcludeTarget(shape, 'keydown')).toBe(true);
     expect(adapterOptions.shouldExcludeTarget(path, 'keydown')).toBe(true);
+    expect(adapterOptions.shouldExcludeTarget(full, 'keydown')).toBe(true);
+    expect(adapterOptions.shouldExcludeTarget(brushDescendant, 'keydown')).toBe(true);
     expect(adapterOptions.shouldExcludeTarget(document.querySelector('.canvas-frame'), 'keydown')).toBe(false);
     const touchCopyTarget = document.createElement('button');
     touchCopyTarget.className = 'touch-copy-menu';
     expect(adapterOptions.shouldExcludeTarget(touchCopyTarget, 'pointerdown')).toBe(true);
+    fireEvent.pointerDown(full, { pointerId: 30, pointerType: 'mouse', isPrimary: true, button: 0 });
+    act(() => vi.advanceTimersByTime(500));
+    const brushDialog = screen.getByRole('dialog', { name: /Full stitch brush size/i });
+    expect(adapterOptions.shouldExcludeTarget(brushDialog, 'keydown')).toBe(true);
+    expect(adapterOptions.shouldExcludeTarget(brushDialog.querySelector('input')!, 'keydown')).toBe(true);
+    vi.useRealTimers();
   });
-  it('wires the top-level stitch tools and relocated brush size control', () => { render(<EditorSurface workspace={ws} document={doc} />); f.resize?.(); expect(f.c.setMetrics).toHaveBeenCalled(); const brushSettings = screen.getByRole('heading', { name: 'Brush settings' }).parentElement as HTMLElement; const size = within(brushSettings).getByRole('slider', { name: /Brush size/ }); fireEvent.change(size, { target: { value: '7' } }); expect(f.c.setBrushSize).toHaveBeenCalledWith(7); fireEvent.click(screen.getByRole('button', { name: 'Full stitch' })); expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'full', paletteId: 1 }); fireEvent.click(screen.getByRole('button', { name: 'Half stitch' })); expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'half', paletteId: 1 }); fireEvent.click(screen.getByRole('button', { name: '3/4 stitch' })); expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'three-quarter', paletteId: 1 }); expect(screen.queryByRole('button', { name: 'Stitch' })).not.toBeInTheDocument(); });
+  it('wires the top-level stitch tools and removes separate brush settings', () => { render(<EditorSurface workspace={ws} document={doc} />); f.resize?.(); expect(f.c.setMetrics).toHaveBeenCalled(); expect(screen.queryByRole('heading', { name: 'Brush settings' })).not.toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: 'Full stitch' })); expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'full', paletteId: 1 }); fireEvent.click(screen.getByRole('button', { name: 'Half stitch' })); expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'half', paletteId: 1 }); fireEvent.click(screen.getByRole('button', { name: '3/4 stitch' })); expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'three-quarter', paletteId: 1 }); expect(screen.queryByRole('button', { name: 'Stitch' })).not.toBeInTheDocument(); });
+  it('opens an anchored brush-size dialog on hold without switching tools', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+    fireEvent.pointerDown(full, { pointerId: 4, pointerType: 'mouse', isPrimary: true });
+    act(() => vi.advanceTimersByTime(500));
+    expect(screen.getByRole('dialog', { name: /Full stitch brush size/i })).toBeInTheDocument();
+    const slider = screen.getByRole('slider', { name: /Full stitch brush size/i });
+    fireEvent.change(slider, { target: { value: '7' } });
+    expect(f.c.setToolBrushSize).toHaveBeenCalledWith('full', 7);
+    expect(f.c.setBrush).not.toHaveBeenCalled();
+    expect(screen.queryByRole('heading', { name: 'Brush settings' })).not.toBeInTheDocument();
+  });
+  it.each([['Full stitch','full'],['Half stitch','half'],['3/4 stitch','three-quarter'],['Eraser','eraser']] as const)('supports the %s hold trigger and its affordances', (name, key) => {
+    vi.useFakeTimers(); render(<EditorSurface workspace={ws} document={doc} />);
+    const trigger = screen.getByRole('button', { name });
+    expect(trigger).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(trigger.querySelector('.brush-size-corner')).toHaveClass('brush-size-corner');
+    fireEvent.pointerDown(trigger, { pointerId: 31, isPrimary: true }); act(() => vi.advanceTimersByTime(499));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); act(() => vi.advanceTimersByTime(1));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByRole('slider', { name: new RegExp(name) })).toHaveFocus();
+    fireEvent.change(within(screen.getByRole('dialog')).getByRole('slider'), { target: { value: '6' } });
+    expect(f.c.setToolBrushSize).toHaveBeenCalledWith(key, 6);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); expect(trigger).toHaveFocus();
+  });
+  it('keeps Backstitch outside brush-size hold and context-menu behavior', () => {
+    vi.useFakeTimers(); render(<EditorSurface workspace={ws} document={doc} />);
+    const backstitch = screen.getByRole('button', { name: 'Backstitch' });
+    fireEvent.pointerDown(backstitch, { pointerId: 19, isPrimary: true }); act(() => vi.advanceTimersByTime(500));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    fireEvent.contextMenu(backstitch); expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+  it('opens brush size immediately for mouse and keyboard context-menu commands', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+
+    dispatchContextMenu(full, 'mouse', 2);
+    expect(screen.getByRole('dialog', { name: /Full stitch brush size/i })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.keyDown(full, { key: 'ContextMenu' });
+    expect(screen.getByRole('dialog', { name: /Full stitch brush size/i })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.keyDown(full, { key: 'F10', shiftKey: true });
+    expect(screen.getByRole('dialog', { name: /Full stitch brush size/i })).toBeInTheDocument();
+  });
+  it('defers a touch contextmenu during its primary press to the hold threshold', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+    fireEvent.pointerDown(full, { pointerId: 108, pointerType: 'touch', isPrimary: true, button: 0 });
+    fireEvent.contextMenu(full, { pointerType: 'touch' });
+    expect(screen.queryByRole('dialog', { name: /Full stitch brush size/i })).not.toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(499));
+    expect(screen.queryByRole('dialog', { name: /Full stitch brush size/i })).not.toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.getByRole('dialog', { name: /Full stitch brush size/i })).toBeInTheDocument();
+    fireEvent.pointerUp(full, { pointerId: 108, clientX: 0, clientY: 0 });
+    fireEvent.click(full, { detail: 1, pointerId: 108, pointerType: 'touch' });
+    expect(f.c.setBrush).not.toHaveBeenCalled();
+  });
+  it('keeps a touch contextmenu deferred after pointercancel through the guard window', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+    fireEvent.pointerDown(full, { pointerId: 203, pointerType: 'touch', isPrimary: true, button: 0 });
+    fireEvent.pointerCancel(document.body, { pointerId: 203, pointerType: 'touch' });
+    fireEvent.contextMenu(full, { button: 0 });
+    expect(screen.queryByRole('dialog', { name: /Full stitch brush size/i })).not.toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(499));
+    fireEvent.contextMenu(full, { button: 0 });
+    expect(screen.queryByRole('dialog', { name: /Full stitch brush size/i })).not.toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.queryByRole('dialog', { name: /Full stitch brush size/i })).not.toBeInTheDocument();
+  });
+  it('defers an active touch contextmenu even if its button value is 2', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+    fireEvent.pointerDown(full, { pointerId: 204, pointerType: 'touch', isPrimary: true, button: 0 });
+    dispatchContextMenu(full, 'touch', 2);
+    expect(screen.queryByRole('dialog', { name: /Full stitch brush size/i })).not.toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(500));
+    expect(screen.getByRole('dialog', { name: /Full stitch brush size/i })).toBeInTheDocument();
+  });
+  it('defers a post-cancel touch contextmenu with button 2 through the guard window', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+    fireEvent.pointerDown(full, { pointerId: 205, pointerType: 'touch', isPrimary: true, button: 0 });
+    fireEvent.pointerCancel(document.body, { pointerId: 205, pointerType: 'touch' });
+    dispatchContextMenu(full, 'touch', 2);
+    expect(screen.queryByRole('dialog', { name: /Full stitch brush size/i })).not.toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(500));
+    expect(screen.queryByRole('dialog', { name: /Full stitch brush size/i })).not.toBeInTheDocument();
+  });
+  it('keeps the mobile Tools popover open when Escape dismisses the brush dialog', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const tools = screen.getByRole('button', { name: 'Tools', hidden: true });
+    fireEvent.click(tools);
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+    fireEvent.pointerDown(full, { pointerId: 109, pointerType: 'touch', isPrimary: true, button: 0 });
+    act(() => vi.advanceTimersByTime(500));
+    expect(screen.getByRole('dialog', { name: 'Tools' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: /Full stitch brush size/i })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: /Full stitch brush size/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Tools' })).toBeInTheDocument();
+  });
+  it('suppresses only the originating pointer click when dialog closes before release', () => {
+    vi.useFakeTimers(); render(<EditorSurface workspace={ws} document={doc} />);
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+    fireEvent.pointerDown(full, { pointerId: 41, isPrimary: true }); act(() => vi.advanceTimersByTime(500));
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.pointerUp(full, { pointerId: 41 }); fireEvent.click(full, { detail: 1 });
+    expect(f.c.setBrush).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Half stitch' }));
+    expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'half', paletteId: 1 });
+  });
+  it('suppresses an originating touch click dispatched after a normal delay', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+    fireEvent.pointerDown(full, { pointerId: 42, pointerType: 'touch', isPrimary: true, button: 0 });
+    act(() => vi.advanceTimersByTime(500));
+    fireEvent.pointerUp(full, { pointerId: 42, pointerType: 'touch' });
+    act(() => vi.advanceTimersByTime(350));
+    dispatchPointerClick(full, 42);
+    expect(f.c.setBrush).not.toHaveBeenCalled();
+  });
+  it('uses anchor-only suppression for a delayed click with no pointer identity', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+    fireEvent.pointerDown(full, { pointerId: 46, pointerType: 'touch', isPrimary: true, button: 0 });
+    act(() => vi.advanceTimersByTime(500));
+    fireEvent.pointerUp(full, { pointerId: 46, pointerType: 'touch' });
+    act(() => vi.advanceTimersByTime(350));
+    const anonymousClick = new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 });
+    expect('pointerId' in anonymousClick).toBe(false);
+    full.dispatchEvent(anonymousClick);
+    expect(f.c.setBrush).not.toHaveBeenCalled();
+  });
+  it('does not let an outside mouse release leave a token for a reused pointer id', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+    vi.spyOn(full, 'getBoundingClientRect').mockReturnValue({ x: 0, y: 0, left: 0, top: 0, right: 40, bottom: 40, width: 40, height: 40, toJSON: () => ({}) });
+
+    fireEvent.pointerDown(full, { pointerId: 202, pointerType: 'mouse', isPrimary: true, button: 0, clientX: 10, clientY: 10 });
+    fireEvent.pointerUp(document.body, { pointerId: 202, pointerType: 'mouse', clientX: 80, clientY: 10 });
+    fireEvent.pointerDown(full, { pointerId: 202, pointerType: 'mouse', isPrimary: true, button: 0, clientX: 10, clientY: 10 });
+    fireEvent.pointerUp(full, { pointerId: 202, pointerType: 'mouse', clientX: 10, clientY: 10 });
+    dispatchPointerClick(full, 202);
+
+    expect(f.c.setBrush).toHaveBeenCalledTimes(1);
+    expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'full', paletteId: 1 });
+  });
+  it('expires suppression when an opened press produces no click', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+    fireEvent.pointerDown(full, { pointerId: 43, pointerType: 'touch', isPrimary: true, button: 0 });
+    act(() => vi.advanceTimersByTime(500));
+    fireEvent.pointerUp(full, { pointerId: 43, pointerType: 'touch' });
+    act(() => vi.advanceTimersByTime(1001));
+
+    dispatchPointerClick(full, 43);
+    expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'full', paletteId: 1 });
+  });
+  it('does not let an intervening same-tool press consume an older click or lose its own activation', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+    fireEvent.pointerDown(full, { pointerId: 44, pointerType: 'touch', isPrimary: true, button: 0 });
+    act(() => vi.advanceTimersByTime(500));
+    fireEvent.pointerUp(full, { pointerId: 44, pointerType: 'touch' });
+
+    fireEvent.pointerDown(full, { pointerId: 45, pointerType: 'touch', isPrimary: true, button: 0 });
+    fireEvent.click(full, { detail: 1 });
+    fireEvent.pointerUp(full, { pointerId: 45, pointerType: 'touch' });
+    fireEvent.click(full, { detail: 1 });
+    expect(f.c.setBrush).toHaveBeenCalledTimes(1);
+    expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'full', paletteId: 1 });
+  });
+  it('cancels a pending hold on pointer leave and ignores unrelated pointer releases', () => {
+    vi.useFakeTimers(); render(<EditorSurface workspace={ws} document={doc} />);
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+    fireEvent.pointerDown(full, { pointerId: 51, isPrimary: true }); fireEvent.pointerUp(full, { pointerId: 99 });
+    fireEvent.pointerLeave(full, { pointerId: 51 }); act(() => vi.advanceTimersByTime(500));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
   it('orders movement and selection tools first without reordering the remaining tools', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     const rail = within(screen.getByRole('navigation', { name: 'Editor sections' }));
@@ -490,41 +749,54 @@ describe('EditorSurface', () => {
       'Shape', 'Backstitch', 'Completion', 'Eraser', 'Fill', 'Eyedropper',
     ]);
   });
-  it('offers a default line shape tool and a long-press shape picker', () => {
+  it('offers a default Triangle shape tool and a long-press shape picker', () => {
     vi.useFakeTimers();
     render(<EditorSurface workspace={ws} document={doc} />);
     const shape = screen.getByRole('button', { name: 'Shape' });
-    expect(shape.querySelector('[data-shape-icon="line"]')).toBeInTheDocument();
+    expect(shape.querySelector('[data-shape-icon="triangle"]')).toBeInTheDocument();
     expect(shape).toBeEnabled();
-    fireEvent.pointerDown(shape, { pointerId: 1, pointerType: 'touch' });
+    fireEvent.pointerDown(shape, { pointerId: 1, pointerType: 'touch', isPrimary: true });
     act(() => vi.advanceTimersByTime(499));
     expect(screen.queryByRole('menu', { name: 'Choose shape' })).not.toBeInTheDocument();
     act(() => vi.advanceTimersByTime(1));
     const menu = screen.getByRole('menu', { name: 'Choose shape' });
     expect(menu.parentElement).toBe(document.body);
-    expect(within(menu).getAllByRole('menuitemradio')).toHaveLength(6);
+    expect(within(menu).getAllByRole('menuitemradio')).toHaveLength(7);
     expect(f.c.setTool).not.toHaveBeenCalled();
     fireEvent.click(within(menu).getByRole('menuitemradio', { name: 'Circle' }));
     expect(shape.querySelector('[data-shape-icon="circle"]')).toBeInTheDocument();
     expect(shape).toHaveAttribute('aria-pressed', 'false');
-    fireEvent.click(shape);
+    fireEvent.click(shape, { detail: 1, pointerId: 21, pointerType: 'touch' });
     expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'circle' });
     vi.useRealTimers();
   });
-  it('presents six icon-only shape choices with accessible names and distinct icons', () => {
+  it('presents seven icon-only choices including a distinct, accessible Oval in compact rows', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     const shape = screen.getByRole('button', { name: 'Shape' });
     fireEvent.contextMenu(shape);
     const menu = screen.getByRole('menu', { name: 'Choose shape' });
-    for (const [name, icon] of [['Line', 'line'], ['Rectangle', 'rectangle'], ['Square', 'square'], ['Circle', 'circle'], ['Triangle', 'triangle'], ['Right triangle', 'right-triangle']]) {
+    for (const [name, icon] of [['Line', 'line'], ['Rectangle', 'rectangle'], ['Square', 'square'], ['Circle', 'circle'], ['Triangle', 'triangle'], ['Right triangle', 'right-triangle'], ['Oval', 'oval']]) {
       const choice = within(menu).getByRole('menuitemradio', { name });
       expect(choice.querySelector(`[data-shape-icon="${icon}"]`)).toBeInTheDocument();
       expect(choice).toHaveAttribute('title', name);
       expect(choice.textContent?.trim()).toBe('');
     }
     expect(within(menu).queryByRole('menuitemcheckbox')).not.toBeInTheDocument();
-    expect(menu.querySelector('[data-shape-icon="right-triangle"] path')?.getAttribute('d')).toMatch(/M\d+ \d+V\d+H\d+/);
-    expect(stylesText).toMatch(/\.shape-picker-menu\s*\{[^}]*grid-template-columns:\s*repeat\(6,/s);
+    const rightTrianglePath = menu.querySelector('[data-shape-icon="right-triangle"] path')?.getAttribute('d');
+    expect(rightTrianglePath).toBe('M5 5V19H19Z');
+    expect(rightTrianglePath).not.toContain('M8 16');
+    const ovalPath = menu.querySelector('[data-shape-icon="oval"] path')?.getAttribute('d');
+    expect(ovalPath).toBe('M12 4a8 6 0 1 0 0 12 8 6 0 0 0 0-12');
+    expect(stylesText).toMatch(/\.shape-picker-menu\s*\{[^}]*grid-template-columns:\s*repeat\(7,/s);
+    expect(stylesText).toMatch(/@media\s*\(max-width:\s*520px\)[\s\S]*?\.shape-picker-menu\s*\{[^}]*grid-template-columns:\s*repeat\(4,/);
+  });
+  it('activates a chosen shape immediately when the current tool is not Shape', () => {
+    f.uiState.tool = { tool: 'paint' } as never;
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Shape' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Oval' }));
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'oval' });
+    expect(screen.getByRole('button', { name: 'Shape' }).querySelector('[data-shape-icon="oval"]')).toBeInTheDocument();
   });
   it('opens shape menu from context-menu keys and restores focus when dismissed', async () => {
     render(<EditorSurface workspace={ws} document={doc} />);
@@ -537,7 +809,7 @@ describe('EditorSurface', () => {
     fireEvent.pointerDown(document.body);
     await waitFor(() => expect(document.activeElement).toBe(shape));
     fireEvent.click(shape);
-    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'line' });
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'triangle' });
   });
   it('disables shape without an active thread', () => {
     const empty = { ...(doc as object), palette: [] } as never;
@@ -559,57 +831,70 @@ describe('EditorSurface', () => {
     const shape = screen.getByRole('button', { name: 'Shape' });
     fireEvent.keyDown(shape, { key: 'ContextMenu' });
     const menu = screen.getByRole('menu', { name: 'Choose shape' });
-    const line = within(menu).getByRole('menuitemradio', { name: 'Line' });
-    const rectangle = within(menu).getByRole('menuitemradio', { name: 'Rectangle' });
-    expect(line).toHaveFocus();
-    fireEvent.keyDown(line, { key: 'ArrowDown' });
-    expect(rectangle).toHaveFocus();
-    fireEvent.keyDown(rectangle, { key: 'End' });
+    const triangle = within(menu).getByRole('menuitemradio', { name: 'Triangle' });
+    expect(triangle).toHaveFocus();
+    fireEvent.keyDown(triangle, { key: 'ArrowDown' });
     const rightTriangle = within(menu).getByRole('menuitemradio', { name: 'Right triangle' });
     expect(rightTriangle).toHaveFocus();
+    fireEvent.keyDown(rightTriangle, { key: 'End' });
+    expect(rightTriangle).toHaveFocus();
     fireEvent.keyDown(rightTriangle, { key: 'Home' });
+    const line = within(menu).getByRole('menuitemradio', { name: 'Line' });
     expect(line).toHaveFocus();
     fireEvent.keyDown(line, { key: ' ' });
-    expect(f.c.setTool).not.toHaveBeenCalled();
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'line' });
     fireEvent.keyDown(line, { key: 'Escape' });
     expect(screen.queryByRole('menu', { name: 'Choose shape' })).not.toBeInTheDocument();
     expect(screen.getByRole('dialog', { name: 'Tools' })).toBeInTheDocument();
     expect(shape).toHaveFocus();
   });
-  it('supports arrow-key navigation across the six shape choices', () => {
+  it('supports arrow-key navigation across all seven shape choices', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.keyDown(screen.getByRole('button', { name: 'Shape' }), { key: 'ContextMenu' });
     const menu = screen.getByRole('menu', { name: 'Choose shape' });
-    const line = within(menu).getByRole('menuitemradio', { name: 'Line' });
-    const rightTriangle = within(menu).getByRole('menuitemradio', { name: 'Right triangle' });
-    fireEvent.keyDown(line, { key: 'ArrowRight' });
-    expect(within(menu).getByRole('menuitemradio', { name: 'Rectangle' })).toHaveFocus();
-    fireEvent.keyDown(line, { key: 'End' });
-    expect(rightTriangle).toHaveFocus();
-    fireEvent.keyDown(rightTriangle, { key: 'ArrowRight' });
-    expect(line).toHaveFocus();
+    const triangle = within(menu).getByRole('menuitemradio', { name: 'Triangle' });
+    const lastChoice = within(menu).getByRole('menuitemradio', { name: 'Right triangle' });
+    fireEvent.keyDown(triangle, { key: 'ArrowRight' });
+    expect(within(menu).getByRole('menuitemradio', { name: 'Right triangle' })).toHaveFocus();
+    fireEvent.keyDown(triangle, { key: 'End' });
+    expect(lastChoice).toHaveFocus();
+    fireEvent.keyDown(lastChoice, { key: 'ArrowRight' });
+    expect(within(menu).getByRole('menuitemradio', { name: 'Line' })).toHaveFocus();
+  });
+  it('restores focus to the selected Oval when reopening the picker and continues keyboard navigation', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const trigger = screen.getByRole('button', { name: 'Shape' });
+    fireEvent.keyDown(trigger, { key: 'ContextMenu' });
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Oval' }));
+
+    fireEvent.keyDown(trigger, { key: 'ContextMenu' });
+    const menu = screen.getByRole('menu', { name: 'Choose shape' });
+    const oval = within(menu).getByRole('menuitemradio', { name: 'Oval' });
+    expect(oval).toHaveFocus();
+    fireEvent.keyDown(oval, { key: 'ArrowLeft' });
+    expect(within(menu).getByRole('menuitemradio', { name: 'Circle' })).toHaveFocus();
   });
   it('activates Shape from a nested SVG target and remains activatable after outside release', () => {
     vi.useFakeTimers();
     render(<EditorSurface workspace={ws} document={doc} />);
     const shape = screen.getByRole('button', { name: 'Shape' });
     fireEvent.click(shape.querySelector('path')!);
-    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'line' });
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'triangle' });
     f.c.setTool.mockClear();
-    fireEvent.pointerDown(shape, { pointerId: 12, pointerType: 'touch' });
+    fireEvent.pointerDown(shape, { pointerId: 12, pointerType: 'touch', isPrimary: true });
     fireEvent.pointerUp(document.body, { pointerId: 12 });
     act(() => vi.advanceTimersByTime(500));
     expect(screen.queryByRole('menu', { name: 'Choose shape' })).not.toBeInTheDocument();
     fireEvent.keyDown(shape, { key: 'Enter' });
     fireEvent.click(shape);
-    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'line' });
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'triangle' });
     vi.useRealTimers();
   });
   it('does not let an outside release after opening the long-press menu suppress the next Shape activation', () => {
     vi.useFakeTimers();
     render(<EditorSurface workspace={ws} document={doc} />);
     const shape = screen.getByRole('button', { name: 'Shape' });
-    fireEvent.pointerDown(shape, { pointerId: 19, pointerType: 'touch' });
+    fireEvent.pointerDown(shape, { pointerId: 19, pointerType: 'touch', isPrimary: true });
     act(() => vi.advanceTimersByTime(500));
     expect(screen.getByRole('menu', { name: 'Choose shape' })).toBeInTheDocument();
     fireEvent.pointerUp(document.body, { pointerId: 19 });
@@ -617,43 +902,262 @@ describe('EditorSurface', () => {
     expect(screen.queryByRole('menu', { name: 'Choose shape' })).not.toBeInTheDocument();
     fireEvent.keyDown(shape, { key: 'Enter' });
     fireEvent.click(shape);
-    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'line' });
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'triangle' });
     vi.useRealTimers();
+  });
+  it.each(['Full stitch','Half stitch','3/4 stitch','Eraser'] as const)('tracks %s movement at document capture and irrevocably cancels an out-and-back press', (name) => {
+    vi.useFakeTimers(); render(<EditorSurface workspace={ws} document={doc} />);
+    const trigger = screen.getByRole('button', { name });
+    vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue({ x: 0, y: 0, left: 0, top: 0, right: 40, bottom: 40, width: 40, height: 40, toJSON: () => ({}) });
+    fireEvent.pointerDown(trigger, { pointerId: 71, pointerType: 'touch', button: 0, isPrimary: true, clientX: 10, clientY: 10 });
+    fireEvent.pointerMove(document, { pointerId: 71, clientX: 80, clientY: 10 });
+    fireEvent.pointerMove(trigger, { pointerId: 71, clientX: 10, clientY: 10 });
+    act(() => vi.advanceTimersByTime(500));
+    expect(screen.queryByRole('dialog', { name: new RegExp(name) })).not.toBeInTheDocument();
+    fireEvent.pointerUp(document.body, { pointerId: 71 });
+  });
+  it('opens Shape only if captured-pointer coordinates remain inside its original geometry', () => {
+    vi.useFakeTimers(); render(<EditorSurface workspace={ws} document={doc} />);
+    const trigger = screen.getByRole('button', { name: 'Shape' });
+    vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue({ x: 0, y: 0, left: 0, top: 0, right: 40, bottom: 40, width: 40, height: 40, toJSON: () => ({}) });
+    fireEvent.pointerDown(trigger, { pointerId: 72, pointerType: 'touch', button: 0, isPrimary: true, clientX: 10, clientY: 10 });
+    fireEvent.pointerMove(trigger, { pointerId: 72, clientX: 80, clientY: 10 });
+    act(() => vi.advanceTimersByTime(500));
+    expect(screen.queryByRole('menu', { name: 'Choose shape' })).not.toBeInTheDocument();
+    fireEvent.pointerUp(document.body, { pointerId: 72 });
+  });
+  it('does not let a captured out-and-back brush press activate on its trailing click', () => {
+    vi.useFakeTimers(); render(<EditorSurface workspace={ws} document={doc} />);
+    const trigger = screen.getByRole('button', { name: 'Full stitch' });
+    vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue({ x: 0, y: 0, left: 0, top: 0, right: 40, bottom: 40, width: 40, height: 40, toJSON: () => ({}) });
+    fireEvent.pointerDown(trigger, { pointerId: 91, pointerType: 'touch', button: 0, isPrimary: true, clientX: 10, clientY: 10 });
+    fireEvent.pointerMove(trigger, { pointerId: 91, clientX: 80, clientY: 10 });
+    fireEvent.pointerMove(trigger, { pointerId: 91, clientX: 10, clientY: 10 });
+    fireEvent.pointerUp(trigger, { pointerId: 91, clientX: 10, clientY: 10 });
+    fireEvent.click(trigger, { detail: 1, pointerId: 91, pointerType: 'touch' });
+    expect(f.c.setBrush).not.toHaveBeenCalled();
+    fireEvent.pointerDown(trigger, { pointerId: 92, pointerType: 'touch', button: 0, isPrimary: true, clientX: 10, clientY: 10 });
+    fireEvent.pointerUp(trigger, { pointerId: 92, clientX: 10, clientY: 10 });
+    fireEvent.click(trigger, { detail: 1, pointerId: 92, pointerType: 'touch' });
+    expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'full', paletteId: 1 });
+  });
+  it('does not activate a short press released outside its trigger bounds', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const trigger = screen.getByRole('button', { name: 'Full stitch' });
+    vi.spyOn(trigger, 'getBoundingClientRect').mockReturnValue({ x: 0, y: 0, left: 0, top: 0, right: 40, bottom: 40, width: 40, height: 40, toJSON: () => ({}) });
+
+    fireEvent.pointerDown(trigger, { pointerId: 94, pointerType: 'touch', button: 0, isPrimary: true, clientX: 10, clientY: 10 });
+    fireEvent.pointerUp(trigger, { pointerId: 94, clientX: 80, clientY: 10 });
+    fireEvent.click(trigger, { detail: 1, pointerId: 94, pointerType: 'touch' });
+
+    expect(f.c.setBrush).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+  it('rechecks current trigger geometry on a stationary hold timeout', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const trigger = screen.getByRole('button', { name: 'Full stitch' });
+    let currentRect = { x: 0, y: 0, left: 0, top: 0, right: 40, bottom: 40, width: 40, height: 40, toJSON: () => ({}) };
+    vi.spyOn(trigger, 'getBoundingClientRect').mockImplementation(() => currentRect as DOMRect);
+
+    fireEvent.pointerDown(trigger, { pointerId: 95, pointerType: 'touch', isPrimary: true, button: 0, clientX: 10, clientY: 10 });
+    currentRect = { ...currentRect, x: 100, left: 100, right: 140 };
+    act(() => vi.advanceTimersByTime(500));
+    expect(screen.queryByRole('dialog', { name: /Full stitch brush size/i })).not.toBeInTheDocument();
+    fireEvent.pointerUp(trigger, { pointerId: 95, clientX: 10, clientY: 10 });
+    fireEvent.click(trigger, { detail: 1, pointerId: 95, pointerType: 'touch' });
+    expect(f.c.setBrush).not.toHaveBeenCalled();
+  });
+  it('rechecks current trigger geometry on captured move and release', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const trigger = screen.getByRole('button', { name: 'Full stitch' });
+    let currentRect = { x: 0, y: 0, left: 0, top: 0, right: 40, bottom: 40, width: 40, height: 40, toJSON: () => ({}) };
+    vi.spyOn(trigger, 'getBoundingClientRect').mockImplementation(() => currentRect as DOMRect);
+
+    fireEvent.pointerDown(trigger, { pointerId: 96, pointerType: 'touch', isPrimary: true, button: 0, clientX: 10, clientY: 10 });
+    currentRect = { ...currentRect, x: 100, left: 100, right: 140 };
+    fireEvent.pointerMove(document, { pointerId: 96, clientX: 10, clientY: 10 });
+    act(() => vi.advanceTimersByTime(500));
+    expect(screen.queryByRole('dialog', { name: /Full stitch brush size/i })).not.toBeInTheDocument();
+    fireEvent.pointerUp(trigger, { pointerId: 96, clientX: 10, clientY: 10 });
+    fireEvent.click(trigger, { detail: 1, pointerId: 96, pointerType: 'touch' });
+    expect(f.c.setBrush).not.toHaveBeenCalled();
+
+    currentRect = { ...currentRect, x: 0, left: 0, right: 40 };
+    fireEvent.pointerDown(trigger, { pointerId: 97, pointerType: 'touch', isPrimary: true, button: 0, clientX: 10, clientY: 10 });
+    currentRect = { ...currentRect, x: 100, left: 100, right: 140 };
+    fireEvent.pointerUp(trigger, { pointerId: 97, clientX: 10, clientY: 10 });
+    fireEvent.click(trigger, { detail: 1, pointerId: 97, pointerType: 'touch' });
+    expect(f.c.setBrush).not.toHaveBeenCalled();
+  });
+  it('retains Shape click suppression through menu selection and its original release', () => {
+    vi.useFakeTimers(); render(<EditorSurface workspace={ws} document={doc} />);
+    const shape = screen.getByRole('button', { name: 'Shape' });
+    fireEvent.pointerDown(shape, { pointerId: 93, pointerType: 'touch', button: 0, isPrimary: true });
+    act(() => vi.advanceTimersByTime(500));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'Circle' }));
+    fireEvent.pointerUp(shape, { pointerId: 93 });
+    fireEvent.click(shape, { detail: 1, pointerId: 93, pointerType: 'touch' });
+    expect(f.c.setTool).toHaveBeenCalledTimes(1);
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'circle' });
+  });
+  it('ignores a competing pointer until the owning brush session ends', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+    const shape = screen.getByRole('button', { name: 'Shape' });
+
+    fireEvent.pointerDown(full, { pointerId: 101, pointerType: 'touch', isPrimary: true, button: 0 });
+    fireEvent.pointerDown(shape, { pointerId: 102, pointerType: 'touch', isPrimary: false, button: 0 });
+    act(() => vi.advanceTimersByTime(500));
+    expect(screen.getByRole('dialog', { name: /Full stitch brush size/i })).toBeInTheDocument();
+    expect(screen.queryByRole('menu', { name: 'Choose shape' })).not.toBeInTheDocument();
+
+    fireEvent.pointerUp(document.body, { pointerId: 102 });
+    fireEvent.click(shape, { detail: 1, pointerId: 102, pointerType: 'touch' });
+    expect(f.c.setTool).not.toHaveBeenCalled();
+    fireEvent.pointerUp(full, { pointerId: 101 });
+    fireEvent.click(full, { detail: 1, pointerId: 101, pointerType: 'touch' });
+    expect(f.c.setBrush).not.toHaveBeenCalled();
+  });
+  it('ignores a competing pointer click released after the owning session', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+    const half = screen.getByRole('button', { name: 'Half stitch' });
+    fireEvent.pointerDown(full, { pointerId: 110, pointerType: 'touch', isPrimary: true, button: 0 });
+    fireEvent.pointerDown(half, { pointerId: 111, pointerType: 'touch', isPrimary: false, button: 0 });
+    act(() => vi.advanceTimersByTime(500));
+
+    fireEvent.pointerUp(full, { pointerId: 110, pointerType: 'touch' });
+    fireEvent.pointerUp(half, { pointerId: 111, pointerType: 'touch' });
+    fireEvent.click(half, { detail: 1, pointerId: 111, pointerType: 'touch' });
+    fireEvent.click(full, { detail: 1, pointerId: 110, pointerType: 'touch' });
+    expect(f.c.setBrush).not.toHaveBeenCalled();
+  });
+  it('keeps tracking a competing pointer after the owner cancels', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+    const half = screen.getByRole('button', { name: 'Half stitch' });
+    fireEvent.pointerDown(full, { pointerId: 310, pointerType: 'touch', isPrimary: true, button: 0 });
+    fireEvent.pointerDown(half, { pointerId: 311, pointerType: 'touch', isPrimary: false, button: 0 });
+
+    fireEvent.pointerCancel(document.body, { pointerId: 310, pointerType: 'touch' });
+    fireEvent.pointerUp(half, { pointerId: 311, pointerType: 'touch' });
+    dispatchPointerClick(half, 311);
+    expect(f.c.setBrush).not.toHaveBeenCalled();
+  });
+  it('preserves a competing pointer click token when its owner cancels later', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+    const half = screen.getByRole('button', { name: 'Half stitch' });
+    fireEvent.pointerDown(full, { pointerId: 312, pointerType: 'touch', isPrimary: true, button: 0 });
+    fireEvent.pointerDown(half, { pointerId: 313, pointerType: 'touch', isPrimary: false, button: 0 });
+    fireEvent.pointerUp(half, { pointerId: 313, pointerType: 'touch' });
+    fireEvent.pointerCancel(document.body, { pointerId: 312, pointerType: 'touch' });
+
+    act(() => vi.advanceTimersByTime(350));
+    dispatchPointerClick(half, 313);
+    expect(f.c.setBrush).not.toHaveBeenCalled();
+  });
+  it('does not retain click suppression after an opened press is canceled', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+    fireEvent.pointerDown(full, { pointerId: 103, pointerType: 'touch', isPrimary: true, button: 0 });
+    act(() => vi.advanceTimersByTime(500));
+    expect(screen.getByRole('dialog', { name: /Full stitch brush size/i })).toBeInTheDocument();
+
+    fireEvent.pointerCancel(document.body, { pointerId: 103 });
+    fireEvent.click(full, { detail: 0 });
+    expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'full', paletteId: 1 });
+  });
+  it('clears the press session on window blur and allows a fresh same-tool tap', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+    fireEvent.pointerDown(full, { pointerId: 107, pointerType: 'touch', isPrimary: true, button: 0 });
+    act(() => vi.advanceTimersByTime(500));
+    fireEvent(window, new Event('blur'));
+
+    fireEvent.click(full, { detail: 0 });
+    expect(f.c.setBrush).toHaveBeenCalledTimes(1);
+    fireEvent.pointerDown(full, { pointerId: 108, pointerType: 'touch', isPrimary: true, button: 0 });
+    fireEvent.pointerUp(full, { pointerId: 108 });
+    fireEvent.click(full, { detail: 1, pointerId: 108, pointerType: 'touch' });
+    expect(f.c.setBrush).toHaveBeenCalledTimes(2);
+  });
+  it('keeps an outside-dismissed Shape press owned until its trailing click is consumed', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const shape = screen.getByRole('button', { name: 'Shape' });
+    fireEvent.pointerDown(shape, { pointerId: 104, pointerType: 'touch', isPrimary: true, button: 0 });
+    act(() => vi.advanceTimersByTime(500));
+    expect(screen.getByRole('menu', { name: 'Choose shape' })).toBeInTheDocument();
+
+    fireEvent.pointerDown(document.body, { pointerId: 105, pointerType: 'touch', isPrimary: true, button: 0 });
+    expect(screen.queryByRole('menu', { name: 'Choose shape' })).not.toBeInTheDocument();
+    fireEvent.pointerUp(shape, { pointerId: 104 });
+    fireEvent.click(shape, { detail: 1, pointerId: 104, pointerType: 'touch' });
+    expect(f.c.setTool).not.toHaveBeenCalled();
+    fireEvent.click(shape);
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'triangle' });
+  });
+  it('removes captured lifecycle listeners when an active press unmounts', () => {
+    vi.useFakeTimers();
+    const addSpy = vi.spyOn(document, 'addEventListener');
+    const removeSpy = vi.spyOn(document, 'removeEventListener');
+    const view = render(<EditorSurface workspace={ws} document={doc} />);
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+    fireEvent.pointerDown(full, { pointerId: 106, pointerType: 'touch', isPrimary: true, button: 0 });
+    const moveListener = addSpy.mock.calls.find(([type, , capture]) => type === 'pointermove' && capture === true)?.[1];
+    expect(moveListener).toBeTypeOf('function');
+
+    view.unmount();
+    expect(removeSpy).toHaveBeenCalledWith('pointermove', moveListener, true);
+    act(() => vi.advanceTimersByTime(500));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    addSpy.mockRestore();
+    removeSpy.mockRestore();
   });
   it('keeps the long-press click suppressed when Escape closes the menu before release', () => {
     vi.useFakeTimers();
     render(<EditorSurface workspace={ws} document={doc} />);
     const shape = screen.getByRole('button', { name: 'Shape' });
-    fireEvent.pointerDown(shape, { pointerId: 21, pointerType: 'touch' });
+    fireEvent.pointerDown(shape, { pointerId: 21, pointerType: 'touch', isPrimary: true });
     act(() => vi.advanceTimersByTime(500));
     expect(screen.getByRole('menu', { name: 'Choose shape' })).toBeInTheDocument();
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('menu', { name: 'Choose shape' })).not.toBeInTheDocument();
     fireEvent.pointerUp(shape, { pointerId: 21 });
-    fireEvent.click(shape);
+    fireEvent.click(shape, { detail: 1, pointerId: 21, pointerType: 'touch' });
     expect(f.c.setTool).not.toHaveBeenCalled();
-    fireEvent.click(shape);
-    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'line' });
+    fireEvent.click(shape, { detail: 1, pointerId: 21, pointerType: 'touch' });
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'triangle' });
     vi.useRealTimers();
   });
   it('clears long-press suppression after release outside before Escape', () => {
     vi.useFakeTimers();
     render(<EditorSurface workspace={ws} document={doc} />);
     const shape = screen.getByRole('button', { name: 'Shape' });
-    fireEvent.pointerDown(shape, { pointerId: 22, pointerType: 'touch' });
+    fireEvent.pointerDown(shape, { pointerId: 22, pointerType: 'touch', isPrimary: true });
     act(() => vi.advanceTimersByTime(500));
     expect(screen.getByRole('menu', { name: 'Choose shape' })).toBeInTheDocument();
     fireEvent.pointerUp(document.body, { pointerId: 22 });
     fireEvent.keyDown(document, { key: 'Escape' });
     fireEvent.click(shape);
-    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'line' });
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'triangle' });
     vi.useRealTimers();
   });
   it('cancels long press when the pointer leaves and ignores an outside release', () => {
     vi.useFakeTimers();
     render(<EditorSurface workspace={ws} document={doc} />);
     const shape = screen.getByRole('button', { name: 'Shape' });
-    fireEvent.pointerDown(shape, { pointerId: 4, pointerType: 'touch' });
+    fireEvent.pointerDown(shape, { pointerId: 4, pointerType: 'touch', isPrimary: true });
     fireEvent.pointerLeave(shape, { pointerId: 4 });
     fireEvent.pointerUp(document.body, { pointerId: 4 });
     act(() => vi.advanceTimersByTime(500));
@@ -675,15 +1179,15 @@ describe('EditorSurface', () => {
     const shape = screen.getByRole('button', { name: 'Shape' });
     f.c.handleKeyDown.mockClear();
     fireEvent.keyDown(shape, { key });
-    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'line' });
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'triangle' });
     expect(f.c.handleKeyDown).not.toHaveBeenCalled();
   });
   it('marks the current choice selected and exposes all six menu items', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.contextMenu(screen.getByRole('button', { name: 'Shape' }));
     const menu = screen.getByRole('menu', { name: 'Choose shape' });
-    expect(within(menu).getAllByRole('menuitemradio')).toHaveLength(6);
-    expect(within(menu).getByRole('menuitemradio', { name: 'Line' })).toHaveAttribute('aria-checked', 'true');
+    expect(within(menu).getAllByRole('menuitemradio')).toHaveLength(7);
+    expect(within(menu).getByRole('menuitemradio', { name: 'Triangle' })).toHaveAttribute('aria-checked', 'true');
   });
   it('keeps selection actions out of the rail', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
@@ -756,7 +1260,7 @@ describe('EditorSurface', () => {
     view.unmount();
   });
   it('marks top-level stitch tools with accessible pressed state and fill icons', () => { f.uiState.tool = { tool: 'paint', brush: { kind: 'half', paletteId: 1 } } as never; const view = render(<EditorSurface workspace={ws} document={doc} />); expect(screen.getByRole('button', { name: 'Full stitch' })).toHaveAttribute('aria-pressed', 'false'); expect(screen.getByRole('button', { name: 'Half stitch' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: '3/4 stitch' })).toHaveAttribute('aria-pressed', 'false'); expect(screen.getByRole('button', { name: 'Full stitch' }).querySelector('.stitch-brush-icon-full')).toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Half stitch' }).querySelector('.stitch-brush-icon-half')).toBeInTheDocument(); expect(screen.getByRole('button', { name: '3/4 stitch' }).querySelector('.stitch-brush-icon-three-quarter')).toBeInTheDocument(); view.unmount(); f.uiState.tool = { tool: 'backstitch' }; render(<EditorSurface workspace={ws} document={doc} />); expect(screen.getByRole('button', { name: 'Backstitch' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: 'Full stitch' })).toHaveAttribute('aria-pressed', 'false'); });
-  it('invokes Completion as a top-level tool and exposes its pressed state', () => { f.uiState.tool = { tool: 'completion' }; render(<EditorSurface workspace={ws} document={doc} />); const completion = screen.getByRole('button', { name: 'Completion' }); expect(completion).toHaveAttribute('title', 'Completion'); expect(completion).toHaveAttribute('aria-pressed', 'true'); expect(completion.querySelector('[data-icon="completion"]')).toBeInTheDocument(); fireEvent.click(completion); expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'completion' }); });
+   it('invokes Completion as a top-level tool and exposes its pressed state', () => { f.uiState.tool = { tool: 'completion' }; render(<EditorSurface workspace={ws} document={doc} />); const completion = screen.getByRole('button', { name: 'Completion' }); expect(completion).toHaveAttribute('title', 'Completion'); expect(completion).toHaveAttribute('aria-pressed', 'true'); expect(completion.querySelector('[data-icon="completion"]')).toBeInTheDocument(); fireEvent.click(completion); expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'completion' }); });
   it('surfaces the project name, selected-unit size, rail controls, header history, and palette rail', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     expect(screen.getByRole('heading', { name: 'Sampler' })).toBeInTheDocument();
@@ -765,7 +1269,7 @@ describe('EditorSurface', () => {
     expect(screen.getByRole('button', { name: 'Redo' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Paint' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Paint' })).not.toBeInTheDocument();
-    expect(screen.getByRole('slider', { name: /Brush size/ })).toBeInTheDocument();
+    expect(screen.queryByRole('slider', { name: /Brush size/ })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Full stitch' })).toBeVisible();
     const paletteRegion = screen.getByRole('region', { name: 'Thread colors' });
     const rail = screen.getByRole('complementary', { name: 'Editor controls' });
@@ -787,8 +1291,8 @@ describe('EditorSurface', () => {
   });
   it('keeps section popovers separate from the canvas action row', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
-    const brush = screen.getByRole('heading', { name: 'Brush settings' });
-    expect(brush).toBeInTheDocument();
+    const brush = screen.queryByRole('heading', { name: 'Brush settings' });
+    expect(brush).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Full stitch' }).closest('.editor-control-panel')).toBeNull();
     const actions = document.querySelector('.canvas-actions') as HTMLElement;
     const reference = within(actions).getByRole('toolbar', { name: 'Reference image' });
@@ -1078,8 +1582,8 @@ describe('EditorSurface', () => {
     const picker = within(dialog).getByLabelText('Choose custom color');
     const hex = within(dialog).getByLabelText('Hex color');
     expect(picker).toHaveAttribute('type', 'color');
-    expect(hex).toHaveValue('');
-    expect(within(dialog).getByRole('button', { name: 'Add custom color' })).toBeDisabled();
+    expect(hex).toHaveValue('#000000');
+    expect(within(dialog).getByRole('button', { name: 'Add #000000' })).toBeEnabled();
     fireEvent.change(hex, { target: { value: '#c72b3b' } });
     expect(within(dialog).getByRole('button', { name: 'Add Red' })).toBeEnabled();
     fireEvent.change(picker, { target: { value: '#123456' } });
@@ -1266,8 +1770,8 @@ describe('EditorSurface', () => {
     fireEvent.click(within(firstDialog).getByRole('button', { name: 'Close catalog dialog' }));
     fireEvent.click(screen.getByRole('button', { name: /Add new color/ }));
     const reopened = screen.getByRole('dialog', { name: 'Add a thread color' });
-    expect(within(reopened).getByLabelText('Hex color')).toHaveValue('');
-    expect(within(reopened).getByRole('button', { name: 'Add custom color' })).toBeDisabled();
+    expect(within(reopened).getByLabelText('Hex color')).toHaveValue('#000000');
+    expect(within(reopened).getByRole('button', { name: 'Add #000000' })).toBeEnabled();
   }, 15000);
   it('shows a clear empty state when no thread colors match', () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: /Add new color/ })); fireEvent.change(screen.getByLabelText('Search DMC catalog'), { target: { value: 'not-a-real-thread-color' } }); expect(screen.getByText('No matching colors.')).toBeInTheDocument(); expect(within(screen.getByRole('list', { name: 'Available thread colors' })).queryAllByRole('button')).toHaveLength(0); });
   it('keeps query 31 results limited to catalog matches', async () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: /Add new color/ })); const grid = screen.getByRole('list', { name: 'Available thread colors' }); fireEvent.change(screen.getByLabelText('Search DMC catalog'), { target: { value: '31' } }); await waitFor(() => expect(within(grid).getAllByRole('button').length).toBeGreaterThan(0)); for (const button of within(grid).getAllByRole('button')) { const label = button.getAttribute('aria-label') ?? ''; const code = label.split(', color ')[1] ?? ''; const record = DEFAULT_CATALOG_DEFINITION.records.find((entry) => entry.code === code); expect(record).toBeDefined(); expect([record?.code ?? '', record?.name ?? '', record?.hex ?? '', record?.sourceId ?? ''].some((field) => field.toLowerCase().includes('31'))).toBe(true); } expect(within(grid).queryByRole('button', { name: /Snow White/ })).not.toBeInTheDocument(); });

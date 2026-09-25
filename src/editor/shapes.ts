@@ -109,6 +109,71 @@ function rasterizeCircle(left: number, top: number, right: number, bottom: numbe
   return rowMajorUnique(points);
 }
 
+function rasterizeOval(left: number, top: number, right: number, bottom: number): ModelPoint[] {
+  if (left === right || top === bottom) return rowMajorUnique(bresenhamLine({ x: left, y: top }, { x: right, y: bottom }));
+
+  const centerX = (left + right) / 2;
+  const centerY = (top + bottom) / 2;
+  const radiusX = (right - left) / 2;
+  const radiusY = (bottom - top) / 2;
+  const points: ModelPoint[] = [];
+  const nearestCells = (coordinate: number, min: number, max: number): number[] => {
+    const lower = Math.floor(coordinate);
+    if (Math.abs(coordinate - lower - 0.5) < 1e-9) {
+      return [lower, lower + 1].filter((value) => value >= min && value <= max);
+    }
+    const nearest = Math.max(min, Math.min(max, Math.round(coordinate)));
+    return [nearest];
+  };
+  const roots = (
+    axisCenter: number,
+    axisRadius: number,
+    offset: number,
+    spanCenter: number,
+    spanRadius: number,
+    min: number,
+    max: number
+  ): number[] => {
+    const normalized = (offset - axisCenter) / axisRadius;
+    const remaining = 1 - normalized * normalized;
+    if (remaining < -1e-9) return [];
+    const halfSpan = spanRadius * Math.sqrt(Math.max(0, remaining));
+    return [
+      ...nearestCells(spanCenter - halfSpan, min, max),
+      ...nearestCells(spanCenter + halfSpan, min, max)
+    ];
+  };
+
+  let previousLeft: ModelPoint | undefined;
+  let previousRight: ModelPoint | undefined;
+  for (let y = top; y <= bottom; y += 1) {
+    const xs = roots(centerY, radiusY, y, centerX, radiusX, left, right);
+    if (xs.length === 0) continue;
+    const leftPoint = { x: Math.min(...xs), y };
+    const rightPoint = { x: Math.max(...xs), y };
+    points.push(leftPoint, rightPoint);
+    if (previousLeft) addThinSegment(points, previousLeft, leftPoint);
+    if (previousRight) addThinSegment(points, previousRight, rightPoint);
+    previousLeft = leftPoint;
+    previousRight = rightPoint;
+  }
+
+  let previousTop: ModelPoint | undefined;
+  let previousBottom: ModelPoint | undefined;
+  for (let x = left; x <= right; x += 1) {
+    const ys = roots(centerX, radiusX, x, centerY, radiusY, top, bottom);
+    if (ys.length === 0) continue;
+    const topPoint = { x, y: Math.min(...ys) };
+    const bottomPoint = { x, y: Math.max(...ys) };
+    points.push(topPoint, bottomPoint);
+    if (previousTop) addThinSegment(points, previousTop, topPoint);
+    if (previousBottom) addThinSegment(points, previousBottom, bottomPoint);
+    previousTop = topPoint;
+    previousBottom = bottomPoint;
+  }
+  return rowMajorUnique(points);
+}
+
 function rasterizeTriangle(left: number, top: number, right: number, bottom: number): ModelPoint[] {
   const apex = { x: Math.floor((left + right) / 2), y: top };
   const bottomLeft = { x: left, y: bottom };
@@ -121,13 +186,13 @@ function rasterizeTriangle(left: number, top: number, right: number, bottom: num
 }
 
 function rasterizeRightTriangle(start: ModelPoint, end: ModelPoint): ModelPoint[] {
+  const rightAngle = cell(start);
   const endpoint = cell(end);
-  const startCell = cell(start);
-  const adjacentVertical = { x: endpoint.x, y: startCell.y };
-  const adjacentHorizontal = { x: startCell.x, y: endpoint.y };
+  const adjacentVertical = { x: endpoint.x, y: rightAngle.y };
+  const adjacentHorizontal = { x: rightAngle.x, y: endpoint.y };
   const points: ModelPoint[] = [];
-  addThinSegment(points, endpoint, adjacentVertical);
-  addThinSegment(points, endpoint, adjacentHorizontal);
+  addThinSegment(points, rightAngle, adjacentVertical);
+  addThinSegment(points, rightAngle, adjacentHorizontal);
   addThinSegment(points, adjacentVertical, adjacentHorizontal);
   return rowMajorUnique(points);
 }
@@ -169,6 +234,7 @@ export function rasterizeShapeOutline(shape: ShapeKind, start: ModelPoint, end: 
   if (shape === 'line') return rowMajorUnique(bresenhamLine(first, second));
   if (shape === 'rectangle' || shape === 'square') return rasterizeRectangle(left, top, right, bottom);
   if (shape === 'circle') return rasterizeCircle(left, top, right, bottom);
+  if (shape === 'oval') return rasterizeOval(left, top, right, bottom);
   if (shape === 'triangle') return rasterizeTriangle(left, top, right, bottom);
   return rasterizeRightTriangle(first, second);
 }

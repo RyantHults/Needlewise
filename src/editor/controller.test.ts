@@ -600,6 +600,25 @@ describe('EditorSurfaceController', () => {
     reverse.controller.dispose();
   });
 
+  it('only extends a full-stitch drag into a cell once the pointer is a quarter of a cell inside it', () => {
+    const { gateway, uiStore, controller } = controllerFixture();
+    controller.handlePointerDown(pointer(1, 8, 8));
+    controller.handlePointerMove(pointer(1, 19, 8));
+    expect(uiStore.getState().overlay.pendingCells).toHaveLength(1);
+    controller.handlePointerMove(pointer(1, 20, 8));
+    expect(uiStore.getState().overlay.pendingCells).toHaveLength(2);
+    controller.handlePointerMove(pointer(1, 24, 19));
+    expect(uiStore.getState().overlay.pendingCells).toHaveLength(2);
+    controller.handlePointerMove(pointer(1, 24, 20));
+    expect(uiStore.getState().overlay.pendingCells).toHaveLength(3);
+    controller.handlePointerMove(pointer(1, 13, 24));
+    expect(uiStore.getState().overlay.pendingCells).toHaveLength(3);
+    controller.handlePointerUp(pointer(1, 13, 24));
+    expect(gateway.commands).toHaveLength(1);
+    expect(gateway.commands[0].indices).toEqual(new Uint32Array([0, 1, 9]));
+    controller.dispose();
+  });
+
   it('keeps a paint stroke transient and commits one deduplicated bulk command', () => {
     const { gateway, uiStore, controller, calls } = controllerFixture();
     controller.handlePointerDown(pointer(1, 8, 8));
@@ -734,6 +753,21 @@ describe('EditorSurfaceController', () => {
       indices: new Uint32Array([9, 10, 11, 17, 18, 19])
     });
     rectangle.controller.dispose();
+
+    const oval = controllerFixture();
+    oval.controller.setTool({ tool: 'shape', shape: 'oval' });
+    oval.controller.handlePointerDown(pointer(1, 8, 8));
+    oval.controller.handlePointerMove(pointer(1, 104, 72));
+    const ovalCells = oval.uiStore.getState().overlay.pendingCells ?? [];
+    expect({
+      minX: Math.min(...ovalCells.map(({ x }) => x)),
+      maxX: Math.max(...ovalCells.map(({ x }) => x)),
+      minY: Math.min(...ovalCells.map(({ y }) => y)),
+      maxY: Math.max(...ovalCells.map(({ y }) => y))
+    }).toEqual({ minX: 0, maxX: 6, minY: 0, maxY: 4 });
+    expect(ovalCells).not.toContainEqual({ x: 3, y: 2 });
+    oval.controller.handlePointerUp(pointer(1, 104, 72));
+    oval.controller.dispose();
 
     const clamped = controllerFixture();
     clamped.controller.setTool({ tool: 'shape', shape: 'line' });
@@ -921,12 +955,55 @@ describe('EditorSurfaceController', () => {
     fixture.controller.handlePointerUp(pointer(2, 40, 8));
     expect(fixture.gateway.commands.at(-1)).toMatchObject({
       type: 'bulk-completion',
-      indices: new Uint32Array([0, 1, 2, 3]),
-      masks: new Uint8Array([1, 1, 1, 4]),
+      indices: new Uint32Array([1, 2]),
+      masks: new Uint8Array([1, 1]),
       operation: 'set'
     });
-    expect(Array.from(fixture.gateway.getSnapshot().document!.completed.slice(0, 4))).toEqual([1, 1, 1, 4]);
+    expect(Array.from(fixture.gateway.getSnapshot().document!.completed.slice(0, 4))).toEqual([1, 1, 1, 0]);
     expect(fixture.gateway.getSnapshot().document?.completed[4]).toBe(0);
+    fixture.controller.dispose();
+  });
+
+  it('keeps completion click, drag, hover preview, and keyboard application to one cell with a non-unit brush size', () => {
+    const document = createDocument({
+      width: 8,
+      height: 8,
+      catalog: DEFAULT_CATALOG_DEFINITION.association,
+      palette: [{ id: 1, name: 'Thread', color: '#123456', active: true }]
+    });
+    document.kind.fill(CellKind.Full);
+    for (let index = 0; index < document.kind.length; index += 1) document.colors[index * 4] = 1;
+    const fixture = controllerFixture({}, document);
+    fixture.controller.setTool({ tool: 'completion' });
+    fixture.controller.setBrushSize(3);
+
+    fixture.controller.handlePointerMove({ ...pointer(8, 40, 40), buttons: 0 });
+    expect(fixture.uiStore.getState().overlay.brushPreview?.states.map((state) => state.index)).toEqual([18]);
+
+    fixture.controller.handlePointerDown(pointer(1, 8, 8));
+    fixture.controller.handlePointerUp(pointer(1, 8, 8));
+    expect(fixture.gateway.commands.at(-1)).toMatchObject({
+      type: 'bulk-completion',
+      indices: new Uint32Array([0]),
+      masks: new Uint8Array([1])
+    });
+
+    fixture.controller.handlePointerDown(pointer(2, 24, 8));
+    fixture.controller.handlePointerMove(pointer(2, 56, 8));
+    fixture.controller.handlePointerUp(pointer(2, 56, 8));
+    expect(fixture.gateway.commands.at(-1)).toMatchObject({
+      type: 'bulk-completion',
+      indices: new Uint32Array([1, 2, 3]),
+      masks: new Uint8Array([1, 1, 1])
+    });
+
+    fixture.uiStore.setKeyboardCursor({ x: 4, y: 4 });
+    fixture.controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined });
+    expect(fixture.gateway.commands.at(-1)).toMatchObject({
+      type: 'bulk-completion',
+      indices: new Uint32Array([36]),
+      masks: new Uint8Array([1])
+    });
     fixture.controller.dispose();
   });
 
@@ -1435,8 +1512,8 @@ describe('EditorSurfaceController', () => {
     const viewport = { x: 3, y: -2, zoom: 20 };
     const brush = { kind: 'half', direction: '/', paletteId: 1 } as const;
     uiStore.setViewport(viewport);
-    controller.setBrushSize(4);
     controller.setAuthoringBrush(brush);
+    controller.setBrushSize(4);
     uiStore.setKeyboardCursor({ x: 2, y: 3 });
     const next = createDocument({ width: 12, height: 6, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Thread', color: '#123456' }] });
     next.revision = gateway.getSnapshot().revision! + 1;
@@ -1611,6 +1688,121 @@ describe('EditorSurfaceController', () => {
     controller.dispose();
   });
 
+  it('retains independent sizes only for paint brushes and erasing', () => {
+    const { uiStore, controller } = controllerFixture();
+    expect(uiStore.getState().toolBrushSizes).toEqual({
+      full: 1,
+      half: 1,
+      'three-quarter': 1,
+      eraser: 1
+    });
+
+    controller.setToolBrushSize('half', 3);
+    controller.setToolBrushSize('three-quarter', 4);
+    controller.setToolBrushSize('eraser', 6);
+    expect(controller.getBrushSize()).toBe(1);
+
+    controller.setToolBrushSize('full', 2);
+    expect(controller.getBrushSize()).toBe(2);
+    controller.setTool({ tool: 'paint', brush: { kind: 'half', paletteId: 1 } });
+    expect(controller.getBrushSize()).toBe(3);
+    controller.setBrushSize(7);
+    expect(controller.getBrushSize()).toBe(7);
+    controller.setTool({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
+    expect(controller.getBrushSize()).toBe(2);
+    controller.setTool({ tool: 'paint', brush: { kind: 'half', paletteId: 1 } });
+    expect(controller.getBrushSize()).toBe(7);
+    controller.setTool({ tool: 'paint', brush: { kind: 'three-quarter', paletteId: 1 } });
+    expect(controller.getBrushSize()).toBe(4);
+    controller.setTool({ tool: 'completion' });
+    expect(controller.getBrushSize()).toBe(4);
+    controller.setTool({ tool: 'eraser' });
+    expect(controller.getBrushSize()).toBe(6);
+    expect(uiStore.getState().toolBrushSizes).toEqual({
+      full: 2,
+      half: 7,
+      'three-quarter': 4,
+      eraser: 6
+    });
+    controller.dispose();
+  });
+
+  it('keeps Shape on the legacy brush size while preserving supported sizes across the transition', () => {
+    const { uiStore, controller } = controllerFixture();
+    controller.setBrushSize(2);
+    controller.setTool({ tool: 'shape', shape: 'line' });
+    expect(controller.getBrushSize()).toBe(2);
+
+    controller.setBrushSize(3);
+    expect(controller.getBrushSize()).toBe(3);
+    expect(uiStore.getState().toolBrushSizes).toMatchObject({
+      full: 2,
+      half: 1,
+      'three-quarter': 1,
+      eraser: 1
+    });
+    controller.handlePointerDown(pointer(1, 56, 56));
+    expect(uiStore.getState().overlay.pendingCells).toHaveLength(9);
+    controller.handlePointerCancel(pointer(1, 56, 56));
+
+    controller.setToolBrushSize('half', 5);
+    expect(controller.getBrushSize()).toBe(3);
+    controller.setTool({ tool: 'paint', brush: { kind: 'half', paletteId: 1 } });
+    expect(controller.getBrushSize()).toBe(5);
+    controller.setTool({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
+    expect(controller.getBrushSize()).toBe(2);
+    expect(uiStore.getState().toolBrushSizes).toMatchObject({ full: 2, half: 5 });
+    controller.dispose();
+  });
+
+  it('uses each retained brush size for hover previews and tool behavior', () => {
+    const paint = controllerFixture();
+    paint.controller.setToolBrushSize('full', 2);
+    paint.controller.setToolBrushSize('half', 3);
+    paint.controller.setToolBrushSize('three-quarter', 4);
+    const hover = { ...pointer(1, 56, 56), buttons: 0 };
+
+    paint.controller.setTool({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
+    paint.controller.handlePointerMove(hover);
+    expect(paint.uiStore.getState().overlay.brushPreview?.states).toHaveLength(5);
+    paint.controller.handlePointerDown(pointer(2, 56, 56));
+    expect(paint.uiStore.getState().overlay.pendingCells).toHaveLength(5);
+    paint.controller.handlePointerCancel(pointer(2, 56, 56));
+
+    paint.controller.setTool({ tool: 'paint', brush: { kind: 'half', paletteId: 1 } });
+    expect(paint.uiStore.getState().overlay.brushPreview?.states).toHaveLength(9);
+    paint.controller.handlePointerDown(pointer(3, 56, 56));
+    expect(paint.uiStore.getState().overlay.pendingCells).toHaveLength(9);
+    paint.controller.handlePointerCancel(pointer(3, 56, 56));
+
+    paint.controller.setTool({ tool: 'paint', brush: { kind: 'three-quarter', paletteId: 1 } });
+    expect(paint.uiStore.getState().overlay.brushPreview?.states).toHaveLength(13);
+    paint.controller.handlePointerDown(pointer(4, 56, 56));
+    expect(paint.uiStore.getState().overlay.pendingCells).toHaveLength(13);
+    paint.controller.handlePointerCancel(pointer(4, 56, 56));
+    paint.controller.dispose();
+
+    const occupied = createDocument({
+      width: 8,
+      height: 8,
+      catalog: DEFAULT_CATALOG_DEFINITION.association,
+      palette: [{ id: 1, name: 'Thread', color: '#123456', active: true }]
+    });
+    occupied.kind.fill(CellKind.Full);
+    for (let index = 0; index < occupied.kind.length; index += 1) occupied.colors[index * 4] = 1;
+    const otherTools = controllerFixture({}, occupied);
+    otherTools.controller.setToolBrushSize('eraser', 6);
+    otherTools.controller.setTool({ tool: 'completion' });
+    otherTools.controller.setBrushSize(5);
+    otherTools.controller.handlePointerMove(hover);
+    expect(otherTools.uiStore.getState().overlay.brushPreview?.states).toHaveLength(1);
+    otherTools.controller.setTool({ tool: 'eraser' });
+    expect(otherTools.uiStore.getState().overlay.brushPreview?.states).toHaveLength(29);
+    otherTools.controller.handlePointerDown(pointer(5, 56, 56));
+    expect(otherTools.uiStore.getState().overlay.pendingCells).toHaveLength(29);
+    otherTools.controller.dispose();
+  });
+
   it('uses the disk diameter for exact size-one, size-two, size-three, and large stamps', () => {
     const paintIndices = (size: number, x: number, y: number): number[] => {
       const fixture = controllerFixture();
@@ -1634,6 +1826,36 @@ describe('EditorSurfaceController', () => {
       42, 43, 44
     ]);
     expect(paintIndices(5, 0, 0)).toEqual([0, 1, 2, 8, 9, 10, 16, 17]);
+  });
+
+  it('previews the whole brush footprint over stitches already in the selected color', () => {
+    const occupied = createDocument({
+      width: 8,
+      height: 8,
+      catalog: DEFAULT_CATALOG_DEFINITION.association,
+      palette: [{ id: 1, name: 'Thread', color: '#000000', active: true }]
+    });
+    // Column 0..2, rows 0..2 already hold full palette-1 stitches; the rest are empty.
+    for (const index of [0, 1, 2, 8, 9, 10, 16, 17, 18]) {
+      occupied.kind[index] = CellKind.Full;
+      occupied.colors[index * 4] = 1;
+    }
+    const { uiStore, controller } = controllerFixture({}, occupied);
+    const previewIndices = (): number[] | undefined =>
+      uiStore.getState().overlay.brushPreview?.states.map((state) => state.index);
+
+    controller.setBrushSize(1);
+    controller.handlePointerMove({ ...pointer(1, 24, 24), buttons: 0 });
+    expect(previewIndices()).toEqual([9]);
+
+    controller.setBrushSize(3);
+    controller.handlePointerMove({ ...pointer(1, 25, 25), buttons: 0 });
+    expect(previewIndices()).toEqual([0, 1, 2, 8, 9, 10, 16, 17, 18]);
+
+    // A footprint straddling same-color and empty cells keeps every stamped cell.
+    controller.handlePointerMove({ ...pointer(1, 40, 24), buttons: 0 });
+    expect(previewIndices()).toEqual([1, 2, 3, 9, 10, 11, 17, 18, 19]);
+    controller.dispose();
   });
 
   it('shows and clears a hover brush preview without committing a gesture', () => {
@@ -1662,6 +1884,7 @@ describe('EditorSurfaceController', () => {
     expect(gateway.undoDepth).toBe(1);
 
     controller.setAuthoringBrush({ kind: 'half', paletteId: 1 });
+    controller.setBrushSize(2);
     controller.handlePointerDown(pointer(2, 24, 24));
     expect(uiStore.getState().overlay.pendingCellStates?.map((state) => state.kind)).toEqual([
       CellKind.HalfBackslash, CellKind.HalfBackslash, CellKind.HalfBackslash, CellKind.HalfBackslash, CellKind.HalfBackslash
@@ -1695,8 +1918,8 @@ describe('EditorSurfaceController', () => {
     }
 
     const dragged = controllerFixture();
-    dragged.controller.setBrushSize(2);
     dragged.controller.setAuthoringBrush({ kind: 'three-quarter', paletteId: 1 });
+    dragged.controller.setBrushSize(2);
     dragged.controller.handlePointerDown(pointer(9, 20, 20));
     dragged.controller.handlePointerMove(pointer(9, 36, 20));
     dragged.controller.handlePointerUp(pointer(9, 36, 20));
@@ -1867,8 +2090,8 @@ describe('EditorSurfaceController', () => {
     gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
     gateway.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
     gateway.commands.length = 0;
-    controller.setBrushSize(2);
     controller.setTool({ tool: 'eraser', mode: 'whole-cell' });
+    controller.setBrushSize(2);
     controller.handlePointerDown(pointer(1, 24, 24));
     expect(uiStore.getState().overlay.pendingCellStates).toMatchObject([
       { index: 9, kind: CellKind.Empty, colors: [0, 0, 0, 0], completed: 0 }
@@ -1904,6 +2127,7 @@ describe('EditorSurfaceController', () => {
     expect(() => uiStore.setBrushSize(1.5)).toThrow(/integer/);
     expect(() => uiStore.setState({ brushSize: Number.NaN })).toThrow(/integer/);
     expect(() => controller.setBrushSize(-1)).toThrow(/integer/);
+    expect(() => controller.setToolBrushSize('full', 0)).toThrow(/integer/);
     controller.dispose();
   });
 
@@ -2418,8 +2642,8 @@ describe('EditorSurfaceController', () => {
 
   it('applies keyboard half-stitch brush stamps across multiple cells', () => {
     const { gateway, uiStore, controller } = controllerFixture();
-    controller.setBrushSize(2);
     controller.setAuthoringBrush({ kind: 'half', direction: '/', paletteId: 1 });
+    controller.setBrushSize(2);
     uiStore.setKeyboardCursor({ x: 2, y: 2 });
     controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined });
     expect(gateway.commands.at(-1)).toMatchObject({
@@ -2437,8 +2661,8 @@ describe('EditorSurfaceController', () => {
     gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
     gateway.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
     gateway.commands.length = 0;
-    controller.setBrushSize(2);
     controller.setTool({ tool: 'eraser', mode: 'whole-cell' });
+    controller.setBrushSize(2);
     uiStore.setKeyboardCursor({ x: 1, y: 1 });
     const historyBeforeErase = gateway.undoDepth;
     controller.handleKeyDown({ key: 'Backspace', preventDefault: () => undefined });

@@ -736,6 +736,7 @@ describe('Canvas 2D chart renderer', () => {
       ['moveTo', 16, 0, '#00f'], ['lineTo', 16, 16, '#00f'], ['lineTo', 0, 16, '#00f']
     ]);
     expect(overlay.records.filter((call) => call.name === 'stroke' && call.strokeStyle === '#242424')).toHaveLength(1);
+    expect(overlay.records.find((call) => call.name === 'stroke' && call.strokeStyle === '#242424')?.globalAlpha).toBe(1);
     renderer.dispose();
   });
 
@@ -763,26 +764,26 @@ describe('Canvas 2D chart renderer', () => {
     renderer.dispose();
   });
 
-  it('renders a clipped brush preview as a low-alpha outer footprint outline', () => {
+  it('renders a brush preview as an opaque, high-contrast outer footprint outline', () => {
     const document = chart(5, 5);
     document.palette[0] = { ...document.palette[0], color: '#ffffff' };
-    document.palette[1] = { ...document.palette[1], color: '#000000' };
-    document.colors[1 * 4] = 35;
-    document.colors[5 * 4] = 1;
-    document.colors[6 * 4] = 35;
-    document.colors[7 * 4] = 35;
-    document.colors[11 * 4] = 35;
+    document.palette[1] = { ...document.palette[1], color: '#000' };
+    for (const [index, paletteId] of [[1, 35], [5, 1], [6, 35], [7, 35], [11, 35]]) {
+      document.kind[index] = CellKind.Full;
+      document.colors[index * 4] = paletteId;
+    }
+    const base = recordingContext();
     const overlay = recordingContext();
     const renderer = createCanvasRenderer({
       document,
-      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      targets: { base: target(base), overlay: target(overlay) },
       metrics: getCanvasMetrics(80, 80),
       viewport: { x: 0, y: 0, zoom: 16 },
       overlay: {
         brushPreview: {
           kind: 'paint',
           states: [
-            { index: 1, cell: { x: 1, y: 0 }, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 },
+            { index: 1, cell: { x: 1, y: 0 }, kind: CellKind.Full, colors: [35, 0, 0, 0], completed: 0 },
             { index: 5, cell: { x: 0, y: 1 }, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 },
             { index: 6, cell: { x: 1, y: 1 }, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 },
             { index: 7, cell: { x: 2, y: 1 }, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 },
@@ -792,13 +793,350 @@ describe('Canvas 2D chart renderer', () => {
       }
     });
     renderer.renderNow();
+    expect(base.records.some((call) => call.name === 'fillRect' && call.args.join(',') === '16,0,16,16' && call.fillStyle === '#000')).toBe(true);
+    expect(base.records.some((call) => call.name === 'fillRect' && call.args.join(',') === '0,16,16,16' && call.fillStyle === '#ffffff')).toBe(true);
     expect(overlay.records.some((call) => call.name === 'fillRect' && call.globalAlpha < 0.3)).toBe(false);
     expect(overlay.records.filter((call) => call.name === 'fill').length).toBe(0);
-    expect(overlay.records.some((call) => call.name === 'stroke' && call.globalAlpha === 0.42)).toBe(true);
-    const previewSegments = overlay.records.filter((call) => call.name === 'lineTo' && (call.strokeStyle === '#242424' || call.strokeStyle === '#ffffff'));
-    expect(previewSegments.length).toBe(12);
-    expect(new Set(previewSegments.map((call) => call.globalAlpha))).toEqual(new Set([0.42]));
-    expect(new Set(previewSegments.map((call) => call.strokeStyle))).toEqual(new Set(['#242424', '#ffffff']));
+    expect(overlay.records.some((call) => call.name === 'stroke' && call.globalAlpha === 1)).toBe(true);
+    // Exact per-edge colors below depend on the *committed* neighbour across
+    // each edge (mixing painted cells and out-of-bounds/background), not on a
+    // single per-cell proposed color, so only the overall geometry and the
+    // restricted {ink, keyline} palette are asserted here (via the `stroke()`
+    // calls, since strokeStyle is set right before each stroke, not before the
+    // moveTo/lineTo that defines its path). See the dedicated committed-color
+    // regressions below for exact ink/keyline assertions.
+    // The 5-cell plus-shaped footprint has 12 outer edges; each gets its own
+    // solid keyline stroke plus a dashed ink stroke on top.
+    const strokes = overlay.records.filter((call) => call.name === 'stroke');
+    expect(strokes.length).toBe(24);
+    expect(new Set(strokes.map((call) => call.globalAlpha))).toEqual(new Set([1]));
+    expect(strokes.every((call) => call.strokeStyle === '#242424' || call.strokeStyle === '#ffffff')).toBe(true);
+    renderer.dispose();
+  });
+
+  it('derives the brush-preview ink from committed colour, ignoring the pending paint colour (dark region)', () => {
+    // Regression: the hover outline must read the colour it is drawn OVER
+    // (the committed document), never the pending/proposed selected thread.
+    const document = chart(3, 3);
+    document.palette[0] = { ...document.palette[0], color: '#000000' }; // id 1: committed region colour
+    document.palette[1] = { ...document.palette[1], color: '#ffffff' }; // id 35: the (irrelevant) selected thread
+    for (let index = 0; index < 9; index += 1) {
+      document.kind[index] = CellKind.Full;
+      document.colors[index * 4] = 1;
+    }
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      metrics: getCanvasMetrics(48, 48),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      overlay: {
+        brushPreview: {
+          kind: 'paint',
+          // Hover the center cell; its proposed paint colour (id 35, light)
+          // is the opposite of the committed colour underneath it and must
+          // have zero effect on the outline.
+          states: [{ index: 4, cell: { x: 1, y: 1 }, kind: CellKind.Full, colors: [35, 0, 0, 0], completed: 0 }]
+        }
+      }
+    });
+    renderer.renderNow();
+
+    const strokes = overlay.records.filter((call) => call.name === 'stroke');
+    expect(strokes.length).toBeGreaterThan(0);
+    expect(strokes.every((call) => call.globalAlpha === 1)).toBe(true);
+    const keylineWidth = Math.max(...strokes.map((call) => call.lineWidth));
+    const keylineStrokes = strokes.filter((call) => call.lineWidth === keylineWidth);
+    const inkStrokes = strokes.filter((call) => call.lineWidth < keylineWidth);
+    expect(inkStrokes.length).toBeGreaterThan(0);
+    expect(inkStrokes.every((call) => call.strokeStyle === '#ffffff')).toBe(true);
+    expect(keylineStrokes.every((call) => call.strokeStyle === '#242424')).toBe(true);
+    renderer.dispose();
+  });
+
+  it('derives the brush-preview ink from committed colour, ignoring the pending paint colour (light region)', () => {
+    const document = chart(3, 3);
+    document.palette[0] = { ...document.palette[0], color: '#ffffff' }; // id 1: committed region colour
+    document.palette[1] = { ...document.palette[1], color: '#000000' }; // id 35: the (irrelevant) selected thread
+    for (let index = 0; index < 9; index += 1) {
+      document.kind[index] = CellKind.Full;
+      document.colors[index * 4] = 1;
+    }
+    const base = recordingContext();
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(overlay) },
+      metrics: getCanvasMetrics(48, 48),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      overlay: {
+        brushPreview: {
+          kind: 'paint',
+          // Proposed paint colour is DARK (selected thread); committed region
+          // is white, so a correct outline stays dark-ink/white-keyline
+          // regardless of what is about to be painted.
+          states: [{ index: 4, cell: { x: 1, y: 1 }, kind: CellKind.Full, colors: [35, 0, 0, 0], completed: 0 }]
+        }
+      }
+    });
+    renderer.renderNow();
+
+    expect(base.records.some((call) => call.name === 'fillRect' && call.fillStyle === '#ffffff')).toBe(true);
+    const strokes = overlay.records.filter((call) => call.name === 'stroke');
+    expect(strokes.length).toBeGreaterThan(0);
+    expect(strokes.every((call) => call.globalAlpha === 1)).toBe(true);
+    const keylineWidth = Math.max(...strokes.map((call) => call.lineWidth));
+    const keylineStrokes = strokes.filter((call) => call.lineWidth === keylineWidth);
+    const inkStrokes = strokes.filter((call) => call.lineWidth < keylineWidth);
+    expect(inkStrokes.length).toBeGreaterThan(0);
+    expect(keylineStrokes.every((call) => call.strokeStyle === '#ffffff')).toBe(true);
+    expect(inkStrokes.every((call) => call.strokeStyle === '#242424')).toBe(true);
+    expect(keylineWidth).toBeGreaterThan(inkStrokes[0]?.lineWidth ?? 0);
+    renderer.dispose();
+  });
+
+  it('keys the outline from the committed neighbour across each footprint edge (mixed colours)', () => {
+    // A hovered black cell ringed entirely by white committed neighbours puts
+    // both candidate inks {white, symbolColor} in front of every edge; the
+    // renderer must make the worst-case-contrast choice consistently rather
+    // than leaking the (unused) proposed colour.
+    const document = chart(3, 3);
+    document.palette[0] = { ...document.palette[0], color: '#000000' }; // id 1: the hovered cell
+    document.palette[1] = { ...document.palette[1], color: '#ffffff' }; // id 35: its committed neighbours
+    for (let index = 0; index < 9; index += 1) {
+      document.kind[index] = CellKind.Full;
+      document.colors[index * 4] = index === 4 ? 1 : 35;
+    }
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      metrics: getCanvasMetrics(48, 48),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      overlay: {
+        brushPreview: {
+          kind: 'paint',
+          states: [{ index: 4, cell: { x: 1, y: 1 }, kind: CellKind.Full, colors: [35, 0, 0, 0], completed: 0 }]
+        }
+      }
+    });
+    renderer.renderNow();
+
+    const strokes = overlay.records.filter((call) => call.name === 'stroke');
+    expect(strokes.length).toBeGreaterThan(0);
+    const allowedInks = new Set(['#ffffff', '#242424']);
+    expect(strokes.every((call) => allowedInks.has(call.strokeStyle))).toBe(true);
+    expect(new Set(strokes.map((call) => call.strokeStyle)).size).toBe(2);
+    const keylineWidth = Math.max(...strokes.map((call) => call.lineWidth));
+    const keylineStrokes = strokes.filter((call) => call.lineWidth === keylineWidth);
+    const inkStrokes = strokes.filter((call) => call.lineWidth < keylineWidth);
+    expect(inkStrokes.length).toBeGreaterThan(0);
+    // Ink and keyline must always differ, and (since every neighbour is
+    // uniformly white) the choice is uniform across every edge.
+    expect(keylineStrokes.every((call) => call.strokeStyle === '#ffffff')).toBe(true);
+    expect(inkStrokes.every((call) => call.strokeStyle === '#242424')).toBe(true);
+    renderer.dispose();
+  });
+
+  it('strokes the keyline solid and wider, then the ink dashed and narrower', () => {
+    const document = chart(3, 3);
+    document.palette[0] = { ...document.palette[0], color: '#000000' };
+    document.palette[1] = { ...document.palette[1], color: '#ffffff' };
+    for (let index = 0; index < 9; index += 1) {
+      document.kind[index] = CellKind.Full;
+      document.colors[index * 4] = 1;
+    }
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      metrics: getCanvasMetrics(48, 48),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      overlay: {
+        brushPreview: {
+          kind: 'paint',
+          states: [{ index: 4, cell: { x: 1, y: 1 }, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 }]
+        }
+      }
+    });
+    renderer.renderNow();
+
+    const records = overlay.records;
+    const strokeIndices: number[] = [];
+    records.forEach((call, index) => { if (call.name === 'stroke') strokeIndices.push(index); });
+    expect(strokeIndices.length).toBeGreaterThanOrEqual(2);
+    const [firstStrokeIndex, secondStrokeIndex] = strokeIndices;
+    const lastDashBefore = (index: number): unknown => {
+      for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+        if (records[cursor].name === 'setLineDash') return records[cursor].args[0];
+      }
+      return undefined;
+    };
+    // Keyline: solid, wider. Ink: dashed, narrower. Keyline strokes first.
+    expect(records[firstStrokeIndex].lineWidth).toBeGreaterThan(records[secondStrokeIndex].lineWidth);
+    expect(lastDashBefore(firstStrokeIndex)).toEqual([]);
+    const inkDash = lastDashBefore(secondStrokeIndex);
+    expect(Array.isArray(inkDash) && (inkDash as unknown[]).length > 0).toBe(true);
+    renderer.dispose();
+  });
+
+  it('treats a 3-digit #000 shorthand palette colour the same as full black for ink selection', () => {
+    const document = chart(3, 3);
+    document.palette[0] = { ...document.palette[0], color: '#000' };
+    document.palette[1] = { ...document.palette[1], color: '#fff' };
+    for (let index = 0; index < 9; index += 1) {
+      document.kind[index] = CellKind.Full;
+      document.colors[index * 4] = 1;
+    }
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      metrics: getCanvasMetrics(48, 48),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      overlay: {
+        brushPreview: {
+          kind: 'paint',
+          states: [{ index: 4, cell: { x: 1, y: 1 }, kind: CellKind.Full, colors: [35, 0, 0, 0], completed: 0 }]
+        }
+      }
+    });
+    renderer.renderNow();
+
+    const strokes = overlay.records.filter((call) => call.name === 'stroke');
+    expect(strokes.length).toBeGreaterThan(0);
+    const keylineWidth = Math.max(...strokes.map((call) => call.lineWidth));
+    const inkStrokes = strokes.filter((call) => call.lineWidth < keylineWidth);
+    expect(inkStrokes.length).toBeGreaterThan(0);
+    expect(inkStrokes.every((call) => call.strokeStyle === '#ffffff')).toBe(true);
+    renderer.dispose();
+  });
+
+  it('keys a split-cell outline from its painted slot plus the exposed light background', () => {
+    // Regression: unpainted quarters expose the pattern background as an
+    // underlying colour too (not just the one painted dark slot), so a light
+    // background must pull the outline toward a dark ink / white keyline.
+    const document = chart(1, 1);
+    document.settings = { ...document.settings, backgroundColor: '#ffffff' };
+    document.palette[0] = { ...document.palette[0], color: '#ffffff' };
+    document.palette[1] = { ...document.palette[1], color: '#000' };
+    document.kind[0] = CellKind.Quarters;
+    document.colors.set([35, 0, 0, 0], 0);
+    const base = recordingContext();
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(overlay) },
+      metrics: getCanvasMetrics(16, 16),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      overlay: {
+        brushPreview: {
+          kind: 'paint',
+          states: [{ index: 0, cell: { x: 0, y: 0 }, kind: CellKind.Quarters, colors: [35, 0, 0, 0], completed: 0 }]
+        }
+      }
+    });
+    renderer.renderNow();
+
+    expect(base.records.some((call) => call.name === 'fillRect' && call.fillStyle === document.settings.backgroundColor)).toBe(true);
+    expect(base.records.some((call) => call.name === 'fill' && call.fillStyle === '#000')).toBe(true);
+    const strokes = overlay.records.filter((call) => call.name === 'stroke');
+    expect(strokes.length).toBeGreaterThan(0);
+    expect(strokes.every((call) => call.globalAlpha === 1)).toBe(true);
+    const keylineWidth = Math.max(...strokes.map((call) => call.lineWidth));
+    const keylineStrokes = strokes.filter((call) => call.lineWidth === keylineWidth);
+    const inkStrokes = strokes.filter((call) => call.lineWidth < keylineWidth);
+    expect(inkStrokes.length).toBeGreaterThan(0);
+    // Underlying colours here are {dark painted slot, white background}: the
+    // worst-case-contrast choice is a dark ink (style.symbolColor) with a
+    // white keyline beneath it.
+    expect(keylineStrokes.every((call) => call.strokeStyle === '#ffffff')).toBe(true);
+    expect(inkStrokes.every((call) => call.strokeStyle === '#242424')).toBe(true);
+    renderer.dispose();
+  });
+
+  it('keys a half-stitch outline from its exposed corner background, not just its painted band', () => {
+    // Regression: HalfBackslash/HalfSlash paint a diagonal hexagon that
+    // leaves two corner triangles as exposed pattern background. Without
+    // that background, an edge shared with an equally-coloured committed
+    // neighbour sees only one (duplicated) colour and picks the *worse*
+    // worst-case ink; the exposed white background must pull it back to
+    // the correct dark ink / white keyline pair.
+    const document = chart(2, 1);
+    document.settings = { ...document.settings, backgroundColor: '#ffffff' };
+    document.palette[0] = { ...document.palette[0], color: '#4d4d4d' };
+    document.kind[0] = CellKind.HalfBackslash;
+    document.colors[0] = 1;
+    document.kind[1] = CellKind.Full;
+    document.colors[4] = 1;
+    const base = recordingContext();
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(overlay) },
+      metrics: getCanvasMetrics(32, 16),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      overlay: {
+        brushPreview: {
+          kind: 'paint',
+          states: [{ index: 0, cell: { x: 0, y: 0 }, kind: CellKind.HalfBackslash, colors: [1, 0, 0, 0], completed: 0 }]
+        }
+      }
+    });
+    renderer.renderNow();
+
+    expect(base.records.some((call) => call.name === 'fill' && call.fillStyle === '#4d4d4d')).toBe(true);
+    expect(base.records.some((call) => call.name === 'fillRect' && call.fillStyle === '#4d4d4d')).toBe(true);
+    const strokes = overlay.records.filter((call) => call.name === 'stroke');
+    expect(strokes.length).toBeGreaterThan(0);
+    const keylineWidth = Math.max(...strokes.map((call) => call.lineWidth));
+    const keylineStrokes = strokes.filter((call) => call.lineWidth === keylineWidth);
+    const inkStrokes = strokes.filter((call) => call.lineWidth < keylineWidth);
+    expect(inkStrokes.length).toBeGreaterThan(0);
+    // Every edge (including the one shared with the equally-dark Full
+    // neighbour) must resolve to the same dark-ink/white-keyline pair.
+    expect(inkStrokes.every((call) => call.strokeStyle === '#242424')).toBe(true);
+    expect(keylineStrokes.every((call) => call.strokeStyle === '#ffffff')).toBe(true);
+    renderer.dispose();
+  });
+
+  it('keys a directional three-quarter outline from its exposed corner background', () => {
+    // Same regression as the half-stitch case above, for a single-direction
+    // three-quarter stitch (ThreeQuarterNW/NE/SE/SW), which paints one
+    // triangle and leaves the opposite corner as exposed background.
+    const document = chart(2, 1);
+    document.settings = { ...document.settings, backgroundColor: '#ffffff' };
+    document.palette[0] = { ...document.palette[0], color: '#4d4d4d' };
+    document.kind[0] = CellKind.ThreeQuarterSE;
+    document.colors[0] = 1;
+    document.kind[1] = CellKind.Full;
+    document.colors[4] = 1;
+    const base = recordingContext();
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(overlay) },
+      metrics: getCanvasMetrics(32, 16),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      overlay: {
+        brushPreview: {
+          kind: 'paint',
+          states: [{ index: 0, cell: { x: 0, y: 0 }, kind: CellKind.ThreeQuarterSE, colors: [1, 0, 0, 0], completed: 0 }]
+        }
+      }
+    });
+    renderer.renderNow();
+
+    expect(base.records.some((call) => call.name === 'fill' && call.fillStyle === '#4d4d4d')).toBe(true);
+    expect(base.records.some((call) => call.name === 'fillRect' && call.fillStyle === '#4d4d4d')).toBe(true);
+    const strokes = overlay.records.filter((call) => call.name === 'stroke');
+    expect(strokes.length).toBeGreaterThan(0);
+    const keylineWidth = Math.max(...strokes.map((call) => call.lineWidth));
+    const keylineStrokes = strokes.filter((call) => call.lineWidth === keylineWidth);
+    const inkStrokes = strokes.filter((call) => call.lineWidth < keylineWidth);
+    expect(inkStrokes.length).toBeGreaterThan(0);
+    expect(inkStrokes.every((call) => call.strokeStyle === '#242424')).toBe(true);
+    expect(keylineStrokes.every((call) => call.strokeStyle === '#ffffff')).toBe(true);
     renderer.dispose();
   });
 
@@ -806,23 +1144,28 @@ describe('Canvas 2D chart renderer', () => {
     const document = chart(1, 1);
     document.kind[0] = CellKind.Full;
     document.colors[0] = 1;
+    document.completed[0] = 1;
     const base = recordingContext();
     const renderer = createCanvasRenderer({
       document,
       targets: { base: target(base), overlay: target(recordingContext()) },
       metrics: getCanvasMetrics(16, 16),
-      viewport: { x: 0, y: 0, zoom: 16 }
+      viewport: { x: 0, y: 0, zoom: 16 },
+      style: { completedOpacity: 1 }
     });
     const cellFills = () => base.records.filter((call) => call.name === 'fillRect' && call.args[0] === 0 && call.args[1] === 0 && call.args[2] === 16 && call.args[3] === 16);
+    const completionMarks = () => base.records.filter((call) => call.name === 'stroke' && call.strokeStyle === '#242424');
     renderer.renderNow();
     // The background fill and the (0,0) cell fill share the same rect; the cell
     // is drawn last, so it is the final record while the background stays opaque.
     expect(cellFills().at(-1)?.globalAlpha).toBe(1);
+    expect(completionMarks().at(-1)?.globalAlpha).toBe(1);
     base.calls.length = 0;
     base.records.length = 0;
     renderer.setPatternDimmed?.(true);
     renderer.renderNow();
     expect(cellFills().at(-1)?.globalAlpha).toBe(0.5);
+    expect(completionMarks().at(-1)?.globalAlpha).toBe(0.5);
     renderer.setPatternDimmed?.(false);
     renderer.dispose();
   });

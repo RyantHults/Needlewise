@@ -50,10 +50,10 @@ import {
 } from './atlas';
 import { clearTarget, defaultAtlasTargetFactory, drawImage, prepareTarget, restore, save } from './context';
 import { grayscaleColor } from './symbols';
-import { contrastSymbolInk } from './contrast';
+import { contrastSymbolInk, relativeLuminance } from './contrast';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
 import { createTraceImageProjection, drawTraceImage } from './trace';
-import { isLegacyQuarterKind, isThreeQuarterPairKind, threeQuarterPairComponents } from '../editor/cell-kinds';
+import { isLegacyQuarterKind, isThreeQuarterKind, isThreeQuarterPairKind, threeQuarterPairComponents } from '../editor/cell-kinds';
 import { selectionBoundarySegments } from '../editor/lasso';
 
 const EMPTY_STATS: RenderStats = {
@@ -155,7 +155,7 @@ function completedMark(
   save(context);
   context.strokeStyle = style.completedColor;
   context.lineWidth = style.completedMarkWidth;
-  setAlpha(context, 0.8 * dimAlpha);
+  setAlpha(context, dimAlpha);
   linePath(
     context,
     { x: rect.x + rect.width * 0.2, y: rect.y + rect.height * 0.5 },
@@ -1115,6 +1115,95 @@ function drawBackstitchPreview(
   restore(context);
 }
 
+function compositeHexColor(foreground: string, background: string, alpha: number): string {
+  const opacity = Math.max(0, Math.min(1, alpha));
+  const channels = (color: string): [number, number, number] | undefined => {
+    const shorthand = /^#([\da-f])([\da-f])([\da-f])$/i.exec(color);
+    if (shorthand) return [1, 2, 3].map((index) => parseInt(shorthand[index] + shorthand[index], 16)) as [number, number, number];
+    const full = /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(color);
+    if (full) return [parseInt(full[1], 16), parseInt(full[2], 16), parseInt(full[3], 16)];
+    return undefined;
+  };
+  const foregroundChannels = channels(foreground);
+  const backgroundChannels = channels(background);
+  if (!foregroundChannels || !backgroundChannels || opacity >= 1) return foreground;
+  return `#${foregroundChannels.map((channel, index) =>
+    Math.round(channel * opacity + backgroundChannels[index] * (1 - opacity)).toString(16).padStart(2, '0')
+  ).join('')}`;
+}
+
+// Pick whichever of `#ffffff` / `darkInk` has the best WORST-CASE WCAG contrast
+// across every color in `colors` (a cell can expose several colors at once —
+// split-stitch slots, the pattern background, or both). Mirrors
+// contrastSymbolInk's tie-breaking (keeps darkInk on unparseable input).
+function bestContrastInk(colors: readonly string[], darkInk: string): string {
+  if (colors.length === 0) return darkInk;
+  if (colors.length === 1) return contrastSymbolInk(colors[0], darkInk);
+  const luminances = colors.map(relativeLuminance);
+  const darkLuminance = relativeLuminance(darkInk);
+  if (darkLuminance === undefined || luminances.some((value) => value === undefined)) {
+    return contrastSymbolInk(colors[0], darkInk);
+  }
+  const contrast = (left: number, right: number): number => (Math.max(left, right) + 0.05) / (Math.min(left, right) + 0.05);
+  const darkContrast = Math.min(...luminances.map((value) => contrast(darkLuminance, value!)));
+  const whiteContrast = Math.min(...luminances.map((value) => contrast(1, value!)));
+  return whiteContrast > darkContrast ? '#ffffff' : darkInk;
+}
+
+// The brush hover preview draws no fill of its own — what's actually on
+// screen under it is whatever the committed document already painted there.
+// This returns every color a cell could show: the painted slot colors (split
+// cells can have several), composited for completed slots, plus the pattern
+// background for empty cells, unpainted split slots, and out-of-bounds
+// neighbours past the chart edge.
+function visibleCellColors(document: PatternDocument, x: number, y: number, style: RendererStyle): string[] {
+  const patternBackground = patternBackgroundColor(document);
+  if (x < 0 || y < 0 || x >= document.width || y >= document.height) return [patternBackground];
+
+  const index = y * document.width + x;
+  const kind = document.kind[index];
+  if (kind === CellKind.Empty) return [patternBackground];
+
+  const offset = index * 4;
+  const colors = document.colors.subarray(offset, offset + 4);
+  const completed = document.completed[index];
+
+  let slots: number[];
+  if (isLegacyQuarterKind(kind)) {
+    slots = [0, 1, 2, 3];
+  } else if (isThreeQuarterPairKind(kind)) {
+    slots = threeQuarterPairComponents(colors).map((component) => component.slot);
+  } else {
+    slots = [0];
+  }
+
+  const visible: string[] = [];
+  for (const slot of slots) {
+    const paletteId = colors[slot] ?? 0;
+    if (paletteId === 0) continue;
+    const fill = style.mode === ChartPresentationMode.Symbol
+      ? style.symbolBackgroundColor
+      : styleColor(document, paletteId, style);
+    visible.push((completed & (1 << slot)) !== 0
+      ? compositeHexColor(fill, patternBackground, style.completedOpacity)
+      : fill);
+  }
+  // Every kind whose drawStitchGeometry shape doesn't fully tile the cell
+  // leaves some pattern background exposed: legacy quarters and
+  // three-quarter pairs can have an unpainted slot; HalfBackslash/HalfSlash
+  // paint a diagonal hexagon that always leaves two opposite corner
+  // triangles bare; a single-direction three-quarter stitch (NW/NE/SE/SW)
+  // paints one triangle and always leaves the opposite corner bare.
+  // CellKind.Full is the only kind that always fully covers its cell.
+  const exposesBackground = isLegacyQuarterKind(kind)
+    || isThreeQuarterPairKind(kind)
+    || kind === CellKind.HalfBackslash
+    || kind === CellKind.HalfSlash
+    || isThreeQuarterKind(kind);
+  if (exposesBackground || visible.length === 0) visible.push(patternBackground);
+  return visible;
+}
+
 function drawBrushPreview(
   context: CanvasContextAdapter,
   document: PatternDocument,
@@ -1133,27 +1222,48 @@ function drawBrushPreview(
   }
   if (!cells.size) return;
   save(context);
-  setAlpha(context, 0.42);
-  context.lineWidth = Math.max(0.75, Math.min(1.5, viewport.zoom * 0.06));
-  context.setLineDash?.([3, 2]);
+  setAlpha(context, 1);
+  const strokeWidth = Math.max(0.75, Math.min(1.5, viewport.zoom * 0.06));
+
+  // Each outer edge segment gets its own ink/keyline pair, judged against the
+  // colors actually visible there: the hovered cell and the cell just outside
+  // the footprint across that edge. The keyline is drawn solid and wider so it
+  // stays visible through the dashed ink's gaps; preview.color (when set)
+  // overrides ink only — the keyline still tracks the underlying colors, so it
+  // stays legible regardless of what color is being previewed.
+  const strokeEdge = (from: ScreenPoint, to: ScreenPoint, hoveredColors: readonly string[], neighborColors: readonly string[]): void => {
+    const underlyingColors = [...hoveredColors, ...neighborColors];
+    const bestInk = bestContrastInk(underlyingColors, style.symbolColor);
+    const keylineInk = bestInk === '#ffffff' ? style.symbolColor : '#ffffff';
+    context.beginPath();
+    context.moveTo(from.x, from.y);
+    context.lineTo(to.x, to.y);
+    context.strokeStyle = keylineInk;
+    context.lineWidth = strokeWidth + 1;
+    context.setLineDash?.([]);
+    context.stroke();
+    context.beginPath();
+    context.moveTo(from.x, from.y);
+    context.lineTo(to.x, to.y);
+    context.strokeStyle = preview.color ?? bestInk;
+    context.lineWidth = strokeWidth;
+    context.setLineDash?.([3, 2]);
+    context.stroke();
+  };
+
   for (const key of cells) {
     const [x, y] = key.split(',').map(Number);
     const rect = intersectRects(cellToScreenRect({ x, y, width: 1, height: 1 }, viewport), bounds);
     if (!rect) continue;
-    const index = y * document.width + x;
-    const paletteId = document.colors[index * 4] ?? 0;
-    const background = paletteId === 0 ? patternBackgroundColor(document) : styleColor(document, paletteId, style);
-    context.strokeStyle = preview.color ?? contrastSymbolInk(background, style.symbolColor);
-    context.beginPath();
+    const hoveredColors = visibleCellColors(document, x, y, style);
     const left = modelToScreen({ x, y }, viewport);
     const right = modelToScreen({ x: x + 1, y }, viewport);
     const bottomRight = modelToScreen({ x: x + 1, y: y + 1 }, viewport);
     const bottom = modelToScreen({ x, y: y + 1 }, viewport);
-    if (!cells.has(`${x},${y - 1}`)) { context.moveTo(left.x, left.y); context.lineTo(right.x, right.y); }
-    if (!cells.has(`${x + 1},${y}`)) { context.moveTo(right.x, right.y); context.lineTo(bottomRight.x, bottomRight.y); }
-    if (!cells.has(`${x},${y + 1}`)) { context.moveTo(bottomRight.x, bottomRight.y); context.lineTo(bottom.x, bottom.y); }
-    if (!cells.has(`${x - 1},${y}`)) { context.moveTo(bottom.x, bottom.y); context.lineTo(left.x, left.y); }
-    context.stroke();
+    if (!cells.has(`${x},${y - 1}`)) strokeEdge(left, right, hoveredColors, visibleCellColors(document, x, y - 1, style));
+    if (!cells.has(`${x + 1},${y}`)) strokeEdge(right, bottomRight, hoveredColors, visibleCellColors(document, x + 1, y, style));
+    if (!cells.has(`${x},${y + 1}`)) strokeEdge(bottomRight, bottom, hoveredColors, visibleCellColors(document, x, y + 1, style));
+    if (!cells.has(`${x - 1},${y}`)) strokeEdge(bottom, left, hoveredColors, visibleCellColors(document, x - 1, y, style));
   }
   restore(context);
 }

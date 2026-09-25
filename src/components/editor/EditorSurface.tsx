@@ -30,7 +30,7 @@ import lassoIcon from "../../assets/editor-tools/lasso.svg";
 import eyedropperIcon from "../../assets/editor-tools/eyedropper.svg";
 import panIcon from "../../assets/editor-tools/pan.svg";
 import stitchIcon from "../../assets/editor-tools/stitch.svg";
-import type { ShapeKind } from "../../editor/contracts";
+import type { BrushSizeTool, ShapeKind } from "../../editor/contracts";
 interface Props {
   workspace: ProjectWorkspace;
   document: NonNullable<
@@ -43,6 +43,15 @@ interface Props {
   onOpenMaterials?: () => void;
 }
 type CatalogColor = CatalogRecord;
+const SHAPE_CHOICES: readonly ShapeKind[] = [
+  "line",
+  "rectangle",
+  "square",
+  "circle",
+  "oval",
+  "triangle",
+  "right-triangle",
+];
 const normalizeHexColor = (value: string): string | undefined => {
   const digits = value.trim().replace(/^#/, "");
   if (!/^(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(digits)) return undefined;
@@ -71,6 +80,44 @@ type EditorPreferences = {
   paletteDisplay: { symbols: boolean; numbers: boolean };
   /** Restrict finger touch to movement controls; pen input still edits. */
   pencilModeEnabled: boolean;
+};
+
+type PressTool = BrushSizeTool | "shape";
+type PressSession = {
+  pointerId: number;
+  pointerType: string;
+  kind: "brush" | "shape";
+  anchor: HTMLButtonElement;
+  tool: PressTool;
+  label: string;
+  phase: "pending" | "opened" | "aborted";
+  clientX: number;
+  clientY: number;
+  timer: number | null;
+  removeListeners: ((keepReleaseObservers: boolean) => void) | null;
+  removeReleaseListeners: (() => void) | null;
+};
+type TrailingPointerClick = {
+  anchor: HTMLButtonElement;
+  pointerId: number;
+  timer: number;
+  allowAnonymous: boolean;
+};
+type CompetingPressPointer = {
+  pointerId: number;
+  anchor: HTMLButtonElement;
+  owner: PressSession;
+};
+type TouchContextGuard = {
+  anchor: HTMLButtonElement;
+  timer: number;
+};
+type PressLifecycle = {
+  session: PressSession | null;
+  trailingClicks: TrailingPointerClick[];
+  competingPointers: CompetingPressPointer[];
+  releaseObservers: PressSession[];
+  touchContextGuards: TouchContextGuard[];
 };
 
 const defaultEditorPreferences = (): EditorPreferences => ({
@@ -185,16 +232,16 @@ export function EditorSurface({
   );
   const [ui, setUi] = useState<EditorUiState | null>(null);
   const [fallback, setFallback] = useState(false);
-  const [size, setSize] = useState(1);
-  const [selectedShape, setSelectedShape] = useState<ShapeKind>("line");
+  const [brushPopover, setBrushPopover] = useState<{ tool: BrushSizeTool; label: string; left: number; top: number } | null>(null);
+  const brushTrigger = useRef<HTMLButtonElement | null>(null);
+  const brushMenu = useRef<HTMLDivElement | null>(null);
+  const pressLifecycle = useRef<PressLifecycle>({ session: null, trailingClicks: [], competingPointers: [], releaseObservers: [], touchContextGuards: [] });
+  const [selectedShape, setSelectedShape] = useState<ShapeKind>("triangle");
   const [shapeMenuOpen, setShapeMenuOpen] = useState(false);
   const [shapeMenuPosition, setShapeMenuPosition] = useState({ left: 8, top: 8 });
   const shapeTrigger = useRef<HTMLButtonElement>(null);
   const shapeMenu = useRef<HTMLDivElement>(null);
   const shapeItems = useRef<Array<HTMLButtonElement | null>>([]);
-  const shapePress = useRef<number | null>(null);
-  const shapeLongPressed = useRef(false);
-  const shapePointerId = useRef<number | null>(null);
   const [open, setOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<"project" | "aida" | "editor">("project");
   const [title, setTitle] = useState(workspace.metadata?.title ?? "");
@@ -219,10 +266,12 @@ export function EditorSurface({
   const [selectedCatalogId, setSelectedCatalogId] = useState(defaultCatalogId);
   const [selectedCatalogColor, setSelectedCatalogColor] =
     useState<CatalogColor | null>(null);
+  const [swapTarget, setSwapTarget] = useState<number | null>(null);
   const [customColorInput, setCustomColorInput] = useState("");
   const [canonicalCustomColor, setCanonicalCustomColor] = useState("#000000");
   const [paletteNotice, setPaletteNotice] = useState("");
   const addTrigger = useRef<HTMLButtonElement>(null);
+  const paletteTrigger = useRef<HTMLButtonElement | null>(null);
   const paletteDialog = useRef<HTMLDivElement>(null);
   const [removeOpen, setRemoveOpen] = useState(false);
   const [removeQuery, setRemoveQuery] = useState("");
@@ -332,9 +381,9 @@ export function EditorSurface({
         c,
         {
           keyboardSurface: root,
-          shouldExcludeTarget: (target: unknown) =>
+            shouldExcludeTarget: (target: unknown) =>
             target instanceof Element &&
-            Boolean(target.closest('.touch-copy-menu, button[aria-label="Shape"]')),
+            Boolean(target.closest('.touch-copy-menu, button[aria-label="Shape"], button[aria-haspopup="dialog"], .tool-brush-popover')),
         },
       );
       const observer =
@@ -498,12 +547,25 @@ export function EditorSurface({
     setSelectedCatalogColor(pickerCatalog?.search("", { limit: 1 })[0] ?? null);
   }, [selectedCatalogId]);
   const openPalettePicker = () => {
+    paletteTrigger.current = addTrigger.current;
+    setSwapTarget(null);
     setPaletteNotice("");
     setPaletteQuery("");
-    setCustomColorInput("");
+    setCustomColorInput("#000000");
     setCanonicalCustomColor("#000000");
     setSelectedCatalogId(defaultCatalogId);
     setSelectedCatalogColor(availableCatalogs.find((item) => item.association.catalogId === defaultCatalogId)?.search("", { limit: 1 })[0] ?? null);
+    setPaletteOpen(true);
+  };
+  const openSwapPicker = (id: number, trigger: HTMLButtonElement) => {
+    paletteTrigger.current = trigger;
+    setPaletteNotice("");
+    setPaletteQuery("");
+    setCustomColorInput("#000000");
+    setCanonicalCustomColor("#000000");
+    setSelectedCatalogId(defaultCatalogId);
+    setSelectedCatalogColor(availableCatalogs.find((item) => item.association.catalogId === defaultCatalogId)?.search("", { limit: 1 })[0] ?? null);
+    setSwapTarget(id);
     setPaletteOpen(true);
   };
   const customColor = normalizeHexColor(customColorInput);
@@ -523,7 +585,9 @@ export function EditorSurface({
   const customPaletteMatch = customColor
     ? selectedCatalogPaletteMatch ?? palette.find((entry) => entry.active && !entry.catalog && normalizeHexColor(entry.color) === customColor)
     : undefined;
-  const customActionLabel = customPaletteMatch
+  const customActionLabel = swapTarget !== null
+    ? customPaletteMatch ? `Swap with ${customPaletteMatch.name}` : customCatalogColor ? `Swap with ${customCatalogColor.name}` : customColor ? `Replace with ${customColor}` : "Replace custom color"
+    : customPaletteMatch
     ? `Select ${customPaletteMatch.name}`
     : customCatalogColor
       ? `Add ${customCatalogColor.name}`
@@ -532,7 +596,7 @@ export function EditorSurface({
         : "Add custom color";
   const closePalettePicker = () => {
     setPaletteOpen(false);
-    window.setTimeout(() => addTrigger.current?.focus(), 0);
+    window.setTimeout(() => paletteTrigger.current?.focus(), 0);
   };
   const addPaletteColor = async (
     color: CatalogColor,
@@ -559,6 +623,38 @@ export function EditorSurface({
           ? error.message
           : "This color could not be added.",
       );
+    }
+  };
+  const swapIntoCatalogColor = (color: CatalogColor) => {
+    const target = swapTarget;
+    const definition = pickerCatalog;
+    if (target === null || !definition) return;
+    const existing = palette.find((entry) => entry.active && entry.id !== target && entry.catalog?.catalogId === definition.association.catalogId && entry.catalog.sourceId === color.sourceId);
+    try {
+      if (existing) workspace.execute({ type: "palette-merge", from: target, to: existing.id });
+      else workspace.execute({ type: "palette-merge", from: target, createTo: { name: color.name, color: color.hex, catalog: createCatalogReference(definition, color) } });
+      const current = workspace.getStateSnapshot().document;
+      const replacement = existing?.id ?? current?.palette.find((entry) => entry.active && entry.id !== target && entry.catalog?.catalogId === definition.association.catalogId && entry.catalog.sourceId === color.sourceId)?.id ?? null;
+      controllerRef.current?.selectPalette(replacement);
+      closePalettePicker();
+      setSwapTarget(null);
+    } catch (error) {
+      setPaletteNotice(error instanceof Error ? error.message : "This color could not be swapped.");
+    }
+  };
+  const swapIntoCustomColor = () => {
+    const target = swapTarget;
+    if (target === null || !customColor) return;
+    const existing = palette.find((entry) => entry.active && entry.id !== target && normalizeHexColor(entry.color) === customColor);
+    try {
+      if (existing) workspace.execute({ type: "palette-merge", from: target, to: existing.id });
+      else workspace.execute({ type: "palette-merge", from: target, createTo: { name: customColor, color: customColor } });
+      const replacement = existing?.id ?? workspace.getStateSnapshot().document?.palette.find((entry) => entry.active && entry.id !== target && normalizeHexColor(entry.color) === customColor)?.id ?? null;
+      controllerRef.current?.selectPalette(replacement);
+      closePalettePicker();
+      setSwapTarget(null);
+    } catch (error) {
+      setPaletteNotice(error instanceof Error ? error.message : "This color could not be swapped.");
     }
   };
   const addCustomColor = async (): Promise<void> => {
@@ -747,7 +843,7 @@ export function EditorSurface({
           <button type="button" role="menuitem" onClick={() => { const anchor = menuAnchor.current as HTMLButtonElement; openSymbolPicker(x.id, anchor); setPaletteMenu(null); }}>Change symbol</button>
           {!(ui?.pendingPaletteId === x.id && !paletteActiveIds.has(x.id)) && (
             <>
-            <button type="button" role="menuitem" onClick={() => { const anchor = menuAnchor.current as HTMLButtonElement; openRemove(x.id, anchor); setPaletteMenu(null); }}>Swap color</button>
+             <button type="button" role="menuitem" onClick={() => { openSwapPicker(x.id, menuAnchor.current as HTMLButtonElement); setPaletteMenu(null); }}>Swap color</button>
             <button type="button" role="menuitem" className="palette-menu-delete" onClick={() => { deleteTrigger.current = menuAnchor.current as HTMLButtonElement; setDeleteTarget(x.id); setPaletteMenu(null); }}>Delete color</button>
             </>
           )}
@@ -1094,7 +1190,7 @@ export function EditorSurface({
     if (!mobilePanel) return;
     mobilePopover.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && globalThis.document.querySelector(".shape-picker-menu")) return;
+       if (event.key === "Escape" && globalThis.document.querySelector(".shape-picker-menu, .tool-brush-popover")) return;
       if (event.key === "Escape") {
         event.preventDefault();
         setMobilePanel(null);
@@ -1106,7 +1202,7 @@ export function EditorSurface({
     const onPointerDown = (event: PointerEvent) => {
       if (paletteOpen) return;
       const target = event.target;
-      if (target instanceof Node && !mobileDock.current?.contains(target) && !(target instanceof Element && target.closest(".mobile-dock-trigger, .editor-rail-popover"))) setMobilePanel(null);
+       if (target instanceof Node && !mobileDock.current?.contains(target) && !(target instanceof Element && target.closest(".mobile-dock-trigger, .editor-rail-popover, .tool-brush-popover"))) setMobilePanel(null);
     };
     globalThis.document.addEventListener("keydown", onKeyDown);
     globalThis.document.addEventListener("pointerdown", onPointerDown);
@@ -1231,13 +1327,26 @@ export function EditorSurface({
   const threeQuarterActive =
     (selectedBrush as { kind?: string } | undefined)?.kind === "three-quarter";
   const backstitchActive = ui?.tool.tool === "backstitch";
+  const openBrushPopover = (tool: BrushSizeTool, label: string, anchor: HTMLButtonElement) => {
+    brushTrigger.current = anchor;
+    const rect = anchor.getBoundingClientRect();
+    setBrushPopover({ tool, label, left: Math.max(8, Math.min(rect.left, window.innerWidth - 250)), top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 100)) });
+  };
+  useEffect(() => {
+    if (!brushPopover) return;
+    const close = (restore = false) => { setBrushPopover(null); if (restore && brushTrigger.current?.isConnected) brushTrigger.current.focus(); };
+    const outside = (event: PointerEvent) => { if (event.target instanceof Node && !brushMenu.current?.contains(event.target) && !brushTrigger.current?.contains(event.target)) close(); };
+    const key = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); event.stopImmediatePropagation(); close(true); } };
+    const reposition = () => { const anchor = brushTrigger.current; if (!anchor?.isConnected) { close(); return; } const rect = anchor.getBoundingClientRect(); setBrushPopover((current) => current ? { ...current, left: Math.max(8, Math.min(rect.left, window.innerWidth - 250)), top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 100)) } : current); };
+    globalThis.document.addEventListener("pointerdown", outside); globalThis.document.addEventListener("keydown", key); window.addEventListener("resize", reposition); window.addEventListener("scroll", reposition, true);
+    return () => { globalThis.document.removeEventListener("pointerdown", outside); globalThis.document.removeEventListener("keydown", key); window.removeEventListener("resize", reposition); window.removeEventListener("scroll", reposition, true); };
+  }, [brushPopover]);
+  useEffect(() => { if (brushPopover) brushMenu.current?.querySelector<HTMLInputElement>("input")?.focus(); }, [brushPopover]);
   const positionShapeMenu = (anchor: HTMLElement) => {
     const rect = anchor.getBoundingClientRect();
-    setShapeMenuPosition({ left: Math.max(8, Math.min(rect.left, window.innerWidth - 280)), top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 110)) });
+    setShapeMenuPosition({ left: Math.max(8, Math.min(rect.left, window.innerWidth - 324)), top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 110)) });
   };
   const openShapeMenu = (anchor: HTMLElement) => {
-    window.clearTimeout(shapePress.current ?? undefined);
-    shapePress.current = null;
     shapeTrigger.current = anchor as HTMLButtonElement;
     positionShapeMenu(anchor);
     setShapeMenuOpen(true);
@@ -1251,20 +1360,20 @@ export function EditorSurface({
     if (shapeToolDisabled) return;
     controllerRef.current?.setTool({ tool: "shape", shape } as never);
   };
-  const shapeIcon = (kind: ShapeKind) => <svg data-shape-icon={kind} viewBox="0 0 24 24" aria-hidden="true"><path d={kind === "line" ? "M5 19 19 5" : kind === "rectangle" ? "M5 6h14v12H5z" : (kind as string) === "square" ? "M5 5h14v14H5z" : kind === "circle" ? "M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16" : (kind as string) === "right-triangle" ? "M5 5V19H19Z M8 16V13H11V16Z" : "M12 4 20 19H4z"} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>;
+  const shapeIcon = (kind: ShapeKind) => <svg data-shape-icon={kind} viewBox="0 0 24 24" aria-hidden="true"><path d={kind === "line" ? "M5 19 19 5" : kind === "rectangle" ? "M5 6h14v12H5z" : (kind as string) === "square" ? "M5 5h14v14H5z" : kind === "circle" ? "M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16" : (kind as string) === "oval" ? "M12 4a8 6 0 1 0 0 12 8 6 0 0 0 0-12" : (kind as string) === "right-triangle" ? "M5 5V19H19Z" : "M12 4 20 19H4z"} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>;
   useEffect(() => {
     if (!shapeMenuOpen) return;
-    shapeItems.current[( ["line", "rectangle", "square", "circle", "triangle", "right-triangle"] as string[]).indexOf(selectedShape)]?.focus();
+    shapeItems.current[SHAPE_CHOICES.indexOf(selectedShape)]?.focus();
     const outside = (event: PointerEvent) => { if (event.target instanceof Node && !shapeMenu.current?.contains(event.target) && !shapeTrigger.current?.contains(event.target)) closeShapeMenu(); };
     const key = (event: KeyboardEvent) => {
       if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeShapeMenu(); return; }
       const current = shapeItems.current.findIndex((item) => item === globalThis.document.activeElement);
       if (current < 0) return;
       let next: number | undefined;
-      if (event.key === "ArrowDown" || event.key === "ArrowRight") next = (current + 1) % 6;
-      else if (event.key === "ArrowUp" || event.key === "ArrowLeft") next = (current + 5) % 6;
+      if (event.key === "ArrowDown" || event.key === "ArrowRight") next = (current + 1) % 7;
+      else if (event.key === "ArrowUp" || event.key === "ArrowLeft") next = (current + 6) % 7;
       else if (event.key === "Home") next = 0;
-      else if (event.key === "End") next = 5;
+      else if (event.key === "End") next = 6;
       else if (event.key === "Enter" || event.key === " ") { event.preventDefault(); shapeItems.current[current]?.click(); return; }
       if (next !== undefined) { event.preventDefault(); shapeItems.current[next]?.focus(); }
     };
@@ -1272,17 +1381,251 @@ export function EditorSurface({
     globalThis.document.addEventListener("keydown", key);
     return () => { globalThis.document.removeEventListener("pointerdown", outside); globalThis.document.removeEventListener("keydown", key); };
   }, [shapeMenuOpen, selectedShape]);
-  useEffect(() => {
-    const releaseOutside = (event: PointerEvent) => {
-      if (shapePointerId.current !== null && event.pointerId === shapePointerId.current && !(event.target instanceof Node && shapeTrigger.current?.contains(event.target))) {
-        window.clearTimeout(shapePress.current ?? undefined);
-        shapePress.current = null;
-        shapePointerId.current = null;
-        shapeLongPressed.current = false;
+  const pressPointInside = (session: PressSession, x: number, y: number) => {
+    const rect = session.anchor.getBoundingClientRect();
+    return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+  };
+  const removeTrailingClick = (token: TrailingPointerClick) => {
+    window.clearTimeout(token.timer);
+    pressLifecycle.current.trailingClicks = pressLifecycle.current.trailingClicks.filter((item) => item !== token);
+  };
+  const clearTrailingClicks = () => {
+    for (const token of pressLifecycle.current.trailingClicks) window.clearTimeout(token.timer);
+    pressLifecycle.current.trailingClicks = [];
+  };
+  const clearTrailingClicksFor = (anchor: HTMLButtonElement, pointerId: number) => {
+    for (const token of [...pressLifecycle.current.trailingClicks]) {
+      if (token.anchor === anchor && token.pointerId === pointerId) removeTrailingClick(token);
+    }
+  };
+  const removeTouchContextGuard = (guard: TouchContextGuard) => {
+    window.clearTimeout(guard.timer);
+    pressLifecycle.current.touchContextGuards = pressLifecycle.current.touchContextGuards.filter((item) => item !== guard);
+  };
+  const clearTouchContextGuards = () => {
+    for (const guard of pressLifecycle.current.touchContextGuards) window.clearTimeout(guard.timer);
+    pressLifecycle.current.touchContextGuards = [];
+  };
+  const addTouchContextGuard = (anchor: HTMLButtonElement) => {
+    for (const guard of [...pressLifecycle.current.touchContextGuards]) {
+      if (guard.anchor === anchor) removeTouchContextGuard(guard);
+    }
+    const guard: TouchContextGuard = { anchor, timer: 0 };
+    guard.timer = window.setTimeout(() => removeTouchContextGuard(guard), 500);
+    pressLifecycle.current.touchContextGuards.push(guard);
+  };
+  const addTrailingClick = (anchor: HTMLButtonElement, pointerId: number) => {
+    const token: TrailingPointerClick = { anchor, pointerId, timer: 0, allowAnonymous: true };
+    token.timer = window.setTimeout(() => removeTrailingClick(token), 1_000);
+    pressLifecycle.current.trailingClicks.push(token);
+  };
+  const detachPressSession = (session: PressSession, keepReleaseObservers = false) => {
+    if (session.timer !== null) window.clearTimeout(session.timer);
+    session.timer = null;
+    session.removeListeners?.(keepReleaseObservers);
+    session.removeListeners = null;
+    if (keepReleaseObservers && !pressLifecycle.current.releaseObservers.includes(session)) {
+      pressLifecycle.current.releaseObservers.push(session);
+    } else if (!keepReleaseObservers) {
+      session.removeReleaseListeners = null;
+    }
+    if (pressLifecycle.current.session === session) pressLifecycle.current.session = null;
+  };
+  const finishCompetingPointer = (pointerId: number, owner: PressSession, canceled: boolean) => {
+    const lifecycle = pressLifecycle.current;
+    const index = lifecycle.competingPointers.findIndex((item) => item.pointerId === pointerId && item.owner === owner);
+    if (index < 0) return;
+    const [competing] = lifecycle.competingPointers.splice(index, 1);
+    if (!competing) return;
+    if (!canceled) addTrailingClick(competing.anchor, competing.pointerId);
+    if (
+      lifecycle.session !== owner &&
+      !lifecycle.competingPointers.some((item) => item.owner === owner)
+    ) {
+      owner.removeReleaseListeners?.();
+      owner.removeReleaseListeners = null;
+      lifecycle.releaseObservers = lifecycle.releaseObservers.filter((item) => item !== owner);
+    }
+  };
+  const beginPress = (
+    event: React.PointerEvent<HTMLButtonElement>,
+    kind: PressSession["kind"],
+    tool: PressTool,
+    label: string,
+  ) => {
+    if (event.button !== 0 || event.isPrimary === false) return;
+    const lifecycle = pressLifecycle.current;
+    if (lifecycle.session) return;
+    const anchor = event.currentTarget;
+    for (const token of [...lifecycle.trailingClicks]) {
+      if (token.anchor !== anchor) continue;
+      if (token.pointerId === event.pointerId) removeTrailingClick(token);
+      else token.allowAnonymous = false;
+    }
+    const session: PressSession = {
+      pointerId: event.pointerId,
+      pointerType: event.pointerType,
+      kind,
+      anchor,
+      tool,
+      label,
+      phase: "pending",
+      clientX: event.clientX,
+      clientY: event.clientY,
+      timer: null,
+      removeListeners: null,
+      removeReleaseListeners: null,
+    };
+    lifecycle.session = session;
+    if (!pressPointInside(session, session.clientX, session.clientY)) session.phase = "aborted";
+    const abortIfOutside = (x: number, y: number) => {
+      if (pressPointInside(session, x, y)) return;
+      if (session.phase === "pending" || session.phase === "opened") {
+        session.phase = "aborted";
+        if (session.timer !== null) window.clearTimeout(session.timer);
+        session.timer = null;
       }
     };
-    globalThis.document.addEventListener("pointerup", releaseOutside, true);
-    return () => globalThis.document.removeEventListener("pointerup", releaseOutside, true);
+    const move = (pointer: PointerEvent) => {
+      if (pointer.pointerId !== session.pointerId || lifecycle.session !== session) return;
+      session.clientX = pointer.clientX;
+      session.clientY = pointer.clientY;
+      abortIfOutside(pointer.clientX, pointer.clientY);
+    };
+    const observeCompetingDown = (pointer: PointerEvent) => {
+      if (pointer.pointerId === session.pointerId || lifecycle.session !== session || pointer.button !== 0) return;
+      const target = pointer.target instanceof Element
+        ? pointer.target.closest<HTMLButtonElement>('button[aria-haspopup="dialog"], button[aria-label="Shape"]')
+        : null;
+      if (!target || lifecycle.competingPointers.some((item) => item.pointerId === pointer.pointerId && item.owner === session)) return;
+      lifecycle.competingPointers.push({ pointerId: pointer.pointerId, anchor: target, owner: session });
+    };
+    const release = (pointer: PointerEvent) => {
+      if (pointer.pointerId !== session.pointerId) {
+        finishCompetingPointer(pointer.pointerId, session, false);
+        return;
+      }
+      if (lifecycle.session !== session) return;
+      session.clientX = pointer.clientX;
+      session.clientY = pointer.clientY;
+      abortIfOutside(pointer.clientX, pointer.clientY);
+      const keepReleaseObservers = lifecycle.competingPointers.some((item) => item.owner === session);
+      const clickRemainsPlausible = pointer.target instanceof Node && session.anchor.contains(pointer.target);
+      const consumeClick = pointer.type === "pointerup" && session.phase !== "pending" && clickRemainsPlausible;
+      detachPressSession(session, keepReleaseObservers);
+      if (consumeClick) addTrailingClick(session.anchor, session.pointerId);
+    };
+    const cancel = (pointer: PointerEvent) => {
+      if (pointer.pointerId !== session.pointerId) {
+        finishCompetingPointer(pointer.pointerId, session, true);
+        return;
+      }
+      if (lifecycle.session !== session) return;
+      const keepReleaseObservers = lifecycle.competingPointers.some((item) => item.owner === session);
+      detachPressSession(session, keepReleaseObservers);
+      clearTrailingClicksFor(session.anchor, session.pointerId);
+      if (session.pointerType === "touch") addTouchContextGuard(session.anchor);
+    };
+    const clearReleasedObservers = () => {
+      for (const owner of lifecycle.releaseObservers) {
+        owner.removeReleaseListeners?.();
+        owner.removeReleaseListeners = null;
+      }
+      lifecycle.releaseObservers = [];
+      lifecycle.competingPointers = [];
+    };
+    const blur = () => {
+      if (lifecycle.session === session) detachPressSession(session);
+      clearReleasedObservers();
+      clearTrailingClicks();
+      clearTouchContextGuards();
+    };
+    globalThis.document.addEventListener("pointermove", move, true);
+    globalThis.document.addEventListener("pointerdown", observeCompetingDown, true);
+    globalThis.document.addEventListener("pointerup", release, true);
+    globalThis.document.addEventListener("pointercancel", cancel, true);
+    window.addEventListener("blur", blur);
+    session.removeReleaseListeners = () => {
+      globalThis.document.removeEventListener("pointerup", release, true);
+      globalThis.document.removeEventListener("pointercancel", cancel, true);
+      window.removeEventListener("blur", blur);
+    };
+    session.removeListeners = (keepReleaseObservers) => {
+      globalThis.document.removeEventListener("pointermove", move, true);
+      globalThis.document.removeEventListener("pointerdown", observeCompetingDown, true);
+      if (!keepReleaseObservers) session.removeReleaseListeners?.();
+    };
+    session.timer = window.setTimeout(() => {
+      session.timer = null;
+      if (lifecycle.session !== session || session.phase !== "pending") return;
+      abortIfOutside(session.clientX, session.clientY);
+      if (session.phase !== "pending") return;
+      session.phase = "opened";
+      if (session.kind === "shape") openShapeMenu(anchor);
+      else openBrushPopover(session.tool as BrushSizeTool, session.label, anchor);
+    }, 500);
+  };
+  const abortPressOnLeave = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const session = pressLifecycle.current.session;
+    if (!session || session.pointerId !== event.pointerId || session.phase !== "pending") return;
+    session.phase = "aborted";
+    if (session.timer !== null) window.clearTimeout(session.timer);
+    session.timer = null;
+  };
+  const shouldSuppressPressClick = (
+    anchor: HTMLButtonElement,
+    event: React.MouseEvent<HTMLButtonElement>,
+  ) => {
+    const pointerId = (event.nativeEvent as MouseEvent & { pointerId?: number }).pointerId;
+    const lifecycle = pressLifecycle.current;
+    if (event.detail <= 0) return false;
+    const suppression = lifecycle.trailingClicks.find((token) =>
+      token.anchor === anchor &&
+      (pointerId === undefined ? token.allowAnonymous : token.pointerId === pointerId),
+    );
+    if (suppression) {
+      removeTrailingClick(suppression);
+      return true;
+    }
+    const activeSession = lifecycle.session;
+    if (activeSession && (pointerId === undefined || pointerId !== activeSession.pointerId)) return true;
+    return false;
+  };
+  const deferTouchContextMenu = (anchor: HTMLButtonElement, event: React.MouseEvent<HTMLButtonElement>) => {
+    const lifecycle = pressLifecycle.current;
+    const session = lifecycle.session;
+    const eventPointerType = (event.nativeEvent as MouseEvent & { pointerType?: string }).pointerType;
+    const touchSession = session?.anchor === anchor && session.pointerType === "touch";
+    const touchGuard = lifecycle.touchContextGuards.some((guard) => guard.anchor === anchor);
+    if (eventPointerType === "touch") return true;
+    if (event.button === 2 && eventPointerType === "mouse") return false;
+    if (touchSession || touchGuard) return true;
+    if (event.button === 2) return false;
+    return false;
+  };
+  const brushHandlers = (tool: BrushSizeTool, label: string) => ({
+    onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => beginPress(event, "brush", tool, label),
+    onPointerLeave: abortPressOnLeave,
+    onContextMenu: (event: React.MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      if (!deferTouchContextMenu(event.currentTarget, event)) openBrushPopover(tool, label, event.currentTarget);
+    },
+    onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => {
+      if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
+        event.preventDefault();
+        event.stopPropagation();
+        openBrushPopover(tool, label, event.currentTarget);
+      }
+    },
+  });
+  useEffect(() => () => {
+    const lifecycle = pressLifecycle.current;
+    if (lifecycle.session) detachPressSession(lifecycle.session);
+    for (const session of lifecycle.releaseObservers) session.removeReleaseListeners?.();
+    lifecycle.releaseObservers = [];
+    lifecycle.competingPointers = [];
+    clearTrailingClicks();
+    clearTouchContextGuards();
   }, []);
   return (
     <section ref={workspaceRoot} className="editor-workspace" aria-labelledby="editor-title">
@@ -1381,33 +1724,42 @@ export function EditorSurface({
             </button>
             <button
               className="rail-button"
+              {...brushHandlers("full", "Full stitch")}
               type="button"
               aria-label="Full stitch"
-              title="Full stitch"
+              aria-haspopup="dialog" aria-expanded={brushPopover?.tool === "full"} aria-controls="tool-brush-popover"
+              title="Full stitch · hold for size"
               aria-pressed={fullStitchActive}
-              onClick={() => choose("full")}
+              onClick={(event) => { if (shouldSuppressPressClick(event.currentTarget, event)) return; choose("full"); }}
             >
               <span className="stitch-brush-icon stitch-brush-icon-full" aria-hidden="true" />
+              <span className="brush-size-corner" aria-hidden="true" />
             </button>
             <button
               className="rail-button"
+              {...brushHandlers("half", "Half stitch")}
               type="button"
               aria-label="Half stitch"
-              title="Half stitch"
+              aria-haspopup="dialog" aria-expanded={brushPopover?.tool === "half"} aria-controls="tool-brush-popover"
+              title="Half stitch · hold for size"
               aria-pressed={halfActive}
-              onClick={() => choose("half")}
+              onClick={(event) => { if (shouldSuppressPressClick(event.currentTarget, event)) return; choose("half"); }}
             >
               <span className="stitch-brush-icon stitch-brush-icon-half" aria-hidden="true" />
+              <span className="brush-size-corner" aria-hidden="true" />
             </button>
             <button
               className="rail-button"
+              {...brushHandlers("three-quarter", "3/4 stitch")}
               type="button"
               aria-label="3/4 stitch"
-              title="3/4 stitch"
+              aria-haspopup="dialog" aria-expanded={brushPopover?.tool === "three-quarter"} aria-controls="tool-brush-popover"
+              title="3/4 stitch · hold for size"
               aria-pressed={threeQuarterActive}
-              onClick={() => choose("three-quarter")}
+              onClick={(event) => { if (shouldSuppressPressClick(event.currentTarget, event)) return; choose("three-quarter"); }}
             >
               <span className="stitch-brush-icon stitch-brush-icon-three-quarter" aria-hidden="true" />
+              <span className="brush-size-corner" aria-hidden="true" />
             </button>
             <button
               className="rail-button"
@@ -1416,24 +1768,17 @@ export function EditorSurface({
               aria-label="Shape"
               title="Shape · hold for options"
               aria-pressed={ui?.tool.tool === "shape"}
-              onPointerDown={(event) => {
-                const anchor = event.currentTarget;
-                shapePointerId.current = event.pointerId;
-                shapeLongPressed.current = false;
-                window.clearTimeout(shapePress.current ?? undefined);
-                shapePress.current = window.setTimeout(() => { shapeLongPressed.current = true; openShapeMenu(anchor); }, 500);
-              }}
-              onPointerUp={() => { window.clearTimeout(shapePress.current ?? undefined); shapePress.current = null; shapePointerId.current = null; }}
-              onPointerLeave={() => { if (shapePress.current !== null) { window.clearTimeout(shapePress.current); shapePress.current = null; shapePointerId.current = null; } }}
-              onPointerCancel={() => { window.clearTimeout(shapePress.current ?? undefined); shapePress.current = null; shapePointerId.current = null; }}
-              onContextMenu={(event) => { event.preventDefault(); openShapeMenu(event.currentTarget); }}
+              onPointerDown={(event) => beginPress(event, "shape", "shape", "Shape")}
+              onPointerLeave={abortPressOnLeave}
+              onContextMenu={(event) => { event.preventDefault(); if (!deferTouchContextMenu(event.currentTarget, event)) openShapeMenu(event.currentTarget); }}
               onKeyDown={(event) => {
                 if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) { event.preventDefault(); event.stopPropagation(); openShapeMenu(event.currentTarget); }
                 else if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); applyShapeTool(selectedShape); }
               }}
-              onClick={() => { if (shapeLongPressed.current) { shapeLongPressed.current = false; return; } applyShapeTool(selectedShape); }}
+              onClick={(event) => { if (shouldSuppressPressClick(event.currentTarget, event)) return; applyShapeTool(selectedShape); }}
             >
               {shapeIcon(selectedShape)}
+              <span className="brush-size-corner" aria-hidden="true" />
             </button>
             <button
               className="rail-button"
@@ -1452,7 +1797,7 @@ export function EditorSurface({
               aria-label="Completion"
               title="Completion"
               aria-pressed={(ui?.tool.tool as string | undefined) === "completion"}
-              onClick={() => invoke("completion")}
+              onClick={(event) => { if (shouldSuppressPressClick(event.currentTarget, event)) return; invoke("completion"); }}
             >
               <svg data-icon="completion" viewBox="0 0 24 24" aria-hidden="true">
                 <path
@@ -1466,14 +1811,17 @@ export function EditorSurface({
               </svg>
             </button>
             <button
+              {...brushHandlers("eraser", "Eraser")}
               className="rail-button"
               type="button"
               aria-label="Eraser"
-              title="Eraser"
+              aria-haspopup="dialog" aria-expanded={brushPopover?.tool === "eraser"} aria-controls="tool-brush-popover"
+              title="Eraser · hold for size"
               aria-pressed={ui?.tool.tool === "eraser"}
-              onClick={() => invoke("eraser")}
+              onClick={(event) => { if (shouldSuppressPressClick(event.currentTarget, event)) return; invoke("eraser"); }}
             >
               <img data-icon="eraser" src={eraserIcon} alt="" aria-hidden="true" />
+              <span className="brush-size-corner" aria-hidden="true" />
             </button>
             <button
               className="rail-button"
@@ -1499,10 +1847,10 @@ export function EditorSurface({
           </nav>
           </div>
           {shapeMenuOpen && createPortal(<div ref={shapeMenu} className="shape-picker-menu" role="menu" aria-label="Choose shape" style={{ position: "fixed", left: shapeMenuPosition.left, top: shapeMenuPosition.top, zIndex: 1000 }} onPointerDown={(event) => event.stopPropagation()}>
-            {(["line", "rectangle", "square", "circle", "triangle", "right-triangle"] as string[]).map((kind, index) => {
-              const shape = kind as ShapeKind;
+            {SHAPE_CHOICES.map((shape, index) => {
+              const kind = shape as string;
               const label = kind === "right-triangle" ? "Right triangle" : kind[0]!.toUpperCase() + kind.slice(1);
-              return <button key={kind} ref={(element) => { shapeItems.current[index] = element; }} type="button" role="menuitemradio" aria-label={label} title={label} aria-checked={selectedShape === shape} onClick={() => { setSelectedShape(shape); if (ui?.tool.tool === "shape") applyShapeTool(shape); shapeLongPressed.current = false; closeShapeMenu(); }}>{shapeIcon(shape)}</button>;
+               return <button key={kind} ref={(element) => { shapeItems.current[index] = element; }} type="button" role="menuitemradio" aria-label={label} title={label} aria-checked={selectedShape === shape} onClick={() => { setSelectedShape(shape); applyShapeTool(shape); closeShapeMenu(); }}>{shapeIcon(shape)}</button>;
             })}
           </div>, globalThis.document.body)}
           <div ref={mobilePanel === "colors" ? mobilePopover : undefined} id="mobile-colors-popover" className={`editor-rail-popover mobile-colors-popover${mobilePanel === "colors" ? " mobile-popover-open" : ""}`} role={mobilePanel === "colors" ? "dialog" : undefined} aria-label="Colors" tabIndex={-1}>
@@ -1617,24 +1965,10 @@ export function EditorSurface({
             </div>
           </div>
           <div className="canvas-actions">
-            <section className="action-section brush-settings" aria-labelledby="brush-settings-label">
-              <h3 id="brush-settings-label">Brush settings</h3>
-              <label className="brush-size-control" htmlFor="brush-size">
-                <span>Brush size <output>{size}</output></span>
-                <input
-                  id="brush-size"
-                  type="range"
-                  min="1"
-                  max="10"
-                  value={size}
-                  onChange={(e) => {
-                    const n = Number(e.target.value);
-                    setSize(n);
-                    controllerRef.current?.setBrushSize?.(n);
-                  }}
-                />
-              </label>
-            </section>
+            {brushPopover && createPortal(<div id="tool-brush-popover" ref={brushMenu} className="tool-brush-popover" role="dialog" aria-label={`${brushPopover.label} brush size`} style={{ position: "fixed", left: brushPopover.left, top: brushPopover.top, zIndex: 1000 }}>
+              <label htmlFor="tool-brush-size">{brushPopover.label} brush size <output>{ui?.toolBrushSizes[brushPopover.tool] ?? 1}</output></label>
+              <input id="tool-brush-size" type="range" min="1" max="10" aria-label={`${brushPopover.label} brush size`} value={ui?.toolBrushSizes[brushPopover.tool] ?? 1} onChange={(event) => controllerRef.current?.setToolBrushSize(brushPopover.tool, Number(event.target.value))} />
+            </div>, globalThis.document.body)}
             <section className="action-section reference-actions" aria-labelledby="reference-actions-label">
               <h3 id="reference-actions-label">Reference image</h3>
               <TraceImageControls workspace={workspace} document={document} controller={controller} activeTool={ui?.tool.tool} />
@@ -1934,7 +2268,8 @@ export function EditorSurface({
                 ×
               </button>
                  <p className="section-label">{pickerCatalog?.association.brandLabel ?? "Catalog"}</p>
-               <h2 id="editor-catalog-title">Add a thread color</h2>
+                <h2 id="editor-catalog-title">{swapTarget === null ? "Add a thread color" : `Swap ${palette.find((entry) => entry.id === swapTarget)?.name ?? "color"} for a thread color`}</h2>
+                {swapTarget !== null && <p className="modal-hint">Stitches and backstitches using {palette.find((entry) => entry.id === swapTarget)?.name ?? "this color"} will be changed.</p>}
                 <div className="catalog-box">
                   <div className="catalog-selection" aria-label="Selected thread color" role="group" aria-live="polite">
                   {selectedCatalogColor ? (
@@ -1951,11 +2286,11 @@ export function EditorSurface({
                       <button
                         className="small-action"
                         type="button"
-                        aria-label={`Add ${selectedCatalogColor.name}`}
-                          onClick={() => void addPaletteColor(selectedCatalogColor)}
+                         aria-label={`${swapTarget === null ? "Add" : "Swap"} ${selectedCatalogColor.name}`}
+                           onClick={() => swapTarget === null ? void addPaletteColor(selectedCatalogColor) : swapIntoCatalogColor(selectedCatalogColor)}
                         disabled={!pickerCatalog}
                       >
-                        Add
+                         {swapTarget === null ? "Add" : "Swap"}
                       </button>
                     </>
                   ) : (
@@ -2031,7 +2366,7 @@ export function EditorSurface({
                   <h3 id="custom-color-title">Custom color</h3>
                   <div className="custom-color-fields">
                     <label htmlFor="custom-color-picker">Choose custom color</label>
-                     <input
+                    <input
                       id="custom-color-picker"
                       type="color"
                        value={canonicalCustomColor}
@@ -2059,7 +2394,7 @@ export function EditorSurface({
                     type="button"
                      disabled={!customColor}
                     aria-label={customActionLabel}
-                    onClick={() => void addCustomColor()}
+                     onClick={() => swapTarget === null ? void addCustomColor() : swapIntoCustomColor()}
                   >
                     {customActionLabel}
                   </button>

@@ -18,6 +18,11 @@ export const MIN_BRUSH_SIZE = 1;
 export const MAX_BRUSH_SIZE = 10;
 export const DEFAULT_BRUSH_SIZE = 1;
 
+/** Paint and eraser tools with independent retained brush sizes. */
+export type BrushSizeTool = 'full' | 'half' | 'three-quarter' | 'eraser';
+
+export type ToolBrushSizes = Readonly<Record<BrushSizeTool, number>>;
+
 export function normalizeBrushSize(value: unknown): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < MIN_BRUSH_SIZE || value > MAX_BRUSH_SIZE) {
     throw new RangeError(`Brush size must be an integer from ${String(MIN_BRUSH_SIZE)} to ${String(MAX_BRUSH_SIZE)}.`);
@@ -466,6 +471,8 @@ export type RendererLifecycle = Pick<CanvasRenderer, 'requestRender' | 'render' 
 export interface EditorUiState {
   readonly viewport: Viewport;
   readonly brushSize: number;
+  /** Retained brush size for each supported authoring tool. */
+  readonly toolBrushSizes: ToolBrushSizes;
   readonly mode: ChartPresentationMode;
   /** Session-scoped chart-grid visibility; a view preference, never persisted or undoable. */
   readonly gridVisible: boolean;
@@ -528,7 +535,7 @@ export const EditorToolKind = {
 
 export type EditorToolKind = (typeof EditorToolKind)[keyof typeof EditorToolKind];
 
-export type ShapeKind = 'line' | 'rectangle' | 'square' | 'circle' | 'triangle' | 'right-triangle';
+export type ShapeKind = 'line' | 'rectangle' | 'square' | 'circle' | 'oval' | 'triangle' | 'right-triangle';
 
 export const StitchBrushKind = {
   Full: 'full',
@@ -647,6 +654,7 @@ export interface EditorUiStore {
   setViewport(viewport: Viewport): void;
   getBrushSize(): number;
   setBrushSize(size: number): void;
+  setToolBrushSize(tool: BrushSizeTool, size: number): void;
   setMode(mode: ChartPresentationMode): void;
   setGridVisible(visible: boolean): void;
   setOverlay(overlay: OverlayState): void;

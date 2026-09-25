@@ -5,6 +5,8 @@ import {
   type EditorUiState,
   type EditorUiStore,
   type EditorToolState,
+  type BrushSizeTool,
+  type ToolBrushSizes,
   type AuthoringStitchBrush,
   type ModelPoint,
   type OverlayState,
@@ -15,9 +17,34 @@ import {
   type Viewport
 } from './contracts';
 
+const DEFAULT_TOOL_BRUSH_SIZES: ToolBrushSizes = {
+  full: DEFAULT_BRUSH_SIZE,
+  half: DEFAULT_BRUSH_SIZE,
+  'three-quarter': DEFAULT_BRUSH_SIZE,
+  eraser: DEFAULT_BRUSH_SIZE
+};
+
+function brushSizeToolFor(tool: EditorToolState): BrushSizeTool | undefined {
+  if (tool.tool === 'paint' && tool.brush && (tool.brush.kind === 'full' || tool.brush.kind === 'half' || tool.brush.kind === 'three-quarter')) {
+    return tool.brush.kind;
+  }
+  if (tool.tool === 'eraser') return tool.tool;
+  return undefined;
+}
+
+function normalizeToolBrushSizes(sizes: Partial<ToolBrushSizes>): ToolBrushSizes {
+  return {
+    full: normalizeBrushSize(sizes.full ?? DEFAULT_BRUSH_SIZE),
+    half: normalizeBrushSize(sizes.half ?? DEFAULT_BRUSH_SIZE),
+    'three-quarter': normalizeBrushSize(sizes['three-quarter'] ?? DEFAULT_BRUSH_SIZE),
+    eraser: normalizeBrushSize(sizes.eraser ?? DEFAULT_BRUSH_SIZE)
+  };
+}
+
 export const DEFAULT_EDITOR_UI_STATE: EditorUiState = {
   viewport: { x: 0, y: 0, zoom: 16 },
   brushSize: DEFAULT_BRUSH_SIZE,
+  toolBrushSizes: DEFAULT_TOOL_BRUSH_SIZES,
   mode: ChartPresentationMode.Color,
   gridVisible: true,
   overlay: {},
@@ -33,6 +60,7 @@ export const DEFAULT_EDITOR_UI_STATE: EditorUiState = {
 function sameState(left: EditorUiState, right: EditorUiState): boolean {
   return left.viewport === right.viewport
     && left.brushSize === right.brushSize
+    && left.toolBrushSizes === right.toolBrushSizes
     && left.mode === right.mode
     && left.gridVisible === right.gridVisible
     && left.overlay === right.overlay
@@ -50,8 +78,21 @@ export function createUiStore(initial: Partial<EditorUiState> = {}): EditorUiSto
     ...DEFAULT_EDITOR_UI_STATE,
     ...initial,
     viewport: initial.viewport ? { ...initial.viewport } : { ...DEFAULT_EDITOR_UI_STATE.viewport },
-    brushSize: normalizeBrushSize(initial.brushSize ?? DEFAULT_BRUSH_SIZE),
+    toolBrushSizes: normalizeToolBrushSizes(initial.toolBrushSizes ?? DEFAULT_TOOL_BRUSH_SIZES),
     overlay: initial.overlay ? { ...initial.overlay } : {}
+  };
+  const initialBrushSize = normalizeBrushSize(initial.brushSize ?? DEFAULT_BRUSH_SIZE);
+  const initialBrushTool = brushSizeToolFor(state.tool);
+  let toolBrushSizes = state.toolBrushSizes;
+  if (initial.brushSize !== undefined && initialBrushTool) {
+    toolBrushSizes = { ...toolBrushSizes, [initialBrushTool]: initialBrushSize };
+  }
+  state = {
+    ...state,
+    brushSize: initial.brushSize === undefined && initialBrushTool
+      ? toolBrushSizes[initialBrushTool]
+      : initialBrushSize,
+    toolBrushSizes
   };
   const listeners = new Set<UiListener>();
 
@@ -60,13 +101,30 @@ export function createUiStore(initial: Partial<EditorUiState> = {}): EditorUiSto
 
     setState(patch: UiStatePatch): void {
       const changes = typeof patch === 'function' ? patch(state) : patch;
-      const next: EditorUiState = {
+      let next: EditorUiState = {
         ...state,
         ...changes,
         viewport: changes.viewport ? { ...changes.viewport } : state.viewport,
-        brushSize: changes.brushSize === undefined ? state.brushSize : normalizeBrushSize(changes.brushSize),
+        toolBrushSizes: changes.toolBrushSizes
+          ? normalizeToolBrushSizes({ ...state.toolBrushSizes, ...changes.toolBrushSizes })
+          : state.toolBrushSizes,
         overlay: changes.overlay ? { ...changes.overlay } : state.overlay
       };
+      const activeBrushSizeTool = brushSizeToolFor(next.tool);
+      if (changes.brushSize !== undefined) {
+        const brushSize = normalizeBrushSize(changes.brushSize);
+        next = {
+          ...next,
+          brushSize,
+          toolBrushSizes: activeBrushSizeTool && next.toolBrushSizes[activeBrushSizeTool] !== brushSize
+            ? { ...next.toolBrushSizes, [activeBrushSizeTool]: brushSize }
+            : next.toolBrushSizes
+        };
+      } else if (activeBrushSizeTool && (changes.tool !== undefined || changes.toolBrushSizes !== undefined)) {
+        next = { ...next, brushSize: next.toolBrushSizes[activeBrushSizeTool] };
+      } else {
+        next = { ...next, brushSize: state.brushSize };
+      }
       if (sameState(state, next)) return;
       const previous = state;
       state = next;
@@ -83,6 +141,14 @@ export function createUiStore(initial: Partial<EditorUiState> = {}): EditorUiSto
 
     setBrushSize(size: number): void {
       store.setState({ brushSize: normalizeBrushSize(size) });
+    },
+
+    setToolBrushSize(tool: BrushSizeTool, size: number): void {
+      const normalized = normalizeBrushSize(size);
+      if (state.toolBrushSizes[tool] === normalized) return;
+      store.setState((current) => ({
+        toolBrushSizes: { ...current.toolBrushSizes, [tool]: normalized }
+      }));
     },
 
     setMode(mode): void {
