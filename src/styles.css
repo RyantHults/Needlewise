@@ -16,6 +16,27 @@ body {
   min-height: 100vh;
   margin: 0;
   background: radial-gradient(circle at 87% 4%, #e4e9df 0, transparent 27rem), #f5f1ea;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+img, canvas {
+  -webkit-user-drag: none;
+}
+
+/* Form fields must stay selectable/editable on iOS. */
+input, textarea, select, [contenteditable]:not([contenteditable="false"]) {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+
+/* Displayed thread names/codes stay copyable. */
+.catalog-selection-details, .material-main strong, .palette-menu > strong, .palette-menu > span {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
 }
 
 button {
@@ -333,7 +354,7 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .editor-layout:not(.rail-right) .palette-rail { order:-1; margin-left:0; margin-right:.35rem; }
 .palette-rail .palette-row { display:block; min-height:3.55rem; padding:0; overflow:visible; background:transparent; }
 .palette-rail .palette-button { display:grid; width:2.75rem; height:3.55rem; min-height:3.55rem; padding:0; overflow:visible; border:0; border-radius:.45rem; background:transparent; }
-.palette-rail .palette-button { touch-action:manipulation; user-select:none; }
+.palette-rail .palette-button { touch-action:manipulation; }
 .palette-rail .palette-button:hover { background:transparent; }
 .palette-rail .palette-row-selected, .palette-rail .palette-button[aria-pressed="true"] { background:transparent; }
 .palette-rail .palette-swatch { position:relative; display:grid; place-items:center; justify-self:center; width:var(--palette-square); height:var(--palette-square); border:1px solid rgba(39,35,33,.25); border-radius:.62rem; box-shadow:0 .15rem .2rem rgba(67,55,42,.16); }
