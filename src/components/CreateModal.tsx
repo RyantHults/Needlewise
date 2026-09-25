@@ -103,7 +103,8 @@ export function previewLensGeometry(
   frameRect: { left: number; top: number; right: number; bottom: number },
   rect: { left: number; top: number; right: number; bottom: number },
   pointerX: number,
-  pointerY: number
+  pointerY: number,
+  placement: 'centered' | 'above' = 'centered'
 ) {
   const canvasCssWidth = cssWidth || canvasWidth;
   const canvasCssHeight = cssHeight || canvasHeight;
@@ -116,7 +117,12 @@ export function previewLensGeometry(
   const sourceLeft = Math.max(0, Math.min(sourceX - half, canvasWidth - sampleSize));
   const sourceTop = Math.max(0, Math.min(sourceY - half, canvasHeight - sampleSize));
   const lensLeft = Math.max(0, Math.min(frameRect.right - frameRect.left - PREVIEW_LENS_SIZE, pointerX - frameRect.left - PREVIEW_LENS_SIZE / 2));
-  const lensTop = Math.max(0, Math.min(frameRect.bottom - frameRect.top - PREVIEW_LENS_SIZE, pointerY - frameRect.top - PREVIEW_LENS_SIZE / 2));
+  // 'above' sits the box's bottom edge on the touch point so a finger never
+  // covers it; its top is intentionally left unclamped, since clamping it
+  // back down near the frame's top edge would put it under the finger again.
+  const lensTop = placement === 'above'
+    ? pointerY - frameRect.top - PREVIEW_LENS_SIZE
+    : Math.max(0, Math.min(frameRect.bottom - frameRect.top - PREVIEW_LENS_SIZE, pointerY - frameRect.top - PREVIEW_LENS_SIZE / 2));
   return {
     sourceLeft,
     sourceTop,
@@ -127,7 +133,7 @@ export function previewLensGeometry(
 }
 
 /** Imperative 2x zoom lens over the review preview. No per-move re-renders. */
-function updatePreviewLens(canvas: HTMLCanvasElement, lens: HTMLCanvasElement, frame: HTMLDivElement, pointerX: number, pointerY: number, backgroundColor: string) {
+function updatePreviewLens(canvas: HTMLCanvasElement, lens: HTMLCanvasElement, frame: HTMLDivElement, pointerX: number, pointerY: number, backgroundColor: string, placement: 'centered' | 'above' = 'centered') {
   if (canvas.width < 1 || canvas.height < 1) return;
   const context = lens.getContext('2d');
   const frameRect = frame.getBoundingClientRect();
@@ -135,7 +141,7 @@ function updatePreviewLens(canvas: HTMLCanvasElement, lens: HTMLCanvasElement, f
   // Position the lens box first (from the pure clamp math) so visibility and
   // follow behavior work even where getContext is unavailable (jsdom); the
   // drawing step is guarded on the context below.
-  const geometry = previewLensGeometry(canvas.width, canvas.height, rect.width, rect.height, frameRect, rect, pointerX, pointerY);
+  const geometry = previewLensGeometry(canvas.width, canvas.height, rect.width, rect.height, frameRect, rect, pointerX, pointerY, placement);
   lens.style.left = `${geometry.lensLeft}px`;
   lens.style.top = `${geometry.lensTop}px`;
   lens.style.opacity = '1';
@@ -215,12 +221,16 @@ export function CreateModal(props: Props) {
     if (editedValue >= 1) derived = Math.max(1, Math.min(derived, Math.floor(1_000_000 / editedValue)));
     if (axis === 'width') onHeight(String(derived)); else onWidth(String(derived));
   }
+  // Touch and pen have no precise cursor to sit beside, so their lens rises
+  // above the contact point instead of centering on it (which would hide
+  // under a finger or nib); mouse keeps the centered lens.
+  const lensPlacementFor = (pointerType: string): 'centered' | 'above' => pointerType === 'touch' || pointerType === 'pen' ? 'above' : 'centered';
   const handlePreviewEnter = (event: React.PointerEvent<HTMLCanvasElement>) => {
     if (event.pointerType === 'touch') return;
     const canvas = previewRef.current, lens = lensRef.current, frame = frameRef.current;
     if (!canvas || !lens || !frame) return;
     lensVisible.current = true;
-    updatePreviewLens(canvas, lens, frame, event.clientX, event.clientY, backgroundColor);
+    updatePreviewLens(canvas, lens, frame, event.clientX, event.clientY, backgroundColor, lensPlacementFor(event.pointerType));
   };
   // Touch has no hover, so a tap shows the lens directly at the tap point;
   // it then stays visible through pointerleave/pointerup (see below) until
@@ -230,13 +240,13 @@ export function CreateModal(props: Props) {
     const canvas = previewRef.current, lens = lensRef.current, frame = frameRef.current;
     if (!canvas || !lens || !frame) return;
     lensVisible.current = true;
-    updatePreviewLens(canvas, lens, frame, event.clientX, event.clientY, backgroundColor);
+    updatePreviewLens(canvas, lens, frame, event.clientX, event.clientY, backgroundColor, 'above');
   };
   const handlePreviewMove = (event: React.PointerEvent<HTMLCanvasElement>) => {
     if (!lensVisible.current) return;
     const canvas = previewRef.current, lens = lensRef.current, frame = frameRef.current;
     if (!canvas || !lens || !frame) return;
-    updatePreviewLens(canvas, lens, frame, event.clientX, event.clientY, backgroundColor);
+    updatePreviewLens(canvas, lens, frame, event.clientX, event.clientY, backgroundColor, lensPlacementFor(event.pointerType));
   };
   const handlePreviewLeave = (event: React.PointerEvent<HTMLCanvasElement>) => {
     if (event.pointerType === 'touch') return;

@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { calculatePreviewSize, CreateModal, previewFinishedSize, previewLensGeometry, suggestConversionDimensions } from './CreateModal';
+import { calculatePreviewSize, CreateModal, PREVIEW_LENS_SIZE, previewFinishedSize, previewLensGeometry, suggestConversionDimensions } from './CreateModal';
 import { DEFAULT_CATALOG_DEFINITION, type CatalogSnapshot } from '../catalog';
 
 const DEFAULT_CATALOG_COLOR_COUNT = DEFAULT_CATALOG_DEFINITION.snapshot.association.colorCount;
@@ -723,6 +723,25 @@ describe('CreateModal image lifecycle', () => {
     expect(farCorner.lensTop).toBe(0);
   });
 
+  it('places the "above" lens by its bottom edge and leaves a negative top unclamped', () => {
+    // A bigger frame than the previous test so the horizontal clamp isn't
+    // pinned to 0 for every pointer position, and a near-top pointer so the
+    // "above" placement's top goes negative (rising past the frame).
+    const frame = { left: 0, top: 0, right: 300, bottom: 300 };
+    const rect = { left: 10, top: 20, right: 110, bottom: 100 };
+    const geometry = previewLensGeometry(80, 60, 100, 80, frame, rect, 50, 10, 'above');
+    // The box's bottom edge sits exactly on the touch point...
+    expect(geometry.lensTop + PREVIEW_LENS_SIZE).toBe(10);
+    // ...which pushes the top above the frame; it is not clamped back down.
+    expect(geometry.lensTop).toBeLessThan(0);
+    // Horizontal placement is unchanged from 'centered': still centered on
+    // the pointer and clamped into the frame.
+    expect(geometry.lensLeft).toBe(Math.max(0, Math.min(300 - PREVIEW_LENS_SIZE, 50 - PREVIEW_LENS_SIZE / 2)));
+    // Sample region is unaffected by placement: still centered on the point.
+    expect(geometry.sourceLeft).toBe(previewLensGeometry(80, 60, 100, 80, frame, rect, 50, 10).sourceLeft);
+    expect(geometry.sourceTop).toBe(previewLensGeometry(80, 60, 100, 80, frame, rect, 50, 10).sourceTop);
+  });
+
   it('shows and moves a decorative 2x preview lens while the pointer hovers', async () => {
     render(<ControlledModal />);
     fireEvent.change(screen.getByLabelText(/Choose a PNG/), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } });
@@ -777,9 +796,15 @@ describe('CreateModal image lifecycle', () => {
       const { preview, lens } = await setUpPreview();
       fireEvent.pointerDown(preview, { pointerType: 'touch', clientX: 30, clientY: 40 });
       expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 1'));
-      // A tap-drag still follows, same as hover does for mouse.
+      // Touch places the lens 'above' the tap point: its bottom edge sits on
+      // it (40 - 160 = -120), unclamped so it can rise above the frame.
+      expect(lens.style.left).toBe('0px');
+      expect(lens.style.top).toBe('-120px');
+      // A tap-drag still follows, same as hover does for mouse, keeping the
+      // bottom edge on the new point (70 - 160 = -90).
       fireEvent.pointerMove(preview, { pointerType: 'touch', clientX: 60, clientY: 70 });
-      expect(lens.style.left).not.toBe('');
+      expect(lens.style.left).toBe('0px');
+      expect(lens.style.top).toBe('-90px');
       // Neither pointerup nor pointerleave hides a touch-shown lens.
       fireEvent.pointerUp(preview, { pointerType: 'touch', clientX: 60, clientY: 70 });
       expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 1'));
@@ -808,7 +833,21 @@ describe('CreateModal image lifecycle', () => {
       fireEvent.pointerEnter(preview, { pointerType: 'mouse', clientX: 30, clientY: 40 });
       fireEvent.pointerMove(preview, { pointerType: 'mouse', clientX: 40, clientY: 50 });
       expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 1'));
+      // Mouse keeps the centered placement: box centered on the pointer.
+      expect(lens.style.top).toBe('0px');
       fireEvent.pointerLeave(preview, { pointerType: 'mouse' });
+      expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 0'));
+    });
+
+    it('places a pen-hover lens above the pen point like touch', async () => {
+      const { preview, lens } = await setUpPreview();
+      fireEvent.pointerEnter(preview, { pointerType: 'pen', clientX: 30, clientY: 40 });
+      expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 1'));
+      // Same 'above' math as the touch tap test: bottom edge on the point.
+      expect(lens.style.top).toBe('-120px');
+      fireEvent.pointerMove(preview, { pointerType: 'pen', clientX: 60, clientY: 70 });
+      expect(lens.style.top).toBe('-90px');
+      fireEvent.pointerLeave(preview, { pointerType: 'pen' });
       expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 0'));
     });
   });
