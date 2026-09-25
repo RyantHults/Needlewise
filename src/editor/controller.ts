@@ -65,7 +65,7 @@ import {
   cellToScreenRect,
   type ViewportClampOptions
 } from './coordinates';
-import { cellKey, supercoverLine } from './interpolation';
+import { bresenhamLine, cellKey, supercoverLine } from './interpolation';
 import { constrainShapeEndpoint, rasterizeShapeOutline } from './shapes';
 import {
   type EditorRevisionToken,
@@ -2965,7 +2965,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       return;
     }
     if (gesture.lastCell) {
-      for (const cell of supercoverLine(gesture.lastCell, nextCell)) stampBrush(gesture.cells, cell, gesture.brushSize, document);
+      // Full stitches follow an 8-connected line: a supercover walk would claim
+      // both side cells whenever the stroke steps diagonally through a corner.
+      const segment = gesture.brush.kind === 'full' ? bresenhamLine(gesture.lastCell, nextCell) : supercoverLine(gesture.lastCell, nextCell);
+      for (const cell of segment) stampBrush(gesture.cells, cell, gesture.brushSize, document);
     } else {
       stampBrush(gesture.cells, nextCell, gesture.brushSize, document);
     }

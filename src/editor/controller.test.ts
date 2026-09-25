@@ -619,6 +619,27 @@ describe('EditorSurfaceController', () => {
     controller.dispose();
   });
 
+  it('draws a diagonal full-stitch drag without filling the cells beside each corner step', () => {
+    const straight = controllerFixture();
+    straight.controller.handlePointerDown(pointer(1, 8, 8));
+    straight.controller.handlePointerMove(pointer(1, 24, 24));
+    straight.controller.handlePointerMove(pointer(1, 40, 40));
+    straight.controller.handlePointerUp(pointer(1, 40, 40));
+    expect(straight.gateway.commands[0].indices).toEqual(new Uint32Array([0, 9, 18]));
+    straight.controller.dispose();
+
+    // A hand-drawn diagonal wobbles across the corner: a shallow graze of the
+    // side cell is ignored and the stroke still steps straight to the diagonal.
+    const wobbly = controllerFixture();
+    wobbly.controller.handlePointerDown(pointer(1, 8, 8));
+    wobbly.controller.handlePointerMove(pointer(1, 17, 15));
+    wobbly.controller.handlePointerMove(pointer(1, 18, 17));
+    wobbly.controller.handlePointerMove(pointer(1, 22, 21));
+    wobbly.controller.handlePointerUp(pointer(1, 22, 21));
+    expect(wobbly.gateway.commands[0].indices).toEqual(new Uint32Array([0, 9]));
+    wobbly.controller.dispose();
+  });
+
   it('keeps a paint stroke transient and commits one deduplicated bulk command', () => {
     const { gateway, uiStore, controller, calls } = controllerFixture();
     controller.handlePointerDown(pointer(1, 8, 8));

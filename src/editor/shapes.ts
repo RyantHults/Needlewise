@@ -1,5 +1,5 @@
 import type { ModelPoint, ShapeKind } from './contracts';
-import { supercoverLine } from './interpolation';
+import { bresenhamLine, supercoverLine } from './interpolation';
 
 function cell(point: ModelPoint): ModelPoint {
   return { x: Math.floor(point.x), y: Math.floor(point.y) };
@@ -13,35 +13,6 @@ function rowMajorUnique(points: readonly ModelPoint[]): ModelPoint[] {
   const unique = new Map<string, ModelPoint>();
   for (const point of points) unique.set(pointKey(point), point);
   return [...unique.values()].sort((left, right) => left.y - right.y || left.x - right.x);
-}
-
-/** Bresenham's integer line walk; diagonal-only neighboring cells are intentional. */
-function bresenhamLine(start: ModelPoint, end: ModelPoint): ModelPoint[] {
-  let x = Math.floor(start.x);
-  let y = Math.floor(start.y);
-  const targetX = Math.floor(end.x);
-  const targetY = Math.floor(end.y);
-  const deltaX = Math.abs(targetX - x);
-  const stepX = x < targetX ? 1 : -1;
-  const deltaY = -Math.abs(targetY - y);
-  const stepY = y < targetY ? 1 : -1;
-  let error = deltaX + deltaY;
-  const points: ModelPoint[] = [];
-
-  while (true) {
-    points.push({ x, y });
-    if (x === targetX && y === targetY) break;
-    const doubledError = 2 * error;
-    if (doubledError >= deltaY) {
-      error += deltaY;
-      x += stepX;
-    }
-    if (doubledError <= deltaX) {
-      error += deltaX;
-      y += stepY;
-    }
-  }
-  return points;
 }
 
 function addThinSegment(points: ModelPoint[], start: ModelPoint, end: ModelPoint): void {

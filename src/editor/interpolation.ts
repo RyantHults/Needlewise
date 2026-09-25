@@ -57,6 +57,35 @@ export function supercoverLine(start: CellPoint, end: CellPoint): CellPoint[] {
   return cells;
 }
 
+/** Bresenham's integer line walk; diagonal-only neighboring cells are intentional. */
+export function bresenhamLine(start: CellPoint, end: CellPoint): CellPoint[] {
+  let x = Math.floor(start.x);
+  let y = Math.floor(start.y);
+  const targetX = Math.floor(end.x);
+  const targetY = Math.floor(end.y);
+  const deltaX = Math.abs(targetX - x);
+  const stepX = x < targetX ? 1 : -1;
+  const deltaY = -Math.abs(targetY - y);
+  const stepY = y < targetY ? 1 : -1;
+  let error = deltaX + deltaY;
+  const points: CellPoint[] = [];
+
+  while (true) {
+    points.push({ x, y });
+    if (x === targetX && y === targetY) break;
+    const doubledError = 2 * error;
+    if (doubledError >= deltaY) {
+      error += deltaY;
+      x += stepX;
+    }
+    if (doubledError <= deltaX) {
+      error += deltaX;
+      y += stepY;
+    }
+  }
+  return points;
+}
+
 export const supercover = supercoverLine;
 export const interpolateCells = supercoverLine;
 
