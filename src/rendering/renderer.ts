@@ -175,6 +175,13 @@ function drawSymbol(
   drawPaletteSymbol(context, document, id, rect, style, slot);
 }
 
+/** Round a screen coordinate to the nearest device pixel, so adjacent full-cell
+ * fills share exact edges instead of leaving anti-aliased seams between them. */
+function snapToDevicePixel(value: number, pixelRatio: number): number {
+  const ratio = Number.isFinite(pixelRatio) && pixelRatio > 0 ? pixelRatio : 1;
+  return Math.round(value * ratio) / ratio;
+}
+
 function drawCellState(
   context: CanvasContextAdapter,
   document: PatternDocument,
@@ -186,7 +193,8 @@ function drawCellState(
   style: RendererStyle,
   viewport: Viewport,
   lod: RenderLod,
-  dimAlpha = 1
+  dimAlpha = 1,
+  pixelRatio = 1
 ): boolean {
   if (kind === CellKind.Empty) return false;
   const rect = cellToScreenRect({ x, y, width: 1, height: 1 }, viewport);
@@ -195,8 +203,15 @@ function drawCellState(
     save(context);
     context.fillStyle = symbolMode ? style.symbolBackgroundColor : styleColor(document, id, style);
     setAlpha(context, (completed ? style.completedOpacity : 1) * dimAlpha);
-    if (geometryKind === CellKind.Full) context.fillRect(rect.x, rect.y, rect.width, rect.height);
-    else drawStitchGeometry(context, geometryKind, rect, slot);
+    if (geometryKind === CellKind.Full) {
+      // Snap the start and end edges independently (not the width) so
+      // neighbouring cells tile with no gap or overlap between them.
+      const x0 = snapToDevicePixel(rect.x, pixelRatio);
+      const x1 = snapToDevicePixel(rect.x + rect.width, pixelRatio);
+      const y0 = snapToDevicePixel(rect.y, pixelRatio);
+      const y1 = snapToDevicePixel(rect.y + rect.height, pixelRatio);
+      context.fillRect(x0, y0, x1 - x0, y1 - y0);
+    } else drawStitchGeometry(context, geometryKind, rect, slot);
     restore(context);
     if (lod === RenderLod.Detail || symbolMode) drawSymbol(context, document, id, rect, style, slot);
     if (completed && lod === RenderLod.Detail) {
@@ -234,7 +249,8 @@ function drawCell(
   style: RendererStyle,
   viewport: Viewport,
   lod: RenderLod,
-  dimAlpha = 1
+  dimAlpha = 1,
+  pixelRatio = 1
 ): boolean {
   const index = y * document.width + x;
   return drawCellState(
@@ -248,7 +264,8 @@ function drawCell(
     style,
     viewport,
     lod,
-    dimAlpha
+    dimAlpha,
+    pixelRatio
   );
 }
 
@@ -782,7 +799,7 @@ function drawOverviewSymbolFallback(
   let drawnCells = 0;
   for (let y = visible.y; y < visible.y + visible.height; y += 1) {
     for (let x = visible.x; x < visible.x + visible.width; x += 1) {
-      if (drawCell(context, document, x, y, style, viewport, RenderLod.Overview)) drawnCells += 1;
+      if (drawCell(context, document, x, y, style, viewport, RenderLod.Overview, 1, metrics.dpr)) drawnCells += 1;
     }
   }
   return { visitedCells: visible.width * visible.height, drawnCells };
@@ -938,7 +955,8 @@ function drawPendingCellState(
   viewport: Viewport,
   style: RendererStyle,
   lod: RenderLod,
-  bounds: Rect
+  bounds: Rect,
+  pixelRatio = 1
 ): CellRect | undefined {
   const x = Math.floor(state.cell.x);
   const y = Math.floor(state.cell.y);
@@ -954,7 +972,7 @@ function drawPendingCellState(
   setAlpha(context, 1);
   context.fillRect(clippedCellRect.x, clippedCellRect.y, clippedCellRect.width, clippedCellRect.height);
   restore(context);
-  drawCellState(context, document, x, y, state.kind, state.colors, state.completed, style, viewport, lod);
+  drawCellState(context, document, x, y, state.kind, state.colors, state.completed, style, viewport, lod, 1, pixelRatio);
   return { x, y, width: 1, height: 1 };
 }
 
@@ -965,12 +983,13 @@ function drawPendingCellStates(
   viewport: Viewport,
   style: RendererStyle,
   lod: RenderLod,
-  bounds: Rect
+  bounds: Rect,
+  pixelRatio = 1
 ): CellRect[] {
   if (!states || states.length === 0) return [];
   const cells: CellRect[] = [];
   for (const state of states) {
-    const cell = drawPendingCellState(context, document, state, viewport, style, lod, bounds);
+    const cell = drawPendingCellState(context, document, state, viewport, style, lod, bounds, pixelRatio);
     if (cell) cells.push(cell);
   }
   return cells;
@@ -1044,7 +1063,9 @@ function drawFloatingPaste(
           preview.completion?.[sourceIndex] ?? 0,
           style,
           viewport,
-          lod
+          lod,
+          1,
+          metrics.dpr
         );
       }
     }
@@ -1293,7 +1314,7 @@ function drawOverlay(
   context.lineWidth = style.overlayLineWidth;
   let pendingStateCells: CellRect[] = [];
   if (overlay.pendingCellStates !== undefined) {
-    pendingStateCells = drawPendingCellStates(context, document, overlay.pendingCellStates, viewport, style, lod, bounds);
+    pendingStateCells = drawPendingCellStates(context, document, overlay.pendingCellStates, viewport, style, lod, bounds, metrics.dpr);
   } else {
     drawPendingCells(context, document, overlay.pendingCells, viewport, style, bounds);
   }
@@ -1699,7 +1720,7 @@ export class Canvas2DRenderer implements CanvasRenderer {
     if (dimAlpha < 1) setAlpha(context, dimAlpha);
     for (let y = dirtyCells.y; y < dirtyCells.y + dirtyCells.height; y += 1) {
       for (let x = dirtyCells.x; x < dirtyCells.x + dirtyCells.width; x += 1) {
-        if (drawCell(context, this.document, x, y, this.style, this.viewport, lod, dimAlpha)) drawnCells += 1;
+        if (drawCell(context, this.document, x, y, this.style, this.viewport, lod, dimAlpha, this.metrics.dpr)) drawnCells += 1;
       }
     }
     drawGrid(context, this.document, this.viewport, this.metrics, this.style, dirtyCells, lod);

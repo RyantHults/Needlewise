@@ -651,6 +651,41 @@ describe('Canvas 2D chart renderer', () => {
     expect(base.records.some((call) => call.name === 'moveTo' && call.args[0] === 16 && call.args[1] === 0)).toBe(true);
   });
 
+  describe('device-pixel snapping for full-cell fills', () => {
+    // Fractional zoom (6.5 px/cell, between the Overview and Detail cutoffs)
+    // is where seams show up: without snapping, each cell's anti-aliased
+    // edge lands at a different sub-pixel offset than its neighbour's.
+    function renderAdjacentFullCells(dpr: number): number[][] {
+      const document = chart(2, 1);
+      document.kind.set([CellKind.Full, CellKind.Full]);
+      document.colors[0] = 1;
+      document.colors[4] = 1;
+      const base = recordingContext();
+      const renderer = createCanvasRenderer({
+        document,
+        targets: { base: target(base), overlay: target(recordingContext()) },
+        metrics: getCanvasMetrics(20, 10, { dpr }),
+        viewport: { x: 0, y: 0, zoom: 6.5 }
+      });
+      renderer.renderNow();
+      return base.records
+        .filter((call) => call.name === 'fillRect' && call.fillStyle === '#f00')
+        .map((call) => call.args as number[]);
+    }
+
+    it.each([1, 2])('shares an exact device-pixel edge between adjacent cells at dpr %i', (dpr) => {
+      const [cellA, cellB] = renderAdjacentFullCells(dpr);
+      const cellARight = cellA[0] + cellA[2];
+      // No gap or overlap: the shared edge is bit-for-bit the same value.
+      expect(cellARight).toBe(cellB[0]);
+      // Every edge lands on a device-pixel boundary (an integer once scaled
+      // by dpr), not a fractional CSS pixel that would anti-alias.
+      for (const edge of [cellA[0], cellARight, cellB[0] + cellB[2]]) {
+        expect(edge * dpr).toBe(Math.round(edge * dpr));
+      }
+    });
+  });
+
   it('renders half bands and all directional three-quarter triangles with exact paths', () => {
     const document = chart(6, 1);
     document.kind.set([
