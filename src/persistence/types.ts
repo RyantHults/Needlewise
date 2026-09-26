@@ -368,3 +368,29 @@ export interface RepositoryOptions {
   databaseName?: string;
   now?: () => number;
 }
+
+export const MAX_FOLDER_NAME_CHARS = 80;
+
+export interface ProjectFolder {
+  id: string;
+  name: string;
+  parentId: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ProjectFolderAssignment {
+  projectId: string;
+  folderId: string;
+}
+
+export interface ProjectFolderIndex {
+  folders: ProjectFolder[];
+  assignments: ProjectFolderAssignment[];
+}
+
+export interface CreateFolderInput {
+  name: string;
+  parentId?: string | null;
+  id?: string;
+}

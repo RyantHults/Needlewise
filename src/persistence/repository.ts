@@ -23,8 +23,12 @@ import {
 } from './project-thumbnail';
 import type {
   ArchiveImportOptions,
+  CreateFolderInput,
   ProjectAsset,
   ProjectAssetInput,
+  ProjectFolder,
+  ProjectFolderAssignment,
+  ProjectFolderIndex,
   ProjectHealth,
   ProjectMetadata,
   ProjectRecord,
@@ -40,12 +44,29 @@ import type {
   StoredProjectAsset,
   StoredDailyProgressAggregate
 } from './types';
+import { MAX_FOLDER_NAME_CHARS } from './types';
 import { consumePreparedDocumentCapability } from './preparation-client';
 import type { MaterialSettingsV2 } from '../domain';
 import { prepareSessionHistory, sessionHistoryMatchesTrace, traceStateCanonical, traceStateFingerprint } from './session-history';
 
 function invalidMetadata(message: string): never {
   throw new PersistenceError('invalid-metadata', message);
+}
+
+function hasControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+function validateFolderName(name: string): string {
+  if (typeof name !== 'string') invalidMetadata('Folder name is malformed.');
+  const trimmed = name.trim();
+  if (trimmed.length < 1 || trimmed.length > MAX_FOLDER_NAME_CHARS) invalidMetadata(`Folder name must be between 1 and ${String(MAX_FOLDER_NAME_CHARS)} characters.`);
+  if (hasControlCharacter(trimmed) || !isBoundedMetadataString(trimmed)) invalidMetadata('Folder name is malformed.');
+  return trimmed;
 }
 
 function validateProjectMetadata(projectId: string, metadata: ProjectMetadata, documentOrRevision: PatternDocument | number): ProjectMetadata {
@@ -1491,7 +1512,7 @@ export class ProjectRepository {
 
   async deleteProject(projectId: string): Promise<void> {
     this.clearVerifiedCurrentCache(projectId);
-    await this.db.transaction('rw', [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.documentHistories, this.db.assets, this.db.dailyActivity], async () => {
+    await this.db.transaction('rw', [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.documentHistories, this.db.assets, this.db.dailyActivity, this.db.projectFolders], async () => {
       await this.db.projects.delete(projectId);
       await this.db.currentSnapshots.delete(projectId);
       await this.db.recoverySnapshots.delete(projectId);
@@ -1499,7 +1520,133 @@ export class ProjectRepository {
       await this.db.documentHistories.delete(projectId);
       await this.db.assets.where('projectId').equals(projectId).delete();
       await this.db.dailyActivity.where('projectId').equals(projectId).delete();
+      await this.db.projectFolders.delete(projectId);
     });
+  }
+
+  async listFolderIndex(): Promise<ProjectFolderIndex> {
+    try {
+      return await this.db.transaction('r', [this.db.folders, this.db.projectFolders, this.db.projects], async () => {
+        const [folderRows, assignmentRows, projectRows] = await Promise.all([
+          this.db.folders.toArray(),
+          this.db.projectFolders.toArray(),
+          this.db.projects.toArray()
+        ]);
+        const folders = folderRows
+          .slice()
+          .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: 'base' }) || left.id.localeCompare(right.id));
+        const folderIds = new Set(folders.map((folder) => folder.id));
+        const projectIds = new Set(projectRows.map((project) => project.id));
+        const assignments = assignmentRows.filter((assignment) => folderIds.has(assignment.folderId) && projectIds.has(assignment.projectId));
+        return { folders, assignments };
+      });
+    } catch (error) {
+      if (error instanceof PersistenceError) throw error;
+      throw new PersistenceError('storage-failure', 'Unable to list local folders.', error);
+    }
+  }
+
+  async createFolder(input: CreateFolderInput): Promise<ProjectFolder> {
+    const name = validateFolderName(input.name);
+    const parentId = input.parentId ?? null;
+    if (parentId !== null && (typeof parentId !== 'string' || parentId.length < 1 || parentId.length > 256 || !isBoundedMetadataString(parentId))) invalidMetadata('Folder parent ID is malformed.');
+    if (input.id !== undefined && (typeof input.id !== 'string' || input.id.length < 1 || input.id.length > 256 || !isBoundedMetadataString(input.id))) invalidMetadata('Folder ID is malformed.');
+    const id = input.id ?? crypto.randomUUID();
+    try {
+      return await this.db.transaction('rw', [this.db.folders], async () => {
+        if (parentId !== null) {
+          const parent = await this.db.folders.get(parentId);
+          if (!parent || parent.parentId !== null) invalidMetadata('Folder parent must be an existing top-level folder.');
+        }
+        const now = this.now();
+        const folder: ProjectFolder = { id, name, parentId, createdAt: now, updatedAt: now };
+        await this.db.folders.put(folder);
+        return folder;
+      });
+    } catch (error) {
+      if (error instanceof PersistenceError) throw error;
+      throw new PersistenceError('storage-failure', 'Unable to create the local folder.', error);
+    }
+  }
+
+  async renameFolder(folderId: string, name: string): Promise<ProjectFolder> {
+    const trimmed = validateFolderName(name);
+    try {
+      return await this.db.transaction('rw', [this.db.folders], async () => {
+        const existing = await this.db.folders.get(folderId);
+        if (!existing) invalidMetadata('Folder does not exist.');
+        const renamed: ProjectFolder = { ...existing, name: trimmed, updatedAt: this.now() };
+        await this.db.folders.put(renamed);
+        return renamed;
+      });
+    } catch (error) {
+      if (error instanceof PersistenceError) throw error;
+      throw new PersistenceError('storage-failure', 'Unable to rename the local folder.', error);
+    }
+  }
+
+  async deleteFolder(folderId: string): Promise<void> {
+    try {
+      await this.db.transaction('rw', [this.db.folders, this.db.projectFolders], async () => {
+        const deleted = await this.db.folders.get(folderId);
+        if (!deleted) return;
+        const reparentedId = deleted.parentId;
+        const children = await this.db.folders.where('parentId').equals(folderId).toArray();
+        await Promise.all(children.map((child) => this.db.folders.update(child.id, { parentId: reparentedId, updatedAt: this.now() })));
+        const assignments = await this.db.projectFolders.where('folderId').equals(folderId).toArray();
+        if (reparentedId === null) {
+          await Promise.all(assignments.map((assignment) => this.db.projectFolders.delete(assignment.projectId)));
+        } else {
+          await Promise.all(assignments.map((assignment) => this.db.projectFolders.put({ projectId: assignment.projectId, folderId: reparentedId })));
+        }
+        await this.db.folders.delete(folderId);
+      });
+    } catch (error) {
+      if (error instanceof PersistenceError) throw error;
+      throw new PersistenceError('storage-failure', 'Unable to delete the local folder.', error);
+    }
+  }
+
+  async moveProjectToFolder(projectId: string, folderId: string | null): Promise<void> {
+    try {
+      await this.db.transaction('rw', [this.db.projects, this.db.folders, this.db.projectFolders], async () => {
+        const project = await this.db.projects.get(projectId);
+        if (!project) invalidMetadata('Project does not exist.');
+        if (folderId === null) {
+          await this.db.projectFolders.delete(projectId);
+          return;
+        }
+        const folder = await this.db.folders.get(folderId);
+        if (!folder) invalidMetadata('Folder does not exist.');
+        const assignment: ProjectFolderAssignment = { projectId, folderId };
+        await this.db.projectFolders.put(assignment);
+      });
+    } catch (error) {
+      if (error instanceof PersistenceError) throw error;
+      throw new PersistenceError('storage-failure', 'Unable to move the project to the folder.', error);
+    }
+  }
+
+  async moveFolder(folderId: string, parentId: string | null): Promise<void> {
+    try {
+      await this.db.transaction('rw', [this.db.folders], async () => {
+        const folder = await this.db.folders.get(folderId);
+        if (!folder) invalidMetadata('Folder does not exist.');
+        if (parentId === null) {
+          await this.db.folders.update(folderId, { parentId: null, updatedAt: this.now() });
+          return;
+        }
+        if (parentId === folderId) invalidMetadata('A folder cannot be moved into itself.');
+        const parent = await this.db.folders.get(parentId);
+        if (!parent || parent.parentId !== null) invalidMetadata('Folder parent must be an existing top-level folder.');
+        const children = await this.db.folders.where('parentId').equals(folderId).toArray();
+        if (children.length > 0) invalidMetadata('A folder with subfolders cannot be moved into another folder.');
+        await this.db.folders.update(folderId, { parentId, updatedAt: this.now() });
+      });
+    } catch (error) {
+      if (error instanceof PersistenceError) throw error;
+      throw new PersistenceError('storage-failure', 'Unable to move the local folder.', error);
+    }
   }
 
   async close(): Promise<void> {

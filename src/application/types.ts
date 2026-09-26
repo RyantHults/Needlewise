@@ -11,8 +11,11 @@ import type {
 } from '../domain';
 import type {
   ArchiveImportOptions,
+  CreateFolderInput,
   ProjectAsset,
   ProjectAssetInput,
+  ProjectFolder,
+  ProjectFolderIndex,
   ProjectMetadata,
   ProjectHealth,
   PreparedDocumentCapability,
@@ -67,6 +70,12 @@ export interface WorkspaceRepository {
   inspectProjectHealth?(projectId: string): Promise<ProjectHealth | undefined>;
   loadRecoveryRevision?(projectId: string, revision?: number): Promise<ProjectRecord | undefined>;
   promoteRecoveryRevision?(projectId: string, revision?: number): Promise<ProjectRecord>;
+  listFolderIndex?(): Promise<ProjectFolderIndex>;
+  createFolder?(input: CreateFolderInput): Promise<ProjectFolder>;
+  renameFolder?(folderId: string, name: string): Promise<ProjectFolder>;
+  deleteFolder?(folderId: string): Promise<void>;
+  moveProjectToFolder?(projectId: string, folderId: string | null): Promise<void>;
+  moveFolder?(folderId: string, parentId: string | null): Promise<void>;
   close?(): Promise<void> | void;
 }
 

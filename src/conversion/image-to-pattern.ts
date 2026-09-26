@@ -9,6 +9,9 @@ import {
 import type { CatalogRecord, CatalogSnapshot } from '../catalog';
 import { MAX_IMAGE_DECODE_BYTES, MAX_IMAGE_DECODE_DIMENSION, MAX_IMAGE_DECODE_PIXELS } from '../shared/limits';
 import { MAX_WORKING_IMAGE_DIMENSION, MAX_WORKING_IMAGE_PIXELS } from '../shared/image-sizing';
+import { isConfettiDistance, reduceConfetti, reduceConfettiSteps } from './confetti';
+
+export { MAX_CONFETTI_DISTANCE } from './confetti';
 
 export const CONVERSION_PROTOCOL = 'needlewise.image-conversion.v1' as const;
 export const CONVERSION_REQUEST_TYPE = 'conversion-request' as const;
@@ -95,6 +98,11 @@ export interface ConversionOptions {
   readonly backgroundSourceId?: string;
   /** Trim empty borders off the source raster before the target mapping. */
   readonly autoCrop?: boolean;
+  /**
+   * Replace stitches with no same-color cell within this Chebyshev distance
+   * (1..MAX_CONFETTI_DISTANCE) by their dominant neighbour; undefined is off.
+   */
+  readonly confettiDistance?: number;
   readonly token?: ConversionToken;
   readonly catalog: CatalogSnapshot;
   readonly sourceImage?: Partial<Pick<ConversionSourceImageCandidate, 'assetId' | 'mimeType'>>;
@@ -109,6 +117,7 @@ export interface ConversionRequestBase {
   readonly paletteBudget?: number;
   readonly backgroundSourceId?: string;
   readonly autoCrop?: boolean;
+  readonly confettiDistance?: number;
   readonly catalog: CatalogSnapshot;
   readonly sourceAssetId?: string;
   readonly sourceMimeType?: string;
@@ -476,12 +485,79 @@ function paletteEntry(association: CatalogSnapshot['association'], id: number, c
   };
 }
 
+interface PaletteSelection {
+  readonly catalogIndex: number;
+  readonly paletteId: number;
+}
+
+interface PrunedPalette {
+  readonly document: PatternDocument;
+  readonly selectedOrder: readonly PaletteSelection[];
+  readonly usage: ReadonlyMap<number, number>;
+}
+
+/**
+ * Drop selected colors that ended with no stitches (the budget is spent before
+ * assignment and confetti reduction), renumbering survivors 1..k in rank
+ * order. The palette is rebuilt through createDocument so ids, symbols and
+ * nextPaletteId follow the same normalization as a fresh conversion; the
+ * cell planes carry over with color slots remapped. Yields every `chunk`
+ * cells of the remap.
+ */
+function* prunePaletteSteps(
+  document: PatternDocument,
+  selectedOrder: readonly PaletteSelection[],
+  usage: ReadonlyMap<number, number>,
+  catalog: CatalogSnapshot,
+  chunk: number
+): Generator<void, PrunedPalette> {
+  const kept = selectedOrder.filter(({ paletteId }) => (usage.get(paletteId) ?? 0) > 0);
+  if (kept.length === selectedOrder.length) return { document, selectedOrder, usage };
+  const remap = new Uint16Array(selectedOrder.length + 1);
+  const nextOrder = kept.map(({ catalogIndex, paletteId }, offset) => {
+    remap[paletteId] = offset + 1;
+    return { catalogIndex, paletteId: offset + 1 };
+  });
+  const pruned = createDocument({
+    width: document.width,
+    height: document.height,
+    catalog: catalog.association,
+    palette: nextOrder.map(({ catalogIndex, paletteId }) => paletteEntry(catalog.association, paletteId, catalog.records[catalogIndex]))
+  });
+  pruned.kind = document.kind;
+  for (let index = 0; index < document.width * document.height; index += 1) {
+    if (document.kind[index] !== CellKind.Empty) pruned.colors[index * 4] = remap[document.colors[index * 4]];
+    if ((index + 1) % chunk === 0) yield;
+  }
+  return {
+    document: pruned,
+    selectedOrder: nextOrder,
+    usage: new Map(kept.map(({ paletteId }, offset) => [offset + 1, usage.get(paletteId) ?? 0]))
+  };
+}
+
+function prunePalette(document: PatternDocument, selectedOrder: readonly PaletteSelection[], usage: ReadonlyMap<number, number>, catalog: CatalogSnapshot): PrunedPalette {
+  const steps = prunePaletteSteps(document, selectedOrder, usage, catalog, Number.POSITIVE_INFINITY);
+  let step = steps.next();
+  while (step.done !== true) step = steps.next();
+  return step.value;
+}
+
 function sourceRgb(pixels: Uint8ClampedArray, offset: number): [number, number, number] {
   return [pixels[offset], pixels[offset + 1], pixels[offset + 2]];
 }
 
 function defaultToken(): ConversionToken {
   return { projectId: 'local-conversion', baseRevision: 0, requestId: 'conversion-direct' };
+}
+
+function assertConfettiDistance(value: number | undefined): void {
+  if (value !== undefined && !isConfettiDistance(value)) throw new ConversionError('invalid-raster', 'The confetti distance is outside the supported bounds.');
+}
+
+function paletteColorLookup(records: readonly CatalogRecord[], order: readonly { readonly catalogIndex: number; readonly paletteId: number }[]): (paletteId: number) => readonly [number, number, number] | undefined {
+  const colors = new Map(order.map(({ catalogIndex, paletteId }) => [paletteId, records[catalogIndex].rgb]));
+  return (paletteId) => colors.get(paletteId);
 }
 
 /** Convert an already decoded/resampled raster without mutating or transferring its pixels. */
@@ -496,6 +572,7 @@ export function convertRasterToPattern(raster: ConversionRaster, options: Conver
   const sourceHeight = raster.sourceHeight ?? raster.height;
   const token = options.token ?? defaultToken();
   assertToken(token);
+  assertConfettiDistance(options.confettiDistance);
   const budget = options.paletteBudget ?? Math.min(DEFAULT_CONVERSION_PALETTE_BUDGET, catalog.association.colorCount);
   if (!Number.isSafeInteger(budget) || budget < 1 || budget > catalog.association.colorCount) throw new ConversionError('invalid-palette-budget', 'The palette budget must fit within the supplied catalog bound.');
   const counts = new Map<number, number>();
@@ -520,10 +597,10 @@ export function convertRasterToPattern(raster: ConversionRaster, options: Conver
   const selectedOrder = selectedIndices.map((catalogIndex, paletteOffset) => ({ catalogIndex, paletteId: paletteOffset + 1 }));
   const paletteInputs: PaletteEntryInput[] = selectedOrder.map(({ catalogIndex, paletteId }) => paletteEntry(catalog.association, paletteId, records[catalogIndex]));
   const paletteIdByCatalogIndex = new Map(selectedOrder.map(({ catalogIndex, paletteId }) => [catalogIndex, paletteId]));
-  const document = createDocument({ width: options.targetWidth, height: options.targetHeight, catalog: catalog.association, palette: paletteInputs });
-  const usage = new Map<number, number>();
+  const assigned = createDocument({ width: options.targetWidth, height: options.targetHeight, catalog: catalog.association, palette: paletteInputs });
+  const assignedUsage = new Map<number, number>();
   let stitchedPixels = 0;
-  for (let targetIndex = 0; targetIndex < document.width * document.height; targetIndex += 1) {
+  for (let targetIndex = 0; targetIndex < assigned.width * assigned.height; targetIndex += 1) {
     const sourceIndex = targetIndex;
     const offset = sourceIndex * 4;
     if (sampled.pixels[offset + 3] === 0) {
@@ -539,11 +616,15 @@ export function convertRasterToPattern(raster: ConversionRaster, options: Conver
     const sourceCatalogIndex = nearestCatalogIndex(pixel, selected);
     const paletteId = paletteIdByCatalogIndex.get(selectedCatalogIndices[sourceCatalogIndex]);
     if (paletteId === undefined) continue;
-    document.kind[targetIndex] = CellKind.Full;
-    document.colors[targetIndex * 4] = paletteId;
-    usage.set(paletteId, (usage.get(paletteId) ?? 0) + 1);
+    assigned.kind[targetIndex] = CellKind.Full;
+    assigned.colors[targetIndex * 4] = paletteId;
+    assignedUsage.set(paletteId, (assignedUsage.get(paletteId) ?? 0) + 1);
     stitchedPixels += 1;
   }
+  if (options.confettiDistance !== undefined) {
+    stitchedPixels -= reduceConfetti(assigned, options.confettiDistance, paletteColorLookup(records, selectedOrder), assignedUsage);
+  }
+  const { document, selectedOrder: finalOrder, usage } = prunePalette(assigned, selectedOrder, assignedUsage, catalog);
   // Trimming only removes Empty cells (zeroed color slots the usage counting
   // skips), so palette and usage stay valid without recomputation. The
   // transparent count is re-scoped to the kept box so every stat describes
@@ -560,9 +641,8 @@ export function convertRasterToPattern(raster: ConversionRaster, options: Conver
       transparentPixels = keptTransparent;
     }
   }
-  const paletteUsage = selectedOrder
-    .map(({ catalogIndex, paletteId }) => ({ paletteId, catalogId: records[catalogIndex].sourceId, count: usage.get(paletteId) ?? 0 }))
-    .filter((entry) => entry.count > 0);
+  const paletteUsage = finalOrder
+    .map(({ catalogIndex, paletteId }) => ({ paletteId, catalogId: records[catalogIndex].sourceId, count: usage.get(paletteId) ?? 0 }));
   return {
     token,
     document,
@@ -607,6 +687,7 @@ export async function convertRasterToPatternAsync(
   const records = catalog.records;
   const token = options.token ?? defaultToken();
   assertToken(token);
+  assertConfettiDistance(options.confettiDistance);
   conversionCancelled(cancellation, token.requestId);
   const sampled = await resampleRasterAsync(raster, options.targetWidth, options.targetHeight, cancellation);
   conversionCancelled(cancellation, token.requestId);
@@ -643,11 +724,11 @@ export async function convertRasterToPatternAsync(
   const paletteInputs: PaletteEntryInput[] = selectedOrder.map(({ catalogIndex, paletteId }) => paletteEntry(catalog.association, paletteId, records[catalogIndex]));
   const paletteIdByCatalogIndex = new Map(selectedOrder.map(({ catalogIndex, paletteId }) => [catalogIndex, paletteId]));
   conversionCancelled(cancellation, token.requestId);
-  const document = createDocument({ width: options.targetWidth, height: options.targetHeight, catalog: catalog.association, palette: paletteInputs });
+  const assigned = createDocument({ width: options.targetWidth, height: options.targetHeight, catalog: catalog.association, palette: paletteInputs });
   conversionCancelled(cancellation, token.requestId);
-  const usage = new Map<number, number>();
+  const assignedUsage = new Map<number, number>();
   let stitchedPixels = 0;
-  for (let targetIndex = 0; targetIndex < document.width * document.height; targetIndex += 1) {
+  for (let targetIndex = 0; targetIndex < assigned.width * assigned.height; targetIndex += 1) {
     const offset = targetIndex * 4;
     if (sampled.pixels[offset + 3] === 0) {
       // Keep the default empty-cell planes untouched.
@@ -662,9 +743,9 @@ export async function convertRasterToPatternAsync(
         const sourceCatalogIndex = nearestCatalogIndex(pixel, selected);
         const paletteId = paletteIdByCatalogIndex.get(selectedCatalogIndices[sourceCatalogIndex]);
         if (paletteId !== undefined) {
-          document.kind[targetIndex] = CellKind.Full;
-          document.colors[targetIndex * 4] = paletteId;
-          usage.set(paletteId, (usage.get(paletteId) ?? 0) + 1);
+          assigned.kind[targetIndex] = CellKind.Full;
+          assigned.colors[targetIndex * 4] = paletteId;
+          assignedUsage.set(paletteId, (assignedUsage.get(paletteId) ?? 0) + 1);
           stitchedPixels += 1;
         }
       }
@@ -676,6 +757,26 @@ export async function convertRasterToPatternAsync(
     }
   }
   conversionCancelled(cancellation, token.requestId);
+  if (options.confettiDistance !== undefined) {
+    const steps = reduceConfettiSteps(assigned, options.confettiDistance, paletteColorLookup(records, selectedOrder), assignedUsage, CONVERSION_LOOP_CHUNK);
+    let step = steps.next();
+    while (step.done !== true) {
+      conversionCancelled(cancellation, token.requestId);
+      await yieldConversionWork();
+      conversionCancelled(cancellation, token.requestId);
+      step = steps.next();
+    }
+    stitchedPixels -= step.value;
+  }
+  const pruneSteps = prunePaletteSteps(assigned, selectedOrder, assignedUsage, catalog, CONVERSION_LOOP_CHUNK);
+  let pruneStep = pruneSteps.next();
+  while (pruneStep.done !== true) {
+    conversionCancelled(cancellation, token.requestId);
+    await yieldConversionWork();
+    conversionCancelled(cancellation, token.requestId);
+    pruneStep = pruneSteps.next();
+  }
+  const { document, selectedOrder: finalOrder, usage } = pruneStep.value;
   // Trimming only removes Empty cells (zeroed color slots the usage counting
   // skips), so palette and usage stay valid without recomputation. The
   // transparent count is re-scoped to the kept box so every stat describes
@@ -699,9 +800,8 @@ export async function convertRasterToPatternAsync(
       transparentPixels = keptTransparent;
     }
   }
-  const paletteUsage = selectedOrder
-    .map(({ catalogIndex, paletteId }) => ({ paletteId, catalogId: records[catalogIndex].sourceId, count: usage.get(paletteId) ?? 0 }))
-    .filter((entry) => entry.count > 0);
+  const paletteUsage = finalOrder
+    .map(({ catalogIndex, paletteId }) => ({ paletteId, catalogId: records[catalogIndex].sourceId, count: usage.get(paletteId) ?? 0 }));
   return {
     token,
     document,
@@ -882,6 +982,7 @@ export function createConversionRequest(
     ...(options.paletteBudget === undefined ? {} : { paletteBudget: options.paletteBudget }),
     ...(options.backgroundSourceId === undefined ? {} : { backgroundSourceId: options.backgroundSourceId }),
     ...(options.autoCrop === undefined ? {} : { autoCrop: options.autoCrop }),
+    ...(options.confettiDistance === undefined ? {} : { confettiDistance: options.confettiDistance }),
     catalog: cloneCatalogSnapshot(options.catalog),
     ...(options.sourceImage?.assetId === undefined ? {} : { sourceAssetId: options.sourceImage.assetId }),
     ...(options.sourceImage?.mimeType === undefined ? {} : { sourceMimeType: options.sourceImage.mimeType })
@@ -929,6 +1030,7 @@ export function createConversionImageRequest(options: ConversionImageRequestOpti
     ...(options.paletteBudget === undefined ? {} : { paletteBudget: options.paletteBudget }),
     ...(options.backgroundSourceId === undefined ? {} : { backgroundSourceId: options.backgroundSourceId }),
     ...(options.autoCrop === undefined ? {} : { autoCrop: options.autoCrop }),
+    ...(options.confettiDistance === undefined ? {} : { confettiDistance: options.confettiDistance }),
     catalog: cloneCatalogSnapshot(options.catalog),
     ...(options.sourceImage?.assetId === undefined ? {} : { sourceAssetId: options.sourceImage.assetId }),
     ...(options.sourceImage?.mimeType === undefined ? {} : { sourceMimeType: options.sourceImage.mimeType })
@@ -946,6 +1048,7 @@ export function validateConversionRequest(request: ConversionRequestMessage): vo
   assertToken(request.token);
   assertCatalogSnapshot(request.catalog);
   assertPositiveDimensions(request.targetWidth, request.targetHeight, 'target');
+  assertConfettiDistance(request.confettiDistance);
   if (isRasterRequest(request)) {
     assertPositiveDimensions(request.width, request.height, 'raster');
     assertPositiveSourceDimensions(request.sourceWidth, request.sourceHeight);
@@ -976,6 +1079,7 @@ export function convertConversionRequest(request: ConversionRequestMessage): Con
 
     backgroundSourceId: request.backgroundSourceId,
     autoCrop: request.autoCrop,
+    confettiDistance: request.confettiDistance,
     token: request.token,
     catalog: request.catalog,
     sourceImage: {
@@ -1005,6 +1109,7 @@ export async function convertConversionRequestAsync(
 
     backgroundSourceId: request.backgroundSourceId,
     autoCrop: request.autoCrop,
+    confettiDistance: request.confettiDistance,
     token: request.token,
     catalog: request.catalog,
     sourceImage: {

@@ -2256,7 +2256,7 @@ describe('archive validation', () => {
     try {
       const loaded = await repo.load('old-database-project');
       expect(loaded?.metadata.aidaCount).toBeUndefined();
-      expect(repo.db.verno).toBe(6);
+      expect(repo.db.verno).toBe(7);
       expect(await repo.db.documentHistories.get('old-database-project')).toBeUndefined();
     } finally {
       await closeRepository(repo);

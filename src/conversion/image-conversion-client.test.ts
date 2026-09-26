@@ -176,6 +176,21 @@ describe('image conversion worker client', () => {
     client.dispose();
   });
 
+  it('forwards confettiDistance to the worker request', async () => {
+    const worker = new FakeWorker();
+    const client = createConversionWorkerClient({ workerFactory: () => worker });
+    const job = client.submit({ ...input(), confettiDistance: 2 });
+    const posted = worker.posted[0] as ConversionRasterRequestMessage;
+    expect(posted.confettiDistance).toBe(2);
+    worker.emit(convertConversionRequest(posted));
+    await job.promise;
+    const plain = client.submit(input('plain'));
+    expect('confettiDistance' in (worker.posted[1] as ConversionRasterRequestMessage)).toBe(false);
+    worker.emit(convertConversionRequest(plain.request));
+    await plain.promise;
+    client.dispose();
+  });
+
   it('rejects cancellation and ignores a later worker response', async () => {
     const worker = new FakeWorker();
     const client = createConversionWorkerClient({ workerFactory: () => worker });
@@ -331,6 +346,20 @@ describe('image conversion worker client', () => {
     expect(result.draft.document.kind).toEqual(expected.document.kind);
     expect(result.draft.document.colors).toEqual(expected.document.colors);
     expect(result.draft.document.catalog).toEqual(passthroughCatalog.association);
+    client.dispose();
+  });
+
+  it('applies confettiDistance on the fallback image path', async () => {
+    const red = [255, 0, 0, 255];
+    const pixels = new Uint8ClampedArray([...red, ...red, ...red, ...red, 0, 0, 255, 255, ...red, ...red, ...red, ...red]);
+    const client = createConversionWorkerClient({ useWorker: false, rasterOptions: {
+      createImageBitmap: async () => ({ width: 3, height: 3 }),
+      surfaceFactory: () => ({ context: { drawImage: () => undefined, getImageData: () => ({ data: pixels }) } })
+    } });
+    const image = new Blob([pngBytes(3, 3).buffer as ArrayBuffer], { type: 'image/png' });
+    const result = await client.requestImage(image, { ...input(), targetWidth: 3, targetHeight: 3, confettiDistance: 1, requestId: 'fallback-confetti' });
+    expect(result.draft.stats.paletteUsage).toEqual([{ paletteId: 1, catalogId: 'red', count: 9 }]);
+    expect(result.draft.document.colors[4 * 4]).toBe(1);
     client.dispose();
   });
 

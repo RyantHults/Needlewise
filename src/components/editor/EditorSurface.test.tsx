@@ -1354,7 +1354,7 @@ describe('EditorSurface', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
     const dialog = screen.getByRole('dialog', { name: 'Settings' });
-    fireEvent.click(within(dialog).getByRole('tab', { name: 'Aida' }));
+    fireEvent.click(within(dialog).getByRole('tab', { name: 'Canvas' }));
     const section = within(dialog).getByRole('region', { name: 'Aida Settings' });
     expect(within(section).getByLabelText('Aida count')).toBeInTheDocument();
     expect(within(section).getByLabelText('Background color')).toBeInTheDocument();
@@ -1367,7 +1367,7 @@ describe('EditorSurface', () => {
     const dialog = screen.getByRole('dialog', { name: 'Settings' });
     const tabs = within(dialog).getByRole('tablist', { name: 'Settings sections' });
     const project = within(tabs).getByRole('tab', { name: 'Project' });
-    const aidaTab = within(tabs).getByRole('tab', { name: 'Aida' });
+    const aidaTab = within(tabs).getByRole('tab', { name: 'Canvas' });
     const editor = within(tabs).getByRole('tab', { name: 'Editor' });
     expect(project).toHaveAttribute('aria-selected', 'true');
     expect(within(dialog).getByRole('tabpanel')).toHaveAttribute('aria-labelledby', project.id);
@@ -1423,13 +1423,13 @@ describe('EditorSurface', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
     const dialog = screen.getByRole('dialog', { name: 'Settings' });
-    fireEvent.click(within(dialog).getByRole('tab', { name: 'Aida' }));
+    fireEvent.click(within(dialog).getByRole('tab', { name: 'Canvas' }));
     const hex = within(dialog).getByLabelText('HEX Code');
     fireEvent.change(hex, { target: { value: '#12' } });
     expect(within(dialog).getByText('Enter a 3- or 6-digit hex color.')).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole('tab', { name: 'Project' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save settings' }));
-    expect(within(dialog).getByRole('tab', { name: 'Aida' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(dialog).getByRole('tab', { name: 'Canvas' })).toHaveAttribute('aria-selected', 'true');
     expect(within(dialog).getByText('Enter a 3- or 6-digit hex color.')).toBeVisible();
     await waitFor(() => expect(hex).toHaveFocus());
     expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).not.toHaveBeenCalled();

@@ -60,6 +60,7 @@ async function convertWorkerRequest(request: ConversionRequestMessage, active: A
     paletteBudget: request.paletteBudget,
     backgroundSourceId: request.backgroundSourceId,
     autoCrop: request.autoCrop,
+    confettiDistance: request.confettiDistance,
     catalog: request.catalog,
     token: request.token,
     sourceImage: {

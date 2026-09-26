@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { calculatePreviewSize, CreateModal, PREVIEW_LENS_SIZE, previewFinishedSize, previewLensGeometry, suggestConversionDimensions } from './CreateModal';
 import { DEFAULT_CATALOG_DEFINITION, type CatalogSnapshot } from '../catalog';
+import { MAX_CONFETTI_DISTANCE } from '../conversion/image-to-pattern';
 
 const DEFAULT_CATALOG_COLOR_COUNT = DEFAULT_CATALOG_DEFINITION.snapshot.association.colorCount;
 
@@ -26,6 +27,11 @@ class MockImage {
   onload: (() => void) | null = null;
   onerror: (() => void) | null = null;
   set src(_value: string) { images.push(this); }
+}
+
+/** Minimal DataTransfer stand-in: jsdom has no DataTransfer constructor. */
+function dropData(...files: File[]) {
+  return { files: Object.assign([...files], { item: (index: number) => files[index] ?? null }), types: files.length ? ['Files'] : [], dropEffect: 'none' };
 }
 
 function props(onClose: () => void = vi.fn(), catalog: CatalogSnapshot = DEFAULT_CATALOG_DEFINITION.snapshot) {
@@ -663,6 +669,130 @@ describe('CreateModal image lifecycle', () => {
     act(() => { vi.advanceTimersByTime(300); });
     await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(2));
     expect(conversion.convert.mock.calls[1][1]).toMatchObject({ autoCrop: true });
+  });
+
+  it('re-converts with a confetti distance when confetti reduction is toggled and the slider moves', async () => {
+    render(<ControlledModal />);
+    fireEvent.change(screen.getByLabelText(/Choose a PNG/), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } });
+    act(() => { images[0].onload?.(); });
+    act(() => { vi.advanceTimersByTime(300); });
+    await vi.waitFor(() => screen.getByRole('slider', { name: 'Color budget, 24 colors' }));
+    const checkbox = screen.getByLabelText('Reduce confetti stitches');
+    expect(checkbox).not.toBeChecked();
+    expect(conversion.convert.mock.calls[0][1].confettiDistance).toBeUndefined();
+    expect(screen.queryByRole('slider', { name: /Confetti distance/ })).not.toBeInTheDocument();
+
+    fireEvent.click(checkbox);
+    expect(checkbox).toBeChecked();
+    const slider = screen.getByRole('slider', { name: 'Confetti distance, 1 stitch' });
+    expect(slider).toHaveAttribute('min', '1');
+    expect(slider).toHaveAttribute('max', String(MAX_CONFETTI_DISTANCE));
+    expect(screen.getByText(/Lower values clean up more/)).toBeInTheDocument();
+    // The accepted preview no longer matches the inputs, so it can't be created mid-change.
+    expect(screen.getByRole('button', { name: 'Create from image' })).toBeDisabled();
+    act(() => { vi.advanceTimersByTime(300); });
+    await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(2));
+    expect(conversion.convert.mock.calls[1][1]).toMatchObject({ confettiDistance: 1 });
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Create from image' })).toBeEnabled());
+
+    fireEvent.change(slider, { target: { value: '3' } });
+    expect(screen.getByRole('slider', { name: 'Confetti distance, 3 stitches' })).toHaveValue('3');
+    expect(screen.getByRole('button', { name: 'Create from image' })).toBeDisabled();
+    act(() => { vi.advanceTimersByTime(300); });
+    await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(3));
+    expect(conversion.convert.mock.calls[2][1]).toMatchObject({ confettiDistance: 3 });
+
+    fireEvent.click(checkbox);
+    expect(screen.queryByRole('slider', { name: /Confetti distance/ })).not.toBeInTheDocument();
+    act(() => { vi.advanceTimersByTime(300); });
+    await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(4));
+    expect(conversion.convert.mock.calls[3][1].confettiDistance).toBeUndefined();
+  });
+
+  it('steps the confetti distance with +/- buttons that stop at the bounds', async () => {
+    render(<ControlledModal />);
+    fireEvent.change(screen.getByLabelText(/Choose a PNG/), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } });
+    act(() => { images[0].onload?.(); });
+    act(() => { vi.advanceTimersByTime(300); });
+    await vi.waitFor(() => screen.getByRole('slider', { name: 'Color budget, 24 colors' }));
+    fireEvent.click(screen.getByLabelText('Reduce confetti stitches'));
+    act(() => { vi.advanceTimersByTime(300); });
+    await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(2));
+    const decrease = screen.getByRole('button', { name: 'Decrease confetti distance' });
+    const increase = screen.getByRole('button', { name: 'Increase confetti distance' });
+    expect(decrease).toBeDisabled();
+    expect(increase).toBeEnabled();
+
+    fireEvent.click(increase);
+    expect(screen.getByRole('slider', { name: 'Confetti distance, 2 stitches' })).toHaveValue('2');
+    expect(decrease).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Create from image' })).toBeDisabled();
+    act(() => { vi.advanceTimersByTime(300); });
+    await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(3));
+    expect(conversion.convert.mock.calls[2][1]).toMatchObject({ confettiDistance: 2 });
+
+    fireEvent.click(decrease);
+    expect(screen.getByRole('slider', { name: 'Confetti distance, 1 stitch' })).toHaveValue('1');
+    act(() => { vi.advanceTimersByTime(300); });
+    await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(4));
+    expect(conversion.convert.mock.calls[3][1]).toMatchObject({ confettiDistance: 1 });
+
+    fireEvent.change(screen.getByRole('slider', { name: /Confetti distance/ }), { target: { value: String(MAX_CONFETTI_DISTANCE) } });
+    expect(increase).toBeDisabled();
+    act(() => { vi.advanceTimersByTime(300); });
+    await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(5));
+    expect(conversion.convert.mock.calls[4][1]).toMatchObject({ confettiDistance: MAX_CONFETTI_DISTANCE });
+  });
+
+  it('converts an image dropped onto the upload zone like a chosen one', async () => {
+    render(<ControlledModal />);
+    const zone = screen.getByLabelText(/Choose a PNG/).closest('label') as HTMLElement;
+    expect(zone).toHaveTextContent('Drop an image here');
+    expect(zone).toHaveTextContent('Browse files');
+    fireEvent.dragEnter(zone, { dataTransfer: dropData() });
+    expect(zone).toHaveClass('file-drop-active');
+    fireEvent.dragLeave(zone, { dataTransfer: dropData() });
+    expect(zone).not.toHaveClass('file-drop-active');
+    fireEvent.dragOver(zone, { dataTransfer: dropData() });
+    expect(zone).toHaveClass('file-drop-active');
+    fireEvent.drop(zone, { dataTransfer: dropData(new File(['one'], 'dropped.png', { type: 'image/png' })) });
+    expect(zone).not.toHaveClass('file-drop-active');
+    expect(zone).toHaveClass('file-drop-selected');
+    expect(zone).toHaveTextContent('dropped.png');
+    expect(zone).toHaveTextContent('Replace image');
+    act(() => { images[0].onload?.(); });
+    act(() => { vi.advanceTimersByTime(300); });
+    await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(1));
+    expect((conversion.convert.mock.calls[0][0] as File).name).toBe('dropped.png');
+  });
+
+  it('rejects a dropped file that is not a supported image', () => {
+    render(<ControlledModal />);
+    const zone = screen.getByLabelText(/Choose a PNG/).closest('label') as HTMLElement;
+    fireEvent.drop(zone, { dataTransfer: dropData(new File(['text'], 'notes.txt', { type: 'text/plain' })) });
+    expect(screen.getByRole('alert')).toHaveTextContent('Choose a PNG, JPEG, or WebP image.');
+    expect(images).toHaveLength(0);
+    expect(zone).not.toHaveClass('file-drop-selected');
+  });
+
+  it('reports how many colors the preview uses when fewer than the budget, and stays quiet when all are used', async () => {
+    const draftWith = (ids: string[]) => ({ draft: { stats: { sourceWidth: 2, sourceHeight: 1 }, document: { width: 2, height: 1, palette: ids.map((id, index) => ({ id: index + 1, name: id, color: '#ff0000', active: true, symbol: `S${index + 1}`, catalog: { catalogId: 'dmc', sourceId: id, code: id, name: id, hex: '#ff0000', rgb: [255, 0, 0] } })), colors: new Uint16Array(4) } } });
+    conversion.convert.mockResolvedValueOnce(draftWith(['red', 'blue']));
+    render(<ControlledModal />);
+    fireEvent.change(screen.getByLabelText(/Choose a PNG/), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } });
+    act(() => { images[0].onload?.(); });
+    act(() => { vi.advanceTimersByTime(300); });
+    await vi.waitFor(() => expect(screen.getByText('2 of 24 colors used.')).toBeInTheDocument());
+    expect(screen.getByText(/no stitches left after color matching or confetti reduction/)).toBeInTheDocument();
+
+    // A stale preview doesn't report a count against the new budget.
+    conversion.convert.mockResolvedValueOnce(draftWith(['red', 'blue']));
+    fireEvent.change(screen.getByRole('slider', { name: 'Color budget, 24 colors' }), { target: { value: '2' } });
+    expect(screen.queryByText(/colors used/)).not.toBeInTheDocument();
+    act(() => { vi.advanceTimersByTime(300); });
+    await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Create from image' })).toBeEnabled());
+    expect(screen.queryByText(/colors used/)).not.toBeInTheDocument();
   });
 
   it('keeps the image controls hidden until a file is decoded and ready', async () => {    render(<ControlledModal />);

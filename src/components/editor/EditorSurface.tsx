@@ -2009,7 +2009,7 @@ export function EditorSurface({
               <h2 id="settings-heading">Settings</h2>
               <form onSubmit={save}>
                 <div className="settings-tabs" role="tablist" aria-label="Settings sections">
-                  {([['project', 'Project'], ['aida', 'Aida'], ['editor', 'Editor']] as const).map(([key, label]) => <button
+                  {([['project', 'Project'], ['aida', 'Canvas'], ['editor', 'Editor']] as const).map(([key, label]) => <button
                     key={key}
                     id={`settings-tab-${key}`}
                     className="settings-tab"
@@ -2079,15 +2079,13 @@ export function EditorSurface({
                 </div>
                 <div id="settings-panel-aida" className="settings-tabpanel" role="tabpanel" aria-labelledby="settings-tab-aida" hidden={settingsTab !== 'aida'}>
                 <section className="settings-section aida-settings-section" aria-labelledby="aida-settings-heading">
-                  <h3 id="aida-settings-heading">Aida Settings</h3>
                   <label htmlFor="details-aida">
-                    Aida count
+                    Stitch count
                     <select id="details-aida" value={aida} onChange={(e) => setAida(e.target.value)}>
                       {[11, 14, 16, 18, 22].map((x) => <option key={x}>{x}</option>)}
                     </select>
                   </label>
                   <section className="custom-color-section settings-background-color" aria-labelledby="background-color-title">
-                    <h4 id="background-color-title">Aida background</h4>
                     <div className="custom-color-fields">
                       <label htmlFor="background-color-picker">Background color</label>
                       <input id="background-color-picker" type="color" value={backgroundColor.toLowerCase()} onChange={(event) => setBackgroundFromHex(event.target.value)} />

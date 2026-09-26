@@ -146,7 +146,7 @@ describe('image conversion worker handler', () => {
     expect(active.size).toBe(0);
   });
 
-  it('forwards autoCrop from an image request and trims empty pattern borders', async () => {
+  it('forwards autoCrop and confettiDistance from an image request', async () => {
     const originalCreateImageBitmap = (globalThis as unknown as { createImageBitmap?: unknown }).createImageBitmap;
     const originalOffscreenCanvas = (globalThis as unknown as { OffscreenCanvas?: unknown }).OffscreenCanvas;
     (globalThis as unknown as { createImageBitmap: unknown }).createImageBitmap = async () => ({ width: 4, height: 2, close: () => undefined });
@@ -156,7 +156,7 @@ describe('image conversion worker handler', () => {
         drawImage: () => undefined,
         getImageData: () => ({ data: new Uint8ClampedArray([
           0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-          0, 0, 0, 0, 255, 0, 0, 255, 255, 0, 0, 255, 0, 0, 0, 0
+          0, 0, 0, 0, 255, 0, 0, 255, 255, 0, 0, 255, 0, 0, 255, 255
         ]) })
       };
 
@@ -171,10 +171,12 @@ describe('image conversion worker handler', () => {
         targetWidth: 4,
         targetHeight: 2,
         autoCrop: true,
+        confettiDistance: 1,
         catalog,
         token: { projectId: 'worker-project', baseRevision: 2, requestId: 'worker-autocrop' }
       });
       expect(imageRequest.autoCrop).toBe(true);
+      expect(imageRequest.confettiDistance).toBe(1);
       const responses: ConversionWorkerResponse[] = [];
       const active = new Map<string, { cancelled: boolean }>();
       handleImageConversionWorkerMessage(imageRequest, (response) => responses.push(response), active);
@@ -182,12 +184,13 @@ describe('image conversion worker handler', () => {
       expect(responses).toHaveLength(1);
       expect(responses[0]?.type).toBe('conversion-result');
       if (responses[0]?.type === 'conversion-result') {
-        // Source dims stay original (4x2 decode); the pattern trims to the
-        // stitched 2x1 content box.
+        // Source dims stay original (4x2 decode); confetti reduction clears
+        // the lone blue stitch, so the pattern trims to the red 2x1 box.
         expect(responses[0].draft.stats.sourceWidth).toBe(4);
         expect(responses[0].draft.stats.sourceHeight).toBe(2);
         expect(responses[0].draft.document.width).toBe(2);
         expect(responses[0].draft.document.height).toBe(1);
+        expect(responses[0].draft.stats.paletteUsage).toEqual([{ paletteId: 1, catalogId: 'red', count: 2 }]);
       }
       expect(active.size).toBe(0);
     } finally {

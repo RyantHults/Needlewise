@@ -16,7 +16,7 @@ import type {
   WorkspaceInitializationOptions,
   WorkspaceOptions
 } from './types';
-import type { ArchiveImportOptions, ProgressActivity, ProjectMetadata } from '../persistence';
+import type { ArchiveImportOptions, ProgressActivity, ProjectFolder, ProjectFolderAssignment, ProjectMetadata } from '../persistence';
 import type { ProjectSession } from './session';
 import type { CommandResult, DomainCommand, PatternMetrics } from '../domain';
 import type { SessionProgressStats } from './progress';
@@ -33,6 +33,8 @@ export interface UseProjectWorkspaceResult {
   busy: boolean;
   state: ActiveWorkspaceState;
   projects: ProjectMetadata[];
+  folders: ProjectFolder[];
+  folderAssignments: ProjectFolderAssignment[];
   error: Error | null;
   saveState: SaveState;
   metrics: PatternMetrics | null;
@@ -45,6 +47,11 @@ export interface UseProjectWorkspaceResult {
   openProject(projectId: string): Promise<ProjectSession>;
   selectProject(projectId?: string): Promise<ProjectSession | undefined>;
   deleteProject(projectId: string): Promise<void>;
+  createFolder(name: string, parentId?: string | null): Promise<ProjectFolder>;
+  renameFolder(folderId: string, name: string): Promise<ProjectFolder>;
+  deleteFolder(folderId: string): Promise<void>;
+  moveProjectToFolder(projectId: string, folderId: string | null): Promise<void>;
+  moveFolder(folderId: string, parentId: string | null): Promise<void>;
   importProject(input: Uint8Array | ArrayBuffer | Blob, options?: ArchiveImportOptions): Promise<ProjectSession>;
   importProjectAsCopy(input: Uint8Array | ArrayBuffer | Blob, options?: ArchiveImportOptions): Promise<ProjectSession>;
   exportProject(): Promise<Uint8Array>;
@@ -112,6 +119,8 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
   const [initialized, setInitialized] = useState(false);
   const [busy, setBusy] = useState(true);
   const [projects, setProjects] = useState<ProjectMetadata[]>([]);
+  const [folders, setFolders] = useState<ProjectFolder[]>([]);
+  const [folderAssignments, setFolderAssignments] = useState<ProjectFolderAssignment[]>([]);
   const [actionError, setActionError] = useState<Error | null>(null);
 
   const subscribe = useCallback((listener: () => void) => {
@@ -131,8 +140,12 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
   }, []);
 
   const refreshProjects = useCallback(async (instance: ProjectWorkspace): Promise<ProjectMetadata[]> => {
-    const nextProjects = await instance.listProjects();
-    if (lifecycleRef.current.mounted && workspaceRef.current === instance) setProjects(nextProjects);
+    const [nextProjects, folderIndex] = await Promise.all([instance.listProjects(), instance.listFolderIndex()]);
+    if (lifecycleRef.current.mounted && workspaceRef.current === instance) {
+      setProjects(nextProjects);
+      setFolders(folderIndex.folders);
+      setFolderAssignments(folderIndex.assignments);
+    }
     return nextProjects;
   }, []);
 
@@ -223,6 +236,11 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
   const openProject = useCallback((projectId: string) => runAction((instance) => instance.openProject(projectId)), [runAction]);
   const selectProject = useCallback((projectId?: string) => runAction((instance) => instance.selectProject(projectId)), [runAction]);
   const deleteProject = useCallback((projectId: string) => runAction((instance) => instance.deleteProject(projectId)), [runAction]);
+  const createFolder = useCallback((name: string, parentId: string | null = null) => runAction((instance) => instance.createFolder(name, parentId)), [runAction]);
+  const renameFolder = useCallback((folderId: string, name: string) => runAction((instance) => instance.renameFolder(folderId, name)), [runAction]);
+  const deleteFolder = useCallback((folderId: string) => runAction((instance) => instance.deleteFolder(folderId)), [runAction]);
+  const moveProjectToFolder = useCallback((projectId: string, folderId: string | null) => runAction((instance) => instance.moveProjectToFolder(projectId, folderId)), [runAction]);
+  const moveFolder = useCallback((folderId: string, parentId: string | null) => runAction((instance) => instance.moveFolder(folderId, parentId)), [runAction]);
   const importProject = useCallback((input: Uint8Array | ArrayBuffer | Blob, importOptions: ArchiveImportOptions = {}) => runAction((instance) => instance.importProject(input, importOptions)), [runAction]);
   const importProjectAsCopy = useCallback((input: Uint8Array | ArrayBuffer | Blob, importOptions: ArchiveImportOptions = {}) => runAction((instance) => instance.importProjectAsCopy(input, importOptions)), [runAction]);
   const exportProject = useCallback(() => runAction((instance) => instance.exportActiveProject()), [runAction]);
@@ -242,6 +260,8 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
     busy,
     state,
     projects,
+    folders,
+    folderAssignments,
     error: state.error ?? actionError,
     saveState: state.save,
     metrics: state.metrics ?? null,
@@ -254,6 +274,11 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
     openProject,
     selectProject,
     deleteProject,
+    createFolder,
+    renameFolder,
+    deleteFolder,
+    moveProjectToFolder,
+    moveFolder,
     importProject,
     importProjectAsCopy,
     exportProject,

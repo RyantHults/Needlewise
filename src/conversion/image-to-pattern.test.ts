@@ -9,6 +9,7 @@ import {
   convertRasterToPattern,
   createConversionImageRequest,
   createConversionRequest,
+  MAX_CONFETTI_DISTANCE,
   resampleRaster,
   resampleRasterAsync,
   trimDocumentToContent,
@@ -496,5 +497,150 @@ describe('auto-crop to content', () => {
     expect(withFlag.autoCrop).toBe(true);
     const withoutFlag = createConversionRequest(raster(1, 1, [1, 2, 3, 255]), { targetWidth: 1, targetHeight: 1, catalog });
     expect(withoutFlag.autoCrop).toBeUndefined();
+  });
+});
+
+describe('confetti reduction during conversion', () => {
+  it('replaces isolated stitches and recomputes the stats', () => {
+    const input = letterRaster(['RRR', 'RBR', 'RRR']);
+    const plain = convertRasterToPattern(input, { targetWidth: 3, targetHeight: 3, catalog });
+    expect(plain.stats.paletteUsage.map((entry) => entry.catalogId)).toEqual(['red', 'blue']);
+    const reduced = convertRasterToPattern(input, { targetWidth: 3, targetHeight: 3, confettiDistance: 1, catalog });
+    expect(Array.from(reduced.document.colors.filter((_, offset) => offset % 4 === 0))).toEqual([1, 1, 1, 1, 1, 1, 1, 1, 1]);
+    expect(reduced.stats.stitchedPixels).toBe(9);
+    expect(reduced.stats.emptyPixels).toBe(0);
+    expect(reduced.stats.paletteUsage).toEqual([{ paletteId: 1, catalogId: 'red', count: 9 }]);
+    expect(reduced.stats.matchedColorCount).toBe(2);
+    expect(() => acceptConversionDraft(reduced)).not.toThrow();
+  });
+
+  it('clears lone stitches surrounded by empty cells', () => {
+    const reduced = convertRasterToPattern(letterRaster(['TTT', 'TRT', 'TTT']), { targetWidth: 3, targetHeight: 3, confettiDistance: 1, catalog });
+    expect(reduced.document.kind).toEqual(new Uint8Array(9));
+    expect(reduced.stats.stitchedPixels).toBe(0);
+    expect(reduced.stats.emptyPixels).toBe(9);
+    expect(reduced.stats.transparentPixels).toBe(8);
+    expect(reduced.stats.paletteUsage).toEqual([]);
+    expect(() => acceptConversionDraft(reduced)).not.toThrow();
+  });
+
+  it('runs before auto-crop so removed stitches no longer hold the crop box open', () => {
+    const input = letterRaster(['BTTT', 'TTTT', 'TTRR', 'TTRR']);
+    const cropOnly = convertRasterToPattern(input, { targetWidth: 4, targetHeight: 4, autoCrop: true, catalog });
+    expect(cropOnly.document.width).toBe(4);
+    const both = convertRasterToPattern(input, { targetWidth: 4, targetHeight: 4, autoCrop: true, confettiDistance: 1, catalog });
+    expect(both.document.width).toBe(2);
+    expect(both.document.height).toBe(2);
+    expect(both.stats.stitchedPixels).toBe(4);
+    expect(both.stats.transparentPixels).toBe(0);
+    expect(both.stats.paletteUsage).toEqual([{ paletteId: 1, catalogId: 'red', count: 4 }]);
+    expect(() => acceptConversionDraft(both)).not.toThrow();
+  });
+
+  it('produces identical documents on the sync and async paths', async () => {
+    // Large enough to cross several CONVERSION_LOOP_CHUNK yields.
+    const width = 90;
+    const height = 90;
+    const letters = 'RBWTRRBB';
+    const rows = Array.from({ length: height }, (_, y) => Array.from({ length: width }, (_, x) => letters[(x * 7 + y * 13 + ((x * y) % 5)) % letters.length]).join(''));
+    const input = letterRaster(rows);
+    const options = { targetWidth: width, targetHeight: height, confettiDistance: 2, autoCrop: true, catalog };
+    const synchronous = convertRasterToPattern(input, options);
+    const asynchronous = await convertRasterToPatternAsync(input, options);
+    expect(asynchronous.document.width).toBe(synchronous.document.width);
+    expect(asynchronous.document.kind).toEqual(synchronous.document.kind);
+    expect(asynchronous.document.colors).toEqual(synchronous.document.colors);
+    expect(asynchronous.stats).toEqual(synchronous.stats);
+    expect(synchronous.document.colors).not.toEqual(convertRasterToPattern(input, { ...options, confettiDistance: undefined }).document.colors);
+  });
+
+  it('checks cancellation while reducing confetti on the async path', async () => {
+    const input = letterRaster(Array.from({ length: 90 }, () => 'R'.repeat(90)));
+    const options = { targetWidth: 90, targetHeight: 90, catalog };
+    let plainChecks = 0;
+    await convertRasterToPatternAsync(input, options, { isCancelled: () => { plainChecks += 1; return false; } });
+    let reducedChecks = 0;
+    await convertRasterToPatternAsync(input, { ...options, confettiDistance: 1 }, { isCancelled: () => { reducedChecks += 1; return false; } });
+    expect(reducedChecks).toBeGreaterThan(plainChecks);
+    // Every check past the plain run's total happens inside the confetti pass.
+    let checks = 0;
+    await expect(convertRasterToPatternAsync(input, { ...options, confettiDistance: 1 }, { isCancelled: () => {
+      checks += 1;
+      return checks > plainChecks;
+    } })).rejects.toBeInstanceOf(ConversionCancelledError);
+  });
+
+  it('carries confettiDistance through the request builders', () => {
+    const source = new Blob(['x'], { type: 'image/png' });
+    expect(createConversionImageRequest({ source, targetWidth: 2, targetHeight: 2, confettiDistance: 3, catalog }).confettiDistance).toBe(3);
+    expect(createConversionRequest(raster(1, 1, [1, 2, 3, 255]), { targetWidth: 1, targetHeight: 1, confettiDistance: 1, catalog }).confettiDistance).toBe(1);
+    const withoutValue = createConversionRequest(raster(1, 1, [1, 2, 3, 255]), { targetWidth: 1, targetHeight: 1, catalog });
+    expect('confettiDistance' in withoutValue).toBe(false);
+    expect('confettiDistance' in createConversionImageRequest({ source, targetWidth: 2, targetHeight: 2, catalog })).toBe(false);
+  });
+
+  it('rejects confetti distances outside 1..MAX_CONFETTI_DISTANCE', async () => {
+    const input = raster(1, 1, [1, 2, 3, 255]);
+    const request = createConversionRequest(input, { targetWidth: 1, targetHeight: 1, catalog });
+    expect(() => validateConversionRequest({ ...request, confettiDistance: MAX_CONFETTI_DISTANCE })).not.toThrow();
+    for (const confettiDistance of [0, MAX_CONFETTI_DISTANCE + 1, 1.5]) {
+      expect(() => validateConversionRequest({ ...request, confettiDistance })).toThrow(ConversionError);
+      expect(() => convertRasterToPattern(input, { targetWidth: 1, targetHeight: 1, confettiDistance, catalog })).toThrow(ConversionError);
+      await expect(convertRasterToPatternAsync(input, { targetWidth: 1, targetHeight: 1, confettiDistance, catalog })).rejects.toBeInstanceOf(ConversionError);
+    }
+  });
+
+  describe('palette pruning', () => {
+    // Blue stitches are isolated (confetti at distance 1); the white pair is not.
+    const scattered = letterRaster(['RRRRRR', 'RBRRBR', 'RRRRRR', 'RBRWWR']);
+    const options = { targetWidth: 6, targetHeight: 4, confettiDistance: 1, catalog };
+
+    it('drops colors confetti reduction empties and renumbers the survivors', () => {
+      const plain = convertRasterToPattern(scattered, { ...options, confettiDistance: undefined });
+      expect(plain.document.palette.map((entry) => [entry.id, entry.catalog?.sourceId])).toEqual([[1, 'red'], [2, 'blue'], [3, 'white']]);
+      const reduced = convertRasterToPattern(scattered, options);
+      expect(reduced.document.palette.map((entry) => [entry.id, entry.catalog?.sourceId])).toEqual([[1, 'red'], [2, 'white']]);
+      expect(reduced.document.palette[1].catalog).toEqual(plain.document.palette[2].catalog);
+      expect(reduced.document.palette[1].name).toBe(plain.document.palette[2].name);
+      expect(reduced.document.nextPaletteId).toBe(3);
+      const slots = Array.from(reduced.document.colors.filter((_, offset) => offset % 4 === 0));
+      expect(slots.filter((id) => id === 2)).toHaveLength(2);
+      expect(slots[3 * 6 + 3]).toBe(2);
+      expect(slots[3 * 6 + 4]).toBe(2);
+      expect(slots.every((id) => id === 1 || id === 2)).toBe(true);
+      expect(reduced.stats.paletteUsage).toEqual([{ paletteId: 1, catalogId: 'red', count: 22 }, { paletteId: 2, catalogId: 'white', count: 2 }]);
+      expect(reduced.document.palette).toHaveLength(reduced.stats.paletteUsage.length);
+      expect(reduced.stats.matchedColorCount).toBe(3);
+      expect(() => acceptConversionDraft(reduced)).not.toThrow();
+    });
+
+    it('prunes a color whose every stitch is cleared to empty', () => {
+      const reduced = convertRasterToPattern(letterRaster(['TTTT', 'TBTT', 'TTRR', 'TTRR']), { targetWidth: 4, targetHeight: 4, confettiDistance: 1, catalog });
+      expect(reduced.document.palette.map((entry) => [entry.id, entry.catalog?.sourceId])).toEqual([[1, 'red']]);
+      expect(reduced.stats.paletteUsage).toEqual([{ paletteId: 1, catalogId: 'red', count: 4 }]);
+      expect(() => acceptConversionDraft(reduced)).not.toThrow();
+    });
+
+    it('leaves the palette untouched when every color is used', () => {
+      const input = letterRaster(['RRBB', 'RRBB']);
+      const plain = convertRasterToPattern(input, { targetWidth: 4, targetHeight: 2, catalog });
+      const reduced = convertRasterToPattern(input, { targetWidth: 4, targetHeight: 2, confettiDistance: 1, catalog });
+      expect(reduced.document.palette).toEqual(plain.document.palette);
+      expect(reduced.document.colors).toEqual(plain.document.colors);
+      expect(reduced.stats.paletteUsage).toEqual(plain.stats.paletteUsage);
+    });
+
+    it('prunes identically on the async path', async () => {
+      const synchronous = convertRasterToPattern(scattered, options);
+      const asynchronous = await convertRasterToPatternAsync(scattered, options);
+      expect(asynchronous.document).toEqual(synchronous.document);
+      expect(asynchronous.stats).toEqual(synchronous.stats);
+      // Large enough to yield inside the remap loop.
+      const large = letterRaster(Array.from({ length: 90 }, (_, y) => (y === 45 ? 'R'.repeat(44) + 'B' + 'R'.repeat(45) : 'R'.repeat(90))));
+      const largeOptions = { targetWidth: 90, targetHeight: 90, confettiDistance: 1, catalog };
+      const largeAsync = await convertRasterToPatternAsync(large, largeOptions);
+      expect(largeAsync.document.palette.map((entry) => entry.catalog?.sourceId)).toEqual(['red']);
+      expect(largeAsync.document).toEqual(convertRasterToPattern(large, largeOptions).document);
+    });
   });
 });

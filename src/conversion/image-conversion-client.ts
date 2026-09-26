@@ -217,6 +217,7 @@ function requestFromInput(input: ConversionRequestInput, requestIdFactory: () =>
     paletteBudget: input.paletteBudget,
     backgroundSourceId: input.backgroundSourceId,
     autoCrop: input.autoCrop,
+    confettiDistance: input.confettiDistance,
     catalog: input.catalog,
     sourceImage: input.sourceImage,
     token: {
@@ -425,6 +426,7 @@ export class ConversionWorkerClient {
           paletteBudget: workRequest.paletteBudget,
           backgroundSourceId: workRequest.backgroundSourceId,
           autoCrop: workRequest.autoCrop,
+          confettiDistance: workRequest.confettiDistance,
           catalog: workRequest.catalog,
           token: workRequest.token,
           sourceImage: {

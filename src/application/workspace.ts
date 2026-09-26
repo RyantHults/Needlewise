@@ -14,6 +14,8 @@ import {
   PersistenceError,
   ProjectRepository,
   type ArchiveImportOptions,
+  type ProjectFolder,
+  type ProjectFolderIndex,
   type ProjectHealth,
   type ProjectMetadata,
   type ProjectRecord,
@@ -638,6 +640,92 @@ export class ProjectWorkspace {
     } catch (error) {
       if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
       return this.rememberOperationError(error, 'save-failed', 'Unable to delete the local project.');
+    }
+  }
+
+  async listFolderIndex(): Promise<ProjectFolderIndex> {
+    const token = this.operationToken;
+    try {
+      const index = this.repository.listFolderIndex ? await this.repository.listFolderIndex() : { folders: [], assignments: [] };
+      this.ensureOperation(token);
+      this.operationError = null;
+      this.notify();
+      return { folders: index.folders.map((folder) => ({ ...folder })), assignments: index.assignments.map((assignment) => ({ ...assignment })) };
+    } catch (error) {
+      if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
+      return this.rememberOperationError(error, 'save-failed', 'Unable to list local folders.');
+    }
+  }
+
+  async createFolder(name: string, parentId: string | null = null): Promise<ProjectFolder> {
+    const token = this.startOperation();
+    try {
+      if (!this.repository.createFolder) throw new WorkspaceError('save-failed', 'This repository cannot create folders.');
+      const folder = await this.repository.createFolder({ name, parentId, id: this.projectIdFactory() });
+      this.ensureOperation(token);
+      this.operationError = null;
+      this.notify();
+      return { ...folder };
+    } catch (error) {
+      if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
+      return this.rememberOperationError(error, 'save-failed', 'Unable to create the folder.');
+    }
+  }
+
+  async renameFolder(folderId: string, name: string): Promise<ProjectFolder> {
+    const token = this.startOperation();
+    try {
+      if (!this.repository.renameFolder) throw new WorkspaceError('save-failed', 'This repository cannot rename folders.');
+      const folder = await this.repository.renameFolder(folderId, name);
+      this.ensureOperation(token);
+      this.operationError = null;
+      this.notify();
+      return { ...folder };
+    } catch (error) {
+      if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
+      return this.rememberOperationError(error, 'save-failed', 'Unable to rename the folder.');
+    }
+  }
+
+  async deleteFolder(folderId: string): Promise<void> {
+    const token = this.startOperation();
+    try {
+      if (!this.repository.deleteFolder) throw new WorkspaceError('save-failed', 'This repository cannot delete folders.');
+      await this.repository.deleteFolder(folderId);
+      this.ensureOperation(token);
+      this.operationError = null;
+      this.notify();
+    } catch (error) {
+      if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
+      return this.rememberOperationError(error, 'save-failed', 'Unable to delete the folder.');
+    }
+  }
+
+  async moveProjectToFolder(projectId: string, folderId: string | null): Promise<void> {
+    const token = this.startOperation();
+    try {
+      if (!this.repository.moveProjectToFolder) throw new WorkspaceError('save-failed', 'This repository cannot move projects between folders.');
+      await this.repository.moveProjectToFolder(projectId, folderId);
+      this.ensureOperation(token);
+      this.operationError = null;
+      this.notify();
+    } catch (error) {
+      if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
+      return this.rememberOperationError(error, 'save-failed', 'Unable to move the project.');
+    }
+  }
+
+  async moveFolder(folderId: string, parentId: string | null): Promise<void> {
+    const token = this.startOperation();
+    try {
+      if (!this.repository.moveFolder) throw new WorkspaceError('save-failed', 'This repository cannot move folders.');
+      await this.repository.moveFolder(folderId, parentId);
+      this.ensureOperation(token);
+      this.operationError = null;
+      this.notify();
+    } catch (error) {
+      if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
+      return this.rememberOperationError(error, 'save-failed', 'Unable to move the folder.');
     }
   }
 
