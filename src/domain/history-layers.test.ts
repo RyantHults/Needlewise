@@ -163,7 +163,8 @@ describe('layered DocumentEditor: layer-scoped commands', () => {
     editor.execute(full(0, 0, 2, top));
     expect(compositeCell(editor, 0, 0).color).toBe(2);
     const hidden = editor.execute(layerSetVisibilityCommand(top, false));
-    expect(hidden.compositeFull).toBe(true);
+    expect(hidden.compositeFull).toBeUndefined();
+    expect(Array.from(hidden.compositeChangedIndices ?? [])).toEqual([0]);
     expect(compositeCell(editor, 0, 0).color).toBe(1);
   });
 });
@@ -192,7 +193,9 @@ describe('layered DocumentEditor: structure commands', () => {
         expect(result.compositeUnchanged, command.type).toBe(true);
         expect(result.compositeChangedIndices?.length, command.type).toBe(0);
       } else {
-        expect(result.compositeFull, command.type).toBe(true);
+        // Structure changes that keep the size report the exact changed cells.
+        expect(result.compositeFull, command.type).toBeUndefined();
+        expect(result.compositeChangedIndices, command.type).toBeInstanceOf(Uint32Array);
       }
       expect(editor.revision).toBe(revision + 1);
       snapshots.push(editor.document);
@@ -298,7 +301,8 @@ describe('layered DocumentEditor: structure commands', () => {
     const id = editor.document.nextLayerId;
     const result = editor.execute({ type: 'batch', commands: [layerAddCommand(LayerType.Stitch, { id }), { ...pasteFragmentCommand(fragment, { x: 1, y: 1 }), layerId: id }] });
     expect(result.changed).toBe(true);
-    expect(result.compositeFull).toBe(true);
+    expect(result.compositeFull).toBeUndefined();
+    expect(Array.from(result.compositeChangedIndices ?? [])).toEqual([5, 6]);
     expect(editor.undoDepth).toBe(1);
     expect(stitch(editor.document, id).colors[(1 * 4 + 1) * 4]).toBe(1);
     expect(stitch(editor.document, STITCHES).kind.every((kind) => kind === CellKind.Empty)).toBe(true);
@@ -321,6 +325,87 @@ describe('layered DocumentEditor: structure commands', () => {
     expect(() => editor.execute({ type: 'batch', commands: [layerAddCommand(LayerType.Stitch), full(0, 0, 99, 3)] })).toThrow();
     expect(editor.document).toBe(before);
     expect(editor.undoDepth).toBe(0);
+  });
+});
+
+describe('layered DocumentEditor: exact composite invalidation for structure changes', () => {
+  function layeredEditor(): DocumentEditor {
+    const editor = editorFor();
+    editor.execute(layerAddCommand(LayerType.Stitch));
+    editor.execute(full(0, 0, 1));
+    editor.execute(full(1, 0, 1));
+    editor.execute(full(1, 0, 2, 3));
+    editor.execute(full(2, 2, 3, 3));
+    return editor;
+  }
+
+  function changed(result: { compositeChangedIndices?: Uint32Array }): number[] {
+    return Array.from(result.compositeChangedIndices ?? []);
+  }
+
+  it('reports only the cells that visibility, move, duplicate, merge and delete change, and the same on undo and redo', () => {
+    const editor = layeredEditor();
+    const cases: Array<[DomainCommand, number[]]> = [
+      [layerSetVisibilityCommand(3, false), [1, 10]],
+      [layerSetVisibilityCommand(3, true), [1, 10]],
+      [layerMoveCommand(3, 0), [1]],
+      [layerDuplicateCommand(3), []],
+      [layerMergeCommand(4, STITCHES), []],
+      [layerDeleteCommand(3), []],
+      // The merged layer is now the only stitch layer, so deleting it empties every painted cell.
+      [layerDeleteCommand(STITCHES), [0, 1, 10]]
+    ];
+    for (const [command, expected] of cases) {
+      const before = editor.composite;
+      const result = editor.execute(command);
+      expect(result.compositeFull, command.type).toBeUndefined();
+      expect(result.requiresFullRedraw, command.type).toBeUndefined();
+      expect(changed(result), command.type).toEqual(expected);
+      expect(Array.from(result.changedIndices ?? []), command.type).toEqual(expected);
+      expect(result.compositeUnchanged === true, command.type).toBe(expected.length === 0);
+      expect(before.kind, command.type).not.toBe(result.document.kind);
+      const undone = editor.undo();
+      expect(changed(undone), `undo ${command.type}`).toEqual(expected);
+      const redone = editor.redo();
+      expect(changed(redone), `redo ${command.type}`).toEqual(expected);
+    }
+  });
+
+  it('flags a metrics rescan only when a specialty toggle changes the visible lines', () => {
+    const editor = editorFor();
+    editor.execute(line(0, 0, 1, 0, 1));
+    const hidden = editor.execute(layerSetVisibilityCommand(SPECIALTY, false));
+    expect(hidden.compositeFull).toBeUndefined();
+    expect(changed(hidden)).toEqual([]);
+    expect(hidden.recalculateMetrics).toBe(true);
+    expect(hidden.compositeUnchanged).toBeUndefined();
+    expect(hidden.document.backstitches.ids.length).toBe(0);
+
+    const stitchesOnly = editorFor();
+    stitchesOnly.execute(full(0, 0, 1));
+    const toggled = stitchesOnly.execute(layerSetVisibilityCommand(SPECIALTY, false));
+    expect(toggled.recalculateMetrics).toBe(false);
+    expect(toggled.compositeUnchanged).toBe(true);
+  });
+
+  it('keeps compositeFull for dimension changes', () => {
+    const editor = layeredEditor();
+    expect(editor.execute({ type: 'rotate-cw' }).compositeFull).toBe(true);
+    expect(editor.undo().compositeFull).toBe(true);
+    expect(editor.execute({ type: 'crop', x: 0, y: 0, width: 2, height: 2 }).compositeFull).toBe(true);
+    expect(editor.undo().compositeFull).toBe(true);
+  });
+
+  it('reports the pasted cells when an add-and-paste group is undone and redone', () => {
+    const source = createDocument({ width: 1, height: 1, catalog: CATALOG, palette: palette() });
+    source.kind[0] = CellKind.Full;
+    source.colors[0] = 2;
+    const fragment = createPatternFragment(source, { x: 0, y: 0, width: 1, height: 1 });
+    const editor = editorFor();
+    const id = editor.document.nextLayerId;
+    editor.execute({ type: 'batch', commands: [layerAddCommand(LayerType.Stitch, { id }), { ...pasteFragmentCommand(fragment, { x: 3, y: 2 }), layerId: id }] });
+    expect(changed(editor.undo())).toEqual([11]);
+    expect(changed(editor.redo())).toEqual([11]);
   });
 });
 

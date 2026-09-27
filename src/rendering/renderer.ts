@@ -1415,6 +1415,20 @@ function drawOverlay(
   if (partial) restore(context);
 }
 
+/** The cells a document invalidation says changed; undefined when unknown. */
+function atlasChangedCells(invalidation: Invalidation, document: PatternDocument): ArrayLike<number> | undefined {
+  if (invalidation.cellIndices !== undefined) return invalidation.cellIndices;
+  const rect = invalidation.cellRect;
+  if (invalidation.full || !rect || rect.width * rect.height > document.width * document.height / 4) return undefined;
+  const cells: number[] = [];
+  const left = Math.max(0, Math.floor(rect.x));
+  const top = Math.max(0, Math.floor(rect.y));
+  const right = Math.min(document.width, Math.ceil(rect.x + rect.width));
+  const bottom = Math.min(document.height, Math.ceil(rect.y + rect.height));
+  for (let y = top; y < bottom; y += 1) for (let x = left; x < right; x += 1) cells.push(y * document.width + x);
+  return cells;
+}
+
 function setterInvalidation(request: Invalidation, layer: 'base' | 'overlay'): Invalidation {
   // A setter owns its corresponding surface. A caller may still request an
   // atomic `all` invalidation, while a mismatched single-layer request is
@@ -1495,6 +1509,10 @@ export class Canvas2DRenderer implements CanvasRenderer {
     if (this.disposed) return;
     this.document = document;
     const request: Invalidation = invalidation ? setterInvalidation(invalidation, 'base') : { layer: 'all', full: true };
+    const changedCells = atlasChangedCells(request, document);
+    const cellCount = document.width * document.height;
+    this.atlas.invalidate(changedCells, cellCount);
+    this.symbolAtlas.invalidate(changedCells, cellCount);
     this.invalidate(request);
   }
 

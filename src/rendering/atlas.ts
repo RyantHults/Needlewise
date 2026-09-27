@@ -187,16 +187,126 @@ export function isCanvasImageSource(value: unknown): value is CanvasImageSource 
   return typeof candidate.width === 'number' && typeof candidate.height === 'number' && typeof candidate.close === 'function';
 }
 
+/** Above this share of changed cells, repainting cell by cell costs more than a rebuild. */
+const MAX_PATCH_FRACTION = 0.5;
+
 /**
- * A single cached bitmap-sized target for overview rendering. The cache is
- * invalidated by visual plane identity, primitive palette projections, or
- * presentation colors; it never writes to the document.
+ * Cells changed since an atlas was last painted. `all` means unknown, so the
+ * next plane change rebuilds; a set lets the atlas repaint only those cells.
+ */
+class AtlasDirtyCells {
+  private cells: Set<number> | 'all' = new Set();
+
+  /** Record changed cells; undefined means every cell may have changed. */
+  mark(cells: ArrayLike<number> | undefined, cellCount: number): void {
+    if (this.cells === 'all') return;
+    if (cells === undefined || this.cells.size + cells.length > cellCount * MAX_PATCH_FRACTION) {
+      this.cells = 'all';
+      return;
+    }
+    for (let position = 0; position < cells.length; position += 1) this.cells.add(cells[position]);
+    if (this.cells.size > cellCount * MAX_PATCH_FRACTION) this.cells = 'all';
+  }
+
+  get pending(): ReadonlySet<number> | 'all' {
+    return this.cells;
+  }
+
+  reset(): void {
+    this.cells = new Set();
+  }
+}
+
+/** Add palette IDs a set of cells uses to an atlas' known IDs; returns the same array when nothing is new. */
+function paletteIdsWithCells(document: PatternDocument, known: readonly number[], cells: ReadonlySet<number>): readonly number[] {
+  const ids = new Set(known);
+  let grew = false;
+  const add = (id: number): void => {
+    if (id === 0 || ids.has(id)) return;
+    ids.add(id);
+    grew = true;
+  };
+  for (const index of cells) {
+    const kind = document.kind[index];
+    if (kind === CellKind.Empty) continue;
+    const offset = index * 4;
+    if (isLegacyQuarterKind(kind)) for (let slot = 0; slot < 4; slot += 1) add(document.colors[offset + slot]);
+    else if (isThreeQuarterPairKind(kind)) for (const component of threeQuarterPairComponents(document.colors.subarray(offset, offset + 4))) add(document.colors[offset + component.slot]);
+    else add(document.colors[offset]);
+  }
+  return grew ? Object.freeze([...ids].sort((left, right) => left - right)) : known;
+}
+
+function paintColorAtlasCell(
+  context: CanvasTarget['context'],
+  document: PatternDocument,
+  index: number,
+  pixelsPerCell: number,
+  style: RendererStyle
+): void {
+  const x = index % document.width;
+  const y = Math.floor(index / document.width);
+  const cellRect = { x: x * pixelsPerCell, y: y * pixelsPerCell, width: pixelsPerCell, height: pixelsPerCell };
+  const offset = index * 4;
+  const kind = document.kind[index];
+  if (kind === CellKind.Empty) return;
+  if (isLegacyQuarterKind(kind)) {
+    const half = pixelsPerCell / 2;
+    const colors = [
+      [cellRect.x, cellRect.y, half, half, 0],
+      [cellRect.x + half, cellRect.y, half, half, 1],
+      [cellRect.x + half, cellRect.y + half, half, half, 2],
+      [cellRect.x, cellRect.y + half, half, half, 3]
+    ] as const;
+    for (const [left, top, width, height, slot] of colors) {
+      const color = document.colors[offset + slot];
+      if (color === 0) continue;
+      context.fillStyle = overviewColorForPaletteId(document, color, style);
+      context.fillRect(left, top, width, height);
+    }
+  } else if (isThreeQuarterPairKind(kind)) {
+    for (const component of threeQuarterPairComponents(document.colors.subarray(offset, offset + 4))) {
+      const color = document.colors[offset + component.slot];
+      if (color === 0) continue;
+      context.fillStyle = overviewColorForPaletteId(document, color, style);
+      drawStitchGeometry(context, component.kind, cellRect);
+    }
+  } else {
+    const color = document.colors[offset];
+    if (color === 0) return;
+    context.fillStyle = overviewColorForPaletteId(document, color, style);
+    if (kind === CellKind.Full) context.fillRect(cellRect.x, cellRect.y, cellRect.width, cellRect.height);
+    else drawStitchGeometry(context, kind, cellRect);
+  }
+}
+
+/** Reset one cell of an atlas to the pattern background before repainting it. */
+function clearAtlasCell(context: CanvasTarget['context'], document: PatternDocument, index: number, pixelsPerCell: number, background: string): void {
+  const x = (index % document.width) * pixelsPerCell;
+  const y = Math.floor(index / document.width) * pixelsPerCell;
+  context.clearRect(x, y, pixelsPerCell, pixelsPerCell);
+  context.fillStyle = background;
+  context.fillRect(x, y, pixelsPerCell, pixelsPerCell);
+}
+
+/**
+ * A single cached bitmap-sized target for overview rendering. New planes with
+ * known changed cells (`invalidate`) repaint only those cells; unknown changes,
+ * palette projections or presentation colors rebuild. It never writes to the
+ * document.
  */
 export class ColorAtlasCache {
-  private entry: AtlasCacheEntry | undefined;
+  private entry: (AtlasCacheEntry & { readonly target: CanvasTarget | undefined }) | undefined;
+  private readonly dirty = new AtlasDirtyCells();
 
   clear(): void {
     this.entry = undefined;
+    this.dirty.reset();
+  }
+
+  /** Record document cells that changed since the last paint; undefined means unknown. */
+  invalidate(cells: ArrayLike<number> | undefined, cellCount: number): void {
+    this.dirty.mark(cells, cellCount);
   }
 
   get(
@@ -219,13 +329,16 @@ export class ColorAtlasCache {
     if (reusablePlanesAndStyle && current) {
       const paletteProjection = colorPaletteProjection(document.palette, current.paletteIds);
       if (paletteProjection === current.paletteProjection) {
-        // Completion changes replace the document and revision, but do not
+        // Metadata-only changes replace the document and revision, but do not
         // change the overview pixels. Refresh the public metadata without
         // rerasterizing (or scanning the kind plane for atlas resolution).
+        this.dirty.reset();
         this.entry = { ...current, revision: document.revision };
         return this.entry;
       }
     }
+    const patched = this.patch(document, style, patternBackground);
+    if (patched) return patched;
 
     const paletteIds = reusablePlanesAndStyle && current
       ? current.paletteIds
@@ -244,46 +357,13 @@ export class ColorAtlasCache {
       context.clearRect(0, 0, atlasWidth, atlasHeight);
       context.fillStyle = patternBackground;
       context.fillRect(0, 0, atlasWidth, atlasHeight);
-      for (let y = 0; y < document.height; y += 1) {
-        for (let x = 0; x < document.width; x += 1) {
-          const cellRect = { x: x * pixelsPerCell, y: y * pixelsPerCell, width: pixelsPerCell, height: pixelsPerCell };
-          const index = y * document.width + x;
-          const offset = index * 4;
-          const kind = document.kind[index];
-          if (kind === CellKind.Empty) continue;
-          if (isLegacyQuarterKind(kind)) {
-            const half = pixelsPerCell / 2;
-            const colors = [
-              [cellRect.x, cellRect.y, half, half, 0],
-              [cellRect.x + half, cellRect.y, half, half, 1],
-              [cellRect.x + half, cellRect.y + half, half, half, 2],
-              [cellRect.x, cellRect.y + half, half, half, 3]
-            ] as const;
-            for (const [left, top, width, height, slot] of colors) {
-              const color = document.colors[offset + slot];
-              if (color === 0) continue;
-              context.fillStyle = overviewColorForPaletteId(document, color, style);
-              context.fillRect(left, top, width, height);
-            }
-          } else if (isThreeQuarterPairKind(kind)) {
-            for (const component of threeQuarterPairComponents(document.colors.subarray(offset, offset + 4))) {
-              const color = document.colors[offset + component.slot];
-              if (color === 0) continue;
-              context.fillStyle = overviewColorForPaletteId(document, color, style);
-              drawStitchGeometry(context, component.kind, cellRect);
-            }
-          } else {
-            const color = document.colors[offset];
-            if (color === 0) continue;
-            context.fillStyle = overviewColorForPaletteId(document, color, style);
-            if (kind === CellKind.Full) context.fillRect(cellRect.x, cellRect.y, cellRect.width, cellRect.height);
-            else drawStitchGeometry(context, kind, cellRect);
-          }
-        }
-      }
+      const cellCount = document.width * document.height;
+      for (let index = 0; index < cellCount; index += 1) paintColorAtlasCell(context, document, index, pixelsPerCell, style);
       restore(context);
     }
+    this.dirty.reset();
     this.entry = {
+      target,
       source,
       width: atlasWidth,
       height: atlasHeight,
@@ -298,6 +378,41 @@ export class ColorAtlasCache {
       mode: style.mode,
       patternBackground,
       missingColor: style.missingPaletteColor
+    };
+    return this.entry;
+  }
+
+  /** Repaint only the recorded cells onto the existing bitmap when everything else still matches. */
+  private patch(document: PatternDocument, style: RendererStyle, patternBackground: string): ColorAtlas | undefined {
+    const current = this.entry;
+    const cells = this.dirty.pending;
+    if (!current?.target || cells === 'all'
+      || current.documentWidth !== document.width
+      || current.documentHeight !== document.height
+      || current.mode !== style.mode
+      || current.patternBackground !== patternBackground
+      || current.missingColor !== style.missingPaletteColor
+      || colorPaletteProjection(document.palette, current.paletteIds) !== current.paletteProjection) return undefined;
+    // A new pair cell needs the 2×2 footprint a one-pixel atlas cannot hold.
+    if (current.pixelsPerCell === 1) for (const index of cells) if (isThreeQuarterPairKind(document.kind[index])) return undefined;
+    const paletteIds = paletteIdsWithCells(document, current.paletteIds, cells);
+    const context = current.target.context;
+    save(context);
+    if (context.imageSmoothingEnabled !== undefined) context.imageSmoothingEnabled = false;
+    for (const index of cells) {
+      // An opaque full stitch covers its whole cell, so only other cells need clearing first.
+      if (document.kind[index] !== CellKind.Full || document.colors[index * 4] === 0) clearAtlasCell(context, document, index, current.pixelsPerCell, patternBackground);
+      paintColorAtlasCell(context, document, index, current.pixelsPerCell, style);
+    }
+    restore(context);
+    this.dirty.reset();
+    this.entry = {
+      ...current,
+      revision: document.revision,
+      kindPlane: document.kind,
+      colorsPlane: document.colors,
+      paletteIds,
+      paletteProjection: paletteIds === current.paletteIds ? current.paletteProjection : colorPaletteProjection(document.palette, paletteIds)
     };
     return this.entry;
   }
@@ -366,10 +481,17 @@ function symbolAtlasDimensions(
  * per cell, never into the one-pixel-per-cell color atlas.
  */
 export class SymbolAtlasCache {
-  private entry: SymbolAtlasCacheEntry | undefined;
+  private entry: (SymbolAtlasCacheEntry & { readonly target?: CanvasTarget }) | undefined;
+  private readonly dirty = new AtlasDirtyCells();
 
   clear(): void {
     this.entry = undefined;
+    this.dirty.reset();
+  }
+
+  /** Record document cells that changed since the last paint; undefined means unknown. */
+  invalidate(cells: ArrayLike<number> | undefined, cellCount: number): void {
+    this.dirty.mark(cells, cellCount);
   }
 
   get(
@@ -398,10 +520,13 @@ export class SymbolAtlasCache {
     if (reusablePlanesAndStyle && current) {
       const paletteProjection = symbolPaletteProjection(document.palette, current.paletteIds, style.mode, style.showSymbols);
       if (paletteProjection === current.paletteProjection) {
+        this.dirty.reset();
         this.entry = { ...current, revision: document.revision };
         return this.entry;
       }
     }
+    const patched = this.patch(document, style, patternBackground, ppc);
+    if (patched) return patched;
 
     const paletteIds = reusablePlanesAndStyle && current
       ? current.paletteIds
@@ -447,40 +572,9 @@ export class SymbolAtlasCache {
         context.fillStyle = patternBackground;
         context.fillRect(0, 0, dimensions.width, dimensions.height);
         textAvailable = !style.showSymbols || typeof context.fillText === 'function';
-        for (let y = 0; y < document.height; y += 1) {
-          for (let x = 0; x < document.width; x += 1) {
-            const index = y * document.width + x;
-            const offset = index * 4;
-            const kind = document.kind[index];
-            if (kind === CellKind.Empty) continue;
-            const rect = { x: x * ppc, y: y * ppc, width: ppc, height: ppc };
-            const paint = (id: number, slot?: number, geometryKind = kind): void => {
-              context.fillStyle = style.symbolBackgroundColor;
-              drawStitchGeometry(context, geometryKind, rect, slot);
-              if (style.showSymbols) {
-                try {
-                  if (!drawPaletteSymbol(context, document, id, rect, style, slot)) textAvailable = false;
-                } catch {
-                  // Keep the geometry source usable, but let the renderer use
-                  // its direct glyph fallback when text painting is broken.
-                  textAvailable = false;
-                }
-              }
-            };
-            if (isLegacyQuarterKind(kind)) {
-              for (let slot = 0; slot < 4; slot += 1) {
-                const id = document.colors[offset + slot];
-                if (id !== 0) paint(id, slot);
-              }
-            } else if (isThreeQuarterPairKind(kind)) {
-              for (const component of threeQuarterPairComponents(document.colors.subarray(offset, offset + 4))) {
-                const id = document.colors[offset + component.slot];
-                if (id !== 0) paint(id, component.slot, component.kind);
-              }
-            } else {
-              paint(document.colors[offset], undefined);
-            }
-          }
+        const cellCount = document.width * document.height;
+        for (let index = 0; index < cellCount; index += 1) {
+          if (!paintSymbolAtlasCell(context, document, index, ppc, style)) textAvailable = false;
         }
         restore(context);
       }
@@ -493,7 +587,9 @@ export class SymbolAtlasCache {
         try { restore(target.context); } catch { /* already failed softly */ }
       }
     }
-    const result: SymbolAtlasCacheEntry = {
+    this.dirty.reset();
+    const result: SymbolAtlasCacheEntry & { readonly target?: CanvasTarget } = {
+      ...(source && target ? { target } : {}),
       source,
       width: dimensions.width,
       height: dimensions.height,
@@ -517,4 +613,89 @@ export class SymbolAtlasCache {
     this.entry = result;
     return result;
   }
+
+  /** Repaint only the recorded cells onto the existing bitmap when everything else still matches. */
+  private patch(document: PatternDocument, style: RendererStyle, patternBackground: string, ppc: number): SymbolAtlas | undefined {
+    const current = this.entry;
+    const cells = this.dirty.pending;
+    if (!current?.target || !current.textAvailable || cells === 'all'
+      || current.documentWidth !== document.width
+      || current.documentHeight !== document.height
+      || current.mode !== style.mode
+      || current.symbolFont !== style.symbolFont
+      || current.symbolColor !== style.symbolColor
+      || current.symbolBackgroundColor !== style.symbolBackgroundColor
+      || current.patternBackground !== patternBackground
+      || current.missingColor !== style.missingPaletteColor
+      || current.showSymbols !== style.showSymbols
+      || current.ppc !== ppc
+      || symbolPaletteProjection(document.palette, current.paletteIds, style.mode, style.showSymbols) !== current.paletteProjection) return undefined;
+    const paletteIds = paletteIdsWithCells(document, current.paletteIds, cells);
+    const context = current.target.context;
+    let textAvailable = true;
+    try {
+      save(context);
+      for (const index of cells) {
+        clearAtlasCell(context, document, index, ppc, patternBackground);
+        if (!paintSymbolAtlasCell(context, document, index, ppc, style)) textAvailable = false;
+      }
+      restore(context);
+    } catch {
+      try { restore(context); } catch { /* already failed softly */ }
+      return undefined;
+    }
+    this.dirty.reset();
+    this.entry = {
+      ...current,
+      revision: document.revision,
+      kindPlane: document.kind,
+      colorsPlane: document.colors,
+      paletteIds,
+      paletteProjection: paletteIds === current.paletteIds ? current.paletteProjection : symbolPaletteProjection(document.palette, paletteIds, style.mode, style.showSymbols),
+      textAvailable
+    };
+    return this.entry;
+  }
+}
+
+/** Paint one cell's geometry and symbols; false when a glyph could not be drawn. */
+function paintSymbolAtlasCell(
+  context: CanvasTarget['context'],
+  document: PatternDocument,
+  index: number,
+  ppc: number,
+  style: RendererStyle
+): boolean {
+  const kind = document.kind[index];
+  if (kind === CellKind.Empty) return true;
+  const offset = index * 4;
+  const rect = { x: (index % document.width) * ppc, y: Math.floor(index / document.width) * ppc, width: ppc, height: ppc };
+  let textAvailable = true;
+  const paint = (id: number, slot?: number, geometryKind = kind): void => {
+    context.fillStyle = style.symbolBackgroundColor;
+    drawStitchGeometry(context, geometryKind, rect, slot);
+    if (style.showSymbols) {
+      try {
+        if (!drawPaletteSymbol(context, document, id, rect, style, slot)) textAvailable = false;
+      } catch {
+        // Keep the geometry source usable, but let the renderer use
+        // its direct glyph fallback when text painting is broken.
+        textAvailable = false;
+      }
+    }
+  };
+  if (isLegacyQuarterKind(kind)) {
+    for (let slot = 0; slot < 4; slot += 1) {
+      const id = document.colors[offset + slot];
+      if (id !== 0) paint(id, slot);
+    }
+  } else if (isThreeQuarterPairKind(kind)) {
+    for (const component of threeQuarterPairComponents(document.colors.subarray(offset, offset + 4))) {
+      const id = document.colors[offset + component.slot];
+      if (id !== 0) paint(id, component.slot, component.kind);
+    }
+  } else {
+    paint(document.colors[offset], undefined);
+  }
+  return textAvailable;
 }

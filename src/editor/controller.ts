@@ -928,6 +928,20 @@ function isLayerRefusal(error: unknown): error is DomainError {
 }
 
 /** Stamp the active layer on a layer-scoped editor command (and a batch's children). */
+/**
+ * The redraw for a change made outside the editor. When the session reports
+ * the exact composite cells for this revision, only their bounds are redrawn
+ * and the overview atlases repaint only those cells.
+ */
+function externalInvalidation(snapshot: WorkspaceEditorSnapshot, reason: string): Invalidation {
+  const report = snapshot.compositeInvalidation;
+  const document = snapshot.document;
+  if (!report || report.full || !document || report.revision !== snapshot.revision) return { layer: 'all', full: true, reason };
+  const cellIndices = report.indices ?? new Uint32Array(0);
+  const cellRect = cellIndices.length > 0 ? cellRectForIndices(cellIndices, document.width, document.height) : undefined;
+  return cellRect ? { layer: 'all', cellRect, cellIndices, reason } : { layer: 'all', full: true, cellIndices, reason };
+}
+
 function sameActiveLayer(left: EditorActiveLayer | null, right: EditorActiveLayer | null): boolean {
   return left === right || (left !== null && right !== null && left.id === right.id);
 }
@@ -3895,7 +3909,9 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       && (this.fillToken.projectId !== snapshot.projectId || this.fillToken.revision !== snapshot.revision)) this.cancelFill(false);
     if (snapshot.document) {
       if (this.metrics) this.projectViewport(normalizeViewport(this.uiStore.getState().viewport, snapshot.document, this.metrics, this.viewportOptions));
-      this.setDocument(snapshot.document, { layer: 'all', full: true, reason: projectChanged ? 'project-switch' : layerStackChanged ? 'layer-stack' : 'external-document' });
+      this.setDocument(snapshot.document, projectChanged
+        ? { layer: 'all', full: true, reason: 'project-switch' }
+        : externalInvalidation(snapshot, layerStackChanged ? 'layer-stack' : 'external-document'));
     } else {
       this.renderer.setOverlay({});
       this.uiStore.setSelectedCell(null);
@@ -4471,6 +4487,9 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private projectViewport(viewport: Viewport): void {
     const snapshot = this.gateway.getSnapshot();
     const next = normalizeViewport(viewport, snapshot.document ?? undefined, this.metrics ?? undefined, this.viewportOptions);
+    const current = this.uiStore.getState().viewport;
+    // An unchanged viewport must not trigger a whole-canvas redraw.
+    if (current.x === next.x && current.y === next.y && current.zoom === next.zoom) return;
     this.uiStore.setViewport(next);
   }
 

@@ -32,6 +32,7 @@ import {
   type ActiveLayerKind,
   type CanvasRenderer,
   type EditorToolKind,
+  type Invalidation,
   type RenderStats,
   type RendererStyle,
   type Viewport
@@ -56,10 +57,15 @@ class LayeredBoundary implements WorkspaceEditorBoundary {
   readonly batches: DomainCommand[][] = [];
   activeLayerId: ActiveLayerId = 1;
   document: PatternDocument;
+  report: { revision: number; full: boolean; indices?: Uint32Array } | null = null;
   private readonly listeners = new Set<() => void>();
 
   constructor(readonly layeredDocument: LayeredDocument) {
     this.document = flattenDocument(layeredDocument);
+  }
+
+  getEditorLayerSnapshot() {
+    return { compositeInvalidation: this.report };
   }
 
   activeLayerSurface(): PatternDocument | null {
@@ -138,6 +144,7 @@ class LayeredBoundary implements WorkspaceEditorBoundary {
 }
 
 const rendererDocumentCalls: PatternDocument[] = [];
+const rendererInvalidations: Array<Invalidation | undefined> = [];
 
 function rendererFixture(): CanvasRenderer {
   let viewport: Viewport = { x: 0, y: 0, zoom: 16 };
@@ -148,9 +155,10 @@ function rendererFixture(): CanvasRenderer {
     getViewport: () => viewport,
     getStyle: () => ({}) as RendererStyle,
     getTraceImage: () => undefined,
-    setDocument: (document: PatternDocument) => {
+    setDocument: (document: PatternDocument, invalidation?: Invalidation) => {
       rendered = document;
       rendererDocumentCalls.push(document);
+      rendererInvalidations.push(invalidation);
     },
     setViewport: (next: Viewport) => { viewport = next; },
     setMetrics: () => undefined,
@@ -518,6 +526,37 @@ describe('layered editor previews and paste edge cases', () => {
     controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
     expect(rendererDocumentCalls.length).toBe(before);
     expect(uiStore.getState().status).toBe('Undid action');
+    controller.dispose();
+  });
+
+  it('redraws only the cells the session reports for an outside change', () => {
+    const document = layeredDocument();
+    const top = addLayer(document, LayerType.Stitch);
+    seed(document, top, { type: 'set-full', x: 2, y: 3, color: 2 });
+    const { boundary: workspace, controller } = fixture(document, 1);
+    findLayer(workspace.layeredDocument, top)!.visible = false;
+    workspace.layeredDocument.revision += 1;
+    workspace.document = flattenDocument(workspace.layeredDocument);
+    workspace.report = { revision: workspace.layeredDocument.revision, full: false, indices: new Uint32Array([3 * 8 + 2]) };
+    workspace.setActiveLayer(1);
+    expect(rendererInvalidations.at(-1)).toMatchObject({ cellRect: { x: 2, y: 3, width: 1, height: 1 }, cellIndices: new Uint32Array([26]), reason: 'layer-stack' });
+    expect(rendererInvalidations.at(-1)?.full).toBeUndefined();
+
+    // A report for another revision is not trusted.
+    findLayer(workspace.layeredDocument, top)!.visible = true;
+    workspace.layeredDocument.revision += 1;
+    workspace.document = flattenDocument(workspace.layeredDocument);
+    workspace.setActiveLayer(1);
+    expect(rendererInvalidations.at(-1)).toMatchObject({ full: true, reason: 'layer-stack' });
+    expect(rendererInvalidations.at(-1)?.cellIndices).toBeUndefined();
+    controller.dispose();
+  });
+
+  it('keeps the viewport object when an outside change leaves it unchanged', () => {
+    const { boundary: workspace, controller, uiStore } = fixture(layeredDocument(), 1);
+    const viewport = uiStore.getState().viewport;
+    workspace.setVisible(1, false);
+    expect(uiStore.getState().viewport).toBe(viewport);
     controller.dispose();
   });
 

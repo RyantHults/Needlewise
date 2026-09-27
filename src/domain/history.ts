@@ -2401,7 +2401,40 @@ function assertChangedLayersValid(before: LayeredDocument, after: LayeredDocumen
   for (const layer of after.layers) if (!previous.has(layer)) assertValidDocument(layerSurface(after, layer.id));
 }
 
-type CompositeRebuild = 'full' | 'metadata' | 'none' | Uint32Array;
+/**
+ * How the composite is refreshed after a change: `full` rebuilds it and
+ * reports `compositeFull` (dimension, palette or settings changes); `diff`
+ * rebuilds it and reports the cells that actually changed (layer structure);
+ * `metadata` and `none` share every plane; an index set updates those cells.
+ */
+type CompositeRebuild = 'full' | 'diff' | 'metadata' | 'none' | Uint32Array;
+
+/** Cells whose kind or colors differ between two composites of the same size. */
+function diffCompositeCells(previous: PatternDocument, next: PatternDocument): Uint32Array {
+  const changed: number[] = [];
+  const { kind, colors } = next;
+  for (let index = 0; index < kind.length; index += 1) {
+    const offset = index * 4;
+    if (kind[index] !== previous.kind[index]
+      || colors[offset] !== previous.colors[offset]
+      || colors[offset + 1] !== previous.colors[offset + 1]
+      || colors[offset + 2] !== previous.colors[offset + 2]
+      || colors[offset + 3] !== previous.colors[offset + 3]) changed.push(index);
+  }
+  return new Uint32Array(changed);
+}
+
+/** Structure-only transitions keep dimensions, palette and settings, so their composite change is a cell diff. */
+function layersEntryRebuild(entry: LayersEntry): CompositeRebuild {
+  if (layersEntryKeepsComposite(entry)) return 'none';
+  const { before, after } = entry;
+  return before.width === after.width && before.height === after.height && before.palette === null && before.settings === null ? 'diff' : 'full';
+}
+
+function groupRebuild(entries: readonly LeafHistoryEntry[]): CompositeRebuild {
+  const diffable = entries.every((entry) => (entry.kind === 'delta' && entry.layerId !== null) || (entry.kind === 'layers' && layersEntryRebuild(entry) !== 'full'));
+  return diffable ? 'diff' : 'full';
+}
 
 /** A planned change: the next document, its history entry and composite invalidation. No entry means no change. */
 interface LayeredPlan {
@@ -2471,10 +2504,10 @@ function planStructureCommand(document: LayeredDocument, command: DomainCommand)
   // A rename or a new empty layer leaves the visible result untouched.
   const keepsComposite = type === 'layer-rename' || type === 'layer-add';
   return {
-    result: wholeDocumentResult(metadataSurface(next), !keepsComposite),
+    result: wholeDocumentResult(metadataSurface(next), false),
     document: next,
     entry: captureLayersEntry(document, next),
-    rebuild: keepsComposite ? 'none' : 'full',
+    rebuild: keepsComposite ? 'none' : 'diff',
     ...(type === 'layer-add' || type === 'layer-duplicate' ? { addedLayerId: structure.layerId } : {})
   };
 }
@@ -2538,7 +2571,8 @@ function planBatchCommand(document: LayeredDocument, command: DomainCommand, lim
   if (plans.length === 1) return { ...plans[0], document: next };
   const entries = plans.flatMap((plan) => plan.entry === undefined ? [] : plan.entry.kind === 'group' ? plan.entry.entries : [plan.entry]);
   const last = plans[plans.length - 1].result;
-  const commandResult = wholeDocumentResult(metadataSurface(next), true);
+  const rebuild = groupRebuild(entries);
+  const commandResult = wholeDocumentResult(metadataSurface(next), rebuild === 'full');
   const backstitchId = plans.map((plan) => plan.result.backstitchId).filter((id) => id !== undefined).at(-1);
   const paletteId = plans.map((plan) => plan.result.paletteId).filter((id) => id !== undefined).at(-1);
   return {
@@ -2550,7 +2584,7 @@ function planBatchCommand(document: LayeredDocument, command: DomainCommand, lim
     },
     document: next,
     entry: { kind: 'group', entries, bytes: entries.reduce((total, entry) => total + entry.bytes, 0) },
-    rebuild: 'full',
+    rebuild,
     ...(addedLayerId === undefined ? {} : { addedLayerId })
   };
 }
@@ -2582,8 +2616,8 @@ function applyLayeredEntry(document: LayeredDocument, entry: LayeredHistoryEntry
     }
     case 'layers': {
       const next = restoreLayeredSide(document, useAfter ? entry.after : entry.before);
-      const keeps = layersEntryKeepsComposite(entry);
-      return { document: next, rebuild: keeps ? 'none' : 'full', result: wholeDocumentResult(metadataSurface(next), !keeps) };
+      const rebuild = layersEntryRebuild(entry);
+      return { document: next, rebuild, result: wholeDocumentResult(metadataSurface(next), rebuild === 'full') };
     }
     case 'transform': {
       const next = { ...applyDocumentCommandToLayers(document, useAfter ? entry.forward : entry.inverse), revision: document.revision + 1 };
@@ -2599,7 +2633,8 @@ function applyLayeredEntry(document: LayeredDocument, entry: LayeredHistoryEntry
       const ordered = useAfter ? entry.entries : [...entry.entries].reverse();
       const next = ordered.reduce((current, child) => applyLayeredEntry(current, child, useAfter).document, document);
       const final = { ...next, revision: document.revision + 1 };
-      return { document: final, rebuild: 'full', result: wholeDocumentResult(metadataSurface(final), true) };
+      const rebuild = groupRebuild(entry.entries);
+      return { document: final, rebuild, result: wholeDocumentResult(metadataSurface(final), rebuild === 'full') };
     }
   }
 }
@@ -3328,6 +3363,7 @@ export class DocumentEditor {
    * composite plane.
    */
   private publish(base: CommandResult, rebuild: CompositeRebuild): CommandResult {
+    if (rebuild === 'diff') return this.publishDiff(base);
     let composite: PatternDocument;
     if (rebuild === 'full') composite = this.cache.full(this.layered);
     else if (rebuild === 'metadata' || rebuild === 'none') composite = this.cache.touch(this.layered);
@@ -3338,6 +3374,32 @@ export class DocumentEditor {
       revision: this.layered.revision,
       ...(rebuild === 'full' || rebuild === 'metadata' ? { compositeFull: true } : { compositeChangedIndices: rebuild === 'none' ? new Uint32Array(0) : rebuild.slice() }),
       ...(rebuild === 'none' ? { compositeUnchanged: true } : {})
+    };
+  }
+
+  /**
+   * Rebuilds the composite and reports exactly the cells that changed, as
+   * both `changedIndices` and `compositeChangedIndices`. Backstitches follow
+   * the usual convention: consumers compare the stores themselves, and
+   * metrics rescan only when the visible lines changed. Falls back to a full
+   * rebuild when the size changed.
+   */
+  private publishDiff(base: CommandResult): CommandResult {
+    const previous = this.cache.document;
+    const composite = this.cache.full(this.layered);
+    if (previous === null || previous.width !== composite.width || previous.height !== composite.height) {
+      return { ...base, document: composite, revision: this.layered.revision, requiresFullRedraw: true, recalculateMetrics: true, compositeFull: true };
+    }
+    const changedIndices = diffCompositeCells(previous, composite);
+    const linesChanged = !historyStoreEqual(previous.backstitches, composite.backstitches);
+    return {
+      ...base,
+      document: composite,
+      revision: this.layered.revision,
+      changedIndices,
+      compositeChangedIndices: changedIndices.slice(),
+      recalculateMetrics: linesChanged,
+      ...(changedIndices.length === 0 && !linesChanged ? { compositeUnchanged: true } : {})
     };
   }
 

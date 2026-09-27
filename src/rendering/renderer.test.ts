@@ -1614,7 +1614,7 @@ describe('Canvas 2D chart renderer', () => {
     renderer.dispose();
   });
 
-  it('rebuilds an overview atlas for a changed document while keeping bounded setter invalidation full-safe', () => {
+  it('repaints only the invalidated cells of an overview atlas for a changed document', () => {
     const original = chart(2, 2);
     original.kind[0] = CellKind.Full;
     original.colors[0] = 1;
@@ -1623,18 +1623,20 @@ describe('Canvas 2D chart renderer', () => {
     next.colors[0] = 35;
     next.revision = original.revision + 1;
     const base = recordingContext();
-    let atlasBuilds = 0;
+    const atlasContexts: RecordingContext[] = [];
     const renderer = createCanvasRenderer({
       document: original,
       targets: { base: target(base), overlay: target(recordingContext()) },
       metrics: getCanvasMetrics(20, 20),
       viewport: { x: 0, y: 0, zoom: 1 },
       atlasTargetFactory: (width, height) => {
-        atlasBuilds += 1;
-        return target(recordingContext(), new FakeCanvasImageSource(width, height));
+        const context = recordingContext();
+        atlasContexts.push(context);
+        return target(context, new FakeCanvasImageSource(width, height));
       }
     });
     renderer.renderNow();
+    atlasContexts[0].records.length = 0;
     base.records.length = 0;
     renderer.setDocument(next, {
       layer: 'base',
@@ -1642,9 +1644,19 @@ describe('Canvas 2D chart renderer', () => {
       reason: 'document-overview'
     });
     renderer.renderNow();
-    expect(atlasBuilds).toBe(2);
+    expect(atlasContexts).toHaveLength(1);
+    const patched = atlasContexts[0].records;
+    const fills = patched.filter((call) => call.name === 'fillRect');
+    expect(fills.length).toBeGreaterThan(0);
+    expect(fills.every((call) => call.args.join(',') === '0,0,1,1')).toBe(true);
     expect(renderer.lastStats.lod).toBe('overview');
     expect(base.records.some((call) => call.name === 'clearRect' && call.args.join(',') === '0,0,20,20')).toBe(true);
+
+    // A document change without known cells rebuilds.
+    const unknown = { ...next, kind: next.kind.slice(), colors: next.colors.slice(), revision: next.revision + 1 };
+    renderer.setDocument(unknown, { layer: 'base', full: true, reason: 'external-document' });
+    renderer.renderNow();
+    expect(atlasContexts).toHaveLength(2);
     renderer.dispose();
   });
 

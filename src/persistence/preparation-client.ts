@@ -13,7 +13,7 @@ import {
 import type { LayeredDocument } from '../domain';
 import { cloneLayeredDocument } from './binary';
 import { PersistenceError } from './errors';
-import { deriveProjectSummary, type ProjectDocumentSummary } from './project-thumbnail';
+import type { ProjectDocumentSummary } from './project-thumbnail';
 import type { PreparedDocumentCapability } from './types';
 
 export interface PersistencePreparationWorkerLike {
@@ -118,7 +118,9 @@ export function consumePreparedDocumentCapability<T>(
 
 interface PendingPreparation {
   readonly token: PersistencePreparationToken;
-  readonly summary: ProjectDocumentSummary;
+  /** Dimensions of the document that was sent, checked against the worker's summary. */
+  readonly width: number;
+  readonly height: number;
   readonly resolve: (result: PreparedDocumentCapability) => void;
   readonly reject: (error: unknown) => void;
 }
@@ -207,13 +209,9 @@ export class PersistencePreparationWorkerClient implements PersistencePreparatio
     if (input.document.revision !== input.revision) return Promise.reject(new PersistencePreparationClientError('invalid-document', 'Persistence preparation revision does not match its document.'));
     // The client owns the structured-clone equivalent. The caller may keep
     // editing its live document while preparation is queued or running.
+    // The summary (a full flatten plus thumbnail sampling) is derived where
+    // the document is encoded, off the main thread when a worker is available.
     const ownedDocument = cloneLayeredDocument(input.document);
-    let summary: ProjectDocumentSummary;
-    try {
-      summary = deriveProjectSummary(ownedDocument);
-    } catch (error) {
-      return Promise.reject(error);
-    }
     let token: PersistencePreparationToken = {
       projectId: input.projectId,
       revision: input.revision,
@@ -242,7 +240,7 @@ export class PersistencePreparationWorkerClient implements PersistencePreparatio
       resolvePromise = resolve;
       rejectPromise = reject;
     });
-    this.pending.set(key, { token, summary, resolve: resolvePromise, reject: rejectPromise });
+    this.pending.set(key, { token, width: ownedDocument.width, height: ownedDocument.height, resolve: resolvePromise, reject: rejectPromise });
     const worker = this.useWorker ? this.ensureWorker() : null;
     if (worker) {
       try {
@@ -359,20 +357,21 @@ export class PersistencePreparationWorkerClient implements PersistencePreparatio
       revision: result.token.revision,
       requestId: result.token.requestId,
       bytes: result.bytes,
-      checksum: result.checksum
+      checksum: result.checksum,
+      summary: result.summary
     });
   }
 
-  private resolvePending(key: string, result: Omit<PreparedDocumentPayload, 'owner' | 'summary'>): void {
+  private resolvePending(key: string, result: Omit<PreparedDocumentPayload, 'owner'>): void {
     const pending = this.pending.get(key);
     if (!pending) return;
-    if (result.projectId !== pending.token.projectId || result.revision !== pending.token.revision || result.requestId !== pending.token.requestId) {
+    if (result.projectId !== pending.token.projectId || result.revision !== pending.token.revision || result.requestId !== pending.token.requestId || result.summary.width !== pending.width || result.summary.height !== pending.height) {
       this.pending.delete(key);
       pending.reject(new PersistencePreparationClientError('invalid-response', 'The persistence preparation result does not match its exact request token.'));
       return;
     }
     this.pending.delete(key);
-    pending.resolve(createPreparedCapability(this.capabilityOwner, { ...result, summary: pending.summary }));
+    pending.resolve(createPreparedCapability(this.capabilityOwner, result));
   }
 
   private rejectPending(key: string, error: unknown): void {

@@ -26,6 +26,17 @@ export interface WorkspaceEditorSnapshot {
   readonly activeLayer?: EditorActiveLayer | null;
   /** Changes whenever layer order, membership, type or visibility changes. */
   readonly layerStackKey?: string | null;
+  /** What the workspace's last change did to the composite, when it reports it. */
+  readonly compositeInvalidation?: CompositeInvalidationReport | null;
+}
+
+/** The session's report of the cells its last change altered in the composite. */
+export interface CompositeInvalidationReport {
+  readonly revision: number;
+  /** Every cell may have changed. */
+  readonly full: boolean;
+  /** Changed cells when `full` is false; absent means no cell changed. */
+  readonly indices?: Uint32Array;
 }
 
 export type ActiveLayerId = number | 'canvas' | 'reference';
@@ -56,7 +67,10 @@ export function compositeUnchanged(result: CommandResult): boolean {
  * still redraw in full, since single backstitch edits report no cells.
  */
 export function compositeInvalidationFor(result: CommandResult, requestedIndices?: Uint32Array): Invalidation {
-  const full: Invalidation = { layer: 'base', full: true, reason: 'editor-command' };
+  // Exact composite cells let overview atlases repaint only what changed, even
+  // when the screen itself is redrawn in full.
+  const cellIndices = result.compositeFull !== true && result.compositeChangedIndices !== undefined ? result.compositeChangedIndices : undefined;
+  const full: Invalidation = { layer: 'base', full: true, reason: 'editor-command', ...(cellIndices ? { cellIndices } : {}) };
   if (result.compositeFull === true || result.requiresFullRedraw === true) return full;
   const backstitchesChanged = (result.changedBackstitchIds !== undefined && result.changedBackstitchIds.length > 0)
     || (result.movedBackstitchIds !== undefined && result.movedBackstitchIds.length > 0)
@@ -66,7 +80,7 @@ export function compositeInvalidationFor(result: CommandResult, requestedIndices
     ? result.compositeChangedIndices
     : result.changedIndices && result.changedIndices.length > 0 ? result.changedIndices : requestedIndices;
   const cellRect = changed ? cellRectForIndices(changed, result.document.width, result.document.height) : undefined;
-  return cellRect ? { layer: 'base', cellRect, reason: 'editor-command' } : full;
+  return cellRect ? { layer: 'base', cellRect, reason: 'editor-command', ...(cellIndices ? { cellIndices } : {}) } : full;
 }
 
 function cellRectForIndices(indices: Uint32Array, width: number, height: number): Invalidation['cellRect'] {
@@ -112,6 +126,7 @@ export interface WorkspaceEditorBoundary {
   readonly layeredDocument?: LayeredDocument | null;
   readonly activeLayerId?: ActiveLayerId | null;
   activeLayerSurface?(): PatternDocument | null;
+  getEditorLayerSnapshot?(): { readonly compositeInvalidation: CompositeInvalidationReport | null } | null;
   resolvePaste?(type: LayerType): PasteDestination;
   commitPaste?(fragment: PatternFragment, position: { x: number; y: number }, destination: PasteDestination, expectedRevision?: number): PasteCommitResult;
   subscribe(listener: () => void): () => void;
@@ -176,7 +191,8 @@ function snapshotOf(boundary: WorkspaceEditorBoundary): WorkspaceEditorSnapshot 
     layeredDocument: layered,
     editSurface: typeof activeLayer?.id === 'number' ? boundary.activeLayerSurface?.() ?? null : null,
     activeLayer,
-    layerStackKey: layerStackKeyOf(layered)
+    layerStackKey: layerStackKeyOf(layered),
+    compositeInvalidation: boundary.getEditorLayerSnapshot?.()?.compositeInvalidation ?? null
   };
 }
 

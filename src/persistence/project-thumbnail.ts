@@ -224,6 +224,13 @@ export function sanitizeProjectMetadata(metadata: ProjectMetadata): ProjectMetad
   return safe;
 }
 
+/** A structurally valid summary whose thumbnail matches `expectedRevision`. */
+export function isValidProjectSummary(value: unknown, expectedRevision?: number): value is ProjectDocumentSummary {
+  return isRecord(value)
+    && hasValidProjectDimensions(value.width, value.height)
+    && sanitizeProjectThumbnail(value.thumbnail, expectedRevision) !== undefined;
+}
+
 export function completeProjectSummary(metadata: ProjectMetadata): ProjectDocumentSummary | undefined {
   const width = metadata.width;
   const height = metadata.height;

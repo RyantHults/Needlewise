@@ -297,6 +297,12 @@ export interface Invalidation {
   readonly cellRect?: CellRect;
   /** A missing region is a full-layer invalidation; this flag is explicit for callers. */
   readonly full?: boolean;
+  /**
+   * Every document cell whose content changed, when known. Overview atlases
+   * repaint only these cells, even when `full` asks for a whole-screen redraw;
+   * an empty list means no cell changed.
+   */
+  readonly cellIndices?: ArrayLike<number>;
   readonly reason?: string;
 }
 

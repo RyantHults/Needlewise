@@ -1,13 +1,16 @@
 import { act, fireEvent, render } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyLayerStructureCommand, createLayeredDocument, layerAddCommand, type LayeredDocument } from '../../domain';
+import { applyLayerStructureCommand, CellKind, createLayeredDocument, layerAddCommand, layerSetVisibilityCommand, type LayeredDocument, type StitchLayer } from '../../domain';
 import { LAYER_LONG_PRESS_MS, LayersPanel } from './LayersPanel';
 
-const thumbnails = vi.hoisted(() => ({ render: vi.fn() }));
+const thumbnails = vi.hoisted(() => ({ render: vi.fn(), paint: vi.fn() }));
 vi.mock('../../rendering/layer-thumbnail', async () => {
   const actual = await vi.importActual<typeof import('../../rendering/layer-thumbnail')>('../../rendering/layer-thumbnail');
   thumbnails.render.mockImplementation(actual.renderLayerThumbnailPixels);
-  return { ...actual, renderLayerThumbnailPixels: thumbnails.render };
+  // jsdom has no Canvas 2D, so capture what would be painted.
+  thumbnails.paint.mockReturnValue(true);
+  return { ...actual, renderLayerThumbnailPixels: thumbnails.render, paintLayerThumbnail: thumbnails.paint };
 });
 
 const catalog = { catalogId: 'test', brandLabel: 'Test', colorCount: 500 } as never;
@@ -42,6 +45,7 @@ const renderedIds = () => thumbnails.render.mock.calls.map(([, layer]) => (layer
 beforeEach(() => {
   vi.useFakeTimers();
   thumbnails.render.mockClear();
+  thumbnails.paint.mockClear();
 });
 afterEach(() => {
   vi.useRealTimers();
@@ -81,6 +85,33 @@ describe('LayersPanel thumbnails', () => {
     act(() => vi.advanceTimersByTime(500));
     expect(thumbnails.render.mock.calls.length).toBeLessThanOrEqual(2);
     expect(renderedIds().every((id) => id === 1)).toBe(true);
+  });
+
+  it('paints a pre-filled stitch layer under StrictMode, as after creating a pattern from an image', () => {
+    // Regression: the queue lived in a memo and StrictMode's replayed effect
+    // cleanup disposed it, so no thumbnail was ever painted.
+    const document = makeDocument();
+    const stitches = document.layers.find((layer) => layer.id === 1) as StitchLayer;
+    stitches.kind.fill(CellKind.Full);
+    for (let index = 0; index < stitches.kind.length; index += 1) stitches.colors[index * 4] = document.palette[0]!.id;
+    render(<StrictMode>{panel(document)}</StrictMode>);
+    act(() => vi.advanceTimersByTime(600));
+    const painted = thumbnails.paint.mock.calls.map(([, pixels]) => pixels as { data: Uint8ClampedArray });
+    expect(painted).toHaveLength(3);
+    const opaque = (pixels: { data: Uint8ClampedArray }) => pixels.data.filter((_, offset) => offset % 4 === 3 && pixels.data[offset] === 255).length;
+    expect(painted.map(opaque).sort((a, b) => b - a)[0]).toBe(40 * 40);
+  });
+
+  it('does not recompute any thumbnail when a layer is shown or hidden', () => {
+    let document = makeDocument();
+    const view = render(panel(document));
+    act(() => vi.advanceTimersByTime(600));
+    thumbnails.render.mockClear();
+    applyLayerStructureCommand(document, layerSetVisibilityCommand(3, false));
+    document = { ...document, palette: [...document.palette] };
+    view.rerender(panel(document));
+    act(() => vi.advanceTimersByTime(600));
+    expect(thumbnails.render).not.toHaveBeenCalled();
   });
 
   it('repaints every layer when a palette color changes', () => {

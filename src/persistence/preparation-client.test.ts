@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import * as thumbnailModule from './project-thumbnail';
 import { applyCommand, createDocument as createDomainDocument, layeredFromSurface, type CatalogAssociation, type CreateDocumentOptions, type LayeredDocument, type PatternDocument, type StitchLayer } from '../domain';
 import { cloneLayeredDocument } from './binary';
 import { PersistenceError } from './errors';
@@ -72,7 +73,7 @@ class FakeWorker {
 async function preparedResponse(worker: FakeWorker): Promise<PersistencePreparationResponse> {
   const request = worker.posted[worker.posted.length - 1]?.message as { document: LayeredDocument; token: Parameters<typeof prepareDocumentSnapshot>[1] };
   const prepared = await prepareDocumentSnapshot(request.document, request.token);
-  return createPreparedMessage(request.token, prepared.bytes, prepared.checksum);
+  return createPreparedMessage(request.token, prepared.bytes, prepared.checksum, prepared.summary);
 }
 
 describe('persistence preparation worker client', () => {
@@ -115,6 +116,41 @@ describe('persistence preparation worker client', () => {
     client.dispose();
   });
 
+  it('derives the project summary in the worker, not on the main thread, and checks it against the request', async () => {
+    const summarySpy = vi.spyOn(thumbnailModule, 'deriveProjectSummary');
+    const worker = new FakeWorker();
+    const client = new PersistencePreparationWorkerClient({ workerFactory: () => worker, requestIdFactory: () => 'summary-request' });
+    try {
+      const live = document();
+      const accepted = client.prepare({ projectId: 'summary', revision: live.revision, document: live });
+      expect(summarySpy).not.toHaveBeenCalled();
+      const response = await preparedResponse(worker);
+      if (response.type !== 'prepared-document') throw new Error('missing prepared response');
+      // The fake worker runs the real worker handler, which derives the summary once.
+      expect(summarySpy).toHaveBeenCalledTimes(1);
+      expect(response.summary).toMatchObject({ width: live.width, height: live.height, thumbnail: { revision: live.revision } });
+      worker.emit(response);
+      await expect(accepted).resolves.toBeDefined();
+
+      // A summary for different dimensions than the document that was sent is rejected.
+      const mismatched = client.prepare({ projectId: 'summary-mismatch', revision: live.revision, document: live });
+      const mismatchedResponse = await preparedResponse(worker);
+      if (mismatchedResponse.type !== 'prepared-document') throw new Error('missing prepared response');
+      worker.emit({ ...mismatchedResponse, summary: { ...mismatchedResponse.summary, width: live.width + 1 } });
+      await expect(mismatched).rejects.toMatchObject({ code: 'invalid-response' });
+
+      // A malformed thumbnail fails protocol validation.
+      const malformed = client.prepare({ projectId: 'summary-malformed', revision: live.revision, document: live });
+      const malformedResponse = await preparedResponse(worker);
+      if (malformedResponse.type !== 'prepared-document') throw new Error('missing prepared response');
+      worker.emit({ ...malformedResponse, summary: { ...malformedResponse.summary, thumbnail: { ...malformedResponse.summary.thumbnail, revision: live.revision + 1 } } });
+      await expect(malformed).rejects.toMatchObject({ code: 'invalid-response' });
+    } finally {
+      summarySpy.mockRestore();
+      client.dispose();
+    }
+  });
+
   it('rejects malformed and stale responses for the exact pending identity', async () => {
     const worker = new FakeWorker();
     const client = new PersistencePreparationWorkerClient({ workerFactory: () => worker, requestIdFactory: () => 'strict-request' });
@@ -127,13 +163,13 @@ describe('persistence preparation worker client', () => {
       token: malformedRequest.token,
       bytes: new Uint8Array(),
       checksum: '0'.repeat(64)
-    });
+    } as unknown as PersistencePreparationResponse);
     await expect(malformed).rejects.toMatchObject({ code: 'invalid-response' });
 
     const stale = client.prepare({ projectId: 'stale-client', revision: doc.revision, document: cloneLayeredDocument(doc) });
     const staleRequest = worker.posted[1].message as { token: { projectId: string; revision: number; requestId: string } };
     const prepared = await prepareDocumentSnapshot(doc, { ...staleRequest.token, revision: staleRequest.token.revision });
-    worker.emit(createPreparedMessage({ ...staleRequest.token, revision: staleRequest.token.revision + 1 }, prepared.bytes, prepared.checksum));
+    worker.emit(createPreparedMessage({ ...staleRequest.token, revision: staleRequest.token.revision + 1 }, prepared.bytes, prepared.checksum, prepared.summary));
     await expect(stale).rejects.toBeInstanceOf(PersistencePreparationStaleError);
     client.dispose();
   });

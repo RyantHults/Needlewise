@@ -50,7 +50,7 @@ export function handlePersistencePreparationWorkerMessage(
   activeRequests.add(key);
   void prepareDocumentSnapshot(request.document, request.token)
     .then((prepared) => {
-      postMessage(createPreparedMessage(request.token, prepared.bytes, prepared.checksum), preparedTransferList(prepared.bytes));
+      postMessage(createPreparedMessage(request.token, prepared.bytes, prepared.checksum, prepared.summary), preparedTransferList(prepared.bytes));
     })
     .catch((error: unknown) => {
       postError(postMessage, error, request.token);

@@ -90,6 +90,6 @@ describe('persistence preparation protocol and worker', () => {
     expect(prepared.revision).toBe(token.revision);
     expect(prepared.requestId).toBe(token.requestId);
     expect(prepared.bytes).toEqual(await prepareDocumentSnapshot(doc, token).then((value) => value.bytes));
-    expect(createPreparedMessage(token, prepared.bytes, prepared.checksum).token).toEqual(token);
+    expect(createPreparedMessage(token, prepared.bytes, prepared.checksum, prepared.summary).token).toEqual(token);
   });
 });

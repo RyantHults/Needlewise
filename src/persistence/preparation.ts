@@ -2,6 +2,7 @@ import { assertValidLayeredDocument, LayerType, type LayeredDocument } from '../
 import { MAX_DOCUMENT_BYTES } from './limits';
 import { sha256 } from './hash';
 import { encodeDocument } from './binary';
+import { deriveProjectSummary, isValidProjectSummary, type ProjectDocumentSummary } from './project-thumbnail';
 import { PersistenceError } from './errors';
 
 export const PERSISTENCE_PREPARATION_PROTOCOL = 'needlewise-persistence-preparation-v1' as const;
@@ -28,6 +29,8 @@ export interface PersistencePreparedMessage {
   token: PersistencePreparationToken;
   bytes: Uint8Array;
   checksum: string;
+  /** Dimensions and thumbnail, derived in the worker so the main thread never flattens the document. */
+  summary: ProjectDocumentSummary;
 }
 
 export interface PersistencePreparationErrorMessage {
@@ -81,6 +84,7 @@ export function validatePreparedMessage(value: unknown): asserts value is Persis
     || value.bytes.byteLength > MAX_DOCUMENT_BYTES
     || typeof value.checksum !== 'string'
     || !/^[0-9a-f]{64}$/.test(value.checksum)
+    || !isValidProjectSummary(value.summary, value.token.revision)
   ) throw new PersistenceError('invalid-document', 'Prepared document output is malformed.');
 }
 
@@ -114,8 +118,8 @@ export function createPreparationError(error: unknown, token?: PersistencePrepar
   };
 }
 
-export function createPreparedMessage(token: PersistencePreparationToken, bytes: Uint8Array, checksum: string): PersistencePreparedMessage {
-  return { protocol: PERSISTENCE_PREPARATION_PROTOCOL, type: PERSISTENCE_PREPARED_TYPE, token: { ...token }, bytes, checksum };
+export function createPreparedMessage(token: PersistencePreparationToken, bytes: Uint8Array, checksum: string, summary: ProjectDocumentSummary): PersistencePreparedMessage {
+  return { protocol: PERSISTENCE_PREPARATION_PROTOCOL, type: PERSISTENCE_PREPARED_TYPE, token: { ...token }, bytes, checksum, summary };
 }
 
 /** Prepare one already persistence-owned document without cloning it. */
@@ -124,8 +128,9 @@ export async function prepareDocumentSnapshot(document: LayeredDocument, token: 
   if (document.revision !== token.revision) throw new PersistenceError('invalid-document', 'Persistence preparation revision does not match its document.');
   assertValidLayeredDocument(document);
   const bytes = encodeDocument(document);
+  const summary = deriveProjectSummary(document);
   const checksum = await sha256(bytes);
-  return { projectId: token.projectId, revision: token.revision, requestId: token.requestId, bytes, checksum };
+  return { projectId: token.projectId, revision: token.revision, requestId: token.requestId, bytes, checksum, summary };
 }
 
 /** Transfer only the typed-array buffers owned by a preparation clone. */

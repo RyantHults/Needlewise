@@ -227,29 +227,6 @@ function addBackstitchContributions(target: Map<number, MutableCounts>, contribu
   }
 }
 
-/**
- * Cells whose kind, colors or completion differ between the shadow and the composite, or
- * null when more than a quarter of the cells differ and a full recount is
- * cheaper than recounting each one twice.
- */
-function changedCells(shadow: CellPlanes, composite: PatternDocument): Uint32Array | null {
-  const { kind, colors } = composite;
-  const limit = kind.length >> 2;
-  const found: number[] = [];
-  for (let index = 0; index < kind.length; index += 1) {
-    const offset = index * 4;
-    if (kind[index] === shadow.kind[index]
-      && composite.completed[index] === shadow.completed[index]
-      && colors[offset] === shadow.colors[offset]
-      && colors[offset + 1] === shadow.colors[offset + 1]
-      && colors[offset + 2] === shadow.colors[offset + 2]
-      && colors[offset + 3] === shadow.colors[offset + 3]) continue;
-    if (found.length >= limit) return null;
-    found.push(index);
-  }
-  return Uint32Array.from(found);
-}
-
 /** What changed in a composite since the last count. */
 export interface CompositeChange {
   /** Every cell may have changed. */
@@ -516,18 +493,14 @@ export class ProgressMetricsService {
   applyComposite(composite: PatternDocument, change: CompositeChange): boolean {
     const settingsChanged = composite.settings !== this.shadowSettings;
     const shadow = this.shadow;
-    if (shadow === null || shadow.kind.length !== composite.kind.length) {
+    // The domain reports the exact changed cells for layer edits and stack
+    // changes (visibility, move, delete, merge, duplicate); only a full
+    // invalidation, such as a crop or rotate, recounts every cell.
+    if (change.full || shadow === null || shadow.kind.length !== composite.kind.length) {
       this.recalculate(composite);
       return settingsChanged;
     }
-    // A full invalidation of a same-size composite (visibility, add, delete,
-    // merge, palette edits) usually changes few cells: find them by diffing
-    // against the shadow, and recount everything only when most changed.
-    const indices = change.full ? changedCells(shadow, composite) : change.indices;
-    if (indices === null) {
-      this.recalculate(composite);
-      return settingsChanged;
-    }
+    const indices = change.indices;
     if (settingsChanged) {
       this.settings = normalizeMaterialSettings(composite, this.options);
       this.aidaCount = resolveMetricsAidaCount(composite, this.options);
@@ -535,7 +508,8 @@ export class ProgressMetricsService {
     }
     if (indices && indices.length > 0) {
       const counter = new CellCounter(this.counts);
-      for (const index of change.full ? indices : new Set<number>(indices)) {
+      // A repeated index is harmless: the shadow already matches on the second pass.
+      for (const index of indices) {
         if (index >= composite.kind.length) continue;
         counter.cell(shadow, index, -1);
         const offset = index * 4;

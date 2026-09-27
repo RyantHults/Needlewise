@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createLayeredDocument, CellKind, FIXED_POINT_UNITS_PER_CELL, type SpecialtyLayer, type StitchLayer } from '../domain';
-import { createThumbnailScheduler, renderLayerThumbnailPixels, thumbnailDimensions } from './layer-thumbnail';
+import { createThumbnailScheduler, layerContentChanged, renderLayerThumbnailPixels, thumbnailDimensions } from './layer-thumbnail';
 
 const catalog = { catalogId: 'test', brandLabel: 'Test', colorCount: 500 } as never;
 const makeDocument = (width: number, height: number) => createLayeredDocument({
@@ -79,5 +79,16 @@ describe('layer thumbnails', () => {
     scheduler.dispose();
     vi.advanceTimersByTime(1000);
     expect(refresh).toHaveBeenCalledTimes(2);
+  });
+
+  it('treats show/hide and rename as no content change, and edits as a change', () => {
+    const document = makeDocument(4, 4);
+    const layer = document.layers.find((entry) => entry.type === 'stitch') as StitchLayer;
+    expect(layerContentChanged(null, layer)).toBe(true);
+    expect(layerContentChanged(layer, layer)).toBe(false);
+    expect(layerContentChanged(layer, { ...layer, visible: false })).toBe(false);
+    expect(layerContentChanged(layer, { ...layer, name: 'Renamed' })).toBe(false);
+    expect(layerContentChanged(layer, { ...layer })).toBe(true);
+    expect(layerContentChanged(layer, { ...layer, kind: layer.kind.slice() })).toBe(true);
   });
 });
