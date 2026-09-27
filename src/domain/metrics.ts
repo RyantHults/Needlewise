@@ -279,6 +279,15 @@ export function getMetricsAidaCount(options?: MetricsOptions | MaterialSettingsV
   return aidaCountFrom(raw);
 }
 
+/**
+ * The stitch count metrics use: an explicit option wins, otherwise the
+ * document's canvas setting. Normalized material settings read the same
+ * document setting, so strands and the Aida model always agree.
+ */
+export function resolveMetricsAidaCount(document: PatternDocument, options?: MetricsOptions | MaterialSettingsV2): number | undefined {
+  return getMetricsAidaCount(options) ?? aidaCountFrom(asRecord(document.settings as PatternSettings).aidaCount);
+}
+
 /** Derive the stitched dimensions without mutating a document or its metadata. */
 export function deriveFinishedSize(document: Pick<PatternDocument, 'width' | 'height'>, aidaCount: number): FinishedSize;
 export function deriveFinishedSize(width: number, height: number, aidaCount: number): FinishedSize;
@@ -524,7 +533,7 @@ export function computePatternMetrics(
   options?: MetricsOptions | MaterialSettingsV2
 ): PatternMetrics {
   const settings = normalizeMaterialSettings(document, options);
-  const aidaCount = getMetricsAidaCount(options);
+  const aidaCount = resolveMetricsAidaCount(document, options);
   const byId = new Map<number, MutableCounts>();
   const paletteEntries = new Map(document.palette.map((entry) => [entry.id, entry]));
 
@@ -532,12 +541,18 @@ export function computePatternMetrics(
   // the scan.  A malformed document can contain a referenced ID not present
   // in its palette; retaining that usage is more useful than silently losing
   // it, and does not alter the document.
+  // Neighbouring cells usually share a color, so remember the last lookup.
+  let lastPaletteId = -1;
+  let lastCounts: MutableCounts | undefined;
   const ensure = (paletteId: number): MutableCounts => {
+    if (paletteId === lastPaletteId && lastCounts !== undefined) return lastCounts;
     let counts = byId.get(paletteId);
     if (counts === undefined) {
       counts = emptyCounts();
       byId.set(paletteId, counts);
     }
+    lastPaletteId = paletteId;
+    lastCounts = counts;
     return counts;
   };
   for (const entry of document.palette) ensure(entry.id);

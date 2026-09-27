@@ -1,9 +1,12 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import { unzipSync, zipSync, strFromU8, strToU8 } from 'fflate';
-import { applyCommand, CellKind, cloneDocument, computePatternMetrics, createDocument as createDomainDocument, createEditor, QuarterCorner, type CatalogAssociation, type CreateDocumentOptions, type PatternDocument } from '../domain';
+import { applyCommand as applySurfaceCommand, CellKind, commitLayerSurface, computePatternMetrics, createDocument as createDomainDocument, createDocumentEditor as createEditor, createEditorFromHistory, layerAddCommand, layerRenameCommand, layerSetVisibilityCommand, type DocumentEditor, flattenDocument, layeredFromSurface, LayerType, layerSurface, QuarterCorner, topmostVisibleLayer, type CatalogAssociation, type CreateDocumentOptions, type DomainCommand, type LayeredDocument, type PatternDocument, type StitchLayer, type SpecialtyLayer } from '../domain';
+import { cloneLayeredDocument, decodeDocumentWithInfo } from './binary';
+import { encodeLegacyDocument } from './legacy-binary.fixture';
 import { DMC_CATALOG_DEFINITION } from '../catalog';
 import * as binaryModule from './binary';
+import * as domainModule from '../domain';
 import * as hashModule from './hash';
 import { prepareDocumentSnapshot, type PersistencePreparationResponse } from './preparation';
 import { handlePersistencePreparationWorkerMessage } from '../workers/persistence-preparation.worker';
@@ -43,11 +46,48 @@ let databaseCounter = 0;
 
 const TEST_CATALOG: CatalogAssociation = { catalogId: 'test-catalog-v1', brandLabel: 'Test catalog', colorCount: 32 };
 
-function createDocument(options: Omit<CreateDocumentOptions, 'catalog'> & { catalog?: CatalogAssociation }): PatternDocument {
+/** Layer ids created by `layeredFromSurface`. */
+const STITCH_LAYER = 1;
+const SPECIALTY_LAYER = 2;
+
+function createSurface(options: Omit<CreateDocumentOptions, 'catalog'> & { catalog?: CatalogAssociation }): PatternDocument {
   return createDomainDocument({ ...options, catalog: options.catalog ?? TEST_CATALOG });
 }
 
-function makeDocument(): PatternDocument {
+function createDocument(options: Omit<CreateDocumentOptions, 'catalog'> & { catalog?: CatalogAssociation }): LayeredDocument {
+  return layeredFromSurface(createSurface(options));
+}
+
+function stitchLayer(document: LayeredDocument, id = STITCH_LAYER): StitchLayer {
+  const layer = document.layers.find((candidate) => candidate.id === id);
+  if (layer?.type !== LayerType.Stitch) throw new Error(`Layer ${String(id)} is not a stitch layer.`);
+  return layer;
+}
+
+function specialtyLayer(document: LayeredDocument, id = SPECIALTY_LAYER): SpecialtyLayer {
+  const layer = document.layers.find((candidate) => candidate.id === id);
+  if (layer?.type !== LayerType.Specialty) throw new Error(`Layer ${String(id)} is not a specialty layer.`);
+  return layer;
+}
+
+/** Executes through the layered editor and returns a detached copy of its layered document. */
+function executeLayered(editor: DocumentEditor, command: DomainCommand): LayeredDocument {
+  editor.execute(command);
+  return cloneLayeredDocument(editor.document);
+}
+
+/** Applies a surface command to a copy: backstitch commands go to the top specialty layer, everything else to the top stitch layer. */
+function applyCommand(document: LayeredDocument, command: DomainCommand): { document: LayeredDocument } {
+  const next = cloneLayeredDocument(document);
+  const type = command.type.includes('backstitch') ? LayerType.Specialty : LayerType.Stitch;
+  const layer = topmostVisibleLayer(next, type);
+  if (!layer) throw new Error(`No visible ${type} layer.`);
+  const result = applySurfaceCommand(layerSurface(next, layer.id), command);
+  commitLayerSurface(next, layer.id, result.document);
+  return { document: next };
+}
+
+function makeDocument(): LayeredDocument {
   let document = createDocument({
     width: 3,
     height: 2,
@@ -162,11 +202,11 @@ function webpLosslessBytes(width: number, height: number): Uint8Array {
   return bytes;
 }
 
-function metadata(document: PatternDocument, id = 'project-1'): ProjectMetadata {
+function metadata(document: LayeredDocument, id = 'project-1'): ProjectMetadata {
   return { id, title: 'Test project', notes: 'Local notes', createdAt: 1, updatedAt: Date.now(), revision: document.revision };
 }
 
-async function traceHistoryFixture(document: PatternDocument, assetId = 'reference'): Promise<{ history: SessionHistoryEnvelope; asset: TraceHistoryAsset; descriptor: SourceImageDescriptor }> {
+async function traceHistoryFixture(document: LayeredDocument, assetId = 'reference'): Promise<{ history: SessionHistoryEnvelope; asset: TraceHistoryAsset; descriptor: SourceImageDescriptor }> {
   const data = pngBytes(2, 2);
   const asset: TraceHistoryAsset = { id: assetId, name: 'reference.png', mimeType: 'image/png', data, checksum: await sha256(data) };
   const descriptor: SourceImageDescriptor = {
@@ -259,7 +299,7 @@ describe('durable document history persistence', () => {
     try {
       const base = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
       const editor = createEditor(base);
-      const document = editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 }).document;
+      const document = executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER, x: 0, y: 0, color: 1 });
       const history = editor.exportHistory();
       expect(await prepareSessionHistory(document, history)).toBeDefined();
       await repo.save('history-round-trip', metadata(document, 'history-round-trip'), document, undefined, { history });
@@ -267,7 +307,8 @@ describe('durable document history persistence', () => {
       const stored = await repo.db.documentHistories.get('history-round-trip');
       const head = await repo.db.projectHeads.get('history-round-trip');
       expect(stored).toMatchObject({ projectId: 'history-round-trip', revision: document.revision, checksum: head?.checksum, savedAt: 10 });
-      expect(stored?.history.version).toBe(history.version);
+      expect(stored?.history.version).toBe(1);
+      expect(stored?.history.document.version).toBe(history.version);
       expect(stored?.history.document.undo).toHaveLength(history.undo.length);
       expect(stored?.history.document.redo).toHaveLength(history.redo.length);
       expect(stored?.history.document.undo[0]?.kind).toBe(history.undo[0]?.kind);
@@ -277,8 +318,8 @@ describe('durable document history persistence', () => {
       expect(loaded?.history?.undoOrder).toEqual([{ kind: 'document', index: 0 }]);
 
       const twoStepEditor = createEditor(base);
-      twoStepEditor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-      const twoStep = twoStepEditor.execute({ type: 'set-full', x: 1, y: 0, color: 1 }).document;
+      twoStepEditor.execute({ type: 'set-full', layerId: STITCH_LAYER, x: 0, y: 0, color: 1 });
+      const twoStep = executeLayered(twoStepEditor, { type: 'set-full', layerId: STITCH_LAYER, x: 1, y: 0, color: 1 });
       const reversedMarkers = {
         version: 1 as const,
         document: twoStepEditor.exportHistory(),
@@ -302,7 +343,7 @@ describe('durable document history persistence', () => {
   it('keeps settings-only history for a maximum-size document within the session persistence budget', async () => {
     const document = createDocument({ width: 1_000_000, height: 1, palette: [] });
     const editor = createEditor(document);
-    const changed = editor.execute({ type: 'document-settings-update', settings: { backgroundColor: '#aabbcc' } }).document;
+    const changed = executeLayered(editor, { type: 'document-settings-update', settings: { backgroundColor: '#aabbcc' } });
     const prepared = await prepareSessionHistory(changed, editor.exportHistory());
 
     expect(editor.historyBytes).toBeLessThan(MAX_SESSION_HISTORY_BYTES);
@@ -312,38 +353,98 @@ describe('durable document history persistence', () => {
     if (entry?.kind === 'delta') expect(entry.delta.cells.indices).toHaveLength(0);
   });
 
-  it('accepts legacy session snapshots after validating their old accounting', async () => {
-    const original = createDocument({ width: 1, height: 2, palette: [] });
-    const editor = createEditor(original);
-    const document = editor.execute({ type: 'rotate-cw' }).document;
-    const documentHistory = editor.exportHistory();
-    const entry = documentHistory.undo[0] as unknown as { before: PatternDocument; after: PatternDocument; bytes: number };
-    const oldSnapshotBytes = (snapshot: PatternDocument) => {
-      const store = snapshot.backstitches;
-      return snapshot.kind.byteLength + snapshot.colors.byteLength + snapshot.completed.byteLength
-        + store.ids.byteLength + store.x1.byteLength + store.y1.byteLength + store.x2.byteLength + store.y2.byteLength
-        + store.colors.byteLength + store.completed.byteLength
-        + JSON.stringify(snapshot.catalog).length * 2
-        + JSON.stringify(snapshot.palette).length * 2
-        + 64;
-    };
-    for (const snapshot of [entry.before, entry.after]) {
-      snapshot.settings = { symbolSet: snapshot.settings.symbolSet, materialUnit: snapshot.settings.materialUnit } as PatternDocument['settings'];
+  it('persists transform, replay, layer-structure and grouped history entries across a reload', async () => {
+    const repo = await repository();
+    try {
+      const base = createDocument({ width: 3, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+      await repo.save('history-kinds', metadata(base, 'history-kinds'), base);
+      const editor = createEditor(base);
+      executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER, x: 0, y: 0, color: 1 });
+      executeLayered(editor, { type: 'rotate-cw' });
+      executeLayered(editor, { type: 'crop', x: 0, y: 0, width: 2, height: 2 });
+      editor.batch([layerAddCommand(LayerType.Stitch, { id: 3 }), { type: 'set-full', layerId: 3, x: 1, y: 1, color: 1 }]);
+      executeLayered(editor, layerRenameCommand(3, 'Renamed'));
+      const document = cloneLayeredDocument(editor.document);
+      const history = editor.exportHistory();
+      const kinds = new Set(history.undo.map((entry) => entry.kind));
+      expect(kinds).toContain('transform');
+      expect(kinds).toContain('replay');
+      expect(kinds).toContain('group');
+      await repo.save('history-kinds', metadata(document, 'history-kinds'), document, undefined, { history });
+
+      const loaded = await repo.load('history-kinds');
+      if (!loaded?.history) throw new Error('Missing persisted history.');
+      expect(new Set(loaded.history.document.undo.map((entry) => entry.kind))).toEqual(kinds);
+      const restored = createEditorFromHistory(loaded.document, loaded.history.document);
+      for (let step = 0; step < history.undo.length; step += 1) restored.undo();
+      // Undo restores content; counters that are never decremented may only grow.
+      const counters = ['revision', 'nextLayerId', 'nextBackstitchId', 'nextPaletteId'] as const;
+      for (const counter of counters) expect(restored.document[counter]).toBeGreaterThanOrEqual(base[counter]);
+      const normalized = cloneLayeredDocument(restored.document);
+      for (const counter of counters) normalized[counter] = base[counter];
+      expect(encodeDocument(normalized)).toEqual(encodeDocument(base));
+    } finally {
+      await closeRepository(repo);
     }
-    entry.bytes = oldSnapshotBytes(entry.before) + oldSnapshotBytes(entry.after);
-    const envelope = {
+  });
+
+  it('saves live history without rebuilding an editor and validates the chain only on load', async () => {
+    const repo = await repository();
+    const preparation = new PersistencePreparationWorkerClient({ workerFactory: () => new RepositoryPreparationWorker() });
+    const rebuildSpy = vi.spyOn(domainModule, 'createEditorFromHistory');
+    try {
+      const base = createDocument({ width: 3, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+      await repo.save('history-save-path', metadata(base, 'history-save-path'), base);
+      const editor = createEditor(base);
+      for (let step = 0; step < 20; step += 1) executeLayered(editor, { type: 'rotate-cw' });
+      for (let step = 0; step < 20; step += 1) executeLayered(editor, layerSetVisibilityCommand(SPECIALTY_LAYER, step % 2 === 1));
+      const document = cloneLayeredDocument(editor.document);
+      const history = editor.exportHistory();
+      rebuildSpy.mockClear();
+
+      await expect(repo.save('history-save-path', metadata(document, 'history-save-path'), document, undefined, { history })).resolves.toMatchObject({ committed: true });
+      const head = await repo.db.projectHeads.get('history-save-path');
+      await expect(repo.save('history-save-path', metadata(document, 'history-save-path'), { revision: document.revision } as LayeredDocument, undefined, { mode: 'retain', expectedHead: head, history })).resolves.toMatchObject({ committed: true });
+      const next = executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER, x: 0, y: 0, color: 1 });
+      const prepared = await preparation.prepare({ projectId: 'history-save-path', revision: next.revision, document: next, requestId: 'history-save-path' });
+      await expect(repo.savePrepared('history-save-path', metadata(next, 'history-save-path'), prepared, undefined, { preparedRequestId: preparation.getRequestId(prepared), history: editor.exportHistory() })).resolves.toMatchObject({ committed: true });
+      expect(rebuildSpy).not.toHaveBeenCalled();
+
+      const loaded = await repo.load('history-save-path');
+      expect(rebuildSpy).toHaveBeenCalledTimes(1);
+      expect(loaded?.history?.document.undo).toHaveLength(41);
+    } finally {
+      rebuildSpy.mockRestore();
+      preparation.dispose();
+      await closeRepository(repo);
+    }
+  });
+
+  it('discards persisted v1 document history from before layers', async () => {
+    const document = makeDocument();
+    const v1Envelope = {
       version: 1 as const,
-      document: documentHistory,
+      document: { version: 1, undo: [], redo: [] },
       trace: { undo: [], redo: [] },
-      undoOrder: [{ kind: 'document' as const, index: 0 }],
+      undoOrder: [],
       redoOrder: []
     };
+    expect(await prepareSessionHistory(document, v1Envelope)).toBeUndefined();
+    expect(await prepareSessionHistory(document, { version: 1, undo: [], redo: [] })).toBeUndefined();
 
-    const prepared = await prepareSessionHistory(document, envelope);
-
-    expect(prepared).toBeDefined();
-    expect(Object.hasOwn(entry.before.settings, 'backgroundColor')).toBe(false);
-    expect(Object.hasOwn(entry.after.settings, 'backgroundColor')).toBe(false);
+    const repo = await repository();
+    try {
+      await repo.save('history-v1', metadata(document, 'history-v1'), document, undefined, { history: createEditor(document).exportHistory() });
+      const stored = await repo.db.documentHistories.get('history-v1');
+      if (!stored) throw new Error('Missing stored history.');
+      await repo.db.documentHistories.put({ ...stored, history: v1Envelope as never });
+      const loaded = await repo.load('history-v1');
+      expect(loaded?.document.revision).toBe(document.revision);
+      expect(loaded?.history).toBeUndefined();
+      expect(await repo.db.documentHistories.get('history-v1')).toBeUndefined();
+    } finally {
+      await closeRepository(repo);
+    }
   });
 
   it('discards malformed or stale history without blocking the canonical document load', async () => {
@@ -381,7 +482,7 @@ describe('durable document history persistence', () => {
     try {
       const base = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
       const editor = createEditor(base);
-      const document = editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 }).document;
+      const document = executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER, x: 0, y: 0, color: 1 });
       const history = editor.exportHistory();
       const historyPut = vi.spyOn(repo.db.documentHistories, 'put').mockRejectedValueOnce(new Error('quota'));
 
@@ -400,7 +501,7 @@ describe('durable document history persistence', () => {
     try {
       const base = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] });
       const editor = createEditor(base);
-      const document = editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 }).document;
+      const document = executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER, x: 0, y: 0, color: 1 });
       await repo.save('history-lifecycle', metadata(document, 'history-lifecycle'), document, undefined, { history: editor.exportHistory() });
       expect(await repo.db.documentHistories.get('history-lifecycle')).toBeDefined();
 
@@ -413,7 +514,7 @@ describe('durable document history persistence', () => {
       expect(await repo.db.documentHistories.get('history-lifecycle')).toBeUndefined();
 
       const replacementEditor = createEditor(replacement);
-      const replacementWithHistory = replacementEditor.execute({ type: 'set-full', x: 1, y: 0, color: 2 }).document;
+      const replacementWithHistory = executeLayered(replacementEditor, { type: 'set-full', layerId: STITCH_LAYER, x: 1, y: 0, color: 2 });
       await repo.save('history-lifecycle', metadata(replacementWithHistory, 'history-lifecycle'), replacementWithHistory, undefined, { history: replacementEditor.exportHistory() });
       expect(await repo.db.documentHistories.get('history-lifecycle')).toBeDefined();
       await repo.promoteRecoveryRevision('history-lifecycle');
@@ -484,7 +585,7 @@ describe('durable document history persistence', () => {
       await repo.save('warm-history-fallback', metadata(base, 'warm-history-fallback'), base);
       await repo.load('warm-history-fallback');
       const editor = createEditor(base);
-      const next = editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 }).document;
+      const next = executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER, x: 0, y: 0, color: 1 });
       const put = vi.spyOn(repo.db.documentHistories, 'put').mockRejectedValueOnce(new Error('history quota'));
       await expect(repo.save('warm-history-fallback', metadata(next, 'warm-history-fallback'), next, undefined, { history: editor.exportHistory() })).resolves.toMatchObject({ committed: true, stale: false, head: { historyGeneration: 2 } });
       put.mockRestore();
@@ -593,7 +694,7 @@ describe('durable document history persistence', () => {
         }],
         redo: []
       };
-      await expect(repo.save('history-invalid-input', metadata(document, 'history-invalid-input'), { revision: document.revision } as PatternDocument, undefined, { mode: 'retain', expectedRevision: document.revision, history: oversized as never })).resolves.toMatchObject({ committed: true, stale: false });
+      await expect(repo.save('history-invalid-input', metadata(document, 'history-invalid-input'), { revision: document.revision } as LayeredDocument, undefined, { mode: 'retain', expectedRevision: document.revision, history: oversized as never })).resolves.toMatchObject({ committed: true, stale: false });
       expect(await repo.db.documentHistories.get('history-invalid-input')).toBeUndefined();
 
       const prepared = await preparation.prepare({ projectId: 'history-prepared-invalid', revision: document.revision, document, requestId: 'history-prepared-invalid' });
@@ -621,7 +722,7 @@ describe('durable document history persistence', () => {
       expect(await repo.db.documentHistories.get('same-head-history')).toBeUndefined();
 
       const retainPut = vi.spyOn(repo.db.documentHistories, 'put').mockRejectedValueOnce(new Error('same-head retain quota'));
-      await expect(repo.save('same-head-history', metadata(document, 'same-head-history'), { revision: document.revision } as PatternDocument, undefined, { mode: 'retain', expectedHead: { ...firstHead, historyGeneration: 2 }, history })).resolves.toMatchObject({ committed: true, head: { historyGeneration: 3 } });
+      await expect(repo.save('same-head-history', metadata(document, 'same-head-history'), { revision: document.revision } as LayeredDocument, undefined, { mode: 'retain', expectedHead: { ...firstHead, historyGeneration: 2 }, history })).resolves.toMatchObject({ committed: true, head: { historyGeneration: 3 } });
       retainPut.mockRestore();
       expect(await repo.db.documentHistories.get('same-head-history')).toBeUndefined();
     } finally {
@@ -637,10 +738,10 @@ describe('session history lifecycle transaction rollback', () => {
     try {
       const revision0 = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
       const editor0 = createEditor(revision0);
-      const revision1 = editor0.execute({ type: 'set-full', x: 0, y: 0, color: 1 }).document;
+      const revision1 = executeLayered(editor0, { type: 'set-full', layerId: STITCH_LAYER, x: 0, y: 0, color: 1 });
       await repo.save('rollback-target', metadata(revision0, 'rollback-target'), revision0, undefined, { history: editor0.exportHistory() });
       const editor1 = createEditor(revision1);
-      const revision2 = editor1.execute({ type: 'set-full', x: 1, y: 0, color: 1 }).document;
+      const revision2 = executeLayered(editor1, { type: 'set-full', layerId: STITCH_LAYER, x: 1, y: 0, color: 1 });
       await repo.save('rollback-target', metadata(revision2, 'rollback-target'), revision2, undefined, { history: editor1.exportHistory() });
       const currentBeforePromotion = await repo.db.currentSnapshots.get('rollback-target');
       const historyBeforePromotion = await repo.db.documentHistories.get('rollback-target');
@@ -773,67 +874,126 @@ describe('binary document persistence', () => {
     const bytes = encodeDocument(original);
     const decoded = decodeDocument(bytes);
 
-    expect(decoded.kind).toBeInstanceOf(Uint8Array);
-    expect(decoded.colors).toBeInstanceOf(Uint16Array);
-    expect(decoded.completed).toBeInstanceOf(Uint8Array);
-    expect(decoded.kind).toEqual(original.kind);
-    expect(decoded.colors).toEqual(original.colors);
-    expect(decoded.completed).toEqual(original.completed);
-    expect(decoded.backstitches.ids).toEqual(original.backstitches.ids);
-    expect(decoded.backstitches.x1).toEqual(original.backstitches.x1);
-    expect(decoded.backstitches.colors).toEqual(original.backstitches.colors);
+    expect(stitchLayer(decoded).kind).toBeInstanceOf(Uint8Array);
+    expect(stitchLayer(decoded).colors).toBeInstanceOf(Uint16Array);
+    expect(stitchLayer(decoded).completed).toBeInstanceOf(Uint8Array);
+    expect(stitchLayer(decoded).kind).toEqual(stitchLayer(original).kind);
+    expect(stitchLayer(decoded).colors).toEqual(stitchLayer(original).colors);
+    expect(specialtyLayer(decoded).backstitches.ids).toEqual(specialtyLayer(original).backstitches.ids);
+    expect(specialtyLayer(decoded).backstitches.x1).toEqual(specialtyLayer(original).backstitches.x1);
+    expect(specialtyLayer(decoded).backstitches.colors).toEqual(specialtyLayer(original).backstitches.colors);
     expect(decoded.revision).toBe(original.revision);
     expect(decoded.catalog).toEqual(original.catalog);
+    expect(decoded.nextLayerId).toBe(original.nextLayerId);
+    expect(decoded.nextBackstitchId).toBe(original.nextBackstitchId);
   });
 
-  it('round-trips canonical background color using binary schema v2', () => {
+  it('round-trips layer names, visibility, order and ids using binary schema v3', () => {
+    const original = makeDocument();
+    const surface = createSurface({ width: 3, height: 2, palette: [] });
+    const top: StitchLayer = { id: 7, type: LayerType.Stitch, name: 'Top ✚ stitches', visible: false, kind: surface.kind.slice(), colors: surface.colors.slice(), completed: new Uint8Array(6) };
+    top.kind[5] = CellKind.Full;
+    top.colors[20] = 2;
+    const emptySpecialty: SpecialtyLayer = { id: 4, type: LayerType.Specialty, name: 'Outlines', visible: true, backstitches: { ...surface.backstitches } };
+    original.layers = [stitchLayer(original), top, emptySpecialty, specialtyLayer(original)];
+    original.nextLayerId = 9;
+    original.settings = { ...original.settings, aidaCount: 18 };
+    const bytes = encodeDocument(original);
+    const decoded = decodeDocumentWithInfo(bytes);
+
+    expect(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint16(8, true)).toBe(3);
+    expect(decoded.legacy).toBe(false);
+    expect(decoded.document.layers.map(({ id, type, name, visible }) => ({ id, type, name, visible }))).toEqual([
+      { id: STITCH_LAYER, type: 'stitch', name: 'Stitches', visible: true },
+      { id: 7, type: 'stitch', name: 'Top ✚ stitches', visible: false },
+      { id: 4, type: 'specialty', name: 'Outlines', visible: true },
+      { id: SPECIALTY_LAYER, type: 'specialty', name: 'Specialty', visible: true }
+    ]);
+    expect(stitchLayer(decoded.document, 7).kind).toEqual(top.kind);
+    expect(stitchLayer(decoded.document, 7).colors).toEqual(top.colors);
+    expect(specialtyLayer(decoded.document, 4).backstitches.ids).toHaveLength(0);
+    expect(decoded.document.nextLayerId).toBe(9);
+    expect(decoded.document.settings.aidaCount).toBe(18);
+    expect(encodeDocument(decoded.document)).toEqual(bytes);
+  });
+
+  it('does not store completion in binary schema v3', () => {
+    const original = makeDocument();
+    stitchLayer(original).completed[0] = 1;
+    specialtyLayer(original).backstitches.completed[0] = 1;
+    const decoded = decodeDocument(encodeDocument(original));
+    expect(stitchLayer(decoded).completed).toEqual(new Uint8Array(6));
+    expect(specialtyLayer(decoded).backstitches.completed).toEqual(new Uint8Array(1));
+  });
+
+  it('round-trips canonical background color and stitch count in the document settings', () => {
     const original = createDocument({
       width: 1,
       height: 1,
-      settings: { backgroundColor: '#a1b2c3' }
+      settings: { backgroundColor: '#a1b2c3', aidaCount: 16 }
     });
-    const bytes = encodeDocument(original);
-    const decoded = decodeDocument(bytes);
+    const decoded = decodeDocument(encodeDocument(original));
 
-    expect(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint16(8, true)).toBe(2);
     expect(decoded.settings.backgroundColor).toBe('#A1B2C3');
+    expect(decoded.settings.aidaCount).toBe(16);
     expect(decoded.settings).toEqual(original.settings);
+  });
+
+  it('upgrades a v2 document into the default Stitches and Specialty layers', () => {
+    let surface = createSurface({ width: 3, height: 2, settings: { backgroundColor: '#112233' }, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] });
+    surface = applySurfaceCommand(surface, { type: 'set-full', x: 2, y: 1, color: 1 }).document;
+    surface = applySurfaceCommand(surface, { type: 'set-completion', x: 2, y: 1, completed: true }).document;
+    surface = applySurfaceCommand(surface, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 2, y: 2 }, color: 2 }).document;
+    const decoded = decodeDocumentWithInfo(encodeLegacyDocument(surface, 2));
+
+    expect(decoded).toMatchObject({ binaryVersion: 2, legacy: true });
+    const document = decoded.document;
+    expect(document.layers.map(({ id, type, name, visible }) => ({ id, type, name, visible }))).toEqual([
+      { id: STITCH_LAYER, type: 'stitch', name: 'Stitches', visible: true },
+      { id: SPECIALTY_LAYER, type: 'specialty', name: 'Specialty', visible: true }
+    ]);
+    expect(document.nextLayerId).toBe(3);
+    expect(stitchLayer(document).kind).toEqual(surface.kind);
+    expect(stitchLayer(document).colors).toEqual(surface.colors);
+    expect(stitchLayer(document).completed).toEqual(new Uint8Array(6));
+    expect(specialtyLayer(document).backstitches.ids).toEqual(surface.backstitches.ids);
+    expect(specialtyLayer(document).backstitches.completed).toEqual(new Uint8Array(1));
+    expect(document.settings).toEqual({ ...surface.settings, aidaCount: 14 });
+    expect(document.palette).toEqual(surface.palette);
+    expect(document.revision).toBe(surface.revision);
+    expect(document.nextBackstitchId).toBe(surface.nextBackstitchId);
+    // Re-encoding writes v3.
+    expect(decodeDocumentWithInfo(encodeDocument(document)).binaryVersion).toBe(3);
   });
 
   it('upgrades legacy binary schema v1 documents with the neutral Aida background', () => {
     const decoded = decodeDocument(legacyV1Snapshot());
 
-    expect(decoded.settings).toEqual({ symbolSet: 'default', materialUnit: 'skeins', backgroundColor: '#F3EEE5' });
+    expect(decoded.settings).toEqual({ symbolSet: 'default', materialUnit: 'skeins', backgroundColor: '#F3EEE5', aidaCount: 14 });
     expect(decoded.width).toBe(1);
     expect(decoded.height).toBe(1);
-    expect(decoded.kind).toEqual(new Uint8Array([0]));
+    expect(stitchLayer(decoded).kind).toEqual(new Uint8Array([0]));
   });
 
   it('round-trips directional three-quarter kinds as compact single-slot cells', () => {
     let original = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     original = applyCommand(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SW, color: 1 }).document;
-    original = applyCommand(original, { type: 'set-completion', x: 0, y: 0, completed: true }).document;
     const decoded = decodeDocument(encodeDocument(original));
 
-    expect(decoded.kind[0]).toBe(CellKind.ThreeQuarterSW);
-    expect(decoded.colors).toEqual(new Uint16Array([1, 0, 0, 0]));
-    expect(decoded.completed[0]).toBe(1);
-    expect(decoded.version).toBe(1);
+    expect(stitchLayer(decoded).kind[0]).toBe(CellKind.ThreeQuarterSW);
+    expect(stitchLayer(decoded).colors).toEqual(new Uint16Array([1, 0, 0, 0]));
+    expect(decoded.version).toBe(2);
     expect(encodeDocument(decoded)).toEqual(encodeDocument(original));
   });
 
-  it('round-trips paired three-quarter kinds with physical colors and completion bits', () => {
+  it('round-trips paired three-quarter kinds with physical colors', () => {
     let original = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] });
     original = applyCommand(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
     original = applyCommand(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 }).document;
-    original = applyCommand(original, { type: 'set-completion', x: 0, y: 0, corner: QuarterCorner.NW, completed: true }).document;
-    original = applyCommand(original, { type: 'set-completion', x: 0, y: 0, corner: QuarterCorner.SE, completed: true }).document;
     const decoded = decodeDocument(encodeDocument(original));
 
-    expect(decoded.kind[0]).toBe(CellKind.ThreeQuarterPair);
-    expect(decoded.colors).toEqual(new Uint16Array([1, 0, 2, 0]));
-    expect(decoded.completed[0]).toBe(5);
-    expect(decoded.version).toBe(1);
+    expect(stitchLayer(decoded).kind[0]).toBe(CellKind.ThreeQuarterPair);
+    expect(stitchLayer(decoded).colors).toEqual(new Uint16Array([1, 0, 2, 0]));
     expect(encodeDocument(decoded)).toEqual(encodeDocument(original));
   });
 
@@ -850,9 +1010,27 @@ describe('binary document persistence', () => {
 
     const wrongVersion = original.slice();
     const wrongVersionView = new DataView(wrongVersion.buffer);
-    wrongVersionView.setUint16(8, 3, true);
+    wrongVersionView.setUint16(8, 4, true);
     wrongVersionView.setUint32(32, 0xffffffff, true);
     expect(() => decodeDocument(wrongVersion)).toThrow(/schema is unsupported/i);
+  });
+
+  it('rejects forged layer tables and trailing bytes', () => {
+    const bytes = encodeDocument(makeDocument());
+    const tooManyLayers = bytes.slice();
+    new DataView(tooManyLayers.buffer).setUint32(36, 7, true);
+    expect(() => decodeDocument(tooManyLayers)).toThrow(PersistenceError);
+
+    const trailing = new Uint8Array(bytes.length + 1);
+    trailing.set(bytes);
+    expect(() => decodeDocument(trailing)).toThrow(/trailing payload/i);
+
+    expect(() => decodeDocument(bytes.slice(0, bytes.length - 1))).toThrow(PersistenceError);
+
+    // A specialty layer below a stitch layer fails domain validation.
+    const reordered = makeDocument();
+    reordered.layers = [...reordered.layers].reverse();
+    expect(() => encodeDocument(reordered)).toThrow(PersistenceError);
   });
 
   it('round-trips the exact catalog association through the clean binary format', () => {
@@ -862,7 +1040,7 @@ describe('binary document persistence', () => {
 
   it('matches the domain one-million-cell persistence boundary', () => {
     const boundary = createDocument({ width: 1_000, height: 1_000 });
-    expect(boundary.kind.length).toBe(MAX_DOCUMENT_CELLS);
+    expect(stitchLayer(boundary).kind.length).toBe(MAX_DOCUMENT_CELLS);
     const bytes = encodeDocument(boundary);
     const decoded = decodeDocument(bytes);
     expect(decoded.width * decoded.height).toBe(MAX_DOCUMENT_CELLS);
@@ -872,6 +1050,16 @@ describe('binary document persistence', () => {
     const malformed = bytes.slice();
     new DataView(malformed.buffer).setUint32(12, MAX_DOCUMENT_CELLS + 1, true);
     expect(() => decodeDocument(malformed)).toThrow(PersistenceError);
+  });
+
+  it('encodes three maximum-size stitch layers within the document byte limit', () => {
+    const document = createDocument({ width: 1_000, height: 1_000 });
+    const extra = (id: number): StitchLayer => ({ id, type: LayerType.Stitch, name: `Stitches ${String(id)}`, visible: true, kind: new Uint8Array(MAX_DOCUMENT_CELLS), colors: new Uint16Array(MAX_DOCUMENT_CELLS * 4), completed: new Uint8Array(MAX_DOCUMENT_CELLS) });
+    document.layers = [stitchLayer(document), extra(3), extra(4), specialtyLayer(document)];
+    document.nextLayerId = 5;
+    const bytes = encodeDocument(document);
+    expect(bytes.length).toBeLessThanOrEqual(MAX_DOCUMENT_BYTES);
+    expect(decodeDocument(bytes).layers).toHaveLength(4);
   });
 
   it('round-trips v2 palette metadata and document settings', () => {
@@ -889,8 +1077,8 @@ describe('binary document persistence', () => {
       }]
     });
     const decoded = decodeDocument(encodeDocument(original));
-    expect(decoded.version).toBe(1);
-    expect(decoded.settings).toEqual({ symbolSet: 'letters', materialUnit: 'meters', backgroundColor: '#F3EEE5' });
+    expect(decoded.version).toBe(2);
+    expect(decoded.settings).toEqual({ symbolSet: 'letters', materialUnit: 'meters', backgroundColor: '#F3EEE5', aidaCount: 14 });
     expect(decoded.palette[0]).toEqual(original.palette[0]);
   });
 
@@ -947,12 +1135,12 @@ describe('binary document persistence', () => {
         hex: '#228844',
         rgb: [34, 136, 68] as [number, number, number]
       };
-      const savedDocument = editor.execute({
+      const savedDocument = executeLayered(editor, {
         type: 'palette-create',
         name: brandBAddition.name,
         color: brandBAddition.hex,
         catalog: brandBAddition
-      }).document;
+      });
       await repo.save('mixed-catalog-history', metadata(savedDocument, 'mixed-catalog-history'), savedDocument, undefined, { history: editor.exportHistory() });
 
       const loaded = await repo.load('mixed-catalog-history');
@@ -1001,33 +1189,77 @@ describe('binary document persistence', () => {
 
       const loaded = await repo.load('canonical-waste');
       expect(loaded?.metadata.materialSettings).toEqual(settings);
-      const loadedEstimate = computePatternMetrics(document, loaded?.metadata.materialSettings);
+      const loadedEstimate = computePatternMetrics(flattenDocument(document), loaded?.metadata.materialSettings);
       const archive = await repo.exportProject('canonical-waste');
       const parsed = await parseArchive(archive);
       expect(parsed.metadata.materialSettings).toEqual(settings);
-      expect(computePatternMetrics(document, parsed.metadata.materialSettings)).toEqual(loadedEstimate);
+      expect(computePatternMetrics(flattenDocument(document), parsed.metadata.materialSettings)).toEqual(loadedEstimate);
     } finally {
       await closeRepository(repo);
     }
   });
 
-  it('round-trips the optional Aida count without adding it to the binary document', async () => {
-    const document = createDocument({ width: 2, height: 3, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+  it('stores the stitch count in document settings and never writes metadata aidaCount', async () => {
+    const document = createDocument({ width: 2, height: 3, settings: { aidaCount: 16 }, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     const projectMetadata: ProjectMetadata = { ...metadata(document, 'aida-metadata'), aidaCount: 18 };
     const binary = encodeDocument(document);
     const archive = await exportArchive({ metadata: projectMetadata, document, assets: [] });
+    const archivedMetadata = JSON.parse(strFromU8(unzipSync(archive)['metadata.json'])) as Record<string, unknown>;
+    expect(archivedMetadata).not.toHaveProperty('aidaCount');
     const parsed = await parseArchive(archive);
-    expect(parsed.metadata.aidaCount).toBe(18);
+    expect(parsed.metadata.aidaCount).toBeUndefined();
+    expect(parsed.document.settings.aidaCount).toBe(16);
     expect(encodeDocument(parsed.document)).toEqual(binary);
-    expect(() => encodeDocument(document)).not.toThrow();
-    await expect((async () => {
-      const repo = await repository();
-      try {
-        await repo.save('invalid-aida', { ...metadata(document, 'invalid-aida'), aidaCount: Infinity }, document);
-      } finally {
-        await closeRepository(repo);
-      }
-    })()).rejects.toMatchObject({ code: 'invalid-metadata' });
+
+    const repo = await repository();
+    try {
+      await repo.save('aida-metadata', projectMetadata, document);
+      expect((await repo.db.projects.get('aida-metadata'))?.aidaCount).toBeUndefined();
+      expect((await repo.load('aida-metadata'))?.document.settings.aidaCount).toBe(16);
+      await expect(repo.save('invalid-aida', { ...metadata(document, 'invalid-aida'), aidaCount: Infinity }, document)).rejects.toMatchObject({ code: 'invalid-metadata' });
+    } finally {
+      await closeRepository(repo);
+    }
+  });
+
+  it('copies a legacy metadata aidaCount into a v2 document on load until the next replace commit', async () => {
+    const repo = await repository();
+    try {
+      const document = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+      await repo.save('legacy-aida', metadata(document, 'legacy-aida'), document);
+      // Rewrite the stored project as a pre-layers record.
+      const surface = createSurface({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+      const legacyBytes = encodeLegacyDocument(surface, 2);
+      const current = await repo.db.currentSnapshots.get('legacy-aida');
+      if (!current) throw new Error('Missing current snapshot.');
+      await repo.db.currentSnapshots.put({ ...current, bytes: legacyBytes, checksum: await sha256(legacyBytes) });
+      await repo.db.projectHeads.delete('legacy-aida');
+      const stored = await repo.db.projects.get('legacy-aida');
+      await repo.db.projects.put({ ...stored!, aidaCount: 18 });
+
+      const loaded = await repo.load('legacy-aida');
+      if (!loaded) throw new Error('Missing legacy project.');
+      expect(loaded.document.settings.aidaCount).toBe(18);
+      expect(loaded.document.layers).toHaveLength(2);
+
+      // A retain commit leaves the v2 snapshot in place, so the legacy value stays.
+      const retainedMetadata: ProjectMetadata = { ...loaded.metadata, title: 'Renamed' };
+      delete retainedMetadata.aidaCount;
+      await repo.save('legacy-aida', retainedMetadata, { revision: loaded.document.revision } as LayeredDocument, undefined, { mode: 'retain', expectedRevision: loaded.document.revision });
+      expect((await repo.db.projects.get('legacy-aida'))?.aidaCount).toBe(18);
+      expect((await repo.load('legacy-aida'))?.document.settings.aidaCount).toBe(18);
+
+      // A replace commit writes v3 with the count in settings and drops the metadata copy.
+      const next = applyCommand(loaded.document, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+      await repo.save('legacy-aida', { ...retainedMetadata, revision: next.revision }, next);
+      expect((await repo.db.projects.get('legacy-aida'))?.aidaCount).toBeUndefined();
+      expect((await repo.load('legacy-aida'))?.document.settings.aidaCount).toBe(18);
+      const currentBytes = (await repo.db.currentSnapshots.get('legacy-aida'))?.bytes;
+      if (!currentBytes) throw new Error('Missing current snapshot.');
+      expect(decodeDocumentWithInfo(currentBytes).binaryVersion).toBe(3);
+    } finally {
+      await closeRepository(repo);
+    }
   });
 
   it('round-trips the optional display units without adding them to the binary document', async () => {
@@ -1211,7 +1443,7 @@ describe('local project repository', () => {
       const result = await repo.save(
         'retain',
         retainedMetadata,
-        { revision: revision1.revision } as PatternDocument,
+        { revision: revision1.revision } as LayeredDocument,
         [{ id: 'new', name: 'new.bin', mimeType: 'application/octet-stream', data: new Uint8Array([2, 3]) }],
         {
           mode: 'retain',
@@ -1244,7 +1476,7 @@ describe('local project repository', () => {
       const result = await repo.save(
         'retain-head',
         { ...metadata(document, 'retain-head'), title: 'Head-only retain' },
-        { revision: document.revision } as PatternDocument,
+        { revision: document.revision } as LayeredDocument,
         undefined,
         { mode: 'retain', expectedHead: head }
       );
@@ -1271,7 +1503,7 @@ describe('local project repository', () => {
       await repo.save(
         'retain-summary',
         { ...metadata(document, 'retain-summary'), ...summary, width: 999, height: 999 },
-        { revision: document.revision } as PatternDocument,
+        { revision: document.revision } as LayeredDocument,
         undefined,
         { mode: 'retain', expectedHead: head }
       );
@@ -1286,7 +1518,7 @@ describe('local project repository', () => {
       await repo.save(
         'retain-summary',
         { ...metadata(document, 'retain-summary'), ...summary },
-        { revision: document.revision } as PatternDocument,
+        { revision: document.revision } as LayeredDocument,
         undefined,
         { mode: 'retain', expectedHead: head }
       );
@@ -1303,7 +1535,7 @@ describe('local project repository', () => {
       await repo.save(
         'retain-summary',
         metadata(document, 'retain-summary'),
-        { revision: document.revision } as PatternDocument,
+        { revision: document.revision } as LayeredDocument,
         undefined,
         { mode: 'retain', expectedHead: head }
       );
@@ -1329,7 +1561,7 @@ describe('local project repository', () => {
       const result = await repo.save(
         'retain-checksum',
         { ...metadata(document, 'retain-checksum'), title: 'Rejected' },
-        { revision: document.revision } as PatternDocument,
+        { revision: document.revision } as LayeredDocument,
         undefined,
         { mode: 'retain', expectedHead: { ...head, checksum: '0'.repeat(64) } }
       );
@@ -1356,7 +1588,7 @@ describe('local project repository', () => {
       await expect(repo.save(
         'retain-backfill',
         { ...metadata(document, 'retain-backfill'), title: 'Backfilled' },
-        { revision: document.revision } as PatternDocument,
+        { revision: document.revision } as LayeredDocument,
         undefined,
         { mode: 'retain', expectedHead: head }
       )).resolves.toMatchObject({ committed: true, head });
@@ -1380,7 +1612,7 @@ describe('local project repository', () => {
       const staleRevision = await repo.save(
         'retain-stale',
         { ...metadata(revision0, 'retain-stale'), title: 'Stale revision' },
-        { revision: revision0.revision } as PatternDocument,
+        { revision: revision0.revision } as LayeredDocument,
         undefined,
         { mode: 'retain', expectedRevision: revision0.revision }
       );
@@ -1392,7 +1624,7 @@ describe('local project repository', () => {
       const staleHead = await repo.save(
         'retain-stale',
         { ...metadata(revision1, 'retain-stale'), title: 'Stale head' },
-        { revision: revision1.revision } as PatternDocument,
+        { revision: revision1.revision } as LayeredDocument,
         undefined,
         { mode: 'retain', expectedHead: { revision: revision1.revision, checksum: '0'.repeat(64) } }
       );
@@ -1480,7 +1712,7 @@ describe('local project repository', () => {
       await expect(repo.save(
         'legacy-equal',
         metadata(original, 'legacy-equal'),
-        { revision: original.revision } as PatternDocument,
+        { revision: original.revision } as LayeredDocument,
         undefined,
         { allowSameRevision: true }
       )).rejects.toThrow();
@@ -1505,13 +1737,13 @@ describe('local project repository', () => {
       const revision0 = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
       const revision1 = applyCommand(revision0, { type: 'set-full', x: 1, y: 1, color: 1 }).document;
       await repo.save('prepared', metadata(revision0, 'prepared'), revision0);
-      const rawPrepared = await prepareDocumentSnapshot(cloneDocument(revision1), { projectId: 'prepared', revision: revision1.revision, requestId: 'raw-prepared' });
+      const rawPrepared = await prepareDocumentSnapshot(cloneLayeredDocument(revision1), { projectId: 'prepared', revision: revision1.revision, requestId: 'raw-prepared' });
       const preparedSummary = deriveProjectSummary(revision1);
-      const validRevision1 = cloneDocument(revision1);
+      const validRevision1 = cloneLayeredDocument(revision1);
       const prepared = await preparation.prepare({ projectId: 'prepared', revision: revision1.revision, document: revision1, requestId: 'prepared-1' });
       // The preparation client must retain its summary from the owned clone,
       // not from a document the caller continues to mutate.
-      revision1.colors.fill(0);
+      stitchLayer(revision1).colors.fill(0);
       const preparedRequestId = preparation.getRequestId(prepared);
       encodeSpy.mockClear();
       hashSpy.mockClear();
@@ -1572,7 +1804,7 @@ describe('local project repository', () => {
 
       const currentGet = vi.spyOn(db.currentSnapshots, 'get');
       const hashSpy = vi.spyOn(hashModule, 'sha256');
-      const decodeSpy = vi.spyOn(binaryModule, 'decodeDocument');
+      const decodeSpy = vi.spyOn(binaryModule, 'decodeDocumentWithInfo');
       currentGet.mockClear();
       hashSpy.mockClear();
       decodeSpy.mockClear();
@@ -1610,7 +1842,7 @@ describe('local project repository', () => {
       const prepared = await preparation.prepare({ projectId: 'cold-cache', revision: revision1.revision, document: revision1, requestId: 'cold-revision' });
       const currentGet = vi.spyOn(db.currentSnapshots, 'get');
       const hashSpy = vi.spyOn(hashModule, 'sha256');
-      const decodeSpy = vi.spyOn(binaryModule, 'decodeDocument');
+      const decodeSpy = vi.spyOn(binaryModule, 'decodeDocumentWithInfo');
       currentGet.mockClear();
       hashSpy.mockClear();
       decodeSpy.mockClear();
@@ -1645,7 +1877,7 @@ describe('local project repository', () => {
       const prepared = await preparation.prepare({ projectId: 'stale-cache', revision: revision1.revision, document: revision1, requestId: 'stale-head-revision' });
       const currentGet = vi.spyOn(repo.db.currentSnapshots, 'get');
       const hashSpy = vi.spyOn(hashModule, 'sha256');
-      const decodeSpy = vi.spyOn(binaryModule, 'decodeDocument');
+      const decodeSpy = vi.spyOn(binaryModule, 'decodeDocumentWithInfo');
       currentGet.mockClear();
       hashSpy.mockClear();
       decodeSpy.mockClear();
@@ -1781,10 +2013,10 @@ describe('local project repository', () => {
       let head = await repo.db.projectHeads.get('asset-omission');
       if (!head) throw new Error('missing compact project head');
 
-      await repo.save('asset-omission', { ...metadata(document, 'asset-omission'), title: 'Omitted' }, { revision: document.revision } as PatternDocument, undefined, { mode: 'retain', expectedHead: head });
+      await repo.save('asset-omission', { ...metadata(document, 'asset-omission'), title: 'Omitted' }, { revision: document.revision } as LayeredDocument, undefined, { mode: 'retain', expectedHead: head });
       expect((await repo.load('asset-omission'))?.assets.map((asset) => asset.id)).toEqual(['kept']);
 
-      await repo.save('asset-omission', { ...metadata(document, 'asset-omission'), title: 'Cleared' }, { revision: document.revision } as PatternDocument, [], { mode: 'retain', expectedHead: head });
+      await repo.save('asset-omission', { ...metadata(document, 'asset-omission'), title: 'Cleared' }, { revision: document.revision } as LayeredDocument, [], { mode: 'retain', expectedHead: head });
       expect((await repo.load('asset-omission'))?.assets).toEqual([]);
       head = (await repo.db.projectHeads.get('asset-omission')) as typeof head;
       expect(head.revision).toBe(document.revision);
@@ -2076,8 +2308,8 @@ describe('local project repository', () => {
       const imported = await importedRepo.importProject(archive);
       expect(imported.metadata).toMatchObject(projectMetadata);
       expect(imported.metadata).toMatchObject({ width: document.width, height: document.height, thumbnail: deriveProjectSummary(document).thumbnail });
-      expect(imported.document.kind).toEqual(document.kind);
-      expect(imported.document.colors).toEqual(document.colors);
+      expect(stitchLayer(imported.document).kind).toEqual(stitchLayer(document).kind);
+      expect(stitchLayer(imported.document).colors).toEqual(stitchLayer(document).colors);
       expect(imported.document.catalog).toEqual(document.catalog);
       expect(imported.head).toMatchObject({ projectId: 'project-1', revision: document.revision, checksum: (await importedRepo.db.currentSnapshots.get('project-1'))?.checksum });
       expect(imported.assets).toHaveLength(1);

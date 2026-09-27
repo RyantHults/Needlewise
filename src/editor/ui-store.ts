@@ -5,6 +5,8 @@ import {
   type EditorUiState,
   type EditorUiStore,
   type EditorToolState,
+  type ActiveLayerKind,
+  type EditorActiveLayer,
   type BrushSizeTool,
   type ToolBrushSizes,
   type AuthoringStitchBrush,
@@ -53,7 +55,8 @@ export const DEFAULT_EDITOR_UI_STATE: EditorUiState = {
   keyboardCursor: null,
   selectedCell: null,
   status: null,
-  canPaste: false
+  canPaste: false,
+  activeLayer: null
 };
 
 function sameState(left: EditorUiState, right: EditorUiState): boolean {
@@ -68,7 +71,8 @@ function sameState(left: EditorUiState, right: EditorUiState): boolean {
     && left.keyboardCursor === right.keyboardCursor
     && left.selectedCell === right.selectedCell
     && left.status === right.status
-    && left.canPaste === right.canPaste;
+    && left.canPaste === right.canPaste
+    && left.activeLayer === right.activeLayer;
 }
 
 export function createUiStore(initial: Partial<EditorUiState> = {}): EditorUiStore {
@@ -93,6 +97,7 @@ export function createUiStore(initial: Partial<EditorUiState> = {}): EditorUiSto
     toolBrushSizes
   };
   const listeners = new Set<UiListener>();
+  const lastToolByLayer = new Map<ActiveLayerKind, EditorToolState>();
 
   const store: EditorUiStore = {
     getState: () => state,
@@ -191,6 +196,21 @@ export function createUiStore(initial: Partial<EditorUiState> = {}): EditorUiSto
 
     setCanPaste(canPaste: boolean): void {
       store.setState({ canPaste });
+    },
+
+    setActiveLayer(activeLayer: EditorActiveLayer | null): void {
+      const current = state.activeLayer;
+      if (current === activeLayer || (current && activeLayer
+        && current.id === activeLayer.id && current.kind === activeLayer.kind && current.visible === activeLayer.visible)) return;
+      store.setState({ activeLayer: activeLayer ? { ...activeLayer } : null });
+    },
+
+    rememberToolForLayer(kind: ActiveLayerKind, tool: EditorToolState): void {
+      lastToolByLayer.set(kind, tool);
+    },
+
+    lastToolForLayer(kind: ActiveLayerKind): EditorToolState | undefined {
+      return lastToolByLayer.get(kind);
     },
 
     subscribe(listener: UiListener): () => void {

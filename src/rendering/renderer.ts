@@ -1107,6 +1107,33 @@ function drawFloatingPaste(
   drawSelectionRect(context, destination, viewport, style, bounds, preview.color, true);
 }
 
+/** Mark backstitches an uncommitted specialty-layer erase would remove. */
+function drawPendingBackstitchRemovals(
+  context: CanvasContextAdapter,
+  document: PatternDocument,
+  removals: OverlayState['pendingBackstitchRemovals'],
+  viewport: Viewport,
+  style: RendererStyle,
+  bounds: Rect
+): void {
+  if (!removals || removals.length === 0) return;
+  save(context);
+  context.strokeStyle = style.pendingCellColor;
+  context.lineWidth = Math.max(style.overlayLineWidth * 2, Math.min(8, viewport.zoom * 0.24));
+  context.setLineDash?.([4, 3]);
+  for (const removal of removals) {
+    const modelSegment = clipSegmentToRect(
+      fixedToModel(removal.start),
+      fixedToModel(removal.end),
+      { x: 0, y: 0, width: document.width, height: document.height }
+    );
+    if (!modelSegment) continue;
+    const screenSegment = clipSegmentToRect(modelToScreen(modelSegment.start, viewport), modelToScreen(modelSegment.end, viewport), bounds);
+    if (screenSegment) linePath(context, screenSegment.start, screenSegment.end);
+  }
+  restore(context);
+}
+
 function drawBackstitchPreview(
   context: CanvasContextAdapter,
   document: PatternDocument,
@@ -1321,6 +1348,7 @@ function drawOverlay(
   drawGridForCells(context, document, viewport, metrics, style, pendingStateCells, lod);
   drawBrushPreview(context, document, overlay.brushPreview, viewport, style, lod, bounds);
   drawBackstitchesForCells(context, document, viewport, metrics, style, pendingStateCells, lod, bounds);
+  drawPendingBackstitchRemovals(context, document, overlay.pendingBackstitchRemovals, viewport, style, bounds);
   drawBackstitchPreview(context, document, overlay.backstitchPreview, viewport, style, bounds);
   drawFloatingPaste(context, document, overlay.floatingPaste, viewport, metrics, style, lod, bounds);
   const selectionValue = overlay.selection;

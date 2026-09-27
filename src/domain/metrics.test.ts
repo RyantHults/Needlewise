@@ -42,7 +42,8 @@ describe('derived pattern metrics', () => {
 
     const metrics = computePatternMetrics(pattern, { strands: 2, waste: 0.1, skeinLength: 10 });
 
-    expect(metrics.palettes).toEqual([
+    // The canvas stitch count adds physical Aida estimates on top of these stitch units.
+    expect(metrics.palettes).toMatchObject([
       {
         paletteId: 7,
         full: 1,
@@ -171,14 +172,16 @@ describe('derived pattern metrics', () => {
     expect(MAX_PERSISTABLE_CELL_COUNT).toBe(1_000_000);
   });
 
-  it('keeps default material results abstract and only emits physical units when calibrated', () => {
-    let pattern = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+  it('estimates from the canvas stitch count by default and honours calibration', () => {
+    let pattern = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 18, height: 9, palette: [{ id: 1, name: 'Red', color: '#d33' }], settings: { aidaCount: 18 } });
     pattern = applyCommand(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
-    const abstract = computePatternMetrics(pattern);
-    expect(abstract.palettes[0].material).toMatchObject({ stitchUnits: 1, strandLength: 1, estimatedLength: 1 });
-    expect(abstract.palettes[0].material.estimatedMeters).toBeUndefined();
-    expect(abstract.palettes[0].material.estimatedSkeins).toBeUndefined();
-    expect(abstract.palettes[0].material.requiredSkeins).toBeUndefined();
+    const canvas = computePatternMetrics(pattern);
+    expect(canvas.finishedSize).toEqual(computePatternMetrics(pattern, { aidaCount: 18 }).finishedSize);
+    expect(canvas.finishedSize).toMatchObject({ widthInches: 1, heightInches: 0.5 });
+    expect(canvas.materialSettings).toMatchObject({ strands: 2 });
+    expect(canvas.palettes[0].material.assumptions).toMatchObject({ model: 'aida', aidaCount: 18, strands: 2 });
+    expect(canvas.palettes[0].material.estimatedMeters).toBeGreaterThan(0);
+    expect(computePatternMetrics(pattern, { aidaCount: 14 }).palettes[0].material.assumptions).toMatchObject({ aidaCount: 14 });
 
     const calibrated = computeMetricsSinglePass(pattern, {
       strands: 2,

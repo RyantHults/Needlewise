@@ -1,4 +1,4 @@
-import { assertValidDocument, cloneDocument, normalizeAidaCount, normalizeDisplayUnits, normalizeMaterialAssumptions, type PatternDocument } from '../domain';
+import { assertValidLayeredDocument, normalizeAidaCount, normalizeDisplayUnits, normalizeMaterialAssumptions, type LayeredDocument } from '../domain';
 import { exportArchive, importArchive } from './archive';
 import { NeedlewiseDatabase } from './database';
 import { PersistenceError } from './errors';
@@ -10,7 +10,7 @@ import {
   MAX_ASSET_TOTAL_BYTES,
   MAX_DOCUMENT_BYTES
 } from './limits';
-import { decodeDocument, encodeDocument } from './binary';
+import { applyLegacyAidaCount, cloneLayeredDocument, decodeDocumentWithInfo, encodeDocument, type DecodedDocument } from './binary';
 import { sha256 } from './hash';
 import { MAX_DAILY_PROGRESS_ENTRIES, normalizeProgressActivity, type ProgressActivity } from './activity';
 import { inspectSourceImage, validateSourceImageDescriptor } from './source-image';
@@ -47,7 +47,7 @@ import type {
 import { MAX_FOLDER_NAME_CHARS } from './types';
 import { consumePreparedDocumentCapability } from './preparation-client';
 import type { MaterialSettingsV2 } from '../domain';
-import { prepareSessionHistory, sessionHistoryMatchesTrace, traceStateCanonical, traceStateFingerprint } from './session-history';
+import { prepareSessionHistory, prepareSessionHistoryForSave, sessionHistoryMatchesTrace, traceStateCanonical, traceStateFingerprint } from './session-history';
 
 function invalidMetadata(message: string): never {
   throw new PersistenceError('invalid-metadata', message);
@@ -69,15 +69,18 @@ function validateFolderName(name: string): string {
   return trimmed;
 }
 
-function validateProjectMetadata(projectId: string, metadata: ProjectMetadata, documentOrRevision: PatternDocument | number): ProjectMetadata {
+/**
+ * Validates metadata for writing. A legacy `aidaCount` is still checked but is
+ * never written: the stitch count now lives in the document settings.
+ */
+function validateProjectMetadata(projectId: string, metadata: ProjectMetadata, documentOrRevision: LayeredDocument | number): ProjectMetadata {
   if (typeof projectId !== 'string' || projectId.length < 1 || projectId.length > 256 || !isBoundedMetadataString(projectId) || metadata.id !== projectId) invalidMetadata('Project metadata ID does not match the project being saved.');
   if (typeof metadata.title !== 'string' || typeof metadata.notes !== 'string' || !isBoundedMetadataString(metadata.title) || !isBoundedMetadataString(metadata.notes) || !Number.isSafeInteger(metadata.createdAt) || metadata.createdAt < 0 || !Number.isSafeInteger(metadata.updatedAt) || metadata.updatedAt < 0 || !Number.isSafeInteger(metadata.revision) || metadata.revision < 0) invalidMetadata('Project metadata is malformed.');
   const documentRevision = typeof documentOrRevision === 'number' ? documentOrRevision : documentOrRevision.revision;
   if (metadata.revision !== documentRevision) invalidMetadata('Project metadata and document revisions must match.');
-  let aidaCount: ProjectMetadata['aidaCount'];
   if (metadata.aidaCount !== undefined) {
     try {
-      aidaCount = normalizeAidaCount(metadata.aidaCount);
+      normalizeAidaCount(metadata.aidaCount);
     } catch (error) {
       invalidMetadata(`Project Aida count is malformed: ${errorText(error)}`);
     }
@@ -106,7 +109,9 @@ function validateProjectMetadata(projectId: string, metadata: ProjectMetadata, d
       invalidMetadata(`Project source image settings are malformed: ${errorText(error)}`);
     }
   }
-  return { ...metadata, ...(aidaCount === undefined ? {} : { aidaCount }), ...(units === undefined ? {} : { units }), ...(materialSettings === undefined ? {} : { materialSettings }), ...(sourceImage === undefined ? {} : { sourceImage }) };
+  const written: ProjectMetadata = { ...metadata };
+  delete written.aidaCount;
+  return { ...written, ...(units === undefined ? {} : { units }), ...(materialSettings === undefined ? {} : { materialSettings }), ...(sourceImage === undefined ? {} : { sourceImage }) };
 }
 
 function isMetadataRecord(projectId: string, metadata: ProjectMetadata | undefined): metadata is ProjectMetadata {
@@ -210,19 +215,30 @@ async function normalizeAssets(inputs: readonly ProjectAssetInput[], legacyIds: 
   return assets;
 }
 
-async function verifySnapshot(snapshot: StoredDocumentSnapshot): Promise<PatternDocument> {
+async function decodeSnapshot(snapshot: StoredDocumentSnapshot): Promise<DecodedDocument> {
   const bytes = storedBytes(snapshot.bytes);
   if (typeof snapshot.projectId !== 'string' || snapshot.projectId.length < 1 || snapshot.projectId.length > 256 || !bytes || typeof snapshot.checksum !== 'string' || !Number.isSafeInteger(snapshot.revision) || snapshot.revision < 0) {
     throw new PersistenceError('invalid-document', 'Stored snapshot metadata is malformed.');
   }
   const checksum = await sha256(bytes);
   if (checksum !== snapshot.checksum) throw new PersistenceError('checksum-mismatch', `Snapshot revision ${String(snapshot.revision)} failed its checksum.`);
-  const document = decodeDocument(bytes);
-  if (document.revision !== snapshot.revision) throw new PersistenceError('invalid-document', 'Snapshot revision does not match its document.');
-  return document;
+  const decoded = decodeDocumentWithInfo(bytes);
+  if (decoded.document.revision !== snapshot.revision) throw new PersistenceError('invalid-document', 'Snapshot revision does not match its document.');
+  return decoded;
 }
 
-function toStoredSnapshot(projectId: string, document: PatternDocument, bytes: Uint8Array, checksum: string, savedAt: number): StoredDocumentSnapshot {
+async function verifySnapshot(snapshot: StoredDocumentSnapshot): Promise<LayeredDocument> {
+  return (await decodeSnapshot(snapshot)).document;
+}
+
+/** Decodes a snapshot for use, copying a legacy metadata stitch count into v1/v2 documents. */
+async function loadSnapshotDocument(snapshot: StoredDocumentSnapshot, metadata: ProjectMetadata): Promise<LayeredDocument> {
+  const decoded = await decodeSnapshot(snapshot);
+  applyLegacyAidaCount(decoded, metadata.aidaCount);
+  return decoded.document;
+}
+
+function toStoredSnapshot(projectId: string, document: LayeredDocument, bytes: Uint8Array, checksum: string, savedAt: number): StoredDocumentSnapshot {
   return { projectId, revision: document.revision, bytes: bytes.slice(), checksum, savedAt };
 }
 
@@ -601,7 +617,7 @@ export class ProjectRepository {
     }
   }
 
-  async save(projectId: string, metadata: ProjectMetadata, document: PatternDocument, assets?: readonly ProjectAssetInput[], options: SaveOptions = {}): Promise<SaveResult> {
+  async save(projectId: string, metadata: ProjectMetadata, document: LayeredDocument, assets?: readonly ProjectAssetInput[], options: SaveOptions = {}): Promise<SaveResult> {
     const previous = this.queues.get(projectId) ?? Promise.resolve();
     const operation = previous.catch(() => undefined).then(() => this.saveSerialized(projectId, metadata, document, assets, options));
     const tracked = operation.then(() => {
@@ -625,7 +641,7 @@ export class ProjectRepository {
     return operation;
   }
 
-  private async saveSerialized(projectId: string, metadataInput: ProjectMetadata, sourceDocument: PatternDocument, assetsInput?: readonly ProjectAssetInput[], options: SaveOptions = {}): Promise<SaveResult> {
+  private async saveSerialized(projectId: string, metadataInput: ProjectMetadata, sourceDocument: LayeredDocument, assetsInput?: readonly ProjectAssetInput[], options: SaveOptions = {}): Promise<SaveResult> {
     const mode = this.resolveSaveMode(options);
     if (mode === 'retain') return this.saveRetained(projectId, metadataInput, assetsInput, options);
     return this.saveReplaced(projectId, metadataInput, sourceDocument, assetsInput, options);
@@ -651,20 +667,16 @@ export class ProjectRepository {
       prepared,
       { projectId, revision: metadata.revision, requestId: options.preparedRequestId },
       async (bytes, checksum, summary) => {
-        let history: SessionHistoryEnvelope | null = null;
-        if (options.history !== undefined) {
-          const serializedDocument = decodeDocument(bytes);
-          history = await prepareSessionHistory(serializedDocument, options.history) ?? null;
-        }
+        const history: SessionHistoryEnvelope | null = options.history === undefined ? null : await prepareSessionHistoryForSave(options.history) ?? null;
         return this.commitReplaced(projectId, metadata, summary, metadata.revision, bytes, checksum, assetsInput, options, history, false);
       }
     );
   }
 
-  private async saveReplaced(projectId: string, metadataInput: ProjectMetadata, sourceDocument: PatternDocument, assetsInput?: readonly ProjectAssetInput[], options: SaveOptions = {}): Promise<SaveResult> {
-    assertValidDocument(sourceDocument);
-    const history: SessionHistoryEnvelope | null = options.history === undefined ? null : await prepareSessionHistory(sourceDocument, options.history) ?? null;
-    const document = cloneDocument(sourceDocument);
+  private async saveReplaced(projectId: string, metadataInput: ProjectMetadata, sourceDocument: LayeredDocument, assetsInput?: readonly ProjectAssetInput[], options: SaveOptions = {}): Promise<SaveResult> {
+    assertValidLayeredDocument(sourceDocument);
+    const history: SessionHistoryEnvelope | null = options.history === undefined ? null : await prepareSessionHistoryForSave(options.history) ?? null;
+    const document = cloneLayeredDocument(sourceDocument);
     const metadata = validateProjectMetadata(projectId, metadataInput, document);
     const summary = deriveProjectSummary(document);
     const bytes = encodeDocument(document);
@@ -908,16 +920,9 @@ export class ProjectRepository {
     const incomingMetadata = sanitizeProjectMetadata(validatedMetadata);
     const incomingSummary = completeProjectSummary(incomingMetadata);
     let history: SessionHistoryEnvelope | null | undefined;
-    if (options.history !== undefined) {
-      let currentDocument: PatternDocument | undefined;
-      try {
-        const currentSnapshot = await this.db.currentSnapshots.get(projectId);
-        if (currentSnapshot !== undefined) currentDocument = await verifySnapshot(currentSnapshot);
-      } catch {
-        currentDocument = undefined;
-      }
-      history = currentDocument === undefined ? null : await prepareSessionHistory(currentDocument, options.history) ?? null;
-    }
+    // The head check inside the commit transaction anchors this history to
+    // the current snapshot; no snapshot decode or chain replay happens here.
+    if (options.history !== undefined) history = await prepareSessionHistoryForSave(options.history) ?? null;
     let legacyAssetIds = new Set<string>();
     if (assetsInput !== undefined) {
       try {
@@ -998,6 +1003,9 @@ export class ProjectRepository {
         delete retainedMetadata.width;
         delete retainedMetadata.height;
         delete retainedMetadata.thumbnail;
+        // Retain never rewrites the snapshot, so a stored legacy stitch count
+        // stays with its v1/v2 document until the next replace commit.
+        if (safeStoredMetadata?.aidaCount !== undefined) retainedMetadata.aidaCount = safeStoredMetadata.aidaCount;
         if (retainedSummary !== undefined) {
           retainedMetadata.width = retainedSummary.width;
           retainedMetadata.height = retainedSummary.height;
@@ -1091,11 +1099,11 @@ export class ProjectRepository {
       const recoveryHealth = await inspectSnapshot(recovery, projectId);
       if (!metadata || !isMetadataRecord(projectId, metadata)) throw new PersistenceError('storage-failure', 'Project metadata is missing or malformed.');
       if (currentHealth.status !== 'valid' || !current) throw new PersistenceError('storage-failure', 'Current project snapshot is corrupt or missing.');
-      const document = await verifySnapshot(current);
+      const document = await loadSnapshotDocument(current, metadata);
       if (metadata.revision !== document.revision) throw new PersistenceError('storage-failure', 'Project metadata and current snapshot are inconsistent.');
       let recoveryRecord: ProjectRecord['recovery'] = null;
       if (recovery && recoveryHealth.status === 'valid') {
-        const recoveryDocument = await verifySnapshot(recovery);
+        const recoveryDocument = await loadSnapshotDocument(recovery, metadata);
         recoveryRecord = { revision: recovery.revision, document: recoveryDocument };
       }
       const loadedAssets = await loadAssets(projectId, storedAssets);
@@ -1296,7 +1304,7 @@ export class ProjectRepository {
       const recoveryHealth = await inspectSnapshot(recovery, projectId);
       if (recoveryHealth.status !== 'valid') throw new PersistenceError('storage-failure', 'Project recovery snapshot is corrupt.');
       if (revision !== undefined && recovery.revision !== revision) throw new PersistenceError('storage-failure', `Recovery revision ${String(revision)} is not available.`);
-      const document = await verifySnapshot(recovery);
+      const document = await loadSnapshotDocument(recovery, metadata);
       const loadedAssets = await loadAssets(projectId, storedAssets);
       const loadedActivity = activityFromStored(projectId, storedActivity);
       const sourceImage = inspectSourceImage(metadata.sourceImage, loadedAssets.assets);

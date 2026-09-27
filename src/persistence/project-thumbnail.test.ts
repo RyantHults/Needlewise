@@ -1,7 +1,8 @@
-import { applyCommand, createDocument, QuarterCorner } from '../domain';
+import { applyCommand, CellKind, createDocument, LayerType, layeredFromSurface, QuarterCorner, type StitchLayer } from '../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { describe, expect, it } from 'vitest';
 import {
+  deriveProjectSummary,
   deriveProjectThumbnail,
   completeProjectSummary,
   PROJECT_THUMBNAIL_FABRIC_COLOR,
@@ -162,5 +163,35 @@ describe('project thumbnail summaries', () => {
       expect(safe).not.toHaveProperty('height');
       expect(safe).not.toHaveProperty('thumbnail');
     }
+  });
+
+  it('flattens layered documents and ignores hidden layers', () => {
+    let surface = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
+      width: 2,
+      height: 1,
+      settings: { backgroundColor: '#123456' },
+      palette: [
+        { id: 1, name: 'Red', color: '#d33' },
+        { id: 2, name: 'Blue', color: '#36c' }
+      ]
+    });
+    surface = applyCommand(surface, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+    const document = layeredFromSurface(surface);
+    const top: StitchLayer = { id: 3, type: LayerType.Stitch, name: 'Top', visible: true, kind: new Uint8Array(2), colors: new Uint16Array(8), completed: new Uint8Array(2) };
+    top.kind[0] = CellKind.Full;
+    top.colors[0] = 2;
+    top.kind[1] = CellKind.Full;
+    top.colors[4] = 2;
+    document.layers.splice(1, 0, top);
+    document.nextLayerId = 4;
+
+    expect(deriveProjectThumbnail(document).indices).toEqual([1, 1]);
+    expect(deriveProjectThumbnail(document).palette).toEqual(['#123456', '#3366cc']);
+
+    top.visible = false;
+    const hidden = deriveProjectSummary(document);
+    expect(hidden).toMatchObject({ width: 2, height: 1 });
+    expect(hidden.thumbnail.palette).toEqual(['#123456', '#dd3333']);
+    expect(hidden.thumbnail.indices).toEqual([1, 0]);
   });
 });

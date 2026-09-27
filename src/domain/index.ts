@@ -5,3 +5,4 @@ export * from './fragment';
 export * from './commands';
 export * from './history';
 export * from './metrics';
+export * from './layers';

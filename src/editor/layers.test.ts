@@ -1,0 +1,603 @@
+import { describe, expect, it } from 'vitest';
+import {
+  CellKind,
+  LayerType,
+  applyCommand,
+  applyLayerStructureCommand,
+  canAddLayer,
+  commandLayerType,
+  commitLayerSurface,
+  createLayeredDocument,
+  findLayer,
+  flattenDocument,
+  layerAddCommand,
+  layerSurface,
+  pasteFragmentCommand,
+  requireEditableLayer,
+  topmostVisibleLayer,
+  type CommandResult,
+  type DomainCommand,
+  type LayeredDocument,
+  type PatternDocument,
+  type PatternFragment
+} from '../domain';
+import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
+import { EditorSurfaceController, backstitchPassesThroughCell, buildBackstitchCellIndex } from './controller';
+import {
+  HIDDEN_LAYER_TOOL_HINT,
+  SPECIALTY_LAYER_BACKSTITCH_HINT,
+  STITCH_LAYER_TOOL_HINT,
+  EDITABLE_LAYER_TOOL_HINT,
+  toolAvailability,
+  type ActiveLayerKind,
+  type CanvasRenderer,
+  type EditorToolKind,
+  type RenderStats,
+  type RendererStyle,
+  type Viewport
+} from './contracts';
+import { getCanvasMetrics } from './coordinates';
+import { createFillWorkerClient } from './fill';
+import {
+  compositeInvalidationFor,
+  compositeUnchanged,
+  createWorkspaceEditorGateway,
+  type ActiveLayerId,
+  type PasteDestination,
+  type WorkspaceEditorBoundary
+} from './gateway';
+import type { PointerSample } from './input';
+import { createUiStore } from './ui-store';
+
+/** A small layered workspace: layer-scoped commands run on one layer surface, as the session does. */
+class LayeredBoundary implements WorkspaceEditorBoundary {
+  readonly activeProjectId = 'project-a';
+  readonly log: DomainCommand[] = [];
+  readonly batches: DomainCommand[][] = [];
+  activeLayerId: ActiveLayerId = 1;
+  document: PatternDocument;
+  private readonly listeners = new Set<() => void>();
+
+  constructor(readonly layeredDocument: LayeredDocument) {
+    this.document = flattenDocument(layeredDocument);
+  }
+
+  activeLayerSurface(): PatternDocument | null {
+    return typeof this.activeLayerId === 'number' ? layerSurface(this.layeredDocument, this.activeLayerId) : null;
+  }
+
+  setActiveLayer(id: ActiveLayerId): void {
+    this.activeLayerId = id;
+    this.emit();
+  }
+
+  setVisible(layerId: number, visible: boolean): void {
+    findLayer(this.layeredDocument, layerId)!.visible = visible;
+    this.layeredDocument.revision += 1;
+    this.document = flattenDocument(this.layeredDocument);
+    this.emit();
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  execute(command: DomainCommand): CommandResult {
+    this.log.push(command);
+    return this.run(command);
+  }
+
+  executeBatch(commands: readonly DomainCommand[]): CommandResult {
+    this.batches.push([...commands]);
+    return this.run({ type: 'batch', commands: [...commands] });
+  }
+
+  undo(): CommandResult {
+    throw new Error('not used');
+  }
+
+  redo(): CommandResult {
+    throw new Error('not used');
+  }
+
+  resolvePaste(type: LayerType): PasteDestination {
+    const active = typeof this.activeLayerId === 'number' ? findLayer(this.layeredDocument, this.activeLayerId) : undefined;
+    if (active?.type === type && active.visible) return { layerId: active.id, create: false };
+    if (canAddLayer(this.layeredDocument, type)) return { layerId: null, create: true, message: `Added a new ${type} layer for your paste.` };
+    const top = topmostVisibleLayer(this.layeredDocument, type);
+    return top ? { layerId: top.id, create: false, message: 'Pasted on the top layer.' } : { layerId: null, create: false, message: 'Show a layer to paste.' };
+  }
+
+  commitPaste(fragment: PatternFragment, position: { x: number; y: number }, destination: PasteDestination) {
+    let layerId = destination.layerId;
+    if (destination.create) {
+      const type = fragment.kind.some((kind) => kind !== CellKind.Empty) ? LayerType.Stitch : LayerType.Specialty;
+      layerId = applyLayerStructureCommand(this.layeredDocument, layerAddCommand(type)).layerId!;
+    }
+    this.activeLayerId = layerId!;
+    const result = this.run({ ...pasteFragmentCommand(fragment, position), layerId });
+    this.emit();
+    return { result, layerId: layerId!, message: destination.message };
+  }
+
+  private run(command: DomainCommand): CommandResult {
+    const children = command.type === 'batch' ? command.commands as DomainCommand[] : [command];
+    const layerId = (children[0]?.layerId as number | undefined) ?? (this.activeLayerId as number);
+    requireEditableLayer(this.layeredDocument, layerId, commandLayerType(command));
+    const result = applyCommand(layerSurface(this.layeredDocument, layerId), command);
+    if (result.changed) commitLayerSurface(this.layeredDocument, layerId, result.document);
+    this.document = flattenDocument(this.layeredDocument);
+    this.emit();
+    return { ...result, document: this.document };
+  }
+
+  private emit(): void {
+    for (const listener of [...this.listeners]) listener();
+  }
+}
+
+const rendererDocumentCalls: PatternDocument[] = [];
+
+function rendererFixture(): CanvasRenderer {
+  let viewport: Viewport = { x: 0, y: 0, zoom: 16 };
+  let rendered: PatternDocument | undefined;
+  const renderer = {
+    lastStats: { lod: 'detail', visitedCells: 0, drawnCells: 0, drawnBackstitches: 0, baseRendered: false, overlayRendered: false } as RenderStats,
+    getDocument: () => rendered,
+    getViewport: () => viewport,
+    getStyle: () => ({}) as RendererStyle,
+    getTraceImage: () => undefined,
+    setDocument: (document: PatternDocument) => {
+      rendered = document;
+      rendererDocumentCalls.push(document);
+    },
+    setViewport: (next: Viewport) => { viewport = next; },
+    setMetrics: () => undefined,
+    setStyle: () => undefined,
+    setTraceImage: () => undefined,
+    clearTraceImage: () => undefined,
+    setOverlay: () => undefined,
+    invalidate: () => undefined,
+    requestRender: () => undefined,
+    render: () => renderer.lastStats,
+    renderNow: () => renderer.lastStats,
+    getLastInvalidation: () => ({ base: false, overlay: false, reasons: [] }),
+    dispose: () => undefined,
+    destroy: () => undefined
+  } as unknown as CanvasRenderer;
+  return renderer;
+}
+
+/** Screen point at the center of a cell for the fixture's zoom of 16. */
+function at(pointerId: number, x: number, y: number): PointerSample {
+  return { pointerId, pointerType: 'mouse', screenX: x * 16 + 8, screenY: y * 16 + 8, button: 0, buttons: 1, isPrimary: true };
+}
+
+function layeredDocument(): LayeredDocument {
+  return createLayeredDocument({
+    width: 8,
+    height: 8,
+    catalog: DEFAULT_CATALOG_DEFINITION.association,
+    palette: [{ id: 1, name: 'Red', color: '#d33', active: true }, { id: 2, name: 'Blue', color: '#36c', active: true }]
+  });
+}
+
+/** Apply a command straight to one layer, bypassing the editor, to arrange a test. */
+function seed(document: LayeredDocument, layerId: number, command: DomainCommand): void {
+  const result = applyCommand(layerSurface(document, layerId), command);
+  commitLayerSurface(document, layerId, result.document);
+}
+
+function addLayer(document: LayeredDocument, type: LayerType): number {
+  return applyLayerStructureCommand(document, layerAddCommand(type)).layerId!;
+}
+
+function fixture(document = layeredDocument(), activeLayerId: ActiveLayerId = 1) {
+  const boundary = new LayeredBoundary(document);
+  boundary.activeLayerId = activeLayerId;
+  const gateway = createWorkspaceEditorGateway(boundary);
+  const uiStore = createUiStore({ tool: { tool: 'paint', brush: { kind: 'full', paletteId: 1 } } });
+  const notices: string[] = [];
+  const fillClient = createFillWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'layer-fill' });
+  const controller = new EditorSurfaceController({
+    gateway,
+    uiStore,
+    renderer: rendererFixture(),
+    metrics: getCanvasMetrics(128, 128),
+    fillClient,
+    onNotice: (message) => notices.push(message)
+  });
+  controller.start();
+  controller.handleFocus();
+  return { boundary, gateway, uiStore, controller, notices, fillClient };
+}
+
+function backstitch(x1: number, y1: number, x2: number, y2: number, color = 1): DomainCommand {
+  return { type: 'add-backstitch', start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, color };
+}
+
+describe('tool availability', () => {
+  const tools: readonly EditorToolKind[] = ['pan', 'eyedropper', 'select', 'lasso', 'eraser', 'paint', 'shape', 'fill', 'backstitch'];
+  const expected: Record<ActiveLayerKind, readonly EditorToolKind[]> = {
+    stitch: ['pan', 'eyedropper', 'select', 'lasso', 'eraser', 'paint', 'shape', 'fill'],
+    specialty: ['pan', 'eyedropper', 'select', 'lasso', 'eraser', 'backstitch'],
+    canvas: ['pan', 'eyedropper'],
+    reference: ['pan', 'eyedropper']
+  };
+
+  it('follows the layer-type matrix for visible layers', () => {
+    for (const kind of Object.keys(expected) as ActiveLayerKind[]) {
+      const enabled = tools.filter((tool) => toolAvailability(tool, tool === 'paint' ? 'full' : undefined, { kind, visible: true }).enabled);
+      expect({ kind, enabled }).toEqual({ kind, enabled: expected[kind] });
+    }
+  });
+
+  it('gates every stitch brush to stitch layers', () => {
+    for (const brush of ['full', 'half', 'three-quarter'] as const) {
+      expect(toolAvailability('paint', brush, { kind: 'stitch', visible: true }).enabled).toBe(true);
+      expect(toolAvailability('paint', brush, { kind: 'specialty', visible: true })).toEqual({ enabled: false, hint: STITCH_LAYER_TOOL_HINT });
+    }
+  });
+
+  it('gives short hints and disables every editing tool on a hidden layer', () => {
+    expect(toolAvailability('backstitch', undefined, { kind: 'stitch', visible: true })).toEqual({ enabled: false, hint: SPECIALTY_LAYER_BACKSTITCH_HINT });
+    expect(toolAvailability('fill', undefined, { kind: 'canvas', visible: true })).toEqual({ enabled: false, hint: STITCH_LAYER_TOOL_HINT });
+    expect(toolAvailability('select', undefined, { kind: 'reference', visible: true })).toEqual({ enabled: false, hint: EDITABLE_LAYER_TOOL_HINT });
+    for (const kind of ['stitch', 'specialty'] as const) {
+      for (const tool of tools) {
+        const availability = toolAvailability(tool, undefined, { kind, visible: false });
+        if (tool === 'pan' || tool === 'eyedropper') expect(availability.enabled).toBe(true);
+        else expect(availability).toEqual({ enabled: false, hint: HIDDEN_LAYER_TOOL_HINT });
+      }
+    }
+    expect(toolAvailability('fill', undefined, null).enabled).toBe(true);
+  });
+});
+
+describe('layered editor controller', () => {
+  it('returns to the last tool used on a layer type when a switch disables the current tool', () => {
+    const { boundary, uiStore, controller } = fixture();
+    expect(uiStore.getState().activeLayer).toEqual({ id: 1, kind: 'stitch', visible: true });
+
+    boundary.setActiveLayer(2);
+    expect(uiStore.getState().activeLayer).toEqual({ id: 2, kind: 'specialty', visible: true });
+    expect(uiStore.getState().tool).toEqual({ tool: 'pan' });
+    expect(controller.setTool({ tool: 'backstitch' })).toBe(true);
+
+    boundary.setActiveLayer(1);
+    expect(uiStore.getState().tool).toEqual({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
+    boundary.setActiveLayer(2);
+    expect(uiStore.getState().tool).toEqual({ tool: 'backstitch' });
+
+    controller.setTool({ tool: 'select' });
+    boundary.setActiveLayer(1);
+    expect(uiStore.getState().tool).toEqual({ tool: 'select' });
+    boundary.setActiveLayer('canvas');
+    expect(uiStore.getState().tool).toEqual({ tool: 'pan' });
+    controller.dispose();
+  });
+
+  it('refuses edits on a hidden layer and shows the hint', () => {
+    const { boundary, controller, notices, uiStore } = fixture();
+    boundary.setVisible(1, false);
+    expect(uiStore.getState().activeLayer).toEqual({ id: 1, kind: 'stitch', visible: false });
+
+    expect(controller.handlePointerDown(at(1, 0, 0))).toBe(false);
+    controller.handlePointerUp(at(1, 0, 0));
+    expect(boundary.log).toHaveLength(0);
+    expect(boundary.layeredDocument.layers[0].type === LayerType.Stitch && boundary.layeredDocument.layers[0].kind[0]).toBe(CellKind.Empty);
+    expect(notices.at(-1)).toBe(HIDDEN_LAYER_TOOL_HINT);
+
+    expect(controller.setTool({ tool: 'fill' })).toBe(false);
+    expect(uiStore.getState().tool.tool).toBe('paint');
+    controller.dispose();
+  });
+
+  it('paints only the selected layer and reads hover info from the composite', () => {
+    const document = layeredDocument();
+    const top = addLayer(document, LayerType.Stitch);
+    seed(document, 1, { type: 'set-full', x: 3, y: 3, color: 2 });
+    const { boundary, controller, uiStore } = fixture(document, top);
+    controller.handlePointerDown(at(1, 0, 0));
+    controller.handlePointerUp(at(1, 0, 0));
+    const [bottom, upper] = boundary.layeredDocument.layers;
+    expect(bottom.type === LayerType.Stitch && bottom.kind[0]).toBe(CellKind.Empty);
+    expect(upper.type === LayerType.Stitch && upper.kind[0]).toBe(CellKind.Full);
+    expect(boundary.log.at(-1)).toMatchObject({ type: 'bulk-cell', layerId: top });
+
+    uiStore.setKeyboardCursor({ x: 3, y: 3 });
+    controller.handleKeyDown({ key: 'ArrowRight', preventDefault: () => undefined });
+    controller.handleKeyDown({ key: 'ArrowLeft', preventDefault: () => undefined });
+    expect(uiStore.getState().selectedCell).toMatchObject({ geometry: 'full', paletteId: 2 });
+    controller.dispose();
+  });
+
+  it('bounds Fill by the selected layer only', async () => {
+    const document = layeredDocument();
+    for (let y = 0; y < 8; y += 1) seed(document, 1, { type: 'set-full', x: 2, y, color: 1 });
+    const top = addLayer(document, LayerType.Stitch);
+    const { boundary, controller, fillClient } = fixture(document, top);
+    controller.selectPalette(2);
+    controller.setTool({ tool: 'fill' });
+    expect(controller.handlePointerDown(at(1, 0, 0))).toBe(true);
+    for (let tick = 0; tick < 4; tick += 1) await Promise.resolve();
+
+    const [bottom, upper] = boundary.layeredDocument.layers;
+    expect(upper.type === LayerType.Stitch && Array.from(upper.kind).every((kind) => kind === CellKind.Full)).toBe(true);
+    expect(upper.type === LayerType.Stitch && upper.colors[(7 * 8 + 7) * 4]).toBe(2);
+    expect(bottom.type === LayerType.Stitch && bottom.colors[2 * 4]).toBe(1);
+    expect(bottom.type === LayerType.Stitch && bottom.kind[0]).toBe(CellKind.Empty);
+    fillClient.dispose();
+    controller.dispose();
+  });
+
+  it('samples the topmost visible stitch with the eyedropper', () => {
+    const document = layeredDocument();
+    const top = addLayer(document, LayerType.Stitch);
+    seed(document, 1, { type: 'set-full', x: 0, y: 0, color: 1 });
+    seed(document, top, { type: 'set-full', x: 0, y: 0, color: 2 });
+    const { boundary, controller, uiStore } = fixture(document, 1);
+    controller.setTool({ tool: 'eyedropper' });
+    controller.handlePointerDown(at(1, 0, 0));
+    expect(uiStore.getState().paletteId).toBe(2);
+
+    boundary.setVisible(top, false);
+    controller.setTool({ tool: 'eyedropper' });
+    controller.handlePointerDown(at(2, 0, 0));
+    expect(uiStore.getState().paletteId).toBe(1);
+    controller.dispose();
+  });
+
+  it('copies only backstitches from a specialty layer', () => {
+    const document = layeredDocument();
+    seed(document, 1, { type: 'set-full', x: 0, y: 0, color: 1 });
+    seed(document, 2, backstitch(0, 0, 4, 4));
+    const { controller } = fixture(document, 2);
+    controller.setTool({ tool: 'select' });
+    controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 1 });
+    const copied = controller.copySelection()!;
+    expect(Array.from(copied.kind).every((kind) => kind === CellKind.Empty)).toBe(true);
+    expect(copied.backstitches.x1).toHaveLength(1);
+    controller.dispose();
+  });
+
+  it('routes a stitch paste onto a new stitch layer when a specialty layer is selected', () => {
+    const document = layeredDocument();
+    seed(document, 1, { type: 'set-full', x: 0, y: 0, color: 1 });
+    const { boundary, controller, notices, uiStore } = fixture(document, 1);
+    controller.setTool({ tool: 'select' });
+    controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 1 });
+    controller.copySelection();
+
+    boundary.setActiveLayer(2);
+    expect(controller.pasteSelection()).toBe(true);
+    controller.handlePointerDown(at(1, 6, 6));
+
+    const created = boundary.layeredDocument.layers.find((layer) => layer.id === 3);
+    expect(created?.type).toBe(LayerType.Stitch);
+    expect(created?.type === LayerType.Stitch && created.kind[0]).toBe(CellKind.Full);
+    expect(boundary.activeLayerId).toBe(3);
+    expect(uiStore.getState().activeLayer).toEqual({ id: 3, kind: 'stitch', visible: true });
+    expect(notices).toEqual(['Added a new stitch layer for your paste.']);
+    controller.dispose();
+  });
+
+  it('does not paste when no layer of the clipboard type can take it', () => {
+    const document = layeredDocument();
+    seed(document, 1, { type: 'set-full', x: 0, y: 0, color: 1 });
+    addLayer(document, LayerType.Stitch);
+    addLayer(document, LayerType.Stitch);
+    const { boundary, controller, notices } = fixture(document, 1);
+    controller.setTool({ tool: 'select' });
+    controller.setSelection({ x: 0, y: 0 }, { x: 0, y: 0 });
+    controller.copySelection();
+    for (const layer of boundary.layeredDocument.layers) if (layer.type === LayerType.Stitch) layer.visible = false;
+    boundary.setActiveLayer(2);
+
+    controller.pasteSelection();
+    controller.handlePointerDown(at(1, 6, 6));
+    expect(boundary.log).toHaveLength(0);
+    expect(notices).toEqual(['Show a layer to paste.']);
+    controller.dispose();
+  });
+
+  it('erases only the touched backstitches of the selected specialty layer in one batch', () => {
+    const document = layeredDocument();
+    seed(document, 2, backstitch(4, 4, 8, 8));
+    seed(document, 2, backstitch(4, 4, 4, 12));
+    seed(document, 2, backstitch(0, 0, 4, 4));
+    seed(document, 2, backstitch(20, 20, 28, 20));
+    const other = addLayer(document, LayerType.Specialty);
+    seed(document, other, backstitch(4, 4, 8, 8));
+    const { boundary, controller, uiStore } = fixture(document, 2);
+    const ids = (layerId: number) => {
+      const layer = findLayer(boundary.layeredDocument, layerId)!;
+      return layer.type === LayerType.Specialty ? Array.from(layer.backstitches.ids) : [];
+    };
+    const [touchedDiagonal, touchedEdge, cornerOnly, far] = ids(2);
+    const otherIds = ids(other);
+
+    controller.setTool({ tool: 'eraser' });
+    controller.handlePointerDown(at(1, 1, 1));
+    controller.handlePointerMove(at(1, 1, 1));
+    expect(uiStore.getState().overlay.pendingBackstitchRemovals?.map((removal) => removal.id).sort()).toEqual([touchedDiagonal, touchedEdge].sort());
+    controller.handlePointerUp(at(1, 1, 1));
+
+    expect(uiStore.getState().overlay.pendingBackstitchRemovals).toBeUndefined();
+    expect(ids(2)).toEqual([cornerOnly, far]);
+    expect(ids(other)).toEqual(otherIds);
+    expect(boundary.batches).toHaveLength(1);
+    expect(boundary.batches[0].map((command) => command.type)).toEqual(['remove-backstitch', 'remove-backstitch']);
+    expect(boundary.batches[0].every((command) => command.layerId === 2)).toBe(true);
+    controller.dispose();
+  });
+
+  it('honors brush size when erasing backstitches', () => {
+    const document = layeredDocument();
+    seed(document, 2, backstitch(12, 4, 12, 8));
+    seed(document, 2, backstitch(24, 24, 28, 24));
+    const { boundary, controller } = fixture(document, 2);
+    controller.setTool({ tool: 'eraser' });
+    controller.setBrushSize(3);
+    controller.handlePointerDown(at(1, 1, 1));
+    controller.handlePointerUp(at(1, 1, 1));
+    const layer = findLayer(boundary.layeredDocument, 2)!;
+    expect(layer.type === LayerType.Specialty && layer.backstitches.ids.length).toBe(1);
+    controller.dispose();
+  });
+
+  it('picks up backstitches only from the selected specialty layer', () => {
+    const document = layeredDocument();
+    const other = addLayer(document, LayerType.Specialty);
+    seed(document, other, backstitch(0, 8, 32, 8));
+    const { controller } = fixture(document, 2);
+    controller.setTool({ tool: 'backstitch' });
+    controller.handlePointerDown({ ...at(1, 1, 1), screenY: 32 });
+    expect(controller.getSelectedBackstitchId()).toBeUndefined();
+    controller.handlePointerCancel({ ...at(1, 1, 1), screenY: 32 });
+    controller.dispose();
+  });
+});
+
+describe('layered editor previews and paste edge cases', () => {
+  it('hides paint preview cells that a visible upper stitch layer covers', () => {
+    const document = layeredDocument();
+    const top = addLayer(document, LayerType.Stitch);
+    seed(document, top, { type: 'set-full', x: 0, y: 0, color: 2 });
+    const { controller, uiStore } = fixture(document, 1);
+    controller.handlePointerDown(at(1, 0, 0));
+    controller.handlePointerMove(at(1, 1, 0));
+    expect(uiStore.getState().overlay.pendingCellStates?.map((state) => state.index)).toEqual([1]);
+    controller.handlePointerUp(at(1, 1, 0));
+    const bottom = stitchLayer(document, 1);
+    expect(bottom.kind[0]).toBe(CellKind.Full);
+    controller.dispose();
+  });
+
+  it('previews an erase on an upper layer as the stitch the lower layer shows', () => {
+    const document = layeredDocument();
+    const top = addLayer(document, LayerType.Stitch);
+    seed(document, 1, { type: 'set-full', x: 0, y: 0, color: 1 });
+    seed(document, top, { type: 'set-full', x: 0, y: 0, color: 2 });
+    seed(document, top, { type: 'set-full', x: 1, y: 0, color: 2 });
+    const { controller, uiStore } = fixture(document, top);
+    controller.setTool({ tool: 'eraser' });
+    controller.handlePointerDown(at(1, 0, 0));
+    controller.handlePointerMove(at(1, 1, 0));
+    expect(uiStore.getState().overlay.pendingCellStates).toMatchObject([
+      { index: 0, kind: CellKind.Full, colors: [1, 0, 0, 0] },
+      { index: 1, kind: CellKind.Empty, colors: [0, 0, 0, 0] }
+    ]);
+    controller.handlePointerCancel(at(1, 1, 0));
+    controller.dispose();
+  });
+
+  it('does not create a layer or history entry for an empty paste', () => {
+    const { boundary: workspace, controller, notices } = fixture(layeredDocument(), 1);
+    controller.setTool({ tool: 'select' });
+    controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 1 });
+    controller.copySelection();
+    workspace.setActiveLayer(2);
+    controller.pasteSelection();
+    controller.handlePointerDown(at(1, 6, 6));
+    expect(workspace.layeredDocument.layers).toHaveLength(2);
+    expect(workspace.log).toHaveLength(0);
+    expect(notices).toEqual([]);
+    controller.dispose();
+  });
+
+  it('skips the redraw for a result tagged compositeUnchanged', () => {
+    const { boundary: workspace, controller, uiStore } = fixture(layeredDocument(), 1);
+    workspace.undo = () => {
+      workspace.layeredDocument.revision += 1;
+      workspace.document = { ...workspace.document, revision: workspace.layeredDocument.revision };
+      return { document: workspace.document, changed: true, revision: workspace.layeredDocument.revision, compositeChangedIndices: new Uint32Array(), compositeUnchanged: true };
+    };
+    const before = rendererDocumentCalls.length;
+    controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
+    expect(rendererDocumentCalls.length).toBe(before);
+    expect(uiStore.getState().status).toBe('Undid action');
+    controller.dispose();
+  });
+
+  it('redraws once when layer visibility changes', () => {
+    const { boundary: workspace, controller } = fixture(layeredDocument(), 1);
+    const before = rendererDocumentCalls.length;
+    workspace.setVisible(2, false);
+    expect(rendererDocumentCalls.length - before).toBe(1);
+    controller.dispose();
+  });
+});
+
+function stitchLayer(document: LayeredDocument, layerId: number) {
+  const layer = findLayer(document, layerId)!;
+  if (layer.type !== LayerType.Stitch) throw new Error('expected a stitch layer');
+  return layer;
+}
+
+describe('layer helpers', () => {
+  it('counts edge overlap but not a corner touch as passing through a cell', () => {
+    expect(backstitchPassesThroughCell(4, 4, 8, 8, 1, 1)).toBe(true);
+    expect(backstitchPassesThroughCell(4, 4, 4, 12, 1, 1)).toBe(true);
+    expect(backstitchPassesThroughCell(4, 4, 4, 12, 0, 1)).toBe(true);
+    expect(backstitchPassesThroughCell(0, 0, 4, 4, 1, 1)).toBe(false);
+    expect(backstitchPassesThroughCell(20, 20, 28, 20, 1, 1)).toBe(false);
+  });
+
+  it('indexes only the cells a long diagonal crosses', () => {
+    const document = flattenDocument(createLayeredDocument({ width: 1000, height: 1000, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Red', color: '#d33' }] }));
+    document.backstitches = {
+      ids: new Uint32Array([1]),
+      x1: new Uint32Array([0]),
+      y1: new Uint32Array([0]),
+      x2: new Uint32Array([4000]),
+      y2: new Uint32Array([4000]),
+      colors: new Uint16Array([1]),
+      completed: new Uint8Array(1)
+    };
+    const index = buildBackstitchCellIndex(document);
+    expect(index.size).toBe(1000);
+    for (let cell = 0; cell < 1000; cell += 1) expect(index.get(cell * 1000 + cell)).toEqual([0]);
+  });
+
+  it('indexes the same cells as testing every cell', () => {
+    const size = 6;
+    const document = flattenDocument(createLayeredDocument({ width: size, height: size, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Red', color: '#d33' }] }));
+    const segments: Array<[number, number, number, number]> = [];
+    for (let x1 = 0; x1 <= size * 4; x1 += 3) {
+      for (let y1 = 0; y1 <= size * 4; y1 += 5) {
+        for (const [x2, y2] of [[x1 + 4, y1], [x1, y1 + 8], [x1 + 7, y1 + 3], [x1 - 5, y1 + 9], [x1 + 8, y1 + 8], [x1 + 1, y1 - 6]]) {
+          if (x2 < 0 || y2 < 0 || x2 > size * 4 || y2 > size * 4) continue;
+          segments.push([x1, y1, x2, y2]);
+        }
+      }
+    }
+    document.backstitches = {
+      ids: new Uint32Array(segments.map((_, position) => position + 1)),
+      x1: new Uint32Array(segments.map((segment) => segment[0])),
+      y1: new Uint32Array(segments.map((segment) => segment[1])),
+      x2: new Uint32Array(segments.map((segment) => segment[2])),
+      y2: new Uint32Array(segments.map((segment) => segment[3])),
+      colors: new Uint16Array(segments.length).fill(1),
+      completed: new Uint8Array(segments.length)
+    };
+    const index = buildBackstitchCellIndex(document);
+    for (let cell = 0; cell < size * size; cell += 1) {
+      const expected = segments.flatMap(([x1, y1, x2, y2], position) => backstitchPassesThroughCell(x1, y1, x2, y2, cell % size, Math.floor(cell / size)) ? [position] : []);
+      expect({ cell, positions: index.get(cell) ?? [] }).toEqual({ cell, positions: expected });
+    }
+  });
+
+  it('prefers composite invalidation fields', () => {
+    const document = flattenDocument(layeredDocument());
+    const base = { document, changed: true, revision: 1 };
+    expect(compositeInvalidationFor({ ...base, compositeFull: true })).toMatchObject({ full: true });
+    expect(compositeInvalidationFor({ ...base, changedIndices: new Uint32Array([0]), compositeChangedIndices: new Uint32Array([9]) }))
+      .toMatchObject({ cellRect: { x: 1, y: 1, width: 1, height: 1 } });
+    expect(compositeInvalidationFor({ ...base, changedIndices: new Uint32Array([0]) })).toMatchObject({ cellRect: { x: 0, y: 0, width: 1, height: 1 } });
+    expect(compositeInvalidationFor({ ...base, compositeChangedIndices: new Uint32Array() })).toMatchObject({ full: true });
+    expect(compositeUnchanged({ ...base, compositeUnchanged: true })).toBe(true);
+    expect(compositeUnchanged(base)).toBe(false);
+  });
+});

@@ -2986,8 +2986,8 @@ describe('pattern background settings', () => {
     const malformedEditor = createRotatedEditor();
     const malformed = makeLegacySnapshotState(malformedEditor);
     const malformedEntry = malformed.undo[0] as unknown as { before: PatternDocument; after: PatternDocument };
-    malformedEntry.before.settings = { ...malformedEntry.before.settings, backgroundColor: 'not-a-color' };
-    malformedEntry.after.settings = { ...malformedEntry.after.settings, backgroundColor: 'not-a-color' };
+    malformedEntry.before.settings = { ...malformedEntry.before.settings, backgroundColor: 'not-a-color', aidaCount: 14 };
+    malformedEntry.after.settings = { ...malformedEntry.after.settings, backgroundColor: 'not-a-color', aidaCount: 14 };
     expect(() => malformedEditor.importHistory(malformed)).toThrow(/backgroundColor/i);
 
     const partialLegacyEditor = createRotatedEditor();
@@ -3056,7 +3056,7 @@ describe('pattern background settings', () => {
 
     const incompatible = makeSettingsHistory();
     const incompatibleEntry = incompatible.history.undo[0] as unknown as { delta: Record<string, unknown>; bytes: number };
-    incompatibleEntry.delta.afterSettings = { symbolSet: 'default', materialUnit: 'skeins', backgroundColor: '#FFFFFF' };
+    incompatibleEntry.delta.afterSettings = { symbolSet: 'default', materialUnit: 'skeins', backgroundColor: '#FFFFFF', aidaCount: 14 };
     incompatibleEntry.bytes = settingDeltaBytes(incompatibleEntry.delta);
     expect(() => incompatible.editor.importHistory(incompatible.history)).toThrow(/incompatible with the supplied current document/i);
   });

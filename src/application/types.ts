@@ -2,6 +2,8 @@ import type {
   CommandResult,
   DisplayUnits,
   DocumentEditor,
+  LayeredDocument,
+  LayerType,
   MaterialSettingsV2,
   MaterialSettingsUpdate,
   NormalizedMaterialSettings,
@@ -49,7 +51,7 @@ export interface WorkspaceRepository {
   save(
     projectId: string,
     metadata: ProjectMetadata,
-    document: PatternDocument,
+    document: LayeredDocument,
     assets?: readonly ProjectAssetInput[],
     options?: SaveOptions
   ): Promise<SaveResult>;
@@ -89,12 +91,14 @@ export interface StarterProjectOptions {
   notes?: string;
   width?: number;
   height?: number;
+  /** The Canvas stitch count, stored in the document settings. */
   aidaCount?: number;
   units?: DisplayUnits;
 }
 
 export interface CreateProjectOptions extends StarterProjectOptions {
-  document?: PatternDocument;
+  /** A single surface becomes the "Stitches" and "Specialty" layers. */
+  document?: PatternDocument | LayeredDocument;
   settings?: Partial<PatternSettings>;
   assets?: readonly ProjectAssetInput[];
   materialSettings?: MaterialSettingsV2;
@@ -112,7 +116,7 @@ export interface CreateConvertedProjectOptions extends StarterProjectOptions {
 export interface ActiveMetadataChanges {
   title?: string;
   notes?: string;
-  /** `null` clears the optional fabric count. */
+  /** The Canvas stitch count; an undoable document settings change. `null` is ignored. */
   aidaCount?: number | null;
   /** `null` clears the optional display units (metric is the default). */
   units?: DisplayUnits | null;
@@ -146,6 +150,9 @@ export interface ActiveWorkspaceState {
   dailyActivity?: ProgressActivity | null;
   materialSettings?: NormalizedMaterialSettings | null;
   sourceImage?: SourceImageDescriptor;
+  layeredDocument?: LayeredDocument | null;
+  layers?: readonly LayerSummary[];
+  activeLayer?: ActiveLayerInfo | null;
 }
 
 export type MaterialSettingsChanges = MaterialSettingsUpdate;
@@ -153,7 +160,7 @@ export type MaterialSettingsChanges = MaterialSettingsUpdate;
 export interface ProjectSessionOptions {
   repository: WorkspaceRepository;
   metadata: ProjectMetadata;
-  document: PatternDocument;
+  document: LayeredDocument;
   head?: StoredProjectHead;
   preparationClient: PersistencePreparationClient;
   assets?: readonly ProjectAsset[];
@@ -170,3 +177,55 @@ export interface ProjectSessionOptions {
 
 export type SessionCommandResult = CommandResult;
 export type SessionEditor = DocumentEditor;
+
+/** The selected row in the layers panel. Canvas and the reference image are not `layers` entries. */
+export type ActiveLayerId = number | 'canvas' | 'reference';
+export type ActiveLayerKind = 'stitch' | 'specialty' | 'canvas' | 'reference';
+
+export interface ActiveLayerInfo {
+  readonly id: ActiveLayerId;
+  readonly kind: ActiveLayerKind;
+  readonly visible: boolean;
+  readonly name: string;
+}
+
+export interface LayerSummary {
+  readonly id: number;
+  readonly type: LayerType;
+  readonly name: string;
+  readonly visible: boolean;
+  /** Absolute index in `LayeredDocument.layers`, bottom to top. */
+  readonly index: number;
+}
+
+/** Where a paste goes, from `resolvePaste`. `layerId` null and `create` false means nothing is pasted. */
+export interface PasteDestination {
+  readonly layerType: LayerType;
+  readonly layerId: number | null;
+  readonly create: boolean;
+  /** A short toast when the paste did not simply land on the selected layer. */
+  readonly message?: string;
+}
+
+export interface PasteCommitResult {
+  readonly result: CommandResult;
+  readonly layerId: number | null;
+  readonly message?: string;
+}
+
+/** What the renderer must redraw after the last document change. */
+export interface CompositeInvalidation {
+  readonly revision: number;
+  /** Redraw every cell. */
+  readonly full: boolean;
+  /** Composite cells that changed when `full` is false. Absent: no cell changed (backstitches, palette or settings may have). */
+  readonly indices?: Uint32Array;
+}
+
+export interface EditorLayerSnapshot {
+  /** The selected layer's own surface, or null for Canvas and Reference. Read-only. */
+  readonly editSurface: PatternDocument | null;
+  readonly activeLayer: ActiveLayerInfo;
+  readonly composite: PatternDocument;
+  readonly compositeInvalidation: CompositeInvalidation | null;
+}

@@ -42,6 +42,15 @@ function largeVp8HeaderSource(width: number, height: number): Blob {
   return new Blob([bytes.buffer as ArrayBuffer], { type: 'image/webp' });
 }
 
+function largeVp8lHeaderSource(width: number, height: number): Blob {
+  const bytes = new Uint8Array(64 * 1024);
+  bytes.set([82, 73, 70, 70, 0, 0, 0, 0, 87, 69, 66, 80, 86, 80, 56, 76], 0);
+  new DataView(bytes.buffer).setUint32(16, 250_000, true);
+  const packed = (width - 1) | ((height - 1) << 14);
+  bytes.set([0x2f, packed & 0xff, (packed >> 8) & 0xff, (packed >> 16) & 0xff, (packed >> 24) & 0xff], 20);
+  return new Blob([bytes.buffer as ArrayBuffer], { type: 'image/webp' });
+}
+
 interface RecordedDraw {
   source: unknown;
   sourceRect: number[];
@@ -154,6 +163,16 @@ describe('bounded conversion rasterization', () => {
       surfaceFactory: harness.factory
     });
     expect(decoded).toBe(true);
+    expect(result.sourceWidth).toBe(1_057);
+    expect(result.sourceHeight).toBe(1_600);
+  });
+
+  it('accepts VP8L dimensions when the declared chunk extends beyond the header probe', async () => {
+    const harness = surfaceHarness();
+    const result = await decodeAndResampleImage(largeVp8lHeaderSource(1_057, 1_600), 2, 2, {
+      createImageBitmap: async () => ({ width: 1_057, height: 1_600 }),
+      surfaceFactory: harness.factory
+    });
     expect(result.sourceWidth).toBe(1_057);
     expect(result.sourceHeight).toBe(1_600);
   });

@@ -221,6 +221,8 @@ export interface OverlayState {
   /** Exact sparse cell states that the pending gesture would produce. */
   readonly pendingCellStates?: readonly PendingCellState[];
   readonly floatingPaste?: FloatingPasteOverlay | null;
+  /** Backstitches an uncommitted specialty-layer erase gesture would remove. */
+  readonly pendingBackstitchRemovals?: readonly PendingBackstitchRemoval[];
   /** A touch-only request for the UI to offer Copy for the active selection. */
   readonly touchCopyRequest?: TouchCopyRequest | null;
   readonly color?: string;
@@ -239,7 +241,14 @@ export interface BackstitchPreviewOverlay {
 export interface BrushPreviewOverlay {
   readonly states: readonly PendingCellState[];
   readonly color?: string;
-  readonly kind: 'paint' | 'completion' | 'eraser';
+  readonly kind: 'paint' | 'eraser';
+}
+
+/** A backstitch segment an uncommitted specialty-layer erase would remove. */
+export interface PendingBackstitchRemoval {
+  readonly id: number;
+  readonly start: FixedPoint;
+  readonly end: FixedPoint;
 }
 
 /** Presentation-only preview for a controller-owned, uncommitted paste. */
@@ -484,6 +493,8 @@ export interface EditorUiState {
   readonly status: string | null;
   /** True when the controller has a cloned in-app fragment available to paste. */
   readonly canPaste: boolean;
+  /** The layer editor tools act on; null when the workspace has no layer information. */
+  readonly activeLayer: EditorActiveLayer | null;
 }
 
 export type SelectedCellGeometry =
@@ -525,7 +536,6 @@ export const EditorToolKind = {
   Select: 'select',
   Lasso: 'lasso',
   Fill: 'fill',
-  Completion: 'completion',
   Backstitch: 'backstitch',
   Eyedropper: 'eyedropper',
   Shape: 'shape'
@@ -611,10 +621,6 @@ export interface FillToolState {
   readonly brush?: StitchBrush;
 }
 
-export interface CompletionToolState {
-  readonly tool: 'completion';
-}
-
 export interface BackstitchToolState {
   readonly tool: 'backstitch';
 }
@@ -638,9 +644,67 @@ export interface ResizeImageToolState {
   readonly tool: 'resize-image';
 }
 
-export type EditorToolState = PaintToolState | PanToolState | EraserToolState | SelectToolState | LassoToolState | FillToolState | CompletionToolState | BackstitchToolState | EyedropperToolState | ShapeToolState | MoveImageToolState | ResizeImageToolState;
+export type EditorToolState = PaintToolState | PanToolState | EraserToolState | SelectToolState | LassoToolState | FillToolState | BackstitchToolState | EyedropperToolState | ShapeToolState | MoveImageToolState | ResizeImageToolState;
 export type ToolState = EditorToolState;
 export type ActiveStitchBrush = StitchBrush;
+
+/** The kind of row selected in the layers panel. */
+export type ActiveLayerKind = 'stitch' | 'specialty' | 'canvas' | 'reference';
+
+export interface EditorActiveLayer {
+  readonly id: number | 'canvas' | 'reference';
+  readonly kind: ActiveLayerKind;
+  readonly visible: boolean;
+}
+
+export interface ToolAvailability {
+  readonly enabled: boolean;
+  /** Short, non-technical reason shown when a disabled tool is tapped or hovered. */
+  readonly hint?: string;
+}
+
+export const HIDDEN_LAYER_TOOL_HINT = 'Show this layer to edit it.';
+export const STITCH_LAYER_TOOL_HINT = 'Select a stitch layer to use this tool.';
+export const SPECIALTY_LAYER_BACKSTITCH_HINT = 'Select a specialty layer to use Backstitch.';
+export const EDITABLE_LAYER_TOOL_HINT = 'Select a stitch or specialty layer to use this tool.';
+
+/** Tools that change the selected layer; Pan, Eyedropper and the reference-image tools never do. */
+function isEditingTool(tool: EditorToolKind | EditorToolState['tool']): boolean {
+  return tool !== 'pan' && tool !== 'eyedropper' && tool !== 'move-image' && tool !== 'resize-image';
+}
+
+/**
+ * Whether a tool can be used on the selected layer.
+ *
+ * Pan and Eyedropper always work. Select, Lasso and Eraser work on stitch and
+ * specialty layers; stitch brushes, Shape and Fill only on stitch layers;
+ * Backstitch only on specialty layers. Every editing tool is disabled on a
+ * hidden layer. A null layer means the workspace has no layer information.
+ * `brush` is accepted so callers can gate brush variants; every current brush
+ * is a stitch brush.
+ */
+export function toolAvailability(
+  tool: EditorToolKind | EditorToolState['tool'],
+  brush: StitchBrushKind | undefined,
+  layer: Pick<EditorActiveLayer, 'kind' | 'visible'> | null
+): ToolAvailability {
+  void brush;
+  if (!layer || !isEditingTool(tool)) return { enabled: true };
+  const editable = layer.kind === 'stitch' || layer.kind === 'specialty';
+  if (editable && !layer.visible) return { enabled: false, hint: HIDDEN_LAYER_TOOL_HINT };
+  if (tool === 'select' || tool === 'lasso' || tool === 'eraser') {
+    return editable ? { enabled: true } : { enabled: false, hint: EDITABLE_LAYER_TOOL_HINT };
+  }
+  if (tool === 'backstitch') {
+    return layer.kind === 'specialty' ? { enabled: true } : { enabled: false, hint: SPECIALTY_LAYER_BACKSTITCH_HINT };
+  }
+  return layer.kind === 'stitch' ? { enabled: true } : { enabled: false, hint: STITCH_LAYER_TOOL_HINT };
+}
+
+/** `toolAvailability` for a full tool state, reading the brush from paint tools. */
+export function toolStateAvailability(tool: EditorToolState, layer: Pick<EditorActiveLayer, 'kind' | 'visible'> | null): ToolAvailability {
+  return toolAvailability(tool.tool, tool.tool === 'paint' ? tool.brush?.kind : undefined, layer);
+}
 
 export type UiStatePatch = Partial<EditorUiState> | ((state: EditorUiState) => Partial<EditorUiState>);
 
@@ -664,5 +728,9 @@ export interface EditorUiStore {
   setSelectedCell(selectedCell: SelectedCellSemantics | null): void;
   setStatus(status: string | null): void;
   setCanPaste(canPaste: boolean): void;
+  setActiveLayer(activeLayer: EditorActiveLayer | null): void;
+  /** Remember the last tool used on a layer type, for returning to it after a layer switch. */
+  rememberToolForLayer(kind: ActiveLayerKind, tool: EditorToolState): void;
+  lastToolForLayer(kind: ActiveLayerKind): EditorToolState | undefined;
   subscribe(listener: UiListener): () => void;
 }

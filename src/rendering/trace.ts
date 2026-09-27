@@ -375,25 +375,30 @@ function webpHeaderDimensions(bytes: Uint8Array): { width: number; height: numbe
     const chunk = String.fromCharCode(bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]);
     const length = new DataView(bytes.buffer, bytes.byteOffset + offset + 4, 4).getUint32(0, true);
     const dataOffset = offset + 8;
-    if (dataOffset + length > bytes.length) return undefined;
-    if (chunk === 'VP8X' && length >= 10) {
+    // Recognized chunks only need the bytes read here: a simple-format VP8/VP8L
+    // chunk holds the whole bitstream and routinely extends past the probe.
+    if (chunk === 'VP8X') {
+      if (length < 10 || dataOffset + 10 > bytes.length) return undefined;
       return {
         width: 1 + (bytes[dataOffset + 4] | (bytes[dataOffset + 5] << 8) | (bytes[dataOffset + 6] << 16)),
         height: 1 + (bytes[dataOffset + 7] | (bytes[dataOffset + 8] << 8) | (bytes[dataOffset + 9] << 16))
       };
     }
-    if (chunk === 'VP8L' && length >= 6 && bytes[dataOffset] === 0x2f) {
+    if (chunk === 'VP8L') {
+      if (length < 5 || dataOffset + 5 > bytes.length || bytes[dataOffset] !== 0x2f) return undefined;
       return {
         width: 1 + ((bytes[dataOffset + 1] | (bytes[dataOffset + 2] << 8)) & 0x3fff),
         height: 1 + (((bytes[dataOffset + 2] >> 6) | (bytes[dataOffset + 3] << 2) | (bytes[dataOffset + 4] << 10)) & 0x3fff)
       };
     }
-    if (chunk === 'VP8 ' && length >= 10 && bytes[dataOffset + 3] === 0x9d && bytes[dataOffset + 4] === 0x01 && bytes[dataOffset + 5] === 0x2a) {
+    if (chunk === 'VP8 ') {
+      if (length < 10 || dataOffset + 10 > bytes.length || bytes[dataOffset + 3] !== 0x9d || bytes[dataOffset + 4] !== 0x01 || bytes[dataOffset + 5] !== 0x2a) return undefined;
       return {
         width: readUint16LittleEndian(bytes, dataOffset + 6) & 0x3fff,
         height: readUint16LittleEndian(bytes, dataOffset + 8) & 0x3fff
       };
     }
+    if (dataOffset + length > bytes.length) return undefined;
     offset = dataOffset + length + (length & 1);
   }
   return undefined;

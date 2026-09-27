@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { applyCommand, cloneDocument, createDocument as createDomainDocument, type CatalogAssociation, type CreateDocumentOptions, type PatternDocument } from '../domain';
+import { applyCommand, createDocument as createDomainDocument, layeredFromSurface, type CatalogAssociation, type CreateDocumentOptions, type LayeredDocument, type PatternDocument, type StitchLayer } from '../domain';
+import { cloneLayeredDocument } from './binary';
 import { sha256 } from './hash';
 import {
   createPreparationRequest,
@@ -18,9 +19,13 @@ function createDocument(options: Omit<CreateDocumentOptions, 'catalog'> & { cata
   return createDomainDocument({ ...options, catalog: options.catalog ?? TEST_CATALOG });
 }
 
-function document(): PatternDocument {
+function stitchLayer(document: LayeredDocument): StitchLayer {
+  return document.layers[0] as StitchLayer;
+}
+
+function document(): LayeredDocument {
   const original = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-  return applyCommand(original, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+  return layeredFromSurface(applyCommand(original, { type: 'set-full', x: 0, y: 0, color: 1 }).document);
 }
 
 function waitForTurn(): Promise<void> {
@@ -30,7 +35,7 @@ function waitForTurn(): Promise<void> {
 describe('persistence preparation protocol and worker', () => {
   it('prepares worker bytes equivalent to the existing binary encoder and transfers only clone buffers', async () => {
     const live = document();
-    const clone = cloneDocument(live);
+    const clone = cloneLayeredDocument(live);
     const token: PersistencePreparationToken = { projectId: 'worker-project', revision: clone.revision, requestId: 'worker-request' };
     const request = createPreparationRequest(clone, token);
     const responses: Array<{ message: PersistencePreparationResponse; transfer?: Transferable[] }> = [];
@@ -48,14 +53,14 @@ describe('persistence preparation protocol and worker', () => {
     expect(decodeDocument(response.bytes).catalog).toEqual(live.catalog);
     expect(response.checksum).toBe(await sha256(expectedBytes));
     expect(responses[0].transfer).toEqual([response.bytes.buffer]);
-    expect(live.kind.byteLength).toBeGreaterThan(0);
+    expect(stitchLayer(live).kind.byteLength).toBeGreaterThan(0);
   });
 
   it('returns protocol errors for malformed and revision-mismatched requests', async () => {
     const responses: PersistencePreparationResponse[] = [];
     handlePersistencePreparationWorkerMessage({ protocol: 'wrong', type: 'prepare-document' }, (message) => responses.push(message));
     handlePersistencePreparationWorkerMessage({
-      ...createPreparationRequest(cloneDocument(document()), { projectId: 'malformed', revision: 99, requestId: 'bad-revision' }),
+      ...createPreparationRequest(cloneLayeredDocument(document()), { projectId: 'malformed', revision: 99, requestId: 'bad-revision' }),
       document: document()
     }, (message) => responses.push(message));
     await waitForTurn();
@@ -65,7 +70,7 @@ describe('persistence preparation protocol and worker', () => {
   });
 
   it('rejects duplicate active worker requests without disturbing the first request', async () => {
-    const doc = cloneDocument(document());
+    const doc = cloneLayeredDocument(document());
     const token: PersistencePreparationToken = { projectId: 'duplicate', revision: doc.revision, requestId: 'same' };
     const request = createPreparationRequest(doc, token);
     const responses: PersistencePreparationResponse[] = [];

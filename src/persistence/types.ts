@@ -1,5 +1,5 @@
 import { DOCUMENT_SCHEMA_VERSION } from '../domain';
-import type { CatalogAssociation, DisplayUnits, DocumentEditorHistoryDto, NormalizedMaterialSettings, PatternDocument } from '../domain';
+import type { CatalogAssociation, DisplayUnits, DocumentEditorHistoryDto, LayeredDocument, NormalizedMaterialSettings } from '../domain';
 import type { ProgressActivity } from './activity';
 
 export const PERSISTENCE_SCHEMA_VERSION = 1 as const;
@@ -82,7 +82,11 @@ export interface ProjectMetadata {
   createdAt: number;
   updatedAt: number;
   revision: number;
-  /** Optional fabric count in stitches per inch. Old records omit it. */
+  /**
+   * Legacy fabric count from before layers. It is read but never written: the
+   * repository and archive import copy it into `settings.aidaCount` of a
+   * document decoded from v1/v2 bytes. New code reads the document settings.
+   */
   aidaCount?: number;
   /** Optional display units for measurement readouts. Old records omit it; metric is the default. */
   units?: DisplayUnits;
@@ -139,14 +143,14 @@ export interface StoredDailyProgressAggregate {
 
 export interface ProjectRecord {
   metadata: ProjectMetadata;
-  document: PatternDocument;
+  document: LayeredDocument;
   /** Exact durable current head, when supplied by a repository. */
   head?: StoredProjectHead;
   /** Valid local session history anchored to the returned current head. */
   history?: SessionHistoryEnvelope;
   recovery: {
     revision: number;
-    document: PatternDocument;
+    document: LayeredDocument;
   } | null;
   assets: ProjectAsset[];
   /** Bounded, date-keyed progress activity; absent means an older record. */
@@ -347,7 +351,7 @@ export interface ArchiveManifest {
 export interface ArchiveBundle {
   manifest: ArchiveManifest;
   metadata: ProjectMetadata;
-  document: PatternDocument;
+  document: LayeredDocument;
   assets: ProjectAsset[];
   activity?: ProgressActivity;
   warnings?: string[];

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { bulkRecolorCommand, bulkSetCompletionCommand, bulkSetThreeQuarterCommand, CellKind, computePatternMetrics, createDocument, createEditor, deleteRegionCommand, HalfDirection, QuarterCorner, type DomainCommand, type PatternDocument } from '../domain';
+import { bulkRecolorCommand, bulkSetCompletionCommand, bulkSetThreeQuarterCommand, CellKind, cloneDocument, computePatternMetrics, createDocument, createEditor, createLayeredDocument, deleteRegionCommand, HalfDirection, layeredFromSurface, QuarterCorner, type DomainCommand, type LayeredDocument, type PatternDocument } from '../domain';
 import { setDailyProgress, type PersistencePreparationClient, type ProgressActivity, type ProjectMetadata, type SaveResult } from '../persistence';
 import { attachDeleteMetricsImpactForDelta, registerDeleteMetricsImpact, type DeleteMetricsImpact } from '../domain/internal-metrics-impact';
 import { ProjectSession } from './session';
@@ -106,14 +106,14 @@ function countIndexedReads<T extends Uint8Array | Uint16Array | Uint32Array>(pla
 }
 
 describe('application progress integration', () => {
-  it('updates metrics from change sets and records ephemeral plus durable activity', async () => {
-    const saves: Array<{ revision: number; activity?: unknown }> = [];
-    const save = vi.fn(async (_projectId: string, _metadata: ProjectMetadata, document: ReturnType<typeof createDocument>, _assets: undefined, options: { activity?: unknown }): Promise<SaveResult> => {
-      saves.push({ revision: document.revision, activity: options.activity });
+  it('updates session metrics from layer edits and saves the layered document', async () => {
+    const saves: number[] = [];
+    const save = vi.fn(async (_projectId: string, _metadata: ProjectMetadata, document: LayeredDocument): Promise<SaveResult> => {
+      saves.push(document.revision);
       return { committed: true, stale: false, revision: document.revision };
     });
     const repository = { save } as unknown as WorkspaceRepository;
-    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    const document = createLayeredDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     const session = new ProjectSession({
       repository,
       metadata: metadata('progress', document.revision),
@@ -124,38 +124,29 @@ describe('application progress integration', () => {
     });
 
     session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-    session.execute({ type: 'set-completion', x: 0, y: 0, completed: true });
-    expect(session.metrics.totals).toMatchObject({ full: 1, completedComponents: 1, remainingComponents: 0 });
-    expect(session.sessionStats).toEqual({ startedAt: Date.UTC(2026, 7, 30, 12), marked: 1, unmarked: 0 });
-
-    const cleared = session.execute({ type: 'bulk-completion', indices: new Uint32Array([0]), operation: 'clear' });
-    expect(cleared.changedIndices).toEqual(new Uint32Array([0]));
-    expect(session.metrics.progress).toMatchObject({ completedComponents: 0, remainingComponents: 1, fraction: 0 });
-    expect(session.sessionStats).toMatchObject({ marked: 1, unmarked: 1 });
-    expect(session.activity).toEqual({ daily: [{ date: '2026-08-30', marked: 1, unmarked: 1 }] });
+    session.execute({ type: 'set-full', x: 1, y: 0, color: 1 });
+    expect(session.metrics.totals).toMatchObject({ full: 2, completedComponents: 0, remainingComponents: 2 });
+    session.undo();
+    expect(session.metrics.totals).toMatchObject({ full: 1 });
+    expect(session.metrics).toEqual(computePatternMetrics(session.document));
 
     await session.flush();
     expect(save).toHaveBeenCalledOnce();
-    expect(saves[0]).toMatchObject({ revision: 3, activity: { daily: [{ date: '2026-08-30', marked: 1, unmarked: 1 }] } });
-    await session.retrySave();
-    expect(save).toHaveBeenCalledOnce();
+    expect(saves[0]).toBe(session.document.revision);
     await session.dispose();
   });
 
-  it('keeps weighted three-quarter metrics current through geometry and completion changes', async () => {
-    const repository = { save: vi.fn(async (_id: string, _metadata: ProjectMetadata, next: PatternDocument): Promise<SaveResult> => ({ committed: true, stale: false, revision: next.revision })) } as unknown as WorkspaceRepository;
-    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+  it('keeps weighted three-quarter metrics current through geometry changes', async () => {
+    const repository = { save: vi.fn(async (_id: string, _metadata: ProjectMetadata, next: LayeredDocument): Promise<SaveResult> => ({ committed: true, stale: false, revision: next.revision })) } as unknown as WorkspaceRepository;
+    const document = createLayeredDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     const session = new ProjectSession({ repository, metadata: metadata('three-quarter-progress', document.revision), document, preparationClient: testPreparationClient, clock: { now: () => Date.UTC(2026, 7, 30) }, debounceMs: longDebounceMs });
     try {
       session.execute({ type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NE, color: 1 });
       expect(session.metrics.totals).toMatchObject({ threeQuarter: 1, totalComponents: 1, completedComponents: 0, remainingComponents: 1 });
 
-      session.execute({ type: 'set-completion', x: 0, y: 0, completed: true });
-      expect(session.metrics.progress).toEqual({ completedComponents: 1, remainingComponents: 0, totalComponents: 1, fraction: 1, percent: 100 });
-      expect(session.sessionStats).toMatchObject({ marked: 1, unmarked: 0 });
-
       session.execute({ type: 'set-full', x: 1, y: 0, color: 1 });
-      expect(session.metrics.totals).toMatchObject({ full: 1, threeQuarter: 1, totalComponents: 2, completedComponents: 1, remainingComponents: 1 });
+      expect(session.metrics.totals).toMatchObject({ full: 1, threeQuarter: 1, totalComponents: 2, remainingComponents: 2 });
+      expect(session.metrics).toEqual(computePatternMetrics(session.document));
     } finally {
       await session.dispose();
     }
@@ -324,54 +315,6 @@ describe('application progress integration', () => {
     expect(repeated).toEqual(activity);
   });
 
-  it('does not record activity for identity-preserving transforms, but does record undo progress', async () => {
-    const repository = { save: vi.fn(async (_id: string, _metadata: ProjectMetadata, next: ReturnType<typeof createDocument>): Promise<SaveResult> => ({ committed: true, stale: false, revision: next.revision })) } as unknown as WorkspaceRepository;
-    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    const session = new ProjectSession({
-      repository,
-      metadata: metadata('identity-progress', document.revision),
-      document,
-      preparationClient: testPreparationClient,
-      clock: { now: () => Date.UTC(2026, 7, 30, 12) },
-      debounceMs: 0
-    });
-
-    session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-    session.execute({ type: 'set-completion', x: 0, y: 0, completed: true });
-    expect(session.sessionStats).toMatchObject({ marked: 1, unmarked: 0 });
-
-    session.execute({ type: 'rotate-cw' });
-    expect(session.sessionStats).toMatchObject({ marked: 1, unmarked: 0 });
-    const undoTransform = session.undo();
-    expect(undoTransform.progress).toEqual({ cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0), marked: 0, unmarked: 0 });
-    expect(session.sessionStats).toMatchObject({ marked: 1, unmarked: 0 });
-    const undoCompletion = session.undo();
-    expect(undoCompletion.progress).toEqual({ cellIndices: new Uint32Array([0]), backstitchIds: new Uint32Array(0), marked: 0, unmarked: 1 });
-    expect(session.sessionStats).toMatchObject({ marked: 1, unmarked: 1 });
-    session.redo();
-    expect(session.sessionStats).toMatchObject({ marked: 2, unmarked: 1 });
-    await session.dispose();
-  });
-
-  it('exposes stable-ID backstitch completion helpers backed by domain validation', async () => {
-    const repository = { save: vi.fn(async (_id: string, _metadata: ProjectMetadata, next: ReturnType<typeof createDocument>): Promise<SaveResult> => ({ committed: true, stale: false, revision: next.revision })) } as unknown as WorkspaceRepository;
-    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    const session = new ProjectSession({ repository, metadata: metadata('backstitch-progress', document.revision), document, preparationClient: testPreparationClient, clock: { now: () => Date.UTC(2026, 7, 30) }, debounceMs: 0 });
-    try {
-      const created = session.execute({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 4 }, color: 1 });
-      const id = created.backstitchId;
-      if (id === undefined) throw new Error('backstitch ID was not allocated');
-      const completed = session.completeBackstitches(new Uint32Array([id]));
-      expect(completed.changed).toBe(true);
-      expect(completed.changedBackstitchIds).toEqual(new Uint32Array([id]));
-      expect(session.document.backstitches.completed[0]).toBe(1);
-      session.toggleBackstitchCompletion(id);
-      expect(session.document.backstitches.completed[0]).toBe(0);
-    } finally {
-      await session.dispose();
-    }
-  });
-
   it('matches fresh metrics for mixed multi-palette delete, undo, and redo', () => {
     const { editor, rect } = mixedDeleteFixture();
     const service = new ProgressMetricsService(editor.document);
@@ -411,11 +354,11 @@ describe('application progress integration', () => {
     expectDeleteMetricsRoundTrip(mixed.editor, mixed.rect);
   });
 
-  it('keeps real session metrics exact and preserves zero delete activity', async () => {
+  it('keeps real session metrics exact across layered delete, undo, and redo', async () => {
     const { editor, rect } = mixedDeleteFixture();
-    const document = editor.document;
+    const document = layeredFromSurface(cloneDocument(editor.document));
     const repository = {
-      save: async (_id: string, _metadata: ProjectMetadata, next: PatternDocument): Promise<SaveResult> => ({ committed: true, stale: false, revision: next.revision })
+      save: async (_id: string, _metadata: ProjectMetadata, next: LayeredDocument): Promise<SaveResult> => ({ committed: true, stale: false, revision: next.revision })
     } as unknown as WorkspaceRepository;
     const session = new ProjectSession({
       repository,
@@ -426,20 +369,18 @@ describe('application progress integration', () => {
       debounceMs: longDebounceMs
     });
     try {
-      let result = session.execute(deleteRegionCommand(rect, session.document.revision));
-      expect(result.progress).toEqual({ cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0), marked: 0, unmarked: 0 });
-      expect(session.sessionStats).toMatchObject({ marked: 0, unmarked: 0 });
+      for (const layerId of [1, 2]) {
+        session.setActiveLayer(layerId);
+        session.execute(deleteRegionCommand(rect, session.document.revision));
+        expect(session.metrics).toEqual(computePatternMetrics(session.document));
+      }
+      session.undo();
       expect(session.metrics).toEqual(computePatternMetrics(session.document));
-
-      result = session.undo();
-      expect(result.progress).toEqual({ cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0), marked: 0, unmarked: 0 });
-      expect(session.sessionStats).toMatchObject({ marked: 0, unmarked: 0 });
+      session.undo();
       expect(session.metrics).toEqual(computePatternMetrics(session.document));
-
-      result = session.redo();
-      expect(result.progress).toEqual({ cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0), marked: 0, unmarked: 0 });
-      expect(session.sessionStats).toMatchObject({ marked: 0, unmarked: 0 });
+      session.redo();
       expect(session.metrics).toEqual(computePatternMetrics(session.document));
+      expect(session.sessionStats).toMatchObject({ marked: 0, unmarked: 0 });
     } finally {
       await session.dispose();
     }

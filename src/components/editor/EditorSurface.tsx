@@ -13,12 +13,17 @@ import { createCanvasTarget } from "../../rendering/context";
 import { createCanvasRenderer } from "../../rendering/renderer";
 import type { ProjectWorkspace } from "../../application/workspace";
 import {
+  DEFAULT_PATTERN_AIDA_COUNT,
+  findLayer,
   isAlphanumericSymbol,
   MAX_PALETTE_SYMBOL_LENGTH,
   PALETTE_SYMBOLS,
 } from "../../domain";
-import type { DisplayUnits } from "../../domain";
+import type { DisplayUnits, LayerType } from "../../domain";
 import { TraceImageControls } from "./TraceImageControls";
+import { LayersPanel, LAYER_TYPE_LABELS, type ActiveLayerId } from "./LayersPanel";
+import { LayerControls } from "./LayerControls";
+import { Toast, useToast } from "./Toast";
 import { createCatalogReference, type CatalogRecord } from "../../catalog";
 import { useMemo } from "react";
 import { createPortal } from "react-dom";
@@ -30,7 +35,8 @@ import lassoIcon from "../../assets/editor-tools/lasso.svg";
 import eyedropperIcon from "../../assets/editor-tools/eyedropper.svg";
 import panIcon from "../../assets/editor-tools/pan.svg";
 import stitchIcon from "../../assets/editor-tools/stitch.svg";
-import type { BrushSizeTool, ShapeKind } from "../../editor/contracts";
+import { toolAvailability, type BrushSizeTool, type EditorActiveLayer, type ShapeKind } from "../../editor/contracts";
+import type { ProjectSession } from "../../application/session";
 interface Props {
   workspace: ProjectWorkspace;
   document: NonNullable<
@@ -243,14 +249,20 @@ export function EditorSurface({
   const shapeMenu = useRef<HTMLDivElement>(null);
   const shapeItems = useRef<Array<HTMLButtonElement | null>>([]);
   const [open, setOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<"project" | "aida" | "editor">("project");
+  const [settingsTab, setSettingsTab] = useState<"project" | "editor">("project");
   const [title, setTitle] = useState(workspace.metadata?.title ?? "");
   const [notes, setNotes] = useState(workspace.metadata?.notes ?? "");
-  const [aida, setAida] = useState(String(workspace.metadata?.aidaCount ?? 14));
-  const [backgroundColor, setBackgroundColor] = useState(() => normalizeHexColor((document as typeof document & { settings?: { backgroundColor?: string } }).settings?.backgroundColor ?? "") ?? "#F3EEE5");
-  const [backgroundColorInput, setBackgroundColorInput] = useState(() => normalizeHexColor((document as typeof document & { settings?: { backgroundColor?: string } }).settings?.backgroundColor ?? "") ?? "#F3EEE5");
-  const backgroundColorDirty = useRef(false);
   const documentBackgroundColor = normalizeHexColor((document as typeof document & { settings?: { backgroundColor?: string } }).settings?.backgroundColor ?? "") ?? "#F3EEE5";
+  const { toast, showToast, dismissToast } = useToast();
+  const showToastRef = useRef(showToast);
+  showToastRef.current = showToast;
+  const traceFilePicker = useRef<(() => void) | null>(null);
+  // The layer stack lives on the session; the `document` prop is its flattened composite.
+  const session = workspace.session as ProjectSession | null | undefined;
+  const layeredDocument = session?.layeredDocument ?? null;
+  const activeLayerId: ActiveLayerId = session?.activeLayerId ?? "canvas";
+  const activeLayerInfo = session?.activeLayer ?? null;
+  const aidaCount = Number(layeredDocument?.settings.aidaCount ?? (document as typeof document & { settings?: { aidaCount?: number } }).settings?.aidaCount ?? DEFAULT_PATTERN_AIDA_COUNT);
   const [units, setUnits] = useState<DisplayUnits>(
     workspace.metadata?.units ?? "metric",
   );
@@ -340,6 +352,7 @@ export function EditorSurface({
         uiStore: store,
         metrics,
         catalogDefinition: catalog,
+        onNotice: (message: string) => showToastRef.current(message),
         onTraceBoundsChange: (bounds) => {
           const current = workspace.sourceImage;
           if (!current) return;
@@ -439,21 +452,14 @@ export function EditorSurface({
   useEffect(() => {
     setTitle(workspace.metadata?.title ?? "");
     setNotes(workspace.metadata?.notes ?? "");
-    setAida(String(workspace.metadata?.aidaCount ?? 14));
     setUnits(workspace.metadata?.units ?? "metric");
   }, [
     workspace,
     workspace.metadata?.id,
     workspace.metadata?.title,
     workspace.metadata?.notes,
-    workspace.metadata?.aidaCount,
     workspace.metadata?.units,
   ]);
-  useEffect(() => {
-    if (backgroundColorDirty.current) return;
-    setBackgroundColor(documentBackgroundColor);
-    setBackgroundColorInput(documentBackgroundColor);
-  }, [documentBackgroundColor]);
   useEffect(() => {
     try {
       globalThis.localStorage.setItem(
@@ -475,38 +481,57 @@ export function EditorSurface({
         paletteId: id,
       } as never);
   };
+  // Tools stay visible on every layer; unavailable ones are greyed and explain
+  // why on hover (title) and on tap (toast) instead of switching.
+  const toolLayer: Pick<EditorActiveLayer, "kind" | "visible"> | null =
+    (ui as (EditorUiState & { activeLayer?: EditorActiveLayer | null }) | null)?.activeLayer ?? activeLayerInfo;
+  const availability = (tool: string) => toolAvailability(tool as never, undefined, toolLayer);
+  const toolGate = (tool: string, title: string) => {
+    const state = availability(tool);
+    return state.enabled
+      ? { title, "aria-disabled": undefined, className: "rail-button" }
+      : { title: state.hint ?? title, "aria-disabled": true as const, className: "rail-button rail-button-unavailable" };
+  };
+  /** Shows the hint and returns true when `tool` can't be used on the selected layer. */
+  const refuseUnavailable = (tool: string) => {
+    const state = availability(tool);
+    if (state.enabled) return false;
+    if (state.hint) showToast(state.hint);
+    return true;
+  };
   const invoke = (tool: string) => {
+    if (refuseUnavailable(tool)) return;
     if (noThread && ["paint", "fill", "backstitch"].includes(tool)) return;
     if (tool === "eraser") controllerRef.current?.setEraserMode("whole-cell");
     else controllerRef.current?.setTool({ tool } as never);
   };
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
-    const settingsColor = normalizeHexColor(backgroundColorInput);
-    if (!settingsColor) {
-      setSettingsTab("aida");
-      window.setTimeout(() => globalThis.document.getElementById("background-color-hex")?.focus(), 0);
-      return;
-    }
-    workspace.execute({ type: "document-settings-update", settings: { backgroundColor: settingsColor } } as never);
     await workspace.updateActiveMetadata({
       title: title.trim() || "Untitled sampler",
       notes,
       units,
     });
-    await workspace.updateActiveAidaCount?.(Number(aida));
-    backgroundColorDirty.current = false;
     setOpen(false);
   };
-  const setBackgroundFromHex = (value: string) => {
-    backgroundColorDirty.current = true;
-    setBackgroundColorInput(value);
-    const normalized = normalizeHexColor(value);
-    if (normalized) {
-      setBackgroundColor(normalized);
-      setBackgroundColorInput(normalized);
+  const runLayerAction = (action: () => unknown) => {
+    try {
+      action();
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "That layer change could not be made.");
     }
   };
+  const selectLayer = (id: ActiveLayerId) => runLayerAction(() => session?.setActiveLayer(id));
+  const addLayer = (type: LayerType) => runLayerAction(() => session?.addLayer(type));
+  const setReferenceVisible = (visible: boolean) => {
+    const current = workspace.sourceImage;
+    if (!current) return;
+    void workspace.applyTraceImageChange({ ...current, traceVisible: visible }, { label: "trace-image-visibility" }).catch(() => undefined);
+  };
+  const setCanvasBackground = (color: string) =>
+    runLayerAction(() => workspace.execute({ type: "document-settings-update", settings: { backgroundColor: color } } as never));
+  const setCanvasAidaCount = (count: number) =>
+    runLayerAction(() => (session ? session.setAidaCount(count) : workspace.execute({ type: "document-settings-update", settings: { aidaCount: count } } as never)));
   const applyUnits = (next: DisplayUnits) => {
     setUnits(next);
     void Promise.resolve(workspace.updateActiveMetadata({ units: next })).catch(
@@ -1280,7 +1305,12 @@ export function EditorSurface({
       )
     : [];
   const projectName = workspace.metadata?.title ?? "Untitled pattern";
-  const aidaCount = Number(workspace.metadata?.aidaCount ?? 14);
+  const activeStackLayer = layeredDocument && typeof activeLayerId === "number" ? findLayer(layeredDocument, activeLayerId) : undefined;
+  const activeLayerHeading = !layeredDocument || activeLayerId === "reference"
+    ? "Reference image"
+    : activeLayerId === "canvas"
+      ? "Canvas"
+      : activeStackLayer ? `${LAYER_TYPE_LABELS[activeStackLayer.type]} · ${activeStackLayer.name}` : "Layer";
   const formatMeasure = (inches: number) =>
     units === "metric"
       ? `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(inches * 2.54)} cm`
@@ -1327,7 +1357,7 @@ export function EditorSurface({
   };
   const shapeToolDisabled = noThread || ui?.paletteId == null || !palette.some((entry) => entry.id === ui.paletteId);
   const applyShapeTool = (shape: ShapeKind) => {
-    if (shapeToolDisabled) return;
+    if (shapeToolDisabled || refuseUnavailable("shape")) return;
     controllerRef.current?.setTool({ tool: "shape", shape } as never);
   };
   const shapeIcon = (kind: ShapeKind) => <svg data-shape-icon={kind} viewBox="0 0 24 24" aria-hidden="true"><path d={kind === "line" ? "M5 19 19 5" : kind === "rectangle" ? "M5 6h14v12H5z" : (kind as string) === "square" ? "M5 5h14v14H5z" : kind === "circle" ? "M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16" : (kind as string) === "oval" ? "M12 4a8 6 0 1 0 0 12 8 6 0 0 0 0-12" : (kind as string) === "right-triangle" ? "M5 5V19H19Z" : "M12 4 20 19H4z"} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>;
@@ -1655,7 +1685,7 @@ export function EditorSurface({
             type="button"
             aria-label="Open settings"
             title="Settings"
-            onClick={() => { backgroundColorDirty.current = false; setBackgroundColor(documentBackgroundColor); setBackgroundColorInput(documentBackgroundColor); setSettingsTab("project"); setOpen(true); }}
+            onClick={() => { setSettingsTab("project"); setOpen(true); }}
           >
             ⚙
           </button>
@@ -1686,57 +1716,53 @@ export function EditorSurface({
             <button className="rail-button" type="button" aria-label="Pan" title="Pan" aria-pressed={ui?.tool.tool === "pan"} onClick={() => invoke("pan")}>
               <img data-icon="pan" src={panIcon} alt="" aria-hidden="true" />
             </button>
-            <button className="rail-button" type="button" aria-label="Select" title="Select" aria-pressed={ui?.tool.tool === "select"} onClick={() => invoke("select")}>
+            <button {...toolGate("select", "Select")} type="button" aria-label="Select" aria-pressed={ui?.tool.tool === "select"} onClick={() => invoke("select")}>
               <img data-icon="select" src={selectIcon} alt="" aria-hidden="true" />
             </button>
-            <button className="rail-button" type="button" aria-label="Lasso select" title="Lasso select" aria-pressed={String(ui?.tool.tool) === "lasso"} onClick={() => invoke("lasso")}>
+            <button {...toolGate("lasso", "Lasso select")} type="button" aria-label="Lasso select" aria-pressed={String(ui?.tool.tool) === "lasso"} onClick={() => invoke("lasso")}>
               <img data-icon="lasso" src={lassoIcon} alt="" aria-hidden="true" />
             </button>
             <button
-              className="rail-button"
               {...brushHandlers("full", "Full stitch")}
+              {...toolGate("paint", "Full stitch · hold for size")}
               type="button"
               aria-label="Full stitch"
               aria-haspopup="dialog" aria-expanded={brushPopover?.tool === "full"} aria-controls="tool-brush-popover"
-              title="Full stitch · hold for size"
               aria-pressed={fullStitchActive}
-              onClick={(event) => { if (shouldSuppressPressClick(event.currentTarget, event)) return; choose("full"); }}
+              onClick={(event) => { if (shouldSuppressPressClick(event.currentTarget, event)) return; if (refuseUnavailable("paint")) return; choose("full"); }}
             >
               <span className="stitch-brush-icon stitch-brush-icon-full" aria-hidden="true" />
               <span className="brush-size-corner" aria-hidden="true" />
             </button>
             <button
-              className="rail-button"
               {...brushHandlers("half", "Half stitch")}
+              {...toolGate("paint", "Half stitch · hold for size")}
               type="button"
               aria-label="Half stitch"
               aria-haspopup="dialog" aria-expanded={brushPopover?.tool === "half"} aria-controls="tool-brush-popover"
-              title="Half stitch · hold for size"
               aria-pressed={halfActive}
-              onClick={(event) => { if (shouldSuppressPressClick(event.currentTarget, event)) return; choose("half"); }}
+              onClick={(event) => { if (shouldSuppressPressClick(event.currentTarget, event)) return; if (refuseUnavailable("paint")) return; choose("half"); }}
             >
               <span className="stitch-brush-icon stitch-brush-icon-half" aria-hidden="true" />
               <span className="brush-size-corner" aria-hidden="true" />
             </button>
             <button
-              className="rail-button"
               {...brushHandlers("three-quarter", "3/4 stitch")}
+              {...toolGate("paint", "3/4 stitch · hold for size")}
               type="button"
               aria-label="3/4 stitch"
               aria-haspopup="dialog" aria-expanded={brushPopover?.tool === "three-quarter"} aria-controls="tool-brush-popover"
-              title="3/4 stitch · hold for size"
               aria-pressed={threeQuarterActive}
-              onClick={(event) => { if (shouldSuppressPressClick(event.currentTarget, event)) return; choose("three-quarter"); }}
+              onClick={(event) => { if (shouldSuppressPressClick(event.currentTarget, event)) return; if (refuseUnavailable("paint")) return; choose("three-quarter"); }}
             >
               <span className="stitch-brush-icon stitch-brush-icon-three-quarter" aria-hidden="true" />
               <span className="brush-size-corner" aria-hidden="true" />
             </button>
             <button
-              className="rail-button"
+              {...toolGate("shape", "Shape · hold for options")}
               type="button"
               disabled={shapeToolDisabled}
               aria-label="Shape"
-              title="Shape · hold for options"
               aria-pressed={ui?.tool.tool === "shape"}
               onPointerDown={(event) => beginPress(event, "shape", "shape", "Shape")}
               onPointerLeave={abortPressOnLeave}
@@ -1751,42 +1777,21 @@ export function EditorSurface({
               <span className="brush-size-corner" aria-hidden="true" />
             </button>
             <button
-              className="rail-button"
+              {...toolGate("backstitch", "Backstitch")}
               type="button"
               disabled={noThread}
               aria-label="Backstitch"
-              title="Backstitch"
               aria-pressed={backstitchActive}
               onClick={() => invoke("backstitch")}
             >
               <img data-icon="backstitch" src={backstitchIcon} alt="" aria-hidden="true" />
             </button>
             <button
-              className="rail-button"
-              type="button"
-              aria-label="Completion"
-              title="Completion"
-              aria-pressed={(ui?.tool.tool as string | undefined) === "completion"}
-              onClick={(event) => { if (shouldSuppressPressClick(event.currentTarget, event)) return; invoke("completion"); }}
-            >
-              <svg data-icon="completion" viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  d="m5 12.5 4.2 4.2L19 7"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </button>
-            <button
               {...brushHandlers("eraser", "Eraser")}
-              className="rail-button"
+              {...toolGate("eraser", "Eraser · hold for size")}
               type="button"
               aria-label="Eraser"
               aria-haspopup="dialog" aria-expanded={brushPopover?.tool === "eraser"} aria-controls="tool-brush-popover"
-              title="Eraser · hold for size"
               aria-pressed={ui?.tool.tool === "eraser"}
               onClick={(event) => { if (shouldSuppressPressClick(event.currentTarget, event)) return; invoke("eraser"); }}
             >
@@ -1794,10 +1799,9 @@ export function EditorSurface({
               <span className="brush-size-corner" aria-hidden="true" />
             </button>
             <button
-              className="rail-button"
+              {...toolGate("fill", "Fill")}
               type="button"
               aria-label="Fill"
-              title="Fill"
               disabled={noThread}
               aria-pressed={ui?.tool.tool === "fill"}
               onClick={() => invoke("fill")}
@@ -1837,6 +1841,20 @@ export function EditorSurface({
               {palette.map(paletteRow)}
             </div>
           </div>
+          {layeredDocument && (
+            <LayersPanel
+              document={layeredDocument}
+              activeLayerId={activeLayerId}
+              backgroundColor={documentBackgroundColor}
+              reference={{ present: Boolean(workspace.sourceImage), visible: workspace.sourceImage?.traceVisible ?? true }}
+              onSelect={selectLayer}
+              onToggleVisibility={(layerId, visible) => runLayerAction(() => session?.setLayerVisibility(layerId, visible))}
+              onToggleReferenceVisibility={setReferenceVisible}
+              onAddReference={() => traceFilePicker.current?.()}
+              onMove={(move) => runLayerAction(() => session?.moveLayer(move.layerId, move.toIndex))}
+              onAdd={addLayer}
+            />
+          )}
           </div>
         </aside>
         <div className="canvas-column">
@@ -1923,6 +1941,7 @@ export function EditorSurface({
               </>
             )}
           </div>
+          <Toast toast={toast} onDismiss={dismissToast} />
           <div className="mobile-dock-card">
             <div className="mobile-dock-triggers" aria-label="Open editor controls">
               <button ref={mobileToolsTrigger} className="mobile-dock-trigger" type="button" aria-label="Tools" aria-expanded={mobilePanel === "tools"} aria-controls="mobile-tools-popover" onClick={() => setMobilePanel(mobilePanel === "tools" ? null : "tools")}>
@@ -1938,9 +1957,26 @@ export function EditorSurface({
               <label htmlFor="tool-brush-size">{brushPopover.label} brush size <output>{ui?.toolBrushSizes[brushPopover.tool] ?? 1}</output></label>
               <input id="tool-brush-size" type="range" min="1" max="10" aria-label={`${brushPopover.label} brush size`} value={ui?.toolBrushSizes[brushPopover.tool] ?? 1} onChange={(event) => controllerRef.current?.setToolBrushSize(brushPopover.tool, Number(event.target.value))} />
             </div>, globalThis.document.body)}
-            <section className="action-section reference-actions" aria-labelledby="reference-actions-label">
-              <h3 id="reference-actions-label">Reference image</h3>
-              <TraceImageControls workspace={workspace} document={document} controller={controller} activeTool={ui?.tool.tool} />
+            <section className="action-section reference-actions layer-actions" aria-labelledby="reference-actions-label">
+              <h3 id="reference-actions-label">{activeLayerHeading}</h3>
+              {layeredDocument && activeLayerId !== "reference" && (
+                <LayerControls
+                  document={layeredDocument}
+                  activeLayerId={activeLayerId}
+                  backgroundColor={documentBackgroundColor}
+                  aidaCount={aidaCount}
+                  onBackgroundColorChange={setCanvasBackground}
+                  onAidaCountChange={setCanvasAidaCount}
+                  onRename={(layerId, name) => runLayerAction(() => session?.renameLayer(layerId, name))}
+                  onDuplicate={(layerId) => runLayerAction(() => session?.duplicateLayer(layerId))}
+                  onMerge={(sourceId, targetId) => runLayerAction(() => session?.mergeLayer(sourceId, targetId))}
+                  onDelete={(layerId) => runLayerAction(() => session?.deleteLayer(layerId))}
+                />
+              )}
+              {/* Always mounted: it owns decoding the reference image for the canvas. */}
+              <div className="reference-layer-controls" hidden={Boolean(layeredDocument) && activeLayerId !== "reference"}>
+                <TraceImageControls workspace={workspace} document={document} controller={controller} activeTool={ui?.tool.tool} filePickerRef={traceFilePicker} />
+              </div>
             </section>
             <section className="action-section view-actions" aria-labelledby="view-actions-label">
             <h3 id="view-actions-label">View settings</h3>
@@ -2009,7 +2045,7 @@ export function EditorSurface({
               <h2 id="settings-heading">Settings</h2>
               <form onSubmit={save}>
                 <div className="settings-tabs" role="tablist" aria-label="Settings sections">
-                  {([['project', 'Project'], ['aida', 'Canvas'], ['editor', 'Editor']] as const).map(([key, label]) => <button
+                  {([['project', 'Project'], ['editor', 'Editor']] as const).map(([key, label]) => <button
                     key={key}
                     id={`settings-tab-${key}`}
                     className="settings-tab"
@@ -2022,7 +2058,7 @@ export function EditorSurface({
                     onKeyDown={(event) => {
                       if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
                       event.preventDefault();
-                      const keys = ['project', 'aida', 'editor'] as const;
+                      const keys = ['project', 'editor'] as const;
                       const current = keys.indexOf(key);
                       const target = event.key === 'Home' ? 0 : event.key === 'End' ? keys.length - 1 : (current + (event.key === 'ArrowRight' ? 1 : -1) + keys.length) % keys.length;
                       const next = keys[target];
@@ -2075,25 +2111,6 @@ export function EditorSurface({
                       Imperial
                     </button>
                   </div>
-                </section>
-                </div>
-                <div id="settings-panel-aida" className="settings-tabpanel" role="tabpanel" aria-labelledby="settings-tab-aida" hidden={settingsTab !== 'aida'}>
-                <section className="settings-section aida-settings-section" aria-labelledby="aida-settings-heading">
-                  <label htmlFor="details-aida">
-                    Stitch count
-                    <select id="details-aida" value={aida} onChange={(e) => setAida(e.target.value)}>
-                      {[11, 14, 16, 18, 22].map((x) => <option key={x}>{x}</option>)}
-                    </select>
-                  </label>
-                  <section className="custom-color-section settings-background-color" aria-labelledby="background-color-title">
-                    <div className="custom-color-fields">
-                      <label htmlFor="background-color-picker">Background color</label>
-                      <input id="background-color-picker" type="color" value={backgroundColor.toLowerCase()} onChange={(event) => setBackgroundFromHex(event.target.value)} />
-                      <label htmlFor="background-color-hex">HEX Code</label>
-                      <input id="background-color-hex" type="text" value={backgroundColorInput} onChange={(event) => setBackgroundFromHex(event.target.value)} placeholder="#F3EEE5" autoComplete="off" aria-describedby="background-color-help" />
-                    </div>
-                    <p id="background-color-help" className="custom-color-help background-color-help" aria-live="polite">{backgroundColorInput && !normalizeHexColor(backgroundColorInput) ? "Enter a 3- or 6-digit hex color." : "Use a three- or six-digit hex value."}</p>
-                  </section>
                 </section>
                 </div>
                 <div id="settings-panel-editor" className="settings-tabpanel" role="tabpanel" aria-labelledby="settings-tab-editor" hidden={settingsTab !== 'editor'}>

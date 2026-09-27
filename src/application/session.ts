@@ -1,22 +1,40 @@
 import {
-  cloneDocument,
+  canAddLayer as canAddLayerOfType,
+  commandLayerType,
+  commandScope,
   DocumentEditor,
+  DomainError,
+  findLayer,
+  layerAddCommand,
+  layerDeleteCommand,
+  layerDuplicateCommand,
+  LayerErrorCode,
+  layerMergeCommand,
+  layerMoveCommand,
+  layerRenameCommand,
+  layerSetVisibilityCommand,
+  layerSurface,
+  LayerType,
+  MAX_LAYERS_PER_TYPE,
   normalizeAidaCount,
   normalizeDisplayUnits,
   normalizeMaterialSettings,
+  pasteFragmentCommand,
+  topmostVisibleLayer,
   type MetricsOptions,
   updateMaterialSettings,
   type MaterialSettingsUpdate,
   type NormalizedMaterialSettings,
-  type BulkProgressOperation,
   type CommandResult,
   type DomainCommand,
-  type PatternDocument
+  type LayeredDocument,
+  type PatternDocument,
+  type PatternFragment,
+  type Point
 } from '../domain';
-import { PersistenceError } from '../persistence';
+import { cloneLayeredDocument, PersistenceError } from '../persistence';
 import {
   cloneProgressActivity,
-  recordDailyProgress,
   normalizeSourceImageDescriptor,
   normalizeSourceImageAsset,
   validateSourceImageDescriptor,
@@ -40,8 +58,15 @@ import {
   type SourceImageSettingsInput
 } from '../persistence';
 import { WorkspaceError } from './errors';
-import { ProgressMetricsService, type ProgressActivityDelta, type SessionProgressStats } from './progress';
+import { ProgressMetricsService, type SessionProgressStats } from './progress';
 import type {
+  ActiveLayerId,
+  ActiveLayerInfo,
+  CompositeInvalidation,
+  EditorLayerSnapshot,
+  LayerSummary,
+  PasteCommitResult,
+  PasteDestination,
   ProjectSessionOptions,
   MaterialSettingsChanges,
   SaveState,
@@ -229,6 +254,59 @@ function reconcileMarkerKinds(kinds: readonly HistoryKind[], documentDepth: numb
   return result;
 }
 
+/** On open, and when the selected layer disappears: topmost visible stitch layer, else topmost visible layer, else Canvas. */
+export function defaultActiveLayerId(document: LayeredDocument): ActiveLayerId {
+  return (topmostVisibleLayer(document, LayerType.Stitch) ?? topmostVisibleLayer(document))?.id ?? 'canvas';
+}
+
+/** The layer type a clipboard fragment needs, or null for an empty or mixed fragment. */
+export function fragmentLayerType(fragment: PatternFragment): LayerType | null {
+  const required = commandLayerType({ type: 'paste-fragment', fragment });
+  return required === 'mixed' ? null : required;
+}
+
+function layerSummariesOf(document: LayeredDocument, previous: readonly LayerSummary[]): readonly LayerSummary[] {
+  const next = document.layers.map((layer, index) => ({ id: layer.id, type: layer.type, name: layer.name, visible: layer.visible, index }));
+  const same = next.length === previous.length && next.every((summary, index) => {
+    const before = previous[index];
+    return before.id === summary.id && before.type === summary.type && before.name === summary.name && before.visible === summary.visible;
+  });
+  return same ? previous : next;
+}
+
+/** Adds the selected layer to layer-scoped commands (and batch children) that do not name one. */
+function stampLayerId(command: DomainCommand, layerId: number): DomainCommand {
+  if (command.type === 'batch' && Array.isArray(command.commands)) {
+    return { ...command, commands: (command.commands as DomainCommand[]).map((child) => stampLayerId(child, layerId)) };
+  }
+  if (commandScope(command) !== 'layer' || typeof command.layerId === 'number') return command;
+  return { ...command, layerId };
+}
+
+function needsLayer(command: DomainCommand): boolean {
+  if (command.type === 'batch' && Array.isArray(command.commands)) return (command.commands as DomainCommand[]).some(needsLayer);
+  return commandScope(command) === 'layer' && typeof command.layerId !== 'number';
+}
+
+const LAYER_TYPE_NOUN: Record<LayerType, string> = {
+  [LayerType.Stitch]: 'stitch',
+  [LayerType.Specialty]: 'specialty'
+};
+
+const PASTE_HIDDEN_MESSAGE: Record<LayerType, string> = {
+  [LayerType.Stitch]: 'Your stitch layers are all hidden, so nothing was pasted. Show one to paste these stitches.',
+  [LayerType.Specialty]: 'Your specialty layers are all hidden, so nothing was pasted. Show one to paste these backstitches.'
+};
+
+function invalidationFrom(result: CommandResult): CompositeInvalidation {
+  const indices = result.compositeChangedIndices;
+  return {
+    revision: result.revision,
+    full: result.compositeFull === true || indices === undefined,
+    ...(indices === undefined ? {} : { indices })
+  };
+}
+
 export class ProjectSession {
   readonly projectId: string;
   private readonly repository: WorkspaceRepository;
@@ -275,6 +353,11 @@ export class ProjectSession {
   private traceRedoStack: TraceHistoryEntry[] = [];
   private historyKindsUndo: Array<'document' | 'trace'> = [];
   private historyKindsRedo: Array<'document' | 'trace'> = [];
+  private activeLayerIdState: ActiveLayerId;
+  private layerSummaries: readonly LayerSummary[] = [];
+  private activeLayerInfo: ActiveLayerInfo | null = null;
+  private compositeInvalidation: CompositeInvalidation | null = null;
+  private editorSnapshot: EditorLayerSnapshot | null = null;
 
   constructor(options: ProjectSessionOptions) {
     this.projectId = options.metadata.id;
@@ -285,27 +368,48 @@ export class ProjectSession {
     this.editor = new DocumentEditor(options.document, options.historyLimitBytes === undefined ? undefined : { historyLimitBytes: options.historyLimitBytes });
     const suppliedMaterialSettings = options.materialSettings ?? options.metadata.materialSettings;
     this.materialSettingsPersisted = suppliedMaterialSettings !== undefined;
-    this.materialAssumptionsState = normalizeMaterialSettings(options.document, {
-      ...(this.materialSettingsPersisted ? suppliedMaterialSettings : {}),
-      ...(options.metadata.aidaCount === undefined ? {} : { aidaCount: options.metadata.aidaCount })
-    });
-    this.metricOptions = {
-      ...(this.materialSettingsPersisted ? this.materialAssumptionsState : {}),
-      ...(options.metadata.aidaCount === undefined ? {} : { aidaCount: options.metadata.aidaCount })
-    };
+    // The stitch count lives in the document settings, which metrics read directly.
+    this.materialAssumptionsState = normalizeMaterialSettings(this.editor.composite, this.materialSettingsPersisted ? suppliedMaterialSettings : undefined);
+    this.metricOptions = this.materialSettingsPersisted ? { ...this.materialAssumptionsState } : {};
+    const metadata = { ...options.metadata };
+    delete metadata.aidaCount;
     this.projectMetadata = {
-      ...options.metadata,
+      ...metadata,
       ...(this.materialSettingsPersisted ? { materialSettings: { ...this.materialAssumptionsState } } : {})
     };
     this.projectAssets = (options.assets ?? []).map(cloneAsset);
     this.projectHealth = cloneHealth(options.health ?? null);
     this.recoverySession = options.usingRecovery === true;
-    this.progressService = new ProgressMetricsService(options.document, this.metricOptions);
+    this.progressService = new ProgressMetricsService(this.editor.composite, this.metricOptions);
     this.dailyProgressActivity = cloneProgressActivity(options.activity);
     this.sessionStartedAt = options.sessionStartedAt ?? this.clock.now();
     this.lastSavedRevision = options.document.revision;
     this.projectHead = options.head === undefined ? null : { ...options.head };
+    this.activeLayerIdState = defaultActiveLayerId(options.document);
+    this.refreshLayerState();
     if (!this.recoverySession) this.restoreHistory(options.history);
+  }
+
+  /** Re-derive layer summaries and the active layer, reselecting the default when the active layer is gone. */
+  private refreshLayerState(documentChanged = true): void {
+    const document = this.editor.document;
+    this.layerSummaries = layerSummariesOf(document, this.layerSummaries);
+    const active = this.activeLayerIdState;
+    if (typeof active === 'number' && findLayer(document, active) === undefined) this.activeLayerIdState = defaultActiveLayerId(document);
+    const next = this.describeActiveLayer();
+    const previous = this.activeLayerInfo;
+    const activeChanged = previous === null || previous.id !== next.id || previous.kind !== next.kind || previous.visible !== next.visible || previous.name !== next.name;
+    if (activeChanged) this.activeLayerInfo = next;
+    if (documentChanged || activeChanged) this.editorSnapshot = null;
+  }
+
+  private describeActiveLayer(): ActiveLayerInfo {
+    const id = this.activeLayerIdState;
+    if (id === 'canvas') return { id, kind: 'canvas', visible: true, name: 'Canvas' };
+    if (id === 'reference') return { id, kind: 'reference', visible: this.projectMetadata.sourceImage?.traceVisible ?? false, name: 'Reference image' };
+    const layer = findLayer(this.editor.document, id);
+    if (!layer) return { id: 'canvas', kind: 'canvas', visible: true, name: 'Canvas' };
+    return { id, kind: layer.type, visible: layer.visible, name: layer.name };
   }
 
   private restoreHistory(history: SessionHistoryEnvelope | undefined): void {
@@ -429,8 +533,63 @@ export class ProjectSession {
     };
   }
 
+  /** The flattened, visible-only composite every reader (rendering, metrics, eyedropper) uses. */
   get document(): PatternDocument {
+    return this.editor.composite;
+  }
+
+  /** The stored layer stack. Callers must change it only through commands. */
+  get layeredDocument(): LayeredDocument {
     return this.editor.document;
+  }
+
+  get layers(): readonly LayerSummary[] {
+    return this.layerSummaries;
+  }
+
+  get activeLayerId(): ActiveLayerId {
+    return this.activeLayerIdState;
+  }
+
+  get activeLayer(): ActiveLayerInfo {
+    return this.activeLayerInfo ?? this.describeActiveLayer();
+  }
+
+  get lastCompositeInvalidation(): CompositeInvalidation | null {
+    return this.compositeInvalidation;
+  }
+
+  /** Selecting a layer is session memory only; it is never saved or undone. */
+  setActiveLayer(id: ActiveLayerId): void {
+    this.ensureActive();
+    if (typeof id === 'number' && findLayer(this.editor.document, id) === undefined) throw new DomainError(LayerErrorCode.NotFound, `Layer ${String(id)} does not exist.`);
+    if (id === this.activeLayerIdState) return;
+    this.activeLayerIdState = id;
+    this.refreshLayerState();
+    this.notify();
+  }
+
+  /** The selected layer's own surface (aliasing its planes), or null for Canvas and Reference. Read-only. */
+  activeLayerSurface(): PatternDocument | null {
+    const id = this.activeLayerIdState;
+    return typeof id === 'number' ? layerSurface(this.editor.document, id) : null;
+  }
+
+  /** A stable snapshot for the editor gateway; a new object only after a change. */
+  getEditorLayerSnapshot(): EditorLayerSnapshot {
+    if (this.editorSnapshot === null || this.editorSnapshot.composite !== this.editor.composite) {
+      this.editorSnapshot = {
+        editSurface: this.activeLayerSurface(),
+        activeLayer: this.activeLayer,
+        composite: this.editor.composite,
+        compositeInvalidation: this.compositeInvalidation
+      };
+    }
+    return this.editorSnapshot;
+  }
+
+  canAddLayer(type: LayerType): boolean {
+    return canAddLayerOfType(this.editor.document, type);
   }
 
   get assets(): ProjectAsset[] {
@@ -605,7 +764,7 @@ export class ProjectSession {
 
   private async savePreparedOrLegacy(
     metadata: ProjectMetadata,
-    document: PatternDocument,
+    document: LayeredDocument,
     assets: readonly ProjectAssetInput[] | undefined,
     options: SaveOptions
   ): Promise<SaveResult> {
@@ -618,15 +777,8 @@ export class ProjectSession {
       });
       return this.repository.savePrepared(this.projectId, metadata, prepared, assets, { ...options, preparedRequestId: this.preparationClient.getRequestId(prepared) });
     }
-    const legacyDocument = mode === 'replace' ? cloneDocument(document) : document;
+    const legacyDocument = mode === 'replace' ? cloneLayeredDocument(document) : document;
     return this.repository.save(this.projectId, metadata, legacyDocument, assets, options);
-  }
-
-  private recordProgress(delta: ProgressActivityDelta): void {
-    if (delta.marked === 0 && delta.unmarked === 0) return;
-    this.sessionMarked += delta.marked;
-    this.sessionUnmarked += delta.unmarked;
-    this.dailyProgressActivity = recordDailyProgress(this.dailyProgressActivity, this.clock.now(), delta.marked, delta.unmarked);
   }
 
   private ensureActive(): void {
@@ -638,13 +790,18 @@ export class ProjectSession {
     if (this.recoverySession) throw new WorkspaceError('recovery-promotion-required', 'Promote the validated recovery revision before editing this project.');
   }
 
+  /**
+   * Runs a command against the layer stack. Layer-scoped commands without a
+   * `layerId` target the selected layer; with Canvas or Reference selected
+   * they are refused.
+   */
   execute(command: DomainCommand): SessionCommandResult {
     this.ensureWritable();
-    const previous = this.editor.document;
-    const result = this.editor.execute(command);
+    const active = this.activeLayerIdState;
+    if (typeof active !== 'number' && needsLayer(command)) throw new DomainError(LayerErrorCode.NotFound, 'Select a stitch or specialty layer to edit.');
+    const result = this.editor.execute(typeof active === 'number' ? stampLayerId(command, active) : command);
     if (result.changed) {
-      this.recordProgress(this.progressService.apply(previous, result));
-      this.projectMetadata = { ...this.projectMetadata, revision: result.document.revision };
+      this.applyDocumentChange(result);
       this.historyKindsUndo.push('document');
       this.historyKindsRedo = [];
       this.traceRedoStack = [];
@@ -657,6 +814,119 @@ export class ProjectSession {
 
   executeBatch(commands: readonly DomainCommand[]): CommandResult {
     return this.execute({ type: 'batch', commands: [...commands] });
+  }
+
+  /** Metrics, revision and layer state follow every document change, including undo and redo. */
+  private applyDocumentChange(result: CommandResult): void {
+    const composite = this.editor.composite;
+    this.compositeInvalidation = invalidationFrom(result);
+    const settingsChanged = this.progressService.applyComposite(composite, this.compositeInvalidation);
+    if (settingsChanged && !this.materialSettingsPersisted) this.materialAssumptionsState = normalizeMaterialSettings(composite);
+    this.projectMetadata = { ...this.projectMetadata, revision: result.revision };
+    this.refreshLayerState();
+  }
+
+  /**
+   * Where a paste of `fragmentType` content goes: the selected layer when it
+   * is visible and of that type; otherwise a new layer at the top of its group
+   * when there is room; otherwise the topmost visible layer of the group; and
+   * nowhere when every layer of that type is hidden.
+   */
+  resolvePaste(fragmentType: LayerType): PasteDestination {
+    const document = this.editor.document;
+    const active = this.activeLayerIdState;
+    const activeLayer = typeof active === 'number' ? findLayer(document, active) : undefined;
+    if (activeLayer && activeLayer.type === fragmentType && activeLayer.visible) return { layerType: fragmentType, layerId: activeLayer.id, create: false };
+    const noun = LAYER_TYPE_NOUN[fragmentType];
+    if (canAddLayerOfType(document, fragmentType)) return { layerType: fragmentType, layerId: null, create: true, message: `Added a new ${noun} layer for your paste.` };
+    const top = topmostVisibleLayer(document, fragmentType);
+    if (top) return { layerType: fragmentType, layerId: top.id, create: false, message: `You have ${String(MAX_LAYERS_PER_TYPE)} ${noun} layers already, so this went on the top one.` };
+    return { layerType: fragmentType, layerId: null, create: false, message: PASTE_HIDDEN_MESSAGE[fragmentType] };
+  }
+
+  /**
+   * Pastes `fragment` at `at` on the resolved destination as one undo step
+   * (creating the layer first when needed) and selects that layer.
+   */
+  commitPaste(fragment: PatternFragment, at: Point, destination: PasteDestination, expectedRevision?: number): PasteCommitResult {
+    this.ensureWritable();
+    const message = destination.message === undefined ? {} : { message: destination.message };
+    // An empty fragment changes nothing; never add a layer or a history entry for it.
+    if (commandLayerType({ type: 'paste-fragment', fragment }) === null) return { result: this.unchangedResult(), layerId: null };
+    if (destination.create) {
+      const layerId = this.editor.document.nextLayerId;
+      const result = this.execute({
+        type: 'batch',
+        commands: [layerAddCommand(destination.layerType, { id: layerId }), { ...pasteFragmentCommand(fragment, at, expectedRevision), layerId }]
+      });
+      if (result.changed) this.selectLayerQuietly(layerId);
+      return { result, layerId: result.changed ? layerId : null, ...message };
+    }
+    if (destination.layerId === null) return { result: this.unchangedResult(), layerId: null, ...message };
+    const result = this.execute({ ...pasteFragmentCommand(fragment, at, expectedRevision), layerId: destination.layerId });
+    this.selectLayerQuietly(destination.layerId);
+    return { result, layerId: destination.layerId, ...message };
+  }
+
+  private selectLayerQuietly(id: ActiveLayerId): void {
+    if (typeof id === 'number' && findLayer(this.editor.document, id) === undefined) return;
+    if (id === this.activeLayerIdState) return;
+    this.activeLayerIdState = id;
+    this.refreshLayerState();
+    this.notify();
+  }
+
+  /** Adds a layer at the top of its group and selects it. */
+  addLayer(type: LayerType, name?: string): SessionCommandResult {
+    const id = this.editor.document.nextLayerId;
+    const result = this.execute(layerAddCommand(type, name === undefined ? { id } : { id, name }));
+    if (result.changed) this.selectLayerQuietly(id);
+    return result;
+  }
+
+  /** Deletes any layer, hidden ones included; the default layer is selected if the active one goes. */
+  deleteLayer(layerId: number): SessionCommandResult {
+    return this.execute(layerDeleteCommand(layerId));
+  }
+
+  /** `toIndex` is an absolute index into `layeredDocument.layers`, clamped to the layer's group. */
+  moveLayer(layerId: number, toIndex: number): SessionCommandResult {
+    return this.execute(layerMoveCommand(layerId, toIndex));
+  }
+
+  renameLayer(layerId: number, name: string): SessionCommandResult {
+    return this.execute(layerRenameCommand(layerId, name));
+  }
+
+  setLayerVisibility(layerId: number, visible: boolean): SessionCommandResult {
+    return this.execute(layerSetVisibilityCommand(layerId, visible));
+  }
+
+  /** Copies a layer directly above itself and selects the copy. */
+  duplicateLayer(layerId: number): SessionCommandResult {
+    const before = new Set(this.editor.document.layers.map((layer) => layer.id));
+    const result = this.execute(layerDuplicateCommand(layerId));
+    const copy = this.editor.document.layers.find((layer) => !before.has(layer.id));
+    if (result.changed && copy) this.selectLayerQuietly(copy.id);
+    return result;
+  }
+
+  /** Merges `sourceId` into `targetId` (same type, both visible) and selects the target. */
+  mergeLayer(sourceId: number, targetId: number): SessionCommandResult {
+    const result = this.execute(layerMergeCommand(sourceId, targetId));
+    if (result.changed) this.selectLayerQuietly(targetId);
+    return result;
+  }
+
+  /** The Canvas stitch count, as an undoable document settings change. */
+  setAidaCount(aidaCount: number): SessionCommandResult {
+    let normalized: number;
+    try {
+      normalized = normalizeAidaCount(aidaCount);
+    } catch (error) {
+      throw new WorkspaceError('save-failed', 'The stitch count is invalid.', error);
+    }
+    return this.execute({ type: 'document-settings-update', settings: { aidaCount: normalized } });
   }
 
   private recordTraceEntry(entry: TraceHistoryEntry): void {
@@ -689,6 +959,7 @@ export class ProjectSession {
       }
       this.metadataVersion += 1;
       this.assetsVersion += 1;
+      this.refreshLayerState(false);
     } else {
       if (targetDescriptor === undefined) {
         const nextMetadata = { ...this.projectMetadata };
@@ -698,12 +969,13 @@ export class ProjectSession {
         this.projectMetadata = { ...this.projectMetadata, sourceImage: cloneSourceImage(targetDescriptor) as SourceImageDescriptor };
       }
       this.metadataVersion += 1;
+      this.refreshLayerState(false);
     }
   }
 
   private traceCommandResult(): CommandResult {
     return {
-      document: this.editor.document,
+      document: this.editor.composite,
       changed: true,
       revision: this.editor.document.revision
     };
@@ -711,7 +983,7 @@ export class ProjectSession {
 
   private unchangedResult(): CommandResult {
     return {
-      document: this.editor.document,
+      document: this.editor.composite,
       changed: false,
       revision: this.editor.document.revision
     };
@@ -731,11 +1003,9 @@ export class ProjectSession {
     const kind = this.historyKindsUndo.pop();
     if (kind === undefined) return this.unchangedResult();
     if (kind === 'document') {
-      const previous = this.editor.document;
       const result = this.editor.undo();
       if (result.changed) {
-        this.recordProgress(this.progressService.apply(previous, result));
-        this.projectMetadata = { ...this.projectMetadata, revision: result.document.revision };
+        this.applyDocumentChange(result);
         this.historyKindsRedo.push('document');
         this.historyVersion += 1;
         this.reconcileHistoryMarkers();
@@ -773,11 +1043,9 @@ export class ProjectSession {
     const kind = this.historyKindsRedo.pop();
     if (kind === undefined) return this.unchangedResult();
     if (kind === 'document') {
-      const previous = this.editor.document;
       const result = this.editor.redo();
       if (result.changed) {
-        this.recordProgress(this.progressService.apply(previous, result));
-        this.projectMetadata = { ...this.projectMetadata, revision: result.document.revision };
+        this.applyDocumentChange(result);
         this.historyKindsUndo.push('document');
         this.historyVersion += 1;
         this.reconcileHistoryMarkers();
@@ -801,25 +1069,16 @@ export class ProjectSession {
     return this.traceCommandResult();
   }
 
+  /**
+   * Title, notes and display units are project metadata. A non-null
+   * `aidaCount` is the Canvas stitch count and becomes an undoable document
+   * settings change; `null` is ignored because the count is always set.
+   */
   updateMetadata(changes: { title?: string; notes?: string; aidaCount?: number | null; units?: ProjectMetadata['units'] | null }): void {
     this.ensureWritable();
     const title = changes.title ?? this.projectMetadata.title;
     const notes = changes.notes ?? this.projectMetadata.notes;
     if (typeof title !== 'string' || typeof notes !== 'string') throw new WorkspaceError('save-failed', 'Project metadata is invalid.');
-    let aidaCount = this.projectMetadata.aidaCount;
-    if (Object.prototype.hasOwnProperty.call(changes, 'aidaCount')) {
-      if (changes.aidaCount === null || changes.aidaCount === undefined) aidaCount = undefined;
-      else {
-        try {
-          // The repository validates again at the persistence boundary; this
-          // early check keeps an invalid in-memory metadata state out of the
-          // session and gives callers a deterministic error.
-          aidaCount = normalizeAidaCount(changes.aidaCount);
-        } catch (error) {
-          throw new WorkspaceError('save-failed', 'Project Aida count is invalid.', error);
-        }
-      }
-    }
     let units = this.projectMetadata.units;
     if (Object.prototype.hasOwnProperty.call(changes, 'units')) {
       if (changes.units === null || changes.units === undefined) units = undefined;
@@ -831,27 +1090,14 @@ export class ProjectSession {
         }
       }
     }
-    if (title === this.projectMetadata.title && notes === this.projectMetadata.notes && aidaCount === this.projectMetadata.aidaCount && units === this.projectMetadata.units) return;
+    if (changes.aidaCount !== null && changes.aidaCount !== undefined) this.setAidaCount(changes.aidaCount);
+    if (title === this.projectMetadata.title && notes === this.projectMetadata.notes && units === this.projectMetadata.units) return;
     const nextMetadata: ProjectMetadata = { ...this.projectMetadata, title, notes };
-    if (aidaCount === undefined) delete nextMetadata.aidaCount;
-    else nextMetadata.aidaCount = aidaCount;
     if (units === undefined) delete nextMetadata.units;
     else nextMetadata.units = units;
     this.projectMetadata = nextMetadata;
-    if (!this.materialSettingsPersisted) {
-      this.materialAssumptionsState = normalizeMaterialSettings(this.document, aidaCount === undefined ? undefined : { aidaCount });
-    }
-    this.metricOptions = {
-      ...(this.materialSettingsPersisted ? this.materialAssumptionsState : {}),
-      ...(aidaCount === undefined ? {} : { aidaCount })
-    };
-    if (Object.prototype.hasOwnProperty.call(changes, 'aidaCount')) this.progressService.setMaterialSettings(this.metricOptions);
     this.metadataVersion += 1;
     this.scheduleSave();
-  }
-
-  setAidaCount(aidaCount: number | null): void {
-    this.updateMetadata({ aidaCount });
   }
 
   updateMaterialSettings(changes: MaterialSettingsUpdate): void {
@@ -864,7 +1110,7 @@ export class ProjectSession {
     this.materialAssumptionsState = next;
     this.materialSettingsPersisted = true;
     this.projectMetadata = { ...this.projectMetadata, materialSettings: { ...next } };
-    this.metricOptions = { ...next, ...(this.projectMetadata.aidaCount === undefined ? {} : { aidaCount: this.projectMetadata.aidaCount }) };
+    this.metricOptions = { ...next };
     this.progressService.setMaterialSettings(this.metricOptions);
     this.metadataVersion += 1;
     this.scheduleSave();
@@ -932,6 +1178,7 @@ export class ProjectSession {
         this.projectMetadata = nextMetadata;
       }
       this.metadataVersion += 1;
+      this.refreshLayerState(false);
       const entry: TraceHistoryEntry = {
         label,
         beforeDescriptor: before,
@@ -980,7 +1227,7 @@ export class ProjectSession {
         const nextMetadata: ProjectMetadata = { ...this.projectMetadata, sourceImage: nextDescriptor };
         const documentRevisionChanged = this.document.revision !== this.lastSavedRevision;
         const mode = !documentRevisionChanged && this.hasExactCurrentHead() ? 'retain' : 'replace';
-        const document = this.document;
+        const document = this.layeredDocument;
         const candidateMetadataVersion = this.metadataVersion;
         const candidateAssetsVersion = this.assetsVersion;
         const traceEntry: TraceHistoryEntry = {
@@ -1025,6 +1272,7 @@ export class ProjectSession {
         // import/replace can restore the previous asset even though the live
         // asset list (and repository) no longer holds it.
         this.recordTraceEntry(traceEntry);
+        this.refreshLayerState(false);
         if (this.historyVersion === historyVersionAtCapture + 1) this.savedHistoryVersion = this.historyVersion;
         this.lastSavedRevision = Math.max(this.lastSavedRevision, result.revision);
         this.pendingRevision = this.isDirty() ? this.document.revision : null;
@@ -1063,7 +1311,7 @@ export class ProjectSession {
           .map(cloneAsset);
         const documentRevisionChanged = this.document.revision !== this.lastSavedRevision;
         const mode = !documentRevisionChanged && this.hasExactCurrentHead() ? 'retain' : 'replace';
-        const document = this.document;
+        const document = this.layeredDocument;
         const candidateMetadataVersion = this.metadataVersion;
         const candidateAssetsVersion = this.assetsVersion;
         const traceEntry: TraceHistoryEntry = {
@@ -1103,6 +1351,7 @@ export class ProjectSession {
         this.savedMetadataVersion = candidateMetadataVersion + 1;
         this.savedAssetsVersion = candidateAssetsVersion + 1;
         this.recordTraceEntry(traceEntry);
+        this.refreshLayerState(false);
         if (this.historyVersion === historyVersionAtCapture + 1) this.savedHistoryVersion = this.historyVersion;
         this.lastSavedRevision = Math.max(this.lastSavedRevision, result.revision);
         this.pendingRevision = this.isDirty() ? this.document.revision : null;
@@ -1115,20 +1364,6 @@ export class ProjectSession {
 
   async removeSourceImageAsset(): Promise<void> {
     return this.removeSourceImage();
-  }
-
-  /** Safely complete one stable-ID backstitch through the domain command path. */
-  setBackstitchCompletion(id: number, completed: boolean): SessionCommandResult {
-    return this.execute({ type: 'set-backstitch-completion', id, completed, expectedRevision: this.document.revision });
-  }
-
-  toggleBackstitchCompletion(id: number): SessionCommandResult {
-    return this.execute({ type: 'toggle-backstitch-completion', id, expectedRevision: this.document.revision });
-  }
-
-  /** Complete a sorted stable-ID run atomically as one history operation. */
-  completeBackstitches(ids: Uint32Array, operation: BulkProgressOperation = 'set'): SessionCommandResult {
-    return this.execute({ type: 'bulk-backstitch-completion', ids: ids.slice(), operation, expectedRevision: this.document.revision });
   }
 
   replaceAssets(assets: readonly ProjectAsset[]): void {
@@ -1209,7 +1444,7 @@ export class ProjectSession {
         }
         const documentRevisionChanged = this.document.revision !== this.lastSavedRevision;
         const mode = !documentRevisionChanged && this.hasExactCurrentHead() ? 'retain' : 'replace';
-        const snapshot = this.document;
+        const snapshot = this.layeredDocument;
         const history = this.exportHistoryEnvelope();
         attempt = {
           revision: snapshot.revision,

@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
-import { createDocument as createDomainDocument, type CatalogAssociation, type CreateDocumentOptions, type PatternDocument } from '../domain';
+import { createDocument as createDomainDocument, layeredFromSurface, type CatalogAssociation, type CreateDocumentOptions, type LayeredDocument } from '../domain';
 import {
   exportArchive,
   importArchive,
@@ -15,8 +15,8 @@ let databaseCounter = 20_000;
 
 const TEST_CATALOG: CatalogAssociation = { catalogId: 'test-catalog-v1', brandLabel: 'Test catalog', colorCount: 32 };
 
-function createDocument(options: Omit<CreateDocumentOptions, 'catalog'> & { catalog?: CatalogAssociation }): PatternDocument {
-  return createDomainDocument({ ...options, catalog: options.catalog ?? TEST_CATALOG });
+function createDocument(options: Omit<CreateDocumentOptions, 'catalog'> & { catalog?: CatalogAssociation }): LayeredDocument {
+  return layeredFromSurface(createDomainDocument({ ...options, catalog: options.catalog ?? TEST_CATALOG }));
 }
 
 function nextRepository(): ProjectRepository {

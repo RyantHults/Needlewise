@@ -1,14 +1,90 @@
-import type {
-  CommandResult,
-  DomainCommand,
-  PatternDocument
+import {
+  findLayer,
+  pasteFragmentCommand,
+  type CommandResult,
+  type DomainCommand,
+  type LayeredDocument,
+  type LayerType,
+  type PatternDocument,
+  type PatternFragment
 } from '../domain';
 import type { ProjectWorkspace } from '../application/workspace';
+import type { EditorActiveLayer, Invalidation } from './contracts';
 
 export interface WorkspaceEditorSnapshot {
   readonly projectId: string | null;
   readonly revision: number | null;
+  /** The flattened, visible-only composite that rendering, eyedropper and hover info read. */
   readonly document: PatternDocument | null;
+  readonly layeredDocument?: LayeredDocument | null;
+  /**
+   * The selected layer's own content, which editor tools read and change. It is
+   * null for Canvas and Reference, and equals `document` when the workspace has
+   * no layer information.
+   */
+  readonly editSurface?: PatternDocument | null;
+  readonly activeLayer?: EditorActiveLayer | null;
+  /** Changes whenever layer order, membership, type or visibility changes. */
+  readonly layerStackKey?: string | null;
+}
+
+export type ActiveLayerId = number | 'canvas' | 'reference';
+
+/** Where a paste of a given layer type lands; see `ProjectSession.resolvePaste`. */
+export interface PasteDestination {
+  readonly layerId: number | null;
+  readonly create: boolean;
+  readonly message?: string;
+}
+
+export interface PasteCommitResult {
+  readonly result: CommandResult;
+  /** Null when nothing was pasted (every layer of the type is hidden). */
+  readonly layerId?: number | null;
+  readonly message?: string;
+}
+
+/** True when a result is tagged as leaving the visible composite untouched. */
+export function compositeUnchanged(result: CommandResult): boolean {
+  return result.compositeUnchanged === true;
+}
+
+/**
+ * The base-layer invalidation a command result implies for the composite.
+ * `compositeFull` wins, then composite changed indices, then the legacy
+ * single-surface fields. Empty indices without the `compositeUnchanged` tag
+ * still redraw in full, since single backstitch edits report no cells.
+ */
+export function compositeInvalidationFor(result: CommandResult, requestedIndices?: Uint32Array): Invalidation {
+  const full: Invalidation = { layer: 'base', full: true, reason: 'editor-command' };
+  if (result.compositeFull === true || result.requiresFullRedraw === true) return full;
+  const backstitchesChanged = (result.changedBackstitchIds !== undefined && result.changedBackstitchIds.length > 0)
+    || (result.movedBackstitchIds !== undefined && result.movedBackstitchIds.length > 0)
+    || (result.createdBackstitchIds !== undefined && result.createdBackstitchIds.length > 0);
+  if (backstitchesChanged) return full;
+  const changed = result.compositeChangedIndices !== undefined
+    ? result.compositeChangedIndices
+    : result.changedIndices && result.changedIndices.length > 0 ? result.changedIndices : requestedIndices;
+  const cellRect = changed ? cellRectForIndices(changed, result.document.width, result.document.height) : undefined;
+  return cellRect ? { layer: 'base', cellRect, reason: 'editor-command' } : full;
+}
+
+function cellRectForIndices(indices: Uint32Array, width: number, height: number): Invalidation['cellRect'] {
+  if (indices.length === 0 || width < 1 || height < 1) return undefined;
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+  for (const index of indices) {
+    if (index >= width * height) continue;
+    const x = index % width;
+    const y = Math.floor(index / width);
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  }
+  return maxX < minX || maxY < minY ? undefined : { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
 }
 
 export interface EditorRevisionToken {
@@ -32,6 +108,12 @@ export class StaleEditorTransactionError extends Error {
 export interface WorkspaceEditorBoundary {
   readonly activeProjectId: string | null;
   readonly document: PatternDocument | null;
+  /** Layer support is optional so single-surface boundaries keep working. */
+  readonly layeredDocument?: LayeredDocument | null;
+  readonly activeLayerId?: ActiveLayerId | null;
+  activeLayerSurface?(): PatternDocument | null;
+  resolvePaste?(type: LayerType): PasteDestination;
+  commitPaste?(fragment: PatternFragment, position: { x: number; y: number }, destination: PasteDestination, expectedRevision?: number): PasteCommitResult;
   subscribe(listener: () => void): () => void;
   execute(command: DomainCommand): CommandResult;
   executeBatch(commands: readonly DomainCommand[]): CommandResult;
@@ -54,15 +136,47 @@ export interface WorkspaceEditorGateway {
   executeBatch(commands: readonly DomainCommand[], expected?: EditorRevisionToken): CommandResult;
   undo(expected?: EditorRevisionToken): CommandResult;
   redo(expected?: EditorRevisionToken): CommandResult;
+  /** Where a paste of this layer type would go; null `layerId` means nowhere. */
+  resolvePaste?(type: LayerType): PasteDestination;
+  /** Paste as one history entry, creating the destination layer when needed. */
+  commitPaste?(fragment: PatternFragment, position: { x: number; y: number }, destination: PasteDestination, expected?: EditorRevisionToken): PasteCommitResult;
   dispose(): void;
+}
+
+function activeLayerOf(layered: LayeredDocument, id: ActiveLayerId | null | undefined): EditorActiveLayer | null {
+  if (id === 'canvas' || id === 'reference') return { id, kind: id, visible: true };
+  if (typeof id !== 'number') return null;
+  const layer = findLayer(layered, id);
+  return layer ? { id, kind: layer.type, visible: layer.visible } : null;
+}
+
+function layerStackKeyOf(layered: LayeredDocument): string {
+  return layered.layers.map((layer) => `${String(layer.id)}:${layer.type}:${layer.visible ? 1 : 0}`).join(',');
 }
 
 function snapshotOf(boundary: WorkspaceEditorBoundary): WorkspaceEditorSnapshot {
   const document = boundary.document;
+  const layered = document ? boundary.layeredDocument ?? null : null;
+  if (!layered) {
+    return {
+      projectId: boundary.activeProjectId,
+      revision: document?.revision ?? null,
+      document,
+      layeredDocument: null,
+      editSurface: document,
+      activeLayer: null,
+      layerStackKey: null
+    };
+  }
+  const activeLayer = activeLayerOf(layered, boundary.activeLayerId);
   return {
     projectId: boundary.activeProjectId,
     revision: document?.revision ?? null,
-    document
+    document,
+    layeredDocument: layered,
+    editSurface: typeof activeLayer?.id === 'number' ? boundary.activeLayerSurface?.() ?? null : null,
+    activeLayer,
+    layerStackKey: layerStackKeyOf(layered)
   };
 }
 
@@ -153,6 +267,23 @@ class WorkspaceEditorGatewayImpl implements WorkspaceEditorGateway {
     const result = this.boundary.redo();
     this.refresh();
     return result;
+  }
+
+  resolvePaste(type: LayerType): PasteDestination {
+    if (this.boundary.resolvePaste) return this.boundary.resolvePaste(type);
+    return { layerId: null, create: false };
+  }
+
+  commitPaste(fragment: PatternFragment, position: { x: number; y: number }, destination: PasteDestination, expected?: EditorRevisionToken): PasteCommitResult {
+    this.ensureLive();
+    this.refreshFromBoundary();
+    expectedToken(expected, this.snapshot);
+    const revision = expected?.revision ?? this.snapshot.revision ?? undefined;
+    const outcome = this.boundary.commitPaste
+      ? this.boundary.commitPaste(fragment, position, destination, revision)
+      : { result: this.boundary.execute(pasteFragmentCommand(fragment, position, revision ?? 0)) };
+    this.refresh();
+    return outcome;
   }
 
   dispose(): void {

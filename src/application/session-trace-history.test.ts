@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
-  cloneDocument,
   createDocument,
-  type PatternDocument
+  createLayeredDocument,
+  type LayeredDocument
 } from '../domain';
 import {
   PersistenceError,
   createPersistencePreparationClient,
+  cloneLayeredDocument,
   cloneSessionHistory,
   sha256,
   type ProjectAsset,
@@ -25,9 +26,9 @@ import { createInstalledCatalogRegistry, DEFAULT_CATALOG_DEFINITION } from '../c
 function copyRecord(record: ProjectRecord): ProjectRecord {
   return {
     metadata: { ...record.metadata },
-    document: cloneDocument(record.document),
+    document: cloneLayeredDocument(record.document),
     ...(record.head === undefined ? {} : { head: { ...record.head } }),
-    recovery: record.recovery === null ? null : { revision: record.recovery.revision, document: cloneDocument(record.recovery.document) },
+    recovery: record.recovery === null ? null : { revision: record.recovery.revision, document: cloneLayeredDocument(record.recovery.document) },
     assets: record.assets.map((asset) => ({ ...asset, data: new Uint8Array(asset.data) })),
     ...(record.history === undefined ? {} : { history: cloneSessionHistory(record.history) })
   };
@@ -37,7 +38,7 @@ class MemoryRepository implements WorkspaceRepository {
   readonly records = new Map<string, ProjectRecord>();
   beforeSave: (() => Promise<void> | void) | undefined;
 
-  async save(projectId: string, metadata: ProjectMetadata, document: PatternDocument, assets?: readonly ProjectAssetInput[], options: SaveOptions = {}): Promise<SaveResult> {
+  async save(projectId: string, metadata: ProjectMetadata, document: LayeredDocument, assets?: readonly ProjectAssetInput[], options: SaveOptions = {}): Promise<SaveResult> {
     await this.beforeSave?.();
     const current = this.records.get(projectId);
     if (options.mode === 'retain') {
@@ -62,9 +63,9 @@ class MemoryRepository implements WorkspaceRepository {
     }
     this.records.set(projectId, {
       metadata: { ...metadata },
-      document: cloneDocument(persistedDocument),
+      document: cloneLayeredDocument(persistedDocument),
       head,
-      recovery: retained ? current?.recovery ?? null : current === undefined ? null : { revision: current.document.revision, document: cloneDocument(current.document) },
+      recovery: retained ? current?.recovery ?? null : current === undefined ? null : { revision: current.document.revision, document: cloneLayeredDocument(current.document) },
       assets: nextAssets,
       ...(options.history !== undefined && 'trace' in options.history ? { history: cloneSessionHistory(options.history as SessionHistoryEnvelope) } : {})
     });
@@ -417,7 +418,7 @@ describe('trace image unified history', () => {
     const session = new ProjectSession({
       repository,
       metadata: { id: 'bounded-trace-export', title: 'Bounded', notes: '', createdAt: 100, updatedAt: 100, revision: 0 },
-      document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [] }),
+      document: createLayeredDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [] }),
       preparationClient: {
         prepare: async () => { throw new Error('not used'); },
         getRequestId: () => 'bounded',
@@ -482,7 +483,7 @@ describe('trace image unified history', () => {
     const session = new ProjectSession({
       repository,
       metadata: { id: 'eviction', title: 'Eviction', notes: '', createdAt: 100, updatedAt: 100, revision: 0 },
-      document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }),
+      document: createLayeredDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }),
       preparationClient: createPersistencePreparationClient({ useWorker: false }),
       clock: { now: () => 100 },
       debounceMs: 0,

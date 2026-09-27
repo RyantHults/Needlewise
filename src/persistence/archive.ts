@@ -5,7 +5,7 @@ import {
   UnzipPassThrough,
   zipSync
 } from 'fflate';
-import { assertValidDocument, DOCUMENT_SCHEMA_VERSION, PALETTE_ID_MAX, normalizeAidaCount, normalizeDisplayUnits, normalizeMaterialAssumptions, type CatalogAssociation } from '../domain';
+import { assertValidLayeredDocument, DOCUMENT_SCHEMA_VERSION, PALETTE_ID_MAX, normalizeAidaCount, normalizeDisplayUnits, normalizeMaterialAssumptions, type CatalogAssociation } from '../domain';
 import { PersistenceError } from './errors';
 import {
   ARCHIVE_FORMAT,
@@ -35,7 +35,7 @@ import {
   MAX_METADATA_BYTES
 } from './limits';
 import { sha256 } from './hash';
-import { decodeDocument, encodeDocument } from './binary';
+import { applyLegacyAidaCount, decodeDocumentWithInfo, encodeDocument } from './binary';
 import { inspectRasterAsset, validateSourceImageDescriptor } from './source-image';
 import { deriveProjectSummary } from './project-thumbnail';
 
@@ -181,6 +181,13 @@ function validateMetadata(value: unknown): ValidatedMetadata {
 function withoutSourceImage(metadata: ProjectMetadata): ProjectMetadata {
   const next = { ...metadata };
   delete next.sourceImage;
+  return next;
+}
+
+/** The stitch count lives in document settings; metadata no longer carries it. */
+function withoutAidaCount(metadata: ProjectMetadata): ProjectMetadata {
+  const next = { ...metadata };
+  delete next.aidaCount;
   return next;
 }
 
@@ -547,9 +554,9 @@ function extractEntries(
 }
 
 export async function exportArchive(bundle: Omit<ArchiveBundle, 'manifest'>, options: ArchiveExportOptions = {}): Promise<Uint8Array> {
-  assertValidDocument(bundle.document);
+  assertValidLayeredDocument(bundle.document);
   const validatedMetadata = validateMetadata(bundle.metadata);
-  let metadata = validatedMetadata.metadata;
+  let metadata = withoutAidaCount(validatedMetadata.metadata);
   const warnings = [...validatedMetadata.warnings];
   if (metadata.sourceImage !== undefined) {
     try {
@@ -683,7 +690,10 @@ export async function parseArchive(input: Uint8Array | ArrayBuffer | Blob, optio
   let metadata = validatedMetadata.metadata;
   const warnings = [...validatedMetadata.warnings];
   if (metadata.id !== manifest.projectId) invalidManifest('Archive project metadata does not match its manifest.');
-  const document = decodeDocument(documentBytes);
+  const decoded = decodeDocumentWithInfo(documentBytes);
+  applyLegacyAidaCount(decoded, metadata.aidaCount);
+  metadata = withoutAidaCount(metadata);
+  const document = decoded.document;
   if (
     document.catalog.catalogId !== manifest.document.catalog.catalogId
     || document.catalog.brandLabel !== manifest.document.catalog.brandLabel

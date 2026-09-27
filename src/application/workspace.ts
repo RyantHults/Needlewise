@@ -1,16 +1,24 @@
 import {
   assertValidDocument,
+  assertValidLayeredDocument,
   cloneDocument,
   createDocument,
-  DEFAULT_AIDA_COUNT,
+  flattenDocument,
+  layeredFromSurface,
   normalizeAidaCount,
   normalizeDisplayUnits,
   normalizeMaterialSettings,
   normalizePatternSettings,
   type DomainCommand,
-  type PatternDocument
+  type LayeredDocument,
+  type LayerType,
+  type PatternDocument,
+  type PatternFragment,
+  type PatternSettings,
+  type Point
 } from '../domain';
 import {
+  cloneLayeredDocument,
   PersistenceError,
   ProjectRepository,
   type ArchiveImportOptions,
@@ -35,8 +43,14 @@ import { createCatalogReference, DEFAULT_CATALOG_DEFINITION, INSTALLED_CATALOG_R
 import { WorkspaceError } from './errors';
 import { ProjectSession } from './session';
 import type {
+  ActiveLayerId,
+  ActiveLayerInfo,
   ActiveWorkspaceState,
   ActiveMetadataChanges,
+  EditorLayerSnapshot,
+  LayerSummary,
+  PasteCommitResult,
+  PasteDestination,
   CreateProjectOptions,
   CreateConvertedProjectOptions,
   SaveState,
@@ -121,8 +135,34 @@ export function createStarterDocument(options: Pick<CreateProjectOptions, 'width
 
 export const createStarterPattern = createStarterDocument;
 
+function isLayeredDocument(document: PatternDocument | LayeredDocument): document is LayeredDocument {
+  return Array.isArray((document as Partial<LayeredDocument>).layers);
+}
+
+/**
+ * The stored document for a new project: an explicit layered document as
+ * given, or a single surface (starter or image conversion) split into the
+ * "Stitches" and "Specialty" layers. A supplied document keeps its own
+ * settings; `settings` only shape the starter. An explicit Canvas stitch
+ * count applies to either.
+ */
+function layeredProjectDocument(options: CreateProjectOptions): LayeredDocument {
+  const aida: Partial<PatternSettings> = options.aidaCount === undefined ? {} : { aidaCount: normalizeAidaCount(options.aidaCount) };
+  const source = options.document;
+  if (source !== undefined && isLayeredDocument(source)) {
+    const document = cloneLayeredDocument(source);
+    if (aida.aidaCount !== undefined) document.settings = normalizePatternSettings({ ...document.settings, ...aida });
+    return document;
+  }
+  const surface = source === undefined ? createStarterDocument(options) : cloneDocument(source);
+  assertValidDocument(surface);
+  return layeredFromSurface(surface, aida);
+}
+
+const EMPTY_LAYERS: readonly LayerSummary[] = [];
+
 function emptyState(): ActiveWorkspaceState {
-  return { projectId: null, metadata: null, document: null, health: null, usingRecovery: false, save: { ...EMPTY_SAVE_STATE }, error: null, materialSettings: null };
+  return { projectId: null, metadata: null, document: null, health: null, usingRecovery: false, save: { ...EMPTY_SAVE_STATE }, error: null, materialSettings: null, layeredDocument: null, layers: EMPTY_LAYERS, activeLayer: null };
 }
 
 export class ProjectWorkspace {
@@ -169,8 +209,25 @@ export class ProjectWorkspace {
     return this.active?.metadata ?? null;
   }
 
+  /** The flattened, visible-only composite of the active project. */
   get document(): PatternDocument | null {
     return this.active?.document ?? null;
+  }
+
+  get layeredDocument(): LayeredDocument | null {
+    return this.active?.layeredDocument ?? null;
+  }
+
+  get layers(): readonly LayerSummary[] {
+    return this.active?.layers ?? EMPTY_LAYERS;
+  }
+
+  get activeLayer(): ActiveLayerInfo | null {
+    return this.active?.activeLayer ?? null;
+  }
+
+  get activeLayerId(): ActiveLayerId | null {
+    return this.active?.activeLayerId ?? null;
   }
 
   get health(): ProjectHealth | null {
@@ -206,7 +263,7 @@ export class ProjectWorkspace {
     return this.sourceImage;
   }
 
-  catalogFor(document: PatternDocument | null | undefined): CatalogDefinition | undefined {
+  catalogFor(document: Pick<PatternDocument, 'catalog'> | null | undefined): CatalogDefinition | undefined {
     return document === null || document === undefined ? undefined : this.catalogRegistry.resolve(document.catalog);
   }
 
@@ -291,7 +348,10 @@ export class ProjectWorkspace {
       activity: this.activity,
       dailyActivity: this.dailyActivity,
       materialSettings: this.materialSettings,
-      sourceImage: this.sourceImage
+      sourceImage: this.sourceImage,
+      layeredDocument: this.layeredDocument,
+      layers: this.layers,
+      activeLayer: this.activeLayer
     };
     for (const listener of [...this.listeners]) listener();
   }
@@ -334,7 +394,7 @@ export class ProjectWorkspace {
   }
 
   private makeSession(record: ProjectRecord, usingRecovery = false, health?: ProjectHealth | null): ProjectSession {
-    assertValidDocument(record.document);
+    assertValidLayeredDocument(record.document);
     return new ProjectSession({
       repository: this.repository,
       metadata: record.metadata,
@@ -376,16 +436,12 @@ export class ProjectWorkspace {
     }
     const projectId = options.id ?? this.projectIdFactory();
     if (!isProjectId(projectId)) throw new WorkspaceError('save-failed', 'Generated project ID is invalid.');
-    const document = cloneDocument(options.document ?? createStarterDocument(options));
-    assertValidDocument(document);
-    const aidaCount = options.aidaCount === undefined ? DEFAULT_AIDA_COUNT : normalizeAidaCount(options.aidaCount);
+    const document = layeredProjectDocument(options);
+    assertValidLayeredDocument(document);
     const units = options.units === undefined ? undefined : normalizeDisplayUnits(options.units);
-    const materialSettings = normalizeMaterialSettings(document, {
-      ...(options.materialSettings ?? {}),
-      ...(aidaCount === undefined ? {} : { aidaCount })
-    });
+    const materialSettings = options.materialSettings === undefined ? undefined : normalizeMaterialSettings(flattenDocument(document), options.materialSettings);
     const now = this.clock.now();
-    const metadata: ProjectMetadata = { id: projectId, title: options.title ?? DEFAULT_TITLE, notes: options.notes ?? '', createdAt: now, updatedAt: now, revision: document.revision, ...(aidaCount === undefined ? {} : { aidaCount }), ...(units === undefined ? {} : { units }), ...(options.materialSettings === undefined ? {} : { materialSettings }), ...(options.sourceImage === undefined ? {} : { sourceImage: options.sourceImage }) };
+    const metadata: ProjectMetadata = { id: projectId, title: options.title ?? DEFAULT_TITLE, notes: options.notes ?? '', createdAt: now, updatedAt: now, revision: document.revision, ...(units === undefined ? {} : { units }), ...(materialSettings === undefined ? {} : { materialSettings }), ...(options.sourceImage === undefined ? {} : { sourceImage: options.sourceImage }) };
     try {
       const saveResult = await this.repository.save(projectId, metadata, document, options.assets, allowLegacyAssetIds ? { allowLegacyAssetIds: true } : undefined);
       this.ensureOperation(token);
@@ -468,6 +524,7 @@ export class ProjectWorkspace {
       title: options.title,
       notes: options.notes,
       aidaCount: options.aidaCount,
+      // The converted surface becomes the "Stitches" layer.
       document: draft.document,
       assets,
       materialSettings: options.materialSettings,
@@ -491,8 +548,18 @@ export class ProjectWorkspace {
     }
   }
 
+  /** The Canvas stitch count: an undoable document settings change. `null` is ignored. */
   async updateActiveAidaCount(aidaCount: number | null): Promise<void> {
-    return this.updateActiveMetadata({ aidaCount });
+    if (aidaCount === null) return;
+    const session = this.ensureActiveSession();
+    try {
+      session.setAidaCount(aidaCount);
+      if (this.debounceMs === 0) await session.flush();
+      this.operationError = null;
+      this.notify();
+    } catch (error) {
+      return this.rememberOperationError(error, 'save-failed', 'Unable to update the stitch count.');
+    }
   }
 
   async updateAidaCount(aidaCount: number | null): Promise<void> {
@@ -806,14 +873,13 @@ export class ProjectWorkspace {
     if (source.saveState.status !== 'conflict' && source.saveState.status !== 'error') await source.flush();
     const projectId = options.id ?? this.projectIdFactory();
     const copiedMaterialSettings = options.materialSettings ?? source.metadata.materialSettings;
-    const copiedAidaCount = options.aidaCount === undefined ? source.metadata.aidaCount : options.aidaCount;
     const copiedUnits = options.units === undefined ? source.metadata.units : options.units;
     const copiedSourceImage = options.sourceImage ?? source.sourceImage;
     // When the caller supplies custom assets without a matching descriptor,
     // the source reference would dangle, so only carry it when the asset set
     // is the source set (or a matching descriptor was supplied explicitly).
     const carrySourceImage = copiedSourceImage !== undefined && (options.assets === undefined || options.sourceImage !== undefined);
-    const copy = await this.createProjectInternal({ ...options, id: projectId, title: options.title ?? `${source.metadata.title} copy`, notes: options.notes ?? source.metadata.notes, aidaCount: copiedAidaCount, units: copiedUnits, document: cloneDocument(source.document), assets: options.assets ?? source.assets, ...(copiedMaterialSettings === undefined ? {} : { materialSettings: copiedMaterialSettings }), ...(carrySourceImage && copiedSourceImage !== undefined ? { sourceImage: copiedSourceImage } : {}) }, false, true);
+    const copy = await this.createProjectInternal({ ...options, id: projectId, title: options.title ?? `${source.metadata.title} copy`, notes: options.notes ?? source.metadata.notes, units: copiedUnits, document: cloneLayeredDocument(source.layeredDocument), assets: options.assets ?? source.assets, ...(copiedMaterialSettings === undefined ? {} : { materialSettings: copiedMaterialSettings }), ...(carrySourceImage && copiedSourceImage !== undefined ? { sourceImage: copiedSourceImage } : {}) }, false, true);
     return copy;
   }
 
@@ -823,6 +889,62 @@ export class ProjectWorkspace {
 
   execute(command: DomainCommand) {
     return this.ensureActiveSession().execute(command);
+  }
+
+  setActiveLayer(id: ActiveLayerId): void {
+    this.ensureActiveSession().setActiveLayer(id);
+  }
+
+  activeLayerSurface(): PatternDocument | null {
+    return this.active?.activeLayerSurface() ?? null;
+  }
+
+  getEditorLayerSnapshot(): EditorLayerSnapshot | null {
+    return this.active?.getEditorLayerSnapshot() ?? null;
+  }
+
+  canAddLayer(type: LayerType): boolean {
+    return this.active?.canAddLayer(type) ?? false;
+  }
+
+  addLayer(type: LayerType, name?: string) {
+    return this.ensureActiveSession().addLayer(type, name);
+  }
+
+  deleteLayer(layerId: number) {
+    return this.ensureActiveSession().deleteLayer(layerId);
+  }
+
+  moveLayer(layerId: number, toIndex: number) {
+    return this.ensureActiveSession().moveLayer(layerId, toIndex);
+  }
+
+  renameLayer(layerId: number, name: string) {
+    return this.ensureActiveSession().renameLayer(layerId, name);
+  }
+
+  setLayerVisibility(layerId: number, visible: boolean) {
+    return this.ensureActiveSession().setLayerVisibility(layerId, visible);
+  }
+
+  duplicateLayer(layerId: number) {
+    return this.ensureActiveSession().duplicateLayer(layerId);
+  }
+
+  mergeLayer(sourceId: number, targetId: number) {
+    return this.ensureActiveSession().mergeLayer(sourceId, targetId);
+  }
+
+  setAidaCount(aidaCount: number) {
+    return this.ensureActiveSession().setAidaCount(aidaCount);
+  }
+
+  resolvePaste(fragmentType: LayerType): PasteDestination {
+    return this.ensureActiveSession().resolvePaste(fragmentType);
+  }
+
+  commitPaste(fragment: PatternFragment, at: Point, destination: PasteDestination, expectedRevision?: number): PasteCommitResult {
+    return this.ensureActiveSession().commitPaste(fragment, at, destination, expectedRevision);
   }
 
   async updateActiveMaterialSettings(changes: Parameters<ProjectSession['updateMaterialSettings']>[0]): Promise<void> {
@@ -920,18 +1042,6 @@ export class ProjectWorkspace {
 
   async removeSourceImageAsset(): Promise<void> {
     return this.removeSourceImage();
-  }
-
-  setBackstitchCompletion(id: number, completed: boolean) {
-    return this.ensureActiveSession().setBackstitchCompletion(id, completed);
-  }
-
-  toggleBackstitchCompletion(id: number) {
-    return this.ensureActiveSession().toggleBackstitchCompletion(id);
-  }
-
-  completeBackstitches(ids: Uint32Array, operation: Parameters<ProjectSession['completeBackstitches']>[1] = 'set') {
-    return this.ensureActiveSession().completeBackstitches(ids, operation);
   }
 
   executeBatch(commands: readonly DomainCommand[]) {

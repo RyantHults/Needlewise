@@ -1,4 +1,4 @@
-import { DEFAULT_PATTERN_SETTINGS, MAX_PERSISTABLE_CELL_COUNT, type PatternDocument } from '../domain';
+import { DEFAULT_PATTERN_SETTINGS, MAX_PERSISTABLE_CELL_COUNT, flattenDocument, type LayeredDocument, type PatternDocument } from '../domain';
 import type { ProjectMetadata, ProjectThumbnailSummary } from './types';
 
 export const PROJECT_THUMBNAIL_VERSION = 1 as const;
@@ -109,12 +109,18 @@ function thumbnailDimensions(document: PatternDocument): { columns: number; rows
   };
 }
 
+function isLayeredDocument(document: LayeredDocument | PatternDocument): document is LayeredDocument {
+  return 'layers' in document;
+}
+
 /**
  * Derive a small color-only overview without encoding or decoding the
  * document. The document is authoritative; progress, backstitches, and source
- * images intentionally do not participate in this summary.
+ * images intentionally do not participate in this summary. A layered document
+ * is flattened first, so hidden layers never appear.
  */
-export function deriveProjectThumbnail(document: PatternDocument): ProjectThumbnailSummary {
+export function deriveProjectThumbnail(source: LayeredDocument | PatternDocument): ProjectThumbnailSummary {
+  const document = isLayeredDocument(source) ? flattenDocument(source) : source;
   const { columns, rows } = thumbnailDimensions(document);
   const fabricColor = normalizeThumbnailColor(document.settings?.backgroundColor)
     ?? normalizeThumbnailColor(DEFAULT_PATTERN_SETTINGS.backgroundColor)
@@ -172,7 +178,7 @@ export function deriveProjectThumbnail(document: PatternDocument): ProjectThumbn
 
 export const createProjectThumbnail = deriveProjectThumbnail;
 
-export function deriveProjectSummary(document: PatternDocument): ProjectDocumentSummary {
+export function deriveProjectSummary(document: LayeredDocument | PatternDocument): ProjectDocumentSummary {
   return { width: document.width, height: document.height, thumbnail: deriveProjectThumbnail(document) };
 }
 

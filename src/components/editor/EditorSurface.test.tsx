@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EditorSurface } from './EditorSurface';
 import { createEditorSurfaceController } from '../../editor';
 import { createCatalogReference, DEFAULT_CATALOG_DEFINITION, type CatalogDefinition, type CatalogRecord } from '../../catalog';
-import { PALETTE_SYMBOLS } from '../../domain';
+import { createLayeredDocument, layerAddCommand, applyLayerStructureCommand, PALETTE_SYMBOLS, type LayeredDocument } from '../../domain';
 import stylesText from '../../styles.css?inline';
 
 const compactDmcRecords = [...new Map([
@@ -328,6 +328,9 @@ describe('EditorSurface', () => {
     expect(within(chip).getByText('321')).toHaveClass('palette-code-label');
     expect(stylesText).toContain('.palette-rail .palette-number');
     expect(stylesText).toContain('width:2.75rem');
+    expect(stylesText).toContain('.editor-layout { position:relative; grid-template-columns:9.3rem minmax(0,1fr);');
+    expect(stylesText).toContain('grid-template-columns:repeat(2, 2.75rem)');
+    expect(stylesText).toMatch(/\.editor-rail-shell \.layers-panel \{ grid-column:1 \/ -1; grid-row:2; height:33vh; \}/);
     const brandRule = stylesText.match(/\.palette-rail \.palette-brand-label\s*\{([^}]*)\}/)?.[1] ?? '';
     expect(brandRule).toContain('white-space:nowrap');
     expect(brandRule).toContain('overflow:hidden');
@@ -344,18 +347,6 @@ describe('EditorSurface', () => {
     const shape = screen.getByRole('button', { name: 'Shape' });
     expect(shape.querySelector('[data-shape-icon="triangle"]')).toBeInTheDocument();
     expect(shape.querySelector('.brush-size-corner')).toHaveAttribute('aria-hidden', 'true');
-  });
-  it('keeps Completion a normal one-cell tool without hold settings', () => {
-    render(<EditorSurface workspace={ws} document={doc} />);
-    const completion = screen.getByRole('button', { name: 'Completion' });
-    expect(completion).not.toHaveAttribute('aria-haspopup');
-    expect(completion).not.toHaveAttribute('aria-controls');
-    expect(completion).not.toHaveAttribute('title', expect.stringContaining('hold'));
-    expect(completion.querySelector('.brush-size-corner')).toBeNull();
-    vi.useFakeTimers();
-    fireEvent.pointerDown(completion, { pointerId: 88, pointerType: 'touch', isPrimary: true });
-    act(() => vi.advanceTimersByTime(600));
-    expect(screen.queryByRole('dialog', { name: /Completion brush size/i })).not.toBeInTheDocument();
   });
   it('draws the settings marker as a bottom-right right-angle triangle', () => {
     const markerRule = stylesText.match(/\.brush-size-corner\s*\{([^}]*)\}/)?.[1] ?? '';
@@ -746,7 +737,7 @@ describe('EditorSurface', () => {
     const rail = within(screen.getByRole('navigation', { name: 'Editor sections' }));
     expect(rail.getAllByRole('button').map((button) => button.getAttribute('aria-label'))).toEqual([
       'Pan', 'Select', 'Lasso select', 'Full stitch', 'Half stitch', '3/4 stitch',
-      'Shape', 'Backstitch', 'Completion', 'Eraser', 'Fill', 'Eyedropper',
+      'Shape', 'Backstitch', 'Eraser', 'Fill', 'Eyedropper',
     ]);
   });
   it('offers a default Triangle shape tool and a long-press shape picker', () => {
@@ -1260,7 +1251,6 @@ describe('EditorSurface', () => {
     view.unmount();
   });
   it('marks top-level stitch tools with accessible pressed state and fill icons', () => { f.uiState.tool = { tool: 'paint', brush: { kind: 'half', paletteId: 1 } } as never; const view = render(<EditorSurface workspace={ws} document={doc} />); expect(screen.getByRole('button', { name: 'Full stitch' })).toHaveAttribute('aria-pressed', 'false'); expect(screen.getByRole('button', { name: 'Half stitch' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: '3/4 stitch' })).toHaveAttribute('aria-pressed', 'false'); expect(screen.getByRole('button', { name: 'Full stitch' }).querySelector('.stitch-brush-icon-full')).toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Half stitch' }).querySelector('.stitch-brush-icon-half')).toBeInTheDocument(); expect(screen.getByRole('button', { name: '3/4 stitch' }).querySelector('.stitch-brush-icon-three-quarter')).toBeInTheDocument(); view.unmount(); f.uiState.tool = { tool: 'backstitch' }; render(<EditorSurface workspace={ws} document={doc} />); expect(screen.getByRole('button', { name: 'Backstitch' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: 'Full stitch' })).toHaveAttribute('aria-pressed', 'false'); });
-   it('invokes Completion as a top-level tool and exposes its pressed state', () => { f.uiState.tool = { tool: 'completion' }; render(<EditorSurface workspace={ws} document={doc} />); const completion = screen.getByRole('button', { name: 'Completion' }); expect(completion).toHaveAttribute('title', 'Completion'); expect(completion).toHaveAttribute('aria-pressed', 'true'); expect(completion.querySelector('[data-icon="completion"]')).toBeInTheDocument(); fireEvent.click(completion); expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'completion' }); });
   it('surfaces the project name, selected-unit size, rail controls, header history, and palette rail', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     expect(screen.getByRole('heading', { name: 'Sampler' })).toBeInTheDocument();
@@ -1335,106 +1325,41 @@ describe('EditorSurface', () => {
   });
   it('auto-fits the pattern once on init with the Fit-button routine', () => { render(<EditorSurface workspace={ws} document={doc} />); expect(f.c.setMetrics).toHaveBeenCalled(); const fits = () => (f.c.handleKeyDown as ReturnType<typeof vi.fn>).mock.calls.filter(([event]) => (event as { key: string }).key === '0'); expect(fits()).toHaveLength(1); fireEvent.click(screen.getByRole('button', { name: 'Fit' })); expect(fits()).toHaveLength(2); });
   it('renders settings sections and immediate rail placement', () => { render(<EditorSurface workspace={ws} document={doc} />); expect(screen.queryByRole('button', { name: 'Delete selection' })).not.toBeInTheDocument(); expect(screen.queryByRole('button', { name: 'Paste selection' })).not.toBeInTheDocument(); expect(screen.queryByRole('button', { name: /Move controls/ })).not.toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); const settings = screen.getByRole('dialog', { name: 'Settings' }); expect(within(settings).getByRole('heading', { name: 'Project' })).toBeInTheDocument(); fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' })); expect(within(settings).getByRole('heading', { name: 'Editor' })).toBeInTheDocument(); fireEvent.click(within(settings).getByRole('button', { name: 'Right' })); expect(within(settings).getByRole('button', { name: 'Right' })).toHaveAttribute('aria-pressed', 'true'); expect(within(settings).getByRole('button', { name: 'Left' })).toHaveAttribute('aria-pressed', 'false'); expect(document.querySelector('.editor-layout')).toHaveClass('rail-right'); fireEvent.keyDown(settings, { key: 'Escape' }); expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
-  it('synchronizes and saves the pattern background color in Settings', async () => {
-    const pattern = { ...(doc as object), settings: { backgroundColor: '#F3EEE5' } } as never;
-    render(<EditorSurface workspace={ws} document={pattern} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
-    const settings = screen.getByRole('dialog', { name: 'Settings' });
-    const picker = within(settings).getByLabelText('Background color');
-    const hex = within(settings).getByLabelText('HEX Code');
-    expect(picker).toHaveValue('#f3eee5');
-    fireEvent.change(picker, { target: { value: '#12ab34' } });
-    expect(hex).toHaveValue('#12AB34');
-    fireEvent.change(hex, { target: { value: 'abc' } });
-    expect(picker).toHaveValue('#aabbcc');
-    fireEvent.click(within(settings).getByRole('button', { name: 'Save settings' }));
-    await waitFor(() => expect(executeMock()).toHaveBeenCalledWith({ type: 'document-settings-update', settings: { backgroundColor: '#AABBCC' } }));
-  });
-  it('groups Aida count and background color controls in Aida Settings', () => {
-    render(<EditorSurface workspace={ws} document={doc} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
-    const dialog = screen.getByRole('dialog', { name: 'Settings' });
-    fireEvent.click(within(dialog).getByRole('tab', { name: 'Canvas' }));
-    const section = within(dialog).getByRole('region', { name: 'Aida Settings' });
-    expect(within(section).getByLabelText('Aida count')).toBeInTheDocument();
-    expect(within(section).getByLabelText('Background color')).toBeInTheDocument();
-    expect(within(section).getByLabelText('HEX Code')).toBeInTheDocument();
-    expect(within(section).getByText(/three- or six-digit hex value/)).toBeInTheDocument();
-  });
-  it('opens Settings on Project and exposes accessible Project, Aida, and Editor tabs', async () => {
+  it('opens Settings on Project with accessible Project and Editor tabs and no Canvas tab', async () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
     const dialog = screen.getByRole('dialog', { name: 'Settings' });
     const tabs = within(dialog).getByRole('tablist', { name: 'Settings sections' });
+    expect(within(tabs).getAllByRole('tab').map((tab) => tab.textContent)).toEqual(['Project', 'Editor']);
     const project = within(tabs).getByRole('tab', { name: 'Project' });
-    const aidaTab = within(tabs).getByRole('tab', { name: 'Canvas' });
     const editor = within(tabs).getByRole('tab', { name: 'Editor' });
     expect(project).toHaveAttribute('aria-selected', 'true');
     expect(within(dialog).getByRole('tabpanel')).toHaveAttribute('aria-labelledby', project.id);
-    expect(within(dialog).getByLabelText('Title')).toBeInTheDocument();
     fireEvent.change(within(dialog).getByLabelText('Title'), { target: { value: 'Draft title' } });
-    fireEvent.click(aidaTab);
-    fireEvent.click(project);
-    expect(within(dialog).getByLabelText('Title')).toHaveValue('Draft title');
-    fireEvent.click(aidaTab);
-    let panel = within(dialog).getByRole('tabpanel');
-    expect(panel).toHaveAttribute('aria-labelledby', aidaTab.id);
-    expect(within(panel).getByLabelText('Aida count')).toBeInTheDocument();
-    expect(within(panel).getByLabelText('Background color')).toBeInTheDocument();
     fireEvent.click(editor);
-    panel = within(dialog).getByRole('tabpanel');
+    const panel = within(dialog).getByRole('tabpanel');
     expect(panel).toHaveAttribute('aria-labelledby', editor.id);
     expect(within(panel).getByRole('checkbox', { name: 'Show palette symbols' })).toBeInTheDocument();
-    editor.focus();
+    fireEvent.click(project);
+    expect(within(dialog).getByLabelText('Title')).toHaveValue('Draft title');
+    expect(within(dialog).queryByLabelText(/Background color|Stitch count|Aida count/)).not.toBeInTheDocument();
+    project.focus();
+    fireEvent.keyDown(project, { key: 'ArrowRight' });
+    await waitFor(() => expect(editor).toHaveFocus());
     fireEvent.keyDown(editor, { key: 'Home' });
     await waitFor(() => expect(project).toHaveFocus());
-    expect(project).toHaveAttribute('aria-selected', 'true');
-    fireEvent.keyDown(project, { key: 'ArrowRight' });
-    await waitFor(() => expect(aidaTab).toHaveFocus());
-    expect(aidaTab).toHaveAttribute('aria-selected', 'true');
-    fireEvent.keyDown(aidaTab, { key: 'End' });
+    fireEvent.keyDown(project, { key: 'End' });
     await waitFor(() => expect(editor).toHaveFocus());
-    expect(editor).toHaveAttribute('aria-selected', 'true');
   });
-  it('refreshes pristine settings color from document updates and reopened settings', () => {
-    const first = { ...(doc as object), settings: { backgroundColor: '#F3EEE5' } } as never;
-    const view = render(<EditorSurface workspace={ws} document={first} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
-    const dialog = screen.getByRole('dialog', { name: 'Settings' });
-    const hex = within(dialog).getByLabelText('HEX Code');
-    fireEvent.change(hex, { target: { value: '#abc' } });
-    const updated = { ...(doc as object), settings: { backgroundColor: '#123456' } } as never;
-    view.rerender(<EditorSurface workspace={ws} document={updated} />);
-    expect(hex).toHaveValue('#AABBCC');
-    fireEvent.keyDown(dialog, { key: 'Escape' });
-    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
-    expect(within(screen.getByRole('dialog', { name: 'Settings' })).getByLabelText('HEX Code')).toHaveValue('#123456');
-  });
-  it('keeps Settings open and does not save metadata for invalid background HEX', async () => {
+  it('saves project metadata from Settings without changing canvas settings', async () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
     const dialog = screen.getByRole('dialog', { name: 'Settings' });
-    fireEvent.change(within(dialog).getByLabelText('HEX Code'), { target: { value: '#12' } });
+    fireEvent.change(within(dialog).getByLabelText('Title'), { target: { value: 'Renamed' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save settings' }));
-    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
-    expect((ws as { updateActiveMetadata: ReturnType<typeof vi.fn> }).updateActiveMetadata).not.toHaveBeenCalled();
-  });
-  it('returns to Aida and exposes invalid HEX help when Save is submitted from another tab', async () => {
-    render(<EditorSurface workspace={ws} document={doc} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
-    const dialog = screen.getByRole('dialog', { name: 'Settings' });
-    fireEvent.click(within(dialog).getByRole('tab', { name: 'Canvas' }));
-    const hex = within(dialog).getByLabelText('HEX Code');
-    fireEvent.change(hex, { target: { value: '#12' } });
-    expect(within(dialog).getByText('Enter a 3- or 6-digit hex color.')).toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole('tab', { name: 'Project' }));
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Save settings' }));
-    expect(within(dialog).getByRole('tab', { name: 'Canvas' })).toHaveAttribute('aria-selected', 'true');
-    expect(within(dialog).getByText('Enter a 3- or 6-digit hex color.')).toBeVisible();
-    await waitFor(() => expect(hex).toHaveFocus());
-    expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).not.toHaveBeenCalled();
-    expect((ws as { updateActiveMetadata: ReturnType<typeof vi.fn> }).updateActiveMetadata).not.toHaveBeenCalled();
-    expect(dialog).toBeInTheDocument();
+    await waitFor(() => expect((ws as { updateActiveMetadata: ReturnType<typeof vi.fn> }).updateActiveMetadata).toHaveBeenCalledWith({ title: 'Renamed', notes: '', units: 'metric' }));
+    expect(executeMock()).not.toHaveBeenCalled();
+    expect((ws as { updateActiveAidaCount: ReturnType<typeof vi.fn> }).updateActiveAidaCount).not.toHaveBeenCalled();
   });
   it('hydrates global editor preferences across workspace changes', () => {
     localStorage.setItem('needlewise-editor-preferences:v1', JSON.stringify({ version: 1, railSide: 'right', paletteDisplay: { symbols: false, numbers: false } }));
@@ -1551,7 +1476,7 @@ describe('EditorSurface', () => {
   it('defaults project details to metric units and saves a switch through metadata', () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); expect(screen.getByRole('button', { name: 'Metric' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: 'Imperial' })).toHaveAttribute('aria-pressed', 'false'); fireEvent.click(screen.getByRole('button', { name: 'Imperial' })); expect(screen.getByRole('button', { name: 'Imperial' })).toHaveAttribute('aria-pressed', 'true'); fireEvent.click(screen.getByRole('button', { name: 'Save settings' })); expect((ws as { updateActiveMetadata: ReturnType<typeof vi.fn> }).updateActiveMetadata).toHaveBeenCalledWith({ title: 'Sampler', notes: '', units: 'imperial' }); });
   it('reflects a stored imperial preference when project details opens', () => { const base = ws as unknown as { metadata: Record<string, unknown> }; const imperialWs = { ...base, metadata: { ...base.metadata, units: 'imperial' } } as never; render(<EditorSurface workspace={imperialWs} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); expect(screen.getByRole('button', { name: 'Imperial' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: 'Metric' })).toHaveAttribute('aria-pressed', 'false'); });
   it('applies units immediately on toggle without waiting for save', () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); fireEvent.click(screen.getByRole('button', { name: 'Imperial' })); expect((ws as { updateActiveMetadata: ReturnType<typeof vi.fn> }).updateActiveMetadata).toHaveBeenCalledWith({ units: 'imperial' }); expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument(); });
-  it('guides users without a thread while keeping Completion available', () => { const empty = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: false }], backstitches: { ids: new Uint32Array() } } as never; render(<EditorSurface workspace={ws} document={empty} />); expect(screen.queryByRole('button', { name: 'Paint' })).not.toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Fill' })).toBeDisabled(); expect(screen.getByRole('button', { name: 'Backstitch' })).toBeDisabled(); fireEvent.click(screen.getByRole('button', { name: 'Completion' })); expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'completion' }); });
+  it('guides users without a thread and no longer offers a Completion tool', () => { const empty = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: false }], backstitches: { ids: new Uint32Array() } } as never; render(<EditorSurface workspace={ws} document={empty} />); expect(screen.queryByRole('button', { name: 'Paint' })).not.toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Fill' })).toBeDisabled(); expect(screen.getByRole('button', { name: 'Backstitch' })).toBeDisabled(); expect(screen.queryByRole('button', { name: 'Completion' })).not.toBeInTheDocument(); });
   it('shows catalog code before the palette name and exposes command buttons', () => { render(<EditorSurface workspace={ws} document={doc} />); const ruby = screen.getByRole('button', { name: '321Ruby' }); expect(ruby).toBeInTheDocument(); for (const name of ['Undo', 'Redo', 'Zoom in', 'Zoom out', 'Fit']) expect(screen.getByRole('button', { name })).toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: 'Undo' })); expect(f.c.handleKeyDown).toHaveBeenCalledWith(expect.objectContaining({ key: 'z', ctrlKey: true })); fireEvent.click(screen.getByRole('button', { name: 'Redo' })); expect(f.c.handleKeyDown).toHaveBeenCalledWith(expect.objectContaining({ key: 'y', ctrlKey: true })); fireEvent.click(screen.getByRole('button', { name: 'Zoom out' })); expect(f.c.handleKeyDown).toHaveBeenCalledWith(expect.objectContaining({ key: '-' })); });
   it('filters the thread-color grid, selects a swatch, and adds the summary color', async () => {
     const createdDocument = customColorDocument([
@@ -2019,5 +1944,265 @@ describe('EditorSurface', () => {
     expect(screen.queryByRole('button', { name: 'Assign ● to Ruby' })).not.toBeInTheDocument();
     fireEvent.change(filter, { target: { value: 'zzz' } });
     expect(screen.getByText(/No symbols match "zzz"/)).toBeInTheDocument();
+  });
+});
+
+describe('EditorSurface layers', () => {
+  type MockSession = ReturnType<typeof layerSession>;
+  const layeredDocument = (): LayeredDocument => createLayeredDocument({
+    width: 16,
+    height: 16,
+    catalog: COMPACT_DMC_DEFINITION.association,
+    palette: [{ name: 'Ruby', color: '#BB4444' }],
+    settings: { backgroundColor: '#F3EEE5', aidaCount: 14 },
+  });
+  const layerSession = (document: LayeredDocument, activeLayerId: number | 'canvas' | 'reference' = 1) => {
+    const layer = typeof activeLayerId === 'number' ? document.layers.find((entry) => entry.id === activeLayerId) : undefined;
+    return {
+      layeredDocument: document,
+      activeLayerId,
+      activeLayer: { id: activeLayerId, kind: layer?.type ?? activeLayerId, visible: layer?.visible ?? true, name: layer?.name ?? String(activeLayerId) },
+      setActiveLayer: vi.fn(),
+      addLayer: vi.fn(),
+      deleteLayer: vi.fn(),
+      moveLayer: vi.fn(),
+      renameLayer: vi.fn(),
+      setLayerVisibility: vi.fn(),
+      duplicateLayer: vi.fn(),
+      mergeLayer: vi.fn(),
+      setAidaCount: vi.fn(),
+    };
+  };
+  const useSession = (session: MockSession) => { (ws as { session?: unknown }).session = session; return session; };
+  const layersPanel = () => screen.getByRole('region', { name: 'Layers' });
+  const rowNames = () => [...layersPanel().querySelectorAll('.layers-list > li.layer-row')].map((row) => row.querySelector('button')?.getAttribute('aria-label'));
+  afterEach(() => {
+    delete (ws as { session?: unknown }).session;
+    delete (f.uiState as { activeLayer?: unknown }).activeLayer;
+  });
+
+  it('lists Reference, specialty, stitch and Canvas rows from top to bottom with type symbols', () => {
+    const document = layeredDocument();
+    applyLayerStructureCommand(document, layerAddCommand('stitch', { name: 'Border' }));
+    useSession(layerSession(document));
+    render(<EditorSurface workspace={ws} document={doc} />);
+    expect(rowNames()).toEqual([
+      'Add reference image',
+      'Specialty, Specialty layer',
+      'Border, Stitch layer',
+      'Stitches, Stitch layer',
+      'Canvas',
+    ]);
+    const rows = layersPanel().querySelectorAll('.layers-list > li.layer-row');
+    expect([...rows].map((row) => row.querySelector('.layer-type-symbol')?.className.split(' ')[1])).toEqual([
+      'layer-type-reference', 'layer-type-specialty', 'layer-type-stitch', 'layer-type-stitch', 'layer-type-canvas',
+    ]);
+    expect(within(layersPanel()).getByRole('button', { name: 'Stitches, Stitch layer' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(layersPanel()).getByRole('button', { name: 'Reorder Border' })).toBeInTheDocument();
+    expect(within(layersPanel()).queryByRole('button', { name: /Hide Canvas|Reorder Canvas/ })).not.toBeInTheDocument();
+    expect(layersPanel().querySelectorAll('canvas.layer-thumbnail')).toHaveLength(3);
+    // Only groups with more than one layer get a header.
+    expect([...layersPanel().querySelectorAll('.layers-group-header')].map((header) => header.textContent)).toEqual(['Stitch layers']);
+  });
+  it('shows no group headers while each group has a single layer', () => {
+    useSession(layerSession(layeredDocument()));
+    render(<EditorSurface workspace={ws} document={doc} />);
+    expect(layersPanel().querySelectorAll('.layers-group-header')).toHaveLength(0);
+  });
+
+  it('selects rows, toggles visibility and reorders within a group from the keyboard', () => {
+    const document = layeredDocument();
+    applyLayerStructureCommand(document, layerAddCommand('stitch', { name: 'Border' }));
+    const session = useSession(layerSession(document));
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.click(within(layersPanel()).getByRole('button', { name: 'Canvas' }));
+    expect(session.setActiveLayer).toHaveBeenCalledWith('canvas');
+    fireEvent.click(within(layersPanel()).getByRole('button', { name: 'Specialty, Specialty layer' }));
+    expect(session.setActiveLayer).toHaveBeenCalledWith(2);
+    fireEvent.click(within(layersPanel()).getByRole('button', { name: 'Hide Border' }));
+    expect(session.setLayerVisibility).toHaveBeenCalledWith(3, false);
+    fireEvent.keyDown(within(layersPanel()).getByRole('button', { name: 'Reorder Stitches' }), { key: 'ArrowUp' });
+    expect(session.moveLayer).toHaveBeenCalledWith(1, 1);
+    // Stitches sit below every specialty layer, so Border cannot move up.
+    fireEvent.keyDown(within(layersPanel()).getByRole('button', { name: 'Reorder Border' }), { key: 'ArrowUp' });
+    expect(session.moveLayer).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the image picker from the collapsed reference row', () => {
+    const session = useSession(layerSession(layeredDocument()));
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const input = document.querySelector<HTMLInputElement>('.trace-controls input[type="file"]')!;
+    const click = vi.spyOn(input, 'click');
+    fireEvent.click(within(layersPanel()).getByRole('button', { name: 'Add reference image' }));
+    expect(session.setActiveLayer).toHaveBeenCalledWith('reference');
+    expect(click).toHaveBeenCalled();
+  });
+
+  it('disables an Add layer option at the cap and explains why', () => {
+    const document = layeredDocument();
+    applyLayerStructureCommand(document, layerAddCommand('stitch'));
+    applyLayerStructureCommand(document, layerAddCommand('stitch'));
+    const session = useSession(layerSession(document));
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.click(within(layersPanel()).getByRole('button', { name: 'Add layer' }));
+    const menu = screen.getByRole('menu', { name: 'Add layer' });
+    const stitch = within(menu).getByRole('menuitem', { name: /Stitch layer/ });
+    expect(stitch).toBeDisabled();
+    expect(stitch).toHaveAccessibleDescription('You already have 3 stitch layers.');
+    fireEvent.click(within(menu).getByRole('menuitem', { name: /Specialty layer/ }));
+    expect(session.addLayer).toHaveBeenCalledWith('specialty');
+    expect(screen.queryByRole('menu', { name: 'Add layer' })).not.toBeInTheDocument();
+  });
+
+  it('always confirms before deleting a layer', () => {
+    const session = useSession(layerSession(layeredDocument()));
+    render(<EditorSurface workspace={ws} document={doc} />);
+    expect(screen.getByRole('heading', { name: 'Stitch layer · Stitches' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete layer' }));
+    let dialog = screen.getByRole('dialog', { name: 'Delete Stitches?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(session.deleteLayer).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Delete layer' }));
+    dialog = screen.getByRole('dialog', { name: 'Delete Stitches?' });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete layer' }));
+    expect(session.deleteLayer).toHaveBeenCalledWith(1);
+    expect(screen.queryByRole('dialog', { name: 'Delete Stitches?' })).not.toBeInTheDocument();
+  });
+
+  it('renames the selected layer from a modal and returns focus to the Rename button', async () => {
+    const session = useSession(layerSession(layeredDocument()));
+    render(<EditorSurface workspace={ws} document={doc} />);
+    expect(screen.queryByRole('textbox', { name: /name/i })).not.toBeInTheDocument();
+    const rename = screen.getByRole('button', { name: 'Rename layer' });
+    fireEvent.click(rename);
+    let dialog = screen.getByRole('dialog', { name: 'Rename layer' });
+    let field = within(dialog).getByRole('textbox', { name: 'Name' });
+    expect(field).toHaveValue('Stitches');
+    expect(field).toHaveFocus();
+    fireEvent.change(field, { target: { value: '  Sky  ' } });
+    fireEvent.submit(field.closest('form')!);
+    expect(session.renameLayer).toHaveBeenCalledWith(1, 'Sky');
+    expect(screen.queryByRole('dialog', { name: 'Rename layer' })).not.toBeInTheDocument();
+    await waitFor(() => expect(rename).toHaveFocus());
+    fireEvent.click(rename);
+    dialog = screen.getByRole('dialog', { name: 'Rename layer' });
+    field = within(dialog).getByRole('textbox', { name: 'Name' });
+    fireEvent.change(field, { target: { value: 'Ignored' } });
+    fireEvent.keyDown(field, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Rename layer' })).not.toBeInTheDocument();
+    fireEvent.click(rename);
+    dialog = screen.getByRole('dialog', { name: 'Rename layer' });
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Name' }), { target: { value: '   ' } });
+    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(session.renameLayer).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(rename).toHaveFocus());
+  });
+  it('duplicates the selected layer', () => {
+    const session = useSession(layerSession(layeredDocument()));
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Duplicate layer' }));
+    expect(session.duplicateLayer).toHaveBeenCalledWith(1);
+  });
+
+  it('offers only other visible layers of the same type as merge targets', () => {
+    const document = layeredDocument();
+    applyLayerStructureCommand(document, layerAddCommand('stitch', { name: 'Border' }));
+    applyLayerStructureCommand(document, layerAddCommand('stitch', { name: 'Hidden sky' }));
+    document.layers = document.layers.map((layer) => layer.name === 'Hidden sky' ? { ...layer, visible: false } : layer);
+    const session = useSession(layerSession(document));
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Merge into…' }));
+    const menu = screen.getByRole('menu', { name: 'Merge Stitches into' });
+    expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['Border']);
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Border' }));
+    expect(session.mergeLayer).toHaveBeenCalledWith(1, 3);
+  });
+
+  it('disables Merge into when there is no target or the selected layer is hidden', () => {
+    const document = layeredDocument();
+    useSession(layerSession(document));
+    const view = render(<EditorSurface workspace={ws} document={doc} />);
+    expect(screen.getByRole('button', { name: 'Merge into…' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Merge into…' })).toHaveAttribute('title', 'There is no other visible stitch layer to merge into.');
+    view.unmount();
+    applyLayerStructureCommand(document, layerAddCommand('stitch', { name: 'Border' }));
+    document.layers = document.layers.map((layer) => layer.id === 1 ? { ...layer, visible: false } : layer);
+    useSession(layerSession(document));
+    render(<EditorSurface workspace={ws} document={doc} />);
+    expect(screen.getByRole('button', { name: 'Merge into…' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Merge into…' })).toHaveAttribute('title', 'Show this layer to merge it.');
+  });
+
+  it('moves background color and stitch count into the Canvas layer controls', () => {
+    const session = useSession(layerSession(layeredDocument(), 'canvas'));
+    const pattern = { ...(doc as object), settings: { backgroundColor: '#F3EEE5' } } as never;
+    render(<EditorSurface workspace={ws} document={pattern} />);
+    const group = screen.getByRole('group', { name: 'Canvas settings' });
+    const hex = within(group).getByLabelText('Background color HEX code');
+    expect(hex).toHaveValue('#F3EEE5');
+    fireEvent.change(hex, { target: { value: '#12' } });
+    fireEvent.keyDown(hex, { key: 'Enter' });
+    expect(executeMock()).not.toHaveBeenCalled();
+    fireEvent.change(hex, { target: { value: 'abc' } });
+    fireEvent.keyDown(hex, { key: 'Enter' });
+    expect(executeMock()).toHaveBeenCalledWith({ type: 'document-settings-update', settings: { backgroundColor: '#AABBCC' } });
+    const picker = within(group).getByLabelText('Background color');
+    fireEvent.input(picker, { target: { value: '#12ab34' } });
+    expect(executeMock()).toHaveBeenCalledTimes(1);
+    fireEvent.change(picker, { target: { value: '#12ab34' } });
+    expect(executeMock()).toHaveBeenLastCalledWith({ type: 'document-settings-update', settings: { backgroundColor: '#12AB34' } });
+    const count = within(group).getByLabelText('Stitch count');
+    expect(count).toHaveValue('14');
+    fireEvent.change(count, { target: { value: '18' } });
+    expect(session.setAidaCount).toHaveBeenCalledWith(18);
+    expect(screen.queryByRole('button', { name: 'Rename layer' })).not.toBeInTheDocument();
+  });
+
+  it('shows the reference image controls only when the Reference row is selected', () => {
+    useSession(layerSession(layeredDocument(), 'reference'));
+    const view = render(<EditorSurface workspace={ws} document={doc} />);
+    expect(screen.getByRole('toolbar', { name: 'Reference image' })).toBeVisible();
+    view.unmount();
+    useSession(layerSession(layeredDocument(), 1));
+    render(<EditorSurface workspace={ws} document={doc} />);
+    expect(screen.getByRole('toolbar', { name: 'Reference image', hidden: true }).closest('.reference-layer-controls')).toHaveAttribute('hidden');
+  });
+
+  it('greys tools that do not fit the selected layer and explains them on hover and tap', () => {
+    (f.uiState as { activeLayer?: unknown }).activeLayer = { id: 2, kind: 'specialty', visible: true };
+    useSession(layerSession(layeredDocument(), 2));
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+    expect(full).toHaveAttribute('aria-disabled', 'true');
+    expect(full).toHaveAttribute('title', 'Select a stitch layer to use this tool.');
+    expect(screen.getByRole('button', { name: 'Backstitch' })).not.toHaveAttribute('aria-disabled');
+    expect(screen.getByRole('button', { name: 'Eraser' })).not.toHaveAttribute('aria-disabled');
+    fireEvent.click(full);
+    expect(f.c.setBrush).not.toHaveBeenCalled();
+    expect(document.querySelector('.editor-toast-region')).toHaveTextContent('Select a stitch layer to use this tool.');
+    fireEvent.click(screen.getByRole('button', { name: 'Fill' }));
+    expect(f.c.setTool).not.toHaveBeenCalledWith({ tool: 'fill' });
+  });
+
+  it('disables every editing tool on a hidden layer with the show-layer hint', () => {
+    (f.uiState as { activeLayer?: unknown }).activeLayer = { id: 1, kind: 'stitch', visible: false };
+    render(<EditorSurface workspace={ws} document={doc} />);
+    for (const name of ['Select', 'Lasso select', 'Full stitch', 'Shape', 'Backstitch', 'Eraser', 'Fill']) {
+      expect(screen.getByRole('button', { name })).toHaveAttribute('title', 'Show this layer to edit it.');
+    }
+    for (const name of ['Pan', 'Eyedropper']) expect(screen.getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('shows controller notices such as paste routing as a toast that dismisses itself', () => {
+    vi.useFakeTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const options = vi.mocked(createEditorSurfaceController).mock.calls.at(-1)![0] as { onNotice?: (message: string) => void };
+    act(() => options.onNotice?.('Added a new stitch layer for your paste.'));
+    const region = document.querySelector('.editor-toast-region')!;
+    expect(region).toHaveAttribute('role', 'status');
+    expect(region).toHaveTextContent('Added a new stitch layer for your paste.');
+    act(() => vi.advanceTimersByTime(3300));
+    expect(region).toBeEmptyDOMElement();
   });
 });

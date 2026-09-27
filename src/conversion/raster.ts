@@ -51,11 +51,6 @@ interface EncodedImageDimensions {
   readonly height: number;
 }
 
-interface EncodedSourceProbe {
-  readonly mimeType: EncodedImageMimeType;
-  readonly header: Uint8Array;
-}
-
 function defaultSurface(width: number, height: number): ConversionRasterSurface | undefined {
   try {
     if (typeof globalThis.OffscreenCanvas === 'function') {
@@ -175,7 +170,7 @@ function detectEncodedImageDimensions(bytes: Uint8Array): EncodedImageDimensions
   return undefined;
 }
 
-async function assertEncodedSourceBounds(source: Blob, options: ConversionRasterOptions, cancellation?: ConversionCancellation): Promise<EncodedSourceProbe> {
+async function assertEncodedSourceBounds(source: Blob, options: ConversionRasterOptions, cancellation?: ConversionCancellation): Promise<EncodedImageMimeType> {
   const maxBytes = options.maxBytes ?? MAX_CONVERSION_SOURCE_BYTES;
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_CONVERSION_SOURCE_BYTES) throw new ConversionError('invalid-raster', 'The image decode limit is outside the supported bounds.');
   if (!Number.isFinite(source.size) || source.size > maxBytes) throw new ConversionError('invalid-raster', 'The image source exceeds the local byte limit.');
@@ -192,34 +187,7 @@ async function assertEncodedSourceBounds(source: Blob, options: ConversionRaster
   if (!dimensions || !Number.isSafeInteger(dimensions.width) || !Number.isSafeInteger(dimensions.height) || dimensions.width < 1 || dimensions.height < 1 || dimensions.width > MAX_CONVERSION_DECODE_DIMENSION || dimensions.height > MAX_CONVERSION_DECODE_DIMENSION || dimensions.width * dimensions.height > MAX_CONVERSION_DECODE_PIXELS) {
     throw new ConversionError('invalid-raster', 'The encoded source image dimensions are outside the supported bounds.');
   }
-  return { mimeType: dimensions.mimeType, header };
-}
-
-/**
- * The shared trace decoder also probes a bounded header. For a recognized WebP
- * chunk whose payload extends beyond that probe, give it a probe-sized chunk
- * length while keeping the original full source for createImageBitmap. The
- * dimensions have already been checked from the required bytes above; this
- * only keeps the decoder's static header inspection from mistaking a valid
- * large chunk for a truncated header.
- */
-function traceDecodeSource(source: Blob, mimeType: EncodedImageMimeType, header: Uint8Array): Blob {
-  if (mimeType !== 'image/webp' || header.length < 20) return source;
-  const chunk = String.fromCharCode(header[12], header[13], header[14], header[15]);
-  const required = chunk === 'VP8X' ? 10 : chunk === 'VP8L' ? 5 : chunk === 'VP8 ' ? 10 : 0;
-  if (required === 0) return source;
-  const length = readUint32(header, 16, true);
-  const dataOffset = 20;
-  if (length < required || dataOffset + required > header.length || dataOffset + length <= header.length) return source;
-  const probe = header.slice();
-  new DataView(probe.buffer, probe.byteOffset, probe.byteLength).setUint32(16, probe.length - dataOffset, true);
-  const probeBlob = new Blob([probe], { type: mimeType });
-  return {
-    type: mimeType,
-    size: source.size,
-    arrayBuffer: () => source.arrayBuffer(),
-    slice: (start?: number, end?: number, contentType?: string) => probeBlob.slice(start, end, contentType)
-  } as unknown as Blob;
+  return dimensions.mimeType;
 }
 
 export interface RasterFit {
@@ -332,13 +300,11 @@ export async function decodeAndResampleImage(
 ): Promise<ConversionRaster> {
   assertTargetDimensions(targetWidth, targetHeight);
   conversionCancelled(cancellation);
-  const detected = await assertEncodedSourceBounds(source, options, cancellation);
-  const detectedMimeType = detected.mimeType;
+  const detectedMimeType = await assertEncodedSourceBounds(source, options, cancellation);
   conversionCancelled(cancellation);
   const createImageBitmap = options.createImageBitmap ?? (typeof globalThis.createImageBitmap === 'function' ? globalThis.createImageBitmap.bind(globalThis) as TraceCreateImageBitmap : undefined);
   const declaredMimeType = source.type.trim().toLowerCase();
   const canonicalSource = declaredMimeType === detectedMimeType ? source : source.slice(0, source.size, detectedMimeType);
-  const sourceForDecode = traceDecodeSource(canonicalSource, detectedMimeType, detected.header);
   // The conversion pipeline pre-scales oversized decodes to the working bounds,
   // so the trace decode limit is raised to the full decode ceiling.
   const decodeOptions: ConversionRasterOptions = {
@@ -366,7 +332,7 @@ export async function decodeAndResampleImage(
   };
   let decoded;
   try {
-    decoded = await decodeTraceImage(sourceForDecode, decodeOptions);
+    decoded = await decodeTraceImage(canonicalSource, decodeOptions);
   } catch (error) {
     conversionCancelled(cancellation);
     throw error;

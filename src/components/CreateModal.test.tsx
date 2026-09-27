@@ -684,7 +684,7 @@ describe('CreateModal image lifecycle', () => {
 
     fireEvent.click(checkbox);
     expect(checkbox).toBeChecked();
-    const slider = screen.getByRole('slider', { name: 'Confetti distance, 1 stitch' });
+    const slider = screen.getByRole('slider', { name: 'Confetti distance, 3 stitches' });
     expect(slider).toHaveAttribute('min', '1');
     expect(slider).toHaveAttribute('max', String(MAX_CONFETTI_DISTANCE));
     expect(screen.getByText(/Lower values clean up more/)).toBeInTheDocument();
@@ -692,15 +692,15 @@ describe('CreateModal image lifecycle', () => {
     expect(screen.getByRole('button', { name: 'Create from image' })).toBeDisabled();
     act(() => { vi.advanceTimersByTime(300); });
     await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(2));
-    expect(conversion.convert.mock.calls[1][1]).toMatchObject({ confettiDistance: 1 });
+    expect(conversion.convert.mock.calls[1][1]).toMatchObject({ confettiDistance: 3 });
     await vi.waitFor(() => expect(screen.getByRole('button', { name: 'Create from image' })).toBeEnabled());
 
-    fireEvent.change(slider, { target: { value: '3' } });
-    expect(screen.getByRole('slider', { name: 'Confetti distance, 3 stitches' })).toHaveValue('3');
+    fireEvent.change(slider, { target: { value: '1' } });
+    expect(screen.getByRole('slider', { name: 'Confetti distance, 1 stitch' })).toHaveValue('1');
     expect(screen.getByRole('button', { name: 'Create from image' })).toBeDisabled();
     act(() => { vi.advanceTimersByTime(300); });
     await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(3));
-    expect(conversion.convert.mock.calls[2][1]).toMatchObject({ confettiDistance: 3 });
+    expect(conversion.convert.mock.calls[2][1]).toMatchObject({ confettiDistance: 1 });
 
     fireEvent.click(checkbox);
     expect(screen.queryByRole('slider', { name: /Confetti distance/ })).not.toBeInTheDocument();
@@ -720,12 +720,13 @@ describe('CreateModal image lifecycle', () => {
     await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(2));
     const decrease = screen.getByRole('button', { name: 'Decrease confetti distance' });
     const increase = screen.getByRole('button', { name: 'Increase confetti distance' });
-    expect(decrease).toBeDisabled();
+    // Enabling starts at the default distance of 3, clear of both bounds.
+    expect(conversion.convert.mock.calls[1][1]).toMatchObject({ confettiDistance: 3 });
+    expect(decrease).toBeEnabled();
     expect(increase).toBeEnabled();
 
-    fireEvent.click(increase);
+    fireEvent.click(decrease);
     expect(screen.getByRole('slider', { name: 'Confetti distance, 2 stitches' })).toHaveValue('2');
-    expect(decrease).toBeEnabled();
     expect(screen.getByRole('button', { name: 'Create from image' })).toBeDisabled();
     act(() => { vi.advanceTimersByTime(300); });
     await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(3));
@@ -733,15 +734,23 @@ describe('CreateModal image lifecycle', () => {
 
     fireEvent.click(decrease);
     expect(screen.getByRole('slider', { name: 'Confetti distance, 1 stitch' })).toHaveValue('1');
+    expect(decrease).toBeDisabled();
     act(() => { vi.advanceTimersByTime(300); });
     await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(4));
     expect(conversion.convert.mock.calls[3][1]).toMatchObject({ confettiDistance: 1 });
 
+    fireEvent.click(increase);
+    expect(screen.getByRole('slider', { name: 'Confetti distance, 2 stitches' })).toHaveValue('2');
+    expect(decrease).toBeEnabled();
+    act(() => { vi.advanceTimersByTime(300); });
+    await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(5));
+    expect(conversion.convert.mock.calls[4][1]).toMatchObject({ confettiDistance: 2 });
+
     fireEvent.change(screen.getByRole('slider', { name: /Confetti distance/ }), { target: { value: String(MAX_CONFETTI_DISTANCE) } });
     expect(increase).toBeDisabled();
     act(() => { vi.advanceTimersByTime(300); });
-    await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(5));
-    expect(conversion.convert.mock.calls[4][1]).toMatchObject({ confettiDistance: MAX_CONFETTI_DISTANCE });
+    await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(6));
+    expect(conversion.convert.mock.calls[5][1]).toMatchObject({ confettiDistance: MAX_CONFETTI_DISTANCE });
   });
 
   it('converts an image dropped onto the upload zone like a chosen one', async () => {

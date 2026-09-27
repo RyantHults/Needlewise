@@ -102,12 +102,18 @@ export interface PatternSettings {
   readonly materialUnit: MaterialUnit;
   /** Canonical uppercase #RRGGBB fabric/chart background color. */
   readonly backgroundColor: string;
+  /** Fabric stitch count. It only affects size, thread and stitch estimates. */
+  readonly aidaCount: number;
 }
+
+/** Mirrors metrics' DEFAULT_AIDA_COUNT without importing it into the type layer. */
+export const DEFAULT_PATTERN_AIDA_COUNT = 14;
 
 export const DEFAULT_PATTERN_SETTINGS: PatternSettings = {
   symbolSet: 'default',
   materialUnit: MaterialUnit.Skeins,
-  backgroundColor: '#F3EEE5'
+  backgroundColor: '#F3EEE5',
+  aidaCount: DEFAULT_PATTERN_AIDA_COUNT
 };
 
 export interface PaletteEntry {
@@ -180,6 +186,65 @@ export interface PatternDocument {
 }
 
 export type Pattern = PatternDocument;
+
+export const LayerType = {
+  Stitch: 'stitch',
+  Specialty: 'specialty'
+} as const;
+
+export type LayerType = (typeof LayerType)[keyof typeof LayerType];
+
+export const MAX_LAYERS_PER_TYPE = 3;
+export const MAX_LAYER_NAME_CHARS = 60;
+export const LAYERED_DOCUMENT_VERSION = 2 as const;
+
+export const LayerErrorCode = {
+  NotFound: 'layer-not-found',
+  Hidden: 'layer-hidden',
+  TypeMismatch: 'layer-type-mismatch',
+  Limit: 'layer-limit',
+  MergeInvalid: 'layer-merge-invalid'
+} as const;
+
+export type LayerErrorCode = (typeof LayerErrorCode)[keyof typeof LayerErrorCode];
+
+interface LayerBase {
+  readonly id: number;
+  name: string;
+  visible: boolean;
+}
+
+export interface StitchLayer extends LayerBase {
+  readonly type: typeof LayerType.Stitch;
+  kind: Uint8Array;
+  colors: Uint16Array;
+  /** Always zero and never persisted; it exists so command code runs unchanged on a layer surface. */
+  completed: Uint8Array;
+}
+
+export interface SpecialtyLayer extends LayerBase {
+  readonly type: typeof LayerType.Specialty;
+  backstitches: BackstitchStore;
+}
+
+export type Layer = StitchLayer | SpecialtyLayer;
+
+export interface LayeredDocument {
+  readonly version: typeof LAYERED_DOCUMENT_VERSION;
+  readonly catalog: CatalogAssociation;
+  width: number;
+  height: number;
+  /** Bottom to top. Every stitch layer precedes every specialty layer. Canvas and reference image are not entries. */
+  layers: Layer[];
+  palette: PaletteEntry[];
+  settings: PatternSettings;
+  revision: number;
+  /** Document-wide, so backstitch ids are unique across layers. It is never decremented. */
+  nextBackstitchId: number;
+  nextPaletteId: number;
+  /** The next value allocated for a layer. It is never decremented. */
+  nextLayerId: number;
+}
 
 export interface CreateDocumentOptions {
   width: number;
@@ -346,6 +411,59 @@ export interface DeleteCellSetCommand extends DomainCommand {
   readonly expectedRevision?: number;
 }
 
+export interface LayerAddCommand extends DomainCommand {
+  readonly type: 'layer-add';
+  readonly layerType: LayerType;
+  readonly id?: number;
+  readonly name?: string;
+  /** Absolute insertion index in `layers`, clamped to the layer type's group. Defaults to the top of the group. */
+  readonly index?: number;
+}
+
+export interface LayerDeleteCommand extends DomainCommand {
+  readonly type: 'layer-delete';
+  readonly layerId: number;
+}
+
+export interface LayerMoveCommand extends DomainCommand {
+  readonly type: 'layer-move';
+  readonly layerId: number;
+  /** Absolute final index in `layers`, clamped to the layer's group. */
+  readonly toIndex: number;
+}
+
+export interface LayerRenameCommand extends DomainCommand {
+  readonly type: 'layer-rename';
+  readonly layerId: number;
+  readonly name: string;
+}
+
+export interface LayerSetVisibilityCommand extends DomainCommand {
+  readonly type: 'layer-set-visibility';
+  readonly layerId: number;
+  readonly visible: boolean;
+}
+
+export interface LayerDuplicateCommand extends DomainCommand {
+  readonly type: 'layer-duplicate';
+  readonly layerId: number;
+}
+
+export interface LayerMergeCommand extends DomainCommand {
+  readonly type: 'layer-merge';
+  readonly sourceId: number;
+  readonly targetId: number;
+}
+
+export type LayerStructureCommand =
+  | LayerAddCommand
+  | LayerDeleteCommand
+  | LayerMoveCommand
+  | LayerRenameCommand
+  | LayerSetVisibilityCommand
+  | LayerDuplicateCommand
+  | LayerMergeCommand;
+
 export interface CommandResult {
   document: PatternDocument;
   changed: boolean;
@@ -370,6 +488,12 @@ export interface CommandResult {
   recalculateMetrics?: boolean;
   /** Signals that the base renderer must be invalidated in full for a history delta. */
   requiresFullRedraw?: boolean;
+  /** Composite cells to redraw; absent with compositeFull means unknown. */
+  compositeChangedIndices?: Uint32Array;
+  /** The whole composite must be rebuilt/redrawn: structure, visibility, dimension or palette-wide changes. */
+  compositeFull?: boolean;
+  /** The visible composite did not change (for example a rename); no redraw or metrics rescan is needed. */
+  compositeUnchanged?: boolean;
 }
 
 export interface ValidationResult {

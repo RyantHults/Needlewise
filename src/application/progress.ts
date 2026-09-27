@@ -5,7 +5,7 @@ import {
   fixedPointBackstitchLength,
   materialEstimateFromCounts,
   normalizeMaterialSettings,
-  getMetricsAidaCount,
+  resolveMetricsAidaCount,
   deriveFinishedSize,
   isThreeQuarterPairKind,
   isThreeQuarterSingleKind,
@@ -13,7 +13,8 @@ import {
   type MetricsOptions,
   type NormalizedMaterialSettings,
   type PatternDocument,
-  type PatternMetrics
+  type PatternMetrics,
+  type PatternSettings
 } from '../domain';
 import {
   deleteMetricsImpactForResult,
@@ -125,28 +126,57 @@ function transitionByBoundedScan(previous: PatternDocument, next: PatternDocumen
   return delta;
 }
 
-function addCellCounts(target: Map<number, MutableCounts>, document: PatternDocument, index: number, multiplier: 1 | -1): void {
-  if (index < 0 || index >= document.kind.length) return;
-  const kind = document.kind[index];
-  const offset = index * 4;
-  const completion = document.completed[index];
-  const add = (paletteId: number, completed: boolean, field: 'full' | 'half' | 'quarter' | 'threeQuarter'): void => {
+type CellPlanes = Pick<PatternDocument, 'kind' | 'colors' | 'completed'>;
+
+/**
+ * Adds or removes cells' stitch components. One counter serves a run of
+ * cells and remembers its last palette lookup, since neighbouring cells
+ * usually share a color. Create a new counter after the map is pruned.
+ */
+class CellCounter {
+  private lastPaletteId = 0;
+  private lastCounts: MutableCounts | undefined;
+
+  constructor(private readonly target: Map<number, MutableCounts>) {}
+
+  private countsFor(paletteId: number): MutableCounts {
+    if (paletteId === this.lastPaletteId && this.lastCounts !== undefined) return this.lastCounts;
+    let counts = this.target.get(paletteId);
+    if (counts === undefined) {
+      counts = emptyCounts();
+      this.target.set(paletteId, counts);
+    }
+    this.lastPaletteId = paletteId;
+    this.lastCounts = counts;
+    return counts;
+  }
+
+  private add(paletteId: number, completed: boolean, field: 'full' | 'half' | 'quarter' | 'threeQuarter', multiplier: 1 | -1): void {
     if (paletteId === 0) return;
-    const counts = target.get(paletteId) ?? emptyCounts();
+    const counts = this.countsFor(paletteId);
     counts[field] += multiplier;
     if (completed) counts.completedComponents += multiplier;
-    target.set(paletteId, counts);
-  };
-
-  if (kind === CellKind.Full || kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash) {
-    add(document.colors[offset], (completion & 1) !== 0, kind === CellKind.Full ? 'full' : 'half');
-  } else if (isThreeQuarterSingleKind(kind)) {
-    add(document.colors[offset], (completion & 1) !== 0, 'threeQuarter');
-  } else if (isThreeQuarterPairKind(kind)) {
-    for (let slot = 0; slot < 4; slot += 1) add(document.colors[offset + slot], (completion & (1 << slot)) !== 0, 'threeQuarter');
-  } else if (kind === CellKind.Quarters) {
-    for (let slot = 0; slot < 4; slot += 1) add(document.colors[offset + slot], (completion & (1 << slot)) !== 0, 'quarter');
   }
+
+  cell(document: CellPlanes, index: number, multiplier: 1 | -1): void {
+    if (index < 0 || index >= document.kind.length) return;
+    const kind = document.kind[index];
+    const offset = index * 4;
+    const completion = document.completed[index];
+    if (kind === CellKind.Full || kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash) {
+      this.add(document.colors[offset], (completion & 1) !== 0, kind === CellKind.Full ? 'full' : 'half', multiplier);
+    } else if (isThreeQuarterSingleKind(kind)) {
+      this.add(document.colors[offset], (completion & 1) !== 0, 'threeQuarter', multiplier);
+    } else if (isThreeQuarterPairKind(kind)) {
+      for (let slot = 0; slot < 4; slot += 1) this.add(document.colors[offset + slot], (completion & (1 << slot)) !== 0, 'threeQuarter', multiplier);
+    } else if (kind === CellKind.Quarters) {
+      for (let slot = 0; slot < 4; slot += 1) this.add(document.colors[offset + slot], (completion & (1 << slot)) !== 0, 'quarter', multiplier);
+    }
+  }
+}
+
+function addCellCounts(target: Map<number, MutableCounts>, document: CellPlanes, index: number, multiplier: 1 | -1): void {
+  new CellCounter(target).cell(document, index, multiplier);
 }
 
 function addBackstitchCounts(target: Map<number, MutableCounts>, document: PatternDocument, id: number, multiplier: 1 | -1): void {
@@ -164,6 +194,68 @@ function addBackstitchCounts(target: Map<number, MutableCounts>, document: Patte
   );
   if (document.backstitches.completed[index] !== 0) counts.completedComponents += multiplier;
   target.set(paletteId, counts);
+}
+
+interface BackstitchContribution {
+  count: number;
+  lengthFixed: number;
+  completed: number;
+}
+
+function backstitchContributions(document: PatternDocument): Map<number, BackstitchContribution> {
+  const result = new Map<number, BackstitchContribution>();
+  const store = document.backstitches;
+  for (let index = 0; index < store.ids.length; index += 1) {
+    const paletteId = store.colors[index];
+    if (paletteId === 0) continue;
+    const entry = result.get(paletteId) ?? { count: 0, lengthFixed: 0, completed: 0 };
+    entry.count += 1;
+    entry.lengthFixed += fixedPointBackstitchLength(store.x1[index], store.y1[index], store.x2[index], store.y2[index]);
+    if (store.completed[index] !== 0) entry.completed += 1;
+    result.set(paletteId, entry);
+  }
+  return result;
+}
+
+function addBackstitchContributions(target: Map<number, MutableCounts>, contributions: Map<number, BackstitchContribution>, multiplier: 1 | -1): void {
+  for (const [paletteId, entry] of contributions) {
+    const counts = target.get(paletteId) ?? emptyCounts();
+    counts.backstitch += multiplier * entry.count;
+    counts.backstitchLengthFixed += multiplier * entry.lengthFixed;
+    counts.completedComponents += multiplier * entry.completed;
+    target.set(paletteId, counts);
+  }
+}
+
+/**
+ * Cells whose kind, colors or completion differ between the shadow and the composite, or
+ * null when more than a quarter of the cells differ and a full recount is
+ * cheaper than recounting each one twice.
+ */
+function changedCells(shadow: CellPlanes, composite: PatternDocument): Uint32Array | null {
+  const { kind, colors } = composite;
+  const limit = kind.length >> 2;
+  const found: number[] = [];
+  for (let index = 0; index < kind.length; index += 1) {
+    const offset = index * 4;
+    if (kind[index] === shadow.kind[index]
+      && composite.completed[index] === shadow.completed[index]
+      && colors[offset] === shadow.colors[offset]
+      && colors[offset + 1] === shadow.colors[offset + 1]
+      && colors[offset + 2] === shadow.colors[offset + 2]
+      && colors[offset + 3] === shadow.colors[offset + 3]) continue;
+    if (found.length >= limit) return null;
+    found.push(index);
+  }
+  return Uint32Array.from(found);
+}
+
+/** What changed in a composite since the last count. */
+export interface CompositeChange {
+  /** Every cell may have changed. */
+  readonly full: boolean;
+  /** Changed cells when `full` is false; absent means no cell changed. */
+  readonly indices?: Uint32Array;
 }
 
 function countsFromMetrics(metrics: PatternMetrics): Map<number, MutableCounts> {
@@ -377,15 +469,23 @@ export class ProgressMetricsService {
   private counts: Map<number, MutableCounts>;
   private current: PatternMetrics;
   private revision: number;
+  // Copies of the composite's cell planes and backstitch totals as last
+  // counted, so a change needs only the composite and its changed cells.
+  private shadow: CellPlanes | null = null;
+  private shadowBackstitches = new Map<number, BackstitchContribution>();
+  private shadowSettings: PatternSettings | null = null;
 
   constructor(document: PatternDocument, options?: MetricsOptions) {
     this.currentDocument = document;
     this.options = options;
-    this.aidaCount = getMetricsAidaCount(options);
+    this.aidaCount = resolveMetricsAidaCount(document, options);
     this.current = computePatternMetrics(document, options);
     this.settings = normalizeMaterialSettings(document, options);
     this.counts = countsFromMetrics(this.current);
     this.revision = document.revision;
+    this.shadow = { kind: document.kind.slice(), colors: document.colors.slice(), completed: document.completed.slice() };
+    this.shadowBackstitches = backstitchContributions(document);
+    this.shadowSettings = document.settings;
   }
 
   get metrics(): PatternMetrics {
@@ -403,12 +503,59 @@ export class ProgressMetricsService {
   /** Replace calibration inputs and rebuild only the derived read model. */
   setMaterialSettings(options: MetricsOptions | undefined): PatternMetrics {
     this.options = options;
-    this.aidaCount = getMetricsAidaCount(options);
-    this.settings = normalizeMaterialSettings(this.currentDocument, options);
-    this.current = computePatternMetrics(this.currentDocument, options);
-    this.counts = countsFromMetrics(this.current);
-    this.revision = this.currentDocument.revision;
-    return this.current;
+    return this.recalculate(this.currentDocument);
+  }
+
+  /**
+   * Applies a change to the layered editor's composite: changed cells are
+   * recounted against a private copy of their previous values, and
+   * backstitches, palette and settings are re-read (flattening can dedupe or
+   * reveal backstitches outside the command's own change set). Returns true
+   * when the document settings changed.
+   */
+  applyComposite(composite: PatternDocument, change: CompositeChange): boolean {
+    const settingsChanged = composite.settings !== this.shadowSettings;
+    const shadow = this.shadow;
+    if (shadow === null || shadow.kind.length !== composite.kind.length) {
+      this.recalculate(composite);
+      return settingsChanged;
+    }
+    // A full invalidation of a same-size composite (visibility, add, delete,
+    // merge, palette edits) usually changes few cells: find them by diffing
+    // against the shadow, and recount everything only when most changed.
+    const indices = change.full ? changedCells(shadow, composite) : change.indices;
+    if (indices === null) {
+      this.recalculate(composite);
+      return settingsChanged;
+    }
+    if (settingsChanged) {
+      this.settings = normalizeMaterialSettings(composite, this.options);
+      this.aidaCount = resolveMetricsAidaCount(composite, this.options);
+      this.shadowSettings = composite.settings;
+    }
+    if (indices && indices.length > 0) {
+      const counter = new CellCounter(this.counts);
+      for (const index of change.full ? indices : new Set<number>(indices)) {
+        if (index >= composite.kind.length) continue;
+        counter.cell(shadow, index, -1);
+        const offset = index * 4;
+        shadow.kind[index] = composite.kind[index];
+        shadow.colors[offset] = composite.colors[offset];
+        shadow.colors[offset + 1] = composite.colors[offset + 1];
+        shadow.colors[offset + 2] = composite.colors[offset + 2];
+        shadow.colors[offset + 3] = composite.colors[offset + 3];
+        shadow.completed[index] = composite.completed[index];
+        counter.cell(composite, index, 1);
+      }
+    }
+    const backstitches = backstitchContributions(composite);
+    addBackstitchContributions(this.counts, this.shadowBackstitches, -1);
+    addBackstitchContributions(this.counts, backstitches, 1);
+    this.shadowBackstitches = backstitches;
+    this.current = buildMetrics(composite, this.counts, this.settings, this.aidaCount);
+    this.currentDocument = composite;
+    this.revision = composite.revision;
+    return settingsChanged;
   }
 
   get materialSettings(): NormalizedMaterialSettings {
@@ -504,9 +651,14 @@ export class ProgressMetricsService {
 
   recalculate(document: PatternDocument): PatternMetrics {
     this.currentDocument = document;
+    this.aidaCount = resolveMetricsAidaCount(document, this.options);
+    this.settings = normalizeMaterialSettings(document, this.options);
     this.current = computePatternMetrics(document, this.options);
     this.counts = countsFromMetrics(this.current);
     this.revision = document.revision;
+    this.shadow = { kind: document.kind.slice(), colors: document.colors.slice(), completed: document.completed.slice() };
+    this.shadowBackstitches = backstitchContributions(document);
+    this.shadowSettings = document.settings;
     return this.current;
   }
 }

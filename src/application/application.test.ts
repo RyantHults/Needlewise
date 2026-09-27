@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   CellKind,
-  cloneDocument,
   createDocument as createDomainDocument,
   defaultPaletteSymbol,
+  flattenDocument,
+  layeredFromSurface,
+  LayerType,
+  type LayeredDocument,
   type PatternDocument
 } from '../domain';
 import {
@@ -11,6 +14,7 @@ import {
   encodeDocument,
   exportArchive,
   importArchive,
+  cloneLayeredDocument,
   cloneSessionHistory,
   PersistenceError,
   PersistencePreparationWorkerClient,
@@ -67,9 +71,9 @@ function syntheticCatalogDefinition(catalogId: string, brandLabel: string): Cata
 function copyRecord(record: ProjectRecord): ProjectRecord {
   return {
     metadata: { ...record.metadata },
-    document: cloneDocument(record.document),
+    document: cloneLayeredDocument(record.document),
     ...(record.head === undefined ? {} : { head: { ...record.head } }),
-    recovery: record.recovery === null ? null : { revision: record.recovery.revision, document: cloneDocument(record.recovery.document) },
+    recovery: record.recovery === null ? null : { revision: record.recovery.revision, document: cloneLayeredDocument(record.recovery.document) },
     assets: record.assets.map((asset) => ({ ...asset, data: new Uint8Array(asset.data) })),
     ...(record.history === undefined ? {} : { history: cloneSessionHistory(record.history) })
   };
@@ -79,12 +83,12 @@ class MemoryRepository implements WorkspaceRepository {
   readonly records = new Map<string, ProjectRecord>();
   readonly saveCalls: Array<{ id: string; revision: number }> = [];
   readonly saveModes: Array<SaveOptions['mode']> = [];
-  readonly saveDocuments: PatternDocument[] = [];
+  readonly saveDocuments: LayeredDocument[] = [];
   readonly preparedSaveCalls: string[] = [];
   failSaves = false;
   beforeSave: (() => Promise<void> | void) | undefined;
 
-  async save(projectId: string, metadata: ProjectMetadata, document: PatternDocument, assets?: readonly ProjectAssetInput[], options: SaveOptions = {}): Promise<SaveResult> {
+  async save(projectId: string, metadata: ProjectMetadata, document: LayeredDocument, assets?: readonly ProjectAssetInput[], options: SaveOptions = {}): Promise<SaveResult> {
     if (this.failSaves) throw new PersistenceError('storage-failure', 'Test storage failure.');
     await this.beforeSave?.();
     this.saveModes.push(options.mode);
@@ -113,9 +117,9 @@ class MemoryRepository implements WorkspaceRepository {
     this.saveCalls.push({ id: projectId, revision: persistedDocument.revision });
     this.records.set(projectId, {
       metadata: { ...metadata },
-      document: cloneDocument(persistedDocument),
+      document: cloneLayeredDocument(persistedDocument),
       ...(head === undefined ? {} : { head }),
-      recovery: retained ? current?.recovery ?? null : current === undefined ? null : { revision: current.document.revision, document: cloneDocument(current.document) },
+      recovery: retained ? current?.recovery ?? null : current === undefined ? null : { revision: current.document.revision, document: cloneLayeredDocument(current.document) },
       assets: nextAssets,
       ...(options.history !== undefined && 'trace' in options.history ? { history: cloneSessionHistory(options.history as SessionHistoryEnvelope) } : {})
     });
@@ -163,11 +167,11 @@ class ImmediateRepository {
   readonly records = new Map<string, ProjectRecord>();
   beforeSave: (() => Promise<void> | void) | undefined;
 
-  async save(projectId: string, metadata: ProjectMetadata, document: PatternDocument): Promise<SaveResult> {
+  async save(projectId: string, metadata: ProjectMetadata, document: LayeredDocument): Promise<SaveResult> {
     await this.beforeSave?.();
     this.saveCalls.push({ id: projectId, revision: document.revision });
     const head = { projectId, revision: document.revision, checksum: '0'.repeat(64) };
-    this.records.set(projectId, { metadata: { ...metadata }, document: cloneDocument(document), head, recovery: null, assets: [] });
+    this.records.set(projectId, { metadata: { ...metadata }, document: cloneLayeredDocument(document), head, recovery: null, assets: [] });
     return { committed: true, stale: false, revision: document.revision, head };
   }
 
@@ -175,7 +179,7 @@ class ImmediateRepository {
     const record = this.records.get(projectId);
     return record === undefined ? undefined : {
       metadata: { ...record.metadata },
-      document: cloneDocument(record.document),
+      document: cloneLayeredDocument(record.document),
       ...(record.head === undefined ? {} : { head: { ...record.head } }),
       recovery: record.recovery,
       assets: []
@@ -449,7 +453,7 @@ describe('headless project workspace', () => {
   it('resolves exact catalog associations without blocking unavailable saved documents', async () => {
     const repository = new MemoryRepository();
     const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'unavailable' });
-    const document = createStarterDocument({ width: 2, height: 2 });
+    const document = layeredFromSurface(createStarterDocument({ width: 2, height: 2 }));
     const unavailable = {
       ...document,
       catalog: { ...document.catalog, catalogId: 'uninstalled-revision' },
@@ -546,7 +550,7 @@ describe('headless project workspace', () => {
     expect(starter.palette).toHaveLength(1);
     expect(starter.palette[0]).toMatchObject({ id: 1, name: 'Black', color: '#000000' });
     expect(starter.nextPaletteId).toBe(2);
-    const decoded = decodeDocument(encodeDocument(starter));
+    const decoded = decodeDocument(encodeDocument(layeredFromSurface(starter)));
     expect(decoded.palette).toEqual(starter.palette);
     expect(decoded.nextPaletteId).toBe(2);
     expect(decoded.width).toBe(100);
@@ -738,13 +742,15 @@ describe('headless project workspace', () => {
 
       expect((await repository.load('metadata'))?.metadata).toMatchObject({ title: 'After', notes: 'new' });
 
+      // The stitch count is a Canvas document setting, never metadata.
       await workspace.updateActiveMetadata({ aidaCount: 16 });
       await workspace.flush();
-      expect(workspace.metadata?.aidaCount).toBe(16);
-      expect((await repository.load('metadata'))?.metadata.aidaCount).toBe(16);
+      expect(workspace.metadata?.aidaCount).toBeUndefined();
+      expect(workspace.document?.settings.aidaCount).toBe(16);
+      expect((await repository.load('metadata'))?.document.settings.aidaCount).toBe(16);
       await workspace.updateActiveMetadata({ aidaCount: null });
       await workspace.flush();
-      expect(workspace.metadata?.aidaCount).toBeUndefined();
+      expect(workspace.document?.settings.aidaCount).toBe(16);
 
       expect(workspace.metadata?.units).toBeUndefined();
       await workspace.updateActiveMetadata({ units: 'imperial' });
@@ -773,12 +779,12 @@ describe('headless project workspace', () => {
       session.updateMetadata({ title: 'Retained' });
       await session.flush();
       expect(repository.saveModes.at(-1)).toBe('retain');
-      expect(repository.saveDocuments.at(-1)).toBe(session.document);
+      expect(repository.saveDocuments.at(-1)).toBe(session.layeredDocument);
 
       session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
       await session.flush();
       expect(repository.saveModes.at(-1)).toBe('replace');
-      expect(repository.saveDocuments.at(-1)).not.toBe(session.document);
+      expect(repository.saveDocuments.at(-1)).not.toBe(session.layeredDocument);
     } finally {
       await workspace.dispose();
     }
@@ -798,14 +804,14 @@ describe('headless project workspace', () => {
       session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
       await session.flush();
       expect(preparation.requests).toHaveLength(1);
-      expect(preparation.requests[0].document).toBe(session.document);
+      expect(preparation.requests[0].document).toBe(session.layeredDocument);
       expect(repository.preparedSaveCalls).toHaveLength(1);
 
       session.updateMetadata({ title: 'Retained metadata' });
       await session.flush();
       expect(preparation.requests).toHaveLength(1);
       expect(repository.preparedSaveCalls).toHaveLength(1);
-      expect(repository.saveDocuments.at(-1)).toBe(session.document);
+      expect(repository.saveDocuments.at(-1)).toBe(session.layeredDocument);
 
       session.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
       await session.flush();
@@ -829,7 +835,7 @@ describe('headless project workspace', () => {
     const session = new ProjectSession({
       repository,
       metadata: { id: 'legacy-session', title: 'Legacy', notes: '', createdAt: 1, updatedAt: 1, revision: document.revision },
-      document,
+      document: layeredFromSurface(document),
       preparationClient: preparation,
       clock: { now: () => 100 },
       debounceMs: 0
@@ -841,7 +847,7 @@ describe('headless project workspace', () => {
       if (!received) throw new Error('legacy repository did not receive a document');
       const persistedSnapshot = received;
       expect(preparation.requests).toHaveLength(0);
-      expect(persistedSnapshot).not.toBe(session.document);
+      expect(persistedSnapshot).not.toBe(session.layeredDocument);
       expect(persistedSnapshot.revision).toBe(session.document.revision);
 
       session.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
@@ -864,7 +870,7 @@ describe('headless project workspace', () => {
         document: createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] })
       });
       const replacement = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Blue', color: '#36c' }] });
-      await repository.save('head-race', { id: 'head-race', title: 'External', notes: '', createdAt: 100, updatedAt: 100, revision: replacement.revision }, replacement, undefined, { allowSameRevision: true });
+      await repository.save('head-race', { id: 'head-race', title: 'External', notes: '', createdAt: 100, updatedAt: 100, revision: replacement.revision }, layeredFromSurface(replacement), undefined, { allowSameRevision: true });
 
       session.updateMetadata({ title: 'Must reject' });
       await expect(session.flush()).rejects.toMatchObject({ code: 'save-conflict' });
@@ -882,7 +888,7 @@ describe('headless project workspace', () => {
       const session = await workspace.createProject({ width: 1, height: 1, document: createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }) });
       session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
       const designRevision = session.document.revision;
-      expect(session.metadata.aidaCount).toBe(14);
+      expect(session.document.settings.aidaCount).toBe(14);
       expect(session.materialSettings).toEqual({ strands: 2, waste: 0 });
       expect(session.metrics.palettes[0].material.estimatedMeters).toBeCloseTo(0.04064);
 
@@ -923,22 +929,17 @@ describe('headless project workspace', () => {
     }
   });
 
-  it('uses the current Aida default when a copied project has no count', async () => {
+  it('carries the Canvas stitch count and layers through Save As Copy', async () => {
     const repository = new MemoryRepository();
     const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'aida-copy' });
-    const document = createStarterDocument({ width: 1, height: 1 });
-    repository.records.set('unknown-aida', {
-      metadata: { id: 'unknown-aida', title: 'Older project', notes: '', createdAt: 1, updatedAt: 1, revision: document.revision },
-      document: cloneDocument(document),
-      recovery: null,
-      assets: []
-    });
     try {
-      await workspace.openProject('unknown-aida');
-      expect(workspace.metadata?.aidaCount).toBeUndefined();
+      await workspace.createProject({ id: 'aida-source', width: 1, height: 1, aidaCount: 18 });
+      workspace.addLayer(LayerType.Stitch);
       const copy = await workspace.saveAsCopy({ id: 'aida-copy' });
-      expect(copy.metadata.aidaCount).toBe(14);
-      expect((await repository.load('aida-copy'))?.metadata.aidaCount).toBe(14);
+      expect(copy.metadata.aidaCount).toBeUndefined();
+      expect(copy.document.settings.aidaCount).toBe(18);
+      expect(copy.layers.map((layer) => layer.name)).toEqual(['Stitches', 'Stitches 2', 'Specialty']);
+      expect((await repository.load('aida-copy'))?.document.settings.aidaCount).toBe(18);
     } finally {
       await workspace.dispose();
     }
@@ -1128,7 +1129,7 @@ describe('headless project workspace', () => {
       const loaded = await repository.load('source-before');
       expect(loaded?.metadata.title).toBe('Changed after autosave started');
       expect(loaded?.metadata.sourceImage).toEqual(newDescriptor);
-      expect(loaded?.document.kind[0]).toBe(1);
+      expect(flattenDocument(loaded!.document).kind[0]).toBe(1);
       expect(loaded?.assets.map((asset) => asset.id)).toEqual(['new-reference']);
     } finally {
       repository.beforeSave = undefined;

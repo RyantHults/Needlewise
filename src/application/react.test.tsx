@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto';
 import { StrictMode } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { createDocument, CellKind } from '../domain';
+import { createLayeredDocument as createDocument, CellKind, flattenDocument } from '../domain';
 import { NeedlewiseDatabase, ProjectRepository, type ProjectMetadata } from '../persistence';
 import { ProjectWorkspace, useProjectWorkspace } from './index';
 import { createInstalledCatalogRegistry, DEFAULT_CATALOG_DEFINITION } from '../catalog';
@@ -113,7 +113,7 @@ describe('ProjectWorkspace observable adapter', () => {
         await rendered.result.current.flush();
       });
       expect(rendered.result.current.saveState.status).toBe('saved');
-      expect((await repository.load('created'))?.document.kind[0]).toBe(CellKind.Full);
+      expect(flattenDocument((await repository.load('created'))!.document).kind[0]).toBe(CellKind.Full);
     } finally {
       rendered.unmount();
       await Promise.resolve();

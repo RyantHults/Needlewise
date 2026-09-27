@@ -1,4 +1,4 @@
-import { createEditorFromHistory, type DocumentEditorHistoryDto, type PatternDocument } from '../domain';
+import { createEditorFromHistory, DOCUMENT_EDITOR_HISTORY_VERSION, type DocumentEditorHistoryDto, type LayeredDocument } from '../domain';
 import { sha256 } from './hash';
 import { isValidAssetId, MAX_ASSET_BYTES } from './limits';
 import { validateSourceImageDescriptor } from './source-image';
@@ -91,7 +91,7 @@ function stringValue(value: unknown, label: string, maximum: number): asserts va
 function validateDocumentDtoShape(value: unknown): asserts value is DocumentEditorHistoryDto {
   if (!isRecord(value)) throw new Error('document history is not an object.');
   exactKeys(value, ['version', 'undo', 'redo']);
-  if (value.version !== 1 || !Array.isArray(value.undo) || !Array.isArray(value.redo)) throw new Error('document history shape is invalid.');
+  if (value.version !== DOCUMENT_EDITOR_HISTORY_VERSION || !Array.isArray(value.undo) || !Array.isArray(value.redo)) throw new Error('document history shape is invalid.');
   if (value.undo.length + value.redo.length > MAX_SESSION_HISTORY_ENTRIES) throw new Error('document history contains too many entries.');
 }
 
@@ -322,10 +322,12 @@ async function validateTraceEntries(entries: readonly unknown[]): Promise<void> 
 /**
  * Validates the untrusted shape and budget before making any local deep copy,
  * then returns a detached structured-clone-safe envelope. A supplied document
- * is additionally used to validate the domain history chain.
+ * is additionally used to validate the domain history chain by rebuilding an
+ * editor, which replays transforms and validates layer entries; that cost is
+ * paid on load only (see `prepareSessionHistoryForSave`).
  */
 export async function prepareSessionHistory(
-  document: PatternDocument | undefined,
+  document: LayeredDocument | undefined,
   input: unknown,
   traceCurrent?: { metadata: ProjectMetadata; assets: readonly (ProjectAsset | StoredProjectAsset)[] }
 ): Promise<SessionHistoryEnvelope | undefined> {
@@ -345,6 +347,16 @@ export async function prepareSessionHistory(
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The save path: history exported from a live editor is checked for envelope
+ * shape, size, reference aliasing and trace entries, then detached. It never
+ * rebuilds an editor, so saving stays cheap however long the history is; the
+ * domain chain is validated when the history is loaded.
+ */
+export async function prepareSessionHistoryForSave(input: unknown): Promise<SessionHistoryEnvelope | undefined> {
+  return prepareSessionHistory(undefined, input);
 }
 
 export function traceStateCanonical(metadata: ProjectMetadata, assets: readonly (ProjectAsset | StoredProjectAsset)[]): string {

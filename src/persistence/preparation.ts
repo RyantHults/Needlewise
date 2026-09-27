@@ -1,4 +1,4 @@
-import { assertValidDocument, type PatternDocument } from '../domain';
+import { assertValidLayeredDocument, LayerType, type LayeredDocument } from '../domain';
 import { MAX_DOCUMENT_BYTES } from './limits';
 import { sha256 } from './hash';
 import { encodeDocument } from './binary';
@@ -19,7 +19,7 @@ export interface PersistencePreparationRequest {
   protocol: typeof PERSISTENCE_PREPARATION_PROTOCOL;
   type: typeof PERSISTENCE_PREPARE_TYPE;
   token: PersistencePreparationToken;
-  document: PatternDocument;
+  document: LayeredDocument;
 }
 
 export interface PersistencePreparedMessage {
@@ -97,7 +97,7 @@ export function validatePreparationError(value: unknown): asserts value is Persi
   ) throw new PersistenceError('invalid-document', 'Persistence preparation error output is malformed.');
 }
 
-export function createPreparationRequest(document: PatternDocument, token: PersistencePreparationToken): PersistencePreparationRequest {
+export function createPreparationRequest(document: LayeredDocument, token: PersistencePreparationToken): PersistencePreparationRequest {
   if (!validatePreparationToken(token)) throw new PersistenceError('invalid-document', 'Persistence preparation identity is malformed.');
   return { protocol: PERSISTENCE_PREPARATION_PROTOCOL, type: PERSISTENCE_PREPARE_TYPE, token: { ...token }, document };
 }
@@ -119,17 +119,17 @@ export function createPreparedMessage(token: PersistencePreparationToken, bytes:
 }
 
 /** Prepare one already persistence-owned document without cloning it. */
-export async function prepareDocumentSnapshot(document: PatternDocument, token: PersistencePreparationToken) {
+export async function prepareDocumentSnapshot(document: LayeredDocument, token: PersistencePreparationToken) {
   if (!validatePreparationToken(token)) throw new PersistenceError('invalid-document', 'Persistence preparation identity is malformed.');
   if (document.revision !== token.revision) throw new PersistenceError('invalid-document', 'Persistence preparation revision does not match its document.');
-  assertValidDocument(document);
+  assertValidLayeredDocument(document);
   const bytes = encodeDocument(document);
   const checksum = await sha256(bytes);
   return { projectId: token.projectId, revision: token.revision, requestId: token.requestId, bytes, checksum };
 }
 
 /** Transfer only the typed-array buffers owned by a preparation clone. */
-export function preparationTransferList(document: PatternDocument): Transferable[] {
+export function preparationTransferList(document: LayeredDocument): Transferable[] {
   const buffers: Transferable[] = [];
   const seen = new Set<ArrayBuffer>();
   const add = (buffer: ArrayBufferLike): void => {
@@ -137,16 +137,21 @@ export function preparationTransferList(document: PatternDocument): Transferable
     seen.add(buffer);
     buffers.push(buffer);
   };
-  add(document.kind.buffer);
-  add(document.colors.buffer);
-  add(document.completed.buffer);
-  add(document.backstitches.ids.buffer);
-  add(document.backstitches.x1.buffer);
-  add(document.backstitches.y1.buffer);
-  add(document.backstitches.x2.buffer);
-  add(document.backstitches.y2.buffer);
-  add(document.backstitches.colors.buffer);
-  add(document.backstitches.completed.buffer);
+  for (const layer of document.layers) {
+    if (layer.type === LayerType.Stitch) {
+      add(layer.kind.buffer);
+      add(layer.colors.buffer);
+      add(layer.completed.buffer);
+    } else {
+      add(layer.backstitches.ids.buffer);
+      add(layer.backstitches.x1.buffer);
+      add(layer.backstitches.y1.buffer);
+      add(layer.backstitches.x2.buffer);
+      add(layer.backstitches.y2.buffer);
+      add(layer.backstitches.colors.buffer);
+      add(layer.backstitches.completed.buffer);
+    }
+  }
   return buffers;
 }
 

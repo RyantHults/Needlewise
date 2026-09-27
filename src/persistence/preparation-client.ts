@@ -10,7 +10,8 @@ import {
   type PersistencePreparationResponse,
   type PersistencePreparedMessage
 } from './preparation';
-import { cloneDocument, type PatternDocument } from '../domain';
+import type { LayeredDocument } from '../domain';
+import { cloneLayeredDocument } from './binary';
 import { PersistenceError } from './errors';
 import { deriveProjectSummary, type ProjectDocumentSummary } from './project-thumbnail';
 import type { PreparedDocumentCapability } from './types';
@@ -27,7 +28,7 @@ export type PersistencePreparationWorkerFactory = () => PersistencePreparationWo
 export interface PersistencePreparationInput {
   projectId: string;
   revision: number;
-  document: PatternDocument;
+  document: LayeredDocument;
   requestId?: string;
 }
 
@@ -206,7 +207,7 @@ export class PersistencePreparationWorkerClient implements PersistencePreparatio
     if (input.document.revision !== input.revision) return Promise.reject(new PersistencePreparationClientError('invalid-document', 'Persistence preparation revision does not match its document.'));
     // The client owns the structured-clone equivalent. The caller may keep
     // editing its live document while preparation is queued or running.
-    const ownedDocument = cloneDocument(input.document);
+    const ownedDocument = cloneLayeredDocument(input.document);
     let summary: ProjectDocumentSummary;
     try {
       summary = deriveProjectSummary(ownedDocument);

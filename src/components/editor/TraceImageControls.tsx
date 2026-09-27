@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type MutableRefObject } from 'react';
 import { createPortal } from 'react-dom';
 import type { ProjectWorkspace } from '../../application/workspace';
 import type { PatternDocument } from '../../domain';
@@ -7,7 +7,14 @@ import type { EditorSurfaceController } from '../../editor';
 import { decodeTraceImage, disposeTraceImage, fitTraceImageBounds, TraceDecodeError } from '../../rendering/trace';
 import { MAX_TRACE_IMAGE_BYTES } from '../../rendering/trace';
 
-interface Props { workspace: ProjectWorkspace; document: PatternDocument; controller: EditorSurfaceController | null; activeTool?: string; }
+interface Props {
+  workspace: ProjectWorkspace;
+  document: PatternDocument;
+  controller: EditorSurfaceController | null;
+  activeTool?: string;
+  /** Receives a function that opens the image picker, for the layers panel's "Add image" row. */
+  filePickerRef?: MutableRefObject<(() => void) | null>;
+}
 
 /** A replacement decode is transferred to the source-change effect exactly once. */
 function handoffTrace(
@@ -29,7 +36,7 @@ function handoffTrace(
   }
 }
 
-export function TraceImageControls({ workspace, document, controller, activeTool }: Props) {
+export function TraceImageControls({ workspace, document, controller, activeTool, filePickerRef }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -47,6 +54,12 @@ export function TraceImageControls({ workspace, document, controller, activeTool
   const removeDialog = useRef<HTMLDivElement>(null);
 
   useEffect(() => () => { mountedRef.current = false; importRequestRef.current += 1; }, []);
+
+  useEffect(() => {
+    if (!filePickerRef) return undefined;
+    filePickerRef.current = () => inputRef.current?.click();
+    return () => { filePickerRef.current = null; };
+  }, [filePickerRef]);
 
   useEffect(() => {
     // React StrictMode intentionally tears effects down and replays them. The

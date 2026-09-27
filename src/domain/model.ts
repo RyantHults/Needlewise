@@ -691,7 +691,7 @@ export function defaultPaletteMaterial(name: string, catalog?: PaletteCatalogRef
 }
 
 export function clonePatternSettings(settings: PatternSettings): PatternSettings {
-  return { symbolSet: settings.symbolSet, materialUnit: settings.materialUnit, backgroundColor: settings.backgroundColor };
+  return { symbolSet: settings.symbolSet, materialUnit: settings.materialUnit, backgroundColor: settings.backgroundColor, aidaCount: settings.aidaCount };
 }
 
 export function normalizePatternSettings(settings: Partial<PatternSettings> | undefined): PatternSettings {
@@ -700,10 +700,12 @@ export function normalizePatternSettings(settings: Partial<PatternSettings> | un
   const suppliedBackgroundColor = settings?.backgroundColor === undefined
     ? DEFAULT_PATTERN_SETTINGS.backgroundColor
     : settings.backgroundColor;
+  const aidaCount = settings?.aidaCount ?? DEFAULT_PATTERN_SETTINGS.aidaCount;
   if (typeof symbolSet !== 'string' || symbolSet.trim() === '') throw new DomainError('invalid-settings', 'The symbol set must be a non-empty string.');
   if (![MaterialUnit.Skeins, MaterialUnit.Meters, MaterialUnit.Count].includes(materialUnit)) throw new DomainError('invalid-settings', `Material unit ${String(materialUnit)} is invalid.`);
   if (typeof suppliedBackgroundColor !== 'string' || !/^#[0-9A-Fa-f]{6}$/.test(suppliedBackgroundColor)) throw new DomainError('invalid-settings', 'The background color must be a 6-digit HEX color.');
-  return { symbolSet, materialUnit, backgroundColor: suppliedBackgroundColor.toUpperCase() };
+  if (typeof aidaCount !== 'number' || !Number.isFinite(aidaCount) || aidaCount <= 0) throw new DomainError('invalid-settings', 'The stitch count must be a finite number greater than zero.');
+  return { symbolSet, materialUnit, backgroundColor: suppliedBackgroundColor.toUpperCase(), aidaCount };
 }
 
 function normalizeCatalogReference(value: unknown): PaletteCatalogReference | undefined {

@@ -54,6 +54,7 @@ import {
   type ProgressChangeSet
 } from './types';
 import { assertValidDocument } from './validation';
+import { isSharedEmptyCellPlane } from './layers';
 import { assertValidPatternFragment, backstitchEndpointsContainedInCellUnion } from './fragment';
 import { fixedPointBackstitchLength } from './metrics';
 import {
@@ -371,7 +372,8 @@ export class MutationTracker {
     if (this.beforeSettings !== undefined
       && (this.beforeSettings.symbolSet !== document.settings.symbolSet
         || this.beforeSettings.materialUnit !== document.settings.materialUnit
-        || this.beforeSettings.backgroundColor !== document.settings.backgroundColor)) {
+        || this.beforeSettings.backgroundColor !== document.settings.backgroundColor
+        || this.beforeSettings.aidaCount !== document.settings.aidaCount)) {
       delta.beforeSettings = clonePatternSettings(this.beforeSettings);
       delta.afterSettings = clonePatternSettings(document.settings);
     }
@@ -3339,6 +3341,7 @@ function paletteMerge(document: PatternDocument, command: DomainCommand): Mutati
   if (!fromEntry) throw new DomainError('unknown-palette', `Palette ID ${String(from)} does not exist.`);
   const to = toValue === undefined ? document.nextPaletteId : requiredNumber(toValue, 'to');
   let toEntry = findPaletteEntry(document, to);
+  const createdTo = !toEntry;
   if (!toEntry) {
     if (createInput === undefined || typeof createInput !== 'object' || createInput === null) throw new DomainError('unknown-palette', `Palette ID ${String(to)} does not exist.`);
     paletteCreate(document, { type: 'palette-create', ...createInput as Record<string, unknown>, id: to, active: true });
@@ -3347,11 +3350,22 @@ function paletteMerge(document: PatternDocument, command: DomainCommand): Mutati
   if (from === to) throw new DomainError('palette-merge', 'A palette color cannot merge into itself.');
   if (!toEntry) throw new DomainError('unknown-palette', `Palette ID ${String(to)} does not exist.`);
   if (!toEntry.active) throw new DomainError('palette-inactive', `Palette ID ${String(to)} is not active.`);
-  const before = cloneDocument(document);
-  for (let index = 0; index < document.colors.length; index += 1) if (document.colors[index] === from) document.colors[index] = to;
-  for (let index = 0; index < document.backstitches.colors.length; index += 1) if (document.backstitches.colors[index] === from) document.backstitches.colors[index] = to;
-  if (fromEntry.active) document.palette = document.palette.map((candidate) => candidate.id === from ? { ...candidate, active: false } : candidate);
-  return sameContent(before, document) ? noChange() : changed(true);
+  let didChange = createdTo;
+  for (let index = 0; index < document.colors.length; index += 1) {
+    if (document.colors[index] !== from) continue;
+    document.colors[index] = to;
+    didChange = true;
+  }
+  for (let index = 0; index < document.backstitches.colors.length; index += 1) {
+    if (document.backstitches.colors[index] !== from) continue;
+    document.backstitches.colors[index] = to;
+    didChange = true;
+  }
+  if (fromEntry.active) {
+    document.palette = document.palette.map((candidate) => candidate.id === from ? { ...candidate, active: false } : candidate);
+    didChange = true;
+  }
+  return didChange ? changed(true) : noChange();
 }
 
 function paletteDelete(document: PatternDocument, command: DomainCommand): MutationInfo {
@@ -3416,7 +3430,9 @@ function rotateOnce(document: PatternDocument, clockwise: boolean): void {
   const nextKind = new Uint8Array(nextWidth * nextHeight);
   const nextColors = new Uint16Array(nextWidth * nextHeight * 4);
   const nextCompleted = new Uint8Array(nextWidth * nextHeight);
-  for (let y = 0; y < oldHeight; y += 1) {
+  // Specialty layer surfaces share all-zero cell planes; their transformed planes are simply zero.
+  const cellsEmpty = isSharedEmptyCellPlane(oldKind);
+  for (let y = 0; !cellsEmpty && y < oldHeight; y += 1) {
     for (let x = 0; x < oldWidth; x += 1) {
       const oldIndex = y * oldWidth + x;
       const nextX = clockwise ? oldHeight - 1 - y : y;
@@ -3477,7 +3493,8 @@ function mirror(document: PatternDocument, horizontal: boolean): void {
   const nextKind = new Uint8Array(oldKind.length);
   const nextColors = new Uint16Array(oldColors.length);
   const nextCompleted = new Uint8Array(oldCompleted.length);
-  for (let y = 0; y < document.height; y += 1) {
+  const cellsEmpty = isSharedEmptyCellPlane(oldKind);
+  for (let y = 0; !cellsEmpty && y < document.height; y += 1) {
     for (let x = 0; x < document.width; x += 1) {
       const oldIndex = y * document.width + x;
       const nextX = horizontal ? document.width - 1 - x : x;
@@ -3546,7 +3563,7 @@ function parseTurns(command: DomainCommand, clockwiseDefault: boolean): number {
 
 function sameContent(left: PatternDocument, right: PatternDocument): boolean {
   if (left.width !== right.width || left.height !== right.height || left.palette.length !== right.palette.length || left.backstitches.ids.length !== right.backstitches.ids.length || left.nextBackstitchId !== right.nextBackstitchId || left.nextPaletteId !== right.nextPaletteId) return false;
-  if (left.settings.symbolSet !== right.settings.symbolSet || left.settings.materialUnit !== right.settings.materialUnit || left.settings.backgroundColor !== right.settings.backgroundColor) return false;
+  if (left.settings.symbolSet !== right.settings.symbolSet || left.settings.materialUnit !== right.settings.materialUnit || left.settings.backgroundColor !== right.settings.backgroundColor || left.settings.aidaCount !== right.settings.aidaCount) return false;
   for (let index = 0; index < left.kind.length; index += 1) {
     if (left.kind[index] !== right.kind[index] || left.completed[index] !== right.completed[index]) return false;
     const offset = index * 4;
@@ -3561,22 +3578,62 @@ function sameContent(left: PatternDocument, right: PatternDocument): boolean {
 
 export const documentsEqual = sameContent;
 
+function rotationTurns(command: DomainCommand, type: string): number {
+  let turns = parseTurns(command, type !== 'rotate-ccw');
+  if (type === 'rotate' && valueOf(command, 'direction') !== undefined) {
+    const direction = String(valueOf(command, 'direction')).toLowerCase();
+    turns = parseTurns(command, direction !== 'counterclockwise' && direction !== 'ccw');
+  }
+  return turns;
+}
+
+function mirrorType(command: DomainCommand, type: string): 'mirror-horizontal' | 'mirror-vertical' | undefined {
+  if (type === 'mirror') {
+    const axis = String(valueOf(command, 'axis', 'direction') ?? 'horizontal').toLowerCase();
+    return axis === 'vertical' || axis === 'y' || axis === 'top-bottom' ? 'mirror-vertical' : 'mirror-horizontal';
+  }
+  if (type === 'mirror-horizontal' || type === 'mirror-left-right') return 'mirror-horizontal';
+  if (type === 'mirror-vertical' || type === 'mirror-top-bottom') return 'mirror-vertical';
+  return undefined;
+}
+
+/**
+ * For a rotate or mirror command, a canonical forward command and its exact
+ * inverse, so history can undo the transform instead of storing planes.
+ * Undefined for any other command and for a zero-turn rotation.
+ */
+export function canonicalTransformCommand(command: DomainCommand): { forward: DomainCommand; inverse: DomainCommand } | undefined {
+  if (!command || typeof command.type !== 'string') return undefined;
+  const type = normalizeType(command.type);
+  const mirrorAxis = mirrorType(command, type);
+  if (mirrorAxis !== undefined) return { forward: { type: mirrorAxis }, inverse: { type: mirrorAxis } };
+  if (type !== 'rotate-cw' && type !== 'rotate-ccw' && type !== 'rotate') return undefined;
+  const turns = rotationTurns(command, type);
+  if (turns === 0) return undefined;
+  return { forward: { type: 'rotate-cw', quarterTurns: turns }, inverse: { type: 'rotate-cw', quarterTurns: 4 - turns } };
+}
+
+/** For a crop command, the canonical `{ type: 'crop', x, y, width, height }` form; otherwise undefined. */
+export function canonicalCropCommand(command: DomainCommand): DomainCommand | undefined {
+  if (!command || typeof command.type !== 'string' || normalizeType(command.type) !== 'crop') return undefined;
+  const rect = parseCrop(command);
+  return { type: 'crop', x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+}
+
 function transformCommand(document: PatternDocument, command: DomainCommand, type: string): MutationInfo {
+  // Transforms replace every plane and the backstitch store rather than writing
+  // them in place, so a shallow snapshot is enough for no-op detection.
   if (type === 'rotate-cw' || type === 'rotate-ccw' || type === 'rotate') {
-    const before = cloneDocument(document);
-    const clockwiseDefault = type !== 'rotate-ccw';
-    let turns = parseTurns(command, clockwiseDefault);
-    if (type === 'rotate' && valueOf(command, 'direction') !== undefined) {
-      const direction = String(valueOf(command, 'direction')).toLowerCase();
-      turns = parseTurns(command, direction !== 'counterclockwise' && direction !== 'ccw');
-    }
+    const before = { ...document };
+    const turns = rotationTurns(command, type);
     if (turns === 0) return noChange();
-    // `turns` is normalized to clockwise turns, so three clockwise turns
-    // represent one counter-clockwise turn without a second coordinate path.
-    for (let turn = 0; turn < turns; turn += 1) rotateOnce(document, true);
+    // `turns` is normalized to clockwise turns; three clockwise turns run as
+    // one counter-clockwise pass so an undone rotation costs a single pass.
+    if (turns === 3) rotateOnce(document, false);
+    else for (let turn = 0; turn < turns; turn += 1) rotateOnce(document, true);
     return sameContent(before, document) ? noChange() : changed(true);
   }
-  const before = cloneDocument(document);
+  const before = { ...document };
   const horizontal = type === 'mirror-horizontal' || type === 'mirror-left-right';
   mirror(document, horizontal);
   return sameContent(before, document) ? noChange() : changed(true);
@@ -3608,7 +3665,8 @@ function applyCrop(document: PatternDocument, command: DomainCommand): MutationI
   const nextKind = new Uint8Array(rect.width * rect.height);
   const nextColors = new Uint16Array(rect.width * rect.height * 4);
   const nextCompleted = new Uint8Array(rect.width * rect.height);
-  for (let y = 0; y < rect.height; y += 1) {
+  const cellsEmpty = isSharedEmptyCellPlane(oldKind);
+  for (let y = 0; !cellsEmpty && y < rect.height; y += 1) {
     for (let x = 0; x < rect.width; x += 1) {
       const oldIndex = (rect.y + y) * oldWidth + rect.x + x;
       const nextIndex = y * rect.width + x;
@@ -3768,7 +3826,8 @@ function applyOneToDraftInternal(document: PatternDocument, command: DomainComma
       const normalized = normalizePatternSettings({ ...document.settings, ...suppliedSettings as Partial<PatternSettings> });
       if (normalized.symbolSet === document.settings.symbolSet
         && normalized.materialUnit === document.settings.materialUnit
-        && normalized.backgroundColor === document.settings.backgroundColor) return noChange();
+        && normalized.backgroundColor === document.settings.backgroundColor
+        && normalized.aidaCount === document.settings.aidaCount) return noChange();
       document.settings = normalized;
       return changed();
     }

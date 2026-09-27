@@ -286,6 +286,58 @@ describe('trace image projection and local raster utilities', () => {
     decoded.dispose?.();
   });
 
+  it('accepts simple-format WebP chunks that extend past the header probe', async () => {
+    // A lossy VP8 chunk holds the whole bitstream, so real files (for example
+    // a 1057x1600 photo with a 337,002-byte chunk) run far past the 64 KiB probe.
+    const vp8 = new Uint8Array(100_000);
+    vp8.set([82, 73, 70, 70, 0, 0, 0, 0, 87, 69, 66, 80, 86, 80, 56, 32], 0);
+    const vp8View = new DataView(vp8.buffer);
+    vp8View.setUint32(4, 337_014, true);
+    vp8View.setUint32(16, 337_002, true);
+    vp8.set([157, 1, 42], 23);
+    vp8View.setUint16(26, 1_057, true);
+    vp8View.setUint16(28, 1_600, true);
+    const vp8Bitmap = { width: 1_057, height: 1_600, close: vi.fn() };
+    const vp8Decoded = await decodeTraceImage(new Blob([vp8], { type: 'image/webp' }), { createImageBitmap: vi.fn(async () => vp8Bitmap), maxPixels: 50_000_000 });
+    expect(vp8Decoded.width).toBe(1_057);
+    expect(vp8Decoded.height).toBe(1_600);
+    vp8Decoded.dispose?.();
+
+    const vp8l = new Uint8Array(100_000);
+    vp8l.set([82, 73, 70, 70, 0, 0, 0, 0, 87, 69, 66, 80, 86, 80, 56, 76], 0);
+    new DataView(vp8l.buffer).setUint32(16, 250_000, true);
+    vp8l.set([47, 9, 192, 4, 0], 20);
+    const vp8lBitmap = { width: 10, height: 20, close: vi.fn() };
+    const vp8lDecoded = await decodeTraceImage(new Blob([vp8l], { type: 'image/webp' }), { createImageBitmap: vi.fn(async () => vp8lBitmap), maxPixels: 200 });
+    expect(vp8lDecoded.width).toBe(10);
+    expect(vp8lDecoded.height).toBe(20);
+    vp8lDecoded.dispose?.();
+  });
+
+  it('still rejects WebP headers truncated inside the dimension bytes or an unread chunk', async () => {
+    const createImageBitmap = vi.fn();
+    // VP8 needs ten payload bytes; this probe ends after eight.
+    const vp8 = new Uint8Array([
+      82, 73, 70, 70, 0, 0, 0, 0, 87, 69, 66, 80,
+      86, 80, 56, 32, 0, 36, 5, 0,
+      0, 0, 0, 157, 1, 42, 33, 4
+    ]);
+    await expect(decodeTraceImage(new Blob([vp8], { type: 'image/webp' }), { createImageBitmap })).rejects.toMatchObject({ code: 'invalid-dimensions' });
+    // VP8L needs five payload bytes; this probe ends after four.
+    const vp8l = new Uint8Array([
+      82, 73, 70, 70, 0, 0, 0, 0, 87, 69, 66, 80,
+      86, 80, 56, 76, 0, 36, 5, 0,
+      47, 9, 192, 4
+    ]);
+    await expect(decodeTraceImage(new Blob([vp8l], { type: 'image/webp' }), { createImageBitmap })).rejects.toMatchObject({ code: 'invalid-dimensions' });
+    // A chunk that must be skipped still has to fit inside the probe.
+    const skipped = new Uint8Array(1_000);
+    skipped.set([82, 73, 70, 70, 0, 0, 0, 0, 87, 69, 66, 80, 73, 67, 67, 80], 0);
+    new DataView(skipped.buffer).setUint32(16, 200_000, true);
+    await expect(decodeTraceImage(new Blob([skipped], { type: 'image/webp' }), { createImageBitmap })).rejects.toMatchObject({ code: 'invalid-dimensions' });
+    expect(createImageBitmap).not.toHaveBeenCalled();
+  });
+
   it('passes reference images within the working bound through unchanged', async () => {
     const harness = traceSurfaceHarness();
     const bitmap = { width: 3_000, height: 2_000, close: vi.fn() };

@@ -1,8 +1,18 @@
 import {
   assertValidDocument,
+  assertValidLayeredDocument,
   DOCUMENT_SCHEMA_VERSION,
   DEFAULT_PATTERN_SETTINGS,
+  LAYERED_DOCUMENT_VERSION,
+  LayerType,
+  MAX_LAYERS_PER_TYPE,
   PALETTE_ID_RESERVED,
+  clonePaletteEntry,
+  clonePatternSettings,
+  layeredFromSurface,
+  type BackstitchStore,
+  type Layer,
+  type LayeredDocument,
   type PaletteCatalogReference,
   type PaletteEntry,
   type PaletteMaterial,
@@ -19,9 +29,27 @@ import {
 } from './limits';
 
 const MAGIC = new Uint8Array([0x4e, 0x57, 0x44, 0x4f, 0x43, 0x31, 0x01, 0x00]);
-export const BINARY_SCHEMA_VERSION = 2 as const;
+export const BINARY_SCHEMA_VERSION = 3 as const;
 const LITTLE_ENDIAN_MARKER = 1;
 const HEADER_BYTES = 40;
+/** v1/v2 backstitch record: id, x1, y1, x2, y2, color, completed. */
+const LEGACY_BACKSTITCH_BYTES = 23;
+/** v3 backstitch record: id, x1, y1, x2, y2, color. Completion is not stored. */
+const BACKSTITCH_BYTES = 22;
+const LAYER_TYPE_CODES: Record<LayerType, number> = { [LayerType.Stitch]: 0, [LayerType.Specialty]: 1 };
+const MAX_LAYERS = MAX_LAYERS_PER_TYPE * 2;
+
+/** A decoded document plus the binary schema it was read from. */
+export interface DecodedDocument {
+  document: LayeredDocument;
+  binaryVersion: number;
+  /**
+   * True when the bytes predate layers (v1/v2). Such documents carry the
+   * default `settings.aidaCount`; a legacy `ProjectMetadata.aidaCount` should
+   * be copied into settings (see `applyLegacyAidaCount`).
+   */
+  legacy: boolean;
+}
 
 function fail(message: string): never {
   throw new PersistenceError('invalid-document', message);
@@ -65,13 +93,9 @@ function sameMagic(bytes: Uint8Array): boolean {
   return MAGIC.every((byte, index) => bytes[index] === byte);
 }
 
-function byteLengthFor(document: PatternDocument): number {
-  let length = BigInt(HEADER_BYTES);
-  const catalogId = stringBytes(document.catalog.catalogId, 'Document catalog ID');
-  const brandLabel = stringBytes(document.catalog.brandLabel, 'Document catalog brand label');
-  length += 4n + BigInt(catalogId.length) + 4n + BigInt(brandLabel.length) + 4n;
-  length += BigInt(document.kind.length) + BigInt(document.colors.length) * 2n + BigInt(document.completed.length);
-  for (const entry of document.palette) {
+function paletteByteLength(palette: readonly PaletteEntry[]): bigint {
+  let length = 0n;
+  for (const entry of palette) {
     const name = stringBytes(entry.name, 'Palette name');
     const color = stringBytes(entry.color, 'Palette color');
     const symbol = stringBytes(entry.symbol, 'Palette symbol');
@@ -88,10 +112,24 @@ function byteLengthFor(document: PatternDocument): number {
       length += 3n;
     }
   }
+  return length;
+}
+
+function byteLengthFor(document: LayeredDocument): number {
+  let length = BigInt(HEADER_BYTES);
+  const catalogId = stringBytes(document.catalog.catalogId, 'Document catalog ID');
+  const brandLabel = stringBytes(document.catalog.brandLabel, 'Document catalog brand label');
+  length += 4n + BigInt(catalogId.length) + 4n + BigInt(brandLabel.length) + 4n;
+  length += paletteByteLength(document.palette);
   length += 4n + BigInt(stringBytes(document.settings.symbolSet, 'Document symbol set').length);
   length += 4n + BigInt(stringBytes(document.settings.materialUnit, 'Document material unit').length);
   length += 4n + BigInt(stringBytes(document.settings.backgroundColor, 'Document background color').length);
-  length += BigInt(document.backstitches.ids.length) * 23n;
+  length += 8n + 4n;
+  for (const layer of document.layers) {
+    length += 4n + 1n + 1n + 4n + BigInt(stringBytes(layer.name, 'Layer name').length);
+    if (layer.type === LayerType.Stitch) length += BigInt(layer.kind.length) + BigInt(layer.colors.length) * 2n;
+    else length += 4n + BigInt(layer.backstitches.ids.length) * BigInt(BACKSTITCH_BYTES);
+  }
   if (length > BigInt(MAX_DOCUMENT_BYTES) || length > BigInt(Number.MAX_SAFE_INTEGER)) fail('Document snapshot exceeds the size limit.');
   return Number(length);
 }
@@ -104,31 +142,8 @@ function writeString(view: DataView, bytes: Uint8Array, offset: number, value: s
   return offset + encoded.length;
 }
 
-export function encodeDocument(document: PatternDocument): Uint8Array {
-  checkedDocumentDimensions(document.width, document.height);
-  assertValidDocument(document);
-  if (document.revision > 0xffffffff || document.nextBackstitchId > 0x100000000) fail('Document counters exceed the binary format.');
-  const length = byteLengthFor(document);
-  if (length > MAX_DOCUMENT_BYTES) fail('Document snapshot exceeds the size limit.');
-  const bytes = new Uint8Array(length);
-  const view = new DataView(bytes.buffer);
-  bytes.set(MAGIC, 0);
-  view.setUint16(8, BINARY_SCHEMA_VERSION, true);
-  view.setUint8(10, LITTLE_ENDIAN_MARKER);
-  view.setUint8(11, 0);
-  view.setUint32(12, document.width, true);
-  view.setUint32(16, document.height, true);
-  view.setUint32(20, document.revision, true);
-  view.setUint32(24, document.nextBackstitchId === 0x100000000 ? 0 : document.nextBackstitchId, true);
-  view.setUint32(28, document.nextPaletteId, true);
-  view.setUint32(32, document.palette.length, true);
-  view.setUint32(36, document.backstitches.ids.length, true);
-  let offset = HEADER_BYTES;
-  offset = writeString(view, bytes, offset, document.catalog.catalogId, 'Document catalog ID');
-  offset = writeString(view, bytes, offset, document.catalog.brandLabel, 'Document catalog brand label');
-  view.setUint32(offset, document.catalog.colorCount, true);
-  offset += 4;
-  for (const entry of document.palette) {
+function writePalette(view: DataView, bytes: Uint8Array, offset: number, palette: readonly PaletteEntry[]): number {
+  for (const entry of palette) {
     view.setUint16(offset, entry.id, true);
     offset += 2;
     view.setUint8(offset, entry.active ? 1 : 0);
@@ -162,33 +177,94 @@ export function encodeDocument(document: PatternDocument): Uint8Array {
       offset += 3;
     }
   }
-  offset = writeString(view, bytes, offset, document.settings.symbolSet, 'Document symbol set');
-  offset = writeString(view, bytes, offset, document.settings.materialUnit, 'Document material unit');
-  offset = writeString(view, bytes, offset, document.settings.backgroundColor, 'Document background color');
-  bytes.set(document.kind, offset);
-  offset += document.kind.length;
-  for (const color of document.colors) {
+  return offset;
+}
+
+function writeStitchLayer(view: DataView, bytes: Uint8Array, offset: number, kind: Uint8Array, colors: Uint16Array): number {
+  bytes.set(kind, offset);
+  offset += kind.length;
+  for (const color of colors) {
     view.setUint16(offset, color, true);
     offset += 2;
   }
-  bytes.set(document.completed, offset);
-  offset += document.completed.length;
-  for (let index = 0; index < document.backstitches.ids.length; index += 1) {
-    view.setUint32(offset, document.backstitches.ids[index], true);
+  return offset;
+}
+
+function writeBackstitches(view: DataView, offset: number, store: BackstitchStore): number {
+  view.setUint32(offset, store.ids.length, true);
+  offset += 4;
+  for (let index = 0; index < store.ids.length; index += 1) {
+    view.setUint32(offset, store.ids[index], true);
     offset += 4;
-    view.setUint32(offset, document.backstitches.x1[index], true);
+    view.setUint32(offset, store.x1[index], true);
     offset += 4;
-    view.setUint32(offset, document.backstitches.y1[index], true);
+    view.setUint32(offset, store.y1[index], true);
     offset += 4;
-    view.setUint32(offset, document.backstitches.x2[index], true);
+    view.setUint32(offset, store.x2[index], true);
     offset += 4;
-    view.setUint32(offset, document.backstitches.y2[index], true);
+    view.setUint32(offset, store.y2[index], true);
     offset += 4;
-    view.setUint16(offset, document.backstitches.colors[index], true);
+    view.setUint16(offset, store.colors[index], true);
     offset += 2;
-    view.setUint8(offset, document.backstitches.completed[index]);
-    offset += 1;
   }
+  return offset;
+}
+
+/**
+ * Encodes the v3 layered format: header, catalog, palette, settings (including
+ * aidaCount), nextLayerId, then the layer table bottom to top. Stitch layers
+ * store kind and color planes; specialty layers store their backstitches.
+ * Completion is never stored.
+ */
+export function encodeDocument(document: LayeredDocument): Uint8Array {
+  checkedDocumentDimensions(document.width, document.height);
+  try {
+    assertValidLayeredDocument(document);
+  } catch (error) {
+    throw new PersistenceError('invalid-document', 'Document failed domain validation.', error);
+  }
+  if (document.revision > 0xffffffff || document.nextBackstitchId > 0x100000000 || document.nextLayerId > 0xffffffff) fail('Document counters exceed the binary format.');
+  const length = byteLengthFor(document);
+  if (length > MAX_DOCUMENT_BYTES) fail('Document snapshot exceeds the size limit.');
+  const bytes = new Uint8Array(length);
+  const view = new DataView(bytes.buffer);
+  bytes.set(MAGIC, 0);
+  view.setUint16(8, BINARY_SCHEMA_VERSION, true);
+  view.setUint8(10, LITTLE_ENDIAN_MARKER);
+  view.setUint8(11, 0);
+  view.setUint32(12, document.width, true);
+  view.setUint32(16, document.height, true);
+  view.setUint32(20, document.revision, true);
+  view.setUint32(24, document.nextBackstitchId === 0x100000000 ? 0 : document.nextBackstitchId, true);
+  view.setUint32(28, document.nextPaletteId, true);
+  view.setUint32(32, document.palette.length, true);
+  view.setUint32(36, document.layers.length, true);
+  let offset = HEADER_BYTES;
+  offset = writeString(view, bytes, offset, document.catalog.catalogId, 'Document catalog ID');
+  offset = writeString(view, bytes, offset, document.catalog.brandLabel, 'Document catalog brand label');
+  view.setUint32(offset, document.catalog.colorCount, true);
+  offset += 4;
+  offset = writePalette(view, bytes, offset, document.palette);
+  offset = writeString(view, bytes, offset, document.settings.symbolSet, 'Document symbol set');
+  offset = writeString(view, bytes, offset, document.settings.materialUnit, 'Document material unit');
+  offset = writeString(view, bytes, offset, document.settings.backgroundColor, 'Document background color');
+  view.setFloat64(offset, document.settings.aidaCount, true);
+  offset += 8;
+  view.setUint32(offset, document.nextLayerId, true);
+  offset += 4;
+  for (const layer of document.layers) {
+    view.setUint32(offset, layer.id, true);
+    offset += 4;
+    view.setUint8(offset, LAYER_TYPE_CODES[layer.type]);
+    offset += 1;
+    view.setUint8(offset, layer.visible ? 1 : 0);
+    offset += 1;
+    offset = writeString(view, bytes, offset, layer.name, 'Layer name');
+    offset = layer.type === LayerType.Stitch
+      ? writeStitchLayer(view, bytes, offset, layer.kind, layer.colors)
+      : writeBackstitches(view, offset, layer.backstitches);
+  }
+  if (offset !== length) fail('Document snapshot length is inconsistent.');
   return bytes;
 }
 
@@ -207,46 +283,7 @@ function readString(bytes: Uint8Array, view: DataView, offset: number, label: st
   return { value, offset: offset + length };
 }
 
-export function decodeDocument(input: Uint8Array | ArrayBuffer): PatternDocument {
-  const bytes = asBytes(input);
-  if (bytes.length > MAX_DOCUMENT_BYTES) fail('Document snapshot exceeds the size limit.');
-  if (bytes.length < HEADER_BYTES || !sameMagic(bytes)) fail('Document binary magic is invalid.');
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const binaryVersion = view.getUint16(8, true);
-  if (binaryVersion !== 1 && binaryVersion !== BINARY_SCHEMA_VERSION) throw new PersistenceError('unsupported-version', 'Document binary schema is unsupported.');
-  if (view.getUint8(10) !== LITTLE_ENDIAN_MARKER) fail('Document byte order is unsupported.');
-  if (view.getUint8(11) !== 0) fail('Document header flags are invalid.');
-  const width = view.getUint32(12, true);
-  const height = view.getUint32(16, true);
-  const cellCount = checkedDocumentDimensions(width, height);
-  const revision = view.getUint32(20, true);
-  const encodedNextBackstitchId = view.getUint32(24, true);
-  const nextBackstitchId = encodedNextBackstitchId === 0 ? 0x100000000 : encodedNextBackstitchId;
-  const nextPaletteId = view.getUint32(28, true);
-  const paletteCount = view.getUint32(32, true);
-  const backstitchCount = view.getUint32(36, true);
-  if (paletteCount > MAX_PALETTE_ENTRIES) fail('Palette count exceeds the size limit.');
-  if (backstitchCount > 0x1000000) fail('Backstitch count exceeds the size limit.');
-
-  // Validate all count-derived minimum sizes before allocating any typed
-  // arrays. In particular, a forged backstitch count must not reach the
-  // constructors below merely because the count fits in a uint32.
-  const minimumPayload = 12n
-    + BigInt(paletteCount) * 29n
-    + BigInt(cellCount) * 10n
-    + BigInt(backstitchCount) * 23n
-    + (binaryVersion === 1 ? 8n : 12n);
-  if (minimumPayload > BigInt(bytes.length - HEADER_BYTES)) fail('Document counts exceed the remaining payload.');
-
-  let offset = HEADER_BYTES;
-  const catalogIdResult = readString(bytes, view, offset, 'Document catalog ID');
-  offset = catalogIdResult.offset;
-  const brandLabelResult = readString(bytes, view, offset, 'Document catalog brand label');
-  offset = brandLabelResult.offset;
-  if (offset + 4 > bytes.length) fail('Document ended while reading catalog color count.');
-  const colorCount = view.getUint32(offset, true);
-  offset += 4;
-  const catalog = { catalogId: catalogIdResult.value, brandLabel: brandLabelResult.value, colorCount };
+function readPalette(bytes: Uint8Array, view: DataView, offset: number, paletteCount: number): { palette: PaletteEntry[]; offset: number } {
   const palette: PaletteEntry[] = [];
   for (let index = 0; index < paletteCount; index += 1) {
     if (offset + 7 > bytes.length) fail('Document ended while reading the palette.');
@@ -308,6 +345,113 @@ export function decodeDocument(input: Uint8Array | ArrayBuffer): PatternDocument
       ...(catalog === undefined ? {} : { catalog })
     });
   }
+  return { palette, offset };
+}
+
+function readColorPlane(bytes: Uint8Array, offset: number, cellCount: number): Uint16Array {
+  const colorsBytes = take(bytes, offset, cellCount * 4 * 2, 'cell colors');
+  const decodedColors = new Uint16Array(cellCount * 4);
+  const colorView = new DataView(colorsBytes.buffer, colorsBytes.byteOffset, colorsBytes.byteLength);
+  for (let index = 0; index < decodedColors.length; index += 1) decodedColors[index] = colorView.getUint16(index * 2, true);
+  return decodedColors;
+}
+
+function readBackstitches(view: DataView, offset: number, count: number, recordBytes: number): BackstitchStore {
+  const ids = new Uint32Array(count);
+  const x1 = new Uint32Array(count);
+  const y1 = new Uint32Array(count);
+  const x2 = new Uint32Array(count);
+  const y2 = new Uint32Array(count);
+  const colors = new Uint16Array(count);
+  const completed = new Uint8Array(count);
+  for (let index = 0; index < count; index += 1) {
+    ids[index] = view.getUint32(offset, true);
+    offset += 4;
+    x1[index] = view.getUint32(offset, true);
+    offset += 4;
+    y1[index] = view.getUint32(offset, true);
+    offset += 4;
+    x2[index] = view.getUint32(offset, true);
+    offset += 4;
+    y2[index] = view.getUint32(offset, true);
+    offset += 4;
+    colors[index] = view.getUint16(offset, true);
+    offset += 2;
+    if (recordBytes === LEGACY_BACKSTITCH_BYTES) {
+      completed[index] = view.getUint8(offset);
+      offset += 1;
+    }
+  }
+  return { ids, x1, y1, x2, y2, colors, completed };
+}
+
+interface DecodedHeader {
+  binaryVersion: number;
+  width: number;
+  height: number;
+  cellCount: number;
+  revision: number;
+  nextBackstitchId: number;
+  nextPaletteId: number;
+  paletteCount: number;
+  /** Backstitch count for v1/v2, layer count for v3. */
+  tableCount: number;
+}
+
+function readHeader(bytes: Uint8Array, view: DataView): DecodedHeader {
+  const binaryVersion = view.getUint16(8, true);
+  if (binaryVersion !== 1 && binaryVersion !== 2 && binaryVersion !== BINARY_SCHEMA_VERSION) throw new PersistenceError('unsupported-version', 'Document binary schema is unsupported.');
+  if (view.getUint8(10) !== LITTLE_ENDIAN_MARKER) fail('Document byte order is unsupported.');
+  if (view.getUint8(11) !== 0) fail('Document header flags are invalid.');
+  const width = view.getUint32(12, true);
+  const height = view.getUint32(16, true);
+  const cellCount = checkedDocumentDimensions(width, height);
+  const encodedNextBackstitchId = view.getUint32(24, true);
+  const paletteCount = view.getUint32(32, true);
+  if (paletteCount > MAX_PALETTE_ENTRIES) fail('Palette count exceeds the size limit.');
+  return {
+    binaryVersion,
+    width,
+    height,
+    cellCount,
+    revision: view.getUint32(20, true),
+    nextBackstitchId: encodedNextBackstitchId === 0 ? 0x100000000 : encodedNextBackstitchId,
+    nextPaletteId: view.getUint32(28, true),
+    paletteCount,
+    tableCount: view.getUint32(36, true)
+  };
+}
+
+function readCatalog(bytes: Uint8Array, view: DataView, offset: number): { catalog: LayeredDocument['catalog']; offset: number } {
+  const catalogIdResult = readString(bytes, view, offset, 'Document catalog ID');
+  offset = catalogIdResult.offset;
+  const brandLabelResult = readString(bytes, view, offset, 'Document catalog brand label');
+  offset = brandLabelResult.offset;
+  if (offset + 4 > bytes.length) fail('Document ended while reading catalog color count.');
+  const colorCount = view.getUint32(offset, true);
+  offset += 4;
+  return { catalog: { catalogId: catalogIdResult.value, brandLabel: brandLabelResult.value, colorCount }, offset };
+}
+
+/** v1/v2: a single surface, upgraded to the default Stitches + Specialty stack. */
+function decodeLegacyDocument(bytes: Uint8Array, view: DataView, header: DecodedHeader): LayeredDocument {
+  const { binaryVersion, width, height, cellCount, revision, nextBackstitchId, nextPaletteId, paletteCount } = header;
+  const backstitchCount = header.tableCount;
+  if (backstitchCount > 0x1000000) fail('Backstitch count exceeds the size limit.');
+
+  // Validate all count-derived minimum sizes before allocating any typed
+  // arrays. In particular, a forged backstitch count must not reach the
+  // constructors below merely because the count fits in a uint32.
+  const minimumPayload = 12n
+    + BigInt(paletteCount) * 29n
+    + BigInt(cellCount) * 10n
+    + BigInt(backstitchCount) * BigInt(LEGACY_BACKSTITCH_BYTES)
+    + (binaryVersion === 1 ? 8n : 12n);
+  if (minimumPayload > BigInt(bytes.length - HEADER_BYTES)) fail('Document counts exceed the remaining payload.');
+
+  const catalogResult = readCatalog(bytes, view, HEADER_BYTES);
+  const paletteResult = readPalette(bytes, view, catalogResult.offset, paletteCount);
+  let offset = paletteResult.offset;
   const symbolSet = readString(bytes, view, offset, 'Document symbol set');
   offset = symbolSet.offset;
   const materialUnit = readString(bytes, view, offset, 'Document material unit');
@@ -318,67 +462,171 @@ export function decodeDocument(input: Uint8Array | ArrayBuffer): PatternDocument
     backgroundColor = decodedBackgroundColor.value;
     offset = decodedBackgroundColor.offset;
   }
-  const settings: PatternSettings = { symbolSet: symbolSet.value, materialUnit: materialUnit.value as PatternSettings['materialUnit'], backgroundColor };
+  const settings: PatternSettings = { symbolSet: symbolSet.value, materialUnit: materialUnit.value as PatternSettings['materialUnit'], backgroundColor, aidaCount: DEFAULT_PATTERN_SETTINGS.aidaCount };
   const kindBytes = take(bytes, offset, cellCount, 'cell kinds');
   offset += cellCount;
-  const colorsByteLength = cellCount * 4 * 2;
-  const colorsBytes = take(bytes, offset, colorsByteLength, 'cell colors');
-  offset += colorsByteLength;
+  const colors = readColorPlane(bytes, offset, cellCount);
+  offset += cellCount * 4 * 2;
   const completedBytes = take(bytes, offset, cellCount, 'cell completion');
   offset += cellCount;
-  const expectedBackstitchBytesBig = BigInt(backstitchCount) * 23n;
+  const expectedBackstitchBytesBig = BigInt(backstitchCount) * BigInt(LEGACY_BACKSTITCH_BYTES);
   if (expectedBackstitchBytesBig > BigInt(bytes.length - offset)) fail('Backstitch payload exceeds the document size limit.');
   const expectedBackstitchBytes = Number(expectedBackstitchBytesBig);
   if (offset + expectedBackstitchBytes !== bytes.length) fail('Document contains an invalid trailing payload.');
+  const backstitches = readBackstitches(view, offset, backstitchCount, LEGACY_BACKSTITCH_BYTES);
 
-  const ids = new Uint32Array(backstitchCount);
-  const x1 = new Uint32Array(backstitchCount);
-  const y1 = new Uint32Array(backstitchCount);
-  const x2 = new Uint32Array(backstitchCount);
-  const y2 = new Uint32Array(backstitchCount);
-  const colors = new Uint16Array(backstitchCount);
-  const completed = new Uint8Array(backstitchCount);
-  const backstitchView = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  for (let index = 0; index < backstitchCount; index += 1) {
-    ids[index] = backstitchView.getUint32(offset, true);
-    offset += 4;
-    x1[index] = backstitchView.getUint32(offset, true);
-    offset += 4;
-    y1[index] = backstitchView.getUint32(offset, true);
-    offset += 4;
-    x2[index] = backstitchView.getUint32(offset, true);
-    offset += 4;
-    y2[index] = backstitchView.getUint32(offset, true);
-    offset += 4;
-    colors[index] = backstitchView.getUint16(offset, true);
-    offset += 2;
-    completed[index] = backstitchView.getUint8(offset);
-    offset += 1;
-  }
-  const decodedColors = new Uint16Array(cellCount * 4);
-  const colorView = new DataView(colorsBytes.buffer, colorsBytes.byteOffset, colorsBytes.byteLength);
-  for (let index = 0; index < decodedColors.length; index += 1) decodedColors[index] = colorView.getUint16(index * 2, true);
-  const document: PatternDocument = {
+  const surface: PatternDocument = {
     version: DOCUMENT_SCHEMA_VERSION,
-    catalog,
+    catalog: catalogResult.catalog,
     width,
     height,
     kind: new Uint8Array(kindBytes),
-    colors: decodedColors,
+    colors,
     completed: new Uint8Array(completedBytes),
-    backstitches: { ids, x1, y1, x2, y2, colors, completed },
+    backstitches,
     revision,
     nextBackstitchId,
     nextPaletteId,
-    palette,
+    palette: paletteResult.palette,
     settings
   };
   try {
-    assertValidDocument(document);
+    assertValidDocument(surface);
+  } catch (error) {
+    throw new PersistenceError('invalid-document', 'Decoded document failed domain validation.', error);
+  }
+  return layeredFromSurface(surface);
+}
+
+function decodeLayeredDocument(bytes: Uint8Array, view: DataView, header: DecodedHeader): LayeredDocument {
+  const { width, height, cellCount, revision, nextBackstitchId, nextPaletteId, paletteCount } = header;
+  const layerCount = header.tableCount;
+  if (layerCount > MAX_LAYERS) fail('Layer count exceeds the size limit.');
+  const minimumPayload = 12n + BigInt(paletteCount) * 29n + 12n + 8n + 4n + BigInt(layerCount) * 10n;
+  if (minimumPayload > BigInt(bytes.length - HEADER_BYTES)) fail('Document counts exceed the remaining payload.');
+
+  const catalogResult = readCatalog(bytes, view, HEADER_BYTES);
+  const paletteResult = readPalette(bytes, view, catalogResult.offset, paletteCount);
+  let offset = paletteResult.offset;
+  const symbolSet = readString(bytes, view, offset, 'Document symbol set');
+  offset = symbolSet.offset;
+  const materialUnit = readString(bytes, view, offset, 'Document material unit');
+  offset = materialUnit.offset;
+  const backgroundColor = readString(bytes, view, offset, 'Document background color');
+  offset = backgroundColor.offset;
+  if (offset + 12 > bytes.length) fail('Document ended while reading document settings.');
+  const aidaCount = view.getFloat64(offset, true);
+  offset += 8;
+  const nextLayerId = view.getUint32(offset, true);
+  offset += 4;
+  const settings: PatternSettings = { symbolSet: symbolSet.value, materialUnit: materialUnit.value as PatternSettings['materialUnit'], backgroundColor: backgroundColor.value, aidaCount };
+
+  const layers: Layer[] = [];
+  for (let index = 0; index < layerCount; index += 1) {
+    if (offset + 6 > bytes.length) fail('Document ended while reading a layer.');
+    const id = view.getUint32(offset, true);
+    offset += 4;
+    const typeCode = view.getUint8(offset);
+    offset += 1;
+    const visibleValue = view.getUint8(offset);
+    offset += 1;
+    if (visibleValue > 1) fail('Layer visible flag is invalid.');
+    const name = readString(bytes, view, offset, 'Layer name');
+    offset = name.offset;
+    if (typeCode === LAYER_TYPE_CODES[LayerType.Stitch]) {
+      // Both planes are bounds-checked by `take` before any allocation.
+      if (BigInt(cellCount) * 9n > BigInt(bytes.length - offset)) fail('Document ended while reading layer cells.');
+      const kind = new Uint8Array(take(bytes, offset, cellCount, 'cell kinds'));
+      offset += cellCount;
+      const colors = readColorPlane(bytes, offset, cellCount);
+      offset += cellCount * 4 * 2;
+      layers.push({ id, type: LayerType.Stitch, name: name.value, visible: visibleValue === 1, kind, colors, completed: new Uint8Array(cellCount) });
+    } else if (typeCode === LAYER_TYPE_CODES[LayerType.Specialty]) {
+      if (offset + 4 > bytes.length) fail('Document ended while reading a backstitch count.');
+      const count = view.getUint32(offset, true);
+      offset += 4;
+      if (count > 0x1000000) fail('Backstitch count exceeds the size limit.');
+      const recordBytes = BigInt(count) * BigInt(BACKSTITCH_BYTES);
+      if (recordBytes > BigInt(bytes.length - offset)) fail('Backstitch payload exceeds the document size limit.');
+      const backstitches = readBackstitches(view, offset, count, BACKSTITCH_BYTES);
+      offset += Number(recordBytes);
+      layers.push({ id, type: LayerType.Specialty, name: name.value, visible: visibleValue === 1, backstitches });
+    } else {
+      fail('Layer type is invalid.');
+    }
+  }
+  if (offset !== bytes.length) fail('Document contains an invalid trailing payload.');
+
+  const document: LayeredDocument = {
+    version: LAYERED_DOCUMENT_VERSION,
+    catalog: catalogResult.catalog,
+    width,
+    height,
+    layers,
+    palette: paletteResult.palette,
+    settings,
+    revision,
+    nextBackstitchId,
+    nextPaletteId,
+    nextLayerId
+  };
+  try {
+    assertValidLayeredDocument(document);
   } catch (error) {
     throw new PersistenceError('invalid-document', 'Decoded document failed domain validation.', error);
   }
   return document;
+}
+
+/** Decodes any supported binary schema and reports which one it was. */
+export function decodeDocumentWithInfo(input: Uint8Array | ArrayBuffer): DecodedDocument {
+  const bytes = asBytes(input);
+  if (bytes.length > MAX_DOCUMENT_BYTES) fail('Document snapshot exceeds the size limit.');
+  if (bytes.length < HEADER_BYTES || !sameMagic(bytes)) fail('Document binary magic is invalid.');
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const header = readHeader(bytes, view);
+  const legacy = header.binaryVersion < BINARY_SCHEMA_VERSION;
+  const document = legacy ? decodeLegacyDocument(bytes, view, header) : decodeLayeredDocument(bytes, view, header);
+  return { document, binaryVersion: header.binaryVersion, legacy };
+}
+
+export function decodeDocument(input: Uint8Array | ArrayBuffer): LayeredDocument {
+  return decodeDocumentWithInfo(input).document;
+}
+
+/**
+ * Before layers, the stitch count lived in project metadata. Copies a legacy
+ * `aidaCount` into the settings of a document decoded from v1/v2 bytes, in
+ * place. Returns true when it changed the document.
+ */
+export function applyLegacyAidaCount(decoded: DecodedDocument, legacyAidaCount: number | undefined): boolean {
+  if (!decoded.legacy || legacyAidaCount === undefined || !Number.isFinite(legacyAidaCount) || legacyAidaCount <= 0) return false;
+  if (decoded.document.settings.aidaCount === legacyAidaCount) return false;
+  decoded.document.settings = { ...decoded.document.settings, aidaCount: legacyAidaCount };
+  return true;
+}
+
+function cloneBackstitches(store: BackstitchStore): BackstitchStore {
+  return { ids: store.ids.slice(), x1: store.x1.slice(), y1: store.y1.slice(), x2: store.x2.slice(), y2: store.y2.slice(), colors: store.colors.slice(), completed: store.completed.slice() };
+}
+
+/** A fully detached copy, so persistence never shares planes with a live editor. */
+export function cloneLayeredDocument(document: LayeredDocument): LayeredDocument {
+  return {
+    version: LAYERED_DOCUMENT_VERSION,
+    catalog: { catalogId: document.catalog.catalogId, brandLabel: document.catalog.brandLabel, colorCount: document.catalog.colorCount },
+    width: document.width,
+    height: document.height,
+    layers: document.layers.map((layer): Layer => layer.type === LayerType.Stitch
+      ? { id: layer.id, type: LayerType.Stitch, name: layer.name, visible: layer.visible, kind: layer.kind.slice(), colors: layer.colors.slice(), completed: layer.completed.slice() }
+      : { id: layer.id, type: LayerType.Specialty, name: layer.name, visible: layer.visible, backstitches: cloneBackstitches(layer.backstitches) }),
+    palette: document.palette.map(clonePaletteEntry),
+    settings: clonePatternSettings(document.settings),
+    revision: document.revision,
+    nextBackstitchId: document.nextBackstitchId,
+    nextPaletteId: document.nextPaletteId,
+    nextLayerId: document.nextLayerId
+  };
 }
 
 export const serializeDocument = encodeDocument;
