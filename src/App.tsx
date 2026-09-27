@@ -10,6 +10,7 @@ import { installModalScrollLock } from './components/modal-scroll-lock';
 import { DEFAULT_CATALOG_DEFINITION } from './catalog';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import type { ProjectFolder, ProjectMetadata } from './persistence';
+import { isPostHogConfigured, posthog, posthogLogger } from './posthog';
 
 const projectPath = (id: string) => `/patterns/${encodeURIComponent(id)}/edit`;
 interface UndoableMove { kind: 'project' | 'folder'; id: string; name: string; from: string | null; to: string | null }
@@ -94,6 +95,9 @@ function WorkspaceApp() {
   const dialogWasOpen = useRef(false);
 
   const active = isEditor && state.metadata && state.document ? { metadata: state.metadata, document: state.document } : null;
+  const capture = (event: string, properties?: Record<string, string | number | boolean>) => {
+    if (isPostHogConfigured) posthog.capture(event, properties);
+  };
   useEffect(() => {
     const adapter = createPwaUpdateAdapter();
     setPwa(adapter);
@@ -192,6 +196,8 @@ function WorkspaceApp() {
       const session = await createProject({ title: createTitle.trim() || 'Untitled sampler', width, height, aidaCount: Number(createAida), settings: { backgroundColor: createBackgroundColor } });
       setCreateOpen(false);
       await moveIntoCurrentFolder(session.projectId, targetFolderId, 'Pattern created, but it could not be moved into the folder.');
+      capture('pattern_created', { width, height, aida_count: Number(createAida) });
+      posthogLogger.info('local pattern created', { width, height, aida_count: Number(createAida), placed_in_folder: targetFolderId !== null });
       navigate(projectPath(session.projectId));
     } catch { setCreateError('The pattern could not be saved locally.'); }
   }
@@ -203,6 +209,8 @@ function WorkspaceApp() {
       const session = await importProjectAsCopy(file);
       setMessage('Project imported and saved locally.');
       await moveIntoCurrentFolder(session.projectId, targetFolderId, 'Project imported, but it could not be moved into the folder.');
+      capture('pattern_imported');
+      posthogLogger.info('local archive imported', { placed_in_folder: targetFolderId !== null });
       navigate(projectPath(session.projectId));
     } catch {
       // The accessible error below is sourced from the adapter.
@@ -229,7 +237,7 @@ function WorkspaceApp() {
     clearConfirmDeleteTimer();
     setConfirmDeleteId(null);
     setMessage(`Deleting “${title}”…`);
-    void deleteProject(projectId).then(() => { if (appMounted.current) setMessage('Project deleted.'); }).catch(() => {
+    void deleteProject(projectId).then(() => { capture('pattern_deleted'); if (appMounted.current) setMessage('Project deleted.'); }).catch(() => {
       if (appMounted.current) setMessage('The project could not be deleted.');
     });
   }
@@ -241,12 +249,12 @@ function WorkspaceApp() {
 
   async function handleCreateFolder(name: string, parentId: string | null) {
     setMessage('');
-    try { await createFolder(name, parentId); setMessage('Folder created.'); } catch { setMessage('The folder could not be created.'); }
+    try { await createFolder(name, parentId); capture('folder_created', { is_nested: parentId !== null }); setMessage('Folder created.'); } catch { setMessage('The folder could not be created.'); }
   }
 
   async function handleRenameFolder(folderId: string, name: string) {
     setMessage('');
-    try { await renameFolder(folderId, name); setMessage('Folder renamed.'); } catch { setMessage('The folder could not be renamed.'); }
+    try { await renameFolder(folderId, name); capture('folder_renamed'); setMessage('Folder renamed.'); } catch { setMessage('The folder could not be renamed.'); }
   }
 
   function folderName(folderId: string | null): string {
@@ -277,6 +285,7 @@ function WorkspaceApp() {
     setMessage('');
     const previousFolderId = folderAssignments.find((assignment) => assignment.projectId === project.id)?.folderId ?? null;
     void moveProjectToFolder(project.id, folderId).then(() => {
+      capture('pattern_moved', { moved_to_top_level: folderId === null });
       if (appMounted.current) showUndoToast({ kind: 'project', id: project.id, name: project.title, from: previousFolderId, to: folderId });
     }).catch(() => {
       if (appMounted.current) setMessage('The pattern could not be moved.');
@@ -287,6 +296,7 @@ function WorkspaceApp() {
     setMessage('');
     const previousParentId = folder.parentId;
     void moveFolder(folder.id, parentId).then(() => {
+      capture('folder_moved', { moved_to_top_level: parentId === null });
       if (appMounted.current) showUndoToast({ kind: 'folder', id: folder.id, name: folder.name, from: previousParentId, to: parentId });
     }).catch(() => {
       if (appMounted.current) setMessage('The folder could not be moved.');
@@ -312,6 +322,7 @@ function WorkspaceApp() {
     const viewedFolder = folders.find((candidate) => candidate.id === currentFolderId) ?? null;
     const shouldNavigateUp = currentFolderId === folder.id || viewedFolder?.parentId === folder.id;
     void deleteFolder(folder.id).then(() => {
+      capture('folder_deleted');
       if (!appMounted.current) return;
       setMessage('Folder deleted. Its patterns moved up a level.');
       if (shouldNavigateUp) handleNavigateFolder(folder.parentId);
@@ -333,6 +344,10 @@ function WorkspaceApp() {
       link.click();
       link.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      const width = active?.document.width ?? 0;
+      const height = active?.document.height ?? 0;
+      capture('pattern_exported', { width, height });
+      posthogLogger.info('local archive exported', { width, height });
       setMessage('Local archive exported.');
     } catch {
       // The adapter error is rendered below.
@@ -393,7 +408,7 @@ function WorkspaceApp() {
       <footer className="footer-note"><span aria-hidden="true">⌁</span> Local archives are your backup path <span className="footer-divider" aria-hidden="true">·</span> Keep a copy somewhere safe</footer>
     </div>
     </div>
-    {createOpen && <div ref={createDialogRef}><CreateModal catalog={DEFAULT_CATALOG_DEFINITION.snapshot} mode={createMode} title={createTitle} width={createWidth} height={createHeight} aida={createAida} backgroundColor={createBackgroundColor} onBackgroundColor={setCreateBackgroundColor} busy={busy} onMode={(next) => { if (!createLockedRef.current) setCreateMode(next); }} onClose={() => { if (!createLockedRef.current) setCreateOpen(false); }} onBlank={(event) => void submitCreate(event)} onDurableCreateChange={(locked) => { createLockedRef.current = locked; }} onConversionCreate={(draft, asset) => { const targetFolderId = currentFolderId; return createProjectFromConversion({ title: createTitle.trim() || 'Untitled sampler', draft, aidaCount: Number(createAida), settings: { backgroundColor: createBackgroundColor }, ...(asset ? { sourceImageAsset: asset } : {}) }).then(async (session) => { await moveIntoCurrentFolder(session.projectId, targetFolderId, 'Pattern created, but it could not be moved into the folder.'); return session.projectId; }); }} onCreated={(projectId) => { if (appMounted.current) navigate(projectPath(projectId)); }} onTitle={setCreateTitle} onWidth={setCreateWidth} onHeight={setCreateHeight} onAida={setCreateAida} /></div>}
+    {createOpen && <div ref={createDialogRef}><CreateModal catalog={DEFAULT_CATALOG_DEFINITION.snapshot} mode={createMode} title={createTitle} width={createWidth} height={createHeight} aida={createAida} backgroundColor={createBackgroundColor} onBackgroundColor={setCreateBackgroundColor} busy={busy} onMode={(next) => { if (!createLockedRef.current) setCreateMode(next); }} onClose={() => { if (!createLockedRef.current) setCreateOpen(false); }} onBlank={(event) => void submitCreate(event)} onDurableCreateChange={(locked) => { createLockedRef.current = locked; }} onConversionCreate={(draft, asset) => { const targetFolderId = currentFolderId; return createProjectFromConversion({ title: createTitle.trim() || 'Untitled sampler', draft, aidaCount: Number(createAida), settings: { backgroundColor: createBackgroundColor }, ...(asset ? { sourceImageAsset: asset } : {}) }).then(async (session) => { await moveIntoCurrentFolder(session.projectId, targetFolderId, 'Pattern created, but it could not be moved into the folder.'); capture('image_pattern_created', { width: draft.document.width, height: draft.document.height, aida_count: Number(createAida), source_image_retained: Boolean(asset) }); return session.projectId; }); }} onCreated={(projectId) => { if (appMounted.current) navigate(projectPath(projectId)); }} onTitle={setCreateTitle} onWidth={setCreateWidth} onHeight={setCreateHeight} onAida={setCreateAida} /></div>}
     </>
   );
 }
