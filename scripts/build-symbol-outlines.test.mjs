@@ -109,6 +109,15 @@ describe('buildOutlines', () => {
     expect(Object.keys(payload.symbols).every((id) => id.includes('--'))).toBe(true);
   });
 
+  it('counts the symbols it generated', () => {
+    const two = registry.slice(0, 2).map((record) => {
+      const first = candidates.find((c) => c.font === record.slug);
+      return candidateKey(record.slug, first.codepoint);
+    });
+    const payload = buildOutlines(two, registry, candidates, fonts);
+    expect(payload.generated).toBe(Object.keys(payload.symbols).length);
+  });
+
   it('builds a selection drawn from more than one font', () => {
     if (registry.length < 2) return;
     const perFont = registry.map((r) => {

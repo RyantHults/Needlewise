@@ -75,13 +75,18 @@ export function selectCandidates(candidates, selection) {
 }
 
 /**
- * Order the pool so related glyphs sit together.
+ * Order the pool so related glyphs sit together and neighbouring cells differ.
  *
- * Symbols are grouped by Unicode block, sub-grouped by codepoint, and the
- * blocks are then interleaved so a palette built by cycling the pool samples
- * every block before repeating one. The codepoint sub-grouping is what places
- * two fonts' versions of one glyph next to each other, so a reviewer comparing
- * variants sees them side by side.
+ * Symbols are grouped by Unicode block and sub-grouped by codepoint, which is
+ * what places two fonts' versions of one glyph side by side so a reviewer can
+ * compare them. The blocks are then interleaved so a palette built by cycling
+ * the pool samples every block before repeating one.
+ *
+ * Plain round-robin degenerates once the small blocks empty out and the large
+ * ones emit back to back, so each step draws from the fullest block that was not
+ * used last. That keeps a repeated block out of the sequence as long as any other
+ * block still has a symbol left; once only one block remains there is nothing to
+ * interleave against, so the tail is a single run.
  */
 export function interleaveByBlock(symbols) {
   const blocks = new Map();
@@ -93,10 +98,18 @@ export function interleaveByBlock(symbols) {
   for (const list of blocks.values()) {
     list.sort((a, b) => a.codepoint - b.codepoint || a.font.localeCompare(b.font));
   }
-  const queues = [...blocks.values()].sort((a, b) => a[0].block.localeCompare(b[0].block));
   const out = [];
-  for (let i = 0; out.length < symbols.length; i += 1) {
-    for (const queue of queues) if (i < queue.length) out.push(queue[i]);
+  let previous = null;
+  while (blocks.size > 0) {
+    let best = null;
+    for (const [block, queue] of blocks) {
+      if (block === previous) continue;
+      if (best === null || queue.length > blocks.get(best).length) best = block;
+    }
+    if (best === null) best = blocks.keys().next().value;
+    out.push(blocks.get(best).shift());
+    if (blocks.get(best).length === 0) blocks.delete(best);
+    previous = best;
   }
   return out;
 }
@@ -134,7 +147,7 @@ export function buildOutlines(selection, registry, candidates, fonts) {
     version: ARTIFACT_VERSION,
     fonts: fontsOut,
     tileView: NORMALIZATION.tileView,
-    generated: symbols.length,
+    generated: Object.keys(symbols).length,
     symbols
   };
 }

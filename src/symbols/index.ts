@@ -1,0 +1,80 @@
+import outlinesAsset from './outlines.generated.json';
+import type { SymbolOutline } from '../rendering/symbol-painter';
+
+/**
+ * The owned symbol pool.
+ *
+ * `selection.json` is the authored source of truth: it names the vendored font
+ * and lists the codepoints chosen for the pool. `outlines.generated.json` is the
+ * committed build output of that selection, produced by
+ * `node scripts/build-symbol-outlines.mjs` and verified in CI with `--check`.
+ * Nothing is chosen at runtime and no glyph is ever resolved from a system font.
+ */
+export interface PoolEntry {
+  /** Stable slug, and the value a palette entry stores. */
+  readonly id: string;
+  /** Unicode character name, shown in the picker and used as the accessible label. */
+  readonly name: string;
+  /** Unicode block the glyph comes from, used to group and interleave the pool. */
+  readonly block: string;
+  /** The codepoint this outline was extracted from. */
+  readonly codepoint: number;
+  /** SVG path data in the shared unit cell, centered on the origin. */
+  readonly d: string;
+}
+
+export interface PoolFont {
+  readonly family: string;
+  readonly file: string;
+  readonly sha256: string;
+  readonly license: string;
+}
+
+const asset = outlinesAsset as unknown as {
+  readonly version: number;
+  readonly font: PoolFont;
+  readonly tileView: number;
+  readonly generated: number;
+  readonly symbols: Readonly<Record<string, PoolEntry>>;
+};
+
+/**
+ * Half-extent, in cell units, of the tile viewport that previews a symbol.
+ *
+ * Outlines normalize to at most the pool's max extent, and the build emits the
+ * preview window alongside them so the tile and the geometry that produced it
+ * cannot drift apart. Kept as one constant so the tile and its sprite agree on
+ * the same window; the runtime coverage test asserts no outline reaches the edge.
+ */
+export const SYMBOL_TILE_VIEW = asset.tileView;
+
+/** The font the pool was extracted from, for attribution surfaces. */
+export const SYMBOL_FONT = asset.font;
+
+export const SYMBOL_POOL_VERSION = asset.version;
+
+export const SYMBOL_OUTLINES: Readonly<Record<string, PoolEntry>> = asset.symbols;
+
+export const SYMBOL_IDS: readonly string[] = Object.keys(asset.symbols);
+
+export const SYMBOL_COUNT = SYMBOL_IDS.length;
+
+/**
+ * Every symbol in the pool, ordered as the build emitted them and carrying its
+ * own slug. The slug lives on the entry so a consumer listing the pool never has
+ * to zip it back against {@link SYMBOL_IDS}.
+ */
+export const SYMBOL_POOL: readonly PoolEntry[] = SYMBOL_IDS.map((id) => {
+  const entry = asset.symbols[id];
+  return { id, name: entry.name, block: entry.block, codepoint: entry.codepoint, d: entry.d };
+});
+
+/** Look up a symbol by slug. Returns undefined for an unknown or removed slug. */
+export const getSymbolOutline = (slug: string): PoolEntry | undefined => SYMBOL_OUTLINES[slug];
+
+/** Adapt a pool entry to the painter's outline shape. */
+export const toSymbolOutline = (slug: string): SymbolOutline | undefined => {
+  const entry = getSymbolOutline(slug);
+  if (!entry) return undefined;
+  return { d: entry.d };
+};
