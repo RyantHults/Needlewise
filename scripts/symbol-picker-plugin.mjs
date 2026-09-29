@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import { assignIds, listCandidates, loadFont } from './lib/symbol-font.mjs';
 import { discoverFonts, FONTS_DIR, FONT_EXTENSIONS, isFontFileName } from './lib/font-registry.mjs';
 import { sortEntries } from './lib/selection.mjs';
-import { SELECTION_PATH, selectCandidates } from './build-symbol-outlines.mjs';
+import { ARTIFACT_VERSION, SELECTION_PATH, selectCandidates } from './build-symbol-outlines.mjs';
 
 const PICKER_PREFIX = '/__symbols';
 export const FONT_ROUTE_PREFIX = `${PICKER_PREFIX}/font`;
@@ -128,7 +128,7 @@ function saveSelection(entries, fontsDir, selectionPath) {
   const selection = sortEntries(entries);
   const registry = registryFor(fontsDir);
   selectCandidates(candidatesFor(registry), selection);
-  const next = { version: 3, selection };
+  const next = { version: ARTIFACT_VERSION, selection };
   writeFileSync(selectionPath, `${JSON.stringify(next, null, 2)}\n`);
   return next;
 }

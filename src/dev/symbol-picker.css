@@ -170,10 +170,24 @@
   font-size: 0.85rem;
 }
 
+/*
+ * The card wall. The number of ticked fonts arrives as --compared-fonts and is
+ * the only number the layout turns on: it sets the width of one font's column,
+ * and a card is as wide as the fonts it holds, so one compared font gives a wall
+ * of narrow cards and four give far fewer, wider ones. The wall is a wrapping
+ * flex line rather than uniform grid tracks, because a codepoint most fonts do
+ * not hold has to end in a card of its own size instead of a wide empty track.
+ */
 .symbol-picker-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 0.4rem;
+  --card-padding: 0.6rem;
+  /* A font's column, never wider than an equal share of the wall, so the widest
+     card a comparison can make still fits the row it is on. */
+  --variant-track: min(11rem, calc((100% - 2 * var(--card-padding)) / max(1, var(--compared-fonts))));
+
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 0.5rem;
   max-height: calc(100vh - 17rem);
   overflow-y: auto;
   padding: 0.25rem;
@@ -182,23 +196,27 @@
   background: #fff;
 }
 
-/* One card per codepoint, titled by the codepoint it is about. */
-.symbol-picker-item {
-  display: grid;
+/* One card per codepoint, titled by the codepoint it is about. Cards in a line
+   are the height of its tallest card, so their titles start on one line. */
+.symbol-picker-card {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
   gap: 0.35rem;
-  padding: 0.5rem 0.6rem;
+  width: calc(var(--card-fonts) * var(--variant-track) + 2 * var(--card-padding));
+  padding: 0.5rem var(--card-padding);
   border: 1px solid var(--picker-border);
   border-radius: 6px;
   background: #fdfcfa;
   content-visibility: auto;
-  contain-intrinsic-size: auto 7rem;
+  contain-intrinsic-size: auto 9rem;
 }
 
-.symbol-picker-item-title {
+.symbol-picker-card-title {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 0.5rem;
+  gap: 0.4rem 0.5rem;
   margin: 0;
   font-size: 0.85rem;
   font-weight: 400;
@@ -214,11 +232,11 @@
   font-weight: 600;
 }
 
-.symbol-picker-item-name {
+.symbol-picker-card-name {
   font-weight: 600;
 }
 
-.symbol-picker-item-block {
+.symbol-picker-card-block {
   color: var(--picker-muted);
   font-size: 0.75rem;
 }
@@ -230,19 +248,22 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* The variants stand side by side in the order the fonts are declared, so a
-   codepoint one font can draw and another cannot is a row of one, not a gap. */
+/* The variants stand side by side in the order the fonts are declared, in equal
+   shares of the card, so a codepoint one font can draw and another cannot is a
+   card of one column rather than a card with a hole in it. The tracks may shrink
+   below their content, which keeps a narrow card from squeezing the samples. */
 .symbol-picker-variants {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(var(--card-fonts), minmax(0, 1fr));
   gap: 0.4rem;
 }
 
 .symbol-picker-variant {
   display: grid;
   justify-items: start;
+  align-content: start;
   gap: 0.25rem;
-  min-width: 12rem;
+  min-width: 0;
   padding: 0.4rem;
   border: 1px solid var(--picker-border);
   border-radius: 4px;
@@ -285,8 +306,11 @@
 }
 
 .symbol-picker-font-name {
+  max-width: 100%;
+  overflow: hidden;
   color: var(--picker-muted);
   font-size: 0.75rem;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -295,11 +319,13 @@
 }
 
 /* The strip is as tall as its largest sample needs, so nothing is shaved off
-   the 24px glyph by the padding or the border. */
+   the 24px glyph by the padding or the border. It can shrink inside a narrow
+   card, and the samples are what give way first rather than the glyph beside it. */
 .symbol-picker-sizes {
   display: flex;
   align-items: flex-end;
-  gap: 0.5rem;
+  gap: 0.4rem;
+  max-width: 100%;
   padding: 0.2rem 0.4rem;
   border: 1px solid var(--picker-border);
   border-radius: 3px;
@@ -309,14 +335,15 @@
 
 .symbol-picker-sizes b {
   display: inline-block;
-  min-width: 1.75rem;
+  min-width: 0;
   font-weight: 400;
   text-align: center;
 }
 
+/* The two notices span the whole wall rather than taking a card's width. */
 .symbol-picker-more,
 .symbol-picker-empty {
-  grid-column: 1 / -1;
+  flex: 0 0 100%;
   margin: 0;
   padding: 0.75rem;
   color: var(--picker-muted);

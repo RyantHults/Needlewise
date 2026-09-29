@@ -1,4 +1,4 @@
-import { useDeferredValue, useMemo, useRef, useState } from 'react';
+import { useDeferredValue, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import candidatesAsset from '../symbols/candidates.generated.json';
 import selectionAsset from '../symbols/selection.json';
@@ -7,15 +7,21 @@ import './symbol-picker.css';
 /**
  * The symbol pool curation tool, served at /__symbols in dev only.
  *
- * The pool is the selection in src/symbols/selection.json. The list is a list of
- * codepoints in ascending order, and each one shows what every compared font can
- * draw at it, side by side, at the sizes a chart actually uses, so a mark that
- * turns to mush at 8 pixels can be left out before it ever reaches a pattern.
+ * The pool is the selection in src/symbols/selection.json. The grid is a grid of
+ * codepoints in ascending order, one card each, and a card holds what every
+ * compared font can draw at that codepoint, side by side, at the sizes a chart
+ * actually uses, so a mark that turns to mush at 8 pixels can be left out before
+ * it ever reaches a pattern.
  *
  * Which fonts to compare is a multi-select rather than a filter: any number of
- * them can be on at once, and a codepoint is in the list whenever at least one
- * compared font can draw it. Narrowing the fonts therefore narrows the list,
+ * them can be on at once, and a codepoint is in the grid whenever at least one
+ * compared font can draw it. Narrowing the fonts therefore narrows the grid,
  * and a codepoint no compared font holds is simply not there.
+ *
+ * The number of ticked fonts is the one number the layout turns on. It reaches
+ * the stylesheet as --compared-fonts, which sets the width of one font's column;
+ * a card is then as wide as the fonts it holds, so comparing one font gives a
+ * wall of narrow cards and comparing four gives far fewer, wider ones.
  *
  * A selection entry is "<font-slug>:U+XXXX", because two fonts can both hold the
  * same codepoint and choosing one must not hide the other. Every control in the
@@ -55,7 +61,7 @@ interface SelectionFile {
   readonly selection: readonly string[];
 }
 
-/** One row of the list: a codepoint and the glyph each compared font has for it. */
+/** One card of the grid: a codepoint and the glyph each compared font has for it. */
 interface CodepointRow {
   readonly codepoint: number;
   readonly name: string;
@@ -329,6 +335,7 @@ export default function SymbolPickerPage() {
         role="region"
         aria-label="Codepoints"
         ref={scroller}
+        style={{ '--compared-fonts': compared.size } as CSSProperties}
         onScroll={(event) => {
           const element = event.currentTarget;
           if (element.scrollTop + element.clientHeight >= element.scrollHeight - 400) {
@@ -339,11 +346,15 @@ export default function SymbolPickerPage() {
         {visible.map((row) => {
           const ticks = row.variants.filter((variant) => selected.has(toEntry(variant))).length;
           return (
-            <article className="symbol-picker-item" key={row.codepoint}>
-              <h2 className="symbol-picker-item-title">
+            <article
+              className="symbol-picker-card"
+              key={row.codepoint}
+              style={{ '--card-fonts': row.variants.length } as CSSProperties}
+            >
+              <h2 className="symbol-picker-card-title">
                 <span className="symbol-picker-codepoint">{formatCodepoint(row.codepoint)}</span>
-                <span className="symbol-picker-item-name">{row.name}</span>
-                <span className="symbol-picker-item-block">{row.block}</span>
+                <span className="symbol-picker-card-name">{row.name}</span>
+                <span className="symbol-picker-card-block">{row.block}</span>
                 {ticks > 0 && ticks < row.poolSize && (
                   <span className="symbol-picker-tick-count">{ticks} of {row.poolSize} in pool</span>
                 )}

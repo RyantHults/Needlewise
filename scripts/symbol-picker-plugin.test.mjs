@@ -12,6 +12,7 @@ import symbolPickerPlugin, {
   fontsSignature
 } from './symbol-picker-plugin.mjs';
 import { discoverFonts, FONTS_DIR } from './lib/font-registry.mjs';
+import { ARTIFACT_VERSION } from './build-symbol-outlines.mjs';
 
 /** Every font parse, wherever it was asked for, so caching can be measured. */
 const parses = vi.hoisted(() => ({ fonts: 0 }));
@@ -225,7 +226,7 @@ describe('the picker plugin', () => {
       next: 'pnpm symbols:build'
     });
     expect(readFileSync(selectionPath, 'utf8')).toBe(`${JSON.stringify({
-      version: 3,
+      version: ARTIFACT_VERSION,
       selection: ['libertinus-math:U+2660', 'libertinus-math:U+2665', 'noto-sans-symbols-2:U+2666']
     }, null, 2)}\n`);
   });
