@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { useProjectWorkspace } from './application/react';
 import { createPwaUpdateAdapter, type PwaUpdateAdapter, type PwaUpdateState } from './pwa';
 import { EditorSurface } from './components/editor/EditorSurface';
@@ -413,4 +413,30 @@ function WorkspaceApp() {
   );
 }
 
-export default function App() { return <BrowserRouter><Routes><Route path="/" element={<HomePage />} /><Route path="/patterns" element={<WorkspaceApp />} /><Route path="/patterns/:projectId/edit" element={<WorkspaceApp />} /><Route path="*" element={<Navigate to="/" replace />} /></Routes></BrowserRouter>; }
+/**
+ * The symbol pool curation tool. It only exists in a dev build, and is loaded
+ * lazily so the picker, the font it previews, and the dev-only save endpoint
+ * never reach a deployed bundle.
+ */
+const SymbolPickerPage = import.meta.env.DEV
+  ? lazy(() => import('./dev/SymbolPickerPage'))
+  : null;
+
+export default function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<HomePage />} />
+        <Route path="/patterns" element={<WorkspaceApp />} />
+        <Route path="/patterns/:projectId/edit" element={<WorkspaceApp />} />
+        {SymbolPickerPage && (
+          <Route
+            path="/__symbols"
+            element={<Suspense fallback={<p className="loading-panel">Loading the symbol picker…</p>}><SymbolPickerPage /></Suspense>}
+          />
+        )}
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </BrowserRouter>
+  );
+}

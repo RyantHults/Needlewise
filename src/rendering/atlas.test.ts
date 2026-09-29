@@ -169,6 +169,6 @@ describe('overview atlas caches', () => {
     const atlas = cache.get(erased.document, style, factory);
     expect(targets).toHaveLength(1);
     expect(atlas.revision).toBe(erased.revision);
-    expect(atlas.textAvailable).toBe(true);
+    expect(atlas.source).toBe(targets[0].source);
   });
 });

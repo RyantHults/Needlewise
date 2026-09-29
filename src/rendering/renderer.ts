@@ -49,7 +49,7 @@ import {
   patternBackgroundColor
 } from './atlas';
 import { clearTarget, defaultAtlasTargetFactory, drawImage, prepareTarget, restore, save } from './context';
-import { grayscaleColor } from './symbols';
+import { grayscaleColor } from './colors';
 import { contrastSymbolInk, relativeLuminance } from './contrast';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
 import { createTraceImageProjection, drawTraceImage } from './trace';
@@ -1693,8 +1693,7 @@ export class Canvas2DRenderer implements CanvasRenderer {
         const canDrawCachedSymbols = Boolean(
           symbolAtlas.source &&
           context.drawImage &&
-          isCanvasImageSource(symbolAtlas.source) &&
-          (symbolAtlas.textAvailable || !context.fillText)
+          isCanvasImageSource(symbolAtlas.source)
         );
         if (canDrawCachedSymbols) {
           const previousSmoothing = context.imageSmoothingEnabled;

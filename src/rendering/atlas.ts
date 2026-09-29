@@ -1,9 +1,8 @@
-import { CellKind, DEFAULT_PATTERN_SETTINGS, type PatternDocument } from '../domain';
+import { CellKind, DEFAULT_PATTERN_SETTINGS, defaultPaletteSymbol, type PatternDocument } from '../domain';
 import type { CanvasTarget, RendererStyle } from '../editor/contracts';
 import { MAX_ATLAS_PIXELS, restore, save } from './context';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
 import { isLegacyQuarterKind, isThreeQuarterPairKind, threeQuarterPairComponents } from '../editor/cell-kinds';
-import { symbolForPaletteId } from './symbols';
 
 /** Document-owned Aida color, with the renderer's neutral default for legacy runtime documents. */
 export function patternBackgroundColor(document: PatternDocument): string {
@@ -85,7 +84,7 @@ function symbolPaletteProjection(
     // uses the configured ink color, so palette color is not a visual input.
     return [
       id,
-      symbolsAreVisual ? entry?.symbol ?? symbolForPaletteId(id) : null,
+      symbolsAreVisual ? entry?.symbol ?? defaultPaletteSymbol(id) : null,
       symbolsAreVisual && mode === 'combined' ? entry?.color ?? null : null
     ];
   })) ?? '';
@@ -419,13 +418,11 @@ export class ColorAtlasCache {
 }
 
 export interface SymbolAtlas {
-  /** Undefined means allocation or text painting was unavailable. */
+  /** Undefined means allocation or painting was unavailable. */
   readonly source: CanvasImageSource | undefined;
   readonly width: number;
   readonly height: number;
   readonly revision: number;
-  /** False when the source context could not paint actual glyphs. */
-  readonly textAvailable: boolean;
 }
 
 interface SymbolAtlasCacheEntry extends SymbolAtlas {
@@ -436,7 +433,6 @@ interface SymbolAtlasCacheEntry extends SymbolAtlas {
   readonly paletteIds: readonly number[];
   readonly paletteProjection: string;
   readonly mode: RendererStyle['mode'];
-  readonly symbolFont: string;
   readonly symbolColor: string;
   readonly symbolBackgroundColor: string;
   readonly patternBackground: string;
@@ -509,7 +505,6 @@ export class SymbolAtlasCache {
       current.kindPlane === document.kind &&
       current.colorsPlane === document.colors &&
       current.mode === style.mode &&
-      current.symbolFont === style.symbolFont &&
       current.symbolColor === style.symbolColor &&
       current.symbolBackgroundColor === style.symbolBackgroundColor &&
       current.patternBackground === patternBackground &&
@@ -546,14 +541,12 @@ export class SymbolAtlasCache {
         paletteIds,
         paletteProjection,
         mode: style.mode,
-        symbolFont: style.symbolFont,
         symbolColor: style.symbolColor,
         symbolBackgroundColor: style.symbolBackgroundColor,
         patternBackground,
         missingColor: style.missingPaletteColor,
         showSymbols: style.showSymbols,
-        ppc,
-        textAvailable: false
+        ppc
       };
       this.entry = unavailable;
       return unavailable;
@@ -561,7 +554,6 @@ export class SymbolAtlasCache {
 
     let target: CanvasTarget | undefined;
     let source: CanvasImageSource | undefined;
-    let textAvailable = !style.showSymbols;
     try {
       target = targetFactory(dimensions.width, dimensions.height);
       source = target && isCanvasImageSource(target.source) ? target.source : undefined;
@@ -571,18 +563,16 @@ export class SymbolAtlasCache {
         context.clearRect(0, 0, dimensions.width, dimensions.height);
         context.fillStyle = patternBackground;
         context.fillRect(0, 0, dimensions.width, dimensions.height);
-        textAvailable = !style.showSymbols || typeof context.fillText === 'function';
         const cellCount = document.width * document.height;
         for (let index = 0; index < cellCount; index += 1) {
-          if (!paintSymbolAtlasCell(context, document, index, ppc, style)) textAvailable = false;
+          paintSymbolAtlasCell(context, document, index, ppc, style);
         }
         restore(context);
       }
     } catch {
-      // Allocation and canvas text APIs are optional in workers, jsdom, and
+      // Allocation and canvas APIs are optional in workers, jsdom, and
       // restricted browsers. The renderer will fall back to visible cells.
       source = undefined;
-      textAvailable = false;
       if (target) {
         try { restore(target.context); } catch { /* already failed softly */ }
       }
@@ -601,14 +591,12 @@ export class SymbolAtlasCache {
       paletteIds,
       paletteProjection,
       mode: style.mode,
-      symbolFont: style.symbolFont,
       symbolColor: style.symbolColor,
       symbolBackgroundColor: style.symbolBackgroundColor,
       patternBackground,
       missingColor: style.missingPaletteColor,
       showSymbols: style.showSymbols,
-      ppc,
-      textAvailable
+      ppc
     };
     this.entry = result;
     return result;
@@ -618,11 +606,10 @@ export class SymbolAtlasCache {
   private patch(document: PatternDocument, style: RendererStyle, patternBackground: string, ppc: number): SymbolAtlas | undefined {
     const current = this.entry;
     const cells = this.dirty.pending;
-    if (!current?.target || !current.textAvailable || cells === 'all'
+    if (!current?.target || cells === 'all'
       || current.documentWidth !== document.width
       || current.documentHeight !== document.height
       || current.mode !== style.mode
-      || current.symbolFont !== style.symbolFont
       || current.symbolColor !== style.symbolColor
       || current.symbolBackgroundColor !== style.symbolBackgroundColor
       || current.patternBackground !== patternBackground
@@ -632,12 +619,11 @@ export class SymbolAtlasCache {
       || symbolPaletteProjection(document.palette, current.paletteIds, style.mode, style.showSymbols) !== current.paletteProjection) return undefined;
     const paletteIds = paletteIdsWithCells(document, current.paletteIds, cells);
     const context = current.target.context;
-    let textAvailable = true;
     try {
       save(context);
       for (const index of cells) {
         clearAtlasCell(context, document, index, ppc, patternBackground);
-        if (!paintSymbolAtlasCell(context, document, index, ppc, style)) textAvailable = false;
+        paintSymbolAtlasCell(context, document, index, ppc, style);
       }
       restore(context);
     } catch {
@@ -651,38 +637,28 @@ export class SymbolAtlasCache {
       kindPlane: document.kind,
       colorsPlane: document.colors,
       paletteIds,
-      paletteProjection: paletteIds === current.paletteIds ? current.paletteProjection : symbolPaletteProjection(document.palette, paletteIds, style.mode, style.showSymbols),
-      textAvailable
+      paletteProjection: paletteIds === current.paletteIds ? current.paletteProjection : symbolPaletteProjection(document.palette, paletteIds, style.mode, style.showSymbols)
     };
     return this.entry;
   }
 }
 
-/** Paint one cell's geometry and symbols; false when a glyph could not be drawn. */
+/** Paint one cell's geometry and symbols. */
 function paintSymbolAtlasCell(
   context: CanvasTarget['context'],
   document: PatternDocument,
   index: number,
   ppc: number,
   style: RendererStyle
-): boolean {
+): void {
   const kind = document.kind[index];
-  if (kind === CellKind.Empty) return true;
+  if (kind === CellKind.Empty) return;
   const offset = index * 4;
   const rect = { x: (index % document.width) * ppc, y: Math.floor(index / document.width) * ppc, width: ppc, height: ppc };
-  let textAvailable = true;
   const paint = (id: number, slot?: number, geometryKind = kind): void => {
     context.fillStyle = style.symbolBackgroundColor;
     drawStitchGeometry(context, geometryKind, rect, slot);
-    if (style.showSymbols) {
-      try {
-        if (!drawPaletteSymbol(context, document, id, rect, style, slot)) textAvailable = false;
-      } catch {
-        // Keep the geometry source usable, but let the renderer use
-        // its direct glyph fallback when text painting is broken.
-        textAvailable = false;
-      }
-    }
+    if (style.showSymbols) drawPaletteSymbol(context, document, id, rect, style, slot);
   };
   if (isLegacyQuarterKind(kind)) {
     for (let slot = 0; slot < 4; slot += 1) {
@@ -697,5 +673,4 @@ function paintSymbolAtlasCell(
   } else {
     paint(document.colors[offset], undefined);
   }
-  return textAvailable;
 }

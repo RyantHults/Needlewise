@@ -304,6 +304,16 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .symbol-option:hover { border-color:#bc5a3d; color:#88452f; }
 .symbol-option[aria-pressed="true"] { border-color:#bc5a3d; background:#f1e4da; color:#88452f; }
 .symbol-option:focus-visible { outline:3px solid #bc5a3d; outline-offset:1px; }
+.symbol-option.symbol-held { border-style:dashed; }
+/* The viewBox is the pool's own unit cell, so a preview is the same geometry the
+   canvas draws, at any zoom, with no per-symbol sizing. */
+.symbol-preview { width:100%; max-width:1.6rem; height:auto; aspect-ratio:1; display:block; }
+.symbol-token { display:block; width:1.05rem; height:1.05rem; flex:none; }
+.palette-swatch-symbol { display:grid; place-items:center; }
+.palette-menu .symbol-token { width:.9rem; height:.9rem; }
+/* Definitions only: the sprite itself is never painted, its paths are
+   referenced by the tiles through <use>. */
+.symbol-sprite { position:absolute; width:0; height:0; overflow:hidden; }
 .palette-button[aria-pressed="true"] { background:#f3eee5; }
 .canvas-column { min-width:0; }
 .canvas-frame { min-height:42rem; }

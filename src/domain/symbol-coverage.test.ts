@@ -1,222 +1,134 @@
-import { expect, it } from 'vitest';
-import {
-  isAlphanumericSymbol,
-  MAX_PALETTE_SYMBOL_LENGTH,
-  PALETTE_SYMBOLS
-} from './index';
+import { describe, expect, it } from 'vitest';
+
+import { DMC_CATALOG } from '../catalog';
+import { getSymbolOutline, SYMBOL_COUNT, SYMBOL_IDS, SYMBOL_POOL } from '../symbols';
+import { defaultPaletteSymbol, isKnownSymbolId } from './index';
 
 /**
- * Golden coverage set for the 128 hand-curated DMC 606 symbol-selector
- * descriptions (symbols.md). One plausible Unicode glyph per description,
- * listed in description order 1..128. Every glyph here must be usable as a
- * palette symbol (non-alphanumeric, <= 4 UTF-16 units) and present in the pool.
- * The pool is emoji-free: goldens map every emoji-default description to a
- * text-presentation-default replacement (no U+FE0E anywhere), enforced below.
+ * The pool is the selection in src/symbols/selection.json, deliberately
+ * smaller than the 489-color catalog: the "one symbol per color" coverage
+ * requirement is relaxed, and palette ids past the pool end cycle
+ * deterministically. These tests pin that relationship instead: every pool id
+ * is drawable, defaults cycle, explicit duplicates stay rejected, and the block
+ * interleave that keeps neighbouring palette ids visually distinct survives
+ * future edits.
  */
-const DESCRIPTION_SYMBOLS: readonly string[] = [
-  '✦', // 1
-  '⟳', // 2
-  '✹', // 3
-  '◯', // 4
-  '✕', // 5
-  '✡', // 6
-  '△', // 7
-  '❛', // 8
-  '□', // 9
-  '❅', // 10
-  '✠', // 11
-  '✽', // 12
-  '∞', // 13
-  '◔', // 14
-  '∾', // 15
-  '◉', // 16
-  '•', // 17
-  '⁘', // 18
-  '⣿', // 19
-  '⬚', // 20
-  '✢', // 21
-  '☁', // 22
-  '✿', // 23
-  '✾', // 24
-  '❧', // 25
-  '◭', // 26
-  '❦', // 27
-  '❜', // 28
-  '⊙', // 29
-  '⋄', // 30
-  '♻', // 31
-  '¶', // 32
-  '∕', // 33
-  '◿', // 34
-  '◸', // 35
-  '◺', // 36
-  '◹', // 37
-  '◲', // 38
-  '∥', // 39
-  '⊗', // 40
-  '❨', // 41
-  '𝄞', // 42
-  '▛', // 43
-  '⁜', // 44
-  '▣', // 45
-  '♥', // 46
-  '∏', // 47
-  '⊛', // 48
-  '◎', // 49
-  '⟐', // 50
-  '♠', // 51
-  '↯', // 52
-  '✺', // 53
-  '☙', // 54
-  '╲', // 55
-  '§', // 56
-  '❁', // 57
-  '✴', // 58
-  '◐', // 59
-  '⌖', // 60
-  '⟁', // 61
-  '☘', // 62
-  '℗', // 63
-  '♨', // 64
-  '⊠', // 65
-  '⌒', // 66
-  '♫', // 67
-  '❪', // 68
-  '▢', // 69
-  '⚒', // 70
-  '☰', // 71
-  '⇕', // 72
-  '▩', // 73
-  '⚙', // 74
-  '⚗', // 75
-  '≡', // 76
-  '√', // 77
-  '⌣', // 78
-  '❂', // 79
-  '∪', // 80
-  '⨯', // 81
-  '⠿', // 82
-  '≈', // 83
-  '◠', // 84
-  '◴', // 85
-  '𝄽', // 86
-  '✳', // 87
-  '◆', // 88
-  '◈', // 89
-  '⊚', // 90
-  '⦾', // 91
-  '○', // 92
-  '●', // 93
-  '╱', // 94
-  '▲', // 95
-  '▼', // 96
-  '▶', // 97
-  '◀', // 98
-  '▀', // 99
-  '▄', // 100
-  '▌', // 101
-  '▐', // 102
-  '■', // 103
-  '◻', // 104
-  '↖', // 105
-  '↗', // 106
-  '↙', // 107
-  '↘', // 108
-  '⌐', // 109
-  '╳', // 110
-  '¿', // 111
-  '∟', // 112
-  '✧', // 113
-  '⌃', // 114
-  '⌄', // 115
-  '☸', // 116
-  '▦', // 117
-  '☯', // 118
-  '⚛', // 119
-  '❀', // 120
-  '═', // 121
-  '◡', // 122
-  '⟲', // 123
-  '⊕', // 124
-  '❴', // 125
-  '❬', // 126
-  'Ⅾ', // 127
-  '◦', // 128
-];
+describe('symbol pool coverage', () => {
+  it('is smaller than the catalog: no symbol is kept just for coverage', () => {
+    expect(DMC_CATALOG.length).toBe(489);
+    expect(SYMBOL_COUNT).toBeLessThan(DMC_CATALOG.length);
+  });
 
-it('covers every DMC 606 description with a distinct, plausible glyph', () => {
-  expect(DESCRIPTION_SYMBOLS).toHaveLength(128);
-  // One glyph per description, none reused.
-  expect(new Set(DESCRIPTION_SYMBOLS).size).toBe(DESCRIPTION_SYMBOLS.length);
-  // Every mapped glyph is actually auto-assignable from the pool.
-  const pool = new Set(PALETTE_SYMBOLS);
-  for (const glyph of DESCRIPTION_SYMBOLS) {
-    expect(pool.has(glyph)).toBe(true);
-  }
-  // Pool still satisfies the symbol contract for all 561+ entries.
-  expect(PALETTE_SYMBOLS.length).toBeGreaterThanOrEqual(561);
-  expect(new Set(PALETTE_SYMBOLS).size).toBe(PALETTE_SYMBOLS.length);
-  for (const glyph of PALETTE_SYMBOLS) {
-    expect(glyph.length).toBeGreaterThan(0);
-    expect(glyph.length).toBeLessThanOrEqual(MAX_PALETTE_SYMBOL_LENGTH);
-    expect(isAlphanumericSymbol(glyph)).toBe(false);
-  }
+  it('resolves every pool id to a drawable outline', () => {
+    for (const id of SYMBOL_IDS) {
+      const outline = getSymbolOutline(id);
+      expect(outline, `${id} has no outline`).toBeDefined();
+      expect(outline?.d.length, `${id} has empty path data`).toBeGreaterThan(0);
+      expect(outline?.block, `${id} has no block`).toBeTruthy();
+      expect(outline?.codepoint, `${id} has no codepoint`).toBeGreaterThan(0);
+    }
+  });
+
+  it('has no duplicate ids', () => {
+    expect(new Set(SYMBOL_IDS).size).toBe(SYMBOL_IDS.length);
+    expect(SYMBOL_POOL.map((entry) => entry.id)).toEqual([...SYMBOL_IDS]);
+  });
+
+  it('draws each symbol from its own codepoint within its font', () => {
+    // Two fonts can both draw U+2666, so a codepoint is unique only inside one
+    // font. Across the pool the font-qualified id is what identifies a glyph.
+    const seen = new Set<string>();
+    const clashes: string[] = [];
+    for (const entry of SYMBOL_POOL) {
+      const key = `${entry.font} ${entry.codepoint}`;
+      if (seen.has(key)) clashes.push(key);
+      seen.add(key);
+    }
+    expect(clashes).toEqual([]);
+  });
+
+  it('accepts every pool id as a palette symbol', () => {
+    for (const id of SYMBOL_IDS) expect(isKnownSymbolId(id)).toBe(true);
+    expect(isKnownSymbolId('not-a-real-symbol')).toBe(false);
+    expect(isKnownSymbolId('')).toBe(false);
+  });
 });
 
-it('keeps the pool emoji-free: no denied codepoint and no U+FE0E anywhere', () => {
-  // All 39 codepoints removed when the pool went emoji-free: the 15
-  // Emoji_Presentation=Yes defaults plus the 24 user-curated glyphs that
-  // still read as emoji-default. A plain U+FE0E in any entry would also
-  // (re-)pin presentation, so the whole pool and the golden set must be
-  // free of it.
-  const denied = new Set<number>([
-    0x1f4a7, // 💧 droplet
-    0x1f514, // 🔔 bell
-    0x1f33e, // 🌾 ear of rice
-    0x1f41a, // 🐚 spiral shell
-    0x1f6a9, // 🚩 triangular flag
-    0x231a, // ⌚ watch
-    0x231b, // ⌛ hourglass
-    0x2604, // ☄ comet
-    0x2607, // ☇ lightning
-    0x2608, // ☈ thunderstorm
-    0x2609, // ☉ sun
-    0x260a, // ☊ ascending node
-    0x260b, // ☋ descending node
-    0x260c, // ☌ conjunction
-    0x260d, // ☍ opposition
-    0x260e, // ☎ black telephone
-    0x2614, // ☔ umbrella with rain drops
-    0x2615, // ☕ hot beverage
-    0x2646, // ♆ neptune
-    0x2655, // ♕ white chess queen
-    0x265f, // ♟ black chess pawn
-    0x266a, // ♪ eighth note
-    0x266f, // ♯ music sharp sign
-    0x2690, // ⚐ white flag
-    0x2691, // ⚑ black flag
-    0x2694, // ⚔ crossed swords
-    0x2698, // ⚘ flower
-    0x26a1, // ⚡ high voltage
-    0x26b1, // ⚱ funeral urn
-    0x26f3, // ⛳ flag in hole
-    0x2702, // ✂ scissors
-    0x2705, // ✅ check mark button
-    0x2708, // ✈ airplane
-    0x2709, // ✉ envelope
-    0x270e, // ✎ lower right pencil
-    0x270f, // ✏ pencil
-    0x2728, // ✨ sparkles
-    0x2b1b, // ⬛ black large square
-    0x2b1c // ⬜ white large square
-  ]);
-  for (const glyph of PALETTE_SYMBOLS) {
-    for (const code of [...glyph].map((unit) => unit.codePointAt(0) as number)) {
-      expect(denied.has(code), `emoji-default codepoint U+${code.toString(16).toUpperCase()} re-entered the pool`).toBe(false);
+describe('cyclic default assignment', () => {
+  it('covers the pool in order and cycles past the pool end', () => {
+    // One cycle covers the whole pool in pool order; the catalog ceiling then
+    // maps through one full cycle plus a partial second one.
+    const oneCycle = DMC_CATALOG.slice(0, SYMBOL_COUNT).map((_, index) => defaultPaletteSymbol(index + 1));
+    expect(oneCycle).toEqual(SYMBOL_IDS);
+    for (let id = SYMBOL_COUNT + 1; id <= DMC_CATALOG.length; id += 1) {
+      expect(defaultPaletteSymbol(id)).toBe(SYMBOL_IDS[(id - 1) % SYMBOL_COUNT]);
     }
-    expect(glyph.includes('\uFE0E'), 'pool entries must not carry U+FE0E').toBe(false);
-  }
-  for (const glyph of DESCRIPTION_SYMBOLS) {
-    expect(glyph.includes('\uFE0E'), 'golden entries must not carry U+FE0E').toBe(false);
-  }
+  });
+
+  it('assigns only symbols the pool can draw', () => {
+    for (let id = 1; id <= DMC_CATALOG.length; id += 1) {
+      expect(isKnownSymbolId(defaultPaletteSymbol(id))).toBe(true);
+    }
+  });
+
+  it('is stable for a given id', () => {
+    expect(defaultPaletteSymbol(7)).toBe(defaultPaletteSymbol(7));
+  });
+
+  it('cycles deterministically past the end of the pool', () => {
+    // The relaxed requirement makes this the reaching path for palette ids past
+    // the pool end rather than a safety tail.
+    const overflow = SYMBOL_COUNT + 1;
+    expect(defaultPaletteSymbol(overflow)).toBe(defaultPaletteSymbol(1));
+  });
+});
+
+describe('block interleave', () => {
+  /**
+   * Neighbouring palette ids are assigned consecutive pool ids, so a run of
+   * same-block symbols would put a run of similar marks next to each other in a
+   * chart. The build always draws from the fullest block it did not just use, so
+   * a block only repeats once every other block has run out. That means a run is
+   * possible, but only as a tail: once two entries in a row share a block,
+   * every remaining entry of the cycle shares it too.
+   *
+   * A fixed "no more than N in a row" bound cannot be asserted here, because a
+   * selection made of one block would legitimately be a run of the whole pool.
+   * Asserting the tail property instead keeps the guarantee meaningful for any
+   * selection the picker can produce.
+   */
+  it('only ever repeats a block in the trailing part of a cycle', () => {
+    const block = new Map(SYMBOL_POOL.map((entry) => [entry.id, entry.block]));
+    const blocks = SYMBOL_IDS.map((id) => block.get(id));
+
+    let runStart = 0;
+    for (let index = 1; index <= blocks.length; index += 1) {
+      const repeated = index < blocks.length && blocks[index] === blocks[runStart];
+      if (repeated) continue;
+      // The run just ended. Anything after it must be a different block, and a
+      // run longer than one is only allowed when it reaches the cycle's end.
+      const isTail = runStart + 1 >= blocks.length;
+      expect(
+        blocks[index] === undefined || blocks[index] !== blocks[runStart],
+        `blocks[${index}] repeats blocks[${runStart}]`
+      ).toBe(true);
+      if (blocks[runStart + 1] === blocks[runStart]) {
+        expect(isTail, `block ${String(blocks[runStart])} repeats at ${runStart} with symbols after it`).toBe(true);
+      }
+      runStart = index;
+    }
+  });
+
+  it('holds a full catalog to the same bound across the wrap seam', () => {
+    // A whole catalog wraps back to the start of the pool for the tail, so the
+    // bound is asserted per cycle with the seam between them held to the same
+    // rule: joining the pool's last block to its first is fine, but only if one
+    // of them is the single block left over.
+    const block = new Map(SYMBOL_POOL.map((entry) => [entry.id, entry.block]));
+    const first = block.get(SYMBOL_IDS[0]);
+    const last = block.get(SYMBOL_IDS[SYMBOL_COUNT - 1]);
+    if (first !== last) return;
+    const blocks = new Set(SYMBOL_POOL.map((entry) => entry.block));
+    expect(blocks.size).toBe(1);
+  });
 });

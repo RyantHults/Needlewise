@@ -20,6 +20,10 @@ const FONT_FILE = resolve(import.meta.dirname, '../../fonts/LibertinusMath-Regul
 const OUTLINES_FILE = resolve(import.meta.dirname, '../../src/symbols/outlines.generated.json');
 const SELECTION_FILE = resolve(import.meta.dirname, '../../src/symbols/selection.json');
 
+const sha256Of = (relative) => createHash('sha256')
+  .update(readFileSync(resolve(import.meta.dirname, '../..', relative)))
+  .digest('hex');
+
 const font = loadFont(FONT_FILE);
 const candidates = listCandidates(font, 'libertinus-math');
 const byCodepoint = new Map(candidates.map((candidate) => [candidate.codepoint, candidate]));
@@ -216,7 +220,14 @@ describe('the committed pool', () => {
     // the failure `symbols:check` exists to catch; this pins the same
     // relationship so a stale artifact is visible in the test run too.
     expect(Object.keys(outlines.symbols)).toHaveLength(selection.selection.length);
-    expect(outlines.font.sha256).toBe(selection.font.sha256);
+    // Every recorded font is one the selection actually draws from, and the
+    // digest is of the vendored file the outline was extracted from.
+    for (const entry of Object.values(outlines.symbols)) {
+      expect(outlines.fonts[entry.font], entry.id).toBeDefined();
+    }
+    for (const provenance of Object.values(outlines.fonts)) {
+      expect(sha256Of(provenance.file)).toBe(provenance.sha256);
+    }
   });
 
   it('draws every selected symbol with enough ink to be visible', () => {

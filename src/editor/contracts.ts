@@ -340,12 +340,6 @@ export interface RendererStyle extends RendererTheme {
   readonly midGridInterval: number;
   readonly showGrid: boolean;
   readonly showSymbols: boolean;
-  /**
-   * Symbol glyph font. The `em` size unit is interpreted as a fraction of the
-   * grid cell (e.g. `1em` fills most of the cell) rather than the canvas
-   * default font size, so the glyph scales with the cell at every zoom level.
-   */
-  readonly symbolFont: string;
   readonly completedOpacity: number;
   readonly completedMarkWidth: number;
   readonly overlayLineWidth: number;
@@ -370,7 +364,6 @@ export const DEFAULT_RENDERER_STYLE: RendererStyle = {
   midGridInterval: 5,
   showGrid: true,
   showSymbols: true,
-  symbolFont: '600 1em sans-serif',
   completedOpacity: 0.62,
   completedMarkWidth: 1,
   overlayLineWidth: 2,
@@ -399,12 +392,15 @@ export interface CanvasContextAdapter {
   closePath?(): void;
   moveTo(x: number, y: number): void;
   lineTo(x: number, y: number): void;
-  fill(): void;
-  stroke(): void;
+  fill(path?: unknown): void;
+  stroke(path?: unknown): void;
   fillText?(text: string, x: number, y: number): void;
   drawImage?(...args: unknown[]): void;
   save?(): void;
   restore?(): void;
+  /** Composes with the current matrix. `setTransform` would replace the DPR matrix. */
+  translate?(x: number, y: number): void;
+  scale?(x: number, y: number): void;
   setTransform?(a: number, b: number, c: number, d: number, e: number, f: number): void;
   setLineDash?(segments: readonly number[]): void;
 }

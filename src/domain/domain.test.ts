@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { getSymbolOutline, SYMBOL_IDS } from '../symbols';
 import {
   applyCommand,
   assertValidDocument,
@@ -31,13 +32,12 @@ import {
   getCell,
   getQuarter,
   HalfDirection,
-  isAlphanumericSymbol,
+  isKnownSymbolId,
   isQuarterKind,
   isThreeQuarterKind,
   listBackstitches,
   MaterialKind,
   MaterialUnit,
-  MAX_PALETTE_SYMBOL_LENGTH,
   MAX_PERSISTABLE_CELL_COUNT,
   mixedEraseCommand,
   pasteFragmentCommand,
@@ -60,7 +60,6 @@ import {
   estimateDeleteCellSetHistoryBytes,
   mergePaletteCommand,
   moveFragmentCommand,
-  PALETTE_SYMBOLS,
   type DocumentSettingsUpdateCommand,
   type PatternDocument,
   type CatalogAssociation,
@@ -863,7 +862,7 @@ describe('typed-array pattern document', () => {
         id: 1,
         name: 'Red',
         color: '#d33',
-        symbol: '✚',
+        symbol: SYMBOL_IDS[0],
         material: { kind: 'floss', label: 'Cotton', unit: 'skeins', amount: 2 },
         catalog: { catalogId: TEST_CATALOG.catalogId, sourceId: 'source', code: 'R', name: 'Red', hex: '#DD3333', rgb: [221, 51, 51] }
       }]
@@ -880,88 +879,123 @@ describe('typed-array pattern document', () => {
     expect(editor.document.palette[0].catalog?.rgb).toEqual([204, 34, 34]);
   });
 
-  it('assigns Unicode defaults in order, covers the brand ceiling, and cycles past the pool', () => {
-    // The symbol pool must exceed the brand palette ceiling so every valid
-    // palette id maps to a unique default glyph.
-    expect(PALETTE_SYMBOLS.length).toBeGreaterThanOrEqual(TEST_CATALOG.colorCount);
-    expect(new Set(PALETTE_SYMBOLS).size).toBe(PALETTE_SYMBOLS.length);
-    for (const glyph of PALETTE_SYMBOLS) {
-      expect(glyph.length).toBeGreaterThan(0);
-      expect(glyph.length).toBeLessThanOrEqual(MAX_PALETTE_SYMBOL_LENGTH);
-      expect(isAlphanumericSymbol(glyph)).toBe(false);
+  it('assigns pool defaults in order and cycles deterministically past the pool end', () => {
+    // The pool is curated to fewer symbols than the brand palette ceiling, so
+    // the "pool must cover the catalog" size requirement is relaxed: ids past
+    // the pool end reuse the cycled default. The pool itself still has one
+    // drawable slug per id.
+    expect(SYMBOL_IDS.length).toBeLessThan(TEST_CATALOG.colorCount);
+    expect(new Set(SYMBOL_IDS).size).toBe(SYMBOL_IDS.length);
+    for (const id of SYMBOL_IDS) {
+      expect(id.length).toBeGreaterThan(0);
+      expect(getSymbolOutline(id), `${id} is not drawable`).toBeDefined();
     }
-    // The first 28 glyphs are tier-1 coverage symbols, interleaved by coarse
-    // visual class via round-robin seeded at ● (filled / hollow / line-cross /
-    // diagonal / curved / arrow / pointy-pictographic).
-    expect(PALETTE_SYMBOLS.slice(0, 28)).toEqual([
-      '●', '△', '✕', '◭', '⟳', '↯', '✦', '▛', '□', '✠', '∕', '∞', '↖', '✹', '◆', '⬚', '∥', '◿', '◔', '↗', '\u25ef', '▲', '▣', '∏', '◸', '∾', '↙', '\u2721'
-    ]);
-    expect([1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(defaultPaletteSymbol)).toEqual(
-      ['●', '△', '✕', '◭', '⟳', '↯', '✦', '▛', '□', '✠']
-    );
-    expect(defaultPaletteSymbol(20)).toBe('\u2197');
-    expect(defaultPaletteSymbol(28)).toBe('\u2721');
-    // Ids 1..TEST_CATALOG.colorCount each get a distinct default glyph.
+    // Defaults are assigned in pool order, so id 1 takes the first slug and the
+    // sequence is a straight slice of the pool up to the pool end.
+    expect([1, 2, 3, 4, 5].map(defaultPaletteSymbol)).toEqual(SYMBOL_IDS.slice(0, 5));
+    expect(defaultPaletteSymbol(SYMBOL_IDS.length)).toBe(SYMBOL_IDS[SYMBOL_IDS.length - 1]);
+    // Ids 1..pool length each get a distinct default symbol.
     const assigned = new Set<string>();
-    for (let id = 1; id <= TEST_CATALOG.colorCount; id += 1) {
+    for (let id = 1; id <= SYMBOL_IDS.length; id += 1) {
       assigned.add(defaultPaletteSymbol(id));
     }
-    expect(assigned.size).toBe(TEST_CATALOG.colorCount);
-    // Past the end of the pool the assignment cycles deterministically as a
-    // safety tail (unreachable under the business ceiling).
-    expect(defaultPaletteSymbol(PALETTE_SYMBOLS.length + 1)).toBe('●');
-    expect(defaultPaletteSymbol(2 * PALETTE_SYMBOLS.length + 1)).toBe('●');
+    expect(assigned.size).toBe(SYMBOL_IDS.length);
+    // Past the end of the pool the assignment cycles deterministically.
+    expect(defaultPaletteSymbol(SYMBOL_IDS.length + 1)).toBe(SYMBOL_IDS[0]);
+    expect(defaultPaletteSymbol(2 * SYMBOL_IDS.length + 1)).toBe(SYMBOL_IDS[0]);
     expect(() => defaultPaletteSymbol(0)).toThrow(DomainError);
   });
 
   it('validates reassigned palette symbols through palette-update', () => {
+    // The shared helper builds a three-entry palette whose defaults are the
+    // first three slugs in pool order, so slugs from `fourth` on are free.
     const editor = createEditor(document(2, 2));
-    expect(editor.document.palette.map((entry) => entry.symbol)).toEqual(['●', '△', '✕']);
-    const result = editor.execute({ type: 'palette-update', id: 1, symbol: '☆' });
+    const [first, second, third, fourth, fifth, sixth] = SYMBOL_IDS;
+    expect(editor.document.palette.map((entry) => entry.symbol)).toEqual([first, second, third]);
+    const result = editor.execute({ type: 'palette-update', id: 1, symbol: fourth });
     expect(result.changed).toBe(true);
-    expect(editor.document.palette[0].symbol).toBe('☆');
+    expect(editor.document.palette[0].symbol).toBe(fourth);
     expect(() => editor.execute({ type: 'palette-update', id: 2, symbol: '' })).toThrow(/empty/);
     expect(() => editor.execute({ type: 'palette-update', id: 2, symbol: '   ' })).toThrow(/empty/);
-    expect(() => editor.execute({ type: 'palette-update', id: 2, symbol: 'ABC' })).toThrow(/alphanumeric/);
-    // A single astral-plane glyph is exactly 2 UTF-16 units, so it passes.
-    editor.execute({ type: 'palette-update', id: 2, symbol: '𝕏' });
-    expect(editor.document.palette[1].symbol).toBe('𝕏');
-    expect(() => editor.execute({ type: 'palette-update', id: 3, symbol: '☆' })).toThrow(/duplicated/);
-    expect(() => editor.execute({ type: 'palette-update', id: 99, symbol: '○' })).toThrow();
-    // Alphanumeric symbols stay banned so the legacy "S3" defaults cannot
-    // resurface, but enclosed-digit glyphs (which are non-alphanumeric
-    // Unicode) still pass.
-    expect(() => editor.execute({ type: 'palette-update', id: 2, symbol: 'S3' })).toThrow(/alphanumeric/);
-    expect(() => editor.execute({ type: 'palette-update', id: 2, symbol: 'Ａ' })).toThrow(/alphanumeric/);
-    editor.execute({ type: 'palette-update', id: 2, symbol: '①' });
-    expect(editor.document.palette[1].symbol).toBe('①');
-    // Astral-plane emoji pinned with VS16 + skin-tone modifier (4 UTF-16
-    // units) is accepted; anything beyond the cap is still rejected.
-    editor.execute({ type: 'palette-update', id: 2, symbol: '🧶\u{fe0f}' });
-    expect(editor.document.palette[1].symbol).toBe('🧶\u{fe0f}');
-    expect(() => editor.execute({ type: 'palette-update', id: 2, symbol: '🧶\u{fe0f}ab' })).toThrow(/4 UTF-16/);
+    // Only a slug the pool owns is a valid symbol; anything else is refused,
+    // which is what keeps an undrawable character out of a saved document.
+    expect(() => editor.execute({ type: 'palette-update', id: 2, symbol: '\u2606' })).toThrow(/not in the symbol pool/);
+    expect(() => editor.execute({ type: 'palette-update', id: 2, symbol: 'ABC' })).toThrow(/not in the symbol pool/);
+    editor.execute({ type: 'palette-update', id: 2, symbol: fifth });
+    expect(editor.document.palette[1].symbol).toBe(fifth);
+    // A slug another entry already holds is still a duplicate.
+    expect(() => editor.execute({ type: 'palette-update', id: 1, symbol: fifth })).toThrow(/duplicated/);
+    expect(() => editor.execute({ type: 'palette-update', id: 99, symbol: fifth })).toThrow();
+    // A slug no entry holds is accepted even on an entry this test never touched.
+    expect(() => editor.execute({ type: 'palette-update', id: 3, symbol: sixth })).not.toThrow();
+    // Slugs are case sensitive, so a differently-cased copy is simply unknown.
+    const upper = first.toUpperCase();
+    if (upper !== first) {
+      expect(() => editor.execute({ type: 'palette-update', id: 1, symbol: upper })).toThrow(/not in the symbol pool/);
+    }
   });
 
-  it('auto-assigns a unique glyph per palette entry up to the brand ceiling and rejects past it', () => {
+  it('swaps two palette glyphs atomically, round-trips through undo and keeps every glyph unique', () => {
+    // The shared helper builds a three-entry palette whose defaults are the
+    // first three slugs in pool order.
+    const editor = createEditor(document(2, 2));
+    const [first, second, third] = SYMBOL_IDS;
+    expect(editor.document.palette.map((entry) => entry.symbol)).toEqual([first, second, third]);
+    const result = editor.execute({ type: 'palette-swap', a: 1, b: 2 });
+    expect(result.changed).toBe(true);
+    expect(editor.document.palette.map((entry) => entry.symbol)).toEqual([second, first, third]);
+    // The move is atomic, so the document never passes through a duplicated
+    // glyph, and the swap is recordable: undo/redo restore both sides.
+    expect(new Set(editor.document.palette.map((entry) => entry.symbol)).size).toBe(3);
+    expect(editor.undo().document.palette.map((entry) => entry.symbol)).toEqual([first, second, third]);
+    expect(editor.redo().document.palette.map((entry) => entry.symbol)).toEqual([second, first, third]);
+    // The two-step palette-update formulation stays impossible: giving entry 1
+    // the glyph entry 2 still holds is a duplicate, which is exactly the trap
+    // the picker used to fall into.
+    expect(() => editor.execute({ type: 'palette-update', id: 1, symbol: first })).toThrow(/duplicated/);
+  });
+
+  it('rejects malformed palette-swap commands and keeps the palette unique through a swap', () => {
+    const editor = createEditor(document(2, 2));
+    expect(() => editor.execute({ type: 'palette-swap', a: 1, b: 1 })).toThrow(/distinct colors/);
+    expect(() => editor.execute({ type: 'palette-swap', a: 1, b: 99 })).toThrow();
+    expect(() => editor.execute({ type: 'palette-swap', a: 99, b: 1 })).toThrow();
+    // Swapping twice round-trips the glyphs without ever producing a duplicate:
+    // validation forbids that state from arising, so the swap's identical-glyph
+    // no-op is defensive rather than reachable.
+    editor.execute({ type: 'palette-swap', a: 1, b: 2 });
+    editor.execute({ type: 'palette-swap', a: 1, b: 2 });
+    const [first, second] = SYMBOL_IDS;
+    expect(editor.document.palette.map((entry) => entry.symbol)).toEqual([first, second, SYMBOL_IDS[2]]);
+    expect(new Set(editor.document.palette.map((entry) => entry.symbol)).size).toBe(3);
+  });
+
+  it('auto-assigns a unique glyph per pool symbol, cycles cycled defaults for the rest, and rejects past it', () => {
     let pattern = createDocument({ width: 2, height: 2, catalog: TEST_CATALOG });
     for (let id = 1; id <= TEST_CATALOG.colorCount; id++) {
       pattern = applyCommand(pattern, { type: 'palette-create', name: `Color ${id}`, color: '#123456' }).document;
     }
     expect(pattern.palette).toHaveLength(TEST_CATALOG.colorCount);
-    // Auto-assignment takes the first unused glyph in pool order, so the first
-    // TEST_CATALOG.colorCount entries carry unique, ordered symbols.
-    expect(pattern.palette.map((entry) => entry.symbol)).toEqual(PALETTE_SYMBOLS.slice(0, TEST_CATALOG.colorCount));
+    // Auto-assignment takes the first unused symbol in pool order, so the first
+    // pool-sized chunk carries every pool slug once, and each of the remaining
+    // entries reuses its cycled default (the auto-overflow path) instead of
+    // failing once the pool is exhausted.
+    expect(pattern.palette.slice(0, SYMBOL_IDS.length).map((entry) => entry.symbol)).toEqual(SYMBOL_IDS);
+    for (let id = SYMBOL_IDS.length + 1; id <= TEST_CATALOG.colorCount; id++) {
+      expect(pattern.palette[id - 1].symbol).toBe(defaultPaletteSymbol(id));
+    }
+    expect(new Set(pattern.palette.map((entry) => entry.symbol)).size).toBe(SYMBOL_IDS.length);
     // The next palette-create would exceed the brand ceiling, so it must throw
     // instead of overflowing onto a cycled duplicate.
     expect(() => applyCommand(pattern, { type: 'palette-create', name: 'Color over', color: '#654321' })).toThrow(/brand's color count/);
     // Explicit duplicates stay rejected on create and update alike (checked on
     // a small palette so the brand-ceiling guard does not fire first).
     const small = document(2, 2);
-    expect(() => applyCommand(small, { type: 'palette-create', name: 'Copy', color: '#000000', symbol: '●' })).toThrow(/duplicated/);
-    expect(() => applyCommand(small, { type: 'palette-update', id: 2, symbol: '●' })).toThrow(/duplicated/);
+    expect(() => applyCommand(small, { type: 'palette-create', name: 'Copy', color: '#000000', symbol: SYMBOL_IDS[0] })).toThrow(/duplicated/);
+    expect(() => applyCommand(small, { type: 'palette-update', id: 2, symbol: SYMBOL_IDS[0] })).toThrow(/duplicated/);
   }, 10_000);
 
-  it('yields all-unique symbols at the brand ceiling and rejects ids above it', () => {
+  it('yields cycled defaults at the brand ceiling and rejects ids above it', () => {
     const entries = Array.from({ length: TEST_CATALOG.colorCount }, (_, index) => ({
       id: index + 1,
       name: `Color ${index + 1}`,
@@ -969,9 +1003,14 @@ describe('typed-array pattern document', () => {
     }));
     const pattern = createDocument({ width: 2, height: 2, catalog: TEST_CATALOG, palette: entries });
     expect(pattern.palette).toHaveLength(TEST_CATALOG.colorCount);
-    expect(new Set(pattern.palette.map((entry) => entry.symbol)).size).toBe(TEST_CATALOG.colorCount);
+    // The create path derives the cycled default per id, so a full-ceiling
+    // document stays valid even though the pool no longer covers the catalog.
+    expect(pattern.palette.slice(0, SYMBOL_IDS.length).map((entry) => entry.symbol)).toEqual(SYMBOL_IDS);
+    for (let id = SYMBOL_IDS.length + 1; id <= TEST_CATALOG.colorCount; id++) {
+      expect(pattern.palette[id - 1].symbol).toBe(defaultPaletteSymbol(id));
+    }
     // An explicit id above the brand ceiling is rejected on palette-create.
-    expect(() => applyCommand(pattern, { type: 'palette-create', name: 'Over', color: '#ffffff', id: TEST_CATALOG.colorCount + 1, symbol: '★' })).toThrow(/brand's color count/);
+    expect(() => applyCommand(pattern, { type: 'palette-create', name: 'Over', color: '#ffffff', id: TEST_CATALOG.colorCount + 1, symbol: SYMBOL_IDS[99] })).toThrow(/brand's color count/);
   });
 
   it('enforces the shared maximum cell count during creation and validation', () => {
@@ -3063,42 +3102,21 @@ describe('pattern background settings', () => {
 });
 
 describe('palette symbol helpers', () => {
-  it('exposes the four-unit cap so multi-glyph and astral-plane symbols fit', () => {
-    expect(MAX_PALETTE_SYMBOL_LENGTH).toBe(4);
-    // BMP glyph, BMP + VS15, surrogate pair, surrogate pair + VS16 — all fit.
-    expect('●'.length).toBeLessThanOrEqual(MAX_PALETTE_SYMBOL_LENGTH);
-    expect('▶︎'.length).toBeLessThanOrEqual(MAX_PALETTE_SYMBOL_LENGTH);
-    expect('𝕏'.length).toBeLessThanOrEqual(MAX_PALETTE_SYMBOL_LENGTH);
-    expect('🧶\u{fe0f}'.length).toBeLessThanOrEqual(MAX_PALETTE_SYMBOL_LENGTH);
-    // Five units would overflow even with VS16 + skin tone + extra modifier.
-    expect('🧶\u{fe0f}abc'.length).toBeGreaterThan(MAX_PALETTE_SYMBOL_LENGTH);
+  it('accepts every generated pool slug', () => {
+    for (const id of SYMBOL_IDS) expect(isKnownSymbolId(id)).toBe(true);
   });
 
-  it('flags ASCII letters, ASCII digits, and fullwidth Latin forms as alphanumeric', () => {
-    expect(isAlphanumericSymbol('S')).toBe(true);
-    expect(isAlphanumericSymbol('3')).toBe(true);
-    expect(isAlphanumericSymbol('S3')).toBe(true);
-    expect(isAlphanumericSymbol('abcXYZ')).toBe(true);
-    expect(isAlphanumericSymbol('Ａ')).toBe(true); // U+FF21 fullwidth A
-    expect(isAlphanumericSymbol('ａ')).toBe(true); // U+FF41 fullwidth a
-    expect(isAlphanumericSymbol('３')).toBe(true); // U+FF13 fullwidth 3
-    expect(isAlphanumericSymbol('ＡＢ')).toBe(true);
+  it('rejects anything the pool cannot draw', () => {
+    // A former Unicode glyph is no longer valid: the pool owns every symbol, so
+    // an unknown value must be refused rather than silently un-drawable.
+    expect(isKnownSymbolId('\u25cf')).toBe(false);
+    expect(isKnownSymbolId('1')).toBe(false);
+    expect(isKnownSymbolId('')).toBe(false);
+    expect(isKnownSymbolId(' ')).toBe(false);
   });
 
-  it('treats non-alphanumeric Unicode — including digit look-alikes — as allowed', () => {
-    // BMP geometric / cross / star glyphs from the curated set all pass.
-    for (const glyph of PALETTE_SYMBOLS) expect(isAlphanumericSymbol(glyph)).toBe(false);
-    // Astral-plane glyphs pass (their surrogate halves are not alphanumeric).
-    expect(isAlphanumericSymbol('𝕏')).toBe(false);
-    expect(isAlphanumericSymbol('🧶')).toBe(false);
-    // Variation selectors are not alphanumeric.
-    expect(isAlphanumericSymbol('▶︎')).toBe(false);
-    // Digit-shaped enclosed/dingbat forms are explicitly NOT alphanumeric:
-    // U+2460 "①", U+2461 "②", U+2776 "❶".
-    expect(isAlphanumericSymbol('①')).toBe(false);
-    expect(isAlphanumericSymbol('②')).toBe(false);
-    expect(isAlphanumericSymbol('❶')).toBe(false);
-    // Empty input is not alphanumeric (it's caught earlier as empty).
-    expect(isAlphanumericSymbol('')).toBe(false);
+  it('is case sensitive, because slugs are lowercase by construction', () => {
+    const [first] = SYMBOL_IDS;
+    expect(isKnownSymbolId(first.toUpperCase())).toBe(first.toUpperCase() === first);
   });
 });

@@ -6,9 +6,13 @@ import { ThreeQuarterPair } from '../editor/cell-kinds';
 import { MAX_ATLAS_PIXELS, createDefaultAtlasTarget } from './context';
 import { isCanvasImageSource } from './atlas';
 import { createCanvasRenderer } from './renderer';
-import { symbolForPaletteId } from './symbols';
 import { sparseSelectionGeometry } from '../editor/lasso';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
+import { getSymbolOutline, SYMBOL_IDS } from '../symbols';
+
+// Fixtures must name real pool slugs: an unknown slug is deliberately not
+// drawable, so a stale glyph here would quietly assert nothing.
+const [STAR_ID, DIAMOND_ID, HOLLOW_DIAMOND_ID] = SYMBOL_IDS;
 
 interface RecordingContext extends CanvasContextAdapter {
   calls: string[];
@@ -43,12 +47,13 @@ function recordingContext(): RecordingContext {
     lineTo: function (this: RecordingContext, ...args: number[]): void { record(this, 'lineTo', args); },
     fill: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'fill', args); },
     stroke: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'stroke', args); },
-    fillText: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'fillText', args); },
     drawImage: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'drawImage', args); },
     save: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'save', args); },
     restore: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'restore', args); },
     setTransform: function (this: RecordingContext, ...args: number[]): void { record(this, 'setTransform', args); },
-    setLineDash: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'setLineDash', args); }
+    setLineDash: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'setLineDash', args); },
+    translate: function (this: RecordingContext, ...args: number[]): void { record(this, 'translate', args); },
+    scale: function (this: RecordingContext, ...args: number[]): void { record(this, 'scale', args); }
   };
   return context;
 }
@@ -64,6 +69,31 @@ function record(context: RecordingContext, name: string, args: unknown[]): void 
     lineWidth: context.lineWidth,
     font: context.font
   });
+}
+
+/**
+ * Every recorded call that painted a symbol outline, keyed by the Path2D it
+ * carried. Detected by the path data rather than `instanceof Path2D`, because one
+ * test removes that global to simulate a host that cannot paint outlines.
+ */
+const isPathArgument = (value: unknown): value is { d: string } =>
+  typeof value === 'object' && value !== null && typeof (value as { d?: unknown }).d === 'string';
+
+function symbolInkCalls(context: RecordingContext): RecordingContext['records'] {
+  return context.records.filter((call) => (call.name === 'fill' || call.name === 'stroke') && isPathArgument(call.args[0]));
+}
+
+/**
+ * Cell-geometry fills, which are the `fill()` calls that carry no path argument.
+ * A symbol paints through `fill(path)`, so the raw name is no longer exclusive.
+ */
+function cellFills(context: RecordingContext): RecordingContext['records'] {
+  return context.records.filter((call) => call.name === 'fill' && call.args.length === 0);
+}
+
+/** The path data actually drawn, for tests that care about which symbol appeared. */
+function drawnPaths(context: RecordingContext): string[] {
+  return symbolInkCalls(context).map((call) => (call.args[0] as { d: string }).d);
 }
 
 function target(context: RecordingContext, source?: unknown): CanvasTarget & { resizeCount: number } {
@@ -240,12 +270,6 @@ describe('Canvas 2D chart renderer', () => {
       expect(overviewRenderer.lastStats.baseRendered).toBe(true);
       overviewRenderer.dispose();
     }
-  });
-
-  it('uses deterministic base-36 symbols', () => {
-    expect(symbolForPaletteId(1)).toBe('1');
-    expect(symbolForPaletteId(35)).toBe('z');
-    expect(symbolForPaletteId(36)).toBe('10');
   });
 
   it('renders floating fragments with transparent holes, destination masking, cleared completion, backstitches, and a clipped boundary', () => {
@@ -459,9 +483,10 @@ describe('Canvas 2D chart renderer', () => {
     renderer.dispose();
   });
 
-  it('renders the v2 palette symbol instead of deriving one from the palette ID', () => {
+  it('renders the palette symbol stored on the entry instead of deriving one from the id', () => {
     const document = chart(1, 1);
-    document.palette[0] = { ...document.palette[0], symbol: '☆' };
+    const [id] = SYMBOL_IDS;
+    document.palette[0] = { ...document.palette[0], symbol: id };
     document.kind[0] = CellKind.Full;
     document.colors[0] = 1;
     const base = recordingContext();
@@ -473,7 +498,7 @@ describe('Canvas 2D chart renderer', () => {
       style: { mode: 'combined' }
     });
     renderer.renderNow();
-    expect(base.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(true);
+    expect(drawnPaths(base)).toContain(getSymbolOutline(id)?.d);
     renderer.dispose();
   });
 
@@ -491,7 +516,7 @@ describe('Canvas 2D chart renderer', () => {
       style: { mode: 'combined' }
     });
     renderer.renderNow();
-    expect(base.records.some((call) => call.name === 'fillText' && call.fillStyle === '#242424')).toBe(true);
+    expect(symbolInkCalls(base).some((call) => call.fillStyle === '#242424')).toBe(true);
     renderer.dispose();
   });
 
@@ -509,8 +534,8 @@ describe('Canvas 2D chart renderer', () => {
       style: { mode: 'combined' }
     });
     renderer.renderNow();
-    expect(base.records.some((call) => call.name === 'fillText' && call.fillStyle === '#ffffff')).toBe(true);
-    expect(base.records.some((call) => call.name === 'fillText' && call.fillStyle === '#242424')).toBe(false);
+    expect(symbolInkCalls(base).some((call) => call.fillStyle === '#ffffff')).toBe(true);
+    expect(symbolInkCalls(base).some((call) => call.fillStyle === '#242424')).toBe(false);
     renderer.dispose();
   });
 
@@ -528,11 +553,11 @@ describe('Canvas 2D chart renderer', () => {
       style: { mode: 'symbol' }
     });
     renderer.renderNow();
-    expect(base.records.some((call) => call.name === 'fillText' && call.fillStyle === '#242424')).toBe(true);
+    expect(symbolInkCalls(base).some((call) => call.fillStyle === '#242424')).toBe(true);
     renderer.dispose();
   });
 
-  it('scales the symbol font to the grid cell size in combined mode', () => {
+  it('scales the symbol outline to the grid cell size in combined mode', () => {
     const document = chart(1, 1);
     document.kind[0] = CellKind.Full;
     document.colors[0] = 1;
@@ -546,71 +571,10 @@ describe('Canvas 2D chart renderer', () => {
     });
     renderer.renderNow();
     // A 1x1 cell spans viewport.zoom screen px (cellToScreenRect: width =
-    // height = zoom), so the default 1em symbolFont resolves to 16px.
-    expect(base.records.some((call) => call.name === 'fillText' && call.font === '600 16px sans-serif')).toBe(true);
+    // height = zoom), and outlines are drawn in a unit cell, so the painter is
+    // handed 16 and the symbol fills its cell at any zoom.
+    expect(base.records.some((call) => call.name === 'scale' && call.args[0] === 16 && call.args[1] === 16)).toBe(true);
     renderer.dispose();
-  });
-
-  it('applies the per-glyph scale and dy override to shift the draw centre', () => {
-    // Render the same centred 1x1 cell once with the overridden glyph (℗
-    // = { scale: 0.7, dy: 2 }) and once with a plain glyph, in fresh contexts,
-    // to compare font scaling and draw-centre shift without renderer diffing.
-    const renderSingle = (symbol: string): RecordingContext => {
-      const document = chart(1, 1);
-      document.palette[0] = { ...document.palette[0], symbol };
-      document.kind[0] = CellKind.Full;
-      document.colors[0] = 1;
-      const base = recordingContext();
-      const renderer = createCanvasRenderer({
-        document,
-        targets: { base: target(base), overlay: target(recordingContext()) },
-        metrics: getCanvasMetrics(32, 32),
-        viewport: { x: 0, y: 0, zoom: 16 },
-        style: { mode: 'combined' }
-      });
-      renderer.renderNow();
-      renderer.dispose();
-      return base;
-    };
-    const marker = renderSingle('\u2117');
-    const overridden = marker.records.find((call) => call.name === 'fillText' && call.args[0] === '\u2117');
-    expect(overridden).toBeDefined();
-    // Scale shrinks the 16px cell to 16 × 0.7 = 11.2 → 11px em font.
-    expect(overridden?.font).toBe('600 11px sans-serif');
-    const plain = renderSingle('\u25cf').records.find((call) => call.name === 'fillText' && call.args[0] === '\u25cf');
-    expect(plain).toBeDefined();
-    // dy shifts the draw centre 2px below the plain glyph's baseline.
-    expect(overridden?.args[2]).toBe((plain?.args[2] as number) + 2);
-  });
-
-  it('applies scale-only overrides without shifting the draw position', () => {
-    const renderSingle = (symbol: string): RecordingContext => {
-      const document = chart(1, 1);
-      document.palette[0] = { ...document.palette[0], symbol };
-      document.kind[0] = CellKind.Full;
-      document.colors[0] = 1;
-      const base = recordingContext();
-      const renderer = createCanvasRenderer({
-        document,
-        targets: { base: target(base), overlay: target(recordingContext()) },
-        metrics: getCanvasMetrics(32, 32),
-        viewport: { x: 0, y: 0, zoom: 16 },
-        style: { mode: 'combined' }
-      });
-      renderer.renderNow();
-      renderer.dispose();
-      return base;
-    };
-    // ⣿ is overridden with { scale: 0.6 } only.
-    const braille = renderSingle('\u28FF');
-    const scalled = braille.records.find((call) => call.name === 'fillText' && call.args[0] === '\u28FF');
-    expect(scalled).toBeDefined();
-    // Scale shrinks the 16px cell to 16 × 0.6 = 9.6 → 10px em font.
-    expect(scalled?.font).toBe('600 10px sans-serif');
-    const plain = renderSingle('\u25cf').records.find((call) => call.name === 'fillText' && call.args[0] === '\u25cf');
-    expect(plain).toBeDefined();
-    // No dy entry on ⣿: the draw centre stays on the plain-glyph baseline.
-    expect(scalled?.args[2]).toBe(plain?.args[2]);
   });
 
   it('draws full, half, quarter geometry and culls distant backstitches', () => {
@@ -646,7 +610,7 @@ describe('Canvas 2D chart renderer', () => {
     expect(stats.drawnBackstitches).toBe(1);
     expect(base.calls).toContain('fillRect');
     expect(base.calls).toContain('fill');
-    expect(base.calls).toContain('fillText');
+    expect(symbolInkCalls(base).length).toBeGreaterThan(0);
     expect(base.records.find((call) => call.name === 'fillRect' && call.args[0] === 0 && call.args[1] === 0 && call.args[2] === 16 && call.args[3] === 16)).toMatchObject({ fillStyle: '#f00' });
     expect(base.records.some((call) => call.name === 'moveTo' && call.args[0] === 16 && call.args[1] === 0)).toBe(true);
   });
@@ -1406,7 +1370,7 @@ describe('Canvas 2D chart renderer', () => {
     });
     renderer.renderNow();
     expect(builds).toBe(1);
-    expect(sources[0].records.filter((call) => call.name === 'fill')).toHaveLength(1);
+    expect(cellFills(sources[0])).toHaveLength(1);
     expect(sources[0].records.filter((call) => call.name === 'moveTo' || call.name === 'lineTo').map((call) => call.args)).toEqual([
       [0, 0], [8, 0], [0, 8]
     ]);
@@ -1422,7 +1386,7 @@ describe('Canvas 2D chart renderer', () => {
     renderer.setDocument(next);
     renderer.renderNow();
     expect(builds).toBe(2);
-    expect(sources[1].records.filter((call) => call.name === 'fill')).toHaveLength(1);
+    expect(cellFills(sources[1])).toHaveLength(1);
     expect(sources[1].records.filter((call) => call.name === 'moveTo' || call.name === 'lineTo').map((call) => call.args)).toEqual([
       [0, 0], [8, 8], [0, 8]
     ]);
@@ -1762,10 +1726,10 @@ describe('Canvas 2D chart renderer', () => {
     renderer.dispose();
   });
 
-  it('keeps compact geometry and Symbol glyphs while Combined remains detail-only', () => {
+  it('keeps compact geometry and Symbol outlines while Combined remains detail-only', () => {
     const compactContext = recordingContext();
     const compactDocument = chart(5, 5);
-    compactDocument.palette[0] = { ...compactDocument.palette[0], symbol: '☆' };
+    compactDocument.palette[0] = { ...compactDocument.palette[0], symbol: STAR_ID };
     compactDocument.kind[0] = CellKind.Full;
     compactDocument.colors[0] = 1;
     compactDocument.completed[0] = 1;
@@ -1800,9 +1764,9 @@ describe('Canvas 2D chart renderer', () => {
     expect(compact.lastStats.lod).toBe('compact');
     expect(compactCombined.lastStats.lod).toBe('compact');
     expect(detail.lastStats.lod).toBe('detail');
-    expect(compactContext.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(true);
-    expect(compactCombinedContext.records.some((call) => call.name === 'fillText')).toBe(false);
-    expect(detailContext.records.some((call) => call.name === 'fillText')).toBe(true);
+    expect(symbolInkCalls(compactContext).length).toBeGreaterThan(0);
+    expect(symbolInkCalls(compactCombinedContext).length).toBe(0);
+    expect(symbolInkCalls(detailContext).length).toBeGreaterThan(0);
     expect(compactContext.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#d8d8d8')).toBe(false);
     expect(compactCombinedContext.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#d8d8d8')).toBe(false);
     expect(detailContext.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#d8d8d8')).toBe(true);
@@ -2229,7 +2193,7 @@ describe('Canvas 2D chart renderer', () => {
     renderer.dispose();
   });
 
-  it('keeps color presentation distinct while Symbol Overview paints actual glyphs', () => {
+  it('keeps color presentation distinct while Symbol Overview paints actual outlines', () => {
     const modeColor = (mode: 'color' | 'grayscale' | 'symbol' | 'combined'): string => {
       const atlasContext = recordingContext();
       const renderer = createCanvasRenderer({
@@ -2258,7 +2222,7 @@ describe('Canvas 2D chart renderer', () => {
     const sourceContext = recordingContext();
     const base = recordingContext();
     const document = chart(1, 1);
-    document.palette[0] = { ...document.palette[0], symbol: '☆' };
+    document.palette[0] = { ...document.palette[0], symbol: STAR_ID };
     document.kind[0] = CellKind.Full;
     document.colors[0] = 1;
     const symbolRenderer = createCanvasRenderer({
@@ -2275,18 +2239,18 @@ describe('Canvas 2D chart renderer', () => {
     });
     symbolRenderer.renderNow();
     expect(base.records.some((call) => call.name === 'drawImage')).toBe(true);
-    expect(sourceContext.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(true);
-    expect(sourceContext.records.some((call) => call.name === 'fillText' && call.fillStyle === '#123456')).toBe(true);
+    expect(symbolInkCalls(sourceContext).length).toBeGreaterThan(0);
+    expect(symbolInkCalls(sourceContext).some((call) => call.fillStyle === '#123456')).toBe(true);
     expect(sourceContext.records.some((call) => call.name === 'fillRect' && call.fillStyle === '#abcdef')).toBe(true);
     expect(sourceContext.records.some((call) => call.name === 'fillRect' && call.fillStyle === document.settings.backgroundColor)).toBe(true);
     expect(sourceContext.records.some((call) => call.name === 'fillRect' && call.fillStyle !== '#abcdef' && call.fillStyle !== document.settings.backgroundColor)).toBe(false);
     symbolRenderer.dispose();
   });
 
-  it('preserves a custom Symbol glyph at Detail, Compact, and Overview zooms', () => {
+  it('preserves the palette Symbol choice at Detail, Compact, and Overview zooms', () => {
     const render = (zoom: number): { base: RecordingContext; source: RecordingContext } => {
       const document = chart(1, 1);
-      document.palette[0] = { ...document.palette[0], symbol: '☆' };
+      document.palette[0] = { ...document.palette[0], symbol: STAR_ID };
       document.kind[0] = CellKind.Full;
       document.colors[0] = 1;
       const base = recordingContext();
@@ -2307,17 +2271,17 @@ describe('Canvas 2D chart renderer', () => {
     const detail = render(16);
     const compact = render(8);
     const overview = render(1);
-    expect(detail.base.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(true);
-    expect(compact.base.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(true);
+    expect(symbolInkCalls(detail.base).length).toBeGreaterThan(0);
+    expect(symbolInkCalls(compact.base).length).toBeGreaterThan(0);
     expect(overview.base.records.some((call) => call.name === 'drawImage')).toBe(true);
-    expect(overview.base.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(false);
-    expect(overview.source.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(true);
+    expect(symbolInkCalls(overview.base).length).toBe(0);
+    expect(drawnPaths(overview.source).includes(getSymbolOutline(STAR_ID)?.d ?? '')).toBe(true);
   });
 
-  it('keeps Symbol glyph behavior at every LOD threshold boundary', () => {
+  it('keeps Symbol outline behavior at every LOD threshold boundary', () => {
     for (const [zoom, expectedLod] of [[3.99, 'overview'], [4, 'compact'], [11.99, 'compact'], [12, 'detail']] as const) {
       const document = chart(1, 1);
-      document.palette[0] = { ...document.palette[0], symbol: '☆' };
+      document.palette[0] = { ...document.palette[0], symbol: STAR_ID };
       document.kind[0] = CellKind.Full;
       document.colors[0] = 1;
       const base = recordingContext();
@@ -2332,10 +2296,10 @@ describe('Canvas 2D chart renderer', () => {
       });
       expect(renderer.renderNow().lod).toBe(expectedLod);
       if (expectedLod === 'overview') {
-        expect(source.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(true);
+        expect(drawnPaths(source).includes(getSymbolOutline(STAR_ID)?.d ?? '')).toBe(true);
         expect(base.records.some((call) => call.name === 'drawImage')).toBe(true);
       } else {
-        expect(base.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(true);
+        expect(drawnPaths(base).includes(getSymbolOutline(STAR_ID)?.d ?? '')).toBe(true);
       }
       renderer.dispose();
     }
@@ -2343,7 +2307,7 @@ describe('Canvas 2D chart renderer', () => {
 
   it('reuses the Symbol overview atlas across viewport, grid, and overlay changes', () => {
     const document = chart(2, 2);
-    document.palette[0] = { ...document.palette[0], symbol: '☆' };
+    document.palette[0] = { ...document.palette[0], symbol: STAR_ID };
     document.kind[0] = CellKind.Full;
     document.colors[0] = 1;
     const base = recordingContext();
@@ -2364,7 +2328,7 @@ describe('Canvas 2D chart renderer', () => {
     });
     renderer.renderNow();
     expect(builds).toBe(1);
-    const firstSourceGlyphs = sources[0].records.filter((call) => call.name === 'fillText').length;
+    const firstSourceSymbols = symbolInkCalls(sources[0]).length;
 
     const completionOnlyDocument = {
       ...document,
@@ -2374,13 +2338,13 @@ describe('Canvas 2D chart renderer', () => {
     renderer.setDocument(completionOnlyDocument);
     renderer.renderNow();
     expect(builds).toBe(1);
-    expect(sources[0].records.filter((call) => call.name === 'fillText')).toHaveLength(firstSourceGlyphs);
+    expect(symbolInkCalls(sources[0])).toHaveLength(firstSourceSymbols);
     const firstDrawImages = base.records.filter((call) => call.name === 'drawImage').length;
 
     renderer.setViewport({ x: 0.25, y: 0.1, zoom: 2 });
     renderer.renderNow();
     expect(builds).toBe(1);
-    expect(sources[0].records.filter((call) => call.name === 'fillText')).toHaveLength(firstSourceGlyphs);
+    expect(symbolInkCalls(sources[0])).toHaveLength(firstSourceSymbols);
     expect(base.records.filter((call) => call.name === 'drawImage').length).toBe(firstDrawImages + 1);
 
     renderer.setOverlay({ cursor: { x: 0, y: 0 } });
@@ -2390,7 +2354,7 @@ describe('Canvas 2D chart renderer', () => {
     expect(builds).toBe(1);
 
     const changedDocument = chart(2, 2);
-    changedDocument.palette[0] = { ...changedDocument.palette[0], symbol: '☆' };
+    changedDocument.palette[0] = { ...changedDocument.palette[0], symbol: STAR_ID };
     changedDocument.kind[0] = CellKind.Full;
     changedDocument.colors[0] = 1;
     changedDocument.revision = document.revision + 1;
@@ -2398,22 +2362,24 @@ describe('Canvas 2D chart renderer', () => {
     renderer.renderNow();
     expect(builds).toBe(2);
 
+    // The symbol font is gone: outlines are pool geometry, so there is no font
+    // left to invalidate the atlas, while these three still repaint it.
     for (const styleChange of [
       { symbolFont: '600 0.8em sans-serif' },
       { symbolColor: '#123456' },
       { symbolBackgroundColor: '#abcdef' },
       { showSymbols: false }
     ]) {
-      renderer.setStyle(styleChange);
+      renderer.setStyle(styleChange as Parameters<typeof renderer.setStyle>[0]);
       renderer.renderNow();
     }
-    expect(builds).toBe(6);
+    expect(builds).toBe(5);
     renderer.dispose();
   });
 
   it('reuses the Symbol overview atlas for unused palette changes but rebuilds for a used symbol mutation', () => {
     const document = chart(2, 2);
-    document.palette[0] = { ...document.palette[0], symbol: '☆' };
+    document.palette[0] = { ...document.palette[0], symbol: STAR_ID };
     document.kind[0] = CellKind.Full;
     document.colors[0] = 1;
     const base = recordingContext();
@@ -2433,41 +2399,41 @@ describe('Canvas 2D chart renderer', () => {
       }
     });
     renderer.renderNow();
-    const firstSourceGlyphs = sources[0].records.filter((call) => call.name === 'fillText').length;
+    const firstSourceSymbols = symbolInkCalls(sources[0]).length;
 
     const appended = {
       ...document,
-      palette: [...document.palette, { ...document.palette[1], id: 99, name: 'Unused', symbol: '◇' }],
+      palette: [...document.palette, { ...document.palette[1], id: 99, name: 'Unused', symbol: DIAMOND_ID }],
       revision: document.revision + 1
     };
     renderer.setDocument(appended);
     renderer.renderNow();
     expect(builds).toBe(1);
-    expect(sources[0].records.filter((call) => call.name === 'fillText')).toHaveLength(firstSourceGlyphs);
+    expect(symbolInkCalls(sources[0])).toHaveLength(firstSourceSymbols);
 
     const unusedUpdated = {
       ...appended,
-      palette: appended.palette.map((entry) => entry.id === 99 ? { ...entry, symbol: '◈' } : entry),
+      palette: appended.palette.map((entry) => entry.id === 99 ? { ...entry, symbol: HOLLOW_DIAMOND_ID } : entry),
       revision: appended.revision + 1
     };
     renderer.setDocument(unusedUpdated);
     renderer.renderNow();
     expect(builds).toBe(1);
-    expect(sources[0].records.filter((call) => call.name === 'fillText')).toHaveLength(firstSourceGlyphs);
+    expect(symbolInkCalls(sources[0])).toHaveLength(firstSourceSymbols);
 
-    (unusedUpdated.palette[0] as { symbol: string }).symbol = '★';
+    (unusedUpdated.palette[0] as { symbol: string }).symbol = DIAMOND_ID;
     unusedUpdated.revision += 1;
     renderer.setDocument(unusedUpdated);
     renderer.renderNow();
     expect(builds).toBe(2);
-    expect(sources[1].records.some((call) => call.name === 'fillText' && call.args[0] === '★')).toBe(true);
+    expect(drawnPaths(sources[1])).toContain(getSymbolOutline(DIAMOND_ID)?.d ?? '');
     renderer.dispose();
   });
 
-  it('falls back to direct Symbol glyphs when overview atlas allocation fails', () => {
+  it('falls back to direct Symbol outlines when overview atlas allocation fails', () => {
     const base = recordingContext();
     const document = chart(1, 1);
-    document.palette[0] = { ...document.palette[0], symbol: '☆' };
+    document.palette[0] = { ...document.palette[0], symbol: STAR_ID };
     document.kind[0] = CellKind.Full;
     document.colors[0] = 1;
     const renderer = createCanvasRenderer({
@@ -2479,59 +2445,46 @@ describe('Canvas 2D chart renderer', () => {
       atlasTargetFactory: () => undefined
     });
     expect(() => renderer.renderNow()).not.toThrow();
-    expect(base.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(true);
+    expect(drawnPaths(base).includes(getSymbolOutline(STAR_ID)?.d ?? '')).toBe(true);
     expect(base.records.some((call) => call.name === 'fillRect' && call.fillStyle === '#abcdef')).toBe(true);
     expect(base.records.filter((call) => call.name === 'fillRect').every((call) => call.fillStyle === document.settings.backgroundColor || call.fillStyle === '#abcdef')).toBe(true);
     renderer.dispose();
   });
 
-  it('falls back to direct Symbol glyphs when the atlas context cannot paint text', () => {
-    const base = recordingContext();
-    const source = recordingContext();
-    source.fillText = undefined;
-    const document = chart(1, 1);
-    document.palette[0] = { ...document.palette[0], symbol: '☆' };
-    document.kind[0] = CellKind.Full;
-    document.colors[0] = 1;
-    const renderer = createCanvasRenderer({
-      document,
-      targets: { base: target(base), overlay: target(recordingContext()) },
-      metrics: getCanvasMetrics(32, 32),
-      viewport: { x: 0, y: 0, zoom: 1 },
-      style: { mode: 'symbol' },
-      atlasTargetFactory: (width, height) => target(source, new FakeCanvasImageSource(width, height))
-    });
-    expect(() => renderer.renderNow()).not.toThrow();
-    expect(base.records.some((call) => call.name === 'fillText' && call.args[0] === '☆')).toBe(true);
-    expect(base.records.some((call) => call.name === 'drawImage')).toBe(false);
-    renderer.dispose();
-  });
-
-  it('keeps Symbol geometry when neither atlas nor base text painting is available', () => {
-    const base = recordingContext();
-    base.fillText = undefined;
-    const document = chart(1, 1);
-    document.palette[0] = { ...document.palette[0], symbol: '☆' };
-    document.kind[0] = CellKind.Full;
-    document.colors[0] = 1;
-    const renderer = createCanvasRenderer({
-      document,
-      targets: { base: target(base), overlay: target(recordingContext()) },
-      metrics: getCanvasMetrics(32, 32),
-      viewport: { x: 0, y: 0, zoom: 1 },
-      style: { mode: 'symbol', symbolBackgroundColor: '#abcdef' },
-      atlasTargetFactory: () => undefined
-    });
-    expect(() => renderer.renderNow()).not.toThrow();
-    expect(base.records.some((call) => call.name === 'fillText')).toBe(false);
-    expect(base.records.some((call) => call.name === 'fillRect' && call.fillStyle === '#abcdef')).toBe(true);
-    expect(base.records.filter((call) => call.name === 'fillRect').every((call) => call.fillStyle === document.settings.backgroundColor || call.fillStyle === '#abcdef')).toBe(true);
-    renderer.dispose();
+  it('falls back to visible cells when the environment cannot construct Path2D', () => {
+    // Path2D is a global capability, not a per-context one, so this is the one
+    // remaining way symbol painting can be unavailable. It must degrade to
+    // visible cells rather than throwing out of a render pass.
+    const real = globalThis.Path2D;
+    // @ts-expect-error deliberately removing a DOM global to simulate an old host
+    globalThis.Path2D = undefined;
+    try {
+      const base = recordingContext();
+      const document = chart(1, 1);
+      document.palette[0] = { ...document.palette[0], symbol: STAR_ID };
+      document.kind[0] = CellKind.Full;
+      document.colors[0] = 1;
+      const renderer = createCanvasRenderer({
+        document,
+        targets: { base: target(base), overlay: target(recordingContext()) },
+        metrics: getCanvasMetrics(32, 32),
+        viewport: { x: 0, y: 0, zoom: 1 },
+        style: { mode: 'symbol' },
+        atlasTargetFactory: () => undefined
+      });
+      expect(() => renderer.renderNow()).not.toThrow();
+      expect(symbolInkCalls(base).length).toBe(0);
+      // Symbol-mode geometry is still painted; only the outline is missing.
+      expect(base.records.some((call) => call.name === 'fillRect')).toBe(true);
+      renderer.dispose();
+    } finally {
+      globalThis.Path2D = real;
+    }
   });
 
   it('keeps the dense 1000x1000 Symbol overview source within the pixel budget and cached', () => {
     const document = chart(1000, 1000);
-    document.palette[0] = { ...document.palette[0], symbol: '☆' };
+    document.palette[0] = { ...document.palette[0], symbol: STAR_ID };
     document.kind[0] = CellKind.Full;
     document.colors[0] = 1;
     const base = recordingContext();
@@ -2555,11 +2508,11 @@ describe('Canvas 2D chart renderer', () => {
     renderer.renderNow();
     expect(allocation).toEqual({ width: 4000, height: 4000 });
     expect(builds).toBe(1);
-    const sourceGlyphs = source?.records.filter((call) => call.name === 'fillText').length;
+    const sourceSymbols = source ? symbolInkCalls(source).length : 0;
     renderer.setViewport({ x: 0, y: 0, zoom: 2 });
     renderer.renderNow();
     expect(builds).toBe(1);
-    expect(source?.records.filter((call) => call.name === 'fillText').length).toBe(sourceGlyphs);
+    expect(source ? symbolInkCalls(source).length : 0).toBe(sourceSymbols);
     renderer.dispose();
   });
 
@@ -2697,7 +2650,7 @@ describe('Canvas 2D chart renderer', () => {
     const traceIndex = base.records.findIndex((call) => call.name === 'drawImage' && call.args[0] === traceSource);
     const committedPaintIndices = base.records
       .map((call, index) => ({ call, index }))
-      .filter(({ call }) => ['fillRect', 'fill', 'fillText', 'stroke', 'strokeRect', 'moveTo', 'lineTo'].includes(call.name))
+      .filter(({ call }) => ['fillRect', 'fill', 'stroke', 'strokeRect', 'moveTo', 'lineTo'].includes(call.name))
       .map(({ index }) => index);
     expect(traceIndex).toBeGreaterThan(Math.max(...committedPaintIndices));
     renderer.dispose();

@@ -1,4 +1,4 @@
-import { CellKind, type PatternDocument } from '../domain';
+import { CellKind, defaultPaletteSymbol, type PatternDocument } from '../domain';
 import {
   ChartPresentationMode,
   type CanvasContextAdapter,
@@ -7,8 +7,8 @@ import {
   type ScreenPoint
 } from '../editor/contracts';
 import { contrastSymbolInk } from './contrast';
-import { SYMBOL_RENDER_OVERRIDES, symbolFontForCell } from './symbol-font';
-import { grayscaleColor, symbolForPaletteId } from './symbols';
+import { getSymbolOutline } from '../symbols';
+import { grayscaleColor } from './colors';
 import {
   isThreeQuarterKind,
   isThreeQuarterPairKind,
@@ -17,6 +17,44 @@ import {
   ThreeQuarterSE,
   ThreeQuarterSW
 } from '../editor/cell-kinds';
+
+/**
+ * A symbol outline in cell-relative units, already centered on its origin.
+ * `d` is SVG path data so the same string can back a canvas Path2D and an
+ * SVG sprite reference.
+ *
+ * There is no paint mode. A glyph contour is already the solid silhouette of
+ * the mark, so the path is simply filled; stroking it would trace a border
+ * around an already-filled shape, doubling the weight of every stem and
+ * closing the counters of marks like `o`, `8` and the zodiac glyphs.
+ */
+export interface SymbolOutline {
+  readonly d: string;
+}
+
+/**
+ * Paint a normalized outline centered on `position` and scaled to `cellSize`.
+ *
+ * The transform is composed with translate/scale rather than setTransform, so
+ * the renderer's device-pixel-ratio matrix survives.
+ */
+export function drawSymbolOutline(
+  context: CanvasContextAdapter,
+  outline: SymbolOutline,
+  position: ScreenPoint,
+  cellSize: number,
+  ink: string
+): void {
+  context.save?.();
+  try {
+    context.translate?.(position.x, position.y);
+    context.scale?.(cellSize, cellSize);
+    context.fillStyle = ink;
+    context.fill(new Path2D(outline.d));
+  } finally {
+    context.restore?.();
+  }
+}
 
 function polygon(context: CanvasContextAdapter, points: readonly ScreenPoint[]): void {
   context.beginPath();
@@ -109,9 +147,9 @@ function paletteColor(document: PatternDocument, id: number, missing: string): s
   return document.palette.find((entry) => entry.id === id)?.color ?? missing;
 }
 
-/** Preserve the renderer's exact custom-symbol/fallback lookup semantics. */
+/** A palette id's own slug, falling back to the same default the domain assigns. */
 function paletteSymbol(document: PatternDocument, id: number): string {
-  return document.palette.find((entry) => entry.id === id)?.symbol ?? symbolForPaletteId(id);
+  return document.palette.find((entry) => entry.id === id)?.symbol ?? defaultPaletteSymbol(id);
 }
 
 function symbolInkColor(document: PatternDocument, id: number, style: RendererStyle): string {
@@ -129,7 +167,14 @@ function symbolPosition(rect: Rect, slot?: number): ScreenPoint {
   return { x: rect.x + rect.width * column, y: rect.y + rect.height * row };
 }
 
-/** Paint one actual palette glyph with the renderer's shared symbol semantics. */
+/**
+ * Paint one palette color's symbol from the generated pool.
+ *
+ * A palette id with no symbol of its own is not a failure: it takes the domain
+ * default, so every id in a valid document draws something. Neither is an id
+ * whose slug the pool does not own, which the domain already refuses to
+ * validate; painting nothing there is correct rather than exceptional.
+ */
 export function drawPaletteSymbol(
   context: CanvasContextAdapter,
   document: PatternDocument,
@@ -137,33 +182,17 @@ export function drawPaletteSymbol(
   rect: Rect,
   style: RendererStyle,
   slot?: number
-): boolean {
-  if (!context.fillText || !style.showSymbols || style.mode === ChartPresentationMode.Color || style.mode === ChartPresentationMode.Grayscale) return false;
-  const symbol = paletteSymbol(document, id);
-  // A missing id has no glyph to paint, but it does not mean the canvas text
-  // capability is unavailable to the atlas.
-  if (!symbol) return true;
+): void {
+  if (!style.showSymbols || style.mode === ChartPresentationMode.Color || style.mode === ChartPresentationMode.Grayscale) return;
+  const outline = getSymbolOutline(paletteSymbol(document, id));
+  if (!outline) return;
   const position = symbolPosition(rect, slot);
-  // Per-glyph corrections for denser/off-centre keepers (see symbol-font.ts):
-  // scale shrinks the em fraction so full-cell ink stays inside the cell, and
-  // dy nudges the baseline-relative ink high/low bias back to centre. Glyphs
-  // without an entry keep the identity (scale 1 / dy 0) exactly as before.
-  const override = SYMBOL_RENDER_OVERRIDES[symbol];
-  const cellSize = Math.min(rect.width, rect.height) * (override?.scale ?? 1);
-  const dy = override?.dy ?? 0;
-  context.save?.();
+  const cellSize = Math.min(rect.width, rect.height);
   try {
-    context.fillStyle = symbolInkColor(document, id, style);
-    context.font = symbolFontForCell(style.symbolFont, cellSize);
-    if (context.textAlign !== undefined) context.textAlign = 'center';
-    if (context.textBaseline !== undefined) context.textBaseline = 'middle';
-    context.fillText(symbol, position.x, position.y + dy);
-    return true;
+    drawSymbolOutline(context, outline, position, cellSize, symbolInkColor(document, id, style));
   } catch {
-    // A restricted or partially implemented canvas may expose fillText but
-    // reject a particular text operation. Geometry remains a safe fallback.
-    return false;
-  } finally {
-    context.restore?.();
+    // A restricted or partially implemented canvas may expose the path methods
+    // but reject a particular operation. The cell geometry the caller painted
+    // first is the fallback, so a rejected symbol must not abort the frame.
   }
 }

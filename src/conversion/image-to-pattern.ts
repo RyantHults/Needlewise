@@ -466,9 +466,9 @@ export function trimDocumentToContent(document: PatternDocument): DocumentConten
 
 function paletteEntry(association: CatalogSnapshot['association'], id: number, color: CatalogRecord): PaletteEntryInput {
   // `symbol` is intentionally omitted: `normalizePaletteEntry` auto-assigns a
-  // curated Unicode glyph via `defaultPaletteSymbol(id)` (cycled past 28),
-  // and `isAutoOverflowEntry` flags any cycled-default duplicate so the
-  // validator's unique-symbol guard accepts overflow palettes.
+  // generated pool slug via `defaultPaletteSymbol(id)`, and `isAutoOverflowEntry`
+  // flags any cycled-default duplicate so the validator's unique-symbol guard
+  // accepts overflow palettes.
   return {
     id,
     name: color.name,

@@ -4,11 +4,14 @@ import type { SymbolOutline } from '../rendering/symbol-painter';
 /**
  * The owned symbol pool.
  *
- * `selection.json` is the authored source of truth: it names the vendored font
- * and lists the codepoints chosen for the pool. `outlines.generated.json` is the
- * committed build output of that selection, produced by
+ * `selection.json` is the authored source of truth: it lists the vendored fonts
+ * and the codepoint each pooled glyph is taken from. `outlines.generated.json` is
+ * the committed build output of that selection, produced by
  * `node scripts/build-symbol-outlines.mjs` and verified in CI with `--check`.
  * Nothing is chosen at runtime and no glyph is ever resolved from a system font.
+ *
+ * Several fonts can draw the same codepoint, so a symbol is identified by its
+ * font-qualified id and its Unicode name is unique only within one font.
  */
 export interface PoolEntry {
   /** Stable slug, and the value a palette entry stores. */
@@ -19,6 +22,10 @@ export interface PoolEntry {
   readonly block: string;
   /** The codepoint this outline was extracted from. */
   readonly codepoint: number;
+  /** Slug of the font this outline was extracted from. */
+  readonly font: string;
+  /** Display name of that font, for attribution surfaces. */
+  readonly family: string;
   /** SVG path data in the shared unit cell, centered on the origin. */
   readonly d: string;
 }
@@ -27,12 +34,15 @@ export interface PoolFont {
   readonly family: string;
   readonly file: string;
   readonly sha256: string;
-  readonly license: string;
+  readonly unitsPerEm: number;
+  readonly version: string;
+  readonly licenseUrl: string;
+  readonly drawableCodepoints: number;
 }
 
 const asset = outlinesAsset as unknown as {
   readonly version: number;
-  readonly font: PoolFont;
+  readonly fonts: Readonly<Record<string, PoolFont>>;
   readonly tileView: number;
   readonly generated: number;
   readonly symbols: Readonly<Record<string, PoolEntry>>;
@@ -48,8 +58,10 @@ const asset = outlinesAsset as unknown as {
  */
 export const SYMBOL_TILE_VIEW = asset.tileView;
 
-/** The font the pool was extracted from, for attribution surfaces. */
-export const SYMBOL_FONT = asset.font;
+/** Every font the pool was extracted from, keyed by slug, for attribution surfaces. */
+export const SYMBOL_FONTS: Readonly<Record<string, PoolFont>> = asset.fonts;
+
+const familyOf = (slug: string): string => SYMBOL_FONTS[slug]?.family ?? '';
 
 export const SYMBOL_POOL_VERSION = asset.version;
 
@@ -66,7 +78,15 @@ export const SYMBOL_COUNT = SYMBOL_IDS.length;
  */
 export const SYMBOL_POOL: readonly PoolEntry[] = SYMBOL_IDS.map((id) => {
   const entry = asset.symbols[id];
-  return { id, name: entry.name, block: entry.block, codepoint: entry.codepoint, d: entry.d };
+  return {
+    id,
+    name: entry.name,
+    block: entry.block,
+    codepoint: entry.codepoint,
+    font: entry.font,
+    family: familyOf(entry.font),
+    d: entry.d
+  };
 });
 
 /** Look up a symbol by slug. Returns undefined for an unknown or removed slug. */

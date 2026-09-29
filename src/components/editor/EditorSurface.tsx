@@ -15,11 +15,9 @@ import type { ProjectWorkspace } from "../../application/workspace";
 import {
   DEFAULT_PATTERN_AIDA_COUNT,
   findLayer,
-  isAlphanumericSymbol,
-  MAX_PALETTE_SYMBOL_LENGTH,
-  PALETTE_SYMBOLS,
 } from "../../domain";
 import type { DisplayUnits, LayerType } from "../../domain";
+import { SYMBOL_POOL, SYMBOL_TILE_VIEW } from "../../symbols";
 import { TraceImageControls } from "./TraceImageControls";
 import { LayersPanel, LAYER_TYPE_LABELS, type ActiveLayerId } from "./LayersPanel";
 import { LayerControls } from "./LayerControls";
@@ -80,6 +78,22 @@ const modes = [
   [ChartPresentationMode.Combined, "Both"],
 ] as const;
 const EDITOR_PREFERENCES_KEY = "needlewise-editor-preferences:v1";
+
+/** DOM id for a symbol's shared sprite path, namespaced so it cannot collide. */
+const symbolSpriteId = (slug: string): string => `symbol-${slug}`;
+
+/**
+ * One preview of a pool symbol, drawn from the single sprite path rather than
+ * repeating its `d` string. The palette swatch, the symbol chip, the details
+ * menu, and the picker grid go through here, so a mark is the same geometry
+ * everywhere and one value is read, not copied.
+ */
+const SymbolTile = ({ id, className = "symbol-token" }: { id: string; className?: string }) => (
+  <svg className={className} viewBox={`${-SYMBOL_TILE_VIEW} ${-SYMBOL_TILE_VIEW} ${SYMBOL_TILE_VIEW * 2} ${SYMBOL_TILE_VIEW * 2}`} aria-hidden="true" focusable="false">
+    <use href={`#${symbolSpriteId(id)}`} />
+  </svg>
+);
+
 type EditorPreferences = {
   version: 1;
   railSide: "left" | "right";
@@ -211,9 +225,10 @@ const readEditorPreferences = (workspaceId: string): EditorPreferences => {
     return defaults;
   }
 };
-// The symbol picker renders the palette as one continuous wall (glyphs already
-// held by other palette entries are omitted, so only reachable assignments show)
-// and the filter above narrows the wall on demand.
+// The symbol picker renders the palette as one continuous wall: every pool
+// symbol is reachable, glyphs already held by other palette entries stay
+// visible and picking one swaps the two colors' glyphs (the document keeps
+// one unique symbol per color). The filter above narrows the wall on demand.
 export function EditorSurface({
   workspace,
   document,
@@ -294,7 +309,6 @@ export function EditorSurface({
   const removeTrigger = useRef<HTMLButtonElement>(null);
   const [symbolTarget, setSymbolTarget] = useState<number | null>(null);
   const [symbolNotice, setSymbolNotice] = useState("");
-  const [symbolQuery, setSymbolQuery] = useState("");
   const [symbolFilter, setSymbolFilter] = useState("");
   const symbolDialog = useRef<HTMLDivElement>(null);
   const symbolTrigger = useRef<HTMLButtonElement | null>(null);
@@ -808,7 +822,7 @@ export function EditorSurface({
         }}
       >
         <span className="palette-swatch" style={{ backgroundColor: x.color }} aria-hidden="true">
-          {paletteOptions.symbols && <span className="palette-swatch-symbol">{x.symbol}</span>}
+          {paletteOptions.symbols && <span className="palette-swatch-symbol"><SymbolTile id={x.symbol} /></span>}
           {paletteOptions.numbers && (
             <span className={`palette-number${x.catalog ? "" : " palette-number-hex"}`}>
               {catalogEntryBrand(x) ? <><span className="palette-brand-label">{catalogEntryBrand(x)}</span><span className="palette-code-label">{x.catalog?.code}</span></> : catalogEntryLabel(x)}
@@ -823,7 +837,7 @@ export function EditorSurface({
         title={`Change symbol for ${x.name}`}
         onClick={(e) => openSymbolPicker(x.id, e.currentTarget)}
       >
-        {x.symbol}
+        <SymbolTile id={x.symbol} />
       </button>
       <button
         className="palette-remove"
@@ -838,7 +852,7 @@ export function EditorSurface({
         <div ref={menuElement} className="palette-menu" role="menu" aria-label={`Details for ${x.name}`} style={{ position: 'fixed', left: paletteMenuPosition.left, top: paletteMenuPosition.top, zIndex: 1000 }} onPointerDown={(event) => event.stopPropagation()}>
           <strong>{x.name}</strong>
             <span>{catalogEntryLabel(x)}</span>
-          <span>Symbol {x.symbol}</span>
+          <span>Symbol <SymbolTile id={x.symbol} /><span className="visually-hidden">{x.symbol}</span></span>
           <button type="button" role="menuitem" onClick={() => { const anchor = menuAnchor.current as HTMLButtonElement; openSymbolPicker(x.id, anchor); setPaletteMenu(null); }}>Change symbol</button>
           <button type="button" role="menuitem" onClick={() => { openSwapPicker(x.id, menuAnchor.current as HTMLButtonElement); setPaletteMenu(null); }}>Swap color</button>
           <button type="button" role="menuitem" className="palette-menu-delete" onClick={() => { deleteTrigger.current = menuAnchor.current as HTMLButtonElement; setDeleteTarget(x.id); setPaletteMenu(null); }}>Delete color</button>
@@ -857,67 +871,16 @@ export function EditorSurface({
       : (palette.find((x) => x.id === symbolTarget) ?? null);
   const openSymbolPicker = (id: number, trigger: HTMLButtonElement) => {
     setSymbolNotice("");
-    setSymbolQuery("");
     setSymbolFilter("");
     setSymbolTarget(id);
     symbolTrigger.current = trigger;
   };
   const closeSymbolPicker = () => {
     setSymbolTarget(null);
-    setSymbolQuery("");
     setSymbolNotice("");
     setSymbolFilter("");
     window.setTimeout(() => symbolTrigger.current?.focus(), 0);
   };
-  const symbolStatus = (value: string): "empty" | "long" | "alpha" | "ok" =>
-    value === ""
-      ? "empty"
-      : value.length > MAX_PALETTE_SYMBOL_LENGTH
-        ? "long"
-        : isAlphanumericSymbol(value)
-          ? "alpha"
-          : "ok";
-  const symbolStatusMessage = (value: string): string =>
-    symbolStatus(value) === "long"
-      ? `That's ${String(value.length)} UTF-16 code units — palette symbols can be at most ${String(MAX_PALETTE_SYMBOL_LENGTH)}.`
-      : symbolStatus(value) === "alpha"
-        ? "Palette symbols must be non-alphanumeric — ASCII letters, digits, and fullwidth forms are reserved."
-        : "";
-  const updateSymbolQuery = (raw: string) => {
-    setSymbolQuery(raw);
-    setSymbolNotice(symbolStatusMessage(raw.trim()));
-  };
-  const commitSymbolQuery = () => {
-    const target = symbolTarget;
-    if (target === null) return;
-    const next = symbolQuery.trim();
-    const status = symbolStatus(next);
-    if (status === "empty") {
-      setSymbolNotice(
-        "Type or paste a single non-alphanumeric character, then press Enter to assign it.",
-      );
-      return;
-    }
-    if (status !== "ok") {
-      setSymbolNotice(symbolStatusMessage(next));
-      return;
-    }
-    assignSymbol(next);
-  };
-  const customSymbol = symbolQuery.trim();
-  const customStatus = symbolStatus(customSymbol);
-  const customHolder =
-    customStatus === "ok" && symbolEntry
-      ? (palette.find(
-          (x) => x.id !== symbolEntry.id && x.symbol === customSymbol,
-        ) ?? null)
-      : null;
-  const customCommitLabel =
-    customStatus !== "ok" || !symbolEntry
-      ? null
-      : customHolder
-        ? `Assign ${customSymbol} to ${symbolEntry.name} (custom, swaps with ${customHolder.name})`
-        : `Assign ${customSymbol} to ${symbolEntry.name} (custom)`;
   const assignSymbol = (symbol: string) => {
     const target = symbolTarget;
     if (target === null) return;
@@ -930,13 +893,15 @@ export function EditorSurface({
       const holder = palette.find(
         (x) => x.id !== target && x.symbol === symbol,
       );
-      if (holder)
-        workspace.execute({
-          type: "palette-update",
-          id: holder.id,
-          symbol: current.symbol,
-        });
-      workspace.execute({ type: "palette-update", id: target, symbol });
+      if (holder) {
+        // Atomic glyph swap: two palette-update calls cannot express this,
+        // because the first update would trip the duplicate-symbol guard while
+        // the other color still holds the symbol being moved. The swap command
+        // exchanges both glyphs in one step and keeps glyphs unique.
+        workspace.execute({ type: "palette-swap", a: holder.id, b: target });
+      } else {
+        workspace.execute({ type: "palette-update", id: target, symbol });
+      }
       closeSymbolPicker();
     } catch (error) {
       setSymbolNotice(
@@ -1119,7 +1084,7 @@ export function EditorSurface({
       globalThis.document.querySelector<HTMLElement>("[data-application]");
     const wasInert = root?.inert ?? false;
     if (root) root.inert = true;
-    el.querySelector<HTMLInputElement>("#symbol-custom-input")?.focus();
+    el.querySelector<HTMLInputElement>("#symbol-filter-input")?.focus();
     const all = () =>
       [...el.querySelectorAll<HTMLElement>("button,input")].filter(
         (item) => !item.hasAttribute("disabled") && item.tabIndex >= 0,
@@ -1297,11 +1262,11 @@ export function EditorSurface({
   }, [touchCopyRequest]);
   const symbolFilterQuery = symbolFilter.trim().toLowerCase();
   const symbolMatches = symbolEntry
-    ? PALETTE_SYMBOLS.filter(
-        (s) =>
-          (s === symbolEntry.symbol ||
-            !palette.some((x) => x.id !== symbolEntry.id && x.symbol === s)) &&
-          (!symbolFilterQuery || s.toLowerCase().includes(symbolFilterQuery)),
+    ? SYMBOL_POOL.filter(
+        (option) =>
+          !symbolFilterQuery ||
+          option.id.toLowerCase().includes(symbolFilterQuery) ||
+          option.name.toLowerCase().includes(symbolFilterQuery),
       )
     : [];
   const projectName = workspace.metadata?.title ?? "Untitled pattern";
@@ -1629,6 +1594,27 @@ export function EditorSurface({
   }, []);
   return (
     <section ref={workspaceRoot} className="editor-workspace" aria-labelledby="editor-title">
+      {/*
+        One sprite for the whole pool, shared by the palette swatches, the
+        symbol chip, the details menu, and the symbol picker. A tile references
+        a single path instead of repeating its `d` string; the `d` is the pool's
+        own value, so a mark is the same geometry the canvas paints through
+        Path2D, and both fill it for the same reason they cannot disagree.
+        `.symbol-sprite` keeps it inert: absolute, zero size, overflow hidden —
+        a definition holder, never painted where placed.
+      */}
+      <svg
+        className="symbol-sprite"
+        viewBox={`${-SYMBOL_TILE_VIEW} ${-SYMBOL_TILE_VIEW} ${SYMBOL_TILE_VIEW * 2} ${SYMBOL_TILE_VIEW * 2}`}
+        aria-hidden="true"
+        focusable="false"
+      >
+        <defs>
+          {SYMBOL_POOL.map((option) => (
+            <path key={option.id} id={symbolSpriteId(option.id)} d={option.d} fill="currentColor" />
+          ))}
+        </defs>
+      </svg>
       <header className="editor-heading">
         <a
           className="editor-brand"
@@ -2542,67 +2528,41 @@ export function EditorSurface({
               <p className="section-label">Palette</p>
               <h2 id="symbol-picker-title">Symbol for {symbolEntry.name}</h2>
               <p className="modal-hint">
-                Pick a symbol from the grid below, or type any non-alphanumeric
-                character of your own and press Enter to assign it.
+                Pick a symbol from the pool below. Every symbol is drawn by
+                this application, so the preview matches the chart exactly.
+                Symbols already in use by another color stay visible: picking
+                one swaps the two colors' glyphs.
               </p>
-              <div className="catalog-box">
-                <label htmlFor="symbol-custom-input">Symbol character</label>
-                <input
-                  id="symbol-custom-input"
-                  value={symbolQuery}
-                  onChange={(e) => updateSymbolQuery(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      commitSymbolQuery();
-                    }
-                  }}
-                  placeholder="e.g. ⚑ or 🧶"
-                  autoComplete="off"
-                />
-                {customCommitLabel && (
-                  <button
-                    className="small-action"
-                    type="button"
-                    style={{ marginTop: ".55rem" }}
-                    aria-label={customCommitLabel}
-                    onClick={commitSymbolQuery}
-                  >
-                    {customSymbol}
-                    {customHolder ? ` swaps with ${customHolder.name}` : ""}
-                  </button>
-                )}
-                {customHolder && (
-                  <p className="modal-hint">
-                    {customHolder.name} already uses {customSymbol}. Assigning
-                    will swap the two symbols.
-                  </p>
-                )}
-              </div>
               <div className="catalog-box">
                 <label htmlFor="symbol-filter-input">Filter symbols</label>
                 <input
                   id="symbol-filter-input"
                   value={symbolFilter}
                   onChange={(e) => setSymbolFilter(e.target.value)}
-                  placeholder="Narrow by glyph or palette name"
+                  placeholder="Narrow by symbol name or ID"
                   autoComplete="off"
                 />
               </div>
+              {/*
+                Tiles reference the shared sprite hoisted to the editor
+                surface, so the dialog never re-defines the pool.
+              */}
               {symbolMatches.length > 0 && (
                 <div className="symbol-grid">
-                  {symbolMatches.map((s) => {
-                    const current = symbolEntry.symbol === s;
+                  {symbolMatches.map((option) => {
+                    const current = symbolEntry.symbol === option.id;
+                    const holder = palette.find((x) => x.id !== symbolEntry.id && x.symbol === option.id);
                     return (
                       <button
-                        key={s}
+                        key={option.id}
                         type="button"
-                        className="symbol-option"
+                        className={holder ? "symbol-option symbol-held" : "symbol-option"}
                         aria-pressed={current}
-                        aria-label={`Assign ${s} to ${symbolEntry.name}`}
-                        onClick={() => assignSymbol(s)}
+                        aria-label={`${holder ? `Swap ${option.name} with ${holder.name}; currently used by ${holder.name}. ` : ""}Assign ${option.name} to ${symbolEntry.name}`}
+                        title={holder ? `${option.name} (used by ${holder.name}) — pick to swap` : option.name}
+                        onClick={() => assignSymbol(option.id)}
                       >
-                        <span aria-hidden="true">{s}</span>
+                        <SymbolTile id={option.id} className="symbol-preview" />
                       </button>
                     );
                   })}

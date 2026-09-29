@@ -1,12 +1,4 @@
-/** Stable, locale-independent symbols for palette IDs. */
-export function symbolForPaletteId(id: number): string {
-  if (!Number.isInteger(id) || id < 1) return '';
-  return id.toString(36);
-}
-
-export const paletteIdToSymbol = symbolForPaletteId;
-export const deterministicPaletteSymbol = symbolForPaletteId;
-
+/** Color helpers shared by the symbol painter and the renderer. */
 function byte(value: string): number | undefined {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(0, Math.min(255, Math.round(parsed))) : undefined;
@@ -42,5 +34,3 @@ export function grayscaleColor(color: string): string {
   const value = luminance.toString(16).padStart(2, '0');
   return `#${value}${value}${value}`;
 }
-
-export const toGrayscale = grayscaleColor;

@@ -1,0 +1,195 @@
+/*
+ * Styling for the /__symbols curation page.
+ *
+ * This is a developer tool, not part of the application, so it deliberately
+ * does not share the editor's design tokens: it is a dense list with its own
+ * layout, and none of it ships to a deployed build.
+ */
+
+.symbol-picker {
+  --picker-border: #d8d2c6;
+  --picker-ink: #2b2622;
+  --picker-muted: #6f6659;
+  --picker-accent: #8a3324;
+
+  min-height: 100vh;
+  margin: 0;
+  padding: 1.5rem;
+  box-sizing: border-box;
+  background: #f7f3ee;
+  color: var(--picker-ink);
+  font: 14px/1.5 ui-sans-serif, system-ui, sans-serif;
+}
+
+.symbol-picker *,
+.symbol-picker *::before,
+.symbol-picker *::after {
+  box-sizing: inherit;
+}
+
+.symbol-picker-header h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.4rem;
+}
+
+.symbol-picker-header p {
+  margin: 0 0 1.25rem;
+  max-width: 60ch;
+  color: var(--picker-muted);
+}
+
+.symbol-picker-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.symbol-picker-controls label {
+  font-weight: 600;
+}
+
+.symbol-picker-controls input {
+  flex: 1 1 16rem;
+  min-width: 12rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--picker-border);
+  border-radius: 4px;
+  background: #fff;
+  font: inherit;
+}
+
+.symbol-picker-count {
+  color: var(--picker-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.symbol-picker-controls button {
+  padding: 0.4rem 0.7rem;
+  border: 1px solid var(--picker-border);
+  border-radius: 4px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.symbol-picker-controls button:hover:not(:disabled) {
+  border-color: var(--picker-muted);
+}
+
+.symbol-picker-controls button:disabled {
+  color: #a89e90;
+  cursor: default;
+}
+
+.symbol-picker-save {
+  margin-left: auto;
+  border-color: var(--picker-accent) !important;
+  color: var(--picker-accent) !important;
+  font-weight: 600;
+}
+
+.symbol-picker-status {
+  min-height: 1.5rem;
+  margin: 0 0 0.75rem;
+  color: var(--picker-muted);
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+}
+
+.symbol-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 0.5rem;
+  max-height: calc(100vh - 15rem);
+  overflow-y: auto;
+  padding: 0.25rem;
+  border: 1px solid var(--picker-border);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.symbol-picker-cell {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas:
+    "glyph label"
+    "glyph meta"
+    "sizes sizes";
+  gap: 0.1rem 0.6rem;
+  align-items: center;
+  padding: 0.5rem;
+  border: 1px solid var(--picker-border);
+  border-radius: 4px;
+  background: #fdfcfa;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 4.5rem;
+}
+
+.symbol-picker-cell:hover {
+  border-color: var(--picker-muted);
+}
+
+.symbol-picker-cell.is-selected {
+  border-color: var(--picker-accent);
+  background: #fdf6f4;
+  box-shadow: inset 3px 0 0 var(--picker-accent);
+}
+
+.symbol-picker-glyph {
+  grid-area: glyph;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  font-size: 1.6rem;
+  line-height: 1;
+  background: #fff;
+  border: 1px solid var(--picker-border);
+  border-radius: 3px;
+}
+
+.symbol-picker-label {
+  grid-area: label;
+  font-weight: 600;
+}
+
+.symbol-picker-meta {
+  grid-area: meta;
+  color: var(--picker-muted);
+  font-size: 0.75rem;
+}
+
+.symbol-picker-sizes {
+  grid-area: sizes;
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  height: 1.5rem;
+  margin-top: 0.3rem;
+  padding: 0.15rem 0.35rem;
+  background: #fff;
+  border: 1px solid var(--picker-border);
+  border-radius: 3px;
+  line-height: 1;
+  overflow: hidden;
+}
+
+.symbol-picker-sizes b {
+  font-weight: 400;
+}
+
+.symbol-picker-more {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 0.75rem;
+  color: var(--picker-muted);
+  text-align: center;
+}

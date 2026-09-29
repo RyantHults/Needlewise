@@ -11,7 +11,6 @@ import {
   clonePaletteEntry,
   clonePatternSettings,
   normalizePatternSettings,
-  PALETTE_SYMBOLS,
   UINT32_MAX,
   isThreeQuarterKind,
   isThreeQuarterPairKind,
@@ -53,6 +52,7 @@ import {
   type PatternFragment,
   type ProgressChangeSet
 } from './types';
+import { SYMBOL_IDS } from '../symbols';
 import { assertValidDocument } from './validation';
 import { isSharedEmptyCellPlane } from './layers';
 import { assertValidPatternFragment, backstitchEndpointsContainedInCellUnion } from './fragment';
@@ -501,6 +501,9 @@ function normalizeType(type: string): string {
     'add-palette': 'palette-create',
     'palette-add': 'palette-create',
     'update-palette': 'palette-update',
+    'swap-palette': 'palette-swap',
+    'swap-palette-symbols': 'palette-swap',
+    'swap-symbols': 'palette-swap',
     'deactivate-color': 'palette-deactivate',
     'deactivate-palette-color': 'palette-deactivate',
     'merge-palette': 'palette-merge',
@@ -556,7 +559,7 @@ function touchCommandTargets(document: PatternDocument, command: DomainCommand, 
   }
   const backstitchTypes = new Set(['add-backstitch', 'remove-backstitch', 'move-backstitch', 'recolor-backstitch', 'set-backstitch-completion', 'toggle-backstitch-completion', 'update-backstitch']);
   if (backstitchTypes.has(type)) tracker.touchBackstitches(document);
-  if (type === 'palette-create' || type === 'palette-update' || type === 'palette-deactivate') tracker.touchPalette(document);
+  if (type === 'palette-create' || type === 'palette-update' || type === 'palette-swap' || type === 'palette-deactivate') tracker.touchPalette(document);
   if (type === 'document-settings-update') tracker.touchSettings(document);
 }
 
@@ -3264,7 +3267,7 @@ function paletteCreate(document: PatternDocument, command: DomainCommand): Mutat
     symbol = source.symbol as string;
   } else {
     const used = new Set(document.palette.map((candidate) => candidate.symbol));
-    const free = PALETTE_SYMBOLS.find((glyph) => !used.has(glyph));
+    const free = SYMBOL_IDS.find((slug) => !used.has(slug));
     if (free !== undefined) {
       symbol = free;
     } else {
@@ -3330,6 +3333,27 @@ function paletteDeactivate(document: PatternDocument, command: DomainCommand): M
   if (!entry.active) return noChange();
   if (paletteIsReferenced(document, id)) throw new DomainError('palette-in-use', `Palette ID ${String(id)} is referenced by the document.`);
   document.palette = document.palette.map((candidate) => candidate.id === id ? { ...candidate, active: false } : candidate);
+  return changed();
+}
+
+function paletteSwap(document: PatternDocument, command: DomainCommand): MutationInfo {
+  const a = requiredNumber(valueOf(command, 'a', 'from', 'idA', 'first'), 'a');
+  const b = requiredNumber(valueOf(command, 'b', 'to', 'idB', 'second'), 'b');
+  if (a === b) throw new DomainError('invalid-palette-id', 'Palette symbol swap needs two distinct colors.');
+  const entryA = findPaletteEntry(document, a);
+  const entryB = findPaletteEntry(document, b);
+  if (!entryA || !entryB) throw new DomainError('unknown-palette', 'Palette symbol swap references a missing color.');
+  if (entryA.symbol === entryB.symbol) return noChange();
+  // The swap exchanges glyphs atomically: doing it as two palette-update calls
+  // would trip the duplicate guard on the first step, because the other entry
+  // still holds the symbol being moved. Keeping glyphs unique is the product
+  // rule, so the picker's "take a symbol in use elsewhere" needs this one
+  // combined step rather than a relaxation of the guard.
+  document.palette = document.palette.map((candidate) => {
+    if (candidate.id === a) return { ...candidate, symbol: entryB.symbol };
+    if (candidate.id === b) return { ...candidate, symbol: entryA.symbol };
+    return candidate;
+  });
   return changed();
 }
 
@@ -3854,6 +3878,7 @@ function applyOneToDraftInternal(document: PatternDocument, command: DomainComma
     case 'update-backstitch': return applyUpdateBackstitch(document, command);
     case 'palette-create': return paletteCreate(document, command);
     case 'palette-update': return paletteUpdate(document, command);
+    case 'palette-swap': return paletteSwap(document, command);
     case 'palette-deactivate': return paletteDeactivate(document, command);
     case 'palette-merge': return paletteMerge(document, command);
     case 'palette-delete': return paletteDelete(document, command);

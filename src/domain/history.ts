@@ -218,13 +218,14 @@ function normalizedPaletteCommandType(command: DomainCommand): string {
   const normalized = command.type.replace(/([a-z])([A-Z])/g, '$1-$2').replace(/_/g, '-').toLowerCase();
   if (normalized === 'create-palette' || normalized === 'add-palette' || normalized === 'palette-add') return 'palette-create';
   if (normalized === 'update-palette') return 'palette-update';
+  if (normalized === 'swap-palette' || normalized === 'swap-palette-symbols' || normalized === 'swap-symbols') return 'palette-swap';
   if (normalized === 'deactivate-color' || normalized === 'deactivate-palette-color') return 'palette-deactivate';
   return normalized;
 }
 
 function isPaletteMetadataOnlyCommand(command: DomainCommand): boolean {
   const type = normalizedPaletteCommandType(command);
-  if (type === 'palette-create' || type === 'palette-update' || type === 'palette-deactivate') return true;
+  if (type === 'palette-create' || type === 'palette-update' || type === 'palette-swap' || type === 'palette-deactivate') return true;
   if (type !== 'batch' || !Array.isArray(command.commands) || command.commands.length === 0) return false;
   return command.commands.every((child) => isPaletteMetadataOnlyCommand(child as DomainCommand));
 }

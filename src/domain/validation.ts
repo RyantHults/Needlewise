@@ -108,9 +108,9 @@ export function collectValidationErrors(document: PatternDocument): string[] {
   const symbols = new Set<string>();
   for (const entry of document.palette) {
     if (typeof entry.symbol === 'string') {
-      // The auto-create overflow path (all curated glyphs taken, palette
-      // grows past PALETTE_SYMBOLS.length) intentionally reuses the cycled
-      // default. Validation still rejects explicit symbol duplicates on
+      // The auto-create overflow path (every pool symbol taken, so the palette
+      // grows past the pool and the default cycles) intentionally reuses the
+      // cycled default. Validation still rejects explicit symbol duplicates on
       // create-with-symbol and on palette-update — only entries the
       // auto-assign path produced are exempt, identified by the helper.
       if (!isAutoOverflowEntry(entry, document.palette) && symbols.has(entry.symbol)) errors.push(`Palette symbol ${entry.symbol} is duplicated.`);

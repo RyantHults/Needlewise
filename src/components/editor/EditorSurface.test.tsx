@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EditorSurface } from './EditorSurface';
 import { createEditorSurfaceController } from '../../editor';
 import { createCatalogReference, DEFAULT_CATALOG_DEFINITION, type CatalogDefinition, type CatalogRecord } from '../../catalog';
-import { createLayeredDocument, layerAddCommand, applyLayerStructureCommand, PALETTE_SYMBOLS, type LayeredDocument } from '../../domain';
+import { createLayeredDocument, layerAddCommand, applyLayerStructureCommand, type LayeredDocument } from '../../domain';
+import { SYMBOL_POOL, SYMBOL_IDS } from '../../symbols';
 import stylesText from '../../styles.css?inline';
 
 const compactDmcRecords = [...new Map([
@@ -39,7 +40,7 @@ const ws = { metadata: { title: 'Sampler', notes: '', aidaCount: 14 }, updateAct
 const executeMock = () => (ws as { execute: ReturnType<typeof vi.fn> }).execute;
 const doc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
 const two = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321' } }, { id: 2, name: 'Sky', color: '#48c', active: true }], backstitches: { ids: new Uint32Array() } } as never;
-const paletteDetailsDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: '✦', catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
+const paletteDetailsDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: 'strip-square-x20', catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
 const customColorDocument = (palette: unknown[]) => ({ width: 16, height: 16, colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } }) as never;
 const makeCatalog = (catalogId: string, brandLabel: string, records: CatalogRecord[]): CatalogDefinition => {
   const byHex = new Map(records.map((record) => [record.hex.toUpperCase(), record]));
@@ -59,15 +60,14 @@ const openCustomColorDialog = () => {
   return screen.getByRole('dialog', { name: 'Add a thread color' });
 };
 const customColorAction = (dialog: HTMLElement) => dialog.querySelector('.custom-color-action') as HTMLButtonElement;
-// Mirrors the picker's render predicate: every pool symbol except those held by
-// another palette entry (the open entry's own symbol is always kept). Computed by
-// value so pool reordering or enrichment never hardcodes glyphs or indices.
-const expectedTiles = (palette: { id: number; symbol: string }[], openId: number) => {
-  const open = palette.find((e) => e.id === openId);
-  if (!open) return 0;
-  const held = new Set(palette.filter((e) => e.id !== openId).map((e) => e.symbol));
-  return PALETTE_SYMBOLS.filter((s) => s === open.symbol || !held.has(s)).length;
-};
+// Mirrors the picker's render predicate: the full pool is one continuous wall
+// with no held-tile exclusion, so every glyph that survives the filter shows.
+// Computed by value so pool reordering or enrichment never hardcodes glyphs or
+// indices.
+const expectedTiles = () => SYMBOL_POOL.length;
+/** A tile's accessible label, which the picker builds from the symbol's name. */
+const tileName = (slug: string): string => SYMBOL_POOL.find((s) => s.id === slug)?.name ?? slug;
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const dispatchPointerClick = (target: Element, pointerId: number) => {
   const click = new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 });
   Object.defineProperty(click, 'pointerId', { value: pointerId });
@@ -1721,7 +1721,7 @@ describe('EditorSurface', () => {
     const menu = screen.getByRole('menu', { name: 'Details for Ruby' });
     expect(menu).toHaveTextContent('Ruby');
     expect(menu).toHaveTextContent('321');
-    expect(menu).toHaveTextContent('Symbol ✦');
+    expect(menu).toHaveTextContent('Symbol strip-square-x20');
     expect(within(menu).getByRole('menuitem', { name: 'Delete color' })).toBeInTheDocument();
   });
   it('opens the color details menu after a 500ms press without selecting the color', () => {
@@ -1803,47 +1803,104 @@ describe('EditorSurface', () => {
     expect(screen.getByRole('group', { name: 'View settings' })).toBeInTheDocument();
   });
   it('activates Resize image from the compact reference toolbar', async () => { (ws as { sourceImage: unknown }).sourceImage = { assetId: 'trace', mimeType: 'image/png', width: 2, height: 2, crop: { x: 0, y: 0, width: 1, height: 1 }, chartBounds: { x: 0, y: 0, width: 2, height: 2 }, traceVisible: true, opacity: 1 }; (ws as { getAsset: ReturnType<typeof vi.fn> }).getAsset.mockReturnValue({ id: 'trace', name: 'trace.png', mimeType: 'image/png', data: new Uint8Array([1]), checksum: '0'.repeat(64) }); f.uiState.tool = { tool: 'resize-image' }; render(<EditorSurface workspace={ws} document={doc} />); const toolbar = screen.getByRole('toolbar', { name: 'Reference image' }); const button = within(toolbar).getByRole('button', { name: 'Resize image' }); expect(button).toHaveAttribute('aria-pressed', 'true'); expect(within(toolbar).getByRole('button', { name: 'Move image' })).toHaveAttribute('aria-pressed', 'false'); fireEvent.click(button); expect(f.c.setTool).toHaveBeenCalledWith(expect.objectContaining({ tool: 'resize-image' })); await waitFor(() => expect(f.c.setTraceImage).toHaveBeenCalled()); });
-  it('opens the symbol picker from a palette chip and assigns a free symbol', async () => {
-    const palette = [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: '●' }, { id: 2, name: 'Sky', color: '#48c', active: true, symbol: '■' }];
+  it('opens the symbol picker from a palette chip and assigns a free pool symbol', async () => {
+    // Entry 1 holds one slug, entry 2 another, so the target below is free.
+    const [heldSymbol, otherSymbol, target] = [SYMBOL_IDS[1], SYMBOL_IDS[2], SYMBOL_IDS[3]];
+    const palette = [
+      { id: 1, name: 'Ruby', color: '#b44', active: true, symbol: heldSymbol },
+      { id: 2, name: 'Sky', color: '#48c', active: true, symbol: otherSymbol }
+    ];
     const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     const chip = screen.getByRole('button', { name: 'Change symbol for Ruby' });
-    expect(chip).toHaveTextContent('●');
     fireEvent.click(chip);
     expect(screen.getByRole('dialog', { name: 'Symbol for Ruby' })).toBeInTheDocument();
-    expect(screen.getAllByRole('button', { name: /Assign / })).toHaveLength(expectedTiles(palette, 1));
-    expect(screen.queryByRole('button', { name: 'Assign ■ to Ruby' })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Assign ▲ to Ruby' }));
-    expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).toHaveBeenCalledWith({ type: 'palette-update', id: 1, symbol: '▲' });
+    expect(screen.getAllByRole('button', { name: /Assign / })).toHaveLength(expectedTiles());
+    fireEvent.click(screen.getByRole('button', { name: `Assign ${tileName(target)} to Ruby` }));
+    expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).toHaveBeenCalledWith({ type: 'palette-update', id: 1, symbol: target });
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     await waitFor(() => expect(document.activeElement).toBe(chip));
   });
-  it('renders every reachable symbol as one continuous grid without held tiles, categories, or pagination', () => {
-    const palette = [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: '●' }, { id: 2, name: 'Sky', color: '#48c', active: true, symbol: '■' }];
+  it('renders every reachable symbol as one continuous grid with held tiles visible, no categories, or pagination', () => {
+    const [heldSymbol, otherSymbol] = [SYMBOL_IDS[1], SYMBOL_IDS[2]];
+    const palette = [
+      { id: 1, name: 'Ruby', color: '#b44', active: true, symbol: heldSymbol },
+      { id: 2, name: 'Sky', color: '#48c', active: true, symbol: otherSymbol }
+    ];
     const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
     const dialog = screen.getByRole('dialog', { name: 'Symbol for Ruby' });
-    expect(within(dialog).getAllByRole('button', { name: /Assign / })).toHaveLength(expectedTiles(palette, 1));
+    expect(within(dialog).getAllByRole('button', { name: /Assign / })).toHaveLength(expectedTiles());
     expect(within(dialog).queryByRole('button', { name: /^Show all / })).not.toBeInTheDocument();
     expect(within(dialog).queryByRole('heading', { level: 3 })).not.toBeInTheDocument();
     expect(within(dialog).queryByRole('group')).not.toBeInTheDocument();
-    expect(within(dialog).getByRole('button', { name: 'Assign ● to Ruby' })).toHaveAttribute('aria-pressed', 'true');
-    expect(within(dialog).getByRole('button', { name: 'Assign ▲ to Ruby' })).toHaveAttribute('aria-pressed', 'false');
+    expect(within(dialog).getByRole('button', { name: `Assign ${tileName(heldSymbol)} to Ruby` })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(dialog).getByRole('button', { name: new RegExp(`^Swap ${escapeRegExp(tileName(otherSymbol))} with Sky;`, 'i') })).toBeInTheDocument();
   });
-  it('hides symbols assigned to other colors and keeps only the open color’s own symbol selected', () => {
-    const palette = [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: '●' }, { id: 2, name: 'Sky', color: '#48c', active: true, symbol: '■' }, { id: 3, name: 'Sea', color: '#38a', active: true, symbol: '♡' }];
+  it('previews each symbol from a shared sprite that carries the pool\'s own path data', () => {
+    const assigned = SYMBOL_IDS[0];
+    const entry = SYMBOL_POOL.find((s) => s.id === assigned)!;
+    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: assigned }], backstitches: { ids: new Uint32Array() } } as never;
+    render(<EditorSurface workspace={ws} document={symDoc} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
+    const dialog = screen.getByRole('dialog', { name: 'Symbol for Ruby' });
+    // One shared definition per pool symbol, rather than a copy per tile. The
+    // sprite lives at the editor surface root, so every palette mark can draw
+    // through it and the dialog is not what defines the pool.
+    const sprite = document.querySelector('.symbol-sprite');
+    expect(dialog.querySelector('.symbol-sprite')).toBeNull();
+    expect(sprite?.querySelectorAll('defs > path')).toHaveLength(SYMBOL_POOL.length);
+    // The definition carries the pool's own geometry, which is what makes the
+    // preview the same shape the canvas paints through Path2D. A glyph is filled
+    // and never stroked, so the sprite must not set a stroke at all.
+    const definition = sprite?.querySelector(`#symbol-${assigned}`);
+    expect(definition?.getAttribute('d')).toBe(entry.d);
+    expect(definition?.getAttribute('fill')).toBe('currentColor');
+    expect(definition?.getAttribute('stroke')).toBeNull();
+    expect(definition?.getAttribute('stroke-width')).toBeNull();
+    const tile = within(dialog).getByRole('button', { name: `Assign ${entry.name} to Ruby` });
+    expect(tile.querySelector('use')?.getAttribute('href')).toBe(`#symbol-${assigned}`);
+    expect(tile.querySelector('path')).toBeNull();
+  });
+  it('draws the palette symbols from the shared sprite instead of printing the pool slug', () => {
+    const assigned = SYMBOL_IDS[0];
+    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: assigned, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
+    render(<EditorSurface workspace={ws} document={symDoc} />);
+    const row = screen.getByRole('button', { name: '321Ruby' });
+    const swatchSymbol = row.querySelector('.palette-swatch-symbol');
+    expect(swatchSymbol?.querySelector('use')?.getAttribute('href')).toBe(`#symbol-${assigned}`);
+    expect(swatchSymbol?.textContent).not.toContain(assigned);
+    const chip = screen.getByRole('button', { name: 'Change symbol for Ruby' });
+    expect(chip.querySelector('use')?.getAttribute('href')).toBe(`#symbol-${assigned}`);
+    expect(chip.textContent).not.toContain(assigned);
+    expect(chip.querySelector('path')).toBeNull();
+  });
+  it('keeps held symbols visible and swaps glyphs atomically when a held tile is picked', async () => {
+    const [symbolA, symbolB, symbolC] = [SYMBOL_IDS[0], SYMBOL_IDS[1], SYMBOL_IDS[2]];
+    const palette = [
+      { id: 1, name: 'Ruby', color: '#b44', active: true, symbol: symbolA },
+      { id: 2, name: 'Sky', color: '#48c', active: true, symbol: symbolB },
+      { id: 3, name: 'Sea', color: '#38a', active: true, symbol: symbolC }
+    ];
     const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
     const dialog = screen.getByRole('dialog', { name: 'Symbol for Ruby' });
-    expect(within(dialog).getByRole('button', { name: 'Assign ● to Ruby' })).toHaveAttribute('aria-pressed', 'true');
-    expect(within(dialog).queryByRole('button', { name: 'Assign ■ to Ruby' })).not.toBeInTheDocument();
-    expect(within(dialog).queryByRole('button', { name: 'Assign ♡ to Ruby' })).not.toBeInTheDocument();
-    expect(within(dialog).getAllByRole('button', { name: /Assign / })).toHaveLength(expectedTiles(palette, 1));
+    expect(within(dialog).getByRole('button', { name: `Assign ${tileName(symbolA)} to Ruby` })).toHaveAttribute('aria-pressed', 'true');
+    // Every pool symbol is reachable now: Sky's and Sea's glyphs stay on the
+    // wall, labelled as held, instead of vanishing the way a filtered pool did.
+    expect(within(dialog).getByRole('button', { name: new RegExp(`^Swap ${escapeRegExp(tileName(symbolB))} with Sky;`, 'i') })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: new RegExp(`^Swap ${escapeRegExp(tileName(symbolC))} with Sea;`, 'i') })).toBeInTheDocument();
+    expect(within(dialog).getAllByRole('button', { name: /Assign / })).toHaveLength(expectedTiles());
+    // Picking a held symbol swaps the two colors' glyphs in one step.
+    fireEvent.click(within(dialog).getByRole('button', { name: new RegExp(`^Swap ${escapeRegExp(tileName(symbolB))} with Sky;`, 'i') }));
+    expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).toHaveBeenCalledWith({ type: 'palette-swap', a: 2, b: 1 });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
   it('closes the symbol picker on Escape and backdrop click with focus restore', async () => {
-    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: '●' }], backstitches: { ids: new Uint32Array() } } as never;
+    const heldSymbol = SYMBOL_IDS[0];
+    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: heldSymbol }], backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     const chip = screen.getByRole('button', { name: 'Change symbol for Ruby' });
     fireEvent.click(chip);
@@ -1857,93 +1914,54 @@ describe('EditorSurface', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).not.toHaveBeenCalled();
   });
-  it('assigns a typed custom character through the palette-update command', async () => {
-    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: '●' }, { id: 2, name: 'Sky', color: '#48c', active: true, symbol: '■' }], backstitches: { ids: new Uint32Array() } } as never;
+  it('offers no way to enter a symbol the pool cannot draw', () => {
+    const heldSymbol = SYMBOL_IDS[0];
+    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: heldSymbol }], backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
-    const entry = screen.getByLabelText('Symbol character');
-    fireEvent.change(entry, { target: { value: '⚑' } });
-    expect(screen.getByRole('button', { name: 'Assign ⚑ to Ruby (custom)' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Assign ⚑ to Ruby (custom)' }));
-    expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).toHaveBeenCalledWith({ type: 'palette-update', id: 1, symbol: '⚑' });
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-  });
-  it('commits a typed custom character on Enter', async () => {
-    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: '●' }, { id: 2, name: 'Sky', color: '#48c', active: true, symbol: '■' }], backstitches: { ids: new Uint32Array() } } as never;
-    render(<EditorSurface workspace={ws} document={symDoc} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
-    const entry = screen.getByLabelText('Symbol character');
-    fireEvent.change(entry, { target: { value: '♠' } });
-    fireEvent.keyDown(entry, { key: 'Enter' });
-    expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).toHaveBeenCalledWith({ type: 'palette-update', id: 1, symbol: '♠' });
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-  });
-  it('rejects empty and whitespace-only custom symbols with feedback and no command', async () => {
-    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: '●' }], backstitches: { ids: new Uint32Array() } } as never;
-    render(<EditorSurface workspace={ws} document={symDoc} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
-    const entry = screen.getByLabelText('Symbol character');
-    const execute = (ws as { execute: ReturnType<typeof vi.fn> }).execute;
-    fireEvent.keyDown(entry, { key: 'Enter' });
-    expect(screen.getByRole('alert')).toHaveTextContent('Type or paste a single non-alphanumeric character, then press Enter to assign it.');
-    fireEvent.change(entry, { target: { value: '   ' } });
-    fireEvent.keyDown(entry, { key: 'Enter' });
-    expect(screen.getByRole('alert')).toHaveTextContent('Type or paste a single non-alphanumeric character, then press Enter to assign it.');
-    expect(execute).not.toHaveBeenCalled();
-    expect(screen.getByRole('dialog', { name: 'Symbol for Ruby' })).toBeInTheDocument();
-  });
-  it('rejects over-length custom symbols with feedback and no command', async () => {
-    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: '●' }], backstitches: { ids: new Uint32Array() } } as never;
-    render(<EditorSurface workspace={ws} document={symDoc} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
-    const entry = screen.getByLabelText('Symbol character');
-    const execute = (ws as { execute: ReturnType<typeof vi.fn> }).execute;
-    fireEvent.change(entry, { target: { value: '◐◑◒◓★' } });
-    expect(screen.getByRole('alert')).toHaveTextContent(/That's 5 UTF-16 code units/);
-    expect(screen.getByRole('alert')).toHaveTextContent(/at most 4/);
-    expect(screen.queryByRole('button', { name: /\(custom/ })).not.toBeInTheDocument();
-    fireEvent.keyDown(entry, { key: 'Enter' });
-    expect(execute).not.toHaveBeenCalled();
-    expect(screen.getByRole('dialog', { name: 'Symbol for Ruby' })).toBeInTheDocument();
-  });
-  it('rejects alphanumeric custom symbols with live feedback and no command', async () => {
-    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: '●' }], backstitches: { ids: new Uint32Array() } } as never;
-    render(<EditorSurface workspace={ws} document={symDoc} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
-    const entry = screen.getByLabelText('Symbol character');
-    const execute = (ws as { execute: ReturnType<typeof vi.fn> }).execute;
-    fireEvent.change(entry, { target: { value: 'S3' } });
-    expect(screen.getByRole('alert')).toHaveTextContent('Palette symbols must be non-alphanumeric');
-    expect(screen.queryByRole('button', { name: /\(custom/ })).not.toBeInTheDocument();
-    fireEvent.keyDown(entry, { key: 'Enter' });
-    expect(execute).not.toHaveBeenCalled();
-    expect(screen.getByRole('dialog', { name: 'Symbol for Ruby' })).toBeInTheDocument();
-  });
-  it('routes a typed character held by another row through the swap path', async () => {
-    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: '●' }, { id: 2, name: 'Sky', color: '#48c', active: true, symbol: '■' }], backstitches: { ids: new Uint32Array() } } as never;
-    render(<EditorSurface workspace={ws} document={symDoc} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
-    const entry = screen.getByLabelText('Symbol character');
-    fireEvent.change(entry, { target: { value: '■' } });
-    expect(screen.getByText(/Sky already uses ■/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Assign ■ to Ruby (custom, swaps with Sky)' })).toBeInTheDocument();
-    fireEvent.keyDown(entry, { key: 'Enter' });
-    const execute = (ws as { execute: ReturnType<typeof vi.fn> }).execute;
-    expect(execute).toHaveBeenCalledTimes(2);
-    expect(execute.mock.calls[0][0]).toEqual({ type: 'palette-update', id: 2, symbol: '●' });
-    expect(execute.mock.calls[1][0]).toEqual({ type: 'palette-update', id: 1, symbol: '■' });
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    const dialog = screen.getByRole('dialog', { name: 'Symbol for Ruby' });
+    // The only text input is the filter, which cannot commit a symbol.
+    expect(within(dialog).getAllByRole('textbox')).toHaveLength(1);
+    expect(within(dialog).getByLabelText('Filter symbols')).toBeInTheDocument();
+    expect(within(dialog).queryByLabelText('Symbol character')).not.toBeInTheDocument();
   });
   it('filters the symbol grid by a typed query', async () => {
-    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: '●' }], backstitches: { ids: new Uint32Array() } } as never;
+    const heldSymbol = SYMBOL_IDS[0];
+    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: heldSymbol }], backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
     const filter = screen.getByLabelText('Filter symbols');
-    fireEvent.change(filter, { target: { value: '⊕' } });
-    expect(screen.getByRole('button', { name: 'Assign ⊕ to Ruby' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Assign ● to Ruby' })).not.toBeInTheDocument();
+    const match = SYMBOL_POOL[3];
+    fireEvent.change(filter, { target: { value: match.name } });
+    expect(screen.getByRole('button', { name: `Assign ${match.name} to Ruby` })).toBeInTheDocument();
+    // The filter is a search, not a commit: typing never assigns.
+    expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).not.toHaveBeenCalled();
+    fireEvent.change(filter, { target: { value: match.id.slice(0, 4) } });
+    expect(screen.getAllByRole('button', { name: /Assign / }).length).toBeGreaterThan(0);
     fireEvent.change(filter, { target: { value: 'zzz' } });
     expect(screen.getByText(/No symbols match "zzz"/)).toBeInTheDocument();
+  });
+  it('finds a held glyph like "heart" by search instead of hiding the whole pool behind the open color', async () => {
+    const palette = [
+      { id: 1, name: 'Ruby', color: '#b44', active: true, symbol: SYMBOL_IDS[0] },
+      { id: 2, name: 'Sky', color: '#48c', active: true, symbol: 'libertinus-math--black-heart-suit' },
+      { id: 3, name: 'Sea', color: '#38a', active: true, symbol: 'libertinus-math--white-heart-suit' }
+    ];
+    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } } as never;
+    render(<EditorSurface workspace={ws} document={symDoc} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
+    const filter = screen.getByLabelText('Filter symbols');
+    fireEvent.change(filter, { target: { value: 'heart' } });
+    // Two heart glyphs are held by Sky and Sea; they must still be findable,
+    // labelled for a swap, and the non-matching wall must not leak in. The
+    // label is the Unicode character name, so it reads "black heart suit"
+    // rather than a hand-written family description.
+    expect(screen.getByRole('button', { name: /^Swap black heart suit with Sky;/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Swap white heart suit with Sea;/ })).toBeInTheDocument();
+    // Every heart-named symbol is on screen and nothing else is, so the count
+    // tracks the pool rather than a number that curation drifts away from.
+    const heartPool = SYMBOL_IDS.filter((id) => id.includes('heart')).length;
+    expect(screen.getAllByRole('button', { name: /Assign |Swap / }).length).toBe(heartPool);
   });
 });
 

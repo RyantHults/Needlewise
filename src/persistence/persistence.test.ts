@@ -1071,7 +1071,7 @@ describe('binary document persistence', () => {
         id: 1,
         name: 'Black',
         color: '#000',
-        symbol: '✚',
+        symbol: 'libertinus-math--white-circle',
         material: { kind: 'floss', label: 'Cotton', unit: 'meters', amount: 2.5 },
         catalog: { catalogId: TEST_CATALOG.catalogId, sourceId: 'test-black', code: '310', name: 'Black', hex: '#000000', rgb: [0, 0, 0] }
       }]
