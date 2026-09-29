@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-/* global process */
 
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
