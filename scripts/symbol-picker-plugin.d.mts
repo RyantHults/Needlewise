@@ -9,4 +9,11 @@ import type { Plugin } from 'vite';
  */
 declare const symbolPickerPlugin: () => Plugin;
 
+/** Fonts are served at `${FONT_ROUTE_PREFIX}/${slug}.ttf`. */
+export declare const FONT_ROUTE_PREFIX: string;
+/** Lists every vendored font with the url it is served at. */
+export declare const REGISTRY_ROUTE: string;
+/** Accepts a posted selection and writes the authored file. */
+export declare const SAVE_ROUTE: string;
+
 export default symbolPickerPlugin;
