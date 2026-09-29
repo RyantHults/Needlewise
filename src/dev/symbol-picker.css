@@ -38,6 +38,64 @@
   color: var(--picker-muted);
 }
 
+/* The font strip reads as tabs set into the page: a rule underneath, an accent
+   underline on the chosen one, and a roving tab stop so arrows walk the strip. */
+.symbol-picker-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 0.15rem;
+  margin-bottom: 0.75rem;
+  border-bottom: 1px solid var(--picker-border);
+}
+
+.symbol-picker-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-bottom: -1px;
+  padding: 0.4rem 0.7rem;
+  border: 1px solid transparent;
+  border-bottom: 2px solid transparent;
+  border-radius: 4px 4px 0 0;
+  background: transparent;
+  color: var(--picker-muted);
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.symbol-picker-tabs button:hover:not(:disabled) {
+  background: #fff;
+  color: var(--picker-ink);
+}
+
+.symbol-picker-tabs button.is-active {
+  border-bottom-color: var(--picker-accent);
+  background: #fff;
+  color: var(--picker-ink);
+  font-weight: 600;
+}
+
+.symbol-picker-tabs button:focus-visible {
+  outline: 2px solid var(--picker-accent);
+  outline-offset: 1px;
+}
+
+.symbol-picker-tab-count {
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: #efe9e1;
+  color: var(--picker-muted);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.symbol-picker-tabs button.is-active .symbol-picker-tab-count {
+  background: #f6e6e2;
+  color: var(--picker-accent);
+}
+
 .symbol-picker-controls {
   display: flex;
   flex-wrap: wrap;
@@ -50,7 +108,7 @@
   font-weight: 600;
 }
 
-.symbol-picker-controls input {
+.symbol-picker-controls > input {
   flex: 1 1 16rem;
   min-width: 12rem;
   padding: 0.4rem 0.6rem;
@@ -84,6 +142,56 @@
   cursor: default;
 }
 
+/* A real checkbox, dressed like the buttons beside it, so the review view reads
+   as a mode you are in rather than an action you have taken. */
+.symbol-picker-controls .symbol-picker-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--picker-border);
+  border-radius: 4px;
+  background: #fff;
+  color: inherit;
+  font-size: 0.85rem;
+  font-weight: 400;
+  cursor: pointer;
+  user-select: none;
+}
+
+.symbol-picker-controls .symbol-picker-toggle:hover {
+  border-color: var(--picker-muted);
+}
+
+.symbol-picker-controls .symbol-picker-toggle.is-on {
+  border-color: var(--picker-accent);
+  background: #fdf6f4;
+  color: var(--picker-accent);
+  font-weight: 600;
+}
+
+.symbol-picker-controls .symbol-picker-toggle:focus-within {
+  outline: 2px solid var(--picker-accent);
+  outline-offset: 1px;
+}
+
+.symbol-picker-toggle input {
+  flex: 0 0 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--picker-accent);
+}
+
+.symbol-picker-toggle-count {
+  color: var(--picker-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.symbol-picker-toggle.is-on .symbol-picker-toggle-count {
+  color: var(--picker-accent);
+}
+
 .symbol-picker-save {
   margin-left: auto;
   border-color: var(--picker-accent) !important;
@@ -103,7 +211,7 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
   gap: 0.5rem;
-  max-height: calc(100vh - 15rem);
+  max-height: calc(100vh - 17rem);
   overflow-y: auto;
   padding: 0.25rem;
   border: 1px solid var(--picker-border);
