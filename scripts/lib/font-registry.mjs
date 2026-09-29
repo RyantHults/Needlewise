@@ -109,6 +109,13 @@ export function discoverFonts(dir = FONTS_DIR) {
 
 /** The recorded form of a font, which never carries a machine-local path. */
 export function toProvenance(record) {
-  const { absPath, slug, ...provenance } = record;
-  return provenance;
+  return {
+    family: record.family,
+    file: record.file,
+    sha256: record.sha256,
+    unitsPerEm: record.unitsPerEm,
+    version: record.version,
+    licenseUrl: record.licenseUrl,
+    drawableCodepoints: record.drawableCodepoints
+  };
 }
