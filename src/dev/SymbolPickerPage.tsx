@@ -375,15 +375,17 @@ export default function SymbolPickerPage() {
                       title={`${family} · ${formatCodepoint(row.codepoint)} · ${row.name} · ${row.block}`}
                       onClick={() => toggle(entry)}
                     >
-                      <span className="symbol-picker-glyph" style={{ fontFamily: face }} aria-hidden="true">
-                        {String.fromCodePoint(variant.codepoint)}
+                      <span className="symbol-picker-specimen">
+                        <span className="symbol-picker-glyph" style={{ fontFamily: face }} aria-hidden="true">
+                          {String.fromCodePoint(variant.codepoint)}
+                        </span>
+                        <span className="symbol-picker-sizes" aria-hidden="true">
+                          <b style={{ fontFamily: face, fontSize: 8 }}>{String.fromCodePoint(variant.codepoint)}</b>
+                          <b style={{ fontFamily: face, fontSize: 16 }}>{String.fromCodePoint(variant.codepoint)}</b>
+                          <b style={{ fontFamily: face, fontSize: 24 }}>{String.fromCodePoint(variant.codepoint)}</b>
+                        </span>
                       </span>
                       <span className="symbol-picker-font-name">{family}</span>
-                      <span className="symbol-picker-sizes" aria-hidden="true">
-                        <b style={{ fontFamily: face, fontSize: 8 }}>{String.fromCodePoint(variant.codepoint)}</b>
-                        <b style={{ fontFamily: face, fontSize: 16 }}>{String.fromCodePoint(variant.codepoint)}</b>
-                        <b style={{ fontFamily: face, fontSize: 24 }}>{String.fromCodePoint(variant.codepoint)}</b>
-                      </span>
                     </button>
                   );
                 })}

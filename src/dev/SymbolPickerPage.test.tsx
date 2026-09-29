@@ -109,6 +109,20 @@ const ruleFor = (selector: string): CSSStyleRule => {
   throw new Error(`No rule for ${selector} in the picker's stylesheet.`);
 };
 
+/** A declared length in px, whether the stylesheet wrote it in rem or in px. */
+const toPx = (value: string): number => {
+  const size = Number.parseFloat(value);
+  return Number.isNaN(size) ? 0 : value.trim().endsWith('rem') ? size * 16 : size;
+};
+
+/** The border a rule declares, read from the declaration because jsdom misreads a var() colour. */
+const borderWidth = (selector: string): number => {
+  const declared = ruleFor(selector).style;
+  const found = /([\d.]+)px/.exec(declared.getPropertyValue('border'))
+    ?? /([\d.]+)px/.exec(declared.getPropertyValue('borderTopWidth'));
+  return found ? Number.parseFloat(found[1]) : 0;
+};
+
 /**
  * The size strip has to be tall enough for its largest sample, and jsdom does no
  * layout, so the box is checked where the layout would be decided: the computed
@@ -124,6 +138,9 @@ const expectNoClipping = (box: HTMLElement, largestSample: number): void => {
   expect(computed.overflow).not.toBe('hidden');
   expect(largestSample).toBeGreaterThan(0);
 };
+
+/** The samples, at the sizes a chart draws them. */
+const SAMPLE_SIZES = [8, 16, 24];
 
 describe('SymbolPickerPage', () => {
   it('lists codepoints in ascending order, one card per codepoint, each titled with it', () => {
@@ -269,7 +286,7 @@ describe('SymbolPickerPage', () => {
     expect(listOf(view.container)).toHaveTextContent('No fonts are being compared.');
   }, 15000);
 
-  it('renders each variant as its glyph, then the font it belongs to, then size previews', async () => {
+  it('renders each variant as a specimen of glyph and sizes, named by the font they are set in', async () => {
     const view = render(<SymbolPickerPage />);
     const faces = view.container.querySelector('style')!.textContent ?? '';
     for (const slug of fontSlugs) {
@@ -282,19 +299,66 @@ describe('SymbolPickerPage', () => {
     for (const slug of fontSlugs) {
       const variant = variantFor(card, slug);
       const face = `"${slug}", serif`;
+      // A variant is the specimen row and then the font name under it.
       expect([...variant.children].map((child) => child.className)).toEqual([
-        'symbol-picker-glyph',
-        'symbol-picker-font-name',
-        'symbol-picker-sizes'
+        'symbol-picker-specimen',
+        'symbol-picker-font-name'
       ]);
-      const glyph = variant.querySelector<HTMLElement>('.symbol-picker-glyph')!;
+      expect(variant.querySelector('.symbol-picker-font-name')).toHaveTextContent(familyOf(slug));
+      expect(variant).toHaveAttribute('aria-label', expect.stringContaining(familyOf(slug)));
+
+      const specimen = variant.querySelector<HTMLElement>('.symbol-picker-specimen')!;
+      const glyph = specimen.querySelector<HTMLElement>('.symbol-picker-glyph')!;
       expect(glyph).toHaveTextContent(String.fromCodePoint(SHARED));
       expect(glyph).toHaveStyle({ fontFamily: face });
-      expect(variant.querySelector('.symbol-picker-font-name')).toHaveTextContent(familyOf(slug));
-      const samples = [...variant.querySelectorAll<HTMLElement>('.symbol-picker-sizes b')];
+      const samples = [...specimen.querySelectorAll<HTMLElement>('.symbol-picker-sizes b')];
       expect(samples.map((sample) => sample.style.fontFamily)).toEqual([face, face, face]);
       expect(samples.map((sample) => sample.style.fontSize)).toEqual(['8px', '16px', '24px']);
     }
+  }, 15000);
+
+  it('keeps the sizes beside the glyph in one row, and that row inside one variant track', async () => {
+    const view = render(<SymbolPickerPage />);
+    await showOnly(view.container, formatCodepoint(SHARED));
+    const variant = variantFor(cardFor(view.container, SHARED)!, 'libertinus-math');
+
+    // The glyph and the strip share one row, and the name is not in it. A strip
+    // stacked under the glyph would be a child of the variant instead of the
+    // specimen, and one stacked inside the specimen would stack the row.
+    const specimen = variant.querySelector<HTMLElement>('.symbol-picker-specimen')!;
+    expect([...specimen.children].map((child) => child.className)).toEqual([
+      'symbol-picker-glyph',
+      'symbol-picker-sizes'
+    ]);
+    const row = getComputedStyle(specimen);
+    expect(row.display).toBe('flex');
+    expect(row.flexDirection).toBe('row');
+    expect(row.alignItems).toBe('flex-end');
+
+    // The glyph holds its place in the row and the strip is what narrows, so a
+    // card can never be pushed wider than its track by putting the two side by
+    // side: that would trade the height it saves for cards per row.
+    const glyph = specimen.querySelector<HTMLElement>('.symbol-picker-glyph')!;
+    const sizes = specimen.querySelector<HTMLElement>('.symbol-picker-sizes')!;
+    expect(getComputedStyle(glyph).flex).toBe('0 0 auto');
+    expect(getComputedStyle(sizes).flex).toBe('0 1 auto');
+    expect(getComputedStyle(sizes).minWidth).toBe('0px');
+
+    // The row has to fit one font's column, measured from the stylesheet's own
+    // numbers: a sample is never wider than the font size it is drawn at, so the
+    // three of them bound the strip, and the rest is the glyph, the gap and the
+    // variant's own box.
+    const track = toPx(/([\d.]+rem)/.exec(ruleFor('.symbol-picker-grid').style.getPropertyValue('--variant-track'))![1]);
+    const strip = SAMPLE_SIZES.reduce((total, size) => total + size, 0)
+      + 2 * toPx(getComputedStyle(sizes).gap)
+      + toPx(getComputedStyle(sizes).paddingLeft) + toPx(getComputedStyle(sizes).paddingRight)
+      + 2 * borderWidth('.symbol-picker-sizes');
+    const needed = toPx(getComputedStyle(glyph).minWidth)
+      + toPx(row.gap)
+      + strip
+      + toPx(getComputedStyle(variant).paddingLeft) + toPx(getComputedStyle(variant).paddingRight)
+      + 2 * borderWidth('.symbol-picker-variant');
+    expect(needed).toBeLessThanOrEqual(track);
   }, 15000);
 
   it('sizes the glyph and its size strip from the samples, so the largest one is not clipped', async () => {
@@ -303,12 +367,11 @@ describe('SymbolPickerPage', () => {
     const variant = variantFor(cardFor(view.container, SHARED)!, 'libertinus-math');
 
     const sizes = variant.querySelector<HTMLElement>('.symbol-picker-sizes')!;
-    const largest = Math.max(
-      ...[...variant.querySelectorAll<HTMLElement>('.symbol-picker-sizes b')].map((sample) => Number.parseFloat(sample.style.fontSize))
-    );
+    const samples = [...sizes.querySelectorAll<HTMLElement>('b')];
+    const largest = Math.max(...samples.map((sample) => Number.parseFloat(sample.style.fontSize)));
     expectNoClipping(sizes, largest);
     // The samples are laid out at the sizes a chart uses, so the box is taller
-    // than the old fixed strip once it is sized from them.
+    // than a fixed strip once it is sized from them.
     expect(largest).toBe(24);
 
     const glyph = variant.querySelector<HTMLElement>('.symbol-picker-glyph')!;
@@ -317,6 +380,13 @@ describe('SymbolPickerPage', () => {
     expect(glyphStyle.height).toBe('auto');
     expect(glyphStyle.width).toBe('auto');
     expect(Number.parseFloat(glyphStyle.minHeight)).toBeGreaterThanOrEqual(largest);
+
+    // Sharing a row with the glyph is where the squeeze happens, so the strip
+    // is the part that narrows and the glyph is the part that holds its floor.
+    expect(getComputedStyle(sizes).flex).toBe('0 1 auto');
+    expect(getComputedStyle(sizes).minWidth).toBe('0px');
+    expect(getComputedStyle(glyph).flex).toBe('0 0 auto');
+    expect(Number.parseFloat(glyphStyle.minWidth)).toBeGreaterThanOrEqual(largest);
 
     // A narrower card squeezes the samples rather than cutting them off, which
     // is what the minmax(0, 1fr) tracks and the flexible strip are for.

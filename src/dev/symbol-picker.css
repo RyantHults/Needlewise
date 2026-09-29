@@ -197,29 +197,31 @@
 }
 
 /* One card per codepoint, titled by the codepoint it is about. Cards in a line
-   are the height of its tallest card, so their titles start on one line. */
+   are the height of its tallest card, so their titles start on one line. The
+   title sets its own leading, because a two-line title is a quarter of a card. */
 .symbol-picker-card {
   display: flex;
   flex: 0 0 auto;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: 0.3rem;
   width: calc(var(--card-fonts) * var(--variant-track) + 2 * var(--card-padding));
-  padding: 0.5rem var(--card-padding);
+  padding: 0.4rem var(--card-padding);
   border: 1px solid var(--picker-border);
   border-radius: 6px;
   background: #fdfcfa;
   content-visibility: auto;
-  contain-intrinsic-size: auto 9rem;
+  contain-intrinsic-size: auto 8rem;
 }
 
 .symbol-picker-card-title {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 0.4rem 0.5rem;
+  gap: 0.3rem 0.5rem;
   margin: 0;
   font-size: 0.85rem;
   font-weight: 400;
+  line-height: 1.25;
 }
 
 .symbol-picker-codepoint {
@@ -258,9 +260,13 @@
   gap: 0.4rem;
 }
 
+/* A variant reads as a specimen beside its sizes, and the font they are set in
+   under both, which keeps a variant to two lines instead of three. The two rows
+   stretch to the card's width; the specimen then gives the strip what the glyph
+   does not need, and the name the whole of it. */
 .symbol-picker-variant {
   display: grid;
-  justify-items: start;
+  justify-items: stretch;
   align-content: start;
   gap: 0.25rem;
   min-width: 0;
@@ -272,6 +278,14 @@
   font: inherit;
   text-align: left;
   cursor: pointer;
+}
+
+.symbol-picker-specimen {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 0.4rem;
+  min-width: 0;
 }
 
 .symbol-picker-variant:hover {
@@ -290,13 +304,16 @@
 }
 
 /* The specimen is floored rather than squared off, so a tall glyph has room to
-   sit inside its box instead of being cut by it. */
+   sit inside its box instead of being cut by it. The floor holds its place in
+   the specimen row, and the strip beside it is what gives way when a comparison
+   of many fonts makes a font's column narrow. */
 .symbol-picker-glyph {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  min-width: 3rem;
-  min-height: 3rem;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
   padding: 0.3rem 0.5rem;
   border: 1px solid var(--picker-border);
   border-radius: 3px;
@@ -310,6 +327,7 @@
   overflow: hidden;
   color: var(--picker-muted);
   font-size: 0.75rem;
+  line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -318,14 +336,16 @@
   color: var(--picker-accent);
 }
 
-/* The strip is as tall as its largest sample needs, so nothing is shaved off
-   the 24px glyph by the padding or the border. It can shrink inside a narrow
-   card, and the samples are what give way first rather than the glyph beside it. */
+/* The strip is as tall as its largest sample needs, so nothing is shaved off the
+   24px sample by the padding or the border, and as wide as the three samples ask
+   for beside the specimen. It is the part of the pair that may narrow. */
 .symbol-picker-sizes {
   display: flex;
+  flex: 0 1 auto;
   align-items: flex-end;
   gap: 0.4rem;
   max-width: 100%;
+  min-width: 0;
   padding: 0.2rem 0.4rem;
   border: 1px solid var(--picker-border);
   border-radius: 3px;
