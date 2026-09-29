@@ -17,7 +17,7 @@ import { createReadStream, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path';
 
 import { assignIds, listCandidates, loadFont } from './lib/symbol-font.mjs';
-import { discoverFonts, FONTS_DIR } from './lib/font-registry.mjs';
+import { discoverFonts, FONTS_DIR, FONT_EXTENSIONS, isFontFileName } from './lib/font-registry.mjs';
 import { sortEntries } from './lib/selection.mjs';
 import { SELECTION_PATH, selectCandidates } from './build-symbol-outlines.mjs';
 
@@ -25,7 +25,9 @@ const PICKER_PREFIX = '/__symbols';
 export const FONT_ROUTE_PREFIX = `${PICKER_PREFIX}/font`;
 export const REGISTRY_ROUTE = `${PICKER_PREFIX}/fonts`;
 export const SAVE_ROUTE = `${PICKER_PREFIX}/selection`;
-const FONT_EXTENSION = '.ttf';
+/** Every font is served at this suffix, whatever extension the file it came from has. */
+const FONT_ROUTE_EXTENSION = '.ttf';
+const FONT_ROUTE_SUFFIX = new RegExp(`${FONT_EXTENSIONS.map((extension) => `\\${extension}`).join('|')}$`);
 /** A selection naming every candidate of every font is a few hundred kilobytes. */
 const MAX_BODY_BYTES = 1024 * 1024;
 
@@ -58,12 +60,18 @@ const readBody = (request) => new Promise((resolveBody, reject) => {
  * Discovering a font means parsing it and walking every glyph it maps, which is
  * far too much to repeat on each of the picker's requests. A font dropped into
  * the directory is the point of the tool, so the cache is keyed on the files
- * themselves and a new one is picked up on the next request.
+ * themselves and a new one is picked up on the next request. The file set comes
+ * from the same predicate the build discovers fonts with, so a font the build
+ * can read is never one the picker hides.
  */
+let cachedDir = null;
 let cachedSignature = null;
 let cachedRegistry = null;
+/** Every parsed font's candidates, dropped with the registry the files describe. */
+const cachedCandidates = new Map();
 
-function fontsSignature(dir) {
+/** What the cache has to be keyed on for a change in fonts/ to be a change here. */
+export function fontsSignature(dir) {
   let entries;
   try {
     entries = readdirSync(dir);
@@ -71,7 +79,7 @@ function fontsSignature(dir) {
     return 'absent';
   }
   return entries
-    .filter((name) => name.toLowerCase().endsWith(FONT_EXTENSION))
+    .filter(isFontFileName)
     .sort()
     .map((name) => {
       const stats = statSync(join(dir, name));
@@ -80,13 +88,33 @@ function fontsSignature(dir) {
     .join('|');
 }
 
-function registryFor(dir = FONTS_DIR) {
+function registryFor(dir) {
   const signature = fontsSignature(dir);
-  if (signature !== cachedSignature) {
+  if (dir !== cachedDir || signature !== cachedSignature) {
     cachedRegistry = discoverFonts(dir);
+    cachedCandidates.clear();
     cachedSignature = signature;
+    cachedDir = dir;
   }
   return cachedRegistry;
+}
+
+/**
+ * Every glyph every vendored font can draw, parsed once per file.
+ *
+ * Ids are qualified by the font that draws the glyph, so they are settled
+ * within one font's own candidates and the files can be read one at a time.
+ */
+function candidatesFor(registry) {
+  for (const record of registry) {
+    if (!cachedCandidates.has(record.absPath)) {
+      cachedCandidates.set(
+        record.absPath,
+        assignIds(listCandidates(loadFont(record.absPath), record.slug)),
+      );
+    }
+  }
+  return registry.flatMap((record) => cachedCandidates.get(record.absPath));
 }
 
 /**
@@ -96,20 +124,17 @@ function registryFor(dir = FONTS_DIR) {
  * the files in fonts/, so there is nothing for the page to claim about them and
  * nothing here to keep in sync.
  */
-function saveSelection(entries) {
+function saveSelection(entries, fontsDir, selectionPath) {
   const selection = sortEntries(entries);
-  const registry = registryFor();
-  const candidates = assignIds(
-    registry.flatMap((record) => listCandidates(loadFont(record.absPath), record.slug))
-  );
-  selectCandidates(candidates, selection);
+  const registry = registryFor(fontsDir);
+  selectCandidates(candidatesFor(registry), selection);
   const next = { version: 3, selection };
-  writeFileSync(SELECTION_PATH, `${JSON.stringify(next, null, 2)}\n`);
+  writeFileSync(selectionPath, `${JSON.stringify(next, null, 2)}\n`);
   return next;
 }
 
-function serveFont(slug, response) {
-  const record = registryFor().find((font) => font.slug === slug);
+function serveFont(slug, response, dir) {
+  const record = registryFor(dir).find((font) => font.slug === slug);
   if (!record) {
     sendJson(response, 404, { error: `No font with the slug "${slug}".` });
     return;
@@ -119,8 +144,17 @@ function serveFont(slug, response) {
   createReadStream(record.absPath).pipe(response);
 }
 
-/** A Vite plugin that serves the fonts and saves selections during dev. */
-export default function symbolPickerPlugin() {
+/**
+ * A Vite plugin that serves the fonts and saves selections during dev.
+ *
+ * `fontsDir` and `selectionPath` default to the vendored fonts and the authored
+ * selection; both are parameters so a test can exercise the whole request path
+ * against a directory and a file of its own.
+ */
+export default function symbolPickerPlugin({
+  fontsDir = FONTS_DIR,
+  selectionPath = SELECTION_PATH
+} = {}) {
   return {
     name: 'needlewise-symbol-picker',
     apply: 'serve',
@@ -130,17 +164,17 @@ export default function symbolPickerPlugin() {
 
         if (path.startsWith(`${FONT_ROUTE_PREFIX}/`)) {
           const slug = path.slice(FONT_ROUTE_PREFIX.length + 1)
-            .replace(new RegExp(`${FONT_EXTENSION}$`), '');
-          serveFont(slug, response);
+            .replace(FONT_ROUTE_SUFFIX, '');
+          serveFont(slug, response, fontsDir);
           return;
         }
 
         if (path === REGISTRY_ROUTE) {
           sendJson(response, 200, {
-            fonts: registryFor().map((record) => ({
+            fonts: registryFor(fontsDir).map((record) => ({
               slug: record.slug,
               family: record.family,
-              url: `${FONT_ROUTE_PREFIX}/${record.slug}.ttf`
+              url: `${FONT_ROUTE_PREFIX}/${record.slug}${FONT_ROUTE_EXTENSION}`
             }))
           });
           return;
@@ -167,7 +201,7 @@ export default function symbolPickerPlugin() {
               sendJson(response, 400, { error: 'A symbol pool needs at least one symbol.' });
               return;
             }
-            const saved = saveSelection(body.selection);
+            const saved = saveSelection(body.selection, fontsDir, selectionPath);
             const perFont = {};
             for (const entry of saved.selection) {
               const font = entry.slice(0, entry.indexOf(':'));

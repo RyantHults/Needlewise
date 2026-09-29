@@ -67,6 +67,12 @@ const customColorAction = (dialog: HTMLElement) => dialog.querySelector('.custom
 const expectedTiles = () => SYMBOL_POOL.length;
 /** A tile's accessible label, which the picker builds from the symbol's name. */
 const tileName = (slug: string): string => SYMBOL_POOL.find((s) => s.id === slug)?.name ?? slug;
+/** The names more than one font contributes a glyph of, each with its variants. */
+const sharedNameGroups = (): typeof SYMBOL_POOL[] => {
+  const byName = new Map<string, typeof SYMBOL_POOL>();
+  for (const entry of SYMBOL_POOL) byName.set(entry.name, [...(byName.get(entry.name) ?? []), entry]);
+  return [...byName.values()].filter((group) => group.length > 1);
+};
 const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const dispatchPointerClick = (target: Element, pointerId: number) => {
   const click = new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 });
@@ -1814,7 +1820,7 @@ describe('EditorSurface', () => {
     render(<EditorSurface workspace={ws} document={symDoc} />);
     const chip = screen.getByRole('button', { name: 'Change symbol for Ruby' });
     fireEvent.click(chip);
-    expect(screen.getByRole('dialog', { name: 'Symbol for Ruby' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: /^Symbol for Ruby/ })).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: /Assign / })).toHaveLength(expectedTiles());
     fireEvent.click(screen.getByRole('button', { name: `Assign ${tileName(target)} to Ruby` }));
     expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).toHaveBeenCalledWith({ type: 'palette-update', id: 1, symbol: target });
@@ -1830,7 +1836,7 @@ describe('EditorSurface', () => {
     const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
-    const dialog = screen.getByRole('dialog', { name: 'Symbol for Ruby' });
+    const dialog = screen.getByRole('dialog', { name: /^Symbol for Ruby/ });
     expect(within(dialog).getAllByRole('button', { name: /Assign / })).toHaveLength(expectedTiles());
     expect(within(dialog).queryByRole('button', { name: /^Show all / })).not.toBeInTheDocument();
     expect(within(dialog).queryByRole('heading', { level: 3 })).not.toBeInTheDocument();
@@ -1838,13 +1844,57 @@ describe('EditorSurface', () => {
     expect(within(dialog).getByRole('button', { name: `Assign ${tileName(heldSymbol)} to Ruby` })).toHaveAttribute('aria-pressed', 'true');
     expect(within(dialog).getByRole('button', { name: new RegExp(`^Swap ${escapeRegExp(tileName(otherSymbol))} with Sky;`, 'i') })).toBeInTheDocument();
   });
+  it('tells apart the variants of a name two fonts share, and leaves a unique name clean', () => {
+    // Two fonts can both draw a codepoint, so its Unicode name is unique only
+    // within one font. Every label a variant is reachable by therefore has to
+    // carry the family that drew it, or two buttons answer to one name.
+    const groups = sharedNameGroups();
+    // Nothing below means anything if the pool has stopped sharing a name, and
+    // an empty set of groups would pass in silence.
+    expect(groups.length).toBeGreaterThan(0);
+    const held = SYMBOL_POOL[0];
+    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: held.id }], backstitches: { ids: new Uint32Array() } } as never;
+    render(<EditorSurface workspace={ws} document={symDoc} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
+    const dialog = screen.getByRole('dialog');
+
+    for (const group of groups) {
+      // Each variant answers to its own name, rather than the pair sharing one
+      // and making a lookup by name ambiguous.
+      const buttons = group.map((entry) => within(dialog).getByRole('button', {
+        name: `Assign ${entry.name} (${entry.family}) to Ruby`
+      }));
+      expect(new Set(buttons).size).toBe(group.length);
+      for (const [index, entry] of group.entries()) {
+        expect(buttons[index]).toHaveAttribute('title', `${entry.name} (${entry.family})`);
+      }
+    }
+
+    // A name only one font contributes already says which glyph it is, so it is
+    // not cluttered with a family nobody needs to choose between.
+    expect(within(dialog).getByRole('button', { name: `Assign ${held.name} to Ruby` }))
+      .toHaveAttribute('title', held.name);
+    expect(screen.getByRole('dialog', { name: `Symbol for Ruby — ${held.name}` })).toBeInTheDocument();
+  });
+  it('names the variant a color holds in the picker heading', () => {
+    // The heading is the dialog's accessible name, so a color holding one of
+    // several variants of a glyph says which one is on offer.
+    const group = sharedNameGroups()[0];
+    expect(group).toBeDefined();
+    const held = group[0];
+    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: held.id }], backstitches: { ids: new Uint32Array() } } as never;
+    render(<EditorSurface workspace={ws} document={symDoc} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
+    expect(screen.getByRole('dialog', { name: `Symbol for Ruby — ${held.name} (${held.family})` }))
+      .toBeInTheDocument();
+  });
   it('previews each symbol from a shared sprite that carries the pool\'s own path data', () => {
     const assigned = SYMBOL_IDS[0];
     const entry = SYMBOL_POOL.find((s) => s.id === assigned)!;
     const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: assigned }], backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
-    const dialog = screen.getByRole('dialog', { name: 'Symbol for Ruby' });
+    const dialog = screen.getByRole('dialog', { name: /^Symbol for Ruby/ });
     // One shared definition per pool symbol, rather than a copy per tile. The
     // sprite lives at the editor surface root, so every palette mark can draw
     // through it and the dialog is not what defines the pool.
@@ -1886,7 +1936,7 @@ describe('EditorSurface', () => {
     const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
-    const dialog = screen.getByRole('dialog', { name: 'Symbol for Ruby' });
+    const dialog = screen.getByRole('dialog', { name: /^Symbol for Ruby/ });
     expect(within(dialog).getByRole('button', { name: `Assign ${tileName(symbolA)} to Ruby` })).toHaveAttribute('aria-pressed', 'true');
     // Every pool symbol is reachable now: Sky's and Sea's glyphs stay on the
     // wall, labelled as held, instead of vanishing the way a filtered pool did.
@@ -1904,12 +1954,12 @@ describe('EditorSurface', () => {
     render(<EditorSurface workspace={ws} document={symDoc} />);
     const chip = screen.getByRole('button', { name: 'Change symbol for Ruby' });
     fireEvent.click(chip);
-    const dialog = screen.getByRole('dialog', { name: 'Symbol for Ruby' });
+    const dialog = screen.getByRole('dialog', { name: /^Symbol for Ruby/ });
     fireEvent.keyDown(dialog, { key: 'Escape' });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     await waitFor(() => expect(document.activeElement).toBe(chip));
     fireEvent.click(chip);
-    const reopened = screen.getByRole('dialog', { name: 'Symbol for Ruby' });
+    const reopened = screen.getByRole('dialog', { name: /^Symbol for Ruby/ });
     fireEvent.click(reopened.closest('.modal-backdrop') as HTMLElement);
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).not.toHaveBeenCalled();
@@ -1919,7 +1969,7 @@ describe('EditorSurface', () => {
     const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: heldSymbol }], backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
-    const dialog = screen.getByRole('dialog', { name: 'Symbol for Ruby' });
+    const dialog = screen.getByRole('dialog', { name: /^Symbol for Ruby/ });
     // The only text input is the filter, which cannot commit a symbol.
     expect(within(dialog).getAllByRole('textbox')).toHaveLength(1);
     expect(within(dialog).getByLabelText('Filter symbols')).toBeInTheDocument();

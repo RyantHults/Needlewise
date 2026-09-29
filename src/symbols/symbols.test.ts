@@ -106,6 +106,9 @@ describe('symbol pool loader', () => {
       byName.set(entry.name, [...(byName.get(entry.name) ?? []), entry]);
     }
     const shared = [...byName.values()].filter((group) => group.length > 1);
+    // The loop below is the only thing that fails when a shared name is gone, so
+    // require the pool to still share one rather than assert over nothing.
+    expect(shared.length).toBeGreaterThan(0);
     for (const group of shared) {
       expect(new Set(group.map((entry) => entry.font)).size).toBe(group.length);
     }

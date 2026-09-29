@@ -9,9 +9,17 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 export const FONTS_DIR = resolve(REPO_ROOT, 'fonts');
 
-const FONT_EXTENSIONS = new Set(['.ttf', '.otf']);
+/** The file extensions the pool loads, and the one definition of "a font file". */
+export const FONT_EXTENSIONS = ['.ttf', '.otf'];
 const NON_ALPHANUMERIC = /[^a-z0-9]+/g;
 const EDGE_HYPHENS = /^-+|-+$/g;
+/** A slug for a font that names neither itself nor its file. */
+const FALLBACK_SLUG = 'font';
+
+/** Whether a filename names a font the pool can draw from, whatever its case. */
+export function isFontFileName(name) {
+  return FONT_EXTENSIONS.includes(extname(name).toLowerCase());
+}
 
 /** The family name as the font's author wrote it, or the filename if it has none. */
 function familyOf(font, fileName) {
@@ -34,11 +42,15 @@ function metaOf(font, key) {
  * the `--` that separates a font from a glyph inside a symbol id. A slug that is
  * already taken gets a numeric suffix, so two files reporting the same family
  * name stay addressable.
+ *
+ * A font with no usable name in either place is still a font the pool has to
+ * address, so the slug is never empty: a selection entry is
+ * `<slug>:<codepoint>` and its grammar requires a leading alphanumeric.
  */
 export function slugForFamily(family, fileName, taken) {
   const slugify = (text) => text.toLowerCase().replace(NON_ALPHANUMERIC, '-').replace(EDGE_HYPHENS, '');
   const stem = basename(fileName, extname(fileName));
-  const base = slugify(family ?? '') || slugify(stem);
+  const base = slugify(family ?? '') || slugify(stem) || FALLBACK_SLUG;
   if (!taken.has(base)) return base;
   let n = 2;
   while (taken.has(`${base}-${n}`)) n += 1;
@@ -77,7 +89,7 @@ export function discoverFonts(dir = FONTS_DIR) {
   }
 
   const fontFiles = files
-    .filter((name) => FONT_EXTENSIONS.has(extname(name).toLowerCase()))
+    .filter(isFontFileName)
     .filter((name) => statSync(resolve(dir, name)).isFile())
     .sort();
 
@@ -107,7 +119,13 @@ export function discoverFonts(dir = FONTS_DIR) {
   });
 }
 
-/** The recorded form of a font, which never carries a machine-local path. */
+/**
+ * The recorded form of a font.
+ *
+ * `file` is the repo-relative path when the font is vendored in this repository
+ * and an absolute one when it is not, so it is carried through unchanged; only
+ * the `absPath` the registry was read from is dropped.
+ */
 export function toProvenance(record) {
   return {
     family: record.family,

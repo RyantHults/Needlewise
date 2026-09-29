@@ -18,6 +18,7 @@ import {
 } from "../../domain";
 import type { DisplayUnits, LayerType } from "../../domain";
 import { SYMBOL_POOL, SYMBOL_TILE_VIEW } from "../../symbols";
+import type { PoolEntry } from "../../symbols";
 import { TraceImageControls } from "./TraceImageControls";
 import { LayersPanel, LAYER_TYPE_LABELS, type ActiveLayerId } from "./LayersPanel";
 import { LayerControls } from "./LayerControls";
@@ -81,6 +82,29 @@ const EDITOR_PREFERENCES_KEY = "needlewise-editor-preferences:v1";
 
 /** DOM id for a symbol's shared sprite path, namespaced so it cannot collide. */
 const symbolSpriteId = (slug: string): string => `symbol-${slug}`;
+
+/** How many pool entries carry each Unicode name. */
+const symbolNameCounts = SYMBOL_POOL.reduce((counts, entry) => {
+  counts.set(entry.name, (counts.get(entry.name) ?? 0) + 1);
+  return counts;
+}, new Map<string, number>());
+
+/**
+ * The label a pool entry is shown and announced with.
+ *
+ * A name only one font contributes already says which glyph it is, so it is
+ * left as the font's author wrote it. A name several fonts contribute is the
+ * same glyph drawn more than once, and the family that drew each variant is
+ * what tells them apart, so it is credited in the label.
+ */
+const symbolLabel = (entry: PoolEntry): string =>
+  (symbolNameCounts.get(entry.name) ?? 1) > 1 ? `${entry.name} (${entry.family})` : entry.name;
+
+/** The heading that names the color being edited and the glyph it holds now. */
+const symbolDialogTitle = (colorName: string, symbol: string | undefined): string => {
+  const held = SYMBOL_POOL.find((option) => option.id === symbol);
+  return held ? `Symbol for ${colorName} — ${symbolLabel(held)}` : `Symbol for ${colorName}`;
+};
 
 /**
  * One preview of a pool symbol, drawn from the single sprite path rather than
@@ -2526,7 +2550,7 @@ export function EditorSurface({
                 ×
               </button>
               <p className="section-label">Palette</p>
-              <h2 id="symbol-picker-title">Symbol for {symbolEntry.name}</h2>
+              <h2 id="symbol-picker-title">{symbolDialogTitle(symbolEntry.name, symbolEntry.symbol)}</h2>
               <p className="modal-hint">
                 Pick a symbol from the pool below. Every symbol is drawn by
                 this application, so the preview matches the chart exactly.
@@ -2558,8 +2582,8 @@ export function EditorSurface({
                         type="button"
                         className={holder ? "symbol-option symbol-held" : "symbol-option"}
                         aria-pressed={current}
-                        aria-label={`${holder ? `Swap ${option.name} with ${holder.name}; currently used by ${holder.name}. ` : ""}Assign ${option.name} to ${symbolEntry.name}`}
-                        title={holder ? `${option.name} (used by ${holder.name}) — pick to swap` : option.name}
+                        aria-label={`${holder ? `Swap ${symbolLabel(option)} with ${holder.name}; currently used by ${holder.name}. ` : ""}Assign ${symbolLabel(option)} to ${symbolEntry.name}`}
+                        title={holder ? `${symbolLabel(option)} (used by ${holder.name}) — pick to swap` : symbolLabel(option)}
                         onClick={() => assignSymbol(option.id)}
                       >
                         <SymbolTile id={option.id} className="symbol-preview" />

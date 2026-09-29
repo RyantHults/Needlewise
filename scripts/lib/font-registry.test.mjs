@@ -3,7 +3,7 @@ import { mkdtempSync, copyFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-import { discoverFonts, slugForFamily, toProvenance } from './font-registry.mjs';
+import { discoverFonts, isFontFileName, slugForFamily, toProvenance } from './font-registry.mjs';
 import { loadFont } from './symbol-font.mjs';
 
 const REPO_FONT = resolve(import.meta.dirname, '../../fonts/LibertinusMath-Regular.ttf');
@@ -104,6 +104,20 @@ describe('toProvenance', () => {
   });
 });
 
+describe('isFontFileName', () => {
+  it('accepts either font extension, whatever the case', () => {
+    expect(isFontFileName('LibertinusMath-Regular.ttf')).toBe(true);
+    expect(isFontFileName('NotoSansSymbols2-Regular.otf')).toBe(true);
+    expect(isFontFileName('SHOUTY.OTF')).toBe(true);
+  });
+
+  it('rejects anything that is not a font file', () => {
+    expect(isFontFileName('OFL.txt')).toBe(false);
+    expect(isFontFileName('ttf')).toBe(false);
+    expect(isFontFileName('font.ttf.zip')).toBe(false);
+  });
+});
+
 describe('slugForFamily', () => {
   it('lowerases and hyphenates a family name', () => {
     expect(slugForFamily('Noto Sans Symbols 2', 'NotoSansSymbols2-Regular.ttf', new Set()))
@@ -123,5 +137,22 @@ describe('slugForFamily', () => {
 
   it('falls back to the filename when the family name has no alphanumerics', () => {
     expect(slugForFamily('---', 'Symbol-Font.ttf', new Set())).toBe('symbol-font');
+  });
+
+  it('never produces an empty slug, even when the filename has none either', () => {
+    // Every font's glyphs are addressed as "<slug>:<codepoint>", and the entry
+    // grammar requires a leading alphanumeric, so a slug of "" would leave a
+    // vendored font no way to be named in selection.json at all.
+    const slug = slugForFamily('---', '___.ttf', new Set());
+    expect(slug).toMatch(/^[a-z0-9][a-z0-9-]*$/);
+  });
+
+  it('keeps two nameless fonts apart', () => {
+    // Taken the way a caller builds it: each slug joins the set before the next
+    // file is named.
+    const taken = new Set();
+    const first = slugForFamily('---', '___.ttf', taken);
+    taken.add(first);
+    expect(slugForFamily('---', '___.otf', taken)).not.toBe(first);
   });
 });
