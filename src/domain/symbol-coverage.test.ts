@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { DMC_CATALOG } from '../catalog';
-import { getSymbolOutline, SYMBOL_COUNT, SYMBOL_IDS, SYMBOL_POOL } from '../symbols';
+import { getSymbolOutline, SYMBOL_COUNT, SYMBOL_IDS, SYMBOL_POOL, type PoolEntry } from '../symbols';
 import { defaultPaletteSymbol, isKnownSymbolId } from './index';
 
 /**
@@ -32,6 +32,21 @@ describe('symbol pool coverage', () => {
   it('has no duplicate ids', () => {
     expect(new Set(SYMBOL_IDS).size).toBe(SYMBOL_IDS.length);
     expect(SYMBOL_POOL.map((entry) => entry.id)).toEqual([...SYMBOL_IDS]);
+  });
+
+  it('places the fonts’ versions of one glyph next to each other', () => {
+    // Two fonts can hold the same codepoint. Keeping the variants adjacent in
+    // the pool is what lets someone comparing them see them side by side.
+    const byCodepoint = new Map<number, PoolEntry[]>();
+    for (const entry of SYMBOL_POOL) {
+      const list = byCodepoint.get(entry.codepoint) ?? [];
+      list.push(entry);
+      byCodepoint.set(entry.codepoint, list);
+    }
+    const shared = [...byCodepoint.values()].find((list) => list.length > 1);
+    if (!shared) return;
+    const indices = shared.map((entry) => SYMBOL_POOL.indexOf(entry));
+    expect(Math.max(...indices) - Math.min(...indices)).toBe(shared.length - 1);
   });
 
   it('draws each symbol from its own codepoint within its font', () => {
@@ -92,14 +107,18 @@ describe('block interleave', () => {
    * possible, but only as a tail: once two entries in a row share a block,
    * every remaining entry of the cycle shares it too.
    *
+   * Two fonts drawing one codepoint is the deliberate exception. Those symbols
+   * are near-identical by construction and sit side by side so a reviewer can
+   * compare them, so the pair is adjacent wherever it lands.
+   *
    * A fixed "no more than N in a row" bound cannot be asserted here, because a
    * selection made of one block would legitimately be a run of the whole pool.
    * Asserting the tail property instead keeps the guarantee meaningful for any
    * selection the picker can produce.
    */
-  it('only ever repeats a block in the trailing part of a cycle', () => {
-    const block = new Map(SYMBOL_POOL.map((entry) => [entry.id, entry.block]));
-    const blocks = SYMBOL_IDS.map((id) => block.get(id));
+  it('only ever repeats a block in the trailing part of a cycle, or for one glyph’s variants', () => {
+    const byId = new Map(SYMBOL_POOL.map((entry) => [entry.id, entry]));
+    const blocks = SYMBOL_IDS.map((id) => byId.get(id)?.block);
 
     let runStart = 0;
     for (let index = 1; index <= blocks.length; index += 1) {
@@ -113,7 +132,13 @@ describe('block interleave', () => {
         `blocks[${index}] repeats blocks[${runStart}]`
       ).toBe(true);
       if (blocks[runStart + 1] === blocks[runStart]) {
-        expect(isTail, `block ${String(blocks[runStart])} repeats at ${runStart} with symbols after it`).toBe(true);
+        const first = byId.get(SYMBOL_IDS[runStart]);
+        const second = byId.get(SYMBOL_IDS[runStart + 1]);
+        const areVariants = first?.codepoint === second?.codepoint && first?.font !== second?.font;
+        expect(
+          isTail || areVariants,
+          `block ${String(blocks[runStart])} repeats at ${runStart} with symbols after it`
+        ).toBe(true);
       }
       runStart = index;
     }

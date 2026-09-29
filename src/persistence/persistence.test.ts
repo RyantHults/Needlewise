@@ -5,6 +5,7 @@ import { applyCommand as applySurfaceCommand, CellKind, commitLayerSurface, comp
 import { cloneLayeredDocument, decodeDocumentWithInfo } from './binary';
 import { encodeLegacyDocument } from './legacy-binary.fixture';
 import { DMC_CATALOG_DEFINITION } from '../catalog';
+import { SYMBOL_POOL } from '../symbols';
 import * as binaryModule from './binary';
 import * as domainModule from '../domain';
 import * as hashModule from './hash';
@@ -1080,6 +1081,26 @@ describe('binary document persistence', () => {
     expect(decoded.version).toBe(2);
     expect(decoded.settings).toEqual({ symbolSet: 'letters', materialUnit: 'meters', backgroundColor: '#F3EEE5', aidaCount: 14 });
     expect(decoded.palette[0]).toEqual(original.palette[0]);
+  });
+
+  it('round-trips a palette symbol drawn from a second font', () => {
+    // A symbol id carries its font, so a saved document has to preserve the
+    // whole qualified id rather than resolving a bare slug to one font.
+    const fromSecondFont = SYMBOL_POOL.find((entry) => entry.font !== 'libertinus-math');
+    expect(fromSecondFont, 'the pool needs a symbol from a font other than Libertinus Math').toBeDefined();
+    const document = createDocument({
+      width: 1,
+      height: 1,
+      palette: [{
+        id: 1,
+        name: 'Black',
+        color: '#000',
+        symbol: fromSecondFont!.id,
+        catalog: { catalogId: TEST_CATALOG.catalogId, sourceId: 'test-black', code: '310', name: 'Black', hex: '#000000', rgb: [0, 0, 0] }
+      }]
+    });
+    const restored = decodeDocument(encodeDocument(document));
+    expect(restored.palette[0].symbol).toBe(fromSecondFont!.id);
   });
 
   it('preserves mixed-catalog and custom palette entries through binary, archive, repository, and history round trips', async () => {

@@ -77,10 +77,10 @@ export function selectCandidates(candidates, selection) {
 /**
  * Order the pool so related glyphs sit together and neighbouring cells differ.
  *
- * Symbols are grouped by Unicode block and sub-grouped by codepoint, which is
- * what places two fonts' versions of one glyph side by side so a reviewer can
- * compare them. The blocks are then interleaved so a palette built by cycling
- * the pool samples every block before repeating one.
+ * Symbols are grouped by Unicode block, then into runs of one codepoint, and the
+ * blocks are interleaved so a palette built by cycling the pool samples every
+ * block before repeating one. A run is emitted whole, so two fonts' versions of
+ * one glyph stay side by side where someone can compare them directly.
  *
  * Plain round-robin degenerates once the small blocks empty out and the large
  * ones emit back to back, so each step draws from the fullest block that was not
@@ -95,24 +95,38 @@ export function interleaveByBlock(symbols) {
     list.push(symbol);
     blocks.set(symbol.block, list);
   }
-  for (const list of blocks.values()) {
+  for (const [block, list] of blocks) {
     list.sort((a, b) => a.codepoint - b.codepoint || a.font.localeCompare(b.font));
+    blocks.set(block, runsOfOneCodepoint(list));
   }
   const out = [];
   let previous = null;
   while (blocks.size > 0) {
     let best = null;
-    for (const [block, queue] of blocks) {
+    for (const [block, runs] of blocks) {
       if (block === previous) continue;
-      if (best === null || queue.length > blocks.get(best).length) best = block;
+      if (best === null || sizeOf(runs) > sizeOf(blocks.get(best))) best = block;
     }
     if (best === null) best = blocks.keys().next().value;
-    out.push(blocks.get(best).shift());
+    out.push(...blocks.get(best).shift());
     if (blocks.get(best).length === 0) blocks.delete(best);
     previous = best;
   }
   return out;
 }
+
+/** Group a block's symbols so the variants of one codepoint cannot be split. */
+function runsOfOneCodepoint(sorted) {
+  const runs = [];
+  for (const symbol of sorted) {
+    const current = runs.at(-1);
+    if (current && current[0].codepoint === symbol.codepoint) current.push(symbol);
+    else runs.push([symbol]);
+  }
+  return runs;
+}
+
+const sizeOf = (runs) => runs.reduce((total, run) => total + run.length, 0);
 
 function loadFonts(registry) {
   return new Map(registry.map((record) => [record.slug, loadFont(record.absPath)]));

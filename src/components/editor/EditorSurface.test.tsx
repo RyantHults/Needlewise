@@ -40,7 +40,7 @@ const ws = { metadata: { title: 'Sampler', notes: '', aidaCount: 14 }, updateAct
 const executeMock = () => (ws as { execute: ReturnType<typeof vi.fn> }).execute;
 const doc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
 const two = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321' } }, { id: 2, name: 'Sky', color: '#48c', active: true }], backstitches: { ids: new Uint32Array() } } as never;
-const paletteDetailsDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: 'strip-square-x20', catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
+const paletteDetailsDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: 'libertinus-math--black-star', catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
 const customColorDocument = (palette: unknown[]) => ({ width: 16, height: 16, colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } }) as never;
 const makeCatalog = (catalogId: string, brandLabel: string, records: CatalogRecord[]): CatalogDefinition => {
   const byHex = new Map(records.map((record) => [record.hex.toUpperCase(), record]));
@@ -1721,7 +1721,7 @@ describe('EditorSurface', () => {
     const menu = screen.getByRole('menu', { name: 'Details for Ruby' });
     expect(menu).toHaveTextContent('Ruby');
     expect(menu).toHaveTextContent('321');
-    expect(menu).toHaveTextContent('Symbol strip-square-x20');
+    expect(menu).toHaveTextContent('Symbol libertinus-math--black-star');
     expect(within(menu).getByRole('menuitem', { name: 'Delete color' })).toBeInTheDocument();
   });
   it('opens the color details menu after a 500ms press without selecting the color', () => {

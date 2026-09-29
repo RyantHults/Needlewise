@@ -1,10 +1,11 @@
 /**
  * Read symbols out of the vendored Libertinus Math font.
  *
- * The pool used to be drawn by parametric geometry. It is now extracted from a
- * real font, so this module owns everything that used to live in the family
- * definitions: which codepoints a symbol may come from, what a symbol is called,
- * which Unicode block it belongs to, and how a stable id is derived.
+ * A codepoint can only be selected if the font has contours for it, so this
+ * module owns the whole pipeline: glyph commands, the Unicode name and block,
+ * the normalized outline, and the id a palette entry stores. A glyph the font
+ * maps but cannot draw is not a candidate at all, which is why the candidate
+ * list is shorter than the cmap.
  *
  * Two things here are load-bearing and easy to get wrong:
  *
@@ -34,10 +35,15 @@ import { normalizeOutline, scale, toPathData } from './symbol-geometry.mjs';
 const require = createRequire(import.meta.url);
 
 /**
- * Normalization policy, and the single source for it now that `pool.json` is
- * gone. Values carry over from the procedural pool unchanged except for the
- * removal of `strokeWidth`: a glyph contour is already a filled silhouette, so
- * there is no stroke to keep clear of the tile edge.
+ * The shared unit cell and how a glyph is fitted into it.
+ *
+ * Extents are normalized to the target so one mark reads at the same visual
+ * weight as the next, with a ceiling and a floor on the scale factor: a glyph
+ * that is mostly whitespace must not be inflated to fill the cell, and the clamp
+ * on the low side deliberately leaves a mark like a full stop smaller than the
+ * target rather than distorting it. A glyph contour is already a filled
+ * silhouette, so nothing is stroked and no stroke width is kept clear of the
+ * tile edge.
  *
  * `tileView` is the half-extent the picker and sprite windows must show, kept
  * here so the runtime cannot disagree with the geometry that produced it.
@@ -82,10 +88,10 @@ const hexLabel = (codePoint) => `codepoint u${codePoint.toString(16).toUpperCase
 /**
  * Every Unicode block name, keyed by codepoint.
  *
- * The package ships one directory per block instead of a single block map, so
- * the map is built by walking those directories. It costs a few hundred
- * milliseconds, so {@link blockOf} builds it on first use and caches it rather
- * than making every caller thread it through.
+ * The package ships one module per block and thousands of them, so they are
+ * resolved by filename through a dynamic import and the result is cached. That
+ * walk costs a few hundred milliseconds, so {@link blockOf} builds the map on
+ * first use rather than making every caller thread it through.
  */
 export function buildBlockMap() {
   const blockRoot = dirname(dirname(require.resolve('@unicode/unicode-15.1.0/Block/Arrows/ranges.mjs')));
