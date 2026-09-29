@@ -8,31 +8,32 @@ import './symbol-picker.css';
  * The symbol pool curation tool, served at /__symbols in dev only.
  *
  * The pool is the selection in src/symbols/selection.json, and the page has two
- * modes for looking at it.
+ * modes for looking at it, which share one mark: a codepoint drawn by a compared
+ * font is a mark, set in that font, and a mark is the tick target.
  *
- * Browsing is the curation mode. It is a wall of codepoint cards in ascending
- * order, one card each, and a card holds what every compared font can draw at
- * that codepoint, side by side, at the sizes a chart actually uses, so a mark
- * that turns to mush at 8 pixels can be left out before it ever reaches a
- * pattern. Everything needed to make that decision is on the card: the
- * codepoint, the name, the block, the fonts, and the samples at 8, 16 and 24
- * pixels.
+ * Browsing is a wall of those marks grouped by codepoint, ascending. A codepoint
+ * two compared fonts both draw is one group of two adjacent marks, so the
+ * variants can be compared in place, and a codepoint only one font draws is a
+ * group of one. Each group carries a collapsed expander, and everything the
+ * decision needs that is not the shape itself lives behind it: the codepoint, the
+ * name, the block, which font each mark is set in, and the samples at 8, 16 and
+ * 24 pixels. The description is also one hover away on every mark, so a curator
+ * scanning thousands of codepoints is not reading, and opening a group is the
+ * deliberate act.
  *
- * Reviewing is the other mode, and it is the opposite trade. It is a dense grid
- * of bare glyphs and nothing else, so the chosen set can be judged as a whole —
- * whether the weights, the rhythm and the shapes hold together. All of the
- * information is still there, in the hover text and in each glyph's accessible
- * name, but none of it is on the page to clutter the shapes.
+ * Reviewing drops the groups and shows the ticked marks alone in one dense grid,
+ * so the chosen set can be judged as a whole — whether the weights, the rhythm
+ * and the shapes hold together. Same marks, same size, no chrome.
  *
  * Which fonts to compare is a multi-select rather than a filter: any number of
  * them can be on at once, and a codepoint is in the grid whenever at least one
- * compared font can draw it. Narrowing the fonts therefore narrows the grid,
- * and a codepoint no compared font holds is simply not there.
+ * compared font can draw it. Narrowing the fonts therefore narrows the grid, and
+ * a codepoint no compared font holds is simply not there.
  *
- * The number of ticked fonts is the one number the browsing layout turns on. It
- * reaches the stylesheet as --compared-fonts, which sets the width of one font's
- * column; a card is then as wide as the fonts it holds, so comparing one font
- * gives a wall of narrow cards and comparing four gives far fewer, wider ones.
+ * The number of ticked fonts reaches the stylesheet as --compared-fonts, which
+ * bounds one mark's track to a fair share of the wall, so a group of many fonts
+ * cannot outgrow the row it is on. A group's own width is that track times the
+ * fonts it holds.
  *
  * A selection entry is "<font-slug>:U+XXXX", because two fonts can both hold the
  * same codepoint and choosing one must not hide the other. Every control in the
@@ -72,7 +73,7 @@ interface SelectionFile {
   readonly selection: readonly string[];
 }
 
-/** One card of the grid: a codepoint and the glyph each compared font has for it. */
+/** One group of the wall: a codepoint, the mark each compared font has for it, and its details. */
 interface CodepointRow {
   readonly codepoint: number;
   readonly name: string;
@@ -127,7 +128,7 @@ const describeVariant = (variant: Candidate, name: string, block: string): strin
   `${familyOf(variant.font)} · ${formatCodepoint(variant.codepoint)} · ${name} · ${block}`;
 
 /** How many codepoints to paint at once, so the page stays responsive on first paint. */
-const PAGE_SIZE = 200;
+const PAGE_SIZE = 600;
 
 function matches(candidate: Candidate, needle: string, asCodepoint: number | null): boolean {
   return candidate.name.includes(needle)
@@ -142,9 +143,13 @@ export default function SymbolPickerPage() {
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set(authored));
   const [compared, setCompared] = useState<ReadonlySet<string>>(() => new Set(fontSlugs));
   const [query, setQuery] = useState('');
-  // The two modes: browsing the whole codepoint space, or reviewing the ticked
-  // set as bare glyphs.
+  // The two modes: browsing codepoints as grouped marks, or reviewing the ticked
+  // marks on their own.
   const [review, setReview] = useState(false);
+  // Which groups have their details open, by codepoint. A group is opened one at
+  // a time on purpose, so a curator comparing thousands of codepoints is not
+  // reading a wall of detail by accident.
+  const [open, setOpen] = useState<ReadonlySet<number>>(() => new Set());
   const [limit, setLimit] = useState(PAGE_SIZE);
   const [status, setStatus] = useState('');
   const [saving, setSaving] = useState(false);
@@ -202,6 +207,14 @@ export default function SymbolPickerPage() {
   function resetView() {
     setLimit(PAGE_SIZE);
     if (scroller.current) scroller.current.scrollTop = 0;
+  }
+
+  function toggleDetails(codepoint: number) {
+    setOpen((current) => {
+      const next = new Set(current);
+      if (!next.delete(codepoint)) next.add(codepoint);
+      return next;
+    });
   }
 
   function toggleFont(slug: string) {
@@ -356,7 +369,7 @@ export default function SymbolPickerPage() {
       <p className="symbol-picker-status" role="status">{status}</p>
 
       <div
-        className={review ? 'symbol-picker-grid is-review' : 'symbol-picker-grid is-wall'}
+        className={review ? 'symbol-picker-grid is-marks' : 'symbol-picker-grid is-wall'}
         role="region"
         aria-label={review ? 'Ticked symbols' : 'Codepoints'}
         ref={scroller}
@@ -388,53 +401,82 @@ export default function SymbolPickerPage() {
             );
           }))
           : visible.map((row) => {
+            const expanded = open.has(row.codepoint);
+            const detailId = `symbol-picker-detail-${row.codepoint}`;
             const ticks = row.variants.filter((variant) => selected.has(toEntry(variant))).length;
             return (
               <article
-                className="symbol-picker-card"
+                className={expanded ? 'symbol-picker-group is-open' : 'symbol-picker-group'}
                 key={row.codepoint}
-                style={{ '--card-fonts': row.variants.length } as CSSProperties}
+                style={{ '--group-fonts': row.variants.length } as CSSProperties}
               >
-                <h2 className="symbol-picker-card-title">
-                  <span className="symbol-picker-codepoint">{formatCodepoint(row.codepoint)}</span>
-                  <span className="symbol-picker-card-name">{row.name}</span>
-                  <span className="symbol-picker-card-block">{row.block}</span>
-                  {ticks > 0 && ticks < row.poolSize && (
-                    <span className="symbol-picker-tick-count">{ticks} of {row.poolSize} in pool</span>
-                  )}
-                </h2>
-                <div className="symbol-picker-variants">
-                  {row.variants.map((variant) => {
-                    const entry = toEntry(variant);
-                    const on = selected.has(entry);
-                    const family = familyOf(variant.font);
-                    const face = `"${variant.font}", serif`;
-                    const description = describeVariant(variant, row.name, row.block);
-                    return (
-                      <button
-                        key={variant.id}
-                        type="button"
-                        className={on ? 'symbol-picker-variant is-selected' : 'symbol-picker-variant'}
-                        aria-pressed={on}
-                        aria-label={description}
-                        title={description}
-                        onClick={() => toggle(entry)}
-                      >
-                        <span className="symbol-picker-specimen">
-                          <span className="symbol-picker-glyph" style={{ fontFamily: face }} aria-hidden="true">
-                            {String.fromCodePoint(variant.codepoint)}
-                          </span>
-                          <span className="symbol-picker-sizes" aria-hidden="true">
-                            <b style={{ fontFamily: face, fontSize: 8 }}>{String.fromCodePoint(variant.codepoint)}</b>
-                            <b style={{ fontFamily: face, fontSize: 16 }}>{String.fromCodePoint(variant.codepoint)}</b>
-                            <b style={{ fontFamily: face, fontSize: 24 }}>{String.fromCodePoint(variant.codepoint)}</b>
-                          </span>
-                        </span>
-                        <span className="symbol-picker-font-name">{family}</span>
-                      </button>
-                    );
-                  })}
+                <div className="symbol-picker-group-head">
+                  <div className="symbol-picker-group-marks">
+                    {row.variants.map((variant) => {
+                      const entry = toEntry(variant);
+                      const on = selected.has(entry);
+                      const description = describeVariant(variant, row.name, row.block);
+                      return (
+                        <button
+                          key={variant.id}
+                          type="button"
+                          className={on ? 'symbol-picker-mark is-selected' : 'symbol-picker-mark'}
+                          aria-pressed={on}
+                          aria-label={description}
+                          title={description}
+                          style={{ fontFamily: `"${variant.font}", serif` }}
+                          onClick={() => toggle(entry)}
+                        >
+                          {String.fromCodePoint(variant.codepoint)}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <button
+                    type="button"
+                    className="symbol-picker-expander"
+                    aria-expanded={expanded}
+                    aria-controls={detailId}
+                    aria-label={`Details for ${formatCodepoint(row.codepoint)}, ${row.name}`}
+                    title={expanded ? `Hide the details of ${formatCodepoint(row.codepoint)}` : `Show what ${formatCodepoint(row.codepoint)} is and how large it draws`}
+                    onClick={() => toggleDetails(row.codepoint)}
+                  >
+                    <span className="symbol-picker-caret" aria-hidden="true" />
+                  </button>
                 </div>
+                {expanded && <div className="symbol-picker-detail" id={detailId}>
+                  <h2 className="symbol-picker-detail-title">
+                    <span className="symbol-picker-codepoint">{formatCodepoint(row.codepoint)}</span>
+                    <span className="symbol-picker-detail-name">{row.name}</span>
+                    <span className="symbol-picker-detail-block">{row.block}</span>
+                    {ticks > 0 && ticks < row.poolSize && (
+                      <span className="symbol-picker-tick-count">{ticks} of {row.poolSize} in pool</span>
+                    )}
+                  </h2>
+                  <div className="symbol-picker-detail-variants">
+                    {row.variants.map((variant) => {
+                      const face = `"${variant.font}", serif`;
+                      return (
+                        <div
+                          key={variant.id}
+                          className={selected.has(toEntry(variant)) ? 'symbol-picker-detail-variant is-selected' : 'symbol-picker-detail-variant'}
+                        >
+                          <span className="symbol-picker-specimen">
+                            <span className="symbol-picker-glyph" style={{ fontFamily: face }} aria-hidden="true">
+                              {String.fromCodePoint(variant.codepoint)}
+                            </span>
+                            <span className="symbol-picker-sizes" aria-hidden="true">
+                              <b style={{ fontFamily: face, fontSize: 8 }}>{String.fromCodePoint(variant.codepoint)}</b>
+                              <b style={{ fontFamily: face, fontSize: 16 }}>{String.fromCodePoint(variant.codepoint)}</b>
+                              <b style={{ fontFamily: face, fontSize: 24 }}>{String.fromCodePoint(variant.codepoint)}</b>
+                            </span>
+                          </span>
+                          <span className="symbol-picker-font-name">{familyOf(variant.font)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>}
               </article>
             );
           })}

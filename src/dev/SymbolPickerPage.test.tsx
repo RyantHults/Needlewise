@@ -64,7 +64,7 @@ const matching = (needle: string): number => {
 };
 
 /** The picker paints one page of codepoints and grows the page as the grid scrolls. */
-const PAGE = 200;
+const PAGE = 600;
 
 const shownLine = (shown: number, total: number): string => `Showing ${shown.toLocaleString()} of ${total.toLocaleString()}.`;
 
@@ -76,23 +76,40 @@ const searchBox = (): HTMLInputElement => screen.getByLabelText('Search');
 const fontChip = (slug: string): HTMLInputElement => screen.getByRole('checkbox', { name: new RegExp(familyOf(slug)) });
 const reviewToggle = (): HTMLInputElement => screen.getByRole('checkbox', { name: /Selected only/ });
 
-const cards = (container: HTMLElement): HTMLElement[] => [...container.querySelectorAll<HTMLElement>('.symbol-picker-card')];
+const cards = (container: HTMLElement): HTMLElement[] => [...container.querySelectorAll<HTMLElement>('.symbol-picker-group')];
 const marks = (container: HTMLElement): HTMLElement[] => [...container.querySelectorAll<HTMLElement>('.symbol-picker-mark')];
-const variants = (card: HTMLElement): HTMLElement[] => [...card.querySelectorAll<HTMLElement>('.symbol-picker-variant')];
-const cardFor = (container: HTMLElement, codepoint: number): HTMLElement | null =>
-  cards(container).find((card) => card.querySelector('.symbol-picker-codepoint')?.textContent === formatCodepoint(codepoint)) ?? null;
+const expanderFor = (card: HTMLElement): HTMLButtonElement => card.querySelector<HTMLButtonElement>('.symbol-picker-expander')!;
+const detailFor = (card: HTMLElement): HTMLElement => card.querySelector<HTMLElement>('.symbol-picker-detail')!;
+const detailVariants = (card: HTMLElement): HTMLElement[] => [...card.querySelectorAll<HTMLElement>('.symbol-picker-detail-variant')];
 
-/** The mark a review grid holds for one font, found by the family in its description. */
+const cardFor = (container: HTMLElement, codepoint: number): HTMLElement | null =>
+  cards(container).find((card) => {
+    const mark = card.querySelector('.symbol-picker-mark');
+    return mark?.getAttribute('title')?.includes(` · ${formatCodepoint(codepoint)} · `) === true;
+  }) ?? null;
+
+/**
+ * The mark for one font at one codepoint, found by the description it carries.
+ * A collapsed group shows no codepoint of its own, so the description is where a
+ * mark says what it is in either mode.
+ */
 const markFor = (container: HTMLElement, codepoint: number, slug: string): HTMLElement => {
-  const found = marks(container).filter((mark) => mark.getAttribute('title')?.includes(`${formatCodepoint(codepoint)}`) && mark.getAttribute('title')?.includes(familyOf(slug)));
+  const found = marks(container).filter((mark) => {
+    const description = mark.getAttribute('title') ?? '';
+    return description.includes(` · ${formatCodepoint(codepoint)} · `) && description.includes(familyOf(slug));
+  });
   expect(found).toHaveLength(1);
   return found[0];
 };
 
-/** The variant a codepoint holds for one font, found by the family name printed under its glyph. */
-const variantFor = (card: HTMLElement, slug: string): HTMLElement =>
-  within(card).getByText(familyOf(slug)).closest<HTMLElement>('button')!;
+/** Open a group's details and return it, which is where the detail lives. */
+const openDetails = (card: HTMLElement): HTMLElement => {
+  const expander = expanderFor(card);
+  if (expander.getAttribute('aria-expanded') === 'false') fireEvent.click(expander);
+  return card;
+};
 
+/** The variant a codepoint holds for one font, found by the family name printed under its glyph. */
 /** Type a query and wait for the deferred, filtered grid to settle. */
 const showOnly = async (container: HTMLElement, query: string): Promise<void> => {
   fireEvent.change(searchBox(), { target: { value: query } });
@@ -152,27 +169,25 @@ const expectNoClipping = (box: HTMLElement, largestSample: number): void => {
 const SAMPLE_SIZES = [8, 16, 24];
 
 describe('SymbolPickerPage', () => {
-  it('lists codepoints in ascending order, one card per codepoint, each titled with it', () => {
+  it('lists codepoints in ascending order, one group per codepoint', () => {
     const view = render(<SymbolPickerPage />);
     const listed = cards(view.container);
     expect(listed).toHaveLength(PAGE);
     expect(listOf(view.container)).toHaveTextContent(shownLine(PAGE, allCodepoints.length));
 
+    // The order is readable from the mark descriptions, since a collapsed group
+    // shows no codepoint of its own.
     const codepoints = listed.map((card) => Number.parseInt(
-      card.querySelector('.symbol-picker-codepoint')!.textContent!.slice(2),
+      /· (U\+[0-9A-F]{4}) · /.exec(card.querySelector('.symbol-picker-mark')!.getAttribute('title')!)![1].slice(2),
       16
     ));
     expect(codepoints).toEqual([...codepoints].sort((a, b) => a - b));
     expect(new Set(codepoints).size).toBe(codepoints.length);
 
     for (const card of listed) {
-      const heading = within(card).getByRole('heading');
-      const codepoint = Number.parseInt(heading.textContent!.slice(2, 6), 16);
-      const name = candidates.find((candidate) => candidate.codepoint === codepoint)!.name;
-      expect(heading).toHaveTextContent(formatCodepoint(codepoint));
-      expect(heading).toHaveTextContent(name);
-      // A card holds one variant per compared font that can draw the codepoint.
-      expect(variants(card)).toHaveLength(glyphsByCodepoint.get(codepoint)!.length);
+      const codepoint = codepoints[listed.indexOf(card)];
+      // A group holds one mark per compared font that can draw the codepoint.
+      expect(marks(card)).toHaveLength(glyphsByCodepoint.get(codepoint)!.length);
     }
   }, 15000);
 
@@ -183,9 +198,11 @@ describe('SymbolPickerPage', () => {
 
     // The count is what sets the width of one font's column, so a stylesheet
     // that hardcoded the column would leave nothing here to turn on.
-    const track = ruleFor('.symbol-picker-grid').style.getPropertyValue('--variant-track');
-    expect(track).toContain('var(--compared-fonts)');
-    expect(track).not.toMatch(/^\d/);
+    for (const track of ['--mark-track', '--detail-track']) {
+      const declared = ruleFor('.symbol-picker-grid').style.getPropertyValue(track);
+      expect(declared).toContain('var(--compared-fonts)');
+      expect(declared).not.toMatch(/^\d/);
+    }
 
     fireEvent.click(fontChip('noto-sans-symbols-2'));
 
@@ -194,71 +211,143 @@ describe('SymbolPickerPage', () => {
     expect(grid.style.getPropertyValue('--compared-fonts')).toBe('0');
   }, 15000);
 
-  it('sizes a card from the fonts it holds, so a card with one is narrower than a card with four', async () => {
+  it('sizes a group from the fonts it holds, so a group of one is narrower than a group of four', async () => {
     const view = render(<SymbolPickerPage />);
     const singleCodepoint = exclusiveTo('libertinus-math');
     await showOnly(view.container, formatCodepoint(singleCodepoint));
-    expect(cardFor(view.container, singleCodepoint)!.style.getPropertyValue('--card-fonts')).toBe('1');
+    expect(cardFor(view.container, singleCodepoint)!.style.getPropertyValue('--group-fonts')).toBe('1');
 
     await showOnly(view.container, formatCodepoint(SHARED));
     const shared = cardFor(view.container, SHARED)!;
-    expect(shared.style.getPropertyValue('--card-fonts')).toBe(String(fontSlugs.length));
+    expect(shared.style.getPropertyValue('--group-fonts')).toBe(String(fontSlugs.length));
 
-    // The card's width is that count times one font's column, so the two cards
+    // A closed group is that count times one mark's track, so the two groups
     // above cannot come out the same width.
-    const width = ruleFor('.symbol-picker-card').style.getPropertyValue('width');
-    expect(width).toContain('var(--card-fonts)');
-    expect(width).toContain('var(--variant-track)');
-    expect(width).not.toMatch(/\d+rem\s*;/);
-    expect(ruleFor('.symbol-picker-variants').style.getPropertyValue('grid-template-columns'))
-      .toBe('repeat(var(--card-fonts), minmax(0, 1fr))');
+    const width = ruleFor('.symbol-picker-group').style.getPropertyValue('width');
+    expect(width).toContain('var(--group-fonts)');
+    expect(width).toContain('var(--mark-track)');
+    expect(width).not.toMatch(/^\d+rem\s*;/);
+    // An open group takes the width its details need instead.
+    const openWidth = ruleFor('.symbol-picker-group.is-open').style.getPropertyValue('width');
+    expect(openWidth).toContain('var(--detail-track)');
+    // One mark's track against one detail's column, so a closed group is a third
+    // the width of the group it opens into.
+    expect(toPx(/([\d.]+rem)/.exec(ruleFor('.symbol-picker-grid').style.getPropertyValue('--mark-track'))![1]))
+      .toBeLessThan(toPx(/([\d.]+rem)/.exec(ruleFor('.symbol-picker-grid').style.getPropertyValue('--detail-track'))![1]));
   }, 15000);
 
-  it('draws cards as a wrapping wall of one height, so the titles line up', () => {
+  it('draws the wall as a wrapping flex line of groups', () => {
     const view = render(<SymbolPickerPage />);
-    const grid = listOf(view.container);
-    const wall = getComputedStyle(grid);
+    const wall = getComputedStyle(listOf(view.container));
     expect(wall.display).toBe('flex');
     expect(wall.flexWrap).toBe('wrap');
-    // A line of cards shares the height of its tallest card, and no card opts out.
-    expect(wall.alignItems).toBe('stretch');
-    for (const card of cards(view.container).slice(0, 5)) {
-      expect(getComputedStyle(card).alignSelf).toBe('auto');
+  }, 15000);
+
+  it('shows a collapsed group as its marks alone, with no text and no previews', () => {
+    const view = render(<SymbolPickerPage />);
+    for (const card of cards(view.container)) {
+      expect(expanderFor(card).getAttribute('aria-expanded')).toBe('false');
+      // Nothing but the marks is in the markup, so there is no hidden text for a
+      // magnifier or a text selection to land on: no codepoint, name, block, font
+      // name or samples exist while the group is closed.
+      expect(card.querySelector('.symbol-picker-detail, .symbol-picker-codepoint, .symbol-picker-detail-name, .symbol-picker-detail-block, .symbol-picker-font-name, .symbol-picker-sizes, .symbol-picker-glyph, b')).toBeNull();
+      for (const mark of marks(card)) {
+        expect(mark.children).toHaveLength(0);
+        expect([...mark.textContent!]).toHaveLength(1);
+      }
     }
   }, 15000);
 
-  it('shows a codepoint one font can draw as a card of one, with no empty placeholder', async () => {
+  it('nests no control inside another, and keeps the mark as the tick target', () => {
+    const view = render(<SymbolPickerPage />);
+    // A button cannot hold a button: the group holds its marks and its expander
+    // side by side, so the tick target is the mark and nothing wraps it.
+    for (const button of view.container.querySelectorAll('button')) {
+      expect(button.querySelector('button')).toBeNull();
+    }
+    const card = cardFor(view.container, SHARED) ?? cards(view.container)[0];
+    expect(marks(card).length).toBeGreaterThan(0);
+    expect(expanderFor(card).querySelector('.symbol-picker-mark')).toBeNull();
+  }, 15000);
+
+  it('expands a group behind its expander without touching the selection', async () => {
+    const view = render(<SymbolPickerPage />);
+    await showOnly(view.container, formatCodepoint(SHARED));
+    const card = cardFor(view.container, SHARED)!;
+    const expander = expanderFor(card);
+
+    expect(expander).toHaveAttribute('aria-expanded', 'false');
+    // The expander names the panel it will show, which is not in the markup yet.
+    expect(expander.getAttribute('aria-controls')).toMatch(/^symbol-picker-detail-/);
+    expect(card.querySelector('.symbol-picker-detail')).toBeNull();
+    const before = countOf(view.container).textContent;
+
+    fireEvent.click(expander);
+
+    // The details are there, the panel is the one the expander named, and the
+    // pool is exactly as it was.
+    expect(expander).toHaveAttribute('aria-expanded', 'true');
+    expect(detailFor(card)).toBeInTheDocument();
+    expect(detailFor(card).id).toBe(expander.getAttribute('aria-controls'));
+    expect(detailFor(card).querySelector('.symbol-picker-codepoint')).toHaveTextContent(formatCodepoint(SHARED));
+    expect(countOf(view.container).textContent).toBe(before);
+    for (const slug of fontSlugs) {
+      expect(markFor(view.container, SHARED, slug)).toHaveAttribute('aria-pressed', 'true');
+    }
+
+    fireEvent.click(expander);
+
+    expect(expander).toHaveAttribute('aria-expanded', 'false');
+    expect(card.querySelector('.symbol-picker-detail')).toBeNull();
+  }, 15000);
+
+  it('puts the details of a shared codepoint side by side, one per compared font', async () => {
+    const view = render(<SymbolPickerPage />);
+    await showOnly(view.container, formatCodepoint(SHARED));
+    const card = openDetails(cardFor(view.container, SHARED)!);
+
+    const detail = detailFor(card);
+    expect(within(detail).getByRole('heading')).toHaveTextContent(formatCodepoint(SHARED));
+    expect(detailVariants(card).map((variant) => variant.querySelector('.symbol-picker-font-name')?.textContent))
+      .toEqual(fontSlugs.map(familyOf));
+    for (const variant of detailVariants(card)) {
+      const samples = [...variant.querySelectorAll<HTMLElement>('.symbol-picker-sizes b')];
+      expect(samples.map((sample) => sample.style.fontSize)).toEqual(['8px', '16px', '24px']);
+    }
+  }, 15000);
+
+  it('shows a codepoint one font can draw as a group of one mark, with no empty placeholder', async () => {
     const view = render(<SymbolPickerPage />);
     const only = exclusiveTo('libertinus-math');
     await showOnly(view.container, formatCodepoint(only));
 
     const card = cardFor(view.container, only)!;
-    expect(variants(card)).toHaveLength(1);
-    expect(variantFor(card, 'libertinus-math')).toBeInTheDocument();
-    expect(within(card).queryByText(familyOf('noto-sans-symbols-2'))).toBeNull();
+    expect(marks(card)).toHaveLength(1);
+    expect(markFor(view.container, only, 'libertinus-math')).toBeInTheDocument();
+    expect(marks(card)[0].getAttribute('title')).not.toContain(familyOf('noto-sans-symbols-2'));
   }, 15000);
 
-  it('groups a shared codepoint into one card of one variant per font', async () => {
+  it('groups a shared codepoint into one group of adjacent marks, one per font', async () => {
     const view = render(<SymbolPickerPage />);
     expect(glyphsByCodepoint.get(SHARED)).toEqual(fontSlugs);
     await showOnly(view.container, formatCodepoint(SHARED));
 
-    const card = cardFor(view.container, SHARED)!;
     expect(cards(view.container)).toHaveLength(1);
-    expect(variants(card)).toHaveLength(fontSlugs.length);
-    for (const slug of fontSlugs) {
-      expect(variantFor(card, slug)).toBeInTheDocument();
-    }
+    const card = cards(view.container)[0];
+    // The variants of one codepoint are neighbours, so they can be compared in
+    // place rather than found on separate cards.
+    const inGroup = [...card.querySelectorAll('.symbol-picker-group-marks .symbol-picker-mark')];
+    expect(inGroup).toHaveLength(fontSlugs.length);
+    expect(inGroup.map((mark) => mark.getAttribute('title')?.split(' · ')[0])).toEqual(fontSlugs.map(familyOf));
   }, 15000);
 
-  it('toggles one font\'s copy of a shared codepoint without disturbing the other font', async () => {
+  it('toggles one font\'s mark of a shared codepoint without disturbing the other font\'s', async () => {
     expect(selection).toEqual(expect.arrayContaining(fontSlugs.map((slug) => `${slug}:U+2666`)));
     const view = render(<SymbolPickerPage />);
     await showOnly(view.container, formatCodepoint(SHARED));
 
-    const card = cardFor(view.container, SHARED)!;
-    const libertinus = variantFor(card, 'libertinus-math');
-    const noto = variantFor(card, 'noto-sans-symbols-2');
+    const libertinus = markFor(view.container, SHARED, 'libertinus-math');
+    const noto = markFor(view.container, SHARED, 'noto-sans-symbols-2');
     expect(libertinus).toHaveAttribute('aria-pressed', 'true');
     expect(noto).toHaveAttribute('aria-pressed', 'true');
     expect(countOf(view.container)).toHaveTextContent(`${selection.length} selected`);
@@ -280,7 +369,7 @@ describe('SymbolPickerPage', () => {
 
     const only = exclusiveTo('libertinus-math');
     await showOnly(view.container, formatCodepoint(only));
-    expect(variants(cardFor(view.container, only)!)).toHaveLength(1);
+    expect(marks(cardFor(view.container, only)!)).toHaveLength(1);
 
     fireEvent.click(fontChip('libertinus-math'));
 
@@ -295,7 +384,7 @@ describe('SymbolPickerPage', () => {
     expect(listOf(view.container)).toHaveTextContent('No fonts are being compared.');
   }, 15000);
 
-  it('renders each variant as a specimen of glyph and sizes, named by the font they are set in', async () => {
+  it('previews every font in its own face, on the wall and in the details', async () => {
     const view = render(<SymbolPickerPage />);
     const faces = view.container.querySelector('style')!.textContent ?? '';
     for (const slug of fontSlugs) {
@@ -304,18 +393,18 @@ describe('SymbolPickerPage', () => {
     expect(faces.match(/@font-face/g)).toHaveLength(fontSlugs.length);
 
     await showOnly(view.container, formatCodepoint(SHARED));
-    const card = cardFor(view.container, SHARED)!;
+    const card = openDetails(cardFor(view.container, SHARED)!);
     for (const slug of fontSlugs) {
-      const variant = variantFor(card, slug);
       const face = `"${slug}", serif`;
-      // A variant is the specimen row and then the font name under it.
-      expect([...variant.children].map((child) => child.className)).toEqual([
-        'symbol-picker-specimen',
-        'symbol-picker-font-name'
-      ]);
-      expect(variant.querySelector('.symbol-picker-font-name')).toHaveTextContent(familyOf(slug));
-      expect(variant).toHaveAttribute('aria-label', expect.stringContaining(familyOf(slug)));
+      // The mark on the wall, and the specimen in the details behind it, are the
+      // same glyph drawn in the same font.
+      const mark = markFor(view.container, SHARED, slug);
+      expect(mark).toHaveTextContent(String.fromCodePoint(SHARED));
+      expect(mark).toHaveStyle({ fontFamily: face });
+      expect(mark).toHaveAttribute('aria-label', expect.stringContaining(familyOf(slug)));
 
+      const variant = detailVariants(card)
+        .find((one) => one.querySelector('.symbol-picker-font-name')?.textContent === familyOf(slug))!;
       const specimen = variant.querySelector<HTMLElement>('.symbol-picker-specimen')!;
       const glyph = specimen.querySelector<HTMLElement>('.symbol-picker-glyph')!;
       expect(glyph).toHaveTextContent(String.fromCodePoint(SHARED));
@@ -326,10 +415,11 @@ describe('SymbolPickerPage', () => {
     }
   }, 15000);
 
-  it('keeps the sizes beside the glyph in one row, and that row inside one variant track', async () => {
+  it('keeps the sizes beside the glyph in one row, and that row inside the detail', async () => {
     const view = render(<SymbolPickerPage />);
     await showOnly(view.container, formatCodepoint(SHARED));
-    const variant = variantFor(cardFor(view.container, SHARED)!, 'libertinus-math');
+    const card = openDetails(cardFor(view.container, SHARED)!);
+    const variant = detailVariants(card)[0];
 
     // The glyph and the strip share one row, and the name is not in it. A strip
     // stacked under the glyph would be a child of the variant instead of the
@@ -345,19 +435,19 @@ describe('SymbolPickerPage', () => {
     expect(row.alignItems).toBe('flex-end');
 
     // The glyph holds its place in the row and the strip is what narrows, so a
-    // card can never be pushed wider than its track by putting the two side by
-    // side: that would trade the height it saves for cards per row.
+    // detail cannot be pushed wider than its column by putting the two side by
+    // side: that would trade the height it saves for codepoints per row.
     const glyph = specimen.querySelector<HTMLElement>('.symbol-picker-glyph')!;
     const sizes = specimen.querySelector<HTMLElement>('.symbol-picker-sizes')!;
     expect(getComputedStyle(glyph).flex).toBe('0 0 auto');
     expect(getComputedStyle(sizes).flex).toBe('0 1 auto');
     expect(getComputedStyle(sizes).minWidth).toBe('0px');
 
-    // The row has to fit one font's column, measured from the stylesheet's own
-    // numbers: a sample is never wider than the font size it is drawn at, so the
-    // three of them bound the strip, and the rest is the glyph, the gap and the
-    // variant's own box.
-    const track = toPx(/([\d.]+rem)/.exec(ruleFor('.symbol-picker-grid').style.getPropertyValue('--variant-track'))![1]);
+    // The row has to fit one column of the detail, measured from the stylesheet's
+    // own numbers: a sample is never wider than the font size it is drawn at, so
+    // the three of them bound the strip, and the rest is the glyph, the gap and
+    // the variant's own box.
+    const track = toPx(/([\d.]+rem)/.exec(ruleFor('.symbol-picker-grid').style.getPropertyValue('--detail-track'))![1]);
     const strip = SAMPLE_SIZES.reduce((total, size) => total + size, 0)
       + 2 * toPx(getComputedStyle(sizes).gap)
       + toPx(getComputedStyle(sizes).paddingLeft) + toPx(getComputedStyle(sizes).paddingRight)
@@ -366,14 +456,14 @@ describe('SymbolPickerPage', () => {
       + toPx(row.gap)
       + strip
       + toPx(getComputedStyle(variant).paddingLeft) + toPx(getComputedStyle(variant).paddingRight)
-      + 2 * borderWidth('.symbol-picker-variant');
+      + 2 * borderWidth('.symbol-picker-detail-variant');
     expect(needed).toBeLessThanOrEqual(track);
   }, 15000);
 
   it('sizes the glyph and its size strip from the samples, so the largest one is not clipped', async () => {
     const view = render(<SymbolPickerPage />);
     await showOnly(view.container, formatCodepoint(SHARED));
-    const variant = variantFor(cardFor(view.container, SHARED)!, 'libertinus-math');
+    const variant = detailVariants(openDetails(cardFor(view.container, SHARED)!))[0];
 
     const sizes = variant.querySelector<HTMLElement>('.symbol-picker-sizes')!;
     const samples = [...sizes.querySelectorAll<HTMLElement>('b')];
@@ -399,19 +489,19 @@ describe('SymbolPickerPage', () => {
 
     // A narrower card squeezes the samples rather than cutting them off, which
     // is what the minmax(0, 1fr) tracks and the flexible strip are for.
-    expect(ruleFor('.symbol-picker-variants').style.getPropertyValue('grid-template-columns'))
-      .toBe('repeat(var(--card-fonts), minmax(0, 1fr))');
+    expect(ruleFor('.symbol-picker-detail-variants').style.getPropertyValue('grid-template-columns'))
+      .toBe('repeat(var(--group-fonts), minmax(0, 1fr))');
     expect(getComputedStyle(sizes).maxWidth).toBe('100%');
   }, 15000);
 
-  it('keeps the codepoint title readable in a narrow card', async () => {
+  it('keeps the codepoint title readable when the group is open', async () => {
     const view = render(<SymbolPickerPage />);
     await showOnly(view.container, formatCodepoint(SHARED));
 
-    for (const card of cards(view.container)) {
-      const title = within(card).getByRole('heading');
+    for (const card of cards(view.container).map(openDetails)) {
+      const title = within(detailFor(card)).getByRole('heading');
       // The codepoint, the name and the block each keep their own line when the
-      // card is too narrow to hold them, rather than being cut off.
+      // detail is too narrow to hold them, rather than being cut off.
       expect(getComputedStyle(title).flexWrap).toBe('wrap');
       expect(getComputedStyle(title).overflow).not.toBe('hidden');
       for (const part of title.children) {
@@ -473,7 +563,7 @@ describe('SymbolPickerPage', () => {
     }
   }, 15000);
 
-  it('returns to the codepoint cards when reviewing is switched off', async () => {
+  it('returns to the codepoint groups when reviewing is switched off', async () => {
     const view = render(<SymbolPickerPage />);
     fireEvent.click(reviewToggle());
     expect(cards(view.container)).toEqual([]);
@@ -482,13 +572,17 @@ describe('SymbolPickerPage', () => {
     await showOnly(view.container, formatCodepoint(SHARED));
 
     expect(reviewToggle()).not.toBeChecked();
-    expect(marks(view.container)).toEqual([]);
-    const card = cardFor(view.container, SHARED)!;
-    expect(within(card).getByRole('heading')).toHaveTextContent(formatCodepoint(SHARED));
-    expect(variants(card)).toHaveLength(fontSlugs.length);
-    expect(variants(card).map((variant) => [...variant.querySelectorAll('.symbol-picker-sizes b')].length)).toEqual([3, 3]);
-    expect(variants(card).map((variant) => variant.querySelector('.symbol-picker-font-name')?.textContent))
+    // Browsing again: the marks are back inside a group, with an expander beside
+    // them rather than loose in a grid.
+    expect(listOf(view.container, 'Codepoints')).toBeTruthy();
+    expect(marks(view.container).every((mark) => mark.closest('.symbol-picker-group') !== null)).toBe(true);
+    const card = openDetails(cardFor(view.container, SHARED)!);
+    expect(within(detailFor(card)).getByRole('heading')).toHaveTextContent(formatCodepoint(SHARED));
+    expect(marks(card)).toHaveLength(fontSlugs.length);
+    expect(detailVariants(card).map((variant) => variant.querySelector('.symbol-picker-font-name')?.textContent))
       .toEqual(fontSlugs.map(familyOf));
+    expect(detailVariants(card).map((variant) => [...variant.querySelectorAll('.symbol-picker-sizes b')].length))
+      .toEqual(fontSlugs.map(() => 3));
   }, 15000);
 
   it('reviews the ticked symbols and drops the search on entry', async () => {
@@ -545,13 +639,13 @@ describe('SymbolPickerPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear shown' }));
     for (const slug of fontSlugs) {
-      expect(variantFor(cardFor(view.container, SHARED)!, slug)).toHaveAttribute('aria-pressed', 'false');
+      expect(markFor(view.container, SHARED, slug)).toHaveAttribute('aria-pressed', 'false');
     }
     expect(countOf(view.container)).toHaveTextContent(`${selection.length - fontsAtPlay} selected`);
 
     fireEvent.click(screen.getByRole('button', { name: 'Select shown' }));
     for (const slug of fontSlugs) {
-      expect(variantFor(cardFor(view.container, SHARED)!, slug)).toHaveAttribute('aria-pressed', 'true');
+      expect(markFor(view.container, SHARED, slug)).toHaveAttribute('aria-pressed', 'true');
     }
     expect(countOf(view.container)).toHaveTextContent(`${selection.length} selected`);
   }, 15000);

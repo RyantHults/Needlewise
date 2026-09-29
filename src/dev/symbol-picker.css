@@ -172,18 +172,20 @@
 
 /*
  * The scroller, which holds whichever grid the current mode wants. The number of
- * ticked fonts arrives as --compared-fonts and is the only number the browsing
- * layout turns on: it sets the width of one font's column, and a card is as wide
- * as the fonts it holds, so one compared font gives a wall of narrow cards and
- * four give far fewer, wider ones. The browsing wall is a wrapping flex line
- * rather than uniform grid tracks, because a codepoint most fonts do not hold
- * has to end in a card of its own size instead of a wide empty track.
+ * ticked fonts arrives as --compared-fonts and bounds one mark's track to a fair
+ * share of the wall, so a group of many fonts cannot outgrow its row. Browsing is
+ * a wrapping flex line of groups rather than uniform grid tracks, because a
+ * codepoint most compared fonts cannot draw has to end in a group of its own
+ * width instead of a wide empty track.
  */
 .symbol-picker-grid {
-  --card-padding: 0.6rem;
-  /* A font's column, never wider than an equal share of the wall, so the widest
-     card a comparison can make still fits the row it is on. */
-  --variant-track: min(11rem, calc((100% - 2 * var(--card-padding)) / max(1, var(--compared-fonts))));
+  --card-padding: 0.4rem;
+  /* A mark's track, never wider than an equal share of the wall, so a group of
+     many fonts cannot outgrow the row it is on. */
+  --mark-track: min(3.25rem, calc((100% - 2 * var(--card-padding)) / max(1, var(--compared-fonts))));
+  /* A detail's column, which has to hold a glyph beside its samples and a font
+     name, so it is wider than a mark and shares the same share-of-the-wall bound. */
+  --detail-track: min(11rem, calc((100% - 2 * var(--card-padding)) / max(1, var(--compared-fonts))));
 
   max-height: calc(100vh - 17rem);
   overflow-y: auto;
@@ -196,27 +198,51 @@
 .symbol-picker-grid.is-wall {
   display: flex;
   flex-wrap: wrap;
-  align-items: stretch;
-  gap: 0.5rem;
-}
-
-/*
- * Reviewing: the ticked set as bare marks, so its weights, rhythms and shapes
- * can be judged together. The marks are set large on purpose, because the point
- * of the mode is comparing shapes and nothing is on the page but the shapes; the
- * name, codepoint, block and font travel with each mark in its hover text and its
- * accessible name instead.
- */
-.symbol-picker-grid.is-review {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(3.25rem, 1fr));
-  align-content: start;
+  align-items: flex-start;
   gap: 0.4rem;
 }
 
-/* Every mark here is in the pool, so the selected state is a pale field rather
-   than the accent bar a lone card carries, which at this density would be a
-   picket fence. Hover and focus are what single a mark out. */
+/* One group per codepoint: its marks side by side, and an expander. The group is
+   a container, never a control, because it holds the tick targets. A closed group
+   is only as wide as its marks, which is what keeps the wall dense. */
+.symbol-picker-group {
+  flex: 0 0 auto;
+  width: calc(var(--group-fonts) * var(--mark-track) + 1.9rem);
+  max-width: 100%;
+  padding: 0.15rem;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 4rem;
+}
+
+/* An open group takes the width its details need, which is a specimen beside its
+   samples rather than a bare mark, and holds that width while it stays open. */
+.symbol-picker-group.is-open {
+  width: calc(var(--group-fonts) * var(--detail-track) + 2 * var(--card-padding));
+  border-color: var(--picker-border);
+  background: #fdfcfa;
+}
+
+.symbol-picker-group-head {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+/* The marks of one codepoint sit next to each other, so two fonts drawing the
+   same codepoint can be compared in place. */
+.symbol-picker-group-marks {
+  display: flex;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+/*
+ * A mark: the shape alone, and the only tick target. It is the same mark in both
+ * modes, set the same size, so browsing and reviewing are the same tool in two
+ * states rather than two designs.
+ */
 .symbol-picker-mark {
   display: flex;
   align-items: center;
@@ -232,6 +258,9 @@
   cursor: pointer;
 }
 
+/* A mark in the pool is a pale field with a hairline accent border, not the
+   accent bar a card carries, which at this density would be a picket fence.
+   Hover and focus are what single a mark out. */
 .symbol-picker-mark.is-selected {
   border-color: var(--picker-accent);
   background: var(--picker-tint);
@@ -247,24 +276,72 @@
   outline-offset: 1px;
 }
 
-/* One card per codepoint, titled by the codepoint it is about. Cards in a line
-   are the height of its tallest card, so their titles start on one line. The
-   title sets its own leading, because a two-line title is a quarter of a card. */
-.symbol-picker-card {
-  display: flex;
-  flex: 0 0 auto;
-  flex-direction: column;
-  gap: 0.3rem;
-  width: calc(var(--card-fonts) * var(--variant-track) + 2 * var(--card-padding));
-  padding: 0.4rem var(--card-padding);
-  border: 1px solid var(--picker-border);
-  border-radius: 6px;
-  background: #fdfcfa;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 8rem;
+/*
+ * Reviewing: the ticked marks alone in one dense grid, so the chosen set can be
+ * judged as a whole. Same marks at the same size as browsing, without the groups
+ * and the expanders, so the mode is the wall with everything but the pool taken
+ * away.
+ */
+.symbol-picker-grid.is-marks {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--mark-track), 1fr));
+  align-content: start;
+  gap: 0.4rem;
 }
 
-.symbol-picker-card-title {
+/* The expander is a sibling of the marks, not a parent, so clicking it cannot
+   tick the symbol. The caret rotates and the open group gains a border, so the
+   state is visible as well as announced. */
+.symbol-picker-expander {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  min-height: 3.25rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--picker-muted);
+  cursor: pointer;
+}
+
+.symbol-picker-expander:hover {
+  border-color: var(--picker-border);
+  color: var(--picker-ink);
+}
+
+.symbol-picker-expander:focus-visible {
+  outline: 2px solid var(--picker-accent);
+  outline-offset: 1px;
+}
+
+/* A caret drawn rather than typed, so it carries no text of its own. */
+.symbol-picker-caret {
+  width: 0;
+  height: 0;
+  border-top: 0.3rem solid transparent;
+  border-bottom: 0.3rem solid transparent;
+  border-left: 0.4rem solid currentColor;
+  transition: transform 0.12s ease-out;
+  transform-origin: 0.15rem 50%;
+}
+
+.symbol-picker-group.is-open .symbol-picker-caret {
+  transform: rotate(90deg);
+}
+
+.symbol-picker-detail {
+  display: grid;
+  gap: 0.3rem;
+  margin-top: 0.3rem;
+  padding-top: 0.3rem;
+  border-top: 1px dashed var(--picker-border);
+}
+
+/* The detail is only in the markup while its group is open, so a closed wall
+   carries no hidden text for a magnifier or a text selection to land on. */
+.symbol-picker-detail-title {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -285,11 +362,11 @@
   font-weight: 600;
 }
 
-.symbol-picker-card-name {
+.symbol-picker-detail-name {
   font-weight: 600;
 }
 
-.symbol-picker-card-block {
+.symbol-picker-detail-block {
   color: var(--picker-muted);
   font-size: 0.75rem;
 }
@@ -302,22 +379,16 @@
 }
 
 /* The variants stand side by side in the order the fonts are declared, in equal
-   shares of the card, so a codepoint one font can draw and another cannot is a
-   card of one column rather than a card with a hole in it. The tracks may shrink
-   below their content, which keeps a narrow card from squeezing the samples. */
-.symbol-picker-variants {
+   shares, so a codepoint one font can draw and another cannot is a detail of one
+   column rather than a column with a hole in it. The tracks may shrink below
+   their content, which keeps a narrow card from squeezing the samples. */
+.symbol-picker-detail-variants {
   display: grid;
-  grid-template-columns: repeat(var(--card-fonts), minmax(0, 1fr));
+  grid-template-columns: repeat(var(--group-fonts), minmax(0, 1fr));
   gap: 0.4rem;
-}
-
-/* A variant reads as a specimen beside its sizes, and the font they are set in
-   under both, which keeps a variant to two lines instead of three. The two rows
-   stretch to the card's width; the specimen then gives the strip what the glyph
-   does not need, and the name the whole of it. */
-.symbol-picker-variant {
+}.symbol-picker-detail-variant {
   display: grid;
-  justify-items: stretch;
+  justify-items: start;
   align-content: start;
   gap: 0.25rem;
   min-width: 0;
@@ -325,33 +396,22 @@
   border: 1px solid var(--picker-border);
   border-radius: 4px;
   background: #fff;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
 }
 
+.symbol-picker-detail-variant.is-selected {
+  border-color: var(--picker-accent);
+}
+
+/* A specimen is the glyph beside its sizes, and the font under both, which keeps
+   it to two lines instead of three. The two rows stretch to the detail's width;
+   the specimen then gives the strip what the glyph does not need, and the name
+   the whole of it. */
 .symbol-picker-specimen {
   display: flex;
   flex-direction: row;
   align-items: flex-end;
   gap: 0.4rem;
   min-width: 0;
-}
-
-.symbol-picker-variant:hover {
-  border-color: var(--picker-muted);
-}
-
-.symbol-picker-variant:focus-visible {
-  outline: 2px solid var(--picker-accent);
-  outline-offset: 1px;
-}
-
-.symbol-picker-variant.is-selected {
-  border-color: var(--picker-accent);
-  background: var(--picker-tint);
-  box-shadow: inset 3px 0 0 var(--picker-accent);
 }
 
 /* The specimen is floored rather than squared off, so a tall glyph has room to
@@ -383,7 +443,9 @@
   white-space: nowrap;
 }
 
-.symbol-picker-variant.is-selected .symbol-picker-font-name {
+/* A variant in the pool is tinted like its mark, so the detail and the wall read
+   as the same state. */
+.symbol-picker-detail-variant.is-selected .symbol-picker-font-name {
   color: var(--picker-accent);
 }
 
