@@ -11,6 +11,8 @@
   --picker-ink: #2b2622;
   --picker-muted: #6f6659;
   --picker-accent: #8a3324;
+  --picker-tint: #fdf6f4;
+  --picker-wash: #efe9e1;
 
   min-height: 100vh;
   margin: 0;
@@ -33,66 +35,76 @@
 }
 
 .symbol-picker-header p {
-  margin: 0 0 1.25rem;
-  max-width: 60ch;
+  margin: 0 0 1rem;
+  max-width: 68ch;
   color: var(--picker-muted);
 }
 
-/* The font strip reads as tabs set into the page: a rule underneath, an accent
-   underline on the chosen one, and a roving tab stop so arrows walk the strip. */
-.symbol-picker-tabs {
+/* Which fonts are on the table, as a multi-select rather than a set of tabs:
+   any number can be ticked, and the list follows the tick. */
+.symbol-picker-fonts {
   display: flex;
   flex-wrap: wrap;
-  align-items: stretch;
-  gap: 0.15rem;
+  align-items: center;
+  gap: 0.4rem;
   margin-bottom: 0.75rem;
-  border-bottom: 1px solid var(--picker-border);
 }
 
-.symbol-picker-tabs button {
+.symbol-picker-fonts-label {
+  margin-right: 0.2rem;
+  color: var(--picker-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* One chip shape for every checkbox on the page: a font being compared, and the
+   review view. The chip is the whole control, so its focus ring is the label's. */
+.symbol-picker-chip {
   display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
-  margin-bottom: -1px;
-  padding: 0.4rem 0.7rem;
-  border: 1px solid transparent;
-  border-bottom: 2px solid transparent;
-  border-radius: 4px 4px 0 0;
-  background: transparent;
-  color: var(--picker-muted);
-  font: inherit;
-  font-size: 0.9rem;
+  gap: 0.4rem;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--picker-border);
+  border-radius: 4px;
+  background: #fff;
+  color: inherit;
+  font-size: 0.85rem;
   cursor: pointer;
+  user-select: none;
 }
 
-.symbol-picker-tabs button:hover:not(:disabled) {
-  background: #fff;
-  color: var(--picker-ink);
+.symbol-picker-chip:hover {
+  border-color: var(--picker-muted);
 }
 
-.symbol-picker-tabs button.is-active {
-  border-bottom-color: var(--picker-accent);
-  background: #fff;
-  color: var(--picker-ink);
+.symbol-picker-chip.is-on {
+  border-color: var(--picker-accent);
+  background: var(--picker-tint);
+  color: var(--picker-accent);
   font-weight: 600;
 }
 
-.symbol-picker-tabs button:focus-visible {
+.symbol-picker-chip:focus-within {
   outline: 2px solid var(--picker-accent);
   outline-offset: 1px;
 }
 
-.symbol-picker-tab-count {
-  padding: 0 0.4rem;
-  border-radius: 999px;
-  background: #efe9e1;
+.symbol-picker-chip input {
+  flex: 0 0 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--picker-accent);
+}
+
+.symbol-picker-chip-count {
   color: var(--picker-muted);
-  font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
 }
 
-.symbol-picker-tabs button.is-active .symbol-picker-tab-count {
-  background: #f6e6e2;
+.symbol-picker-chip.is-on .symbol-picker-chip-count {
   color: var(--picker-accent);
 }
 
@@ -104,7 +116,8 @@
   margin-bottom: 0.75rem;
 }
 
-.symbol-picker-controls label {
+/* The search box is labelled; the review chip beside it labels itself. */
+.symbol-picker-controls > label:not(.symbol-picker-chip) {
   font-weight: 600;
 }
 
@@ -142,56 +155,6 @@
   cursor: default;
 }
 
-/* A real checkbox, dressed like the buttons beside it, so the review view reads
-   as a mode you are in rather than an action you have taken. */
-.symbol-picker-controls .symbol-picker-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.3rem 0.6rem;
-  border: 1px solid var(--picker-border);
-  border-radius: 4px;
-  background: #fff;
-  color: inherit;
-  font-size: 0.85rem;
-  font-weight: 400;
-  cursor: pointer;
-  user-select: none;
-}
-
-.symbol-picker-controls .symbol-picker-toggle:hover {
-  border-color: var(--picker-muted);
-}
-
-.symbol-picker-controls .symbol-picker-toggle.is-on {
-  border-color: var(--picker-accent);
-  background: #fdf6f4;
-  color: var(--picker-accent);
-  font-weight: 600;
-}
-
-.symbol-picker-controls .symbol-picker-toggle:focus-within {
-  outline: 2px solid var(--picker-accent);
-  outline-offset: 1px;
-}
-
-.symbol-picker-toggle input {
-  flex: 0 0 auto;
-  min-width: 0;
-  margin: 0;
-  padding: 0;
-  accent-color: var(--picker-accent);
-}
-
-.symbol-picker-toggle-count {
-  color: var(--picker-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.symbol-picker-toggle.is-on .symbol-picker-toggle-count {
-  color: var(--picker-accent);
-}
-
 .symbol-picker-save {
   margin-left: auto;
   border-color: var(--picker-accent) !important;
@@ -209,8 +172,8 @@
 
 .symbol-picker-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
-  gap: 0.5rem;
+  grid-template-columns: 1fr;
+  gap: 0.4rem;
   max-height: calc(100vh - 17rem);
   overflow-y: auto;
   padding: 0.25rem;
@@ -219,82 +182,140 @@
   background: #fff;
 }
 
-.symbol-picker-cell {
+/* One card per codepoint, titled by the codepoint it is about. */
+.symbol-picker-item {
   display: grid;
-  grid-template-columns: auto 1fr;
-  grid-template-areas:
-    "glyph label"
-    "glyph meta"
-    "sizes sizes";
-  gap: 0.1rem 0.6rem;
-  align-items: center;
-  padding: 0.5rem;
+  gap: 0.35rem;
+  padding: 0.5rem 0.6rem;
   border: 1px solid var(--picker-border);
-  border-radius: 4px;
+  border-radius: 6px;
   background: #fdfcfa;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
   content-visibility: auto;
-  contain-intrinsic-size: auto 4.5rem;
+  contain-intrinsic-size: auto 7rem;
 }
 
-.symbol-picker-cell:hover {
-  border-color: var(--picker-muted);
-}
-
-.symbol-picker-cell.is-selected {
-  border-color: var(--picker-accent);
-  background: #fdf6f4;
-  box-shadow: inset 3px 0 0 var(--picker-accent);
-}
-
-.symbol-picker-glyph {
-  grid-area: glyph;
+.symbol-picker-item-title {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 2.75rem;
-  height: 2.75rem;
-  font-size: 1.6rem;
-  line-height: 1;
-  background: #fff;
-  border: 1px solid var(--picker-border);
-  border-radius: 3px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 400;
 }
 
-.symbol-picker-label {
-  grid-area: label;
+.symbol-picker-codepoint {
+  padding: 0 0.35rem;
+  border-radius: 3px;
+  background: var(--picker-wash);
+  color: var(--picker-ink);
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
   font-weight: 600;
 }
 
-.symbol-picker-meta {
-  grid-area: meta;
+.symbol-picker-item-name {
+  font-weight: 600;
+}
+
+.symbol-picker-item-block {
   color: var(--picker-muted);
   font-size: 0.75rem;
 }
 
+.symbol-picker-tick-count {
+  margin-left: auto;
+  color: var(--picker-accent);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The variants stand side by side in the order the fonts are declared, so a
+   codepoint one font can draw and another cannot is a row of one, not a gap. */
+.symbol-picker-variants {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.symbol-picker-variant {
+  display: grid;
+  justify-items: start;
+  gap: 0.25rem;
+  min-width: 12rem;
+  padding: 0.4rem;
+  border: 1px solid var(--picker-border);
+  border-radius: 4px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.symbol-picker-variant:hover {
+  border-color: var(--picker-muted);
+}
+
+.symbol-picker-variant:focus-visible {
+  outline: 2px solid var(--picker-accent);
+  outline-offset: 1px;
+}
+
+.symbol-picker-variant.is-selected {
+  border-color: var(--picker-accent);
+  background: var(--picker-tint);
+  box-shadow: inset 3px 0 0 var(--picker-accent);
+}
+
+/* The specimen is floored rather than squared off, so a tall glyph has room to
+   sit inside its box instead of being cut by it. */
+.symbol-picker-glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 3rem;
+  min-height: 3rem;
+  padding: 0.3rem 0.5rem;
+  border: 1px solid var(--picker-border);
+  border-radius: 3px;
+  background: #fff;
+  font-size: 1.75rem;
+  line-height: 1.3;
+}
+
+.symbol-picker-font-name {
+  color: var(--picker-muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.symbol-picker-variant.is-selected .symbol-picker-font-name {
+  color: var(--picker-accent);
+}
+
+/* The strip is as tall as its largest sample needs, so nothing is shaved off
+   the 24px glyph by the padding or the border. */
 .symbol-picker-sizes {
-  grid-area: sizes;
   display: flex;
   align-items: flex-end;
   gap: 0.5rem;
-  height: 1.5rem;
-  margin-top: 0.3rem;
-  padding: 0.15rem 0.35rem;
-  background: #fff;
+  padding: 0.2rem 0.4rem;
   border: 1px solid var(--picker-border);
   border-radius: 3px;
-  line-height: 1;
-  overflow: hidden;
+  background: #fff;
+  line-height: 1.2;
 }
 
 .symbol-picker-sizes b {
+  display: inline-block;
+  min-width: 1.75rem;
   font-weight: 400;
+  text-align: center;
 }
 
-.symbol-picker-more {
+.symbol-picker-more,
+.symbol-picker-empty {
   grid-column: 1 / -1;
   margin: 0;
   padding: 0.75rem;

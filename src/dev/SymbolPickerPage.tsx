@@ -1,4 +1,4 @@
-import { useDeferredValue, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useDeferredValue, useMemo, useRef, useState } from 'react';
 
 import candidatesAsset from '../symbols/candidates.generated.json';
 import selectionAsset from '../symbols/selection.json';
@@ -7,19 +7,24 @@ import './symbol-picker.css';
 /**
  * The symbol pool curation tool, served at /__symbols in dev only.
  *
- * The pool is the selection in src/symbols/selection.json. This page shows every
- * glyph the vendored fonts can draw at the sizes a chart actually uses, so a
- * mark that turns to mush at 8 pixels can be left out before it ever reaches a
- * pattern.
+ * The pool is the selection in src/symbols/selection.json. The list is a list of
+ * codepoints in ascending order, and each one shows what every compared font can
+ * draw at it, side by side, at the sizes a chart actually uses, so a mark that
+ * turns to mush at 8 pixels can be left out before it ever reaches a pattern.
+ *
+ * Which fonts to compare is a multi-select rather than a filter: any number of
+ * them can be on at once, and a codepoint is in the list whenever at least one
+ * compared font can draw it. Narrowing the fonts therefore narrows the list,
+ * and a codepoint no compared font holds is simply not there.
+ *
+ * A selection entry is "<font-slug>:U+XXXX", because two fonts can both hold the
+ * same codepoint and choosing one must not hide the other. Every control in the
+ * page is therefore keyed on that entry string, never on the codepoint.
  *
  * There is no near-duplicate filter and no visual similarity ranking. The fonts
  * contain thousands of deliberate variants — the fourteen diamonds, the dozen
  * circled letters — and a filter that judged them too similar would quietly
  * remove glyphs someone wanted. Search is the only tool offered.
- *
- * A selection entry is "<font-slug>:U+XXXX", because two fonts can both hold the
- * same codepoint and choosing one must not hide the other. Every control in the
- * page is therefore keyed on that entry string, never on the codepoint.
  *
  * The glyphs are shown with an @font-face of the vendored fonts rather than the
  * pool's own outlines, so a codepoint is visible even before it is selected and
@@ -50,6 +55,16 @@ interface SelectionFile {
   readonly selection: readonly string[];
 }
 
+/** One row of the list: a codepoint and the glyph each compared font has for it. */
+interface CodepointRow {
+  readonly codepoint: number;
+  readonly name: string;
+  readonly block: string;
+  /** How many fonts in the whole pool can draw this codepoint, compared or not. */
+  readonly poolSize: number;
+  readonly variants: readonly Candidate[];
+}
+
 const catalog = (candidatesAsset as unknown as CandidatesFile);
 const candidates = catalog.candidates;
 const fonts = catalog.fonts;
@@ -57,55 +72,94 @@ const fontSlugs = Object.keys(fonts);
 
 const authored = new Set((selectionAsset as unknown as SelectionFile).selection);
 
+/** The codepoints any font can draw, ascending, each mapped to its per-font glyph. */
+const glyphsByCodepoint = new Map<number, Map<string, Candidate>>();
+for (const candidate of candidates) {
+  const glyphs = glyphsByCodepoint.get(candidate.codepoint) ?? new Map<string, Candidate>();
+  glyphs.set(candidate.font, candidate);
+  glyphsByCodepoint.set(candidate.codepoint, glyphs);
+}
+
+const codepoints = [...glyphsByCodepoint.keys()].sort((a, b) => a - b);
+
+/** The first font to name a codepoint gives its row a title. */
+const names = new Map<number, { name: string; block: string }>();
+for (const candidate of candidates) {
+  if (!names.has(candidate.codepoint)) names.set(candidate.codepoint, { name: candidate.name, block: candidate.block });
+}
+
+/** How many codepoints each font adds to the list on its own. */
+const codepointsPerFont = new Map<string, number>(fontSlugs.map((slug) => [slug, 0]));
+for (const glyphs of glyphsByCodepoint.values()) {
+  for (const slug of glyphs.keys()) codepointsPerFont.set(slug, (codepointsPerFont.get(slug) ?? 0) + 1);
+}
+
 const formatCodepoint = (codePoint: number): string => `U+${codePoint.toString(16).toUpperCase().padStart(4, '0')}`;
 
 const toCodepoint = (value: string): number => Number.parseInt(value.replace(/^U\+/i, ''), 16);
 
 const toEntry = (candidate: Candidate): string => `${candidate.font}:${formatCodepoint(candidate.codepoint)}`;
 
-/** The tab that shows every font's candidates, alongside one tab per font. */
-const ALL_FONTS = 'all';
+/** How many codepoints to paint at once, so the page stays responsive on first paint. */
+const PAGE_SIZE = 200;
 
-/** How many candidates to paint at once, so the page stays responsive on first paint. */
-const PAGE_SIZE = 400;
-
-const candidateCounts = new Map<string, number>(fontSlugs.map((slug) => [slug, 0]));
-for (const candidate of candidates) {
-  candidateCounts.set(candidate.font, (candidateCounts.get(candidate.font) ?? 0) + 1);
+function matches(candidate: Candidate, needle: string, asCodepoint: number | null): boolean {
+  return candidate.name.includes(needle)
+    || candidate.block.toLowerCase().includes(needle)
+    || candidate.id.includes(needle)
+    || fonts[candidate.font]?.family.toLowerCase().includes(needle) === true
+    || (asCodepoint !== null && candidate.codepoint === asCodepoint)
+    || String.fromCodePoint(candidate.codepoint) === needle;
 }
 
 export default function SymbolPickerPage() {
   const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set(authored));
+  const [compared, setCompared] = useState<ReadonlySet<string>>(() => new Set(fontSlugs));
   const [query, setQuery] = useState('');
-  const [fontFilter, setFontFilter] = useState<string>(ALL_FONTS);
   const [onlySelected, setOnlySelected] = useState(false);
   const [limit, setLimit] = useState(PAGE_SIZE);
   const [status, setStatus] = useState('');
   const [saving, setSaving] = useState(false);
-  // Typing in the search box should not rebuild a grid of thousands of nodes.
+  // Typing in the search box should not rebuild a list of thousands of rows.
   const deferredQuery = useDeferredValue(query);
-  const gridTop = useRef<HTMLDivElement>(null);
-  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const scroller = useRef<HTMLDivElement>(null);
+  // The tick state is a filter input only while the review view is on, so a tick
+  // in browse mode leaves the row list alone.
+  const reviewed = onlySelected ? selected : null;
 
-  const matches = useMemo(() => {
+  const rows = useMemo(() => {
     const needle = deferredQuery.trim().toLowerCase();
-    return candidates.filter((candidate) => {
-      // The review view deliberately spans the whole pool, so a font tab left
-      // over from browsing it does not hide the other font's ticked glyphs.
-      if (!onlySelected && fontFilter !== ALL_FONTS && candidate.font !== fontFilter) return false;
-      if (onlySelected && !selected.has(toEntry(candidate))) return false;
-      if (!needle) return true;
-      const asCodepoint = needle.startsWith('u+') ? toCodepoint(needle) : null;
-      return candidate.name.includes(needle)
-        || candidate.block.toLowerCase().includes(needle)
-        || candidate.id.includes(needle)
-        || fonts[candidate.font]?.family.toLowerCase().includes(needle) === true
-        || (asCodepoint !== null && candidate.codepoint === asCodepoint)
-        || String.fromCodePoint(candidate.codepoint) === needle;
-    });
-  }, [deferredQuery, fontFilter, onlySelected, selected]);
+    const asCodepoint = needle.startsWith('u+') ? toCodepoint(needle) : null;
+    const chosen = fontSlugs.filter((slug) => compared.has(slug));
+    const out: CodepointRow[] = [];
+    for (const codepoint of codepoints) {
+      const glyphs = glyphsByCodepoint.get(codepoint);
+      if (!glyphs) continue;
+      const variants: Candidate[] = [];
+      for (const slug of chosen) {
+        const candidate = glyphs.get(slug);
+        if (!candidate) continue;
+        // The review view is the pool itself, so a row holds only ticked glyphs.
+        if (reviewed && !reviewed.has(toEntry(candidate))) continue;
+        variants.push(candidate);
+      }
+      // Nothing to show means no row: the compared fonts may not draw this
+      // codepoint, or the review view holds none of its glyphs.
+      if (variants.length === 0) continue;
+      if (needle && !variants.some((variant) => matches(variant, needle, asCodepoint))) continue;
+      const { name, block } = names.get(codepoint)!;
+      out.push({ codepoint, name, block, poolSize: glyphs.size, variants });
+    }
+    return out;
+  }, [deferredQuery, compared, reviewed]);
 
-  const visible = matches.slice(0, limit);
+  const visible = rows.slice(0, limit);
+
+  const emptyMessage = compared.size === 0
+    ? 'No fonts are being compared. Tick a font above to see what it can draw.'
+    : onlySelected
+      ? 'Nothing is ticked in the fonts being compared.'
+      : 'No codepoints match this search.';
 
   const perFont = useMemo(() => {
     const counts = new Map<string, number>();
@@ -116,30 +170,19 @@ export default function SymbolPickerPage() {
     return counts;
   }, [selected]);
 
-  /** A narrower set means a fresh page of results, read from the top of the grid. */
+  /** A narrower list means a fresh page of rows, read from the top of the scroller. */
   function resetView() {
     setLimit(PAGE_SIZE);
-    if (gridTop.current) gridTop.current.scrollTop = 0;
+    if (scroller.current) scroller.current.scrollTop = 0;
   }
 
-  function chooseFont(slug: string) {
-    setFontFilter(slug);
+  function toggleFont(slug: string) {
+    setCompared((current) => {
+      const next = new Set(current);
+      if (!next.delete(slug)) next.add(slug);
+      return next;
+    });
     resetView();
-  }
-
-  /** Arrow keys walk the tab strip and pick the tab they land on, as a tablist should. */
-  function onTabKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    const order = [ALL_FONTS, ...fontSlugs];
-    const current = order.indexOf(fontFilter);
-    let next: number;
-    if (event.key === 'ArrowRight') next = (current + 1) % order.length;
-    else if (event.key === 'ArrowLeft') next = (current - 1 + order.length) % order.length;
-    else if (event.key === 'Home') next = 0;
-    else if (event.key === 'End') next = order.length - 1;
-    else return;
-    event.preventDefault();
-    chooseFont(order[next]);
-    tabRefs.current[next]?.focus();
   }
 
   function toggle(entry: string) {
@@ -152,25 +195,25 @@ export default function SymbolPickerPage() {
   }
 
   function selectVisible() {
-    setSelected((current) => new Set([...current, ...visible.map(toEntry)]));
+    setSelected((current) => {
+      const next = new Set(current);
+      for (const row of visible) for (const variant of row.variants) next.add(toEntry(variant));
+      return next;
+    });
   }
 
   function clearVisible() {
     setSelected((current) => {
       const next = new Set(current);
-      for (const candidate of visible) next.delete(toEntry(candidate));
+      for (const row of visible) for (const variant of row.variants) next.delete(toEntry(variant));
       return next;
     });
   }
 
-  /** Entering the review view drops the search and font filters, which rarely suit it. */
+  /** Entering the review view drops the search, which rarely survives a 160-item read. */
   function toggleOnlySelected() {
-    const entering = !onlySelected;
-    setOnlySelected(entering);
-    if (entering) {
-      setQuery('');
-      setFontFilter(ALL_FONTS);
-    }
+    setOnlySelected((current) => !current);
+    if (!onlySelected) setQuery('');
     resetView();
   }
 
@@ -222,43 +265,30 @@ export default function SymbolPickerPage() {
       <header className="symbol-picker-header">
         <h1>Symbol pool</h1>
         <p>
-          Every glyph the vendored fonts can draw: {candidates.length.toLocaleString()} candidates across{' '}
-          {fontSlugs.length} font{fontSlugs.length === 1 ? '' : 's'}. Tick the ones worth stitching, save, then
-          run the build. Search matches names, blocks, ids, font names, and U+ codepoints.
+          Every codepoint the vendored fonts can draw: {codepoints.length.toLocaleString()} codepoints from{' '}
+          {candidates.length.toLocaleString()} glyphs across {fontSlugs.length} font
+          {fontSlugs.length === 1 ? '' : 's'}. Tick the ones worth stitching, save, then run the build. Search
+          matches names, blocks, ids, font names, and U+ codepoints.
         </p>
       </header>
 
-      <div className="symbol-picker-tabs" role="tablist" aria-label="Font" onKeyDown={onTabKeyDown}>
-        <button
-          ref={(node) => { tabRefs.current[0] = node; }}
-          type="button"
-          role="tab"
-          aria-selected={fontFilter === ALL_FONTS}
-          aria-controls="symbol-picker-grid"
-          tabIndex={fontFilter === ALL_FONTS ? 0 : -1}
-          className={fontFilter === ALL_FONTS ? 'is-active' : ''}
-          onClick={() => chooseFont(ALL_FONTS)}
-        >
-          All fonts
-          <span className="symbol-picker-tab-count">{candidates.length.toLocaleString()}</span>
-        </button>
-        {fontSlugs.map((slug, index) => (
-          <button
+      <div className="symbol-picker-fonts" role="group" aria-label="Fonts to compare">
+        <span className="symbol-picker-fonts-label">Compare</span>
+        {fontSlugs.map((slug) => (
+          <label
             key={slug}
-            ref={(node) => { tabRefs.current[index + 1] = node; }}
-            type="button"
-            role="tab"
-            aria-selected={fontFilter === slug}
-            aria-controls="symbol-picker-grid"
-            tabIndex={fontFilter === slug ? 0 : -1}
-            className={fontFilter === slug ? 'is-active' : ''}
-            onClick={() => chooseFont(slug)}
+            className={compared.has(slug) ? 'symbol-picker-chip is-on' : 'symbol-picker-chip'}
           >
+            <input
+              type="checkbox"
+              checked={compared.has(slug)}
+              onChange={() => toggleFont(slug)}
+            />
             {fonts[slug].family}
-            <span className="symbol-picker-tab-count">
-              {(candidateCounts.get(slug) ?? 0).toLocaleString()}
+            <span className="symbol-picker-chip-count">
+              {(codepointsPerFont.get(slug) ?? 0).toLocaleString()}
             </span>
-          </button>
+          </label>
         ))}
       </div>
 
@@ -274,18 +304,18 @@ export default function SymbolPickerPage() {
         <span className="symbol-picker-count">
           {selected.size} selected
           {perFont.size > 1 && ` (${[...perFont].map(([slug, n]) => `${fonts[slug]?.family ?? slug} ${n}`).join(' · ')})`}
-          {deferredQuery.trim() ? ` · ${matches.length.toLocaleString()} matching` : ''}
+          {deferredQuery.trim() ? ` · ${rows.length.toLocaleString()} matching` : ''}
         </span>
         <button type="button" onClick={selectVisible} disabled={visible.length === 0}>Select shown</button>
         <button type="button" onClick={clearVisible} disabled={visible.length === 0}>Clear shown</button>
-        <label className={onlySelected ? 'symbol-picker-toggle is-on' : 'symbol-picker-toggle'}>
+        <label className={onlySelected ? 'symbol-picker-chip is-on' : 'symbol-picker-chip'}>
           <input
             type="checkbox"
             checked={onlySelected}
             onChange={toggleOnlySelected}
           />
           Selected only
-          <span className="symbol-picker-toggle-count">{selected.size.toLocaleString()}</span>
+          <span className="symbol-picker-chip-count">{selected.size.toLocaleString()}</span>
         </label>
         <button type="button" className="symbol-picker-save" onClick={() => void save()} disabled={saving || selected.size === 0}>
           {saving ? 'Saving…' : 'Save selection.json'}
@@ -295,11 +325,10 @@ export default function SymbolPickerPage() {
       <p className="symbol-picker-status" role="status">{status}</p>
 
       <div
-        id="symbol-picker-grid"
-        role="tabpanel"
-        aria-label="Candidates"
         className="symbol-picker-grid"
-        ref={gridTop}
+        role="region"
+        aria-label="Codepoints"
+        ref={scroller}
         onScroll={(event) => {
           const element = event.currentTarget;
           if (element.scrollTop + element.clientHeight >= element.scrollHeight - 400) {
@@ -307,37 +336,53 @@ export default function SymbolPickerPage() {
           }
         }}
       >
-        {visible.map((candidate) => {
-          const entry = toEntry(candidate);
-          const on = selected.has(entry);
-          const family = fonts[candidate.font]?.family ?? candidate.font;
-          const face = `"${candidate.font}", serif`;
+        {visible.map((row) => {
+          const ticks = row.variants.filter((variant) => selected.has(toEntry(variant))).length;
           return (
-            <button
-              key={candidate.id}
-              type="button"
-              className={on ? 'symbol-picker-cell is-selected' : 'symbol-picker-cell'}
-              aria-pressed={on}
-              title={`${candidate.name} · ${formatCodepoint(candidate.codepoint)} · ${candidate.block} · ${family}`}
-              onClick={() => toggle(entry)}
-            >
-              <span className="symbol-picker-glyph" style={{ fontFamily: face }} aria-hidden="true">
-                {String.fromCodePoint(candidate.codepoint)}
-              </span>
-              <span className="symbol-picker-label">{candidate.name}</span>
-              <span className="symbol-picker-meta">
-                {formatCodepoint(candidate.codepoint)} · {family}
-              </span>
-              <span className="symbol-picker-sizes" aria-hidden="true">
-                <b style={{ fontFamily: face, fontSize: 8 }}>{String.fromCodePoint(candidate.codepoint)}</b>
-                <b style={{ fontFamily: face, fontSize: 16 }}>{String.fromCodePoint(candidate.codepoint)}</b>
-                <b style={{ fontFamily: face, fontSize: 24 }}>{String.fromCodePoint(candidate.codepoint)}</b>
-              </span>
-            </button>
+            <article className="symbol-picker-item" key={row.codepoint}>
+              <h2 className="symbol-picker-item-title">
+                <span className="symbol-picker-codepoint">{formatCodepoint(row.codepoint)}</span>
+                <span className="symbol-picker-item-name">{row.name}</span>
+                <span className="symbol-picker-item-block">{row.block}</span>
+                {ticks > 0 && ticks < row.poolSize && (
+                  <span className="symbol-picker-tick-count">{ticks} of {row.poolSize} in pool</span>
+                )}
+              </h2>
+              <div className="symbol-picker-variants">
+                {row.variants.map((variant) => {
+                  const entry = toEntry(variant);
+                  const on = selected.has(entry);
+                  const family = fonts[variant.font]?.family ?? variant.font;
+                  const face = `"${variant.font}", serif`;
+                  return (
+                    <button
+                      key={variant.id}
+                      type="button"
+                      className={on ? 'symbol-picker-variant is-selected' : 'symbol-picker-variant'}
+                      aria-pressed={on}
+                      aria-label={`${family} ${formatCodepoint(row.codepoint)} ${row.name}`}
+                      title={`${family} · ${formatCodepoint(row.codepoint)} · ${row.name} · ${row.block}`}
+                      onClick={() => toggle(entry)}
+                    >
+                      <span className="symbol-picker-glyph" style={{ fontFamily: face }} aria-hidden="true">
+                        {String.fromCodePoint(variant.codepoint)}
+                      </span>
+                      <span className="symbol-picker-font-name">{family}</span>
+                      <span className="symbol-picker-sizes" aria-hidden="true">
+                        <b style={{ fontFamily: face, fontSize: 8 }}>{String.fromCodePoint(variant.codepoint)}</b>
+                        <b style={{ fontFamily: face, fontSize: 16 }}>{String.fromCodePoint(variant.codepoint)}</b>
+                        <b style={{ fontFamily: face, fontSize: 24 }}>{String.fromCodePoint(variant.codepoint)}</b>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </article>
           );
         })}
-        {visible.length < matches.length && (
-          <p className="symbol-picker-more">Showing {visible.length.toLocaleString()} of {matches.length.toLocaleString()}. Scroll for more.</p>
+        {visible.length === 0 && <p className="symbol-picker-empty">{emptyMessage}</p>}
+        {visible.length < rows.length && (
+          <p className="symbol-picker-more">Showing {visible.length.toLocaleString()} of {rows.length.toLocaleString()}. Scroll for more.</p>
         )}
       </div>
     </div>
