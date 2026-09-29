@@ -7,9 +7,10 @@ import selectionAsset from '../symbols/selection.json';
 
 /**
  * The picker draws two vendored fonts over one codepoint space, so the pool is
- * addressed by "<font-slug>:U+XXXX" and never by the codepoint alone. The grid
- * is grouped by codepoint, and which fonts it holds is a multi-select rather
- * than a filter, so a card is only there when a compared font can draw it.
+ * addressed by "<font-slug>:U+XXXX" and never by the codepoint alone. Browsing
+ * groups the codepoints into cards, and reviewing shows the ticked set as bare
+ * marks; which fonts the grid holds is a multi-select rather than a filter, so
+ * what is there is only there when a compared font can draw it.
  *
  * Every expectation below is derived from the generated candidates and the
  * committed selection, so curating the pool never has to edit these numbers.
@@ -43,11 +44,9 @@ const exclusiveTo = (slug: string): number => allCodepoints
 
 const selectedFor = (slug: string): number => selection.filter((entry) => entry.startsWith(`${slug}:`)).length;
 
-const ticked = [...new Set(selection.map((entry) => Number.parseInt(entry.split(':')[1].slice(2), 16)))];
-
-/** The ticked codepoints the grid holds with one font compared, or with all of them. */
-const tickedCodepoints = (slug?: string): number => ticked
-  .filter((codepoint) => !slug || glyphsByCodepoint.get(codepoint)!.includes(slug)).length;
+/** The ticked marks the review grid holds, which is one per ticked entry. */
+const tickedMarks = (slug?: string): number => selection
+  .filter((entry) => !slug || entry.startsWith(`${slug}:`)).length;
 
 /** The codepoints a search would leave in the grid, by the same rule the page filters on. */
 const matching = (needle: string): number => {
@@ -69,16 +68,26 @@ const PAGE = 200;
 
 const shownLine = (shown: number, total: number): string => `Showing ${shown.toLocaleString()} of ${total.toLocaleString()}.`;
 
-const listOf = (container: HTMLElement): HTMLElement => within(container).getByRole('region', { name: 'Codepoints' });
+/** The scroller, which is the codepoint wall while browsing and the mark grid while reviewing. */
+const listOf = (container: HTMLElement, name = 'Codepoints'): HTMLElement =>
+  within(container).getByRole('region', { name });
 const countOf = (container: HTMLElement): HTMLElement => container.querySelector<HTMLElement>('.symbol-picker-count')!;
 const searchBox = (): HTMLInputElement => screen.getByLabelText('Search');
 const fontChip = (slug: string): HTMLInputElement => screen.getByRole('checkbox', { name: new RegExp(familyOf(slug)) });
 const reviewToggle = (): HTMLInputElement => screen.getByRole('checkbox', { name: /Selected only/ });
 
 const cards = (container: HTMLElement): HTMLElement[] => [...container.querySelectorAll<HTMLElement>('.symbol-picker-card')];
+const marks = (container: HTMLElement): HTMLElement[] => [...container.querySelectorAll<HTMLElement>('.symbol-picker-mark')];
 const variants = (card: HTMLElement): HTMLElement[] => [...card.querySelectorAll<HTMLElement>('.symbol-picker-variant')];
 const cardFor = (container: HTMLElement, codepoint: number): HTMLElement | null =>
   cards(container).find((card) => card.querySelector('.symbol-picker-codepoint')?.textContent === formatCodepoint(codepoint)) ?? null;
+
+/** The mark a review grid holds for one font, found by the family in its description. */
+const markFor = (container: HTMLElement, codepoint: number, slug: string): HTMLElement => {
+  const found = marks(container).filter((mark) => mark.getAttribute('title')?.includes(`${formatCodepoint(codepoint)}`) && mark.getAttribute('title')?.includes(familyOf(slug)));
+  expect(found).toHaveLength(1);
+  return found[0];
+};
 
 /** The variant a codepoint holds for one font, found by the family name printed under its glyph. */
 const variantFor = (card: HTMLElement, slug: string): HTMLElement =>
@@ -412,6 +421,76 @@ describe('SymbolPickerPage', () => {
     }
   }, 15000);
 
+  it('reviews the ticked set as bare marks, keeping the description in hover text and the accessible name', () => {
+    const view = render(<SymbolPickerPage />);
+    fireEvent.click(reviewToggle());
+
+    // Reviewing is the pool as marks and nothing else: no cards, and no text on
+    // a mark but the glyph itself, which is the only text it can carry.
+    expect(cards(view.container)).toEqual([]);
+    expect(marks(view.container)).toHaveLength(selection.length);
+    for (const mark of marks(view.container)) {
+      expect(mark.children).toHaveLength(0);
+      expect([...mark.textContent!]).toHaveLength(1);
+      expect(mark.querySelector('.symbol-picker-codepoint, .symbol-picker-card-name, .symbol-picker-card-block, .symbol-picker-font-name, .symbol-picker-sizes, .symbol-picker-glyph, b')).toBeNull();
+    }
+
+    // What the hover text says is what the mark is called, so a screen reader
+    // gets the whole description and the two marks one codepoint draws are told
+    // apart even though nothing on the page says which font is which.
+    for (const slug of fontSlugs) {
+      const mark = markFor(view.container, SHARED, slug);
+      const description = mark.getAttribute('title') ?? '';
+      expect(description).toBe(`${familyOf(slug)} · ${formatCodepoint(SHARED)} · ${candidates.find((one) => one.codepoint === SHARED)!.name} · ${candidates.find((one) => one.codepoint === SHARED)!.block}`);
+      expect(mark).toHaveAttribute('aria-label', description);
+      expect(mark).toHaveTextContent(String.fromCodePoint(SHARED));
+      expect(mark).toHaveStyle({ fontFamily: `"${slug}", serif` });
+    }
+    const named = screen.getAllByRole('button', { name: /black diamond suit/ });
+    expect(named).toHaveLength(fontSlugs.length);
+    expect(named.map((mark) => mark.getAttribute('aria-label'))).toEqual(
+      fontSlugs.map((slug) => `${familyOf(slug)} · ${formatCodepoint(SHARED)} · black diamond suit · ${candidates.find((one) => one.codepoint === SHARED)!.block}`)
+    );
+  }, 15000);
+
+  it('lays the review marks out as a grid of glyphs that are not clipped', () => {
+    const view = render(<SymbolPickerPage />);
+    fireEvent.click(reviewToggle());
+    const grid = listOf(view.container, 'Ticked symbols');
+
+    expect(getComputedStyle(grid).display).toBe('grid');
+    expect(getComputedStyle(grid).gridTemplateColumns).toContain('auto-fill');
+    for (const mark of marks(view.container).slice(0, 8)) {
+      const style = getComputedStyle(mark);
+      const size = Number.parseFloat(style.fontSize);
+      // The mark is floored rather than squared off, so a descender or a tall
+      // accent has room and nothing is shaved off it.
+      expect(style.display).toBe('flex');
+      expect(style.height).toBe('auto');
+      expect(style.overflow).not.toBe('hidden');
+      expect(Number.parseFloat(style.minHeight)).toBeGreaterThanOrEqual(size);
+      expect(Number.parseFloat(style.minWidth)).toBeGreaterThanOrEqual(size);
+    }
+  }, 15000);
+
+  it('returns to the codepoint cards when reviewing is switched off', async () => {
+    const view = render(<SymbolPickerPage />);
+    fireEvent.click(reviewToggle());
+    expect(cards(view.container)).toEqual([]);
+
+    fireEvent.click(reviewToggle());
+    await showOnly(view.container, formatCodepoint(SHARED));
+
+    expect(reviewToggle()).not.toBeChecked();
+    expect(marks(view.container)).toEqual([]);
+    const card = cardFor(view.container, SHARED)!;
+    expect(within(card).getByRole('heading')).toHaveTextContent(formatCodepoint(SHARED));
+    expect(variants(card)).toHaveLength(fontSlugs.length);
+    expect(variants(card).map((variant) => [...variant.querySelectorAll('.symbol-picker-sizes b')].length)).toEqual([3, 3]);
+    expect(variants(card).map((variant) => variant.querySelector('.symbol-picker-font-name')?.textContent))
+      .toEqual(fontSlugs.map(familyOf));
+  }, 15000);
+
   it('reviews the ticked symbols and drops the search on entry', async () => {
     const view = render(<SymbolPickerPage />);
     await showOnly(view.container, formatCodepoint(SHARED));
@@ -419,30 +498,44 @@ describe('SymbolPickerPage', () => {
 
     expect(searchBox()).toHaveValue('');
     expect(reviewToggle()).toBeChecked();
-    expect(cards(view.container)).toHaveLength(tickedCodepoints());
-    expect(listOf(view.container)).not.toHaveTextContent(/Showing /);
+    expect(marks(view.container)).toHaveLength(selection.length);
+    // One page holds the whole pool, so a review of it needs no scrolling.
+    expect(listOf(view.container, 'Ticked symbols')).not.toHaveTextContent(/Showing /);
 
-    fireEvent.click(variantFor(cardFor(view.container, SHARED)!, 'libertinus-math'));
+    fireEvent.click(markFor(view.container, SHARED, 'libertinus-math'));
 
-    const card = cardFor(view.container, SHARED)!;
-    expect(variants(card)).toHaveLength(1);
-    expect(variantFor(card, 'noto-sans-symbols-2')).toBeInTheDocument();
+    expect(markFor(view.container, SHARED, 'noto-sans-symbols-2')).toBeInTheDocument();
+    expect(marks(view.container)).toHaveLength(selection.length - 1);
     expect(countOf(view.container)).toHaveTextContent(`${selection.length - 1} selected`);
   }, 15000);
 
   it('spans the compared fonts alone while reviewing, since the pool is font-specific', async () => {
     const view = render(<SymbolPickerPage />);
     fireEvent.click(reviewToggle());
-    expect(cards(view.container)).toHaveLength(tickedCodepoints());
+    expect(marks(view.container)).toHaveLength(tickedMarks());
 
     fireEvent.click(fontChip('noto-sans-symbols-2'));
 
     expect(fontChip('noto-sans-symbols-2')).not.toBeChecked();
-    expect(cards(view.container)).toHaveLength(tickedCodepoints('libertinus-math'));
-    expect(view.container.querySelectorAll('.symbol-picker-font-name')).toHaveLength(tickedCodepoints('libertinus-math'));
-    for (const name of view.container.querySelectorAll('.symbol-picker-font-name')) {
-      expect(name).toHaveTextContent(familyOf('libertinus-math'));
+    // Nothing on a mark names its font, so the compared set is read from the
+    // descriptions the marks carry.
+    expect(marks(view.container)).toHaveLength(tickedMarks('libertinus-math'));
+    for (const mark of marks(view.container)) {
+      expect(mark.getAttribute('title')).toContain(familyOf('libertinus-math'));
     }
+  }, 15000);
+
+  it('clears the pool from the review grid, and says so', () => {
+    const view = render(<SymbolPickerPage />);
+    fireEvent.click(reviewToggle());
+    expect(marks(view.container)).toHaveLength(selection.length);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear shown' }));
+
+    expect(marks(view.container)).toEqual([]);
+    expect(listOf(view.container, 'Ticked symbols')).toHaveTextContent('Nothing is ticked in the fonts being compared.');
+    expect(countOf(view.container)).toHaveTextContent('0 selected');
+    expect(screen.getByRole('button', { name: 'Select shown' })).toBeDisabled();
   }, 15000);
 
   it('applies Select shown and Clear shown to every font at the listed codepoints', async () => {
