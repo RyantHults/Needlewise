@@ -94,8 +94,43 @@ describe('sortEntries', () => {
     ]);
   });
 
-  it('normalises each entry as it sorts', () => {
-    expect(sortEntries(['b:U+0061', 'a:U+0061'])).toEqual(['a:U+0061', 'b:U+0061']);
+  it('canonicalises each entry as it sorts', () => {
+    // The parser is lenient about case, padding, and whitespace; the committed
+    // file is not, so every entry comes back out in one spelling.
+    expect(sortEntries([
+      'noto-sans-symbols-2:u+20a2',
+      'libertinus-math:U+00021',
+      '  libertinus-math:U+2665  '
+    ])).toEqual([
+      'libertinus-math:U+0021',
+      'libertinus-math:U+2665',
+      'noto-sans-symbols-2:U+20A2'
+    ]);
+  });
+
+  it('is idempotent over a canonical selection', () => {
+    const once = sortEntries(['b:u+0061', 'a:U+000061']);
+    expect(sortEntries(once)).toEqual(once);
+  });
+
+  it('orders fonts by codepoint, not by locale collation', () => {
+    // The committed bytes are a pure function of selection.json, so the order
+    // cannot depend on the host's ICU: local Node is 24, CI is 22, and a
+    // collation change there would reorder the artifact for no real reason.
+    // Pinned by forcing localeCompare to the opposite of codepoint order.
+    const real = String.prototype.localeCompare;
+    String.prototype.localeCompare = function reversed(other) {
+      return other < this ? -1 : other > this ? 1 : 0;
+    };
+    try {
+      expect(sortEntries(['ab:U+0061', 'a-b:U+0061', 'b:U+0061'])).toEqual([
+        'a-b:U+0061',
+        'ab:U+0061',
+        'b:U+0061'
+      ]);
+    } finally {
+      String.prototype.localeCompare = real;
+    }
   });
 
   it('does not mutate its input', () => {

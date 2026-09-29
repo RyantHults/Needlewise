@@ -1,11 +1,13 @@
 /**
- * Read symbols out of the vendored Libertinus Math font.
+ * Read symbols out of the vendored fonts.
  *
  * A codepoint can only be selected if the font has contours for it, so this
  * module owns the whole pipeline: glyph commands, the Unicode name and block,
  * the normalized outline, and the id a palette entry stores. A glyph the font
  * maps but cannot draw is not a candidate at all, which is why the candidate
- * list is shorter than the cmap.
+ * list is shorter than the cmap. Every function that touches a font takes the
+ * parsed font and its slug, so nothing here can read as belonging to one
+ * implicit font.
  *
  * Two things here are load-bearing and easy to get wrong:
  *

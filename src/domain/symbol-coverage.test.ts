@@ -102,8 +102,8 @@ describe('block interleave', () => {
   /**
    * Neighbouring palette ids are assigned consecutive pool ids, so a run of
    * same-block symbols would put a run of similar marks next to each other in a
-   * chart. The build always draws from the fullest block it did not just use, so
-   * a block only repeats once every other block has run out. That means a run is
+   * chart. The build skips the block it just drew from, so a block can only be
+   * drawn again once every other block has run out. That means a run is
    * possible, but only as a tail: once two entries in a row share a block,
    * every remaining entry of the cycle shares it too.
    *
@@ -124,14 +124,10 @@ describe('block interleave', () => {
     for (let index = 1; index <= blocks.length; index += 1) {
       const repeated = index < blocks.length && blocks[index] === blocks[runStart];
       if (repeated) continue;
-      // The run just ended. Anything after it must be a different block, and a
-      // run longer than one is only allowed when it reaches the cycle's end.
-      const isTail = runStart + 1 >= blocks.length;
-      expect(
-        blocks[index] === undefined || blocks[index] !== blocks[runStart],
-        `blocks[${index}] repeats blocks[${runStart}]`
-      ).toBe(true);
+      // The run just ended. A run longer than one is only allowed when it is
+      // the pair of fonts drawing one glyph, or when it reaches the cycle's end.
       if (blocks[runStart + 1] === blocks[runStart]) {
+        const isTail = runStart + 1 >= blocks.length;
         const first = byId.get(SYMBOL_IDS[runStart]);
         const second = byId.get(SYMBOL_IDS[runStart + 1]);
         const areVariants = first?.codepoint === second?.codepoint && first?.font !== second?.font;

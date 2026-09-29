@@ -52,9 +52,23 @@ export function parseSelection(selection) {
   return selection.map(parseEntry);
 }
 
+/**
+ * Compare two strings by codepoint.
+ *
+ * Every comparison whose result reaches a committed artifact goes through this,
+ * because `localeCompare` is ICU collation rather than codepoint order: hyphen
+ * is a low-weight variable character, so `'a-b'` collates before `'ab'`, and the
+ * collation itself varies with the ICU the host was built against. Neither is an
+ * input to the build, so neither may reach its output.
+ */
+export const compareCodepointOrder = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
+/**
+ * Sort into the one canonical order the committed file is written in.
+ */
 export function sortEntries(entries) {
   return [...entries]
     .map(parseEntry)
-    .sort((a, b) => a.font.localeCompare(b.font) || a.codepoint - b.codepoint)
+    .sort((a, b) => compareCodepointOrder(a.font, b.font) || a.codepoint - b.codepoint)
     .map(({ font, codepoint }) => formatEntry(font, codepoint));
 }

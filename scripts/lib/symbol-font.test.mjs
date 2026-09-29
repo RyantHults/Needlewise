@@ -36,12 +36,21 @@ describe('vendored font', () => {
     expect(font.outlinesFormat).toBe('truetype');
   });
 
-  it('is the file the selection records', () => {
-    // The digest is what makes a committed outline traceable to a font build.
-    // If the vendored file is ever swapped without updating selection.json, the
-    // build fails rather than silently emitting outlines from a different font.
+  it('digests the bytes of the file it is given', () => {
+    // The digest is what makes a committed outline traceable to a font build,
+    // and swapping the vendored file without rebuilding would ship outlines
+    // drawn from a font the artifact does not name. So this pins that the
+    // digest follows the file's contents, not its path or its name.
     const digest = createHash('sha256').update(readFileSync(FONT_FILE)).digest('hex');
     expect(fontSha256(FONT_FILE)).toBe(digest);
+
+    const elsewhere = resolve(import.meta.dirname, '../../src/test/setup.ts');
+    expect(fontSha256(elsewhere)).toBe(sha256Of('src/test/setup.ts'));
+    expect(fontSha256(elsewhere)).not.toBe(digest);
+  });
+
+  it('needs the path of a font to digest', () => {
+    expect(() => fontSha256()).toThrow(/path of the font/);
   });
 });
 

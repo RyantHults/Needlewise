@@ -8,8 +8,9 @@
  * stale artifact cannot reach a build.
  *
  * Everything here is deterministic: no timestamps, no random seeds, codepoints
- * sorted, symbols emitted in block-interleaved order. The committed bytes are a
- * pure function of the vendored fonts and selection.json.
+ * and font slugs sorted in codepoint order, symbols emitted in block-interleaved
+ * order. Nothing reads the clock, the locale, or the environment, so the
+ * committed bytes are a pure function of the vendored fonts and selection.json.
  */
 
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -18,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 
 import { NORMALIZATION, assignIds, buildSymbol, listCandidates, loadFont } from './lib/symbol-font.mjs';
 import { FONTS_DIR, discoverFonts, toProvenance } from './lib/font-registry.mjs';
-import { candidateKey, parseSelection, sortEntries } from './lib/selection.mjs';
+import { candidateKey, compareCodepointOrder, parseSelection, sortEntries } from './lib/selection.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = resolve(HERE, '..');
@@ -27,12 +28,14 @@ export const OUTPUT_PATH = resolve(REPO_ROOT, 'src/symbols/outlines.generated.js
 export const CANDIDATES_PATH = resolve(REPO_ROOT, 'src/symbols/candidates.generated.json');
 
 /**
- * The artifact schema version, bumped when the emitted shape changes in a way
- * the runtime has to notice. Version 2 rows came from one font and carried a
- * codepoint; version 3 rows are qualified by the font that draws them, because
- * a pool spans several fonts and two fonts can hold the same codepoint.
+ * The schema version every committed symbol file carries.
+ *
+ * `selection.json`, `outlines.generated.json`, and `candidates.generated.json`
+ * are bumped together, and the build refuses to run when the authored file
+ * disagrees with this constant, so a pool can never be emitted under a schema
+ * the runtime does not expect.
  */
-const ARTIFACT_VERSION = 3;
+export const ARTIFACT_VERSION = 3;
 const STALE_MESSAGE = 'run: pnpm symbols:build';
 
 export const readSelection = (path = SELECTION_PATH) => JSON.parse(readFileSync(path, 'utf8'));
@@ -82,11 +85,22 @@ export function selectCandidates(candidates, selection) {
  * block before repeating one. A run is emitted whole, so two fonts' versions of
  * one glyph stay side by side where someone can compare them directly.
  *
- * Plain round-robin degenerates once the small blocks empty out and the large
- * ones emit back to back, so each step draws from the fullest block that was not
- * used last. That keeps a repeated block out of the sequence as long as any other
- * block still has a symbol left; once only one block remains there is nothing to
- * interleave against, so the tail is a single run.
+ * The no-repeat guarantee comes from the `previous` check, not from the fullness
+ * comparison. Each step skips the block it just drew from, so as long as any
+ * other block still holds a symbol there is always an eligible one to draw and a
+ * block can never come round twice; the fallback that takes the sole remaining
+ * block is the only place a run can begin, and by then there is nothing left to
+ * interleave against. The fullness comparison only picks *which* eligible block
+ * goes next, so the large blocks drain evenly instead of whichever comes first.
+ * Drop the `previous` check and the guarantee fails on any two-block selection
+ * with unequal sizes; drop the fullness comparison and it still holds.
+ *
+ * Both comparisons are codepoint order rather than locale collation, because
+ * the result is committed and collation is not a pure function of the inputs.
+ * Block queues are walked in Map insertion order, which for a tie between two
+ * equally full blocks is the order the sorted selection first mentions each
+ * one. That is a pure function of selection.json: adding a font can move a
+ * block within the pool, but the same selection always emits the same bytes.
  */
 export function interleaveByBlock(symbols) {
   const blocks = new Map();
@@ -96,7 +110,7 @@ export function interleaveByBlock(symbols) {
     blocks.set(symbol.block, list);
   }
   for (const [block, list] of blocks) {
-    list.sort((a, b) => a.codepoint - b.codepoint || a.font.localeCompare(b.font));
+    list.sort((a, b) => a.codepoint - b.codepoint || compareCodepointOrder(a.font, b.font));
     blocks.set(block, runsOfOneCodepoint(list));
   }
   const out = [];
@@ -128,8 +142,20 @@ function runsOfOneCodepoint(sorted) {
 
 const sizeOf = (runs) => runs.reduce((total, run) => total + run.length, 0);
 
+/**
+ * Parsed fonts, keyed by path.
+ *
+ * A codepoint selected from two fonts must not parse the file twice, and a
+ * check run has already parsed everything by the time it writes, so the cache
+ * also keeps `--check` and a write to a temp dir from re-reading the fonts.
+ */
+const fontCache = new Map();
+
 function loadFonts(registry) {
-  return new Map(registry.map((record) => [record.slug, loadFont(record.absPath)]));
+  return new Map(registry.map((record) => {
+    if (!fontCache.has(record.absPath)) fontCache.set(record.absPath, loadFont(record.absPath));
+    return [record.slug, fontCache.get(record.absPath)];
+  }));
 }
 
 function allCandidates(registry, fonts) {
@@ -195,7 +221,7 @@ export const serialize = (payload) => `${JSON.stringify(payload, null, 2)}\n`;
  * Check mode throws rather than returning a flag, so a stale artifact is
  * reported with the reason instead of a bare exit code.
  */
-function writeOrCheck(path, payload, label, check) {
+export function writeOrCheck(path, payload, label, check) {
   const body = serialize(payload);
   if (check) {
     let current;
@@ -210,9 +236,26 @@ function writeOrCheck(path, payload, label, check) {
   writeFileSync(path, body);
 }
 
-export function main(argv) {
+/**
+ * Build, or with `--check` verify, the two committed artifacts.
+ *
+ * `paths` redirects every file the run reads or writes, and `log` takes the
+ * line it reports, so a test can exercise check mode against a temp dir without
+ * touching what ships or printing the paths. Both default to the repository and
+ * to stdout, which is the only way the script is ever run for real.
+ */
+export function main(argv, paths = {}) {
+  const selectionPath = paths.selectionPath ?? SELECTION_PATH;
+  const outputDir = paths.outputDir ?? dirname(OUTPUT_PATH);
+  const log = paths.log ?? ((line) => process.stdout.write(line));
   const check = argv.includes('--check');
-  const selection = readSelection();
+  const selection = readSelection(selectionPath);
+  if (selection.version !== ARTIFACT_VERSION) {
+    throw new Error(
+      `selection.json is version ${selection.version} but this build emits version ${ARTIFACT_VERSION}. `
+      + 'The three symbol files move together, so bump all of them in one change.'
+    );
+  }
   const registry = discoverFonts(FONTS_DIR);
   if (registry.length === 0) throw new Error(`No fonts were found in ${FONTS_DIR}.`);
   const fonts = loadFonts(registry);
@@ -221,16 +264,16 @@ export function main(argv) {
   const outlines = buildOutlines(sortEntries(selection.selection), registry, candidates, fonts);
   const catalog = buildCandidates(registry, candidates);
 
-  writeOrCheck(OUTPUT_PATH, outlines, 'outlines.generated.json', check);
-  writeOrCheck(CANDIDATES_PATH, catalog, 'candidates.generated.json', check);
+  writeOrCheck(resolve(outputDir, 'outlines.generated.json'), outlines, 'outlines.generated.json', check);
+  writeOrCheck(resolve(outputDir, 'candidates.generated.json'), catalog, 'candidates.generated.json', check);
 
   const fontCount = Object.keys(outlines.fonts).length;
   const plural = fontCount === 1 ? '' : 's';
   const line = check
     ? `symbol outlines are up to date: ${outlines.generated} symbols from ${catalog.total} candidates`
-    : `wrote ${outlines.generated} symbol outlines to src/symbols/outlines.generated.json `
-      + `and ${catalog.total} candidates to src/symbols/candidates.generated.json`;
-  process.stdout.write(`${line} across ${fontCount} font${plural}\n`);
+    : `wrote ${outlines.generated} symbol outlines to ${resolve(outputDir, 'outlines.generated.json')} `
+      + `and ${catalog.total} candidates to ${resolve(outputDir, 'candidates.generated.json')}`;
+  log(`${line} across ${fontCount} font${plural}\n`);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

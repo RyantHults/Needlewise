@@ -1,11 +1,35 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
+import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
-  buildCandidates, buildOutlines, interleaveByBlock, selectCandidates
+  ARTIFACT_VERSION,
+  CANDIDATES_PATH,
+  OUTPUT_PATH,
+  SELECTION_PATH,
+  buildCandidates,
+  buildOutlines,
+  interleaveByBlock,
+  main,
+  readSelection,
+  selectCandidates
 } from './build-symbol-outlines.mjs';
 import { discoverFonts, FONTS_DIR } from './lib/font-registry.mjs';
 import { loadFont, listCandidates } from './lib/symbol-font.mjs';
 import { candidateKey } from './lib/selection.mjs';
+
+const tempDirs = [];
+/** Temp-dir runs report through `log`; a test does not want its stdout. */
+const SILENT = { log: () => {} };
+const tempDir = () => {
+  const dir = mkdtempSync(join(tmpdir(), 'symbols-build-'));
+  tempDirs.push(dir);
+  return dir;
+};
+afterAll(() => {
+  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
+});
 
 const registry = discoverFonts(FONTS_DIR);
 const fonts = new Map(registry.map((record) => [record.slug, loadFont(record.absPath)]));
@@ -80,6 +104,154 @@ describe('interleaveByBlock', () => {
       id: `x${i}`, name: `n${i}`, block: 'A', codepoint: i, font: 'x', d: ''
     }));
     expect(interleaveByBlock(only)).toHaveLength(4);
+  });
+
+  it('orders the fonts of one codepoint by codepoint, not by collation', () => {
+    // Which face of a glyph comes first lands in the committed artifact, and
+    // the host's ICU is not part of its inputs.
+    const variants = [
+      { id: 'b--heart', name: 'heart', block: 'A', codepoint: heart, font: 'b', d: '' },
+      { id: 'a-b--heart', name: 'heart', block: 'A', codepoint: heart, font: 'a-b', d: '' },
+      { id: 'ab--heart', name: 'heart', block: 'A', codepoint: heart, font: 'ab', d: '' }
+    ];
+    const real = String.prototype.localeCompare;
+    String.prototype.localeCompare = function reversed(other) {
+      return other < this ? -1 : other > this ? 1 : 0;
+    };
+    try {
+      expect(interleaveByBlock(variants).map((s) => s.id)).toEqual([
+        'a-b--heart', 'ab--heart', 'b--heart'
+      ]);
+    } finally {
+      String.prototype.localeCompare = real;
+    }
+  });
+
+  it('breaks a tie between equal-sized blocks by Map insertion order', () => {
+    // Two blocks of the same size have no fuller candidate, so the first one
+    // the walk reaches wins. Insertion order is the order the sorted selection
+    // first mentions each block, which is a pure function of selection.json:
+    // adding a font can move a block in the pool, but two runs of the same
+    // selection always agree.
+    const symbols = [
+      { id: 'z0', name: 'z0', block: 'Zebra', codepoint: 1, font: 'z', d: '' },
+      { id: 'a0', name: 'a0', block: 'Alpha', codepoint: 1, font: 'a', d: '' }
+    ];
+    expect(interleaveByBlock(symbols).map((s) => s.id)).toEqual(['z0', 'a0']);
+    expect(interleaveByBlock([...symbols].reverse()).map((s) => s.id)).toEqual(['a0', 'z0']);
+  });
+});
+
+describe('schema version lockstep', () => {
+  it('is the version selection.json records', () => {
+    expect(readSelection().version).toBe(ARTIFACT_VERSION);
+  });
+
+  it('refuses to build when selection.json is on another version', () => {
+    // The lockstep is only a guarantee if something compares the two numbers.
+    // Bumping the authored file alone would otherwise emit a pool the runtime
+    // reads under the wrong schema, with no failure anywhere.
+    const dir = tempDir();
+    const selectionPath = join(dir, 'selection.json');
+    writeFileSync(selectionPath, JSON.stringify({ version: ARTIFACT_VERSION + 1, selection: [] }));
+    expect(() => main([], { selectionPath, outputDir: dir, ...SILENT }))
+      .toThrow(new RegExp(`selection.json is version ${ARTIFACT_VERSION + 1}`));
+  });
+
+  it('names the version the build emits when they disagree', () => {
+    const dir = tempDir();
+    const selectionPath = join(dir, 'selection.json');
+    writeFileSync(selectionPath, JSON.stringify({ version: ARTIFACT_VERSION + 1, selection: [] }));
+    expect(() => main([], { selectionPath, outputDir: dir, ...SILENT }))
+      .toThrow(new RegExp(`emits version ${ARTIFACT_VERSION}`));
+  });
+
+  it('writes nothing when the versions disagree', () => {
+    const dir = tempDir();
+    const selectionPath = join(dir, 'selection.json');
+    writeFileSync(selectionPath, JSON.stringify({ version: ARTIFACT_VERSION + 1, selection: [] }));
+    expect(() => main([], { selectionPath, outputDir: dir, ...SILENT })).toThrow();
+    expect(existsSync(join(dir, 'outlines.generated.json'))).toBe(false);
+  });
+});
+
+describe('check mode', () => {
+  // Check mode is about the bytes on disk against the bytes the build produces,
+  // so a one-symbol selection exercises the same path in a fraction of the
+  // time. The only test that needs the whole selection asserts the committed
+  // artifacts are reproducible, and pays for it.
+  const ONE = () => [JSON.parse(readFileSync(SELECTION_PATH, 'utf8')).selection[0]];
+  const ALL = () => JSON.parse(readFileSync(SELECTION_PATH, 'utf8')).selection;
+
+  /** Build once into a temp dir; every case below copies or perturbs that. */
+  const build = (selection) => {
+    const dir = tempDir();
+    const selectionPath = join(dir, 'selection.json');
+    writeFileSync(selectionPath, JSON.stringify({ version: ARTIFACT_VERSION, selection }));
+    main([], { selectionPath, outputDir: dir, ...SILENT });
+    return { dir, selectionPath };
+  };
+  const perturb = (source, edits) => {
+    const dir = tempDir();
+    for (const name of readdirSync(source.dir)) cpSync(join(source.dir, name), join(dir, name));
+    edits(dir);
+    return { dir, selectionPath: join(dir, 'selection.json') };
+  };
+
+  it('reports a missing artifact', () => {
+    // `symbols:check` runs in CI, so a deleted artifact has to fail loudly
+    // rather than being recreated where nobody looks.
+    const dir = perturb(build(ONE()), (d) => rmSync(join(d, 'outlines.generated.json')));
+    expect(() => main(['--check'], { selectionPath: dir.selectionPath, outputDir: dir.dir, ...SILENT }))
+      .toThrow(/outlines.generated.json is missing/);
+  });
+
+  it('reports a stale artifact', () => {
+    const dir = perturb(build(ONE()), (d) => {
+      writeFileSync(join(d, 'outlines.generated.json'), '{ "version": 3, "symbols": {} }\n');
+    });
+    expect(() => main(['--check'], { selectionPath: dir.selectionPath, outputDir: dir.dir, ...SILENT }))
+      .toThrow(/outlines.generated.json is stale/);
+  });
+
+  it('reports a stale candidate catalog too', () => {
+    const dir = perturb(build(ONE()), (d) => {
+      writeFileSync(join(d, 'candidates.generated.json'), '{ "version": 3, "candidates": [] }\n');
+    });
+    expect(() => main(['--check'], { selectionPath: dir.selectionPath, outputDir: dir.dir, ...SILENT }))
+      .toThrow(/candidates.generated.json is stale/);
+  });
+
+  it('passes when the artifacts on disk are the ones the build produces', () => {
+    const dir = build(ONE());
+    expect(() => main(['--check'], { selectionPath: dir.selectionPath, outputDir: dir.dir, ...SILENT }))
+      .not.toThrow();
+  });
+
+  it('does not rewrite what it just accepted', () => {
+    const dir = build(ONE());
+    const snapshot = () => readdirSync(dir.dir).map((n) => [n, readFileSync(join(dir.dir, n), 'utf8')]);
+    const before = snapshot();
+    main(['--check'], { selectionPath: dir.selectionPath, outputDir: dir.dir, ...SILENT });
+    expect(snapshot()).toEqual(before);
+  });
+
+  it('reproduces the committed bytes from the committed selection', () => {
+    const dir = perturb(build(ALL()), () => {});
+    main([], { selectionPath: dir.selectionPath, outputDir: dir.dir, ...SILENT });
+    expect(readFileSync(join(dir.dir, 'outlines.generated.json'), 'utf8'))
+      .toBe(readFileSync(OUTPUT_PATH, 'utf8'));
+    expect(readFileSync(join(dir.dir, 'candidates.generated.json'), 'utf8'))
+      .toBe(readFileSync(CANDIDATES_PATH, 'utf8'));
+  }, 30_000);
+
+  it('leaves the committed artifacts alone', () => {
+    // The temp-dir options exist so no test can overwrite what ships.
+    const before = [OUTPUT_PATH, CANDIDATES_PATH].map((path) => readFileSync(path, 'utf8'));
+    const dir = build(ONE());
+    main([], { selectionPath: dir.selectionPath, outputDir: dir.dir, ...SILENT });
+    main(['--check'], { selectionPath: dir.selectionPath, outputDir: dir.dir, ...SILENT });
+    expect([OUTPUT_PATH, CANDIDATES_PATH].map((path) => readFileSync(path, 'utf8'))).toEqual(before);
   });
 });
 

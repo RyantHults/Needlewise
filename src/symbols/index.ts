@@ -4,11 +4,13 @@ import type { SymbolOutline } from '../rendering/symbol-painter';
 /**
  * The owned symbol pool.
  *
- * `selection.json` is the authored source of truth: it lists the vendored fonts
- * and the codepoint each pooled glyph is taken from. `outlines.generated.json` is
- * the committed build output of that selection, produced by
+ * `selection.json` is the authored source of truth: it lists one
+ * `font:U+XXXX` entry per pooled glyph. `outlines.generated.json` is the
+ * committed build output of that selection, produced by
  * `node scripts/build-symbol-outlines.mjs` and verified in CI with `--check`.
- * Nothing is chosen at runtime and no glyph is ever resolved from a system font.
+ * It records the provenance of every font the pool draws from, derived from the
+ * font files at build time. Nothing is chosen at runtime and no glyph is ever
+ * resolved from a system font.
  *
  * Several fonts can draw the same codepoint, so a symbol is identified by its
  * font-qualified id and its Unicode name is unique only within one font.
