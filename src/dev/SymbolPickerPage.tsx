@@ -14,12 +14,13 @@ import './symbol-picker.css';
  * Browsing is a wall of those marks grouped by codepoint, ascending. A codepoint
  * two compared fonts both draw is one group of two adjacent marks, so the
  * variants can be compared in place, and a codepoint only one font draws is a
- * group of one. Each group carries a collapsed expander, and everything the
- * decision needs that is not the shape itself lives behind it: the codepoint, the
- * name, the block, which font each mark is set in, and the samples at 8, 16 and
- * 24 pixels. The description is also one hover away on every mark, so a curator
- * scanning thousands of codepoints is not reading, and opening a group is the
- * deliberate act.
+ * group of one. Each group carries a collapsed expander holding the things the
+ * wall does not show: the codepoint, the name, the block, and, per font, the
+ * family name and the samples at 24, 16 and 8 pixels. The mark the samples are
+ * sizes of stays on the wall, so the detail never draws it a second time. The
+ * description is also one hover away on every mark, so a curator scanning
+ * thousands of codepoints is not reading, and opening a group is the deliberate
+ * act.
  *
  * Reviewing drops the groups and shows the ticked marks alone in one dense grid,
  * so the chosen set can be judged as a whole — whether the weights, the rhythm
@@ -453,6 +454,9 @@ export default function SymbolPickerPage() {
                       <span className="symbol-picker-tick-count">{ticks} of {row.poolSize} in pool</span>
                     )}
                   </h2>
+                  {/* The mark itself is on the wall directly above, so a variant
+                      is named by its font and sized against it, with the largest
+                      sample leading the row. */}
                   <div className="symbol-picker-detail-variants">
                     {row.variants.map((variant) => {
                       const face = `"${variant.font}", serif`;
@@ -461,17 +465,12 @@ export default function SymbolPickerPage() {
                           key={variant.id}
                           className={selected.has(toEntry(variant)) ? 'symbol-picker-detail-variant is-selected' : 'symbol-picker-detail-variant'}
                         >
-                          <span className="symbol-picker-specimen">
-                            <span className="symbol-picker-glyph" style={{ fontFamily: face }} aria-hidden="true">
-                              {String.fromCodePoint(variant.codepoint)}
-                            </span>
-                            <span className="symbol-picker-sizes" aria-hidden="true">
-                              <b style={{ fontFamily: face, fontSize: 8 }}>{String.fromCodePoint(variant.codepoint)}</b>
-                              <b style={{ fontFamily: face, fontSize: 16 }}>{String.fromCodePoint(variant.codepoint)}</b>
-                              <b style={{ fontFamily: face, fontSize: 24 }}>{String.fromCodePoint(variant.codepoint)}</b>
-                            </span>
-                          </span>
                           <span className="symbol-picker-font-name">{familyOf(variant.font)}</span>
+                          <span className="symbol-picker-sizes" aria-hidden="true">
+                            <b style={{ fontFamily: face, fontSize: 24 }}>{String.fromCodePoint(variant.codepoint)}</b>
+                            <b style={{ fontFamily: face, fontSize: 16 }}>{String.fromCodePoint(variant.codepoint)}</b>
+                            <b style={{ fontFamily: face, fontSize: 8 }}>{String.fromCodePoint(variant.codepoint)}</b>
+                          </span>
                         </div>
                       );
                     })}

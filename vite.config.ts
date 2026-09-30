@@ -3,6 +3,8 @@ import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import { resolve } from 'node:path';
 
+import symbolPickerPlugin from './scripts/symbol-picker-plugin.mjs';
+
 const pwaOptions = {
   registerType: 'prompt' as const,
   // Registration is owned by src/pwa.ts so the application can present an
@@ -72,10 +74,20 @@ export default defineConfig(({ mode }) => ({
   base: githubPagesBase(),
   plugins: [
     react(),
+    // Serves the vendored font and writes selection.json for /__symbols. The
+    // plugin declares `apply: 'serve'`, so it is absent from a production build.
+    symbolPickerPlugin(),
     ...(mode === 'test' ? [] : [VitePWA(pwaOptions)])
   ],
+  // Tests read a fixed symbol pool rather than the curated one, which the build
+  // regenerates whenever the selection changes.
   resolve: mode === 'test'
-    ? { alias: { 'virtual:pwa-register': resolve(process.cwd(), 'src/test/pwa-register-stub.ts') } }
+    ? {
+        alias: {
+          'virtual:pwa-register': resolve(process.cwd(), 'src/test/pwa-register-stub.ts'),
+          './pool-asset': resolve(process.cwd(), 'src/symbols/outlines.fixture.generated.json')
+        }
+      }
     : undefined,
   server: {
     // Deliberately allow only this development tunnel, not arbitrary Host headers.

@@ -183,9 +183,9 @@
   /* A mark's track, never wider than an equal share of the wall, so a group of
      many fonts cannot outgrow the row it is on. */
   --mark-track: min(3.25rem, calc((100% - 2 * var(--card-padding)) / max(1, var(--compared-fonts))));
-  /* A detail's column, which has to hold a glyph beside its samples and a font
-     name, so it is wider than a mark and shares the same share-of-the-wall bound. */
-  --detail-track: min(11rem, calc((100% - 2 * var(--card-padding)) / max(1, var(--compared-fonts))));
+  /* A detail's column, which holds a font name beside the samples it is named
+     for, so it is wider than a mark and shares the same share-of-the-wall bound. */
+  --detail-track: min(13rem, calc((100% - 2 * var(--card-padding)) / max(1, var(--compared-fonts))));
 
   max-height: calc(100vh - 17rem);
   overflow-y: auto;
@@ -216,8 +216,8 @@
   contain-intrinsic-size: auto 4rem;
 }
 
-/* An open group takes the width its details need, which is a specimen beside its
-   samples rather than a bare mark, and holds that width while it stays open. */
+/* An open group takes the width its details need, a font name beside the samples
+   it is named for, and holds that width while it stays open. */
 .symbol-picker-group.is-open {
   width: calc(var(--group-fonts) * var(--detail-track) + 2 * var(--card-padding));
   border-color: var(--picker-border);
@@ -386,13 +386,19 @@
   display: grid;
   grid-template-columns: repeat(var(--group-fonts), minmax(0, 1fr));
   gap: 0.4rem;
-}.symbol-picker-detail-variant {
-  display: grid;
-  justify-items: start;
-  align-content: start;
-  gap: 0.25rem;
+}
+
+/* A variant is its font and its samples, on one line: the mark the samples are
+   sizes of is on the wall directly above. The font leads, so the two fonts of a
+   shared codepoint are named in a column of their own, and the largest sample
+   leads the strip so the row has a left edge to line up on. */
+.symbol-picker-detail-variant {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.5rem;
   min-width: 0;
-  padding: 0.4rem;
+  padding: 0.3rem 0.4rem;
   border: 1px solid var(--picker-border);
   border-radius: 4px;
   background: #fff;
@@ -400,37 +406,6 @@
 
 .symbol-picker-detail-variant.is-selected {
   border-color: var(--picker-accent);
-}
-
-/* A specimen is the glyph beside its sizes, and the font under both, which keeps
-   it to two lines instead of three. The two rows stretch to the detail's width;
-   the specimen then gives the strip what the glyph does not need, and the name
-   the whole of it. */
-.symbol-picker-specimen {
-  display: flex;
-  flex-direction: row;
-  align-items: flex-end;
-  gap: 0.4rem;
-  min-width: 0;
-}
-
-/* The specimen is floored rather than squared off, so a tall glyph has room to
-   sit inside its box instead of being cut by it. The floor holds its place in
-   the specimen row, and the strip beside it is what gives way when a comparison
-   of many fonts makes a font's column narrow. */
-.symbol-picker-glyph {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  min-width: 2.75rem;
-  min-height: 2.75rem;
-  padding: 0.3rem 0.5rem;
-  border: 1px solid var(--picker-border);
-  border-radius: 3px;
-  background: #fff;
-  font-size: 1.75rem;
-  line-height: 1.3;
 }
 
 .symbol-picker-font-name {
@@ -451,7 +426,7 @@
 
 /* The strip is as tall as its largest sample needs, so nothing is shaved off the
    24px sample by the padding or the border, and as wide as the three samples ask
-   for beside the specimen. It is the part of the pair that may narrow. */
+   for. It is the part of a detail that may narrow. */
 .symbol-picker-sizes {
   display: flex;
   flex: 0 1 auto;
