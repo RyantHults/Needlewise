@@ -879,6 +879,18 @@ describe('typed-array pattern document', () => {
     expect(editor.document.palette[0].catalog?.rgb).toEqual([204, 34, 34]);
   });
 
+  it('creates a color against a non-empty pool and draws its default symbol', () => {
+    // The counterpart of the empty-pool guard in empty-symbol-pool.test.ts: with
+    // glyphs in the pool, adding a color is ordinary work and the symbol it
+    // lands on is one the pool can actually draw.
+    const pattern = createDocument({ width: 1, height: 1, catalog: TEST_CATALOG });
+    const result = applyCommand(pattern, { type: 'palette-create', name: 'Ruby', color: '#b44' });
+    const [entry] = result.document.palette;
+    expect(result.changed).toBe(true);
+    expect(isKnownSymbolId(entry.symbol)).toBe(true);
+    expect(getSymbolOutline(entry.symbol)).toBeDefined();
+  });
+
   it('assigns pool defaults in order and cycles deterministically past the pool end', () => {
     // The pool is curated to fewer symbols than the brand palette ceiling, so
     // the "pool must cover the catalog" size requirement is relaxed: ids past
@@ -1009,8 +1021,9 @@ describe('typed-array pattern document', () => {
     for (let id = SYMBOL_IDS.length + 1; id <= TEST_CATALOG.colorCount; id++) {
       expect(pattern.palette[id - 1].symbol).toBe(defaultPaletteSymbol(id));
     }
-    // An explicit id above the brand ceiling is rejected on palette-create.
-    expect(() => applyCommand(pattern, { type: 'palette-create', name: 'Over', color: '#ffffff', id: TEST_CATALOG.colorCount + 1, symbol: SYMBOL_IDS[99] })).toThrow(/brand's color count/);
+    // An explicit id above the brand ceiling is rejected on palette-create, and
+    // it is a symbol the pool owns, so the id is the only thing wrong with it.
+    expect(() => applyCommand(pattern, { type: 'palette-create', name: 'Over', color: '#ffffff', id: TEST_CATALOG.colorCount + 1, symbol: SYMBOL_IDS[0] })).toThrow(/brand's color count/);
   });
 
   it('enforces the shared maximum cell count during creation and validation', () => {

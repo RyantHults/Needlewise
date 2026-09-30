@@ -40,7 +40,7 @@ const ws = { metadata: { title: 'Sampler', notes: '', aidaCount: 14 }, updateAct
 const executeMock = () => (ws as { execute: ReturnType<typeof vi.fn> }).execute;
 const doc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
 const two = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321' } }, { id: 2, name: 'Sky', color: '#48c', active: true }], backstitches: { ids: new Uint32Array() } } as never;
-const paletteDetailsDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: 'libertinus-math--black-star', catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
+const paletteDetailsDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: SYMBOL_IDS[0], catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
 const customColorDocument = (palette: unknown[]) => ({ width: 16, height: 16, colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } }) as never;
 const makeCatalog = (catalogId: string, brandLabel: string, records: CatalogRecord[]): CatalogDefinition => {
   const byHex = new Map(records.map((record) => [record.hex.toUpperCase(), record]));
@@ -65,13 +65,29 @@ const customColorAction = (dialog: HTMLElement) => dialog.querySelector('.custom
 // Computed by value so pool reordering or enrichment never hardcodes glyphs or
 // indices.
 const expectedTiles = () => SYMBOL_POOL.length;
-/** A tile's accessible label, which the picker builds from the symbol's name. */
-const tileName = (slug: string): string => SYMBOL_POOL.find((s) => s.id === slug)?.name ?? slug;
 /** The names more than one font contributes a glyph of, each with its variants. */
 const sharedNameGroups = (): typeof SYMBOL_POOL[] => {
   const byName = new Map<string, typeof SYMBOL_POOL>();
   for (const entry of SYMBOL_POOL) byName.set(entry.name, [...(byName.get(entry.name) ?? []), entry]);
   return [...byName.values()].filter((group) => group.length > 1);
+};
+/**
+ * A tile's accessible label, which the picker builds from the symbol's name and
+ * credits with the family whenever more than one font draws that name.
+ */
+const tileName = (slug: string): string => {
+  const entry = SYMBOL_POOL.find((s) => s.id === slug);
+  if (!entry) return slug;
+  return sharedNameGroups().some((group) => group[0].name === entry.name)
+    ? `${entry.name} (${entry.family})`
+    : entry.name;
+};
+/** A pool symbol no other font draws a glyph of, so its label is the bare name. */
+const uniquelyNamed = (): (typeof SYMBOL_POOL)[number] => {
+  const shared = new Set(sharedNameGroups().map((group) => group[0].name));
+  const entry = SYMBOL_POOL.find((candidate) => !shared.has(candidate.name));
+  expect(entry, 'the pool needs a symbol no second font draws').toBeDefined();
+  return entry!;
 };
 const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const dispatchPointerClick = (target: Element, pointerId: number) => {
@@ -1727,7 +1743,7 @@ describe('EditorSurface', () => {
     const menu = screen.getByRole('menu', { name: 'Details for Ruby' });
     expect(menu).toHaveTextContent('Ruby');
     expect(menu).toHaveTextContent('321');
-    expect(menu).toHaveTextContent('Symbol libertinus-math--black-star');
+    expect(menu).toHaveTextContent(`Symbol ${SYMBOL_IDS[0]}`);
     expect(within(menu).getByRole('menuitem', { name: 'Delete color' })).toBeInTheDocument();
   });
   it('opens the color details menu after a 500ms press without selecting the color', () => {
@@ -1852,7 +1868,7 @@ describe('EditorSurface', () => {
     // Nothing below means anything if the pool has stopped sharing a name, and
     // an empty set of groups would pass in silence.
     expect(groups.length).toBeGreaterThan(0);
-    const held = SYMBOL_POOL[0];
+    const held = uniquelyNamed();
     const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: held.id }], backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
@@ -1909,7 +1925,7 @@ describe('EditorSurface', () => {
     expect(definition?.getAttribute('fill')).toBe('currentColor');
     expect(definition?.getAttribute('stroke')).toBeNull();
     expect(definition?.getAttribute('stroke-width')).toBeNull();
-    const tile = within(dialog).getByRole('button', { name: `Assign ${entry.name} to Ruby` });
+    const tile = within(dialog).getByRole('button', { name: `Assign ${tileName(assigned)} to Ruby` });
     expect(tile.querySelector('use')?.getAttribute('href')).toBe(`#symbol-${assigned}`);
     expect(tile.querySelector('path')).toBeNull();
   });
@@ -1992,10 +2008,15 @@ describe('EditorSurface', () => {
     expect(screen.getByText(/No symbols match "zzz"/)).toBeInTheDocument();
   });
   it('finds a held glyph like "heart" by search instead of hiding the whole pool behind the open color', async () => {
+    // The glyphs are the pool's own hearts, so the test says what it means
+    // whatever the curated pool holds.
+    const hearts = SYMBOL_POOL.filter((entry) => entry.name.includes('heart'));
+    expect(hearts.length).toBeGreaterThanOrEqual(2);
+    const [sky, sea] = hearts;
     const palette = [
       { id: 1, name: 'Ruby', color: '#b44', active: true, symbol: SYMBOL_IDS[0] },
-      { id: 2, name: 'Sky', color: '#48c', active: true, symbol: 'libertinus-math--black-heart-suit' },
-      { id: 3, name: 'Sea', color: '#38a', active: true, symbol: 'libertinus-math--white-heart-suit' }
+      { id: 2, name: 'Sky', color: '#48c', active: true, symbol: sky.id },
+      { id: 3, name: 'Sea', color: '#38a', active: true, symbol: sea.id }
     ];
     const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
@@ -2006,8 +2027,8 @@ describe('EditorSurface', () => {
     // labelled for a swap, and the non-matching wall must not leak in. The
     // label is the Unicode character name, so it reads "black heart suit"
     // rather than a hand-written family description.
-    expect(screen.getByRole('button', { name: /^Swap black heart suit with Sky;/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^Swap white heart suit with Sea;/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: new RegExp(`^Swap ${escapeRegExp(tileName(sky.id))} with Sky;`) })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: new RegExp(`^Swap ${escapeRegExp(tileName(sea.id))} with Sea;`) })).toBeInTheDocument();
     // Every heart-named symbol is on screen and nothing else is, so the count
     // tracks the pool rather than a number that curation drifts away from.
     const heartPool = SYMBOL_IDS.filter((id) => id.includes('heart')).length;

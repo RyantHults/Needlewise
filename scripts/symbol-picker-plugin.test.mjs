@@ -191,9 +191,20 @@ describe('the picker plugin', () => {
     expect(JSON.parse(response.body).error).toMatch(/U\+10FFFD/);
   });
 
-  it('rejects a save with no selection', async () => {
-    const response = await serve('POST', SAVE_ROUTE, JSON.stringify({ selection: [] }), { selectionPath: scratchSelection() });
-    expect(response.statusCode).toBe(400);
+  it('saves an empty selection, because curation starts from an empty pool', async () => {
+    // A pool is curated by choosing glyphs, so clearing every one of them has to
+    // be expressible. Refusing it would leave the picker unable to return to the
+    // state it was opened in.
+    const selectionPath = scratchSelection();
+    const response = await serve('POST', SAVE_ROUTE, JSON.stringify({ selection: [] }), { selectionPath });
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toEqual({
+      saved: 0,
+      perFont: {},
+      file: AUTHORED_SELECTION,
+      next: 'pnpm symbols:build'
+    });
+    expect(readFileSync(selectionPath, 'utf8')).toBe(`${JSON.stringify({ version: ARTIFACT_VERSION, selection: [] }, null, 2)}\n`);
   });
 
   it('rejects a save that is not a list of entries', async () => {

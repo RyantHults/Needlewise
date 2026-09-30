@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import {
   ARTIFACT_VERSION,
@@ -16,7 +16,7 @@ import {
   selectCandidates
 } from './build-symbol-outlines.mjs';
 import { discoverFonts, FONTS_DIR } from './lib/font-registry.mjs';
-import { loadFont, listCandidates } from './lib/symbol-font.mjs';
+import { NORMALIZATION, loadFont, listCandidates } from './lib/symbol-font.mjs';
 import { candidateKey } from './lib/selection.mjs';
 
 const tempDirs = [];
@@ -36,11 +36,30 @@ const fonts = new Map(registry.map((record) => [record.slug, loadFont(record.abs
 const candidates = registry.flatMap((record) => listCandidates(fonts.get(record.slug), record.slug));
 const catalog = new Map(candidates.map((c) => [candidateKey(c.font, c.codepoint), c]));
 
+/**
+ * The pool every runtime test reads, and the selection it is built from.
+ *
+ * The curated pool is the user's to change, so nothing in the test suite is
+ * written against it. These two files are what the alias in vite.config.ts
+ * swaps the runtime artifact for, which is why the fixture artifact has to stay
+ * reproducible from the fixture selection like the committed one does.
+ */
+const FIXTURE_SELECTION_PATH = resolve(import.meta.dirname, '../src/symbols/selection.fixture.json');
+const FIXTURE_OUTLINE_PATH = resolve(import.meta.dirname, '../src/symbols/outlines.fixture.generated.json');
+const fixtureSelection = () => JSON.parse(readFileSync(FIXTURE_SELECTION_PATH, 'utf8')).selection;
+
 const libertinus = registry[0].slug;
 const key = (cp) => `${libertinus}:U+${cp.toString(16).toUpperCase()}`;
 const heart = 0x2665;
 
 describe('selectCandidates', () => {
+  it('resolves an empty selection to an empty pool', () => {
+    // A selection is authored by hand and may name no glyphs, which is a pool
+    // with nothing in it rather than a selection that went wrong. The check that
+    // an entry resolves is about the entries there are.
+    expect(selectCandidates(candidates, [])).toEqual([]);
+  });
+
   it('resolves an entry against the font it names', () => {
     const [chosen] = selectCandidates(candidates, [key(heart)]);
     expect(chosen.codepoint).toBe(heart);
@@ -178,9 +197,10 @@ describe('schema version lockstep', () => {
 describe('check mode', () => {
   // Check mode is about the bytes on disk against the bytes the build produces,
   // so a one-symbol selection exercises the same path in a fraction of the
-  // time. The only test that needs the whole selection asserts the committed
-  // artifacts are reproducible, and pays for it.
-  const ONE = () => [JSON.parse(readFileSync(SELECTION_PATH, 'utf8')).selection[0]];
+  // time. The one symbol comes from the test fixture pool rather than the
+  // curated one, so the cost and the shape of this suite do not depend on what
+  // the pool currently holds.
+  const ONE = () => [fixtureSelection()[0]];
   const ALL = () => JSON.parse(readFileSync(SELECTION_PATH, 'utf8')).selection;
 
   /** Build once into a temp dir; every case below copies or perturbs that. */
@@ -255,7 +275,55 @@ describe('check mode', () => {
   });
 });
 
+describe('the test fixture pool', () => {
+  // The whole runtime suite is written against this pool, so the two properties
+  // it needs are asserted here: it is drawn from every vendored font, so a test
+  // can still see a symbol a second font contributed, and more than one font
+  // contributes one name, so a test can still see a shared one. An artifact
+  // that lost either would leave those tests quietly asserting nothing.
+  it('draws from every vendored font', () => {
+    const fonts = new Set(fixtureSelection().map((entry) => entry.slice(0, entry.indexOf(':'))));
+    expect([...fonts].sort()).toEqual(registry.map((record) => record.slug).sort());
+  });
+
+  it('shares a Unicode name between two fonts', () => {
+    const byName = new Map();
+    for (const entry of Object.values(JSON.parse(readFileSync(FIXTURE_OUTLINE_PATH, 'utf8')).symbols)) {
+      byName.set(entry.name, [...(byName.get(entry.name) ?? []), entry.font]);
+    }
+    expect([...byName.values()].filter((variants) => new Set(variants).size > 1).length)
+      .toBeGreaterThan(0);
+  });
+
+  it('holds enough symbols for a test to reach past the first few', () => {
+    expect(fixtureSelection().length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('reproduces the committed bytes from the committed selection', () => {
+    // Editing the fixture selection without rebuilding the fixture artifact
+    // would leave every runtime test reading geometry that no longer matches the
+    // selection it is named after.
+    const dir = tempDir();
+    main([], { selectionPath: FIXTURE_SELECTION_PATH, outputDir: dir, ...SILENT });
+    expect(readFileSync(join(dir, 'outlines.generated.json'), 'utf8'))
+      .toBe(readFileSync(FIXTURE_OUTLINE_PATH, 'utf8'));
+  }, 30_000);
+});
+
 describe('buildOutlines', () => {
+  it('emits an empty pool for an empty selection', () => {
+    // The pool is whatever the selection holds, so the artifact of a selection
+    // that names nothing is an artifact with nothing in it: no symbols, and no
+    // font provenance either, since no glyph came from one.
+    expect(buildOutlines([], registry, candidates, fonts)).toEqual({
+      version: ARTIFACT_VERSION,
+      fonts: {},
+      tileView: NORMALIZATION.tileView,
+      generated: 0,
+      symbols: {}
+    });
+  });
+
   it('records a font field on every symbol', () => {
     const payload = buildOutlines([key(heart)], registry, candidates, fonts);
     const [entry] = Object.values(payload.symbols);

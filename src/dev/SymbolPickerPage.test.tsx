@@ -18,7 +18,9 @@ import selectionAsset from '../symbols/selection.json';
 const candidates = candidatesAsset.candidates;
 const fontFamilies = candidatesAsset.fonts;
 const fontSlugs = Object.keys(fontFamilies);
-const selection = selectionAsset.selection;
+// Annotated, because a selection that names no glyphs is a legal authored file
+// and TypeScript reads its entries as `never`.
+const selection: readonly string[] = selectionAsset.selection;
 
 /** The codepoint both fonts hold and the pool names, which the page groups side by side. */
 const SHARED = 0x2666;

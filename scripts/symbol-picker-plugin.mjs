@@ -197,10 +197,6 @@ export default function symbolPickerPlugin({
               });
               return;
             }
-            if (body.selection.length === 0) {
-              sendJson(response, 400, { error: 'A symbol pool needs at least one symbol.' });
-              return;
-            }
             const saved = saveSelection(body.selection, fontsDir, selectionPath);
             const perFont = {};
             for (const entry of saved.selection) {

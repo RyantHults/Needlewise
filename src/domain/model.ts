@@ -65,6 +65,15 @@ export function clonePaletteEntry(entry: PaletteEntry): PaletteEntry {
 
 export function defaultPaletteSymbol(id: number): string {
   if (!Number.isSafeInteger(id) || id < 1) throw new DomainError('invalid-palette-id', `Palette ID ${String(id)} is invalid.`);
+  // The pool is whatever the selection holds, and an empty selection is a state
+  // the picker can save, so there is nothing here to index into. Naming the tool
+  // that fills the pool is the whole answer: the id is fine, the pool is not.
+  if (SYMBOL_IDS.length === 0) {
+    throw new DomainError(
+      'empty-symbol-pool',
+      'The symbol pool is empty, so a color has no symbol to draw. Choose symbols in the picker at /__symbols, then run: pnpm symbols:build'
+    );
+  }
   // Palette IDs start at 1. The curated pool does not cover the (larger) brand
   // palette ceiling, so ids past the end of the pool cycle deterministically
   // and the default repeats; see isAutoOverflowEntry for how the duplicate

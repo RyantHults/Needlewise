@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { DMC_CATALOG } from '../catalog';
+import committedOutlines from '../symbols/outlines.generated.json';
 import { getSymbolOutline, SYMBOL_COUNT, SYMBOL_IDS, SYMBOL_POOL, type PoolEntry } from '../symbols';
 import { defaultPaletteSymbol, isKnownSymbolId } from './index';
 
@@ -8,15 +9,27 @@ import { defaultPaletteSymbol, isKnownSymbolId } from './index';
  * The pool is the selection in src/symbols/selection.json, deliberately
  * smaller than the 489-color catalog: the "one symbol per color" coverage
  * requirement is relaxed, and palette ids past the pool end cycle
- * deterministically. These tests pin that relationship instead: every pool id
- * is drawable, defaults cycle, explicit duplicates stay rejected, and the block
- * interleave that keeps neighbouring palette ids visually distinct survives
- * future edits.
+ * deterministically.
+ *
+ * Every property below is a property of a pool of glyphs, so these run against
+ * the fixture pool the rest of the suite reads, not against the committed
+ * selection: an empty or freshly curated pool would make them assert nothing.
+ * Skipping them on an empty pool would hide the ordering and cycling rules
+ * behind whatever happened to be selected, so instead the committed pool is
+ * held to the one claim that survives it, that it does not have to cover the
+ * catalog.
  */
 describe('symbol pool coverage', () => {
   it('is smaller than the catalog: no symbol is kept just for coverage', () => {
     expect(DMC_CATALOG.length).toBe(489);
     expect(SYMBOL_COUNT).toBeLessThan(DMC_CATALOG.length);
+  });
+
+  it('leaves the committed pool smaller than the catalog too', () => {
+    // The rule is about the curated selection, so it is stated against the
+    // curated selection rather than the fixture. A pool with no glyphs in it
+    // satisfies it; a pool grown past the catalog would not.
+    expect(Object.keys(committedOutlines.symbols).length).toBeLessThan(DMC_CATALOG.length);
   });
 
   it('resolves every pool id to a drawable outline', () => {

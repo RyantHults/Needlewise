@@ -1,16 +1,18 @@
-import outlinesAsset from './outlines.generated.json';
+import outlinesAsset from './pool-asset';
 import type { SymbolOutline } from '../rendering/symbol-painter';
 
 /**
  * The owned symbol pool.
  *
  * `selection.json` is the authored source of truth: it lists one
- * `font:U+XXXX` entry per pooled glyph. `outlines.generated.json` is the
- * committed build output of that selection, produced by
+ * `font:U+XXXX` entry per pooled glyph, and the pool holds whichever of them
+ * the picker has ticked. `outlines.generated.json` is the committed build
+ * output of that selection, produced by
  * `node scripts/build-symbol-outlines.mjs` and verified in CI with `--check`.
  * It records the provenance of every font the pool draws from, derived from the
  * font files at build time. Nothing is chosen at runtime and no glyph is ever
- * resolved from a system font.
+ * resolved from a system font. A selection can be empty, and then so is the
+ * pool; the generated artifact is read through `./pool-asset`.
  *
  * Several fonts can draw the same codepoint, so a symbol is identified by its
  * font-qualified id and its Unicode name is unique only within one font.

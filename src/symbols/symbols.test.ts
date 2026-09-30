@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import committedSelection from './selection.json';
+import committedOutlines from './outlines.generated.json';
 import {
   SYMBOL_COUNT,
   SYMBOL_FONTS,
@@ -9,10 +11,26 @@ import {
   SYMBOL_POOL_VERSION,
   SYMBOL_TILE_VIEW,
   getSymbolOutline,
-  toSymbolOutline
+  toSymbolOutline,
+  type PoolEntry,
+  type PoolFont
 } from './index';
 
+/**
+ * What the loader does with the artifact it is handed.
+ *
+ * Test mode swaps `./pool-asset` for the committed fixture pool, so the pool
+ * these cases read is fixed and the first case below pins that it is not empty:
+ * every remaining case loops over it, and a loop over nothing would pass in
+ * silence. The committed pool is a separate, deliberately weaker question, and
+ * the second describe is about it.
+ */
 describe('symbol pool loader', () => {
+  it('reads a non-empty pool, so the invariants below are not vacuous', () => {
+    expect(SYMBOL_COUNT).toBeGreaterThan(0);
+    expect(Object.keys(SYMBOL_FONTS).length).toBeGreaterThan(0);
+  });
+
   it('exposes a versioned pool', () => {
     expect(SYMBOL_POOL_VERSION).toBe(3);
     expect(SYMBOL_COUNT).toBe(SYMBOL_IDS.length);
@@ -130,5 +148,43 @@ describe('symbol pool loader', () => {
       expect(entry.id, entry.name).toMatch(/^[a-z0-9][a-z0-9-]*$/);
     }
     expect(SYMBOL_POOL.some((entry) => entry.id === 'space')).toBe(false);
+  });
+});
+
+/**
+ * What the committed pool is.
+ *
+ * The selection is authored by hand and may hold no glyphs at all, so nothing
+ * here says anything about which symbols are pooled. What it can say is that the
+ * shipped artifact is the build of the authored selection, under the schema the
+ * runtime reads, with every id naming a font it carries provenance for. The
+ * count is the assertion that keeps the rest from holding over nothing: it fails
+ * the moment a selection is curated without rebuilding.
+ */
+describe('committed symbol pool', () => {
+  const committed = committedOutlines as unknown as {
+    readonly version: number;
+    readonly fonts: Readonly<Record<string, PoolFont>>;
+    readonly generated: number;
+    readonly symbols: Readonly<Record<string, Omit<PoolEntry, 'id' | 'family'>>>;
+  };
+  const ids = Object.keys(committed.symbols);
+
+  it('carries the schema version the runtime expects', () => {
+    expect(committed.version).toBe(3);
+    expect(committedSelection.version).toBe(3);
+  });
+
+  it('holds exactly one symbol per entry of the authored selection', () => {
+    expect(committed.generated).toBe(ids.length);
+    expect(ids).toHaveLength(committedSelection.selection.length);
+  });
+
+  it('qualifies every id with a font it records provenance for', () => {
+    for (const id of ids) {
+      const entry = committed.symbols[id];
+      expect(id.startsWith(`${entry.font}--`), id).toBe(true);
+      expect(committed.fonts[entry.font], id).toBeDefined();
+    }
   });
 });
