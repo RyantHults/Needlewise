@@ -16,5 +16,18 @@ export default tseslint.config(
         ...globals.node
       }
     }
+  },
+  {
+    // The build-time symbol scripts are plain Node ESM so the build can import
+    // them without compiling TypeScript. They are not browser code and never
+    // ship, so they get the Node globals and not the browser ones.
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      globals: {
+        ...globals.node
+      }
+    }
   }
 );

@@ -301,5 +301,75 @@
     "noto-sans-symbols-2:U+1FBBD",
     "noto-sans-symbols-2:U+1FBBF",
     "noto-sans-symbols-2:U+1FBCA"
-  ]
+  ],
+  "adjustments": {
+    "libertinus-math:U+0192": {
+      "embolden": 0.03
+    },
+    "libertinus-math:U+25CF": {
+      "scale": 0.75
+    },
+    "noto-sans-symbols-2:U+25C6": {
+      "scale": 0.75
+    },
+    "noto-sans-symbols-2:U+2665": {
+      "scale": 0.75
+    },
+    "noto-sans-symbols-2:U+26CF": {
+      "embolden": 0.005,
+      "scale": 1.25
+    },
+    "noto-sans-symbols-2:U+26D4": {
+      "scale": 0.75
+    },
+    "noto-sans-symbols-2:U+2726": {
+      "scale": 0.75
+    },
+    "noto-sans-symbols-2:U+2B1F": {
+      "scale": 0.75
+    },
+    "noto-sans-symbols-2:U+2B22": {
+      "scale": 0.75
+    },
+    "noto-sans-symbols-2:U+2BD3": {
+      "embolden": 0.01
+    },
+    "noto-sans-symbols-2:U+2BD4": {
+      "embolden": 0.01
+    },
+    "noto-sans-symbols-2:U+2BD5": {
+      "embolden": 0.01
+    },
+    "noto-sans-symbols-2:U+2BD6": {
+      "embolden": 0.01
+    },
+    "noto-sans-symbols-2:U+2BDB": {
+      "embolden": 0.01
+    },
+    "noto-sans-symbols-2:U+2BDF": {
+      "embolden": 0.01
+    },
+    "noto-sans-symbols-2:U+2BE0": {
+      "embolden": 0.01
+    },
+    "noto-sans-symbols-2:U+2BE3": {
+      "embolden": 0.01
+    },
+    "noto-sans-symbols-2:U+2BE5": {
+      "embolden": 0.01
+    },
+    "noto-sans-symbols-2:U+2BE7": {
+      "embolden": 0.01
+    },
+    "noto-sans-symbols-2:U+1F5E1": {
+      "embolden": 0.005,
+      "scale": 1.25
+    },
+    "noto-sans-symbols-2:U+1F7D6": {
+      "scale": 0.75
+    },
+    "noto-sans-symbols-2:U+1F7D8": {
+      "scale": 0.75
+    }
+  }
 }

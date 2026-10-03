@@ -78,7 +78,8 @@ export function defaultPaletteSymbol(id: number): string {
   // palette ceiling, so ids past the end of the pool cycle deterministically
   // and the default repeats; see isAutoOverflowEntry for how the duplicate
   // guards treat those cycled defaults. Ids inside the pool still map one-to-one
-  // in pool order.
+  // in pool order, which is distinctness order: each symbol is the least like
+  // those before it.
   return SYMBOL_IDS[(id - 1) % SYMBOL_IDS.length];
 }
 

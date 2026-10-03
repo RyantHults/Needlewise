@@ -201,6 +201,7 @@ describe('the picker plugin', () => {
     expect(JSON.parse(response.body)).toEqual({
       saved: 0,
       perFont: {},
+      adjusted: 0,
       file: AUTHORED_SELECTION,
       next: 'pnpm symbols:build'
     });
@@ -233,6 +234,7 @@ describe('the picker plugin', () => {
     expect(JSON.parse(response.body)).toEqual({
       saved: 3,
       perFont: { 'libertinus-math': 2, 'noto-sans-symbols-2': 1 },
+      adjusted: 0,
       file: AUTHORED_SELECTION,
       next: 'pnpm symbols:build'
     });

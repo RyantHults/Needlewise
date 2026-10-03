@@ -4,11 +4,13 @@
  *
  * The authored file names codepoints and the font each one comes from; this
  * script resolves every entry against that font, extracts its outline, and
- * writes two committed artifacts. `--check` fails instead of writing, so a
+ * writes two committed artifacts. The selection may also carry per-glyph
+ * adjustments (embolden, scale, offset), which are applied to the outline after
+ * its extent is normalized. `--check` fails instead of writing, so a
  * stale artifact cannot reach a build.
  *
  * Everything here is deterministic: no timestamps, no random seeds, codepoints
- * and font slugs sorted in codepoint order, symbols emitted in block-interleaved
+ * and font slugs sorted in codepoint order, symbols emitted in distinctness
  * order. Nothing reads the clock, the locale, or the environment, so the
  * committed bytes are a pure function of the vendored fonts and selection.json.
  */
@@ -19,7 +21,9 @@ import { fileURLToPath } from 'node:url';
 
 import { NORMALIZATION, assignIds, buildSymbol, listCandidates, loadFont } from './lib/symbol-font.mjs';
 import { FONTS_DIR, discoverFonts, toProvenance } from './lib/font-registry.mjs';
-import { candidateKey, compareCodepointOrder, parseSelection, sortEntries } from './lib/selection.mjs';
+import { candidateKey, parseSelection, sortEntries } from './lib/selection.mjs';
+import { parseAdjustments } from './lib/symbol-adjust.mjs';
+import { orderByDistinctness } from './lib/symbol-distinctness.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = resolve(HERE, '..');
@@ -78,71 +82,6 @@ export function selectCandidates(candidates, selection) {
 }
 
 /**
- * Order the pool so related glyphs sit together and neighbouring cells differ.
- *
- * Symbols are grouped by Unicode block, then into runs of one codepoint, and the
- * blocks are interleaved so a palette built by cycling the pool samples every
- * block before repeating one. A run is emitted whole, so two fonts' versions of
- * one glyph stay side by side where someone can compare them directly.
- *
- * The no-repeat guarantee comes from the `previous` check, not from the fullness
- * comparison. Each step skips the block it just drew from, so as long as any
- * other block still holds a symbol there is always an eligible one to draw and a
- * block can never come round twice; the fallback that takes the sole remaining
- * block is the only place a run can begin, and by then there is nothing left to
- * interleave against. The fullness comparison only picks *which* eligible block
- * goes next, so the large blocks drain evenly instead of whichever comes first.
- * Drop the `previous` check and the guarantee fails on any two-block selection
- * with unequal sizes; drop the fullness comparison and it still holds.
- *
- * Both comparisons are codepoint order rather than locale collation, because
- * the result is committed and collation is not a pure function of the inputs.
- * Block queues are walked in Map insertion order, which for a tie between two
- * equally full blocks is the order the sorted selection first mentions each
- * one. That is a pure function of selection.json: adding a font can move a
- * block within the pool, but the same selection always emits the same bytes.
- */
-export function interleaveByBlock(symbols) {
-  const blocks = new Map();
-  for (const symbol of symbols) {
-    const list = blocks.get(symbol.block) ?? [];
-    list.push(symbol);
-    blocks.set(symbol.block, list);
-  }
-  for (const [block, list] of blocks) {
-    list.sort((a, b) => a.codepoint - b.codepoint || compareCodepointOrder(a.font, b.font));
-    blocks.set(block, runsOfOneCodepoint(list));
-  }
-  const out = [];
-  let previous = null;
-  while (blocks.size > 0) {
-    let best = null;
-    for (const [block, runs] of blocks) {
-      if (block === previous) continue;
-      if (best === null || sizeOf(runs) > sizeOf(blocks.get(best))) best = block;
-    }
-    if (best === null) best = blocks.keys().next().value;
-    out.push(...blocks.get(best).shift());
-    if (blocks.get(best).length === 0) blocks.delete(best);
-    previous = best;
-  }
-  return out;
-}
-
-/** Group a block's symbols so the variants of one codepoint cannot be split. */
-function runsOfOneCodepoint(sorted) {
-  const runs = [];
-  for (const symbol of sorted) {
-    const current = runs.at(-1);
-    if (current && current[0].codepoint === symbol.codepoint) current.push(symbol);
-    else runs.push([symbol]);
-  }
-  return runs;
-}
-
-const sizeOf = (runs) => runs.reduce((total, run) => total + run.length, 0);
-
-/**
  * Parsed fonts, keyed by path.
  *
  * A codepoint selected from two fonts must not parse the file twice, and a
@@ -162,17 +101,32 @@ function allCandidates(registry, fonts) {
   return assignIds(registry.flatMap((record) => listCandidates(fonts.get(record.slug), record.slug)));
 }
 
-/** Build the outline payload from the selection and the vendored fonts. */
-export function buildOutlines(selection, registry, candidates, fonts) {
+/**
+ * Build the outline payload from the selection and the vendored fonts.
+ *
+ * `adjustments` maps a canonical entry to its parsed adjustment; an entry
+ * without one is drawn as the font draws it. An adjustment that cannot be
+ * applied fails with the entry it belongs to.
+ */
+export function buildOutlines(selection, registry, candidates, fonts, adjustments = new Map()) {
   const chosen = selectCandidates(candidates, selection);
   const usedFonts = new Set(chosen.map((candidate) => candidate.font));
 
   const entries = chosen.map((candidate) => {
-    const { entry } = buildSymbol(fonts.get(candidate.font), candidate, NORMALIZATION);
+    const adjustment = adjustments.get(candidateKey(candidate.font, candidate.codepoint));
+    let entry;
+    try {
+      ({ entry } = buildSymbol(fonts.get(candidate.font), candidate, NORMALIZATION, adjustment));
+    } catch (error) {
+      if (!adjustment) throw error;
+      throw new Error(`The adjustment for ${candidateKey(candidate.font, candidate.codepoint)} failed: ${error.message}`, { cause: error });
+    }
     return { id: candidate.id, ...entry, font: candidate.font };
   });
 
-  const ordered = interleaveByBlock(entries);
+  // Palette id N is auto-assigned the Nth pooled symbol, so each next symbol is
+  // the one least like everything before it.
+  const ordered = orderByDistinctness(entries, { tileView: NORMALIZATION.tileView });
   const symbols = {};
   for (const { id, name, block, codepoint, font, d } of ordered) {
     symbols[id] = { name, block, codepoint, font, d };
@@ -261,7 +215,9 @@ export function main(argv, paths = {}) {
   const fonts = loadFonts(registry);
   const candidates = allCandidates(registry, fonts);
 
-  const outlines = buildOutlines(sortEntries(selection.selection), registry, candidates, fonts);
+  const sorted = sortEntries(selection.selection);
+  const adjustments = parseAdjustments(selection.adjustments, sorted);
+  const outlines = buildOutlines(sorted, registry, candidates, fonts, adjustments);
   const catalog = buildCandidates(registry, candidates);
 
   writeOrCheck(resolve(outputDir, 'outlines.generated.json'), outlines, 'outlines.generated.json', check);

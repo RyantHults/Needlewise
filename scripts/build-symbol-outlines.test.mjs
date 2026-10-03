@@ -10,7 +10,6 @@ import {
   SELECTION_PATH,
   buildCandidates,
   buildOutlines,
-  interleaveByBlock,
   main,
   readSelection,
   selectCandidates
@@ -18,6 +17,8 @@ import {
 import { discoverFonts, FONTS_DIR } from './lib/font-registry.mjs';
 import { NORMALIZATION, loadFont, listCandidates } from './lib/symbol-font.mjs';
 import { candidateKey } from './lib/selection.mjs';
+import { parseAdjustments } from './lib/symbol-adjust.mjs';
+import { orderByDistinctness } from './lib/symbol-distinctness.mjs';
 
 const tempDirs = [];
 /** Temp-dir runs report through `log`; a test does not want its stdout. */
@@ -99,68 +100,6 @@ describe('selectCandidates', () => {
   });
 });
 
-describe('interleaveByBlock', () => {
-  it('places the variants of one codepoint next to each other', () => {
-    const variants = [
-      { id: 'a--heart', name: 'heart', block: 'Miscellaneous Symbols', codepoint: heart, font: 'a', d: '' },
-      { id: 'b--heart', name: 'heart', block: 'Miscellaneous Symbols', codepoint: heart, font: 'b', d: '' },
-      { id: 'a--star', name: 'star', block: 'Miscellaneous Symbols', codepoint: 0x2605, font: 'a', d: '' }
-    ];
-    const ordered = interleaveByBlock(variants).map((s) => s.id);
-    expect(ordered.indexOf('a--heart')).toBe(ordered.indexOf('b--heart') - 1);
-  });
-
-  it('only repeats a block after every other block is exhausted', () => {
-    const many = Array.from({ length: 6 }, (_, i) => ({
-      id: `x${i}`, name: `n${i}`, block: 'A', codepoint: i, font: 'x', d: ''
-    }));
-    const ordered = interleaveByBlock([...many, { id: 'y', name: 'y', block: 'B', codepoint: 0, font: 'y', d: '' }]);
-    expect(ordered.map((s) => s.block)).toEqual(['A', 'B', 'A', 'A', 'A', 'A', 'A']);
-  });
-
-  it('accepts a selection drawn from a single block', () => {
-    const only = Array.from({ length: 4 }, (_, i) => ({
-      id: `x${i}`, name: `n${i}`, block: 'A', codepoint: i, font: 'x', d: ''
-    }));
-    expect(interleaveByBlock(only)).toHaveLength(4);
-  });
-
-  it('orders the fonts of one codepoint by codepoint, not by collation', () => {
-    // Which face of a glyph comes first lands in the committed artifact, and
-    // the host's ICU is not part of its inputs.
-    const variants = [
-      { id: 'b--heart', name: 'heart', block: 'A', codepoint: heart, font: 'b', d: '' },
-      { id: 'a-b--heart', name: 'heart', block: 'A', codepoint: heart, font: 'a-b', d: '' },
-      { id: 'ab--heart', name: 'heart', block: 'A', codepoint: heart, font: 'ab', d: '' }
-    ];
-    const real = String.prototype.localeCompare;
-    String.prototype.localeCompare = function reversed(other) {
-      return other < this ? -1 : other > this ? 1 : 0;
-    };
-    try {
-      expect(interleaveByBlock(variants).map((s) => s.id)).toEqual([
-        'a-b--heart', 'ab--heart', 'b--heart'
-      ]);
-    } finally {
-      String.prototype.localeCompare = real;
-    }
-  });
-
-  it('breaks a tie between equal-sized blocks by Map insertion order', () => {
-    // Two blocks of the same size have no fuller candidate, so the first one
-    // the walk reaches wins. Insertion order is the order the sorted selection
-    // first mentions each block, which is a pure function of selection.json:
-    // adding a font can move a block in the pool, but two runs of the same
-    // selection always agree.
-    const symbols = [
-      { id: 'z0', name: 'z0', block: 'Zebra', codepoint: 1, font: 'z', d: '' },
-      { id: 'a0', name: 'a0', block: 'Alpha', codepoint: 1, font: 'a', d: '' }
-    ];
-    expect(interleaveByBlock(symbols).map((s) => s.id)).toEqual(['z0', 'a0']);
-    expect(interleaveByBlock([...symbols].reverse()).map((s) => s.id)).toEqual(['a0', 'z0']);
-  });
-});
-
 describe('schema version lockstep', () => {
   it('is the version selection.json records', () => {
     expect(readSelection().version).toBe(ARTIFACT_VERSION);
@@ -201,13 +140,13 @@ describe('check mode', () => {
   // curated one, so the cost and the shape of this suite do not depend on what
   // the pool currently holds.
   const ONE = () => [fixtureSelection()[0]];
-  const ALL = () => JSON.parse(readFileSync(SELECTION_PATH, 'utf8')).selection;
+  const ALL = () => JSON.parse(readFileSync(SELECTION_PATH, 'utf8'));
 
   /** Build once into a temp dir; every case below copies or perturbs that. */
-  const build = (selection) => {
+  const build = (selection, adjustments) => {
     const dir = tempDir();
     const selectionPath = join(dir, 'selection.json');
-    writeFileSync(selectionPath, JSON.stringify({ version: ARTIFACT_VERSION, selection }));
+    writeFileSync(selectionPath, JSON.stringify({ version: ARTIFACT_VERSION, selection, adjustments }));
     main([], { selectionPath, outputDir: dir, ...SILENT });
     return { dir, selectionPath };
   };
@@ -257,7 +196,7 @@ describe('check mode', () => {
   });
 
   it('reproduces the committed bytes from the committed selection', () => {
-    const dir = perturb(build(ALL()), () => {});
+    const dir = perturb(build(ALL().selection, ALL().adjustments), () => {});
     main([], { selectionPath: dir.selectionPath, outputDir: dir.dir, ...SILENT });
     expect(readFileSync(join(dir.dir, 'outlines.generated.json'), 'utf8'))
       .toBe(readFileSync(OUTPUT_PATH, 'utf8'));
@@ -272,6 +211,11 @@ describe('check mode', () => {
     main([], { selectionPath: dir.selectionPath, outputDir: dir.dir, ...SILENT });
     main(['--check'], { selectionPath: dir.selectionPath, outputDir: dir.dir, ...SILENT });
     expect([OUTPUT_PATH, CANDIDATES_PATH].map((path) => readFileSync(path, 'utf8'))).toEqual(before);
+  });
+
+  it('fails the build for an adjustment on an entry that is not selected', () => {
+    const unselected = candidateKey(libertinus, 0x41);
+    expect(() => build([candidateKey(libertinus, 0x42)], { [unselected]: { embolden: 0.02 } })).toThrow(unselected);
   });
 });
 
@@ -322,6 +266,26 @@ describe('buildOutlines', () => {
       generated: 0,
       symbols: {}
     });
+  });
+
+  it('emits the pool in distinctness order', () => {
+    const selection = candidates.filter((c) => c.font === libertinus).slice(0, 6).map((c) => key(c.codepoint));
+    const payload = buildOutlines(selection, registry, candidates, fonts);
+    const entries = selectCandidates(candidates, selection).map((c) => ({
+      id: c.id, d: payload.symbols[c.id].d
+    }));
+    expect(Object.keys(payload.symbols))
+      .toEqual(orderByDistinctness(entries, { tileView: NORMALIZATION.tileView }).map((e) => e.id));
+  });
+
+  it('applies an adjustment to its own symbol and leaves the others alone', () => {
+    const selection = [candidateKey(libertinus, 0x41), candidateKey(libertinus, 0x42)];
+    const plain = buildOutlines(selection, registry, candidates, fonts);
+    const adjustments = parseAdjustments({ [selection[0]]: { embolden: 0.02 } }, selection);
+    const adjusted = buildOutlines(selection, registry, candidates, fonts, adjustments);
+    const [a, b] = selection.map((entry) => candidates.find((c) => candidateKey(c.font, c.codepoint) === entry).id);
+    expect(adjusted.symbols[a].d).not.toBe(plain.symbols[a].d);
+    expect(adjusted.symbols[b].d).toBe(plain.symbols[b].d);
   });
 
   it('records a font field on every symbol', () => {

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { DMC_CATALOG } from '../catalog';
 import committedOutlines from '../symbols/outlines.generated.json';
-import { getSymbolOutline, SYMBOL_COUNT, SYMBOL_IDS, SYMBOL_POOL, type PoolEntry } from '../symbols';
+import { getSymbolOutline, SYMBOL_COUNT, SYMBOL_IDS, SYMBOL_POOL } from '../symbols';
 import { defaultPaletteSymbol, isKnownSymbolId } from './index';
 
 /**
@@ -45,21 +45,6 @@ describe('symbol pool coverage', () => {
   it('has no duplicate ids', () => {
     expect(new Set(SYMBOL_IDS).size).toBe(SYMBOL_IDS.length);
     expect(SYMBOL_POOL.map((entry) => entry.id)).toEqual([...SYMBOL_IDS]);
-  });
-
-  it('places the fonts’ versions of one glyph next to each other', () => {
-    // Two fonts can hold the same codepoint. Keeping the variants adjacent in
-    // the pool is what lets someone comparing them see them side by side.
-    const byCodepoint = new Map<number, PoolEntry[]>();
-    for (const entry of SYMBOL_POOL) {
-      const list = byCodepoint.get(entry.codepoint) ?? [];
-      list.push(entry);
-      byCodepoint.set(entry.codepoint, list);
-    }
-    const shared = [...byCodepoint.values()].find((list) => list.length > 1);
-    if (!shared) return;
-    const indices = shared.map((entry) => SYMBOL_POOL.indexOf(entry));
-    expect(Math.max(...indices) - Math.min(...indices)).toBe(shared.length - 1);
   });
 
   it('draws each symbol from its own codepoint within its font', () => {
@@ -108,61 +93,5 @@ describe('cyclic default assignment', () => {
     // the pool end rather than a safety tail.
     const overflow = SYMBOL_COUNT + 1;
     expect(defaultPaletteSymbol(overflow)).toBe(defaultPaletteSymbol(1));
-  });
-});
-
-describe('block interleave', () => {
-  /**
-   * Neighbouring palette ids are assigned consecutive pool ids, so a run of
-   * same-block symbols would put a run of similar marks next to each other in a
-   * chart. The build skips the block it just drew from, so a block can only be
-   * drawn again once every other block has run out. That means a run is
-   * possible, but only as a tail: once two entries in a row share a block,
-   * every remaining entry of the cycle shares it too.
-   *
-   * Two fonts drawing one codepoint is the deliberate exception. Those symbols
-   * are near-identical by construction and sit side by side so a reviewer can
-   * compare them, so the pair is adjacent wherever it lands.
-   *
-   * A fixed "no more than N in a row" bound cannot be asserted here, because a
-   * selection made of one block would legitimately be a run of the whole pool.
-   * Asserting the tail property instead keeps the guarantee meaningful for any
-   * selection the picker can produce.
-   */
-  it('only ever repeats a block in the trailing part of a cycle, or for one glyph’s variants', () => {
-    const byId = new Map(SYMBOL_POOL.map((entry) => [entry.id, entry]));
-    const blocks = SYMBOL_IDS.map((id) => byId.get(id)?.block);
-
-    let runStart = 0;
-    for (let index = 1; index <= blocks.length; index += 1) {
-      const repeated = index < blocks.length && blocks[index] === blocks[runStart];
-      if (repeated) continue;
-      // The run just ended. A run longer than one is only allowed when it is
-      // the pair of fonts drawing one glyph, or when it reaches the cycle's end.
-      if (blocks[runStart + 1] === blocks[runStart]) {
-        const isTail = runStart + 1 >= blocks.length;
-        const first = byId.get(SYMBOL_IDS[runStart]);
-        const second = byId.get(SYMBOL_IDS[runStart + 1]);
-        const areVariants = first?.codepoint === second?.codepoint && first?.font !== second?.font;
-        expect(
-          isTail || areVariants,
-          `block ${String(blocks[runStart])} repeats at ${runStart} with symbols after it`
-        ).toBe(true);
-      }
-      runStart = index;
-    }
-  });
-
-  it('holds a full catalog to the same bound across the wrap seam', () => {
-    // A whole catalog wraps back to the start of the pool for the tail, so the
-    // bound is asserted per cycle with the seam between them held to the same
-    // rule: joining the pool's last block to its first is fine, but only if one
-    // of them is the single block left over.
-    const block = new Map(SYMBOL_POOL.map((entry) => [entry.id, entry.block]));
-    const first = block.get(SYMBOL_IDS[0]);
-    const last = block.get(SYMBOL_IDS[SYMBOL_COUNT - 1]);
-    if (first !== last) return;
-    const blocks = new Set(SYMBOL_POOL.map((entry) => entry.block));
-    expect(blocks.size).toBe(1);
   });
 });

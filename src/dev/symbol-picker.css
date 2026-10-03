@@ -458,3 +458,216 @@
   color: var(--picker-muted);
   text-align: center;
 }
+
+/*
+ * Reviewing adds the adjust panel beside the grid. The panel docks to the top of
+ * the page while the grid scrolls, and at narrow widths it stacks above the grid
+ * and stays pinned there, so the sliders are never scrolled out of reach.
+ */
+.symbol-picker-body.is-reviewing {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+}
+
+.symbol-picker-body.is-reviewing > .symbol-picker-grid {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* The mark in review is an outline, sized like the glyph text it stands in for. */
+.symbol-picker-mark svg {
+  width: 2.25rem;
+  height: 2.25rem;
+  overflow: visible;
+}
+
+.symbol-picker-mark.is-active {
+  outline: 2px solid var(--picker-accent);
+  outline-offset: 1px;
+}
+
+/* A dot marks an adjusted symbol, small enough to read as a flag rather than a
+   second border. */
+.symbol-picker-mark.is-adjusted {
+  position: relative;
+}
+
+.symbol-picker-mark.is-adjusted::after {
+  content: '';
+  position: absolute;
+  top: 0.2rem;
+  right: 0.2rem;
+  width: 0.4rem;
+  height: 0.4rem;
+  border-radius: 50%;
+  background: var(--picker-accent);
+}
+
+/* A symbol whose current adjustment cannot be built keeps its last good outline
+   and is flagged with a dashed border. */
+.symbol-picker-mark.is-error {
+  border-style: dashed;
+}
+
+.symbol-picker-adjust {
+  position: sticky;
+  top: 0.75rem;
+  display: grid;
+  flex: 0 0 19rem;
+  gap: 0.6rem;
+  padding: 0.6rem;
+  border: 1px solid var(--picker-border);
+  border-radius: 6px;
+  background: #fdfcfa;
+}
+
+.symbol-picker-adjust-hint {
+  margin: 0;
+  color: var(--picker-muted);
+}
+
+.symbol-picker-adjust-view {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.6rem;
+}
+
+/* The preview is the whole cell the symbol is built in, so a crop at the edge of
+   the cell is visible as ink touching the border. */
+.symbol-picker-adjust-preview {
+  flex: 0 0 auto;
+  width: 8rem;
+  height: 8rem;
+  border: 1px solid var(--picker-border);
+  background: #fff;
+}
+
+.symbol-picker-adjust-view .symbol-picker-sizes {
+  align-items: center;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.symbol-picker-adjust-controls {
+  display: grid;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.symbol-picker-adjust-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.5rem;
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 400;
+  line-height: 1.25;
+}
+
+.symbol-picker-slider {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr) 3.5rem;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.symbol-picker-slider label {
+  font-weight: 600;
+}
+
+.symbol-picker-slider input {
+  min-width: 0;
+  margin: 0;
+  accent-color: var(--picker-accent);
+}
+
+.symbol-picker-slider input:focus-visible {
+  outline: 2px solid var(--picker-accent);
+  outline-offset: 2px;
+}
+
+.symbol-picker-slider output {
+  color: var(--picker-muted);
+  font-family: ui-monospace, monospace;
+  font-size: 0.8rem;
+  text-align: right;
+}
+
+.symbol-picker-adjust-error {
+  min-height: 1.25rem;
+  margin: 0;
+  color: var(--picker-accent);
+  font-size: 0.8rem;
+}
+
+.symbol-picker-adjust-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.symbol-picker-adjust-actions button {
+  padding: 0.35rem 0.7rem;
+  border: 1px solid var(--picker-border);
+  border-radius: 4px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.symbol-picker-adjust-actions button:hover:not(:disabled) {
+  border-color: var(--picker-muted);
+}
+
+.symbol-picker-adjust-actions button:disabled {
+  color: #a89e90;
+  cursor: default;
+}
+
+.symbol-picker-adjust-actions button:focus-visible {
+  outline: 2px solid var(--picker-accent);
+  outline-offset: 1px;
+}
+
+@media (max-width: 52rem) {
+  .symbol-picker-body.is-reviewing {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  /* Above the grid and pinned to the top of the page, with the preview beside
+     the sliders so the panel stays short. */
+  .symbol-picker-adjust {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    flex: 0 0 auto;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .symbol-picker-adjust-hint {
+    grid-column: 1 / -1;
+  }
+
+  .symbol-picker-adjust-preview {
+    width: 5rem;
+    height: 5rem;
+  }
+
+  .symbol-picker-body.is-reviewing > .symbol-picker-grid {
+    max-height: 60vh;
+  }
+}
+
+@media (max-width: 30rem) {
+  .symbol-picker-adjust {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .symbol-picker-slider {
+    grid-template-columns: 3.5rem minmax(0, 1fr) 3rem;
+  }
+}

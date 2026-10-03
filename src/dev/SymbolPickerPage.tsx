@@ -1,4 +1,4 @@
-import { useDeferredValue, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 
 import candidatesAsset from '../symbols/candidates.generated.json';
 import selectionAsset from '../symbols/selection.json';
@@ -24,7 +24,15 @@ import './symbol-picker.css';
  *
  * Reviewing drops the groups and shows the ticked marks alone in one dense grid,
  * so the chosen set can be judged as a whole — whether the weights, the rhythm
- * and the shapes hold together. Same marks, same size, no chrome.
+ * and the shapes hold together. Each mark is drawn from the outline the build
+ * emits for it, fetched from /__symbols/outlines, because a font's own text is
+ * neither extent-normalized nor able to show an adjustment. Clicking a mark opens
+ * it in the adjust panel beside the grid, which holds a large preview, the 24, 16
+ * and 8 pixel samples, a boldness slider and a size slider, Reset, and Untick.
+ * Moving a slider refetches that one outline, and a crop or validation error
+ * shows in the panel while the last good outline stays drawn. A mark with an
+ * adjustment carries a dot. Saving sends the selection together with the
+ * adjustments of the entries still in it.
  *
  * Which fonts to compare is a multi-select rather than a filter: any number of
  * them can be on at once, and a codepoint is in the grid whenever at least one
@@ -45,7 +53,7 @@ import './symbol-picker.css';
  * circled letters — and a filter that judged them too similar would quietly
  * remove glyphs someone wanted. Search is the only tool offered.
  *
- * The glyphs are shown with an @font-face of the vendored fonts rather than the
+ * Browsing shows glyphs with an @font-face of the vendored fonts rather than the
  * pool's own outlines, so a codepoint is visible even before it is selected and
  * even when the committed pool does not contain it.
  */
@@ -69,9 +77,26 @@ interface CandidatesFile {
   readonly candidates: readonly Candidate[];
 }
 
+/** The per-glyph adjustments the selection file may carry, in cell units. */
+interface Adjustment {
+  readonly embolden?: number;
+  readonly scale?: number;
+  readonly offset?: readonly [number, number];
+}
+
 interface SelectionFile {
   readonly version: number;
   readonly selection: readonly string[];
+  readonly adjustments?: Readonly<Record<string, Adjustment>>;
+}
+
+/** What the outlines route returns for one entry, and what the page keeps of it. */
+type OutlineResult = { readonly d: string } | { readonly error: string };
+
+interface Outline {
+  /** The last outline that built, kept drawn while a newer adjustment fails. */
+  readonly d?: string;
+  readonly error?: string;
 }
 
 /** One group of the wall: a codepoint, the mark each compared font has for it, and its details. */
@@ -89,7 +114,8 @@ const candidates = catalog.candidates;
 const fonts = catalog.fonts;
 const fontSlugs = Object.keys(fonts);
 
-const authored = new Set((selectionAsset as unknown as SelectionFile).selection);
+const authoredFile = selectionAsset as unknown as SelectionFile;
+const authored = new Set(authoredFile.selection);
 
 /** The codepoints any font can draw, ascending, each mapped to its per-font glyph. */
 const glyphsByCodepoint = new Map<number, Map<string, Candidate>>();
@@ -128,6 +154,39 @@ const familyOf = (slug: string): string => fonts[slug]?.family ?? slug;
 const describeVariant = (variant: Candidate, name: string, block: string): string =>
   `${familyOf(variant.font)} · ${formatCodepoint(variant.codepoint)} · ${name} · ${block}`;
 
+const EMBOLDEN_RANGE = { min: 0, max: 0.06, step: 0.005 } as const;
+const SCALE_RANGE = { min: 0.5, max: 1.3, step: 0.05 } as const;
+const DEFAULT_TILE_VIEW = 0.5;
+const OUTLINE_DEBOUNCE_MS = 150;
+const SAMPLE_SIZES = [24, 16, 8] as const;
+
+/** An adjustment that changes nothing is the same as none, so it earns no indicator. */
+const isAdjusted = (adjustment: Adjustment | undefined): boolean => adjustment !== undefined
+  && ((adjustment.embolden ?? 0) > 0
+    || (adjustment.scale ?? 1) !== 1
+    || (adjustment.offset ?? [0, 0]).some((axis) => axis !== 0));
+
+/** A pool outline in the cell it was built for, filled like every symbol the app draws. */
+function OutlineSvg({ d, tileView, className, size }: {
+  d: string | undefined;
+  tileView: number;
+  className?: string;
+  size?: number;
+}) {
+  return (
+    <svg
+      className={className}
+      viewBox={`${-tileView} ${-tileView} ${2 * tileView} ${2 * tileView}`}
+      width={size}
+      height={size}
+      aria-hidden="true"
+      focusable="false"
+    >
+      {d && <path d={d} fill="currentColor" />}
+    </svg>
+  );
+}
+
 /** How many codepoints to paint at once, so the page stays responsive on first paint. */
 const PAGE_SIZE = 600;
 
@@ -138,6 +197,83 @@ function matches(candidate: Candidate, needle: string, asCodepoint: number | nul
     || fonts[candidate.font]?.family.toLowerCase().includes(needle) === true
     || (asCodepoint !== null && candidate.codepoint === asCodepoint)
     || String.fromCodePoint(candidate.codepoint) === needle;
+}
+
+/** The entry's candidate, for its description, from the catalog. */
+const candidateByEntry = new Map(candidates.map((candidate) => [toEntry(candidate), candidate]));
+
+/**
+ * The docked panel beside the review grid: one entry's outline at preview size
+ * and at the chart sizes, and the two sliders that adjust it. It stays beside
+ * the grid while the grid scrolls, and sits above it at narrow widths.
+ */
+function AdjustPanel({ entry, adjustment, outline, tileView, onAdjust, onReset, onUntick }: {
+  entry: string | null;
+  adjustment: Adjustment | undefined;
+  outline: Outline | undefined;
+  tileView: number;
+  onAdjust: (entry: string, patch: Adjustment) => void;
+  onReset: (entry: string) => void;
+  onUntick: (entry: string) => void;
+}) {
+  const candidate = entry ? candidateByEntry.get(entry) : undefined;
+  if (!entry || !candidate) {
+    return (
+      <aside className="symbol-picker-adjust" aria-label="Adjust symbol">
+        <p className="symbol-picker-adjust-hint">Pick a mark to adjust its boldness and size.</p>
+      </aside>
+    );
+  }
+  const embolden = adjustment?.embolden ?? 0;
+  const scale = adjustment?.scale ?? 1;
+  const { name, block } = names.get(candidate.codepoint)!;
+  const description = describeVariant(candidate, name, block);
+  return (
+    <aside className="symbol-picker-adjust" aria-label={`Adjust ${description}`}>
+      <div className="symbol-picker-adjust-view">
+        <OutlineSvg d={outline?.d} tileView={tileView} className="symbol-picker-adjust-preview" />
+        <span className="symbol-picker-sizes" aria-hidden="true">
+          {SAMPLE_SIZES.map((size) => (
+            <OutlineSvg key={size} d={outline?.d} tileView={tileView} size={size} />
+          ))}
+        </span>
+      </div>
+      <div className="symbol-picker-adjust-controls">
+        <h2 className="symbol-picker-adjust-title">
+          <span className="symbol-picker-codepoint">{formatCodepoint(candidate.codepoint)}</span>
+          <span className="symbol-picker-detail-name">{name}</span>
+          <span className="symbol-picker-detail-block">{familyOf(candidate.font)}</span>
+        </h2>
+        <div className="symbol-picker-slider">
+          <label htmlFor="symbol-picker-embolden">Boldness</label>
+          <input
+            id="symbol-picker-embolden"
+            type="range"
+            {...EMBOLDEN_RANGE}
+            value={embolden}
+            onChange={(event) => onAdjust(entry, { embolden: Number(event.target.value) })}
+          />
+          <output htmlFor="symbol-picker-embolden">{embolden.toFixed(3)}</output>
+        </div>
+        <div className="symbol-picker-slider">
+          <label htmlFor="symbol-picker-scale">Size</label>
+          <input
+            id="symbol-picker-scale"
+            type="range"
+            {...SCALE_RANGE}
+            value={scale}
+            onChange={(event) => onAdjust(entry, { scale: Number(event.target.value) })}
+          />
+          <output htmlFor="symbol-picker-scale">{scale.toFixed(2)}×</output>
+        </div>
+        <p className="symbol-picker-adjust-error" role="alert">{outline?.error ?? ''}</p>
+        <div className="symbol-picker-adjust-actions">
+          <button type="button" onClick={() => onReset(entry)} disabled={!isAdjusted(adjustment)}>Reset</button>
+          <button type="button" onClick={() => onUntick(entry)}>Untick</button>
+        </div>
+      </div>
+    </aside>
+  );
 }
 
 export default function SymbolPickerPage() {
@@ -154,9 +290,29 @@ export default function SymbolPickerPage() {
   const [limit, setLimit] = useState(PAGE_SIZE);
   const [status, setStatus] = useState('');
   const [saving, setSaving] = useState(false);
+  // The adjustments start as the authored file has them, and the page never
+  // forgets one on an untick, so a re-tick finds it again. Only the entries
+  // still selected are saved.
+  const [adjustments, setAdjustments] = useState<Readonly<Record<string, Adjustment>>>(
+    () => ({ ...authoredFile.adjustments })
+  );
+  const [outlines, setOutlines] = useState<Readonly<Record<string, Outline>>>({});
+  const [tileView, setTileView] = useState(DEFAULT_TILE_VIEW);
+  const [pending, setPending] = useState(0);
+  // The entry open in the adjust panel.
+  const [active, setActive] = useState<string | null>(null);
+  // A response only lands if no newer request for its entry has gone out, so a
+  // slow answer for an old slider position cannot overwrite a newer one.
+  const requests = useRef(new Map<string, number>());
+  const timers = useRef(new Map<string, number>());
   // Typing in the search box should not rebuild a list of thousands of rows.
   const deferredQuery = useDeferredValue(query);
   const scroller = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const scheduled = timers.current;
+    return () => { for (const timer of scheduled.values()) window.clearTimeout(timer); };
+  }, []);
   // The tick state is a filter input only while reviewing, so a tick while
   // browsing leaves the row list alone.
   const reviewed = review ? selected : null;
@@ -188,6 +344,7 @@ export default function SymbolPickerPage() {
   }, [deferredQuery, compared, reviewed]);
 
   const visible = rows.slice(0, limit);
+  const activeEntry = review && active !== null && selected.has(active) ? active : null;
 
   const emptyMessage = compared.size === 0
     ? 'No fonts are being compared. Tick a font above to see what it can draw.'
@@ -255,8 +412,82 @@ export default function SymbolPickerPage() {
   /** Switching to reviewing drops the search, which rarely survives a whole-set read. */
   function toggleReview() {
     setReview((current) => !current);
-    if (!review) setQuery('');
+    if (!review) {
+      setQuery('');
+      void loadOutlines([...selected], adjustments);
+    }
     resetView();
+  }
+
+  /** Build the outlines for these entries on the server and keep what comes back. */
+  async function loadOutlines(entries: readonly string[], toApply: Readonly<Record<string, Adjustment>>) {
+    if (entries.length === 0) return;
+    const sent = new Map(entries.map((entry) => [entry, (requests.current.get(entry) ?? 0) + 1]));
+    for (const [entry, serial] of sent) requests.current.set(entry, serial);
+    setPending((count) => count + 1);
+    try {
+      const response = await fetch('/__symbols/outlines', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entries,
+          adjustments: Object.fromEntries(entries.filter((entry) => entry in toApply).map((entry) => [entry, toApply[entry]]))
+        })
+      });
+      const payload = await response.json() as {
+        tileView?: number;
+        outlines?: Record<string, OutlineResult>;
+        error?: string;
+      };
+      if (!response.ok || !payload.outlines) {
+        setStatus(payload.error ?? 'The outlines could not be built.');
+        return;
+      }
+      const built = payload.outlines;
+      if (payload.tileView) setTileView(payload.tileView);
+      setOutlines((current) => {
+        const next = { ...current };
+        for (const [entry, serial] of sent) {
+          const result = built[entry];
+          if (!result || requests.current.get(entry) !== serial) continue;
+          next[entry] = 'd' in result ? { d: result.d } : { d: current[entry]?.d, error: result.error };
+        }
+        return next;
+      });
+    } catch {
+      setStatus('The outlines could not be built. Is the dev server running?');
+    } finally {
+      setPending((count) => count - 1);
+    }
+  }
+
+  /** Change one entry's adjustment and refetch its outline once the slider settles. */
+  function adjust(entry: string, patch: Adjustment) {
+    const next = { ...adjustments[entry], ...patch };
+    setAdjustments((current) => ({ ...current, [entry]: next }));
+    setStatus('');
+    window.clearTimeout(timers.current.get(entry));
+    timers.current.set(entry, window.setTimeout(() => {
+      timers.current.delete(entry);
+      void loadOutlines([entry], { [entry]: next });
+    }, OUTLINE_DEBOUNCE_MS));
+  }
+
+  function reset(entry: string) {
+    window.clearTimeout(timers.current.get(entry));
+    timers.current.delete(entry);
+    setAdjustments((current) => {
+      const next = { ...current };
+      delete next[entry];
+      return next;
+    });
+    setStatus('');
+    void loadOutlines([entry], {});
+  }
+
+  function untick(entry: string) {
+    toggle(entry);
+    setActive(null);
   }
 
   async function save() {
@@ -266,10 +497,16 @@ export default function SymbolPickerPage() {
       const response = await fetch('/__symbols/selection', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ selection: [...selected].sort() })
+        body: JSON.stringify({
+          selection: [...selected].sort(),
+          adjustments: Object.fromEntries(
+            Object.entries(adjustments).filter(([entry, adjustment]) => selected.has(entry) && isAdjusted(adjustment))
+          )
+        })
       });
       const payload = await response.json() as {
         saved?: number;
+        adjusted?: number;
         perFont?: Record<string, number>;
         file?: string;
         next?: string;
@@ -285,6 +522,7 @@ export default function SymbolPickerPage() {
       const saved = [
         `Saved ${payload.saved} symbols to ${payload.file ?? 'src/symbols/selection.json'}`,
         breakdown || null,
+        payload.adjusted ? `${payload.adjusted} adjusted` : null,
         `Run: ${payload.next}`
       ].filter(Boolean).join('. ');
       setStatus(saved);
@@ -369,6 +607,7 @@ export default function SymbolPickerPage() {
 
       <p className="symbol-picker-status" role="status">{status}</p>
 
+      <div className={review ? 'symbol-picker-body is-reviewing' : 'symbol-picker-body'}>
       <div
         className={review ? 'symbol-picker-grid is-marks' : 'symbol-picker-grid is-wall'}
         role="region"
@@ -386,18 +625,22 @@ export default function SymbolPickerPage() {
           ? visible.flatMap((row) => row.variants.map((variant) => {
             const entry = toEntry(variant);
             const description = describeVariant(variant, row.name, row.block);
+            const outline = outlines[entry];
+            const classes = ['symbol-picker-mark', 'is-selected'];
+            if (isAdjusted(adjustments[entry])) classes.push('is-adjusted');
+            if (outline?.error) classes.push('is-error');
+            if (entry === activeEntry) classes.push('is-active');
             return (
               <button
                 key={variant.id}
                 type="button"
-                className="symbol-picker-mark is-selected"
-                aria-pressed
+                className={classes.join(' ')}
+                aria-pressed={entry === activeEntry}
                 aria-label={description}
                 title={description}
-                style={{ fontFamily: `"${variant.font}", serif` }}
-                onClick={() => toggle(entry)}
+                onClick={() => setActive(entry)}
               >
-                {String.fromCodePoint(variant.codepoint)}
+                <OutlineSvg d={outline?.d} tileView={tileView} />
               </button>
             );
           }))
@@ -479,10 +722,23 @@ export default function SymbolPickerPage() {
               </article>
             );
           })}
+        {review && pending > 0 && <p className="symbol-picker-more">Building outlines…</p>}
         {visible.length === 0 && <p className="symbol-picker-empty">{emptyMessage}</p>}
         {visible.length < rows.length && (
           <p className="symbol-picker-more">Showing {visible.length.toLocaleString()} of {rows.length.toLocaleString()}. Scroll for more.</p>
         )}
+      </div>
+      {review && (
+        <AdjustPanel
+          entry={activeEntry}
+          adjustment={activeEntry ? adjustments[activeEntry] : undefined}
+          outline={activeEntry ? outlines[activeEntry] : undefined}
+          tileView={tileView}
+          onAdjust={adjust}
+          onReset={reset}
+          onUntick={untick}
+        />
+      )}
       </div>
     </div>
   );

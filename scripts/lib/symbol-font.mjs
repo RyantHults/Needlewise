@@ -32,7 +32,8 @@ import { dirname, resolve } from 'node:path';
 import opentype from 'opentype.js';
 import names from '@unicode/unicode-15.1.0/Names/index.mjs';
 
-import { normalizeOutline, scale, toPathData } from './symbol-geometry.mjs';
+import { applyAdjustment } from './symbol-adjust.mjs';
+import { measure, normalizeOutline, scale, toPathData } from './symbol-geometry.mjs';
 
 const require = createRequire(import.meta.url);
 
@@ -235,17 +236,24 @@ export function glyphCommands(font, codePoint) {
 
 const hex = (codePoint) => codePoint.toString(16).toUpperCase().padStart(4, '0');
 
-/** Extract one selected codepoint all the way to committed path data. */
-export function buildSymbol(font, candidate, normalization = NORMALIZATION) {
+/**
+ * Extract one selected codepoint all the way to committed path data.
+ *
+ * An adjustment is applied to the normalized outline, so `extent` and `inkArea`
+ * describe the outline that is emitted, not the one the font drew.
+ */
+export function buildSymbol(font, candidate, normalization = NORMALIZATION, adjustment = undefined) {
   const normalized = normalizeOutline(glyphCommands(font, candidate.codepoint), normalization);
+  const commands = adjustment ? applyAdjustment(normalized.commands, adjustment, normalization) : normalized.commands;
+  const { extent, area } = adjustment ? measure(commands) : { extent: normalized.extent, area: normalized.inkArea };
   return {
     entry: {
       name: candidate.name,
       block: candidate.block,
       codepoint: candidate.codepoint,
-      d: toPathData(normalized.commands, normalization.precision)
+      d: toPathData(commands, normalization.precision)
     },
-    extent: normalized.extent,
-    inkArea: normalized.inkArea
+    extent,
+    inkArea: area
   };
 }
