@@ -5,7 +5,6 @@ import {
   createPatternFragmentFromCells,
   clonePatternFragment,
   DomainError,
-  HalfDirection,
   mixedEraseCommand,
   preflightMixedEraseCommand,
   deleteRegionCommand,
@@ -56,7 +55,7 @@ import type {
   EditorActiveLayer,
   PendingBackstitchRemoval
 } from './contracts';
-import { normalizeBrushSize, toolStateAvailability } from './contracts';
+import { DEFAULT_HALF_DIRECTION, normalizeBrushSize, toolStateAvailability } from './contracts';
 import {
   fitViewport,
   hitTestCell,
@@ -427,11 +426,7 @@ function distance(left: PointerSample, right: PointerSample): number {
 function editForBrush(brush: StitchBrush, pointerDownCorner?: QuarterCorner): BulkCellEdit {
   if (brush.kind === 'full') return { kind: 'full', color: brush.paletteId };
   if (brush.kind === 'half') {
-    const direction = pointerDownCorner === QuarterCorner.NW || pointerDownCorner === QuarterCorner.SE
-      ? HalfDirection.Backslash
-      : pointerDownCorner === QuarterCorner.NE || pointerDownCorner === QuarterCorner.SW
-        ? HalfDirection.Slash
-        : brush.direction ?? HalfDirection.Backslash;
+    const direction = brush.direction ?? DEFAULT_HALF_DIRECTION;
     return { kind: 'half', direction, color: brush.paletteId };
   }
   if (brush.kind === 'three-quarter') {

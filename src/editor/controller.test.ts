@@ -935,21 +935,29 @@ describe('EditorSurfaceController', () => {
     controller.dispose();
   });
 
-  it('derives one half-stitch diagonal from the pointer-down corner', () => {
+  it('stamps the brush half-stitch diagonal whichever corner is hit', () => {
+    const corners = [[4, 4], [12, 4], [12, 12], [4, 12]] as const;
     const cases = [
-      { x: 4, y: 4, kind: CellKind.HalfBackslash },
-      { x: 12, y: 4, kind: CellKind.HalfSlash },
-      { x: 12, y: 12, kind: CellKind.HalfBackslash },
-      { x: 4, y: 12, kind: CellKind.HalfSlash }
+      { direction: '/', kind: CellKind.HalfSlash },
+      { direction: '\\', kind: CellKind.HalfBackslash },
+      { direction: undefined, kind: CellKind.HalfSlash }
     ] as const;
-    for (const [pointerId, testCase] of cases.entries()) {
-      const fixture = controllerFixture();
-      fixture.controller.setAuthoringBrush({ kind: 'half', paletteId: 1 });
-      fixture.controller.handlePointerDown(pointer(pointerId + 1, testCase.x, testCase.y));
-      expect(fixture.uiStore.getState().overlay.pendingCellStates).toMatchObject([{ kind: testCase.kind, colors: [1, 0, 0, 0] }]);
-      fixture.controller.handlePointerUp(pointer(pointerId + 1, testCase.x, testCase.y));
-      expect(fixture.gateway.getSnapshot().document?.kind[0]).toBe(testCase.kind);
-      fixture.controller.dispose();
+    let pointerId = 0;
+    for (const testCase of cases) {
+      for (const [x, y] of corners) {
+        pointerId += 1;
+        const fixture = controllerFixture();
+        fixture.controller.setAuthoringBrush({
+          kind: 'half',
+          ...(testCase.direction === undefined ? {} : { direction: testCase.direction }),
+          paletteId: 1
+        });
+        fixture.controller.handlePointerDown(pointer(pointerId, x, y));
+        expect(fixture.uiStore.getState().overlay.pendingCellStates).toMatchObject([{ kind: testCase.kind, colors: [1, 0, 0, 0] }]);
+        fixture.controller.handlePointerUp(pointer(pointerId, x, y));
+        expect(fixture.gateway.getSnapshot().document?.kind[0]).toBe(testCase.kind);
+        fixture.controller.dispose();
+      }
     }
   });
 
@@ -1716,10 +1724,10 @@ describe('EditorSurfaceController', () => {
     controller.setBrushSize(2);
     controller.handlePointerDown(pointer(2, 24, 24));
     expect(uiStore.getState().overlay.pendingCellStates?.map((state) => state.kind)).toEqual([
-      CellKind.HalfBackslash, CellKind.HalfBackslash, CellKind.HalfBackslash, CellKind.HalfBackslash, CellKind.HalfBackslash
+      CellKind.HalfSlash, CellKind.HalfSlash, CellKind.HalfSlash, CellKind.HalfSlash, CellKind.HalfSlash
     ]);
     controller.handlePointerUp(pointer(2, 24, 24));
-    expect(gateway.commands.at(-1)).toMatchObject({ type: 'bulk-cell', edit: { kind: 'half', direction: '\\' } });
+    expect(gateway.commands.at(-1)).toMatchObject({ type: 'bulk-cell', edit: { kind: 'half', direction: '/' } });
     controller.dispose();
   });
 

@@ -37,7 +37,7 @@ import eyedropperIcon from "../../assets/editor-tools/eyedropper.svg";
 import panIcon from "../../assets/editor-tools/pan.svg";
 import stitchIcon from "../../assets/editor-tools/stitch.svg";
 import { contrastSymbolInk } from "../../rendering/contrast";
-import { DEFAULT_RENDERER_STYLE, toolAvailability, type BrushSizeTool, type EditorActiveLayer, type ShapeKind } from "../../editor/contracts";
+import { DEFAULT_HALF_DIRECTION, DEFAULT_RENDERER_STYLE, toolAvailability, type BrushSizeTool, type EditorActiveLayer, type HalfStitchBrush, type ShapeKind } from "../../editor/contracts";
 import type { ProjectSession } from "../../application/session";
 interface Props {
   workspace: ProjectWorkspace;
@@ -121,12 +121,16 @@ const SymbolTile = ({ id, className = "symbol-token" }: { id: string; className?
   </svg>
 );
 
+type HalfStitchDirection = NonNullable<HalfStitchBrush["direction"]>;
+
 type EditorPreferences = {
   version: 1;
   railSide: "left" | "right";
   paletteDisplay: { symbols: boolean; numbers: boolean };
   /** Restrict finger touch to movement controls; pen input still edits. */
   pencilModeEnabled: boolean;
+  /** Which diagonal a half stitch is stamped along. */
+  halfStitchDirection: HalfStitchDirection;
 };
 
 type PopoverTool = BrushSizeTool | "backstitch";
@@ -173,6 +177,7 @@ const defaultEditorPreferences = (): EditorPreferences => ({
   railSide: "left",
   paletteDisplay: { symbols: true, numbers: true },
   pencilModeEnabled: false,
+  halfStitchDirection: DEFAULT_HALF_DIRECTION,
 });
 
 const isEditorPreferences = (value: unknown): value is EditorPreferences => {
@@ -207,6 +212,7 @@ const normalizeEditorPreferences = (value: EditorPreferences): EditorPreferences
       (legacy.touchEditingEnabled === undefined
         ? false
         : !legacy.touchEditingEnabled),
+    halfStitchDirection: value.halfStitchDirection === "\\" || value.halfStitchDirection === "/" ? value.halfStitchDirection : DEFAULT_HALF_DIRECTION,
   };
 };
 
@@ -525,7 +531,14 @@ export function EditorSurface({
       controllerRef.current?.setBrush({
         kind,
         paletteId: id,
+        ...(kind === "half" ? { direction: preferences.halfStitchDirection } : {}),
       } as never);
+  };
+  const chooseHalfDirection = (direction: HalfStitchDirection) => {
+    setPreferences((current) => ({ ...current, halfStitchDirection: direction }));
+    const id = selectedPalette?.id;
+    if (id && halfActive)
+      controllerRef.current?.setBrush({ kind: "half", direction, paletteId: id });
   };
   // Tools stay visible on every layer; unavailable ones are greyed and explain
   // why on hover (title) and on tap (toast) instead of switching.
@@ -1795,7 +1808,7 @@ export function EditorSurface({
               aria-pressed={halfActive}
               onClick={(event) => { if (shouldSuppressPressClick(event.currentTarget, event)) return; if (refuseUnavailable("paint")) return; choose("half"); }}
             >
-              <span className="stitch-brush-icon stitch-brush-icon-half" aria-hidden="true" />
+              <span className={`stitch-brush-icon stitch-brush-icon-half${preferences.halfStitchDirection === "\\" ? " stitch-brush-icon-half-backslash" : ""}`} aria-hidden="true" />
               <span className="brush-size-corner" aria-hidden="true" />
             </button>
             <button
@@ -2025,6 +2038,22 @@ export function EditorSurface({
                 </div>
               ) : (
                 <>
+                  {brushPopover.tool === "half" && (
+                    <div className="backstitch-mode-row" role="group" aria-label="Half stitch direction">
+                      {([["/", "Bottom-left to top-right"], ["\\", "Top-left to bottom-right"]] as const).map(([direction, name]) => (
+                        <button
+                          key={direction}
+                          className="backstitch-mode-button"
+                          type="button"
+                          aria-label={name}
+                          aria-pressed={preferences.halfStitchDirection === direction}
+                          onClick={() => chooseHalfDirection(direction)}
+                        >
+                          <span className={`stitch-brush-icon stitch-brush-icon-half${direction === "\\" ? " stitch-brush-icon-half-backslash" : ""}`} aria-hidden="true" />
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <label htmlFor="tool-brush-size">{brushPopover.label} brush size <output>{ui?.toolBrushSizes[brushPopover.tool] ?? 1}</output></label>
                   <RangeInput id="tool-brush-size" min="1" max="10" aria-label={`${brushPopover.label} brush size`} value={ui?.toolBrushSizes[brushPopover.tool] ?? 1} onChange={(event) => controllerRef.current?.setToolBrushSize(brushPopover.tool as BrushSizeTool, Number(event.target.value))} />
                 </>

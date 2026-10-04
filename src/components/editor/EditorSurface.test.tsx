@@ -559,7 +559,7 @@ describe('EditorSurface', () => {
     expect(adapterOptions.shouldExcludeTarget(brushDialog.querySelector('input')!, 'keydown')).toBe(true);
     vi.useRealTimers();
   });
-  it('wires the top-level stitch tools and removes separate brush settings', () => { render(<EditorSurface workspace={ws} document={doc} />); f.resize?.(); expect(f.c.setMetrics).toHaveBeenCalled(); expect(screen.queryByRole('heading', { name: 'Brush settings' })).not.toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: 'Full stitch' })); expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'full', paletteId: 1 }); fireEvent.click(screen.getByRole('button', { name: 'Half stitch' })); expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'half', paletteId: 1 }); fireEvent.click(screen.getByRole('button', { name: '3/4 stitch' })); expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'three-quarter', paletteId: 1 }); expect(screen.queryByRole('button', { name: 'Stitch' })).not.toBeInTheDocument(); });
+  it('wires the top-level stitch tools and removes separate brush settings', () => { render(<EditorSurface workspace={ws} document={doc} />); f.resize?.(); expect(f.c.setMetrics).toHaveBeenCalled(); expect(screen.queryByRole('heading', { name: 'Brush settings' })).not.toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: 'Full stitch' })); expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'full', paletteId: 1 }); fireEvent.click(screen.getByRole('button', { name: 'Half stitch' })); expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'half', direction: '/', paletteId: 1 }); fireEvent.click(screen.getByRole('button', { name: '3/4 stitch' })); expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'three-quarter', paletteId: 1 }); expect(screen.queryByRole('button', { name: 'Stitch' })).not.toBeInTheDocument(); });
   it('opens an anchored brush-size dialog on hold without switching tools', () => {
     vi.useFakeTimers();
     render(<EditorSurface workspace={ws} document={doc} />);
@@ -579,11 +579,55 @@ describe('EditorSurface', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Full stitch' }));
     expect(f.c.setBrush).toHaveBeenLastCalledWith({ kind: 'full', paletteId: 2 });
     fireEvent.click(screen.getByRole('button', { name: 'Half stitch' }));
-    expect(f.c.setBrush).toHaveBeenLastCalledWith({ kind: 'half', paletteId: 2 });
+    expect(f.c.setBrush).toHaveBeenLastCalledWith({ kind: 'half', direction: '/', paletteId: 2 });
     fireEvent.click(screen.getByRole('button', { name: '3/4 stitch' }));
     expect(f.c.setBrush).toHaveBeenLastCalledWith({ kind: 'three-quarter', paletteId: 2 });
     expect(screen.getByRole('button', { name: 'Sky' })).toHaveAttribute('aria-pressed', 'true');
     f.uiState.paletteId = 1;
+  });
+  it('sets the half stitch direction from the brush popover, persists it, and uses it on choose', async () => {
+    vi.useFakeTimers(); f.uiState.tool = { tool: 'paint', brush: { kind: 'half', paletteId: 1 } } as never;
+    const view = render(<EditorSurface workspace={ws} document={doc} />);
+    const trigger = screen.getByRole('button', { name: 'Half stitch' });
+    expect(trigger.querySelector('.stitch-brush-icon-half')).not.toHaveClass('stitch-brush-icon-half-backslash');
+    fireEvent.pointerDown(trigger, { pointerId: 61, isPrimary: true }); act(() => vi.advanceTimersByTime(500));
+    const dialog = screen.getByRole('dialog');
+    const slash = within(dialog).getByRole('button', { name: 'Bottom-left to top-right' });
+    const backslash = within(dialog).getByRole('button', { name: 'Top-left to bottom-right' });
+    expect(slash).toHaveTextContent(''); expect(backslash).toHaveTextContent('');
+    expect(slash.querySelector('.stitch-brush-icon-half')).not.toHaveClass('stitch-brush-icon-half-backslash');
+    expect(backslash.querySelector('.stitch-brush-icon-half')).toHaveClass('stitch-brush-icon-half-backslash');
+    expect(slash.querySelector('.stitch-brush-icon-half')).toHaveAttribute('aria-hidden', 'true');
+    expect(slash).toHaveAttribute('aria-pressed', 'true'); expect(backslash).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(backslash);
+    expect(f.c.setBrush).toHaveBeenLastCalledWith({ kind: 'half', direction: '\\', paletteId: 1 });
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Top-left to bottom-right' })).toHaveAttribute('aria-pressed', 'true');
+    expect(trigger.querySelector('.stitch-brush-icon-half')).toHaveClass('stitch-brush-icon-half-backslash');
+    expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null').halfStitchDirection).toBe('\\');
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Bottom-left to top-right' }));
+    expect(trigger.querySelector('.stitch-brush-icon-half')).not.toHaveClass('stitch-brush-icon-half-backslash');
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Top-left to bottom-right' }));
+    expect(trigger.querySelector('.stitch-brush-icon-half')).toHaveClass('stitch-brush-icon-half-backslash');
+    f.c.setBrush.mockClear(); fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.click(screen.getByRole('button', { name: 'Half stitch' }));
+    expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'half', direction: '\\', paletteId: 1 });
+    view.unmount(); vi.useRealTimers();
+    render(<EditorSurface workspace={ws} document={doc} />);
+    f.c.setBrush.mockClear(); fireEvent.click(screen.getByRole('button', { name: 'Half stitch' }));
+    expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'half', direction: '\\', paletteId: 1 });
+  });
+  it('does not change the brush when the half direction is set while another tool is active', () => {
+    vi.useFakeTimers(); render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.pointerDown(screen.getByRole('button', { name: 'Half stitch' }), { pointerId: 62, isPrimary: true }); act(() => vi.advanceTimersByTime(500));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Top-left to bottom-right' }));
+    expect(f.c.setBrush).not.toHaveBeenCalled();
+  });
+  it('defaults the half stitch direction to slash for stored preferences without the field', () => {
+    localStorage.setItem('needlewise-editor-preferences:v1', JSON.stringify({ version: 1, railSide: 'left', paletteDisplay: { symbols: true, numbers: true } }));
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Half stitch' }));
+    expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'half', direction: '/', paletteId: 1 });
   });
   it.each([['Full stitch','full'],['Half stitch','half'],['3/4 stitch','three-quarter'],['Eraser','eraser']] as const)('supports the %s hold trigger and its affordances', (name, key) => {
     vi.useFakeTimers(); render(<EditorSurface workspace={ws} document={doc} />);
@@ -723,7 +767,7 @@ describe('EditorSurface', () => {
     fireEvent.pointerUp(full, { pointerId: 41 }); fireEvent.click(full, { detail: 1 });
     expect(f.c.setBrush).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Half stitch' }));
-    expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'half', paletteId: 1 });
+    expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'half', direction: '/', paletteId: 1 });
   });
   it('suppresses an originating touch click dispatched after a normal delay', () => {
     vi.useFakeTimers();
@@ -1455,7 +1499,7 @@ describe('EditorSurface', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Editor' }));
     fireEvent.click(screen.getByRole('button', { name: 'Right' }));
     fireEvent.click(within(screen.getByRole('dialog', { name: 'Settings' })).getByRole('checkbox', { name: 'Show palette symbols' }));
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'right', paletteDisplay: { symbols: false, numbers: true }, pencilModeEnabled: false }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'right', paletteDisplay: { symbols: false, numbers: true }, pencilModeEnabled: false, halfStitchDirection: '/' }));
   });
   it('falls back to default editor preferences for malformed global storage', () => {
     localStorage.setItem('needlewise-editor-preferences:v1', '{not-json');
@@ -1488,7 +1532,7 @@ describe('EditorSurface', () => {
     expect(within(settings).getByRole('button', { name: 'Left' })).toHaveAttribute('aria-pressed', 'true');
     expect(within(settings).getByRole('checkbox', { name: 'Show palette symbols' })).not.toBeChecked();
     expect(within(settings).getByRole('checkbox', { name: 'Show palette numbers' })).toBeChecked();
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'left', paletteDisplay: { symbols: false, numbers: true }, pencilModeEnabled: false }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'left', paletteDisplay: { symbols: false, numbers: true }, pencilModeEnabled: false, halfStitchDirection: '/' }));
   });
   it('defaults pencil mode off and updates the controller', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
@@ -1510,7 +1554,7 @@ describe('EditorSurface', () => {
     fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' }));
     expect(within(settings).getByRole('checkbox', { name: 'Enable pencil mode' })).toBeChecked();
     expect(f.c.setTouchMovementOnly).toHaveBeenCalledWith(true);
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'left', paletteDisplay: { symbols: true, numbers: true }, pencilModeEnabled: true }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'left', paletteDisplay: { symbols: true, numbers: true }, pencilModeEnabled: true, halfStitchDirection: '/' }));
   });
   it('provides an accessible pencil mode tooltip trigger', () => {
     render(<EditorSurface workspace={ws} document={doc} />);

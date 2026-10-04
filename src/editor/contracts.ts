@@ -570,9 +570,12 @@ export interface FullStitchBrush {
   readonly paletteId: number;
 }
 
+/** The diagonal a half-stitch brush stamps when it does not name one. */
+export const DEFAULT_HALF_DIRECTION: '\\' | '/' = '/';
+
 export interface HalfStitchBrush {
   readonly kind: 'half';
-  /** Retained for legacy callers; authoring derives this from the hit corner. */
+  /** The diagonal the half tool stamps, whichever corner is hit; omitted means `DEFAULT_HALF_DIRECTION`. */
   readonly direction?: '\\' | '/';
   readonly paletteId: number;
 }
