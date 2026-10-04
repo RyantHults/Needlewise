@@ -42,6 +42,7 @@ import {
   MAX_PERSISTABLE_CELL_COUNT,
   mixedEraseCommand,
   pasteFragmentCommand,
+  snapBackstitchPoint,
   preflightBulkCompletionCommand,
   preflightBulkRecolorCommand,
   QuarterCorner,
@@ -1113,7 +1114,7 @@ describe('typed-array pattern document', () => {
     expect(getBackstitch(pattern, id)).toMatchObject({ x1: 8, y1: 0, x2: 12, y2: 4, completed: false });
   });
 
-  it('snaps new and moved backstitch endpoints to cell corners without migrating legacy geometry', () => {
+  it('snaps new and moved backstitch endpoints away from cell interiors without migrating legacy geometry', () => {
     let pattern = document(3, 3);
     pattern = apply(pattern, { type: 'add-backstitch', start: { x: 2, y: 2 }, end: { x: 10, y: 6 }, color: 1 });
     expect(listBackstitches(pattern)[0]).toMatchObject({ x1: 4, y1: 4, x2: 12, y2: 8 });
@@ -1135,6 +1136,52 @@ describe('typed-array pattern document', () => {
 
     const moved = apply(legacy, { type: 'move-backstitch', id: 1, start: { x: 2, y: 2 }, end: { x: 9, y: 5 } });
     expect(listBackstitches(moved)[0]).toMatchObject({ x1: 2, y1: 2, x2: 8, y2: 4 });
+  });
+
+  it('snaps a backstitch point to a corner or, within a quarter cell, an edge midpoint', () => {
+    expect(snapBackstitchPoint({ x: 4, y: 8 })).toEqual({ x: 4, y: 8 });
+    expect(snapBackstitchPoint({ x: 5, y: 7 })).toEqual({ x: 4, y: 8 });
+    // Horizontal edge midpoint (1.5, 1): taken within one unit, a corner beyond it.
+    expect(snapBackstitchPoint({ x: 6, y: 4 })).toEqual({ x: 6, y: 4 });
+    expect(snapBackstitchPoint({ x: 6.8, y: 4 })).toEqual({ x: 6, y: 4 });
+    expect(snapBackstitchPoint({ x: 7.2, y: 4 })).toEqual({ x: 8, y: 4 });
+    // Vertical edge midpoint (1, 1.5).
+    expect(snapBackstitchPoint({ x: 4, y: 6 })).toEqual({ x: 4, y: 6 });
+    expect(snapBackstitchPoint({ x: 4.5, y: 5.5 })).toEqual({ x: 4, y: 6 });
+    // Near a cell centre the point goes to a corner, never to the centre.
+    expect(snapBackstitchPoint({ x: 6, y: 6 })).toEqual({ x: 8, y: 8 });
+    expect(snapBackstitchPoint({ x: 5.5, y: 6.5 })).toEqual({ x: 4, y: 8 });
+    for (let x = 0; x <= 12; x += 0.25) {
+      for (let y = 0; y <= 12; y += 0.25) {
+        const snapped = snapBackstitchPoint({ x, y });
+        const onCorner = snapped.x % 4 === 0 && snapped.y % 4 === 0;
+        const onMidpoint = (snapped.x % 4 === 0 && snapped.y % 4 === 2) || (snapped.x % 4 === 2 && snapped.y % 4 === 0);
+        expect({ x, y, valid: onCorner || onMidpoint }).toEqual({ x, y, valid: true });
+        expect(snapBackstitchPoint(snapped)).toEqual(snapped);
+      }
+    }
+    // With bounds the point is clamped to the document first.
+    expect(snapBackstitchPoint({ x: -3, y: 50 }, { width: 3, height: 3 })).toEqual({ x: 0, y: 12 });
+    expect(snapBackstitchPoint({ x: 13, y: 6 }, { width: 3, height: 3 })).toEqual({ x: 12, y: 6 });
+  });
+
+  it('keeps edge-midpoint backstitch endpoints through add, move, rotate, mirror and paste', () => {
+    let pattern = document(3, 2);
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 2 }, end: { x: 6, y: 4 }, color: 1 });
+    const id = listBackstitches(pattern)[0].id;
+    expect(getBackstitch(pattern, id)).toMatchObject({ x1: 0, y1: 2, x2: 6, y2: 4 });
+    pattern = apply(pattern, { type: 'move-backstitch', id, start: { x: 0, y: 2 }, end: { x: 4, y: 6 } });
+    expect(getBackstitch(pattern, id)).toMatchObject({ x1: 0, y1: 2, x2: 4, y2: 6 });
+
+    const rotated = apply(pattern, { type: 'rotate-cw' });
+    // Clockwise on a 2-high chart maps (x, y) to (8 - y, x).
+    expect(listBackstitches(rotated)[0]).toMatchObject({ x1: 2, y1: 4, x2: 6, y2: 0 });
+    const mirrored = apply(pattern, { type: 'mirror-horizontal' });
+    expect(listBackstitches(mirrored)[0]).toMatchObject({ x1: 8, y1: 6, x2: 12, y2: 2 });
+
+    const fragment = createPatternFragment(pattern, { x: 0, y: 0, width: 2, height: 2 });
+    const pasted = applyCommand(document(3, 3), pasteFragmentCommand(fragment, { x: 1, y: 1 }));
+    expect(listBackstitches(pasted.document)[0]).toMatchObject({ x1: 4, y1: 6, x2: 8, y2: 10 });
   });
 
   it('round-trips rotations and mirrors while moving completion with geometry', () => {

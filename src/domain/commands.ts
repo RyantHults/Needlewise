@@ -3073,8 +3073,24 @@ function parseEndpoints(command: DomainCommand): { start: Point; end: Point } {
   return canonicalEndpoints(start, end);
 }
 
-function snapBackstitchEndpoint(point: Point): Point {
-  return { x: Math.round(point.x / 4) * 4, y: Math.round(point.y / 4) * 4 };
+/**
+ * Snap a fixed-point position (model x 4) to a backstitch endpoint: the nearest
+ * grid intersection, or the midpoint of a cell edge when the position is within
+ * a quarter cell (one unit) of it. Corners win otherwise, a cell centre is never
+ * returned, and an already-valid endpoint is returned unchanged. With `bounds`
+ * (in cells) the position is first clamped to the document.
+ */
+export function snapBackstitchPoint(fixed: Point, bounds?: { readonly width: number; readonly height: number }): Point {
+  const x = bounds ? Math.min(bounds.width * 4, Math.max(0, fixed.x)) : fixed.x;
+  const y = bounds ? Math.min(bounds.height * 4, Math.max(0, fixed.y)) : fixed.y;
+  const corner = { x: Math.round(x / 4) * 4, y: Math.round(y / 4) * 4 };
+  // The nearest midpoint lies on the nearest vertical or horizontal grid line.
+  const onVertical = { x: corner.x, y: Math.floor(y / 4) * 4 + 2 };
+  const onHorizontal = { x: Math.floor(x / 4) * 4 + 2, y: corner.y };
+  const verticalDistance = Math.hypot(x - onVertical.x, y - onVertical.y);
+  const horizontalDistance = Math.hypot(x - onHorizontal.x, y - onHorizontal.y);
+  const [midpoint, distance] = verticalDistance <= horizontalDistance ? [onVertical, verticalDistance] : [onHorizontal, horizontalDistance];
+  return distance <= 1 ? midpoint : corner;
 }
 
 function snapBackstitchEndpoints(document: PatternDocument, start: Point, end: Point): { start: Point; end: Point } {
@@ -3082,8 +3098,8 @@ function snapBackstitchEndpoints(document: PatternDocument, start: Point, end: P
     throw new DomainError('out-of-bounds', 'Backstitch endpoints must be within the document boundary.');
   }
   return canonicalEndpoints(
-    snapBackstitchEndpoint(start),
-    snapBackstitchEndpoint(end)
+    snapBackstitchPoint(start),
+    snapBackstitchPoint(end)
   );
 }
 
@@ -3097,8 +3113,8 @@ function snapMovedBackstitchEndpoints(
     throw new DomainError('out-of-bounds', 'Backstitch endpoints must be within the document boundary.');
   }
   return canonicalEndpoints(
-    start.x === current.x1 && start.y === current.y1 ? start : snapBackstitchEndpoint(start),
-    end.x === current.x2 && end.y === current.y2 ? end : snapBackstitchEndpoint(end)
+    start.x === current.x1 && start.y === current.y1 ? start : snapBackstitchPoint(start),
+    end.x === current.x2 && end.y === current.y2 ? end : snapBackstitchPoint(end)
   );
 }
 

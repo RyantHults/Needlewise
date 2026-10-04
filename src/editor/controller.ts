@@ -17,6 +17,7 @@ import {
   preflightBulkCellCommand,
   QuarterCorner,
   LayerType,
+  snapBackstitchPoint,
   type BulkCellEdit,
   type Layer,
   type StitchLayer,
@@ -245,6 +246,10 @@ interface BackstitchGesture {
   readonly token: EditorRevisionToken;
   readonly selectedId?: number;
   readonly movingEndpoint?: 'start' | 'end';
+  /** Where a move press landed; the endpoint stays put until the pointer leaves the tap slop. */
+  readonly pressScreen?: ScreenPoint;
+  readonly slop?: number;
+  dragging?: boolean;
   start: FixedPoint;
   end: FixedPoint;
 }
@@ -352,6 +357,9 @@ const RESIZE_HANDLE_HIT_PIXELS = 12;
 const RESIZE_EDGE_SNAP_PIXELS = 8;
 /** Screen-pixel movement permitted for a stationary multi-touch history tap. */
 export const TOUCH_HISTORY_TAP_SLOP_PIXELS = 12;
+/** A Move-mode press on a backstitch only selects it until the pointer travels this far. */
+const BACKSTITCH_MOVE_SLOP_PIXELS = 4;
+const BACKSTITCH_MOVE_TOUCH_SLOP_PIXELS = 8;
 /** Maximum timestamp span permitted for a stationary multi-touch history tap. */
 export const TOUCH_HISTORY_TAP_MAX_DURATION_MS = 350;
 
@@ -806,12 +814,10 @@ function pairCornerAt(point: ModelPoint, colors: ArrayLike<number>): 0 | 1 | 2 |
   return firstTriangle ? first : second;
 }
 
+/** The backstitch endpoint for a model point: a grid corner or, when close, a cell-edge midpoint. */
 function fixedPointAt(point: ModelPoint, document: PatternDocument): FixedPoint {
   if (!isFiniteModelPoint(point)) throw new DomainError('invalid-coordinate', 'Backstitch coordinates must be finite.');
-  return {
-    x: Math.min(document.width * 4, Math.max(0, Math.round(point.x) * 4)),
-    y: Math.min(document.height * 4, Math.max(0, Math.round(point.y) * 4))
-  };
+  return snapBackstitchPoint({ x: point.x * 4, y: point.y * 4 }, document);
 }
 
 function fixedPointToModel(point: FixedPoint): ModelPoint {
@@ -2550,10 +2556,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (gesture.kind === 'backstitch') {
       const document = this.gateway.getSnapshot().document;
       if (!document || !isFiniteViewport(this.uiStore.getState().viewport)) return false;
-      const snapped = fixedPointAt(this.backstitchModelPoint(sample), document);
-      if (gesture.movingEndpoint === 'start') gesture.start = snapped;
-      else gesture.end = snapped;
-      this.publishBackstitchPreview(gesture.start, gesture.end);
+      this.followBackstitchPointer(gesture, sample, document);
       return true;
     }
     this.updatePan(sample);
@@ -2655,12 +2658,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       else this.publishSelectionOverlay();
     } else if (gesture.kind === 'backstitch') {
       const document = this.gateway.getSnapshot().document;
-      if (document && isFiniteViewport(this.uiStore.getState().viewport)) {
-        const snapped = fixedPointAt(this.backstitchModelPoint(sample), document);
-        if (gesture.movingEndpoint === 'start') gesture.start = snapped;
-        else gesture.end = snapped;
-        this.publishBackstitchPreview(gesture.start, gesture.end);
-      }
+      if (document && isFiniteViewport(this.uiStore.getState().viewport)) this.followBackstitchPointer(gesture, sample, document);
       this.finishBackstitch(gesture);
     } else if (gesture.kind === 'move-image') {
       this.finishMoveImage(gesture, sample);
@@ -3496,6 +3494,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         token: { projectId: snapshot.projectId, revision: snapshot.revision },
         selectedId: hit.id,
         movingEndpoint: startDistance <= endDistance ? 'start' : 'end',
+        pressScreen: { x: sample.screenX, y: sample.screenY },
+        slop: sample.pointerType === 'touch' ? BACKSTITCH_MOVE_TOUCH_SLOP_PIXELS : BACKSTITCH_MOVE_SLOP_PIXELS,
         start: hit.start,
         end: hit.end
       };
@@ -3517,6 +3517,23 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     };
     this.publishBackstitchPreview(snapped, snapped);
     return true;
+  }
+
+  /**
+   * Move the drawn or moving endpoint to the pointer. A Move-mode press leaves
+   * the stitch untouched until the pointer passes the tap slop, so a tap only
+   * selects.
+   */
+  private followBackstitchPointer(gesture: BackstitchGesture, sample: PointerSample, document: PatternDocument): void {
+    if (gesture.mode === 'move' && !gesture.dragging) {
+      const press = gesture.pressScreen;
+      if (press && Math.hypot(sample.screenX - press.x, sample.screenY - press.y) <= (gesture.slop ?? 0)) return;
+      gesture.dragging = true;
+    }
+    const snapped = fixedPointAt(this.backstitchModelPoint(sample), document);
+    if (gesture.movingEndpoint === 'start') gesture.start = snapped;
+    else gesture.end = snapped;
+    this.publishBackstitchPreview(gesture.start, gesture.end);
   }
 
   private finishBackstitch(gesture: BackstitchGesture): void {
@@ -3541,7 +3558,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       if (created?.changed) this.selectedBackstitchId = this.createdBackstitchId(created);
       return;
     }
-    if (gesture.selectedId === undefined) return;
+    // A tap that never left the slop selected the stitch and changes nothing.
+    if (gesture.selectedId === undefined || !gesture.dragging) return;
     const changed = this.executeCommandWithToken({
       type: 'move-backstitch',
       id: gesture.selectedId,

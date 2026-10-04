@@ -1348,10 +1348,12 @@ describe('advanced headless editor tools', () => {
     controller.handlePointerDown(pointer(2, 24, 16));
     expect(controller.getSelectedBackstitchId()).toBe(1);
     controller.handlePointerUp(pointer(2, 24, 16));
+    // A tap only selects, even on an edge midpoint such as (1.5, 1): no endpoint moves.
+    expect(gateway.commands.at(-1)).toMatchObject({ type: 'add-backstitch' });
     controller.handlePointerDown(pointer(3, 40, 24));
     controller.handlePointerMove(pointer(3, 56, 24));
     controller.handlePointerUp(pointer(3, 56, 24));
-    expect(gateway.commands.at(-1)).toMatchObject({ type: 'move-backstitch', id: 1, end: { x: 12, y: 8 } });
+    expect(gateway.commands.at(-1)).toMatchObject({ type: 'move-backstitch', id: 1, start: { x: 4, y: 4 }, end: { x: 16, y: 8 } });
     expect(gateway.getSnapshot().document?.backstitches.completed[0]).toBe(0);
     controller.handleKeyDown({ key: 'Backspace', preventDefault: () => undefined });
     expect(gateway.getSnapshot().document?.backstitches.ids).toHaveLength(0);
