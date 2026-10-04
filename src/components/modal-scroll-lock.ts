@@ -2,10 +2,18 @@
 // scroll chaining: a single-finger drag starting on non-scrollable modal content still
 // rubber-bands or scrolls the page behind it. The CSS lock at styles.css (`html:has(...)`)
 // covers every other browser; this listener is the iOS-only fallback, active only while a
-// modal is open, and it must be a non-passive touchmove handler so preventDefault() can win.
+// modal is open, and it must be a non-passive touchmove handler so preventDefault() can win. Moves within a small tap
+// slop of the touch start are never prevented, so Apple Pencil taps (which report sub-pixel
+// touchmoves) keep their click; once a gesture leaves the slop the lock judges every later move.
 
 const MODAL_SELECTOR = '[aria-modal="true"]';
 const MODAL_BOUNDARY_SELECTOR = '.modal-backdrop';
+
+/**
+ * Distance (CSS px) a touch may wander from its start before it counts as a drag. Apple Pencil
+ * taps emit sub-pixel touchmoves; preventDefault() on those cancels the tap's click.
+ */
+const TAP_SLOP_PX = 10;
 
 interface TouchPoint {
   x: number;
@@ -43,8 +51,10 @@ function hasScrollableAncestor(target: Element, boundary: Element, axis: 'x' | '
  */
 export function installModalScrollLock(doc: Document = document): () => void {
   let start: TouchPoint | null = null;
+  let slopExceeded = false;
 
   const onTouchStart = (event: TouchEvent) => {
+    slopExceeded = false;
     const touch = event.touches[0];
     start = touch ? { x: touch.clientX, y: touch.clientY } : null;
   };
@@ -60,6 +70,10 @@ export function installModalScrollLock(doc: Document = document): () => void {
     const from = start ?? { x: touch.clientX, y: touch.clientY };
     const dx = touch.clientX - from.x;
     const dy = touch.clientY - from.y;
+    if (!slopExceeded) {
+      if (Math.hypot(dx, dy) <= TAP_SLOP_PX) return; // still a tap
+      slopExceeded = true; // a drag, even if the touch drifts back inside the radius
+    }
     if (dx === 0 && dy === 0) return; // no direction to judge yet
 
     const boundary = target.closest(MODAL_BOUNDARY_SELECTOR);

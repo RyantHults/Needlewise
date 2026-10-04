@@ -1222,6 +1222,98 @@ describe('Canvas 2D chart renderer', () => {
     expect(isCanvasImageSource(imageCall?.args[0])).toBe(true);
   });
 
+  it.each([
+    { mode: 'color' as const, atlas: true },
+    { mode: 'color' as const, atlas: false },
+    { mode: 'symbol' as const, atlas: true },
+    { mode: 'symbol' as const, atlas: false }
+  ])('strokes backstitches over the $mode overview (atlas: $atlas)', ({ mode, atlas }) => {
+    const document = chart(2, 1);
+    document.kind[0] = CellKind.Full;
+    document.colors[0] = 1;
+    document.backstitches = {
+      ids: new Uint32Array([1]),
+      x1: new Uint32Array([0]),
+      y1: new Uint32Array([2]),
+      x2: new Uint32Array([8]),
+      y2: new Uint32Array([2]),
+      colors: new Uint16Array([35]),
+      completed: new Uint8Array([0])
+    };
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(32, 16),
+      viewport: { x: 0, y: 0, zoom: 1 },
+      style: { mode },
+      atlasTargetFactory: atlas ? (width, height) => target(recordingContext(), new FakeCanvasImageSource(width, height)) : () => undefined
+    });
+    const stats = renderer.renderNow();
+    expect(stats.lod).toBe('overview');
+    expect(stats.drawnBackstitches).toBe(1);
+    expect(base.calls.includes('drawImage')).toBe(atlas);
+    expect(base.records.some((call) => call.name === 'moveTo' && call.strokeStyle === '#00f')).toBe(true);
+    renderer.dispose();
+  });
+
+  describe('partial redraws snap to device pixels', () => {
+    // A brush stroke invalidates its bounding cell rect, which lands on
+    // fractional CSS coordinates at a fractional zoom and dpr. The redraw must
+    // reach 2px past it (perimeter grid-line halves) and sit on device pixels.
+    const dpr = 1.5;
+    const cellRect = { x: 2, y: 3, width: 2, height: 1 };
+    const viewport = { x: 0, y: 0, zoom: 6.5 };
+    const raw = cellToScreenRect(cellRect, viewport);
+    const onDevicePixel = (value: number): boolean => Math.abs(value * dpr - Math.round(value * dpr)) < 1e-9;
+    const expectExpandedSnappedClear = (context: RecordingContext): void => {
+      const clears = context.records.filter((call) => call.name === 'clearRect' && (call.args[0] as number) > 0);
+      expect(clears).toHaveLength(1);
+      const [x, y, width, height] = clears[0].args as number[];
+      for (const edge of [x, y, x + width, y + height]) expect(onDevicePixel(edge)).toBe(true);
+      expect(x).toBeLessThanOrEqual(raw.x - 2);
+      expect(y).toBeLessThanOrEqual(raw.y - 2);
+      expect(x + width).toBeGreaterThanOrEqual(raw.x + raw.width + 2);
+      expect(y + height).toBeGreaterThanOrEqual(raw.y + raw.height + 2);
+      expect(x).toBeGreaterThan(raw.x - 2 - 1 / dpr);
+      expect(x + width).toBeLessThan(raw.x + raw.width + 2 + 1 / dpr);
+    };
+
+    it('expands and snaps the base clear', () => {
+      const base = recordingContext();
+      const renderer = createCanvasRenderer({
+        document: chart(20, 20),
+        targets: { base: target(base), overlay: target(recordingContext()) },
+        metrics: getCanvasMetrics(100, 100, { dpr }),
+        viewport
+      });
+      expect(renderer.renderNow().lod).not.toBe('overview');
+      base.calls.length = 0;
+      base.records.length = 0;
+      renderer.invalidate({ layer: 'base', cellRect, reason: 'paint-cell' });
+      renderer.renderNow();
+      expectExpandedSnappedClear(base);
+      renderer.dispose();
+    });
+
+    it('expands and snaps the overlay clear', () => {
+      const overlay = recordingContext();
+      const renderer = createCanvasRenderer({
+        document: chart(20, 20),
+        targets: { base: target(recordingContext()), overlay: target(overlay) },
+        metrics: getCanvasMetrics(100, 100, { dpr }),
+        viewport
+      });
+      renderer.renderNow();
+      overlay.calls.length = 0;
+      overlay.records.length = 0;
+      renderer.invalidate({ layer: 'overlay', cellRect, reason: 'pending-cells' });
+      renderer.renderNow();
+      expectExpandedSnappedClear(overlay);
+      renderer.dispose();
+    });
+  });
+
   it('keeps half-band and directional three-quarter geometry in color overview atlases and fallbacks', () => {
     const createDocument = () => {
       const document = chart(2, 1);
@@ -1466,10 +1558,12 @@ describe('Canvas 2D chart renderer', () => {
       cellRect: { x: 5, y: 6, width: 2, height: 1 },
       reasons: ['paint-cell', 'completion-cell']
     });
-    expect(renderer.lastStats.visitedCells).toBe(2);
+    // The 2px seam margin reaches half a cell at zoom 4, so the redraw covers a
+    // ring of neighbours around the two invalidated cells.
+    expect(renderer.lastStats.visitedCells).toBe(12);
     expect(base.records.some((call) => call.name === 'clip')).toBe(true);
     expect(base.records.some((call) => call.name === 'clearRect' && call.args.join(',') === '0,0,40,40')).toBe(false);
-    expect(base.records.some((call) => call.name === 'clearRect' && call.args.join(',') === '20,24,8,4')).toBe(true);
+    expect(base.records.some((call) => call.name === 'clearRect' && call.args.join(',') === '18,22,12,8')).toBe(true);
     renderer.setStyle({ gridColor: '#000' });
     renderer.renderNow();
     expect(base.records.some((call) => call.name === 'clearRect' && call.args.join(',') === '0,0,40,40')).toBe(true);
@@ -1504,7 +1598,8 @@ describe('Canvas 2D chart renderer', () => {
       reason: 'document-revision'
     });
     renderer.renderNow();
-    expect(renderer.lastStats.visitedCells).toBe(1);
+    // One cell plus the ring of neighbours the 2px seam margin reaches.
+    expect(renderer.lastStats.visitedCells).toBe(9);
     expect(renderer.lastStats.baseRendered).toBe(true);
     expect(renderer.lastStats.overlayRendered).toBe(false);
     expect(base.records.some((call) => call.name === 'clip')).toBe(true);
@@ -2163,7 +2258,7 @@ describe('Canvas 2D chart renderer', () => {
     renderer.dispose();
   });
 
-  it('omits pending backstitch repair at overview LOD', () => {
+  it('repairs pending backstitches at overview LOD', () => {
     const document = chart(2, 1);
     document.kind[0] = CellKind.Full;
     document.colors[0] = 1;
@@ -2188,7 +2283,7 @@ describe('Canvas 2D chart renderer', () => {
       }
     });
     expect(renderer.renderNow().lod).toBe('overview');
-    expect(overlay.records.some((call) => call.name === 'moveTo' && call.strokeStyle === '#00f')).toBe(false);
+    expect(overlay.records.some((call) => call.name === 'moveTo' && call.strokeStyle === '#00f')).toBe(true);
     expect(overlay.records.some((call) => call.name === 'moveTo' && call.strokeStyle === '#00aa00')).toBe(false);
     renderer.dispose();
   });

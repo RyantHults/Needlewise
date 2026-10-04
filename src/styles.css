@@ -32,6 +32,21 @@ input, textarea, select, [contenteditable]:not([contenteditable="false"]) {
   -webkit-touch-callout: default;
 }
 
+/* RangeInput: WebKit on iPadOS paints the native accent fill out of step with
+   the thumb, so the track fill is painted from the controlled value instead.
+   The thumb centre travels from --thumb-r to 100% - --thumb-r, so the fill edge
+   is offset by the radius to land under it at every value. The element
+   selector outranks dialog-wide `input` rules that add padding and borders. */
+input[type="range"].range-input { --thumb-r:.55rem; --range-track:linear-gradient(to right, #bc5a3d 0 calc(var(--thumb-r) + (100% - 2 * var(--thumb-r)) * var(--range-fill-ratio, 0)), #d9d2c8 0); height:1.4rem; padding:0; border:0; border-radius:0; background:transparent; box-shadow:none; -webkit-appearance:none; appearance:none; cursor:pointer; }
+input[type="range"].range-input:focus { outline:none; }
+input[type="range"].range-input::-webkit-slider-runnable-track { height:.3rem; border-radius:999px; background:var(--range-track); }
+input[type="range"].range-input::-moz-range-track { height:.3rem; border-radius:999px; background:var(--range-track); }
+input[type="range"].range-input::-webkit-slider-thumb { box-sizing:border-box; width:calc(2 * var(--thumb-r)); height:calc(2 * var(--thumb-r)); margin-top:calc(.15rem - var(--thumb-r)); border:2px solid #bc5a3d; border-radius:50%; background:#fff; box-shadow:0 1px 3px #30201540; -webkit-appearance:none; appearance:none; }
+input[type="range"].range-input::-moz-range-thumb { box-sizing:border-box; width:calc(2 * var(--thumb-r)); height:calc(2 * var(--thumb-r)); border:2px solid #bc5a3d; border-radius:50%; background:#fff; box-shadow:0 1px 3px #30201540; }
+input[type="range"].range-input:focus-visible::-webkit-slider-thumb { box-shadow:0 0 0 3px #f1d6c9, 0 1px 3px #30201540; }
+input[type="range"].range-input:focus-visible::-moz-range-thumb { box-shadow:0 0 0 3px #f1d6c9, 0 1px 3px #30201540; }
+input[type="range"].range-input:disabled { opacity:.55; cursor:not-allowed; }
+
 /* Displayed thread names/codes stay copyable. */
 .catalog-selection-details, .material-main strong, .palette-menu > strong, .palette-menu > span {
   -webkit-user-select: text;
@@ -180,7 +195,7 @@ html:has([aria-modal="true"]), html:has([aria-modal="true"]) body { overflow:hid
 .budget-control .budget-count { display:inline-block; width:4ch; margin:0; padding:0; border:0; border-radius:.25rem; background:#f8f5ef; color:#88452f; font:inherit; font-size:.8rem; font-weight:700; letter-spacing:0; text-align:center; box-shadow:none; outline:none; }
 .budget-control .budget-count:focus-visible { outline:2px solid #f1d6c9; outline-offset:1px; }
 .budget-control .budget-suffix { color:#88452f; font-size:.8rem; letter-spacing:0; }
-.budget-control input[type="range"] { margin:.5rem 0 .25rem; accent-color:#bc5a3d; }
+.budget-control input[type="range"] { margin:.5rem 0 .25rem; }
 .colors-used-note strong { color:#88452f; }
 .file-drop { position:relative; display:grid; justify-items:center; gap:.45rem; margin-top:.8rem; border:2px dashed #d9a891; border-radius:.75rem; padding:1.6rem 1.2rem; background:#fbf4ef; color:#88452f; font-size:.78rem; text-align:center; cursor:pointer; transition:border-color .15s, background-color .15s; }
 .file-drop:hover, .file-drop-active { border-color:#bc5a3d; background:#f8eee7; }
@@ -251,14 +266,14 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .brush-size-control { margin-top:.75rem; border-top:1px solid #e4ddd3; padding-top:.65rem; color:#625c55; font-size:.74rem; }
 .brush-size-control label { display:flex; justify-content:space-between; gap:.5rem; font-weight:700; }
 .brush-size-control output { color:#88452f; }
-.brush-size-control input[type="range"] { width:100%; margin-top:.55rem; accent-color:#bc5a3d; }
+.brush-size-control input[type="range"] { width:100%; margin-top:.55rem; }
 .rail-button { position:relative; }
 .brush-size-corner { position:absolute; right:0; bottom:0; width:7px; height:7px; background:#bc5a3d; clip-path:polygon(0 100%,100% 0,100% 100%); box-shadow:0 0 0 1px #fffdf9; pointer-events:none; }
 .rail-button span.brush-size-corner { position:absolute; inset:auto 0 0 auto; display:block; width:7px; height:7px; overflow:visible; clip:auto; white-space:normal; }
 .tool-brush-popover { width:min(15rem, calc(100vw - 16px)); padding:.7rem .8rem; border:1px solid #d8cbb9; border-radius:10px; background:#fffdf9; box-shadow:0 8px 26px #30201530; color:#39332e; }
 .tool-brush-popover label { display:flex; justify-content:space-between; gap:.75rem; font-size:.82rem; font-weight:700; }
 .tool-brush-popover output { color:#88452f; }
-.tool-brush-popover input[type="range"] { width:100%; margin:.55rem 0 0; accent-color:#bc5a3d; }
+.tool-brush-popover input[type="range"] { width:100%; margin:.55rem 0 0; }
 .rail-button:focus-visible { outline:2px solid #bc5a3d; outline-offset:2px; }
 .trace-controls { background:#f3eee5; }
 .trace-import, .trace-remove { width:100%; min-height:2.5rem; border:1px solid #d5cec3; border-radius:.4rem; background:#fffdf9; color:#4e4842; font-size:.74rem; font-weight:700; }
@@ -267,7 +282,7 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .trace-toggle, .trace-opacity { display:flex; align-items:center; gap:.45rem; margin:.55rem 0; color:#625c55; font-size:.74rem; }
 .trace-opacity { flex-wrap:wrap; }
 .trace-opacity output { margin-left:auto; color:#88452f; font-weight:700; }
-.trace-opacity input[type="range"] { width:100%; accent-color:#bc5a3d; }
+.trace-opacity input[type="range"] { width:100%; }
 .trace-remove { margin-top:.35rem; color:#88452f; }
 .trace-mode-row { display:grid; grid-template-columns:1fr 1fr; gap:.35rem; margin:.55rem 0; }
 .trace-mode-button { min-height:2.5rem; border:1px solid #d1c9bd; border-radius:.4rem; background:#fffdf9; color:#6f6a63; font-size:.74rem; font-weight:700; cursor:pointer; transition:background 160ms ease, border-color 160ms ease, color 160ms ease; }
@@ -383,7 +398,7 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .palette-rail .palette-row-selected, .palette-rail .palette-button[aria-pressed="true"] { background:transparent; }
 .palette-rail .palette-swatch { position:relative; display:grid; place-items:center; justify-self:center; width:var(--palette-square); height:var(--palette-square); border:1px solid rgba(39,35,33,.25); border-radius:.62rem; box-shadow:0 .15rem .2rem rgba(67,55,42,.16); }
 .palette-rail .palette-button:hover .palette-swatch, .palette-rail .palette-button[aria-pressed="true"] .palette-swatch { box-shadow:0 0 0 .06rem var(--palette-surround), 0 .15rem .14rem rgba(67,55,42,.16); }
-.palette-rail .palette-swatch-symbol { color:#fffdf9; font-size:1.25rem; line-height:1; text-shadow:0 1px 2px rgba(0,0,0,.65); }
+.palette-rail .palette-swatch-symbol { font-size:1.25rem; line-height:1; }
 .palette-rail .palette-number { position:absolute; top:2.62rem; left:50%; display:flex; width:2.75rem; flex-direction:column; align-items:center; gap:.03rem; color:#625c55; font-size:.58rem; font-weight:700; line-height:.72rem; text-align:center; transform:translateX(-50%); }
 .palette-rail .palette-brand-label { display:block; max-width:100%; max-height:.52rem; overflow:hidden; font-size:.43rem; font-weight:600; line-height:.52rem; text-overflow:ellipsis; white-space:nowrap; }
 .palette-rail .palette-code-label { font-size:.5rem; line-height:.58rem; }
@@ -483,7 +498,7 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .canvas-actions .trace-visibility:has(input:checked) { border-color:#bc5a3d; background:#f1e4da; }
 .canvas-actions .trace-opacity { display:flex; flex-direction:column; align-items:stretch; gap:.1rem; width:9rem; margin:0; }
 .canvas-actions .trace-opacity-label { color:#687568; font-size:.62rem; font-weight:700; line-height:1; }
-.canvas-actions .trace-opacity input { width:7.605rem; accent-color:#bc5a3d; }
+.canvas-actions .trace-opacity input { width:7.605rem; }
 .canvas-actions .trace-opacity output { color:#88452f; font-size:.68rem; font-weight:700; }
 .canvas-actions .trace-mode-row { display:flex; gap:.3rem; margin:0; }
 .canvas-actions .trace-remove { margin-top:0; color:#88452f; }

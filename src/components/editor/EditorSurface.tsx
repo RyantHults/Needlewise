@@ -19,6 +19,7 @@ import {
 import type { DisplayUnits, LayerType } from "../../domain";
 import { SYMBOL_POOL, SYMBOL_TILE_VIEW } from "../../symbols";
 import type { PoolEntry } from "../../symbols";
+import { RangeInput } from "../RangeInput";
 import { TraceImageControls } from "./TraceImageControls";
 import { LayersPanel, LAYER_TYPE_LABELS, type ActiveLayerId } from "./LayersPanel";
 import { LayerControls } from "./LayerControls";
@@ -34,7 +35,8 @@ import lassoIcon from "../../assets/editor-tools/lasso.svg";
 import eyedropperIcon from "../../assets/editor-tools/eyedropper.svg";
 import panIcon from "../../assets/editor-tools/pan.svg";
 import stitchIcon from "../../assets/editor-tools/stitch.svg";
-import { toolAvailability, type BrushSizeTool, type EditorActiveLayer, type ShapeKind } from "../../editor/contracts";
+import { contrastSymbolInk } from "../../rendering/contrast";
+import { DEFAULT_RENDERER_STYLE, toolAvailability, type BrushSizeTool, type EditorActiveLayer, type ShapeKind } from "../../editor/contracts";
 import type { ProjectSession } from "../../application/session";
 interface Props {
   workspace: ProjectWorkspace;
@@ -512,7 +514,7 @@ export function EditorSurface({
     noThread = !palette.length;
   const selectedPalette = palette.find((x) => x.id === ui?.paletteId) ?? palette[0];
   const choose = (kind: "full" | "half" | "three-quarter") => {
-    const id = palette[0]?.id;
+    const id = selectedPalette?.id;
     if (id)
       controllerRef.current?.setBrush({
         kind,
@@ -846,7 +848,7 @@ export function EditorSurface({
         }}
       >
         <span className="palette-swatch" style={{ backgroundColor: x.color }} aria-hidden="true">
-          {paletteOptions.symbols && <span className="palette-swatch-symbol"><SymbolTile id={x.symbol} /></span>}
+          {paletteOptions.symbols && <span className="palette-swatch-symbol" style={{ color: contrastSymbolInk(x.color, DEFAULT_RENDERER_STYLE.symbolColor) }}><SymbolTile id={x.symbol} /></span>}
           {paletteOptions.numbers && (
             <span className={`palette-number${x.catalog ? "" : " palette-number-hex"}`}>
               {catalogEntryBrand(x) ? <><span className="palette-brand-label">{catalogEntryBrand(x)}</span><span className="palette-code-label">{x.catalog?.code}</span></> : catalogEntryLabel(x)}
@@ -1965,7 +1967,7 @@ export function EditorSurface({
           <div className="canvas-actions">
             {brushPopover && createPortal(<div id="tool-brush-popover" ref={brushMenu} className="tool-brush-popover" role="dialog" aria-label={`${brushPopover.label} brush size`} style={{ position: "fixed", left: brushPopover.left, top: brushPopover.top, zIndex: 1000 }}>
               <label htmlFor="tool-brush-size">{brushPopover.label} brush size <output>{ui?.toolBrushSizes[brushPopover.tool] ?? 1}</output></label>
-              <input id="tool-brush-size" type="range" min="1" max="10" aria-label={`${brushPopover.label} brush size`} value={ui?.toolBrushSizes[brushPopover.tool] ?? 1} onChange={(event) => controllerRef.current?.setToolBrushSize(brushPopover.tool, Number(event.target.value))} />
+              <RangeInput id="tool-brush-size" min="1" max="10" aria-label={`${brushPopover.label} brush size`} value={ui?.toolBrushSizes[brushPopover.tool] ?? 1} onChange={(event) => controllerRef.current?.setToolBrushSize(brushPopover.tool, Number(event.target.value))} />
             </div>, globalThis.document.body)}
             <section className="action-section reference-actions layer-actions" aria-labelledby="reference-actions-label">
               <h3 id="reference-actions-label">{activeLayerHeading}</h3>

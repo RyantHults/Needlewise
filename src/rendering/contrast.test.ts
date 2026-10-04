@@ -15,21 +15,24 @@ describe('contrastSymbolInk', () => {
     expect(contrastSymbolInk('#b40000', '#242424')).toBe('#ffffff');
   });
 
-  it('flips at the WCAG crossover between consecutive mid-tone grays', () => {
-    // #818181 is still slightly above the crossover (dark ink keeps its
-    // ratio); #808080 dips below it and white becomes the higher-contrast ink.
-    expect(contrastSymbolInk('#818181', '#242424')).toBe('#242424');
+  it('favors white ink up to 60% gray', () => {
     expect(contrastSymbolInk('#808080', '#242424')).toBe('#ffffff');
+    expect(contrastSymbolInk('#8c8c8c', '#242424')).toBe('#ffffff');
+    expect(contrastSymbolInk('#999999', '#242424')).toBe('#242424');
+    expect(contrastSymbolInk('#a0a0a0', '#242424')).toBe('#242424');
   });
 
-  it('resolves exact contrast ties toward the dark ink', () => {
+  it('keeps a custom dark ink at and above the threshold', () => {
     expect(contrastSymbolInk('#ffffff', '#ffffff')).toBe('#ffffff');
+    expect(contrastSymbolInk('#ffffff', '#101010')).toBe('#101010');
+    expect(contrastSymbolInk('#000000', '#101010')).toBe('#ffffff');
   });
 
   it('returns the dark ink for unparseable colors', () => {
     expect(contrastSymbolInk('not-a-color', '#242424')).toBe('#242424');
     expect(contrastSymbolInk('#GGGGGG', '#242424')).toBe('#242424');
     expect(contrastSymbolInk('#GGG', '#242424')).toBe('#242424');
+    expect(contrastSymbolInk('garbage', '#242424')).toBe('#242424');
     expect(contrastSymbolInk('', '#242424')).toBe('#242424');
     // A broken dark ink falls back to itself too.
     expect(contrastSymbolInk('#ffffff', 'oops')).toBe('oops');

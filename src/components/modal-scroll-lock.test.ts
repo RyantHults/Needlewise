@@ -145,6 +145,72 @@ describe('installModalScrollLock', () => {
     expect(move.defaultPrevented).toBe(true);
   });
 
+  it('does not prevent small moves within the tap slop (Apple Pencil taps)', () => {
+    cleanup = installModalScrollLock(document);
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
+    const dialog = document.createElement('div');
+    dialog.setAttribute('aria-modal', 'true');
+    const button = document.createElement('button');
+    dialog.appendChild(button);
+    backdrop.appendChild(dialog);
+    document.body.appendChild(backdrop);
+
+    dispatchTouch('touchstart', button, [makeTouch(100, 100)]);
+    expect(dispatchTouch('touchmove', button, [makeTouch(100.5, 100)]).defaultPrevented).toBe(false);
+    expect(dispatchTouch('touchmove', button, [makeTouch(103, 100)]).defaultPrevented).toBe(false);
+  });
+
+  it('prevents a move past the tap slop', () => {
+    cleanup = installModalScrollLock(document);
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
+    const dialog = document.createElement('div');
+    dialog.setAttribute('aria-modal', 'true');
+    const button = document.createElement('button');
+    dialog.appendChild(button);
+    backdrop.appendChild(dialog);
+    document.body.appendChild(backdrop);
+
+    dispatchTouch('touchstart', button, [makeTouch(100, 100)]);
+    expect(dispatchTouch('touchmove', button, [makeTouch(100, 115)]).defaultPrevented).toBe(true);
+  });
+
+  it('keeps preventing after the slop was passed, even when the touch drifts back inside it', () => {
+    cleanup = installModalScrollLock(document);
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
+    const dialog = document.createElement('div');
+    dialog.setAttribute('aria-modal', 'true');
+    const button = document.createElement('button');
+    dialog.appendChild(button);
+    backdrop.appendChild(dialog);
+    document.body.appendChild(backdrop);
+
+    dispatchTouch('touchstart', button, [makeTouch(100, 100)]);
+    dispatchTouch('touchmove', button, [makeTouch(100, 115)]);
+    expect(dispatchTouch('touchmove', button, [makeTouch(100, 103)]).defaultPrevented).toBe(true);
+
+    // A new gesture starts with a fresh slop.
+    dispatchTouch('touchstart', button, [makeTouch(100, 100)]);
+    expect(dispatchTouch('touchmove', button, [makeTouch(100, 103)]).defaultPrevented).toBe(false);
+  });
+
+  it('does not prevent small moves outside the modal', () => {
+    cleanup = installModalScrollLock(document);
+    const page = document.createElement('div');
+    document.body.appendChild(page);
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
+    const dialog = document.createElement('div');
+    dialog.setAttribute('aria-modal', 'true');
+    backdrop.appendChild(dialog);
+    document.body.appendChild(backdrop);
+
+    dispatchTouch('touchstart', page, [makeTouch(0, 0)]);
+    expect(dispatchTouch('touchmove', page, [makeTouch(0, 3)]).defaultPrevented).toBe(false);
+  });
+
   it('removes both listeners on cleanup', () => {
     const remove = installModalScrollLock(document);
     const backdrop = document.createElement('div');

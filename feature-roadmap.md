@@ -37,6 +37,7 @@ Public user/download counts were not consistently available, so these are the mo
 - Thread ID, name, color approximation, usage count, skein estimate, and shopping list.
 - Automatic palette extraction/mapping from an image.
 - Palette size limits, near-duplicate detection, color replacement, and cross-brand conversion.
+- Symbols are generated vector outlines owned by the app, not OS-font glyphs, so they render identically everywhere and scale crisply at any zoom.
 
 #### 4. Image-to-pattern and tracing
 

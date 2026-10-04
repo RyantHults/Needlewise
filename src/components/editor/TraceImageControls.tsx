@@ -6,6 +6,7 @@ import type { SourceImageMimeType } from '../../persistence';
 import type { EditorSurfaceController } from '../../editor';
 import { decodeTraceImage, disposeTraceImage, fitTraceImageBounds, TraceDecodeError } from '../../rendering/trace';
 import { MAX_TRACE_IMAGE_BYTES } from '../../rendering/trace';
+import { RangeInput } from '../RangeInput';
 
 interface Props {
   workspace: ProjectWorkspace;
@@ -276,7 +277,7 @@ export function TraceImageControls({ workspace, document, controller, activeTool
         </div>
       </div>, globalThis.document.body
     )}
-    <label className="trace-opacity"><span className="trace-opacity-label">Transparency</span><input aria-label={`Reference image opacity ${Math.round(opacity * 100)}%`} disabled={!descriptor} type="range" min="0" max="1" step="0.05" value={opacity} onPointerDown={beginOpacityInteraction} onFocus={beginOpacityInteraction} onChange={(event) => handleOpacityChange(Number(event.target.value))} onPointerUp={commitOpacityInteraction} onBlur={commitOpacityInteraction} /></label>
+    <label className="trace-opacity"><span className="trace-opacity-label">Transparency</span><RangeInput aria-label={`Reference image opacity ${Math.round(opacity * 100)}%`} disabled={!descriptor} min="0" max="1" step="0.05" value={opacity} onPointerDown={beginOpacityInteraction} onFocus={beginOpacityInteraction} onChange={(event) => handleOpacityChange(Number(event.target.value))} onPointerUp={commitOpacityInteraction} onBlur={commitOpacityInteraction} /></label>
     <span className="trace-status sr-only" role={status?.includes('could not') || status?.includes('missing') ? 'alert' : 'status'}>{status ?? 'Optional local reference; it is not part of the stitch chart.'}</span>
   </div>;
 }

@@ -573,6 +573,18 @@ describe('EditorSurface', () => {
     expect(f.c.setBrush).not.toHaveBeenCalled();
     expect(screen.queryByRole('heading', { name: 'Brush settings' })).not.toBeInTheDocument();
   });
+  it('keeps the selected non-first palette color when a brush tool is chosen', () => {
+    f.uiState.paletteId = 2;
+    render(<EditorSurface workspace={ws} document={two} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Full stitch' }));
+    expect(f.c.setBrush).toHaveBeenLastCalledWith({ kind: 'full', paletteId: 2 });
+    fireEvent.click(screen.getByRole('button', { name: 'Half stitch' }));
+    expect(f.c.setBrush).toHaveBeenLastCalledWith({ kind: 'half', paletteId: 2 });
+    fireEvent.click(screen.getByRole('button', { name: '3/4 stitch' }));
+    expect(f.c.setBrush).toHaveBeenLastCalledWith({ kind: 'three-quarter', paletteId: 2 });
+    expect(screen.getByRole('button', { name: 'Sky' })).toHaveAttribute('aria-pressed', 'true');
+    f.uiState.paletteId = 1;
+  });
   it.each([['Full stitch','full'],['Half stitch','half'],['3/4 stitch','three-quarter'],['Eraser','eraser']] as const)('supports the %s hold trigger and its affordances', (name, key) => {
     vi.useFakeTimers(); render(<EditorSurface workspace={ws} document={doc} />);
     const trigger = screen.getByRole('button', { name });
@@ -1941,6 +1953,14 @@ describe('EditorSurface', () => {
     expect(chip.querySelector('use')?.getAttribute('href')).toBe(`#symbol-${assigned}`);
     expect(chip.textContent).not.toContain(assigned);
     expect(chip.querySelector('path')).toBeNull();
+  });
+  it('inks palette swatch symbols black or white by swatch color like the chart', () => {
+    const entry = (id: number, name: string, color: string) => ({ id, name, color, active: true, symbol: SYMBOL_IDS[0], catalog: { code: String(id), name, hex: color, rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } });
+    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [entry(1, 'Straw', '#f0e68c'), entry(2, 'Night', '#1a1a40')], backstitches: { ids: new Uint32Array() } } as never;
+    render(<EditorSurface workspace={ws} document={symDoc} />);
+    const ink = (label: string) => (screen.getByRole('button', { name: label }).querySelector('.palette-swatch-symbol') as HTMLElement).style.color;
+    expect(ink('1Straw')).toBe('rgb(36, 36, 36)');
+    expect(ink('2Night')).toBe('rgb(255, 255, 255)');
   });
   it('keeps held symbols visible and swaps glyphs atomically when a held tile is picked', async () => {
     const [symbolA, symbolB, symbolC] = [SYMBOL_IDS[0], SYMBOL_IDS[1], SYMBOL_IDS[2]];

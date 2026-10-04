@@ -175,6 +175,20 @@ function drawSymbol(
   drawPaletteSymbol(context, document, id, rect, style, slot);
 }
 
+/** Grow a partial-redraw rect to cover the outer halves of grid lines on its
+ * perimeter (major lines reach 2.5px) and their antialiasing, then snap it
+ * outward to whole device pixels. A fractional clip and clearRect leave
+ * half-blended edge pixels that read as a seam rectangle around the edit. */
+function expandDirtyRect(rect: Rect, pixelRatio: number): Rect {
+  const ratio = Number.isFinite(pixelRatio) && pixelRatio > 0 ? pixelRatio : 1;
+  const margin = 2;
+  const left = Math.floor((rect.x - margin) * ratio) / ratio;
+  const top = Math.floor((rect.y - margin) * ratio) / ratio;
+  const right = Math.ceil((rect.x + rect.width + margin) * ratio) / ratio;
+  const bottom = Math.ceil((rect.y + rect.height + margin) * ratio) / ratio;
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
 /** Round a screen coordinate to the nearest device pixel, so adjacent full-cell
  * fills share exact edges instead of leaving anti-aliased seams between them. */
 function snapToDevicePixel(value: number, pixelRatio: number): number {
@@ -686,7 +700,7 @@ function drawBackstitchesForCells(
   lod: RenderLod,
   bounds: Rect
 ): void {
-  if (lod === RenderLod.Overview || cells.length === 0) return;
+  if (cells.length === 0) return;
   const visible = viewportModelRect(viewport, metrics);
   const store = document.backstitches;
   for (let index = 0; index < store.ids.length; index += 1) {
@@ -1669,7 +1683,8 @@ export class Canvas2DRenderer implements CanvasRenderer {
     const context = target.context;
     const patternBackground = patternBackgroundColor(this.document);
     const cellInvalidationRect = invalidation.cellRect ? cellToScreenRect(invalidation.cellRect, this.viewport) : undefined;
-    const invalidationRect = unionRect(invalidation.rect, cellInvalidationRect);
+    const rawInvalidationRect = unionRect(invalidation.rect, cellInvalidationRect);
+    const invalidationRect = rawInvalidationRect ? expandDirtyRect(rawInvalidationRect, this.metrics.dpr) : undefined;
     const partial = !fullInvalidation && lod !== RenderLod.Overview && invalidationRect !== undefined && clipToRect(context, invalidationRect);
     if (!partial) {
       clearTarget(target, this.metrics);
@@ -1688,69 +1703,14 @@ export class Canvas2DRenderer implements CanvasRenderer {
     if (lod === RenderLod.Overview) {
       if (dimAlpha < 1) save(context);
       if (dimAlpha < 1) setAlpha(context, dimAlpha);
-      if (this.style.mode === ChartPresentationMode.Symbol) {
-        const symbolAtlas = this.symbolAtlas.get(this.document, this.style, this.atlasFactory);
-        const canDrawCachedSymbols = Boolean(
-          symbolAtlas.source &&
-          context.drawImage &&
-          isCanvasImageSource(symbolAtlas.source)
-        );
-        if (canDrawCachedSymbols) {
-          const previousSmoothing = context.imageSmoothingEnabled;
-          let drawnFromAtlas = false;
-          try {
-            if (previousSmoothing !== undefined) context.imageSmoothingEnabled = true;
-            drawImage(
-              context,
-              symbolAtlas.source,
-              symbolAtlas.width,
-              symbolAtlas.height,
-              -this.viewport.x * this.viewport.zoom,
-              -this.viewport.y * this.viewport.zoom,
-              this.document.width * this.viewport.zoom,
-              this.document.height * this.viewport.zoom
-            );
-            drawnFromAtlas = true;
-          } catch {
-            // An adapter can expose drawImage but still reject this source;
-            // use the direct visible-cell Symbol path below.
-          } finally {
-            if (previousSmoothing !== undefined) context.imageSmoothingEnabled = previousSmoothing;
-          }
-          if (drawnFromAtlas) {
-            const visible = visibleCellRect(this.viewport, this.metrics, this.document);
-            drawGrid(context, this.document, this.viewport, this.metrics, this.style, visible, lod);
-            drawChartBorder(context, this.document, this.viewport, this.metrics, this.style);
-            if (dimAlpha < 1) restore(context);
-            drawTraceImage(context, this.traceImage, this.document, this.viewport, this.metrics);
-            return { visitedCells: 0, drawnCells: 0, drawnBackstitches: 0 };
-          }
-        }
-        const fallback = drawOverviewSymbolFallback(context, this.document, this.viewport, this.metrics, this.style);
-        const visible = visibleCellRect(this.viewport, this.metrics, this.document);
-        drawGrid(context, this.document, this.viewport, this.metrics, this.style, visible, lod);
-        drawChartBorder(context, this.document, this.viewport, this.metrics, this.style);
-        if (dimAlpha < 1) restore(context);
-        drawTraceImage(context, this.traceImage, this.document, this.viewport, this.metrics);
-        return { ...fallback, drawnBackstitches: 0 };
-      }
-      context.imageSmoothingEnabled = false;
-      const atlas = this.atlas.get(this.document, this.style, this.atlasFactory);
+      const cells = this.drawOverviewCells(context);
       const visible = visibleCellRect(this.viewport, this.metrics, this.document);
-      if (atlas.source && context.drawImage && isCanvasImageSource(atlas.source)) {
-        drawImage(context, atlas.source, atlas.width, atlas.height, -this.viewport.x * this.viewport.zoom, -this.viewport.y * this.viewport.zoom, this.document.width * this.viewport.zoom, this.document.height * this.viewport.zoom);
-        drawGrid(context, this.document, this.viewport, this.metrics, this.style, visible, lod);
-        drawChartBorder(context, this.document, this.viewport, this.metrics, this.style);
-        if (dimAlpha < 1) restore(context);
-        drawTraceImage(context, this.traceImage, this.document, this.viewport, this.metrics);
-        return { visitedCells: 0, drawnCells: 0, drawnBackstitches: 0 };
-      }
-      const fallback = drawOverviewFallback(context, this.document, this.viewport, this.metrics, this.style);
       drawGrid(context, this.document, this.viewport, this.metrics, this.style, visible, lod);
       drawChartBorder(context, this.document, this.viewport, this.metrics, this.style);
+      const drawnBackstitches = drawBackstitches(context, this.document, this.viewport, this.metrics, this.style, undefined, dimAlpha);
       if (dimAlpha < 1) restore(context);
       drawTraceImage(context, this.traceImage, this.document, this.viewport, this.metrics);
-      return { ...fallback, drawnBackstitches: 0 };
+      return { ...cells, drawnBackstitches };
     }
     const visible = visibleCellRect(this.viewport, this.metrics, this.document);
     const invalidationCellRect = (invalidation.cellRect && invalidationRect
@@ -1784,12 +1744,58 @@ export class Canvas2DRenderer implements CanvasRenderer {
     return { visitedCells: dirtyCells.width * dirtyCells.height, drawnCells, drawnBackstitches };
   }
 
+  /** Draw the Overview cells from the cached atlas when the adapter can, else
+   * cell by cell; the caller draws the grid, border, and backstitches over them. */
+  private drawOverviewCells(context: CanvasContextAdapter): { visitedCells: number; drawnCells: number } {
+    if (this.style.mode === ChartPresentationMode.Symbol) {
+      const symbolAtlas = this.symbolAtlas.get(this.document, this.style, this.atlasFactory);
+      const canDrawCachedSymbols = Boolean(
+        symbolAtlas.source &&
+        context.drawImage &&
+        isCanvasImageSource(symbolAtlas.source)
+      );
+      if (canDrawCachedSymbols) {
+        const previousSmoothing = context.imageSmoothingEnabled;
+        let drawnFromAtlas = false;
+        try {
+          if (previousSmoothing !== undefined) context.imageSmoothingEnabled = true;
+          drawImage(
+            context,
+            symbolAtlas.source,
+            symbolAtlas.width,
+            symbolAtlas.height,
+            -this.viewport.x * this.viewport.zoom,
+            -this.viewport.y * this.viewport.zoom,
+            this.document.width * this.viewport.zoom,
+            this.document.height * this.viewport.zoom
+          );
+          drawnFromAtlas = true;
+        } catch {
+          // An adapter can expose drawImage but still reject this source;
+          // use the direct visible-cell Symbol path below.
+        } finally {
+          if (previousSmoothing !== undefined) context.imageSmoothingEnabled = previousSmoothing;
+        }
+        if (drawnFromAtlas) return { visitedCells: 0, drawnCells: 0 };
+      }
+      return drawOverviewSymbolFallback(context, this.document, this.viewport, this.metrics, this.style);
+    }
+    context.imageSmoothingEnabled = false;
+    const atlas = this.atlas.get(this.document, this.style, this.atlasFactory);
+    if (atlas.source && context.drawImage && isCanvasImageSource(atlas.source)) {
+      drawImage(context, atlas.source, atlas.width, atlas.height, -this.viewport.x * this.viewport.zoom, -this.viewport.y * this.viewport.zoom, this.document.width * this.viewport.zoom, this.document.height * this.viewport.zoom);
+      return { visitedCells: 0, drawnCells: 0 };
+    }
+    return drawOverviewFallback(context, this.document, this.viewport, this.metrics, this.style);
+  }
+
   private renderOverlay(fullInvalidation: boolean, invalidation: CoalescedInvalidation, lod: RenderLod): void {
     const target = this.options.targets.overlay;
     prepareTarget(target, this.metrics);
-    const dirtyRect = !fullInvalidation
+    const rawDirtyRect = !fullInvalidation
       ? unionRect(invalidation.rect, invalidation.cellRect ? cellToScreenRect(invalidation.cellRect, this.viewport) : undefined)
       : undefined;
+    const dirtyRect = rawDirtyRect ? expandDirtyRect(rawDirtyRect, this.metrics.dpr) : undefined;
     drawOverlay(target.context, this.document, this.overlay, this.viewport, this.metrics, this.style, lod, dirtyRect);
     if (this.overlay.imageResizeHandles && this.traceImage) {
       drawResizeHandles(target.context, this.traceImage, this.document, this.viewport, this.style, this.overlay.color ?? this.style.selectionColor);

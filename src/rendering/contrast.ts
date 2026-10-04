@@ -1,5 +1,5 @@
 /**
- * WCAG contrast helpers for picking the symbol ink with the highest contrast
+ * Luminance helpers for picking the symbol ink (dark or white, favoring white)
  * against the stitch color underneath it in Combined chart presentation mode.
  * Pure functions only — no canvas or document access, so they are unit-testable
  * in isolation.
@@ -41,23 +41,21 @@ export function relativeLuminance(hex: string): number | undefined {
   return 0.2126 * linearChannel(rgb[0]) + 0.7152 * linearChannel(rgb[1]) + 0.0722 * linearChannel(rgb[2]);
 }
 
-function contrastRatio(lighter: number, darker: number): number {
-  return (lighter + 0.05) / (darker + 0.05);
-}
+/**
+ * Backgrounds darker than 60% gray (`#999999`) get white ink. That is
+ * deliberately above the 50% WCAG crossover (`#808080`-ish) so white ink is
+ * favored on mid-tone stitch colors.
+ */
+const WHITE_INK_LUMINANCE_THRESHOLD = relativeLuminance('#999999') as number;
 
 /**
- * Pick the symbol ink that maximizes WCAG contrast against a stitch color.
- * `darkInk` is the configured symbol color (default `#242424`) and the light
- * alternative is always `#ffffff`. Unparseable inputs and exact contrast ties
- * keep `darkInk`, so light-background rendering is behavior-preserving and a
- * dark stitch color flips the glyph to white.
+ * Pick the symbol ink for a stitch color: white when the background's relative
+ * luminance is strictly below `#999999`'s, otherwise `darkInk`. `darkInk` is
+ * the configured symbol color (default `#242424`). Unparseable inputs keep
+ * `darkInk`, so light-background rendering is behavior-preserving.
  */
 export function contrastSymbolInk(backgroundHex: string, darkInk: string): string {
   const background = relativeLuminance(backgroundHex);
-  const dark = relativeLuminance(darkInk);
-  if (background === undefined || dark === undefined) return darkInk;
-  const white = 1;
-  const darkRatio = contrastRatio(Math.max(background, dark), Math.min(background, dark));
-  const whiteRatio = contrastRatio(Math.max(background, white), Math.min(background, white));
-  return whiteRatio > darkRatio ? '#ffffff' : darkInk;
+  if (background === undefined || relativeLuminance(darkInk) === undefined) return darkInk;
+  return background < WHITE_INK_LUMINANCE_THRESHOLD ? '#ffffff' : darkInk;
 }
