@@ -213,7 +213,7 @@ function drawCellState(
   if (kind === CellKind.Empty) return false;
   const rect = cellToScreenRect({ x, y, width: 1, height: 1 }, viewport);
   const symbolMode = style.mode === ChartPresentationMode.Symbol;
-  const fill = (id: number, completed: boolean, slot?: number, geometryKind = kind): void => {
+  const paintShape = (id: number, completed: boolean, slot?: number, geometryKind = kind): void => {
     save(context);
     context.fillStyle = symbolMode ? style.symbolBackgroundColor : styleColor(document, id, style);
     setAlpha(context, (completed ? style.completedOpacity : 1) * dimAlpha);
@@ -227,6 +227,8 @@ function drawCellState(
       context.fillRect(x0, y0, x1 - x0, y1 - y0);
     } else drawStitchGeometry(context, geometryKind, rect, slot);
     restore(context);
+  };
+  const paintMarks = (id: number, completed: boolean, slot?: number): void => {
     if (lod === RenderLod.Detail || symbolMode) drawSymbol(context, document, id, rect, style, slot);
     if (completed && lod === RenderLod.Detail) {
       const completionRect = slot === undefined ? rect : {
@@ -238,6 +240,10 @@ function drawCellState(
       completedMark(context, completionRect, style, dimAlpha);
     }
   };
+  const fill = (id: number, completed: boolean, slot?: number, geometryKind = kind): void => {
+    paintShape(id, completed, slot, geometryKind);
+    paintMarks(id, completed, slot);
+  };
 
   if (isLegacyQuarterKind(kind)) {
     for (let slot = 0; slot < 4; slot += 1) {
@@ -245,9 +251,32 @@ function drawCellState(
       if (id !== 0) fill(id, (completed & (1 << slot)) !== 0, slot);
     }
   } else if (isThreeQuarterPairKind(kind)) {
-    for (const component of threeQuarterPairComponents(colors)) {
-      const id = colors[component.slot] ?? 0;
-      if (id !== 0) fill(id, (completed & (1 << component.slot)) !== 0, component.slot, component.kind);
+    const components = threeQuarterPairComponents(colors).filter((component) => (colors[component.slot] ?? 0) !== 0);
+    for (const component of components) {
+      paintShape(colors[component.slot] ?? 0, (completed & (1 << component.slot)) !== 0, component.slot, component.kind);
+    }
+    // The seam keeps two same-colored three-quarters from reading as one full stitch. It sits above
+    // the fills and below the symbols and completion marks.
+    if (components.length > 0 && lod !== RenderLod.Overview) {
+      const first = components[0];
+      const firstId = colors[first.slot] ?? 0;
+      const backslashSeam = first.slot === 0;
+      save(context);
+      context.strokeStyle = contrastSymbolInk(
+        symbolMode ? style.symbolBackgroundColor : styleColor(document, firstId, style),
+        style.symbolColor
+      );
+      context.lineWidth = Math.max(1, Math.min(2, viewport.zoom * 0.06));
+      setAlpha(context, ((completed & (1 << first.slot)) !== 0 ? style.completedOpacity : 1) * dimAlpha);
+      linePath(
+        context,
+        backslashSeam ? { x: rect.x + rect.width, y: rect.y } : { x: rect.x, y: rect.y },
+        backslashSeam ? { x: rect.x, y: rect.y + rect.height } : { x: rect.x + rect.width, y: rect.y + rect.height }
+      );
+      restore(context);
+    }
+    for (const component of components) {
+      paintMarks(colors[component.slot] ?? 0, (completed & (1 << component.slot)) !== 0, component.slot);
     }
   } else {
     fill(colors[0] ?? 0, (completed & 1) !== 0);
@@ -1194,10 +1223,12 @@ function compositeHexColor(foreground: string, background: string, alpha: number
   ).join('')}`;
 }
 
-// Pick whichever of `#ffffff` / `darkInk` has the best WORST-CASE WCAG contrast
-// across every color in `colors` (a cell can expose several colors at once —
-// split-stitch slots, the pattern background, or both). Mirrors
-// contrastSymbolInk's tie-breaking (keeps darkInk on unparseable input).
+// Pick the brush-preview outline ink for the colors a cell can expose at once
+// (split-stitch slots, the pattern background, or both). A single color
+// delegates to contrastSymbolInk, so it uses its 60%-gray threshold that favors
+// white. Several colors deliberately keep the best worst-case WCAG contrast of
+// `#ffffff` vs `darkInk` across all of them, because this only inks the preview
+// outline, not symbols. Unparseable input keeps darkInk.
 function bestContrastInk(colors: readonly string[], darkInk: string): string {
   if (colors.length === 0) return darkInk;
   if (colors.length === 1) return contrastSymbolInk(colors[0], darkInk);

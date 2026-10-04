@@ -7,6 +7,7 @@ import {
   createPointerEventsAdapter,
   type EditorSurfaceController,
   type EditorUiState,
+  type BackstitchMode,
 } from "../../editor";
 import { getCanvasMetrics } from "../../editor/coordinates";
 import { createCanvasTarget } from "../../rendering/context";
@@ -128,11 +129,12 @@ type EditorPreferences = {
   pencilModeEnabled: boolean;
 };
 
-type PressTool = BrushSizeTool | "shape";
+type PopoverTool = BrushSizeTool | "backstitch";
+type PressTool = PopoverTool | "shape";
 type PressSession = {
   pointerId: number;
   pointerType: string;
-  kind: "brush" | "shape";
+  kind: "brush" | "shape" | "backstitch";
   anchor: HTMLButtonElement;
   tool: PressTool;
   label: string;
@@ -279,7 +281,8 @@ export function EditorSurface({
   );
   const [ui, setUi] = useState<EditorUiState | null>(null);
   const [fallback, setFallback] = useState(false);
-  const [brushPopover, setBrushPopover] = useState<{ tool: BrushSizeTool; label: string; left: number; top: number } | null>(null);
+  const [brushPopover, setBrushPopover] = useState<{ tool: PopoverTool; label: string; left: number; top: number } | null>(null);
+  const [lastBackstitchMode, setLastBackstitchMode] = useState<BackstitchMode>("draw");
   const brushTrigger = useRef<HTMLButtonElement | null>(null);
   const brushMenu = useRef<HTMLDivElement | null>(null);
   const pressLifecycle = useRef<PressLifecycle>({ session: null, trailingClicks: [], competingPointers: [], releaseObservers: [], touchContextGuards: [] });
@@ -320,10 +323,12 @@ export function EditorSurface({
   const [selectedCatalogColor, setSelectedCatalogColor] =
     useState<CatalogColor | null>(null);
   const [swapTarget, setSwapTarget] = useState<number | null>(null);
+  const [backgroundPicking, setBackgroundPicking] = useState(false);
   const [customColorInput, setCustomColorInput] = useState("");
   const [canonicalCustomColor, setCanonicalCustomColor] = useState("#000000");
   const [paletteNotice, setPaletteNotice] = useState("");
   const addTrigger = useRef<HTMLButtonElement>(null);
+  const preselectedCatalogColor = useRef<CatalogColor | null>(null);
   const paletteTrigger = useRef<HTMLButtonElement | null>(null);
   const paletteDialog = useRef<HTMLDivElement>(null);
   const [removeOpen, setRemoveOpen] = useState(false);
@@ -512,6 +517,7 @@ export function EditorSurface({
   }, [preferences]);
   const palette = document.palette.filter((x) => x.active),
     noThread = !palette.length;
+  const activeBackstitchMode = ui?.tool.tool === "backstitch" ? (ui.tool.mode ?? "draw") : undefined;
   const selectedPalette = palette.find((x) => x.id === ui?.paletteId) ?? palette[0];
   const choose = (kind: "full" | "half" | "three-quarter") => {
     const id = selectedPalette?.id;
@@ -542,7 +548,8 @@ export function EditorSurface({
   const invoke = (tool: string) => {
     if (refuseUnavailable(tool)) return;
     if (noThread && ["paint", "fill", "backstitch"].includes(tool)) return;
-    if (tool === "eraser") controllerRef.current?.setEraserMode("whole-cell");
+    if ((tool === "select" || tool === "lasso") && String(ui?.tool.tool) === tool) controllerRef.current?.clearSelection();
+    else if (tool === "eraser") controllerRef.current?.setEraserMode("whole-cell");
     else controllerRef.current?.setTool({ tool } as never);
   };
   const save = async (e: React.FormEvent) => {
@@ -609,11 +616,14 @@ export function EditorSurface({
   }, [catalogResults, paletteOpen, selectedCatalogColor, selectedCatalogId]);
   useEffect(() => {
     setPaletteQuery("");
-    setSelectedCatalogColor(pickerCatalog?.search("", { limit: 1 })[0] ?? null);
+    const preselected = preselectedCatalogColor.current;
+    preselectedCatalogColor.current = null;
+    setSelectedCatalogColor(preselected ?? pickerCatalog?.search("", { limit: 1 })[0] ?? null);
   }, [selectedCatalogId]);
   const openPalettePicker = () => {
     paletteTrigger.current = addTrigger.current;
     setSwapTarget(null);
+    setBackgroundPicking(false);
     setPaletteNotice("");
     setPaletteQuery("");
     setCustomColorInput("#000000");
@@ -624,6 +634,7 @@ export function EditorSurface({
   };
   const openSwapPicker = (id: number, trigger: HTMLButtonElement) => {
     paletteTrigger.current = trigger;
+    setBackgroundPicking(false);
     setPaletteNotice("");
     setPaletteQuery("");
     setCustomColorInput("#000000");
@@ -631,6 +642,27 @@ export function EditorSurface({
     setSelectedCatalogId(defaultCatalogId);
     setSelectedCatalogColor(availableCatalogs.find((item) => item.association.catalogId === defaultCatalogId)?.search("", { limit: 1 })[0] ?? null);
     setSwapTarget(id);
+    setPaletteOpen(true);
+  };
+  const backgroundCatalogMatch = availableCatalogs.flatMap((item) => {
+    const record = item.getByHex(documentBackgroundColor);
+    return record ? [{ item, record }] : [];
+  })[0];
+  const openBackgroundPicker = (trigger: HTMLButtonElement) => {
+    paletteTrigger.current = trigger;
+    const defaultCatalog = availableCatalogs.find((item) => item.association.catalogId === defaultCatalogId);
+    const catalog = backgroundCatalogMatch?.item ?? defaultCatalog;
+    const catalogId = catalog?.association.catalogId ?? defaultCatalogId;
+    const color = backgroundCatalogMatch?.record ?? null;
+    setSwapTarget(null);
+    setBackgroundPicking(true);
+    setPaletteNotice("");
+    setPaletteQuery("");
+    setCustomColorInput(documentBackgroundColor);
+    setCanonicalCustomColor(documentBackgroundColor);
+    if (catalogId !== selectedCatalogId) preselectedCatalogColor.current = color;
+    setSelectedCatalogId(catalogId);
+    setSelectedCatalogColor(color ?? catalog?.search("", { limit: 1 })[0] ?? null);
     setPaletteOpen(true);
   };
   const customColor = normalizeHexColor(customColorInput);
@@ -650,7 +682,9 @@ export function EditorSurface({
   const customPaletteMatch = customColor
     ? selectedCatalogPaletteMatch ?? palette.find((entry) => entry.active && !entry.catalog && normalizeHexColor(entry.color) === customColor)
     : undefined;
-  const customActionLabel = swapTarget !== null
+  const customActionLabel = backgroundPicking
+    ? customColor ? `Use ${customColor}` : "Use custom color"
+    : swapTarget !== null
     ? customPaletteMatch ? `Swap with ${customPaletteMatch.name}` : customCatalogColor ? `Swap with ${customCatalogColor.name}` : customColor ? `Replace with ${customColor}` : "Replace custom color"
     : customPaletteMatch
     ? `Select ${customPaletteMatch.name}`
@@ -661,7 +695,12 @@ export function EditorSurface({
         : "Add custom color";
   const closePalettePicker = () => {
     setPaletteOpen(false);
+    setBackgroundPicking(false);
     window.setTimeout(() => paletteTrigger.current?.focus(), 0);
+  };
+  const useBackgroundColor = (hex: string) => {
+    setCanvasBackground(hex);
+    closePalettePicker();
   };
   const addPaletteColor = async (
     color: CatalogColor,
@@ -1318,7 +1357,8 @@ export function EditorSurface({
   const threeQuarterActive =
     (selectedBrush as { kind?: string } | undefined)?.kind === "three-quarter";
   const backstitchActive = ui?.tool.tool === "backstitch";
-  const openBrushPopover = (tool: BrushSizeTool, label: string, anchor: HTMLButtonElement) => {
+  useEffect(() => { if (activeBackstitchMode) setLastBackstitchMode(activeBackstitchMode); }, [activeBackstitchMode]);
+  const openBrushPopover = (tool: PopoverTool, label: string, anchor: HTMLButtonElement) => {
     brushTrigger.current = anchor;
     const rect = anchor.getBoundingClientRect();
     setBrushPopover({ tool, label, left: Math.max(8, Math.min(rect.left, window.innerWidth - 250)), top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 100)) });
@@ -1332,7 +1372,7 @@ export function EditorSurface({
     globalThis.document.addEventListener("pointerdown", outside); globalThis.document.addEventListener("keydown", key); window.addEventListener("resize", reposition); window.addEventListener("scroll", reposition, true);
     return () => { globalThis.document.removeEventListener("pointerdown", outside); globalThis.document.removeEventListener("keydown", key); window.removeEventListener("resize", reposition); window.removeEventListener("scroll", reposition, true); };
   }, [brushPopover]);
-  useEffect(() => { if (brushPopover) brushMenu.current?.querySelector<HTMLInputElement>("input")?.focus(); }, [brushPopover]);
+  useEffect(() => { if (brushPopover) brushMenu.current?.querySelector<HTMLElement>(brushPopover.tool === "backstitch" ? 'button[aria-pressed="true"]' : "input")?.focus(); }, [brushPopover]);
   const positionShapeMenu = (anchor: HTMLElement) => {
     const rect = anchor.getBoundingClientRect();
     setShapeMenuPosition({ left: Math.max(8, Math.min(rect.left, window.innerWidth - 324)), top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 110)) });
@@ -1553,7 +1593,7 @@ export function EditorSurface({
       if (session.phase !== "pending") return;
       session.phase = "opened";
       if (session.kind === "shape") openShapeMenu(anchor);
-      else openBrushPopover(session.tool as BrushSizeTool, session.label, anchor);
+      else openBrushPopover(session.tool as PopoverTool, session.label, anchor);
     }, 500);
   };
   const abortPressOnLeave = (event: React.PointerEvent<HTMLButtonElement>) => {
@@ -1594,8 +1634,8 @@ export function EditorSurface({
     if (event.button === 2) return false;
     return false;
   };
-  const brushHandlers = (tool: BrushSizeTool, label: string) => ({
-    onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => beginPress(event, "brush", tool, label),
+  const brushHandlers = (tool: PopoverTool, label: string) => ({
+    onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => beginPress(event, tool === "backstitch" ? "backstitch" : "brush", tool, label),
     onPointerLeave: abortPressOnLeave,
     onContextMenu: (event: React.MouseEvent<HTMLButtonElement>) => {
       event.preventDefault();
@@ -1789,14 +1829,17 @@ export function EditorSurface({
               <span className="brush-size-corner" aria-hidden="true" />
             </button>
             <button
-              {...toolGate("backstitch", "Backstitch")}
+              {...brushHandlers("backstitch", "Backstitch")}
+              {...toolGate("backstitch", "Backstitch · hold for mode")}
               type="button"
               disabled={noThread}
-              aria-label="Backstitch"
+              aria-label={activeBackstitchMode ? `Backstitch, ${activeBackstitchMode} mode` : "Backstitch"}
+              aria-haspopup="dialog" aria-expanded={brushPopover?.tool === "backstitch"} aria-controls="tool-brush-popover"
               aria-pressed={backstitchActive}
-              onClick={() => invoke("backstitch")}
+              onClick={(event) => { if (shouldSuppressPressClick(event.currentTarget, event)) return; if (refuseUnavailable("backstitch")) return; controllerRef.current?.setBackstitchMode(lastBackstitchMode); }}
             >
               <img data-icon="backstitch" src={backstitchIcon} alt="" aria-hidden="true" />
+              <span className="brush-size-corner" aria-hidden="true" />
             </button>
             <button
               {...brushHandlers("eraser", "Eraser")}
@@ -1965,9 +2008,27 @@ export function EditorSurface({
             </div>
           </div>
           <div className="canvas-actions">
-            {brushPopover && createPortal(<div id="tool-brush-popover" ref={brushMenu} className="tool-brush-popover" role="dialog" aria-label={`${brushPopover.label} brush size`} style={{ position: "fixed", left: brushPopover.left, top: brushPopover.top, zIndex: 1000 }}>
-              <label htmlFor="tool-brush-size">{brushPopover.label} brush size <output>{ui?.toolBrushSizes[brushPopover.tool] ?? 1}</output></label>
-              <RangeInput id="tool-brush-size" min="1" max="10" aria-label={`${brushPopover.label} brush size`} value={ui?.toolBrushSizes[brushPopover.tool] ?? 1} onChange={(event) => controllerRef.current?.setToolBrushSize(brushPopover.tool, Number(event.target.value))} />
+            {brushPopover && createPortal(<div id="tool-brush-popover" ref={brushMenu} className="tool-brush-popover" role="dialog" aria-label={brushPopover.tool === "backstitch" ? "Backstitch mode" : `${brushPopover.label} brush size`} style={{ position: "fixed", left: brushPopover.left, top: brushPopover.top, zIndex: 1000 }}>
+              {brushPopover.tool === "backstitch" ? (
+                <div className="backstitch-mode-row">
+                  {(["draw", "move"] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      className="backstitch-mode-button"
+                      type="button"
+                      aria-pressed={lastBackstitchMode === mode}
+                      onClick={() => { controllerRef.current?.setBackstitchMode(mode); setLastBackstitchMode(mode); setBrushPopover(null); if (brushTrigger.current?.isConnected) brushTrigger.current.focus(); }}
+                    >
+                      {mode === "draw" ? "Draw" : "Move"}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <>
+                  <label htmlFor="tool-brush-size">{brushPopover.label} brush size <output>{ui?.toolBrushSizes[brushPopover.tool] ?? 1}</output></label>
+                  <RangeInput id="tool-brush-size" min="1" max="10" aria-label={`${brushPopover.label} brush size`} value={ui?.toolBrushSizes[brushPopover.tool] ?? 1} onChange={(event) => controllerRef.current?.setToolBrushSize(brushPopover.tool as BrushSizeTool, Number(event.target.value))} />
+                </>
+              )}
             </div>, globalThis.document.body)}
             <section className="action-section reference-actions layer-actions" aria-labelledby="reference-actions-label">
               <h3 id="reference-actions-label">{activeLayerHeading}</h3>
@@ -1977,7 +2038,8 @@ export function EditorSurface({
                   activeLayerId={activeLayerId}
                   backgroundColor={documentBackgroundColor}
                   aidaCount={aidaCount}
-                  onBackgroundColorChange={setCanvasBackground}
+                  backgroundCatalog={backgroundCatalogMatch ? { name: backgroundCatalogMatch.record.name, brand: backgroundCatalogMatch.item.association.brandLabel, code: backgroundCatalogMatch.record.code } : undefined}
+                  onChooseBackground={openBackgroundPicker}
                   onAidaCountChange={setCanvasAidaCount}
                   onRename={(layerId, name) => runLayerAction(() => session?.renameLayer(layerId, name))}
                   onDuplicate={(layerId) => runLayerAction(() => session?.duplicateLayer(layerId))}
@@ -2264,7 +2326,7 @@ export function EditorSurface({
                 ×
               </button>
                  <p className="section-label">{pickerCatalog?.association.brandLabel ?? "Catalog"}</p>
-                <h2 id="editor-catalog-title">{swapTarget === null ? "Add a thread color" : `Swap ${palette.find((entry) => entry.id === swapTarget)?.name ?? "color"} for a thread color`}</h2>
+                <h2 id="editor-catalog-title">{backgroundPicking ? "Choose a background color" : swapTarget === null ? "Add a thread color" : `Swap ${palette.find((entry) => entry.id === swapTarget)?.name ?? "color"} for a thread color`}</h2>
                 {swapTarget !== null && <p className="modal-hint">Stitches and backstitches using {palette.find((entry) => entry.id === swapTarget)?.name ?? "this color"} will be changed.</p>}
                 <div className="catalog-box">
                   <div className="catalog-selection" aria-label="Selected thread color" role="group" aria-live="polite">
@@ -2282,11 +2344,11 @@ export function EditorSurface({
                       <button
                         className="small-action"
                         type="button"
-                         aria-label={`${swapTarget === null ? "Add" : "Swap"} ${selectedCatalogColor.name}`}
-                           onClick={() => swapTarget === null ? void addPaletteColor(selectedCatalogColor) : swapIntoCatalogColor(selectedCatalogColor)}
+                         aria-label={`${backgroundPicking ? "Use" : swapTarget === null ? "Add" : "Swap"} ${selectedCatalogColor.name}`}
+                           onClick={() => backgroundPicking ? useBackgroundColor(selectedCatalogColor.hex) : swapTarget === null ? void addPaletteColor(selectedCatalogColor) : swapIntoCatalogColor(selectedCatalogColor)}
                         disabled={!pickerCatalog}
                       >
-                         {swapTarget === null ? "Add" : "Swap"}
+                         {backgroundPicking ? "Use" : swapTarget === null ? "Add" : "Swap"}
                       </button>
                     </>
                   ) : (
@@ -2390,7 +2452,7 @@ export function EditorSurface({
                     type="button"
                      disabled={!customColor}
                     aria-label={customActionLabel}
-                     onClick={() => swapTarget === null ? void addCustomColor() : swapIntoCustomColor()}
+                     onClick={() => backgroundPicking ? customColor && useBackgroundColor(customColor) : swapTarget === null ? void addCustomColor() : swapIntoCustomColor()}
                   >
                     {customActionLabel}
                   </button>

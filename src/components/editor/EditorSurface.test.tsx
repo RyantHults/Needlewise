@@ -21,7 +21,7 @@ const COMPACT_DMC_DEFINITION: CatalogDefinition = {
 };
 
 const f = vi.hoisted(() => ({
-  c: { start: vi.fn(), setMetrics: vi.fn(), setDocument: vi.fn(), dispose: vi.fn(), setBrush: vi.fn(), setTool: vi.fn(), setEraserMode: vi.fn(), selectPalette: vi.fn(), selectCreatedPalette: vi.fn(), setChartMode: vi.fn(), setGridVisible: vi.fn(), setBrushSize: vi.fn(), setToolBrushSize: vi.fn(), setTouchMovementOnly: vi.fn(), copySelection: vi.fn(), pasteSelection: vi.fn(), moveSelection: vi.fn(), dismissTouchCopyRequest: vi.fn(), deleteSelection: vi.fn(), handleKeyDown: vi.fn(() => false), getTraceImage: vi.fn(() => undefined), setTraceImage: vi.fn(), setTraceImageSettings: vi.fn(), clearTraceImage: vi.fn() },
+  c: { start: vi.fn(), setMetrics: vi.fn(), setDocument: vi.fn(), dispose: vi.fn(), setBrush: vi.fn(), setTool: vi.fn(), setEraserMode: vi.fn(), clearSelection: vi.fn(), setBackstitchMode: vi.fn(), selectPalette: vi.fn(), selectCreatedPalette: vi.fn(), setChartMode: vi.fn(), setGridVisible: vi.fn(), setBrushSize: vi.fn(), setToolBrushSize: vi.fn(), setTouchMovementOnly: vi.fn(), copySelection: vi.fn(), pasteSelection: vi.fn(), moveSelection: vi.fn(), dismissTouchCopyRequest: vi.fn(), deleteSelection: vi.fn(), handleKeyDown: vi.fn(() => false), getTraceImage: vi.fn(() => undefined), setTraceImage: vi.fn(), setTraceImageSettings: vi.fn(), clearTraceImage: vi.fn() },
   adapter: vi.fn(() => ({ dispose: vi.fn() })),
   r: { dispose: vi.fn() }, resize: undefined as (() => void) | undefined,
   uiState: { mode: 'color', gridVisible: true, overlay: {}, tool: { tool: 'paint' }, paletteId: 1, canPaste: false, toolBrushSizes: { full: 1, half: 1, 'three-quarter': 1, eraser: 1 } }, createdUiState: null as unknown,
@@ -599,12 +599,44 @@ describe('EditorSurface', () => {
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); expect(trigger).toHaveFocus();
   });
-  it('keeps Backstitch outside brush-size hold and context-menu behavior', () => {
+  it('opens the Backstitch mode popover by hold, right-click and the ContextMenu key', () => {
     vi.useFakeTimers(); render(<EditorSurface workspace={ws} document={doc} />);
     const backstitch = screen.getByRole('button', { name: 'Backstitch' });
-    fireEvent.pointerDown(backstitch, { pointerId: 19, isPrimary: true }); act(() => vi.advanceTimersByTime(500));
+    expect(backstitch).toHaveAttribute('title', 'Backstitch · hold for mode');
+    expect(backstitch).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(backstitch.querySelector('.brush-size-corner')).toBeInTheDocument();
+    fireEvent.pointerDown(backstitch, { pointerId: 19, isPrimary: true }); act(() => vi.advanceTimersByTime(499));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); act(() => vi.advanceTimersByTime(1));
+    expect(screen.getByRole('dialog', { name: 'Backstitch mode' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Draw' })).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); expect(backstitch).toHaveFocus();
+    dispatchContextMenu(backstitch, 'mouse', 2);
+    expect(screen.getByRole('dialog', { name: 'Backstitch mode' })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.keyDown(backstitch, { key: 'ContextMenu' });
+    expect(screen.getByRole('dialog', { name: 'Backstitch mode' })).toBeInTheDocument();
+  });
+  it('chooses a backstitch mode from the popover and remembers it for plain clicks', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const backstitch = screen.getByRole('button', { name: 'Backstitch' });
+    dispatchContextMenu(backstitch, 'mouse', 2);
+    const dialog = screen.getByRole('dialog', { name: 'Backstitch mode' });
+    expect(within(dialog).getByRole('button', { name: 'Draw' })).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Move' }));
+    expect(f.c.setBackstitchMode).toHaveBeenCalledWith('move');
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    fireEvent.contextMenu(backstitch); expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(backstitch).toHaveFocus();
+    f.c.setBackstitchMode.mockClear();
+    fireEvent.click(backstitch);
+    expect(f.c.setBackstitchMode).toHaveBeenCalledWith('move');
+    expect(f.c.setTool).not.toHaveBeenCalled();
+  });
+  it('labels the Backstitch button with the current mode and has no bottom-bar mode group', () => {
+    f.uiState.tool = { tool: 'backstitch', mode: 'move' } as never;
+    render(<EditorSurface workspace={ws} document={doc} />);
+    expect(screen.getByRole('button', { name: 'Backstitch, move mode' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByRole('group', { name: 'Backstitch mode' })).not.toBeInTheDocument();
   });
   it('opens brush size immediately for mouse and keyboard context-menu commands', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
@@ -1284,7 +1316,7 @@ describe('EditorSurface', () => {
     await waitFor(() => expect(menu).toHaveStyle({ left: '60px', top: '192px' }));
     view.unmount();
   });
-  it('marks top-level stitch tools with accessible pressed state and fill icons', () => { f.uiState.tool = { tool: 'paint', brush: { kind: 'half', paletteId: 1 } } as never; const view = render(<EditorSurface workspace={ws} document={doc} />); expect(screen.getByRole('button', { name: 'Full stitch' })).toHaveAttribute('aria-pressed', 'false'); expect(screen.getByRole('button', { name: 'Half stitch' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: '3/4 stitch' })).toHaveAttribute('aria-pressed', 'false'); expect(screen.getByRole('button', { name: 'Full stitch' }).querySelector('.stitch-brush-icon-full')).toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Half stitch' }).querySelector('.stitch-brush-icon-half')).toBeInTheDocument(); expect(screen.getByRole('button', { name: '3/4 stitch' }).querySelector('.stitch-brush-icon-three-quarter')).toBeInTheDocument(); view.unmount(); f.uiState.tool = { tool: 'backstitch' }; render(<EditorSurface workspace={ws} document={doc} />); expect(screen.getByRole('button', { name: 'Backstitch' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: 'Full stitch' })).toHaveAttribute('aria-pressed', 'false'); });
+  it('marks top-level stitch tools with accessible pressed state and fill icons', () => { f.uiState.tool = { tool: 'paint', brush: { kind: 'half', paletteId: 1 } } as never; const view = render(<EditorSurface workspace={ws} document={doc} />); expect(screen.getByRole('button', { name: 'Full stitch' })).toHaveAttribute('aria-pressed', 'false'); expect(screen.getByRole('button', { name: 'Half stitch' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: '3/4 stitch' })).toHaveAttribute('aria-pressed', 'false'); expect(screen.getByRole('button', { name: 'Full stitch' }).querySelector('.stitch-brush-icon-full')).toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Half stitch' }).querySelector('.stitch-brush-icon-half')).toBeInTheDocument(); expect(screen.getByRole('button', { name: '3/4 stitch' }).querySelector('.stitch-brush-icon-three-quarter')).toBeInTheDocument(); view.unmount(); f.uiState.tool = { tool: 'backstitch' }; render(<EditorSurface workspace={ws} document={doc} />); expect(screen.getByRole('button', { name: 'Backstitch, draw mode' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: 'Full stitch' })).toHaveAttribute('aria-pressed', 'false'); });
   it('surfaces the project name, selected-unit size, rail controls, header history, and palette rail', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     expect(screen.getByRole('heading', { name: 'Sampler' })).toBeInTheDocument();
@@ -1354,8 +1386,8 @@ describe('EditorSurface', () => {
     expect(lasso).toHaveAttribute('aria-pressed', 'true');
     expect(lasso.querySelector('[data-icon="lasso"]')).toBeInTheDocument();
     expect(select.compareDocumentPosition(lasso) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    fireEvent.click(lasso);
-    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'lasso' });
+    fireEvent.click(select);
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'select' });
   });
   it('auto-fits the pattern once on init with the Fit-button routine', () => { render(<EditorSurface workspace={ws} document={doc} />); expect(f.c.setMetrics).toHaveBeenCalled(); const fits = () => (f.c.handleKeyDown as ReturnType<typeof vi.fn>).mock.calls.filter(([event]) => (event as { key: string }).key === '0'); expect(fits()).toHaveLength(1); fireEvent.click(screen.getByRole('button', { name: 'Fit' })); expect(fits()).toHaveLength(2); });
   it('renders settings sections and immediate rail placement', () => { render(<EditorSurface workspace={ws} document={doc} />); expect(screen.queryByRole('button', { name: 'Delete selection' })).not.toBeInTheDocument(); expect(screen.queryByRole('button', { name: 'Paste selection' })).not.toBeInTheDocument(); expect(screen.queryByRole('button', { name: /Move controls/ })).not.toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); const settings = screen.getByRole('dialog', { name: 'Settings' }); expect(within(settings).getByRole('heading', { name: 'Project' })).toBeInTheDocument(); fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' })); expect(within(settings).getByRole('heading', { name: 'Editor' })).toBeInTheDocument(); fireEvent.click(within(settings).getByRole('button', { name: 'Right' })); expect(within(settings).getByRole('button', { name: 'Right' })).toHaveAttribute('aria-pressed', 'true'); expect(within(settings).getByRole('button', { name: 'Left' })).toHaveAttribute('aria-pressed', 'false'); expect(document.querySelector('.editor-layout')).toHaveClass('rail-right'); fireEvent.keyDown(settings, { key: 'Escape' }); expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
@@ -2248,24 +2280,80 @@ describe('EditorSurface layers', () => {
     const pattern = { ...(doc as object), settings: { backgroundColor: '#F3EEE5' } } as never;
     render(<EditorSurface workspace={ws} document={pattern} />);
     const group = screen.getByRole('group', { name: 'Canvas settings' });
-    const hex = within(group).getByLabelText('Background color HEX code');
-    expect(hex).toHaveValue('#F3EEE5');
-    fireEvent.change(hex, { target: { value: '#12' } });
-    fireEvent.keyDown(hex, { key: 'Enter' });
-    expect(executeMock()).not.toHaveBeenCalled();
-    fireEvent.change(hex, { target: { value: 'abc' } });
-    fireEvent.keyDown(hex, { key: 'Enter' });
-    expect(executeMock()).toHaveBeenCalledWith({ type: 'document-settings-update', settings: { backgroundColor: '#AABBCC' } });
-    const picker = within(group).getByLabelText('Background color');
-    fireEvent.input(picker, { target: { value: '#12ab34' } });
-    expect(executeMock()).toHaveBeenCalledTimes(1);
-    fireEvent.change(picker, { target: { value: '#12ab34' } });
-    expect(executeMock()).toHaveBeenLastCalledWith({ type: 'document-settings-update', settings: { backgroundColor: '#12AB34' } });
+    expect(within(group).queryByLabelText('Background color HEX code')).not.toBeInTheDocument();
+    expect(within(group).getByRole('button', { name: 'Change background color, #F3EEE5' })).toBeInTheDocument();
     const count = within(group).getByLabelText('Stitch count');
     expect(count).toHaveValue('14');
     fireEvent.change(count, { target: { value: '18' } });
     expect(session.setAidaCount).toHaveBeenCalledWith(18);
     expect(screen.queryByRole('button', { name: 'Rename layer' })).not.toBeInTheDocument();
+  });
+
+  it('shows the catalog name, brand, code and hex of a catalog background, and only the hex otherwise', () => {
+    useSession(layerSession(layeredDocument(), 'canvas'));
+    const record = compactDmcRecords[0];
+    const view = render(<EditorSurface workspace={ws} document={{ ...(doc as object), settings: { backgroundColor: record.hex } } as never} />);
+    const button = screen.getByRole('button', { name: `Change background color, ${record.name}, ${COMPACT_DMC_DEFINITION.association.brandLabel} · ${record.code}, ${record.hex.toUpperCase()}` });
+    expect(button).toHaveTextContent(record.name);
+    expect(button).toHaveTextContent(`${COMPACT_DMC_DEFINITION.association.brandLabel} · ${record.code}`);
+    view.unmount();
+    render(<EditorSurface workspace={ws} document={{ ...(doc as object), settings: { backgroundColor: '#123456' } } as never} />);
+    expect(screen.getByRole('button', { name: 'Change background color, #123456' })).toHaveTextContent(/^#123456$/);
+  });
+
+  it('chooses the background from the catalog dialog without touching the palette', () => {
+    useSession(layerSession(layeredDocument(), 'canvas'));
+    const [current, other] = compactDmcRecords;
+    render(<EditorSurface workspace={ws} document={{ ...(doc as object), settings: { backgroundColor: current.hex } } as never} />);
+    fireEvent.click(screen.getByRole('button', { name: /Change background color/ }));
+    const dialog = screen.getByRole('dialog', { name: 'Choose a background color' });
+    expect(within(dialog).getByRole('button', { name: `Use ${current.name}` })).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: `${other.name}, color ${other.code}` }));
+    fireEvent.click(within(dialog).getByRole('button', { name: `Use ${other.name}` }));
+    expect(executeMock()).toHaveBeenCalledTimes(1);
+    expect(executeMock()).toHaveBeenCalledWith({ type: 'document-settings-update', settings: { backgroundColor: other.hex } });
+    expect(screen.queryByRole('dialog', { name: 'Choose a background color' })).not.toBeInTheDocument();
+  });
+
+  it('preselects the catalog tab and color that match the background', () => {
+    multiCatalogWorkspace();
+    useSession(layerSession(layeredDocument(), 'canvas'));
+    render(<EditorSurface workspace={ws} document={{ ...(doc as object), settings: { backgroundColor: catalogBRecord.hex } } as never} />);
+    fireEvent.click(screen.getByRole('button', { name: /Change background color, B Ruby/ }));
+    const dialog = screen.getByRole('dialog', { name: 'Choose a background color' });
+    expect(within(dialog).getByRole('tab', { name: 'Brand B' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(dialog).getByRole('button', { name: 'Use B Ruby' })).toBeInTheDocument();
+  });
+
+  it('chooses a custom hex as the background', () => {
+    useSession(layerSession(layeredDocument(), 'canvas'));
+    render(<EditorSurface workspace={ws} document={{ ...(doc as object), settings: { backgroundColor: '#F3EEE5' } } as never} />);
+    fireEvent.click(screen.getByRole('button', { name: /Change background color/ }));
+    const dialog = screen.getByRole('dialog', { name: 'Choose a background color' });
+    const hex = within(dialog).getByLabelText('Hex color');
+    expect(hex).toHaveValue('#F3EEE5');
+    fireEvent.change(hex, { target: { value: '#12' } });
+    expect(within(dialog).getByRole('button', { name: 'Use custom color' })).toBeDisabled();
+    fireEvent.change(hex, { target: { value: 'abc' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Use #AABBCC' }));
+    expect(executeMock()).toHaveBeenCalledTimes(1);
+    expect(executeMock()).toHaveBeenCalledWith({ type: 'document-settings-update', settings: { backgroundColor: '#AABBCC' } });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it.each(['select', 'lasso'] as const)('activates %s once and clears the selection when it is clicked while active', (tool) => {
+    const name = tool === 'select' ? 'Select' : 'Lasso select';
+    const view = render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.click(screen.getByRole('button', { name }));
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool });
+    expect(f.c.clearSelection).not.toHaveBeenCalled();
+    view.unmount();
+    f.c.setTool.mockClear();
+    f.uiState.tool = { tool } as never;
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.click(screen.getByRole('button', { name }));
+    expect(f.c.clearSelection).toHaveBeenCalledTimes(1);
+    expect(f.c.setTool).not.toHaveBeenCalled();
   });
 
   it('shows the reference image controls only when the Reference row is selected', () => {

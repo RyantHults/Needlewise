@@ -15,6 +15,7 @@ import {
   bulkSetHalfCommand,
   bulkSetQuarterCommand,
   bulkSetThreeQuarterCommand,
+  preflightBulkCellCommand,
   bulkToggleCompletionCommand,
   bulkToggleBackstitchCompletionCommand,
   bulkRecolorCommand,
@@ -342,6 +343,42 @@ describe('typed-array pattern document', () => {
     invalid.colors[1] = 0;
     invalid.completed[0] = 2;
     expect(validateDocument(invalid)).toBe(false);
+  });
+
+  it('keeps a full stitch color on the opposite corner when a three-quarter is painted over it', () => {
+    const full = apply(document(), { type: 'set-full', x: 0, y: 0, color: 1 });
+    const pattern = apply(full, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 2 });
+    expect(pattern.kind[0]).toBe(CellKind.ThreeQuarterPair);
+    expect(Array.from(pattern.colors.slice(0, 4))).toEqual([2, 0, 1, 0]);
+    expect(pattern.completed[0]).toBe(0);
+
+    const same = apply(full, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 });
+    expect(same.kind[0]).toBe(CellKind.ThreeQuarterPair);
+    expect(Array.from(same.colors.slice(0, 4))).toEqual([1, 0, 1, 0]);
+  });
+
+  it('moves a completed full stitch completion onto the opposite corner of the pair', () => {
+    let pattern = apply(document(), { type: 'set-full', x: 0, y: 0, color: 1 });
+    pattern = apply(pattern, { type: 'set-completion', x: 0, y: 0, completed: true });
+    pattern = apply(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NE, color: 2 });
+    expect(pattern.kind[0]).toBe(CellKind.ThreeQuarterPair);
+    expect(Array.from(pattern.colors.slice(0, 4))).toEqual([0, 2, 0, 1]);
+    expect(pattern.completed[0]).toBe(1 << QuarterCorner.SW);
+  });
+
+  it('bulk three-quarter preflight and commit agree for full cells', () => {
+    let pattern = apply(document(), { type: 'set-full', x: 0, y: 0, color: 1 });
+    pattern = apply(pattern, { type: 'set-completion', x: 0, y: 0, completed: true });
+    const command = bulkSetThreeQuarterCommand(new Uint32Array([0, 1]), QuarterCorner.NW, 1);
+    const preflight = preflightBulkCellCommand(pattern, command);
+    expect(preflight.changedIndices).toEqual(new Uint32Array([0, 1]));
+    const editor = createEditor(pattern);
+    const result = editor.execute(command);
+    expect(result.changedIndices).toEqual(preflight.changedIndices);
+    expect(editor.document.kind[0]).toBe(CellKind.ThreeQuarterPair);
+    expect(Array.from(editor.document.colors.slice(0, 4))).toEqual([1, 0, 1, 0]);
+    expect(editor.document.completed[0]).toBe(1 << QuarterCorner.SE);
+    expect(editor.document.kind[1]).toBe(CellKind.ThreeQuarterNW);
   });
 
   it('pairs opposite three-quarter corners while making adjacent clicks exact no-ops', () => {

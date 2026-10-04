@@ -206,6 +206,8 @@ export function createUiStore(initial: Partial<EditorUiState> = {}): EditorUiSto
     },
 
     rememberToolForLayer(kind: ActiveLayerKind, tool: EditorToolState): void {
+      // Reference-image tools act on the image, never on a layer.
+      if (tool.tool === 'move-image' || tool.tool === 'resize-image') return;
       lastToolByLayer.set(kind, tool);
     },
 

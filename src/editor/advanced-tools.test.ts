@@ -1343,6 +1343,8 @@ describe('advanced headless editor tools', () => {
     expect(gateway.commands.at(-1)).toMatchObject({ type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 12, y: 8 } });
     expect(gateway.getSnapshot().document?.backstitches.completed[0]).toBe(0);
 
+    // Draw mode never picks up a stitch; Move mode does.
+    controller.setBackstitchMode('move');
     controller.handlePointerDown(pointer(2, 24, 16));
     expect(controller.getSelectedBackstitchId()).toBe(1);
     controller.handlePointerUp(pointer(2, 24, 16));

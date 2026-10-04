@@ -623,8 +623,13 @@ export interface FillToolState {
   readonly brush?: StitchBrush;
 }
 
+/** Draw always starts a new segment; Move only picks up existing ones. */
+export type BackstitchMode = 'draw' | 'move';
+
 export interface BackstitchToolState {
   readonly tool: 'backstitch';
+  /** Undefined means `'draw'`. */
+  readonly mode?: BackstitchMode;
 }
 
 export interface EyedropperToolState {
@@ -731,7 +736,7 @@ export interface EditorUiStore {
   setStatus(status: string | null): void;
   setCanPaste(canPaste: boolean): void;
   setActiveLayer(activeLayer: EditorActiveLayer | null): void;
-  /** Remember the last tool used on a layer type, for returning to it after a layer switch. */
+  /** Remember the last tool used on a layer type, for returning to it after a layer switch. Image tools are ignored. */
   rememberToolForLayer(kind: ActiveLayerKind, tool: EditorToolState): void;
   lastToolForLayer(kind: ActiveLayerKind): EditorToolState | undefined;
   subscribe(listener: UiListener): () => void;

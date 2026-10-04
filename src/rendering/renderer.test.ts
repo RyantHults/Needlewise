@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { CellKind, createDocument, createPatternFragment } from '../domain';
 import { cellToScreenRect, fitViewport, getCanvasMetrics, visibleCellRect } from '../editor/coordinates';
-import type { CanvasContextAdapter, CanvasTarget, PendingCellState, TraceImage } from '../editor/contracts';
-import { ThreeQuarterPair } from '../editor/cell-kinds';
+import type { CanvasContextAdapter, CanvasTarget, PendingCellState, RendererStyle, TraceImage } from '../editor/contracts';
+import { ThreeQuarterNW, ThreeQuarterPair } from '../editor/cell-kinds';
 import { MAX_ATLAS_PIXELS, createDefaultAtlasTarget } from './context';
 import { isCanvasImageSource } from './atlas';
 import { createCanvasRenderer } from './renderer';
@@ -702,7 +702,7 @@ describe('Canvas 2D chart renderer', () => {
     });
     renderer.renderNow();
     const paths = base.records
-      .filter((call) => (call.fillStyle === '#f00' || call.fillStyle === '#00f') && call.strokeStyle !== '#4b4b4b' && call.args[1] !== 4 && (call.name === 'moveTo' || call.name === 'lineTo'))
+      .filter((call) => (call.fillStyle === '#f00' || call.fillStyle === '#00f') && call.strokeStyle !== '#4b4b4b' && call.strokeStyle !== '#ffffff' && call.args[1] !== 4 && (call.name === 'moveTo' || call.name === 'lineTo'))
       .map((call) => [call.name, ...(call.args as number[]), call.fillStyle]);
     expect(paths).toEqual([
       ['moveTo', 0, 0, '#f00'], ['lineTo', 16, 0, '#f00'], ['lineTo', 0, 16, '#f00'],
@@ -712,6 +712,61 @@ describe('Canvas 2D chart renderer', () => {
     ]);
     expect(base.records.filter((call) => call.name === 'stroke' && call.strokeStyle === '#242424')).toHaveLength(2);
     renderer.dispose();
+  });
+
+  describe('three-quarter pair seam', () => {
+    function seamStrokes(setup: (document: ReturnType<typeof chart>) => void, zoom = 16, style: Partial<RendererStyle> = { mode: 'color' }) {
+      const document = chart(1, 1);
+      setup(document);
+      const base = recordingContext();
+      const renderer = createCanvasRenderer({
+        document,
+        targets: { base: target(base), overlay: target(recordingContext()) },
+        metrics: getCanvasMetrics(zoom, zoom),
+        viewport: { x: 0, y: 0, zoom },
+        style
+      });
+      renderer.renderNow();
+      renderer.dispose();
+      const records = base.records;
+      return records.flatMap((call, position) => {
+        if (call.name !== 'stroke' || call.strokeStyle === '#4b4b4b') return [];
+        const path = records.slice(0, position).filter((entry) => entry.name === 'moveTo' || entry.name === 'lineTo').slice(-2);
+        return [{ strokeStyle: call.strokeStyle, lineWidth: call.lineWidth, path: path.map((entry) => entry.args as number[]) }];
+      });
+    }
+
+    it('strokes the anti-diagonal for a same-colour NW+SE pair', () => {
+      const strokes = seamStrokes((document) => {
+        document.kind[0] = ThreeQuarterPair;
+        document.colors.set([1, 0, 1, 0], 0);
+      });
+      expect(strokes).toContainEqual({ strokeStyle: '#ffffff', lineWidth: 1, path: [[16, 0], [0, 16]] });
+    });
+
+    it('strokes the main diagonal for an NE+SW pair', () => {
+      const strokes = seamStrokes((document) => {
+        document.kind[0] = ThreeQuarterPair;
+        document.colors.set([0, 1, 0, 1], 0);
+      });
+      expect(strokes).toContainEqual({ strokeStyle: '#ffffff', lineWidth: 1, path: [[0, 0], [16, 16]] });
+    });
+
+    it('draws no seam at overview zoom, or for single three-quarter and full cells', () => {
+      const diagonal = (strokes: ReturnType<typeof seamStrokes>) => strokes.filter((stroke) => stroke.path[0]?.[0] !== stroke.path[1]?.[0] && stroke.path[0]?.[1] !== stroke.path[1]?.[1]);
+      expect(diagonal(seamStrokes((document) => {
+        document.kind[0] = ThreeQuarterPair;
+        document.colors.set([1, 0, 1, 0], 0);
+      }, 2))).toEqual([]);
+      expect(diagonal(seamStrokes((document) => {
+        document.kind[0] = ThreeQuarterNW;
+        document.colors.set([1, 0, 0, 0], 0);
+      }))).toEqual([]);
+      expect(diagonal(seamStrokes((document) => {
+        document.kind[0] = CellKind.Full;
+        document.colors.set([1, 0, 0, 0], 0);
+      }))).toEqual([]);
+    });
   });
 
   it('renders pending paired colors and only the occupied completion mark', () => {

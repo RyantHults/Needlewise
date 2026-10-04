@@ -733,6 +733,19 @@ function writeThreeQuarterAtIndex(
     document.colors[offset + corner] = color;
     return true;
   }
+  if (currentKind === CellKind.Full) {
+    // A full stitch keeps its color and completion on the corner the new three-quarter leaves uncovered.
+    const offset = colorsOffset(index);
+    const fullColor = document.colors[offset];
+    const fullCompleted = document.completed[index] & 1;
+    const opposite = oppositeQuarterCorner(corner);
+    document.kind[index] = CellKind.ThreeQuarterPair;
+    document.colors.fill(0, offset, offset + 4);
+    document.colors[offset + corner] = color;
+    document.colors[offset + opposite] = fullColor;
+    document.completed[index] = fullCompleted === 0 ? 0 : 1 << opposite;
+    return true;
+  }
   const desiredKind = threeQuarterKindForCorner(corner);
   return writeThreeQuarterKindAtIndex(document, index, desiredKind, color);
 }

@@ -280,9 +280,52 @@ describe('layered editor controller', () => {
 
     controller.setTool({ tool: 'select' });
     boundary.setActiveLayer(1);
-    expect(uiStore.getState().tool).toEqual({ tool: 'select' });
+    expect(uiStore.getState().tool).toEqual({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
     boundary.setActiveLayer('canvas');
     expect(uiStore.getState().tool).toEqual({ tool: 'pan' });
+    controller.dispose();
+  });
+
+  it('restores the tool remembered for a layer type even when the current tool works there', () => {
+    const document = layeredDocument();
+    const otherSpecialty = addLayer(document, LayerType.Specialty);
+    const { boundary, uiStore, controller } = fixture(document);
+    controller.setTool({ tool: 'eraser' });
+    boundary.setActiveLayer(2);
+    // Nothing is remembered for specialty yet, and the eraser works there.
+    expect(uiStore.getState().tool.tool).toBe('eraser');
+    controller.setTool({ tool: 'backstitch' });
+    boundary.setActiveLayer(1);
+    expect(uiStore.getState().tool.tool).toBe('eraser');
+    controller.setTool({ tool: 'pan' });
+    boundary.setActiveLayer(2);
+    expect(uiStore.getState().tool).toEqual({ tool: 'backstitch' });
+    // Between layers of one type the current tool stays.
+    controller.setTool({ tool: 'eraser' });
+    boundary.setActiveLayer(otherSpecialty);
+    expect(uiStore.getState().tool.tool).toBe('eraser');
+    boundary.setActiveLayer(1);
+    expect(uiStore.getState().tool).toEqual({ tool: 'pan' });
+    controller.dispose();
+  });
+
+  it.each(['move-image', 'resize-image'] as const)('leaves %s on a layer switch and never remembers it', (imageTool) => {
+    const document = layeredDocument();
+    const { boundary, uiStore, controller } = fixture(document);
+    controller.setTraceImage({ source: {}, width: 2, height: 2, chartBounds: { x: 0, y: 0, width: 2, height: 2 } });
+    controller.setTool({ tool: 'eraser' });
+    controller.setTool({ tool: imageTool });
+    expect(uiStore.getState().tool).toEqual({ tool: imageTool });
+
+    boundary.setActiveLayer(2);
+    expect(uiStore.getState().tool.tool).toBe('eraser');
+    expect(uiStore.getState().overlay.imageResizeHandles).not.toBe(true);
+    expect(uiStore.lastToolForLayer('stitch')?.tool).toBe('eraser');
+
+    controller.setTool({ tool: imageTool });
+    boundary.setActiveLayer(1);
+    expect(uiStore.getState().tool.tool).toBe('eraser');
+    expect(uiStore.lastToolForLayer('specialty')?.tool).toBe('eraser');
     controller.dispose();
   });
 
@@ -443,15 +486,183 @@ describe('layered editor controller', () => {
 
   it('honors brush size when erasing backstitches', () => {
     const document = layeredDocument();
-    seed(document, 2, backstitch(12, 4, 12, 8));
+    // The pointer is at (1.25, 1.5); the stitch on x = 2 is 0.75 cells away, past
+    // brush 1's half-cell pick radius at zoom 16 but inside brush 3's 3x3 footprint.
+    seed(document, 2, backstitch(8, 4, 8, 8));
     seed(document, 2, backstitch(24, 24, 28, 24));
+    const { boundary, controller } = fixture(document, 2);
+    const count = () => {
+      const layer = findLayer(boundary.layeredDocument, 2)!;
+      return layer.type === LayerType.Specialty ? layer.backstitches.ids.length : 0;
+    };
+    const press = { ...at(1, 1, 1), screenX: 20 };
+    controller.setTool({ tool: 'eraser' });
+    controller.handlePointerDown(press);
+    controller.handlePointerUp(press);
+    expect(count()).toBe(2);
+    controller.setBrushSize(3);
+    controller.handlePointerDown({ ...press, pointerId: 2 });
+    controller.handlePointerUp({ ...press, pointerId: 2 });
+    expect(count()).toBe(1);
+    controller.dispose();
+  });
+
+  it.each([
+    { pointerType: 'mouse' as const, touchMovementOnly: false },
+    { pointerType: 'pen' as const, touchMovementOnly: false },
+    { pointerType: 'pen' as const, touchMovementOnly: true },
+    { pointerType: 'touch' as const, touchMovementOnly: false }
+  ])('erases a clicked backstitch and keeps the eraser ($pointerType, pencil mode $touchMovementOnly)', ({ pointerType, touchMovementOnly }) => {
+    const document = layeredDocument();
+    seed(document, 2, backstitch(4, 8, 12, 8));
+    const { boundary, controller, uiStore } = fixture(document, 2);
+    controller.setTouchMovementOnly(touchMovementOnly);
+    expect(controller.setTool({ tool: 'eraser' })).toBe(true);
+    const sample = { ...at(1, 1, 1), pointerType, screenY: 32 };
+    controller.handlePointerMove({ ...sample, buttons: 0 });
+    controller.handlePointerDown(sample);
+    controller.handlePointerUp({ ...sample, buttons: 0 });
+    expect(controller.getSelectedBackstitchId()).toBeUndefined();
+    expect(uiStore.getState().tool.tool).toBe('eraser');
+    const layer = findLayer(boundary.layeredDocument, 2)!;
+    expect(layer.type === LayerType.Specialty && layer.backstitches.ids.length).toBe(0);
+    controller.dispose();
+  });
+
+  it('reaches exactly the drawn footprint with a brush wider than one cell', () => {
+    const document = layeredDocument();
+    // Brush 3 at cell (1, 1) stamps cells (0..2, 0..2).
+    seed(document, 2, backstitch(0, 0, 4, 0)); // top edge of corner cell (0, 0), about 1.6 cells from the pointer
+    seed(document, 2, backstitch(12, 0, 16, 4)); // cell (3, 0) only: touches the outline at a corner
+    const { boundary, controller, uiStore } = fixture(document, 2);
+    const ids = () => {
+      const layer = findLayer(boundary.layeredDocument, 2)!;
+      return layer.type === LayerType.Specialty ? Array.from(layer.backstitches.ids) : [];
+    };
+    const [corner, outside] = ids();
+    controller.setTool({ tool: 'eraser' });
+    controller.setBrushSize(3);
+    controller.handlePointerMove({ ...at(1, 1, 1), buttons: 0 });
+    expect(uiStore.getState().overlay.pendingBackstitchRemovals?.map((removal) => removal.id)).toEqual([corner]);
+    controller.handlePointerDown(at(1, 1, 1));
+    controller.handlePointerUp(at(1, 1, 1));
+    expect(ids()).toEqual([outside]);
+    controller.dispose();
+  });
+
+  it('erases only the touched stitch of two sharing a cell with a one-cell brush', () => {
+    const document = layeredDocument();
+    seed(document, 2, backstitch(4, 4, 4, 8)); // x = 1, a quarter cell from the pointer
+    seed(document, 2, backstitch(8, 4, 8, 8)); // x = 2, same cell, 0.75 cells away
+    const { boundary, controller, uiStore } = fixture(document, 2);
+    const ids = () => {
+      const layer = findLayer(boundary.layeredDocument, 2)!;
+      return layer.type === LayerType.Specialty ? Array.from(layer.backstitches.ids) : [];
+    };
+    const [touched, sharing] = ids();
+    const press = { ...at(1, 1, 1), screenX: 20 };
+    controller.setTool({ tool: 'eraser' });
+    controller.handlePointerMove({ ...press, buttons: 0 });
+    expect(uiStore.getState().overlay.pendingBackstitchRemovals?.map((removal) => removal.id)).toEqual([touched]);
+    controller.handlePointerDown(press);
+    controller.handlePointerUp(press);
+    expect(ids()).toEqual([sharing]);
+    controller.dispose();
+  });
+
+  it('keeps a wide-brush drag continuous between far-apart samples', () => {
+    const document = layeredDocument();
+    seed(document, 2, backstitch(16, 0, 16, 4)); // x = 4, crossed only between the samples
     const { boundary, controller } = fixture(document, 2);
     controller.setTool({ tool: 'eraser' });
     controller.setBrushSize(3);
     controller.handlePointerDown(at(1, 1, 1));
-    controller.handlePointerUp(at(1, 1, 1));
+    controller.handlePointerMove(at(1, 7, 1));
+    controller.handlePointerUp(at(1, 7, 1));
+    const layer = findLayer(boundary.layeredDocument, 2)!;
+    expect(layer.type === LayerType.Specialty && layer.backstitches.ids.length).toBe(0);
+    controller.dispose();
+  });
+
+  it('erases only backstitches within the hit radius of the eraser path', () => {
+    const document = layeredDocument();
+    // At zoom 16 the radius is half a cell. The pointer runs along y = 1.5 from x = 0.5 to 6.5.
+    seed(document, 2, backstitch(12, 0, 12, 4));
+    seed(document, 2, backstitch(16, 8, 20, 8));
+    seed(document, 2, backstitch(4, 16, 8, 16));
+    const { boundary, controller, uiStore } = fixture(document, 2);
+    const ids = () => {
+      const layer = findLayer(boundary.layeredDocument, 2)!;
+      return layer.type === LayerType.Specialty ? Array.from(layer.backstitches.ids) : [];
+    };
+    const [crossedOnTheWay, endpointOnPath, oneCellAway] = ids();
+    controller.setTool({ tool: 'eraser' });
+    controller.handlePointerDown(at(1, 0, 1));
+    // One sample jumps the whole stroke, so the segment between samples is measured.
+    controller.handlePointerMove(at(1, 6, 1));
+    expect(uiStore.getState().overlay.pendingBackstitchRemovals?.map((removal) => removal.id).sort()).toEqual([crossedOnTheWay, endpointOnPath].sort());
+    controller.handlePointerUp(at(1, 6, 1));
+    expect(ids()).toEqual([oneCellAway]);
+    controller.dispose();
+  });
+
+  it('marks the backstitches an eraser hover would remove and clears them on leave', () => {
+    const document = layeredDocument();
+    seed(document, 2, backstitch(4, 4, 4, 12));
+    seed(document, 2, backstitch(20, 20, 28, 20));
+    const { boundary, controller, uiStore } = fixture(document, 2);
+    const layer = findLayer(boundary.layeredDocument, 2)!;
+    const [near] = layer.type === LayerType.Specialty ? Array.from(layer.backstitches.ids) : [];
+    controller.setTool({ tool: 'eraser' });
+    controller.handlePointerMove({ ...at(1, 1, 1), buttons: 0 });
+    expect(uiStore.getState().overlay.pendingBackstitchRemovals?.map((removal) => removal.id)).toEqual([near]);
+    controller.handlePointerLeave();
+    expect(uiStore.getState().overlay.pendingBackstitchRemovals).toBeUndefined();
+    controller.dispose();
+  });
+
+  it('draws a new backstitch next to an existing one in draw mode', () => {
+    const document = layeredDocument();
+    seed(document, 2, backstitch(4, 8, 12, 8));
+    const { boundary, controller } = fixture(document, 2);
+    controller.setTool({ tool: 'backstitch' });
+    controller.handlePointerDown({ ...at(1, 1, 1), screenY: 32 });
+    expect(controller.getSelectedBackstitchId()).toBeUndefined();
+    controller.handlePointerUp({ ...at(1, 1, 3), screenY: 64 });
+    const layer = findLayer(boundary.layeredDocument, 2)!;
+    expect(layer.type === LayerType.Specialty && layer.backstitches.ids.length).toBe(2);
+    // The press lands on the existing stitch at (2, 2) and still starts a new one there.
+    expect(boundary.log.at(-1)).toMatchObject({ type: 'add-backstitch', start: { x: 8, y: 8 }, end: { x: 8, y: 16 } });
+    controller.dispose();
+  });
+
+  it('only picks up backstitches in move mode, and a miss draws nothing and clears the selection', () => {
+    const document = layeredDocument();
+    seed(document, 2, backstitch(4, 8, 12, 8));
+    const { boundary, controller, uiStore } = fixture(document, 2);
+    expect(controller.setBackstitchMode('move')).toBe(true);
+    expect(uiStore.getState().tool).toEqual({ tool: 'backstitch', mode: 'move' });
+    expect(controller.handlePointerDown({ ...at(1, 1, 1), screenY: 32 })).toBe(true);
+    expect(controller.getSelectedBackstitchId()).toBeDefined();
+    controller.handlePointerUp({ ...at(1, 1, 1), screenY: 32 });
+
+    expect(controller.handlePointerDown(at(2, 5, 5))).toBe(false);
+    controller.handlePointerUp(at(2, 6, 6));
+    expect(controller.getSelectedBackstitchId()).toBeUndefined();
     const layer = findLayer(boundary.layeredDocument, 2)!;
     expect(layer.type === LayerType.Specialty && layer.backstitches.ids.length).toBe(1);
+    expect(boundary.log.some((command) => command.type === 'add-backstitch')).toBe(false);
+
+    expect(controller.setBackstitchMode('draw')).toBe(true);
+    expect(uiStore.getState().tool).toEqual({ tool: 'backstitch', mode: 'draw' });
+    controller.dispose();
+  });
+
+  it('refuses a backstitch mode off a specialty layer', () => {
+    const { controller, notices, uiStore } = fixture();
+    expect(controller.setBackstitchMode('move')).toBe(false);
+    expect(uiStore.getState().tool.tool).toBe('paint');
+    expect(notices.at(-1)).toBe(SPECIALTY_LAYER_BACKSTITCH_HINT);
     controller.dispose();
   });
 

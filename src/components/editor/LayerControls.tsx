@@ -6,78 +6,44 @@ import { RenameLayerDialog } from "./RenameLayerDialog";
 
 export const AIDA_COUNTS = [11, 14, 16, 18, 22] as const;
 
-const normalizeHexColor = (value: string): string | undefined => {
-  const digits = value.trim().replace(/^#/, "");
-  if (!/^(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(digits)) return undefined;
-  const expanded = digits.length === 3
-    ? digits.split("").map((digit) => `${digit}${digit}`).join("")
-    : digits;
-  return `#${expanded.toUpperCase()}`;
-};
-
 /** Layers a selected layer can merge into: other visible layers of the same type. */
 export function mergeTargets(document: LayeredDocument, layer: Layer): Layer[] {
   return document.layers.filter((entry) => entry.id !== layer.id && entry.type === layer.type && entry.visible).reverse();
 }
 
+export interface BackgroundCatalogMatch {
+  name: string;
+  brand: string;
+  code: string;
+}
+
 interface CanvasProps {
   backgroundColor: string;
+  backgroundCatalog?: BackgroundCatalogMatch;
   aidaCount: number;
-  onBackgroundColorChange: (color: string) => void;
+  onChooseBackground: (trigger: HTMLButtonElement) => void;
   onAidaCountChange: (count: number) => void;
 }
 
 /** Background color and stitch count; each change is one undoable settings update. */
-function CanvasControls({ backgroundColor, aidaCount, onBackgroundColorChange, onAidaCountChange }: CanvasProps) {
-  const [hex, setHex] = useState(backgroundColor);
-  const picker = useRef<HTMLInputElement>(null);
-  useEffect(() => { setHex(backgroundColor); }, [backgroundColor]);
-  const commit = (value: string) => {
-    const normalized = normalizeHexColor(value);
-    if (!normalized) return;
-    setHex(normalized);
-    if (normalized !== normalizeHexColor(backgroundColor)) onBackgroundColorChange(normalized);
-  };
-  // The picker fires `input` continuously while dragging; only its native
-  // `change` (the user settled on a color) becomes a history entry.
-  useEffect(() => {
-    const element = picker.current;
-    if (!element) return undefined;
-    const settle = () => commit(element.value);
-    element.addEventListener("change", settle);
-    return () => element.removeEventListener("change", settle);
-  });
-  const invalid = hex !== "" && !normalizeHexColor(hex);
+function CanvasControls({ backgroundColor, backgroundCatalog, aidaCount, onChooseBackground, onAidaCountChange }: CanvasProps) {
+  const catalogLine = backgroundCatalog ? `${backgroundCatalog.brand} · ${backgroundCatalog.code}` : undefined;
+  const description = backgroundCatalog ? `${backgroundCatalog.name}, ${catalogLine}, ${backgroundColor}` : backgroundColor;
   return (
     <div className="layer-controls layer-controls-canvas" role="group" aria-label="Canvas settings">
-      <label className="layer-control-field layer-color-field" htmlFor="canvas-background-picker">
-        <span>Background</span>
-        <input
-          ref={picker}
-          id="canvas-background-picker"
-          type="color"
-          aria-label="Background color"
-          value={(normalizeHexColor(hex) ?? backgroundColor).toLowerCase()}
-          onChange={(event) => setHex(event.target.value.toUpperCase())}
-        />
-      </label>
-      <label className="layer-control-field" htmlFor="canvas-background-hex">
-        <span>HEX</span>
-        <input
-          id="canvas-background-hex"
-          type="text"
-          value={hex}
-          aria-label="Background color HEX code"
-          aria-invalid={invalid}
-          aria-describedby="canvas-background-help"
-          autoComplete="off"
-          placeholder="#F3EEE5"
-          onChange={(event) => setHex(event.target.value)}
-          onBlur={() => { if (invalid) setHex(backgroundColor); else commit(hex); }}
-          onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); commit(hex); } }}
-        />
-      </label>
-      <span id="canvas-background-help" className="sr-only" aria-live="polite">{invalid ? "Enter a 3- or 6-digit hex color." : "Use a three- or six-digit hex value."}</span>
+      <button
+        className="layer-background-button"
+        type="button"
+        aria-label={`Change background color, ${description}`}
+        onClick={(event) => onChooseBackground(event.currentTarget)}
+      >
+        <span className="layer-background-swatch" style={{ background: backgroundColor }} aria-hidden="true" />
+        <span className="layer-background-details" aria-hidden="true">
+          {backgroundCatalog && <strong>{backgroundCatalog.name}</strong>}
+          {catalogLine && <span>{catalogLine}</span>}
+          <span>{backgroundColor}</span>
+        </span>
+      </button>
       <label className="layer-control-field" htmlFor="canvas-stitch-count">
         <span>Stitch count</span>
         <select id="canvas-stitch-count" value={String(aidaCount)} onChange={(event) => onAidaCountChange(Number(event.target.value))}>
@@ -238,9 +204,9 @@ interface Props extends Omit<LayerProps, "layer">, CanvasProps {
 }
 
 /** The contextual controls for a stitch, specialty or Canvas selection. The Reference image keeps its own controls. */
-export function LayerControls({ activeLayerId, document, backgroundColor, aidaCount, onBackgroundColorChange, onAidaCountChange, ...actions }: Props) {
+export function LayerControls({ activeLayerId, document, backgroundColor, backgroundCatalog, aidaCount, onChooseBackground, onAidaCountChange, ...actions }: Props) {
   if (activeLayerId === "canvas") {
-    return <CanvasControls backgroundColor={backgroundColor} aidaCount={aidaCount} onBackgroundColorChange={onBackgroundColorChange} onAidaCountChange={onAidaCountChange} />;
+    return <CanvasControls backgroundColor={backgroundColor} backgroundCatalog={backgroundCatalog} aidaCount={aidaCount} onChooseBackground={onChooseBackground} onAidaCountChange={onAidaCountChange} />;
   }
   if (activeLayerId === "reference") return null;
   const layer = findLayer(document, activeLayerId);

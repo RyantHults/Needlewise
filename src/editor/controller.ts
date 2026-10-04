@@ -31,6 +31,7 @@ import type {
   CanvasRenderer,
   BrushSizeTool,
   CellRect,
+  BackstitchMode,
   AuthoringStitchBrush,
   EditorToolState,
   EditorUiStore,
@@ -184,11 +185,13 @@ interface EraserGesture {
   readonly brushSize: number;
   readonly cells: Map<string, ModelPoint>;
   readonly components: Map<string, { readonly cell: ModelPoint; readonly corner: number }>;
-  /** Specialty-layer erase: backstitches on the selected layer the brush has touched. */
+  /** Specialty-layer erase: backstitches on the selected layer the eraser has reached. */
   readonly backstitches?: Map<number, PendingBackstitchRemoval>;
-  /** The selected layer's backstitches bucketed by cell, built when the gesture starts. */
+  /** Backstitches bucketed by cell, for a specialty erase wider than one cell. */
   readonly backstitchIndex?: BackstitchCellIndex;
   lastCell: ModelPoint | undefined;
+  /** The previous model point of a one-cell specialty erase, so a fast drag is measured as a path. */
+  lastPoint?: ModelPoint;
 }
 
 type FillRecolorSnapshot =
@@ -824,6 +827,35 @@ function distanceToSegment(point: ModelPoint, start: ModelPoint, end: ModelPoint
   return Math.hypot(point.x - (start.x + projection * dx), point.y - (start.y + projection * dy));
 }
 
+function cross(origin: ModelPoint, a: ModelPoint, b: ModelPoint): number {
+  return (a.x - origin.x) * (b.y - origin.y) - (a.y - origin.y) * (b.x - origin.x);
+}
+
+/** Shortest distance between two model segments; zero when they cross. */
+function distanceBetweenSegments(a0: ModelPoint, a1: ModelPoint, b0: ModelPoint, b1: ModelPoint): number {
+  const crosses = cross(b0, b1, a0) * cross(b0, b1, a1) < 0 && cross(a0, a1, b0) * cross(a0, a1, b1) < 0;
+  if (crosses) return 0;
+  return Math.min(distanceToSegment(a0, b0, b1), distanceToSegment(a1, b0, b1), distanceToSegment(b0, a0, a1), distanceToSegment(b1, a0, a1));
+}
+
+/** Backstitches in `document` within `radius` cells of the eraser path `from`→`to`, keyed by id. */
+function backstitchesNearPath(
+  document: PatternDocument,
+  from: ModelPoint,
+  to: ModelPoint,
+  radius: number,
+  into: Map<number, PendingBackstitchRemoval>
+): void {
+  const store = document.backstitches;
+  for (let position = 0; position < store.ids.length; position += 1) {
+    const id = store.ids[position];
+    if (into.has(id)) continue;
+    const start = { x: store.x1[position], y: store.y1[position] };
+    const end = { x: store.x2[position], y: store.y2[position] };
+    if (distanceBetweenSegments(from, to, fixedPointToModel(start), fixedPointToModel(end)) <= radius) into.set(id, { id, start, end });
+  }
+}
+
 /**
  * True when a fixed-point backstitch runs through a cell for a positive length.
  * A stitch along a cell edge passes through both cells beside it; one that only
@@ -1251,6 +1283,14 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const current = this.uiStore.getState().tool;
     this.setTool({ tool: 'eraser', mode });
     if (current.tool === 'eraser' && current.mode === mode) this.uiStore.setTool({ ...current, mode });
+  }
+
+  /** Select the Backstitch tool in the given mode; refused like `setTool` off a specialty layer. */
+  setBackstitchMode(mode: BackstitchMode): boolean {
+    const current = this.uiStore.getState().tool;
+    if (current.tool === 'backstitch' && (current.mode ?? 'draw') === mode) return true;
+    if (current.tool === 'backstitch' && this.gesture?.kind === 'backstitch') this.cancelGesture();
+    return this.setTool({ tool: 'backstitch', mode });
   }
 
   setEraserCorner(corner: 0 | 1 | 2 | 3): void {
@@ -2361,9 +2401,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const mode = selectedTool.mode ?? 'whole-cell';
       const specialty = snapshot.activeLayer?.kind === 'specialty';
       const backstitches = specialty ? new Map<number, PendingBackstitchRemoval>() : undefined;
-      const backstitchIndex = specialty ? buildBackstitchCellIndex(surface) : undefined;
+      const backstitchIndex = specialty && brushSize > 1 ? buildBackstitchCellIndex(surface) : undefined;
       const gesture: EraserGesture = { kind: 'eraser', pointerId: sample.pointerId, transaction, mode, brushSize, cells, components, backstitches, backstitchIndex, lastCell: cell };
       this.addEraserSample(gesture, cell, sample, surface);
+      this.addEraserBackstitches(gesture, sample, surface);
       this.gesture = gesture;
       this.publishEraserPreview(gesture, surface);
       return true;
@@ -3114,7 +3155,9 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const stamped = brushCells(cell, target.brushSize, document);
     if (target.backstitches) {
       for (const stampedCell of stamped) cells.set(cellKey(stampedCell), stampedCell);
-      backstitchesThroughCells(document, stamped, target.backstitches, target.backstitchIndex);
+      // A wider brush reaches exactly its drawn footprint; a one-cell brush is
+      // measured from the pointer by addEraserBackstitches instead.
+      if (target.brushSize > 1) backstitchesThroughCells(document, stamped, target.backstitches, target.backstitchIndex);
       return;
     }
     const corner = mode === 'component'
@@ -3133,6 +3176,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const nextCell = this.paintHitCell(sample, document);
     if (!nextCell) {
       gesture.lastCell = undefined;
+      gesture.lastPoint = undefined;
       return;
     }
     const cells = gesture.lastCell ? supercoverLine(gesture.lastCell, nextCell) : [nextCell];
@@ -3141,6 +3185,19 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.addEraserSample(gesture, cells[position], sample, document);
     }
     gesture.lastCell = nextCell;
+    this.addEraserBackstitches(gesture, sample, document);
+  }
+
+  /**
+   * One-cell specialty erase: add the backstitches within the pick tolerance of
+   * the pointer's path since the previous sample, so a stitch sharing the cell
+   * survives. Wider brushes are handled by their footprint in addEraserSample.
+   */
+  private addEraserBackstitches(gesture: EraserGesture, sample: PointerSample, document: PatternDocument): void {
+    if (!gesture.backstitches || gesture.brushSize > 1) return;
+    const point = screenToModel({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport);
+    backstitchesNearPath(document, gesture.lastPoint ?? point, point, this.backstitchHitTolerance(), gesture.backstitches);
+    gesture.lastPoint = point;
   }
 
   private finishPaint(commit: boolean): void {
@@ -3391,8 +3448,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return snapshot.document?.palette.find((entry) => entry.id === paletteId)?.color;
   }
 
+  /** Pick distance for a backstitch in cells: 8 screen px, never under a quarter cell. */
+  private backstitchHitTolerance(): number {
+    return Math.max(0.25, 8 / Math.max(0.01, this.uiStore.getState().viewport.zoom));
+  }
+
   private addBackstitchHit(document: PatternDocument, point: ModelPoint): { id: number; start: FixedPoint; end: FixedPoint } | undefined {
-    const tolerance = Math.max(0.25, 8 / Math.max(0.01, this.uiStore.getState().viewport.zoom));
+    const tolerance = this.backstitchHitTolerance();
     let best: { id: number; distance: number; start: FixedPoint; end: FixedPoint } | undefined;
     const store = document.backstitches;
     for (let index = 0; index < store.ids.length; index += 1) {
@@ -3415,9 +3477,15 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.keyboardBackstitchToken = undefined;
     const point = this.backstitchModelPoint(sample);
     if (point.x < 0 || point.y < 0 || point.x > surface.width || point.y > surface.height) return false;
-    // Only the selected layer's backstitches can be picked up and moved.
-    const hit = this.addBackstitchHit(surface, point);
-    if (hit) {
+    const tool = this.uiStore.getState().tool;
+    if (tool.tool === 'backstitch' && tool.mode === 'move') {
+      // Move mode only picks up the selected layer's backstitches; a miss draws
+      // nothing and drops the selection.
+      const hit = this.addBackstitchHit(surface, point);
+      if (!hit) {
+        this.selectedBackstitchId = undefined;
+        return false;
+      }
       this.selectedBackstitchId = hit.id;
       const startDistance = Math.hypot(point.x - fixedPointToModel(hit.start).x, point.y - fixedPointToModel(hit.start).y);
       const endDistance = Math.hypot(point.x - fixedPointToModel(hit.end).x, point.y - fixedPointToModel(hit.end).y);
@@ -3435,6 +3503,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.setStatus(`Selected backstitch ${String(hit.id)}`);
       return true;
     }
+    // Draw mode never hit-tests, so a stroke near an existing stitch starts a new
+    // one; grid snapping still lets it chain from an existing endpoint.
     this.selectedBackstitchId = undefined;
     const snapped = fixedPointAt(point, surface);
     this.gesture = {
@@ -4123,8 +4193,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   private clearBrushPreview(): void {
     const overlay = this.uiStore.getState().overlay;
-    if (!overlay.brushPreview) return;
-    this.uiStore.setOverlay({ ...overlay, brushPreview: undefined });
+    // Outside an erase gesture, pending backstitch removals are the specialty hover's marks.
+    const hoverRemovals = overlay.pendingBackstitchRemovals !== undefined && this.gesture?.kind !== 'eraser';
+    if (!overlay.brushPreview && !hoverRemovals) return;
+    this.uiStore.setOverlay({ ...overlay, brushPreview: undefined, ...(hoverRemovals ? { pendingBackstitchRemovals: undefined } : {}) });
   }
 
   private updateBrushPreview(sample: PointerSample): void {
@@ -4146,9 +4218,19 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     let states: PendingCellState[];
     const kind: 'paint' | 'eraser' = tool.tool === 'paint' ? 'paint' : 'eraser';
     if (tool.tool === 'eraser' && snapshot.activeLayer?.kind === 'specialty') {
-      // A specialty erase removes backstitches, so the hover marks only the brush footprint.
+      // A specialty erase removes backstitches: the hover outlines the brush
+      // footprint and marks the backstitches a press here would remove.
       const composite = snapshot.document ?? document;
-      states = brushCells(cell, brushSize, document).map((footprint) => cellState(composite, footprint.y * composite.width + footprint.x, { kind: 'erase-cell' }));
+      const footprint = brushCells(cell, brushSize, document);
+      states = footprint.map((stamped) => cellState(composite, stamped.y * composite.width + stamped.x, { kind: 'erase-cell' }));
+      const removals = new Map<number, PendingBackstitchRemoval>();
+      if (brushSize > 1) backstitchesThroughCells(document, footprint, removals);
+      else {
+        const point = screenToModel({ x: sample.screenX, y: sample.screenY }, state.viewport);
+        backstitchesNearPath(document, point, point, this.backstitchHitTolerance(), removals);
+      }
+      this.uiStore.setOverlay({ ...state.overlay, brushPreview: { states, kind }, pendingBackstitchRemovals: removals.size ? [...removals.values()] : undefined });
+      return;
     } else if (tool.tool === 'paint') {
       const cells = new Map<string, ModelPoint>();
       stampBrush(cells, cell, brushSize, document);
@@ -4545,7 +4627,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return withLayerId(command, typeof id === 'number' ? id : undefined);
   }
 
-  /** Transient editing state belongs to one layer, so it ends when the selection moves. */
+  /**
+   * Transient editing state belongs to one layer, so it ends when the selection
+   * moves. Reference-image gestures are settled by `syncActiveLayer`, which also
+   * leaves the image tool.
+   */
   private onActiveLayerSwitch(): void {
     if (this.floatingPaste?.mode === 'move') this.discardFloatingPaste();
     if (this.gesture && this.gesture.kind !== 'pan' && this.gesture.kind !== 'pinch'
@@ -4558,19 +4644,30 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   /**
-   * Publish the selected layer. When a switch disables the current tool, return
-   * to the last tool used on the new layer's type, falling back to Pan.
+   * Publish the selected layer. A switch first leaves a reference-image tool for
+   * the tool it replaced. Moving to another layer type returns to the tool last
+   * used on that type when it is enabled there; otherwise, and between layers of
+   * the same type, the current tool stays unless the new layer disables it, in
+   * which case Pan takes over.
    */
   private syncActiveLayer(snapshot: WorkspaceEditorSnapshot): void {
     const next = snapshot.activeLayer ?? null;
     const previous = this.uiStore.getState().activeLayer;
     this.uiStore.setActiveLayer(next);
     if (!next || (previous && previous.id === next.id)) return;
-    const tool = this.uiStore.getState().tool;
+    const current = this.uiStore.getState().tool;
+    let tool = current;
+    if (current.tool === 'move-image' || current.tool === 'resize-image') {
+      // Keep where a drag in progress put the image, as a release would.
+      if (this.gesture?.kind === 'move-image' || this.gesture?.kind === 'resize-image') this.finishResizeImage();
+      tool = this.imageToolPreviousTool ?? { tool: 'pan' };
+    }
     if (previous && toolStateAvailability(tool, previous).enabled) this.uiStore.rememberToolForLayer(previous.kind, tool);
-    if (toolStateAvailability(tool, next).enabled) return;
-    const remembered = this.uiStore.lastToolForLayer(next.kind);
-    this.setTool(remembered && toolStateAvailability(remembered, next).enabled ? remembered : { tool: 'pan' });
+    const remembered = previous?.kind !== next.kind ? this.uiStore.lastToolForLayer(next.kind) : undefined;
+    const target = remembered && toolStateAvailability(remembered, next).enabled
+      ? remembered
+      : toolStateAvailability(tool, next).enabled ? tool : { tool: 'pan' } as const;
+    if (target !== current) this.setTool(target);
   }
 
   private publishEraserPreview(gesture: EraserGesture, document: PatternDocument): void {
