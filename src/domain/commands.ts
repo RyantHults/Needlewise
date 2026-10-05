@@ -54,9 +54,9 @@ import {
 } from './types';
 import { SYMBOL_IDS } from '../symbols';
 import { assertValidDocument } from './validation';
-import { isSharedEmptyCellPlane } from './layers';
 import { assertValidPatternFragment, backstitchEndpointsContainedInCellUnion } from './fragment';
 import { fixedPointBackstitchLength } from './metrics';
+import { backstitchWithinCanvas, isActiveCell } from './canvas';
 import {
   attachDeleteMetricsImpactForDelta,
   createDeleteMetricsImpact,
@@ -509,10 +509,6 @@ function normalizeType(type: string): string {
     'merge-palette': 'palette-merge',
     'palette-merge-color': 'palette-merge',
     'remove-and-replace-palette': 'palette-merge',
-    'rotate-clockwise': 'rotate-cw',
-    'rotate-counterclockwise': 'rotate-ccw',
-    'mirror-x': 'mirror-horizontal',
-    'mirror-y': 'mirror-vertical',
     'bulk-cells': 'bulk-cell',
     'bulk-cell-edit': 'bulk-cell',
     'bulk-complete': 'bulk-completion',
@@ -545,7 +541,7 @@ export function commandRequiresSnapshot(command: DomainCommand): boolean {
     const childCommand = child as DomainCommand;
     return (typeof childCommand?.type === 'string' && normalizeType(childCommand.type) === 'document-settings-update') || commandRequiresSnapshot(childCommand);
   });
-  return type === 'crop' || type === 'rotate' || type === 'rotate-cw' || type === 'rotate-ccw' || type === 'mirror' || type === 'mirror-horizontal' || type === 'mirror-vertical' || type === 'mirror-left-right' || type === 'mirror-top-bottom' || type === 'palette-merge' || type === 'palette-delete';
+  return type === 'palette-merge' || type === 'palette-delete';
 }
 
 function touchCommandTargets(document: PatternDocument, command: DomainCommand, tracker: MutationTracker): void {
@@ -636,6 +632,7 @@ function writeFullAtIndex(
   color: number,
   halfDirection?: HalfDirection
 ): boolean {
+  if (!isActiveCell(document, index)) return false;
   const desiredKind = halfDirection === undefined
     ? CellKind.Full
     : halfDirection === HalfDirection.Backslash
@@ -674,6 +671,7 @@ function writeQuarterAtIndex(
   corner: QuarterCorner,
   color: number
 ): boolean {
+  if (!isActiveCell(document, index)) return false;
   const offset = colorsOffset(index);
   const wasQuarter = document.kind[index] === CellKind.Quarters;
   if (!wasQuarter) {
@@ -709,6 +707,7 @@ function writeThreeQuarterAtIndex(
   corner: QuarterCorner,
   color: number
 ): boolean {
+  if (!isActiveCell(document, index)) return false;
   const currentKind = document.kind[index];
   const currentCorner = threeQuarterCornerForKind(currentKind);
   if (isThreeQuarterSingleKind(currentKind)) {
@@ -757,6 +756,7 @@ function writeThreeQuarterKindAtIndex(
   color: number
 ): boolean {
   if (!isThreeQuarterSingleKind(desiredKind)) throw new DomainError('invalid-kind', `Cell kind ${String(desiredKind)} is not a single three-quarter kind.`);
+  if (!isActiveCell(document, index)) return false;
   const offset = colorsOffset(index);
   const nextCompletion = document.kind[index] === desiredKind ? document.completed[index] & 1 : 0;
   const same = document.kind[index] === desiredKind
@@ -776,6 +776,7 @@ function writeThreeQuarterKindAtIndex(
 }
 
 function writeThreeQuarterPairAtIndex(document: PatternDocument, index: number, colors: ArrayLike<number>, sourceOffset = 0): boolean {
+  if (!isActiveCell(document, index)) return false;
   const color0 = colors[sourceOffset];
   const color1 = colors[sourceOffset + 1];
   const color2 = colors[sourceOffset + 2];
@@ -950,6 +951,7 @@ function threeQuarterComponentPresent(document: PatternDocument, index: number, 
 }
 
 function bulkCellWouldChange(document: PatternDocument, index: number, edit: BulkCellEdit): boolean {
+  if (!isActiveCell(document, index)) return false;
   const offset = colorsOffset(index);
   if (edit.kind === 'erase-cell') {
     return document.kind[index] !== CellKind.Empty
@@ -2217,7 +2219,7 @@ function parsePasteDestination(command: DomainCommand): { x: number; y: number }
 
 function pasteCellWouldChange(document: PatternDocument, targetIndex: number, fragment: PatternFragment, sourceIndex: number): boolean {
   const sourceKind = fragment.kind[sourceIndex];
-  if (sourceKind === CellKind.Empty) return false;
+  if (sourceKind === CellKind.Empty || !isActiveCell(document, targetIndex)) return false;
   const targetOffset = colorsOffset(targetIndex);
   const sourceOffset = colorsOffset(sourceIndex);
   if (isThreeQuarterPairKind(sourceKind)) {
@@ -2257,6 +2259,20 @@ function validatePastePalette(document: PatternDocument, fragment: PatternFragme
   for (const color of fragment.backstitches.colors) requirePaletteEntry(document, color);
 }
 
+function keptPasteBackstitches(document: PatternDocument, fragment: PatternFragment, destinationX: number, destinationY: number): Uint32Array {
+  const count = fragment.backstitches.x1.length;
+  const kept = new Uint32Array(count);
+  let keptCount = 0;
+  const offsetX = destinationX * FIXED_POINT_UNITS_PER_CELL;
+  const offsetY = destinationY * FIXED_POINT_UNITS_PER_CELL;
+  for (let index = 0; index < count; index += 1) {
+    if (document.canvasMask !== undefined && !backstitchWithinCanvas(document, fragment.backstitches.x1[index] + offsetX, fragment.backstitches.y1[index] + offsetY, fragment.backstitches.x2[index] + offsetX, fragment.backstitches.y2[index] + offsetY)) continue;
+    kept[keptCount] = index;
+    keptCount += 1;
+  }
+  return kept.subarray(0, keptCount);
+}
+
 function validatePasteBackstitches(document: PatternDocument, fragment: PatternFragment, destinationX: number, destinationY: number): void {
   const geometries = new Set<string>();
   for (let index = 0; index < document.backstitches.ids.length; index += 1) geometries.add(`${String(document.backstitches.x1[index])},${String(document.backstitches.y1[index])},${String(document.backstitches.x2[index])},${String(document.backstitches.y2[index])}`);
@@ -2282,6 +2298,8 @@ export interface PasteFragmentPreflight {
   readonly destinationY: number;
   readonly changedCellCount: number;
   readonly newBackstitchCount: number;
+  /** Fragment backstitch positions that land inside the canvas, ascending. */
+  readonly keptBackstitches: Uint32Array;
 }
 
 export function preflightPasteFragmentCommand(document: PatternDocument, command: DomainCommand): PasteFragmentPreflight {
@@ -2293,8 +2311,9 @@ export function preflightPasteFragmentCommand(document: PatternDocument, command
   if (destination.x < 0 || destination.y < 0 || destination.x + fragment.width > document.width || destination.y + fragment.height > document.height) throw new DomainError('paste-out-of-bounds', 'The fragment must fit entirely inside the destination document.');
   validatePastePalette(document, fragment);
   validatePasteBackstitches(document, fragment, destination.x, destination.y);
+  const keptBackstitches = keptPasteBackstitches(document, fragment, destination.x, destination.y);
   const nextId = document.nextBackstitchId;
-  if (fragment.backstitches.x1.length > 0 && (nextId > UINT32_MAX || nextId + fragment.backstitches.x1.length - 1 > UINT32_MAX)) throw new DomainError('backstitch-id-exhausted', 'The destination has no remaining backstitch IDs for this paste.');
+  if (keptBackstitches.length > 0 && (nextId > UINT32_MAX || nextId + keptBackstitches.length - 1 > UINT32_MAX)) throw new DomainError('backstitch-id-exhausted', 'The destination has no remaining backstitch IDs for this paste.');
   let changedCellCount = 0;
   for (let y = 0; y < fragment.height; y += 1) {
     for (let x = 0; x < fragment.width; x += 1) {
@@ -2303,7 +2322,7 @@ export function preflightPasteFragmentCommand(document: PatternDocument, command
       if (pasteCellWouldChange(document, targetIndex, fragment, sourceIndex)) changedCellCount += 1;
     }
   }
-  return { fragment, destinationX: destination.x, destinationY: destination.y, changedCellCount, newBackstitchCount: fragment.backstitches.x1.length };
+  return { fragment, destinationX: destination.x, destinationY: destination.y, changedCellCount, newBackstitchCount: keptBackstitches.length, keptBackstitches };
 }
 
 function backstitchStoreBytes(count: number): number {
@@ -2330,10 +2349,10 @@ function applyPastedCell(document: PatternDocument, targetIndex: number, fragmen
   document.completed[targetIndex] = 0;
 }
 
-function createPastedBackstitches(document: PatternDocument, fragment: PatternFragment, destinationX: number, destinationY: number): { before: BackstitchStore; after: BackstitchStore; ids: Uint32Array } {
+function createPastedBackstitches(document: PatternDocument, fragment: PatternFragment, kept: Uint32Array, destinationX: number, destinationY: number): { before: BackstitchStore; after: BackstitchStore; ids: Uint32Array } {
   const before = cloneBackstitchStore(document.backstitches);
   const oldCount = document.backstitches.ids.length;
-  const newCount = fragment.backstitches.x1.length;
+  const newCount = kept.length;
   const after: BackstitchStore = {
     ids: new Uint32Array(oldCount + newCount),
     x1: new Uint32Array(oldCount + newCount),
@@ -2355,14 +2374,15 @@ function createPastedBackstitches(document: PatternDocument, fragment: PatternFr
   const offsetY = destinationY * 4;
   for (let index = 0; index < newCount; index += 1) {
     const target = oldCount + index;
+    const source = kept[index];
     const id = document.nextBackstitchId + index;
     ids[index] = id;
     after.ids[target] = id;
-    after.x1[target] = fragment.backstitches.x1[index] + offsetX;
-    after.y1[target] = fragment.backstitches.y1[index] + offsetY;
-    after.x2[target] = fragment.backstitches.x2[index] + offsetX;
-    after.y2[target] = fragment.backstitches.y2[index] + offsetY;
-    after.colors[target] = fragment.backstitches.colors[index];
+    after.x1[target] = fragment.backstitches.x1[source] + offsetX;
+    after.y1[target] = fragment.backstitches.y1[source] + offsetY;
+    after.x2[target] = fragment.backstitches.x2[source] + offsetX;
+    after.y2[target] = fragment.backstitches.y2[source] + offsetY;
+    after.colors[target] = fragment.backstitches.colors[source];
   }
   return { before, after, ids };
 }
@@ -2404,7 +2424,7 @@ export function applyPasteFragmentCommand(document: PatternDocument, command: Do
   let afterBackstitches: BackstitchStore | undefined;
   let createdBackstitchIds: Uint32Array | undefined;
   if (preflight.newBackstitchCount > 0) {
-    const stores = createPastedBackstitches(document, preflight.fragment, preflight.destinationX, preflight.destinationY);
+    const stores = createPastedBackstitches(document, preflight.fragment, preflight.keptBackstitches, preflight.destinationX, preflight.destinationY);
     beforeBackstitches = stores.before;
     afterBackstitches = stores.after;
     createdBackstitchIds = stores.ids;
@@ -2592,7 +2612,7 @@ function writeOrCompareFinalMoveCell(
   let color1 = sourceIndex < 0 ? document.colors[colorsOffset(index) + 1] : 0;
   let color2 = sourceIndex < 0 ? document.colors[colorsOffset(index) + 2] : 0;
   let color3 = sourceIndex < 0 ? document.colors[colorsOffset(index) + 3] : 0;
-  if (targetSourceIndex >= 0 && document.kind[targetSourceIndex] !== CellKind.Empty) {
+  if (targetSourceIndex >= 0 && document.kind[targetSourceIndex] !== CellKind.Empty && isActiveCell(document, index)) {
     const sourceOffset = colorsOffset(targetSourceIndex);
     kind = document.kind[targetSourceIndex];
     completed = document.completed[targetSourceIndex];
@@ -2645,6 +2665,14 @@ interface MoveBackstitchPlan {
   readonly movedCount: number;
   readonly changed: boolean;
   readonly retainedGeometries: ReadonlySet<string>;
+  /** Contained lines whose destination leaves the canvas; they are dropped. */
+  readonly dropped: ReadonlySet<number>;
+}
+
+function movedBackstitchLeavesCanvas(document: PatternDocument, index: number, deltaX: number, deltaY: number): boolean {
+  if (document.canvasMask === undefined) return false;
+  const store = document.backstitches;
+  return !backstitchWithinCanvas(document, store.x1[index] + deltaX, store.y1[index] + deltaY, store.x2[index] + deltaX, store.y2[index] + deltaY);
 }
 
 function inspectMovedBackstitches(
@@ -2656,23 +2684,25 @@ function inspectMovedBackstitches(
   const store = document.backstitches;
   let movedCount = 0;
   const retainedGeometries = new Set<string>();
+  const dropped = new Set<number>();
+  const deltaX = (destinationX - selection.rect.x) * FIXED_POINT_UNITS_PER_CELL;
+  const deltaY = (destinationY - selection.rect.y) * FIXED_POINT_UNITS_PER_CELL;
   for (let index = 0; index < store.ids.length; index += 1) {
     if (moveBackstitchContained(selection, document, store.x1[index], store.y1[index], store.x2[index], store.y2[index])) {
       requirePaletteEntry(document, store.colors[index]);
-      movedCount += 1;
+      if (movedBackstitchLeavesCanvas(document, index, deltaX, deltaY)) dropped.add(index);
+      else movedCount += 1;
     } else {
       retainedGeometries.add(moveBackstitchKey(store.x1[index], store.y1[index], store.x2[index], store.y2[index]));
     }
   }
-  const deltaX = (destinationX - selection.rect.x) * FIXED_POINT_UNITS_PER_CELL;
-  const deltaY = (destinationY - selection.rect.y) * FIXED_POINT_UNITS_PER_CELL;
   if (movedCount > 0 && (deltaX !== 0 || deltaY !== 0)) {
     for (let index = 0; index < store.ids.length; index += 1) {
-      if (!moveBackstitchContained(selection, document, store.x1[index], store.y1[index], store.x2[index], store.y2[index])) continue;
+      if (dropped.has(index) || !moveBackstitchContained(selection, document, store.x1[index], store.y1[index], store.x2[index], store.y2[index])) continue;
       if (retainedGeometries.has(moveBackstitchKey(store.x1[index] + deltaX, store.y1[index] + deltaY, store.x2[index] + deltaX, store.y2[index] + deltaY))) throw new DomainError('backstitch-collision', 'The moved backstitch collides with retained geometry.');
     }
   }
-  return { movedCount, changed: movedCount > 0 && (deltaX !== 0 || deltaY !== 0), retainedGeometries };
+  return { movedCount, changed: (movedCount > 0 && (deltaX !== 0 || deltaY !== 0)) || dropped.size > 0, retainedGeometries, dropped };
 }
 
 function materializeMovedBackstitches(
@@ -2691,7 +2721,7 @@ function materializeMovedBackstitches(
   const deltaY = (destinationY - selection.rect.y) * FIXED_POINT_UNITS_PER_CELL;
   let movedPosition = 0;
   for (let index = 0; index < store.ids.length; index += 1) {
-    if (!moveBackstitchContained(selection, document, store.x1[index], store.y1[index], store.x2[index], store.y2[index])) continue;
+    if (plan.dropped.has(index) || !moveBackstitchContained(selection, document, store.x1[index], store.y1[index], store.x2[index], store.y2[index])) continue;
     movedIds[movedPosition] = store.ids[index];
     after.x1[index] = store.x1[index] + deltaX;
     after.y1[index] = store.y1[index] + deltaY;
@@ -2700,7 +2730,22 @@ function materializeMovedBackstitches(
     movedPosition += 1;
   }
   movedIds.sort();
-  return { movedIds, before, after };
+  if (plan.dropped.size === 0) return { movedIds, before, after };
+  const kept = store.ids.length - plan.dropped.size;
+  const pruned: BackstitchStore = { ids: new Uint32Array(kept), x1: new Uint32Array(kept), y1: new Uint32Array(kept), x2: new Uint32Array(kept), y2: new Uint32Array(kept), colors: new Uint16Array(kept), completed: new Uint8Array(kept) };
+  let position = 0;
+  for (let index = 0; index < store.ids.length; index += 1) {
+    if (plan.dropped.has(index)) continue;
+    pruned.ids[position] = after.ids[index];
+    pruned.x1[position] = after.x1[index];
+    pruned.y1[position] = after.y1[index];
+    pruned.x2[position] = after.x2[index];
+    pruned.y2[position] = after.y2[index];
+    pruned.colors[position] = after.colors[index];
+    pruned.completed[position] = after.completed[index];
+    position += 1;
+  }
+  return { movedIds, before, after: pruned };
 }
 
 export function preflightMoveFragmentCommand(document: PatternDocument, command: DomainCommand, historyLimitBytes?: number): MoveFragmentPreflight {
@@ -2723,7 +2768,7 @@ export function preflightMoveFragmentCommand(document: PatternDocument, command:
     if (writeOrCompareFinalMoveCell(document, selection, destination.x, destination.y, index)) changedCellCount += 1;
   });
   const backstitchPlan = inspectMovedBackstitches(document, selection, destination.x, destination.y);
-  const estimatedBytes = estimateMoveFragmentHistoryBytes(changedCellCount, document.backstitches.ids.length, backstitchPlan.changed ? backstitchPlan.movedCount : 0);
+  const estimatedBytes = estimateMoveFragmentHistoryBytes(changedCellCount, document.backstitches.ids.length, backstitchPlan.changed ? backstitchPlan.movedCount + backstitchPlan.dropped.size : 0);
   if (historyLimitBytes !== undefined) {
     if (!Number.isSafeInteger(historyLimitBytes) || historyLimitBytes < 1) throw new DomainError('invalid-history-limit', 'Move history limit must be a positive integer.');
     if (estimatedBytes > historyLimitBytes) throw new DomainError('history-entry-too-large', `History entry requires ${String(estimatedBytes)} bytes, exceeding the configured ${String(historyLimitBytes)} byte limit.`);
@@ -2865,6 +2910,7 @@ function writeQuartersAtIndex(document: PatternDocument, index: number, colors: 
     if (color3 !== 0) requirePaletteEntry(document, color3);
   }
   if (!occupied) return clearCell(document, index);
+  if (!isActiveCell(document, index)) return false;
   const oldKind = document.kind[index];
   const oldCompletion = document.completed[index];
   let nextCompletion = 0;
@@ -3134,6 +3180,7 @@ function endpointInBounds(document: PatternDocument, pointValue: Point): boolean
 function ensureBackstitchEndpoints(document: PatternDocument, start: Point, end: Point): void {
   if (start.x === end.x && start.y === end.y) throw new DomainError('invalid-backstitch', 'A backstitch cannot have identical endpoints.');
   if (!endpointInBounds(document, start) || !endpointInBounds(document, end)) throw new DomainError('out-of-bounds', 'Backstitch endpoints must be within the document boundary.');
+  if (document.canvasMask !== undefined && !backstitchWithinCanvas(document, start.x, start.y, end.x, end.y)) throw new DomainError('outside-canvas', 'Backstitches must stay inside the canvas.');
 }
 
 function backstitchIndex(document: PatternDocument, id: number): number {
@@ -3230,8 +3277,7 @@ function applyMoveBackstitch(document: PatternDocument, command: DomainCommand):
     throw new DomainError('duplicate-backstitch', 'A backstitch with these endpoints already exists.');
   }
   if (current.x1 === start.x && current.y1 === start.y && current.x2 === end.x && current.y2 === end.y) return noChange();
-  // Changing endpoints changes the stitch geometry. A whole-document rotate
-  // or mirror is handled separately and deliberately carries this bit along.
+  // Changing endpoints changes the stitch geometry.
   records[index] = { ...current, x1: start.x, y1: start.y, x2: end.x, y2: end.y, start, end, completed: false };
   replaceBackstitches(document, records);
   return changed();
@@ -3452,168 +3498,6 @@ function paletteDelete(document: PatternDocument, command: DomainCommand): Mutat
   return changed(true);
 }
 
-function mapCornerCW(corner: QuarterCorner): QuarterCorner {
-  return [QuarterCorner.NE, QuarterCorner.SE, QuarterCorner.SW, QuarterCorner.NW][corner] as QuarterCorner;
-}
-
-function mapCornerCCW(corner: QuarterCorner): QuarterCorner {
-  return [QuarterCorner.SW, QuarterCorner.NW, QuarterCorner.NE, QuarterCorner.SE][corner] as QuarterCorner;
-}
-
-function mapCornerHorizontal(corner: QuarterCorner): QuarterCorner {
-  return [QuarterCorner.NE, QuarterCorner.NW, QuarterCorner.SW, QuarterCorner.SE][corner] as QuarterCorner;
-}
-
-function mapCornerVertical(corner: QuarterCorner): QuarterCorner {
-  return [QuarterCorner.SW, QuarterCorner.SE, QuarterCorner.NE, QuarterCorner.NW][corner] as QuarterCorner;
-}
-
-function rotatePoint(pointValue: Point, width: number, height: number, clockwise: boolean): Point {
-  return clockwise ? { x: height * 4 - pointValue.y, y: pointValue.x } : { x: pointValue.y, y: width * 4 - pointValue.x };
-}
-
-function rotateOnce(document: PatternDocument, clockwise: boolean): void {
-  const oldWidth = document.width;
-  const oldHeight = document.height;
-  const oldKind = document.kind;
-  const oldColors = document.colors;
-  const oldCompleted = document.completed;
-  const nextWidth = oldHeight;
-  const nextHeight = oldWidth;
-  const nextKind = new Uint8Array(nextWidth * nextHeight);
-  const nextColors = new Uint16Array(nextWidth * nextHeight * 4);
-  const nextCompleted = new Uint8Array(nextWidth * nextHeight);
-  // Specialty layer surfaces share all-zero cell planes; their transformed planes are simply zero.
-  const cellsEmpty = isSharedEmptyCellPlane(oldKind);
-  for (let y = 0; !cellsEmpty && y < oldHeight; y += 1) {
-    for (let x = 0; x < oldWidth; x += 1) {
-      const oldIndex = y * oldWidth + x;
-      const nextX = clockwise ? oldHeight - 1 - y : y;
-      const nextY = clockwise ? x : oldWidth - 1 - x;
-      const nextIndex = nextY * nextWidth + nextX;
-      const oldOffset = oldIndex * 4;
-      const nextOffset = nextIndex * 4;
-      const kind = oldKind[oldIndex];
-      nextKind[nextIndex] = kind;
-      if (isThreeQuarterPairKind(kind)) {
-        const mapCorner = clockwise ? mapCornerCW : mapCornerCCW;
-        for (let slot = 0; slot < 4; slot += 1) {
-          const nextSlot = mapCorner(slot as QuarterCorner);
-          nextColors[nextOffset + nextSlot] = oldColors[oldOffset + slot];
-          if (oldCompleted[oldIndex] & (1 << slot)) nextCompleted[nextIndex] |= 1 << nextSlot;
-        }
-      } else if (isThreeQuarterSingleKind(kind)) {
-        const corner = threeQuarterCornerForKind(kind);
-        if (corner !== undefined) {
-          const mapCorner = clockwise ? mapCornerCW : mapCornerCCW;
-          nextKind[nextIndex] = threeQuarterKindForCorner(mapCorner(corner));
-        }
-        nextColors[nextOffset] = oldColors[oldOffset];
-        nextCompleted[nextIndex] = oldCompleted[oldIndex] & 1;
-      } else if (kind === CellKind.Quarters) {
-        const mapCorner = clockwise ? mapCornerCW : mapCornerCCW;
-        for (let slot = 0; slot < 4; slot += 1) {
-          const nextSlot = mapCorner(slot as QuarterCorner);
-          nextColors[nextOffset + nextSlot] = oldColors[oldOffset + slot];
-          if (oldCompleted[oldIndex] & (1 << slot)) nextCompleted[nextIndex] |= 1 << nextSlot;
-        }
-      } else if (kind !== CellKind.Empty) {
-        nextColors[nextOffset] = oldColors[oldOffset];
-        nextCompleted[nextIndex] = oldCompleted[oldIndex] & 1;
-        if (kind === CellKind.HalfBackslash) nextKind[nextIndex] = CellKind.HalfSlash;
-        else if (kind === CellKind.HalfSlash) nextKind[nextIndex] = CellKind.HalfBackslash;
-      }
-    }
-  }
-  const records = listBackstitches(document).map((record) => {
-    const start = rotatePoint(record.start, oldWidth, oldHeight, clockwise);
-    const end = rotatePoint(record.end, oldWidth, oldHeight, clockwise);
-    const canonical = canonicalEndpoints(start, end);
-    return { ...record, x1: canonical.start.x, y1: canonical.start.y, x2: canonical.end.x, y2: canonical.end.y, start: canonical.start, end: canonical.end };
-  });
-  document.width = nextWidth;
-  document.height = nextHeight;
-  document.kind = nextKind;
-  document.colors = nextColors;
-  document.completed = nextCompleted;
-  replaceBackstitches(document, records);
-}
-
-function mirror(document: PatternDocument, horizontal: boolean): void {
-  const oldKind = document.kind;
-  const oldColors = document.colors;
-  const oldCompleted = document.completed;
-  const nextKind = new Uint8Array(oldKind.length);
-  const nextColors = new Uint16Array(oldColors.length);
-  const nextCompleted = new Uint8Array(oldCompleted.length);
-  const cellsEmpty = isSharedEmptyCellPlane(oldKind);
-  for (let y = 0; !cellsEmpty && y < document.height; y += 1) {
-    for (let x = 0; x < document.width; x += 1) {
-      const oldIndex = y * document.width + x;
-      const nextX = horizontal ? document.width - 1 - x : x;
-      const nextY = horizontal ? y : document.height - 1 - y;
-      const nextIndex = nextY * document.width + nextX;
-      const oldOffset = oldIndex * 4;
-      const nextOffset = nextIndex * 4;
-      const kind = oldKind[oldIndex];
-      nextKind[nextIndex] = kind;
-      if (isThreeQuarterPairKind(kind)) {
-        const mapCorner = horizontal ? mapCornerHorizontal : mapCornerVertical;
-        for (let slot = 0; slot < 4; slot += 1) {
-          const nextSlot = mapCorner(slot as QuarterCorner);
-          nextColors[nextOffset + nextSlot] = oldColors[oldOffset + slot];
-          if (oldCompleted[oldIndex] & (1 << slot)) nextCompleted[nextIndex] |= 1 << nextSlot;
-        }
-      } else if (isThreeQuarterSingleKind(kind)) {
-        const corner = threeQuarterCornerForKind(kind);
-        if (corner !== undefined) {
-          const mapCorner = horizontal ? mapCornerHorizontal : mapCornerVertical;
-          nextKind[nextIndex] = threeQuarterKindForCorner(mapCorner(corner));
-        }
-        nextColors[nextOffset] = oldColors[oldOffset];
-        nextCompleted[nextIndex] = oldCompleted[oldIndex] & 1;
-      } else if (kind === CellKind.Quarters) {
-        const mapCorner = horizontal ? mapCornerHorizontal : mapCornerVertical;
-        for (let slot = 0; slot < 4; slot += 1) {
-          const nextSlot = mapCorner(slot as QuarterCorner);
-          nextColors[nextOffset + nextSlot] = oldColors[oldOffset + slot];
-          if (oldCompleted[oldIndex] & (1 << slot)) nextCompleted[nextIndex] |= 1 << nextSlot;
-        }
-      } else if (kind !== CellKind.Empty) {
-        nextColors[nextOffset] = oldColors[oldOffset];
-        nextCompleted[nextIndex] = oldCompleted[oldIndex] & 1;
-        if (kind === CellKind.HalfBackslash) nextKind[nextIndex] = CellKind.HalfSlash;
-        else if (kind === CellKind.HalfSlash) nextKind[nextIndex] = CellKind.HalfBackslash;
-      }
-    }
-  }
-  const records = listBackstitches(document).map((record) => {
-    const start = horizontal ? { x: document.width * 4 - record.start.x, y: record.start.y } : { x: record.start.x, y: document.height * 4 - record.start.y };
-    const end = horizontal ? { x: document.width * 4 - record.end.x, y: record.end.y } : { x: record.end.x, y: document.height * 4 - record.end.y };
-    const canonical = canonicalEndpoints(start, end);
-    return { ...record, x1: canonical.start.x, y1: canonical.start.y, x2: canonical.end.x, y2: canonical.end.y, start: canonical.start, end: canonical.end };
-  });
-  document.kind = nextKind;
-  document.colors = nextColors;
-  document.completed = nextCompleted;
-  replaceBackstitches(document, records);
-}
-
-function parseTurns(command: DomainCommand, clockwiseDefault: boolean): number {
-  const degreesValue = valueOf(command, 'degrees');
-  if (degreesValue !== undefined) {
-    const degrees = requiredNumber(degreesValue, 'degrees');
-    if (degrees % 90 !== 0) throw new DomainError('invalid-transform', 'Rotation degrees must be a multiple of 90.');
-    return ((degrees / 90) * (clockwiseDefault ? 1 : -1) + 4) % 4;
-  }
-  const turnsValue = valueOf(command, 'turns', 'quarterTurns');
-  if (turnsValue !== undefined) {
-    const turns = requiredNumber(turnsValue, 'turns');
-    return ((turns * (clockwiseDefault ? 1 : -1)) % 4 + 4) % 4;
-  }
-  return clockwiseDefault ? 1 : 3;
-}
-
 function sameContent(left: PatternDocument, right: PatternDocument): boolean {
   if (left.width !== right.width || left.height !== right.height || left.palette.length !== right.palette.length || left.backstitches.ids.length !== right.backstitches.ids.length || left.nextBackstitchId !== right.nextBackstitchId || left.nextPaletteId !== right.nextPaletteId) return false;
   if (left.settings.symbolSet !== right.settings.symbolSet || left.settings.materialUnit !== right.settings.materialUnit || left.settings.backgroundColor !== right.settings.backgroundColor || left.settings.aidaCount !== right.settings.aidaCount) return false;
@@ -3630,124 +3514,6 @@ function sameContent(left: PatternDocument, right: PatternDocument): boolean {
 }
 
 export const documentsEqual = sameContent;
-
-function rotationTurns(command: DomainCommand, type: string): number {
-  let turns = parseTurns(command, type !== 'rotate-ccw');
-  if (type === 'rotate' && valueOf(command, 'direction') !== undefined) {
-    const direction = String(valueOf(command, 'direction')).toLowerCase();
-    turns = parseTurns(command, direction !== 'counterclockwise' && direction !== 'ccw');
-  }
-  return turns;
-}
-
-function mirrorType(command: DomainCommand, type: string): 'mirror-horizontal' | 'mirror-vertical' | undefined {
-  if (type === 'mirror') {
-    const axis = String(valueOf(command, 'axis', 'direction') ?? 'horizontal').toLowerCase();
-    return axis === 'vertical' || axis === 'y' || axis === 'top-bottom' ? 'mirror-vertical' : 'mirror-horizontal';
-  }
-  if (type === 'mirror-horizontal' || type === 'mirror-left-right') return 'mirror-horizontal';
-  if (type === 'mirror-vertical' || type === 'mirror-top-bottom') return 'mirror-vertical';
-  return undefined;
-}
-
-/**
- * For a rotate or mirror command, a canonical forward command and its exact
- * inverse, so history can undo the transform instead of storing planes.
- * Undefined for any other command and for a zero-turn rotation.
- */
-export function canonicalTransformCommand(command: DomainCommand): { forward: DomainCommand; inverse: DomainCommand } | undefined {
-  if (!command || typeof command.type !== 'string') return undefined;
-  const type = normalizeType(command.type);
-  const mirrorAxis = mirrorType(command, type);
-  if (mirrorAxis !== undefined) return { forward: { type: mirrorAxis }, inverse: { type: mirrorAxis } };
-  if (type !== 'rotate-cw' && type !== 'rotate-ccw' && type !== 'rotate') return undefined;
-  const turns = rotationTurns(command, type);
-  if (turns === 0) return undefined;
-  return { forward: { type: 'rotate-cw', quarterTurns: turns }, inverse: { type: 'rotate-cw', quarterTurns: 4 - turns } };
-}
-
-/** For a crop command, the canonical `{ type: 'crop', x, y, width, height }` form; otherwise undefined. */
-export function canonicalCropCommand(command: DomainCommand): DomainCommand | undefined {
-  if (!command || typeof command.type !== 'string' || normalizeType(command.type) !== 'crop') return undefined;
-  const rect = parseCrop(command);
-  return { type: 'crop', x: rect.x, y: rect.y, width: rect.width, height: rect.height };
-}
-
-function transformCommand(document: PatternDocument, command: DomainCommand, type: string): MutationInfo {
-  // Transforms replace every plane and the backstitch store rather than writing
-  // them in place, so a shallow snapshot is enough for no-op detection.
-  if (type === 'rotate-cw' || type === 'rotate-ccw' || type === 'rotate') {
-    const before = { ...document };
-    const turns = rotationTurns(command, type);
-    if (turns === 0) return noChange();
-    // `turns` is normalized to clockwise turns; three clockwise turns run as
-    // one counter-clockwise pass so an undone rotation costs a single pass.
-    if (turns === 3) rotateOnce(document, false);
-    else for (let turn = 0; turn < turns; turn += 1) rotateOnce(document, true);
-    return sameContent(before, document) ? noChange() : changed(true);
-  }
-  const before = { ...document };
-  const horizontal = type === 'mirror-horizontal' || type === 'mirror-left-right';
-  mirror(document, horizontal);
-  return sameContent(before, document) ? noChange() : changed(true);
-}
-
-function parseCrop(command: DomainCommand): CropRect {
-  const source = typeof command.rect === 'object' && command.rect !== null ? command.rect as Record<string, unknown> : command;
-  const x = requiredNumber(source.x ?? source.left ?? source.x0, 'crop x');
-  const y = requiredNumber(source.y ?? source.top ?? source.y0, 'crop y');
-  const widthValue = source.width;
-  const heightValue = source.height;
-  const right = source.right ?? source.x1;
-  const bottom = source.bottom ?? source.y1;
-  const width = widthValue === undefined ? requiredNumber(right, 'crop right') - x : requiredNumber(widthValue, 'crop width');
-  const height = heightValue === undefined ? requiredNumber(bottom, 'crop bottom') - y : requiredNumber(heightValue, 'crop height');
-  return { x, y, width, height };
-}
-
-function applyCrop(document: PatternDocument, command: DomainCommand): MutationInfo {
-  const rect = parseCrop(command);
-  if (!Number.isInteger(rect.x) || !Number.isInteger(rect.y) || !Number.isInteger(rect.width) || !Number.isInteger(rect.height) || rect.x < 0 || rect.y < 0 || rect.width < 1 || rect.height < 1 || rect.x + rect.width > document.width || rect.y + rect.height > document.height) {
-    throw new DomainError('invalid-crop', 'Crop rectangle must be a non-empty rectangle inside the document.');
-  }
-  if (rect.x === 0 && rect.y === 0 && rect.width === document.width && rect.height === document.height) return noChange();
-  const oldWidth = document.width;
-  const oldKind = document.kind;
-  const oldColors = document.colors;
-  const oldCompleted = document.completed;
-  const nextKind = new Uint8Array(rect.width * rect.height);
-  const nextColors = new Uint16Array(rect.width * rect.height * 4);
-  const nextCompleted = new Uint8Array(rect.width * rect.height);
-  const cellsEmpty = isSharedEmptyCellPlane(oldKind);
-  for (let y = 0; !cellsEmpty && y < rect.height; y += 1) {
-    for (let x = 0; x < rect.width; x += 1) {
-      const oldIndex = (rect.y + y) * oldWidth + rect.x + x;
-      const nextIndex = y * rect.width + x;
-      nextKind[nextIndex] = oldKind[oldIndex];
-      nextCompleted[nextIndex] = oldCompleted[oldIndex];
-      const oldOffset = oldIndex * 4;
-      const nextOffset = nextIndex * 4;
-      for (let slot = 0; slot < 4; slot += 1) nextColors[nextOffset + slot] = oldColors[oldOffset + slot];
-    }
-  }
-  const left = rect.x * 4;
-  const top = rect.y * 4;
-  const right = (rect.x + rect.width) * 4;
-  const bottom = (rect.y + rect.height) * 4;
-  const records = listBackstitches(document).filter((record) => record.x1 >= left && record.x1 <= right && record.x2 >= left && record.x2 <= right && record.y1 >= top && record.y1 <= bottom && record.y2 >= top && record.y2 <= bottom).map((record) => {
-    const start = { x: record.x1 - left, y: record.y1 - top };
-    const end = { x: record.x2 - left, y: record.y2 - top };
-    const canonical = canonicalEndpoints(start, end);
-    return { ...record, x1: canonical.start.x, y1: canonical.start.y, x2: canonical.end.x, y2: canonical.end.y, start: canonical.start, end: canonical.end };
-  });
-  document.width = rect.width;
-  document.height = rect.height;
-  document.kind = nextKind;
-  document.colors = nextColors;
-  document.completed = nextCompleted;
-  replaceBackstitches(document, records);
-  return changed(true);
-}
 
 function applyCellCompletion(document: PatternDocument, command: DomainCommand): MutationInfo {
   return completionCommand(document, command, false);
@@ -3911,18 +3677,6 @@ function applyOneToDraftInternal(document: PatternDocument, command: DomainComma
     case 'palette-deactivate': return paletteDeactivate(document, command);
     case 'palette-merge': return paletteMerge(document, command);
     case 'palette-delete': return paletteDelete(document, command);
-    case 'rotate-cw':
-    case 'rotate-ccw':
-    case 'rotate':
-    case 'mirror-horizontal':
-    case 'mirror-vertical':
-    case 'mirror-left-right':
-    case 'mirror-top-bottom': return transformCommand(document, command, type);
-    case 'mirror': {
-      const axis = String(valueOf(command, 'axis', 'direction') ?? 'horizontal').toLowerCase();
-      return transformCommand(document, command, axis === 'vertical' || axis === 'y' || axis === 'top-bottom' ? 'mirror-vertical' : 'mirror-horizontal');
-    }
-    case 'crop': return applyCrop(document, command);
     default: throw new DomainError('unknown-command', `Unknown command type ${command.type}.`);
   }
 }
@@ -4027,18 +3781,6 @@ export function createBackstitchCommand(start: Point, end: Point, color: number,
 
 export const addBackstitchCommand = createBackstitchCommand;
 
-export function rotateCommand(direction: 'cw' | 'ccw' = 'cw', quarterTurns = 1): DomainCommand {
-  return { type: direction === 'cw' ? 'rotate-cw' : 'rotate-ccw', quarterTurns };
-}
-
-export function mirrorCommand(axis: 'horizontal' | 'vertical' = 'horizontal'): DomainCommand {
-  return { type: axis === 'horizontal' ? 'mirror-horizontal' : 'mirror-vertical' };
-}
-
-export function cropCommand(rect: CropRect): DomainCommand {
-  return { type: 'crop', ...rect };
-}
-
 export function setFull(document: PatternDocument, x: number, y: number, color: number, completed?: boolean): CommandResult {
   return applyCommand(document, fullCommand(x, y, color, completed));
 }
@@ -4117,23 +3859,6 @@ export const deactivatePaletteEntry = deactivatePalette;
 export const deleteBackstitch = removeBackstitch;
 export const setCellCompletion = setCompletion;
 
-export function rotate(document: PatternDocument, direction: 'cw' | 'ccw' = 'cw', quarterTurns = 1): CommandResult {
-  return applyCommand(document, rotateCommand(direction, quarterTurns));
-}
-
-export function mirrorDocument(document: PatternDocument, axis: 'horizontal' | 'vertical' = 'horizontal'): CommandResult {
-  return applyCommand(document, mirrorCommand(axis));
-}
-
-export function cropDocument(document: PatternDocument, rect: CropRect): CommandResult {
-  return applyCommand(document, cropCommand(rect));
-}
-
-export const rotateClockwise = (document: PatternDocument, quarterTurns = 1): CommandResult => rotate(document, 'cw', quarterTurns);
-export const rotateCounterClockwise = (document: PatternDocument, quarterTurns = 1): CommandResult => rotate(document, 'ccw', quarterTurns);
-export const mirrorHorizontal = (document: PatternDocument): CommandResult => mirrorDocument(document, 'horizontal');
-export const mirrorVertical = (document: PatternDocument): CommandResult => mirrorDocument(document, 'vertical');
-export const crop = cropDocument;
 export const deleteSelectedRegion = deleteRegion;
 
 export const clearCellCommand = (x: number, y: number): DomainCommand => ({ type: 'erase-cell', x, y });

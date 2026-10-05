@@ -495,7 +495,7 @@ export class ProgressMetricsService {
     const shadow = this.shadow;
     // The domain reports the exact changed cells for layer edits and stack
     // changes (visibility, move, delete, merge, duplicate); only a full
-    // invalidation, such as a crop or rotate, recounts every cell.
+    // invalidation, such as a palette merge, recounts every cell.
     if (change.full || shadow === null || shadow.kind.length !== composite.kind.length) {
       this.recalculate(composite);
       return settingsChanged;

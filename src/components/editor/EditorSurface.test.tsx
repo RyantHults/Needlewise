@@ -1426,12 +1426,98 @@ describe('EditorSurface', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     const select = screen.getByRole('button', { name: 'Select' });
     const lasso = screen.getByRole('button', { name: 'Lasso select' });
-    expect(lasso).toHaveAttribute('title', 'Lasso select');
+    expect(lasso).toHaveAttribute('title', 'Lasso select · hold for options');
     expect(lasso).toHaveAttribute('aria-pressed', 'true');
     expect(lasso.querySelector('[data-icon="lasso"]')).toBeInTheDocument();
     expect(select.compareDocumentPosition(lasso) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.click(select);
-    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'select' });
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'select', shape: 'rectangle' });
+  });
+  const variantPopouts = [
+    { tool: 'select', button: 'Select', menu: 'Choose selection shape', first: ['Rectangle select', 'rectangle', 'select'], second: ['Oval select', 'oval', 'select-oval'] },
+    { tool: 'lasso', button: 'Lasso select', menu: 'Choose lasso shape', first: ['Lasso select', 'freehand', 'lasso'], second: ['Polygon lasso', 'polygon', 'lasso-polygon'] },
+  ] as const;
+  it.each(variantPopouts)('offers both $button variants from the rail button popout and swaps its icon', ({ tool, button, menu: menuName, first, second }) => {
+    f.uiState.tool = { tool: 'paint' } as never;
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const trigger = screen.getByRole('button', { name: button });
+    expect(trigger).toHaveAttribute('title', `${button} · hold for options`);
+    expect(trigger.querySelector(`[data-icon="${first[2]}"]`)).toBeInTheDocument();
+    fireEvent.contextMenu(trigger);
+    const menu = screen.getByRole('menu', { name: menuName });
+    expect(menu.parentElement).toBe(document.body);
+    const items = within(menu).getAllByRole('menuitemradio');
+    expect(items.map((item) => item.getAttribute('aria-label'))).toEqual([first[0], second[0]]);
+    expect(within(menu).getByRole('menuitemradio', { name: first[0] })).toHaveAttribute('aria-checked', 'true');
+    expect(within(menu).getByRole('menuitemradio', { name: second[0] })).toHaveAttribute('aria-checked', 'false');
+    expect(within(menu).getByRole('menuitemradio', { name: second[0] }).querySelector(`[data-icon="${second[2]}"]`)).toBeInTheDocument();
+    expect(f.c.setTool).not.toHaveBeenCalled();
+    fireEvent.click(within(menu).getByRole('menuitemradio', { name: second[0] }));
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool, shape: second[1] });
+    expect(screen.queryByRole('menu', { name: menuName })).not.toBeInTheDocument();
+    expect(trigger.querySelector(`[data-icon="${second[2]}"]`)).toBeInTheDocument();
+    f.c.setTool.mockClear();
+    fireEvent.click(trigger);
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool, shape: second[1] });
+    fireEvent.contextMenu(trigger);
+    expect(screen.getByRole('menuitemradio', { name: second[0] })).toHaveAttribute('aria-checked', 'true');
+  });
+  it.each(variantPopouts)('opens the $button popout on long-press without also activating it', ({ button, menu }) => {
+    vi.useFakeTimers();
+    f.uiState.tool = { tool: 'paint' } as never;
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const trigger = screen.getByRole('button', { name: button });
+    fireEvent.pointerDown(trigger, { pointerId: 1, pointerType: 'touch', isPrimary: true });
+    act(() => vi.advanceTimersByTime(499));
+    expect(screen.queryByRole('menu', { name: menu })).not.toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.getByRole('menu', { name: menu })).toBeInTheDocument();
+    fireEvent.pointerUp(trigger, { pointerId: 1, pointerType: 'touch' });
+    fireEvent.click(trigger, { detail: 1, pointerId: 1, pointerType: 'touch' });
+    expect(f.c.setTool).not.toHaveBeenCalled();
+    expect(f.c.clearSelection).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+  it.each(variantPopouts)('navigates the $button popout with the keyboard and restores focus on Escape', async ({ button, menu: menuName, first, second }) => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const trigger = screen.getByRole('button', { name: button });
+    fireEvent.keyDown(trigger, { key: 'F10', shiftKey: true });
+    const menu = screen.getByRole('menu', { name: menuName });
+    const a = within(menu).getByRole('menuitemradio', { name: first[0] });
+    const b = within(menu).getByRole('menuitemradio', { name: second[0] });
+    await waitFor(() => expect(document.activeElement).toBe(a));
+    fireEvent.keyDown(document, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(b);
+    fireEvent.keyDown(document, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(a);
+    fireEvent.keyDown(document, { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(b);
+    fireEvent.keyDown(document, { key: 'Home' });
+    expect(document.activeElement).toBe(a);
+    fireEvent.keyDown(document, { key: 'End' });
+    expect(document.activeElement).toBe(b);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('menu', { name: menuName })).not.toBeInTheDocument();
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+    expect(f.c.setTool).not.toHaveBeenCalled();
+  });
+  it.each(variantPopouts)('remembers the $button variant from the active tool state', ({ tool, button, second }) => {
+    f.uiState.tool = { tool, shape: second[1] } as never;
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const trigger = screen.getByRole('button', { name: button });
+    expect(trigger.querySelector(`[data-icon="${second[2]}"]`)).toBeInTheDocument();
+    fireEvent.click(trigger);
+    expect(f.c.clearSelection).toHaveBeenCalledTimes(1);
+    expect(f.c.setTool).not.toHaveBeenCalled();
+  });
+  it('moves focus from a rail button onto the canvas frame when the canvas is pressed', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const lasso = screen.getByRole('button', { name: 'Lasso select' });
+    const frame = screen.getByRole('group', { name: 'Stitch chart canvas' });
+    lasso.focus();
+    expect(document.activeElement).toBe(lasso);
+    fireEvent.pointerDown(frame.querySelector('canvas')!, { pointerId: 1, pointerType: 'mouse', isPrimary: true });
+    expect(document.activeElement).toBe(frame);
   });
   it('auto-fits the pattern once on init with the Fit-button routine', () => { render(<EditorSurface workspace={ws} document={doc} />); expect(f.c.setMetrics).toHaveBeenCalled(); const fits = () => (f.c.handleKeyDown as ReturnType<typeof vi.fn>).mock.calls.filter(([event]) => (event as { key: string }).key === '0'); expect(fits()).toHaveLength(1); fireEvent.click(screen.getByRole('button', { name: 'Fit' })); expect(fits()).toHaveLength(2); });
   it('renders settings sections and immediate rail placement', () => { render(<EditorSurface workspace={ws} document={doc} />); expect(screen.queryByRole('button', { name: 'Delete selection' })).not.toBeInTheDocument(); expect(screen.queryByRole('button', { name: 'Paste selection' })).not.toBeInTheDocument(); expect(screen.queryByRole('button', { name: /Move controls/ })).not.toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); const settings = screen.getByRole('dialog', { name: 'Settings' }); expect(within(settings).getByRole('heading', { name: 'Project' })).toBeInTheDocument(); fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' })); expect(within(settings).getByRole('heading', { name: 'Editor' })).toBeInTheDocument(); fireEvent.click(within(settings).getByRole('button', { name: 'Right' })); expect(within(settings).getByRole('button', { name: 'Right' })).toHaveAttribute('aria-pressed', 'true'); expect(within(settings).getByRole('button', { name: 'Left' })).toHaveAttribute('aria-pressed', 'false'); expect(document.querySelector('.editor-layout')).toHaveClass('rail-right'); fireEvent.keyDown(settings, { key: 'Escape' }); expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
@@ -2333,16 +2419,36 @@ describe('EditorSurface layers', () => {
     expect(screen.queryByRole('button', { name: 'Rename layer' })).not.toBeInTheDocument();
   });
 
-  it('shows the catalog name, brand, code and hex of a catalog background, and only the hex otherwise', () => {
+  it('shows a compact background chip: the thread code when catalogued, otherwise the hex, with the full description in its label and title', () => {
     useSession(layerSession(layeredDocument(), 'canvas'));
     const record = compactDmcRecords[0];
+    const description = `${record.name}, ${COMPACT_DMC_DEFINITION.association.brandLabel} · ${record.code}, ${record.hex.toUpperCase()}`;
     const view = render(<EditorSurface workspace={ws} document={{ ...(doc as object), settings: { backgroundColor: record.hex } } as never} />);
-    const button = screen.getByRole('button', { name: `Change background color, ${record.name}, ${COMPACT_DMC_DEFINITION.association.brandLabel} · ${record.code}, ${record.hex.toUpperCase()}` });
-    expect(button).toHaveTextContent(record.name);
-    expect(button).toHaveTextContent(`${COMPACT_DMC_DEFINITION.association.brandLabel} · ${record.code}`);
+    const button = screen.getByRole('button', { name: `Change background color, ${description}` });
+    expect(button).toHaveAttribute('title', `Background color: ${description}`);
+    expect(button).toHaveTextContent(new RegExp(`^${record.code}$`));
+    expect(button.querySelector('.layer-background-swatch')).not.toBeNull();
     view.unmount();
     render(<EditorSurface workspace={ws} document={{ ...(doc as object), settings: { backgroundColor: '#123456' } } as never} />);
-    expect(screen.getByRole('button', { name: 'Change background color, #123456' })).toHaveTextContent(/^#123456$/);
+    const plain = screen.getByRole('button', { name: 'Change background color, #123456' });
+    expect(plain).toHaveTextContent(/^#123456$/);
+    expect(plain).toHaveAttribute('title', 'Background color: #123456');
+  });
+
+  it('styles the Crop split button as one joined control at the neighbouring button height', () => {
+    // Scoped under .canvas-actions so `.canvas-actions button` cannot round the inner corners.
+    expect(stylesText).toMatch(/\.canvas-actions \.crop-split-button \.crop-split-main \{[^}]*border-radius:\.4rem 0 0 \.4rem;/);
+    expect(stylesText).toMatch(/\.canvas-actions \.crop-split-button \.crop-split-arrow \{[^}]*margin:0 0 0 -1px;[^}]*border-radius:0 \.4rem \.4rem 0;/);
+    expect(stylesText).toMatch(/\.canvas-actions \.crop-split-button button \{[^}]*height:2\.75rem;[^}]*min-height:2\.75rem;/);
+    expect(stylesText).toMatch(/\.crop-split-main\[aria-pressed="true"\] \+ \.crop-split-arrow,/);
+    // Active crop fills the arrow too, with a translucent light divider between the halves.
+    expect(stylesText).toMatch(/\.crop-split-main\[aria-pressed="true"\] \+ \.crop-split-arrow \{[^}]*border-left-color:rgba\(255,253,249,\.45\);[^}]*background:#bc5a3d;[^}]*color:#fffdf9;/);
+    // Hover on either half and the open menu darken to #88452f and stay filled.
+    expect(stylesText).toMatch(/\.crop-split-main\[aria-pressed="true"\]:hover,\n[^{]*\.crop-split-main\[aria-pressed="true"\] \+ \.crop-split-arrow:hover,\n[^{]*\.crop-split-main\[aria-pressed="true"\] \+ \.crop-split-arrow\[aria-expanded="true"\] \{[^}]*background:#88452f;/);
+    // The pressed rules come after the open-menu rule, so an open menu doesn't revert the arrow to the light fill.
+    expect(stylesText.indexOf('.crop-split-main[aria-pressed="true"] + .crop-split-arrow {')).toBeGreaterThan(stylesText.indexOf('.crop-split-arrow[aria-expanded="true"] { border-color:#bc5a3d; background:#f1e4da;'));
+    expect(stylesText).toMatch(/\.canvas-actions \.layer-controls-canvas \.layer-background-button \{[^}]*height:2\.75rem;/);
+    expect(stylesText).toMatch(/\.layer-background-swatch \{[^}]*width:1\.2rem;[^}]*height:1\.2rem;/);
   });
 
   it('chooses the background from the catalog dialog without touching the palette', () => {
@@ -2389,7 +2495,7 @@ describe('EditorSurface layers', () => {
     const name = tool === 'select' ? 'Select' : 'Lasso select';
     const view = render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name }));
-    expect(f.c.setTool).toHaveBeenCalledWith({ tool });
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool, shape: tool === 'select' ? 'rectangle' : 'freehand' });
     expect(f.c.clearSelection).not.toHaveBeenCalled();
     view.unmount();
     f.c.setTool.mockClear();
@@ -2445,5 +2551,256 @@ describe('EditorSurface layers', () => {
     expect(region).toHaveTextContent('Added a new stitch layer for your paste.');
     act(() => vi.advanceTimersByTime(3300));
     expect(region).toBeEmptyDOMElement();
+  });
+});
+
+describe('EditorSurface on the Canvas layer', () => {
+  const canvasApi = () => Object.assign(f.c, {
+    setCanvasMode: vi.fn(() => true),
+    setCanvasCropActive: vi.fn(() => true),
+    applyCanvasSelection: vi.fn(() => true),
+    resizeCanvasEdge: vi.fn(() => true),
+    beginCanvasEdgeDrag: vi.fn(() => true),
+    updateCanvasEdgeDrag: vi.fn(() => true),
+    endCanvasEdgeDrag: vi.fn(() => true),
+    cancelCanvasEdgeDrag: vi.fn()
+  });
+  const onCanvas = (mode: 'basic' | 'advanced', basicAvailable = true, cropActive = true) => {
+    const state = f.uiState as Record<string, unknown>;
+    state.activeLayer = { id: 'canvas', kind: 'canvas', visible: true };
+    state.canvasMode = mode;
+    state.canvasBasicAvailable = basicAvailable;
+    state.canvasCropActive = cropActive;
+    state.viewport = { x: -2, y: -2, zoom: 10 };
+    state.toolBrushSizes = { full: 1, half: 1, 'three-quarter': 1, eraser: 1, 'canvas-brush': 4 };
+  };
+  afterEach(() => {
+    const state = f.uiState as Record<string, unknown>;
+    delete state.activeLayer;
+    delete state.canvasMode;
+    delete state.canvasBasicAvailable;
+    delete state.canvasCropActive;
+    delete state.viewport;
+    state.toolBrushSizes = { full: 1, half: 1, 'three-quarter': 1, eraser: 1 };
+  });
+
+  /** Each rail button's name and icon, in order, so two rails can be compared. */
+  const railSnapshot = () => [...document.querySelectorAll<HTMLButtonElement>('.editor-rail > button')].map((button) => ({
+    name: button.getAttribute('aria-label')?.replace(/, \w+ mode$/, ''),
+    icon: button.querySelector('img')?.getAttribute('data-icon') ?? button.querySelector('.stitch-brush-icon')?.className ?? button.querySelector('svg') !== null
+  }));
+
+  it('keeps the same rail on Canvas+Advanced, with Full stitch driving the canvas brush and the other stitch tools greyed', () => {
+    const stitch = render(<EditorSurface workspace={ws} document={doc} />);
+    const stitchRail = railSnapshot();
+    stitch.unmount();
+
+    canvasApi();
+    onCanvas('advanced');
+    f.uiState.tool = { tool: 'canvas-brush' } as never;
+    render(<EditorSurface workspace={ws} document={doc} />);
+    expect(stitchRail.map((entry) => entry.name)).toEqual(['Pan', 'Select', 'Lasso select', 'Full stitch', 'Half stitch', '3/4 stitch', 'Shape', 'Backstitch', 'Eraser', 'Fill', 'Eyedropper']);
+    expect(railSnapshot()).toEqual(stitchRail);
+    expect(document.querySelector('img[data-icon="canvas-brush"]')).toBeNull();
+
+    const full = screen.getByRole('button', { name: 'Full stitch' });
+    expect(full).toHaveAttribute('title', 'Canvas brush · hold for size');
+    expect(full).not.toHaveAttribute('aria-disabled');
+    expect(full).toHaveAttribute('aria-pressed', 'true');
+    expect(full.querySelector('.stitch-brush-icon-full')).not.toBeNull();
+    fireEvent.click(full);
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'canvas-brush' });
+    expect(f.c.setBrush).not.toHaveBeenCalled();
+    // Hold-for-size edits the canvas brush's own retained size.
+    fireEvent.contextMenu(full);
+    expect(screen.getByRole('dialog', { name: 'Canvas brush size' })).toBeInTheDocument();
+    expect(screen.getByRole('slider', { name: 'Canvas brush size' })).toHaveValue('4');
+    fireEvent.change(screen.getByRole('slider', { name: 'Canvas brush size' }), { target: { value: '6' } });
+    expect(f.c.setToolBrushSize).toHaveBeenCalledWith('canvas-brush', 6);
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    for (const name of ['Half stitch', '3/4 stitch', 'Shape', 'Backstitch', 'Fill', 'Eyedropper']) {
+      const button = screen.getByRole('button', { name });
+      expect(button).toHaveAttribute('aria-disabled', 'true');
+      expect(button).toHaveClass('rail-button-unavailable');
+      expect(button).toHaveAttribute('title', 'Select a stitch or specialty layer to use this tool.');
+    }
+    // The eraser stays and removes cells: no whole-cell mode is forced on Canvas.
+    const eraser = screen.getByRole('button', { name: 'Eraser' });
+    expect(eraser).not.toHaveAttribute('aria-disabled');
+    expect(eraser).toHaveAttribute('title', 'Canvas eraser · hold for size');
+    expect(eraser.querySelector('img[data-icon="eraser"]')).not.toBeNull();
+    // Its hold popover is named for the canvas eraser but keeps the eraser's retained size.
+    fireEvent.contextMenu(eraser);
+    expect(screen.getByRole('dialog', { name: 'Canvas eraser size' })).toBeInTheDocument();
+    expect(screen.getByText('Canvas eraser size')).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('slider', { name: 'Canvas eraser size' }), { target: { value: '3' } });
+    expect(f.c.setToolBrushSize).toHaveBeenCalledWith('eraser', 3);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.click(eraser);
+    expect(f.c.setEraserMode).not.toHaveBeenCalled();
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'eraser' });
+    for (const name of ['Select', 'Lasso select', 'Pan']) expect(screen.getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
+    expect(screen.queryByRole('group', { name: 'Resize canvas' })).not.toBeInTheDocument();
+  });
+
+  it('calls the eraser plain Eraser on other layers, with crop off and in basic Crop', () => {
+    const stitch = render(<EditorSurface workspace={ws} document={doc} />);
+    expect(screen.getByRole('button', { name: 'Eraser' })).toHaveAttribute('title', 'Eraser · hold for size');
+    fireEvent.contextMenu(screen.getByRole('button', { name: 'Eraser' }));
+    expect(screen.getByRole('dialog', { name: 'Eraser brush size' })).toBeInTheDocument();
+    stitch.unmount();
+    for (const [mode, crop, hint] of [['advanced', false, 'Turn on Crop to edit the canvas.'], ['basic', true, 'Switch the canvas to Advanced to use this tool.']] as const) {
+      canvasApi();
+      onCanvas(mode, true, crop);
+      const view = render(<EditorSurface workspace={ws} document={doc} />);
+      const eraser = screen.getByRole('button', { name: 'Eraser' });
+      // Disabled here, so its title is the hint rather than either eraser name.
+      expect(eraser).toHaveAttribute('title', hint);
+      fireEvent.contextMenu(eraser);
+      expect(screen.getByRole('dialog', { name: 'Eraser brush size' })).toBeInTheDocument();
+      expect(screen.queryByText(/Canvas eraser/)).not.toBeInTheDocument();
+      view.unmount();
+    }
+  });
+
+  it('keeps the Canvas layer at Pan only, with no edge controls, until Crop is turned on', () => {
+    const c = canvasApi();
+    onCanvas('advanced', true, false);
+    f.uiState.tool = { tool: 'pan' } as never;
+    const session = { layeredDocument: createLayeredDocument({ width: 16, height: 16, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [] }), activeLayerId: 'canvas', activeLayer: { id: 'canvas', kind: 'canvas', visible: true } };
+    const workspace = ws as { session?: unknown };
+    workspace.session = session;
+    try {
+      render(<EditorSurface workspace={ws} document={doc} />);
+      expect(screen.queryByRole('group', { name: 'Resize canvas' })).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Pan' })).not.toHaveAttribute('aria-disabled');
+      for (const name of ['Select', 'Lasso select', 'Full stitch', 'Eraser', 'Fill', 'Eyedropper']) {
+        expect(screen.getByRole('button', { name })).toHaveAttribute('title', 'Turn on Crop to edit the canvas.');
+      }
+      const crop = screen.getByRole('button', { name: 'Advanced crop' });
+      expect(crop).toHaveAttribute('aria-pressed', 'false');
+      fireEvent.click(crop);
+      expect(c.setCanvasCropActive).toHaveBeenCalledWith(true);
+      // Choosing a mode from the menu sets it and turns crop on.
+      c.setCanvasCropActive.mockClear();
+      fireEvent.click(screen.getByRole('button', { name: 'Crop options' }));
+      fireEvent.click(screen.getByRole('menuitemradio', { name: 'Crop' }));
+      expect(c.setCanvasMode).toHaveBeenCalledWith('basic');
+      expect(c.setCanvasCropActive).toHaveBeenCalledWith(true);
+      // A refused mode change leaves crop as it was.
+      c.setCanvasCropActive.mockClear();
+      c.setCanvasMode.mockReturnValueOnce(false);
+      fireEvent.click(screen.getByRole('button', { name: 'Crop options' }));
+      fireEvent.click(screen.getByRole('menuitemradio', { name: 'Advanced crop' }));
+      expect(c.setCanvasCropActive).not.toHaveBeenCalled();
+    } finally {
+      delete workspace.session;
+    }
+  });
+
+  it('moves the edge controls with an edge drag preview', () => {
+    canvasApi();
+    onCanvas('basic');
+    f.uiState.overlay = { canvasEditing: { workspace: { x: -495, y: -495, width: 1000, height: 1000 }, preview: { kind: 'resize', box: { x: 0, y: 0, width: 20, height: 16 } } } } as never;
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const right = document.querySelector<HTMLElement>('.canvas-edge-right')!;
+    // Viewport x -2, zoom 10: the previewed right edge is at (20 + 2) × 10 = 220, not the document's 180.
+    expect(Number.parseFloat(right.style.left)).toBe(220 - 11);
+  });
+
+  it('allows only Pan in Basic and shows the edge controls', () => {
+    const c = canvasApi();
+    onCanvas('basic');
+    f.uiState.tool = { tool: 'pan' } as never;
+    render(<EditorSurface workspace={ws} document={doc} />);
+    expect(screen.getByRole('button', { name: 'Full stitch' })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('button', { name: 'Pan' })).not.toHaveAttribute('aria-disabled');
+    for (const name of ['Select', 'Lasso select', 'Eraser', 'Fill', 'Eyedropper']) {
+      expect(screen.getByRole('button', { name })).toHaveAttribute('title', 'Switch the canvas to Advanced to use this tool.');
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Select' }));
+    expect(f.c.setTool).not.toHaveBeenCalled();
+    expect(screen.getByRole('group', { name: 'Resize canvas' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Add a row at the top' }));
+    expect(c.resizeCanvasEdge).toHaveBeenCalledWith('top', 1);
+    const adapterCall = f.adapter.mock.calls.at(-1) as unknown as [unknown, unknown, { shouldExcludeTarget?: (target: unknown, eventType: string) => boolean }];
+    expect(adapterCall[2].shouldExcludeTarget?.(screen.getByRole('button', { name: 'Drag the left edge' }), 'pointerdown')).toBe(true);
+  });
+
+  it('hides the edge controls while the canvas is not a rectangle', () => {
+    canvasApi();
+    onCanvas('basic', false);
+    render(<EditorSurface workspace={ws} document={doc} />);
+    expect(screen.queryByRole('group', { name: 'Resize canvas' })).not.toBeInTheDocument();
+  });
+
+  const openCanvasBar = (pointerType: 'mouse' | 'touch') => {
+    act(() => {
+      f.uiState.overlay = { touchCopyRequest: { cell: { x: -1, y: 0 }, selection: { x: -2, y: 0, width: 3, height: 2 }, screenX: 40, screenY: 40, canvas: true, pointerType } };
+      f.uiListener?.({ ...f.uiState });
+    });
+    const menu = screen.getByRole('group', { name: 'Selection actions' });
+    return {
+      menu,
+      add: within(menu).getByRole('button', { name: 'Add selected cells to the canvas' }),
+      del: within(menu).getByRole('button', { name: 'Delete selected cells from the canvas' })
+    };
+  };
+
+  it('offers Add and Delete for a mouse-opened canvas selection and runs them on a mouse click', () => {
+    const c = canvasApi();
+    onCanvas('advanced');
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const { menu, add, del } = openCanvasBar('mouse');
+    expect(within(menu).getAllByRole('button').map((item) => item.textContent)).toEqual(['Add', 'Delete']);
+    expect(add).toHaveFocus();
+    // A real mouse click: pointerdown of type mouse, then a click with detail 1.
+    fireEvent.pointerDown(add, { pointerType: 'mouse' });
+    fireEvent.click(add, { detail: 1 });
+    expect(c.applyCanvasSelection).toHaveBeenLastCalledWith('add');
+    expect(f.c.dismissTouchCopyRequest).toHaveBeenCalled();
+    fireEvent.pointerDown(del, { pointerType: 'mouse' });
+    fireEvent.click(del, { detail: 1 });
+    expect(c.applyCanvasSelection).toHaveBeenLastCalledWith('remove');
+    expect(c.applyCanvasSelection).toHaveBeenCalledTimes(2);
+  });
+
+  it('runs a touch-opened canvas bar only from a touch press, and from the keyboard', () => {
+    const c = canvasApi();
+    onCanvas('advanced');
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const { add, del } = openCanvasBar('touch');
+    // The synthetic click that follows the opening tap is ignored.
+    fireEvent.click(add, { detail: 1 });
+    expect(c.applyCanvasSelection).not.toHaveBeenCalled();
+    fireEvent.pointerDown(del, { pointerType: 'touch' });
+    fireEvent.click(del, { detail: 1 });
+    expect(c.applyCanvasSelection).toHaveBeenLastCalledWith('remove');
+    fireEvent.keyDown(add, { key: 'Enter' });
+    expect(c.applyCanvasSelection).toHaveBeenLastCalledWith('add');
+    fireEvent.keyDown(del, { key: ' ' });
+    expect(c.applyCanvasSelection).toHaveBeenLastCalledWith('remove');
+    expect(c.applyCanvasSelection).toHaveBeenCalledTimes(3);
+  });
+
+  it('shows canvas refusals from the controller as toasts', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const options = vi.mocked(createEditorSurfaceController).mock.calls.at(-1)?.[0] as { onNotice?: (message: string) => void };
+    act(() => options.onNotice?.("The canvas can't grow any further in that direction."));
+    expect(screen.getByText("The canvas can't grow any further in that direction.")).toBeInTheDocument();
+  });
+
+  it('stores reference bounds moved by the controller in workspace coordinates', () => {
+    const workspace = ws as { sourceImage: unknown; document?: unknown; applyTraceImageChange: ReturnType<typeof vi.fn> };
+    workspace.sourceImage = { assetId: 'a', crop: { x: 0, y: 0, width: 1, height: 1 }, chartBounds: { x: 0, y: 0, width: 4, height: 4 }, traceVisible: true, opacity: 1 };
+    workspace.document = { originX: -3, originY: 2 };
+    try {
+      render(<EditorSurface workspace={ws} document={doc} />);
+      act(() => f.capturedCallback?.({ x: 5, y: 1, width: 4, height: 4 }));
+      expect(workspace.applyTraceImageChange).toHaveBeenCalledWith(expect.objectContaining({ chartBounds: { x: 2, y: 3, width: 4, height: 4 } }), { label: 'trace-image-bounds' });
+    } finally {
+      delete workspace.document;
+    }
   });
 });

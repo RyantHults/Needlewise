@@ -28,7 +28,12 @@ import {
   SPECIALTY_LAYER_BACKSTITCH_HINT,
   STITCH_LAYER_TOOL_HINT,
   EDITABLE_LAYER_TOOL_HINT,
+  CANVAS_ADVANCED_TOOL_HINT,
+  CANVAS_BASIC_TOOL_HINT,
+  CANVAS_BRUSH_LAYER_HINT,
+  CANVAS_CROP_OFF_HINT,
   toolAvailability,
+  toolStateAvailability,
   type ActiveLayerKind,
   type CanvasRenderer,
   type EditorToolKind,
@@ -226,11 +231,11 @@ function backstitch(x1: number, y1: number, x2: number, y2: number, color = 1): 
 }
 
 describe('tool availability', () => {
-  const tools: readonly EditorToolKind[] = ['pan', 'eyedropper', 'select', 'lasso', 'eraser', 'paint', 'shape', 'fill', 'backstitch'];
+  const tools: readonly EditorToolKind[] = ['pan', 'eyedropper', 'select', 'lasso', 'eraser', 'paint', 'shape', 'fill', 'backstitch', 'canvas-brush'];
   const expected: Record<ActiveLayerKind, readonly EditorToolKind[]> = {
     stitch: ['pan', 'eyedropper', 'select', 'lasso', 'eraser', 'paint', 'shape', 'fill'],
     specialty: ['pan', 'eyedropper', 'select', 'lasso', 'eraser', 'backstitch'],
-    canvas: ['pan', 'eyedropper'],
+    canvas: ['pan'],
     reference: ['pan', 'eyedropper']
   };
 
@@ -238,6 +243,26 @@ describe('tool availability', () => {
     for (const kind of Object.keys(expected) as ActiveLayerKind[]) {
       const enabled = tools.filter((tool) => toolAvailability(tool, tool === 'paint' ? 'full' : undefined, { kind, visible: true }).enabled);
       expect({ kind, enabled }).toEqual({ kind, enabled: expected[kind] });
+    }
+  });
+
+  it('allows only Pan on the Canvas unless crop is active, then Pan only in Basic and the canvas tools in Advanced', () => {
+    const canvas = { kind: 'canvas', visible: true } as const;
+    const enabledIn = (mode: 'basic' | 'advanced', crop: boolean) => tools.filter((tool) => toolAvailability(tool, undefined, canvas, mode, crop).enabled);
+    expect(enabledIn('advanced', false)).toEqual(['pan']);
+    expect(toolAvailability('canvas-brush', undefined, canvas, 'advanced')).toEqual({ enabled: false, hint: CANVAS_CROP_OFF_HINT });
+    expect(enabledIn('basic', true)).toEqual(['pan']);
+    expect(enabledIn('advanced', true)).toEqual(['pan', 'select', 'lasso', 'eraser', 'canvas-brush']);
+    expect(toolAvailability('fill', undefined, canvas, 'basic', true)).toEqual({ enabled: false, hint: CANVAS_BASIC_TOOL_HINT });
+    expect(toolAvailability('paint', 'full', canvas, 'advanced', true)).toEqual({ enabled: false, hint: CANVAS_ADVANCED_TOOL_HINT });
+    expect(toolStateAvailability({ tool: 'canvas-brush' }, canvas, 'advanced', true).enabled).toBe(true);
+    // The mode never changes other layers, and the canvas brush is Canvas-only.
+    for (const kind of ['stitch', 'specialty', 'reference'] as const) {
+      for (const mode of ['basic', 'advanced'] as const) {
+        const enabled = tools.filter((tool) => toolAvailability(tool, tool === 'paint' ? 'full' : undefined, { kind, visible: true }, mode, true).enabled);
+        expect(enabled).toEqual(expected[kind]);
+      }
+      expect(toolAvailability('canvas-brush', undefined, { kind, visible: true }, 'advanced', true)).toEqual({ enabled: false, hint: CANVAS_BRUSH_LAYER_HINT });
     }
   });
 
@@ -250,12 +275,13 @@ describe('tool availability', () => {
 
   it('gives short hints and disables every editing tool on a hidden layer', () => {
     expect(toolAvailability('backstitch', undefined, { kind: 'stitch', visible: true })).toEqual({ enabled: false, hint: SPECIALTY_LAYER_BACKSTITCH_HINT });
-    expect(toolAvailability('fill', undefined, { kind: 'canvas', visible: true })).toEqual({ enabled: false, hint: STITCH_LAYER_TOOL_HINT });
+    expect(toolAvailability('fill', undefined, { kind: 'canvas', visible: true })).toEqual({ enabled: false, hint: CANVAS_CROP_OFF_HINT });
     expect(toolAvailability('select', undefined, { kind: 'reference', visible: true })).toEqual({ enabled: false, hint: EDITABLE_LAYER_TOOL_HINT });
     for (const kind of ['stitch', 'specialty'] as const) {
       for (const tool of tools) {
         const availability = toolAvailability(tool, undefined, { kind, visible: false });
         if (tool === 'pan' || tool === 'eyedropper') expect(availability.enabled).toBe(true);
+        else if (tool === 'canvas-brush') expect(availability).toEqual({ enabled: false, hint: CANVAS_BRUSH_LAYER_HINT });
         else expect(availability).toEqual({ enabled: false, hint: HIDDEN_LAYER_TOOL_HINT });
       }
     }

@@ -28,6 +28,7 @@ import {
 } from './types';
 import { UINT32_MAX, createDocument, emptyBackstitches, normalizePatternSettings } from './model';
 import { collectValidationErrors } from './validation';
+import { canvasFields, isCanvasCommand } from './canvas';
 
 const DEFAULT_LAYER_NAMES: Record<LayerType, string> = {
   [LayerType.Stitch]: 'Stitches',
@@ -184,14 +185,15 @@ export function layerSurface(document: LayeredDocument, layerId: number): Patter
     settings: document.settings,
     revision: document.revision,
     nextBackstitchId: document.nextBackstitchId,
-    nextPaletteId: document.nextPaletteId
+    nextPaletteId: document.nextPaletteId,
+    ...canvasFields(document)
   };
 }
 
 /**
  * Writes a surface back to its layer: cell planes (stitch) or the backstitch
- * store (specialty), plus palette, settings and counters. Width and height are
- * not written.
+ * store (specialty), plus palette, settings and counters. Width, height and
+ * the canvas fields are not written.
  */
 export function commitLayerSurface(document: LayeredDocument, layerId: number, surface: PatternDocument): void {
   const index = layerIndex(document, layerId);
@@ -352,8 +354,19 @@ export function flattenDocument(document: LayeredDocument): PatternDocument {
     settings: document.settings,
     revision: document.revision,
     nextBackstitchId: document.nextBackstitchId,
-    nextPaletteId: document.nextPaletteId
+    nextPaletteId: document.nextPaletteId,
+    ...canvasFields(document)
   };
+}
+
+/** True when the composite no longer matches the document's frame: size, catalog, origin or mask. */
+function frameChanged(previous: PatternDocument, document: LayeredDocument): boolean {
+  return previous.width !== document.width
+    || previous.height !== document.height
+    || previous.catalog !== document.catalog
+    || previous.canvasMask !== document.canvasMask
+    || previous.originX !== document.originX
+    || previous.originY !== document.originY;
 }
 
 /**
@@ -361,8 +374,8 @@ export function flattenDocument(document: LayeredDocument): PatternDocument {
  * returns a new composite each call, copying the kind/colors planes before
  * recomputing `changedIndices`, and always recomputes backstitches and
  * refreshes shared fields. The completed plane stays shared. Structure changes
- * (visibility, order, delete, merge) and dimension changes need `full`;
- * `update` falls back to it when the size no longer matches.
+ * (visibility, order, delete, merge) and canvas changes need `full`; `update`
+ * and `touch` fall back to it when the size, origin or mask no longer match.
  */
 export class FlattenCache {
   private composite: PatternDocument | null = null;
@@ -378,7 +391,7 @@ export class FlattenCache {
 
   update(document: LayeredDocument, changedIndices?: Uint32Array): PatternDocument {
     const previous = this.composite;
-    if (!previous || previous.width !== document.width || previous.height !== document.height || previous.catalog !== document.catalog) return this.full(document);
+    if (!previous || frameChanged(previous, document)) return this.full(document);
     let kind = previous.kind;
     let colors = previous.colors;
     if (changedIndices && changedIndices.length > 0) {
@@ -407,7 +420,7 @@ export class FlattenCache {
    */
   touch(document: LayeredDocument): PatternDocument {
     const previous = this.composite;
-    if (!previous || previous.width !== document.width || previous.height !== document.height || previous.catalog !== document.catalog) return this.full(document);
+    if (!previous || frameChanged(previous, document)) return this.full(document);
     this.composite = {
       ...previous,
       palette: document.palette,
@@ -427,7 +440,7 @@ export class FlattenCache {
 // ---------------------------------------------------------------------------
 // Command scope
 
-export type CommandScope = 'layer' | 'document' | 'structure';
+export type CommandScope = 'layer' | 'document' | 'structure' | 'canvas';
 
 function normalizedCommandType(type: string): string {
   return type.replace(/([a-z])([A-Z])/g, '$1-$2').replace(/_/g, '-').toLowerCase();
@@ -436,17 +449,15 @@ function normalizedCommandType(type: string): string {
 function isDocumentCommandType(type: string): boolean {
   return type.includes('palette')
     || type === 'deactivate-color'
-    || type === 'document-settings-update'
-    || type === 'crop'
-    || type.startsWith('rotate')
-    || type.startsWith('mirror');
+    || type === 'document-settings-update';
 }
 
 /**
- * `structure` for layer-* commands; `document` for palette, settings, crop,
- * rotate and mirror; `layer` for everything else (cell, backstitch, fragment,
- * erase and delete commands), which must carry a `layerId`. A batch takes the
- * broadest scope of its children: structure, then document, then layer.
+ * `structure` for layer-* commands; `canvas` for canvas-resize and
+ * canvas-cells; `document` for palette and settings; `layer` for everything
+ * else (cell, backstitch, fragment, erase and delete commands), which must
+ * carry a `layerId`. A batch takes the broadest scope of its children:
+ * structure, then canvas, then document, then layer.
  */
 export function commandScope(command: DomainCommand): CommandScope {
   const type = normalizedCommandType(command.type);
@@ -454,10 +465,12 @@ export function commandScope(command: DomainCommand): CommandScope {
     const children = Array.isArray(command.commands) ? command.commands as DomainCommand[] : [];
     const scopes = children.map(commandScope);
     if (scopes.includes('structure')) return 'structure';
+    if (scopes.includes('canvas')) return 'canvas';
     if (scopes.includes('document')) return 'document';
     return 'layer';
   }
   if (type.startsWith('layer-')) return 'structure';
+  if (isCanvasCommand(command)) return 'canvas';
   if (isDocumentCommandType(type)) return 'document';
   return 'layer';
 }
@@ -778,7 +791,7 @@ export function collectLayeredValidationErrors(document: LayeredDocument): strin
     errors.push(message);
   };
   const planes = zeroPlanes(document.width, document.height);
-  const bare: PatternDocument = { version: DOCUMENT_SCHEMA_VERSION, catalog: document.catalog, width: document.width, height: document.height, kind: planes.kind, colors: planes.colors, completed: planes.completed, backstitches: emptyBackstitches(), palette: document.palette, settings: document.settings, revision: document.revision, nextBackstitchId: document.nextBackstitchId, nextPaletteId: document.nextPaletteId };
+  const bare: PatternDocument = { version: DOCUMENT_SCHEMA_VERSION, catalog: document.catalog, width: document.width, height: document.height, kind: planes.kind, colors: planes.colors, completed: planes.completed, backstitches: emptyBackstitches(), palette: document.palette, settings: document.settings, revision: document.revision, nextBackstitchId: document.nextBackstitchId, nextPaletteId: document.nextPaletteId, ...canvasFields(document) };
   collectValidationErrors(bare).forEach(add);
   const backstitchIds = new Set<number>();
   for (const layer of document.layers) {

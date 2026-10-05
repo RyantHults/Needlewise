@@ -1,8 +1,44 @@
 import { CellKind, DOCUMENT_SCHEMA_VERSION, DomainError, MaterialKind, MaterialUnit, MAX_PERSISTABLE_CELL_COUNT, PALETTE_ID_MAX, type PatternDocument, type ValidationResult } from './types';
 import { UINT32_MAX, isAutoOverflowEntry, isThreeQuarterKind, isThreeQuarterPairKind, paletteLimit } from './model';
+import { backstitchWithinCanvas, isValidCanvasOrigin } from './canvas';
 
 function isPositiveInteger(value: number): boolean {
   return Number.isInteger(value) && value > 0;
+}
+
+/**
+ * Checks the canvas origin and mask; true when the mask is absent or usable
+ * for the per-cell and per-line checks.
+ */
+function collectCanvasErrors(document: PatternDocument, cellCount: number, errors: string[]): boolean {
+  if (document.originX !== undefined && !isValidCanvasOrigin(document.originX)) errors.push('Canvas originX must be a 32-bit integer.');
+  if (document.originY !== undefined && !isValidCanvasOrigin(document.originY)) errors.push('Canvas originY must be a 32-bit integer.');
+  const mask = document.canvasMask;
+  if (mask === undefined) return true;
+  if (!(mask instanceof Uint8Array) || mask.length !== cellCount) {
+    errors.push('Canvas mask must be a Uint8Array with one value per cell.');
+    return false;
+  }
+  let active = 0;
+  for (let index = 0; index < cellCount; index += 1) {
+    if (mask[index] > 1) {
+      errors.push('Canvas mask must hold only 0 or 1.');
+      return false;
+    }
+    active += mask[index];
+  }
+  if (active === 0) errors.push('Canvas must have at least one active cell.');
+  else if (active === cellCount) errors.push('Canvas mask must be absent when every cell is active.');
+  else {
+    const { width, height } = document;
+    const rowActive = (y: number): boolean => mask.subarray(y * width, (y + 1) * width).includes(1);
+    const columnActive = (x: number): boolean => {
+      for (let y = 0; y < height; y += 1) if (mask[y * width + x] === 1) return true;
+      return false;
+    };
+    if (!rowActive(0) || !rowActive(height - 1) || !columnActive(0) || !columnActive(width - 1)) errors.push('Canvas box must be tight around its active cells.');
+  }
+  return true;
 }
 
 function isKnownCellKind(kind: number): boolean {
@@ -53,6 +89,8 @@ export function collectValidationErrors(document: PatternDocument): string[] {
     errors.push('completed must be a Uint8Array with one value per cell.');
   }
   if (errors.length > 0) return errors;
+  const maskUsable = collectCanvasErrors(document, cellCount, errors);
+  const mask = maskUsable ? document.canvasMask : undefined;
 
   const paletteIds = new Set<number>();
   const activePaletteIds = new Set<number>();
@@ -139,6 +177,14 @@ export function collectValidationErrors(document: PatternDocument): string[] {
     errors.push('nextPaletteId must be greater than every allocated palette ID.');
   }
 
+  if (mask !== undefined) for (let index = 0; index < cellCount; index += 1) {
+    if (mask[index] === 1) continue;
+    const offset = index * 4;
+    if (document.kind[index] !== CellKind.Empty || document.completed[index] !== 0 || document.colors[offset] !== 0 || document.colors[offset + 1] !== 0 || document.colors[offset + 2] !== 0 || document.colors[offset + 3] !== 0) {
+      errors.push(`Cell ${String(index)} is outside the canvas but contains data.`);
+    }
+  }
+
   const hasCellData = document.kind.some((value) => value !== CellKind.Empty)
     || document.colors.some((value) => value !== 0)
     || document.completed.some((value) => value !== 0);
@@ -217,6 +263,7 @@ export function collectValidationErrors(document: PatternDocument): string[] {
     const key = `${String(x1)},${String(y1)},${String(x2)},${String(y2)}`;
     if (id === 0 || id > UINT32_MAX || ids.has(id)) errors.push(`Backstitch ID ${String(id)} is invalid or duplicated.`);
     if (x1 > maxX || x2 > maxX || y1 > maxY || y2 > maxY) errors.push(`Backstitch ${String(id)} is outside the document boundary.`);
+    else if (mask !== undefined && !backstitchWithinCanvas({ width: document.width, height: document.height, canvasMask: mask }, x1, y1, x2, y2)) errors.push(`Backstitch ${String(id)} is outside the canvas.`);
     if (x1 === x2 && y1 === y2) errors.push(`Backstitch ${String(id)} has identical endpoints.`);
     if (x1 > x2 || (x1 === x2 && y1 > y2)) errors.push(`Backstitch ${String(id)} endpoints are not canonical.`);
     if (segments.has(key)) errors.push(`Backstitch ${String(id)} duplicates another segment.`);

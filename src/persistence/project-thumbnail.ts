@@ -7,6 +7,11 @@ export const PROJECT_THUMBNAIL_MAX_CELLS = PROJECT_THUMBNAIL_MAX_AXIS * PROJECT_
 /** A stable, deliberately unbranded color for cells without a stitch. */
 export const PROJECT_THUMBNAIL_FABRIC_COLOR = '#f3eee5';
 export const DEFAULT_FABRIC_COLOR = PROJECT_THUMBNAIL_FABRIC_COLOR;
+/**
+ * Samples that land in a hole of a non-rectangular canvas. The summary format
+ * is opaque hex only, so holes match the editor's default off-canvas color.
+ */
+export const PROJECT_THUMBNAIL_OFF_CANVAS_COLOR = '#e4e1dc';
 
 export interface ProjectDocumentSummary {
   width: number;
@@ -143,6 +148,9 @@ export function deriveProjectThumbnail(source: LayeredDocument | PatternDocument
       const sourceX = Math.min(document.width - 1, Math.floor((column + 0.5) * document.width / columns));
       const offset = (sourceY * document.width + sourceX) * 4;
       let color = fabricColor;
+      if (document.canvasMask !== undefined && document.canvasMask[sourceY * document.width + sourceX] !== 1) {
+        color = PROJECT_THUMBNAIL_OFF_CANVAS_COLOR;
+      }
       let firstNonZeroColorId = 0;
       for (let slot = 0; slot < 4; slot += 1) {
         const colorId = document.colors[offset + slot];

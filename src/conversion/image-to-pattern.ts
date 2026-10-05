@@ -389,8 +389,8 @@ export interface DocumentContentBox {
  * use quarter-cell coordinates, four per cell side, so endpoint coverage maps
  * onto cells by integer division).
  *
- * This mirrors the region remap of the domain crop command without the command
- * machinery: the document is remapped in place (no clone), the revision stays
+ * The kept box is copied to the top-left and backstitches are translated by
+ * its origin. The document is remapped in place (no clone), the revision stays
  * untouched (a fresh draft must remain revision 0), and the pure translation
  * preserves canonical endpoint order so no re-canonicalization is needed.
  * Palette, usage, revision and ID counters are untouched: only Empty cells

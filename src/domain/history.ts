@@ -10,8 +10,6 @@ import {
   applyDeleteRegionCommand,
   applyDeleteCellSetCommand,
   assertBulkBatchPolicy,
-  canonicalCropCommand,
-  canonicalTransformCommand,
   commandRequiresSnapshot,
   estimateBulkCellHistoryBytes,
   estimateBulkRecolorHistoryBytes,
@@ -46,9 +44,11 @@ import {
   type MutationInfo,
   type SparseMutationDelta
 } from './commands';
-import { cloneDocument, clonePaletteEntry, clonePatternSettings, emptyBackstitches } from './model';
+import { UINT32_MAX, cloneDocument, clonePaletteEntry, clonePatternSettings, emptyBackstitches } from './model';
 import type {
   BackstitchStore,
+  CanvasCellsCommand,
+  CanvasResizeCommand,
   CommandResult,
   Layer,
   LayeredDocument,
@@ -62,7 +62,7 @@ import type {
   QuarterCorner,
   ProgressChangeSet
 } from './types';
-import { DEFAULT_PATTERN_SETTINGS, DOCUMENT_SCHEMA_VERSION, DomainError, LayerType, MAX_LAYER_NAME_CHARS, MAX_LAYERS_PER_TYPE, MaterialUnit, MAX_PERSISTABLE_CELL_COUNT, PALETTE_ID_MAX } from './types';
+import { CellKind, DEFAULT_PATTERN_SETTINGS, DOCUMENT_SCHEMA_VERSION, DomainError, LAYERED_DOCUMENT_VERSION, LayerType, MAX_LAYER_NAME_CHARS, MAX_LAYERS_PER_TYPE, MaterialUnit, MAX_PERSISTABLE_CELL_COUNT, PALETTE_ID_MAX } from './types';
 import { assertValidDocument, collectValidationErrors } from './validation';
 import {
   attachDeleteMetricsImpactForDelta
@@ -70,6 +70,7 @@ import {
 import {
   applyLayerStructureCommand,
   assertValidLayeredDocument,
+  collectLayeredValidationErrors,
   commandLayerType,
   commandScope,
   FlattenCache,
@@ -77,6 +78,7 @@ import {
   layerSurface,
   requireEditableLayer
 } from './layers';
+import { applyCanvasCommand, backstitchWithinCanvas, canvasCellsCommand, canvasFields, canvasResizeCommand, isValidCanvasOrigin, packCanvasMask, unpackCanvasMask, type CanvasRemoval } from './canvas';
 
 export const DEFAULT_HISTORY_LIMIT_BYTES = 64 * 1024 * 1024;
 /** Version of the single-surface history DTO kept by `SurfaceEditor`. */
@@ -1875,18 +1877,6 @@ export class SurfaceEditor {
     return this.execute({ type: 'palette-deactivate', id });
   }
 
-  rotate(direction: 'cw' | 'ccw' = 'cw', quarterTurns = 1): CommandResult {
-    return this.execute({ type: direction === 'cw' ? 'rotate-cw' : 'rotate-ccw', quarterTurns });
-  }
-
-  mirror(axis: 'horizontal' | 'vertical' = 'horizontal'): CommandResult {
-    return this.execute({ type: axis === 'horizontal' ? 'mirror-horizontal' : 'mirror-vertical' });
-  }
-
-  crop(rect: CropRect): CommandResult {
-    return this.execute({ type: 'crop', ...rect });
-  }
-
   batch(commands: readonly DomainCommand[]): CommandResult {
     return this.executeBatch(commands);
   }
@@ -1934,7 +1924,7 @@ export class SurfaceEditor {
 export const DOCUMENT_EDITOR_HISTORY_VERSION = 2 as const;
 
 /**
- * One layer on one side of a `layers` or `replay` entry. Content is omitted
+ * One layer on one side of a `layers` entry. Content is omitted
  * when it equals the other side's (it is then taken from the current
  * document), and `empty: true` stands for all-zero planes or no backstitches.
  */
@@ -1979,19 +1969,44 @@ export interface HistoryLayersEntryDto {
   readonly bytes: number;
 }
 
-/** A rotate or mirror; undo applies `inverse`, redo applies `forward`. */
-export interface HistoryTransformEntryDto {
-  readonly kind: 'transform';
-  readonly forward: DomainCommand;
-  readonly inverse: DomainCommand;
-  readonly bytes: number;
+/** The canvas a `canvas` entry undoes back to. Absent fields stay absent. */
+export interface HistoryCanvasFrameDto {
+  readonly width: number;
+  readonly height: number;
+  readonly originX?: number;
+  readonly originY?: number;
+  /** The mask packed by `packCanvasMask`: ceil(width * height / 8) bytes, zero padding. Absent for a full rectangle. */
+  readonly canvasMaskBits?: Uint8Array;
 }
 
-/** A crop; undo restores `before`, redo applies `command` again. */
-export interface HistoryReplayEntryDto {
-  readonly kind: 'replay';
-  readonly command: DomainCommand;
-  readonly before: HistoryLayeredSideDto;
+/** Stitch content a canvas edit cleared from one layer, at before-frame cell indices (ascending). */
+export interface HistoryCanvasRemovedCellsDto {
+  readonly layerId: number;
+  readonly indices: Uint32Array;
+  readonly kind: Uint8Array;
+  readonly colors: Uint16Array;
+}
+
+/** Backstitches a canvas edit dropped from one layer, with their ascending positions in the before store. */
+export interface HistoryCanvasRemovedLinesDto {
+  readonly layerId: number;
+  readonly positions: Uint32Array;
+  readonly backstitches: BackstitchStore;
+}
+
+/**
+ * A canvas resize or cell edit. Undo rebuilds `before` from the current
+ * geometry plus `removal`; redo runs `command` again. Whole planes are never
+ * stored.
+ */
+export interface HistoryCanvasEntryDto {
+  readonly kind: 'canvas';
+  readonly command: CanvasResizeCommand | CanvasCellsCommand;
+  readonly before: HistoryCanvasFrameDto;
+  readonly removal: {
+    readonly cells: readonly HistoryCanvasRemovedCellsDto[];
+    readonly backstitches: readonly HistoryCanvasRemovedLinesDto[];
+  };
   readonly bytes: number;
 }
 
@@ -2002,7 +2017,7 @@ export interface HistoryGroupEntryDto {
   readonly bytes: number;
 }
 
-export type DocumentEditorHistoryEntryDto = HistoryLayerDeltaEntryDto | HistoryLayersEntryDto | HistoryTransformEntryDto | HistoryReplayEntryDto | HistoryGroupEntryDto;
+export type DocumentEditorHistoryEntryDto = HistoryLayerDeltaEntryDto | HistoryLayersEntryDto | HistoryCanvasEntryDto | HistoryGroupEntryDto;
 
 export interface DocumentEditorHistoryDto {
   readonly version: typeof DOCUMENT_EDITOR_HISTORY_VERSION;
@@ -2031,6 +2046,11 @@ interface LayerRecord {
   readonly content: LayerContent | null;
 }
 
+/**
+ * One side of a `layers` entry. Structure and document commands never change
+ * the canvas, so a side does not store the origin or mask: restoring keeps the
+ * current document's, which are the same on both sides.
+ */
 interface LayeredSide {
   readonly width: number;
   readonly height: number;
@@ -2059,21 +2079,18 @@ interface LayersEntry {
   bytes: number;
 }
 
-interface TransformEntry {
-  kind: 'transform';
-  forward: DomainCommand;
-  inverse: DomainCommand;
+interface CanvasEntry {
+  kind: 'canvas';
+  command: CanvasResizeCommand | CanvasCellsCommand;
+  before: HistoryCanvasFrameDto;
+  removal: {
+    cells: CanvasRemoval['cells'];
+    backstitches: readonly HistoryCanvasRemovedLinesDto[];
+  };
   bytes: number;
 }
 
-interface ReplayEntry {
-  kind: 'replay';
-  command: DomainCommand;
-  before: LayeredSide;
-  bytes: number;
-}
-
-type LeafHistoryEntry = LayerDeltaEntry | LayersEntry | TransformEntry | ReplayEntry;
+type LeafHistoryEntry = LayerDeltaEntry | LayersEntry | CanvasEntry;
 
 interface GroupEntry {
   kind: 'group';
@@ -2083,8 +2100,6 @@ interface GroupEntry {
 
 type LayeredHistoryEntry = LeafHistoryEntry | GroupEntry;
 
-const TRANSFORM_ENTRY_BYTES = 64;
-const REPLAY_ENTRY_OVERHEAD_BYTES = 64;
 const EMPTY_KIND = new Uint8Array(0);
 const EMPTY_COLORS = new Uint16Array(0);
 
@@ -2137,8 +2152,7 @@ function leafEntryBytes(entry: LeafHistoryEntry): number {
   switch (entry.kind) {
     case 'delta': return typedDeltaBytes(entry.delta);
     case 'layers': return layeredSideBytes(entry.before) + layeredSideBytes(entry.after);
-    case 'transform': return TRANSFORM_ENTRY_BYTES;
-    case 'replay': return layeredSideBytes(entry.before) + REPLAY_ENTRY_OVERHEAD_BYTES;
+    case 'canvas': return canvasEntryBytes(entry);
   }
 }
 
@@ -2202,6 +2216,188 @@ function restoreLayeredSide(current: LayeredDocument, side: LayeredSide): Layere
   };
 }
 
+// ---------------------------------------------------------------------------
+// Canvas entries
+
+function canvasFrame(document: Pick<LayeredDocument, 'width' | 'height' | 'originX' | 'originY' | 'canvasMask'>): HistoryCanvasFrameDto {
+  const { canvasMask, ...origin } = canvasFields(document);
+  return { width: document.width, height: document.height, ...origin, ...(canvasMask === undefined ? {} : { canvasMaskBits: packCanvasMask(canvasMask) }) };
+}
+
+/** The canonical, detached form of a command `applyCanvasCommand` already accepted. */
+function canonicalCanvasCommand(command: DomainCommand): CanvasResizeCommand | CanvasCellsCommand {
+  if (normalizedHistoryCommandType(command) === 'canvas-resize') {
+    const edges = command.edges as CanvasResizeCommand['edges'];
+    return canvasResizeCommand(edges);
+  }
+  const cells = command.cells as Uint8Array | undefined;
+  return canvasCellsCommand(command.operation as CanvasCellsCommand['operation'], command.rect as CropRect, cells?.slice());
+}
+
+function canvasEntryBytes(entry: CanvasEntry): number {
+  let bytes = 128 + (entry.before.canvasMaskBits?.byteLength ?? 0) + (entry.command.type === 'canvas-cells' ? entry.command.cells?.byteLength ?? 0 : 0);
+  for (const cells of entry.removal.cells) bytes += 32 + cells.indices.byteLength + cells.kind.byteLength + cells.colors.byteLength;
+  for (const lines of entry.removal.backstitches) bytes += 32 + lines.positions.byteLength + storeBytes(lines.backstitches);
+  return bytes;
+}
+
+function storeFromRecords(records: CanvasRemoval['backstitches'][number]['records']): BackstitchStore {
+  const store: BackstitchStore = {
+    ids: new Uint32Array(records.length),
+    x1: new Uint32Array(records.length),
+    y1: new Uint32Array(records.length),
+    x2: new Uint32Array(records.length),
+    y2: new Uint32Array(records.length),
+    colors: new Uint16Array(records.length),
+    completed: new Uint8Array(records.length)
+  };
+  records.forEach((record, index) => {
+    store.ids[index] = record.id;
+    store.x1[index] = record.x1;
+    store.y1[index] = record.y1;
+    store.x2[index] = record.x2;
+    store.y2[index] = record.y2;
+    store.colors[index] = record.color;
+    store.completed[index] = record.completed ? 1 : 0;
+  });
+  return store;
+}
+
+/** Removed lines with the positions they held in the before store, so undo restores the store order exactly. */
+function removedLines(before: LayeredDocument, removal: CanvasRemoval): HistoryCanvasRemovedLinesDto[] {
+  return removal.backstitches.map(({ layerId, records }) => {
+    const layer = before.layers.find((candidate) => candidate.id === layerId);
+    if (layer?.type !== LayerType.Specialty) throw new DomainError('invalid-history-state', `Canvas removal names layer ${String(layerId)}, which is not a specialty layer.`);
+    const positionOf = new Map(Array.from(layer.backstitches.ids, (id, index) => [id, index]));
+    const positions = Uint32Array.from(records, (record) => positionOf.get(record.id) ?? -1);
+    return { layerId, positions, backstitches: storeFromRecords(records) };
+  });
+}
+
+function captureCanvasEntry(before: LayeredDocument, command: DomainCommand, removal: CanvasRemoval): CanvasEntry {
+  const entry: CanvasEntry = {
+    kind: 'canvas',
+    command: canonicalCanvasCommand(command),
+    before: canvasFrame(before),
+    removal: { cells: removal.cells, backstitches: removedLines(before, removal) },
+    bytes: 0
+  };
+  entry.bytes = canvasEntryBytes(entry);
+  return entry;
+}
+
+/** Inserts removed lines back at their before-store positions between the translated survivors. */
+function mergeRemovedLines(survivors: BackstitchStore, dx: number, dy: number, removed: HistoryCanvasRemovedLinesDto | undefined): BackstitchStore {
+  const removedCount = removed?.positions.length ?? 0;
+  const total = survivors.ids.length + removedCount;
+  const store: BackstitchStore = {
+    ids: new Uint32Array(total),
+    x1: new Uint32Array(total),
+    y1: new Uint32Array(total),
+    x2: new Uint32Array(total),
+    y2: new Uint32Array(total),
+    colors: new Uint16Array(total),
+    completed: new Uint8Array(total)
+  };
+  let survivor = 0;
+  let next = 0;
+  for (let index = 0; index < total; index += 1) {
+    if (removed !== undefined && next < removedCount && removed.positions[next] === index) {
+      const lines = removed.backstitches;
+      store.ids[index] = lines.ids[next];
+      store.x1[index] = lines.x1[next];
+      store.y1[index] = lines.y1[next];
+      store.x2[index] = lines.x2[next];
+      store.y2[index] = lines.y2[next];
+      store.colors[index] = lines.colors[next];
+      store.completed[index] = lines.completed[next];
+      next += 1;
+      continue;
+    }
+    if (survivor >= survivors.ids.length) throw new DomainError('invalid-history-state', 'Canvas removal positions are out of range.');
+    store.ids[index] = survivors.ids[survivor];
+    store.x1[index] = survivors.x1[survivor] + dx;
+    store.y1[index] = survivors.y1[survivor] + dy;
+    store.x2[index] = survivors.x2[survivor] + dx;
+    store.y2[index] = survivors.y2[survivor] + dy;
+    store.colors[index] = survivors.colors[survivor];
+    store.completed[index] = survivors.completed[survivor];
+    survivor += 1;
+  }
+  if (next !== removedCount) throw new DomainError('invalid-history-state', 'Canvas removal positions are out of range.');
+  return store;
+}
+
+/**
+ * Undo of a canvas entry: rebuilds the before frame from the current document.
+ * Origins place both boxes in the workspace, so the current box sits at
+ * `origin - before.origin` in the before frame. Planes are copied over that
+ * overlap, removed cells and lines are written back, and the mask and origin
+ * are restored. The revision advances by one.
+ */
+function restoreCanvasFrame(current: LayeredDocument, entry: CanvasEntry): LayeredDocument {
+  const before = entry.before;
+  const offsetX = (current.originX ?? 0) - (before.originX ?? 0);
+  const offsetY = (current.originY ?? 0) - (before.originY ?? 0);
+  const cellCount = before.width * before.height;
+  const cellsById = new Map(entry.removal.cells.map((cells) => [cells.layerId, cells]));
+  const linesById = new Map(entry.removal.backstitches.map((lines) => [lines.layerId, lines]));
+  const startX = Math.max(0, -offsetX);
+  const endX = Math.min(current.width, before.width - offsetX);
+  const layers = current.layers.map((layer): Layer => {
+    if (layer.type === LayerType.Specialty) {
+      return { ...layer, backstitches: mergeRemovedLines(layer.backstitches, offsetX * 4, offsetY * 4, linesById.get(layer.id)) };
+    }
+    const kind = new Uint8Array(cellCount);
+    const colors = new Uint16Array(cellCount * 4);
+    if (startX < endX) {
+      for (let y = Math.max(0, -offsetY); y < Math.min(current.height, before.height - offsetY); y += 1) {
+        const from = y * current.width;
+        const to = (y + offsetY) * before.width + offsetX;
+        kind.set(layer.kind.subarray(from + startX, from + endX), to + startX);
+        colors.set(layer.colors.subarray((from + startX) * 4, (from + endX) * 4), (to + startX) * 4);
+      }
+    }
+    const removed = cellsById.get(layer.id);
+    if (removed !== undefined) {
+      removed.indices.forEach((index, position) => {
+        kind[index] = removed.kind[position];
+        colors.set(removed.colors.subarray(position * 4, position * 4 + 4), index * 4);
+      });
+    }
+    return { ...layer, kind, colors, completed: new Uint8Array(cellCount) };
+  });
+  const document: LayeredDocument = { ...current, width: before.width, height: before.height, layers, revision: current.revision + 1 };
+  delete document.originX;
+  delete document.originY;
+  delete document.canvasMask;
+  const mask = before.canvasMaskBits === undefined ? {} : { canvasMask: unpackCanvasMask(before.canvasMaskBits, cellCount) };
+  return Object.assign(document, canvasFields({ originX: before.originX, originY: before.originY }), mask);
+}
+
+/** Redo of a canvas entry: the recorded command runs again on the before frame. */
+function replayCanvasEntry(current: LayeredDocument, entry: CanvasEntry): LayeredDocument {
+  return { ...applyCanvasCommand(current, entry.command).document, revision: current.revision + 1 };
+}
+
+function canvasEntryToDto(entry: CanvasEntry): HistoryCanvasEntryDto {
+  return {
+    kind: 'canvas',
+    command: canonicalCanvasCommand(entry.command),
+    before: { ...entry.before, ...(entry.before.canvasMaskBits === undefined ? {} : { canvasMaskBits: entry.before.canvasMaskBits.slice() }) },
+    removal: {
+      cells: entry.removal.cells.map((cells) => ({ layerId: cells.layerId, indices: cells.indices.slice(), kind: cells.kind.slice(), colors: cells.colors.slice() })),
+      backstitches: entry.removal.backstitches.map((lines) => ({ layerId: lines.layerId, positions: lines.positions.slice(), backstitches: cloneHistoryStore(lines.backstitches) }))
+    },
+    bytes: entry.bytes
+  };
+}
+
+/** A detached internal entry; the caller recomputes `bytes`. */
+function canvasEntryFromDto(dto: HistoryCanvasEntryDto): CanvasEntry {
+  return canvasEntryToDto(dto);
+}
+
 /** True when a `layers` entry changes only names, so the composite is untouched. */
 function layersEntryKeepsComposite(entry: LayersEntry): boolean {
   const { before, after } = entry;
@@ -2231,7 +2427,8 @@ function metadataSurface(document: LayeredDocument): PatternDocument {
     settings: document.settings,
     revision: document.revision,
     nextBackstitchId: document.nextBackstitchId,
-    nextPaletteId: document.nextPaletteId
+    nextPaletteId: document.nextPaletteId,
+    ...canvasFields(document)
   };
 }
 
@@ -2349,20 +2546,18 @@ function layerWithSurfaceContent(layer: Layer, surface: PatternDocument): Layer 
 }
 
 /**
- * Runs a document-wide content command (crop, rotate, mirror, palette merge
- * or delete, settings) over every layer, hidden ones included. Every surface
- * starts from the same state with its own palette copy, so palette and
- * settings change exactly once: they are taken from the last surface.
- * Transforms and crop allocate new planes, so only commands that recolor or
- * erase in place get copies of stitch planes. Specialty layers keep their
- * shared all-zero cell planes, which these commands never write.
+ * Runs a document-wide content command (palette merge or delete, settings)
+ * over every layer, hidden ones included. Every surface starts from the same
+ * state with its own palette copy, so palette and settings change exactly
+ * once: they are taken from the last surface. These commands recolor or erase
+ * in place, so stitch layers get copies of their planes. Specialty layers keep
+ * their shared all-zero cell planes, which these commands never write.
  */
 function applyDocumentCommandToLayers(document: LayeredDocument, command: DomainCommand): LayeredDocument {
-  const writesInPlace = canonicalTransformCommand(command) === undefined && canonicalCropCommand(command) === undefined;
   const draftFor = (layer: Layer): PatternDocument => {
     const surface = layerSurface(document, layer.id);
     const draft: PatternDocument = { ...surface, palette: surface.palette.slice(), backstitches: cloneHistoryStore(surface.backstitches) };
-    if (writesInPlace && layer.type === LayerType.Stitch) {
+    if (layer.type === LayerType.Stitch) {
       draft.kind = surface.kind.slice();
       draft.colors = surface.colors.slice();
       draft.completed = surface.completed.slice();
@@ -2514,34 +2709,29 @@ function planStructureCommand(document: LayeredDocument, command: DomainCommand)
 }
 
 /**
- * Crop, rotate, mirror, palette merge and delete, and snapshot-scoped
- * document batches over every layer. Rotations and mirrors are stored as the
- * transform and its inverse, a crop keeps only the planes it removes, and
- * anything else keeps both sides of the changed layers.
+ * Palette merge and delete, and snapshot-scoped document batches over every
+ * layer. The entry keeps both sides of the changed layers.
  */
 function planDocumentCommand(document: LayeredDocument, command: DomainCommand): LayeredPlan {
   const applied = applyDocumentCommandToLayers(document, command);
   if (sameLayeredContent(document, applied)) return { result: result(metadataSurface(document), false) };
   const next: LayeredDocument = { ...applied, revision: document.revision + 1 };
   assertChangedLayersValid(document, next);
-  const transform = canonicalTransformCommand(command);
-  const crop = canonicalCropCommand(command);
-  let entry: LeafHistoryEntry;
-  if (transform !== undefined) {
-    entry = { kind: 'transform', forward: transform.forward, inverse: transform.inverse, bytes: TRANSFORM_ENTRY_BYTES };
-  } else if (crop !== undefined) {
-    const replay: ReplayEntry = { kind: 'replay', command: crop, before: captureLayeredSides(document, next).before, bytes: 0 };
-    replay.bytes = leafEntryBytes(replay);
-    entry = replay;
-  } else {
-    entry = captureLayersEntry(document, next);
-  }
-  return { result: wholeDocumentResult(metadataSurface(next), true), document: next, entry, rebuild: 'full' };
+  return { result: wholeDocumentResult(metadataSurface(next), true), document: next, entry: captureLayersEntry(document, next), rebuild: 'full' };
+}
+
+/** A canvas resize or cell edit over every layer, recorded as a `canvas` entry. */
+function planCanvasCommand(document: LayeredDocument, command: DomainCommand): LayeredPlan {
+  const applied = applyCanvasCommand(document, command);
+  if (!applied.changed) return { result: result(metadataSurface(document), false) };
+  const next: LayeredDocument = { ...applied.document, revision: document.revision + 1 };
+  return { result: wholeDocumentResult(metadataSurface(next), true), document: next, entry: captureCanvasEntry(document, command, applied.removal), rebuild: 'full' };
 }
 
 function planSingleCommand(document: LayeredDocument, command: DomainCommand, limit: number, fallbackLayerId?: number): LayeredPlan {
   const scope = commandScope(command);
   if (scope === 'layer') return planLayerCommand(document, command, limit, fallbackLayerId);
+  if (scope === 'canvas' && batchChildren(command) === undefined) return planCanvasCommand(document, command);
   if (scope === 'structure' && batchChildren(command) === undefined) return planStructureCommand(document, command);
   if (isPureDocumentCommand(command) && !commandRequiresSnapshot(command)) return planMetadataCommand(document, command, limit);
   if (batchChildren(command) === undefined) return planDocumentCommand(document, command);
@@ -2552,10 +2742,14 @@ function planSingleCommand(document: LayeredDocument, command: DomainCommand, li
  * Structure, document and mixed batches: children run in order on a working
  * copy and their entries become one undo step. Inside a batch, a layer
  * command without a layerId targets the layer the batch most recently added
- * or duplicated. Any failure leaves the document untouched.
+ * or duplicated. Canvas commands batch only with other canvas commands, so a
+ * canvas reframe never has to compose with layer or document entries. Any
+ * failure leaves the document untouched.
  */
 function planBatchCommand(document: LayeredDocument, command: DomainCommand, limit: number): LayeredPlan {
   const children = batchChildren(command) ?? [];
+  const scopes = children.map(commandScope);
+  if (scopes.includes('canvas') && scopes.some((scope) => scope !== 'canvas')) throw new DomainError('invalid-command', 'Canvas edits cannot be batched with other edits.');
   let work = document;
   let addedLayerId: number | undefined;
   const plans: LayeredPlan[] = [];
@@ -2620,14 +2814,8 @@ function applyLayeredEntry(document: LayeredDocument, entry: LayeredHistoryEntry
       const rebuild = layersEntryRebuild(entry);
       return { document: next, rebuild, result: wholeDocumentResult(metadataSurface(next), rebuild === 'full') };
     }
-    case 'transform': {
-      const next = { ...applyDocumentCommandToLayers(document, useAfter ? entry.forward : entry.inverse), revision: document.revision + 1 };
-      return { document: next, rebuild: 'full', result: wholeDocumentResult(metadataSurface(next), true) };
-    }
-    case 'replay': {
-      const next = useAfter
-        ? { ...applyDocumentCommandToLayers(document, entry.command), revision: document.revision + 1 }
-        : restoreLayeredSide(document, entry.before);
+    case 'canvas': {
+      const next = useAfter ? replayCanvasEntry(document, entry) : restoreCanvasFrame(document, entry);
       return { document: next, rebuild: 'full', result: wholeDocumentResult(metadataSurface(next), true) };
     }
     case 'group': {
@@ -2665,8 +2853,7 @@ function leafEntryToDto(entry: LeafHistoryEntry): Exclude<DocumentEditorHistoryE
   switch (entry.kind) {
     case 'delta': return { kind: 'delta', layerId: entry.layerId, delta: historyDeltaToDto(entry.delta), bytes: entry.bytes };
     case 'layers': return { kind: 'layers', before: sideToDto(entry.before), after: sideToDto(entry.after), bytes: entry.bytes };
-    case 'transform': return { kind: 'transform', forward: { ...entry.forward }, inverse: { ...entry.inverse }, bytes: entry.bytes };
-    case 'replay': return { kind: 'replay', command: { ...entry.command }, before: sideToDto(entry.before), bytes: entry.bytes };
+    case 'canvas': return canvasEntryToDto(entry);
   }
 }
 
@@ -2720,11 +2907,84 @@ function historyLayeredSide(value: unknown, label: string): asserts value is His
   historySafeInteger(side.nextLayerId, `${label}.nextLayerId`, 1);
 }
 
-function historyCanonicalCommand(value: unknown, canonical: (command: DomainCommand) => DomainCommand | undefined, label: string): DomainCommand {
-  const command = historyRecord(value, label) as DomainCommand;
-  const expected = typeof command.type === 'string' ? canonical(command) : undefined;
-  if (expected === undefined || JSON.stringify(expected) !== JSON.stringify(command)) throw new DomainError('invalid-history-state', `${label} is not a canonical command.`);
-  return expected;
+function historySignedInteger(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) throw new DomainError('invalid-history-state', `${label} must be a safe integer.`);
+  return value;
+}
+
+/** The canonical command shapes `canonicalCanvasCommand` produces; values are checked again when the chain replays them. */
+function historyCanvasCommand(value: unknown, label: string): void {
+  const command = historyRecord(value, label);
+  if (command.type === 'canvas-resize') {
+    historyKeys(command, ['type', 'edges'], [], label);
+    const edges = historyRecord(command.edges, `${label}.edges`);
+    historyKeys(edges, ['top', 'right', 'bottom', 'left'], [], `${label}.edges`);
+    for (const edge of ['top', 'right', 'bottom', 'left']) historySignedInteger(edges[edge], `${label}.edges.${edge}`);
+    return;
+  }
+  if (command.type !== 'canvas-cells') throw new DomainError('invalid-history-state', `${label}.type is unsupported.`);
+  historyKeys(command, ['type', 'operation', 'rect'], ['cells'], label);
+  if (command.operation !== 'add' && command.operation !== 'remove') throw new DomainError('invalid-history-state', `${label}.operation is unsupported.`);
+  const rect = historyRecord(command.rect, `${label}.rect`);
+  historyKeys(rect, ['x', 'y', 'width', 'height'], [], `${label}.rect`);
+  historySignedInteger(rect.x, `${label}.rect.x`);
+  historySignedInteger(rect.y, `${label}.rect.y`);
+  const width = historySafeInteger(rect.width, `${label}.rect.width`, 1);
+  const height = historySafeInteger(rect.height, `${label}.rect.height`, 1);
+  if (command.cells !== undefined) {
+    historyUint8(command.cells, `${label}.cells`);
+    historyLength(command.cells, width * height, `${label}.cells`);
+  }
+}
+
+function historyCanvasEntry(entry: HistoryRecord, label: string): void {
+  historyKeys(entry, ['kind', 'command', 'before', 'removal', 'bytes'], [], label);
+  historyCanvasCommand(entry.command, `${label}.command`);
+  const before = historyRecord(entry.before, `${label}.before`);
+  historyKeys(before, ['width', 'height'], ['originX', 'originY', 'canvasMaskBits'], `${label}.before`);
+  const width = historySafeInteger(before.width, `${label}.before.width`, 1);
+  const height = historySafeInteger(before.height, `${label}.before.height`, 1);
+  const cellCount = width * height;
+  if (!Number.isSafeInteger(cellCount) || cellCount > MAX_PERSISTABLE_CELL_COUNT) throw new DomainError('invalid-history-state', `${label}.before dimensions are too large.`);
+  for (const axis of ['originX', 'originY'] as const) {
+    if (before[axis] !== undefined && !isValidCanvasOrigin(before[axis])) throw new DomainError('invalid-history-state', `${label}.before.${axis} must be a 32-bit integer.`);
+  }
+  if (before.canvasMaskBits !== undefined) {
+    const bits = before.canvasMaskBits;
+    historyUint8(bits, `${label}.before.canvasMaskBits`);
+    historyLength(bits, Math.ceil(cellCount / 8), `${label}.before.canvasMaskBits`);
+    if (cellCount % 8 !== 0 && bits[bits.length - 1] >> (cellCount % 8) !== 0) throw new DomainError('invalid-history-state', `${label}.before.canvasMaskBits has nonzero padding.`);
+    let active = 0;
+    for (const byte of bits) for (let bit = byte; bit !== 0; bit &= bit - 1) active += 1;
+    if (active === 0 || active === cellCount) throw new DomainError('invalid-history-state', `${label}.before.canvasMaskBits must hold some but not all cells.`);
+  }
+  const removal = historyRecord(entry.removal, `${label}.removal`);
+  historyKeys(removal, ['cells', 'backstitches'], [], `${label}.removal`);
+  const layerIds = new Set<number>();
+  historyArray(removal.cells, `${label}.removal.cells`).forEach((value, index) => {
+    const cellsLabel = `${label}.removal.cells[${String(index)}]`;
+    const cells = historyRecord(value, cellsLabel);
+    historyKeys(cells, ['layerId', 'indices', 'kind', 'colors'], [], cellsLabel);
+    const layerId = historySafeInteger(cells.layerId, `${cellsLabel}.layerId`, 1);
+    if (layerIds.has(layerId)) throw new DomainError('invalid-history-state', `${cellsLabel}.layerId is duplicated.`);
+    layerIds.add(layerId);
+    historyStrictIndices(cells.indices, cellCount, `${cellsLabel}.indices`);
+    historyUint8(cells.kind, `${cellsLabel}.kind`);
+    historyUint16(cells.colors, `${cellsLabel}.colors`);
+    historyLength(cells.kind, cells.indices.length, `${cellsLabel}.kind`);
+    historyLength(cells.colors, cells.indices.length * 4, `${cellsLabel}.colors`);
+  });
+  historyArray(removal.backstitches, `${label}.removal.backstitches`).forEach((value, index) => {
+    const linesLabel = `${label}.removal.backstitches[${String(index)}]`;
+    const lines = historyRecord(value, linesLabel);
+    historyKeys(lines, ['layerId', 'positions', 'backstitches'], [], linesLabel);
+    const layerId = historySafeInteger(lines.layerId, `${linesLabel}.layerId`, 1);
+    if (layerIds.has(layerId)) throw new DomainError('invalid-history-state', `${linesLabel}.layerId is duplicated.`);
+    layerIds.add(layerId);
+    historyBackstitches(lines.backstitches, `${linesLabel}.backstitches`);
+    historyStrictIndices(lines.positions, UINT32_MAX, `${linesLabel}.positions`);
+    historyLength(lines.positions, lines.backstitches.ids.length, `${linesLabel}.positions`);
+  });
 }
 
 function historyLayeredEntry(value: unknown, label: string, allowGroup = true): asserts value is DocumentEditorHistoryEntryDto {
@@ -2746,15 +3006,8 @@ function historyLayeredEntry(value: unknown, label: string, allowGroup = true): 
     const after = entry.after as HistoryLayeredSideDto;
     if ((before.palette === undefined) !== (after.palette === undefined)) throw new DomainError('invalid-history-state', `${label} palette sides must be paired.`);
     if ((before.settings === undefined) !== (after.settings === undefined)) throw new DomainError('invalid-history-state', `${label} settings sides must be paired.`);
-  } else if (entry.kind === 'transform') {
-    historyKeys(entry, ['kind', 'forward', 'inverse', 'bytes'], [], label);
-    const forward = historyCanonicalCommand(entry.forward, (command) => canonicalTransformCommand(command)?.forward, `${label}.forward`);
-    const transform = canonicalTransformCommand(forward);
-    if (transform === undefined || JSON.stringify(transform.inverse) !== JSON.stringify(entry.inverse)) throw new DomainError('invalid-history-state', `${label}.inverse does not invert the transform.`);
-  } else if (entry.kind === 'replay') {
-    historyKeys(entry, ['kind', 'command', 'before', 'bytes'], [], label);
-    historyCanonicalCommand(entry.command, canonicalCropCommand, `${label}.command`);
-    historyLayeredSide(entry.before, `${label}.before`);
+  } else if (entry.kind === 'canvas') {
+    historyCanvasEntry(entry, label);
   } else if (entry.kind === 'group' && allowGroup) {
     historyKeys(entry, ['kind', 'entries', 'bytes'], [], label);
     const entries = historyArray(entry.entries, `${label}.entries`);
@@ -2792,8 +3045,7 @@ function leafEntryFromDto(entry: Exclude<DocumentEditorHistoryEntryDto, HistoryG
   switch (entry.kind) {
     case 'delta': leaf = { kind: 'delta', layerId: entry.layerId, delta: historyDeltaToInternal(entry.delta), bytes: 0, progress: emptyProgress(), recalculateMetrics: true }; break;
     case 'layers': leaf = { kind: 'layers', before: sideFromDto(entry.before), after: sideFromDto(entry.after), bytes: 0 }; break;
-    case 'transform': leaf = { kind: 'transform', forward: { ...entry.forward }, inverse: { ...entry.inverse }, bytes: 0 }; break;
-    case 'replay': leaf = { kind: 'replay', command: { ...entry.command }, before: sideFromDto(entry.before), bytes: 0 }; break;
+    case 'canvas': leaf = canvasEntryFromDto(entry); break;
   }
   leaf.bytes = leafEntryBytes(leaf);
   return leaf;
@@ -2805,32 +3057,34 @@ function layeredEntryFromDto(entry: DocumentEditorHistoryEntryDto): LayeredHisto
   return { kind: 'group', entries, bytes: entries.reduce((total, child) => total + child.bytes, 0) };
 }
 
-interface ChainLayer {
+interface ChainLayerBase {
   readonly id: number;
-  readonly type: LayerType;
   name: string;
   visible: boolean;
-  /** Exact stitch planes while known. Planes are copied before validation writes into them. */
-  kind?: Uint8Array;
-  colors?: Uint16Array;
-  ownsPlanes: boolean;
-  /** Exact backstitch store while known. */
-  backstitches?: BackstitchStore;
-  /**
-   * Palette id to reference count in this layer. A crop replayed over unknown
-   * content keeps the pre-crop counts as an upper bound: a positive count
-   * means the color may still be in use.
-   */
+  /** Palette id to reference count in this layer. */
   colorUse: Map<number, number>;
-  /** Backstitch ids on this layer; a superset once a crop has been replayed. */
+  /** Backstitch ids on this layer. */
   lineIds: Set<number>;
 }
 
+interface ChainStitchLayer extends ChainLayerBase {
+  readonly type: typeof LayerType.Stitch;
+  /** Exact stitch planes. Planes are copied before validation writes into them. */
+  kind: Uint8Array;
+  colors: Uint16Array;
+  ownsPlanes: boolean;
+}
+
+interface ChainSpecialtyLayer extends ChainLayerBase {
+  readonly type: typeof LayerType.Specialty;
+  backstitches: BackstitchStore;
+}
+
+type ChainLayer = ChainStitchLayer | ChainSpecialtyLayer;
+
 /**
  * The state an imported history chain is checked against. Stack, dimensions,
- * palette, settings and allocators are always exact. Layer content is exact
- * until the first transform or crop replay, which are never executed; after
- * that only structure, bounds and the values each entry writes are checked.
+ * palette, settings, allocators and layer content are always exact.
  */
 interface ChainState {
   width: number;
@@ -2844,6 +3098,10 @@ interface ChainState {
   readonly catalog: LayeredDocument['catalog'];
   /** The largest backstitch allocator in the chain; every written id must sit below it. */
   readonly backstitchIdLimit: number;
+  originX?: number;
+  originY?: number;
+  /** Shared by reference with the documents the chain was built from; never written. */
+  canvasMask?: Uint8Array;
 }
 
 function countColors(values: ArrayLike<number>, use = new Map<number, number>()): Map<number, number> {
@@ -2858,7 +3116,7 @@ function chainLayerFromLayer(layer: Layer): ChainLayer {
   if (layer.type === LayerType.Stitch) {
     return { id: layer.id, type: layer.type, name: layer.name, visible: layer.visible, kind: layer.kind, colors: layer.colors, ownsPlanes: false, colorUse: countColors(layer.colors), lineIds: new Set() };
   }
-  return { id: layer.id, type: layer.type, name: layer.name, visible: layer.visible, backstitches: layer.backstitches, ownsPlanes: false, colorUse: countColors(layer.backstitches.colors), lineIds: new Set(layer.backstitches.ids) };
+  return { id: layer.id, type: layer.type, name: layer.name, visible: layer.visible, backstitches: layer.backstitches, colorUse: countColors(layer.backstitches.colors), lineIds: new Set(layer.backstitches.ids) };
 }
 
 function chainFromDocument(document: LayeredDocument): ChainState {
@@ -2872,7 +3130,8 @@ function chainFromDocument(document: LayeredDocument): ChainState {
     nextPaletteId: document.nextPaletteId,
     nextLayerId: document.nextLayerId,
     catalog: document.catalog,
-    backstitchIdLimit: document.nextBackstitchId
+    backstitchIdLimit: document.nextBackstitchId,
+    ...canvasFields(document)
   };
 }
 
@@ -2905,6 +3164,7 @@ function assertWrittenLinesValid(state: ChainState, layerId: number, store: Back
   const ids = new Set<number>();
   const segments = new Set<string>();
   const fail = (): never => historyStateMismatch(`${label}.backstitches`);
+  const mask = state.width === width && state.height === height ? state.canvasMask : undefined;
   for (let index = 0; index < store.ids.length; index += 1) {
     const id = store.ids[index];
     const x1 = store.x1[index];
@@ -2916,9 +3176,17 @@ function assertWrittenLinesValid(state: ChainState, layerId: number, store: Back
     if ((x1 === x2 && y1 === y2) || x1 > x2 || (x1 === x2 && y1 > y2)) fail();
     const key = `${String(x1)},${String(y1)},${String(x2)},${String(y2)}`;
     if (segments.has(key) || !active.has(store.colors[index]) || store.completed[index] !== 0) fail();
+    if (mask !== undefined && !backstitchWithinCanvas({ width, height, canvasMask: mask }, x1, y1, x2, y2)) fail();
     ids.add(id);
     segments.add(key);
   }
+}
+
+/** A whole stitch plane written on a masked canvas must leave its inactive cells empty. */
+function assertCellsInCanvas(state: ChainState, kind: Uint8Array, label: string): void {
+  const mask = state.canvasMask;
+  if (mask === undefined || kind.length !== mask.length) return;
+  for (let index = 0; index < kind.length; index += 1) if (mask[index] === 0 && kind[index] !== CellKind.Empty) historyStateMismatch(`${label}.kind`);
 }
 
 /** Every color still referenced by content must stay an active palette entry. */
@@ -2929,44 +3197,7 @@ function assertColorsInPalette(layers: readonly ChainLayer[], palette: readonly 
   }
 }
 
-/**
- * Recounts what a crop keeps when the layer's content is known: cells inside
- * the rectangle and lines fully inside its closed boundary, as the crop
- * command retains them. Unknown content keeps its counts as an upper bound.
- */
-function countCropSurvivors(layer: ChainLayer, width: number, rect: CropRect): void {
-  if (layer.kind !== undefined && layer.colors !== undefined) {
-    const use = new Map<number, number>();
-    for (let y = rect.y; y < rect.y + rect.height; y += 1) {
-      const start = (y * width + rect.x) * 4;
-      countColors(layer.colors.subarray(start, start + rect.width * 4), use);
-    }
-    layer.colorUse = use;
-  } else if (layer.backstitches !== undefined) {
-    const store = layer.backstitches;
-    const [left, top, right, bottom] = [rect.x * 4, rect.y * 4, (rect.x + rect.width) * 4, (rect.y + rect.height) * 4];
-    const use = new Map<number, number>();
-    const ids = new Set<number>();
-    for (let index = 0; index < store.ids.length; index += 1) {
-      const inside = store.x1[index] >= left && store.x1[index] <= right && store.x2[index] >= left && store.x2[index] <= right
-        && store.y1[index] >= top && store.y1[index] <= bottom && store.y2[index] >= top && store.y2[index] <= bottom;
-      if (!inside) continue;
-      use.set(store.colors[index], (use.get(store.colors[index]) ?? 0) + 1);
-      ids.add(store.ids[index]);
-    }
-    layer.colorUse = use;
-    layer.lineIds = ids;
-  }
-}
-
-function dropLayerContent(layer: ChainLayer): void {
-  delete layer.kind;
-  delete layer.colors;
-  delete layer.backstitches;
-  layer.ownsPlanes = false;
-}
-
-/** Checks that `state` is the side an entry applies from: stack, dimensions, palette and settings, plus content while it is known. */
+/** Checks that `state` is the side an entry applies from: stack, dimensions, palette, settings and content. */
 function chainMatchesSide(state: ChainState, side: LayeredSide, label: string): void {
   if (state.width !== side.width || state.height !== side.height || state.layers.length !== side.layers.length) historyStateMismatch(label);
   side.layers.forEach((record, index) => {
@@ -2974,13 +3205,13 @@ function chainMatchesSide(state: ChainState, side: LayeredSide, label: string): 
     if (layer.id !== record.id || layer.type !== record.type || layer.name !== record.name || layer.visible !== record.visible) historyStateMismatch(`${label}.layers[${String(index)}]`);
     if (record.content === null) return;
     if (record.content === 'empty') {
-      if ([...layer.colorUse.values()].some((count) => count > 0) || (layer.type === LayerType.Specialty && layer.backstitches !== undefined && layer.backstitches.ids.length > 0)) historyStateMismatch(`${label}.layers[${String(index)}]`);
-      if (layer.kind !== undefined && hasNonZero(layer.kind)) historyStateMismatch(`${label}.layers[${String(index)}]`);
+      const hasContent = layer.type === LayerType.Stitch ? hasNonZero(layer.kind) : layer.backstitches.ids.length > 0;
+      if (hasContent || [...layer.colorUse.values()].some((count) => count > 0)) historyStateMismatch(`${label}.layers[${String(index)}]`);
       return;
     }
     if ('backstitches' in record.content) {
-      if (layer.backstitches !== undefined && !historyStoreEqual(layer.backstitches, record.content.backstitches)) historyStateMismatch(`${label}.layers[${String(index)}]`);
-    } else if (layer.kind !== undefined && layer.colors !== undefined && (!typedEqual(layer.kind, record.content.kind) || !typedEqual(layer.colors, record.content.colors))) {
+      if (layer.type !== LayerType.Specialty || !historyStoreEqual(layer.backstitches, record.content.backstitches)) historyStateMismatch(`${label}.layers[${String(index)}]`);
+    } else if (layer.type !== LayerType.Stitch || (!typedEqual(layer.kind, record.content.kind) || !typedEqual(layer.colors, record.content.colors))) {
       historyStateMismatch(`${label}.layers[${String(index)}]`);
     }
   });
@@ -2991,7 +3222,10 @@ function chainMatchesSide(state: ChainState, side: LayeredSide, label: string): 
     if (record.content === null || record.content === 'empty') return;
     const recordLabel = `${label}.layers[${String(index)}]`;
     if ('backstitches' in record.content) assertWrittenLinesValid(state, record.id, record.content.backstitches, side.width, side.height, state.palette, state.layers, recordLabel);
-    else assertWrittenCellsValid(state, record.content.kind, record.content.colors, state.palette, recordLabel);
+    else {
+      assertWrittenCellsValid(state, record.content.kind, record.content.colors, state.palette, recordLabel);
+      assertCellsInCanvas(state, record.content.kind, recordLabel);
+    }
   });
 }
 
@@ -3011,18 +3245,19 @@ function chainToSide(state: ChainState, side: LayeredSide, label: string): void 
       if (record.type === LayerType.Stitch && (state.width !== side.width || state.height !== side.height)) historyStateMismatch(recordLabel);
       return { ...existing, name: record.name, visible: record.visible };
     }
-    const header = { id: record.id, type: record.type, name: record.name, visible: record.visible };
+    const header = { id: record.id, name: record.name, visible: record.visible };
     if (record.content === 'empty') {
       return record.type === LayerType.Stitch
-        ? { ...header, kind: new Uint8Array(cellCount), colors: new Uint16Array(cellCount * 4), ownsPlanes: true, colorUse: new Map(), lineIds: new Set() }
-        : { ...header, backstitches: emptyBackstitches(), ownsPlanes: false, colorUse: new Map(), lineIds: new Set() };
+        ? { ...header, type: LayerType.Stitch, kind: new Uint8Array(cellCount), colors: new Uint16Array(cellCount * 4), ownsPlanes: true, colorUse: new Map(), lineIds: new Set() }
+        : { ...header, type: LayerType.Specialty, backstitches: emptyBackstitches(), colorUse: new Map(), lineIds: new Set() };
     }
     if ('backstitches' in record.content) {
       const store = record.content.backstitches;
-      return { ...header, backstitches: store, ownsPlanes: false, colorUse: countColors(store.colors), lineIds: new Set(store.ids) };
+      return { ...header, type: LayerType.Specialty, backstitches: store, colorUse: countColors(store.colors), lineIds: new Set(store.ids) };
     }
     assertWrittenCellsValid(state, record.content.kind, record.content.colors, palette, recordLabel);
-    return { ...header, kind: record.content.kind, colors: record.content.colors, ownsPlanes: false, colorUse: countColors(record.content.colors), lineIds: new Set() };
+    assertCellsInCanvas(state, record.content.kind, recordLabel);
+    return { ...header, type: LayerType.Stitch, kind: record.content.kind, colors: record.content.colors, ownsPlanes: false, colorUse: countColors(record.content.colors), lineIds: new Set() };
   });
   side.layers.forEach((record, index) => {
     if (record.content === null || record.content === 'empty' || !('backstitches' in record.content)) return;
@@ -3038,10 +3273,6 @@ function chainToSide(state: ChainState, side: LayeredSide, label: string): void 
   state.nextPaletteId = Math.max(state.nextPaletteId, side.nextPaletteId);
   state.nextLayerId = Math.max(state.nextLayerId, side.nextLayerId);
   if (state.layers.some((layer) => layer.id >= state.nextLayerId)) historyStateMismatch(`${label}.nextLayerId`);
-}
-
-function cropRect(command: DomainCommand): CropRect {
-  return { x: command.x as number, y: command.y as number, width: command.width as number, height: command.height as number };
 }
 
 function packedCellsSide(cells: SparseMutationDelta['cells'], useAfter: boolean): { kind: Uint8Array; colors: Uint16Array; completed: Uint8Array } {
@@ -3076,26 +3307,30 @@ function stepDeltaForValidation(state: ChainState, entry: LayerDeltaEntry, useAf
     const foreign = layer.type === LayerType.Specialty ? cells.indices.length > 0 : (fromStore?.ids.length ?? 0) > 0 || (toStore?.ids.length ?? 0) > 0;
     if (foreign) historyStateMismatch(`${label}.layerId`);
 
-    if (cells.indices.length > 0) {
+    if (layer.type === LayerType.Stitch && cells.indices.length > 0) {
       // Undo writes one side and redo the other, so both must be valid against the palette in effect there.
       assertWrittenCellsValid(state, from.kind, from.colors, state.palette, `${label}.cells`);
       assertWrittenCellsValid(state, to.kind, to.colors, palette, `${label}.cells`);
-      if (layer.kind !== undefined && layer.colors !== undefined) {
-        for (let position = 0; position < cells.indices.length; position += 1) {
-          const index = cells.indices[position];
-          if (layer.kind[index] !== from.kind[position]) historyStateMismatch(`${label}.cells[${String(position)}]`);
-          for (let slot = 0; slot < 4; slot += 1) if (layer.colors[index * 4 + slot] !== from.colors[position * 4 + slot]) historyStateMismatch(`${label}.cells[${String(position)}]`);
-        }
-        if (!layer.ownsPlanes) {
-          layer.kind = layer.kind.slice();
-          layer.colors = layer.colors.slice();
-          layer.ownsPlanes = true;
-        }
-        for (let position = 0; position < cells.indices.length; position += 1) {
-          const index = cells.indices[position];
-          layer.kind[index] = to.kind[position];
-          for (let slot = 0; slot < 4; slot += 1) layer.colors[index * 4 + slot] = to.colors[position * 4 + slot];
-        }
+      const mask = state.canvasMask;
+      if (mask !== undefined) {
+        cells.indices.forEach((index, position) => {
+          if (mask[index] === 0 && (from.kind[position] !== CellKind.Empty || to.kind[position] !== CellKind.Empty)) historyStateMismatch(`${label}.cells[${String(position)}]`);
+        });
+      }
+      for (let position = 0; position < cells.indices.length; position += 1) {
+        const index = cells.indices[position];
+        if (layer.kind[index] !== from.kind[position]) historyStateMismatch(`${label}.cells[${String(position)}]`);
+        for (let slot = 0; slot < 4; slot += 1) if (layer.colors[index * 4 + slot] !== from.colors[position * 4 + slot]) historyStateMismatch(`${label}.cells[${String(position)}]`);
+      }
+      if (!layer.ownsPlanes) {
+        layer.kind = layer.kind.slice();
+        layer.colors = layer.colors.slice();
+        layer.ownsPlanes = true;
+      }
+      for (let position = 0; position < cells.indices.length; position += 1) {
+        const index = cells.indices[position];
+        layer.kind[index] = to.kind[position];
+        for (let slot = 0; slot < 4; slot += 1) layer.colors[index * 4 + slot] = to.colors[position * 4 + slot];
       }
       const use = layer.colorUse;
       for (let slot = 0; slot < from.colors.length; slot += 1) {
@@ -3103,8 +3338,8 @@ function stepDeltaForValidation(state: ChainState, entry: LayerDeltaEntry, useAf
         if (to.colors[slot] !== 0) use.set(to.colors[slot], (use.get(to.colors[slot]) ?? 0) + 1);
       }
     }
-    if (fromStore !== undefined && toStore !== undefined) {
-      if (layer.backstitches !== undefined && !historyStoreEqual(layer.backstitches, fromStore)) historyStateMismatch(`${label}.backstitches`);
+    if (layer.type === LayerType.Specialty && fromStore !== undefined && toStore !== undefined) {
+      if (!historyStoreEqual(layer.backstitches, fromStore)) historyStateMismatch(`${label}.backstitches`);
       assertWrittenLinesValid(state, layer.id, fromStore, state.width, state.height, state.palette, state.layers, label);
       assertWrittenLinesValid(state, layer.id, toStore, state.width, state.height, palette, state.layers, label);
       layer.backstitches = toStore;
@@ -3121,11 +3356,119 @@ function stepDeltaForValidation(state: ChainState, entry: LayerDeltaEntry, useAf
   if (toNextPaletteId !== undefined) state.nextPaletteId = Math.max(state.nextPaletteId, toNextPaletteId);
 }
 
+/** The chain state as a layered document, sharing its planes and stores. */
+function chainDocument(state: ChainState): LayeredDocument {
+  const completed = new Uint8Array(state.width * state.height);
+  return {
+    version: LAYERED_DOCUMENT_VERSION,
+    catalog: state.catalog,
+    width: state.width,
+    height: state.height,
+    layers: state.layers.map((layer): Layer => layer.type === LayerType.Stitch
+      ? { id: layer.id, type: layer.type, name: layer.name, visible: layer.visible, kind: layer.kind, colors: layer.colors, completed }
+      : { id: layer.id, type: layer.type, name: layer.name, visible: layer.visible, backstitches: layer.backstitches }),
+    palette: [...state.palette],
+    settings: state.settings,
+    revision: 0,
+    nextBackstitchId: state.nextBackstitchId,
+    nextPaletteId: state.nextPaletteId,
+    nextLayerId: state.nextLayerId,
+    ...canvasFields(state)
+  };
+}
+
+function adoptChainDocument(state: ChainState, document: LayeredDocument): void {
+  state.width = document.width;
+  state.height = document.height;
+  state.layers = document.layers.map(chainLayerFromLayer);
+  delete state.originX;
+  delete state.originY;
+  delete state.canvasMask;
+  Object.assign(state, canvasFields(document));
+}
+
+function sameCanvasFrame(left: HistoryCanvasFrameDto, right: HistoryCanvasFrameDto): boolean {
+  return left.width === right.width
+    && left.height === right.height
+    && (left.originX ?? 0) === (right.originX ?? 0)
+    && (left.originY ?? 0) === (right.originY ?? 0)
+    && (left.canvasMaskBits === undefined ? right.canvasMaskBits === undefined : right.canvasMaskBits !== undefined && typedEqual(left.canvasMaskBits, right.canvasMaskBits));
+}
+
+function sameLayeredGeometry(left: LayeredDocument, right: LayeredDocument): boolean {
+  return left.width === right.width
+    && left.height === right.height
+    && (left.originX ?? 0) === (right.originX ?? 0)
+    && (left.originY ?? 0) === (right.originY ?? 0)
+    && (left.canvasMask === undefined ? right.canvasMask === undefined : right.canvasMask !== undefined && typedEqual(left.canvasMask, right.canvasMask))
+    && left.layers.length === right.layers.length
+    && left.layers.every((layer, index) => {
+      const other = right.layers[index];
+      if (layer.id !== other.id) return false;
+      if (layer.type === LayerType.Stitch) return other.type === LayerType.Stitch && typedEqual(layer.kind, other.kind) && typedEqual(layer.colors, other.colors);
+      return other.type === LayerType.Specialty && historyStoreEqual(layer.backstitches, other.backstitches);
+    });
+}
+
+function sameCanvasRemoval(left: CanvasEntry['removal'], right: CanvasEntry['removal']): boolean {
+  return left.cells.length === right.cells.length
+    && left.cells.every((cells, index) => {
+      const other = right.cells[index];
+      return cells.layerId === other.layerId && typedEqual(cells.indices, other.indices) && typedEqual(cells.kind, other.kind) && typedEqual(cells.colors, other.colors);
+    })
+    && left.backstitches.length === right.backstitches.length
+    && left.backstitches.every((lines, index) => {
+      const other = right.backstitches[index];
+      return lines.layerId === other.layerId && typedEqual(lines.positions, other.positions) && historyStoreEqual(lines.backstitches, other.backstitches);
+    });
+}
+
+/** Runs the entry's command on `document`, reporting a rejected or unchanged replay as a mismatch. */
+function replayCanvasForValidation(document: LayeredDocument, entry: CanvasEntry, label: string): CanvasEntry['removal'] & { document: LayeredDocument } {
+  let applied: ReturnType<typeof applyCanvasCommand>;
+  try {
+    applied = applyCanvasCommand(document, entry.command);
+  } catch (error) {
+    if (error instanceof DomainError) historyStateMismatch(`${label}.command`);
+    throw error;
+  }
+  if (!applied.changed) historyStateMismatch(`${label}.command`);
+  return { document: applied.document, cells: applied.removal.cells, backstitches: removedLines(document, applied.removal) };
+}
+
+/**
+ * Checks a canvas entry by running it. Redo starts from `before`, so the
+ * state must match it and the replay must remove exactly the recorded
+ * content. Undo rebuilds the before frame the same way `undo` does, checks
+ * that it is a valid document, and then requires the command to turn it back
+ * into the current state with the same removal.
+ */
+function stepCanvasForValidation(state: ChainState, entry: CanvasEntry, useAfter: boolean, label: string): void {
+  const current = chainDocument(state);
+  if (useAfter) {
+    if (!sameCanvasFrame(canvasFrame(current), entry.before)) historyStateMismatch(`${label}.before`);
+    const replayed = replayCanvasForValidation(current, entry, label);
+    if (!sameCanvasRemoval(replayed, entry.removal)) historyStateMismatch(`${label}.removal`);
+    adoptChainDocument(state, replayed.document);
+    return;
+  }
+  let before: LayeredDocument;
+  try {
+    before = restoreCanvasFrame(current, entry);
+  } catch (error) {
+    if (error instanceof DomainError || error instanceof RangeError) historyStateMismatch(`${label}.removal`);
+    throw error;
+  }
+  if (collectLayeredValidationErrors({ ...before, revision: 0 }).length > 0) historyStateMismatch(`${label}.before`);
+  const replayed = replayCanvasForValidation(before, entry, label);
+  if (!sameLayeredGeometry(replayed.document, current) || !sameCanvasRemoval(replayed, entry.removal)) historyStateMismatch(label);
+  adoptChainDocument(state, before);
+}
+
 /**
  * Checks that `entry` applies to `state` from the side it will be applied
  * from and moves the state to the other side (`useAfter` is redo). Every
- * value an entry writes is validated; transforms and crops are never
- * executed and no unchanged cell plane is reread.
+ * value an entry writes is validated and no unchanged cell plane is reread.
  */
 function stepLayeredEntryForValidation(state: ChainState, entry: LayeredHistoryEntry, useAfter: boolean, label: string): void {
   switch (entry.kind) {
@@ -3139,33 +3482,9 @@ function stepLayeredEntryForValidation(state: ChainState, entry: LayeredHistoryE
       chainMatchesSide(state, useAfter ? entry.before : entry.after, label);
       chainToSide(state, useAfter ? entry.after : entry.before, label);
       return;
-    case 'transform': {
-      // The DTO check already proved forward and inverse are a canonical pair. Colors and ids move with their content.
-      const command = useAfter ? entry.forward : entry.inverse;
-      if (command.type === 'rotate-cw' && (command.quarterTurns as number) % 2 === 1) [state.width, state.height] = [state.height, state.width];
-      state.layers.forEach(dropLayerContent);
+    case 'canvas':
+      stepCanvasForValidation(state, entry, useAfter, label);
       return;
-    }
-    case 'replay': {
-      const rect = cropRect(entry.command);
-      if (rect.x + rect.width > entry.before.width || rect.y + rect.height > entry.before.height) historyStateMismatch(`${label}.command`);
-      if (useAfter) {
-        chainMatchesSide(state, entry.before, label);
-        for (const layer of state.layers) {
-          countCropSurvivors(layer, entry.before.width, rect);
-          dropLayerContent(layer);
-        }
-        state.width = rect.width;
-        state.height = rect.height;
-        return;
-      }
-      if (state.width !== rect.width || state.height !== rect.height || state.layers.length !== entry.before.layers.length) historyStateMismatch(label);
-      entry.before.layers.forEach((record, index) => {
-        if (state.layers[index].id !== record.id || state.layers[index].type !== record.type) historyStateMismatch(`${label}.layers[${String(index)}]`);
-      });
-      chainToSide(state, entry.before, label);
-      return;
-    }
     case 'delta':
       stepDeltaForValidation(state, entry, useAfter, label);
   }
@@ -3209,9 +3528,8 @@ function hydrateLayeredHistory(value: unknown, current: LayeredDocument, configu
  * backstitches, fragments, erase, delete) run on the target layer's surface
  * and are stored as sparse deltas tagged with the layer id. Palette and
  * settings metadata are document deltas. Structure commands store only the
- * layers they change; rotations and mirrors store their inverse; a crop
- * stores the planes it removes; batches group their children's entries into
- * one undo step.
+ * layers they change; batches group their children's entries into one undo
+ * step.
  *
  * `document` and `composite` are replaced, never mutated, on every change, and
  * layer objects and their planes are never written after publication.

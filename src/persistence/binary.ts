@@ -29,7 +29,11 @@ import {
 } from './limits';
 
 const MAGIC = new Uint8Array([0x4e, 0x57, 0x44, 0x4f, 0x43, 0x31, 0x01, 0x00]);
-export const BINARY_SCHEMA_VERSION = 3 as const;
+export const BINARY_SCHEMA_VERSION = 4 as const;
+/** First layered schema. Layered documents before v4 have no origin or canvas mask. */
+const LAYERED_SCHEMA_VERSION = 3;
+/** v4 header flags byte: bit 0 means a canvas mask follows the origin. */
+const FLAG_CANVAS_MASK = 1;
 const LITTLE_ENDIAN_MARKER = 1;
 const HEADER_BYTES = 40;
 /** v1/v2 backstitch record: id, x1, y1, x2, y2, color, completed. */
@@ -124,7 +128,8 @@ function byteLengthFor(document: LayeredDocument): number {
   length += 4n + BigInt(stringBytes(document.settings.symbolSet, 'Document symbol set').length);
   length += 4n + BigInt(stringBytes(document.settings.materialUnit, 'Document material unit').length);
   length += 4n + BigInt(stringBytes(document.settings.backgroundColor, 'Document background color').length);
-  length += 8n + 4n;
+  length += 8n + 4n + 8n;
+  if (document.canvasMask !== undefined) length += BigInt(Math.ceil(document.width * document.height / 8));
   for (const layer of document.layers) {
     length += 4n + 1n + 1n + 4n + BigInt(stringBytes(layer.name, 'Layer name').length);
     if (layer.type === LayerType.Stitch) length += BigInt(layer.kind.length) + BigInt(layer.colors.length) * 2n;
@@ -211,8 +216,10 @@ function writeBackstitches(view: DataView, offset: number, store: BackstitchStor
 }
 
 /**
- * Encodes the v3 layered format: header, catalog, palette, settings (including
- * aidaCount), nextLayerId, then the layer table bottom to top. Stitch layers
+ * Encodes the v4 layered format: header, catalog, palette, settings (including
+ * aidaCount), nextLayerId, originX/originY (int32), the canvas mask bitset when
+ * header flag bit 0 is set (LSB first, trailing bits zero), then the layer table
+ * bottom to top. Stitch layers
  * store kind and color planes; specialty layers store their backstitches.
  * Completion is never stored.
  */
@@ -231,7 +238,7 @@ export function encodeDocument(document: LayeredDocument): Uint8Array {
   bytes.set(MAGIC, 0);
   view.setUint16(8, BINARY_SCHEMA_VERSION, true);
   view.setUint8(10, LITTLE_ENDIAN_MARKER);
-  view.setUint8(11, 0);
+  view.setUint8(11, document.canvasMask === undefined ? 0 : FLAG_CANVAS_MASK);
   view.setUint32(12, document.width, true);
   view.setUint32(16, document.height, true);
   view.setUint32(20, document.revision, true);
@@ -252,6 +259,16 @@ export function encodeDocument(document: LayeredDocument): Uint8Array {
   offset += 8;
   view.setUint32(offset, document.nextLayerId, true);
   offset += 4;
+  // An absent origin is written as 0 and decoded back to absent, so round trips are exact.
+  view.setInt32(offset, document.originX ?? 0, true);
+  view.setInt32(offset + 4, document.originY ?? 0, true);
+  offset += 8;
+  if (document.canvasMask !== undefined) {
+    for (let index = 0; index < document.canvasMask.length; index += 1) {
+      if (document.canvasMask[index] === 1) bytes[offset + (index >> 3)] |= 1 << (index & 7);
+    }
+    offset += Math.ceil(document.canvasMask.length / 8);
+  }
   for (const layer of document.layers) {
     view.setUint32(offset, layer.id, true);
     offset += 4;
@@ -387,6 +404,7 @@ function readBackstitches(view: DataView, offset: number, count: number, recordB
 
 interface DecodedHeader {
   binaryVersion: number;
+  hasMask: boolean;
   width: number;
   height: number;
   cellCount: number;
@@ -400,9 +418,10 @@ interface DecodedHeader {
 
 function readHeader(bytes: Uint8Array, view: DataView): DecodedHeader {
   const binaryVersion = view.getUint16(8, true);
-  if (binaryVersion !== 1 && binaryVersion !== 2 && binaryVersion !== BINARY_SCHEMA_VERSION) throw new PersistenceError('unsupported-version', 'Document binary schema is unsupported.');
+  if (binaryVersion < 1 || binaryVersion > BINARY_SCHEMA_VERSION) throw new PersistenceError('unsupported-version', 'Document binary schema is unsupported.');
   if (view.getUint8(10) !== LITTLE_ENDIAN_MARKER) fail('Document byte order is unsupported.');
-  if (view.getUint8(11) !== 0) fail('Document header flags are invalid.');
+  const flags = view.getUint8(11);
+  if (flags !== 0 && (binaryVersion < BINARY_SCHEMA_VERSION || (flags & ~FLAG_CANVAS_MASK) !== 0)) fail('Document header flags are invalid.');
   const width = view.getUint32(12, true);
   const height = view.getUint32(16, true);
   const cellCount = checkedDocumentDimensions(width, height);
@@ -411,6 +430,7 @@ function readHeader(bytes: Uint8Array, view: DataView): DecodedHeader {
   if (paletteCount > MAX_PALETTE_ENTRIES) fail('Palette count exceeds the size limit.');
   return {
     binaryVersion,
+    hasMask: (flags & FLAG_CANVAS_MASK) !== 0,
     width,
     height,
     cellCount,
@@ -499,10 +519,10 @@ function decodeLegacyDocument(bytes: Uint8Array, view: DataView, header: Decoded
 }
 
 function decodeLayeredDocument(bytes: Uint8Array, view: DataView, header: DecodedHeader): LayeredDocument {
-  const { width, height, cellCount, revision, nextBackstitchId, nextPaletteId, paletteCount } = header;
+  const { binaryVersion, hasMask, width, height, cellCount, revision, nextBackstitchId, nextPaletteId, paletteCount } = header;
   const layerCount = header.tableCount;
   if (layerCount > MAX_LAYERS) fail('Layer count exceeds the size limit.');
-  const minimumPayload = 12n + BigInt(paletteCount) * 29n + 12n + 8n + 4n + BigInt(layerCount) * 10n;
+  const minimumPayload = 12n + BigInt(paletteCount) * 29n + 12n + 8n + 4n + (binaryVersion >= BINARY_SCHEMA_VERSION ? 8n : 0n) + BigInt(layerCount) * 10n;
   if (minimumPayload > BigInt(bytes.length - HEADER_BYTES)) fail('Document counts exceed the remaining payload.');
 
   const catalogResult = readCatalog(bytes, view, HEADER_BYTES);
@@ -520,6 +540,22 @@ function decodeLayeredDocument(bytes: Uint8Array, view: DataView, header: Decode
   const nextLayerId = view.getUint32(offset, true);
   offset += 4;
   const settings: PatternSettings = { symbolSet: symbolSet.value, materialUnit: materialUnit.value as PatternSettings['materialUnit'], backgroundColor: backgroundColor.value, aidaCount };
+  let originX = 0;
+  let originY = 0;
+  let canvasMask: Uint8Array | undefined;
+  if (binaryVersion >= BINARY_SCHEMA_VERSION) {
+    if (offset + 8 > bytes.length) fail('Document ended while reading the canvas origin.');
+    originX = view.getInt32(offset, true);
+    originY = view.getInt32(offset + 4, true);
+    offset += 8;
+    if (hasMask) {
+      const maskBytes = take(bytes, offset, Math.ceil(cellCount / 8), 'canvas mask');
+      offset += maskBytes.length;
+      if (cellCount % 8 !== 0 && maskBytes[maskBytes.length - 1] >> (cellCount % 8) !== 0) fail('Canvas mask padding bits are not zero.');
+      canvasMask = new Uint8Array(cellCount);
+      for (let index = 0; index < cellCount; index += 1) canvasMask[index] = (maskBytes[index >> 3] >> (index & 7)) & 1;
+    }
+  }
 
   const layers: Layer[] = [];
   for (let index = 0; index < layerCount; index += 1) {
@@ -568,7 +604,11 @@ function decodeLayeredDocument(bytes: Uint8Array, view: DataView, header: Decode
     revision,
     nextBackstitchId,
     nextPaletteId,
-    nextLayerId
+    nextLayerId,
+    // Origin 0 decodes as absent: encode writes 0 for an absent origin, and old documents never gain fields.
+    ...(originX === 0 ? {} : { originX }),
+    ...(originY === 0 ? {} : { originY }),
+    ...(canvasMask === undefined ? {} : { canvasMask })
   };
   try {
     assertValidLayeredDocument(document);
@@ -585,7 +625,7 @@ export function decodeDocumentWithInfo(input: Uint8Array | ArrayBuffer): Decoded
   if (bytes.length < HEADER_BYTES || !sameMagic(bytes)) fail('Document binary magic is invalid.');
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const header = readHeader(bytes, view);
-  const legacy = header.binaryVersion < BINARY_SCHEMA_VERSION;
+  const legacy = header.binaryVersion < LAYERED_SCHEMA_VERSION;
   const document = legacy ? decodeLegacyDocument(bytes, view, header) : decodeLayeredDocument(bytes, view, header);
   return { document, binaryVersion: header.binaryVersion, legacy };
 }
@@ -625,7 +665,10 @@ export function cloneLayeredDocument(document: LayeredDocument): LayeredDocument
     revision: document.revision,
     nextBackstitchId: document.nextBackstitchId,
     nextPaletteId: document.nextPaletteId,
-    nextLayerId: document.nextLayerId
+    nextLayerId: document.nextLayerId,
+    ...(document.originX === undefined ? {} : { originX: document.originX }),
+    ...(document.originY === undefined ? {} : { originY: document.originY }),
+    ...(document.canvasMask === undefined ? {} : { canvasMask: document.canvasMask.slice() })
   };
 }
 

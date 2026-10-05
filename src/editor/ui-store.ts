@@ -8,6 +8,7 @@ import {
   type ActiveLayerKind,
   type EditorActiveLayer,
   type BrushSizeTool,
+  type CanvasEditMode,
   type ToolBrushSizes,
   type AuthoringStitchBrush,
   type ModelPoint,
@@ -23,14 +24,15 @@ const DEFAULT_TOOL_BRUSH_SIZES: ToolBrushSizes = {
   full: DEFAULT_BRUSH_SIZE,
   half: DEFAULT_BRUSH_SIZE,
   'three-quarter': DEFAULT_BRUSH_SIZE,
-  eraser: DEFAULT_BRUSH_SIZE
+  eraser: DEFAULT_BRUSH_SIZE,
+  'canvas-brush': DEFAULT_BRUSH_SIZE
 };
 
 function brushSizeToolFor(tool: EditorToolState): BrushSizeTool | undefined {
   if (tool.tool === 'paint' && tool.brush && (tool.brush.kind === 'full' || tool.brush.kind === 'half' || tool.brush.kind === 'three-quarter')) {
     return tool.brush.kind;
   }
-  if (tool.tool === 'eraser') return tool.tool;
+  if (tool.tool === 'eraser' || tool.tool === 'canvas-brush') return tool.tool;
   return undefined;
 }
 
@@ -39,7 +41,8 @@ function normalizeToolBrushSizes(sizes: Partial<ToolBrushSizes>): ToolBrushSizes
     full: normalizeBrushSize(sizes.full ?? DEFAULT_BRUSH_SIZE),
     half: normalizeBrushSize(sizes.half ?? DEFAULT_BRUSH_SIZE),
     'three-quarter': normalizeBrushSize(sizes['three-quarter'] ?? DEFAULT_BRUSH_SIZE),
-    eraser: normalizeBrushSize(sizes.eraser ?? DEFAULT_BRUSH_SIZE)
+    eraser: normalizeBrushSize(sizes.eraser ?? DEFAULT_BRUSH_SIZE),
+    'canvas-brush': normalizeBrushSize(sizes['canvas-brush'] ?? DEFAULT_BRUSH_SIZE)
   };
 }
 
@@ -56,7 +59,10 @@ export const DEFAULT_EDITOR_UI_STATE: EditorUiState = {
   selectedCell: null,
   status: null,
   canPaste: false,
-  activeLayer: null
+  activeLayer: null,
+  canvasMode: 'basic',
+  canvasBasicAvailable: true,
+  canvasCropActive: false
 };
 
 function sameState(left: EditorUiState, right: EditorUiState): boolean {
@@ -72,7 +78,10 @@ function sameState(left: EditorUiState, right: EditorUiState): boolean {
     && left.selectedCell === right.selectedCell
     && left.status === right.status
     && left.canPaste === right.canPaste
-    && left.activeLayer === right.activeLayer;
+    && left.activeLayer === right.activeLayer
+    && left.canvasMode === right.canvasMode
+    && left.canvasBasicAvailable === right.canvasBasicAvailable
+    && left.canvasCropActive === right.canvasCropActive;
 }
 
 export function createUiStore(initial: Partial<EditorUiState> = {}): EditorUiStore {
@@ -203,6 +212,14 @@ export function createUiStore(initial: Partial<EditorUiState> = {}): EditorUiSto
       if (current === activeLayer || (current && activeLayer
         && current.id === activeLayer.id && current.kind === activeLayer.kind && current.visible === activeLayer.visible)) return;
       store.setState({ activeLayer: activeLayer ? { ...activeLayer } : null });
+    },
+
+    setCanvasMode(mode: CanvasEditMode): void {
+      store.setState({ canvasMode: mode });
+    },
+
+    setCanvasCropActive(active: boolean): void {
+      store.setState({ canvasCropActive: active });
     },
 
     rememberToolForLayer(kind: ActiveLayerKind, tool: EditorToolState): void {

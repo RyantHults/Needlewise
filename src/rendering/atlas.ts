@@ -30,6 +30,7 @@ interface AtlasCacheEntry extends ColorAtlas {
   readonly mode: RendererStyle['mode'];
   readonly patternBackground: string;
   readonly missingColor: string;
+  readonly canvasMask: PatternDocument['canvasMask'];
 }
 
 function paletteColor(document: PatternDocument, id: number, missing: string): string {
@@ -279,13 +280,40 @@ function paintColorAtlasCell(
   }
 }
 
-/** Reset one cell of an atlas to the pattern background before repainting it. */
+/** Reset one cell of an atlas to the pattern background (a hole stays transparent) before repainting it. */
 function clearAtlasCell(context: CanvasTarget['context'], document: PatternDocument, index: number, pixelsPerCell: number, background: string): void {
   const x = (index % document.width) * pixelsPerCell;
   const y = Math.floor(index / document.width) * pixelsPerCell;
   context.clearRect(x, y, pixelsPerCell, pixelsPerCell);
+  if (document.canvasMask !== undefined && document.canvasMask[index] !== 1) return;
   context.fillStyle = background;
   context.fillRect(x, y, pixelsPerCell, pixelsPerCell);
+}
+
+/**
+ * Paint the fabric over a freshly cleared atlas. A full rectangle is one fill;
+ * a masked canvas fills runs of active cells, leaving holes transparent so
+ * the renderer's off-canvas color shows through.
+ */
+function fillAtlasFabric(context: CanvasTarget['context'], document: PatternDocument, pixelsPerCell: number, background: string): void {
+  context.fillStyle = background;
+  const mask = document.canvasMask;
+  if (mask === undefined) {
+    context.fillRect(0, 0, document.width * pixelsPerCell, document.height * pixelsPerCell);
+    return;
+  }
+  for (let y = 0; y < document.height; y += 1) {
+    const row = y * document.width;
+    let runStart = -1;
+    for (let x = 0; x <= document.width; x += 1) {
+      const active = x < document.width && mask[row + x] === 1;
+      if (active && runStart < 0) runStart = x;
+      else if (!active && runStart >= 0) {
+        context.fillRect(runStart * pixelsPerCell, y * pixelsPerCell, (x - runStart) * pixelsPerCell, pixelsPerCell);
+        runStart = -1;
+      }
+    }
+  }
 }
 
 /**
@@ -323,7 +351,8 @@ export class ColorAtlasCache {
       current.colorsPlane === document.colors &&
       current.mode === style.mode &&
       current.patternBackground === patternBackground &&
-      current.missingColor === style.missingPaletteColor
+      current.missingColor === style.missingPaletteColor &&
+      current.canvasMask === document.canvasMask
     );
     if (reusablePlanesAndStyle && current) {
       const paletteProjection = colorPaletteProjection(document.palette, current.paletteIds);
@@ -354,8 +383,7 @@ export class ColorAtlasCache {
       save(context);
       if (context.imageSmoothingEnabled !== undefined) context.imageSmoothingEnabled = false;
       context.clearRect(0, 0, atlasWidth, atlasHeight);
-      context.fillStyle = patternBackground;
-      context.fillRect(0, 0, atlasWidth, atlasHeight);
+      fillAtlasFabric(context, document, pixelsPerCell, patternBackground);
       const cellCount = document.width * document.height;
       for (let index = 0; index < cellCount; index += 1) paintColorAtlasCell(context, document, index, pixelsPerCell, style);
       restore(context);
@@ -376,7 +404,8 @@ export class ColorAtlasCache {
       paletteProjection,
       mode: style.mode,
       patternBackground,
-      missingColor: style.missingPaletteColor
+      missingColor: style.missingPaletteColor,
+      canvasMask: document.canvasMask
     };
     return this.entry;
   }
@@ -391,6 +420,7 @@ export class ColorAtlasCache {
       || current.mode !== style.mode
       || current.patternBackground !== patternBackground
       || current.missingColor !== style.missingPaletteColor
+      || current.canvasMask !== document.canvasMask
       || colorPaletteProjection(document.palette, current.paletteIds) !== current.paletteProjection) return undefined;
     // A new pair cell needs the 2×2 footprint a one-pixel atlas cannot hold.
     if (current.pixelsPerCell === 1) for (const index of cells) if (isThreeQuarterPairKind(document.kind[index])) return undefined;
@@ -439,6 +469,7 @@ interface SymbolAtlasCacheEntry extends SymbolAtlas {
   readonly missingColor: string;
   readonly showSymbols: boolean;
   readonly ppc: number;
+  readonly canvasMask: PatternDocument['canvasMask'];
 }
 
 const MAX_SAFE_CANVAS_DIMENSION = 32_767;
@@ -510,7 +541,8 @@ export class SymbolAtlasCache {
       current.patternBackground === patternBackground &&
       current.missingColor === style.missingPaletteColor &&
       current.showSymbols === style.showSymbols &&
-      current.ppc === ppc
+      current.ppc === ppc &&
+      current.canvasMask === document.canvasMask
     );
     if (reusablePlanesAndStyle && current) {
       const paletteProjection = symbolPaletteProjection(document.palette, current.paletteIds, style.mode, style.showSymbols);
@@ -546,7 +578,8 @@ export class SymbolAtlasCache {
         patternBackground,
         missingColor: style.missingPaletteColor,
         showSymbols: style.showSymbols,
-        ppc
+        ppc,
+        canvasMask: document.canvasMask
       };
       this.entry = unavailable;
       return unavailable;
@@ -561,8 +594,7 @@ export class SymbolAtlasCache {
         const context = target.context;
         save(context);
         context.clearRect(0, 0, dimensions.width, dimensions.height);
-        context.fillStyle = patternBackground;
-        context.fillRect(0, 0, dimensions.width, dimensions.height);
+        fillAtlasFabric(context, document, ppc, patternBackground);
         const cellCount = document.width * document.height;
         for (let index = 0; index < cellCount; index += 1) {
           paintSymbolAtlasCell(context, document, index, ppc, style);
@@ -596,7 +628,8 @@ export class SymbolAtlasCache {
       patternBackground,
       missingColor: style.missingPaletteColor,
       showSymbols: style.showSymbols,
-      ppc
+      ppc,
+      canvasMask: document.canvasMask
     };
     this.entry = result;
     return result;
@@ -616,6 +649,7 @@ export class SymbolAtlasCache {
       || current.missingColor !== style.missingPaletteColor
       || current.showSymbols !== style.showSymbols
       || current.ppc !== ppc
+      || current.canvasMask !== document.canvasMask
       || symbolPaletteProjection(document.palette, current.paletteIds, style.mode, style.showSymbols) !== current.paletteProjection) return undefined;
     const paletteIds = paletteIdsWithCells(document, current.paletteIds, cells);
     const context = current.target.context;

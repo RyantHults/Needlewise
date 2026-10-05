@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { canAddLayer, findLayer, MAX_LAYERS_PER_TYPE, type Layer, type LayeredDocument } from "../../domain";
+import { CANVAS_BASIC_LOCKED_HINT, type CanvasEditMode } from "../../editor/contracts";
 import type { ActiveLayerId } from "./LayersPanel";
 import { RenameLayerDialog } from "./RenameLayerDialog";
 
@@ -23,26 +24,149 @@ interface CanvasProps {
   aidaCount: number;
   onChooseBackground: (trigger: HTMLButtonElement) => void;
   onAidaCountChange: (count: number) => void;
+  /** The chosen crop mode; the Crop button is shown when `onCanvasModeChange` and `onCanvasCropToggle` are given. */
+  canvasMode?: CanvasEditMode;
+  /** False while the canvas is not a rectangle, which locks the mode to Advanced crop. */
+  canvasBasicAvailable?: boolean;
+  /** True while crop mode is on. */
+  canvasCropActive?: boolean;
+  onCanvasModeChange?: (mode: CanvasEditMode) => void;
+  onCanvasCropToggle?: () => void;
 }
 
-/** Background color and stitch count; each change is one undoable settings update. */
-function CanvasControls({ backgroundColor, backgroundCatalog, aidaCount, onChooseBackground, onAidaCountChange }: CanvasProps) {
+const CROP_MODES: ReadonlyArray<readonly [CanvasEditMode, string, string]> = [
+  ["basic", "Crop", "Add or remove whole rows and columns"],
+  ["advanced", "Advanced crop", "Add or remove single cells"]
+];
+
+interface CropProps {
+  mode: CanvasEditMode;
+  basicAvailable: boolean;
+  active: boolean;
+  onModeChange: (mode: CanvasEditMode) => void;
+  onToggle: () => void;
+}
+
+/**
+ * Crop split button: the main part toggles crop mode in the chosen mode; the
+ * arrow opens a menu choosing Crop (whole rows and columns) or Advanced crop
+ * (single cells). Crop is locked while the canvas is not a rectangle.
+ */
+function CropSplitButton({ mode, basicAvailable, active, onModeChange, onToggle }: CropProps) {
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState({ left: 8, top: 8 });
+  const arrow = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  const effective: CanvasEditMode = basicAvailable ? mode : "advanced";
+  const label = effective === "advanced" ? "Advanced crop" : "Crop";
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const items = () => [...(menu.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]') ?? [])].filter((item) => !item.disabled);
+    (menu.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]') ?? items()[0])?.focus();
+    const outside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !menu.current?.contains(event.target) && !arrow.current?.contains(event.target)) setOpen(false);
+    };
+    const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setOpen(false);
+        arrow.current?.focus();
+        return;
+      }
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+      event.preventDefault();
+      const enabled = items();
+      const index = enabled.indexOf(globalThis.document.activeElement as HTMLButtonElement);
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      enabled[(index + step + enabled.length) % enabled.length]?.focus();
+    };
+    globalThis.document.addEventListener("pointerdown", outside);
+    globalThis.document.addEventListener("keydown", key, true);
+    return () => {
+      globalThis.document.removeEventListener("pointerdown", outside);
+      globalThis.document.removeEventListener("keydown", key, true);
+    };
+  }, [open]);
+
+  const openMenu = () => {
+    const rect = arrow.current?.getBoundingClientRect();
+    if (rect) setPosition({ left: Math.max(8, Math.min(rect.left, window.innerWidth - 240)), top: Math.max(8, rect.top - 8) });
+    setOpen(true);
+  };
+  const choose = (value: CanvasEditMode) => {
+    setOpen(false);
+    onModeChange(value);
+    arrow.current?.focus();
+  };
+
+  return (
+    <div className="crop-split-button" role="group" aria-label="Crop">
+      <button type="button" className="crop-split-main" aria-pressed={active} title={active ? `Turn off ${label}` : `Turn on ${label}`} onClick={onToggle}>
+        {label}
+      </button>
+      <button
+        ref={arrow}
+        type="button"
+        className="crop-split-arrow"
+        aria-label="Crop options"
+        title="Crop options"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => (open ? setOpen(false) : openMenu())}
+      >
+        <span aria-hidden="true">▾</span>
+      </button>
+      {open && createPortal(
+        <div
+          ref={menu}
+          className="layer-merge-menu crop-mode-menu"
+          role="menu"
+          aria-label="Crop mode"
+          style={{ position: "fixed", left: position.left, top: position.top, transform: "translateY(-100%)", zIndex: 1000 }}
+        >
+          {CROP_MODES.map(([value, name, description]) => {
+            const locked = value === "basic" && !basicAvailable;
+            return (
+              <button
+                key={value}
+                type="button"
+                role="menuitemradio"
+                aria-checked={effective === value}
+                disabled={locked}
+                title={locked ? CANVAS_BASIC_LOCKED_HINT : description}
+                aria-description={locked ? CANVAS_BASIC_LOCKED_HINT : description}
+                onClick={() => choose(value)}
+              >
+                {name}
+              </button>
+            );
+          })}
+        </div>,
+        globalThis.document.body,
+      )}
+    </div>
+  );
+}
+
+/** Edit mode, background color and stitch count; each settings change is one undoable update. */
+function CanvasControls({ backgroundColor, backgroundCatalog, aidaCount, onChooseBackground, onAidaCountChange, canvasMode, canvasBasicAvailable, canvasCropActive, onCanvasModeChange, onCanvasCropToggle }: CanvasProps) {
   const catalogLine = backgroundCatalog ? `${backgroundCatalog.brand} · ${backgroundCatalog.code}` : undefined;
   const description = backgroundCatalog ? `${backgroundCatalog.name}, ${catalogLine}, ${backgroundColor}` : backgroundColor;
   return (
     <div className="layer-controls layer-controls-canvas" role="group" aria-label="Canvas settings">
+      {onCanvasModeChange && onCanvasCropToggle && <CropSplitButton mode={canvasMode ?? "basic"} basicAvailable={canvasBasicAvailable ?? true} active={canvasCropActive ?? false} onModeChange={onCanvasModeChange} onToggle={onCanvasCropToggle} />}
       <button
         className="layer-background-button"
         type="button"
         aria-label={`Change background color, ${description}`}
+        title={`Background color: ${description}`}
         onClick={(event) => onChooseBackground(event.currentTarget)}
       >
         <span className="layer-background-swatch" style={{ background: backgroundColor }} aria-hidden="true" />
-        <span className="layer-background-details" aria-hidden="true">
-          {backgroundCatalog && <strong>{backgroundCatalog.name}</strong>}
-          {catalogLine && <span>{catalogLine}</span>}
-          <span>{backgroundColor}</span>
-        </span>
+        {/* One short line: the thread code when the background is catalogued, otherwise the hex. */}
+        <span className="layer-background-code" aria-hidden="true">{backgroundCatalog ? backgroundCatalog.code : backgroundColor}</span>
       </button>
       <label className="layer-control-field" htmlFor="canvas-stitch-count">
         <span>Stitch count</span>
@@ -204,9 +328,9 @@ interface Props extends Omit<LayerProps, "layer">, CanvasProps {
 }
 
 /** The contextual controls for a stitch, specialty or Canvas selection. The Reference image keeps its own controls. */
-export function LayerControls({ activeLayerId, document, backgroundColor, backgroundCatalog, aidaCount, onChooseBackground, onAidaCountChange, ...actions }: Props) {
+export function LayerControls({ activeLayerId, document, backgroundColor, backgroundCatalog, aidaCount, onChooseBackground, onAidaCountChange, canvasMode, canvasBasicAvailable, canvasCropActive, onCanvasModeChange, onCanvasCropToggle, ...actions }: Props) {
   if (activeLayerId === "canvas") {
-    return <CanvasControls backgroundColor={backgroundColor} backgroundCatalog={backgroundCatalog} aidaCount={aidaCount} onChooseBackground={onChooseBackground} onAidaCountChange={onAidaCountChange} />;
+    return <CanvasControls backgroundColor={backgroundColor} backgroundCatalog={backgroundCatalog} aidaCount={aidaCount} onChooseBackground={onChooseBackground} onAidaCountChange={onAidaCountChange} canvasMode={canvasMode} canvasBasicAvailable={canvasBasicAvailable} canvasCropActive={canvasCropActive} onCanvasModeChange={onCanvasModeChange} onCanvasCropToggle={onCanvasCropToggle} />;
   }
   if (activeLayerId === "reference") return null;
   const layer = findLayer(document, activeLayerId);

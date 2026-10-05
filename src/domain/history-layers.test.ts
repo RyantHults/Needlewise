@@ -17,7 +17,9 @@ import {
   layerRenameCommand,
   layerSetVisibilityCommand,
   LayerType,
+  packCanvasMask,
   pasteFragmentCommand,
+  unpackCanvasMask,
   type CatalogAssociation,
   type DomainCommand,
   type Layer,
@@ -388,14 +390,6 @@ describe('layered DocumentEditor: exact composite invalidation for structure cha
     expect(toggled.compositeUnchanged).toBe(true);
   });
 
-  it('keeps compositeFull for dimension changes', () => {
-    const editor = layeredEditor();
-    expect(editor.execute({ type: 'rotate-cw' }).compositeFull).toBe(true);
-    expect(editor.undo().compositeFull).toBe(true);
-    expect(editor.execute({ type: 'crop', x: 0, y: 0, width: 2, height: 2 }).compositeFull).toBe(true);
-    expect(editor.undo().compositeFull).toBe(true);
-  });
-
   it('reports the pasted cells when an add-and-paste group is undone and redone', () => {
     const source = createDocument({ width: 1, height: 1, catalog: CATALOG, palette: palette() });
     source.kind[0] = CellKind.Full;
@@ -468,38 +462,6 @@ describe('layered DocumentEditor: document-scoped commands', () => {
     expect(editor.document.palette.some((entry) => entry.id === 4)).toBe(false);
   });
 
-  it('crops, rotates, and mirrors every layer and restores them on undo', () => {
-    const editor = editorFor(3, 2);
-    editor.execute(layerAddCommand(LayerType.Stitch));
-    editor.execute(full(0, 0, 1));
-    editor.execute(full(2, 1, 2, 3));
-    editor.execute(line(0, 0, 1, 0, 1));
-    editor.execute(layerSetVisibilityCommand(3, false));
-
-    editor.execute({ type: 'rotate-cw' });
-    expect([editor.document.width, editor.document.height]).toEqual([2, 3]);
-    expect(stitch(editor.document, STITCHES).kind[1]).toBe(CellKind.Full);
-    expect(stitch(editor.document, 3).kind[2 * 2]).toBe(CellKind.Full);
-    const rotated = specialty(editor.document, SPECIALTY).backstitches;
-    expect([rotated.x1[0], rotated.x2[0]]).toEqual([8, 8]);
-    editor.undo();
-    expect([editor.document.width, editor.document.height]).toEqual([3, 2]);
-    expect(stitch(editor.document, 3).kind[5]).toBe(CellKind.Full);
-
-    editor.execute({ type: 'mirror-horizontal' });
-    expect(stitch(editor.document, STITCHES).kind[2]).toBe(CellKind.Full);
-    expect(stitch(editor.document, 3).kind[3]).toBe(CellKind.Full);
-    editor.undo();
-
-    editor.execute({ type: 'crop', x: 1, y: 1, width: 2, height: 1 });
-    expect([editor.document.width, editor.document.height]).toEqual([2, 1]);
-    expect(stitch(editor.document, STITCHES).kind.length).toBe(2);
-    expect(stitch(editor.document, 3).kind[1]).toBe(CellKind.Full);
-    expect(editor.composite.width).toBe(2);
-    editor.undo();
-    expect(stitch(editor.document, 3).kind.length).toBe(6);
-  });
-
   it('updates aidaCount through undoable settings', () => {
     const editor = editorFor();
     const result = editor.execute({ type: 'document-settings-update', settings: { aidaCount: 18 } });
@@ -516,9 +478,10 @@ describe('layered DocumentEditor: document-scoped commands', () => {
     const editor = editorFor();
     editor.execute(layerDeleteCommand(SPECIALTY));
     editor.execute(layerDeleteCommand(STITCHES));
-    editor.execute({ type: 'rotate-cw' });
-    expect([editor.document.width, editor.document.height]).toEqual([3, 4]);
-    expect(editor.execute({ type: 'palette-deactivate', id: 1 }).changed).toBe(true);
+    expect(editor.execute({ type: 'palette-merge', from: 1, to: 3 }).changed).toBe(true);
+    expect(editor.lastHistoryEntryKind).toBe('layers');
+    expect(editor.document.palette.find((entry) => entry.id === 1)?.active).toBe(false);
+    expect(editor.execute({ type: 'palette-deactivate', id: 2 }).changed).toBe(true);
   });
 });
 
@@ -554,53 +517,6 @@ describe('layered DocumentEditor: compact entries and fast paths', () => {
     expect(stitch(editor.document, STITCHES).colors[0]).toBe(3);
   });
 
-  it('stores rotations and mirrors as invertible transforms and undoes them exactly', () => {
-    const editor = editorFor(5, 3);
-    editor.execute(layerAddCommand(LayerType.Stitch));
-    editor.execute(full(0, 0, 1));
-    editor.execute({ type: 'set-half', x: 4, y: 2, direction: '/', color: 2, layerId: 3 });
-    editor.execute({ type: 'set-three-quarter', x: 1, y: 2, corner: 1, color: 1, layerId: 3 });
-    editor.execute(line(0, 0, 2, 1, 1));
-    editor.execute(line(4, 3, 5, 0, 2));
-    editor.execute(layerSetVisibilityCommand(3, false));
-    const original = editor.document.layers.map(describeLayer);
-    for (const command of [{ type: 'rotate-cw' }, { type: 'rotate-ccw' }, { type: 'rotate', quarterTurns: 2 }, { type: 'mirror-horizontal' }, { type: 'mirror', axis: 'vertical' }]) {
-      const bytes = editor.historyBytes;
-      editor.execute(command);
-      expect(editor.lastHistoryEntryKind, command.type).toBe('transform');
-      expect(editor.historyBytes - bytes, command.type).toBeLessThanOrEqual(64);
-      const transformed = editor.document.layers.map(describeLayer);
-      editor.undo();
-      expect(editor.document.layers.map(describeLayer), command.type).toEqual(original);
-      expect([editor.document.width, editor.document.height]).toEqual([5, 3]);
-      editor.redo();
-      expect(editor.document.layers.map(describeLayer), command.type).toEqual(transformed);
-      editor.undo();
-    }
-  });
-
-  it('stores only the planes a crop removes and replays it on redo', () => {
-    const editor = editorFor(100, 100);
-    editor.execute(layerAddCommand(LayerType.Stitch));
-    // An empty specialty layer is unchanged by the crop and is restored from the current document.
-    editor.execute(layerAddCommand(LayerType.Specialty));
-    editor.execute(full(0, 0, 1));
-    editor.execute(full(50, 50, 2, 3));
-    editor.execute(line(10, 10, 20, 20, 1));
-    const original = editor.document.layers.map(describeLayer);
-    const bytes = editor.historyBytes;
-    editor.execute({ type: 'crop', x: 10, y: 10, width: 60, height: 60 });
-    expect(editor.lastHistoryEntryKind).toBe('replay');
-    // Two stitch layers before the crop (9 bytes per cell each), the one line, and no after-side planes.
-    expect(editor.historyBytes - bytes).toBeLessThan(2 * 100 * 100 * 9 + 4096);
-    const cropped = editor.document.layers.map(describeLayer);
-    editor.undo();
-    expect(editor.document.layers.map(describeLayer)).toEqual(original);
-    editor.redo();
-    expect(editor.document.layers.map(describeLayer)).toEqual(cropped);
-    expect([editor.document.width, editor.document.height]).toEqual([60, 60]);
-  });
-
   it('records add-and-paste as a tiny structure entry plus a sparse delta in one undo step', () => {
     const source = createDocument({ width: 2, height: 1, catalog: CATALOG, palette: palette() });
     source.kind[0] = CellKind.Full;
@@ -624,16 +540,15 @@ describe('layered DocumentEditor: compact entries and fast paths', () => {
     expect(stitch(restored.document, id).kind[3 * 200 + 3]).toBe(CellKind.Full);
   });
 
-  it('round-trips transform, replay, and group entries through the DTO', () => {
+  it('round-trips document-wide layers and group entries through the DTO', () => {
     const editor = editorFor(6, 4);
     editor.execute(full(1, 1, 1));
     editor.execute(line(0, 0, 2, 2, 2));
-    editor.execute({ type: 'rotate-cw' });
-    editor.execute({ type: 'crop', x: 0, y: 1, width: 3, height: 4 });
+    editor.execute({ type: 'palette-merge', from: 1, to: 3 });
     editor.execute({ type: 'batch', commands: [layerAddCommand(LayerType.Stitch), full(0, 0, 2, 3)] });
     editor.undo();
     const exported = editor.exportHistory();
-    expect(exported.undo.map((entry) => entry.kind)).toEqual(['delta', 'delta', 'transform', 'replay']);
+    expect(exported.undo.map((entry) => entry.kind)).toEqual(['delta', 'delta', 'layers']);
     expect(exported.redo.map((entry) => entry.kind)).toEqual(['group']);
     const restored = createEditorFromHistory(editor.document, exported);
     const snapshots = [restored.document.layers.map(describeLayer)];
@@ -646,32 +561,32 @@ describe('layered DocumentEditor: compact entries and fast paths', () => {
     while (restored.canRedo) restored.redo();
     expect(ids(restored.document)).toEqual([STITCHES, 3, SPECIALTY]);
 
-    const forged = { ...exported, undo: exported.undo.map((entry) => entry.kind === 'transform' ? { ...entry, inverse: { type: 'rotate-cw', quarterTurns: 1 } } : entry) };
+    const forged = { ...exported, undo: exported.undo.map((entry) => entry.kind === 'layers' ? { ...entry, after: { ...entry.after, palette: entry.after.palette?.map((color) => color.id === 1 ? { ...color, name: 'Rex' } : color) } } : entry) };
     expect(errorCode(() => new DocumentEditor(editor.document).importHistory(forged))).toBe('invalid-history-state');
   });
 });
 
 describe('layered DocumentEditor: structural import validation', () => {
-  function rotatedHistory() {
+  function mergedHistory() {
     const editor = editorFor(4, 2);
     editor.execute(full(3, 1, 1));
     editor.execute(layerSetVisibilityCommand(SPECIALTY, false));
-    editor.execute({ type: 'rotate-cw' });
+    editor.execute({ type: 'palette-merge', from: 1, to: 3 });
     editor.execute(layerSetVisibilityCommand(SPECIALTY, true));
     return { editor, exported: editor.exportHistory() };
   }
 
-  it('accepts a chain across a transform without replaying it', () => {
-    const { editor, exported } = rotatedHistory();
-    expect(exported.undo.map((entry) => entry.kind)).toEqual(['delta', 'layers', 'transform', 'layers']);
+  it('accepts a chain across a document-wide palette merge', () => {
+    const { editor, exported } = mergedHistory();
+    expect(exported.undo.map((entry) => entry.kind)).toEqual(['delta', 'layers', 'layers', 'layers']);
     const restored = createEditorFromHistory(editor.document, exported);
     while (restored.canUndo) restored.undo();
     expect([restored.document.width, restored.document.height]).toEqual([4, 2]);
     expect(stitch(restored.document, STITCHES).kind[7]).toBe(CellKind.Empty);
   });
 
-  it('rejects forged structure and out-of-bounds deltas behind a transform', () => {
-    const { editor, exported } = rotatedHistory();
+  it('rejects forged structure and out-of-bounds deltas behind a palette merge', () => {
+    const { editor, exported } = mergedHistory();
     const forgedLayer = {
       ...exported,
       undo: exported.undo.map((entry, index) => {
@@ -705,10 +620,9 @@ describe('layered DocumentEditor: structural import validation', () => {
     expect(createEditorFromHistory(editor.document, editor.exportHistory()).undoDepth).toBe(2);
   });
 
-  it('rejects a delta with an unknown cell kind behind a rotate', () => {
+  it('rejects a delta with an unknown cell kind', () => {
     const editor = editorFor();
     editor.execute(full(0, 0, 1));
-    editor.execute({ type: 'rotate-cw' });
     const exported = editor.exportHistory();
     const delta = exported.undo[0];
     if (delta.kind !== 'delta') throw new Error('Expected a delta entry.');
@@ -716,12 +630,11 @@ describe('layered DocumentEditor: structural import validation', () => {
     expect(errorCode(() => new DocumentEditor(editor.document).importHistory(exported))).toBe('invalid-history-state');
   });
 
-  it('rejects a layer content record with an unknown cell kind behind a rotate', () => {
+  it('rejects a layer content record with an unknown cell kind', () => {
     const editor = editorFor();
     editor.execute(layerAddCommand(LayerType.Stitch));
     editor.execute(full(0, 0, 1, 3));
     editor.execute(layerDeleteCommand(3));
-    editor.execute({ type: 'rotate-cw' });
     const exported = editor.exportHistory();
     const deletion = exported.undo[2];
     if (deletion.kind !== 'layers') throw new Error('Expected a layers entry.');
@@ -735,56 +648,9 @@ describe('layered DocumentEditor: structural import validation', () => {
     const editor = editorFor();
     editor.execute({ type: 'palette-create', name: 'Gold', color: '#DDAA00' });
     editor.execute(full(0, 0, 4));
-    editor.execute({ type: 'rotate-cw' });
     const exported = editor.exportHistory();
     // Dropping the paint stroke leaves the palette-create undo removing a color the cell still uses.
-    const forged = { ...exported, undo: [exported.undo[0], exported.undo[2]] };
-    expect(errorCode(() => new DocumentEditor(editor.document).importHistory(forged))).toBe('invalid-history-state');
-  });
-
-  it('rejects a palette change after a replayed crop that drops a color the kept content uses', () => {
-    const editor = editorFor(6, 4);
-    editor.execute(full(1, 1, 1));
-    editor.execute(line(1, 1, 2, 1, 1));
-    editor.execute({ type: 'crop', x: 0, y: 0, width: 4, height: 3 });
-    editor.execute({ type: 'palette-update', id: 2, name: 'Navy' });
-    editor.undo();
-    editor.undo();
-    const exported = editor.exportHistory();
-    expect(exported.redo.map((entry) => entry.kind)).toEqual(['delta', 'replay']);
-    const update = exported.redo[0];
-    if (update.kind !== 'delta' || update.delta.afterPalette === undefined) throw new Error('Expected a palette delta.');
-    const afterPalette = update.delta.afterPalette.filter((entry) => entry.id !== 1);
-    const growth = (JSON.stringify(afterPalette).length - JSON.stringify(update.delta.afterPalette).length) * 2;
-    const forged = { ...exported, redo: [{ ...update, delta: { ...update.delta, afterPalette }, bytes: update.bytes + growth }, exported.redo[1]] };
-    expect(() => new DocumentEditor(editor.document).importHistory(forged)).toThrow(/redo\[0\]\.palette is incompatible/);
-    expect(createEditorFromHistory(editor.document, exported).redoDepth).toBe(2);
-  });
-
-  it('imports a palette delete of a color the crop removed', () => {
-    const editor = editorFor(6, 4);
-    editor.execute(full(5, 3, 1));
-    editor.execute(line(4, 3, 5, 3, 1));
-    editor.execute(full(0, 0, 2));
-    editor.execute({ type: 'crop', x: 0, y: 0, width: 4, height: 3 });
-    editor.execute({ type: 'palette-delete', id: 1 });
-    expect(editor.document.palette.find((entry) => entry.id === 1)?.active).toBe(false);
-    editor.undo();
-    editor.undo();
-    const restored = createEditorFromHistory(editor.document, editor.exportHistory());
-    restored.redo();
-    restored.redo();
-    expect(restored.document.palette.find((entry) => entry.id === 1)?.active).toBe(false);
-    // The same history also imports from the far end.
-    expect(createEditorFromHistory(restored.document, restored.exportHistory()).undoDepth).toBe(5);
-  });
-
-  it('rejects a crop replay whose rectangle does not produce the current size', () => {
-    const editor = editorFor(6, 4);
-    editor.execute(full(1, 1, 1));
-    editor.execute({ type: 'crop', x: 0, y: 0, width: 3, height: 3 });
-    const exported = editor.exportHistory();
-    const forged = { ...exported, undo: exported.undo.map((entry) => entry.kind === 'replay' ? { ...entry, command: { type: 'crop', x: 0, y: 0, width: 2, height: 3 } } : entry) };
+    const forged = { ...exported, undo: [exported.undo[0]] };
     expect(errorCode(() => new DocumentEditor(editor.document).importHistory(forged))).toBe('invalid-history-state');
   });
 });
@@ -798,7 +664,7 @@ describe('layered DocumentEditor: history DTO', () => {
     editor.execute(line(0, 0, 1, 0, 1));
     editor.execute(layerRenameCommand(3, 'Top'));
     editor.execute({ type: 'palette-update', id: 2, name: 'Navy' });
-    editor.execute({ type: 'rotate-cw' });
+    editor.execute({ type: 'palette-merge', from: 1, to: 3 });
     editor.execute(layerDeleteCommand(STITCHES));
     editor.undo();
     editor.undo();
@@ -821,7 +687,7 @@ describe('layered DocumentEditor: history DTO', () => {
     expect(restored.document.layers.every((layer) => layer.type !== LayerType.Stitch || layer.kind.every((kind) => kind === 0))).toBe(true);
     while (restored.canRedo) restored.redo();
     expect(ids(restored.document)).toEqual([3, SPECIALTY]);
-    expect(restored.document.width).toBe(3);
+    expect(restored.document.palette.find((entry) => entry.id === 1)?.active).toBe(false);
   });
 
   it('exports no repeated object or typed-array references and omits unchanged content', () => {
@@ -857,3 +723,287 @@ function describeLayer(layer: Layer): unknown {
     ? { id: layer.id, name: layer.name, visible: layer.visible, kind: Array.from(layer.kind), colors: Array.from(layer.colors) }
     : { id: layer.id, name: layer.name, visible: layer.visible, lines: Array.from(layer.backstitches.ids) };
 }
+
+describe('layered DocumentEditor: canvas edits', () => {
+  function canvasCommand(top: number, right: number, bottom: number, left: number): DomainCommand {
+    return { type: 'canvas-resize', edges: { top, right, bottom, left } };
+  }
+
+  function cellsCommand(operation: 'add' | 'remove', x: number, y: number, width = 1, height = 1, cells?: Uint8Array): DomainCommand {
+    return { type: 'canvas-cells', operation, rect: { x, y, width, height }, ...(cells === undefined ? {} : { cells }) };
+  }
+
+  /** Content on every layer kind, including a hidden stitch layer, and three lines so a dropped middle line tests store order. */
+  function seededEditor(): DocumentEditor {
+    const editor = editorFor(5, 4);
+    editor.execute(layerAddCommand(LayerType.Stitch));
+    editor.execute(full(0, 0, 1));
+    editor.execute(full(4, 3, 2));
+    editor.execute(full(2, 1, 3));
+    editor.execute(full(1, 2, 2, 3));
+    editor.execute(full(4, 0, 1, 3));
+    editor.execute(line(0, 0, 5, 0, 1));
+    editor.execute(line(2, 1, 3, 2, 2));
+    editor.execute(line(0, 4, 5, 4, 3));
+    editor.execute(layerSetVisibilityCommand(3, false));
+    return editor;
+  }
+
+  function fingerprint(document: LayeredDocument): unknown {
+    return {
+      width: document.width,
+      height: document.height,
+      originX: 'originX' in document ? document.originX : 'absent',
+      originY: 'originY' in document ? document.originY : 'absent',
+      canvasMask: 'canvasMask' in document ? Array.from(document.canvasMask ?? []) : 'absent',
+      layers: document.layers.map((layer) => layer.type === LayerType.Stitch
+        ? { id: layer.id, visible: layer.visible, kind: Array.from(layer.kind), colors: Array.from(layer.colors), completed: Array.from(layer.completed) }
+        : { id: layer.id, visible: layer.visible, store: Object.fromEntries(Object.entries(layer.backstitches).map(([key, values]) => [key, Array.from(values as ArrayLike<number>)])) })
+    };
+  }
+
+  function expectCompositeFrame(editor: DocumentEditor): void {
+    const { composite, document } = editor;
+    expect(composite.canvasMask).toBe(document.canvasMask);
+    expect([composite.originX, composite.originY, composite.width, composite.height]).toEqual([document.originX, document.originY, document.width, document.height]);
+  }
+
+  /** Executes, then checks undo and redo restore both states bit for bit. */
+  function roundTrip(editor: DocumentEditor, command: DomainCommand): void {
+    const before = fingerprint(editor.document);
+    const executed = editor.execute(command);
+    expect(executed.changed).toBe(true);
+    expect(executed.compositeFull).toBe(true);
+    expect(executed.recalculateMetrics).toBe(true);
+    expect(editor.lastHistoryEntryKind).toBe('canvas');
+    expectCompositeFrame(editor);
+    const after = fingerprint(editor.document);
+    editor.undo();
+    expect(fingerprint(editor.document)).toEqual(before);
+    expectCompositeFrame(editor);
+    editor.redo();
+    expect(fingerprint(editor.document)).toEqual(after);
+    expectCompositeFrame(editor);
+  }
+
+  it('routes canvas commands through execute and carries the frame onto the composite', () => {
+    const editor = editorFor(3, 2);
+    const result = editor.execute(canvasCommand(1, 0, 0, 2));
+    expect([result.document.width, result.document.height, result.document.originX, result.document.originY]).toEqual([5, 3, -2, -1]);
+    expect(editor.undoDepth).toBe(1);
+    expect(editor.document.revision).toBe(1);
+    const masked = editor.execute(cellsCommand('remove', 0, 0));
+    expect(masked.document.canvasMask).toBe(editor.document.canvasMask);
+    expect(masked.document.canvasMask?.[0]).toBe(0);
+  });
+
+  it('round-trips growing and shrinking each edge bit for bit across every layer', () => {
+    const editor = seededEditor();
+    roundTrip(editor, canvasCommand(2, 0, 0, 0));
+    roundTrip(editor, canvasCommand(0, 3, 0, 0));
+    roundTrip(editor, canvasCommand(0, 0, 1, 0));
+    roundTrip(editor, canvasCommand(0, 0, 0, 4));
+    roundTrip(editor, canvasCommand(-3, 0, 0, 0));
+    roundTrip(editor, canvasCommand(0, -4, 0, 0));
+    roundTrip(editor, canvasCommand(0, 0, -2, 0));
+    roundTrip(editor, canvasCommand(0, 0, 0, -5));
+    expect([editor.document.width, editor.document.height]).toEqual([3, 2]);
+  });
+
+  it('round-trips adding, removing and re-filling cells, and undo past the first advanced edit restores the rectangle', () => {
+    const editor = seededEditor();
+    const rectangle = fingerprint(editor.document);
+    // Removes (2, 1), (1, 2) and (2, 2): content on the visible and the hidden stitch layer, and the middle line.
+    roundTrip(editor, cellsCommand('remove', 1, 1, 2, 2, new Uint8Array([0, 1, 1, 1])));
+    expect(editor.document.canvasMask).toBeDefined();
+    expect(specialty(editor.document, SPECIALTY).backstitches.ids).toHaveLength(2);
+    roundTrip(editor, cellsCommand('add', -2, -1));
+    expect([editor.document.width, editor.document.height, editor.document.originX, editor.document.originY]).toEqual([7, 5, -2, -1]);
+    // Local coordinates follow the box: its top row now holds only the added cell.
+    roundTrip(editor, cellsCommand('remove', 0, 0, 7, 1));
+    expect([editor.document.width, editor.document.height]).toEqual([5, 4]);
+    expect('originX' in editor.document || 'originY' in editor.document).toBe(false);
+    roundTrip(editor, cellsCommand('add', 1, 1, 2, 2));
+    expect(editor.document.canvasMask).toBeUndefined();
+    while (editor.canUndo && editor.lastHistoryEntryKind === 'canvas') editor.undo();
+    expect(fingerprint(editor.document)).toEqual(rectangle);
+    expect('canvasMask' in editor.document).toBe(false);
+  });
+
+  it('keeps layer structure and layer edits undoable on a masked canvas', () => {
+    const editor = seededEditor();
+    editor.execute(cellsCommand('remove', 2, 2));
+    const masked = fingerprint(editor.document);
+    editor.execute(layerAddCommand(LayerType.Stitch));
+    editor.execute(full(0, 1, 1, 4));
+    editor.execute(layerDeleteCommand(3));
+    editor.undo();
+    editor.undo();
+    editor.undo();
+    expect(fingerprint(editor.document)).toEqual(masked);
+    const restored = createEditorFromHistory(editor.document, editor.exportHistory());
+    while (restored.canRedo) restored.redo();
+    expect(ids(restored.document)).toEqual([STITCHES, 4, SPECIALTY]);
+    expect(restored.document.canvasMask).toEqual(editor.document.canvasMask);
+  });
+
+  it('rejects imported layer edits that write into a hole', () => {
+    const editor = seededEditor();
+    editor.execute(cellsCommand('remove', 2, 2));
+    editor.execute(full(1, 1, 1));
+    editor.undo();
+    const exported = editor.exportHistory();
+    const paint = exported.redo[0];
+    if (paint.kind !== 'delta') throw new Error('Expected a delta entry.');
+    expect(createEditorFromHistory(editor.document, exported).redoDepth).toBe(1);
+    const hole = 2 * 5 + 2;
+    const forged = { ...exported, redo: [{ ...paint, delta: { ...paint.delta, cells: { ...paint.delta.cells, indices: new Uint32Array([hole]) } } }] };
+    expect(errorCode(() => new DocumentEditor(editor.document).importHistory(forged))).toBe('invalid-history-state');
+  });
+
+  it('treats an origin of 0 and an absent origin as the same state on import', () => {
+    const editor = seededEditor();
+    editor.execute(canvasCommand(0, 0, 0, 1));
+    editor.execute(canvasCommand(0, 0, 0, -1));
+    expect('originX' in editor.document).toBe(false);
+    const exported = editor.exportHistory();
+    // A decoder may drop zero origins, or a caller may spell them out.
+    const decoded: LayeredDocument = { ...editor.document };
+    delete decoded.originX;
+    delete decoded.originY;
+    for (const current of [decoded, { ...editor.document, originX: 0, originY: 0 }]) {
+      const restored = createEditorFromHistory(current, exported);
+      restored.undo();
+      expect(restored.document.originX).toBe(-1);
+      restored.undo();
+      expect('originX' in restored.document).toBe(false);
+    }
+  });
+
+  it('undoes a resize whose new box does not overlap the old one', () => {
+    const editor = editorFor(1, 4);
+    editor.execute(full(0, 0, 1));
+    editor.execute(full(0, 3, 2));
+    editor.execute(line(0, 1, 1, 1, 3));
+    roundTrip(editor, canvasCommand(-1, -2, 0, 2));
+    expect([editor.document.width, editor.document.height]).toEqual([1, 3]);
+    expect(createEditorFromHistory(editor.document, editor.exportHistory()).undoDepth).toBe(editor.undoDepth);
+  });
+
+  it('stores the before mask of a stroke on a 1000 by 1000 masked canvas packed to bits', () => {
+    const editor = editorFor(1000, 1000);
+    editor.execute(cellsCommand('remove', 500, 500));
+    const bytes = editor.historyBytes;
+    editor.execute(cellsCommand('remove', 10, 10, 5, 5));
+    expect(editor.historyBytes - bytes).toBeLessThan(140 * 1024);
+    const entry = editor.exportHistory().undo.at(-1);
+    if (entry?.kind !== 'canvas') throw new Error('Expected a canvas entry.');
+    expect(entry.before.canvasMaskBits).toHaveLength(125_000);
+    editor.undo();
+    expect(editor.document.canvasMask?.[10 * 1000 + 10]).toBe(1);
+    expect(editor.document.canvasMask?.[500 * 1000 + 500]).toBe(0);
+  });
+
+  it('stores twenty top-row additions on a 200 by 200 canvas compactly', () => {
+    const editor = editorFor(200, 200);
+    editor.execute(layerAddCommand(LayerType.Stitch));
+    editor.execute(full(10, 10, 1));
+    editor.execute(full(20, 20, 2, 3));
+    const bytes = editor.historyBytes;
+    for (let step = 0; step < 20; step += 1) editor.execute(canvasCommand(1, 0, 0, 0));
+    expect(editor.document.height).toBe(220);
+    expect(editor.historyBytes - bytes).toBeLessThan(64 * 1024);
+    for (let step = 0; step < 20; step += 1) editor.undo();
+    expect(stitch(editor.document, 3).kind[20 * 200 + 20]).toBe(CellKind.Full);
+  });
+
+  it('records nothing for a no-op and rejects canvas edits batched with other edits', () => {
+    const editor = editorFor(3, 2);
+    expect(editor.execute(canvasCommand(0, 0, 0, 0)).changed).toBe(false);
+    expect(editor.execute(cellsCommand('add', 0, 0)).changed).toBe(false);
+    expect(editor.undoDepth).toBe(0);
+    expect(errorCode(() => editor.batch([cellsCommand('remove', 0, 0), full(1, 1, 1)]))).toBe('invalid-command');
+    expect(errorCode(() => editor.batch([layerAddCommand(LayerType.Stitch), canvasCommand(1, 0, 0, 0)]))).toBe('invalid-command');
+    expect(editor.undoDepth).toBe(0);
+    const before = fingerprint(editor.document);
+    editor.batch([canvasCommand(1, 0, 0, 0), cellsCommand('remove', 0, 0)]);
+    expect(editor.undoDepth).toBe(1);
+    expect(editor.lastHistoryEntryKind).toBe('group');
+    editor.undo();
+    expect(fingerprint(editor.document)).toEqual(before);
+  });
+
+  function historyWithCanvasEntries(): DocumentEditor {
+    const editor = seededEditor();
+    editor.execute(canvasCommand(1, 0, 0, 2));
+    editor.execute(canvasCommand(0, -1, 0, 0));
+    editor.execute(full(0, 0, 2));
+    editor.execute(cellsCommand('remove', 3, 2, 2, 2));
+    editor.execute(cellsCommand('add', -1, 0, 1, 1));
+    editor.undo();
+    return editor;
+  }
+
+  it('round-trips canvas entries through the history DTO', () => {
+    const editor = historyWithCanvasEntries();
+    const exported = editor.exportHistory();
+    expect(exported.undo.map((entry) => entry.kind).slice(-4)).toEqual(['canvas', 'canvas', 'delta', 'canvas']);
+    const removed = exported.undo.at(-1);
+    if (removed?.kind !== 'canvas') throw new Error('Expected a canvas entry.');
+    expect(removed.removal.cells.length).toBeGreaterThan(0);
+    expect(removed.removal.backstitches.length).toBeGreaterThan(0);
+    expect(exported.redo.map((entry) => entry.kind)).toEqual(['canvas']);
+    const restored = createEditorFromHistory(editor.document, exported);
+    expect(restored.historyBytes).toBe(editor.historyBytes);
+    while (editor.canUndo) {
+      editor.undo();
+      restored.undo();
+      expect(fingerprint(restored.document)).toEqual(fingerprint(editor.document));
+    }
+    while (editor.canRedo) {
+      editor.redo();
+      restored.redo();
+      expect(fingerprint(restored.document)).toEqual(fingerprint(editor.document));
+      expectCompositeFrame(restored);
+    }
+  });
+
+  it('rejects forged canvas entries', () => {
+    const editor = historyWithCanvasEntries();
+    const exported = editor.exportHistory();
+    const lastCanvas = exported.undo.length - 1;
+    const forge = (patch: (entry: Extract<typeof exported.undo[number], { kind: 'canvas' }>) => unknown, index = lastCanvas): unknown => ({
+      ...exported,
+      undo: exported.undo.map((entry, position) => position === index && entry.kind === 'canvas' ? patch(entry) : entry)
+    });
+    const rejects = (state: unknown): void => {
+      expect(errorCode(() => new DocumentEditor(editor.document).importHistory(state))).toBe('invalid-history-state');
+    };
+    rejects(forge((entry) => ({ ...entry, before: { ...entry.before, width: entry.before.width + 1 } })));
+    const removalIndex = exported.undo.findIndex((entry) => entry.kind === 'canvas' && entry.removal.cells.length > 0);
+    rejects(forge((entry) => ({
+      ...entry,
+      removal: { ...entry.removal, cells: entry.removal.cells.map((cells) => ({ ...cells, indices: Uint32Array.from(cells.indices, (index) => index + 10_000) })) }
+    }), removalIndex));
+    // Only the redo entry was recorded on a masked canvas, a 6 by 5 box whose 30 cells leave two padding bits.
+    const masked = exported.redo[0];
+    if (masked.kind !== 'canvas' || masked.before.canvasMaskBits === undefined) throw new Error('Expected a masked canvas entry.');
+    const bits = masked.before.canvasMaskBits;
+    const cellCount = masked.before.width * masked.before.height;
+    expect([cellCount, bits.length]).toEqual([30, 4]);
+    const withBits = (canvasMaskBits: Uint8Array): unknown => ({ ...exported, redo: [{ ...masked, before: { ...masked.before, canvasMaskBits } }] });
+    rejects(withBits(bits.slice(0, 3)));
+    rejects(withBits(Uint8Array.from([...bits, 0])));
+    rejects(withBits(Uint8Array.from(bits, (byte, index) => index === bits.length - 1 ? byte | 0x80 : byte)));
+    rejects(withBits(packCanvasMask(unpackCanvasMask(bits, cellCount).map((value) => 1 - value))));
+    rejects(withBits(packCanvasMask(new Uint8Array(cellCount).fill(1))));
+    // A removal that moves a cell somewhere else replays to a different document.
+    rejects(forge((entry) => ({
+      ...entry,
+      removal: { ...entry.removal, cells: entry.removal.cells.map((cells) => ({ ...cells, indices: Uint32Array.from(cells.indices, (index) => index + 1) })) }
+    }), removalIndex));
+    rejects({ ...exported, redo: exported.redo.map((entry) => entry.kind === 'canvas' ? { ...entry, command: { ...entry.command, operation: 'flip' } } : entry) });
+    // The untouched export still imports.
+    expect(createEditorFromHistory(editor.document, exported).undoDepth).toBe(editor.undoDepth);
+  });
+});

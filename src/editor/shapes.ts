@@ -209,3 +209,24 @@ export function rasterizeShapeOutline(shape: ShapeKind, start: ModelPoint, end: 
   if (shape === 'triangle') return rasterizeTriangle(left, top, right, bottom);
   return rasterizeRightTriangle(first, second);
 }
+
+/**
+ * The oval Shape's outline plus its interior (each row spanned between its
+ * outermost outline cells), row-major, in inclusive normalized cell bounds.
+ */
+export function rasterizeFilledOval(start: ModelPoint, end: ModelPoint): ModelPoint[] {
+  const spans = new Map<number, { left: number; right: number }>();
+  for (const point of rasterizeShapeOutline('oval', start, end)) {
+    const span = spans.get(point.y);
+    if (!span) spans.set(point.y, { left: point.x, right: point.x });
+    else {
+      span.left = Math.min(span.left, point.x);
+      span.right = Math.max(span.right, point.x);
+    }
+  }
+  const points: ModelPoint[] = [];
+  for (const [y, span] of [...spans].sort((left, right) => left[0] - right[0])) {
+    for (let x = span.left; x <= span.right; x += 1) points.push({ x, y });
+  }
+  return points;
+}

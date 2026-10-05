@@ -6,3 +6,4 @@ export * from './commands';
 export * from './history';
 export * from './metrics';
 export * from './layers';
+export * from './canvas';

@@ -21,7 +21,7 @@ import type { DisplayUnits, LayerType } from "../../domain";
 import { SYMBOL_POOL, SYMBOL_TILE_VIEW } from "../../symbols";
 import type { PoolEntry } from "../../symbols";
 import { RangeInput } from "../RangeInput";
-import { TraceImageControls } from "./TraceImageControls";
+import { TraceImageControls, traceBoundsToWorkspace } from "./TraceImageControls";
 import { LayersPanel, LAYER_TYPE_LABELS, type ActiveLayerId } from "./LayersPanel";
 import { LayerControls } from "./LayerControls";
 import { Toast, useToast } from "./Toast";
@@ -32,12 +32,15 @@ import backstitchIcon from "../../assets/editor-tools/backstitch.svg";
 import eraserIcon from "../../assets/editor-tools/eraser.svg";
 import fillIcon from "../../assets/editor-tools/paint-bucket.svg";
 import selectIcon from "../../assets/editor-tools/select.svg";
+import selectOvalIcon from "../../assets/editor-tools/select-oval.svg";
 import lassoIcon from "../../assets/editor-tools/lasso.svg";
+import lassoPolygonIcon from "../../assets/editor-tools/lasso-polygon.svg";
 import eyedropperIcon from "../../assets/editor-tools/eyedropper.svg";
 import panIcon from "../../assets/editor-tools/pan.svg";
 import stitchIcon from "../../assets/editor-tools/stitch.svg";
+import { CanvasEdgeControls } from "./CanvasEdgeControls";
 import { contrastSymbolInk } from "../../rendering/contrast";
-import { DEFAULT_HALF_DIRECTION, DEFAULT_RENDERER_STYLE, toolAvailability, type BrushSizeTool, type EditorActiveLayer, type HalfStitchBrush, type ShapeKind } from "../../editor/contracts";
+import { DEFAULT_HALF_DIRECTION, DEFAULT_RENDERER_STYLE, toolAvailability, type BrushSizeTool, type EditorActiveLayer, type HalfStitchBrush, type LassoShape, type SelectShape, type ShapeKind } from "../../editor/contracts";
 import type { ProjectSession } from "../../application/session";
 interface Props {
   workspace: ProjectWorkspace;
@@ -60,6 +63,29 @@ const SHAPE_CHOICES: readonly ShapeKind[] = [
   "triangle",
   "right-triangle",
 ];
+/** Tools whose rail button holds a popout of shape variants. */
+type VariantTool = "select" | "lasso";
+type VariantShapes = { select: SelectShape; lasso: LassoShape };
+type VariantChoice = { shape: VariantShapes[VariantTool]; label: string; icon: string; dataIcon: string };
+const VARIANT_TOOLS: Record<VariantTool, { label: string; menuLabel: string; choices: readonly VariantChoice[] }> = {
+  select: {
+    label: "Select",
+    menuLabel: "Choose selection shape",
+    choices: [
+      { shape: "rectangle", label: "Rectangle select", icon: selectIcon, dataIcon: "select" },
+      { shape: "oval", label: "Oval select", icon: selectOvalIcon, dataIcon: "select-oval" },
+    ],
+  },
+  lasso: {
+    label: "Lasso select",
+    menuLabel: "Choose lasso shape",
+    choices: [
+      { shape: "freehand", label: "Lasso select", icon: lassoIcon, dataIcon: "lasso" },
+      { shape: "polygon", label: "Polygon lasso", icon: lassoPolygonIcon, dataIcon: "lasso-polygon" },
+    ],
+  },
+};
+const DEFAULT_VARIANT_SHAPES: VariantShapes = { select: "rectangle", lasso: "freehand" };
 const normalizeHexColor = (value: string): string | undefined => {
   const digits = value.trim().replace(/^#/, "");
   if (!/^(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(digits)) return undefined;
@@ -74,6 +100,8 @@ type TouchCopyRequestWithScreen = {
   screenX: number;
   screenY: number;
   pointerType?: string;
+  /** A canvas selection: offer Add/Delete cells instead of Copy/Paste/Move/Delete. */
+  canvas?: boolean;
 };
 const modes = [
   [ChartPresentationMode.Color, "Color"],
@@ -134,11 +162,15 @@ type EditorPreferences = {
 };
 
 type PopoverTool = BrushSizeTool | "backstitch";
-type PressTool = PopoverTool | "shape";
+/** "Full stitch brush size", but "Canvas brush size" / "Canvas eraser size" for the canvas tools, whose labels already name the tool. */
+const brushSizeHeading = (label: string) => (label.startsWith("Canvas ") ? `${label} size` : `${label} brush size`);
+/** Stitch selections offer Copy/Paste/Move/Delete; canvas selections offer Add/Delete cells. */
+type SelectionAction = "copy" | "paste" | "move" | "delete" | "add-cells" | "delete-cells";
+type PressTool = PopoverTool | "shape" | VariantTool;
 type PressSession = {
   pointerId: number;
   pointerType: string;
-  kind: "brush" | "shape" | "backstitch";
+  kind: "brush" | "shape" | "variant" | "backstitch";
   anchor: HTMLButtonElement;
   tool: PressTool;
   label: string;
@@ -298,6 +330,11 @@ export function EditorSurface({
   const shapeTrigger = useRef<HTMLButtonElement>(null);
   const shapeMenu = useRef<HTMLDivElement>(null);
   const shapeItems = useRef<Array<HTMLButtonElement | null>>([]);
+  const [variantShapes, setVariantShapes] = useState<VariantShapes>(DEFAULT_VARIANT_SHAPES);
+  const [variantMenu, setVariantMenu] = useState<{ tool: VariantTool; left: number; top: number } | null>(null);
+  const variantTrigger = useRef<HTMLButtonElement>(null);
+  const variantMenuRef = useRef<HTMLDivElement>(null);
+  const variantItems = useRef<Array<HTMLButtonElement | null>>([]);
   const [open, setOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<"project" | "editor">("project");
   const [title, setTitle] = useState(workspace.metadata?.title ?? "");
@@ -425,9 +462,10 @@ export function EditorSurface({
               ...trace,
               chartBounds: sanitized,
             });
+          // The descriptor keeps workspace coordinates; the controller works locally.
           void workspace
             .applyTraceImageChange(
-              { ...current, chartBounds: sanitized },
+              { ...current, chartBounds: traceBoundsToWorkspace(sanitized, workspace.document ?? {}) },
               { label: "trace-image-bounds" },
             )
             .catch(() => undefined);
@@ -447,9 +485,18 @@ export function EditorSurface({
           keyboardSurface: root,
             shouldExcludeTarget: (target: unknown) =>
             target instanceof Element &&
-            Boolean(target.closest('.touch-copy-menu, button[aria-label="Shape"], button[aria-haspopup="dialog"], .tool-brush-popover')),
+            Boolean(target.closest('.touch-copy-menu, .canvas-edge-controls, button[aria-label="Shape"], button[aria-label="Select"], button[aria-label="Lasso select"], button[aria-haspopup="dialog"], .tool-brush-popover')),
         },
       );
+      // The adapter prevents default on canvas presses, so focus would stay on
+      // the last rail button and Enter/Escape/Backspace would never reach the
+      // controller. Pull focus onto the frame unless it is already inside it.
+      const focusFrame = (event: PointerEvent) => {
+        if (event.target instanceof Element && event.target.closest(".touch-copy-menu, .canvas-edge-controls")) return;
+        if (el.contains(globalThis.document.activeElement)) return;
+        el.focus({ preventScroll: true });
+      };
+      el.addEventListener("pointerdown", focusFrame, true);
       const observer =
         typeof ResizeObserver === "undefined"
           ? undefined
@@ -473,6 +520,7 @@ export function EditorSurface({
       );
       c.handleKeyDown?.({ key: "0", preventDefault: () => undefined });
       return () => {
+        el.removeEventListener("pointerdown", focusFrame, true);
         observer?.disconnect();
         adapter.dispose();
         c.dispose();
@@ -544,7 +592,13 @@ export function EditorSurface({
   // why on hover (title) and on tap (toast) instead of switching.
   const toolLayer: Pick<EditorActiveLayer, "kind" | "visible"> | null =
     (ui as (EditorUiState & { activeLayer?: EditorActiveLayer | null }) | null)?.activeLayer ?? activeLayerInfo;
-  const availability = (tool: string) => toolAvailability(tool as never, undefined, toolLayer);
+  const canvasMode = ui?.canvasMode ?? "basic";
+  const canvasCropActive = ui?.canvasCropActive ?? false;
+  const availability = (tool: string) => toolAvailability(tool as never, undefined, toolLayer, canvasMode, canvasCropActive);
+  const canvasCropping = toolLayer?.kind === "canvas" && canvasCropActive;
+  /** In Advanced crop the Full stitch button drives the canvas brush. */
+  const canvasAdvanced = canvasCropping && canvasMode === "advanced";
+  const showCanvasEdges = canvasCropping && canvasMode === "basic" && (ui?.canvasBasicAvailable ?? true);
   const toolGate = (tool: string, title: string) => {
     const state = availability(tool);
     return state.enabled
@@ -562,7 +616,7 @@ export function EditorSurface({
     if (refuseUnavailable(tool)) return;
     if (noThread && ["paint", "fill", "backstitch"].includes(tool)) return;
     if ((tool === "select" || tool === "lasso") && String(ui?.tool.tool) === tool) controllerRef.current?.clearSelection();
-    else if (tool === "eraser") controllerRef.current?.setEraserMode("whole-cell");
+    else if (tool === "eraser" && toolLayer?.kind !== "canvas") controllerRef.current?.setEraserMode("whole-cell");
     else controllerRef.current?.setTool({ tool } as never);
   };
   const save = async (e: React.FormEvent) => {
@@ -1260,8 +1314,11 @@ export function EditorSurface({
     surface?.copySelection?.();
     dismissTouchCopy();
   };
-  const runSelectionAction = (action: "copy" | "paste" | "move" | "delete") => {
-    if (action === "copy") copyTouchSelection();
+  const runSelectionAction = (action: SelectionAction) => {
+    if (action === "add-cells" || action === "delete-cells") {
+      controllerRef.current?.applyCanvasSelection(action === "add-cells" ? "add" : "remove");
+      dismissTouchCopy();
+    } else if (action === "copy") copyTouchSelection();
     else if (action === "paste") {
       controllerRef.current?.pasteSelection();
       dismissTouchCopy();
@@ -1277,7 +1334,7 @@ export function EditorSurface({
     if (event.pointerType === "touch") touchActionPointerDown.current = true;
   };
   const handleSelectionActionClick = (
-    action: "copy" | "paste" | "move" | "delete",
+    action: SelectionAction,
     event: React.MouseEvent<HTMLButtonElement>,
   ) => {
     const openingPointerType = touchCopyRequest?.pointerType ?? "touch";
@@ -1287,7 +1344,7 @@ export function EditorSurface({
   };
   const handleSelectionActionKeyDown = (
     event: React.KeyboardEvent<HTMLButtonElement>,
-    action: "copy" | "paste" | "move" | "delete",
+    action: SelectionAction,
   ) => {
     event.stopPropagation();
     if (event.key === "Escape") {
@@ -1425,6 +1482,73 @@ export function EditorSurface({
     globalThis.document.addEventListener("keydown", key);
     return () => { globalThis.document.removeEventListener("pointerdown", outside); globalThis.document.removeEventListener("keydown", key); };
   }, [shapeMenuOpen, selectedShape]);
+  useEffect(() => {
+    const tool = ui?.tool;
+    if (tool?.tool === "select" || tool?.tool === "lasso") {
+      const shape = tool.shape ?? DEFAULT_VARIANT_SHAPES[tool.tool];
+      setVariantShapes((current) => current[tool.tool] === shape ? current : { ...current, [tool.tool]: shape });
+    }
+  }, [ui?.tool]);
+  const openVariantMenu = (tool: VariantTool, anchor: HTMLElement) => {
+    variantTrigger.current = anchor as HTMLButtonElement;
+    const rect = anchor.getBoundingClientRect();
+    setVariantMenu({ tool, left: Math.max(8, Math.min(rect.left, window.innerWidth - 120)), top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 64)) });
+  };
+  const closeVariantMenu = (restoreFocus = true) => {
+    setVariantMenu(null);
+    if (restoreFocus) variantTrigger.current?.focus();
+  };
+  const applyVariantTool = (tool: VariantTool, shape: VariantShapes[VariantTool]) => {
+    if (refuseUnavailable(tool)) return;
+    controllerRef.current?.setTool({ tool, shape } as never);
+  };
+  useEffect(() => {
+    if (!variantMenu) return;
+    const { choices } = VARIANT_TOOLS[variantMenu.tool];
+    variantItems.current[choices.findIndex((choice) => choice.shape === variantShapes[variantMenu.tool])]?.focus();
+    const outside = (event: PointerEvent) => { if (event.target instanceof Node && !variantMenuRef.current?.contains(event.target) && !variantTrigger.current?.contains(event.target)) closeVariantMenu(); };
+    const key = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeVariantMenu(); return; }
+      const current = variantItems.current.findIndex((item) => item === globalThis.document.activeElement);
+      if (current < 0) return;
+      const count = choices.length;
+      let next: number | undefined;
+      if (event.key === "ArrowDown" || event.key === "ArrowRight") next = (current + 1) % count;
+      else if (event.key === "ArrowUp" || event.key === "ArrowLeft") next = (current + count - 1) % count;
+      else if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = count - 1;
+      else if (event.key === "Enter" || event.key === " ") { event.preventDefault(); variantItems.current[current]?.click(); return; }
+      if (next !== undefined) { event.preventDefault(); variantItems.current[next]?.focus(); }
+    };
+    globalThis.document.addEventListener("pointerdown", outside);
+    globalThis.document.addEventListener("keydown", key);
+    return () => { globalThis.document.removeEventListener("pointerdown", outside); globalThis.document.removeEventListener("keydown", key); };
+  }, [variantMenu, variantShapes]);
+  /** The Select and Lasso rail buttons: click applies the remembered variant (or clears when active); hold opens the variant popout. */
+  const variantToolButton = (tool: VariantTool) => {
+    const { label, choices } = VARIANT_TOOLS[tool];
+    const choice = choices.find((item) => item.shape === variantShapes[tool]) ?? choices[0]!;
+    return (
+      <button
+        {...toolGate(tool, `${label} · hold for options`)}
+        type="button"
+        aria-label={label}
+        aria-pressed={String(ui?.tool.tool) === tool}
+        onPointerDown={(event) => beginPress(event, "variant", tool, label)}
+        onPointerLeave={abortPressOnLeave}
+        onContextMenu={(event) => { event.preventDefault(); if (!deferTouchContextMenu(event.currentTarget, event)) openVariantMenu(tool, event.currentTarget); }}
+        onKeyDown={(event) => { if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) { event.preventDefault(); event.stopPropagation(); openVariantMenu(tool, event.currentTarget); } }}
+        onClick={(event) => {
+          if (shouldSuppressPressClick(event.currentTarget, event)) return;
+          if (String(ui?.tool.tool) === tool) invoke(tool);
+          else applyVariantTool(tool, choice.shape);
+        }}
+      >
+        <img data-icon={choice.dataIcon} src={choice.icon} alt="" aria-hidden="true" />
+        <span className="brush-size-corner" aria-hidden="true" />
+      </button>
+    );
+  };
   const pressPointInside = (session: PressSession, x: number, y: number) => {
     const rect = session.anchor.getBoundingClientRect();
     return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
@@ -1539,7 +1663,7 @@ export function EditorSurface({
     const observeCompetingDown = (pointer: PointerEvent) => {
       if (pointer.pointerId === session.pointerId || lifecycle.session !== session || pointer.button !== 0) return;
       const target = pointer.target instanceof Element
-        ? pointer.target.closest<HTMLButtonElement>('button[aria-haspopup="dialog"], button[aria-label="Shape"]')
+        ? pointer.target.closest<HTMLButtonElement>('button[aria-haspopup="dialog"], button[aria-label="Shape"], button[aria-label="Select"], button[aria-label="Lasso select"]')
         : null;
       if (!target || lifecycle.competingPointers.some((item) => item.pointerId === pointer.pointerId && item.owner === session)) return;
       lifecycle.competingPointers.push({ pointerId: pointer.pointerId, anchor: target, owner: session });
@@ -1606,6 +1730,7 @@ export function EditorSurface({
       if (session.phase !== "pending") return;
       session.phase = "opened";
       if (session.kind === "shape") openShapeMenu(anchor);
+      else if (session.kind === "variant") openVariantMenu(session.tool as VariantTool, anchor);
       else openBrushPopover(session.tool as PopoverTool, session.label, anchor);
     }, 500);
   };
@@ -1781,20 +1906,22 @@ export function EditorSurface({
             <button className="rail-button" type="button" aria-label="Pan" title="Pan" aria-pressed={ui?.tool.tool === "pan"} onClick={() => invoke("pan")}>
               <img data-icon="pan" src={panIcon} alt="" aria-hidden="true" />
             </button>
-            <button {...toolGate("select", "Select")} type="button" aria-label="Select" aria-pressed={ui?.tool.tool === "select"} onClick={() => invoke("select")}>
-              <img data-icon="select" src={selectIcon} alt="" aria-hidden="true" />
-            </button>
-            <button {...toolGate("lasso", "Lasso select")} type="button" aria-label="Lasso select" aria-pressed={String(ui?.tool.tool) === "lasso"} onClick={() => invoke("lasso")}>
-              <img data-icon="lasso" src={lassoIcon} alt="" aria-hidden="true" />
-            </button>
+            {variantToolButton("select")}
+            {variantToolButton("lasso")}
             <button
-              {...brushHandlers("full", "Full stitch")}
-              {...toolGate("paint", "Full stitch · hold for size")}
+              {...(canvasAdvanced ? brushHandlers("canvas-brush", "Canvas brush") : brushHandlers("full", "Full stitch"))}
+              {...(canvasAdvanced ? toolGate("canvas-brush", "Canvas brush · hold for size") : toolGate("paint", "Full stitch · hold for size"))}
               type="button"
               aria-label="Full stitch"
-              aria-haspopup="dialog" aria-expanded={brushPopover?.tool === "full"} aria-controls="tool-brush-popover"
-              aria-pressed={fullStitchActive}
-              onClick={(event) => { if (shouldSuppressPressClick(event.currentTarget, event)) return; if (refuseUnavailable("paint")) return; choose("full"); }}
+              aria-haspopup="dialog" aria-expanded={brushPopover?.tool === (canvasAdvanced ? "canvas-brush" : "full")} aria-controls="tool-brush-popover"
+              aria-pressed={canvasAdvanced ? ui?.tool.tool === "canvas-brush" : fullStitchActive}
+              onClick={(event) => {
+                if (shouldSuppressPressClick(event.currentTarget, event)) return;
+                // On the Canvas layer in Advanced mode the full-stitch slot is the canvas brush.
+                if (canvasAdvanced) { invoke("canvas-brush"); return; }
+                if (refuseUnavailable("paint")) return;
+                choose("full");
+              }}
             >
               <span className="stitch-brush-icon stitch-brush-icon-full" aria-hidden="true" />
               <span className="brush-size-corner" aria-hidden="true" />
@@ -1855,8 +1982,8 @@ export function EditorSurface({
               <span className="brush-size-corner" aria-hidden="true" />
             </button>
             <button
-              {...brushHandlers("eraser", "Eraser")}
-              {...toolGate("eraser", "Eraser · hold for size")}
+              {...brushHandlers("eraser", canvasAdvanced ? "Canvas eraser" : "Eraser")}
+              {...toolGate("eraser", canvasAdvanced ? "Canvas eraser · hold for size" : "Eraser · hold for size")}
               type="button"
               aria-label="Eraser"
               aria-haspopup="dialog" aria-expanded={brushPopover?.tool === "eraser"} aria-controls="tool-brush-popover"
@@ -1877,10 +2004,9 @@ export function EditorSurface({
               <img data-icon="paint-bucket" src={fillIcon} alt="" aria-hidden="true" />
             </button>
             <button
-              className="rail-button"
+              {...toolGate("eyedropper", "Eyedropper")}
               type="button"
               aria-label="Eyedropper"
-              title="Eyedropper"
               aria-pressed={ui?.tool.tool === "eyedropper"}
               onClick={() => invoke("eyedropper")}
             >
@@ -1893,6 +2019,12 @@ export function EditorSurface({
               const kind = shape as string;
               const label = kind === "right-triangle" ? "Right triangle" : kind[0]!.toUpperCase() + kind.slice(1);
                return <button key={kind} ref={(element) => { shapeItems.current[index] = element; }} type="button" role="menuitemradio" aria-label={label} title={label} aria-checked={selectedShape === shape} onClick={() => { setSelectedShape(shape); applyShapeTool(shape); closeShapeMenu(); }}>{shapeIcon(shape)}</button>;
+            })}
+          </div>, globalThis.document.body)}
+          {variantMenu && createPortal(<div ref={variantMenuRef} className="shape-picker-menu tool-variant-menu" role="menu" aria-label={VARIANT_TOOLS[variantMenu.tool].menuLabel} style={{ position: "fixed", left: variantMenu.left, top: variantMenu.top, zIndex: 1000 }} onPointerDown={(event) => event.stopPropagation()}>
+            {VARIANT_TOOLS[variantMenu.tool].choices.map((choice, index) => {
+              const { tool } = variantMenu;
+              return <button key={choice.shape} ref={(element) => { variantItems.current[index] = element; }} type="button" role="menuitemradio" aria-label={choice.label} title={choice.label} aria-checked={variantShapes[tool] === choice.shape} onClick={() => { setVariantShapes((current) => ({ ...current, [tool]: choice.shape })); applyVariantTool(tool, choice.shape); closeVariantMenu(); }}><img data-icon={choice.dataIcon} src={choice.icon} alt="" aria-hidden="true" /></button>;
             })}
           </div>, globalThis.document.body)}
           <div ref={mobilePanel === "colors" ? mobilePopover : undefined} id="mobile-colors-popover" className={`editor-rail-popover mobile-colors-popover${mobilePanel === "colors" ? " mobile-popover-open" : ""}`} role={mobilePanel === "colors" ? "dialog" : undefined} aria-label="Colors" tabIndex={-1}>
@@ -1943,6 +2075,16 @@ export function EditorSurface({
               <>
                 <canvas ref={base} aria-hidden="true" />
                 <canvas ref={overlay} aria-hidden="true" />
+                {showCanvasEdges && ui?.viewport && (
+                  <CanvasEdgeControls
+                    controller={controller}
+                    viewport={ui.viewport}
+                    width={document.width}
+                    height={document.height}
+                    frame={frame}
+                    previewBox={ui.overlay.canvasEditing?.preview?.kind === "resize" ? ui.overlay.canvasEditing.preview.box : null}
+                  />
+                )}
                 {touchCopyRequest && ui && (
                   <div
                     ref={touchCopyMenu}
@@ -1962,6 +2104,29 @@ export function EditorSurface({
                       top: `${touchCopyPosition?.top ?? touchCopyRequest.screenY}px`,
                     }}
                   >
+                    {touchCopyRequest.canvas ? (<>
+                    <button
+                      ref={touchCopyAction}
+                      type="button"
+                      onPointerDown={handleSelectionActionPointerDown}
+                      onClick={(event) => handleSelectionActionClick("add-cells", event)}
+                      onKeyDown={(event) => handleSelectionActionKeyDown(event, "add-cells")}
+                      onKeyUp={(event) => event.stopPropagation()}
+                      aria-label="Add selected cells to the canvas"
+                    >
+                      Add
+                    </button>
+                    <button
+                      type="button"
+                      onPointerDown={handleSelectionActionPointerDown}
+                      onClick={(event) => handleSelectionActionClick("delete-cells", event)}
+                      onKeyDown={(event) => handleSelectionActionKeyDown(event, "delete-cells")}
+                      onKeyUp={(event) => event.stopPropagation()}
+                      aria-label="Delete selected cells from the canvas"
+                    >
+                      Delete
+                    </button>
+                    </>) : (<>
                     <button
                       ref={touchCopyAction}
                       type="button"
@@ -2004,6 +2169,7 @@ export function EditorSurface({
                     >
                       Delete
                     </button>
+                    </>)}
                   </div>
                 )}
               </>
@@ -2021,7 +2187,7 @@ export function EditorSurface({
             </div>
           </div>
           <div className="canvas-actions">
-            {brushPopover && createPortal(<div id="tool-brush-popover" ref={brushMenu} className="tool-brush-popover" role="dialog" aria-label={brushPopover.tool === "backstitch" ? "Backstitch mode" : `${brushPopover.label} brush size`} style={{ position: "fixed", left: brushPopover.left, top: brushPopover.top, zIndex: 1000 }}>
+            {brushPopover && createPortal(<div id="tool-brush-popover" ref={brushMenu} className="tool-brush-popover" role="dialog" aria-label={brushPopover.tool === "backstitch" ? "Backstitch mode" : brushSizeHeading(brushPopover.label)} style={{ position: "fixed", left: brushPopover.left, top: brushPopover.top, zIndex: 1000 }}>
               {brushPopover.tool === "backstitch" ? (
                 <div className="backstitch-mode-row">
                   {(["draw", "move"] as const).map((mode) => (
@@ -2054,8 +2220,8 @@ export function EditorSurface({
                       ))}
                     </div>
                   )}
-                  <label htmlFor="tool-brush-size">{brushPopover.label} brush size <output>{ui?.toolBrushSizes[brushPopover.tool] ?? 1}</output></label>
-                  <RangeInput id="tool-brush-size" min="1" max="10" aria-label={`${brushPopover.label} brush size`} value={ui?.toolBrushSizes[brushPopover.tool] ?? 1} onChange={(event) => controllerRef.current?.setToolBrushSize(brushPopover.tool as BrushSizeTool, Number(event.target.value))} />
+                  <label htmlFor="tool-brush-size">{brushSizeHeading(brushPopover.label)} <output>{ui?.toolBrushSizes[brushPopover.tool] ?? 1}</output></label>
+                  <RangeInput id="tool-brush-size" min="1" max="10" aria-label={brushSizeHeading(brushPopover.label)} value={ui?.toolBrushSizes[brushPopover.tool] ?? 1} onChange={(event) => controllerRef.current?.setToolBrushSize(brushPopover.tool as BrushSizeTool, Number(event.target.value))} />
                 </>
               )}
             </div>, globalThis.document.body)}
@@ -2070,6 +2236,14 @@ export function EditorSurface({
                   backgroundCatalog={backgroundCatalogMatch ? { name: backgroundCatalogMatch.record.name, brand: backgroundCatalogMatch.item.association.brandLabel, code: backgroundCatalogMatch.record.code } : undefined}
                   onChooseBackground={openBackgroundPicker}
                   onAidaCountChange={setCanvasAidaCount}
+                  canvasMode={canvasMode}
+                  canvasBasicAvailable={ui?.canvasBasicAvailable ?? true}
+                  canvasCropActive={canvasCropActive}
+                  onCanvasModeChange={(mode) => {
+                    // Choosing a mode from the menu starts editing in it.
+                    if (controllerRef.current?.setCanvasMode(mode)) controllerRef.current.setCanvasCropActive(true);
+                  }}
+                  onCanvasCropToggle={() => controllerRef.current?.setCanvasCropActive(!canvasCropActive)}
                   onRename={(layerId, name) => runLayerAction(() => session?.renameLayer(layerId, name))}
                   onDuplicate={(layerId) => runLayerAction(() => session?.duplicateLayer(layerId))}
                   onMerge={(sourceId, targetId) => runLayerAction(() => session?.mergeLayer(sourceId, targetId))}

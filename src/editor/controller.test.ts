@@ -1532,7 +1532,8 @@ describe('EditorSurfaceController', () => {
       full: 1,
       half: 1,
       'three-quarter': 1,
-      eraser: 1
+      eraser: 1,
+      'canvas-brush': 1
     });
 
     controller.setToolBrushSize('half', 3);
@@ -1560,7 +1561,8 @@ describe('EditorSurfaceController', () => {
       full: 2,
       half: 7,
       'three-quarter': 4,
-      eraser: 6
+      eraser: 6,
+      'canvas-brush': 1
     });
     controller.dispose();
   });

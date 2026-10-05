@@ -18,8 +18,8 @@ export const MIN_BRUSH_SIZE = 1;
 export const MAX_BRUSH_SIZE = 10;
 export const DEFAULT_BRUSH_SIZE = 1;
 
-/** Paint and eraser tools with independent retained brush sizes. */
-export type BrushSizeTool = 'full' | 'half' | 'three-quarter' | 'eraser';
+/** Paint, eraser and canvas-brush tools with independent retained brush sizes. */
+export type BrushSizeTool = 'full' | 'half' | 'three-quarter' | 'eraser' | 'canvas-brush';
 
 export type ToolBrushSizes = Readonly<Record<BrushSizeTool, number>>;
 
@@ -230,7 +230,33 @@ export interface OverlayState {
   readonly showSelection?: boolean;
   /** When true the overlay canvas draws the reference image's resize handles. */
   readonly imageResizeHandles?: boolean;
+  /** Present only while the Canvas layer is active: draws the ghost workspace grid and pending canvas edits. */
+  readonly canvasEditing?: CanvasEditingOverlay | null;
 }
+
+/**
+ * Canvas-editing presentation. Every rect is in local cell coordinates
+ * (0,0 = the canvas box's top-left), so x/y may be negative.
+ */
+export interface CanvasEditingOverlay {
+  /** The workspace frozen for the current gesture (`canvasWorkspace` from the domain). */
+  readonly workspace: CellRect;
+  /** A finalized canvas selection, which may extend beyond the canvas. */
+  readonly selection?: CanvasCellSet | null;
+  /** The uncommitted result of a gesture: brush, eraser, or edge drag. */
+  readonly preview?: CanvasEditPreview | null;
+}
+
+/** Cells over `rect`; `cells` is row-major 0/1 over the rect, and absent means the whole rect. */
+export interface CanvasCellSet {
+  readonly rect: CellRect;
+  readonly cells?: Uint8Array;
+}
+
+export type CanvasEditPreview =
+  | ({ readonly kind: 'add' | 'remove' } & CanvasCellSet)
+  /** Basic-mode edge drag: the box the canvas would have on release. */
+  | { readonly kind: 'resize'; readonly box: CellRect };
 
 export interface BackstitchPreviewOverlay {
   readonly start: FixedPoint;
@@ -285,6 +311,15 @@ export interface TouchCopyRequest {
   readonly selection: GridRect;
   readonly screenX: number;
   readonly screenY: number;
+  /** The pointer type of the tap that opened the request; the UI guards touch-opened menus against synthetic clicks. */
+  readonly pointerType?: string;
+  /**
+   * True when the request is for a canvas selection (Canvas layer): the UI
+   * offers Add/Delete (`applyCanvasSelection`) instead of Copy/Paste/Move/Delete.
+   * `selection` is then the canvas selection's rect, which may lie partly
+   * outside the canvas.
+   */
+  readonly canvas?: boolean;
 }
 
 export type InvalidationLayer = 'base' | 'overlay' | 'all';
@@ -332,6 +367,15 @@ export interface RendererTheme {
   readonly cursorColor: string;
   readonly missingPaletteColor: string;
   readonly pendingCellColor: string;
+  /** Fill for everything that is not an active canvas cell: outside the box and holes inside it. */
+  readonly offCanvasColor: string;
+  /** Lines of the ghost grid drawn over the workspace while the Canvas layer is edited. */
+  readonly ghostGridColor: string;
+  readonly ghostMajorGridColor: string;
+  /** Tint for cells a pending canvas edit would add. */
+  readonly canvasAddColor: string;
+  /** Hatch for cells a pending canvas edit would remove. */
+  readonly canvasRemoveColor: string;
 }
 
 export interface RendererStyle extends RendererTheme {
@@ -360,6 +404,11 @@ export const DEFAULT_RENDERER_STYLE: RendererStyle = {
   cursorColor: '#cc4422',
   missingPaletteColor: '#9b9b9b',
   pendingCellColor: '#2266cc',
+  offCanvasColor: '#e4e1dc',
+  ghostGridColor: '#d3cfc8',
+  ghostMajorGridColor: '#bdb8b0',
+  canvasAddColor: '#2a9d5c',
+  canvasRemoveColor: '#cc3333',
   gridInterval: 10,
   midGridInterval: 5,
   showGrid: true,
@@ -479,6 +528,9 @@ export interface CanvasRenderer {
 
 export type RendererLifecycle = Pick<CanvasRenderer, 'requestRender' | 'render' | 'renderNow' | 'invalidate' | 'dispose' | 'destroy'>;
 
+/** How the Canvas layer is edited: Basic resizes by edges, Advanced adds and removes cells. */
+export type CanvasEditMode = 'basic' | 'advanced';
+
 export interface EditorUiState {
   readonly viewport: Viewport;
   readonly brushSize: number;
@@ -497,6 +549,18 @@ export interface EditorUiState {
   readonly canPaste: boolean;
   /** The layer editor tools act on; null when the workspace has no layer information. */
   readonly activeLayer: EditorActiveLayer | null;
+  /**
+   * The effective Canvas-layer edit mode. UI state, never persisted. The
+   * controller forces 'advanced' while the canvas is not a rectangle.
+   */
+  readonly canvasMode: CanvasEditMode;
+  /** False while the canvas is not a rectangle, which locks `canvasMode` to 'advanced'. */
+  readonly canvasBasicAvailable: boolean;
+  /**
+   * Crop mode: canvas editing is on only while this is true and the Canvas
+   * layer is selected. UI state; it turns off when the layer changes.
+   */
+  readonly canvasCropActive: boolean;
 }
 
 export type SelectedCellGeometry =
@@ -540,7 +604,8 @@ export const EditorToolKind = {
   Fill: 'fill',
   Backstitch: 'backstitch',
   Eyedropper: 'eyedropper',
-  Shape: 'shape'
+  Shape: 'shape',
+  CanvasBrush: 'canvas-brush'
 } as const;
 
 export type EditorToolKind = (typeof EditorToolKind)[keyof typeof EditorToolKind];
@@ -612,12 +677,22 @@ export interface EraserToolState {
   readonly corner?: 0 | 1 | 2 | 3;
 }
 
+/** The marquee Select draws; an oval covers the cells the oval Shape stamps plus its interior. */
+export type SelectShape = 'rectangle' | 'oval';
+
 export interface SelectToolState {
   readonly tool: 'select';
+  /** Undefined means `'rectangle'`. */
+  readonly shape?: SelectShape;
 }
+
+/** Freehand traces the drag; polygon joins clicked vertices with straight edges. */
+export type LassoShape = 'freehand' | 'polygon';
 
 export interface LassoToolState {
   readonly tool: 'lasso';
+  /** Undefined means `'freehand'`. */
+  readonly shape?: LassoShape;
 }
 
 export interface FillToolState {
@@ -644,6 +719,11 @@ export interface ShapeToolState {
   readonly shape: ShapeKind;
 }
 
+/** Adds canvas cells on the Canvas layer in Advanced mode. Removal uses the eraser. */
+export interface CanvasBrushToolState {
+  readonly tool: 'canvas-brush';
+}
+
 /** Reposition the reference image with pointer drags. No brush or chart edits. */
 export interface MoveImageToolState {
   readonly tool: 'move-image';
@@ -654,7 +734,7 @@ export interface ResizeImageToolState {
   readonly tool: 'resize-image';
 }
 
-export type EditorToolState = PaintToolState | PanToolState | EraserToolState | SelectToolState | LassoToolState | FillToolState | BackstitchToolState | EyedropperToolState | ShapeToolState | MoveImageToolState | ResizeImageToolState;
+export type EditorToolState = PaintToolState | PanToolState | EraserToolState | SelectToolState | LassoToolState | FillToolState | BackstitchToolState | EyedropperToolState | ShapeToolState | CanvasBrushToolState | MoveImageToolState | ResizeImageToolState;
 export type ToolState = EditorToolState;
 export type ActiveStitchBrush = StitchBrush;
 
@@ -677,6 +757,13 @@ export const HIDDEN_LAYER_TOOL_HINT = 'Show this layer to edit it.';
 export const STITCH_LAYER_TOOL_HINT = 'Select a stitch layer to use this tool.';
 export const SPECIALTY_LAYER_BACKSTITCH_HINT = 'Select a specialty layer to use Backstitch.';
 export const EDITABLE_LAYER_TOOL_HINT = 'Select a stitch or specialty layer to use this tool.';
+export const CANVAS_BRUSH_LAYER_HINT = 'Select the Canvas layer to use the canvas brush.';
+export const CANVAS_BASIC_TOOL_HINT = 'Switch the canvas to Advanced to use this tool.';
+export const CANVAS_ADVANCED_TOOL_HINT = 'Select a stitch or specialty layer to use this tool.';
+/** Why Basic canvas mode is unavailable. */
+export const CANVAS_BASIC_LOCKED_HINT = "This canvas isn't a rectangle anymore. Undo your shape edits to use Crop.";
+/** Why tools are disabled on the Canvas layer while crop mode is off. */
+export const CANVAS_CROP_OFF_HINT = 'Turn on Crop to edit the canvas.';
 
 /** Tools that change the selected layer; Pan, Eyedropper and the reference-image tools never do. */
 function isEditingTool(tool: EditorToolKind | EditorToolState['tool']): boolean {
@@ -692,13 +779,30 @@ function isEditingTool(tool: EditorToolKind | EditorToolState['tool']): boolean 
  * hidden layer. A null layer means the workspace has no layer information.
  * `brush` is accepted so callers can gate brush variants; every current brush
  * is a stitch brush.
+ *
+ * On the Canvas layer only Pan works unless `canvasCropActive` is true; then
+ * `canvasMode` decides (absent means 'basic'): Basic
+ * allows Pan only; Advanced allows the canvas brush, Eraser, Select, Lasso and
+ * Pan. The canvas brush works only on the Canvas layer. The reference-image
+ * tools are not layer tools and are always allowed.
  */
 export function toolAvailability(
   tool: EditorToolKind | EditorToolState['tool'],
   brush: StitchBrushKind | undefined,
-  layer: Pick<EditorActiveLayer, 'kind' | 'visible'> | null
+  layer: Pick<EditorActiveLayer, 'kind' | 'visible'> | null,
+  canvasMode?: CanvasEditMode,
+  canvasCropActive = false
 ): ToolAvailability {
   void brush;
+  if (tool === 'move-image' || tool === 'resize-image' || tool === 'pan') return { enabled: true };
+  if (layer?.kind === 'canvas') {
+    if (!canvasCropActive) return { enabled: false, hint: CANVAS_CROP_OFF_HINT };
+    if (canvasMode !== 'advanced') return { enabled: false, hint: CANVAS_BASIC_TOOL_HINT };
+    return tool === 'canvas-brush' || tool === 'eraser' || tool === 'select' || tool === 'lasso'
+      ? { enabled: true }
+      : { enabled: false, hint: CANVAS_ADVANCED_TOOL_HINT };
+  }
+  if (tool === 'canvas-brush') return { enabled: false, hint: CANVAS_BRUSH_LAYER_HINT };
   if (!layer || !isEditingTool(tool)) return { enabled: true };
   const editable = layer.kind === 'stitch' || layer.kind === 'specialty';
   if (editable && !layer.visible) return { enabled: false, hint: HIDDEN_LAYER_TOOL_HINT };
@@ -712,8 +816,8 @@ export function toolAvailability(
 }
 
 /** `toolAvailability` for a full tool state, reading the brush from paint tools. */
-export function toolStateAvailability(tool: EditorToolState, layer: Pick<EditorActiveLayer, 'kind' | 'visible'> | null): ToolAvailability {
-  return toolAvailability(tool.tool, tool.tool === 'paint' ? tool.brush?.kind : undefined, layer);
+export function toolStateAvailability(tool: EditorToolState, layer: Pick<EditorActiveLayer, 'kind' | 'visible'> | null, canvasMode?: CanvasEditMode, canvasCropActive = false): ToolAvailability {
+  return toolAvailability(tool.tool, tool.tool === 'paint' ? tool.brush?.kind : undefined, layer, canvasMode, canvasCropActive);
 }
 
 export type UiStatePatch = Partial<EditorUiState> | ((state: EditorUiState) => Partial<EditorUiState>);
@@ -739,6 +843,9 @@ export interface EditorUiStore {
   setStatus(status: string | null): void;
   setCanPaste(canPaste: boolean): void;
   setActiveLayer(activeLayer: EditorActiveLayer | null): void;
+  /** Request a Canvas-layer edit mode; the controller keeps it 'advanced' while the canvas is not a rectangle. */
+  setCanvasMode(mode: CanvasEditMode): void;
+  setCanvasCropActive(active: boolean): void;
   /** Remember the last tool used on a layer type, for returning to it after a layer switch. Image tools are ignored. */
   rememberToolForLayer(kind: ActiveLayerKind, tool: EditorToolState): void;
   lastToolForLayer(kind: ActiveLayerKind): EditorToolState | undefined;

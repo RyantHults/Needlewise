@@ -8,6 +8,7 @@ import {
   PROJECT_THUMBNAIL_FABRIC_COLOR,
   PROJECT_THUMBNAIL_MAX_AXIS,
   PROJECT_THUMBNAIL_MAX_CELLS,
+  PROJECT_THUMBNAIL_OFF_CANVAS_COLOR,
   sanitizeProjectMetadata,
   sanitizeProjectThumbnail
 } from './project-thumbnail';
@@ -24,6 +25,20 @@ describe('project thumbnail summaries', () => {
 
     expect(thumbnail.palette).toEqual(['#123456']);
     expect(thumbnail.indices).toEqual([0, 0]);
+    expect(sanitizeProjectThumbnail(thumbnail, document.revision)).toEqual(thumbnail);
+  });
+
+  it('samples holes of a masked canvas as the off-canvas color', () => {
+    const document = createDocument({
+      catalog: DEFAULT_CATALOG_DEFINITION.association,
+      width: 3,
+      height: 1,
+      settings: { backgroundColor: '#123456' }
+    });
+    const thumbnail = deriveProjectThumbnail({ ...document, canvasMask: new Uint8Array([1, 0, 1]) });
+
+    expect(thumbnail.palette).toEqual(['#123456', PROJECT_THUMBNAIL_OFF_CANVAS_COLOR]);
+    expect(thumbnail.indices).toEqual([0, 1, 0]);
     expect(sanitizeProjectThumbnail(thumbnail, document.revision)).toEqual(thumbnail);
   });
 

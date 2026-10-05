@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CellKind, createDocument, createPatternFragment } from '../domain';
 import { cellToScreenRect, fitViewport, getCanvasMetrics, visibleCellRect } from '../editor/coordinates';
-import type { CanvasContextAdapter, CanvasTarget, PendingCellState, RendererStyle, TraceImage } from '../editor/contracts';
+import { DEFAULT_RENDERER_STYLE, type CanvasContextAdapter, type CanvasTarget, type PendingCellState, type RendererStyle, type TraceImage } from '../editor/contracts';
 import { ThreeQuarterNW, ThreeQuarterPair } from '../editor/cell-kinds';
 import { MAX_ATLAS_PIXELS, createDefaultAtlasTarget } from './context';
 import { isCanvasImageSource } from './atlas';
@@ -2597,7 +2597,9 @@ describe('Canvas 2D chart renderer', () => {
     expect(() => renderer.renderNow()).not.toThrow();
     expect(drawnPaths(base).includes(getSymbolOutline(STAR_ID)?.d ?? '')).toBe(true);
     expect(base.records.some((call) => call.name === 'fillRect' && call.fillStyle === '#abcdef')).toBe(true);
-    expect(base.records.filter((call) => call.name === 'fillRect').every((call) => call.fillStyle === document.settings.backgroundColor || call.fillStyle === '#abcdef')).toBe(true);
+    expect(base.records.filter((call) => call.name === 'fillRect').every((call) =>
+      call.fillStyle === document.settings.backgroundColor || call.fillStyle === '#abcdef' || call.fillStyle === DEFAULT_RENDERER_STYLE.offCanvasColor
+    )).toBe(true);
     renderer.dispose();
   });
 
@@ -2767,7 +2769,8 @@ describe('Canvas 2D chart renderer', () => {
     expect(images[1].args[0]).toBe(traceSource);
     const document = renderer.getDocument();
     expect(atlas.records.some((call) => call.name === 'fillRect' && call.fillStyle === document.settings.backgroundColor && call.args.join(',') === '0,0,2,1')).toBe(true);
-    expect(base.records.some((call) => call.name === 'fillRect' && call.fillStyle === document.settings.backgroundColor && call.args.join(',') === '0,0,20,10')).toBe(true);
+    expect(base.records.some((call) => call.name === 'fillRect' && call.fillStyle === DEFAULT_RENDERER_STYLE.offCanvasColor && call.args.join(',') === '0,0,20,10')).toBe(true);
+    expect(base.records.some((call) => call.name === 'fillRect' && call.fillStyle === document.settings.backgroundColor && call.args.join(',') === '0,0,2,1')).toBe(true);
     renderer.dispose();
   });
 
@@ -2903,6 +2906,304 @@ describe('Canvas 2D chart renderer', () => {
     expect(gridRecords).toEqual([]);
     // The chart border is independent of the grid toggle and still renders.
     expect(base.records.some((call) => call.name === 'moveTo' && call.strokeStyle === '#4b4b4b')).toBe(true);
+    renderer.dispose();
+  });
+});
+
+describe('canvas mask and canvas editing', () => {
+  const FABRIC = '#aabbcc';
+
+  function fabricChart(width: number, height: number) {
+    const document = chart(width, height);
+    document.settings = Object.assign({}, document.settings, { backgroundColor: FABRIC });
+    return document;
+  }
+
+  function maskedChart(width: number, height: number, holes: readonly number[]) {
+    const mask = new Uint8Array(width * height).fill(1);
+    for (const index of holes) mask[index] = 0;
+    return { ...fabricChart(width, height), canvasMask: mask };
+  }
+
+  /** Stroked line segments of one color as [x1, y1, x2, y2]; clip paths are not stroked, so they are skipped. */
+  function strokes(context: RecordingContext, color: string): number[][] {
+    const result: number[][] = [];
+    context.records.forEach((call, index) => {
+      const start = context.records[index - 1];
+      const next = context.records[index + 1];
+      if (call.name !== 'lineTo' || call.strokeStyle !== color || start?.name !== 'moveTo' || next?.name !== 'stroke') return;
+      result.push([...(start.args as number[]), ...(call.args as number[])]);
+    });
+    return result;
+  }
+
+  function fills(context: RecordingContext, color: string): number[][] {
+    return context.records.filter((call) => call.name === 'fillRect' && call.fillStyle === color).map((call) => call.args as number[]);
+  }
+
+  const workspace = { x: -2, y: -2, width: 8, height: 8 };
+
+  it('paints off-canvas outside the box and over holes, and fabric only over active cells', () => {
+    const document = maskedChart(4, 4, [5]);
+    const base = pixelContext(96, 96);
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(96, 96, { dpr: 1 }),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      style: { offCanvasColor: '#111111', showGrid: false }
+    });
+    renderer.renderNow();
+
+    expect(fills(base, '#111111')).toContainEqual([0, 0, 96, 96]);
+    expect(base.pixels[24][24]).toBe('#111111');
+    expect(base.pixels[80][80]).toBe('#111111');
+    expect(base.pixels[8][8]).toBe(FABRIC);
+    expect(base.pixels[24][8]).toBe(FABRIC);
+    expect(base.pixels[24][40]).toBe(FABRIC);
+    for (const [x, y, width, height] of fills(base, FABRIC)) {
+      expect(x < 32 && x + width > 16 && y < 32 && y + height > 16).toBe(false);
+    }
+    renderer.dispose();
+  });
+
+  it('keeps a full rectangle to one fabric fill over the box', () => {
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document: fabricChart(4, 4),
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(96, 96, { dpr: 1 }),
+      viewport: { x: 0, y: 0, zoom: 16 },
+      style: { offCanvasColor: '#111111', showGrid: false }
+    });
+    renderer.renderNow();
+
+    expect(fills(base, '#111111')).toEqual([[0, 0, 96, 96]]);
+    expect(fills(base, FABRIC)).toEqual([[0, 0, 64, 64]]);
+    renderer.dispose();
+  });
+
+  it('draws grid lines only along edges that border an active cell and outlines the holes', () => {
+    const document = maskedChart(4, 4, [1, 2, 5, 6, 9, 10, 13, 14]);
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(64, 64, { dpr: 1 }),
+      viewport: { x: 0, y: 0, zoom: 20 },
+      style: { gridColor: '#00ff00', midGridColor: '#0000ff', majorGridColor: '#ff0000', gridInterval: 10, midGridInterval: 5, chartBorderColor: '#222222' }
+    });
+    renderer.renderNow();
+
+    const minor = strokes(base, '#00ff00');
+    const verticalXs = new Set(minor.filter(([x1, , x2]) => x1 === x2).map(([x]) => x));
+    expect(verticalXs).toEqual(new Set([20, 60]));
+    const rowOne = minor.filter(([, y1, , y2]) => y1 === 20 && y2 === 20);
+    expect(rowOne).toEqual([[0, 20, 20, 20], [60, 20, 64, 20]]);
+    const outline = strokes(base, '#222222');
+    // The hole column's sides run the full visible height as single outline segments.
+    expect(outline).toContainEqual([20, 0, 20, 64]);
+    expect(outline).toContainEqual([60, 0, 60, 64]);
+    expect(outline.some(([x1, , x2]) => x1 === 40 && x2 === 40)).toBe(false);
+    renderer.dispose();
+  });
+
+  it('clips cached outline runs to the view and recomputes them for a new mask', () => {
+    const document = maskedChart(6, 6, [14, 15, 20, 21]);
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(40, 40, { dpr: 1 }),
+      viewport: { x: 3, y: 0, zoom: 10 },
+      style: { chartBorderColor: '#222222', showGrid: false }
+    });
+    renderer.renderNow();
+    // The 2x2 hole spans local columns 2-3 and rows 2-3; the view starts at column 3,
+    // so only its right half and right side are visible.
+    let outline = strokes(base, '#222222');
+    expect(outline).toContainEqual([10, 20, 10, 40]);
+    expect(outline).toContainEqual([0, 20, 10, 20]);
+    expect(outline).toContainEqual([0, 40, 10, 40]);
+    expect(outline.some(([x1, y1, x2, y2]) => x1 === x2 && x1 === 0 && y1 >= 20 && y2 <= 40)).toBe(false);
+
+    base.records.length = 0;
+    const moved = new Uint8Array(36).fill(1);
+    moved[21] = 0;
+    renderer.setDocument({ ...document, canvasMask: moved, revision: document.revision + 1 });
+    renderer.renderNow();
+    outline = strokes(base, '#222222');
+    expect(outline).toContainEqual([0, 30, 0, 40]);
+    expect(outline).toContainEqual([10, 30, 10, 40]);
+    expect(outline).toContainEqual([0, 30, 10, 30]);
+    expect(outline.some(([, y1, , y2]) => y1 === 20 && y2 === 20)).toBe(false);
+    renderer.dispose();
+  });
+
+  it('draws the ghost grid in the base under the fabric only while canvas editing, within the workspace', () => {
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document: fabricChart(4, 4),
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(192, 192, { dpr: 1 }),
+      viewport: { x: -4, y: -4, zoom: 16 },
+      style: { ghostGridColor: '#00ff00', ghostMajorGridColor: '#ff0000', gridInterval: 10, showGrid: false }
+    });
+    renderer.renderNow();
+    expect(strokes(base, '#00ff00')).toEqual([]);
+    expect(strokes(base, '#ff0000')).toEqual([]);
+
+    base.records.length = 0;
+    renderer.setOverlay({ canvasEditing: { workspace } });
+    renderer.renderNow();
+    expect(renderer.lastStats.baseRendered).toBe(true);
+    const ghost = strokes(base, '#00ff00');
+    expect(ghost.length).toBeGreaterThan(0);
+    for (const value of ghost.flat()) {
+      expect(value).toBeGreaterThanOrEqual(32);
+      expect(value).toBeLessThanOrEqual(160);
+    }
+    expect(new Set(ghost.filter(([x1, , x2]) => x1 === x2).map(([x]) => x))).toEqual(new Set([32, 48, 80, 96, 112, 128, 144, 160]));
+    // Local x = 0 keeps the canvas's major phase; the dashed workspace edge shares the major color.
+    const major = base.records.filter((call, index) => call.name === 'lineTo' && call.strokeStyle === '#ff0000' && base.records[index + 1]?.name === 'stroke');
+    expect(major.filter((call) => call.lineWidth === 1).map((call) => call.args)).toEqual(expect.arrayContaining([[64, 160], [160, 64]]));
+    expect(strokes(base, '#ff0000')).toContainEqual([32, 32, 160, 32]);
+    expect(base.records.some((call) => call.name === 'setLineDash')).toBe(true);
+    const firstGhost = base.records.findIndex((call) => call.name === 'stroke' && call.strokeStyle === '#00ff00');
+    const fabric = base.records.findIndex((call) => call.name === 'fillRect' && call.fillStyle === FABRIC);
+    expect(firstGhost).toBeGreaterThanOrEqual(0);
+    expect(firstGhost).toBeLessThan(fabric);
+
+    renderer.setOverlay({ canvasEditing: { workspace: { ...workspace } } });
+    renderer.renderNow();
+    expect(renderer.lastStats.baseRendered).toBe(false);
+
+    base.records.length = 0;
+    renderer.setOverlay({});
+    renderer.renderNow();
+    expect(renderer.lastStats.baseRendered).toBe(true);
+    expect(strokes(base, '#00ff00')).toEqual([]);
+    expect(strokes(base, '#ff0000')).toEqual([]);
+    renderer.dispose();
+  });
+
+  it('keeps only major ghost lines at overview zoom and drops them once they crowd together', () => {
+    const style = { ghostGridColor: '#00ff00', ghostMajorGridColor: '#ff0000', gridInterval: 10, showGrid: false };
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document: fabricChart(4, 4),
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(192, 192, { dpr: 1 }),
+      viewport: { x: -40, y: -40, zoom: 2 },
+      style,
+      overlay: { canvasEditing: { workspace: { x: -30, y: -30, width: 64, height: 64 } } }
+    });
+    renderer.renderNow();
+    expect(strokes(base, '#00ff00')).toEqual([]);
+    const majorXs = strokes(base, '#ff0000').filter(([x1, , x2]) => x1 === x2).map(([x]) => x);
+    // Every tenth local column from -30 to 30, plus the workspace's dashed right edge at local 34.
+    expect(new Set(majorXs)).toEqual(new Set([20, 40, 60, 80, 100, 120, 140, 148]));
+
+    base.records.length = 0;
+    renderer.setViewport({ x: -40, y: -40, zoom: 0.5 });
+    renderer.renderNow();
+    expect(strokes(base, '#00ff00')).toEqual([]);
+    // Only the four dashed workspace edges remain.
+    expect(strokes(base, '#ff0000')).toHaveLength(4);
+    renderer.dispose();
+  });
+
+  it('previews added, removed and resized canvas cells on the overlay, outside the box too', () => {
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document: fabricChart(4, 4),
+      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      metrics: getCanvasMetrics(192, 192, { dpr: 1 }),
+      viewport: { x: -4, y: -4, zoom: 16 },
+      style: { canvasAddColor: '#00aa00', canvasRemoveColor: '#aa0000', chartBorderColor: '#222222' },
+      overlay: { canvasEditing: { workspace, preview: { kind: 'add', rect: { x: -2, y: 0, width: 2, height: 2 }, cells: new Uint8Array([1, 0, 0, 1]) } } }
+    });
+    renderer.renderNow();
+    expect(fills(overlay, '#00aa00')).toEqual([[32, 64, 16, 16], [48, 80, 16, 16]]);
+    expect(overlay.records.find((call) => call.name === 'fillRect' && call.fillStyle === '#00aa00')?.globalAlpha).toBe(0.35);
+
+    overlay.records.length = 0;
+    renderer.setOverlay({ canvasEditing: { workspace, preview: { kind: 'remove', rect: { x: 1, y: 1, width: 1, height: 1 } } } });
+    renderer.renderNow();
+    expect(fills(overlay, '#aa0000')).toEqual([[80, 80, 16, 16]]);
+    expect(overlay.records.some((call) => call.name === 'clip')).toBe(true);
+    const hatch = strokes(overlay, '#aa0000');
+    expect(hatch.length).toBeGreaterThan(0);
+    // Each hatch line runs diagonally (x + y constant).
+    for (const [x1, y1, x2, y2] of hatch) expect(x1 + y1).toBeCloseTo(x2 + y2);
+
+    overlay.records.length = 0;
+    renderer.setOverlay({ canvasEditing: { workspace, preview: { kind: 'resize', box: { x: 0, y: 0, width: 6, height: 3 } } } });
+    renderer.renderNow();
+    expect(fills(overlay, '#00aa00')).toEqual([[128, 64, 32, 48]]);
+    expect(fills(overlay, '#aa0000')).toEqual([[64, 112, 64, 16]]);
+    expect(strokes(overlay, '#222222')).toEqual(expect.arrayContaining([[64, 64, 160, 64], [160, 64, 160, 112]]));
+    expect(overlay.records.some((call) => call.name === 'setLineDash')).toBe(true);
+    renderer.dispose();
+  });
+
+  it('outlines a canvas selection that lies outside the box', () => {
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document: fabricChart(4, 4),
+      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      metrics: getCanvasMetrics(192, 192, { dpr: 1 }),
+      viewport: { x: -4, y: -4, zoom: 16 },
+      style: { selectionColor: '#0000ff' },
+      overlay: { canvasEditing: { workspace, selection: { rect: { x: -3, y: 0, width: 3, height: 2 }, cells: new Uint8Array([1, 1, 0, 1, 0, 0]) } } }
+    });
+    renderer.renderNow();
+    const outline = strokes(overlay, '#0000ff');
+    expect(outline.length).toBeGreaterThan(0);
+    for (const [x1, y1, x2, y2] of outline) {
+      for (const x of [x1, x2]) expect(x >= 16 && x <= 48).toBe(true);
+      for (const y of [y1, y2]) expect(y >= 64 && y <= 96).toBe(true);
+    }
+    expect(outline.some(([x1, , x2]) => x1 === 16 && x2 === 16)).toBe(true);
+
+    overlay.records.length = 0;
+    renderer.setOverlay({ canvasEditing: { workspace, selection: { rect: { x: -3, y: 0, width: 3, height: 2 } } } });
+    renderer.renderNow();
+    expect(strokes(overlay, '#0000ff')).toContainEqual([16, 64, 64, 64]);
+
+    overlay.records.length = 0;
+    renderer.setOverlay({ showSelection: false, canvasEditing: { workspace, selection: { rect: { x: -3, y: 0, width: 3, height: 2 } } } });
+    renderer.renderNow();
+    expect(strokes(overlay, '#0000ff')).toEqual([]);
+    renderer.dispose();
+  });
+
+  it('leaves holes transparent in the overview atlas and rebuilds it when the mask changes', () => {
+    const atlasSources: Array<{ context: RecordingContext; width: number }> = [];
+    const base = recordingContext();
+    const document = maskedChart(2, 1, [1]);
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(2, 1),
+      viewport: { x: 0, y: 0, zoom: 1 },
+      atlasTargetFactory: (width, height) => {
+        const context = recordingContext();
+        atlasSources.push({ context, width });
+        return target(context, new FakeCanvasImageSource(width, height));
+      }
+    });
+    renderer.renderNow();
+    expect(atlasSources).toHaveLength(1);
+    const pixelsPerCell = atlasSources[0].width / 2;
+    expect(fills(atlasSources[0].context, FABRIC)).toEqual([[0, 0, pixelsPerCell, pixelsPerCell]]);
+    // The atlas carries the fabric, so the base does not walk the mask at overview.
+    expect(fills(base, FABRIC)).toEqual([]);
+
+    renderer.setDocument({ ...document, canvasMask: new Uint8Array([0, 1]), revision: document.revision + 1 });
+    renderer.renderNow();
+    expect(atlasSources).toHaveLength(2);
+    expect(fills(atlasSources[1].context, FABRIC)).toEqual([[pixelsPerCell, 0, pixelsPerCell, pixelsPerCell]]);
     renderer.dispose();
   });
 });

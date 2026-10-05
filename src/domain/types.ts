@@ -183,6 +183,15 @@ export interface PatternDocument {
   nextBackstitchId: number;
   /** The next value allocated for a palette entry. It is never decremented. */
   nextPaletteId: number;
+  /** Workspace x of local cell (0,0); absent means 0. */
+  originX?: number;
+  /** Workspace y of local cell (0,0); absent means 0. */
+  originY?: number;
+  /**
+   * Active cells of the box, one byte per cell (1 = active). Absent means the
+   * whole box is active; a present mask is never all-ones and is never mutated.
+   */
+  canvasMask?: Uint8Array;
 }
 
 export type Pattern = PatternDocument;
@@ -244,6 +253,15 @@ export interface LayeredDocument {
   nextPaletteId: number;
   /** The next value allocated for a layer. It is never decremented. */
   nextLayerId: number;
+  /** Workspace x of local cell (0,0); absent means 0. */
+  originX?: number;
+  /** Workspace y of local cell (0,0); absent means 0. */
+  originY?: number;
+  /**
+   * Active cells of the box, one byte per cell (1 = active). Absent means the
+   * whole box is active; a present mask is never all-ones and is never mutated.
+   */
+  canvasMask?: Uint8Array;
 }
 
 export interface CreateDocumentOptions {
@@ -409,6 +427,31 @@ export interface DeleteCellSetCommand extends DomainCommand {
   readonly type: 'delete-cell-set';
   readonly indices: Uint32Array;
   readonly expectedRevision?: number;
+}
+
+/** Per-edge change of a rectangular canvas: positive grows, negative shrinks. */
+export interface CanvasEdges {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+}
+
+/** Grow or shrink a rectangular canvas edge by edge. */
+export interface CanvasResizeCommand extends DomainCommand {
+  type: 'canvas-resize';
+  edges: CanvasEdges;
+  expectedRevision?: number;
+}
+
+/** Add or remove canvas cells; the rect is in local coordinates and may reach past the box. */
+export interface CanvasCellsCommand extends DomainCommand {
+  type: 'canvas-cells';
+  operation: 'add' | 'remove';
+  rect: CropRect;
+  /** Row-major 0/1 over `rect`; absent means the whole rect. */
+  cells?: Uint8Array;
+  expectedRevision?: number;
 }
 
 export interface LayerAddCommand extends DomainCommand {

@@ -430,6 +430,8 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
   .shape-picker-menu { grid-template-columns:repeat(4,1.75rem); gap:.1rem; padding:.25rem; }
   .shape-picker-menu button { width:1.75rem; min-height:1.75rem; padding:.15rem; }
 }
+.shape-picker-menu.tool-variant-menu { grid-template-columns:repeat(2,auto); }
+.tool-variant-menu img { width:1.1rem; height:1.1rem; }
 .touch-copy-menu { position:absolute; z-index:120; display:flex; flex-wrap:nowrap; gap:.15rem; width:max-content; padding:.2rem; border:1px solid #d5cec3; border-radius:.55rem; background:#fffdf9; box-shadow:0 .5rem 1.2rem rgba(67,55,42,.2); }
 .touch-copy-menu button { flex:0 0 auto; min-width:2.75rem; min-height:2.75rem; border:1px solid #d5cec3; border-radius:.3rem; padding:.3rem .45rem; background:#fffdf9; color:#4e4842; font-size:.72rem; text-align:left; white-space:nowrap; }
 .touch-copy-menu button:disabled { opacity:.45; cursor:not-allowed; }
@@ -1195,9 +1197,8 @@ a.button { display: inline-flex; align-items: center; gap: .4rem; text-decoratio
 .layer-control-field input[aria-invalid="true"] { border-color:#a94e34; }
 .layer-background-button { display:flex; align-items:center; gap:.6rem; width:100%; padding:.4rem .5rem; border:1px solid #d5cec3; border-radius:.4rem; background:#fffdf9; color:#4e4842; text-align:left; cursor:pointer; }
 .layer-background-button:hover { border-color:#bc5a3d; background:#f1e4da; }
-.layer-background-swatch { flex:0 0 auto; width:2.2rem; height:2.2rem; border:1px solid rgba(39,35,33,.25); border-radius:.4rem; }
-.layer-background-details { display:flex; flex-direction:column; min-width:0; font-size:.72rem; line-height:1.2; }
-.layer-background-details strong { font-size:.78rem; }
+.layer-background-swatch { flex:0 0 auto; width:1.2rem; height:1.2rem; border:1px solid rgba(39,35,33,.25); border-radius:.4rem; }
+.layer-background-code { font-size:.74rem; font-weight:700; line-height:1; white-space:nowrap; }
 .canvas-actions .layer-action { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.05rem; width:3.1rem; min-width:0; height:2.4rem; border:1px solid #d5cec3; border-radius:.4rem; padding:0; background:#fffdf9; color:#4e4842; }
 .canvas-actions .layer-action:hover:not(:disabled) { border-color:#bc5a3d; background:#f1e4da; color:#88452f; }
 .canvas-actions .layer-action:disabled { color:#aaa49c; border-color:#e3ded7; cursor:not-allowed; opacity:.58; }
@@ -1229,3 +1230,50 @@ a.button { display: inline-flex; align-items: center; gap: .4rem; text-decoratio
 .rename-layer-dialog { width:min(24rem, calc(100vw - 2rem)); }
 .rename-layer-field { display:grid; gap:.35rem; margin:.5rem 0 1rem; color:#687568; font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
 .rename-layer-field input { width:100%; border:1px solid #d1c9bd; border-radius:.35rem; padding:.55rem; background:#fffdf9; color:#272321; font:inherit; font-size:.9rem; text-transform:none; letter-spacing:normal; }
+
+/* Canvas layer: Basic/Advanced toggle and the floating Basic-mode edge controls. */
+/* The Canvas settings row: Crop split button, background chip and stitch count, at the
+   2.75rem (44px) height the neighbouring View settings and Canvas controls buttons render
+   at (their `.canvas-actions button` min-height). These rules are scoped under
+   .canvas-actions so they win over `.canvas-actions button`. */
+.canvas-actions .layer-controls-canvas { flex-wrap:nowrap; }
+.crop-split-button { display:inline-flex; flex:0 0 auto; align-items:stretch; gap:0; }
+.canvas-actions .crop-split-button button { display:grid; place-items:center; height:2.75rem; min-height:2.75rem; border:1px solid #d5cec3; background:#fffdf9; color:#4e4842; font:inherit; font-size:.74rem; font-weight:700; cursor:pointer; }
+.canvas-actions .crop-split-button .crop-split-main { min-width:5.6rem; margin:0; border-radius:.4rem 0 0 .4rem; padding:0 .7rem; }
+.canvas-actions .crop-split-button .crop-split-arrow { min-width:2rem; margin:0 0 0 -1px; border-radius:0 .4rem .4rem 0; padding:0 .45rem; }
+.canvas-actions .crop-split-button button:hover { border-color:#bc5a3d; background:#f1e4da; color:#88452f; }
+.canvas-actions .crop-split-button .crop-split-main[aria-pressed="true"] { border-color:#bc5a3d; background:#bc5a3d; color:#fffdf9; }
+/* The arrow overlaps the main half by 1px; matching its left border keeps the join a single hairline. */
+.canvas-actions .crop-split-button .crop-split-main[aria-pressed="true"] + .crop-split-arrow,
+.canvas-actions .crop-split-button .crop-split-main:hover + .crop-split-arrow { border-left-color:#bc5a3d; }
+.canvas-actions .crop-split-button .crop-split-arrow[aria-expanded="true"] { border-color:#bc5a3d; background:#f1e4da; color:#88452f; }
+/* While crop is active the whole split button reads as pressed: the arrow fills too, and a
+   translucent light divider keeps the two halves distinct. These follow the rules above so
+   they win at equal specificity. */
+.canvas-actions .crop-split-button .crop-split-main[aria-pressed="true"] + .crop-split-arrow { border-color:#bc5a3d; border-left-color:rgba(255,253,249,.45); background:#bc5a3d; color:#fffdf9; }
+.canvas-actions .crop-split-button .crop-split-main[aria-pressed="true"]:hover,
+.canvas-actions .crop-split-button .crop-split-main[aria-pressed="true"] + .crop-split-arrow:hover,
+.canvas-actions .crop-split-button .crop-split-main[aria-pressed="true"] + .crop-split-arrow[aria-expanded="true"] { border-color:#88452f; background:#88452f; color:#fffdf9; }
+.canvas-actions .crop-split-button .crop-split-main[aria-pressed="true"]:hover + .crop-split-arrow,
+.canvas-actions .crop-split-button .crop-split-main[aria-pressed="true"] + .crop-split-arrow:hover,
+.canvas-actions .crop-split-button .crop-split-main[aria-pressed="true"] + .crop-split-arrow[aria-expanded="true"] { border-left-color:rgba(255,253,249,.45); }
+.canvas-actions .crop-split-button button:focus-visible { position:relative; z-index:1; outline:2px solid #bc5a3d; outline-offset:1px; }
+.canvas-actions .layer-controls-canvas .layer-background-button { display:flex; align-items:center; flex:0 0 auto; gap:.4rem; width:auto; height:2.75rem; min-height:2.75rem; padding:0 .55rem; font-size:.74rem; }
+/* The small label plus the select fill the same 2.75rem row. */
+.canvas-actions .layer-controls-canvas .layer-control-field select { height:2.05rem; }
+.crop-mode-menu button[aria-checked="true"] { background:#f1e4da; color:#88452f; }
+.crop-mode-menu button[aria-checked="true"]::before { content:"✓ "; }
+.crop-mode-menu button:disabled { color:#aaa49c; cursor:not-allowed; }
+.canvas-edge-controls { position:absolute; inset:0; z-index:110; pointer-events:none; }
+.canvas-edge-cluster { position:absolute; display:flex; gap:4px; pointer-events:none; }
+.canvas-edge-cluster-vertical { flex-direction:column; }
+.canvas-edge-button { position:relative; display:flex; align-items:center; justify-content:center; width:22px; height:22px; border:1px solid #d5cec3; border-radius:.3rem; padding:0; background:#fffdf9; color:#4e4842; font-size:.8rem; font-weight:700; line-height:1; box-shadow:0 .15rem .4rem rgba(67,55,42,.18); cursor:pointer; pointer-events:auto; touch-action:none; }
+/* A larger invisible hit area: 2px along the edge (half the 4px gap, so neighbours never overlap) and 7px across it. */
+.canvas-edge-button::after { content:""; position:absolute; inset:-7px -2px; }
+.canvas-edge-cluster-vertical .canvas-edge-button::after { inset:-2px -7px; }
+.canvas-edge-button:hover:not(:disabled), .canvas-edge-button:focus-visible { border-color:#bc5a3d; color:#88452f; outline:2px solid #bc5a3d; outline-offset:1px; }
+.canvas-edge-button:disabled { color:#aaa49c; border-color:#e3ded7; opacity:.7; cursor:not-allowed; }
+.canvas-edge-handle { background:#f1e4da; color:#88452f; cursor:grab; }
+.canvas-edge-cluster:not(.canvas-edge-cluster-vertical) .canvas-edge-handle { cursor:ns-resize; }
+.canvas-edge-cluster-vertical .canvas-edge-handle { cursor:ew-resize; }
+.canvas-edge-handle[aria-pressed="true"] { border-color:#bc5a3d; background:#bc5a3d; color:#fffdf9; }

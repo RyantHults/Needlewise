@@ -240,6 +240,28 @@ describe('flattening', () => {
     const small = layered(2, 2);
     expect(cache.update(small).kind).toHaveLength(4);
   });
+
+  it('shares the canvas fields with surfaces and the composite, and rebuilds when they change', () => {
+    const doc = layered(2, 2);
+    expect('canvasMask' in flattenDocument(doc)).toBe(false);
+    expect('originX' in layerSurface(doc, 1)).toBe(false);
+    run(doc, 1, { type: 'set-full', x: 0, y: 0, color: 1 });
+    const cache = new FlattenCache();
+    const before = cache.full(doc);
+    const mask = new Uint8Array([1, 1, 1, 0]);
+    const masked: LayeredDocument = { ...doc, canvasMask: mask, originX: -3, originY: 2 };
+    expect(layerSurface(masked, 1).canvasMask).toBe(mask);
+    expect(layerSurface(masked, 2).originX).toBe(-3);
+    expect(flattenDocument(masked).canvasMask).toBe(mask);
+    const touched = cache.touch(masked);
+    expect(touched.kind).not.toBe(before.kind);
+    expect(touched.canvasMask).toBe(mask);
+    expect([touched.originX, touched.originY]).toEqual([-3, 2]);
+    const moved = cache.update({ ...masked, originY: 5 });
+    expect(moved.kind).not.toBe(touched.kind);
+    expect(moved.originY).toBe(5);
+    expect(cache.update({ ...masked, originY: 5 }).kind).toBe(moved.kind);
+  });
 });
 
 describe('layer queries', () => {
@@ -279,10 +301,11 @@ describe('layer queries', () => {
     expect(commandScope({ type: 'palette-merge' })).toBe('document');
     expect(commandScope({ type: 'mergePalette' })).toBe('document');
     expect(commandScope({ type: 'document-settings-update' })).toBe('document');
-    expect(commandScope({ type: 'rotate-cw' })).toBe('document');
-    expect(commandScope({ type: 'mirror-horizontal' })).toBe('document');
-    expect(commandScope({ type: 'crop' })).toBe('document');
     expect(commandScope({ type: 'layer-merge' })).toBe('structure');
+    expect(commandScope({ type: 'canvas-resize' })).toBe('canvas');
+    expect(commandScope({ type: 'canvasCells' })).toBe('canvas');
+    expect(commandScope({ type: 'batch', commands: [{ type: 'palette-merge' }, { type: 'canvas-cells' }] })).toBe('canvas');
+    expect(commandScope({ type: 'batch', commands: [{ type: 'layer-add' }, { type: 'canvas-cells' }] })).toBe('structure');
     expect(commandScope({ type: 'batch', commands: [{ type: 'layer-add' }, { type: 'paste-fragment' }] })).toBe('structure');
     expect(commandScope({ type: 'batch', commands: [{ type: 'set-full' }, { type: 'add-backstitch' }] })).toBe('layer');
 

@@ -62,6 +62,42 @@ describe('TraceImageControls lifecycle', () => {
   });
 });
 
+describe('TraceImageControls canvas origin', () => {
+  it('keeps the image over the same stitches when the canvas grows left, and again on undo, without re-decoding', async () => {
+    decodeTraceImageMock.mockClear();
+    const controller = { current: undefined as { chartBounds?: unknown } | undefined, setTraceImage: vi.fn((value: { chartBounds?: unknown }) => { controller.current = value; }), getTraceImage: vi.fn(() => controller.current), clearTraceImage: vi.fn(() => { controller.current = undefined; }) };
+    // Persisted bounds are in workspace coordinates.
+    const descriptor = { assetId: 'trace', mimeType: 'image/png' as const, width: 2, height: 2, crop: { x: 0, y: 0, width: 1, height: 1 }, chartBounds: { x: 2, y: 1, width: 4, height: 4 }, traceVisible: true, opacity: 1 };
+    const workspace = { sourceImage: descriptor, getAsset: () => ({ id: 'trace', name: 'trace.png', mimeType: 'image/png', data: new Uint8Array([1]), checksum: '0'.repeat(64) }) } as never;
+    const { rerender, unmount } = render(<TraceImageControls workspace={workspace} document={{ width: 8, height: 8 } as never} controller={controller as never} />);
+    await waitFor(() => expect(controller.current?.chartBounds).toEqual({ x: 2, y: 1, width: 4, height: 4 }));
+
+    // Grow left by 3: local x of the same stitches is 3 larger.
+    rerender(<TraceImageControls workspace={workspace} document={{ width: 11, height: 8, originX: -3 } as never} controller={controller as never} />);
+    expect(controller.current?.chartBounds).toEqual({ x: 5, y: 1, width: 4, height: 4 });
+    // Undo restores the origin and the local bounds; no double shift.
+    rerender(<TraceImageControls workspace={workspace} document={{ width: 8, height: 8 } as never} controller={controller as never} />);
+    expect(controller.current?.chartBounds).toEqual({ x: 2, y: 1, width: 4, height: 4 });
+    expect(decodeTraceImageMock).toHaveBeenCalledTimes(1);
+    unmount();
+  });
+
+  it('stores imported bounds in workspace coordinates and hands local bounds to the controller', async () => {
+    const controller = { current: undefined as unknown, setTraceImage: vi.fn((value: unknown) => { controller.current = value; }), getTraceImage: vi.fn(() => controller.current), clearTraceImage: vi.fn() };
+    const replaceSourceImage = vi.fn(async () => undefined);
+    const workspace = { sourceImage: undefined, getAsset: () => undefined, replaceSourceImage } as never;
+    const { unmount } = render(<TraceImageControls workspace={workspace} document={{ width: 100, height: 50, originX: -4, originY: 2 } as never} controller={controller as never} />);
+    const input = document.querySelector('.visually-hidden') as HTMLInputElement;
+    const file = new File([new Uint8Array(24)], 'ref.png', { type: 'image/png' });
+    vi.spyOn(input, 'files', 'get').mockReturnValue({ 0: file, length: 1 } as unknown as FileList);
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    await waitFor(() => expect(replaceSourceImage).toHaveBeenCalled());
+    expect(replaceSourceImage).toHaveBeenCalledWith(expect.objectContaining({ settings: expect.objectContaining({ chartBounds: { x: 30, y: 11, width: 32, height: 32 } }) }));
+    expect(controller.setTraceImage).toHaveBeenCalledWith(expect.objectContaining({ chartBounds: { x: 34, y: 9, width: 32, height: 32 } }));
+    unmount();
+  });
+});
+
 describe('TraceImageControls reference image tools', () => {
   const descriptor = { assetId: 'trace', mimeType: 'image/png' as const, width: 2, height: 2, crop: { x: 0, y: 0, width: 1, height: 1 }, chartBounds: { x: 0, y: 0, width: 2, height: 2 }, traceVisible: true, opacity: 1 };
 

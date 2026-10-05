@@ -22,6 +22,7 @@ import {
 } from './types';
 import { SYMBOL_IDS } from '../symbols';
 import { assertValidDocument } from './validation';
+import { canvasFields } from './canvas';
 
 const UINT16_MAX = 0xffff;
 const UINT32_MAX = 0xffffffff;
@@ -289,7 +290,8 @@ export function cloneDocument(document: PatternDocument): PatternDocument {
     settings: clonePatternSettings(document.settings),
     revision: document.revision,
     nextBackstitchId: document.nextBackstitchId,
-    nextPaletteId: document.nextPaletteId
+    nextPaletteId: document.nextPaletteId,
+    ...canvasFields(document)
   };
 }
 

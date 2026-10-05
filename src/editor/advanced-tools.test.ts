@@ -539,17 +539,13 @@ describe('advanced headless editor tools', () => {
     expect(direct.uiStore.getState().overlay.selection).toBeUndefined();
     direct.controller.dispose();
 
-    const cropped = fixture();
-    cropped.controller.setSelection({ x: 1, y: 1 });
-    cropped.gateway.execute({ type: 'crop', x: 0, y: 0, width: 4, height: 4 });
-    expect(cropped.controller.getSelection()).toBeUndefined();
-    cropped.controller.dispose();
-
-    const rotated = fixture(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 8, height: 4, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
-    rotated.controller.setSelection({ x: 1, y: 1 });
-    rotated.gateway.execute({ type: 'rotate-cw' });
-    expect(rotated.controller.getSelection()).toBeUndefined();
-    rotated.controller.dispose();
+    // A document-wide change that keeps the dimensions keeps the selection.
+    const merged = fixture();
+    merged.controller.setSelection({ x: 1, y: 1 }, { x: 2, y: 2 });
+    merged.gateway.execute({ type: 'palette-merge', from: 1, to: 2 });
+    expect(merged.gateway.getSnapshot().document?.palette.find((entry) => entry.id === 1)?.active).toBe(false);
+    expect(merged.controller.getSelection()).toEqual({ x: 1, y: 1, width: 2, height: 2 });
+    merged.controller.dispose();
   });
 
   it('copies a local transparent fragment without completion and pastes in one transaction', () => {

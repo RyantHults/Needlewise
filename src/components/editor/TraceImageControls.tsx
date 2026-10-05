@@ -17,6 +17,22 @@ interface Props {
   filePickerRef?: MutableRefObject<(() => void) | null>;
 }
 
+type Bounds = { x: number; y: number; width: number; height: number };
+type CanvasOrigin = Pick<PatternDocument, 'originX' | 'originY'>;
+
+/**
+ * The persisted descriptor's chartBounds are in workspace coordinates (local
+ * plus the canvas origin), so they stay put when the canvas grows left or up;
+ * the controller works in local coordinates. Legacy documents have origin 0.
+ */
+export function traceBoundsToLocal(bounds: Bounds, origin: CanvasOrigin): Bounds {
+  return { ...bounds, x: bounds.x - (origin.originX ?? 0), y: bounds.y - (origin.originY ?? 0) };
+}
+
+export function traceBoundsToWorkspace(bounds: Bounds, origin: CanvasOrigin): Bounds {
+  return { ...bounds, x: bounds.x + (origin.originX ?? 0), y: bounds.y + (origin.originY ?? 0) };
+}
+
 /** A replacement decode is transferred to the source-change effect exactly once. */
 function handoffTrace(
   controller: EditorSurfaceController | null,
@@ -53,6 +69,11 @@ export function TraceImageControls({ workspace, document, controller, activeTool
   const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false);
   const removeTrigger = useRef<HTMLButtonElement>(null);
   const removeDialog = useRef<HTMLDivElement>(null);
+  const originX = document.originX ?? 0;
+  const originY = document.originY ?? 0;
+  // The decode effect reads the origin at handoff time without re-decoding when it moves.
+  const originRef = useRef<CanvasOrigin>({ originX, originY });
+  originRef.current = { originX, originY };
 
   useEffect(() => () => { mountedRef.current = false; importRequestRef.current += 1; }, []);
 
@@ -77,7 +98,7 @@ export function TraceImageControls({ workspace, document, controller, activeTool
     if (retained) handedOffReplacement.current = null;
     void (retained ? Promise.resolve(retained) : decodeTraceImage(new Blob([new Uint8Array(asset.data) as unknown as ArrayBuffer], { type: asset.mimeType }))).then((trace) => {
       if (cancelled) { disposeTraceImage(trace); return; }
-      const accepted = handoffTrace(controller, trace, { visible: source.traceVisible, opacity: source.opacity, crop: source.crop, chartBounds: source.chartBounds }, mountedRef.current);
+      const accepted = handoffTrace(controller, trace, { visible: source.traceVisible, opacity: source.opacity, crop: source.crop, chartBounds: traceBoundsToLocal(source.chartBounds, originRef.current) }, mountedRef.current);
       if (!accepted) { disposeTraceImage(trace); setStatus('Reference image could not be attached to the editor.'); return; }
       decodedAssetRef.current = source.assetId;
       setStatus(`${asset.name} ready`);
@@ -85,13 +106,15 @@ export function TraceImageControls({ workspace, document, controller, activeTool
     // A pending replacement owns the controller handoff; the old effect must
     // not clear (and thereby dispose) that bitmap during dependency cleanup.
     // Bounds/opacity/visibility changes patch the live trace below without
-    // re-decoding, so this effect only watches the asset identity (plus the
-    // document size, which can affect the initial fit).
+    // re-decoding, so this effect only watches the asset identity. Canvas
+    // resizes change the document size and origin but not the asset; the patch
+    // effect re-places the image for them.
     return () => { cancelled = true; if (!handedOffReplacement.current) controller?.clearTraceImage?.(); };
-  }, [workspace, controller, descriptor?.assetId, document.width, document.height]);
+  }, [workspace, controller, descriptor?.assetId]);
 
   // Patch bounds/crop onto the live bitmap when the descriptor changes without
-  // a new asset (drag commits, arrow nudges, resize commits, and their undo).
+  // a new asset (drag commits, arrow nudges, resize commits, and their undo),
+  // or when the canvas origin moves so the local bounds must follow.
   // Re-decoding here would be wasteful; the asset effect above owns bitmaps.
   useEffect(() => {
     const source = workspace.sourceImage;
@@ -99,21 +122,22 @@ export function TraceImageControls({ workspace, document, controller, activeTool
     if (decodedAssetRef.current !== null && decodedAssetRef.current !== source.assetId) return;
     const trace = controller.getTraceImage?.();
     if (!trace) return;
+    const local = traceBoundsToLocal(source.chartBounds, { originX, originY });
     const sameBounds = trace.chartBounds !== undefined
-      && trace.chartBounds.x === source.chartBounds.x
-      && trace.chartBounds.y === source.chartBounds.y
-      && trace.chartBounds.width === source.chartBounds.width
-      && trace.chartBounds.height === source.chartBounds.height;
+      && trace.chartBounds.x === local.x
+      && trace.chartBounds.y === local.y
+      && trace.chartBounds.width === local.width
+      && trace.chartBounds.height === local.height;
     const sameCrop = (trace.crop ?? undefined) === undefined && source.crop === undefined
       || trace.crop !== undefined && trace.crop.x === source.crop.x && trace.crop.y === source.crop.y && trace.crop.width === source.crop.width && trace.crop.height === source.crop.height;
     if (sameBounds && sameCrop) return;
     try {
-      controller.setTraceImage({ ...trace, crop: { ...source.crop }, chartBounds: { ...source.chartBounds } });
+      controller.setTraceImage({ ...trace, crop: { ...source.crop }, chartBounds: local });
     } catch {
       // A failed patch leaves the last good trace in place; the asset effect
       // will re-decode on the next asset change.
     }
-  }, [workspace, controller, descriptor?.assetId, descriptor?.crop.x, descriptor?.crop.y, descriptor?.crop.width, descriptor?.crop.height, descriptor?.chartBounds.x, descriptor?.chartBounds.y, descriptor?.chartBounds.width, descriptor?.chartBounds.height]);
+  }, [workspace, controller, descriptor?.assetId, descriptor?.crop.x, descriptor?.crop.y, descriptor?.crop.width, descriptor?.crop.height, descriptor?.chartBounds.x, descriptor?.chartBounds.y, descriptor?.chartBounds.width, descriptor?.chartBounds.height, originX, originY]);
 
   // Sync visibility/opacity (including undo/redo) without re-decoding.
   useEffect(() => {
@@ -246,7 +270,7 @@ export function TraceImageControls({ workspace, document, controller, activeTool
       // The descriptor describes the persisted ORIGINAL asset, so its
       // dimensions are the original decode dimensions (the overlay trace is
       // pre-scaled to the working bound and reports them in width/height).
-      await workspace.replaceSourceImage({ asset: { id, name: file.name, mimeType: file.type, data: file }, settings: { assetId: id, mimeType: file.type as SourceImageMimeType, width: decoded.sourceWidth ?? decoded.width, height: decoded.sourceHeight ?? decoded.height, crop: { x: 0, y: 0, width: 1, height: 1 }, chartBounds, traceVisible: true, opacity: 1 } });
+      await workspace.replaceSourceImage({ asset: { id, name: file.name, mimeType: file.type, data: file }, settings: { assetId: id, mimeType: file.type as SourceImageMimeType, width: decoded.sourceWidth ?? decoded.width, height: decoded.sourceHeight ?? decoded.height, crop: { x: 0, y: 0, width: 1, height: 1 }, chartBounds: traceBoundsToWorkspace(chartBounds, originRef.current), traceVisible: true, opacity: 1 } });
       const accepted = handoffTrace(controller, decoded, { visible: true, opacity: 1, crop: { x: 0, y: 0, width: 1, height: 1 }, chartBounds }, mountedRef.current && request === importRequestRef.current);
       if (!accepted) throw new Error('Reference image could not be attached to the editor.');
       decodedAssetRef.current = id;

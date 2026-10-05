@@ -294,6 +294,162 @@ class RepositoryPreparationWorker {
   }
 }
 
+describe('binary schema v4 canvas fields', () => {
+  /** 3x2 box with the top-left cell removed and one stitch on an active cell. */
+  function canvasDocument(width = 3, height = 2, holes: readonly number[] = [0]): LayeredDocument {
+    const document = createDocument({ width, height, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    const mask = new Uint8Array(width * height).fill(1);
+    for (const hole of holes) mask[hole] = 0;
+    document.canvasMask = mask;
+    stitchLayer(document).kind[width * height - 1] = CellKind.Full;
+    stitchLayer(document).colors[(width * height - 1) * 4] = 1;
+    return document;
+  }
+
+  /** Offset of the origin fields: right after aidaCount and nextLayerId, which are the last settings. */
+  function originOffset(bytes: Uint8Array, document: LayeredDocument): number {
+    const tail = new Uint8Array(12);
+    const view = new DataView(tail.buffer);
+    view.setFloat64(0, document.settings.aidaCount, true);
+    view.setUint32(8, document.nextLayerId, true);
+    for (let offset = 40; offset + 12 <= bytes.length; offset += 1) {
+      if (tail.every((byte, index) => bytes[offset + index] === byte)) return offset + 12;
+    }
+    throw new Error('Origin offset not found.');
+  }
+
+  function expectInvalid(bytes: Uint8Array): void {
+    expect(() => decodeDocumentWithInfo(bytes)).toThrow(expect.objectContaining({ code: 'invalid-document' }));
+  }
+
+  it('round-trips a rectangular document exactly without adding origin or mask fields', () => {
+    const original = makeDocument();
+    const bytes = encodeDocument(original);
+    const { document, binaryVersion, legacy } = decodeDocumentWithInfo(bytes);
+
+    expect(binaryVersion).toBe(4);
+    expect(legacy).toBe(false);
+    expect(bytes[11]).toBe(0);
+    expect(document).not.toHaveProperty('originX');
+    expect(document).not.toHaveProperty('originY');
+    expect(document).not.toHaveProperty('canvasMask');
+    expect(document).toEqual(original);
+    expect(encodeDocument(document)).toEqual(bytes);
+  });
+
+  it('round-trips a mask with negative origins', () => {
+    const original = canvasDocument();
+    original.originX = -7;
+    original.originY = -2_000_000;
+    const bytes = encodeDocument(original);
+    const { document } = decodeDocumentWithInfo(bytes);
+
+    expect(bytes[11]).toBe(1);
+    expect(document.originX).toBe(-7);
+    expect(document.originY).toBe(-2_000_000);
+    expect(document.canvasMask).toEqual(original.canvasMask);
+    expect(document).toEqual(original);
+    expect(encodeDocument(document)).toEqual(bytes);
+  });
+
+  it('round-trips an origin without a mask and leaves a zero axis absent', () => {
+    const original = createDocument({ width: 2, height: 2, palette: [] });
+    original.originX = 5;
+    const { document } = decodeDocumentWithInfo(encodeDocument(original));
+
+    expect(document.originX).toBe(5);
+    expect(document).not.toHaveProperty('originY');
+    expect(document).not.toHaveProperty('canvasMask');
+  });
+
+  it('packs the mask LSB first and round-trips a cell count that is not a multiple of 8', () => {
+    const original = canvasDocument(5, 3, [0, 7, 9]);
+    const bytes = encodeDocument(original);
+    const maskOffset = originOffset(bytes, original) + 8;
+
+    // 15 cells: cells 0, 7 and 9 are holes.
+    expect(bytes[maskOffset]).toBe(0b01111110);
+    expect(bytes[maskOffset + 1]).toBe(0b01111101);
+    expect(decodeDocument(bytes).canvasMask).toEqual(original.canvasMask);
+    expect(decodeDocument(bytes)).toEqual(original);
+  });
+
+  it('still decodes a v3 document, with no origin or mask, as non-legacy', () => {
+    const original = makeDocument();
+    const v4 = encodeDocument(original);
+    const split = originOffset(v4, original);
+    const v3 = new Uint8Array(v4.length - 8);
+    v3.set(v4.subarray(0, split), 0);
+    v3.set(v4.subarray(split + 8), split);
+    new DataView(v3.buffer).setUint16(8, 3, true);
+    const decoded = decodeDocumentWithInfo(v3);
+
+    expect(decoded).toMatchObject({ binaryVersion: 3, legacy: false });
+    expect(decoded.document).toEqual(original);
+    expect(decoded.document).not.toHaveProperty('canvasMask');
+    expect(encodeDocument(decoded.document)).toEqual(v4);
+    // A v3 header cannot carry the mask flag.
+    v3[11] = 1;
+    expectInvalid(v3);
+  });
+
+  it('rejects an unknown header flag bit', () => {
+    const bytes = encodeDocument(canvasDocument());
+    bytes[11] |= 2;
+    expectInvalid(bytes);
+    const rectangular = encodeDocument(makeDocument());
+    rectangular[11] = 2;
+    expectInvalid(rectangular);
+  });
+
+  it('rejects a flagged mask that is truncated', () => {
+    const original = canvasDocument(5, 3, [0]);
+    const bytes = encodeDocument(original);
+    const maskOffset = originOffset(bytes, original) + 8;
+    // Drop the last mask byte and everything after it would shift; cut the document inside the mask instead.
+    expectInvalid(bytes.slice(0, maskOffset + 1));
+    expectInvalid(bytes.slice(0, maskOffset));
+  });
+
+  it('rejects a mask flag set on a document that holds no mask bytes', () => {
+    const bytes = encodeDocument(makeDocument());
+    bytes[11] = 1;
+    expectInvalid(bytes);
+  });
+
+  it('rejects nonzero padding bits in the mask', () => {
+    const original = canvasDocument(5, 3, [0]);
+    const bytes = encodeDocument(original);
+    bytes[originOffset(bytes, original) + 8 + 1] |= 0x80;
+    expectInvalid(bytes);
+  });
+
+  it('rejects an all-ones mask', () => {
+    const original = canvasDocument(5, 3, [0]);
+    const bytes = encodeDocument(original);
+    const maskOffset = originOffset(bytes, original) + 8;
+    bytes[maskOffset] = 0xff;
+    bytes[maskOffset + 1] = 0x7f;
+    expectInvalid(bytes);
+    const stored = decodeDocument(encodeDocument(original));
+    stored.canvasMask = new Uint8Array(15).fill(1);
+    expect(() => encodeDocument(stored)).toThrow(expect.objectContaining({ code: 'invalid-document' }));
+  });
+
+  it('rejects stitch content in a hole', () => {
+    const original = canvasDocument(5, 3, [0, 7]);
+    const bytes = encodeDocument(original);
+    const maskOffset = originOffset(bytes, original) + 8;
+    // Make the stitched last cell (14) a hole.
+    bytes[maskOffset + 1] &= ~(1 << 6);
+    expectInvalid(bytes);
+    const stored = decodeDocument(encodeDocument(original));
+    stored.canvasMask = stored.canvasMask?.slice();
+    if (stored.canvasMask) stored.canvasMask[14] = 0;
+    expect(() => encodeDocument(stored)).toThrow(expect.objectContaining({ code: 'invalid-document' }));
+  });
+});
+
 describe('durable document history persistence', () => {
   it('round-trips detached history anchored to the exact current head', async () => {
     const repo = await repository();
@@ -341,6 +497,43 @@ describe('durable document history persistence', () => {
     }
   });
 
+  it('accepts a saved session history containing a canvas entry', async () => {
+    const base = createDocument({ width: 3, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    const editor = createEditor(base);
+    editor.execute({ type: 'set-full', layerId: STITCH_LAYER, x: 2, y: 1, color: 1 });
+    const document = executeLayered(editor, { type: 'canvas-cells', operation: 'remove', rect: { x: 0, y: 0, width: 1, height: 1 } });
+    const history = editor.exportHistory();
+    const canvasEntry = history.undo.find((entry) => entry.kind === 'canvas');
+
+    expect(document.canvasMask).toBeDefined();
+    expect(canvasEntry).toBeDefined();
+    expect(await prepareSessionHistory(document, history)).toBeDefined();
+  });
+
+  it('keeps history importable after a canvas round trip leaves a zero origin', async () => {
+    const base = createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    const editor = createEditor(base);
+    editor.execute({ type: 'set-full', layerId: STITCH_LAYER, x: 1, y: 1, color: 1 });
+    editor.execute({ type: 'canvas-resize', edges: { top: 0, right: 0, bottom: 0, left: 1 } });
+    editor.execute({ type: 'canvas-resize', edges: { top: 0, right: 0, bottom: 0, left: -1 } });
+    editor.execute({ type: 'canvas-cells', operation: 'remove', rect: { x: 0, y: 0, width: 1, height: 1 } });
+    editor.execute({ type: 'canvas-cells', operation: 'add', rect: { x: 0, y: 0, width: 1, height: 1 } });
+    const current = cloneLayeredDocument(editor.document);
+    const decoded = decodeDocumentWithInfo(encodeDocument(current)).document;
+    const history = editor.exportHistory();
+
+    const restored = createEditorFromHistory(decoded, history);
+    while (restored.canUndo) restored.undo();
+
+    expect(await prepareSessionHistory(decoded, history)).toBeDefined();
+    expect(restored.document.width).toBe(4);
+    expect(restored.document.height).toBe(4);
+    expect(restored.document.canvasMask).toBeUndefined();
+    expect(stitchLayer(cloneLayeredDocument(restored.document)).kind).toEqual(stitchLayer(base).kind);
+    expect(restored.document.originX ?? 0).toBe(0);
+    expect(restored.document.originY ?? 0).toBe(0);
+  });
+
   it('keeps settings-only history for a maximum-size document within the session persistence budget', async () => {
     const document = createDocument({ width: 1_000_000, height: 1, palette: [] });
     const editor = createEditor(document);
@@ -354,23 +547,20 @@ describe('durable document history persistence', () => {
     if (entry?.kind === 'delta') expect(entry.delta.cells.indices).toHaveLength(0);
   });
 
-  it('persists transform, replay, layer-structure and grouped history entries across a reload', async () => {
+  it('persists delta, document-wide, layer-structure and grouped history entries across a reload', async () => {
     const repo = await repository();
     try {
-      const base = createDocument({ width: 3, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+      const base = createDocument({ width: 3, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] });
       await repo.save('history-kinds', metadata(base, 'history-kinds'), base);
       const editor = createEditor(base);
       executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER, x: 0, y: 0, color: 1 });
-      executeLayered(editor, { type: 'rotate-cw' });
-      executeLayered(editor, { type: 'crop', x: 0, y: 0, width: 2, height: 2 });
-      editor.batch([layerAddCommand(LayerType.Stitch, { id: 3 }), { type: 'set-full', layerId: 3, x: 1, y: 1, color: 1 }]);
+      executeLayered(editor, { type: 'palette-merge', from: 1, to: 2 });
+      editor.batch([layerAddCommand(LayerType.Stitch, { id: 3 }), { type: 'set-full', layerId: 3, x: 1, y: 1, color: 2 }]);
       executeLayered(editor, layerRenameCommand(3, 'Renamed'));
       const document = cloneLayeredDocument(editor.document);
       const history = editor.exportHistory();
       const kinds = new Set(history.undo.map((entry) => entry.kind));
-      expect(kinds).toContain('transform');
-      expect(kinds).toContain('replay');
-      expect(kinds).toContain('group');
+      expect(kinds).toEqual(new Set(['delta', 'layers', 'group']));
       await repo.save('history-kinds', metadata(document, 'history-kinds'), document, undefined, { history });
 
       const loaded = await repo.load('history-kinds');
@@ -397,7 +587,7 @@ describe('durable document history persistence', () => {
       const base = createDocument({ width: 3, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
       await repo.save('history-save-path', metadata(base, 'history-save-path'), base);
       const editor = createEditor(base);
-      for (let step = 0; step < 20; step += 1) executeLayered(editor, { type: 'rotate-cw' });
+      for (let step = 0; step < 20; step += 1) executeLayered(editor, { type: 'document-settings-update', settings: { aidaCount: 15 + step } });
       for (let step = 0; step < 20; step += 1) executeLayered(editor, layerSetVisibilityCommand(SPECIALTY_LAYER, step % 2 === 1));
       const document = cloneLayeredDocument(editor.document);
       const history = editor.exportHistory();
@@ -889,7 +1079,7 @@ describe('binary document persistence', () => {
     expect(decoded.nextBackstitchId).toBe(original.nextBackstitchId);
   });
 
-  it('round-trips layer names, visibility, order and ids using binary schema v3', () => {
+  it('round-trips layer names, visibility, order and ids using binary schema v4', () => {
     const original = makeDocument();
     const surface = createSurface({ width: 3, height: 2, palette: [] });
     const top: StitchLayer = { id: 7, type: LayerType.Stitch, name: 'Top ✚ stitches', visible: false, kind: surface.kind.slice(), colors: surface.colors.slice(), completed: new Uint8Array(6) };
@@ -902,7 +1092,7 @@ describe('binary document persistence', () => {
     const bytes = encodeDocument(original);
     const decoded = decodeDocumentWithInfo(bytes);
 
-    expect(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint16(8, true)).toBe(3);
+    expect(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint16(8, true)).toBe(4);
     expect(decoded.legacy).toBe(false);
     expect(decoded.document.layers.map(({ id, type, name, visible }) => ({ id, type, name, visible }))).toEqual([
       { id: STITCH_LAYER, type: 'stitch', name: 'Stitches', visible: true },
@@ -918,7 +1108,7 @@ describe('binary document persistence', () => {
     expect(encodeDocument(decoded.document)).toEqual(bytes);
   });
 
-  it('does not store completion in binary schema v3', () => {
+  it('does not store completion in binary schema v4', () => {
     const original = makeDocument();
     stitchLayer(original).completed[0] = 1;
     specialtyLayer(original).backstitches.completed[0] = 1;
@@ -963,8 +1153,8 @@ describe('binary document persistence', () => {
     expect(document.palette).toEqual(surface.palette);
     expect(document.revision).toBe(surface.revision);
     expect(document.nextBackstitchId).toBe(surface.nextBackstitchId);
-    // Re-encoding writes v3.
-    expect(decodeDocumentWithInfo(encodeDocument(document)).binaryVersion).toBe(3);
+    // Re-encoding writes v4.
+    expect(decodeDocumentWithInfo(encodeDocument(document)).binaryVersion).toBe(4);
   });
 
   it('upgrades legacy binary schema v1 documents with the neutral Aida background', () => {
@@ -1011,7 +1201,7 @@ describe('binary document persistence', () => {
 
     const wrongVersion = original.slice();
     const wrongVersionView = new DataView(wrongVersion.buffer);
-    wrongVersionView.setUint16(8, 4, true);
+    wrongVersionView.setUint16(8, 5, true);
     wrongVersionView.setUint32(32, 0xffffffff, true);
     expect(() => decodeDocument(wrongVersion)).toThrow(/schema is unsupported/i);
   });
@@ -1270,14 +1460,14 @@ describe('binary document persistence', () => {
       expect((await repo.db.projects.get('legacy-aida'))?.aidaCount).toBe(18);
       expect((await repo.load('legacy-aida'))?.document.settings.aidaCount).toBe(18);
 
-      // A replace commit writes v3 with the count in settings and drops the metadata copy.
+      // A replace commit writes v4 with the count in settings and drops the metadata copy.
       const next = applyCommand(loaded.document, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
       await repo.save('legacy-aida', { ...retainedMetadata, revision: next.revision }, next);
       expect((await repo.db.projects.get('legacy-aida'))?.aidaCount).toBeUndefined();
       expect((await repo.load('legacy-aida'))?.document.settings.aidaCount).toBe(18);
       const currentBytes = (await repo.db.currentSnapshots.get('legacy-aida'))?.bytes;
       if (!currentBytes) throw new Error('Missing current snapshot.');
-      expect(decodeDocumentWithInfo(currentBytes).binaryVersion).toBe(3);
+      expect(decodeDocumentWithInfo(currentBytes).binaryVersion).toBe(4);
     } finally {
       await closeRepository(repo);
     }

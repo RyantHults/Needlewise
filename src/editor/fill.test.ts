@@ -189,6 +189,28 @@ describe('component-graph fill protocol and traversal', () => {
     expect(result.masks).toEqual(new Uint8Array(8).fill(1));
   });
 
+  it('treats inactive canvas cells as walls and copies the mask', () => {
+    // A 4×3 grid whose column x = 2 is a hole.
+    const canvasMask = new Uint8Array([1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1]);
+    const empty = createFillRequest({ ...input(4, 3, 0, new Uint8Array(12).fill(CellKind.Empty), new Uint16Array(48)), canvasMask });
+    expect(empty.canvasMask).toEqual(canvasMask);
+    expect(empty.canvasMask).not.toBe(canvasMask);
+    expect(runExactFloodFill(empty).indices).toEqual(new Uint32Array([0, 1, 4, 5, 8, 9]));
+    // A full component graph stops at the hole too, even where the hole holds a matching colour.
+    const full = createFillRequest({ ...input(4, 3, 0), canvasMask });
+    expect(runExactFloodFill(full).indices).toEqual(new Uint32Array([0, 1, 4, 5, 8, 9]));
+    // Without a mask the same grid fills everywhere.
+    expect(runExactFloodFill(createFillRequest(input(4, 3, 0))).indices).toHaveLength(12);
+  });
+
+  it('rejects a malformed canvas mask or a start on an inactive cell', () => {
+    const empty = (canvasMask: Uint8Array, startIndex = 0) => ({ ...input(2, 2, startIndex, new Uint8Array(4).fill(CellKind.Empty), new Uint16Array(16)), canvasMask });
+    expect(() => createFillRequest(empty(new Uint8Array(3).fill(1)))).toThrow(FillProtocolError);
+    expect(() => createFillRequest(empty(new Uint8Array([1, 1, 2, 1])))).toThrow(FillProtocolError);
+    expect(() => createFillRequest(empty(new Uint8Array([0, 1, 1, 1])))).toThrow(FillProtocolError);
+    expect(createFillRequest(empty(new Uint8Array([0, 1, 1, 1]), 1)).startIndex).toBe(1);
+  });
+
   it('follows compatible components across vertical edges and rejects endpoint-only topology', () => {
     const kind = new Uint8Array([CellKind.Quarters, CellKind.Quarters]);
     const colors = new Uint16Array(8);

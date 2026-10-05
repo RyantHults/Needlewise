@@ -36,6 +36,8 @@ export interface FillRequestInput {
   readonly startMask: number;
   readonly kind: Uint8Array;
   readonly colors: Uint16Array;
+  /** The canvas's active cells (1 = active); absent means every cell is active. */
+  readonly canvasMask?: Uint8Array;
 }
 
 export interface FillRequestMessage {
@@ -53,6 +55,8 @@ export interface FillRequestMessage {
   readonly kind: Uint8Array;
   /** A copied four-slot-per-cell color plane. */
   readonly colors: Uint16Array;
+  /** A copied 0/1 plane of active canvas cells; inactive cells are walls. Absent means none are. */
+  readonly canvasMask?: Uint8Array;
 }
 
 export interface FillResultMessage {
@@ -219,6 +223,18 @@ function assertPlanes(kind: unknown, colors: unknown, cellCount: number): assert
   }
 }
 
+function assertCanvasMask(mask: unknown, cellCount: number): void {
+  if (mask === undefined) return;
+  if (!isUint8Plane(mask) || mask.length !== cellCount) {
+    throw new FillProtocolError(`canvasMask must be a Uint8Array with exactly ${String(cellCount)} cells.`);
+  }
+  for (const value of mask) if (value > 1) throw new FillProtocolError('canvasMask must hold only 0 or 1.');
+}
+
+function isActiveFillCell(request: FillRequestMessage, index: number): boolean {
+  return request.canvasMask === undefined || request.canvasMask[index] === 1;
+}
+
 type EdgeSpan = readonly [number, number];
 type EdgeSpans = readonly [EdgeSpan, EdgeSpan, EdgeSpan, EdgeSpan];
 
@@ -324,7 +340,9 @@ export function assertValidFillRequest(value: unknown): asserts value is FillReq
   const cellCount = (value.width as number) * (value.height as number);
   isNonNegativeInteger(value.startIndex, 'startIndex', cellCount - 1);
   assertPlanes(value.kind, value.colors, cellCount);
+  assertCanvasMask(value.canvasMask, cellCount);
   if (!isSingleComponentMask(value.startMask as number)) throw new FillProtocolError('startMask must contain exactly one component bit.');
+  if (!isActiveFillCell(value as unknown as FillRequestMessage, value.startIndex as number)) throw new FillProtocolError('startIndex must be an active canvas cell.');
   startComponentForRequest(value as unknown as FillRequestMessage);
 }
 
@@ -389,7 +407,8 @@ export function createFillRequest(input: FillRequestInput): FillRequestMessage {
     startMask: input.startMask,
     // These copies are the only planes that are ever sent to a worker.
     kind: isUint8Plane(input.kind) ? new Uint8Array(input.kind) : input.kind,
-    colors: isUint16Plane(input.colors) ? new Uint16Array(input.colors) : input.colors
+    colors: isUint16Plane(input.colors) ? new Uint16Array(input.colors) : input.colors,
+    ...(input.canvasMask === undefined ? {} : { canvasMask: isUint8Plane(input.canvasMask) ? new Uint8Array(input.canvasMask) : input.canvasMask })
   } as FillRequestMessage;
   assertValidFillRequest(request);
   return request;
@@ -548,6 +567,7 @@ function edgeOverlap(left: EdgeSpan, right: EdgeSpan): boolean {
 }
 
 function visitNeighbor(state: FillRunState, index: number, component: FillComponent, edge: number, neighbor: number): void {
+  if (!isActiveFillCell(state.request, neighbor)) return;
   const neighborComponents = componentsForCell(state.request, neighbor);
   const opposite = (edge + 2) % 4;
   for (const candidate of neighborComponents) {
@@ -577,7 +597,7 @@ function processFillBatch(state: FillRunState, cancellation: FillCancellation | 
       const x = index % width;
       const y = Math.floor(index / width);
       const visitEmptyNeighbor = (neighbor: number): void => {
-        if (state.request.kind[neighbor] !== CellKind.Empty || state.visited[neighbor] !== 0) return;
+        if (state.request.kind[neighbor] !== CellKind.Empty || state.visited[neighbor] !== 0 || !isActiveFillCell(state.request, neighbor)) return;
         state.visited[neighbor] = 1;
         state.queue[state.tail++] = neighbor;
       };
@@ -697,7 +717,8 @@ function copyFillRequest(request: FillRequestMessage): FillRequestMessage {
   return {
     ...request,
     kind: new Uint8Array(request.kind),
-    colors: new Uint16Array(request.colors)
+    colors: new Uint16Array(request.colors),
+    ...(request.canvasMask === undefined ? {} : { canvasMask: new Uint8Array(request.canvasMask) })
   };
 }
 
@@ -776,7 +797,7 @@ export class FillWorkerClient {
     if (worker) {
       try {
         const wireRequest = copyFillRequest(request);
-        worker.postMessage(wireRequest, [wireRequest.kind.buffer, wireRequest.colors.buffer]);
+        worker.postMessage(wireRequest, [wireRequest.kind.buffer, wireRequest.colors.buffer, ...(wireRequest.canvasMask ? [wireRequest.canvasMask.buffer] : [])]);
         pending.sent = true;
       } catch (error) {
         this.handleWorkerFailure(new FillWorkerTransportError(eventMessage(error, 'The fill worker could not receive the request.')));

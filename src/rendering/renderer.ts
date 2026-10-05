@@ -7,7 +7,9 @@ import {
   DEFAULT_LOD_THRESHOLDS,
   DEFAULT_RENDERER_STYLE,
   RenderLod,
+  type CanvasCellSet,
   type CanvasContextAdapter,
+  type CanvasEditingOverlay,
   type CanvasMetrics,
   type CanvasRenderer,
   type CanvasRendererOptions,
@@ -344,6 +346,149 @@ function patternCanvasRect(
   );
 }
 
+/**
+ * Emit each maximal run [from, to) of cell positions along one grid line of a
+ * masked canvas whose edge is drawn. A vertical line `line` runs along rows,
+ * a horizontal one along columns; positions must lie inside the box. With
+ * `outline` an edge is drawn where exactly one side is active (the canvas
+ * outline), otherwise where at least one side is.
+ */
+function forEachEdgeRun(
+  mask: Uint8Array,
+  width: number,
+  height: number,
+  vertical: boolean,
+  line: number,
+  from: number,
+  to: number,
+  outline: boolean,
+  emit: (from: number, to: number) => void
+): void {
+  let runStart = -1;
+  for (let position = from; position < to; position += 1) {
+    const before = vertical
+      ? line > 0 && mask[position * width + line - 1] === 1
+      : line > 0 && mask[(line - 1) * width + position] === 1;
+    const after = vertical
+      ? line < width && mask[position * width + line] === 1
+      : line < height && mask[line * width + position] === 1;
+    const drawn = outline ? before !== after : before || after;
+    if (drawn && runStart < 0) runStart = position;
+    else if (!drawn && runStart >= 0) {
+      emit(runStart, position);
+      runStart = -1;
+    }
+  }
+  if (runStart >= 0) emit(runStart, to);
+}
+
+/**
+ * The edge runs of every grid line of one mask, in compressed rows: line i's
+ * runs are the [from, to) pairs at `runs[2 * k]`, `runs[2 * k + 1]` for k in
+ * `starts[i] .. starts[i + 1]`, in increasing order.
+ */
+interface EdgeRuns {
+  readonly starts: Uint32Array;
+  readonly runs: Uint32Array;
+}
+
+interface MaskEdges {
+  readonly width: number;
+  readonly vertical: EdgeRuns;
+  readonly horizontal: EdgeRuns;
+}
+
+/** Outline edges (exactly one active side) and grid edges (at least one) per mask, built once per mask reference. */
+const maskOutlineEdges = new WeakMap<Uint8Array, MaskEdges>();
+const maskGridEdges = new WeakMap<Uint8Array, MaskEdges>();
+
+function buildEdgeRuns(mask: Uint8Array, width: number, height: number, vertical: boolean, outline: boolean): EdgeRuns {
+  const lines = (vertical ? width : height) + 1;
+  const length = vertical ? height : width;
+  const starts = new Uint32Array(lines + 1);
+  const runs: number[] = [];
+  for (let line = 0; line < lines; line += 1) {
+    starts[line] = runs.length / 2;
+    forEachEdgeRun(mask, width, height, vertical, line, 0, length, outline, (from, to) => {
+      runs.push(from, to);
+    });
+  }
+  starts[lines] = runs.length / 2;
+  return { starts, runs: Uint32Array.from(runs) };
+}
+
+/** The cached edge runs of a document's mask, rebuilt only when the mask object (or its width) changes. */
+function maskEdges(mask: Uint8Array, width: number, height: number, outline: boolean): MaskEdges {
+  const cache = outline ? maskOutlineEdges : maskGridEdges;
+  const cached = cache.get(mask);
+  if (cached?.width === width) return cached;
+  const edges = {
+    width,
+    vertical: buildEdgeRuns(mask, width, height, true, outline),
+    horizontal: buildEdgeRuns(mask, width, height, false, outline)
+  };
+  cache.set(mask, edges);
+  return edges;
+}
+
+/** Emit a line's cached runs clipped to [from, to); only the runs of that one line are visited. */
+function forEachCachedRun(edges: EdgeRuns, line: number, from: number, to: number, emit: (from: number, to: number) => void): void {
+  const end = edges.starts[line + 1];
+  for (let run = edges.starts[line]; run < end; run += 1) {
+    const start = edges.runs[2 * run];
+    const stop = edges.runs[2 * run + 1];
+    if (start >= to) return;
+    if (stop > from) emit(Math.max(start, from), Math.min(stop, to));
+  }
+}
+
+/** Emit each maximal run [from, to) of active columns in one box row. */
+function forEachActiveRun(mask: Uint8Array, width: number, y: number, from: number, to: number, emit: (from: number, to: number) => void): void {
+  const row = y * width;
+  let runStart = -1;
+  for (let x = from; x < to; x += 1) {
+    const active = mask[row + x] === 1;
+    if (active && runStart < 0) runStart = x;
+    else if (!active && runStart >= 0) {
+      emit(runStart, x);
+      runStart = -1;
+    }
+  }
+  if (runStart >= 0) emit(runStart, to);
+}
+
+/**
+ * Paint the fabric over the active cells inside `area` (screen space). A full
+ * rectangle is one fill; a masked canvas fills runs of active cells per row.
+ */
+function fillCanvasFabric(
+  context: CanvasContextAdapter,
+  document: PatternDocument,
+  viewport: Viewport,
+  metrics: CanvasMetrics,
+  area: Rect,
+  color: string
+): void {
+  context.fillStyle = color;
+  const mask = document.canvasMask;
+  if (mask === undefined) {
+    const box = intersectRects(cellToScreenRect({ x: 0, y: 0, width: document.width, height: document.height }, viewport), area);
+    if (box) context.fillRect(box.x, box.y, box.width, box.height);
+    return;
+  }
+  const cells = intersectCellRects(visibleCellRect(viewport, metrics, document), screenRectToCellRect(area, viewport));
+  const zoom = viewport.zoom;
+  for (let y = cells.y; y < cells.y + cells.height; y += 1) {
+    const top = snapToDevicePixel((y - viewport.y) * zoom, metrics.dpr);
+    const bottom = snapToDevicePixel((y + 1 - viewport.y) * zoom, metrics.dpr);
+    forEachActiveRun(mask, document.width, y, cells.x, cells.x + cells.width, (from, to) => {
+      const left = snapToDevicePixel((from - viewport.x) * zoom, metrics.dpr);
+      const right = snapToDevicePixel((to - viewport.x) * zoom, metrics.dpr);
+      context.fillRect(left, top, right - left, bottom - top);
+    });
+  }
+}
+
 const GRID_SHOW_AT_FIT_RATIO = 1.2;
 
 function minorGridWidth(lod: RenderLod): number {
@@ -400,6 +545,9 @@ function drawGrid(
   const top = Math.max(0, visible.y, Math.floor(viewportRect.y));
   const bottom = Math.min(document.height, visible.y + visible.height, Math.ceil(viewportRect.y + viewportRect.height));
   if (right < left || bottom < top) return;
+  // A masked canvas draws only the edges that border an active cell.
+  const mask = document.canvasMask;
+  const edges = mask === undefined ? undefined : maskEdges(mask, document.width, document.height, false);
   const clipped = clipToRect(context, bounds);
   try {
     const firstX = Math.ceil(left / interval) * interval;
@@ -412,12 +560,16 @@ function drawGrid(
       // exception: its adaptive step is itself the visible grid.
       const major = lod === RenderLod.Overview || x % configuredInterval === 0;
       if (lod === RenderLod.Compact && !major) continue;
-      const segment = clipSegmentToRect(
-        modelToScreen({ x, y: top }, viewport),
-        modelToScreen({ x, y: bottom }, viewport),
-        bounds
-      );
-      if (segment) gridLine(context, segment.start, segment.end, major ? style.majorGridColor : style.gridColor, major ? majorGridWidth(lod) : minorGridWidth(lod));
+      const line = (from: number, to: number): void => {
+        const segment = clipSegmentToRect(
+          modelToScreen({ x, y: from }, viewport),
+          modelToScreen({ x, y: to }, viewport),
+          bounds
+        );
+        if (segment) gridLine(context, segment.start, segment.end, major ? style.majorGridColor : style.gridColor, major ? majorGridWidth(lod) : minorGridWidth(lod));
+      };
+      if (edges === undefined) line(top, bottom);
+      else if (edges) forEachCachedRun(edges.vertical, x, top, bottom, line);
     }
     const firstY = Math.ceil(top / interval) * interval;
     const lastY = Math.floor(bottom / interval) * interval;
@@ -426,12 +578,16 @@ function drawGrid(
       if (screenY < bounds.y || screenY > bounds.y + bounds.height) continue;
       const major = lod === RenderLod.Overview || y % configuredInterval === 0;
       if (lod === RenderLod.Compact && !major) continue;
-      const segment = clipSegmentToRect(
-        modelToScreen({ x: left, y }, viewport),
-        modelToScreen({ x: right, y }, viewport),
-        bounds
-      );
-      if (segment) gridLine(context, segment.start, segment.end, major ? style.majorGridColor : style.gridColor, major ? majorGridWidth(lod) : minorGridWidth(lod));
+      const line = (from: number, to: number): void => {
+        const segment = clipSegmentToRect(
+          modelToScreen({ x: from, y }, viewport),
+          modelToScreen({ x: to, y }, viewport),
+          bounds
+        );
+        if (segment) gridLine(context, segment.start, segment.end, major ? style.majorGridColor : style.gridColor, major ? majorGridWidth(lod) : minorGridWidth(lod));
+      };
+      if (edges === undefined) line(left, right);
+      else if (edges) forEachCachedRun(edges.horizontal, y, left, right, line);
     }
   } finally {
     if (clipped) restore(context);
@@ -459,6 +615,9 @@ function drawMidGrid(
   const top = Math.max(0, visible.y, Math.floor(viewportRect.y));
   const bottom = Math.min(document.height, visible.y + visible.height, Math.ceil(viewportRect.y + viewportRect.height));
   if (right < left || bottom < top) return;
+  // A masked canvas draws only the edges that border an active cell.
+  const mask = document.canvasMask;
+  const edges = mask === undefined ? undefined : maskEdges(mask, document.width, document.height, false);
   const clipped = clipToRect(context, bounds);
   try {
     const firstX = Math.ceil(left / interval) * interval;
@@ -467,12 +626,16 @@ function drawMidGrid(
       if (x === 0 || x === document.width) continue; // Skip document edges (the border owns them).
       const screenX = modelToScreen({ x, y: 0 }, viewport).x;
       if (screenX < bounds.x || screenX > bounds.x + bounds.width) continue;
-      const segment = clipSegmentToRect(
-        modelToScreen({ x, y: top }, viewport),
-        modelToScreen({ x, y: bottom }, viewport),
-        bounds
-      );
-      if (segment) gridLine(context, segment.start, segment.end, style.midGridColor, midGridWidth(lod));
+      const line = (from: number, to: number): void => {
+        const segment = clipSegmentToRect(
+          modelToScreen({ x, y: from }, viewport),
+          modelToScreen({ x, y: to }, viewport),
+          bounds
+        );
+        if (segment) gridLine(context, segment.start, segment.end, style.midGridColor, midGridWidth(lod));
+      };
+      if (edges === undefined) line(top, bottom);
+      else if (edges) forEachCachedRun(edges.vertical, x, top, bottom, line);
     }
     const firstY = Math.ceil(top / interval) * interval;
     const lastY = Math.floor(bottom / interval) * interval;
@@ -480,12 +643,16 @@ function drawMidGrid(
       if (y === 0 || y === document.height) continue; // Skip document edges.
       const screenY = modelToScreen({ x: 0, y }, viewport).y;
       if (screenY < bounds.y || screenY > bounds.y + bounds.height) continue;
-      const segment = clipSegmentToRect(
-        modelToScreen({ x: left, y }, viewport),
-        modelToScreen({ x: right, y }, viewport),
-        bounds
-      );
-      if (segment) gridLine(context, segment.start, segment.end, style.midGridColor, midGridWidth(lod));
+      const line = (from: number, to: number): void => {
+        const segment = clipSegmentToRect(
+          modelToScreen({ x: from, y }, viewport),
+          modelToScreen({ x: to, y }, viewport),
+          bounds
+        );
+        if (segment) gridLine(context, segment.start, segment.end, style.midGridColor, midGridWidth(lod));
+      };
+      if (edges === undefined) line(left, right);
+      else if (edges) forEachCachedRun(edges.horizontal, y, left, right, line);
     }
   } finally {
     if (clipped) restore(context);
@@ -517,6 +684,28 @@ function drawChartBorder(
   context.lineWidth = 1.5;
   const clipped = clipToRect(context, canvas);
   try {
+    const mask = document.canvasMask;
+    if (mask !== undefined) {
+      // A masked canvas outlines its active region: every visible edge with
+      // exactly one active side, holes included.
+      const visible = visibleCellRect(viewport, metrics, document);
+      const right = visible.x + visible.width;
+      const bottom = visible.y + visible.height;
+      const edges = maskEdges(mask, document.width, document.height, true);
+      for (let x = visible.x; x <= right; x += 1) {
+        forEachCachedRun(edges.vertical, x, visible.y, bottom, (from, to) => {
+          const segment = clipSegmentToRect(modelToScreen({ x, y: from }, viewport), modelToScreen({ x, y: to }, viewport), canvas);
+          if (segment) linePath(context, segment.start, segment.end);
+        });
+      }
+      for (let y = visible.y; y <= bottom; y += 1) {
+        forEachCachedRun(edges.horizontal, y, visible.x, right, (from, to) => {
+          const segment = clipSegmentToRect(modelToScreen({ x: from, y }, viewport), modelToScreen({ x: to, y }, viewport), canvas);
+          if (segment) linePath(context, segment.start, segment.end);
+        });
+      }
+      return;
+    }
     const sides: readonly [ModelPoint, ModelPoint][] = [
       [{ x: 0, y: 0 }, { x: document.width, y: 0 }],
       [{ x: document.width, y: 0 }, { x: document.width, y: document.height }],
@@ -531,6 +720,222 @@ function drawChartBorder(
     if (clipped) restore(context);
     restore(context);
   }
+}
+
+/** Ghost lines are skipped once they would sit closer than this many pixels. */
+const GHOST_MIN_LINE_SPACING = 8;
+const GHOST_MAJOR_WIDTH = 1;
+const WORKSPACE_EDGE_WIDTH = 1.5;
+const CANVAS_ADD_OPACITY = 0.35;
+const CANVAS_REMOVE_OPACITY = 0.25;
+const CANVAS_REMOVE_HATCH_OPACITY = 0.8;
+const CANVAS_REMOVE_HATCH_SPACING = 8;
+
+/** Modulo that keeps the canvas's major-line phase at negative local coordinates. */
+function isMajorLine(value: number, interval: number): boolean {
+  return ((value % interval) + interval) % interval === 0;
+}
+
+/**
+ * The workspace's ghost grid and dashed edge, in local coordinates. It is
+ * drawn in the base target under the fabric, so active cells hide it and only
+ * off-canvas cells and holes show it. Only the visible part is walked: Detail
+ * draws every line, Compact and Overview only the major ones, and lines that
+ * would sit closer than GHOST_MIN_LINE_SPACING pixels are skipped.
+ */
+function drawGhostGrid(
+  context: CanvasContextAdapter,
+  workspace: CellRect,
+  viewport: Viewport,
+  metrics: CanvasMetrics,
+  style: RendererStyle,
+  lod: RenderLod
+): void {
+  const view = viewportModelRect(viewport, metrics);
+  const left = Math.max(workspace.x, Math.floor(view.x));
+  const right = Math.min(workspace.x + workspace.width, Math.ceil(view.x + view.width));
+  const top = Math.max(workspace.y, Math.floor(view.y));
+  const bottom = Math.min(workspace.y + workspace.height, Math.ceil(view.y + view.height));
+  if (right < left || bottom < top) return;
+  const zoom = viewport.zoom > 0 && Number.isFinite(viewport.zoom) ? viewport.zoom : 1;
+  const interval = Number.isFinite(style.gridInterval) ? Math.max(1, Math.floor(style.gridInterval)) : 1;
+  const step = lod === RenderLod.Detail && zoom >= GHOST_MIN_LINE_SPACING ? 1 : interval;
+  save(context);
+  if (step * zoom >= GHOST_MIN_LINE_SPACING) {
+    for (let x = Math.ceil(left / step) * step; x <= right; x += step) {
+      const major = isMajorLine(x, interval);
+      gridLine(context, modelToScreen({ x, y: top }, viewport), modelToScreen({ x, y: bottom }, viewport), major ? style.ghostMajorGridColor : style.ghostGridColor, major ? GHOST_MAJOR_WIDTH : minorGridWidth(lod));
+    }
+    for (let y = Math.ceil(top / step) * step; y <= bottom; y += step) {
+      const major = isMajorLine(y, interval);
+      gridLine(context, modelToScreen({ x: left, y }, viewport), modelToScreen({ x: right, y }, viewport), major ? style.ghostMajorGridColor : style.ghostGridColor, major ? GHOST_MAJOR_WIDTH : minorGridWidth(lod));
+    }
+  }
+  const screen = { x: 0, y: 0, width: metrics.cssWidth, height: metrics.cssHeight };
+  const edgeRight = workspace.x + workspace.width;
+  const edgeBottom = workspace.y + workspace.height;
+  const sides: readonly [ModelPoint, ModelPoint][] = [
+    [{ x: workspace.x, y: workspace.y }, { x: edgeRight, y: workspace.y }],
+    [{ x: edgeRight, y: workspace.y }, { x: edgeRight, y: edgeBottom }],
+    [{ x: edgeRight, y: edgeBottom }, { x: workspace.x, y: edgeBottom }],
+    [{ x: workspace.x, y: edgeBottom }, { x: workspace.x, y: workspace.y }]
+  ];
+  context.strokeStyle = style.ghostMajorGridColor;
+  context.lineWidth = WORKSPACE_EDGE_WIDTH;
+  context.setLineDash?.([6, 4]);
+  for (const [start, end] of sides) {
+    const segment = clipSegmentToRect(modelToScreen(start, viewport), modelToScreen(end, viewport), screen);
+    if (segment) linePath(context, segment.start, segment.end);
+  }
+  restore(context);
+}
+
+/** Emit each visible run of a canvas cell set as a screen rect; the set may lie outside the box. */
+function forEachCellSetRun(set: CanvasCellSet, viewport: Viewport, metrics: CanvasMetrics, emit: (rect: Rect) => void): void {
+  const view = viewportModelRect(viewport, metrics);
+  const viewX = Math.floor(view.x);
+  const viewY = Math.floor(view.y);
+  const area = intersectCellRects(set.rect, {
+    x: viewX,
+    y: viewY,
+    width: Math.ceil(view.x + view.width) - viewX,
+    height: Math.ceil(view.y + view.height) - viewY
+  });
+  if (area.width === 0 || area.height === 0) return;
+  const cells = set.cells;
+  if (cells === undefined) {
+    emit(cellToScreenRect(area, viewport));
+    return;
+  }
+  const from = area.x - set.rect.x;
+  for (let y = area.y; y < area.y + area.height; y += 1) {
+    forEachActiveRun(cells, set.rect.width, y - set.rect.y, from, from + area.width, (start, end) => {
+      emit(cellToScreenRect({ x: set.rect.x + start, y, width: end - start, height: 1 }, viewport));
+    });
+  }
+}
+
+function drawCanvasAddCells(context: CanvasContextAdapter, set: CanvasCellSet, viewport: Viewport, metrics: CanvasMetrics, style: RendererStyle): void {
+  save(context);
+  context.fillStyle = style.canvasAddColor;
+  setAlpha(context, CANVAS_ADD_OPACITY);
+  forEachCellSetRun(set, viewport, metrics, (rect) => context.fillRect(rect.x, rect.y, rect.width, rect.height));
+  restore(context);
+}
+
+/** A translucent red fill, then a diagonal hatch clipped to the same cells. */
+function drawCanvasRemoveCells(context: CanvasContextAdapter, set: CanvasCellSet, viewport: Viewport, metrics: CanvasMetrics, style: RendererStyle): void {
+  let left = Infinity;
+  let top = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  save(context);
+  context.fillStyle = style.canvasRemoveColor;
+  setAlpha(context, CANVAS_REMOVE_OPACITY);
+  forEachCellSetRun(set, viewport, metrics, (rect) => {
+    context.fillRect(rect.x, rect.y, rect.width, rect.height);
+    left = Math.min(left, rect.x);
+    top = Math.min(top, rect.y);
+    right = Math.max(right, rect.x + rect.width);
+    bottom = Math.max(bottom, rect.y + rect.height);
+  });
+  restore(context);
+  if (right <= left || !context.clip || !context.save || !context.restore) return;
+  save(context);
+  context.beginPath();
+  forEachCellSetRun(set, viewport, metrics, (rect) => {
+    context.moveTo(rect.x, rect.y);
+    context.lineTo(rect.x + rect.width, rect.y);
+    context.lineTo(rect.x + rect.width, rect.y + rect.height);
+    context.lineTo(rect.x, rect.y + rect.height);
+    context.closePath?.();
+  });
+  context.clip();
+  context.strokeStyle = style.canvasRemoveColor;
+  context.lineWidth = 1;
+  setAlpha(context, CANVAS_REMOVE_HATCH_OPACITY);
+  // Lines x + y = s, phased to the model origin so the hatch stays put on cells while panning.
+  const origin = modelToScreen({ x: 0, y: 0 }, viewport);
+  const spacing = CANVAS_REMOVE_HATCH_SPACING;
+  const phase = (((origin.x + origin.y) % spacing) + spacing) % spacing;
+  const first = Math.floor((left + top - phase) / spacing) * spacing + phase;
+  for (let sum = first; sum <= right + bottom; sum += spacing) {
+    linePath(context, { x: sum - bottom, y: bottom }, { x: sum - top, y: top });
+  }
+  restore(context);
+}
+
+/** `from` minus `cut`, as up to four strips. */
+function subtractCellRect(from: CellRect, cut: CellRect): CellRect[] {
+  const inner = intersectCellRects(from, cut);
+  if (inner.width === 0 || inner.height === 0) return [from];
+  const fromRight = from.x + from.width;
+  const fromBottom = from.y + from.height;
+  const innerRight = inner.x + inner.width;
+  const innerBottom = inner.y + inner.height;
+  return [
+    { x: from.x, y: from.y, width: from.width, height: inner.y - from.y },
+    { x: from.x, y: innerBottom, width: from.width, height: fromBottom - innerBottom },
+    { x: from.x, y: inner.y, width: inner.x - from.x, height: inner.height },
+    { x: innerRight, y: inner.y, width: fromRight - innerRight, height: inner.height }
+  ].filter((strip) => strip.width > 0 && strip.height > 0);
+}
+
+/** Boundaries of a sparse canvas selection, relative to its rect; cached per set. */
+const canvasSelectionBoundaries = new WeakMap<CanvasCellSet, SelectionBoundarySegment[]>();
+
+function canvasSetBoundaries(set: CanvasCellSet, cells: Uint8Array): SelectionBoundarySegment[] {
+  const cached = canvasSelectionBoundaries.get(set);
+  if (cached) return cached;
+  let count = 0;
+  for (let index = 0; index < cells.length; index += 1) count += cells[index] === 1 ? 1 : 0;
+  const indices = new Uint32Array(count);
+  let position = 0;
+  for (let index = 0; index < cells.length; index += 1) if (cells[index] === 1) indices[position++] = index;
+  const boundaries = selectionBoundarySegments(indices, set.rect.width, set.rect.height);
+  canvasSelectionBoundaries.set(set, boundaries);
+  return boundaries;
+}
+
+/** The pending canvas edit and the canvas selection; both may reach past the box, so they clip to the screen. */
+function drawCanvasEditing(
+  context: CanvasContextAdapter,
+  document: PatternDocument,
+  editing: CanvasEditingOverlay,
+  viewport: Viewport,
+  metrics: CanvasMetrics,
+  style: RendererStyle,
+  screen: Rect,
+  selectionColor: string | undefined
+): void {
+  const preview = editing.preview;
+  if (preview?.kind === 'add') drawCanvasAddCells(context, preview, viewport, metrics, style);
+  else if (preview?.kind === 'remove') drawCanvasRemoveCells(context, preview, viewport, metrics, style);
+  else if (preview?.kind === 'resize') {
+    const box = { x: 0, y: 0, width: document.width, height: document.height };
+    for (const rect of subtractCellRect(preview.box, box)) drawCanvasAddCells(context, { rect }, viewport, metrics, style);
+    for (const rect of subtractCellRect(box, preview.box)) drawCanvasRemoveCells(context, { rect }, viewport, metrics, style);
+    drawSelectionRect(context, preview.box, viewport, style, screen, style.chartBorderColor, true);
+  }
+  const selection = editing.selection;
+  if (!selection || selectionColor === undefined) return;
+  const cells = selection.cells;
+  if (cells === undefined) {
+    drawSelectionRect(context, selection.rect, viewport, style, screen, selectionColor, false);
+    return;
+  }
+  drawSparseSelectionBoundaries(
+    context,
+    canvasSetBoundaries(selection, cells),
+    document,
+    viewport,
+    style,
+    screen,
+    selectionColor,
+    selection.rect.x,
+    selection.rect.y,
+    viewportModelRect(viewport, metrics)
+  );
 }
 
 function drawGridForCells(
@@ -903,10 +1308,10 @@ function drawSparseSelectionBoundaries(
   bounds: Rect,
   color?: string,
   offsetX = 0,
-  offsetY = 0
+  offsetY = 0,
+  chart: Rect = { x: 0, y: 0, width: document.width, height: document.height }
 ): void {
   if (boundaries.length === 0) return;
-  const chart = { x: 0, y: 0, width: document.width, height: document.height };
   const zoom = viewport.zoom;
   const visibleModel = {
     x: viewport.x + bounds.x / zoom,
@@ -1087,6 +1492,7 @@ function drawFloatingPaste(
         const targetX = destination.x + x;
         const targetY = destination.y + y;
         if (targetX < 0 || targetY < 0 || targetX >= document.width || targetY >= document.height) continue;
+        if (document.canvasMask !== undefined && document.canvasMask[targetY * document.width + targetX] !== 1) continue;
         const targetRect = cellToScreenRect({ x: targetX, y: targetY, width: 1, height: 1 }, viewport);
         const clipped = intersectRects(targetRect, bounds);
         if (!clipped) continue;
@@ -1372,11 +1778,18 @@ function drawOverlay(
   dirtyRect?: Rect
 ): void {
   const bounds = patternCanvasRect(document, viewport, metrics);
-  const clippedDirtyRect = dirtyRect && bounds ? intersectRects(dirtyRect, bounds) : undefined;
+  // Canvas editing draws past the box, so its dirty area is the whole screen.
+  const editing = overlay.canvasEditing ?? undefined;
+  const screen = { x: 0, y: 0, width: metrics.cssWidth, height: metrics.cssHeight };
+  const area = editing ? screen : bounds;
+  const clippedDirtyRect = dirtyRect && area ? intersectRects(dirtyRect, area) : undefined;
   if (dirtyRect && !clippedDirtyRect) return;
   const partial = clippedDirtyRect !== undefined && clipToRect(context, clippedDirtyRect);
   if (partial) context.clearRect(clippedDirtyRect.x, clippedDirtyRect.y, clippedDirtyRect.width, clippedDirtyRect.height);
   else clearTarget({ context, width: metrics.pixelWidth, height: metrics.pixelHeight }, metrics);
+  if (editing) {
+    drawCanvasEditing(context, document, editing, viewport, metrics, style, screen, overlay.showSelection === false ? undefined : overlay.color ?? style.selectionColor);
+  }
   if (!bounds) {
     if (partial) restore(context);
     return;
@@ -1609,9 +2022,16 @@ export class Canvas2DRenderer implements CanvasRenderer {
 
   setOverlay(overlay: OverlayState, invalidation?: Invalidation): void {
     if (this.disposed) return;
+    const previous = this.overlay.canvasEditing?.workspace;
+    const next = overlay.canvasEditing?.workspace;
     this.overlay = overlay;
     const request: Invalidation = invalidation ? setterInvalidation(invalidation, 'overlay') : { layer: 'overlay', full: true };
     this.invalidate(request);
+    // The ghost grid lives in the base target, so entering or leaving canvas
+    // editing, or a moved workspace, repaints the base as well.
+    const sameWorkspace = previous === next || (previous !== undefined && next !== undefined
+      && previous.x === next.x && previous.y === next.y && previous.width === next.width && previous.height === next.height);
+    if (!sameWorkspace) this.invalidate('base');
   }
 
   invalidate(invalidation: Invalidation | InvalidationLayer = 'all'): void {
@@ -1717,16 +2137,19 @@ export class Canvas2DRenderer implements CanvasRenderer {
     const rawInvalidationRect = unionRect(invalidation.rect, cellInvalidationRect);
     const invalidationRect = rawInvalidationRect ? expandDirtyRect(rawInvalidationRect, this.metrics.dpr) : undefined;
     const partial = !fullInvalidation && lod !== RenderLod.Overview && invalidationRect !== undefined && clipToRect(context, invalidationRect);
-    if (!partial) {
-      clearTarget(target, this.metrics);
-      context.fillStyle = patternBackground;
-      context.globalAlpha = 1;
-      context.fillRect(0, 0, this.metrics.cssWidth, this.metrics.cssHeight);
-    } else {
-      context.clearRect(invalidationRect.x, invalidationRect.y, invalidationRect.width, invalidationRect.height);
-      context.fillStyle = patternBackground;
-      context.globalAlpha = 1;
-      context.fillRect(invalidationRect.x, invalidationRect.y, invalidationRect.width, invalidationRect.height);
+    const fillArea = partial ? invalidationRect : { x: 0, y: 0, width: this.metrics.cssWidth, height: this.metrics.cssHeight };
+    if (!partial) clearTarget(target, this.metrics);
+    else context.clearRect(invalidationRect.x, invalidationRect.y, invalidationRect.width, invalidationRect.height);
+    // Everything that is not canvas (outside the box, and holes) is off-canvas;
+    // the workspace's ghost grid sits on it, under the fabric.
+    context.fillStyle = this.style.offCanvasColor;
+    context.globalAlpha = 1;
+    context.fillRect(fillArea.x, fillArea.y, fillArea.width, fillArea.height);
+    const workspace = this.overlay.canvasEditing?.workspace;
+    if (workspace) drawGhostGrid(context, workspace, this.viewport, this.metrics, this.style, lod);
+    // The overview atlas carries a masked canvas's fabric, so walking its cells here is left to the fallbacks.
+    if (lod !== RenderLod.Overview || this.document.canvasMask === undefined) {
+      fillCanvasFabric(context, this.document, this.viewport, this.metrics, fillArea, patternBackground);
     }
     // Move-image mode dims the committed pattern so the reference image reads
     // on top; the reference image itself keeps its configured opacity.
@@ -1809,6 +2232,7 @@ export class Canvas2DRenderer implements CanvasRenderer {
         }
         if (drawnFromAtlas) return { visitedCells: 0, drawnCells: 0 };
       }
+      this.fillMaskedOverviewFabric(context);
       return drawOverviewSymbolFallback(context, this.document, this.viewport, this.metrics, this.style);
     }
     context.imageSmoothingEnabled = false;
@@ -1817,7 +2241,15 @@ export class Canvas2DRenderer implements CanvasRenderer {
       drawImage(context, atlas.source, atlas.width, atlas.height, -this.viewport.x * this.viewport.zoom, -this.viewport.y * this.viewport.zoom, this.document.width * this.viewport.zoom, this.document.height * this.viewport.zoom);
       return { visitedCells: 0, drawnCells: 0 };
     }
+    this.fillMaskedOverviewFabric(context);
     return drawOverviewFallback(context, this.document, this.viewport, this.metrics, this.style);
+  }
+
+  /** Without an atlas, a masked canvas's fabric is filled run by run like the other levels of detail. */
+  private fillMaskedOverviewFabric(context: CanvasContextAdapter): void {
+    if (this.document.canvasMask === undefined) return;
+    const screen = { x: 0, y: 0, width: this.metrics.cssWidth, height: this.metrics.cssHeight };
+    fillCanvasFabric(context, this.document, this.viewport, this.metrics, screen, patternBackgroundColor(this.document));
   }
 
   private renderOverlay(fullInvalidation: boolean, invalidation: CoalescedInvalidation, lod: RenderLod): void {
