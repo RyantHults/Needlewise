@@ -114,12 +114,15 @@ describe('oval Select on a stitch layer', () => {
     controller.dispose();
   });
 
-  it('clears an existing selection on a click, as rect select does', () => {
-    const { controller } = fixture('oval');
+  it('keeps an existing selection on a click, as rect select does', () => {
+    const { controller, uiStore } = fixture('oval');
     drag(controller, 1, { x: 1, y: 1 }, { x: 5, y: 3 });
+    const indices = Array.from(controller.getSelectionIndices() ?? []);
     controller.handlePointerDown(at(2, 7, 7));
     controller.handlePointerUp(at(2, 7, 7));
-    expect(controller.getSelection()).toBeUndefined();
+    expect(controller.getSelection()).toEqual({ x: 1, y: 1, width: 5, height: 3 });
+    expect(Array.from(controller.getSelectionIndices() ?? [])).toEqual(indices);
+    expect(uiStore.getState().overlay.selection).toMatchObject({ kind: 'sparse' });
     controller.dispose();
   });
 

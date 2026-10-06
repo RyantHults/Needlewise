@@ -47,6 +47,7 @@ import type {
   FixedPoint,
   GridRect,
   Invalidation,
+  LassoPreviewOverlay,
   ModelPoint,
   OverlayState,
   PendingCellState,
@@ -112,11 +113,11 @@ import {
   MAX_LASSO_PATH_POINTS,
   selectionRectToIndices,
   sparseSelectionGeometry,
+  type LassoSelectionOperation,
   type SelectionBoundarySegment
 } from './lasso';
 import {
   canvasCellSet,
-  canvasCellSetContains,
   canvasCellSetSize,
   canvasEdgeDragDelta,
   canvasEdges,
@@ -172,7 +173,10 @@ export interface EditorSurfaceControllerLifecycle {
   setTouchMovementOnly(enabled: boolean): void;
   pasteSelection(): boolean;
   moveSelection(): boolean;
-  dismissTouchCopyRequest(): void;
+  /** Commit the floating paste or move; false when nothing is floating or the commit is refused. */
+  confirmFloatingPaste(): boolean;
+  /** Remove a floating paste or undo a floating move, restoring the earlier selection; false when nothing is floating. */
+  cancelFloatingPaste(): boolean;
   /** Replace the rendered document without recreating editor interaction state. */
   setDocument(document: PatternDocument, invalidation?: Invalidation): void;
   setMetrics(metrics: CanvasMetrics): void;
@@ -183,7 +187,7 @@ export interface EditorSurfaceControllerLifecycle {
   dispose(): void;
 }
 
-type Gesture = PaintGesture | ShapeGesture | EraserGesture | SelectionGesture | LassoGesture | BackstitchGesture | TouchActionGesture | PanGesture | PinchGesture | MoveImageGesture | ResizeImageGesture | CanvasBrushGesture | CanvasSelectionGesture | CanvasLassoGesture;
+type Gesture = PaintGesture | ShapeGesture | EraserGesture | SelectionGesture | LassoStrokeGesture | BackstitchGesture | TouchActionGesture | PanGesture | PinchGesture | MoveImageGesture | ResizeImageGesture | CanvasBrushGesture | CanvasSelectionGesture;
 
 /** Canvas brush (add) or Canvas-layer eraser (remove); commits one canvas-cells on release. */
 interface CanvasBrushGesture {
@@ -207,18 +211,6 @@ interface CanvasSelectionGesture {
   readonly shape: SelectShape;
   readonly previousSelection: CanvasCellSet | undefined;
   current: ModelPoint;
-}
-
-interface CanvasLassoGesture {
-  readonly kind: 'canvas-lasso';
-  readonly pointerId: number;
-  readonly token: EditorRevisionToken;
-  readonly workspace: CellRect;
-  readonly operation: 'replace' | 'union' | 'subtract';
-  /** Display-only local path; the raster works in workspace coordinates. */
-  readonly points: ModelPoint[];
-  readonly raster: ReturnType<typeof createLassoRasterAccumulator>;
-  previewSamples: number;
 }
 
 /** A Basic-mode edge drag driven by the UI's edge handles. */
@@ -279,23 +271,24 @@ type FillRecolorSnapshot =
 interface SelectionGesture {
   readonly kind: 'selection';
   readonly pointerId: number;
-  readonly anchor: ModelPoint | undefined;
+  readonly anchor: ModelPoint;
   readonly shape: SelectShape;
-  readonly hadSelection: boolean;
+  /** Restored when the press lifts as a click, so a click never changes the selection. */
   readonly previousSelection: FinalizedSelection | undefined;
   readonly previousSelectionAnchor: ModelPoint | undefined;
-  current: ModelPoint | undefined;
+  current: ModelPoint;
 }
 
-interface LassoGesture {
-  readonly kind: 'lasso';
+/** One press of the lasso, from pointer-down to release; its points are the tail of `LassoPath.vertices`. */
+interface LassoStrokeGesture {
+  readonly kind: 'lasso-stroke';
   readonly pointerId: number;
-  readonly token: EditorRevisionToken;
-  readonly startingCell?: ModelPoint;
-  readonly operation: 'replace' | 'union' | 'subtract';
-  /** Display-only path; final selection semantics live in `raster`. */
+  readonly startScreenX: number;
+  readonly startScreenY: number;
+  /** This stroke's points, thinned and capped on their own so earlier strokes keep their indices. */
   readonly points: ModelPoint[];
-  readonly raster: ReturnType<typeof createLassoRasterAccumulator>;
+  /** Past the tap slop; until then the stroke is a click that adds one vertex. */
+  moved: boolean;
   previewSamples: number;
 }
 
@@ -412,32 +405,27 @@ interface FloatingPasteMoveGesture {
   readonly startDestination: GridRect;
 }
 
+/** A one-finger press while a paste floats; past the tap slop it stops counting as a history tap. */
 interface FloatingPasteTouchCandidate {
   readonly pointerId: number;
-  readonly action: 'commit' | 'move';
   readonly startScreenX: number;
   readonly startScreenY: number;
 }
 
-interface TouchCopyCandidate {
-  readonly pointerId: number;
-  readonly pointerType: string;
-  readonly tool: 'select' | 'lasso';
-  readonly cell: ModelPoint;
-  readonly sample: PointerSample;
-}
-
-/** A polygon lasso built press by press; it spans many pointer events, so it is not a gesture. */
-interface PolygonLasso {
+/** A lasso built from clicks and freehand drags; it spans many pointer events, so it is not a gesture. */
+interface LassoPath {
   readonly token: EditorRevisionToken;
   /** The workspace frozen at the first vertex on the Canvas layer; undefined on a stitch layer. */
   readonly workspace: CellRect | undefined;
   /** Fixed by Shift/Alt on the first press. */
-  readonly operation: 'replace' | 'union' | 'subtract';
+  readonly operation: LassoSelectionOperation;
   readonly vertices: ModelPoint[];
+  /** The vertex index each press began at, so Backspace removes the last stroke. */
+  readonly strokeStarts: number[];
   /** The hovering pointer, where the preview closes from. */
   cursor: ModelPoint | undefined;
-  lastPress: { readonly screenX: number; readonly screenY: number; readonly time: number };
+  /** The last grey preview, reused until the point count or the closing point's quarter-cell changes. */
+  preview: { readonly key: string; readonly overlay: LassoPreviewOverlay | undefined } | undefined;
 }
 
 /** Friendly text for canvas edits the domain refuses. */
@@ -455,10 +443,10 @@ const RESIZE_HANDLE_HIT_PIXELS = 12;
 const RESIZE_EDGE_SNAP_PIXELS = 8;
 /** Screen-pixel movement permitted for a stationary multi-touch history tap. */
 export const TOUCH_HISTORY_TAP_SLOP_PIXELS = 12;
-/** Screen-pixel reach of a polygon-lasso vertex, for closing on the first vertex and for double-clicks. */
-const POLYGON_LASSO_CLOSE_PIXELS = 10;
-/** A second polygon-lasso press within this span of the previous one is a double-click that closes it. */
-const POLYGON_LASSO_DOUBLE_CLICK_MS = 350;
+/** Screen-pixel reach of the lasso's start dot; a press or drag release there closes the lasso. */
+const LASSO_CLOSE_PIXELS = 10;
+/** A mouse or pen lasso stroke within this travel is a click that adds one vertex; touch uses the history tap slop. */
+const LASSO_TAP_SLOP_PIXELS = 4;
 /** A Move-mode press on a backstitch only selects it until the pointer travels this far. */
 const BACKSTITCH_MOVE_SLOP_PIXELS = 4;
 const BACKSTITCH_MOVE_TOUCH_SLOP_PIXELS = 8;
@@ -495,8 +483,28 @@ interface TouchHistoryCandidate {
   rejectionReason?: TouchHistoryRejectionReason;
 }
 
-function isPolygonLasso(tool: EditorToolState): boolean {
-  return tool.tool === 'lasso' && tool.shape === 'polygon';
+/**
+ * The cells a closed lasso through `vertices` captures, as indices into the
+ * workspace on the Canvas layer or into the document on a stitch layer.
+ */
+function lassoCapture(vertices: readonly ModelPoint[], workspace: CellRect | undefined, document: PatternDocument): Uint32Array {
+  const origin = workspace ?? { x: 0, y: 0 };
+  const [first, ...rest] = vertices.map((vertex) => ({ x: vertex.x - origin.x, y: vertex.y - origin.y }));
+  const raster = createLassoRasterAccumulator(workspace?.width ?? document.width, workspace?.height ?? document.height, first);
+  for (const vertex of rest) appendLassoRasterPoint(raster, vertex);
+  return finishLassoRaster(raster);
+}
+
+/** Whether a path has three distinct vertices, the fewest that enclose anything. */
+function hasThreeDistinctVertices(vertices: readonly ModelPoint[]): boolean {
+  const first = vertices[0];
+  let second: ModelPoint | undefined;
+  for (const vertex of vertices) {
+    if (vertex.x === first.x && vertex.y === first.y) continue;
+    if (!second) second = vertex;
+    else if (vertex.x !== second.x || vertex.y !== second.y) return true;
+  }
+  return false;
 }
 
 /** The marquee a tool state draws; undefined means a rectangle. */
@@ -1247,10 +1255,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private floatingPaste: FloatingPasteState | undefined;
   private floatingPasteMoveGesture: FloatingPasteMoveGesture | undefined;
   private floatingPasteTouchCandidate: FloatingPasteTouchCandidate | undefined;
-  private touchCopyCandidate: TouchCopyCandidate | undefined;
-  private polygonLasso: PolygonLasso | undefined;
-  /** A touch press on the polygon lasso; it adds a vertex only if it lifts as a tap. */
-  private polygonLassoTap: PointerSample | undefined;
+  private lassoPath: LassoPath | undefined;
   private eraserCorner: 0 | 1 | 2 | 3 = 0;
   private selectedBackstitchId: number | undefined;
   private keyboardBackstitchAnchor: FixedPoint | undefined;
@@ -1308,8 +1313,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.unsubscribeUi = undefined;
     this.discardFloatingPaste();
     this.floatingPasteTouchCandidate = undefined;
-    this.touchCopyCandidate = undefined;
-    this.cancelPolygonLasso();
+    this.cancelLassoPath();
     this.cancelGesture();
     this.cancelFill(false);
     this.touchPointers.clear();
@@ -1360,8 +1364,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     // policy changes.
     this.cancelGesture();
     this.touchPointers.clear();
-    this.touchCopyCandidate = undefined;
-    this.clearTouchCopyRequest();
   }
 
   /**
@@ -1445,7 +1447,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const rect = boundedGridRect(normalizeGridRect(start, end), document);
     this.selection = rect ? { kind: 'rect', rect, documentWidth: document.width, documentHeight: document.height } : undefined;
     this.selectionAnchor = rect ? { x: rect.x, y: rect.y } : undefined;
-    this.clearTouchCopyRequest();
     this.publishSelectionOverlay();
     return rect;
   }
@@ -1454,7 +1455,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   clearSelection(): void {
     this.selection = undefined;
     this.selectionAnchor = undefined;
-    this.clearTouchCopyRequest();
     this.publishSelectionOverlay();
     if (this.canvasSelection) this.clearCanvasSelection();
   }
@@ -1463,7 +1463,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (selectionMatchesDocument(this.selection, document)) return;
     this.selection = undefined;
     this.selectionAnchor = undefined;
-    this.clearTouchCopyRequest();
     this.publishSelectionOverlay();
   }
 
@@ -1560,7 +1559,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const activeKind = snapshot.activeLayer?.kind;
     this.clipboardLayerType = activeKind === 'specialty' ? LayerType.Specialty : activeKind === 'stitch' ? LayerType.Stitch : undefined;
     this.uiStore.setCanPaste(true);
-    this.clearTouchCopyRequest();
     this.setStatus(this.selection.kind === 'sparse'
       ? `Copied ${String(this.selection.indices.length)} cells`
       : `Copied ${String(bounds.width)}×${String(bounds.height)} cells`);
@@ -1580,8 +1578,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const previousSelectionAnchor = this.selectionAnchor;
     this.floatingPasteMoveGesture = undefined;
     this.floatingPasteTouchCandidate = undefined;
-    this.touchCopyCandidate = undefined;
-    this.clearTouchCopyRequest();
     this.selection = undefined;
     this.selectionAnchor = undefined;
     this.floatingPaste = {
@@ -1612,8 +1608,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.setStatus('Paste unavailable');
       return false;
     }
+    // Without a selection or keyboard cursor, the paste lands centred in the visible viewport.
     const bounds = finalizedSelectionBounds(this.selection);
-    const anchor = bounds ? { x: bounds.x, y: bounds.y } : this.uiStore.getState().keyboardCursor;
+    const center = screenToModel(this.viewportCenter(), this.uiStore.getState().viewport);
+    const anchor = bounds ? { x: bounds.x, y: bounds.y } : this.uiStore.getState().keyboardCursor
+      ?? (isFiniteModelPoint(center)
+        ? { x: Math.floor(center.x) - Math.floor(fragment.width / 2), y: Math.floor(center.y) - Math.floor(fragment.height / 2) }
+        : undefined);
     if (!anchor) return false;
     const destination = clampFloatingDestination(anchor, fragment, snapshot.document);
     const copySelection = this.clipboardSelection ?? {
@@ -1625,8 +1626,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const previousSelectionAnchor = previous?.previousSelectionAnchor ?? this.selectionAnchor;
     this.floatingPasteMoveGesture = undefined;
     this.floatingPasteTouchCandidate = undefined;
-    this.touchCopyCandidate = undefined;
-    this.clearTouchCopyRequest();
     this.selection = undefined;
     this.selectionAnchor = undefined;
     this.floatingPaste = {
@@ -1648,8 +1647,14 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return this.pasteSelection();
   }
 
-  dismissTouchCopyRequest(): void {
-    this.clearTouchCopyRequest();
+  confirmFloatingPaste(): boolean {
+    return this.commitFloatingPaste();
+  }
+
+  cancelFloatingPaste(): boolean {
+    if (!this.floatingPaste) return false;
+    this.discardFloatingPaste();
+    return true;
   }
 
   private commitFloatingPaste(): boolean {
@@ -1872,7 +1877,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if (this.uiStore.getState().canvasMode === mode) return true;
     if (this.isCanvasGesture(this.gesture)) this.cancelGesture();
-    this.cancelPolygonLasso();
+    this.cancelLassoPath();
     this.cancelCanvasEdgeDrag();
     if (mode === 'basic') this.discardCanvasSelection();
     this.uiStore.setCanvasMode(mode);
@@ -1898,7 +1903,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (this.uiStore.getState().canvasCropActive === active) return true;
     if (!active) {
       if (this.isCanvasGesture(this.gesture)) this.cancelGesture();
-      this.cancelPolygonLasso();
+      this.cancelLassoPath();
       this.cancelCanvasEdgeDrag();
       this.discardCanvasSelection();
       this.canvasPreview = undefined;
@@ -2038,8 +2043,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return this.isCanvasActive(snapshot) && this.uiStore.getState().canvasCropActive;
   }
 
-  private isCanvasGesture(gesture: Gesture | undefined): gesture is CanvasBrushGesture | CanvasSelectionGesture | CanvasLassoGesture {
-    return gesture?.kind === 'canvas-brush' || gesture?.kind === 'canvas-select' || gesture?.kind === 'canvas-lasso';
+  private isCanvasGesture(gesture: Gesture | undefined): gesture is CanvasBrushGesture | CanvasSelectionGesture {
+    return gesture?.kind === 'canvas-brush' || gesture?.kind === 'canvas-select';
   }
 
   /** Keep the stored mode equal to the effective one, and publish whether Basic is available. */
@@ -2052,7 +2057,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   private discardCanvasSelection(): void {
     this.canvasSelection = undefined;
-    if (this.uiStore.getState().overlay.touchCopyRequest?.canvas) this.clearTouchCopyRequest();
   }
 
   /**
@@ -2154,18 +2158,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     const point = this.lassoModelPoint(sample);
     if (!point) return false;
-    if (tool.tool === 'select' || tool.tool === 'lasso') {
-      // Every polygon vertex is a click, so a press on the selection never offers Copy.
-      if (!isPolygonLasso(tool) && sample.isPrimary !== false && (sample.pointerType === 'mouse' || sample.pointerType === 'pen')) {
-        const cell = this.touchCopyCell(document, sample);
-        if (cell) {
-          this.touchCopyCandidate = { pointerId: sample.pointerId, pointerType: sample.pointerType, tool: tool.tool, cell, sample };
-          return true;
-        }
-      }
-      if (isPolygonLasso(tool)) return this.pressPolygonLasso(sample, snapshot);
-      return this.beginCanvasSelection(tool.tool, sample, snapshot);
-    }
+    if (tool.tool === 'lasso') return this.pressLasso(sample, snapshot);
+    if (tool.tool === 'select') return this.beginCanvasSelection(sample, snapshot);
     if (tool.tool !== 'canvas-brush' && tool.tool !== 'eraser') return false;
     const workspace = canvasWorkspace(document);
     const cell = cloneCell(point);
@@ -2185,37 +2179,16 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return true;
   }
 
-  private beginCanvasSelection(tool: 'select' | 'lasso', sample: PointerSample, snapshot: WorkspaceEditorSnapshot): boolean {
+  private beginCanvasSelection(sample: PointerSample, snapshot: WorkspaceEditorSnapshot): boolean {
     const document = snapshot.document;
     const point = this.lassoModelPoint(sample);
     if (!document || !point || !snapshot.projectId || snapshot.revision === null) return false;
     const workspace = canvasWorkspace(document);
     const token: EditorRevisionToken = { projectId: snapshot.projectId, revision: snapshot.revision };
     const cell = clampToWorkspace(point, workspace);
-    if (tool === 'select') {
-      const previousSelection = this.canvasSelection;
-      this.canvasSelection = canvasRectSelection(cell, cell, workspace);
-      this.gesture = { kind: 'canvas-select', pointerId: sample.pointerId, token, workspace, anchor: cell, shape: selectShapeOf(this.uiStore.getState().tool), previousSelection, current: cell };
-      this.publishCanvasOverlay();
-      return true;
-    }
-    const operation: CanvasLassoGesture['operation'] = sample.altKey ? 'subtract' : sample.shiftKey ? 'union' : 'replace';
-    this.gesture = {
-      kind: 'canvas-lasso',
-      pointerId: sample.pointerId,
-      token,
-      workspace,
-      operation,
-      points: [point],
-      raster: createLassoRasterAccumulator(
-        workspace.width,
-        workspace.height,
-        { x: point.x - workspace.x, y: point.y - workspace.y },
-        { x: cell.x - workspace.x + 0.5, y: cell.y - workspace.y + 0.5 }
-      ),
-      previewSamples: 0
-    };
-    this.publishLassoPath([point]);
+    const previousSelection = this.canvasSelection;
+    this.canvasSelection = canvasRectSelection(cell, cell, workspace);
+    this.gesture = { kind: 'canvas-select', pointerId: sample.pointerId, token, workspace, anchor: cell, shape: selectShapeOf(this.uiStore.getState().tool), previousSelection, current: cell };
     this.publishCanvasOverlay();
     return true;
   }
@@ -2263,6 +2236,25 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.executeCanvasCommand(command, `${gesture.operation === 'add' ? 'Added' : 'Removed'} ${String(changes)} canvas cell${changes === 1 ? '' : 's'}`, gesture.token);
   }
 
+  /** Stretch a stitch-layer marquee from its anchor to the cell under the pointer. */
+  private updateSelection(gesture: SelectionGesture, sample: PointerSample, document: PatternDocument): void {
+    const cell = this.paintHitCell(sample, document);
+    if (!cell || (cell.x === gesture.current.x && cell.y === gesture.current.y)) return;
+    gesture.current = cell;
+    if (gesture.shape === 'oval' && (cell.x !== gesture.anchor.x || cell.y !== gesture.anchor.y)) {
+      // Keyboard extension is rect-only, so an oval leaves no anchor, as the lasso does.
+      const indices = rasterizeFilledOval(gesture.anchor, cell).map(({ x, y }) => y * document.width + x);
+      const sparse = sparseSelectionGeometry(indices, document.width, document.height);
+      this.selection = sparse ? { kind: 'sparse', ...sparse, documentWidth: document.width, documentHeight: document.height } : undefined;
+      this.selectionAnchor = undefined;
+    } else {
+      const rect = boundedGridRect(normalizeGridRect(gesture.anchor, cell), document);
+      this.selection = rect ? { kind: 'rect', rect, documentWidth: document.width, documentHeight: document.height } : undefined;
+      if (gesture.shape === 'oval') this.selectionAnchor = gesture.anchor;
+    }
+    this.publishSelectionOverlay();
+  }
+
   private updateCanvasSelection(gesture: CanvasSelectionGesture, sample: PointerSample): void {
     const point = this.lassoModelPoint(sample);
     if (!point) return;
@@ -2273,21 +2265,9 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.publishCanvasOverlay();
   }
 
-  private appendCanvasLassoPoint(gesture: CanvasLassoGesture, sample: PointerSample, final = false): void {
-    const point = this.lassoModelPoint(sample);
-    if (!point) return;
-    appendLassoRasterPoint(gesture.raster, { x: point.x - gesture.workspace.x, y: point.y - gesture.workspace.y });
-    if (!appendLassoPoint(gesture.points, point) || final) return;
-    gesture.previewSamples += 1;
-    if (gesture.points.length < MAX_LASSO_PATH_POINTS / 2 || gesture.previewSamples % 16 === 0) this.publishLassoPath(gesture.points);
-  }
-
   /** Combine the lasso's cells with the current canvas selection by its operation. */
-  private finishCanvasLasso(gesture: Pick<CanvasLassoGesture, 'workspace' | 'operation' | 'raster'>): void {
-    this.gesture = undefined;
-    this.clearLassoPath();
-    const { workspace } = gesture;
-    const captured = finishLassoRaster(gesture.raster);
+  private finishCanvasLasso(gesture: { readonly workspace: CellRect; readonly operation: LassoSelectionOperation; readonly captured: Uint32Array }): void {
+    const { workspace, captured } = gesture;
     const current = this.canvasSelection;
     let indices: Iterable<number> = captured;
     if (gesture.operation !== 'replace' && current) {
@@ -2348,8 +2328,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     // later sample cannot bridge or jump across the resize.
     this.cancelGesture();
     this.touchPointers.clear();
-    this.touchCopyCandidate = undefined;
-    this.clearTouchCopyRequest();
     this.metrics = metrics;
     this.renderer.setMetrics(metrics);
     const snapshot = this.gateway.getSnapshot();
@@ -2502,6 +2480,31 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.publishFloatingPasteOverlay();
   }
 
+  /**
+   * Nudge the floating paste one cell toward a tap outside it, along the axis
+   * the tap lies further out on; a tie moves horizontally.
+   */
+  private nudgeFloatingPaste(sample: PointerSample): void {
+    const floating = this.floatingPaste;
+    const document = this.gateway.getSnapshot().document;
+    const viewport = this.uiStore.getState().viewport;
+    if (!floating || !document || !validScreenSample(sample) || !isFiniteViewport(viewport)) return;
+    const point = screenToModel({ x: sample.screenX, y: sample.screenY }, viewport);
+    const { destination } = floating;
+    const outside = (value: number, start: number, size: number): number => value < start ? value - start : value > start + size ? value - start - size : 0;
+    const dx = outside(point.x, destination.x, destination.width);
+    const dy = outside(point.y, destination.y, destination.height);
+    if (dx === 0 && dy === 0) return;
+    const horizontal = Math.abs(dx) >= Math.abs(dy);
+    const next = clampFloatingDestination({
+      x: destination.x + (horizontal ? Math.sign(dx) : 0),
+      y: destination.y + (horizontal ? 0 : Math.sign(dy))
+    }, floating.fragment, document);
+    if (next.x === destination.x && next.y === destination.y) return;
+    this.floatingPaste = { ...floating, destination: next };
+    this.publishFloatingPasteOverlay();
+  }
+
   private restoreFloatingPasteMove(): void {
     const gesture = this.floatingPasteMoveGesture;
     const floating = this.floatingPaste;
@@ -2528,14 +2531,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         if (this.gesture?.kind !== 'pinch') this.beginPinch();
         return true;
       }
-      const inside = this.floatingPasteContains(sample);
+      // A tap outside the paste nudges it on release; only the floating controls and Enter commit it.
       this.floatingPasteTouchCandidate = {
         pointerId: sample.pointerId,
-        action: inside ? 'move' : 'commit',
         startScreenX: sample.screenX,
         startScreenY: sample.screenY
       };
-      if (inside) {
+      if (this.floatingPasteContains(sample)) {
         this.floatingPasteMoveGesture = {
           pointerId: sample.pointerId,
           startScreenX: sample.screenX,
@@ -2548,6 +2550,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (sample.pointerType !== 'mouse' && sample.pointerType !== 'pen') return true;
     const primary = (sample.button ?? 0) === 0 && !this.spaceHeld;
     if (!primary || sample.button === 1 || Boolean(sample.buttons && (sample.buttons & 4) !== 0)) return true;
+    // A press outside the paste nudges it; only the floating controls and Enter commit it.
     if (this.floatingPasteContains(sample)) {
       this.floatingPasteMoveGesture = {
         pointerId: sample.pointerId,
@@ -2555,9 +2558,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         startScreenY: sample.screenY,
         startDestination: { ...floating.destination }
       };
-      return true;
-    }
-    this.commitFloatingPaste();
+    } else this.nudgeFloatingPaste(sample);
     return true;
   }
 
@@ -2596,7 +2597,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.floatingPasteTouchCandidate = undefined;
       if (sample.pointerType === 'touch') this.touchPointers.delete(sample.pointerId);
       if (sample.pointerType === 'touch' && this.touchPointers.size === 0) this.finishTouchHistoryCandidate();
-      if (candidate.action === 'commit') this.commitFloatingPaste();
+      if (Math.hypot(sample.screenX - candidate.startScreenX, sample.screenY - candidate.startScreenY) <= TOUCH_HISTORY_TAP_SLOP_PIXELS) this.nudgeFloatingPaste(sample);
       return true;
     }
     if (sample.pointerType === 'touch') {
@@ -2618,111 +2619,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.touchPointers.delete(sample.pointerId);
     }
     this.discardFloatingPaste();
-    return true;
-  }
-
-  private touchCopyCell(document: PatternDocument, sample: PointerSample): ModelPoint | undefined {
-    if (this.isCanvasActive()) {
-      const point = this.canvasSelection ? this.lassoModelPoint(sample) : undefined;
-      const cell = point ? cloneCell(point) : undefined;
-      return cell && this.canvasSelection && canvasCellSetContains(this.canvasSelection, cell.x, cell.y) ? cell : undefined;
-    }
-    if (!this.selection) return undefined;
-    const cell = this.paintHitCell(sample, document);
-    if (!cell) return undefined;
-    const indices = finalizedSelectionIndices(this.selection, document);
-    if (!indices) return undefined;
-    const index = cell.y * document.width + cell.x;
-    for (const selected of indices) if (selected === index) return cell;
-    return undefined;
-  }
-
-  private beginTouchCopyFallback(candidate: TouchCopyCandidate, sample: PointerSample): boolean {
-    const snapshot = this.gateway.getSnapshot();
-    const document = snapshot.document;
-    if (!document) return true;
-    if (candidate.pointerType === 'touch' && this.touchMovementOnly) {
-      this.gesture = {
-        kind: 'pan',
-        pointerId: candidate.pointerId,
-        lastX: candidate.sample.screenX,
-        lastY: candidate.sample.screenY
-      };
-      this.updatePan(sample);
-      return true;
-    }
-    if (this.isCanvasActive(snapshot)) {
-      this.beginCanvasSelection(candidate.tool, candidate.sample, snapshot);
-      return false;
-    }
-    const previousSelection = this.selection;
-    const previousSelectionAnchor = this.selectionAnchor;
-    if (candidate.tool === 'select') {
-      const cell = this.paintHitCell(candidate.sample, document);
-      if (!cell) return true;
-      this.selectionAnchor = cell;
-      this.selection = {
-        kind: 'rect',
-        rect: normalizeGridRect(cell, cell),
-        documentWidth: document.width,
-        documentHeight: document.height
-      };
-      this.gesture = {
-        kind: 'selection',
-        pointerId: candidate.pointerId,
-        anchor: cell,
-        shape: selectShapeOf(this.uiStore.getState().tool),
-        hadSelection: previousSelection !== undefined,
-        previousSelection,
-        previousSelectionAnchor,
-        current: cell
-      };
-      this.publishSelectionOverlay();
-      return false;
-    }
-    const point = this.lassoModelPoint(candidate.sample);
-    const cell = this.paintHitCell(candidate.sample, document);
-    if (!cell || !point || !snapshot.projectId || snapshot.revision === null) return true;
-    const operation: LassoGesture['operation'] = candidate.sample.altKey ? 'subtract' : candidate.sample.shiftKey ? 'union' : 'replace';
-    this.gesture = {
-      kind: 'lasso',
-      pointerId: candidate.pointerId,
-      token: { projectId: snapshot.projectId, revision: snapshot.revision },
-      startingCell: cell,
-      operation,
-      points: [point],
-      raster: createLassoRasterAccumulator(document.width, document.height, point, { x: cell.x + 0.5, y: cell.y + 0.5 }),
-      previewSamples: 0
-    };
-    this.publishLassoPath([point]);
-    return false;
-  }
-
-  private advanceTouchCopyCandidate(sample: PointerSample): boolean | undefined {
-    const candidate = this.touchCopyCandidate;
-    if (!candidate || candidate.pointerId !== sample.pointerId) return undefined;
-    if (Math.hypot(sample.screenX - candidate.sample.screenX, sample.screenY - candidate.sample.screenY) <= TOUCH_HISTORY_TAP_SLOP_PIXELS) return undefined;
-    this.touchCopyCandidate = undefined;
-    this.clearTouchCopyRequest();
-    return this.beginTouchCopyFallback(candidate, sample);
-  }
-
-  private publishTouchCopyRequest(candidate: TouchCopyCandidate, sample: PointerSample): boolean {
-    const canvas = this.isCanvasActive();
-    const selection = canvas ? this.canvasSelection?.rect : finalizedSelectionBounds(this.selection);
-    if (!selection) return false;
-    const state = this.uiStore.getState();
-    this.uiStore.setOverlay({
-      ...state.overlay,
-      touchCopyRequest: {
-        cell: { ...candidate.cell },
-        selection: { ...selection },
-        screenX: sample.screenX,
-        screenY: sample.screenY,
-        pointerType: candidate.pointerType,
-        ...(canvas ? { canvas: true } : {})
-      }
-    });
     return true;
   }
 
@@ -2795,7 +2691,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (this.disposed) return false;
     if (!validScreenSample(sample)) return false;
     this.clearBrushPreview();
-    this.clearTouchCopyRequest();
     const floatingPointerDown = this.handleFloatingPointerDown(sample);
     if (floatingPointerDown !== undefined) return floatingPointerDown;
     if (sample.pointerType !== 'touch') this.editorFocused = true;
@@ -2813,19 +2708,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       if (this.touchPointers.size === 0) this.beginTouchHistoryCandidate(sample);
       this.touchPointers.set(sample.pointerId, sample);
       this.updateTouchHistoryCandidate(sample);
-      if (this.touchPointers.size === 1 && sample.isPrimary !== false && !this.gesture && (tool === 'select' || (tool === 'lasso' && !isPolygonLasso(this.uiStore.getState().tool)))) {
-        const snapshot = this.gateway.getSnapshot();
-        const cell = snapshot.document ? this.touchCopyCell(snapshot.document, sample) : undefined;
-        if (cell) {
-          this.touchCopyCandidate = { pointerId: sample.pointerId, pointerType: sample.pointerType, tool, cell, sample };
-          return true;
-        }
-      }
-      if (this.touchPointers.size >= 2) {
-        this.touchCopyCandidate = undefined;
-        this.polygonLassoTap = undefined;
-        this.clearTouchCopyRequest();
-      }
       if (this.touchMovementOnly) {
         if (this.touchPointers.size >= 2 && this.gesture?.kind !== 'pinch') this.beginPinch();
         else if (this.touchPointers.size === 1) this.gesture = { kind: 'pan', pointerId: sample.pointerId, lastX: sample.screenX, lastY: sample.screenY };
@@ -2857,20 +2739,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     // Editor tools change only the selected, visible layer.
     if (this.refuseTool(selectedTool, snapshot)) return false;
     const surface = this.editSurfaceOf(snapshot) ?? snapshot.document;
-    if (sample.isPrimary !== false && (sample.pointerType === 'mouse' || sample.pointerType === 'pen')
-      && (selectedTool.tool === 'select' || (selectedTool.tool === 'lasso' && !isPolygonLasso(selectedTool)))) {
-      const cell = this.touchCopyCell(snapshot.document, sample);
-      if (cell) {
-        this.touchCopyCandidate = {
-          pointerId: sample.pointerId,
-          pointerType: sample.pointerType,
-          tool: selectedTool.tool,
-          cell,
-          sample
-        };
-        return true;
-      }
-    }
     if (selectedTool.tool === 'eyedropper' && sample.pointerType === 'touch') {
       this.gesture = {
         kind: 'touch-action',
@@ -2886,31 +2754,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       return this.eyedropperAt(sample, snapshot.document);
     }
     if (selectedTool.tool === 'select') {
+      // A press off the pattern never deselects; only Escape and the Select rail button clear.
       const cell = this.paintHitCell(sample, snapshot.document);
+      if (!cell) return false;
       const previousSelection = this.selection;
       const previousSelectionAnchor = this.selectionAnchor;
-      if (!cell) {
-        const hadSelection = previousSelection !== undefined;
-        if (sample.pointerType === 'touch' && hadSelection) {
-          this.selection = undefined;
-          this.selectionAnchor = undefined;
-          this.gesture = {
-            kind: 'selection',
-            pointerId: sample.pointerId,
-            anchor: undefined,
-            shape: selectShapeOf(selectedTool),
-            hadSelection,
-            previousSelection,
-            previousSelectionAnchor,
-            current: undefined
-          };
-          this.publishSelectionOverlay();
-          return true;
-        }
-        if (hadSelection) this.clearSelection();
-        return hadSelection;
-      }
-      const hadSelection = previousSelection !== undefined;
       this.selectionAnchor = cell;
       this.selection = { kind: 'rect', rect: normalizeGridRect(cell, cell), documentWidth: snapshot.document.width, documentHeight: snapshot.document.height };
       this.gesture = {
@@ -2918,7 +2766,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         pointerId: sample.pointerId,
         anchor: cell,
         shape: selectShapeOf(selectedTool),
-        hadSelection,
         previousSelection,
         previousSelectionAnchor,
         current: cell
@@ -2926,30 +2773,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.publishSelectionOverlay();
       return true;
     }
-    if (isPolygonLasso(selectedTool)) return this.pressPolygonLasso(sample, snapshot);
-    if (selectedTool.tool === 'lasso') {
-      const cell = this.paintHitCell(sample, snapshot.document);
-      const point = this.lassoModelPoint(sample);
-      if (!cell || !point) return false;
-      const operation: LassoGesture['operation'] = sample.altKey ? 'subtract' : sample.shiftKey ? 'union' : 'replace';
-      this.gesture = {
-        kind: 'lasso',
-        pointerId: sample.pointerId,
-        token: { projectId: snapshot.projectId, revision: snapshot.revision },
-        startingCell: cell,
-        operation,
-        points: [point],
-        raster: createLassoRasterAccumulator(
-          snapshot.document.width,
-          snapshot.document.height,
-          point,
-          { x: cell.x + 0.5, y: cell.y + 0.5 }
-        ),
-        previewSamples: 0
-      };
-      this.publishLassoPath([point]);
-      return true;
-    }
+    if (selectedTool.tool === 'lasso') return this.pressLasso(sample, snapshot);
     if (selectedTool.tool === 'shape') {
       const cell = this.paintHitCell(sample, snapshot.document);
       const paletteId = this.uiStore.getState().paletteId;
@@ -3032,20 +2856,14 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const floatingPointerMove = this.handleFloatingPointerMove(sample);
     if (floatingPointerMove !== undefined) return floatingPointerMove;
     if (sample.pointerType !== 'touch') {
-      const pointerCopyFallback = this.advanceTouchCopyCandidate(sample);
-      if (pointerCopyFallback === true) return true;
-    }
-    if (sample.pointerType !== 'touch') {
       this.lastHoverSample = sample;
       if (!this.gesture) this.updateBrushPreview(sample);
-      if (!this.gesture && this.polygonLasso) this.hoverPolygonLasso(sample);
+      if (!this.gesture && this.lassoPath) this.hoverLasso(sample);
     }
     if (sample.pointerType === 'touch') {
       if (!this.touchPointers.has(sample.pointerId) && this.gesture?.kind !== 'move-image' && this.gesture?.kind !== 'resize-image') return false;
       this.touchPointers.set(sample.pointerId, sample);
       const stationaryHistoryTap = this.updateTouchHistoryCandidate(sample);
-      const touchCopyFallback = this.advanceTouchCopyCandidate(sample);
-      if (touchCopyFallback === true) return true;
       if (this.gesture?.kind === 'move-image') {
         if (this.gesture.pointerId === sample.pointerId) this.updateMoveImage(sample);
         return true;
@@ -3119,15 +2937,14 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.publishEraserPreview(gesture, document);
       return true;
     }
-    if (gesture.kind === 'canvas-brush' || gesture.kind === 'canvas-select' || gesture.kind === 'canvas-lasso') {
+    if (gesture.kind === 'canvas-brush' || gesture.kind === 'canvas-select') {
       const snapshot = this.gateway.getSnapshot();
       if (!this.isCurrentTransaction(gesture.token, snapshot) || !snapshot.document) {
         this.cancelGesture();
-        this.setStatus(gesture.kind === 'canvas-lasso' ? 'Lasso cancelled: project changed' : 'Stroke cancelled: project changed');
+        this.setStatus('Stroke cancelled: project changed');
         return true;
       }
       if (gesture.kind === 'canvas-select') this.updateCanvasSelection(gesture, sample);
-      else if (gesture.kind === 'canvas-lasso') this.appendCanvasLassoPoint(gesture, sample);
       else {
         const point = this.lassoModelPoint(sample);
         if (point) this.appendCanvasBrushCell(gesture, cloneCell(point), snapshot.document);
@@ -3135,45 +2952,20 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       }
       return true;
     }
-    if (gesture.kind === 'lasso') {
-      const snapshot = this.gateway.getSnapshot();
-      if (!this.isCurrentTransaction(gesture.token, snapshot)) {
-        this.cancelGesture();
-        this.setStatus('Lasso cancelled: project changed');
-        return true;
-      }
-      const point = this.lassoModelPoint(sample);
-      if (point) {
-        appendLassoRasterPoint(gesture.raster, point);
-      }
-      if (point && appendLassoPoint(gesture.points, point)) {
+    if (gesture.kind === 'lasso-stroke') {
+      const path = this.lassoPath;
+      if (path && this.extendLassoStroke(gesture, path, sample)) {
         gesture.previewSamples += 1;
         // Once the hard cap is approached, clone the bounded preview less
-        // often. Finalization still uses every retained point and always
-        // publishes the latest path before clearing it.
-        if (gesture.points.length < MAX_LASSO_PATH_POINTS / 2 || gesture.previewSamples % 16 === 0) this.publishLassoPath(gesture.points);
+        // often. Release always publishes the latest path.
+        if (gesture.points.length < MAX_LASSO_PATH_POINTS / 2 || gesture.previewSamples % 16 === 0) this.publishLassoPath(path);
       }
       return true;
     }
     if (gesture.kind === 'selection') {
       const document = this.gateway.getSnapshot().document;
       if (!document) return false;
-      if (!gesture.anchor) return true;
-      const cell = this.paintHitCell(sample, document);
-      if (!cell || (gesture.current && cell.x === gesture.current.x && cell.y === gesture.current.y)) return true;
-      gesture.current = cell;
-      if (gesture.shape === 'oval' && (cell.x !== gesture.anchor.x || cell.y !== gesture.anchor.y)) {
-        // Keyboard extension is rect-only, so an oval leaves no anchor, as the lasso does.
-        const indices = rasterizeFilledOval(gesture.anchor, cell).map(({ x, y }) => y * document.width + x);
-        const sparse = sparseSelectionGeometry(indices, document.width, document.height);
-        this.selection = sparse ? { kind: 'sparse', ...sparse, documentWidth: document.width, documentHeight: document.height } : undefined;
-        this.selectionAnchor = undefined;
-      } else {
-        const rect = boundedGridRect(normalizeGridRect(gesture.anchor, cell), document);
-        this.selection = rect ? { kind: 'rect', rect, documentWidth: document.width, documentHeight: document.height } : undefined;
-        if (gesture.shape === 'oval') this.selectionAnchor = gesture.anchor;
-      }
-      this.publishSelectionOverlay();
+      this.updateSelection(gesture, sample, document);
       return true;
     }
     if (gesture.kind === 'backstitch') {
@@ -3196,32 +2988,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     const floatingPointerUp = this.handleFloatingPointerUp(sample);
     if (floatingPointerUp !== undefined) return floatingPointerUp;
-    const pointerCopyCandidate = this.touchCopyCandidate?.pointerId === sample.pointerId ? this.touchCopyCandidate : undefined;
-    if (pointerCopyCandidate && sample.pointerType !== 'touch') {
-      if (Math.hypot(sample.screenX - pointerCopyCandidate.sample.screenX, sample.screenY - pointerCopyCandidate.sample.screenY) <= TOUCH_HISTORY_TAP_SLOP_PIXELS) {
-        this.touchCopyCandidate = undefined;
-        this.publishTouchCopyRequest(pointerCopyCandidate, sample);
-        return true;
-      }
-      const fallbackHandled = this.advanceTouchCopyCandidate(sample);
-      if (fallbackHandled !== true) this.handlePointerMove(sample);
-    }
     if (sample.pointerType === 'touch') {
       this.updateTouchHistoryCandidate(sample);
-      const touchCopyCandidate = this.touchCopyCandidate?.pointerId === sample.pointerId ? this.touchCopyCandidate : undefined;
-      if (touchCopyCandidate) {
-        const moved = Math.hypot(sample.screenX - touchCopyCandidate.sample.screenX, sample.screenY - touchCopyCandidate.sample.screenY)
-          > TOUCH_HISTORY_TAP_SLOP_PIXELS;
-        if (!moved) {
-          this.touchCopyCandidate = undefined;
-          this.touchPointers.delete(sample.pointerId);
-          if (this.touchPointers.size === 0) this.finishTouchHistoryCandidate();
-          this.publishTouchCopyRequest(touchCopyCandidate, sample);
-          return true;
-        }
-        const fallbackHandled = this.advanceTouchCopyCandidate(sample);
-        if (fallbackHandled !== true) this.handlePointerMove(sample);
-      }
       this.touchPointers.delete(sample.pointerId);
       if (this.gesture?.kind === 'move-image') {
         if (this.gesture.pointerId === sample.pointerId) this.finishMoveImage(this.gesture, sample);
@@ -3235,10 +3003,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         if (this.gesture.pointerIds.includes(sample.pointerId)) this.rebaseTouchGesture();
       } else if (this.gesture?.kind === 'pan' && this.gesture.pointerId === sample.pointerId) {
         this.gesture = undefined;
-        const tap = this.polygonLassoTap;
-        this.polygonLassoTap = undefined;
-        if (tap?.pointerId === sample.pointerId
-          && Math.hypot(sample.screenX - tap.screenX, sample.screenY - tap.screenY) <= TOUCH_HISTORY_TAP_SLOP_PIXELS) this.addPolygonLassoVertex(tap);
       }
       if (this.touchPointers.size === 0) this.finishTouchHistoryCandidate();
       if (this.gesture?.kind === 'pinch' || this.gesture?.kind === 'pan' || this.touchPointers.size > 0) return true;
@@ -3273,37 +3037,22 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     } else if (gesture.kind === 'canvas-select') {
       this.updateCanvasSelection(gesture, sample);
       this.gesture = undefined;
-      const click = gesture.anchor.x === gesture.current.x && gesture.anchor.y === gesture.current.y;
-      if (gesture.previousSelection && click) this.discardCanvasSelection();
+      // A click keeps the earlier selection; only a drag replaces it.
+      if (gesture.anchor.x === gesture.current.x && gesture.anchor.y === gesture.current.y) this.canvasSelection = gesture.previousSelection;
       this.publishCanvasOverlay();
-    } else if (gesture.kind === 'canvas-lasso') {
-      if (!this.isCurrentTransaction(gesture.token, this.gateway.getSnapshot())) {
-        this.cancelGesture();
-        this.setStatus('Lasso cancelled: project changed');
-      } else {
-        this.appendCanvasLassoPoint(gesture, sample, true);
-        this.finishCanvasLasso(gesture);
-      }
-    } else if (gesture.kind === 'lasso') {
-      const snapshot = this.gateway.getSnapshot();
-      if (!this.isCurrentTransaction(gesture.token, snapshot)) {
-        this.cancelGesture();
-        this.setStatus('Lasso cancelled: project changed');
-        if (touchPointerReleased && this.touchPointers.size === 0) this.finishTouchHistoryCandidate();
-        return true;
-      }
-      const point = this.lassoModelPoint(sample);
-      if (point) {
-        appendLassoRasterPoint(gesture.raster, point);
-        appendLassoPoint(gesture.points, point);
-      }
-      this.finishLasso(gesture);
+    } else if (gesture.kind === 'lasso-stroke') {
+      this.finishLassoStroke(gesture, sample);
     } else if (gesture.kind === 'selection') {
+      // A release can land beyond the last move, as when a mouse or pen emits none.
+      const document = this.gateway.getSnapshot().document;
+      if (document) this.updateSelection(gesture, sample, document);
       this.gesture = undefined;
-      const click = gesture.anchor !== undefined && gesture.current !== undefined
-        && gesture.anchor.x === gesture.current.x && gesture.anchor.y === gesture.current.y;
-      if (gesture.hadSelection && click) this.clearSelection();
-      else this.publishSelectionOverlay();
+      // A click keeps the earlier selection; only a drag replaces it.
+      if (gesture.anchor.x === gesture.current.x && gesture.anchor.y === gesture.current.y) {
+        this.selection = gesture.previousSelection;
+        this.selectionAnchor = gesture.previousSelectionAnchor;
+      }
+      this.publishSelectionOverlay();
     } else if (gesture.kind === 'backstitch') {
       const document = this.gateway.getSnapshot().document;
       if (document && isFiniteViewport(this.uiStore.getState().viewport)) this.followBackstitchPointer(gesture, sample, document);
@@ -3323,17 +3072,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.clearBrushPreview();
     const floatingPointerCancel = this.handleFloatingPointerCancel(sample);
     if (floatingPointerCancel !== undefined) return floatingPointerCancel;
-    if (sample.pointerType !== 'touch' && this.touchCopyCandidate?.pointerId === sample.pointerId) {
-      this.touchCopyCandidate = undefined;
-      this.clearTouchCopyRequest();
-      return true;
-    }
     if (sample.pointerType === 'touch') {
       this.rejectTouchHistoryCandidate('cancelled');
-      if (this.touchCopyCandidate?.pointerId === sample.pointerId) {
-        this.touchCopyCandidate = undefined;
-        this.clearTouchCopyRequest();
-      }
       this.touchPointers.delete(sample.pointerId);
       if ((this.gesture?.kind === 'move-image' || this.gesture?.kind === 'resize-image') && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
       else if (this.gesture?.kind === 'pinch') {
@@ -3348,11 +3088,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (gesture.kind === 'shape') this.finishShape(false);
     else if (gesture.kind === 'paint') this.finishPaint(false);
     else if (gesture.kind === 'eraser') this.finishEraser(false);
-    else if (gesture.kind === 'lasso') {
-      this.gesture = undefined;
-      this.clearLassoPath();
-    }
-    else if (gesture.kind === 'selection' || this.isCanvasGesture(gesture)) this.cancelGesture();
+    else if (gesture.kind === 'selection' || gesture.kind === 'lasso-stroke' || this.isCanvasGesture(gesture)) this.cancelGesture();
     else if (gesture.kind === 'backstitch') this.resetBackstitchState();
     else if (gesture.kind === 'move-image' || gesture.kind === 'resize-image') this.gesture = undefined;
     else this.gesture = undefined;
@@ -3369,21 +3105,12 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.spaceHeld = false;
     const floatingPointerLostCapture = this.handleFloatingPointerCancel(sample, true);
     if (floatingPointerLostCapture !== undefined) return floatingPointerLostCapture;
-    if (sample.pointerType !== 'touch' && this.touchCopyCandidate?.pointerId === sample.pointerId) {
-      this.touchCopyCandidate = undefined;
-      this.clearTouchCopyRequest();
-      return true;
-    }
     if (sample.pointerType === 'touch') {
       // Browsers can emit lostpointercapture immediately after pointerup has
       // already removed this pointer. That notification is not a cancellation
       // of the still-active multi-touch sequence.
       if (!this.touchPointers.has(sample.pointerId)) return true;
       this.rejectTouchHistoryCandidate('lost-capture');
-      if (this.touchCopyCandidate?.pointerId === sample.pointerId) {
-        this.touchCopyCandidate = undefined;
-        this.clearTouchCopyRequest();
-      }
       this.touchPointers.delete(sample.pointerId);
       if ((this.gesture?.kind === 'move-image' || this.gesture?.kind === 'resize-image') && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
       else if (this.gesture?.kind === 'pinch') {
@@ -3439,10 +3166,9 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if (key === 'Escape') {
       sample.preventDefault?.();
-      this.clearTouchCopyRequest();
-      // Escape first abandons a polygon in progress, keeping the selection it would have changed.
-      if (this.polygonLasso) {
-        this.cancelPolygonLasso();
+      // Escape first abandons a lasso in progress, keeping the selection it would have changed.
+      if (this.lassoPath) {
+        this.cancelLassoPath();
         return true;
       }
       if (this.floatingPaste) {
@@ -3478,18 +3204,21 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if (key === 'Enter') {
       sample.preventDefault?.();
-      if (this.polygonLasso) {
-        this.closePolygonLasso();
+      if (this.lassoPath) {
+        this.closeLasso();
         return true;
       }
-      if (this.floatingPaste) return true;
+      if (this.floatingPaste) {
+        this.commitFloatingPaste();
+        return true;
+      }
       this.activateKeyboardCursor();
       return true;
     }
     if (key === 'Delete' || key === 'Backspace') {
       sample.preventDefault?.();
-      if (this.polygonLasso) {
-        if (key === 'Backspace') this.removePolygonLassoVertex();
+      if (this.lassoPath) {
+        if (key === 'Backspace') this.removeLassoStroke();
         return true;
       }
       if (this.floatingPaste) return true;
@@ -3532,8 +3261,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.editorFocused = false;
     if (this.floatingPaste) this.discardFloatingPaste();
     this.floatingPasteTouchCandidate = undefined;
-    this.touchCopyCandidate = undefined;
-    this.clearTouchCopyRequest();
     this.rejectTouchHistoryCandidate('blur');
     this.clearTouchHistoryCandidate();
     if (this.gesture?.kind === 'backstitch') this.resetBackstitchState();
@@ -3701,108 +3428,171 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return isFiniteModelPoint(point) ? point : undefined;
   }
 
-  /** A polygon-lasso press: touch waits to see whether it lifts as a tap; mouse and pen add a vertex now. */
-  private pressPolygonLasso(sample: PointerSample, snapshot: WorkspaceEditorSnapshot): boolean {
-    if (sample.pointerType !== 'touch') return this.addPolygonLassoVertex(sample, snapshot);
-    this.polygonLassoTap = sample;
-    this.gesture = { kind: 'pan', pointerId: sample.pointerId, lastX: sample.screenX, lastY: sample.screenY };
-    return true;
-  }
-
-  /** Add a vertex at the press, or close on the first vertex or a double-click. Starting a polygon fixes its layer and operation. */
-  private addPolygonLassoVertex(sample: PointerSample, snapshot = this.gateway.getSnapshot()): boolean {
+  /**
+   * A lasso press on the start dot ends the lasso: it closes with three
+   * distinct vertices and is cancelled with fewer. Any other press starts a
+   * stroke that a release ends as one vertex (a click) or a freehand run (a
+   * drag). The first press fixes the path's layer and operation.
+   */
+  private pressLasso(sample: PointerSample, snapshot: WorkspaceEditorSnapshot): boolean {
     const document = snapshot.document;
     const point = this.lassoModelPoint(sample);
     if (!document || !point || !snapshot.projectId || snapshot.revision === null) return false;
-    const press = { screenX: sample.screenX, screenY: sample.screenY, time: sample.timeStamp ?? performance.now() };
-    let polygon = this.polygonLasso;
-    if (polygon) {
-      const { lastPress, vertices } = polygon;
-      const zoom = this.uiStore.getState().viewport.zoom;
-      const doubleClick = press.time - lastPress.time <= POLYGON_LASSO_DOUBLE_CLICK_MS
-        && Math.hypot(press.screenX - lastPress.screenX, press.screenY - lastPress.screenY) <= POLYGON_LASSO_CLOSE_PIXELS;
-      const onFirst = vertices.length >= 3 && Math.hypot(point.x - vertices[0].x, point.y - vertices[0].y) * zoom <= POLYGON_LASSO_CLOSE_PIXELS;
-      if (doubleClick || onFirst) {
-        this.closePolygonLasso();
-        return true;
-      }
-      polygon.vertices.push(point);
-      polygon.lastPress = press;
-    } else {
-      polygon = {
+    let path = this.lassoPath;
+    if (path && this.onLassoStart(path, point)) {
+      if (hasThreeDistinctVertices(path.vertices)) this.closeLasso();
+      else this.cancelLassoPath();
+      return true;
+    }
+    if (!path) {
+      path = {
         token: { projectId: snapshot.projectId, revision: snapshot.revision },
         workspace: this.isCanvasActive(snapshot) ? canvasWorkspace(document) : undefined,
         operation: sample.altKey ? 'subtract' : sample.shiftKey ? 'union' : 'replace',
-        vertices: [point],
+        vertices: [],
+        strokeStarts: [],
         cursor: undefined,
-        lastPress: press
+        preview: undefined
       };
-      this.polygonLasso = polygon;
+      this.lassoPath = path;
     }
-    polygon.cursor = undefined;
-    this.publishPolygonLasso(polygon);
+    path.cursor = undefined;
+    path.strokeStarts.push(path.vertices.length);
+    path.vertices.push(point);
+    this.gesture = {
+      kind: 'lasso-stroke',
+      pointerId: sample.pointerId,
+      startScreenX: sample.screenX,
+      startScreenY: sample.screenY,
+      points: [point],
+      moved: false,
+      previewSamples: 0
+    };
+    this.publishLassoPath(path);
     return true;
   }
 
-  private hoverPolygonLasso(sample: PointerSample): void {
-    const polygon = this.polygonLasso;
+  /** Follow a stroke once it passes the tap slop; returns whether the path changed. */
+  private extendLassoStroke(gesture: LassoStrokeGesture, path: LassoPath, sample: PointerSample): boolean {
+    if (!gesture.moved) {
+      const slop = sample.pointerType === 'touch' ? TOUCH_HISTORY_TAP_SLOP_PIXELS : LASSO_TAP_SLOP_PIXELS;
+      if (Math.hypot(sample.screenX - gesture.startScreenX, sample.screenY - gesture.startScreenY) <= slop) return false;
+      gesture.moved = true;
+    }
     const point = this.lassoModelPoint(sample);
-    if (!polygon || !point) return;
-    polygon.cursor = point;
-    this.publishPolygonLasso(polygon);
+    if (!point || !appendLassoPoint(gesture.points, point)) return false;
+    // The stroke's points grew by one, collapsed into their last point, or were decimated.
+    const start = path.strokeStarts[path.strokeStarts.length - 1];
+    const tail = path.vertices.length - start;
+    if (gesture.points.length === tail + 1) path.vertices.push(gesture.points[tail]);
+    else if (gesture.points.length === tail) path.vertices[path.vertices.length - 1] = gesture.points[tail - 1];
+    else path.vertices.splice(start, tail, ...gesture.points);
+    return true;
   }
 
-  /** Preview the polygon as it would close from the cursor. */
-  private publishPolygonLasso(polygon: PolygonLasso): void {
-    this.publishLassoPath(polygon.cursor ? [...polygon.vertices, polygon.cursor] : polygon.vertices);
+  /** End a stroke: a drag released on the start dot closes the lasso; a click or any other drag leaves it open. */
+  private finishLassoStroke(gesture: LassoStrokeGesture, sample: PointerSample): void {
+    this.gesture = undefined;
+    const path = this.lassoPath;
+    if (!path) return;
+    this.extendLassoStroke(gesture, path, sample);
+    if (gesture.moved && this.onLassoStart(path, path.vertices[path.vertices.length - 1]) && hasThreeDistinctVertices(path.vertices)) this.closeLasso();
+    else this.publishLassoPath(path);
   }
 
-  private removePolygonLassoVertex(): void {
-    const polygon = this.polygonLasso;
-    if (!polygon) return;
-    polygon.vertices.pop();
-    if (polygon.vertices.length === 0) this.cancelPolygonLasso();
-    else this.publishPolygonLasso(polygon);
+  /** Whether a point is within reach of the start dot. */
+  private onLassoStart(path: LassoPath, point: ModelPoint): boolean {
+    const start = path.vertices[0];
+    const zoom = this.uiStore.getState().viewport.zoom;
+    return Math.hypot(point.x - start.x, point.y - start.y) * zoom <= LASSO_CLOSE_PIXELS;
   }
 
-  private cancelPolygonLasso(): void {
-    this.polygonLassoTap = undefined;
-    if (!this.polygonLasso) return;
-    this.polygonLasso = undefined;
+  private hoverLasso(sample: PointerSample): void {
+    const path = this.lassoPath;
+    const point = this.lassoModelPoint(sample);
+    if (!path || !point) return;
+    path.cursor = point;
+    this.publishLassoPath(path);
+  }
+
+  /** Remove the last stroke, ending it if it is still drawing; a path left empty is cancelled. */
+  private removeLassoStroke(): void {
+    const path = this.lassoPath;
+    if (!path) return;
+    if (this.gesture?.kind === 'lasso-stroke') this.gesture = undefined;
+    path.vertices.length = path.strokeStarts.pop() ?? 0;
+    path.preview = undefined;
+    if (path.vertices.length === 0) this.cancelLassoPath();
+    else this.publishLassoPath(path);
+  }
+
+  private cancelLassoPath(): void {
+    if (this.gesture?.kind === 'lasso-stroke') this.gesture = undefined;
+    if (!this.lassoPath) return;
+    this.lassoPath = undefined;
     this.clearLassoPath();
   }
 
   /**
-   * Rasterize the polygon through the freehand lasso's accumulator and combine
-   * it by its operation. Fewer than three distinct vertices change nothing.
+   * Rasterize the path through the lasso accumulator and combine it by its
+   * operation. Fewer than three distinct vertices change nothing.
    */
-  private closePolygonLasso(): void {
-    const polygon = this.polygonLasso;
-    if (!polygon) return;
-    this.cancelPolygonLasso();
+  private closeLasso(): void {
+    const path = this.lassoPath;
+    if (!path) return;
+    this.cancelLassoPath();
     const snapshot = this.gateway.getSnapshot();
     const document = snapshot.document;
-    if (!document || !this.isCurrentTransaction(polygon.token, snapshot)) {
+    if (!document || !this.isCurrentTransaction(path.token, snapshot)) {
       this.setStatus('Lasso cancelled: project changed');
       return;
     }
-    if (new Set(polygon.vertices.map((vertex) => `${String(vertex.x)}:${String(vertex.y)}`)).size < 3) return;
-    const { workspace, operation } = polygon;
-    const origin = workspace ?? { x: 0, y: 0 };
-    const [first, ...rest] = polygon.vertices.map((vertex) => ({ x: vertex.x - origin.x, y: vertex.y - origin.y }));
-    const raster = createLassoRasterAccumulator(workspace?.width ?? document.width, workspace?.height ?? document.height, first);
-    for (const vertex of rest) appendLassoRasterPoint(raster, vertex);
-    if (workspace) this.finishCanvasLasso({ workspace, operation, raster });
-    else this.finishLasso({ operation, raster });
+    if (!hasThreeDistinctVertices(path.vertices)) return;
+    const { workspace, operation } = path;
+    const captured = lassoCapture(path.vertices, workspace, document);
+    if (workspace) this.finishCanvasLasso({ workspace, operation, captured });
+    else this.finishLasso({ operation, captured });
   }
 
-  private finishLasso(gesture: Pick<LassoGesture, 'operation' | 'raster'>): void {
-    this.gesture = undefined;
+  /** The cells the open lasso would capture if it closed from its cursor or the stroke's latest point. */
+  private lassoPreview(path: LassoPath, points: readonly ModelPoint[]): LassoPreviewOverlay | undefined {
+    const document = this.gateway.getSnapshot().document;
+    if (!document || !hasThreeDistinctVertices(points)) return undefined;
+    const tip = points[points.length - 1];
+    const key = `${String(points.length)}:${String(Math.floor(tip.x * 4))}:${String(Math.floor(tip.y * 4))}`;
+    if (path.preview?.key === key) return path.preview.overlay;
+    const { workspace } = path;
+    const origin = workspace ?? { x: 0, y: 0 };
+    const width = workspace?.width ?? document.width;
+    const captured = lassoCapture(points, workspace, document);
+    const runs: { x: number; y: number; width: number }[] = [];
+    let run: { x: number; y: number; width: number } | undefined;
+    for (const index of captured) {
+      const x = index % width;
+      const y = Math.floor(index / width);
+      if (run && run.y === y && run.x + run.width === x) run.width += 1;
+      else runs.push(run = { x, y, width: 1 });
+    }
+    for (const entry of runs) {
+      entry.x += origin.x;
+      entry.y += origin.y;
+    }
+    const geometry = sparseSelectionGeometry(captured, width, workspace?.height ?? document.height);
+    const boundaries = (geometry?.boundaries ?? []).map((segment) => ({
+      start: { x: segment.start.x + origin.x, y: segment.start.y + origin.y },
+      end: { x: segment.end.x + origin.x, y: segment.end.y + origin.y },
+      kind: segment.kind
+    }));
+    const overlay = runs.length > 0 ? { runs, boundaries } : undefined;
+    path.preview = { key, overlay };
+    return overlay;
+  }
+
+  private finishLasso(gesture: { readonly operation: LassoSelectionOperation; readonly captured: Uint32Array }): void {
     const snapshot = this.gateway.getSnapshot();
     const document = snapshot.document;
-    this.clearLassoPath();
     if (!document) return;
-    const captured = finishLassoRaster(gesture.raster);
+    const { captured } = gesture;
     const current = finalizedSelectionIndices(this.selection, document) ?? new Uint32Array();
     let next: Uint32Array;
     if (gesture.operation === 'replace') {
@@ -4147,12 +3937,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     });
   }
 
-  private clearTouchCopyRequest(): void {
-    const state = this.uiStore.getState();
-    if (state.overlay.touchCopyRequest === undefined) return;
-    this.uiStore.setOverlay({ ...state.overlay, touchCopyRequest: undefined });
-  }
-
   private discardFloatingPaste(): void {
     const floating = this.floatingPaste;
     this.floatingPaste = undefined;
@@ -4166,9 +3950,29 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (floating) this.publishSelectionOverlay();
   }
 
-  private publishLassoPath(points: readonly ModelPoint[]): void {
+  /**
+   * Preview the open lasso, closing from the cursor while it hovers, with the
+   * start dot. A click on the dot always ends the lasso, but a drag released
+   * there closes it only with three distinct vertices.
+   */
+  private publishLassoPath(path: LassoPath): void {
+    const drawing = this.gesture?.kind === 'lasso-stroke' && this.gesture.moved;
+    const closable = path.cursor
+      ? this.onLassoStart(path, path.cursor)
+      : drawing && this.onLassoStart(path, path.vertices[path.vertices.length - 1]) && hasThreeDistinctVertices(path.vertices);
+    const points = path.cursor ? [...path.vertices, path.cursor] : path.vertices;
+    const preview = this.lassoPreview(path, points);
     const state = this.uiStore.getState();
-    this.uiStore.setOverlay({ ...state.overlay, lassoPath: { points: points.map((point) => ({ ...point })) } });
+    this.uiStore.setOverlay({
+      ...state.overlay,
+      lassoPath: {
+        points: points.map((point) => ({ ...point })),
+        start: { ...path.vertices[0] },
+        closable,
+        anchors: path.strokeStarts.map((index) => ({ ...path.vertices[index] })),
+        ...(preview ? { preview } : {})
+      }
+    });
   }
 
   private clearLassoPath(): void {
@@ -4745,23 +4549,18 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.rejectTouchHistoryCandidate('project/document reset');
       this.clearTouchHistoryCandidate();
     }
-    if (projectChanged || documentChanged) {
-      this.touchCopyCandidate = undefined;
-      this.clearTouchCopyRequest();
-    }
     if (projectChanged) this.resetForProjectSwitch(snapshot);
     else if (this.gesture && ((this.gesture.kind === 'paint' || this.gesture.kind === 'shape' || this.gesture.kind === 'eraser')
       ? (this.gesture.transaction.token.revision !== snapshot.revision || this.gesture.transaction.token.projectId !== snapshot.projectId)
-      : (this.gesture.kind === 'backstitch' || this.gesture.kind === 'lasso' || this.gesture.kind === 'touch-action' || this.isCanvasGesture(this.gesture))
+      : (this.gesture.kind === 'backstitch' || this.gesture.kind === 'touch-action' || this.isCanvasGesture(this.gesture))
         ? (this.gesture.token.revision !== snapshot.revision || this.gesture.token.projectId !== snapshot.projectId)
         : false)) {
-      const staleStatus = this.gesture.kind === 'lasso' || this.gesture.kind === 'canvas-lasso' ? 'Lasso cancelled: project changed'
-          : this.gesture.kind === 'touch-action' ? 'Action cancelled: project changed' : 'Stroke cancelled: project changed';
+      const staleStatus = this.gesture.kind === 'touch-action' ? 'Action cancelled: project changed' : 'Stroke cancelled: project changed';
       this.cancelGesture();
       staleGestureStatus = staleStatus;
     }
-    if (!projectChanged && this.polygonLasso && !this.isCurrentTransaction(this.polygonLasso.token, snapshot)) {
-      this.cancelPolygonLasso();
+    if (!projectChanged && this.lassoPath && !this.isCurrentTransaction(this.lassoPath.token, snapshot)) {
+      this.cancelLassoPath();
       staleGestureStatus = 'Lasso cancelled: project changed';
     }
     if (!projectChanged && this.fillJob && this.fillToken
@@ -4780,7 +4579,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   private resetForProjectSwitch(snapshot: WorkspaceEditorSnapshot): void {
     this.discardFloatingPaste();
-    this.cancelPolygonLasso();
+    this.cancelLassoPath();
     this.cancelGesture();
     this.cancelFill(false);
     this.resetBackstitchState();
@@ -4793,7 +4592,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.uiStore.setCanPaste(false);
     this.touchPointers.clear();
     this.floatingPasteTouchCandidate = undefined;
-    this.touchCopyCandidate = undefined;
     this.canvasEdgeDrag = undefined;
     this.uiStore.setState({ overlay: {}, keyboardCursor: null, status: null, canvasCropActive: false });
     if (snapshot.document && this.metrics) this.projectViewport(fitViewport(snapshot.document, this.metrics, 0, this.viewportOptions));
@@ -4806,7 +4604,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       if (this.floatingPaste) this.discardFloatingPaste();
       this.resetToolTransient();
     }
-    if (!isPolygonLasso(state.tool)) this.cancelPolygonLasso();
+    if (state.tool.tool !== 'lasso') this.cancelLassoPath();
     if (state.tool !== previous.tool && state.activeLayer && this.toolAvailable(state.tool, state.activeLayer).enabled) {
       this.uiStore.rememberToolForLayer(state.activeLayer.kind, state.tool);
     }
@@ -4978,6 +4776,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   private cancelGesture(): void {
     const selection = this.gesture?.kind === 'selection' ? this.gesture : undefined;
+    const lassoStroke = this.gesture?.kind === 'lasso-stroke';
     const backstitch = this.gesture?.kind === 'backstitch';
     const canvasSelection = this.gesture?.kind === 'canvas-select' ? this.gesture : undefined;
     const canvas = this.isCanvasGesture(this.gesture) || this.canvasEdgeDrag !== undefined;
@@ -4991,7 +4790,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.clearTouchHistoryCandidate();
     this.clearPendingCells();
     this.clearPendingBackstitchRemovals();
-    this.clearLassoPath();
+    // A cancelled stroke, such as one a second finger interrupts, leaves the rest of the lasso open.
+    if (lassoStroke) this.removeLassoStroke();
     if (backstitch) this.resetBackstitchState();
     if (selection) {
       this.selection = selection.previousSelection;
@@ -5003,9 +4803,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   private resetToolTransient(): void {
     this.cancelGesture();
-    this.cancelPolygonLasso();
-    this.touchCopyCandidate = undefined;
-    this.clearTouchCopyRequest();
+    this.cancelLassoPath();
     this.cancelFill(false);
     this.resetBackstitchState();
     this.clearBrushPreview();
@@ -5454,7 +5252,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
    */
   private onActiveLayerSwitch(): void {
     if (this.floatingPaste?.mode === 'move') this.discardFloatingPaste();
-    this.cancelPolygonLasso();
+    this.cancelLassoPath();
     if (this.gesture && this.gesture.kind !== 'pan' && this.gesture.kind !== 'pinch'
       && this.gesture.kind !== 'move-image' && this.gesture.kind !== 'resize-image') {
       this.cancelGesture();

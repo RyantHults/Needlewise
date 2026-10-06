@@ -344,8 +344,8 @@ describe('canvas-cells', () => {
     expect(document.canvasMask).toBeUndefined();
     expect('canvasMask' in document).toBe(false);
     expect(stitch(document).kind[1 * 3 + 1]).toBe(CellKind.Full);
-    expect(lines(document)).toEqual([[0, 0, 12, 0], [4, 2, 8, 2]]);
-    expect(removal.backstitches[0].records.map((record) => record.id)).toEqual([1]);
+    expect(lines(document)).toEqual([[0, 0, 4, 0], [4, 0, 8, 0], [8, 0, 12, 0], [4, 2, 8, 2]]);
+    expect(removal.backstitches[0].records.map((record) => record.id)).toEqual([1, 2, 3]);
     expect(Array.from(removal.cells[0].indices)).toEqual([1]);
   });
 

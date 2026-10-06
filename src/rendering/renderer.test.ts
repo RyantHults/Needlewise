@@ -53,7 +53,8 @@ function recordingContext(): RecordingContext {
     setTransform: function (this: RecordingContext, ...args: number[]): void { record(this, 'setTransform', args); },
     setLineDash: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'setLineDash', args); },
     translate: function (this: RecordingContext, ...args: number[]): void { record(this, 'translate', args); },
-    scale: function (this: RecordingContext, ...args: number[]): void { record(this, 'scale', args); }
+    scale: function (this: RecordingContext, ...args: number[]): void { record(this, 'scale', args); },
+    arc: function (this: RecordingContext, ...args: number[]): void { record(this, 'arc', args); }
   };
   return context;
 }
@@ -2164,6 +2165,125 @@ describe('Canvas 2D chart renderer', () => {
     renderer.dispose();
   });
 
+  describe('lasso start dot', () => {
+    function renderLasso(lassoPath: Record<string, unknown>): RecordingContext {
+      const overlay = recordingContext();
+      const renderer = createCanvasRenderer({
+        document: chart(3, 3),
+        targets: { base: target(recordingContext()), overlay: target(overlay) },
+        metrics: getCanvasMetrics(30, 30),
+        viewport: { x: 0, y: 0, zoom: 10 },
+        overlay: { lassoPath } as never
+      });
+      renderer.renderNow();
+      renderer.dispose();
+      return overlay;
+    }
+
+    const arcs = (context: RecordingContext) => context.records.filter((call) => call.name === 'arc');
+
+    it('draws a hollow dot at the start point', () => {
+      const overlay = renderLasso({ points: [{ x: 1, y: 1 }, { x: 2, y: 1 }], start: { x: 1, y: 1 } });
+
+      const [arc] = arcs(overlay);
+      expect(arcs(overlay)).toHaveLength(1);
+      expect(arc.args).toEqual([10, 10, 5, 0, Math.PI * 2]);
+      expect(arc.fillStyle).toBe('#fffdf9');
+      expect(arc.strokeStyle).toBe('#2266cc');
+      expect(overlay.records.some((call) => call.name === 'fill' && call.fillStyle === '#fffdf9')).toBe(true);
+    });
+
+    it('draws a larger filled dot when closable', () => {
+      const overlay = renderLasso({ points: [{ x: 1, y: 1 }, { x: 2, y: 1 }, { x: 2, y: 2 }], start: { x: 1, y: 1 }, closable: true });
+
+      const [arc] = arcs(overlay);
+      expect(arc.args).toEqual([10, 10, 7, 0, Math.PI * 2]);
+      expect(arc.fillStyle).toBe('#2266cc');
+      expect(arc.strokeStyle).toBe('#2266cc');
+    });
+
+    it('draws the dot for a single point', () => {
+      const overlay = renderLasso({ points: [{ x: 1, y: 1 }], start: { x: 1, y: 1 } });
+
+      expect(arcs(overlay)).toHaveLength(1);
+    });
+
+    it('draws no dot without a start', () => {
+      expect(arcs(renderLasso({ points: [{ x: 1, y: 1 }, { x: 2, y: 1 }] }))).toHaveLength(0);
+    });
+
+    const PREVIEW_FILL = 'rgba(110, 110, 110, 0.28)';
+    const PREVIEW_STROKE = '#7d7873';
+    const open = { points: [{ x: 1, y: 1 }, { x: 2, y: 1 }, { x: 2, y: 2 }], start: { x: 1, y: 1 } };
+    const boundary = { start: { x: 1, y: 1 }, end: { x: 2, y: 1 }, kind: 'exterior' };
+
+    it('fills preview runs as rects', () => {
+      const overlay = renderLasso({ ...open, preview: { runs: [{ x: 1, y: 1, width: 2 }, { x: 0, y: 2, width: 1 }], boundaries: [] } });
+
+      const fills = overlay.records.filter((call) => call.name === 'fillRect' && call.fillStyle === PREVIEW_FILL);
+      expect(fills.map((call) => call.args)).toEqual([[10, 10, 20, 10], [0, 20, 10, 10]]);
+    });
+
+    it('strokes preview boundaries grey', () => {
+      const overlay = renderLasso({ ...open, preview: { runs: [], boundaries: [boundary] } });
+
+      const strokes = overlay.records.filter((call) => call.name === 'stroke' && call.strokeStyle === PREVIEW_STROKE);
+      expect(strokes.length).toBeGreaterThan(0);
+      expect(overlay.records.some((call) => call.name === 'moveTo' && call.args.join(',') === '10,10')).toBe(true);
+    });
+
+    it('keeps the path blue while open, with a blue dot', () => {
+      const overlay = renderLasso(open);
+
+      expect(overlay.records.some((call) => call.name === 'stroke' && call.strokeStyle === PREVIEW_STROKE)).toBe(false);
+      const strokes = overlay.records.filter((call) => call.name === 'stroke' && call.strokeStyle === '#2266cc');
+      expect(strokes.length).toBeGreaterThan(1);
+      expect(overlay.records.find((call) => call.name === 'arc')!.strokeStyle).toBe('#2266cc');
+    });
+
+    it('draws a 3px filled dot for each anchor beyond the first', () => {
+      const overlay = renderLasso({ ...open, anchors: [{ x: 1, y: 1 }, { x: 2, y: 1 }, { x: 2, y: 2 }] });
+
+      const arcs = overlay.records.filter((call) => call.name === 'arc');
+      expect(arcs.map((call) => call.args)).toEqual([[20, 10, 3, 0, Math.PI * 2], [20, 20, 3, 0, Math.PI * 2], [10, 10, 5, 0, Math.PI * 2]]);
+      expect(arcs[0].fillStyle).toBe('#2266cc');
+      const anchorFills = overlay.records.filter((call) => call.name === 'fill' && call.fillStyle === '#2266cc');
+      expect(anchorFills).toHaveLength(2);
+    });
+
+    it('draws no anchor dots without anchors', () => {
+      expect(arcs(renderLasso(open))).toHaveLength(1);
+    });
+
+    it('skips off-screen anchors', () => {
+      const overlay = renderLasso({ ...open, anchors: [{ x: 1, y: 1 }, { x: 50, y: 50 }, { x: 2, y: 2 }] });
+
+      expect(arcs(overlay).map((call) => call.args.slice(0, 3))).toEqual([[20, 20, 3], [10, 10, 5]]);
+    });
+
+    it('fills nothing without a preview', () => {
+      const overlay = renderLasso(open);
+
+      expect(overlay.records.some((call) => call.name === 'fillRect' && call.fillStyle === PREVIEW_FILL)).toBe(false);
+    });
+
+    it('clips off-screen preview runs', () => {
+      const overlay = renderLasso({
+        ...open,
+        preview: { runs: [{ x: -5, y: 0, width: 10 }, { x: 0, y: 50, width: 3 }], boundaries: [] }
+      });
+
+      const fills = overlay.records.filter((call) => call.name === 'fillRect' && call.fillStyle === PREVIEW_FILL);
+      expect(fills.map((call) => call.args)).toEqual([[0, 0, 30, 10]]);
+    });
+
+    it('draws no dot when the start is outside the bounds', () => {
+      const overlay = renderLasso({ points: [{ x: 1, y: 1 }, { x: 2, y: 1 }], start: { x: 50, y: 50 } });
+
+      expect(arcs(overlay)).toHaveLength(0);
+    });
+  });
+
   it('renders exact sparse pending after-states for full, half, erase, legacy, and no-op cells', () => {
     const document = chart(6, 1);
     document.kind[3] = CellKind.Full;
@@ -3145,6 +3265,99 @@ describe('canvas mask and canvas editing', () => {
     expect(strokes(overlay, '#222222')).toEqual(expect.arrayContaining([[64, 64, 160, 64], [160, 64, 160, 112]]));
     expect(overlay.records.some((call) => call.name === 'setLineDash')).toBe(true);
     renderer.dispose();
+  });
+
+  describe('selection fill', () => {
+    const FILL = 'rgba(34, 102, 204, 0.16)';
+
+    function renderSelection(selection: Record<string, unknown>, viewport = { x: 0, y: 0, zoom: 10 }, extra: Record<string, unknown> = {}): RecordingContext {
+      const overlay = recordingContext();
+      const renderer = createCanvasRenderer({
+        document: chart(3, 3),
+        targets: { base: target(recordingContext()), overlay: target(overlay) },
+        metrics: getCanvasMetrics(30, 30),
+        viewport,
+        overlay: { selection, ...extra } as never
+      });
+      renderer.renderNow();
+      renderer.dispose();
+      return overlay;
+    }
+
+    const fills = (context: RecordingContext) => context.records.filter((call) => call.name === 'fillRect' && call.fillStyle === FILL).map((call) => call.args);
+
+    function sparse(indices: number[]): Record<string, unknown> {
+      const geometry = sparseSelectionGeometry(new Uint32Array(indices), 3, 3)!;
+      return { rect: geometry.bounds, kind: 'sparse', indices, boundaries: geometry.boundaries };
+    }
+
+    it('fills a rect selection', () => {
+      expect(fills(renderSelection({ x: 0, y: 1, width: 2, height: 1 }))).toEqual([[0, 10, 20, 10]]);
+    });
+
+    it('fills the merged runs of a sparse selection', () => {
+      expect(fills(renderSelection(sparse([0, 1, 2, 4])))).toEqual([[0, 0, 30, 10], [10, 10, 10, 10]]);
+    });
+
+    it('fills a canvas selection, including cells beyond the canvas', () => {
+      const overlay = recordingContext();
+      const renderer = createCanvasRenderer({
+        document: fabricChart(4, 4),
+        targets: { base: target(recordingContext()), overlay: target(overlay) },
+        metrics: getCanvasMetrics(192, 192, { dpr: 1 }),
+        viewport: { x: -4, y: -4, zoom: 16 },
+        style: { selectionColor: '#0000ff' },
+        overlay: { canvasEditing: { workspace, selection: { rect: { x: -3, y: 0, width: 3, height: 2 }, cells: new Uint8Array([1, 1, 0, 1, 0, 0]) } } }
+      });
+      renderer.renderNow();
+      expect(fills(overlay)).toEqual([[16, 64, 32, 16], [16, 80, 16, 16]]);
+
+      overlay.records.length = 0;
+      renderer.setOverlay({ canvasEditing: { workspace, selection: { rect: { x: -3, y: 0, width: 3, height: 2 } } } });
+      renderer.renderNow();
+      expect(fills(overlay)).toEqual([[16, 64, 48, 32]]);
+      renderer.dispose();
+    });
+
+    it('draws the fill before the outline', () => {
+      const overlay = renderSelection(sparse([0, 1, 2, 4]));
+
+      const fillAt = overlay.records.findIndex((call) => call.name === 'fillRect' && call.fillStyle === FILL);
+      const strokeAt = overlay.records.findIndex((call) => call.name === 'stroke' && call.strokeStyle === '#2266cc');
+      expect(fillAt).toBeGreaterThanOrEqual(0);
+      expect(strokeAt).toBeGreaterThan(fillAt);
+    });
+
+    it('keeps the default fill when the overlay recolors the outline', () => {
+      const overlay = renderSelection({ x: 0, y: 0, width: 1, height: 1 }, undefined, { color: '#ff0000' });
+
+      expect(fills(overlay)).toEqual([[0, 0, 10, 10]]);
+    });
+
+    it('clips off-screen runs', () => {
+      expect(fills(renderSelection(sparse([0, 1, 2, 4]), { x: 1, y: 0, zoom: 10 }))).toEqual([[0, 0, 20, 10], [0, 10, 10, 10]]);
+    });
+
+    it('leaves the lasso preview grey', () => {
+      const overlay = renderLassoOnly();
+
+      expect(overlay.records.some((call) => call.name === 'fillRect' && call.fillStyle === FILL)).toBe(false);
+      expect(overlay.records.some((call) => call.name === 'fillRect' && call.fillStyle === 'rgba(110, 110, 110, 0.28)')).toBe(true);
+    });
+
+    function renderLassoOnly(): RecordingContext {
+      const overlay = recordingContext();
+      const renderer = createCanvasRenderer({
+        document: chart(3, 3),
+        targets: { base: target(recordingContext()), overlay: target(overlay) },
+        metrics: getCanvasMetrics(30, 30),
+        viewport: { x: 0, y: 0, zoom: 10 },
+        overlay: { lassoPath: { points: [{ x: 1, y: 1 }, { x: 2, y: 1 }, { x: 2, y: 2 }], start: { x: 1, y: 1 }, preview: { runs: [{ x: 1, y: 1, width: 1 }], boundaries: [] } } }
+      });
+      renderer.renderNow();
+      renderer.dispose();
+      return overlay;
+    }
   });
 
   it('outlines a canvas selection that lies outside the box', () => {

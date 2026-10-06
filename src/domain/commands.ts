@@ -3173,6 +3173,29 @@ function segmentKey(start: Point, end: Point): string {
   return `${String(start.x)},${String(start.y)},${String(end.x)},${String(end.y)}`;
 }
 
+function greatestCommonDivisor(left: number, right: number): number {
+  return right === 0 ? left : greatestCommonDivisor(right, left % right);
+}
+
+/** Splits a canonical line at every grid corner strictly between its endpoints; midpoints never split. */
+function splitAtCorners(start: Point, end: Point): Array<{ start: Point; end: Point }> {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const steps = greatestCommonDivisor(Math.abs(dx), Math.abs(dy));
+  const pieces: Array<{ start: Point; end: Point }> = [];
+  let from = start;
+  for (let step = 1; step < steps; step += 1) {
+    const x = start.x + (dx / steps) * step;
+    const y = start.y + (dy / steps) * step;
+    if (x % 4 !== 0 || y % 4 !== 0) continue;
+    const to = { x, y };
+    pieces.push(canonicalEndpoints(from, to));
+    from = to;
+  }
+  pieces.push(canonicalEndpoints(from, end));
+  return pieces;
+}
+
 function endpointInBounds(document: PatternDocument, pointValue: Point): boolean {
   return pointValue.x >= 0 && pointValue.y >= 0 && pointValue.x <= document.width * 4 && pointValue.y <= document.height * 4;
 }
@@ -3216,30 +3239,42 @@ function applyAddBackstitch(document: PatternDocument, command: DomainCommand): 
   ensureBackstitchEndpoints(document, start, end);
   const color = parseColor(command);
   requirePaletteEntry(document, color);
-  const key = segmentKey(start, end);
-  if (listBackstitches(document).some((record) => segmentKey(record.start, record.end) === key)) {
+  const records = listBackstitches(document);
+  const pieces = splitAtCorners(start, end);
+  const existing = pieces.map((piece) => {
+    const key = segmentKey(piece.start, piece.end);
+    return records.findIndex((record) => segmentKey(record.start, record.end) === key);
+  });
+  if (existing.every((index) => index >= 0 && records[index].color === color && !records[index].completed)) {
     throw new DomainError('duplicate-backstitch', 'A backstitch with these endpoints already exists.');
   }
+  const createdCount = existing.filter((index) => index < 0).length;
   const requestedId = valueOf(command, 'id', 'backstitchId', 'segmentId');
-  const id = requestedId === undefined ? document.nextBackstitchId : requiredNumber(requestedId, 'id');
-  if (id < 1 || id > UINT32_MAX || id < document.nextBackstitchId || backstitchIndex(document, id) >= 0) {
-    throw new DomainError('invalid-backstitch-id', `Backstitch ID ${String(id)} cannot be allocated.`);
+  const firstId = requestedId === undefined ? document.nextBackstitchId : requiredNumber(requestedId, 'id');
+  if (createdCount > 0) {
+    const lastId = firstId + createdCount - 1;
+    if (firstId < 1 || lastId > UINT32_MAX || firstId < document.nextBackstitchId || records.some((record) => record.id >= firstId && record.id <= lastId)) {
+      throw new DomainError('invalid-backstitch-id', `Backstitch ID ${String(firstId)} cannot be allocated.`);
+    }
   }
-  const records = listBackstitches(document);
-  records.push({
-    id,
-    x1: start.x,
-    y1: start.y,
-    x2: end.x,
-    y2: end.y,
-    start,
-    end,
-    color,
-    completed: false
+  // Pieces that already exist are replaced in place: they take the new color and lose their progress.
+  const createdIds: number[] = [];
+  let firstReplacedId: number | undefined;
+  pieces.forEach((piece, pieceIndex) => {
+    const index = existing[pieceIndex];
+    if (index >= 0) {
+      records[index] = { ...records[index], color, completed: false };
+      firstReplacedId ??= records[index].id;
+      return;
+    }
+    const id = firstId + createdIds.length;
+    createdIds.push(id);
+    records.push({ id, x1: piece.start.x, y1: piece.start.y, x2: piece.end.x, y2: piece.end.y, start: piece.start, end: piece.end, color, completed: false });
   });
   replaceBackstitches(document, records);
-  document.nextBackstitchId = id + 1;
-  return { ...changed(), backstitchId: id };
+  if (createdIds.length === 0) return { ...changed(), backstitchId: firstReplacedId };
+  document.nextBackstitchId = createdIds[createdIds.length - 1] + 1;
+  return { ...changed(), backstitchId: createdIds[0], createdBackstitchIds: new Uint32Array(createdIds) };
 }
 
 function applyRemoveBackstitch(document: PatternDocument, command: DomainCommand): MutationInfo {
@@ -3272,15 +3307,27 @@ function applyMoveBackstitch(document: PatternDocument, command: DomainCommand):
   const snapped = snapMovedBackstitchEndpoints(document, current, endpoints.start, endpoints.end);
   const { start, end } = snapped;
   ensureBackstitchEndpoints(document, start, end);
-  const key = segmentKey(start, end);
-  if (records.some((record, candidateIndex) => candidateIndex !== index && segmentKey(record.start, record.end) === key)) {
-    throw new DomainError('duplicate-backstitch', 'A backstitch with these endpoints already exists.');
+  const pieces = splitAtCorners(start, end);
+  if (pieces.length === 1 && current.x1 === start.x && current.y1 === start.y && current.x2 === end.x && current.y2 === end.y) return noChange();
+  const firstId = document.nextBackstitchId;
+  if (pieces.length > 1 && firstId + pieces.length - 2 > UINT32_MAX) {
+    throw new DomainError('invalid-backstitch-id', `Backstitch ID ${String(firstId)} cannot be allocated.`);
   }
-  if (current.x1 === start.x && current.y1 === start.y && current.x2 === end.x && current.y2 === end.y) return noChange();
-  // Changing endpoints changes the stitch geometry.
-  records[index] = { ...current, x1: start.x, y1: start.y, x2: end.x, y2: end.y, start, end, completed: false };
-  replaceBackstitches(document, records);
-  return changed();
+  // Changing endpoints changes the stitch geometry; other stitches on the new pieces are replaced.
+  const keys = new Set(pieces.map((piece) => segmentKey(piece.start, piece.end)));
+  const createdIds: number[] = [];
+  const next = records.flatMap((record, candidateIndex) => {
+    if (candidateIndex !== index) return keys.has(segmentKey(record.start, record.end)) ? [] : [record];
+    return pieces.map((piece, pieceIndex) => {
+      const pieceId = pieceIndex === 0 ? current.id : firstId + pieceIndex - 1;
+      if (pieceIndex > 0) createdIds.push(pieceId);
+      return { ...current, id: pieceId, x1: piece.start.x, y1: piece.start.y, x2: piece.end.x, y2: piece.end.y, start: piece.start, end: piece.end, completed: false };
+    });
+  });
+  replaceBackstitches(document, next);
+  if (createdIds.length === 0) return { ...changed(), backstitchId: id };
+  document.nextBackstitchId = createdIds[createdIds.length - 1] + 1;
+  return { ...changed(), backstitchId: id, createdBackstitchIds: new Uint32Array(createdIds) };
 }
 
 function applyRecolorBackstitch(document: PatternDocument, command: DomainCommand): MutationInfo {
@@ -3311,13 +3358,13 @@ function applyUpdateBackstitch(document: PatternDocument, command: DomainCommand
   if (index < 0) return noChange();
   const hasEndpoints = valueOf(command, 'start', 'from', 'a', 'x1', 'startX', 'fromX', 'dx', 'dy') !== undefined;
   let didChange = false;
+  // Recolor first so every piece the move splits off inherits the new color.
+  if (valueOf(command, 'color', 'paletteId', 'colorId') !== undefined) {
+    didChange = applyRecolorBackstitch(document, command).changed;
+  }
   if (hasEndpoints) {
     const moveResult = applyMoveBackstitch(document, command);
-    didChange = moveResult.changed;
-  }
-  if (valueOf(command, 'color', 'paletteId', 'colorId') !== undefined) {
-    const recolorResult = applyRecolorBackstitch(document, command);
-    didChange = recolorResult.changed || didChange;
+    if (moveResult.changed) return moveResult;
   }
   return didChange ? changed() : noChange();
 }

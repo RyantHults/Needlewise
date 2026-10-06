@@ -1454,7 +1454,7 @@ describe('EditorSurfaceController', () => {
     gateway.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
     gateway.execute({ type: 'set-completion', x: 1, y: 1, completed: true });
     gateway.execute({ type: 'set-full', x: 2, y: 2, color: 1 });
-    gateway.execute({ type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 12, y: 12 }, color: 1 });
+    gateway.execute({ type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 12, y: 8 }, color: 1 });
     gateway.execute({ type: 'add-backstitch', start: { x: 0, y: 4 }, end: { x: 12, y: 12 }, color: 1 });
     const historyBeforeDelete = gateway.undoDepth;
     controller.setSelection({ x: 1, y: 1 }, { x: 2, y: 2 });

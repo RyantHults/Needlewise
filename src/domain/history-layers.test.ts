@@ -111,7 +111,7 @@ describe('layered DocumentEditor: layer-scoped commands', () => {
 
   it('adds backstitches on a specialty layer without touching cells', () => {
     const editor = editorFor();
-    const result = editor.execute(line(0, 0, 2, 0, 2));
+    const result = editor.execute(line(0, 0, 1, 0, 2));
     expect(result.changed).toBe(true);
     expect(result.compositeChangedIndices?.length).toBe(0);
     expect(specialty(editor.document, SPECIALTY).backstitches.ids.length).toBe(1);
@@ -816,7 +816,8 @@ describe('layered DocumentEditor: canvas edits', () => {
     // Removes (2, 1), (1, 2) and (2, 2): content on the visible and the hidden stitch layer, and the middle line.
     roundTrip(editor, cellsCommand('remove', 1, 1, 2, 2, new Uint8Array([0, 1, 1, 1])));
     expect(editor.document.canvasMask).toBeDefined();
-    expect(specialty(editor.document, SPECIALTY).backstitches.ids).toHaveLength(2);
+    // The two edge lines survive as five one-cell records each.
+    expect(specialty(editor.document, SPECIALTY).backstitches.ids).toHaveLength(10);
     roundTrip(editor, cellsCommand('add', -2, -1));
     expect([editor.document.width, editor.document.height, editor.document.originX, editor.document.originY]).toEqual([7, 5, -2, -1]);
     // Local coordinates follow the box: its top row now holds only the added cell.

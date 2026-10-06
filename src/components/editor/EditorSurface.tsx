@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ChartPresentationMode,
   createEditorSurfaceController,
@@ -34,13 +34,12 @@ import fillIcon from "../../assets/editor-tools/paint-bucket.svg";
 import selectIcon from "../../assets/editor-tools/select.svg";
 import selectOvalIcon from "../../assets/editor-tools/select-oval.svg";
 import lassoIcon from "../../assets/editor-tools/lasso.svg";
-import lassoPolygonIcon from "../../assets/editor-tools/lasso-polygon.svg";
 import eyedropperIcon from "../../assets/editor-tools/eyedropper.svg";
 import panIcon from "../../assets/editor-tools/pan.svg";
 import stitchIcon from "../../assets/editor-tools/stitch.svg";
 import { CanvasEdgeControls } from "./CanvasEdgeControls";
 import { contrastSymbolInk } from "../../rendering/contrast";
-import { DEFAULT_HALF_DIRECTION, DEFAULT_RENDERER_STYLE, toolAvailability, type BrushSizeTool, type EditorActiveLayer, type HalfStitchBrush, type LassoShape, type SelectShape, type ShapeKind } from "../../editor/contracts";
+import { DEFAULT_HALF_DIRECTION, DEFAULT_RENDERER_STYLE, toolAvailability, type BrushSizeTool, type EditorActiveLayer, type HalfStitchBrush, type SelectShape, type ShapeKind } from "../../editor/contracts";
 import type { ProjectSession } from "../../application/session";
 interface Props {
   workspace: ProjectWorkspace;
@@ -63,29 +62,15 @@ const SHAPE_CHOICES: readonly ShapeKind[] = [
   "triangle",
   "right-triangle",
 ];
-/** Tools whose rail button holds a popout of shape variants. */
-type VariantTool = "select" | "lasso";
-type VariantShapes = { select: SelectShape; lasso: LassoShape };
-type VariantChoice = { shape: VariantShapes[VariantTool]; label: string; icon: string; dataIcon: string };
-const VARIANT_TOOLS: Record<VariantTool, { label: string; menuLabel: string; choices: readonly VariantChoice[] }> = {
-  select: {
-    label: "Select",
-    menuLabel: "Choose selection shape",
-    choices: [
-      { shape: "rectangle", label: "Rectangle select", icon: selectIcon, dataIcon: "select" },
-      { shape: "oval", label: "Oval select", icon: selectOvalIcon, dataIcon: "select-oval" },
-    ],
-  },
-  lasso: {
-    label: "Lasso select",
-    menuLabel: "Choose lasso shape",
-    choices: [
-      { shape: "freehand", label: "Lasso select", icon: lassoIcon, dataIcon: "lasso" },
-      { shape: "polygon", label: "Polygon lasso", icon: lassoPolygonIcon, dataIcon: "lasso-polygon" },
-    ],
-  },
-};
-const DEFAULT_VARIANT_SHAPES: VariantShapes = { select: "rectangle", lasso: "freehand" };
+/** The Select rail button's shapes, offered in Tool options while selecting or lassoing. */
+type SelectChoice = { tool: "select"; shape: SelectShape; label: string; icon: string; dataIcon: string } | { tool: "lasso"; label: string; icon: string; dataIcon: string };
+const SELECT_CHOICES: readonly SelectChoice[] = [
+  { tool: "select", shape: "rectangle", label: "Rectangle select", icon: selectIcon, dataIcon: "select" },
+  { tool: "select", shape: "oval", label: "Oval select", icon: selectOvalIcon, dataIcon: "select-oval" },
+  { tool: "lasso", label: "Lasso", icon: lassoIcon, dataIcon: "lasso" },
+];
+const STITCH_CHOICES = [["full", "Full stitch"], ["half", "Half stitch"], ["three-quarter", "3/4 stitch"]] as const;
+type StitchKind = (typeof STITCH_CHOICES)[number][0];
 const normalizeHexColor = (value: string): string | undefined => {
   const digits = value.trim().replace(/^#/, "");
   if (!/^(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(digits)) return undefined;
@@ -93,15 +78,6 @@ const normalizeHexColor = (value: string): string | undefined => {
     ? digits.split("").map((digit) => `${digit}${digit}`).join("")
     : digits;
   return `#${expanded.toUpperCase()}`;
-};
-type TouchCopyRequestWithScreen = {
-  cell: { x: number; y: number };
-  selection: { x: number; y: number; width: number; height: number };
-  screenX: number;
-  screenY: number;
-  pointerType?: string;
-  /** A canvas selection: offer Add/Delete cells instead of Copy/Paste/Move/Delete. */
-  canvas?: boolean;
 };
 const modes = [
   [ChartPresentationMode.Color, "Color"],
@@ -161,48 +137,10 @@ type EditorPreferences = {
   halfStitchDirection: HalfStitchDirection;
 };
 
-type PopoverTool = BrushSizeTool | "backstitch";
 /** "Full stitch brush size", but "Canvas brush size" / "Canvas eraser size" for the canvas tools, whose labels already name the tool. */
 const brushSizeHeading = (label: string) => (label.startsWith("Canvas ") ? `${label} size` : `${label} brush size`);
 /** Stitch selections offer Copy/Paste/Move/Delete; canvas selections offer Add/Delete cells. */
 type SelectionAction = "copy" | "paste" | "move" | "delete" | "add-cells" | "delete-cells";
-type PressTool = PopoverTool | "shape" | VariantTool;
-type PressSession = {
-  pointerId: number;
-  pointerType: string;
-  kind: "brush" | "shape" | "variant" | "backstitch";
-  anchor: HTMLButtonElement;
-  tool: PressTool;
-  label: string;
-  phase: "pending" | "opened" | "aborted";
-  clientX: number;
-  clientY: number;
-  timer: number | null;
-  removeListeners: ((keepReleaseObservers: boolean) => void) | null;
-  removeReleaseListeners: (() => void) | null;
-};
-type TrailingPointerClick = {
-  anchor: HTMLButtonElement;
-  pointerId: number;
-  timer: number;
-  allowAnonymous: boolean;
-};
-type CompetingPressPointer = {
-  pointerId: number;
-  anchor: HTMLButtonElement;
-  owner: PressSession;
-};
-type TouchContextGuard = {
-  anchor: HTMLButtonElement;
-  timer: number;
-};
-type PressLifecycle = {
-  session: PressSession | null;
-  trailingClicks: TrailingPointerClick[];
-  competingPointers: CompetingPressPointer[];
-  releaseObservers: PressSession[];
-  touchContextGuards: TouchContextGuard[];
-};
 
 const defaultEditorPreferences = (): EditorPreferences => ({
   version: 1,
@@ -319,22 +257,10 @@ export function EditorSurface({
   );
   const [ui, setUi] = useState<EditorUiState | null>(null);
   const [fallback, setFallback] = useState(false);
-  const [brushPopover, setBrushPopover] = useState<{ tool: PopoverTool; label: string; left: number; top: number } | null>(null);
   const [lastBackstitchMode, setLastBackstitchMode] = useState<BackstitchMode>("draw");
-  const brushTrigger = useRef<HTMLButtonElement | null>(null);
-  const brushMenu = useRef<HTMLDivElement | null>(null);
-  const pressLifecycle = useRef<PressLifecycle>({ session: null, trailingClicks: [], competingPointers: [], releaseObservers: [], touchContextGuards: [] });
   const [selectedShape, setSelectedShape] = useState<ShapeKind>("triangle");
-  const [shapeMenuOpen, setShapeMenuOpen] = useState(false);
-  const [shapeMenuPosition, setShapeMenuPosition] = useState({ left: 8, top: 8 });
-  const shapeTrigger = useRef<HTMLButtonElement>(null);
-  const shapeMenu = useRef<HTMLDivElement>(null);
-  const shapeItems = useRef<Array<HTMLButtonElement | null>>([]);
-  const [variantShapes, setVariantShapes] = useState<VariantShapes>(DEFAULT_VARIANT_SHAPES);
-  const [variantMenu, setVariantMenu] = useState<{ tool: VariantTool; left: number; top: number } | null>(null);
-  const variantTrigger = useRef<HTMLButtonElement>(null);
-  const variantMenuRef = useRef<HTMLDivElement>(null);
-  const variantItems = useRef<Array<HTMLButtonElement | null>>([]);
+  const [selectChoice, setSelectChoice] = useState<SelectChoice>(SELECT_CHOICES[0]!);
+  const [lastStitchKind, setLastStitchKind] = useState<StitchKind>("full");
   const [open, setOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<"project" | "editor">("project");
   const [title, setTitle] = useState(workspace.metadata?.title ?? "");
@@ -393,21 +319,21 @@ export function EditorSurface({
   const [deleteTarget, setDeleteTarget] = useState<number | null>(null);
   const deleteTrigger = useRef<HTMLButtonElement | null>(null);
   const deleteDialog = useRef<HTMLDivElement>(null);
+  const [managerOpen, setManagerOpen] = useState(false);
+  const [managerPanel, setManagerPanel] = useState<"swap" | "add" | null>(null);
+  const [managerSelectedId, setManagerSelectedId] = useState<number | null>(null);
+  const managerTrigger = useRef<HTMLButtonElement | null>(null);
+  const managerDialog = useRef<HTMLDivElement>(null);
+  const managerClose = useRef<HTMLButtonElement>(null);
+  const managerSwapButton = useRef<HTMLButtonElement>(null);
+  const managerAddButton = useRef<HTMLButtonElement>(null);
   const [mobilePanel, setMobilePanel] = useState<"tools" | "colors" | null>(null);
   const mobileDock = useRef<HTMLElement>(null);
   const mobileToolsTrigger = useRef<HTMLButtonElement>(null);
   const mobileColorsTrigger = useRef<HTMLButtonElement>(null);
   const mobilePopover = useRef<HTMLDivElement>(null);
-  const touchCopyMenu = useRef<HTMLDivElement>(null);
-  const touchCopyAction = useRef<HTMLButtonElement>(null);
-  const touchActionPointerDown = useRef(false);
   const palettePress = useRef<number | null>(null);
   const paletteLongPressed = useRef(false);
-  const touchCopyRequest = ui?.overlay.touchCopyRequest as
-    | TouchCopyRequestWithScreen
-    | null
-    | undefined;
-  const [touchCopyPosition, setTouchCopyPosition] = useState<{ left: number; top: number } | null>(null);
   useEffect(() => {
     const el = frame.current,
       b = base.current,
@@ -485,14 +411,14 @@ export function EditorSurface({
           keyboardSurface: root,
             shouldExcludeTarget: (target: unknown) =>
             target instanceof Element &&
-            Boolean(target.closest('.touch-copy-menu, .canvas-edge-controls, button[aria-label="Shape"], button[aria-label="Select"], button[aria-label="Lasso select"], button[aria-haspopup="dialog"], .tool-brush-popover')),
+            Boolean(target.closest('.canvas-edge-controls, .floating-paste-controls, button[aria-label="Shape"], button[aria-label="Select"], button[aria-label="Stitch"], button[aria-label="Eraser"], button[aria-label^="Backstitch"], .tool-options')),
         },
       );
       // The adapter prevents default on canvas presses, so focus would stay on
       // the last rail button and Enter/Escape/Backspace would never reach the
       // controller. Pull focus onto the frame unless it is already inside it.
       const focusFrame = (event: PointerEvent) => {
-        if (event.target instanceof Element && event.target.closest(".touch-copy-menu, .canvas-edge-controls")) return;
+        if (event.target instanceof Element && event.target.closest(".canvas-edge-controls, .floating-paste-controls")) return;
         if (el.contains(globalThis.document.activeElement)) return;
         el.focus({ preventScroll: true });
       };
@@ -573,7 +499,7 @@ export function EditorSurface({
     noThread = !palette.length;
   const activeBackstitchMode = ui?.tool.tool === "backstitch" ? (ui.tool.mode ?? "draw") : undefined;
   const selectedPalette = palette.find((x) => x.id === ui?.paletteId) ?? palette[0];
-  const choose = (kind: "full" | "half" | "three-quarter") => {
+  const choose = (kind: StitchKind) => {
     const id = selectedPalette?.id;
     if (id)
       controllerRef.current?.setBrush({
@@ -596,7 +522,7 @@ export function EditorSurface({
   const canvasCropActive = ui?.canvasCropActive ?? false;
   const availability = (tool: string) => toolAvailability(tool as never, undefined, toolLayer, canvasMode, canvasCropActive);
   const canvasCropping = toolLayer?.kind === "canvas" && canvasCropActive;
-  /** In Advanced crop the Full stitch button drives the canvas brush. */
+  /** In Advanced crop the Stitch button drives the canvas brush. */
   const canvasAdvanced = canvasCropping && canvasMode === "advanced";
   const showCanvasEdges = canvasCropping && canvasMode === "basic" && (ui?.canvasBasicAvailable ?? true);
   const toolGate = (tool: string, title: string) => {
@@ -673,23 +599,21 @@ export function EditorSurface({
     setSelectedCatalogColor(null);
   }, [workspace.activeProjectId, defaultCatalogId]);
   useEffect(() => {
-    if (!paletteOpen) return;
+    if (!(paletteOpen || managerPanel)) return;
     if (
       selectedCatalogColor &&
       catalogResults.some((color) => color.sourceId === selectedCatalogColor.sourceId)
     )
       return;
     setSelectedCatalogColor(catalogResults[0] ?? null);
-  }, [catalogResults, paletteOpen, selectedCatalogColor, selectedCatalogId]);
+  }, [catalogResults, paletteOpen, managerPanel, selectedCatalogColor, selectedCatalogId]);
   useEffect(() => {
     setPaletteQuery("");
     const preselected = preselectedCatalogColor.current;
     preselectedCatalogColor.current = null;
     setSelectedCatalogColor(preselected ?? pickerCatalog?.search("", { limit: 1 })[0] ?? null);
   }, [selectedCatalogId]);
-  const openPalettePicker = () => {
-    paletteTrigger.current = addTrigger.current;
-    setSwapTarget(null);
+  const resetPicker = () => {
     setBackgroundPicking(false);
     setPaletteNotice("");
     setPaletteQuery("");
@@ -697,20 +621,73 @@ export function EditorSurface({
     setCanonicalCustomColor("#000000");
     setSelectedCatalogId(defaultCatalogId);
     setSelectedCatalogColor(availableCatalogs.find((item) => item.association.catalogId === defaultCatalogId)?.search("", { limit: 1 })[0] ?? null);
+  };
+  const openPalettePicker = () => {
+    paletteTrigger.current = addTrigger.current;
+    setSwapTarget(null);
+    resetPicker();
     setPaletteOpen(true);
   };
   const openSwapPicker = (id: number, trigger: HTMLButtonElement) => {
     paletteTrigger.current = trigger;
-    setBackgroundPicking(false);
-    setPaletteNotice("");
-    setPaletteQuery("");
-    setCustomColorInput("#000000");
-    setCanonicalCustomColor("#000000");
-    setSelectedCatalogId(defaultCatalogId);
-    setSelectedCatalogColor(availableCatalogs.find((item) => item.association.catalogId === defaultCatalogId)?.search("", { limit: 1 })[0] ?? null);
+    resetPicker();
     setSwapTarget(id);
     setPaletteOpen(true);
   };
+  // The manager's chip falls back to the first color on its own, so a delete
+  // or swap that removes the chip's color never leaves it pointing at nothing.
+  const managerEntry = palette.find((entry) => entry.id === managerSelectedId) ?? palette[0] ?? null;
+  const openPaletteManager = (trigger: HTMLButtonElement) => {
+    managerTrigger.current = trigger;
+    setManagerSelectedId(ui?.paletteId ?? null);
+    setManagerPanel(null);
+    setSwapTarget(null);
+    setManagerOpen(true);
+  };
+  const closePaletteManager = () => {
+    setManagerOpen(false);
+    setManagerPanel(null);
+    setSwapTarget(null);
+    window.setTimeout(() => managerTrigger.current?.focus(), 0);
+  };
+  const closeManagerPanel = (focus: HTMLButtonElement | null) => {
+    setManagerPanel(null);
+    setSwapTarget(null);
+    window.setTimeout(() => focus?.focus(), 0);
+  };
+  const toggleManagerSwap = () => {
+    if (managerPanel === "swap") {
+      closeManagerPanel(managerSwapButton.current);
+      return;
+    }
+    if (!managerEntry) return;
+    resetPicker();
+    setSwapTarget(managerEntry.id);
+    setManagerPanel("swap");
+  };
+  const toggleManagerAdd = () => {
+    if (managerPanel === "add") {
+      closeManagerPanel(managerAddButton.current);
+      return;
+    }
+    resetPicker();
+    setSwapTarget(null);
+    setManagerPanel("add");
+  };
+  const selectManagerEntry = (id: number) => {
+    setManagerSelectedId(id);
+    if (managerPanel === "swap") setSwapTarget(id);
+  };
+  const deleteFromManager = (id: number, trigger: HTMLButtonElement) => {
+    setManagerPanel(null);
+    setSwapTarget(null);
+    deleteTrigger.current = trigger;
+    setDeleteTarget(id);
+  };
+  // The delete confirmation can sit on top of the manager; when the deleted
+  // color took the manager's Delete button with it, focus falls back to the
+  // manager's close button.
+  const focusAfterDelete = () => window.setTimeout(() => (deleteTrigger.current?.isConnected ? deleteTrigger.current : managerClose.current)?.focus(), 0);
   const backgroundCatalogMatch = availableCatalogs.flatMap((item) => {
     const record = item.getByHex(documentBackgroundColor);
     return record ? [{ item, record }] : [];
@@ -769,6 +746,17 @@ export function EditorSurface({
     setCanvasBackground(hex);
     closePalettePicker();
   };
+  // An add from the manager closes only its panel and keeps the manager open
+  // on the new color; the standalone picker closes as before.
+  const finishAdd = (id: number | null) => {
+    if (managerPanel === "add") {
+      setManagerPanel(null);
+      if (id !== null) setManagerSelectedId(id);
+      window.setTimeout(() => managerAddButton.current?.focus(), 0);
+      return;
+    }
+    closePalettePicker();
+  };
   const addPaletteColor = async (
     color: CatalogColor,
   ) => {
@@ -787,7 +775,7 @@ export function EditorSurface({
         (entry) => entry.active && entry.catalog?.catalogId === definition.association.catalogId && entry.catalog.sourceId === color.sourceId && !previousIds.has(entry.id),
       );
       if (added) controllerRef.current?.selectCreatedPalette(added.id);
-      closePalettePicker();
+      finishAdd(added?.id ?? null);
     } catch (error) {
       setPaletteNotice(
         error instanceof Error
@@ -795,6 +783,19 @@ export function EditorSurface({
           : "This color could not be added.",
       );
     }
+  };
+  // A swap from the manager closes only its panel and keeps the manager
+  // open on the replacement; the standalone picker closes as before.
+  const finishSwap = (replacementId: number | null) => {
+    controllerRef.current?.selectPalette(replacementId);
+    setSwapTarget(null);
+    if (managerPanel === "swap") {
+      setManagerPanel(null);
+      if (replacementId !== null) setManagerSelectedId(replacementId);
+      window.setTimeout(() => managerSwapButton.current?.focus(), 0);
+      return;
+    }
+    closePalettePicker();
   };
   const swapIntoCatalogColor = (color: CatalogColor) => {
     const target = swapTarget;
@@ -806,9 +807,7 @@ export function EditorSurface({
       else workspace.execute({ type: "palette-merge", from: target, createTo: { name: color.name, color: color.hex, catalog: createCatalogReference(definition, color) } });
       const current = workspace.getStateSnapshot().document;
       const replacement = existing?.id ?? current?.palette.find((entry) => entry.active && entry.id !== target && entry.catalog?.catalogId === definition.association.catalogId && entry.catalog.sourceId === color.sourceId)?.id ?? null;
-      controllerRef.current?.selectPalette(replacement);
-      closePalettePicker();
-      setSwapTarget(null);
+      finishSwap(replacement);
     } catch (error) {
       setPaletteNotice(error instanceof Error ? error.message : "This color could not be swapped.");
     }
@@ -821,9 +820,7 @@ export function EditorSurface({
       if (existing) workspace.execute({ type: "palette-merge", from: target, to: existing.id });
       else workspace.execute({ type: "palette-merge", from: target, createTo: { name: customColor, color: customColor } });
       const replacement = existing?.id ?? workspace.getStateSnapshot().document?.palette.find((entry) => entry.active && entry.id !== target && normalizeHexColor(entry.color) === customColor)?.id ?? null;
-      controllerRef.current?.selectPalette(replacement);
-      closePalettePicker();
-      setSwapTarget(null);
+      finishSwap(replacement);
     } catch (error) {
       setPaletteNotice(error instanceof Error ? error.message : "This color could not be swapped.");
     }
@@ -832,7 +829,7 @@ export function EditorSurface({
     if (!customColor) return;
     if (customPaletteMatch) {
       controllerRef.current?.selectPalette(customPaletteMatch.id);
-      closePalettePicker();
+      finishAdd(customPaletteMatch.id);
       return;
     }
     if (customCatalogColor && pickerCatalog) {
@@ -855,7 +852,7 @@ export function EditorSurface({
           normalizeHexColor(entry.color) === customColor,
       );
       if (added) controllerRef.current?.selectCreatedPalette(added.id);
-      closePalettePicker();
+      finishAdd(added?.id ?? null);
     } catch (error) {
       setPaletteNotice(
         error instanceof Error
@@ -1170,6 +1167,47 @@ export function EditorSurface({
     };
   }, [paletteOpen]);
   useEffect(() => {
+    if (!managerOpen) return;
+    const el = managerDialog.current;
+    if (!el) return;
+    const root =
+      globalThis.document.querySelector<HTMLElement>("[data-application]");
+    const wasInert = root?.inert ?? false;
+    if (root) root.inert = true;
+    (el.querySelector<HTMLButtonElement>('.palette-manager-grid [aria-pressed="true"]') ?? managerClose.current)?.focus();
+    // Re-queried on every Tab: the swap panel adds and removes controls.
+    const all = () =>
+      [...el.querySelectorAll<HTMLElement>("button,input,select")].filter(
+        (item) => !item.hasAttribute("disabled") && item.tabIndex >= 0,
+      );
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        // The panel's presence is read from the DOM because this listener
+        // outlives the render that opened the panel.
+        if (el.querySelector("#palette-manager-panel")) closeManagerPanel(el.querySelector('.palette-manager-add[aria-expanded="true"]') ? managerAddButton.current : managerSwapButton.current);
+        else closePaletteManager();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const f = all(),
+        first = f[0],
+        last = f.at(-1);
+      if (e.shiftKey && globalThis.document.activeElement === first) {
+        e.preventDefault();
+        last?.focus();
+      } else if (!e.shiftKey && globalThis.document.activeElement === last) {
+        e.preventDefault();
+        first?.focus();
+      }
+    };
+    el.addEventListener("keydown", key);
+    return () => {
+      el.removeEventListener("keydown", key);
+      if (root) root.inert = wasInert;
+    };
+  }, [managerOpen]);
+  useEffect(() => {
     if (!removeOpen) return;
     const el = removeDialog.current;
     if (!el) return;
@@ -1265,7 +1303,7 @@ export function EditorSurface({
     const wasInert = root?.inert ?? false;
     if (root) root.inert = true;
     dialog.querySelector<HTMLButtonElement>("[data-delete-cancel]")?.focus();
-    const close = () => { setDeleteTarget(null); window.setTimeout(() => deleteTrigger.current?.focus(), 0); };
+    const close = () => { setDeleteTarget(null); focusAfterDelete(); };
     const key = (event: KeyboardEvent) => {
       if (event.key === "Escape") { event.preventDefault(); close(); return; }
       if (event.key !== "Tab") return;
@@ -1282,7 +1320,6 @@ export function EditorSurface({
     if (!mobilePanel) return;
     mobilePopover.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
-       if (event.key === "Escape" && globalThis.document.querySelector(".shape-picker-menu, .tool-brush-popover")) return;
       if (event.key === "Escape") {
         event.preventDefault();
         setMobilePanel(null);
@@ -1292,9 +1329,9 @@ export function EditorSurface({
       }
     };
     const onPointerDown = (event: PointerEvent) => {
-      if (paletteOpen) return;
+      if (paletteOpen || managerOpen) return;
       const target = event.target;
-       if (target instanceof Node && !mobileDock.current?.contains(target) && !(target instanceof Element && target.closest(".mobile-dock-trigger, .editor-rail-popover, .tool-brush-popover"))) setMobilePanel(null);
+       if (target instanceof Node && !mobileDock.current?.contains(target) && !(target instanceof Element && target.closest(".mobile-dock-trigger, .editor-rail-popover"))) setMobilePanel(null);
     };
     globalThis.document.addEventListener("keydown", onKeyDown);
     globalThis.document.addEventListener("pointerdown", onPointerDown);
@@ -1302,99 +1339,16 @@ export function EditorSurface({
       globalThis.document.removeEventListener("keydown", onKeyDown);
       globalThis.document.removeEventListener("pointerdown", onPointerDown);
     };
-  }, [mobilePanel, paletteOpen]);
-  const dismissTouchCopy = () => {
-      controllerRef.current?.dismissTouchCopyRequest?.();
-      window.setTimeout(() => frame.current?.focus(), 0);
-  };
-  const copyTouchSelection = () => {
-    const surface = controllerRef.current as
-      | (EditorSurfaceController & { copySelection?: () => unknown })
-      | null;
-    surface?.copySelection?.();
-    dismissTouchCopy();
-  };
+  }, [mobilePanel, paletteOpen, managerOpen]);
   const runSelectionAction = (action: SelectionAction) => {
-    if (action === "add-cells" || action === "delete-cells") {
-      controllerRef.current?.applyCanvasSelection(action === "add-cells" ? "add" : "remove");
-      dismissTouchCopy();
-    } else if (action === "copy") copyTouchSelection();
-    else if (action === "paste") {
-      controllerRef.current?.pasteSelection();
-      dismissTouchCopy();
-    } else if (action === "move") {
-      controllerRef.current?.moveSelection();
-      dismissTouchCopy();
-    } else {
-      controllerRef.current?.deleteSelection?.();
-      dismissTouchCopy();
-    }
+    const surface = controllerRef.current;
+    if (action === "add-cells" || action === "delete-cells") surface?.applyCanvasSelection(action === "add-cells" ? "add" : "remove");
+    else if (action === "copy") (surface as (EditorSurfaceController & { copySelection?: () => unknown }) | null)?.copySelection?.();
+    else if (action === "paste") surface?.pasteSelection();
+    else if (action === "move") surface?.moveSelection();
+    else surface?.deleteSelection?.();
+    window.setTimeout(() => frame.current?.focus(), 0);
   };
-  const handleSelectionActionPointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
-    if (event.pointerType === "touch") touchActionPointerDown.current = true;
-  };
-  const handleSelectionActionClick = (
-    action: SelectionAction,
-    event: React.MouseEvent<HTMLButtonElement>,
-  ) => {
-    const openingPointerType = touchCopyRequest?.pointerType ?? "touch";
-    if (openingPointerType === "touch" && event.detail > 0 && !touchActionPointerDown.current) return;
-    touchActionPointerDown.current = false;
-    runSelectionAction(action);
-  };
-  const handleSelectionActionKeyDown = (
-    event: React.KeyboardEvent<HTMLButtonElement>,
-    action: SelectionAction,
-  ) => {
-    event.stopPropagation();
-    if (event.key === "Escape") {
-      event.preventDefault();
-      dismissTouchCopy();
-    } else if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      runSelectionAction(action);
-    }
-  };
-  useLayoutEffect(() => {
-    if (!touchCopyRequest) {
-      setTouchCopyPosition(null);
-      return;
-    }
-    const surface = frame.current;
-    const menu = touchCopyMenu.current;
-    if (!surface || !menu) return;
-    touchActionPointerDown.current = false;
-    const width = surface.clientWidth || 640;
-    const height = surface.clientHeight || 480;
-    const menuWidth = menu.offsetWidth || 150;
-    const menuHeight = menu.offsetHeight || 48;
-    const left = touchCopyRequest.screenX - menuWidth / 2;
-    const top = touchCopyRequest.screenY - menuHeight / 2;
-    setTouchCopyPosition({
-      left: Math.max(0, Math.min(left, width - menuWidth)),
-      top: Math.max(0, Math.min(top, height - menuHeight)),
-    });
-    touchCopyAction.current?.focus();
-  }, [touchCopyRequest]);
-  useEffect(() => {
-    if (!touchCopyRequest) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      dismissTouchCopy();
-    };
-    const onPointerDown = (event: PointerEvent) => {
-      if (event.target instanceof Node && touchCopyMenu.current?.contains(event.target)) return;
-      dismissTouchCopy();
-    };
-    globalThis.document.addEventListener("keydown", onKeyDown);
-    globalThis.document.addEventListener("pointerdown", onPointerDown);
-    return () => {
-      globalThis.document.removeEventListener("keydown", onKeyDown);
-      globalThis.document.removeEventListener("pointerdown", onPointerDown);
-    };
-  }, [touchCopyRequest]);
   const symbolFilterQuery = symbolFilter.trim().toLowerCase();
   const symbolMatches = symbolEntry
     ? SYMBOL_POOL.filter(
@@ -1428,374 +1382,189 @@ export function EditorSurface({
     (selectedBrush as { kind?: string } | undefined)?.kind === "three-quarter";
   const backstitchActive = ui?.tool.tool === "backstitch";
   useEffect(() => { if (activeBackstitchMode) setLastBackstitchMode(activeBackstitchMode); }, [activeBackstitchMode]);
-  const openBrushPopover = (tool: PopoverTool, label: string, anchor: HTMLButtonElement) => {
-    brushTrigger.current = anchor;
-    const rect = anchor.getBoundingClientRect();
-    setBrushPopover({ tool, label, left: Math.max(8, Math.min(rect.left, window.innerWidth - 250)), top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 100)) });
-  };
-  useEffect(() => {
-    if (!brushPopover) return;
-    const close = (restore = false) => { setBrushPopover(null); if (restore && brushTrigger.current?.isConnected) brushTrigger.current.focus(); };
-    const outside = (event: PointerEvent) => { if (event.target instanceof Node && !brushMenu.current?.contains(event.target) && !brushTrigger.current?.contains(event.target)) close(); };
-    const key = (event: KeyboardEvent) => { if (event.key === "Escape") { event.preventDefault(); event.stopImmediatePropagation(); close(true); } };
-    const reposition = () => { const anchor = brushTrigger.current; if (!anchor?.isConnected) { close(); return; } const rect = anchor.getBoundingClientRect(); setBrushPopover((current) => current ? { ...current, left: Math.max(8, Math.min(rect.left, window.innerWidth - 250)), top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 100)) } : current); };
-    globalThis.document.addEventListener("pointerdown", outside); globalThis.document.addEventListener("keydown", key); window.addEventListener("resize", reposition); window.addEventListener("scroll", reposition, true);
-    return () => { globalThis.document.removeEventListener("pointerdown", outside); globalThis.document.removeEventListener("keydown", key); window.removeEventListener("resize", reposition); window.removeEventListener("scroll", reposition, true); };
-  }, [brushPopover]);
-  useEffect(() => { if (brushPopover) brushMenu.current?.querySelector<HTMLElement>(brushPopover.tool === "backstitch" ? 'button[aria-pressed="true"]' : "input")?.focus(); }, [brushPopover]);
-  const positionShapeMenu = (anchor: HTMLElement) => {
-    const rect = anchor.getBoundingClientRect();
-    setShapeMenuPosition({ left: Math.max(8, Math.min(rect.left, window.innerWidth - 324)), top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 110)) });
-  };
-  const openShapeMenu = (anchor: HTMLElement) => {
-    shapeTrigger.current = anchor as HTMLButtonElement;
-    positionShapeMenu(anchor);
-    setShapeMenuOpen(true);
-  };
-  const closeShapeMenu = (restoreFocus = true) => {
-    setShapeMenuOpen(false);
-    if (restoreFocus) shapeTrigger.current?.focus();
-  };
   const shapeToolDisabled = noThread || ui?.paletteId == null || !palette.some((entry) => entry.id === ui.paletteId);
   const applyShapeTool = (shape: ShapeKind) => {
     if (shapeToolDisabled || refuseUnavailable("shape")) return;
     controllerRef.current?.setTool({ tool: "shape", shape } as never);
   };
   const shapeIcon = (kind: ShapeKind) => <svg data-shape-icon={kind} viewBox="0 0 24 24" aria-hidden="true"><path d={kind === "line" ? "M5 19 19 5" : kind === "rectangle" ? "M5 6h14v12H5z" : (kind as string) === "square" ? "M5 5h14v14H5z" : kind === "circle" ? "M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16" : (kind as string) === "oval" ? "M12 4a8 6 0 1 0 0 12 8 6 0 0 0 0-12" : (kind as string) === "right-triangle" ? "M5 5V19H19Z" : "M12 4 20 19H4z"} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>;
-  useEffect(() => {
-    if (!shapeMenuOpen) return;
-    shapeItems.current[SHAPE_CHOICES.indexOf(selectedShape)]?.focus();
-    const outside = (event: PointerEvent) => { if (event.target instanceof Node && !shapeMenu.current?.contains(event.target) && !shapeTrigger.current?.contains(event.target)) closeShapeMenu(); };
-    const key = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeShapeMenu(); return; }
-      const current = shapeItems.current.findIndex((item) => item === globalThis.document.activeElement);
-      if (current < 0) return;
-      let next: number | undefined;
-      if (event.key === "ArrowDown" || event.key === "ArrowRight") next = (current + 1) % 7;
-      else if (event.key === "ArrowUp" || event.key === "ArrowLeft") next = (current + 6) % 7;
-      else if (event.key === "Home") next = 0;
-      else if (event.key === "End") next = 6;
-      else if (event.key === "Enter" || event.key === " ") { event.preventDefault(); shapeItems.current[current]?.click(); return; }
-      if (next !== undefined) { event.preventDefault(); shapeItems.current[next]?.focus(); }
+  /** The Select/Lasso choice matching the active tool; lasso matches by tool, and an unset select shape is rectangle. */
+  const activeSelectChoice = SELECT_CHOICES.find((choice) => choice.tool === ui?.tool.tool && (!("shape" in choice) || !("shape" in ui.tool) || ui.tool.shape == null || ui.tool.shape === choice.shape));
+  useEffect(() => { if (activeSelectChoice) setSelectChoice(activeSelectChoice); }, [activeSelectChoice]);
+  const activeStitchKind = ui?.tool.tool === "paint" ? STITCH_CHOICES.find(([kind]) => kind === (selectedBrush as { kind?: string } | undefined)?.kind)?.[0] : undefined;
+  useEffect(() => { if (activeStitchKind) setLastStitchKind(activeStitchKind); }, [activeStitchKind]);
+  const applySelectChoice = (choice: SelectChoice) => {
+    setSelectChoice(choice);
+    if (refuseUnavailable(choice.tool)) return;
+    controllerRef.current?.setTool(("shape" in choice ? { tool: choice.tool, shape: choice.shape } : { tool: choice.tool }) as never);
+  };
+  /** The active tool's brush size, and the label its size control is announced with. */
+  const sizeOption: { tool: BrushSizeTool; label: string } | null =
+    ui?.tool.tool === "canvas-brush" ? { tool: "canvas-brush", label: "Canvas brush" }
+      : ui?.tool.tool === "eraser" ? { tool: "eraser", label: canvasAdvanced ? "Canvas eraser" : "Eraser" }
+        : ui?.tool.tool !== "paint" ? null
+          : fullStitchActive ? { tool: "full", label: "Full stitch" }
+            : halfActive ? { tool: "half", label: "Half stitch" }
+              : threeQuarterActive ? { tool: "three-quarter", label: "3/4 stitch" }
+                : null;
+  /** The Tool options heading: the active tool's rail name, or undefined when the tool has no options and the section is hidden. */
+  const toolOptionsHeading = sizeOption || backstitchActive || ui?.tool.tool === "shape" || activeSelectChoice
+    ? ({ paint: "Stitch", select: "Select", lasso: "Select", shape: "Shape", backstitch: "Backstitch", eraser: "Eraser", "canvas-brush": "Canvas brush" } as Record<string, string>)[String(ui?.tool.tool)]
+    : undefined;
+  /** Apply/Cancel for a floating paste or move: just above the floating rect's top-right corner, below it when there is no room, clamped to the frame. */
+  const floatingPaste = ui?.overlay.floatingPaste;
+  const floatingPasteControls = floatingPaste && ui?.viewport ? (() => {
+    const { destination: rect } = floatingPaste, { x, y, zoom } = ui.viewport;
+    const width = 78, height = 36, gap = 6;
+    const frameWidth = frame.current?.clientWidth || 640, frameHeight = frame.current?.clientHeight || 480;
+    const right = (rect.x + rect.width - x) * zoom, top = (rect.y - y) * zoom, bottom = (rect.y + rect.height - y) * zoom;
+    const above = top - gap - height;
+    return {
+      move: floatingPaste.mode === "move",
+      left: Math.max(0, Math.min(right - width, frameWidth - width)),
+      top: Math.max(0, Math.min(above >= 0 ? above : bottom + gap, frameHeight - height)),
     };
-    globalThis.document.addEventListener("pointerdown", outside);
-    globalThis.document.addEventListener("keydown", key);
-    return () => { globalThis.document.removeEventListener("pointerdown", outside); globalThis.document.removeEventListener("keydown", key); };
-  }, [shapeMenuOpen, selectedShape]);
-  useEffect(() => {
-    const tool = ui?.tool;
-    if (tool?.tool === "select" || tool?.tool === "lasso") {
-      const shape = tool.shape ?? DEFAULT_VARIANT_SHAPES[tool.tool];
-      setVariantShapes((current) => current[tool.tool] === shape ? current : { ...current, [tool.tool]: shape });
-    }
-  }, [ui?.tool]);
-  const openVariantMenu = (tool: VariantTool, anchor: HTMLElement) => {
-    variantTrigger.current = anchor as HTMLButtonElement;
-    const rect = anchor.getBoundingClientRect();
-    setVariantMenu({ tool, left: Math.max(8, Math.min(rect.left, window.innerWidth - 120)), top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 64)) });
+  })() : null;
+  const finishFloatingPaste = (confirm: boolean) => {
+    const surface = controllerRef.current as (EditorSurfaceController & { confirmFloatingPaste?: () => boolean; cancelFloatingPaste?: () => boolean }) | null;
+    if (confirm) surface?.confirmFloatingPaste?.();
+    else surface?.cancelFloatingPaste?.();
+    window.setTimeout(() => frame.current?.focus(), 0);
   };
-  const closeVariantMenu = (restoreFocus = true) => {
-    setVariantMenu(null);
-    if (restoreFocus) variantTrigger.current?.focus();
-  };
-  const applyVariantTool = (tool: VariantTool, shape: VariantShapes[VariantTool]) => {
-    if (refuseUnavailable(tool)) return;
-    controllerRef.current?.setTool({ tool, shape } as never);
-  };
-  useEffect(() => {
-    if (!variantMenu) return;
-    const { choices } = VARIANT_TOOLS[variantMenu.tool];
-    variantItems.current[choices.findIndex((choice) => choice.shape === variantShapes[variantMenu.tool])]?.focus();
-    const outside = (event: PointerEvent) => { if (event.target instanceof Node && !variantMenuRef.current?.contains(event.target) && !variantTrigger.current?.contains(event.target)) closeVariantMenu(); };
-    const key = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeVariantMenu(); return; }
-      const current = variantItems.current.findIndex((item) => item === globalThis.document.activeElement);
-      if (current < 0) return;
-      const count = choices.length;
-      let next: number | undefined;
-      if (event.key === "ArrowDown" || event.key === "ArrowRight") next = (current + 1) % count;
-      else if (event.key === "ArrowUp" || event.key === "ArrowLeft") next = (current + count - 1) % count;
-      else if (event.key === "Home") next = 0;
-      else if (event.key === "End") next = count - 1;
-      else if (event.key === "Enter" || event.key === " ") { event.preventDefault(); variantItems.current[current]?.click(); return; }
-      if (next !== undefined) { event.preventDefault(); variantItems.current[next]?.focus(); }
-    };
-    globalThis.document.addEventListener("pointerdown", outside);
-    globalThis.document.addEventListener("keydown", key);
-    return () => { globalThis.document.removeEventListener("pointerdown", outside); globalThis.document.removeEventListener("keydown", key); };
-  }, [variantMenu, variantShapes]);
-  /** The Select and Lasso rail buttons: click applies the remembered variant (or clears when active); hold opens the variant popout. */
-  const variantToolButton = (tool: VariantTool) => {
-    const { label, choices } = VARIANT_TOOLS[tool];
-    const choice = choices.find((item) => item.shape === variantShapes[tool]) ?? choices[0]!;
-    return (
-      <button
-        {...toolGate(tool, `${label} · hold for options`)}
-        type="button"
-        aria-label={label}
-        aria-pressed={String(ui?.tool.tool) === tool}
-        onPointerDown={(event) => beginPress(event, "variant", tool, label)}
-        onPointerLeave={abortPressOnLeave}
-        onContextMenu={(event) => { event.preventDefault(); if (!deferTouchContextMenu(event.currentTarget, event)) openVariantMenu(tool, event.currentTarget); }}
-        onKeyDown={(event) => { if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) { event.preventDefault(); event.stopPropagation(); openVariantMenu(tool, event.currentTarget); } }}
-        onClick={(event) => {
-          if (shouldSuppressPressClick(event.currentTarget, event)) return;
-          if (String(ui?.tool.tool) === tool) invoke(tool);
-          else applyVariantTool(tool, choice.shape);
-        }}
+  // Shared by the add/swap/background picker and the palette manager's swap
+  // panel; the two are never open together, so the element ids stay unique.
+  const catalogPickerBody = () => (
+    <div className="catalog-box">
+      <div className="catalog-selection" aria-label="Selected thread color" role="group" aria-live="polite">
+      {selectedCatalogColor ? (
+        <>
+          <span
+            className="catalog-selection-swatch swatch"
+            style={{ background: selectedCatalogColor.hex }}
+            aria-hidden="true"
+          />
+          <span className="catalog-selection-details">
+            <strong>{selectedCatalogColor.name}</strong>
+             <span>{pickerCatalog?.association.brandLabel} · #{selectedCatalogColor.code}</span>
+          </span>
+          <button
+            className="small-action"
+            type="button"
+             aria-label={`${backgroundPicking ? "Use" : swapTarget === null ? "Add" : "Swap"} ${selectedCatalogColor.name}`}
+               onClick={() => backgroundPicking ? useBackgroundColor(selectedCatalogColor.hex) : swapTarget === null ? void addPaletteColor(selectedCatalogColor) : swapIntoCatalogColor(selectedCatalogColor)}
+            disabled={!pickerCatalog}
+          >
+             {backgroundPicking ? "Use" : swapTarget === null ? "Add" : "Swap"}
+          </button>
+        </>
+      ) : (
+        <span className="catalog-selection-empty">No color selected</span>
+      )}
+    </div>
+    {availableCatalogs.length > 0 ? <div className="catalog-tabs-area">
+      <div className="catalog-tabs" role="tablist" aria-label="Thread catalogs">
+        {availableCatalogs.map((item) => <button
+          key={item.association.catalogId}
+          id={`editor-catalog-tab-${item.association.catalogId}`}
+          className="catalog-tab"
+          type="button"
+          role="tab"
+          aria-selected={selectedCatalogId === item.association.catalogId}
+          aria-controls="editor-catalog-panel"
+          tabIndex={selectedCatalogId === item.association.catalogId ? 0 : -1}
+          onClick={() => setSelectedCatalogId(item.association.catalogId)}
+          onKeyDown={(event) => {
+            if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) return;
+            event.preventDefault();
+            const index = availableCatalogs.findIndex((catalog) => catalog.association.catalogId === item.association.catalogId);
+            const nextIndex = event.key === "ArrowRight" ? (index + 1) % availableCatalogs.length : event.key === "ArrowLeft" ? (index - 1 + availableCatalogs.length) % availableCatalogs.length : event.key === "Home" ? 0 : event.key === "End" ? availableCatalogs.length - 1 : index;
+            if (nextIndex === index) return;
+            const nextCatalog = availableCatalogs[nextIndex];
+            setSelectedCatalogId(nextCatalog.association.catalogId);
+            window.setTimeout(() => globalThis.document.getElementById(`editor-catalog-tab-${nextCatalog.association.catalogId}`)?.focus(), 0);
+          }}
+        >{item.association.brandLabel}</button>)}
+      </div>
+      {pickerCatalog && <div
+        id="editor-catalog-panel"
+        className="catalog-tabpanel"
+        role="tabpanel"
+        aria-labelledby={`editor-catalog-tab-${pickerCatalog.association.catalogId}`}
       >
-        <img data-icon={choice.dataIcon} src={choice.icon} alt="" aria-hidden="true" />
-        <span className="brush-size-corner" aria-hidden="true" />
+        <label htmlFor="catalog-search">Search {pickerCatalog?.association.brandLabel ? `${pickerCatalog.association.brandLabel} catalog` : "catalog"}</label>
+        <input
+          id="catalog-search"
+          value={paletteQuery}
+          onChange={(e) => setPaletteQuery(e.target.value)}
+          placeholder={`Name or ${pickerCatalog?.association.brandLabel ?? "catalog"} code`}
+          disabled={!pickerCatalog}
+          aria-label={`Search ${pickerCatalog?.association.brandLabel ? `${pickerCatalog.association.brandLabel} catalog` : "catalog"}`}
+        />
+        <div className="catalog-color-grid" role="list" aria-label="Available thread colors">
+        {pickerCatalog && catalogResults.map((color) => (
+         <div role="listitem" key={`${pickerCatalog.association.catalogId}:${color.sourceId}`}>
+          <button
+            className="catalog-color-button"
+            type="button"
+             aria-label={`${color.name}, color ${color.code}`}
+             aria-pressed={selectedCatalogColor?.sourceId === color.sourceId}
+            onClick={() => setSelectedCatalogColor(color)}
+          >
+            <span
+              className="catalog-color-swatch"
+              style={{ background: color.hex }}
+              aria-hidden="true"
+            />
+          </button>
+        </div>
+      ))}
+      {!catalogResults.length && (
+        <p className="catalog-empty" role="status">
+          No matching colors.
+        </p>
+      )}
+        </div>
+      </div>}
+    </div> : <p className="catalog-unavailable" role="status">Catalog unavailable</p>}
+    <section className="custom-color-section" aria-labelledby="custom-color-title">
+      <h3 id="custom-color-title">Custom color</h3>
+      <div className="custom-color-fields">
+        <label htmlFor="custom-color-picker">Choose custom color</label>
+        <input
+          id="custom-color-picker"
+          type="color"
+           value={canonicalCustomColor}
+           onChange={(e) => setColorFromHex(e.target.value)}
+        />
+        <label htmlFor="custom-color-hex">Hex color</label>
+        <input
+          id="custom-color-hex"
+          type="text"
+          value={customColorInput}
+           onChange={(e) => setColorFromHex(e.target.value)}
+          placeholder="#C72B3B"
+          inputMode="text"
+          autoComplete="off"
+          aria-describedby="custom-color-help"
+       />
+      </div>
+      <p id="custom-color-help" className="custom-color-help" aria-live="polite">
+        {customColorInput && !customColor
+          ? "Enter a 3- or 6-digit hex color."
+          : "Use a three- or six-digit hex value."}
+      </p>
+      <button
+        className="small-action custom-color-action"
+        type="button"
+         disabled={!customColor}
+        aria-label={customActionLabel}
+         onClick={() => backgroundPicking ? customColor && useBackgroundColor(customColor) : swapTarget === null ? void addCustomColor() : swapIntoCustomColor()}
+      >
+        {customActionLabel}
       </button>
-    );
-  };
-  const pressPointInside = (session: PressSession, x: number, y: number) => {
-    const rect = session.anchor.getBoundingClientRect();
-    return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
-  };
-  const removeTrailingClick = (token: TrailingPointerClick) => {
-    window.clearTimeout(token.timer);
-    pressLifecycle.current.trailingClicks = pressLifecycle.current.trailingClicks.filter((item) => item !== token);
-  };
-  const clearTrailingClicks = () => {
-    for (const token of pressLifecycle.current.trailingClicks) window.clearTimeout(token.timer);
-    pressLifecycle.current.trailingClicks = [];
-  };
-  const clearTrailingClicksFor = (anchor: HTMLButtonElement, pointerId: number) => {
-    for (const token of [...pressLifecycle.current.trailingClicks]) {
-      if (token.anchor === anchor && token.pointerId === pointerId) removeTrailingClick(token);
-    }
-  };
-  const removeTouchContextGuard = (guard: TouchContextGuard) => {
-    window.clearTimeout(guard.timer);
-    pressLifecycle.current.touchContextGuards = pressLifecycle.current.touchContextGuards.filter((item) => item !== guard);
-  };
-  const clearTouchContextGuards = () => {
-    for (const guard of pressLifecycle.current.touchContextGuards) window.clearTimeout(guard.timer);
-    pressLifecycle.current.touchContextGuards = [];
-  };
-  const addTouchContextGuard = (anchor: HTMLButtonElement) => {
-    for (const guard of [...pressLifecycle.current.touchContextGuards]) {
-      if (guard.anchor === anchor) removeTouchContextGuard(guard);
-    }
-    const guard: TouchContextGuard = { anchor, timer: 0 };
-    guard.timer = window.setTimeout(() => removeTouchContextGuard(guard), 500);
-    pressLifecycle.current.touchContextGuards.push(guard);
-  };
-  const addTrailingClick = (anchor: HTMLButtonElement, pointerId: number) => {
-    const token: TrailingPointerClick = { anchor, pointerId, timer: 0, allowAnonymous: true };
-    token.timer = window.setTimeout(() => removeTrailingClick(token), 1_000);
-    pressLifecycle.current.trailingClicks.push(token);
-  };
-  const detachPressSession = (session: PressSession, keepReleaseObservers = false) => {
-    if (session.timer !== null) window.clearTimeout(session.timer);
-    session.timer = null;
-    session.removeListeners?.(keepReleaseObservers);
-    session.removeListeners = null;
-    if (keepReleaseObservers && !pressLifecycle.current.releaseObservers.includes(session)) {
-      pressLifecycle.current.releaseObservers.push(session);
-    } else if (!keepReleaseObservers) {
-      session.removeReleaseListeners = null;
-    }
-    if (pressLifecycle.current.session === session) pressLifecycle.current.session = null;
-  };
-  const finishCompetingPointer = (pointerId: number, owner: PressSession, canceled: boolean) => {
-    const lifecycle = pressLifecycle.current;
-    const index = lifecycle.competingPointers.findIndex((item) => item.pointerId === pointerId && item.owner === owner);
-    if (index < 0) return;
-    const [competing] = lifecycle.competingPointers.splice(index, 1);
-    if (!competing) return;
-    if (!canceled) addTrailingClick(competing.anchor, competing.pointerId);
-    if (
-      lifecycle.session !== owner &&
-      !lifecycle.competingPointers.some((item) => item.owner === owner)
-    ) {
-      owner.removeReleaseListeners?.();
-      owner.removeReleaseListeners = null;
-      lifecycle.releaseObservers = lifecycle.releaseObservers.filter((item) => item !== owner);
-    }
-  };
-  const beginPress = (
-    event: React.PointerEvent<HTMLButtonElement>,
-    kind: PressSession["kind"],
-    tool: PressTool,
-    label: string,
-  ) => {
-    if (event.button !== 0 || event.isPrimary === false) return;
-    const lifecycle = pressLifecycle.current;
-    if (lifecycle.session) return;
-    const anchor = event.currentTarget;
-    for (const token of [...lifecycle.trailingClicks]) {
-      if (token.anchor !== anchor) continue;
-      if (token.pointerId === event.pointerId) removeTrailingClick(token);
-      else token.allowAnonymous = false;
-    }
-    const session: PressSession = {
-      pointerId: event.pointerId,
-      pointerType: event.pointerType,
-      kind,
-      anchor,
-      tool,
-      label,
-      phase: "pending",
-      clientX: event.clientX,
-      clientY: event.clientY,
-      timer: null,
-      removeListeners: null,
-      removeReleaseListeners: null,
-    };
-    lifecycle.session = session;
-    if (!pressPointInside(session, session.clientX, session.clientY)) session.phase = "aborted";
-    const abortIfOutside = (x: number, y: number) => {
-      if (pressPointInside(session, x, y)) return;
-      if (session.phase === "pending" || session.phase === "opened") {
-        session.phase = "aborted";
-        if (session.timer !== null) window.clearTimeout(session.timer);
-        session.timer = null;
-      }
-    };
-    const move = (pointer: PointerEvent) => {
-      if (pointer.pointerId !== session.pointerId || lifecycle.session !== session) return;
-      session.clientX = pointer.clientX;
-      session.clientY = pointer.clientY;
-      abortIfOutside(pointer.clientX, pointer.clientY);
-    };
-    const observeCompetingDown = (pointer: PointerEvent) => {
-      if (pointer.pointerId === session.pointerId || lifecycle.session !== session || pointer.button !== 0) return;
-      const target = pointer.target instanceof Element
-        ? pointer.target.closest<HTMLButtonElement>('button[aria-haspopup="dialog"], button[aria-label="Shape"], button[aria-label="Select"], button[aria-label="Lasso select"]')
-        : null;
-      if (!target || lifecycle.competingPointers.some((item) => item.pointerId === pointer.pointerId && item.owner === session)) return;
-      lifecycle.competingPointers.push({ pointerId: pointer.pointerId, anchor: target, owner: session });
-    };
-    const release = (pointer: PointerEvent) => {
-      if (pointer.pointerId !== session.pointerId) {
-        finishCompetingPointer(pointer.pointerId, session, false);
-        return;
-      }
-      if (lifecycle.session !== session) return;
-      session.clientX = pointer.clientX;
-      session.clientY = pointer.clientY;
-      abortIfOutside(pointer.clientX, pointer.clientY);
-      const keepReleaseObservers = lifecycle.competingPointers.some((item) => item.owner === session);
-      const clickRemainsPlausible = pointer.target instanceof Node && session.anchor.contains(pointer.target);
-      const consumeClick = pointer.type === "pointerup" && session.phase !== "pending" && clickRemainsPlausible;
-      detachPressSession(session, keepReleaseObservers);
-      if (consumeClick) addTrailingClick(session.anchor, session.pointerId);
-    };
-    const cancel = (pointer: PointerEvent) => {
-      if (pointer.pointerId !== session.pointerId) {
-        finishCompetingPointer(pointer.pointerId, session, true);
-        return;
-      }
-      if (lifecycle.session !== session) return;
-      const keepReleaseObservers = lifecycle.competingPointers.some((item) => item.owner === session);
-      detachPressSession(session, keepReleaseObservers);
-      clearTrailingClicksFor(session.anchor, session.pointerId);
-      if (session.pointerType === "touch") addTouchContextGuard(session.anchor);
-    };
-    const clearReleasedObservers = () => {
-      for (const owner of lifecycle.releaseObservers) {
-        owner.removeReleaseListeners?.();
-        owner.removeReleaseListeners = null;
-      }
-      lifecycle.releaseObservers = [];
-      lifecycle.competingPointers = [];
-    };
-    const blur = () => {
-      if (lifecycle.session === session) detachPressSession(session);
-      clearReleasedObservers();
-      clearTrailingClicks();
-      clearTouchContextGuards();
-    };
-    globalThis.document.addEventListener("pointermove", move, true);
-    globalThis.document.addEventListener("pointerdown", observeCompetingDown, true);
-    globalThis.document.addEventListener("pointerup", release, true);
-    globalThis.document.addEventListener("pointercancel", cancel, true);
-    window.addEventListener("blur", blur);
-    session.removeReleaseListeners = () => {
-      globalThis.document.removeEventListener("pointerup", release, true);
-      globalThis.document.removeEventListener("pointercancel", cancel, true);
-      window.removeEventListener("blur", blur);
-    };
-    session.removeListeners = (keepReleaseObservers) => {
-      globalThis.document.removeEventListener("pointermove", move, true);
-      globalThis.document.removeEventListener("pointerdown", observeCompetingDown, true);
-      if (!keepReleaseObservers) session.removeReleaseListeners?.();
-    };
-    session.timer = window.setTimeout(() => {
-      session.timer = null;
-      if (lifecycle.session !== session || session.phase !== "pending") return;
-      abortIfOutside(session.clientX, session.clientY);
-      if (session.phase !== "pending") return;
-      session.phase = "opened";
-      if (session.kind === "shape") openShapeMenu(anchor);
-      else if (session.kind === "variant") openVariantMenu(session.tool as VariantTool, anchor);
-      else openBrushPopover(session.tool as PopoverTool, session.label, anchor);
-    }, 500);
-  };
-  const abortPressOnLeave = (event: React.PointerEvent<HTMLButtonElement>) => {
-    const session = pressLifecycle.current.session;
-    if (!session || session.pointerId !== event.pointerId || session.phase !== "pending") return;
-    session.phase = "aborted";
-    if (session.timer !== null) window.clearTimeout(session.timer);
-    session.timer = null;
-  };
-  const shouldSuppressPressClick = (
-    anchor: HTMLButtonElement,
-    event: React.MouseEvent<HTMLButtonElement>,
-  ) => {
-    const pointerId = (event.nativeEvent as MouseEvent & { pointerId?: number }).pointerId;
-    const lifecycle = pressLifecycle.current;
-    if (event.detail <= 0) return false;
-    const suppression = lifecycle.trailingClicks.find((token) =>
-      token.anchor === anchor &&
-      (pointerId === undefined ? token.allowAnonymous : token.pointerId === pointerId),
-    );
-    if (suppression) {
-      removeTrailingClick(suppression);
-      return true;
-    }
-    const activeSession = lifecycle.session;
-    if (activeSession && (pointerId === undefined || pointerId !== activeSession.pointerId)) return true;
-    return false;
-  };
-  const deferTouchContextMenu = (anchor: HTMLButtonElement, event: React.MouseEvent<HTMLButtonElement>) => {
-    const lifecycle = pressLifecycle.current;
-    const session = lifecycle.session;
-    const eventPointerType = (event.nativeEvent as MouseEvent & { pointerType?: string }).pointerType;
-    const touchSession = session?.anchor === anchor && session.pointerType === "touch";
-    const touchGuard = lifecycle.touchContextGuards.some((guard) => guard.anchor === anchor);
-    if (eventPointerType === "touch") return true;
-    if (event.button === 2 && eventPointerType === "mouse") return false;
-    if (touchSession || touchGuard) return true;
-    if (event.button === 2) return false;
-    return false;
-  };
-  const brushHandlers = (tool: PopoverTool, label: string) => ({
-    onPointerDown: (event: React.PointerEvent<HTMLButtonElement>) => beginPress(event, tool === "backstitch" ? "backstitch" : "brush", tool, label),
-    onPointerLeave: abortPressOnLeave,
-    onContextMenu: (event: React.MouseEvent<HTMLButtonElement>) => {
-      event.preventDefault();
-      if (!deferTouchContextMenu(event.currentTarget, event)) openBrushPopover(tool, label, event.currentTarget);
-    },
-    onKeyDown: (event: React.KeyboardEvent<HTMLButtonElement>) => {
-      if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) {
-        event.preventDefault();
-        event.stopPropagation();
-        openBrushPopover(tool, label, event.currentTarget);
-      }
-    },
-  });
-  useEffect(() => () => {
-    const lifecycle = pressLifecycle.current;
-    if (lifecycle.session) detachPressSession(lifecycle.session);
-    for (const session of lifecycle.releaseObservers) session.removeReleaseListeners?.();
-    lifecycle.releaseObservers = [];
-    lifecycle.competingPointers = [];
-    clearTrailingClicks();
-    clearTouchContextGuards();
-  }, []);
+    </section>
+    </div>
+  );
   return (
     <section ref={workspaceRoot} className="editor-workspace" aria-labelledby="editor-title">
       {/*
@@ -1906,92 +1675,57 @@ export function EditorSurface({
             <button className="rail-button" type="button" aria-label="Pan" title="Pan" aria-pressed={ui?.tool.tool === "pan"} onClick={() => invoke("pan")}>
               <img data-icon="pan" src={panIcon} alt="" aria-hidden="true" />
             </button>
-            {variantToolButton("select")}
-            {variantToolButton("lasso")}
             <button
-              {...(canvasAdvanced ? brushHandlers("canvas-brush", "Canvas brush") : brushHandlers("full", "Full stitch"))}
-              {...(canvasAdvanced ? toolGate("canvas-brush", "Canvas brush · hold for size") : toolGate("paint", "Full stitch · hold for size"))}
+              {...toolGate(selectChoice.tool, "Select")}
               type="button"
-              aria-label="Full stitch"
-              aria-haspopup="dialog" aria-expanded={brushPopover?.tool === (canvasAdvanced ? "canvas-brush" : "full")} aria-controls="tool-brush-popover"
-              aria-pressed={canvasAdvanced ? ui?.tool.tool === "canvas-brush" : fullStitchActive}
-              onClick={(event) => {
-                if (shouldSuppressPressClick(event.currentTarget, event)) return;
-                // On the Canvas layer in Advanced mode the full-stitch slot is the canvas brush.
+              aria-label="Select"
+              aria-pressed={activeSelectChoice != null}
+              onClick={() => { if (activeSelectChoice) invoke(activeSelectChoice.tool); else applySelectChoice(selectChoice); }}
+            >
+              <img data-icon="select" src={selectIcon} alt="" aria-hidden="true" />
+            </button>
+            <button
+              {...(canvasAdvanced ? toolGate("canvas-brush", "Canvas brush") : toolGate("paint", "Stitch"))}
+              type="button"
+              aria-label="Stitch"
+              aria-pressed={activeStitchKind != null || (canvasAdvanced && ui?.tool.tool === "canvas-brush")}
+              onClick={() => {
+                // On the Canvas layer in Advanced mode the stitch slot is the canvas brush.
                 if (canvasAdvanced) { invoke("canvas-brush"); return; }
                 if (refuseUnavailable("paint")) return;
-                choose("full");
+                choose(lastStitchKind);
               }}
             >
-              <span className="stitch-brush-icon stitch-brush-icon-full" aria-hidden="true" />
-              <span className="brush-size-corner" aria-hidden="true" />
+              <img data-icon="stitch" src={stitchIcon} alt="" aria-hidden="true" />
             </button>
             <button
-              {...brushHandlers("half", "Half stitch")}
-              {...toolGate("paint", "Half stitch · hold for size")}
-              type="button"
-              aria-label="Half stitch"
-              aria-haspopup="dialog" aria-expanded={brushPopover?.tool === "half"} aria-controls="tool-brush-popover"
-              aria-pressed={halfActive}
-              onClick={(event) => { if (shouldSuppressPressClick(event.currentTarget, event)) return; if (refuseUnavailable("paint")) return; choose("half"); }}
-            >
-              <span className={`stitch-brush-icon stitch-brush-icon-half${preferences.halfStitchDirection === "\\" ? " stitch-brush-icon-half-backslash" : ""}`} aria-hidden="true" />
-              <span className="brush-size-corner" aria-hidden="true" />
-            </button>
-            <button
-              {...brushHandlers("three-quarter", "3/4 stitch")}
-              {...toolGate("paint", "3/4 stitch · hold for size")}
-              type="button"
-              aria-label="3/4 stitch"
-              aria-haspopup="dialog" aria-expanded={brushPopover?.tool === "three-quarter"} aria-controls="tool-brush-popover"
-              aria-pressed={threeQuarterActive}
-              onClick={(event) => { if (shouldSuppressPressClick(event.currentTarget, event)) return; if (refuseUnavailable("paint")) return; choose("three-quarter"); }}
-            >
-              <span className="stitch-brush-icon stitch-brush-icon-three-quarter" aria-hidden="true" />
-              <span className="brush-size-corner" aria-hidden="true" />
-            </button>
-            <button
-              {...toolGate("shape", "Shape · hold for options")}
+              {...toolGate("shape", "Shape")}
               type="button"
               disabled={shapeToolDisabled}
               aria-label="Shape"
               aria-pressed={ui?.tool.tool === "shape"}
-              onPointerDown={(event) => beginPress(event, "shape", "shape", "Shape")}
-              onPointerLeave={abortPressOnLeave}
-              onContextMenu={(event) => { event.preventDefault(); if (!deferTouchContextMenu(event.currentTarget, event)) openShapeMenu(event.currentTarget); }}
-              onKeyDown={(event) => {
-                if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) { event.preventDefault(); event.stopPropagation(); openShapeMenu(event.currentTarget); }
-                else if (event.key === "Enter" || event.key === " ") { event.preventDefault(); event.stopPropagation(); applyShapeTool(selectedShape); }
-              }}
-              onClick={(event) => { if (shouldSuppressPressClick(event.currentTarget, event)) return; applyShapeTool(selectedShape); }}
+              onClick={() => applyShapeTool(selectedShape)}
             >
               {shapeIcon(selectedShape)}
-              <span className="brush-size-corner" aria-hidden="true" />
             </button>
             <button
-              {...brushHandlers("backstitch", "Backstitch")}
-              {...toolGate("backstitch", "Backstitch · hold for mode")}
+              {...toolGate("backstitch", "Backstitch")}
               type="button"
               disabled={noThread}
               aria-label={activeBackstitchMode ? `Backstitch, ${activeBackstitchMode} mode` : "Backstitch"}
-              aria-haspopup="dialog" aria-expanded={brushPopover?.tool === "backstitch"} aria-controls="tool-brush-popover"
               aria-pressed={backstitchActive}
-              onClick={(event) => { if (shouldSuppressPressClick(event.currentTarget, event)) return; if (refuseUnavailable("backstitch")) return; controllerRef.current?.setBackstitchMode(lastBackstitchMode); }}
+              onClick={() => { if (refuseUnavailable("backstitch")) return; controllerRef.current?.setBackstitchMode(lastBackstitchMode); }}
             >
               <img data-icon="backstitch" src={backstitchIcon} alt="" aria-hidden="true" />
-              <span className="brush-size-corner" aria-hidden="true" />
             </button>
             <button
-              {...brushHandlers("eraser", canvasAdvanced ? "Canvas eraser" : "Eraser")}
-              {...toolGate("eraser", canvasAdvanced ? "Canvas eraser · hold for size" : "Eraser · hold for size")}
+              {...toolGate("eraser", canvasAdvanced ? "Canvas eraser" : "Eraser")}
               type="button"
               aria-label="Eraser"
-              aria-haspopup="dialog" aria-expanded={brushPopover?.tool === "eraser"} aria-controls="tool-brush-popover"
               aria-pressed={ui?.tool.tool === "eraser"}
-              onClick={(event) => { if (shouldSuppressPressClick(event.currentTarget, event)) return; invoke("eraser"); }}
+              onClick={() => invoke("eraser")}
             >
               <img data-icon="eraser" src={eraserIcon} alt="" aria-hidden="true" />
-              <span className="brush-size-corner" aria-hidden="true" />
             </button>
             <button
               {...toolGate("fill", "Fill")}
@@ -2014,29 +1748,25 @@ export function EditorSurface({
             </button>
           </nav>
           </div>
-          {shapeMenuOpen && createPortal(<div ref={shapeMenu} className="shape-picker-menu" role="menu" aria-label="Choose shape" style={{ position: "fixed", left: shapeMenuPosition.left, top: shapeMenuPosition.top, zIndex: 1000 }} onPointerDown={(event) => event.stopPropagation()}>
-            {SHAPE_CHOICES.map((shape, index) => {
-              const kind = shape as string;
-              const label = kind === "right-triangle" ? "Right triangle" : kind[0]!.toUpperCase() + kind.slice(1);
-               return <button key={kind} ref={(element) => { shapeItems.current[index] = element; }} type="button" role="menuitemradio" aria-label={label} title={label} aria-checked={selectedShape === shape} onClick={() => { setSelectedShape(shape); applyShapeTool(shape); closeShapeMenu(); }}>{shapeIcon(shape)}</button>;
-            })}
-          </div>, globalThis.document.body)}
-          {variantMenu && createPortal(<div ref={variantMenuRef} className="shape-picker-menu tool-variant-menu" role="menu" aria-label={VARIANT_TOOLS[variantMenu.tool].menuLabel} style={{ position: "fixed", left: variantMenu.left, top: variantMenu.top, zIndex: 1000 }} onPointerDown={(event) => event.stopPropagation()}>
-            {VARIANT_TOOLS[variantMenu.tool].choices.map((choice, index) => {
-              const { tool } = variantMenu;
-              return <button key={choice.shape} ref={(element) => { variantItems.current[index] = element; }} type="button" role="menuitemradio" aria-label={choice.label} title={choice.label} aria-checked={variantShapes[tool] === choice.shape} onClick={() => { setVariantShapes((current) => ({ ...current, [tool]: choice.shape })); applyVariantTool(tool, choice.shape); closeVariantMenu(); }}><img data-icon={choice.dataIcon} src={choice.icon} alt="" aria-hidden="true" /></button>;
-            })}
-          </div>, globalThis.document.body)}
           <div ref={mobilePanel === "colors" ? mobilePopover : undefined} id="mobile-colors-popover" className={`editor-rail-popover mobile-colors-popover${mobilePanel === "colors" ? " mobile-popover-open" : ""}`} role={mobilePanel === "colors" ? "dialog" : undefined} aria-label="Colors" tabIndex={-1}>
           <div className="palette-rail" role="region" aria-label="Thread colors">
-            <button
-              ref={addTrigger}
-              className="palette-add-rail"
-              type="button"
-              aria-label="Add new color"
-              title="Add new color"
-              onClick={openPalettePicker}
-            ><span className="palette-add-glyph">+</span></button>
+            <div className="palette-rail-actions">
+              <button
+                ref={addTrigger}
+                className="palette-add-rail"
+                type="button"
+                aria-label="Add new color"
+                title="Add new color"
+                onClick={openPalettePicker}
+              ><span className="palette-add-glyph">+</span></button>
+              <button
+                className="palette-manage-rail"
+                type="button"
+                aria-label="Manage palette"
+                title="Manage palette"
+                onClick={(e) => openPaletteManager(e.currentTarget)}
+              ><span className="palette-manage-glyph" aria-hidden="true"><svg viewBox="0 0 16 16" width="16" height="16" focusable="false"><rect x="2" y="2" width="5" height="5" rx="1" fill="currentColor" /><rect x="9" y="2" width="5" height="5" rx="1" fill="currentColor" /><rect x="2" y="9" width="5" height="5" rx="1" fill="currentColor" /><rect x="9" y="9" width="5" height="5" rx="1" fill="currentColor" /></svg></span></button>
+            </div>
             <div className="palette-rail-items">
               {palette.map(paletteRow)}
             </div>
@@ -2085,91 +1815,10 @@ export function EditorSurface({
                     previewBox={ui.overlay.canvasEditing?.preview?.kind === "resize" ? ui.overlay.canvasEditing.preview.box : null}
                   />
                 )}
-                {touchCopyRequest && ui && (
-                  <div
-                    ref={touchCopyMenu}
-                    className="touch-copy-menu"
-                    role="group"
-                    aria-label="Selection actions"
-                    onKeyDown={(event) => {
-                      event.stopPropagation();
-                      if (event.key === "Escape") {
-                        event.preventDefault();
-                        dismissTouchCopy();
-                      }
-                    }}
-                    onKeyUp={(event) => event.stopPropagation()}
-                    style={{
-                      left: `${touchCopyPosition?.left ?? touchCopyRequest.screenX}px`,
-                      top: `${touchCopyPosition?.top ?? touchCopyRequest.screenY}px`,
-                    }}
-                  >
-                    {touchCopyRequest.canvas ? (<>
-                    <button
-                      ref={touchCopyAction}
-                      type="button"
-                      onPointerDown={handleSelectionActionPointerDown}
-                      onClick={(event) => handleSelectionActionClick("add-cells", event)}
-                      onKeyDown={(event) => handleSelectionActionKeyDown(event, "add-cells")}
-                      onKeyUp={(event) => event.stopPropagation()}
-                      aria-label="Add selected cells to the canvas"
-                    >
-                      Add
-                    </button>
-                    <button
-                      type="button"
-                      onPointerDown={handleSelectionActionPointerDown}
-                      onClick={(event) => handleSelectionActionClick("delete-cells", event)}
-                      onKeyDown={(event) => handleSelectionActionKeyDown(event, "delete-cells")}
-                      onKeyUp={(event) => event.stopPropagation()}
-                      aria-label="Delete selected cells from the canvas"
-                    >
-                      Delete
-                    </button>
-                    </>) : (<>
-                    <button
-                      ref={touchCopyAction}
-                      type="button"
-                      onPointerDown={handleSelectionActionPointerDown}
-                      onClick={(event) => handleSelectionActionClick("copy", event)}
-                      onKeyDown={(event) => handleSelectionActionKeyDown(event, "copy")}
-                      onKeyUp={(event) => event.stopPropagation()}
-                      aria-label="Copy selection"
-                    >
-                      Copy
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!ui.canPaste}
-                      onPointerDown={handleSelectionActionPointerDown}
-                      onClick={(event) => handleSelectionActionClick("paste", event)}
-                      onKeyDown={(event) => handleSelectionActionKeyDown(event, "paste")}
-                      onKeyUp={(event) => event.stopPropagation()}
-                      aria-label="Paste selection"
-                    >
-                      Paste
-                    </button>
-                    <button
-                      type="button"
-                      onPointerDown={handleSelectionActionPointerDown}
-                      onClick={(event) => handleSelectionActionClick("move", event)}
-                      onKeyDown={(event) => handleSelectionActionKeyDown(event, "move")}
-                      onKeyUp={(event) => event.stopPropagation()}
-                      aria-label="Move selection"
-                    >
-                      Move
-                    </button>
-                    <button
-                      type="button"
-                      onPointerDown={handleSelectionActionPointerDown}
-                      onClick={(event) => handleSelectionActionClick("delete", event)}
-                      onKeyDown={(event) => handleSelectionActionKeyDown(event, "delete")}
-                      onKeyUp={(event) => event.stopPropagation()}
-                      aria-label="Delete selection"
-                    >
-                      Delete
-                    </button>
-                    </>)}
+                {floatingPasteControls && (
+                  <div className="floating-paste-controls" role="group" aria-label="Paste controls" style={{ left: `${floatingPasteControls.left}px`, top: `${floatingPasteControls.top}px` }}>
+                    <button type="button" aria-label={floatingPasteControls.move ? "Apply move" : "Apply paste"} title={floatingPasteControls.move ? "Apply move" : "Apply paste"} onPointerDown={(event) => event.stopPropagation()} onClick={() => finishFloatingPaste(true)}>✓</button>
+                    <button type="button" aria-label={floatingPasteControls.move ? "Cancel move" : "Cancel paste"} title={floatingPasteControls.move ? "Cancel move" : "Cancel paste"} onPointerDown={(event) => event.stopPropagation()} onClick={() => finishFloatingPaste(false)}>✗</button>
                   </div>
                 )}
               </>
@@ -2187,44 +1836,6 @@ export function EditorSurface({
             </div>
           </div>
           <div className="canvas-actions">
-            {brushPopover && createPortal(<div id="tool-brush-popover" ref={brushMenu} className="tool-brush-popover" role="dialog" aria-label={brushPopover.tool === "backstitch" ? "Backstitch mode" : brushSizeHeading(brushPopover.label)} style={{ position: "fixed", left: brushPopover.left, top: brushPopover.top, zIndex: 1000 }}>
-              {brushPopover.tool === "backstitch" ? (
-                <div className="backstitch-mode-row">
-                  {(["draw", "move"] as const).map((mode) => (
-                    <button
-                      key={mode}
-                      className="backstitch-mode-button"
-                      type="button"
-                      aria-pressed={lastBackstitchMode === mode}
-                      onClick={() => { controllerRef.current?.setBackstitchMode(mode); setLastBackstitchMode(mode); setBrushPopover(null); if (brushTrigger.current?.isConnected) brushTrigger.current.focus(); }}
-                    >
-                      {mode === "draw" ? "Draw" : "Move"}
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <>
-                  {brushPopover.tool === "half" && (
-                    <div className="backstitch-mode-row" role="group" aria-label="Half stitch direction">
-                      {([["/", "Bottom-left to top-right"], ["\\", "Top-left to bottom-right"]] as const).map(([direction, name]) => (
-                        <button
-                          key={direction}
-                          className="backstitch-mode-button"
-                          type="button"
-                          aria-label={name}
-                          aria-pressed={preferences.halfStitchDirection === direction}
-                          onClick={() => chooseHalfDirection(direction)}
-                        >
-                          <span className={`stitch-brush-icon stitch-brush-icon-half${direction === "\\" ? " stitch-brush-icon-half-backslash" : ""}`} aria-hidden="true" />
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  <label htmlFor="tool-brush-size">{brushSizeHeading(brushPopover.label)} <output>{ui?.toolBrushSizes[brushPopover.tool] ?? 1}</output></label>
-                  <RangeInput id="tool-brush-size" min="1" max="10" aria-label={brushSizeHeading(brushPopover.label)} value={ui?.toolBrushSizes[brushPopover.tool] ?? 1} onChange={(event) => controllerRef.current?.setToolBrushSize(brushPopover.tool as BrushSizeTool, Number(event.target.value))} />
-                </>
-              )}
-            </div>, globalThis.document.body)}
             <section className="action-section reference-actions layer-actions" aria-labelledby="reference-actions-label">
               <h3 id="reference-actions-label">{activeLayerHeading}</h3>
               {layeredDocument && activeLayerId !== "reference" && (
@@ -2255,6 +1866,71 @@ export function EditorSurface({
                 <TraceImageControls workspace={workspace} document={document} controller={controller} activeTool={ui?.tool.tool} filePickerRef={traceFilePicker} />
               </div>
             </section>
+            {toolOptionsHeading && (
+              <section className="action-section tool-options" aria-labelledby="tool-options-label">
+                <h3 id="tool-options-label">{toolOptionsHeading}</h3>
+                {sizeOption ? (
+                  <>
+                    {activeStitchKind && (
+                      <div role="group" aria-label="Stitch type">
+                        {STITCH_CHOICES.map(([kind, name]) => (
+                          <button key={kind} className="tool-option-button" type="button" aria-label={name} title={name} aria-pressed={activeStitchKind === kind} onClick={() => choose(kind)}>
+                            <span className={`stitch-brush-icon stitch-brush-icon-${kind}${kind === "half" && preferences.halfStitchDirection === "\\" ? " stitch-brush-icon-half-backslash" : ""}`} aria-hidden="true" />
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {sizeOption.tool === "half" && (
+                      <div role="group" aria-label="Half stitch direction">
+                        {([["/", "Bottom-left to top-right"], ["\\", "Top-left to bottom-right"]] as const).map(([direction, name]) => (
+                          <button key={direction} className="tool-option-button" type="button" aria-label={name} title={name} aria-pressed={preferences.halfStitchDirection === direction} onClick={() => chooseHalfDirection(direction)}>
+                            <span className={`stitch-brush-icon stitch-brush-icon-half${direction === "\\" ? " stitch-brush-icon-half-backslash" : ""}`} aria-hidden="true" />
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <div className="tool-options-size">
+                      <label htmlFor="tool-brush-size">Size <output>{ui?.toolBrushSizes[sizeOption.tool] ?? 1}</output></label>
+                      <RangeInput id="tool-brush-size" min="1" max="10" aria-label={brushSizeHeading(sizeOption.label)} value={ui?.toolBrushSizes[sizeOption.tool] ?? 1} onChange={(event) => controllerRef.current?.setToolBrushSize(sizeOption.tool, Number(event.target.value))} />
+                    </div>
+                  </>
+                ) : backstitchActive ? (
+                  <div role="group" aria-label="Backstitch mode">
+                    {(["draw", "move"] as const).map((mode) => (
+                      <button key={mode} className="tool-option-button" type="button" aria-pressed={activeBackstitchMode === mode} onClick={() => { controllerRef.current?.setBackstitchMode(mode); setLastBackstitchMode(mode); }}>
+                        {mode === "draw" ? "Draw" : "Move"}
+                      </button>
+                    ))}
+                  </div>
+                ) : ui?.tool.tool === "shape" ? (
+                  <div role="group" aria-label="Shape">
+                    {SHAPE_CHOICES.map((shape) => {
+                      const kind = shape as string;
+                      const label = kind === "right-triangle" ? "Right triangle" : kind[0]!.toUpperCase() + kind.slice(1);
+                      return <button key={kind} className="tool-option-button" type="button" aria-label={label} title={label} aria-pressed={selectedShape === shape} onClick={() => { setSelectedShape(shape); applyShapeTool(shape); }}>{shapeIcon(shape)}</button>;
+                    })}
+                  </div>
+                ) : activeSelectChoice && (
+                  <>
+                    <div role="group" aria-label="Selection shape">
+                      {SELECT_CHOICES.map((choice) => (
+                        <button key={choice.label} className="tool-option-button" type="button" aria-label={choice.label} title={choice.label} aria-pressed={activeSelectChoice === choice} onClick={() => applySelectChoice(choice)}>
+                          <img data-icon={choice.dataIcon} src={choice.icon} alt="" aria-hidden="true" />
+                        </button>
+                      ))}
+                    </div>
+                    <div role="group" aria-label="Selection actions">
+                      {(toolLayer?.kind === "canvas"
+                        ? ([["add-cells", "Add", "Add selected cells to the canvas", !ui?.overlay.canvasEditing?.selection], ["delete-cells", "Delete", "Delete selected cells from the canvas", !ui?.overlay.canvasEditing?.selection]] as const)
+                        : ([["copy", "Copy", "Copy selection", !ui?.overlay.selection], ["paste", "Paste", "Paste selection", !ui?.canPaste], ["move", "Move", "Move selection", !ui?.overlay.selection], ["delete", "Delete", "Delete selection", !ui?.overlay.selection]] as const)
+                      ).map(([action, text, label, disabled]) => (
+                        <button key={action} className="tool-option-button" type="button" aria-label={label} title={label} disabled={disabled} onClick={() => runSelectionAction(action)}>{text}</button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </section>
+            )}
             <section className="action-section view-actions" aria-labelledby="view-actions-label">
             <h3 id="view-actions-label">View settings</h3>
             <div className="chart-view" role="group" aria-label="View settings">
@@ -2531,136 +2207,7 @@ export function EditorSurface({
                  <p className="section-label">{pickerCatalog?.association.brandLabel ?? "Catalog"}</p>
                 <h2 id="editor-catalog-title">{backgroundPicking ? "Choose a background color" : swapTarget === null ? "Add a thread color" : `Swap ${palette.find((entry) => entry.id === swapTarget)?.name ?? "color"} for a thread color`}</h2>
                 {swapTarget !== null && <p className="modal-hint">Stitches and backstitches using {palette.find((entry) => entry.id === swapTarget)?.name ?? "this color"} will be changed.</p>}
-                <div className="catalog-box">
-                  <div className="catalog-selection" aria-label="Selected thread color" role="group" aria-live="polite">
-                  {selectedCatalogColor ? (
-                    <>
-                      <span
-                        className="catalog-selection-swatch swatch"
-                        style={{ background: selectedCatalogColor.hex }}
-                        aria-hidden="true"
-                      />
-                      <span className="catalog-selection-details">
-                        <strong>{selectedCatalogColor.name}</strong>
-                         <span>{pickerCatalog?.association.brandLabel} · #{selectedCatalogColor.code}</span>
-                      </span>
-                      <button
-                        className="small-action"
-                        type="button"
-                         aria-label={`${backgroundPicking ? "Use" : swapTarget === null ? "Add" : "Swap"} ${selectedCatalogColor.name}`}
-                           onClick={() => backgroundPicking ? useBackgroundColor(selectedCatalogColor.hex) : swapTarget === null ? void addPaletteColor(selectedCatalogColor) : swapIntoCatalogColor(selectedCatalogColor)}
-                        disabled={!pickerCatalog}
-                      >
-                         {backgroundPicking ? "Use" : swapTarget === null ? "Add" : "Swap"}
-                      </button>
-                    </>
-                  ) : (
-                    <span className="catalog-selection-empty">No color selected</span>
-                  )}
-                </div>
-                {availableCatalogs.length > 0 ? <div className="catalog-tabs-area">
-                  <div className="catalog-tabs" role="tablist" aria-label="Thread catalogs">
-                    {availableCatalogs.map((item) => <button
-                      key={item.association.catalogId}
-                      id={`editor-catalog-tab-${item.association.catalogId}`}
-                      className="catalog-tab"
-                      type="button"
-                      role="tab"
-                      aria-selected={selectedCatalogId === item.association.catalogId}
-                      aria-controls="editor-catalog-panel"
-                      tabIndex={selectedCatalogId === item.association.catalogId ? 0 : -1}
-                      onClick={() => setSelectedCatalogId(item.association.catalogId)}
-                      onKeyDown={(event) => {
-                        if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) return;
-                        event.preventDefault();
-                        const index = availableCatalogs.findIndex((catalog) => catalog.association.catalogId === item.association.catalogId);
-                        const nextIndex = event.key === "ArrowRight" ? (index + 1) % availableCatalogs.length : event.key === "ArrowLeft" ? (index - 1 + availableCatalogs.length) % availableCatalogs.length : event.key === "Home" ? 0 : event.key === "End" ? availableCatalogs.length - 1 : index;
-                        if (nextIndex === index) return;
-                        const nextCatalog = availableCatalogs[nextIndex];
-                        setSelectedCatalogId(nextCatalog.association.catalogId);
-                        window.setTimeout(() => globalThis.document.getElementById(`editor-catalog-tab-${nextCatalog.association.catalogId}`)?.focus(), 0);
-                      }}
-                    >{item.association.brandLabel}</button>)}
-                  </div>
-                  {pickerCatalog && <div
-                    id="editor-catalog-panel"
-                    className="catalog-tabpanel"
-                    role="tabpanel"
-                    aria-labelledby={`editor-catalog-tab-${pickerCatalog.association.catalogId}`}
-                  >
-                    <label htmlFor="catalog-search">Search {pickerCatalog?.association.brandLabel ? `${pickerCatalog.association.brandLabel} catalog` : "catalog"}</label>
-                    <input
-                      id="catalog-search"
-                      value={paletteQuery}
-                      onChange={(e) => setPaletteQuery(e.target.value)}
-                      placeholder={`Name or ${pickerCatalog?.association.brandLabel ?? "catalog"} code`}
-                      disabled={!pickerCatalog}
-                      aria-label={`Search ${pickerCatalog?.association.brandLabel ? `${pickerCatalog.association.brandLabel} catalog` : "catalog"}`}
-                    />
-                    <div className="catalog-color-grid" role="list" aria-label="Available thread colors">
-                    {pickerCatalog && catalogResults.map((color) => (
-                     <div role="listitem" key={`${pickerCatalog.association.catalogId}:${color.sourceId}`}>
-                      <button
-                        className="catalog-color-button"
-                        type="button"
-                         aria-label={`${color.name}, color ${color.code}`}
-                         aria-pressed={selectedCatalogColor?.sourceId === color.sourceId}
-                        onClick={() => setSelectedCatalogColor(color)}
-                      >
-                        <span
-                          className="catalog-color-swatch"
-                          style={{ background: color.hex }}
-                          aria-hidden="true"
-                        />
-                      </button>
-                    </div>
-                  ))}
-                  {!catalogResults.length && (
-                    <p className="catalog-empty" role="status">
-                      No matching colors.
-                    </p>
-                  )}
-                    </div>
-                  </div>}
-                </div> : <p className="catalog-unavailable" role="status">Catalog unavailable</p>}
-                <section className="custom-color-section" aria-labelledby="custom-color-title">
-                  <h3 id="custom-color-title">Custom color</h3>
-                  <div className="custom-color-fields">
-                    <label htmlFor="custom-color-picker">Choose custom color</label>
-                    <input
-                      id="custom-color-picker"
-                      type="color"
-                       value={canonicalCustomColor}
-                       onChange={(e) => setColorFromHex(e.target.value)}
-                    />
-                    <label htmlFor="custom-color-hex">Hex color</label>
-                    <input
-                      id="custom-color-hex"
-                      type="text"
-                      value={customColorInput}
-                       onChange={(e) => setColorFromHex(e.target.value)}
-                      placeholder="#C72B3B"
-                      inputMode="text"
-                      autoComplete="off"
-                      aria-describedby="custom-color-help"
-                   />
-                  </div>
-                  <p id="custom-color-help" className="custom-color-help" aria-live="polite">
-                    {customColorInput && !customColor
-                      ? "Enter a 3- or 6-digit hex color."
-                      : "Use a three- or six-digit hex value."}
-                  </p>
-                  <button
-                    className="small-action custom-color-action"
-                    type="button"
-                     disabled={!customColor}
-                    aria-label={customActionLabel}
-                     onClick={() => backgroundPicking ? customColor && useBackgroundColor(customColor) : swapTarget === null ? void addCustomColor() : swapIntoCustomColor()}
-                  >
-                    {customActionLabel}
-                  </button>
-                </section>
-              </div>
+                {catalogPickerBody()}
               {paletteNotice && (
                 <p className="modal-error" role="alert">
                   {paletteNotice}
@@ -2778,15 +2325,101 @@ export function EditorSurface({
           </div>,
           globalThis.document.body,
         )}{" "}
+      {managerOpen &&
+        createPortal(
+          <div
+            className="modal-backdrop"
+            role="presentation"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) closePaletteManager();
+            }}
+          >
+            <div
+              ref={managerDialog}
+              className={`catalog-dialog create-modal palette-manager-dialog${managerPanel ? " palette-manager-panel-open" : ""}`}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="palette-manager-title"
+            >
+              <button
+                ref={managerClose}
+                className="modal-close"
+                type="button"
+                aria-label="Close palette manager"
+                onClick={closePaletteManager}
+              >
+                ×
+              </button>
+              <div className="palette-manager-columns">
+                <section className="palette-manager-palette">
+                  <p className="section-label">Manage</p>
+                  <h2 id="palette-manager-title">Color palette</h2>
+                  <div className="catalog-box">
+                    <div className="catalog-selection" aria-label="Selected palette color" role="group">
+                      {managerEntry ? (
+                        <>
+                          <span className="catalog-selection-swatch swatch" style={{ background: managerEntry.color }} aria-hidden="true" />
+                          <span className="catalog-selection-details">
+                            <strong>{managerEntry.name}</strong>
+                            <span>{catalogEntryLabel(managerEntry)}</span>
+                          </span>
+                          <div className="palette-manager-actions">
+                            <button ref={managerSwapButton} className="small-action" type="button" aria-label={`Swap ${managerEntry.name}`} aria-expanded={managerPanel === "swap"} aria-controls="palette-manager-panel" onClick={toggleManagerSwap}>Swap</button>
+                            <button className="small-action palette-manager-delete" type="button" aria-label={`Delete ${managerEntry.name}`} onClick={(e) => deleteFromManager(managerEntry.id, e.currentTarget)}>Delete</button>
+                          </div>
+                        </>
+                      ) : (
+                        <span className="catalog-selection-empty">No colors in this palette yet.</span>
+                      )}
+                    </div>
+                    <div className="catalog-color-grid palette-manager-grid" role="list" aria-label="Palette colors">
+                      <div role="listitem">
+                        <button ref={managerAddButton} className="catalog-color-button palette-manager-add" type="button" aria-label="Add color" title="Add color" aria-expanded={managerPanel === "add"} aria-controls="palette-manager-panel" onClick={toggleManagerAdd}><span className="palette-manager-add-glyph" aria-hidden="true">+</span></button>
+                      </div>
+                      {palette.map((entry) => (
+                        <div role="listitem" key={entry.id}>
+                          <button
+                            className="catalog-color-button"
+                            type="button"
+                            aria-label={`${entry.name}, ${catalogEntryLabel(entry)}`}
+                            aria-pressed={managerEntry?.id === entry.id}
+                            onClick={() => selectManagerEntry(entry.id)}
+                          >
+                            <span className="catalog-color-swatch" style={{ background: entry.color }} aria-hidden="true">
+                              {paletteOptions.symbols && <span className="palette-swatch-symbol" style={{ color: contrastSymbolInk(entry.color, DEFAULT_RENDERER_STYLE.symbolColor) }}><SymbolTile id={entry.symbol} /></span>}
+                            </span>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </section>
+                {(managerPanel === "add" || (managerPanel === "swap" && managerEntry)) && (
+                  <section id="palette-manager-panel" className="palette-manager-panel" aria-labelledby="palette-manager-panel-title">
+                    <h3 id="palette-manager-panel-title">{managerPanel === "swap" && managerEntry ? `Swap ${managerEntry.name} for a thread color` : "Add a thread color"}</h3>
+                    {managerPanel === "swap" && managerEntry && <p className="modal-hint">Stitches and backstitches using {managerEntry.name} will be changed.</p>}
+                    {catalogPickerBody()}
+                    {paletteNotice && (
+                      <p className="modal-error" role="alert">
+                        {paletteNotice}
+                      </p>
+                    )}
+                  </section>
+                )}
+              </div>
+            </div>
+          </div>,
+          globalThis.document.body,
+        )}{" "}
       {deleteTarget !== null && createPortal(
-        <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) { setDeleteTarget(null); window.setTimeout(() => deleteTrigger.current?.focus(), 0); } }}>
+        <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) { setDeleteTarget(null); focusAfterDelete(); } }}>
           <div ref={deleteDialog} className="catalog-dialog create-modal palette-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="palette-delete-title">
             <p className="section-label">Palette</p>
             <h2 id="palette-delete-title">Delete {palette.find((entry) => entry.id === deleteTarget)?.name ?? 'color'}?</h2>
             <p className="modal-hint">Every stitch using this color, including backstitches, will be deleted.</p>
             <div className="actions">
-              <button className="button button-secondary" data-delete-cancel type="button" onClick={() => { setDeleteTarget(null); window.setTimeout(() => deleteTrigger.current?.focus(), 0); }}>Cancel</button>
-              <button className="button button-primary" type="button" onClick={() => { const id = deleteTarget; if (id === null) return; workspace.execute({ type: 'palette-delete', id } as never); if (ui?.paletteId === id) controllerRef.current?.selectPalette(null); setDeleteTarget(null); window.setTimeout(() => deleteTrigger.current?.focus(), 0); }}>Delete color</button>
+              <button className="button button-secondary" data-delete-cancel type="button" onClick={() => { setDeleteTarget(null); focusAfterDelete(); }}>Cancel</button>
+              <button className="button button-primary" type="button" onClick={() => { const id = deleteTarget; if (id === null) return; workspace.execute({ type: 'palette-delete', id } as never); if (ui?.paletteId === id) controllerRef.current?.selectPalette(null); setDeleteTarget(null); focusAfterDelete(); }}>Delete color</button>
             </div>
           </div>
         </div>, globalThis.document.body

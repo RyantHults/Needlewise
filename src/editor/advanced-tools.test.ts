@@ -9,6 +9,7 @@ import {
 } from '../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { createFillWorkerClient, createFillResult, type FillWorkerClient, type FillWorkerLike } from './fill';
+import { getCanvasMetrics } from './coordinates';
 import { EditorSurfaceController } from './controller';
 import { createUiStore } from './ui-store';
 import type {
@@ -167,6 +168,42 @@ function pointer(pointerId: number, screenX: number, screenY: number): PointerSa
   return { pointerId, pointerType: 'mouse', screenX, screenY, button: 0, buttons: 1, isPrimary: true };
 }
 
+/** Lasso one cell by clicking its corners and then its first corner again, which closes the path. */
+function lassoCell(controller: EditorSurfaceController, x: number, y: number, extra: Partial<PointerSample> = {}): void {
+  const corners = [[x, y], [x + 1, y], [x + 1, y + 1], [x, y + 1], [x, y]];
+  corners.forEach(([cornerX, cornerY], index) => {
+    const sample = { ...pointer(index + 1, cornerX * 16, cornerY * 16), ...(index === 0 ? extra : {}) };
+    controller.handlePointerDown(sample);
+    controller.handlePointerUp({ ...sample, buttons: 0 });
+  });
+}
+
+/** A mouse sample at a model point under the fixture's 16px cells. */
+function modelPointer(pointerId: number, x: number, y: number): PointerSample {
+  return pointer(pointerId, x * 16, y * 16);
+}
+
+function tapModel(controller: EditorSurfaceController, pointerId: number, x: number, y: number): void {
+  controller.handlePointerDown(modelPointer(pointerId, x, y));
+  controller.handlePointerUp(modelPointer(pointerId, x, y));
+}
+
+function floatingDestination(uiStore: ReturnType<typeof createUiStore>) {
+  return uiStore.getState().overlay.floatingPaste?.destination;
+}
+
+/** The fixture with a one-cell paste floating at the given cell. */
+function floatingFixture(at: { x: number; y: number }) {
+  const result = fixture();
+  result.controller.setTool({ tool: 'select' });
+  result.controller.setSelection({ x: 0, y: 0 });
+  result.controller.copySelection();
+  result.controller.clearSelection();
+  result.uiStore.setKeyboardCursor(at);
+  result.controller.pasteSelection();
+  return result;
+}
+
 function documentWithStitches(): PatternDocument {
   const editor = createEditor(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 8, height: 8, palette: [
     { id: 1, name: 'Red', color: '#d33' },
@@ -282,27 +319,42 @@ describe('advanced headless editor tools', () => {
     controller.dispose();
   });
 
-  it('clears an existing selection after a valid-cell Select click', () => {
+  it('keeps an existing selection after a valid-cell Select click', () => {
     const { controller, uiStore } = fixture();
     controller.setTool({ tool: 'select' });
     controller.setSelection({ x: 1, y: 1 }, { x: 2, y: 2 });
 
     expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
-    expect(controller.handlePointerUp(pointer(1, 8, 8))).toBe(true);
+    controller.handlePointerUp(pointer(1, 8, 8));
+    expect(controller.getSelection()).toEqual({ x: 1, y: 1, width: 2, height: 2 });
+    expect(uiStore.getState().overlay.selection).toMatchObject({ x: 1, y: 1, width: 2, height: 2 });
+    controller.dispose();
+  });
+
+  it('never creates a one-cell selection from a bare Select click', () => {
+    const { controller, uiStore } = fixture();
+    controller.setTool({ tool: 'select' });
+    controller.handlePointerDown(pointer(1, 8, 8));
+    controller.handlePointerUp(pointer(1, 8, 8));
     expect(controller.getSelection()).toBeUndefined();
     expect(uiStore.getState().overlay.selection).toBeUndefined();
     controller.dispose();
   });
 
-  it('clears an existing selection after an outside-pattern Select click', () => {
+  it('keeps an existing selection after an outside-pattern Select click, for mouse and touch', () => {
     const { controller, uiStore } = fixture();
     controller.setTool({ tool: 'select' });
     controller.setSelection({ x: 1, y: 1 }, { x: 2, y: 2 });
 
-    expect(controller.handlePointerDown(pointer(1, 136, 8))).toBe(true);
-    expect(controller.handlePointerUp(pointer(1, 136, 8))).toBe(false);
-    expect(controller.getSelection()).toBeUndefined();
-    expect(uiStore.getState().overlay.selection).toBeUndefined();
+    expect(controller.handlePointerDown(pointer(1, 136, 8))).toBe(false);
+    controller.handlePointerUp(pointer(1, 136, 8));
+    expect(controller.getSelection()).toEqual({ x: 1, y: 1, width: 2, height: 2 });
+    expect(uiStore.getState().overlay.selection).toMatchObject({ x: 1, y: 1, width: 2, height: 2 });
+
+    controller.handlePointerDown({ ...pointer(2, 136, 8), pointerType: 'touch' });
+    controller.handlePointerUp({ ...pointer(2, 136, 8), pointerType: 'touch' });
+    expect(controller.getSelection()).toEqual({ x: 1, y: 1, width: 2, height: 2 });
+    expect(uiStore.getState().overlay.selection).toMatchObject({ x: 1, y: 1, width: 2, height: 2 });
     controller.dispose();
   });
 
@@ -318,42 +370,43 @@ describe('advanced headless editor tools', () => {
     controller.dispose();
   });
 
-  it('captures lasso selection modifiers at pointer-down and preserves selection while cancelled', () => {
+  it('captures lasso selection modifiers at the first press and preserves selection while cancelled', () => {
     const { controller, uiStore } = fixture();
     controller.setTool({ tool: 'lasso' });
     controller.setSelection({ x: 6, y: 6 });
     const before = controller.getSelection();
 
     expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
-    expect(uiStore.getState().overlay.lassoPath).toMatchObject({ points: [{ x: 0.5, y: 0.5 }] });
+    expect(uiStore.getState().overlay.lassoPath).toMatchObject({ points: [{ x: 0.5, y: 0.5 }], start: { x: 0.5, y: 0.5 } });
     expect(controller.getSelection()).toEqual(before);
-    controller.handlePointerMove(pointer(1, 0, 0));
-    controller.handlePointerMove(pointer(1, 48, 0));
+    controller.handlePointerMove(pointer(1, 48, 8));
     controller.handlePointerMove(pointer(1, 48, 48));
-    controller.handlePointerMove(pointer(1, 0, 48));
-    controller.handlePointerCancel(pointer(1, 0, 48));
+    controller.handlePointerUp(pointer(1, 48, 48));
+    controller.handleKeyDown({ key: 'Escape', preventDefault: () => undefined });
     expect(controller.getSelection()).toEqual(before);
     expect(uiStore.getState().overlay.lassoPath).toBeUndefined();
 
-    controller.handlePointerDown(pointer(2, 8, 8));
-    controller.handlePointerMove(pointer(2, 0, 0));
+    // A drag released on its own start closes the lasso.
+    controller.handlePointerDown(pointer(2, 0, 0));
     controller.handlePointerMove(pointer(2, 48, 0));
     controller.handlePointerMove(pointer(2, 48, 48));
     controller.handlePointerMove(pointer(2, 0, 48));
-    controller.handlePointerUp(pointer(2, 0, 48));
+    controller.handlePointerUp(pointer(2, 0, 2));
     expect(controller.getSelection()).toEqual({ x: 0, y: 0, width: 3, height: 3 });
     expect(controller.getSelectionIndices()).toEqual(new Uint32Array([0, 1, 2, 8, 9, 10, 16, 17, 18]));
     expect(uiStore.getState().overlay.selection).toMatchObject({ kind: 'sparse', indices: [0, 1, 2, 8, 9, 10, 16, 17, 18] });
 
-    controller.handlePointerDown({ ...pointer(3, 24, 8), shiftKey: true });
-    controller.handlePointerMove({ ...pointer(3, 40, 8), shiftKey: true });
-    controller.handlePointerUp({ ...pointer(3, 24, 8), shiftKey: false });
-    expect(controller.getSelectionIndices()).toEqual(new Uint32Array([0, 1, 2, 8, 9, 10, 16, 17, 18]));
+    lassoCell(controller, 3, 0, { shiftKey: true });
+    expect(controller.getSelectionIndices()).toEqual(new Uint32Array([0, 1, 2, 3, 8, 9, 10, 16, 17, 18]));
 
-    controller.handlePointerDown({ ...pointer(4, 24, 8), shiftKey: true, altKey: true });
-    controller.handlePointerMove({ ...pointer(4, 40, 8), shiftKey: true, altKey: true });
-    controller.handlePointerUp({ ...pointer(4, 40, 8), shiftKey: false, altKey: false });
-    expect(controller.getSelectionIndices()).toEqual(new Uint32Array([0, 2, 8, 9, 10, 16, 17, 18]));
+    // Started on cell 4, outside the selection, so the press does not offer Copy.
+    const subtract = [[4, 0], [3, 0], [3, 1], [4, 1], [4, 0]];
+    subtract.forEach(([cornerX, cornerY], index) => {
+      const sample = { ...pointer(10 + index, cornerX * 16, cornerY * 16), altKey: index === 0 };
+      controller.handlePointerDown(sample);
+      controller.handlePointerUp(sample);
+    });
+    expect(controller.getSelectionIndices()).toEqual(new Uint32Array([0, 1, 2, 8, 9, 10, 16, 17, 18]));
 
     controller.handleKeyDown({ key: 'ArrowRight', preventDefault: () => undefined });
     expect(controller.getSelection()).toBeUndefined();
@@ -365,10 +418,8 @@ describe('advanced headless editor tools', () => {
   it('routes sparse copy and delete through ordered cell-set domain operations', () => {
     const { controller, gateway } = fixture();
     controller.setTool({ tool: 'lasso' });
-    controller.handlePointerDown(pointer(1, 8, 8));
-    controller.handlePointerUp(pointer(1, 8, 8));
-    controller.handlePointerDown({ ...pointer(2, 40, 8), shiftKey: true });
-    controller.handlePointerUp(pointer(2, 40, 8));
+    lassoCell(controller, 0, 0);
+    lassoCell(controller, 2, 0, { shiftKey: true });
     expect(controller.getSelectionIndices()).toEqual(new Uint32Array([0, 2]));
     expect(controller.copySelection()).toBeDefined();
     expect(Array.from(controller.getClipboard()!.kind)).toEqual([CellKind.Full, CellKind.Empty, CellKind.Quarters]);
@@ -381,21 +432,27 @@ describe('advanced headless editor tools', () => {
     controller.dispose();
   });
 
-  it('defers selected-cell actions for mouse and pen while preserving drag gestures', () => {
+  it('starts a normal Select gesture for a press inside the selection, for mouse and pen', () => {
     const { controller, uiStore } = fixture();
     controller.setTool({ tool: 'select' });
-    controller.setSelection({ x: 0, y: 0 });
+    controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 1 });
 
+    // A click inside keeps the selection, as a click anywhere does.
     controller.handlePointerDown(pointer(1, 8, 8));
     controller.handlePointerUp(pointer(1, 8, 8));
-    expect(uiStore.getState().overlay.touchCopyRequest).toMatchObject({ cell: { x: 0, y: 0 }, screenX: 8, screenY: 8 });
-    controller.dismissTouchCopyRequest();
+    expect(controller.getSelection()).toEqual({ x: 0, y: 0, width: 2, height: 2 });
 
-    controller.handlePointerDown({ ...pointer(2, 8, 8), pointerType: 'pen' });
-    controller.handlePointerMove({ ...pointer(2, 40, 8), pointerType: 'pen' });
-    controller.handlePointerUp({ ...pointer(2, 40, 8), pointerType: 'pen' });
-    expect(uiStore.getState().overlay.touchCopyRequest).toBeUndefined();
-    expect(controller.getSelection()).toEqual({ x: 0, y: 0, width: 3, height: 1 });
+    controller.handlePointerDown(pointer(2, 24, 24));
+    controller.handlePointerMove(pointer(2, 56, 24));
+    expect(controller.getSelection()).toEqual({ x: 1, y: 1, width: 3, height: 1 });
+    controller.handlePointerUp(pointer(2, 56, 24));
+    expect(controller.getSelection()).toEqual({ x: 1, y: 1, width: 3, height: 1 });
+
+    controller.handlePointerDown({ ...pointer(3, 24, 24), pointerType: 'pen' });
+    controller.handlePointerMove({ ...pointer(3, 40, 40), pointerType: 'pen' });
+    controller.handlePointerUp({ ...pointer(3, 40, 40), pointerType: 'pen' });
+    expect(controller.getSelection()).toEqual({ x: 1, y: 1, width: 2, height: 2 });
+    expect(uiStore.getState().overlay.selection).toMatchObject({ x: 1, y: 1, width: 2, height: 2 });
     controller.dispose();
   });
 
@@ -405,7 +462,6 @@ describe('advanced headless editor tools', () => {
     mouse.controller.setSelection({ x: 0, y: 0 });
     mouse.controller.handlePointerDown(pointer(1, 8, 8));
     mouse.controller.handlePointerUp(pointer(1, 40, 8));
-    expect(mouse.uiStore.getState().overlay.touchCopyRequest).toBeUndefined();
     expect(mouse.controller.getSelection()).toEqual({ x: 0, y: 0, width: 3, height: 1 });
     mouse.controller.dispose();
 
@@ -414,7 +470,6 @@ describe('advanced headless editor tools', () => {
     pen.controller.setSelection({ x: 0, y: 0 });
     pen.controller.handlePointerDown({ ...pointer(1, 8, 8), pointerType: 'pen' });
     pen.controller.handlePointerUp({ ...pointer(1, 40, 8), pointerType: 'pen' });
-    expect(pen.uiStore.getState().overlay.touchCopyRequest).toBeUndefined();
     expect(pen.controller.getSelection()).toEqual({ x: 0, y: 0, width: 3, height: 1 });
     pen.controller.dispose();
   });
@@ -439,10 +494,8 @@ describe('advanced headless editor tools', () => {
   it('retains the immutable sparse copy outline reference while dragging a floating paste', () => {
     const { controller, uiStore } = fixture();
     controller.setTool({ tool: 'lasso' });
-    controller.handlePointerDown(pointer(1, 8, 8));
-    controller.handlePointerUp(pointer(1, 8, 8));
-    controller.handlePointerDown({ ...pointer(2, 40, 8), shiftKey: true });
-    controller.handlePointerUp({ ...pointer(2, 40, 8), shiftKey: false });
+    lassoCell(controller, 0, 0);
+    lassoCell(controller, 2, 0, { shiftKey: true });
     controller.copySelection();
     controller.clearSelection();
     uiStore.setKeyboardCursor({ x: 3, y: 3 });
@@ -467,7 +520,7 @@ describe('advanced headless editor tools', () => {
     committed.controller.copySelection();
     committed.controller.setSelection({ x: 5, y: 5 });
     expect(committed.controller.pasteSelection()).toBe(true);
-    committed.controller.handlePointerDown(pointer(1, 8, 8));
+    expect(committed.controller.confirmFloatingPaste()).toBe(true);
     expect(committed.controller.getSelection()).toBeUndefined();
     expect(committed.uiStore.getState().overlay.selection).toBeUndefined();
     committed.controller.dispose();
@@ -480,7 +533,7 @@ describe('advanced headless editor tools', () => {
     const noOpCommandCount = noOp.gateway.commands.length;
     expect(noOp.controller.pasteSelection()).toBe(true);
     expect(noOp.uiStore.getState().overlay.floatingPaste).toMatchObject({ destination: { x: 5, y: 5 } });
-    noOp.controller.handlePointerDown(pointer(1, 8, 8));
+    noOp.controller.confirmFloatingPaste();
     expect(noOp.gateway.commands).toHaveLength(noOpCommandCount);
     expect(noOp.uiStore.getState().status).toBe('No change');
     expect(noOp.controller.getSelection()).toEqual({ x: 5, y: 5, width: 1, height: 1 });
@@ -494,7 +547,7 @@ describe('advanced headless editor tools', () => {
     failed.controller.setSelection({ x: 5, y: 5 });
     expect(failed.controller.pasteSelection()).toBe(true);
     failed.gateway.getSnapshot().document!.palette.length = 0;
-    failed.controller.handlePointerDown(pointer(1, 8, 8));
+    failed.controller.confirmFloatingPaste();
     expect(failed.uiStore.getState().overlay.floatingPaste).toBeDefined();
     expect(failed.controller.getSelection()).toBeUndefined();
     failed.controller.handleKeyDown({ key: 'Escape', preventDefault: () => undefined });
@@ -511,8 +564,7 @@ describe('advanced headless editor tools', () => {
 
     const sparse = fixture();
     sparse.controller.setTool({ tool: 'lasso' });
-    sparse.controller.handlePointerDown(pointer(1, 8, 8));
-    sparse.controller.handlePointerUp(pointer(1, 8, 8));
+    lassoCell(sparse.controller, 0, 0);
     expect(sparse.controller.getSelectionIndices()).toEqual(new Uint32Array([0]));
 
     sparse.gateway.replaceDocument(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
@@ -562,7 +614,7 @@ describe('advanced headless editor tools', () => {
     expect(gateway.commands).toHaveLength(before);
     expect(controller.getSelection()).toBeUndefined();
     expect(uiStore.getState().overlay.floatingPaste).toMatchObject({ destination: { x: 1, y: 0, width: 1, height: 1 } });
-    controller.handlePointerDown(pointer(1, 8, 40));
+    expect(controller.confirmFloatingPaste()).toBe(true);
     expect(gateway.commands).toHaveLength(before + 1);
     expect(gateway.commands.at(-1)?.type).toBe('paste-fragment');
     expect(gateway.getSnapshot().document?.completed[1]).toBe(0);
@@ -591,7 +643,7 @@ describe('advanced headless editor tools', () => {
     controller.handlePointerMove(pointer(1, 40, 8));
     controller.handlePointerUp(pointer(1, 40, 8));
     expect(uiStore.getState().overlay.floatingPaste).toMatchObject({ destination: { x: 2, y: 0 } });
-    controller.handlePointerDown(pointer(2, 120, 120));
+    expect(controller.confirmFloatingPaste()).toBe(true);
     expect(gateway.commands.filter((command) => command.type === 'move-fragment')).toHaveLength(1);
     expect(controller.getSelection()).toBeUndefined();
     expect(uiStore.getState().overlay.floatingPaste).toBeUndefined();
@@ -611,10 +663,8 @@ describe('advanced headless editor tools', () => {
   it('captures sparse move geometry and restores the source on cancel or recoverable failure', () => {
     const cancelled = fixture();
     cancelled.controller.setTool({ tool: 'lasso' });
-    cancelled.controller.handlePointerDown(pointer(1, 8, 8));
-    cancelled.controller.handlePointerUp(pointer(1, 8, 8));
-    cancelled.controller.handlePointerDown({ ...pointer(2, 40, 8), shiftKey: true });
-    cancelled.controller.handlePointerUp({ ...pointer(2, 40, 8), shiftKey: false });
+    lassoCell(cancelled.controller, 0, 0);
+    lassoCell(cancelled.controller, 2, 0, { shiftKey: true });
     expect(cancelled.controller.moveSelection()).toBe(true);
     expect(cancelled.uiStore.getState().overlay.floatingPaste).toMatchObject({
       mode: 'move',
@@ -632,7 +682,7 @@ describe('advanced headless editor tools', () => {
     failed.controller.setSelection({ x: 0, y: 0 });
     expect(failed.controller.moveSelection()).toBe(true);
     failed.gateway.getSnapshot().document!.palette.length = 0;
-    failed.controller.handlePointerDown(pointer(1, 120, 120));
+    failed.controller.confirmFloatingPaste();
     expect(failed.uiStore.getState().overlay.floatingPaste).toBeDefined();
     expect(failed.controller.getSelection()).toBeUndefined();
     failed.controller.handleKeyDown({ key: 'Escape', preventDefault: () => undefined });
@@ -674,7 +724,7 @@ describe('advanced headless editor tools', () => {
     mixed.controller.handlePointerDown(pointer(1, 8, 8));
     mixed.controller.handlePointerMove(pointer(1, 40, 8));
     mixed.controller.handlePointerUp(pointer(1, 40, 8));
-    mixed.controller.handlePointerDown(pointer(1, 120, 120));
+    expect(mixed.controller.confirmFloatingPaste()).toBe(true);
     expect(mixed.gateway.commands.filter((command) => command.type === 'move-fragment')).toHaveLength(1);
     expect(mixed.gateway.undoDepth).toBe(historyBefore + 1);
     expect(mixed.controller.getSelection()).toBeUndefined();
@@ -689,7 +739,7 @@ describe('advanced headless editor tools', () => {
     noop.controller.setSelection({ x: 4, y: 4 });
     const noopHistory = noop.gateway.undoDepth;
     expect(noop.controller.moveSelection()).toBe(true);
-    noop.controller.handlePointerDown(pointer(1, 120, 120));
+    noop.controller.confirmFloatingPaste();
     expect(noop.gateway.undoDepth).toBe(noopHistory);
     expect(noop.controller.getSelection()).toEqual({ x: 4, y: 4, width: 1, height: 1 });
     expect(noop.controller.getClipboard()?.kind).toEqual(noopClipboard?.kind);
@@ -725,7 +775,7 @@ describe('advanced headless editor tools', () => {
     uiStore.setKeyboardCursor({ x: 7, y: 7 });
     expect(controller.pasteSelection()).toBe(true);
     expect(uiStore.getState().overlay.floatingPaste).toMatchObject({ destination: { x: 6, y: 6, width: 2, height: 2 } });
-    controller.handlePointerDown(pointer(1, 8, 8));
+    expect(controller.confirmFloatingPaste()).toBe(true);
     expect(gateway.commands.at(-1)?.type).toBe('paste-fragment');
     expect(controller.getSelection()).toBeUndefined();
     expect(gateway.undoDepth).toBe(1);
@@ -755,18 +805,29 @@ describe('advanced headless editor tools', () => {
     expect(gateway.commands.filter((command) => command.type === 'paste-fragment')).toHaveLength(0);
     controller.handleKeyDown({ key: 'Escape', preventDefault: () => undefined });
 
+    // A tap inside the selection is a plain Select click and keeps it.
     controller.setSelection({ x: 0, y: 0 });
     controller.handlePointerDown({ ...pointer(3, 8, 8), pointerType: 'touch' });
-    expect(uiStore.getState().overlay.touchCopyRequest).toBeUndefined();
     controller.handlePointerUp({ ...pointer(3, 8, 8), pointerType: 'touch' });
-    expect(uiStore.getState().overlay.touchCopyRequest).toMatchObject({
-      cell: { x: 0, y: 0 },
-      selection: { x: 0, y: 0, width: 1, height: 1 },
-      screenX: 8,
-      screenY: 8
-    });
-    controller.copySelection();
-    expect(uiStore.getState().overlay.touchCopyRequest).toBeUndefined();
+    expect(controller.getSelection()).toEqual({ x: 0, y: 0, width: 1, height: 1 });
+    controller.dispose();
+  });
+
+  it('pastes at the centre of the visible viewport when there is no selection or keyboard cursor', () => {
+    const gateway = new FakeGateway(documentWithStitches());
+    const uiStore = createUiStore({ viewport: { x: 2, y: 0, zoom: 16 } });
+    // 96px square: the centre is model point (5, 3).
+    const controller = new EditorSurfaceController({ gateway, uiStore, renderer: rendererFixture(), metrics: getCanvasMetrics(96, 96) });
+    controller.start();
+    controller.setTool({ tool: 'select' });
+    controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 1 });
+    expect(controller.copySelection()).toBeDefined();
+    controller.clearSelection();
+    expect(uiStore.getState().keyboardCursor).toBeNull();
+
+    expect(controller.pasteSelection()).toBe(true);
+    // Centred: the 2x2 fragment's top-left is half its size up and left of the centre cell.
+    expect(uiStore.getState().overlay.floatingPaste).toMatchObject({ destination: { x: 4, y: 2, width: 2, height: 2 } });
     controller.dispose();
   });
 
@@ -779,7 +840,7 @@ describe('advanced headless editor tools', () => {
     failed.uiStore.setKeyboardCursor({ x: 0, y: 0 });
     failed.controller.pasteSelection();
     failed.gateway.getSnapshot().document!.palette.length = 0;
-    failed.controller.handlePointerDown(pointer(1, 120, 120));
+    failed.controller.confirmFloatingPaste();
     expect(failed.uiStore.getState().overlay.floatingPaste).toBeDefined();
     expect(failed.uiStore.getState().status).toBe('Paste unavailable');
     failed.controller.dispose();
@@ -797,7 +858,7 @@ describe('advanced headless editor tools', () => {
     stale.controller.dispose();
   });
 
-  it('keeps floating paste through keyboard Enter, Space/middle navigation, and post-pinch pan', () => {
+  it('keeps floating paste through Space/middle navigation and post-pinch pan', () => {
     const { controller, gateway, uiStore } = fixture();
     controller.setTool({ tool: 'select' });
     controller.setSelection({ x: 0, y: 0 });
@@ -806,8 +867,6 @@ describe('advanced headless editor tools', () => {
     uiStore.setKeyboardCursor({ x: 0, y: 0 });
     controller.pasteSelection();
     const revision = gateway.getSnapshot().revision;
-    controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined });
-    expect(gateway.getSnapshot().revision).toBe(revision);
 
     const beforeSpace = uiStore.getState().viewport;
     controller.handleKeyDown({ key: 'Space', preventDefault: () => undefined });
@@ -835,6 +894,188 @@ describe('advanced headless editor tools', () => {
     expect(uiStore.getState().overlay.floatingPaste).toBeDefined();
     expect(gateway.getSnapshot().revision).toBe(revision);
     controller.dispose();
+  });
+
+  it('nudges a floating paste one cell toward a press or tap outside it, without committing', () => {
+    const { controller, gateway, uiStore } = floatingFixture({ x: 4, y: 4 });
+    const revision = gateway.getSnapshot().revision;
+
+    // Left, by mouse on press.
+    expect(controller.handlePointerDown(modelPointer(1, 0.5, 4.5))).toBe(true);
+    expect(floatingDestination(uiStore)).toEqual({ x: 3, y: 4, width: 1, height: 1 });
+    controller.handlePointerUp(modelPointer(1, 0.5, 4.5));
+    expect(floatingDestination(uiStore)).toEqual({ x: 3, y: 4, width: 1, height: 1 });
+
+    // Right, by pen.
+    controller.handlePointerDown({ ...modelPointer(2, 7.5, 4.5), pointerType: 'pen' });
+    controller.handlePointerUp({ ...modelPointer(2, 7.5, 4.5), pointerType: 'pen' });
+    expect(floatingDestination(uiStore)).toEqual({ x: 4, y: 4, width: 1, height: 1 });
+
+    // Above, by a touch tap, which nudges on release.
+    controller.handlePointerDown({ ...modelPointer(3, 4.5, 0.5), pointerType: 'touch' });
+    expect(floatingDestination(uiStore)).toEqual({ x: 4, y: 4, width: 1, height: 1 });
+    controller.handlePointerUp({ ...modelPointer(3, 4.5, 0.5), pointerType: 'touch' });
+    expect(floatingDestination(uiStore)).toEqual({ x: 4, y: 3, width: 1, height: 1 });
+
+    // Below.
+    controller.handlePointerDown(modelPointer(4, 4.5, 7.5));
+    controller.handlePointerUp(modelPointer(4, 4.5, 7.5));
+    expect(floatingDestination(uiStore)).toEqual({ x: 4, y: 4, width: 1, height: 1 });
+
+    expect(gateway.commands.filter((command) => command.type === 'paste-fragment')).toHaveLength(0);
+    expect(gateway.getSnapshot().revision).toBe(revision);
+    expect(controller.getSelection()).toBeUndefined();
+    controller.dispose();
+  });
+
+  it('nudges along the dominant axis for a diagonal tap, and horizontally on a tie', () => {
+    const { controller, uiStore } = floatingFixture({ x: 4, y: 4 });
+    // 2.5 cells left against 1.5 below: horizontal.
+    tapModel(controller, 1, 1.5, 6.5);
+    expect(floatingDestination(uiStore)).toMatchObject({ x: 3, y: 4 });
+    // 1.5 cells right against 3.5 above: vertical.
+    tapModel(controller, 2, 5.5, 0.5);
+    expect(floatingDestination(uiStore)).toMatchObject({ x: 3, y: 3 });
+    controller.dispose();
+
+    const tied = floatingFixture({ x: 4, y: 4 });
+    tapModel(tied.controller, 1, 2.5, 2.5);
+    expect(floatingDestination(tied.uiStore)).toMatchObject({ x: 3, y: 4 });
+    tapModel(tied.controller, 2, 5.5, 6.5);
+    expect(floatingDestination(tied.uiStore)).toMatchObject({ x: 4, y: 4 });
+    tied.controller.dispose();
+  });
+
+  it('does not nudge a floating paste past the document edge', () => {
+    const { controller, gateway, uiStore } = floatingFixture({ x: 0, y: 0 });
+    tapModel(controller, 1, -0.5, 0.5);
+    expect(floatingDestination(uiStore)).toEqual({ x: 0, y: 0, width: 1, height: 1 });
+    tapModel(controller, 2, 0.5, -0.5);
+    expect(floatingDestination(uiStore)).toEqual({ x: 0, y: 0, width: 1, height: 1 });
+    expect(gateway.commands.filter((command) => command.type === 'paste-fragment')).toHaveLength(0);
+    controller.dispose();
+  });
+
+  it('does not nudge a floating paste for a touch drag outside it', () => {
+    const { controller, uiStore } = floatingFixture({ x: 4, y: 4 });
+    controller.handlePointerDown({ ...modelPointer(1, 0.5, 4.5), pointerType: 'touch' });
+    controller.handlePointerMove({ ...modelPointer(1, 0.5, 2.5), pointerType: 'touch' });
+    controller.handlePointerUp({ ...modelPointer(1, 0.5, 2.5), pointerType: 'touch' });
+    expect(floatingDestination(uiStore)).toEqual({ x: 4, y: 4, width: 1, height: 1 });
+    controller.dispose();
+  });
+
+  it('commits a nudged move at its new position', () => {
+    const { controller, gateway, uiStore } = fixture();
+    controller.setTool({ tool: 'select' });
+    controller.setSelection({ x: 0, y: 0 });
+    expect(controller.moveSelection()).toBe(true);
+    tapModel(controller, 1, 3.5, 0.5);
+    expect(floatingDestination(uiStore)).toEqual({ x: 1, y: 0, width: 1, height: 1 });
+    expect(gateway.commands.filter((command) => command.type === 'move-fragment')).toHaveLength(0);
+    expect(controller.confirmFloatingPaste()).toBe(true);
+    expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
+    expect(gateway.getSnapshot().document?.kind[1]).toBe(CellKind.Full);
+    controller.dispose();
+  });
+
+  it('confirms a floating paste or move through confirmFloatingPaste', () => {
+    const paste = fixture();
+    paste.controller.setTool({ tool: 'select' });
+    paste.controller.setSelection({ x: 0, y: 0 });
+    paste.controller.copySelection();
+    paste.controller.setSelection({ x: 5, y: 5 });
+    expect(paste.controller.pasteSelection()).toBe(true);
+    expect(paste.controller.confirmFloatingPaste()).toBe(true);
+    expect(paste.gateway.commands.filter((command) => command.type === 'paste-fragment')).toHaveLength(1);
+    expect(paste.gateway.getSnapshot().document?.kind[5 * 8 + 5]).toBe(CellKind.Full);
+    expect(paste.uiStore.getState().overlay.floatingPaste).toBeUndefined();
+    expect(paste.gateway.undoDepth).toBe(1);
+    paste.controller.dispose();
+
+    const move = fixture();
+    move.controller.setTool({ tool: 'select' });
+    move.controller.setSelection({ x: 0, y: 0 });
+    expect(move.controller.moveSelection()).toBe(true);
+    move.controller.handlePointerDown(pointer(1, 8, 8));
+    move.controller.handlePointerMove(pointer(1, 88, 88));
+    move.controller.handlePointerUp(pointer(1, 88, 88));
+    expect(move.uiStore.getState().overlay.floatingPaste).toMatchObject({ mode: 'move', destination: { x: 5, y: 5 } });
+    expect(move.controller.confirmFloatingPaste()).toBe(true);
+    expect(move.gateway.commands.filter((command) => command.type === 'move-fragment')).toHaveLength(1);
+    expect(move.gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
+    expect(move.gateway.getSnapshot().document?.kind[5 * 8 + 5]).toBe(CellKind.Full);
+    expect(move.uiStore.getState().overlay.floatingPaste).toBeUndefined();
+    move.controller.dispose();
+  });
+
+  it('cancels a floating paste or move through cancelFloatingPaste, restoring the previous selection', () => {
+    const paste = fixture();
+    paste.controller.setTool({ tool: 'select' });
+    paste.controller.setSelection({ x: 0, y: 0 });
+    paste.controller.copySelection();
+    paste.controller.setSelection({ x: 5, y: 5 });
+    const revision = paste.gateway.getSnapshot().revision;
+    expect(paste.controller.pasteSelection()).toBe(true);
+    expect(paste.controller.cancelFloatingPaste()).toBe(true);
+    expect(paste.uiStore.getState().overlay.floatingPaste).toBeUndefined();
+    expect(paste.gateway.getSnapshot().revision).toBe(revision);
+    expect(paste.gateway.getSnapshot().document?.kind[5 * 8 + 5]).toBe(CellKind.Empty);
+    expect(paste.controller.getSelection()).toEqual({ x: 5, y: 5, width: 1, height: 1 });
+    expect(paste.controller.cancelFloatingPaste()).toBe(false);
+    paste.controller.dispose();
+
+    const move = fixture();
+    move.controller.setTool({ tool: 'select' });
+    move.controller.setSelection({ x: 0, y: 0 });
+    const moveRevision = move.gateway.getSnapshot().revision;
+    expect(move.controller.moveSelection()).toBe(true);
+    move.controller.handlePointerDown(pointer(1, 8, 8));
+    move.controller.handlePointerMove(pointer(1, 88, 88));
+    move.controller.handlePointerUp(pointer(1, 88, 88));
+    expect(move.controller.cancelFloatingPaste()).toBe(true);
+    expect(move.uiStore.getState().overlay.floatingPaste).toBeUndefined();
+    expect(move.gateway.commands.filter((command) => command.type === 'move-fragment')).toHaveLength(0);
+    expect(move.gateway.getSnapshot().revision).toBe(moveRevision);
+    expect(move.gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Full);
+    expect(move.gateway.getSnapshot().document?.kind[5 * 8 + 5]).toBe(CellKind.Empty);
+    expect(move.controller.getSelection()).toEqual({ x: 0, y: 0, width: 1, height: 1 });
+    expect(move.controller.cancelFloatingPaste()).toBe(false);
+    move.controller.dispose();
+  });
+
+  it('confirms a floating paste or move on Enter and cancels it on Escape', () => {
+    const paste = fixture();
+    paste.controller.setTool({ tool: 'select' });
+    paste.controller.setSelection({ x: 0, y: 0 });
+    paste.controller.copySelection();
+    paste.controller.setSelection({ x: 5, y: 5 });
+    paste.controller.pasteSelection();
+    expect(paste.controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined })).toBe(true);
+    expect(paste.gateway.commands.filter((command) => command.type === 'paste-fragment')).toHaveLength(1);
+    expect(paste.uiStore.getState().overlay.floatingPaste).toBeUndefined();
+
+    paste.controller.setSelection({ x: 3, y: 3 });
+    const revision = paste.gateway.getSnapshot().revision;
+    paste.controller.pasteSelection();
+    expect(paste.controller.handleKeyDown({ key: 'Escape', preventDefault: () => undefined })).toBe(true);
+    expect(paste.uiStore.getState().overlay.floatingPaste).toBeUndefined();
+    expect(paste.gateway.getSnapshot().revision).toBe(revision);
+    expect(paste.controller.getSelection()).toEqual({ x: 3, y: 3, width: 1, height: 1 });
+    paste.controller.dispose();
+
+    const move = fixture();
+    move.controller.setTool({ tool: 'select' });
+    move.controller.setSelection({ x: 0, y: 0 });
+    move.controller.moveSelection();
+    move.controller.handlePointerDown(pointer(1, 8, 8));
+    move.controller.handlePointerMove(pointer(1, 88, 88));
+    move.controller.handlePointerUp(pointer(1, 88, 88));
+    expect(move.controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined })).toBe(true);
+    expect(move.gateway.commands.filter((command) => command.type === 'move-fragment')).toHaveLength(1);
+    expect(move.gateway.getSnapshot().document?.kind[5 * 8 + 5]).toBe(CellKind.Full);
+    expect(move.uiStore.getState().overlay.floatingPaste).toBeUndefined();
+    move.controller.dispose();
   });
 
   it('ignores adapter lost-capture notifications that arrive after a floating pointer has already released', () => {
@@ -883,25 +1124,23 @@ describe('advanced headless editor tools', () => {
     controller.dispose();
   });
 
-  it('falls back from touch Copy to Select or Pan movement according to touch policy', () => {
+  it('starts Select or Pan from a touch press inside the selection according to touch policy', () => {
     const editing = fixture();
     editing.controller.setTool({ tool: 'select' });
     editing.controller.setSelection({ x: 0, y: 0 });
     editing.controller.handlePointerDown({ ...pointer(1, 8, 8), pointerType: 'touch' });
     editing.controller.handlePointerMove({ ...pointer(1, 24, 8), pointerType: 'touch' });
     editing.controller.handlePointerUp({ ...pointer(1, 24, 8), pointerType: 'touch' });
-    expect(editing.uiStore.getState().overlay.touchCopyRequest).toBeUndefined();
     expect(editing.controller.getSelection()).toEqual({ x: 0, y: 0, width: 2, height: 1 });
     editing.controller.dispose();
 
-    const releaseFallback = fixture();
-    releaseFallback.controller.setTool({ tool: 'select' });
-    releaseFallback.controller.setSelection({ x: 0, y: 0 });
-    releaseFallback.controller.handlePointerDown({ ...pointer(1, 8, 8), pointerType: 'touch' });
-    releaseFallback.controller.handlePointerUp({ ...pointer(1, 40, 8), pointerType: 'touch' });
-    expect(releaseFallback.uiStore.getState().overlay.touchCopyRequest).toBeUndefined();
-    expect(releaseFallback.controller.getSelection()).toEqual({ x: 0, y: 0, width: 3, height: 1 });
-    releaseFallback.controller.dispose();
+    const releaseOnly = fixture();
+    releaseOnly.controller.setTool({ tool: 'select' });
+    releaseOnly.controller.setSelection({ x: 0, y: 0 });
+    releaseOnly.controller.handlePointerDown({ ...pointer(1, 8, 8), pointerType: 'touch' });
+    releaseOnly.controller.handlePointerUp({ ...pointer(1, 40, 8), pointerType: 'touch' });
+    expect(releaseOnly.controller.getSelection()).toEqual({ x: 0, y: 0, width: 3, height: 1 });
+    releaseOnly.controller.dispose();
 
     const movementOnly = fixture();
     movementOnly.controller.setTool({ tool: 'select' });
@@ -909,20 +1148,21 @@ describe('advanced headless editor tools', () => {
     const before = movementOnly.uiStore.getState().viewport;
     movementOnly.controller.setTouchMovementOnly(true);
     movementOnly.controller.handlePointerDown({ ...pointer(1, 8, 8), pointerType: 'touch' });
+    movementOnly.controller.handlePointerMove({ ...pointer(1, 40, 8), pointerType: 'touch' });
     movementOnly.controller.handlePointerUp({ ...pointer(1, 40, 8), pointerType: 'touch' });
     expect(movementOnly.uiStore.getState().viewport).not.toEqual(before);
     expect(movementOnly.controller.getSelection()).toEqual({ x: 0, y: 0, width: 1, height: 1 });
     movementOnly.controller.dispose();
   });
 
-  it('cancels selected-cell candidates before and after movement fallback', () => {
+  it('restores the selection when a press inside it is cancelled before or after moving', () => {
     const beforeCancel = fixture();
     beforeCancel.controller.setTool({ tool: 'select' });
     beforeCancel.controller.setSelection({ x: 0, y: 0 });
     beforeCancel.controller.handlePointerDown(pointer(1, 8, 8));
     beforeCancel.controller.handlePointerCancel(pointer(1, 8, 8));
     expect(beforeCancel.controller.getSelection()).toEqual({ x: 0, y: 0, width: 1, height: 1 });
-    expect(beforeCancel.uiStore.getState().overlay.touchCopyRequest).toBeUndefined();
+    expect(beforeCancel.uiStore.getState().overlay.selection).toMatchObject({ x: 0, y: 0, width: 1, height: 1 });
     beforeCancel.controller.handlePointerDown(pointer(2, 8, 8));
     beforeCancel.controller.handlePointerLostCapture(pointer(2, 8, 8));
     expect(beforeCancel.controller.getSelection()).toEqual({ x: 0, y: 0, width: 1, height: 1 });
@@ -942,7 +1182,7 @@ describe('advanced headless editor tools', () => {
     afterFallback.controller.dispose();
   });
 
-  it('keeps inside-selection two- and three-touch history gestures out of the action menu', () => {
+  it('runs two- and three-touch history gestures that start inside the selection', () => {
     const undo = fixture();
     undo.controller.setTool({ tool: 'select' });
     undo.controller.setSelection({ x: 0, y: 0 }, { x: 2, y: 0 });
@@ -951,7 +1191,6 @@ describe('advanced headless editor tools', () => {
     undo.controller.handlePointerDown({ ...pointer(2, 24, 8), pointerType: 'touch' });
     undo.controller.handlePointerUp({ ...pointer(2, 24, 8), pointerType: 'touch' });
     undo.controller.handlePointerUp({ ...pointer(1, 8, 8), pointerType: 'touch' });
-    expect(undo.uiStore.getState().overlay.touchCopyRequest).toBeUndefined();
     expect(undo.gateway.getSnapshot().document?.kind[7 * 8 + 7]).toBe(CellKind.Empty);
     undo.controller.dispose();
 
@@ -966,7 +1205,6 @@ describe('advanced headless editor tools', () => {
     redo.controller.handlePointerUp({ ...pointer(3, 40, 8), pointerType: 'touch' });
     redo.controller.handlePointerUp({ ...pointer(2, 24, 8), pointerType: 'touch' });
     redo.controller.handlePointerUp({ ...pointer(1, 8, 8), pointerType: 'touch' });
-    expect(redo.uiStore.getState().overlay.touchCopyRequest).toBeUndefined();
     expect(redo.gateway.getSnapshot().document?.kind[7 * 8 + 7]).toBe(CellKind.Full);
     redo.controller.dispose();
   });

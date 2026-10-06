@@ -21,6 +21,7 @@ import {
   type Invalidation,
   type InvalidationLayer,
   type LassoPathOverlay,
+  type LassoPreviewOverlay,
   type LodThresholds,
   type ModelPoint,
   type OverlayState,
@@ -723,6 +724,9 @@ function drawChartBorder(
 }
 
 /** Ghost lines are skipped once they would sit closer than this many pixels. */
+const SELECTION_FILL = 'rgba(34, 102, 204, 0.16)';
+const LASSO_PREVIEW_FILL = 'rgba(110, 110, 110, 0.28)';
+const LASSO_PREVIEW_STROKE = '#7d7873';
 const GHOST_MIN_LINE_SPACING = 8;
 const GHOST_MAJOR_WIDTH = 1;
 const WORKSPACE_EDGE_WIDTH = 1.5;
@@ -881,6 +885,82 @@ function subtractCellRect(from: CellRect, cut: CellRect): CellRect[] {
   ].filter((strip) => strip.width > 0 && strip.height > 0);
 }
 
+type CellRun = { readonly x: number; readonly y: number; readonly width: number };
+
+/** One rect per run, clipped to the visible bounds. */
+function fillCellRuns(
+  context: CanvasContextAdapter,
+  runs: readonly CellRun[],
+  viewport: Viewport,
+  bounds: Rect,
+  fillStyle: string
+): void {
+  if (runs.length === 0) return;
+  save(context);
+  context.fillStyle = fillStyle;
+  for (const run of runs) {
+    const topLeft = modelToScreen({ x: run.x, y: run.y }, viewport);
+    const bottomRight = modelToScreen({ x: run.x + run.width, y: run.y + 1 }, viewport);
+    const left = Math.max(topLeft.x, bounds.x);
+    const top = Math.max(topLeft.y, bounds.y);
+    const right = Math.min(bottomRight.x, bounds.x + bounds.width);
+    const bottom = Math.min(bottomRight.y, bounds.y + bounds.height);
+    if (right <= left || bottom <= top) continue;
+    context.fillRect(left, top, right - left, bottom - top);
+  }
+  restore(context);
+}
+
+/** Merges consecutive indices within a row into runs, offset into model space. */
+function indexRuns(indices: ArrayLike<number>, width: number, originX = 0, originY = 0): CellRun[] {
+  const runs: CellRun[] = [];
+  let last: { x: number; y: number; width: number } | undefined;
+  for (let position = 0; position < indices.length; position += 1) {
+    const index = indices[position];
+    const x = index % width;
+    const y = Math.floor(index / width);
+    if (last && last.y === y && last.x + last.width === x) last.width += 1;
+    else {
+      last = { x, y, width: 1 };
+      runs.push(last);
+    }
+  }
+  return originX === 0 && originY === 0 ? runs : runs.map((run) => ({ x: run.x + originX, y: run.y + originY, width: run.width }));
+}
+
+/** Runs of set cells in a row-major mask, relative to its rect; cached per set. */
+const canvasSelectionRuns = new WeakMap<CanvasCellSet, CellRun[]>();
+
+function canvasSetRuns(set: CanvasCellSet, cells: Uint8Array): CellRun[] {
+  const cached = canvasSelectionRuns.get(set);
+  if (cached) return cached;
+  const { width, height } = set.rect;
+  const runs: CellRun[] = [];
+  for (let y = 0; y < height; y += 1) {
+    let x = 0;
+    while (x < width) {
+      if (cells[y * width + x] !== 1) {
+        x += 1;
+        continue;
+      }
+      const startX = x;
+      while (x < width && cells[y * width + x] === 1) x += 1;
+      runs.push({ x: startX + set.rect.x, y: y + set.rect.y, width: x - startX });
+    }
+  }
+  canvasSelectionRuns.set(set, runs);
+  return runs;
+}
+
+function fillSelectionRect(context: CanvasContextAdapter, rect: CellRect, viewport: Viewport, bounds: Rect): void {
+  const screenRect = intersectRects(cellToScreenRect(rect, viewport), bounds);
+  if (!screenRect) return;
+  save(context);
+  context.fillStyle = SELECTION_FILL;
+  context.fillRect(screenRect.x, screenRect.y, screenRect.width, screenRect.height);
+  restore(context);
+}
+
 /** Boundaries of a sparse canvas selection, relative to its rect; cached per set. */
 const canvasSelectionBoundaries = new WeakMap<CanvasCellSet, SelectionBoundarySegment[]>();
 
@@ -921,9 +1001,11 @@ function drawCanvasEditing(
   if (!selection || selectionColor === undefined) return;
   const cells = selection.cells;
   if (cells === undefined) {
+    fillSelectionRect(context, selection.rect, viewport, screen);
     drawSelectionRect(context, selection.rect, viewport, style, screen, selectionColor, false);
     return;
   }
+  fillCellRuns(context, canvasSetRuns(selection, cells), viewport, screen, SELECTION_FILL);
   drawSparseSelectionBoundaries(
     context,
     canvasSetBoundaries(selection, cells),
@@ -1277,15 +1359,21 @@ function drawLassoPath(
   viewport: Viewport,
   style: RendererStyle,
   bounds: Rect,
-  color?: string
+  color?: string,
+  start?: ModelPoint,
+  closable?: boolean,
+  preview?: LassoPreviewOverlay,
+  anchors?: readonly ModelPoint[]
 ): void {
-  if (!points || points.length < 2) return;
+  const hasPath = points !== undefined && points.length >= 2;
+  if (!hasPath && !start) return;
   const chart = { x: 0, y: 0, width: document.width, height: document.height };
+  if (preview) drawLassoPreview(context, preview, document, viewport, style, bounds, chart);
   save(context);
   context.strokeStyle = color ?? style.selectionColor;
   context.lineWidth = style.overlayLineWidth;
   context.setLineDash?.([6, 4]);
-  for (let index = 0; index < points.length; index += 1) {
+  for (let index = 0; hasPath && index < points.length; index += 1) {
     const modelSegment = clipSegmentToRect(points[index], points[(index + 1) % points.length], chart);
     if (!modelSegment) continue;
     const screenSegment = clipSegmentToRect(
@@ -1297,6 +1385,50 @@ function drawLassoPath(
     linePath(context, screenSegment.start, screenSegment.end);
   }
   restore(context);
+  if (anchors && context.arc) {
+    save(context);
+    context.fillStyle = color ?? style.selectionColor;
+    for (let index = 1; index < anchors.length; index += 1) {
+      const center = modelToScreen(anchors[index], viewport);
+      if (center.x < bounds.x || center.x > bounds.x + bounds.width || center.y < bounds.y || center.y > bounds.y + bounds.height) continue;
+      context.beginPath();
+      context.arc(center.x, center.y, 3, 0, Math.PI * 2);
+      context.fill();
+    }
+    restore(context);
+  }
+  if (start) {
+    save(context);
+    context.strokeStyle = color ?? style.selectionColor;
+    drawLassoStartDot(context, modelToScreen(start, viewport), bounds, closable === true);
+    restore(context);
+  }
+}
+
+function drawLassoPreview(
+  context: CanvasContextAdapter,
+  preview: LassoPreviewOverlay,
+  document: PatternDocument,
+  viewport: Viewport,
+  style: RendererStyle,
+  bounds: Rect,
+  chart: Rect
+): void {
+  fillCellRuns(context, preview.runs, viewport, bounds, LASSO_PREVIEW_FILL);
+  drawSparseSelectionBoundaries(context, preview.boundaries, document, viewport, style, bounds, LASSO_PREVIEW_STROKE, 0, 0, chart);
+}
+
+function drawLassoStartDot(context: CanvasContextAdapter, center: ScreenPoint, bounds: Rect, closable: boolean): void {
+  if (!context.arc) return;
+  if (center.x < bounds.x || center.x > bounds.x + bounds.width || center.y < bounds.y || center.y > bounds.y + bounds.height) return;
+  const selection = context.strokeStyle;
+  context.setLineDash?.([]);
+  context.lineWidth = 2;
+  context.fillStyle = closable ? selection : '#fffdf9';
+  context.beginPath();
+  context.arc(center.x, center.y, closable ? 7 : 5, 0, Math.PI * 2);
+  context.fill();
+  context.stroke();
 }
 
 function drawSparseSelectionBoundaries(
@@ -1825,12 +1957,14 @@ function drawOverlay(
         ? selectionBoundarySegments(new Uint32Array(sparseIndices), document.width, document.height)
         : undefined);
     if (boundaries && boundaries.length > 0) {
+      if (sparseIndices) fillCellRuns(context, indexRuns(sparseIndices, document.width), viewport, bounds, SELECTION_FILL);
       drawSparseSelectionBoundaries(context, boundaries, document, viewport, style, bounds, overlay.color ?? sparse?.color);
     } else {
       const boundedSelection = intersectCellRects(selection, { x: 0, y: 0, width: document.width, height: document.height });
       const rect = boundedSelection.width > 0 && boundedSelection.height > 0
         ? intersectRects(cellToScreenRect(boundedSelection, viewport), bounds)
         : undefined;
+      if (rect) fillSelectionRect(context, boundedSelection, viewport, bounds);
       if (rect && context.strokeRect) context.strokeRect(rect.x, rect.y, rect.width, rect.height);
       else if (rect) {
         context.beginPath();
@@ -1846,7 +1980,7 @@ function drawOverlay(
   if (overlay.showSelection !== false) {
     const path = overlayLassoPoints(overlay.lassoPath);
     const pathValue = overlay.lassoPath && !Array.isArray(overlay.lassoPath) ? overlay.lassoPath as LassoPathOverlay : undefined;
-    drawLassoPath(context, path, document, viewport, style, bounds, overlay.color ?? pathValue?.color);
+    drawLassoPath(context, path, document, viewport, style, bounds, overlay.color ?? pathValue?.color, pathValue?.start, pathValue?.closable, pathValue?.preview, pathValue?.anchors);
   }
   const cursor = overlayPoint(overlay.cursor);
   if (cursor && overlay.showCursor !== false) {

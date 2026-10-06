@@ -193,6 +193,21 @@ export interface SelectionBoundarySegment {
 export interface LassoPathOverlay {
   readonly points: readonly ModelPoint[];
   readonly color?: string;
+  /** The open lasso's first vertex: the dot a click closes the lasso on. */
+  readonly start?: ModelPoint;
+  /** The pointer is on the start dot, where a click ends the lasso: closing it, or cancelling it with fewer than three distinct vertices. */
+  readonly closable?: boolean;
+  /** Each point the user placed: the press that began every click or drag, in order. */
+  readonly anchors?: readonly ModelPoint[];
+  /** Cells the open lasso would capture if it closed now, in model space; drawn grey until it closes. */
+  readonly preview?: LassoPreviewOverlay;
+}
+
+export interface LassoPreviewOverlay {
+  /** Horizontal runs of captured cells, one per row segment. */
+  readonly runs: readonly { readonly x: number; readonly y: number; readonly width: number }[];
+  /** Outline of the captured cells. */
+  readonly boundaries: readonly SelectionBoundarySegment[];
 }
 
 export interface CursorOverlay {
@@ -223,8 +238,6 @@ export interface OverlayState {
   readonly floatingPaste?: FloatingPasteOverlay | null;
   /** Backstitches an uncommitted specialty-layer erase gesture would remove. */
   readonly pendingBackstitchRemovals?: readonly PendingBackstitchRemoval[];
-  /** A touch-only request for the UI to offer Copy for the active selection. */
-  readonly touchCopyRequest?: TouchCopyRequest | null;
   readonly color?: string;
   readonly showCursor?: boolean;
   readonly showSelection?: boolean;
@@ -304,22 +317,6 @@ export interface FloatingPasteSelectionOverlay {
   readonly rect: CellRect;
   /** Sparse boundaries are normalized to the copy rectangle's top-left. */
   readonly boundaries?: readonly SelectionBoundarySegment[];
-}
-
-export interface TouchCopyRequest {
-  readonly cell: ModelPoint;
-  readonly selection: GridRect;
-  readonly screenX: number;
-  readonly screenY: number;
-  /** The pointer type of the tap that opened the request; the UI guards touch-opened menus against synthetic clicks. */
-  readonly pointerType?: string;
-  /**
-   * True when the request is for a canvas selection (Canvas layer): the UI
-   * offers Add/Delete (`applyCanvasSelection`) instead of Copy/Paste/Move/Delete.
-   * `selection` is then the canvas selection's rect, which may lie partly
-   * outside the canvas.
-   */
-  readonly canvas?: boolean;
 }
 
 export type InvalidationLayer = 'base' | 'overlay' | 'all';
@@ -441,6 +438,7 @@ export interface CanvasContextAdapter {
   closePath?(): void;
   moveTo(x: number, y: number): void;
   lineTo(x: number, y: number): void;
+  arc?(x: number, y: number, radius: number, startAngle: number, endAngle: number): void;
   fill(path?: unknown): void;
   stroke(path?: unknown): void;
   fillText?(text: string, x: number, y: number): void;
@@ -686,13 +684,9 @@ export interface SelectToolState {
   readonly shape?: SelectShape;
 }
 
-/** Freehand traces the drag; polygon joins clicked vertices with straight edges. */
-export type LassoShape = 'freehand' | 'polygon';
-
+/** Clicks add straight-edged vertices and drags trace freehand, in one path closed on its start. */
 export interface LassoToolState {
   readonly tool: 'lasso';
-  /** Undefined means `'freehand'`. */
-  readonly shape?: LassoShape;
 }
 
 export interface FillToolState {

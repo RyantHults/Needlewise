@@ -1186,7 +1186,7 @@ describe('typed-array pattern document', () => {
     expect(editor.undoDepth).toBe(0);
 
     editor.execute({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 4 }, color: 1 });
-    expect(() => editor.execute({ type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 0, y: 0 }, color: 2 })).toThrow();
+    expect(() => editor.execute({ type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 0, y: 0 }, color: 1 })).toThrow();
     expect(editor.document.backstitches.ids).toHaveLength(1);
     expect(editor.document.revision).toBe(1);
   });
@@ -2102,7 +2102,7 @@ describe('typed-array pattern document', () => {
     pattern = apply(pattern, { type: 'set-full', x: 2, y: 1, color: 2 });
     pattern = apply(pattern, { type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 8, y: 4 }, color: 1 });
     pattern = apply(pattern, { type: 'set-backstitch-completion', id: 1, completed: true });
-    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 4 }, end: { x: 8, y: 4 }, color: 2 });
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 4 }, end: { x: 8, y: 8 }, color: 2 });
     pattern = apply(pattern, { type: 'set-backstitch-completion', id: 2, completed: true });
     const nextId = pattern.nextBackstitchId;
     const editor = createEditor(pattern);
@@ -2115,12 +2115,12 @@ describe('typed-array pattern document', () => {
     expect(editor.document.nextBackstitchId).toBe(nextId);
     expect(listBackstitches(editor.document)).toMatchObject([
       { id: 1, x1: 16, y1: 4, x2: 20, y2: 4, color: 1, completed: true },
-      { id: 2, x1: 0, y1: 4, x2: 8, y2: 4, color: 2, completed: true }
+      { id: 2, x1: 0, y1: 4, x2: 8, y2: 8, color: 2, completed: true }
     ]);
     editor.undo();
     expect(listBackstitches(editor.document)).toMatchObject([
       { id: 1, x1: 4, y1: 4, x2: 8, y2: 4, color: 1, completed: true },
-      { id: 2, x1: 0, y1: 4, x2: 8, y2: 4, color: 2, completed: true }
+      { id: 2, x1: 0, y1: 4, x2: 8, y2: 8, color: 2, completed: true }
     ]);
     editor.redo();
     expect(listBackstitches(editor.document)[0]).toMatchObject({ id: 1, x1: 16, x2: 20, completed: true });
@@ -2367,7 +2367,7 @@ describe('typed-array pattern document', () => {
     editor.execute({ type: 'set-quarter', x: 2, y: 2, corner: QuarterCorner.SE, color: 2 });
     editor.execute({ type: 'set-completion', x: 2, y: 2, corner: QuarterCorner.SE, completed: true });
     editor.execute({ type: 'set-full', x: 4, y: 3, color: 3 });
-    editor.execute({ type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 12, y: 12 }, color: 1 });
+    editor.execute({ type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 12, y: 8 }, color: 1 });
     editor.execute({ type: 'add-backstitch', start: { x: 0, y: 4 }, end: { x: 12, y: 12 }, color: 2 });
     editor.execute({ type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 16, y: 12 }, color: 3 });
     editor.clearHistory();
@@ -2418,7 +2418,7 @@ describe('typed-array pattern document', () => {
     pattern = apply(pattern, { type: 'set-half', x: 2, y: 0, direction: HalfDirection.Slash, color: 1 });
     pattern = apply(pattern, { type: 'set-quarter', x: 1, y: 1, corner: QuarterCorner.NE, color: 1 });
     pattern = apply(pattern, { type: 'set-quarter', x: 1, y: 1, corner: QuarterCorner.SW, color: 1, completed: true });
-    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 4, y: 0 }, end: { x: 12, y: 8 }, color: 1 });
+    pattern = apply(pattern, { type: 'add-backstitch', start: { x: 4, y: 0 }, end: { x: 12, y: 4 }, color: 1 });
     pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 });
     const editor = createEditor(pattern);
     const before = editor.document;

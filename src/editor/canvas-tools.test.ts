@@ -360,6 +360,33 @@ describe('canvas editing in the controller', () => {
     controller.dispose();
   });
 
+  it('keeps the canvas selection on a click, and a bare click selects nothing', () => {
+    const { controller, uiStore } = fixture();
+    controller.setCanvasCropActive(true);
+    controller.setCanvasMode('advanced');
+    controller.setTool({ tool: 'select' });
+    controller.handlePointerDown(at(uiStore, 1, 6, 6));
+    controller.handlePointerUp(at(uiStore, 1, 6, 6));
+    expect(controller.getCanvasSelection()).toBeUndefined();
+    expect(uiStore.getState().overlay.canvasEditing?.selection).toBeFalsy();
+
+    controller.handlePointerDown(at(uiStore, 2, 1, 1));
+    controller.handlePointerMove(at(uiStore, 2, 3, 3));
+    controller.handlePointerUp(at(uiStore, 2, 3, 3));
+    const selection = controller.getCanvasSelection();
+    expect(selection).toEqual({ rect: { x: 1, y: 1, width: 3, height: 3 } });
+    controller.handlePointerDown(at(uiStore, 3, 6, 6));
+    controller.handlePointerUp(at(uiStore, 3, 6, 6));
+    expect(controller.getCanvasSelection()).toBe(selection);
+    expect(uiStore.getState().overlay.canvasEditing?.selection).toBe(selection);
+
+    controller.setTool({ tool: 'select', shape: 'oval' });
+    controller.handlePointerDown(at(uiStore, 4, -1, -1));
+    controller.handlePointerUp(at(uiStore, 4, -1, -1));
+    expect(controller.getCanvasSelection()).toBe(selection);
+    controller.dispose();
+  });
+
   it('leaves crop mode on Escape only when nothing is in progress', () => {
     const { controller, uiStore } = fixture();
     const escape = () => controller.handleKeyDown({ key: 'Escape', preventDefault: () => undefined });
@@ -567,7 +594,7 @@ describe('canvas editing in the controller', () => {
     controller.dispose();
   });
 
-  it('offers Add/Delete through a canvas touch-copy request when the selection is tapped', () => {
+  it('treats a press inside the canvas selection as a normal Select press', () => {
     const { controller, uiStore } = fixture();
     controller.setCanvasMode('advanced');
     controller.setCanvasCropActive(true);
@@ -575,9 +602,17 @@ describe('canvas editing in the controller', () => {
     controller.handlePointerDown(at(uiStore, 1, -2, 0));
     controller.handlePointerMove(at(uiStore, 1, 0, 1));
     controller.handlePointerUp(at(uiStore, 1, 0, 1));
+    const selection = controller.getCanvasSelection();
+    expect(selection).toEqual({ rect: { x: -2, y: 0, width: 3, height: 2 } });
+    // A click inside keeps the selection.
     controller.handlePointerDown(at(uiStore, 2, -1, 1));
     controller.handlePointerUp(at(uiStore, 2, -1, 1));
-    expect(uiStore.getState().overlay.touchCopyRequest).toMatchObject({ canvas: true, pointerType: 'mouse', selection: { x: -2, y: 0, width: 3, height: 2 }, cell: { x: -1, y: 1 } });
+    expect(controller.getCanvasSelection()).toBe(selection);
+    // A drag from inside replaces it.
+    controller.handlePointerDown(at(uiStore, 3, -1, 1));
+    controller.handlePointerMove(at(uiStore, 3, 2, 3));
+    controller.handlePointerUp(at(uiStore, 3, 2, 3));
+    expect(controller.getCanvasSelection()).toEqual({ rect: { x: -1, y: 1, width: 4, height: 3 } });
     controller.handleKeyDown({ key: 'Escape', preventDefault: () => undefined });
     expect(controller.getCanvasSelection()).toBeUndefined();
     controller.dispose();

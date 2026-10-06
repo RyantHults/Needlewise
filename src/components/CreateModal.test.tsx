@@ -418,6 +418,47 @@ describe('CreateModal image lifecycle', () => {
     expect(screen.getByLabelText('Color budget count')).toHaveValue('24');
   });
 
+  describe('background swatch canvas color', () => {
+    async function setup() {
+      const colors = ['#ff0000', '#0000ff'];
+      conversion.convert.mockResolvedValue({ draft: { stats: { sourceWidth: 2, sourceHeight: 1 }, document: { width: 2, height: 1, palette: ['red', 'blue'].map((id, index) => ({ id: index + 1, name: id, color: colors[index], active: true, symbol: `S${index + 1}`, catalog: { catalogId: 'dmc', sourceId: id, code: id, name: id, hex: colors[index], rgb: [0, 0, 0] } })), colors: new Uint16Array(4) } } });
+      render(<ControlledModal />);
+      fireEvent.change(screen.getByLabelText(/Choose a PNG/), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } });
+      act(() => { images[0].onload?.(); });
+      act(() => { vi.advanceTimersByTime(300); });
+      await vi.waitFor(() => screen.getByRole('button', { name: 'Use red as background' }));
+    }
+    const hex = () => screen.getByLabelText('HEX Code');
+    const picker = () => screen.getByLabelText('Background color', { selector: 'input' });
+
+    it('sets the canvas color from the chosen swatch, follows switches, and restores it when cleared', async () => {
+      await setup();
+      fireEvent.click(screen.getByRole('button', { name: 'Use red as background' }));
+      expect(hex()).toHaveValue('#FF0000');
+      expect(picker()).toHaveValue('#ff0000');
+      fireEvent.click(await vi.waitFor(() => screen.getByRole('button', { name: 'Use blue as background' })));
+      expect(hex()).toHaveValue('#0000FF');
+      fireEvent.click(await vi.waitFor(() => screen.getByRole('button', { name: 'Clear background selection' })));
+      expect(hex()).toHaveValue('#F3EEE5');
+      expect(picker()).toHaveValue('#f3eee5');
+    });
+
+    it('restores the canvas color when the selected swatch is toggled off', async () => {
+      await setup();
+      fireEvent.click(screen.getByRole('button', { name: 'Use red as background' }));
+      fireEvent.click(await vi.waitFor(() => screen.getByRole('button', { name: 'Use red as background' })));
+      expect(hex()).toHaveValue('#F3EEE5');
+    });
+
+    it('keeps a manually edited canvas color when the selection is cleared', async () => {
+      await setup();
+      fireEvent.click(screen.getByRole('button', { name: 'Use red as background' }));
+      fireEvent.change(hex(), { target: { value: '#123456' } });
+      fireEvent.click(await vi.waitFor(() => screen.getByRole('button', { name: 'Clear background selection' })));
+      expect(hex()).toHaveValue('#123456');
+    });
+  });
+
   it('steps the color budget down and up through debounced conversions', async () => {
     render(<ControlledModal />);
     fireEvent.change(screen.getByLabelText(/Choose a PNG/), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } });

@@ -449,7 +449,7 @@ describe('layered editor controller', () => {
 
     boundary.setActiveLayer(2);
     expect(controller.pasteSelection()).toBe(true);
-    controller.handlePointerDown(at(1, 6, 6));
+    controller.confirmFloatingPaste();
 
     const created = boundary.layeredDocument.layers.find((layer) => layer.id === 3);
     expect(created?.type).toBe(LayerType.Stitch);
@@ -473,7 +473,7 @@ describe('layered editor controller', () => {
     boundary.setActiveLayer(2);
 
     controller.pasteSelection();
-    controller.handlePointerDown(at(1, 6, 6));
+    controller.confirmFloatingPaste();
     expect(boundary.log).toHaveLength(0);
     expect(notices).toEqual(['Show a layer to paste.']);
     controller.dispose();
@@ -482,9 +482,9 @@ describe('layered editor controller', () => {
   it('erases only the touched backstitches of the selected specialty layer in one batch', () => {
     const document = layeredDocument();
     seed(document, 2, backstitch(4, 4, 8, 8));
-    seed(document, 2, backstitch(4, 4, 4, 12));
+    seed(document, 2, backstitch(4, 4, 4, 8));
     seed(document, 2, backstitch(0, 0, 4, 4));
-    seed(document, 2, backstitch(20, 20, 28, 20));
+    seed(document, 2, backstitch(20, 20, 24, 20));
     const other = addLayer(document, LayerType.Specialty);
     seed(document, other, backstitch(4, 4, 8, 8));
     const { boundary, controller, uiStore } = fixture(document, 2);
@@ -656,7 +656,8 @@ describe('layered editor controller', () => {
     expect(controller.getSelectedBackstitchId()).toBeUndefined();
     controller.handlePointerUp({ ...at(1, 1, 3), screenX: 32, screenY: 64 });
     const layer = findLayer(boundary.layeredDocument, 2)!;
-    expect(layer.type === LayerType.Specialty && layer.backstitches.ids.length).toBe(2);
+    // Both lines span two cells, so each is stored as two one-cell records.
+    expect(layer.type === LayerType.Specialty && layer.backstitches.ids.length).toBe(4);
     // The press lands on the existing stitch at (2, 2) and still starts a new one there.
     expect(boundary.log.at(-1)).toMatchObject({ type: 'add-backstitch', start: { x: 8, y: 8 }, end: { x: 8, y: 16 } });
     controller.dispose();
@@ -679,14 +680,14 @@ describe('layered editor controller', () => {
     { pointerType: 'touch' as const, jitter: 7 }
   ])('selects without moving on a Move-mode tap ($pointerType, $jitter px jitter)', ({ pointerType, jitter }) => {
     const document = layeredDocument();
-    seed(document, 2, backstitch(4, 8, 12, 8));
+    seed(document, 2, backstitch(8, 8, 12, 8));
     const { boundary, controller, uiStore } = fixture(document, 2);
     controller.setBackstitchMode('move');
     // Pressed beside the end corner (3, 2), well inside its snap range.
     const press = { ...at(1, 0, 0), pointerType, screenX: 46, screenY: 32 };
     controller.handlePointerDown(press);
     controller.handlePointerMove({ ...press, screenY: press.screenY + jitter });
-    expect(uiStore.getState().overlay.backstitchPreview).toMatchObject({ start: { x: 4, y: 8 }, end: { x: 12, y: 8 } });
+    expect(uiStore.getState().overlay.backstitchPreview).toMatchObject({ start: { x: 8, y: 8 }, end: { x: 12, y: 8 } });
     controller.handlePointerUp({ ...press, screenY: press.screenY + jitter });
     expect(controller.getSelectedBackstitchId()).toBeDefined();
     expect(boundary.log).toEqual([]);
@@ -697,27 +698,27 @@ describe('layered editor controller', () => {
 
   it('moves the endpoint once a touch drag passes the slop', () => {
     const document = layeredDocument();
-    seed(document, 2, backstitch(4, 8, 12, 8));
+    seed(document, 2, backstitch(8, 8, 12, 8));
     const { boundary, controller } = fixture(document, 2);
     controller.setBackstitchMode('move');
     const press = { ...at(1, 0, 0), pointerType: 'touch' as const, screenX: 48, screenY: 32 };
     controller.handlePointerDown(press);
     controller.handlePointerMove({ ...press, screenY: 41 });
     controller.handlePointerUp({ ...press, screenY: 41 });
-    expect(boundary.log.at(-1)).toMatchObject({ type: 'move-backstitch', start: { x: 4, y: 8 }, end: { x: 12, y: 10 } });
+    expect(boundary.log.at(-1)).toMatchObject({ type: 'move-backstitch', start: { x: 8, y: 8 }, end: { x: 12, y: 10 } });
     controller.dispose();
   });
 
   it('moves a backstitch endpoint onto a cell-edge midpoint', () => {
     const document = layeredDocument();
-    seed(document, 2, backstitch(4, 8, 12, 8));
+    seed(document, 2, backstitch(8, 8, 12, 8));
     const { boundary, controller } = fixture(document, 2);
     controller.setBackstitchMode('move');
     controller.handlePointerDown({ ...at(1, 0, 0), screenX: 48, screenY: 32 });
     // (3, 2.5) is the midpoint of a vertical edge.
     controller.handlePointerMove({ ...at(1, 0, 0), screenX: 48, screenY: 40 });
     controller.handlePointerUp({ ...at(1, 0, 0), screenX: 48, screenY: 40 });
-    expect(boundary.log.at(-1)).toMatchObject({ type: 'move-backstitch', start: { x: 4, y: 8 }, end: { x: 12, y: 10 } });
+    expect(boundary.log.at(-1)).toMatchObject({ type: 'move-backstitch', start: { x: 8, y: 8 }, end: { x: 12, y: 10 } });
     const layer = findLayer(boundary.layeredDocument, 2)!;
     expect(layer.type === LayerType.Specialty && [layer.backstitches.x2[0], layer.backstitches.y2[0]]).toEqual([12, 10]);
     controller.dispose();
@@ -725,7 +726,7 @@ describe('layered editor controller', () => {
 
   it('only picks up backstitches in move mode, and a miss draws nothing and clears the selection', () => {
     const document = layeredDocument();
-    seed(document, 2, backstitch(4, 8, 12, 8));
+    seed(document, 2, backstitch(4, 8, 8, 8));
     const { boundary, controller, uiStore } = fixture(document, 2);
     expect(controller.setBackstitchMode('move')).toBe(true);
     expect(uiStore.getState().tool).toEqual({ tool: 'backstitch', mode: 'move' });
