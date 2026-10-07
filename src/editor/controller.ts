@@ -2510,8 +2510,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.uiStore.pulsePick(paletteId);
     const layer = this.gateway.getSnapshot().activeLayer ?? null;
     const paint: EditorToolState = { tool: 'paint', brush: { kind: 'full', paletteId } };
-    if (this.toolAvailable(paint, layer).enabled) this.setTool(paint);
-    else if (layer?.kind === 'specialty' && this.toolAvailable({ tool: 'backstitch' }, layer).enabled) this.setTool({ tool: 'backstitch' });
+    if (this.toolAvailable(paint, layer).enabled) {
+      this.setTool(paint);
+    } else if (layer?.kind === 'specialty' && this.toolAvailable({ tool: 'backstitch' }, layer).enabled) {
+      this.setTool({ tool: 'backstitch' });
+    } else {
+      this.uiStore.setBrush({ kind: 'full', paletteId });
+    }
   }
 
   private activateSampledColor(rgb: TraceRgb): boolean {
@@ -2768,21 +2773,21 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   private setPaletteSelection(paletteId: number): void {
     const state = this.uiStore.getState();
-    if (state.tool.tool !== 'paint') {
-      this.uiStore.setPaletteId(paletteId);
-      return;
-    }
-    const brush = state.tool.brush;
-    const nextBrush: StitchBrush = brush === undefined
-      ? { kind: 'full', paletteId }
-      : brush.kind === 'full'
+    if (state.tool.tool === 'paint') {
+      const brush = state.tool.brush;
+      const nextBrush: StitchBrush = brush === undefined
         ? { kind: 'full', paletteId }
-        : brush.kind === 'half'
-          ? { kind: 'half', ...(brush.direction === undefined ? {} : { direction: brush.direction }), paletteId }
-          : brush.kind === 'three-quarter'
-            ? { kind: 'three-quarter', paletteId }
-            : { kind: 'quarter', corner: brush.corner, paletteId };
-    this.uiStore.setState({ paletteId, tool: { tool: 'paint', brush: nextBrush } });
+        : brush.kind === 'full'
+          ? { kind: 'full', paletteId }
+          : brush.kind === 'half'
+            ? { kind: 'half', ...(brush.direction === undefined ? {} : { direction: brush.direction }), paletteId }
+            : brush.kind === 'three-quarter'
+              ? { kind: 'three-quarter', paletteId }
+              : { kind: 'quarter', corner: brush.corner, paletteId };
+      this.uiStore.setState({ paletteId, tool: { tool: 'paint', brush: nextBrush } });
+    } else {
+      this.uiStore.setState({ paletteId });
+    }
   }
 
   handlePointerDown(sample: PointerSample): boolean {
