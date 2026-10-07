@@ -310,6 +310,22 @@ interface SparseSelection {
 
 type FinalizedSelection = RectangularSelection | SparseSelection;
 
+/** The selection state an undo or redo step restores, with the canvas origin its canvas cells are local to. */
+interface SelectionSnapshot {
+  readonly selection: FinalizedSelection | undefined;
+  readonly selectionAnchor: ModelPoint | undefined;
+  readonly canvasSelection: CanvasCellSet | undefined;
+  readonly canvasOriginX: number;
+  readonly canvasOriginY: number;
+}
+
+/** One step of the editor's undo timeline: a selection change, or a document step with the selection around it. */
+interface TimelineEntry {
+  readonly kind: 'selection' | 'document';
+  readonly before: SelectionSnapshot;
+  readonly after: SelectionSnapshot;
+}
+
 interface BackstitchGesture {
   readonly kind: 'backstitch';
   readonly pointerId: number;
@@ -450,6 +466,8 @@ const LASSO_TAP_SLOP_PIXELS = 4;
 /** A Move-mode press on a backstitch only selects it until the pointer travels this far. */
 const BACKSTITCH_MOVE_SLOP_PIXELS = 4;
 const BACKSTITCH_MOVE_TOUCH_SLOP_PIXELS = 8;
+/** The undo and redo timelines each keep at most this many steps, dropping the oldest. */
+const TIMELINE_LIMIT = 200;
 /** Maximum timestamp span permitted for a stationary multi-touch history tap. */
 export const TOUCH_HISTORY_TAP_MAX_DURATION_MS = 350;
 
@@ -1272,6 +1290,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   /** The canvas origin the view was last framed for, so an origin change can shift the view. */
   private canvasFrame: { readonly projectId: string | null; readonly originX: number; readonly originY: number } | undefined;
   private canvasOriginChangeCallback: CanvasOriginChangeCallback | undefined;
+  /** Selection and document steps in the order the user made them; it lives only as long as the project is open. */
+  private undoTimeline: TimelineEntry[] = [];
+  private redoTimeline: TimelineEntry[] = [];
+  /** Set while `historyAction` replays a step, so the replay records nothing. */
+  private replayingHistory = false;
+  /** Set when a selection step ended a redo timeline holding document steps the gateway can still redo. */
+  private gatewayRedoStale = false;
 
   constructor(options: EditorSurfaceControllerOptions) {
     this.gateway = options.gateway;
@@ -1444,19 +1469,83 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   setSelection(start: ModelPoint, end = start): GridRect | undefined {
     const document = this.gateway.getSnapshot().document;
     if (!document || !isFiniteModelPoint(start) || !isFiniteModelPoint(end)) return undefined;
+    const before = this.selectionSnapshot();
     const rect = boundedGridRect(normalizeGridRect(start, end), document);
     this.selection = rect ? { kind: 'rect', rect, documentWidth: document.width, documentHeight: document.height } : undefined;
     this.selectionAnchor = rect ? { x: rect.x, y: rect.y } : undefined;
     this.publishSelectionOverlay();
+    this.recordSelectionChange(before);
     return rect;
   }
 
   /** Clear the stitch selection and any canvas selection, so Select and Lasso clear on every layer. */
   clearSelection(): void {
+    const before = this.selectionSnapshot();
+    this.discardSelection();
+    this.recordSelectionChange(before);
+  }
+
+  private discardSelection(): void {
     this.selection = undefined;
     this.selectionAnchor = undefined;
     this.publishSelectionOverlay();
     if (this.canvasSelection) this.clearCanvasSelection();
+  }
+
+  /** The selection state now, with the canvas origin its canvas cells are local to. */
+  private selectionSnapshot(): SelectionSnapshot {
+    const document = this.gateway.getSnapshot().document;
+    return {
+      selection: this.selection,
+      selectionAnchor: this.selectionAnchor,
+      canvasSelection: this.canvasSelection,
+      canvasOriginX: this.canvasFrame?.originX ?? document?.originX ?? 0,
+      canvasOriginY: this.canvasFrame?.originY ?? document?.originY ?? 0
+    };
+  }
+
+  /** Restore a timeline snapshot, dropping a stitch selection the document no longer fits and moving canvas cells to the current origin. */
+  private restoreSelectionSnapshot(snapshot: SelectionSnapshot): void {
+    const current = this.selectionSnapshot();
+    const fits = selectionMatchesDocument(snapshot.selection, this.gateway.getSnapshot().document);
+    this.selection = fits ? snapshot.selection : undefined;
+    this.selectionAnchor = fits ? snapshot.selectionAnchor : undefined;
+    const dx = snapshot.canvasOriginX - current.canvasOriginX;
+    const dy = snapshot.canvasOriginY - current.canvasOriginY;
+    this.canvasSelection = snapshot.canvasSelection && (dx !== 0 || dy !== 0)
+      ? shiftCanvasCellSet(snapshot.canvasSelection, dx, dy)
+      : snapshot.canvasSelection;
+    this.publishSelectionOverlay();
+    this.publishCanvasOverlay();
+  }
+
+  /** Push a selection step when the selection changed since `before`; a new step ends the redo timeline. */
+  private recordSelectionChange(before: SelectionSnapshot): void {
+    if (this.replayingHistory) return;
+    const after = this.selectionSnapshot();
+    if (after.selection === before.selection && after.selectionAnchor === before.selectionAnchor && after.canvasSelection === before.canvasSelection) return;
+    this.pushTimeline(this.undoTimeline, { kind: 'selection', before, after });
+    if (this.redoTimeline.some((entry) => entry.kind === 'document')) this.gatewayRedoStale = true;
+    this.redoTimeline = [];
+  }
+
+  /** Push a document step, with the selection before it and as it stands now; a new step ends the redo timeline. */
+  private recordDocumentChange(before: SelectionSnapshot): void {
+    if (this.replayingHistory) return;
+    this.pushTimeline(this.undoTimeline, { kind: 'document', before, after: this.selectionSnapshot() });
+    this.redoTimeline = [];
+    this.gatewayRedoStale = false;
+  }
+
+  /** Take a selection the last document step cleared into that step, so one undo restores both. */
+  private amendDocumentStep(): void {
+    const last = this.undoTimeline.at(-1);
+    if (last?.kind === 'document') this.undoTimeline[this.undoTimeline.length - 1] = { ...last, after: this.selectionSnapshot() };
+  }
+
+  private pushTimeline(timeline: TimelineEntry[], entry: TimelineEntry): void {
+    timeline.push(entry);
+    if (timeline.length > TIMELINE_LIMIT) timeline.shift();
   }
 
   private reconcileSelectionDimensions(document: PatternDocument | null): void {
@@ -1702,7 +1791,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.publishFloatingPasteOverlay();
       this.projectCommandResult(result, undefined, floating.mode === 'move'
         ? `Moved ${String(floating.fragment.width)}×${String(floating.fragment.height)} cells`
-        : `Pasted ${String(floating.fragment.width)}×${String(floating.fragment.height)} cells`);
+        : `Pasted ${String(floating.fragment.width)}×${String(floating.fragment.height)} cells`, this.floatingSelectionSnapshot(floating));
       this.publishSelectionOverlay();
       return true;
     } catch (error) {
@@ -1767,7 +1856,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.selection = undefined;
       this.selectionAnchor = undefined;
       this.publishFloatingPasteOverlay();
-      this.projectCommandResult(outcome.result, undefined, `Pasted ${String(floating.fragment.width)}×${String(floating.fragment.height)} cells`);
+      this.projectCommandResult(outcome.result, undefined, `Pasted ${String(floating.fragment.width)}×${String(floating.fragment.height)} cells`, this.floatingSelectionSnapshot(floating));
       this.publishSelectionOverlay();
       const message = outcome.message ?? destination.message;
       if (message) this.notify(message);
@@ -1851,7 +1940,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     );
     const after = this.editSurfaceOf(this.gateway.getSnapshot());
     if (result && selectedBackstitchId !== undefined && after && !after.backstitches.ids.some((id) => id === selectedBackstitchId)) this.resetBackstitchState();
-    this.clearSelection();
+    if (result) {
+      // The delete step clears the selection, so one undo restores both.
+      this.discardSelection();
+      this.amendDocumentStep();
+    } else this.clearSelection();
     return result;
   }
 
@@ -1941,10 +2034,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const token: EditorRevisionToken = { projectId: snapshot.projectId, revision: snapshot.revision };
     const count = canvasCellSetSize(selection);
     const command = { ...canvasCellsCommand(operation, selection.rect, selection.cells), expectedRevision: snapshot.revision };
+    const before = this.selectionSnapshot();
     const result = this.executeCanvasCommand(command, `${operation === 'add' ? 'Added' : 'Deleted'} ${String(count)} canvas cell${count === 1 ? '' : 's'}`, token);
     if (!result) return false;
     this.discardCanvasSelection();
     this.publishCanvasOverlay();
+    if (result.changed) this.amendDocumentStep();
+    else this.recordSelectionChange(before);
     return result.changed;
   }
 
@@ -2268,6 +2364,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   /** Combine the lasso's cells with the current canvas selection by its operation. */
   private finishCanvasLasso(gesture: { readonly workspace: CellRect; readonly operation: LassoSelectionOperation; readonly captured: Uint32Array }): void {
     const { workspace, captured } = gesture;
+    const before = this.selectionSnapshot();
     const current = this.canvasSelection;
     let indices: Iterable<number> = captured;
     if (gesture.operation !== 'replace' && current) {
@@ -2283,6 +2380,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     this.canvasSelection = canvasCellSet(indices, workspace);
     this.publishCanvasOverlay();
+    this.recordSelectionChange(before);
   }
 
   handleFocus(): void {
@@ -3040,6 +3138,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       // A click keeps the earlier selection; only a drag replaces it.
       if (gesture.anchor.x === gesture.current.x && gesture.anchor.y === gesture.current.y) this.canvasSelection = gesture.previousSelection;
       this.publishCanvasOverlay();
+      this.recordSelectionChange({ ...this.selectionSnapshot(), canvasSelection: gesture.previousSelection });
     } else if (gesture.kind === 'lasso-stroke') {
       this.finishLassoStroke(gesture, sample);
     } else if (gesture.kind === 'selection') {
@@ -3053,6 +3152,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         this.selectionAnchor = gesture.previousSelectionAnchor;
       }
       this.publishSelectionOverlay();
+      this.recordSelectionChange({ ...this.selectionSnapshot(), selection: gesture.previousSelection, selectionAnchor: gesture.previousSelectionAnchor });
     } else if (gesture.kind === 'backstitch') {
       const document = this.gateway.getSnapshot().document;
       if (document && isFiniteViewport(this.uiStore.getState().viewport)) this.followBackstitchPointer(gesture, sample, document);
@@ -3593,6 +3693,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const document = snapshot.document;
     if (!document) return;
     const { captured } = gesture;
+    const before = this.selectionSnapshot();
     const current = finalizedSelectionIndices(this.selection, document) ?? new Uint32Array();
     let next: Uint32Array;
     if (gesture.operation === 'replace') {
@@ -3616,6 +3717,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       : undefined;
     this.selectionAnchor = undefined;
     this.publishSelectionOverlay();
+    this.recordSelectionChange(before);
   }
 
   private paintCorner(sample: PointerSample): QuarterCorner | undefined {
@@ -3948,6 +4050,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     this.publishFloatingPasteOverlay();
     if (floating) this.publishSelectionOverlay();
+  }
+
+  /** The selection a floating move or paste replaced, which undoing its commit brings back. */
+  private floatingSelectionSnapshot(floating: FloatingPasteState): SelectionSnapshot {
+    return { ...this.selectionSnapshot(), selection: floating.previousSelection, selectionAnchor: floating.previousSelectionAnchor };
   }
 
   /**
@@ -4483,24 +4590,53 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
   }
 
+  /**
+   * Step the timeline: a selection step restores its selection, and a
+   * document step, or any step before the timeline began, is the gateway's
+   * undo or redo with the selection around it.
+   */
   private historyAction(action: 'undo' | 'redo'): void {
     if (this.floatingPaste) this.discardFloatingPaste();
+    const undo = action === 'undo';
+    const from = undo ? this.undoTimeline : this.redoTimeline;
+    const to = undo ? this.redoTimeline : this.undoTimeline;
+    const entry = from.at(-1);
+    if (entry?.kind === 'selection') {
+      from.pop();
+      this.restoreSelectionSnapshot(undo ? entry.before : entry.after);
+      this.pushTimeline(to, entry);
+      this.setStatus(undo ? 'Undid selection' : 'Redid selection');
+      return;
+    }
+    if (!undo && !entry && this.gatewayRedoStale) {
+      this.setStatus('No change');
+      return;
+    }
     const snapshot = this.gateway.getSnapshot();
     if (!snapshot.projectId || snapshot.revision === null) return;
     const token: EditorRevisionToken = { projectId: snapshot.projectId, revision: snapshot.revision };
     try {
       this.commandInFlight = true;
-      const result = action === 'undo' ? this.gateway.undo(token) : this.gateway.redo(token);
+      this.replayingHistory = true;
+      const result = undo ? this.gateway.undo(token) : this.gateway.redo(token);
       this.commandInFlight = false;
-      this.projectCommandResult(result, undefined, action === 'undo' ? 'Undid action' : 'Redid action');
+      this.projectCommandResult(result, undefined, undo ? 'Undid action' : 'Redid action');
+      if (entry) from.pop();
+      if (!result.changed) return;
+      if (entry) this.restoreSelectionSnapshot(undo ? entry.before : entry.after);
+      const current = this.selectionSnapshot();
+      this.pushTimeline(to, entry ?? { kind: 'document', before: current, after: current });
     } catch (error) {
       this.commandInFlight = false;
       if (error instanceof StaleEditorTransactionError) this.setStatus('Action cancelled: project changed');
       else throw error;
+    } finally {
+      this.replayingHistory = false;
     }
   }
 
-  private projectCommandResult(result: CommandResult, requestedIndices: Uint32Array | undefined, status: string): void {
+  /** Project a command's result; a changed document is a timeline step, from the selection `before` it. */
+  private projectCommandResult(result: CommandResult, requestedIndices: Uint32Array | undefined, status: string, before = this.selectionSnapshot()): void {
     const previous = this.lastGatewaySnapshot;
     const current = this.gateway.getSnapshot();
     this.lastGatewaySnapshot = {
@@ -4520,6 +4656,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if (compositeUnchanged(result)) {
       // Rename and add leave every visible plane as it was; skip the redraw.
+      this.recordDocumentChange(before);
       this.setStatus(status);
       return;
     }
@@ -4529,6 +4666,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.publishCanvasOverlay();
     this.renderer.setDocument(result.document, invalidation);
     this.publishSelectedCell(false);
+    this.recordDocumentChange(before);
     this.setStatus(status);
   }
 
@@ -4566,10 +4704,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (!projectChanged && this.fillJob && this.fillToken
       && (this.fillToken.projectId !== snapshot.projectId || this.fillToken.revision !== snapshot.revision)) this.cancelFill(false);
     if (snapshot.document) {
+      const before = this.selectionSnapshot();
       if (this.metrics) this.projectViewport(normalizeViewport(this.uiStore.getState().viewport, snapshot.document, this.metrics, this.viewportOptions));
       this.setDocument(snapshot.document, projectChanged
         ? { layer: 'all', full: true, reason: 'project-switch' }
         : externalInvalidation(snapshot, layerStackChanged ? 'layer-stack' : 'external-document'));
+      // A change made outside the editor, as by a panel, is a document step too.
+      if (documentChanged && !projectChanged) this.recordDocumentChange(before);
     } else {
       this.renderer.setOverlay({});
       this.uiStore.setSelectedCell(null);
@@ -4587,6 +4728,9 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.selectionAnchor = undefined;
     this.canvasSelection = undefined;
     this.canvasPreview = undefined;
+    this.undoTimeline = [];
+    this.redoTimeline = [];
+    this.gatewayRedoStale = false;
     this.clipboard = undefined;
     this.clipboardSelection = undefined;
     this.uiStore.setCanPaste(false);
@@ -5151,6 +5295,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       x: Math.min(Math.max(0, Math.floor(cursor.x)), snapshot.document.width - 1),
       y: Math.min(Math.max(0, Math.floor(cursor.y)), snapshot.document.height - 1)
     };
+    const before = this.selectionSnapshot();
     if (extendSelection) {
       this.selectionAnchor ??= this.uiStore.getState().keyboardCursor ?? { x: 0, y: 0 };
       const rect = boundedGridRect(normalizeGridRect(this.selectionAnchor, bounded), snapshot.document);
@@ -5171,6 +5316,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     });
     if (this.keyboardBackstitchAnchor) this.publishBackstitchPreview(this.keyboardBackstitchAnchor, fixedPointAt(bounded, snapshot.document));
     this.publishSelectionOverlay();
+    this.recordSelectionChange(before);
   }
 
   private publishSelectedCell(updateStatus: boolean): void {
