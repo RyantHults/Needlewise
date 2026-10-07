@@ -2089,6 +2089,122 @@ describe('Canvas 2D chart renderer', () => {
     }
   });
 
+  describe('grid contrast with the stitches it separates', () => {
+    const LIGHT = 2;
+    const DARK = 3;
+    const gridStyle = {
+      gridColor: '#00ff00',
+      majorGridColor: '#00ff00',
+      lightStitchGridColor: '#111111',
+      lightStitchMajorGridColor: '#111111',
+      darkStitchGridColor: '#eeeeee',
+      darkStitchMajorGridColor: '#eeeeee',
+      gridInterval: 10
+    };
+    const toneChart = (ids: readonly number[]) => {
+      const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
+        width: ids.length,
+        // Two identical rows: the grid only shows when zoomed past the fit, so the second row sits below the canvas.
+        height: 2,
+        palette: [
+          { id: LIGHT, name: 'Cream', color: '#ffffcc' },
+          { id: DARK, name: 'Charcoal', color: '#202020' }
+        ]
+      });
+      ids.forEach((id, x) => {
+        if (id === 0) return;
+        for (const index of [x, ids.length + x]) {
+          document.kind[index] = CellKind.Full;
+          document.colors[index * 4] = id;
+        }
+      });
+      return document;
+    };
+    const gridSegments = (context: RecordingContext) => context.records
+      .map((call, index, records) => call.name === 'moveTo' && records[index + 1]?.name === 'lineTo'
+        ? { from: call.args as number[], to: records[index + 1].args as number[], color: call.strokeStyle }
+        : undefined)
+      .filter((segment) => segment !== undefined)
+      .filter((segment) => ['#00ff00', '#111111', '#eeeeee'].includes(segment.color));
+    const verticalAt = (context: RecordingContext, x: number) => gridSegments(context)
+      .filter((segment) => segment.from[0] === x && segment.to[0] === x)
+      .map((segment) => segment.color);
+    const render = (document: ReturnType<typeof toneChart>, style: Partial<RendererStyle> = {}) => {
+      const base = recordingContext();
+      const renderer = createCanvasRenderer({
+        document,
+        targets: { base: target(base), overlay: target(recordingContext()) },
+        metrics: getCanvasMetrics(document.width * 20, 20),
+        viewport: { x: 0, y: 0, zoom: 20 },
+        style: { ...gridStyle, ...style }
+      });
+      renderer.renderNow();
+      renderer.dispose();
+      return base;
+    };
+
+    it('darkens lines between light stitches and lightens lines between dark stitches', () => {
+      const base = render(toneChart([LIGHT, LIGHT, DARK, DARK]));
+      expect(verticalAt(base, 20)).toEqual(['#111111']);
+      expect(verticalAt(base, 40)).toEqual(['#00ff00']);
+      expect(verticalAt(base, 60)).toEqual(['#eeeeee']);
+      // The line between the rows splits into one run per tone instead of one stroke per cell.
+      const between = gridSegments(base).filter((segment) => segment.from[1] === 20 && segment.to[1] === 20);
+      expect(between.map((segment) => [segment.from[0], segment.to[0], segment.color])).toEqual([
+        [0, 40, '#111111'],
+        [40, 80, '#eeeeee']
+      ]);
+    });
+
+    it('keeps a uniform line as a single stroke', () => {
+      const base = render(toneChart([LIGHT, LIGHT, LIGHT, LIGHT]));
+      const between = gridSegments(base).filter((segment) => segment.from[1] === 20 && segment.to[1] === 20);
+      expect(between.map((segment) => [segment.from[0], segment.to[0], segment.color])).toEqual([[0, 80, '#111111']]);
+    });
+
+    it('treats fabric as its background tone and keeps the theme color on blank fabric', () => {
+      const base = render(toneChart([LIGHT, 0, 0, DARK]));
+      // The default fabric is light: light stitch beside it reads light, dark stitch beside it is mixed.
+      expect(verticalAt(base, 20)).toEqual(['#111111']);
+      expect(verticalAt(base, 40)).toEqual(['#00ff00']);
+      expect(verticalAt(base, 60)).toEqual(['#00ff00']);
+      const blank = render(toneChart([0, 0, 0, 0]));
+      expect(gridSegments(blank).length).toBeGreaterThan(0);
+      expect(gridSegments(blank).every((segment) => segment.color === '#00ff00')).toBe(true);
+    });
+
+    it('keeps the theme colors in Symbol mode', () => {
+      const base = render(toneChart([LIGHT, LIGHT, DARK, DARK]), { mode: 'symbol' });
+      expect(gridSegments(base).length).toBeGreaterThan(0);
+      expect(gridSegments(base).every((segment) => segment.color === '#00ff00')).toBe(true);
+    });
+
+    it('judges pending overlay cells by their pending colors', () => {
+      const document = toneChart([0, 0, 0, 0]);
+      const overlay = recordingContext();
+      const renderer = createCanvasRenderer({
+        document,
+        targets: { base: target(recordingContext()), overlay: target(overlay) },
+        metrics: getCanvasMetrics(80, 20),
+        viewport: { x: 0, y: 0, zoom: 20 },
+        style: gridStyle,
+        overlay: {
+          pendingCells: [{ x: 1, y: 0 }, { x: 2, y: 0 }],
+          pendingCellStates: [
+            { index: 1, cell: { x: 1, y: 0 }, kind: CellKind.Full, colors: [DARK, 0, 0, 0], completed: 0 },
+            { index: 2, cell: { x: 2, y: 0 }, kind: CellKind.Full, colors: [DARK, 0, 0, 0], completed: 0 }
+          ]
+        }
+      });
+      renderer.renderNow();
+      expect(verticalAt(overlay, 40)).toEqual(['#eeeeee']);
+      // Each pending cell borders light fabric on its outer side.
+      expect(verticalAt(overlay, 20)).toEqual(['#00ff00']);
+      expect(verticalAt(overlay, 60)).toEqual(['#00ff00']);
+      renderer.dispose();
+    });
+  });
+
   it('clips interaction overlays to the visible PatternDocument rectangle', () => {
     const document = chart(4, 3);
     const overlay = recordingContext();
@@ -2348,7 +2464,8 @@ describe('Canvas 2D chart renderer', () => {
       targets: { base: target(recordingContext()), overlay: target(overlay) },
       metrics: getCanvasMetrics(48, 20),
       viewport: { x: 0, y: 0, zoom: 20 },
-      style: { gridColor: '#00aa00', majorGridColor: '#00aa00', gridInterval: 1 },
+      // The pending stitch is dark, so its outer edges take the dark-stitch variant.
+      style: { gridColor: '#00aa00', majorGridColor: '#00aa00', darkStitchGridColor: '#00aa00', darkStitchMajorGridColor: '#00aa00', gridInterval: 1 },
       overlay: {
         pendingCells: [{ x: 1, y: 0 }],
         pendingCellStates: [{ index: 1, cell: { x: 1, y: 0 }, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 }]

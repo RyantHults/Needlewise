@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { contrastSymbolInk, relativeLuminance } from './contrast';
+import { contrastSymbolInk, isDarkColor, relativeLuminance } from './contrast';
 
 describe('contrastSymbolInk', () => {
   it('keeps the dark ink on light backgrounds', () => {
@@ -59,5 +59,30 @@ describe('relativeLuminance', () => {
     expect(relativeLuminance('red')).toBeUndefined();
     expect(relativeLuminance('#GGG')).toBeUndefined();
     expect(relativeLuminance('')).toBeUndefined();
+  });
+});
+
+describe('isDarkColor', () => {
+  it('is true for dark colors', () => {
+    expect(isDarkColor('#000000')).toBe(true);
+    expect(isDarkColor('#000')).toBe(true);
+    expect(isDarkColor('#223344')).toBe(true);
+  });
+
+  it('is false for light colors', () => {
+    expect(isDarkColor('#ffffff')).toBe(false);
+    expect(isDarkColor('#f0f0f0')).toBe(false);
+  });
+
+  it('is strictly below the #999999 boundary', () => {
+    expect(isDarkColor('#8c8c8c')).toBe(true);
+    expect(isDarkColor('#999999')).toBe(false);
+    expect(isDarkColor('#a0a0a0')).toBe(false);
+  });
+
+  it('is undefined for unparseable colors', () => {
+    expect(isDarkColor('not-a-color')).toBeUndefined();
+    expect(isDarkColor('#GGG')).toBeUndefined();
+    expect(isDarkColor('')).toBeUndefined();
   });
 });

@@ -356,6 +356,14 @@ export interface RendererTheme {
   readonly gridColor: string;
   readonly midGridColor: string;
   readonly majorGridColor: string;
+  /** Grid lines between two light stitches, so dark: minor, mid, and major. */
+  readonly lightStitchGridColor: string;
+  readonly lightStitchMidGridColor: string;
+  readonly lightStitchMajorGridColor: string;
+  /** Grid lines between two dark stitches, so light: minor, mid, and major. */
+  readonly darkStitchGridColor: string;
+  readonly darkStitchMidGridColor: string;
+  readonly darkStitchMajorGridColor: string;
   readonly chartBorderColor: string;
   readonly symbolColor: string;
   readonly symbolBackgroundColor: string;
@@ -393,6 +401,12 @@ export const DEFAULT_RENDERER_STYLE: RendererStyle = {
   gridColor: '#d8d8d8',
   midGridColor: '#b8b8b8',
   majorGridColor: '#858585',
+  lightStitchGridColor: '#8c8c8c',
+  lightStitchMidGridColor: '#5e5e5e',
+  lightStitchMajorGridColor: '#2e2e2e',
+  darkStitchGridColor: '#7a7a7a',
+  darkStitchMidGridColor: '#a8a8a8',
+  darkStitchMajorGridColor: '#dcdcdc',
   chartBorderColor: '#4b4b4b',
   symbolColor: '#242424',
   symbolBackgroundColor: '#ffffff',

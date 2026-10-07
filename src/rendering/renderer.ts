@@ -53,7 +53,7 @@ import {
 } from './atlas';
 import { clearTarget, defaultAtlasTargetFactory, drawImage, prepareTarget, restore, save } from './context';
 import { grayscaleColor } from './colors';
-import { contrastSymbolInk, relativeLuminance } from './contrast';
+import { contrastSymbolInk, isDarkColor, relativeLuminance } from './contrast';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
 import { createTraceImageProjection, drawTraceImage } from './trace';
 import { isLegacyQuarterKind, isThreeQuarterKind, isThreeQuarterPairKind, threeQuarterPairComponents } from '../editor/cell-kinds';
@@ -327,6 +327,114 @@ function gridLine(
   linePath(context, from, to);
 }
 
+type CellTone = 'absent' | 'fabric' | 'light' | 'dark' | 'mixed';
+
+/** 'light' when every stitch beside a grid edge is light, 'dark' when every one is dark, otherwise undefined (theme colors). */
+type EdgeContrast = 'light' | 'dark' | undefined;
+
+/** One grid tier's theme color and its variants for lines between light and between dark stitches. */
+interface GridTierColors {
+  readonly theme: string;
+  readonly betweenLight: string;
+  readonly betweenDark: string;
+}
+
+function gridTierColor(colors: GridTierColors, contrast: EdgeContrast): string {
+  if (contrast === 'light') return colors.betweenLight;
+  if (contrast === 'dark') return colors.betweenDark;
+  return colors.theme;
+}
+
+/** Same threshold as the symbol ink, so a cell that gets white ink also gets the light grid. */
+function colorsTone(colors: readonly string[]): 'light' | 'dark' | 'mixed' {
+  let dark = 0;
+  for (const color of colors) {
+    const isDark = isDarkColor(color);
+    if (isDark === undefined) return 'mixed';
+    if (isDark) dark += 1;
+  }
+  if (dark === colors.length) return 'dark';
+  return dark === 0 ? 'light' : 'mixed';
+}
+
+/**
+ * Build the edge contrast lookup for one draw call: given the two cells a grid
+ * edge separates, whether the stitches on both sides are all light or all
+ * dark. Undefined in Symbol mode, where every cell shows the symbol background.
+ * `pending` cell states stand in for the document cells they cover.
+ */
+function gridEdgeContrast(
+  document: PatternDocument,
+  style: RendererStyle,
+  pending?: ReadonlyMap<number, PendingCellState>
+): ((ax: number, ay: number, bx: number, by: number) => EdgeContrast) | undefined {
+  if (style.mode === ChartPresentationMode.Symbol) return undefined;
+  const fabricTone = colorsTone([patternBackgroundColor(document)]);
+  const mask = document.canvasMask;
+  // Full cells are most of a chart, so their tone is cached by palette id and completion.
+  const fullTones = new Map<number, CellTone>();
+  const cellTone = (x: number, y: number): CellTone => {
+    if (x < 0 || y < 0 || x >= document.width || y >= document.height) return 'absent';
+    const index = y * document.width + x;
+    if (mask !== undefined && mask[index] !== 1) return 'absent';
+    const state = pending?.get(index);
+    const kind = state ? state.kind : document.kind[index];
+    if (kind === CellKind.Empty) return 'fabric';
+    const completed = state ? state.completed : document.completed[index];
+    if (kind === CellKind.Full) {
+      const id = state ? state.colors[0] : document.colors[index * 4];
+      const key = id * 2 + (completed & 1);
+      let tone = fullTones.get(key);
+      if (tone === undefined) {
+        tone = colorsTone(cellStateColors(document, kind, [id, 0, 0, 0], completed & 1, style));
+        fullTones.set(key, tone);
+      }
+      return tone;
+    }
+    const colors = state ? state.colors : document.colors.subarray(index * 4, index * 4 + 4);
+    return colorsTone(cellStateColors(document, kind, colors, completed, style));
+  };
+  return (ax, ay, bx, by) => {
+    const first = cellTone(ax, ay);
+    const second = cellTone(bx, by);
+    const stitched = (tone: CellTone): boolean => tone !== 'absent' && tone !== 'fabric';
+    if (!stitched(first) && !stitched(second)) return undefined;
+    const a = first === 'fabric' ? fabricTone : first;
+    const b = second === 'fabric' ? fabricTone : second;
+    if (a === 'mixed' || b === 'mixed') return undefined;
+    if (a === 'absent') return b === 'absent' ? undefined : b;
+    if (b === 'absent') return a;
+    return a === b ? a : undefined;
+  };
+}
+
+/**
+ * Stroke [from, to) of one grid line as maximal runs of one color, so a line
+ * whose edges all resolve alike is still a single stroke.
+ */
+function strokeGridRuns(
+  from: number,
+  to: number,
+  colorAt: ((position: number) => string) | undefined,
+  theme: string,
+  stroke: (from: number, to: number, color: string) => void
+): void {
+  if (colorAt === undefined) {
+    stroke(from, to, theme);
+    return;
+  }
+  let runStart = from;
+  let runColor = colorAt(from);
+  for (let position = from + 1; position < to; position += 1) {
+    const color = colorAt(position);
+    if (color === runColor) continue;
+    stroke(runStart, position, runColor);
+    runStart = position;
+    runColor = color;
+  }
+  stroke(runStart, to, runColor);
+}
+
 function intersectRects(left: Rect, right: Rect): Rect | undefined {
   const x = Math.max(left.x, right.x);
   const y = Math.max(left.y, right.y);
@@ -549,6 +657,9 @@ function drawGrid(
   // A masked canvas draws only the edges that border an active cell.
   const mask = document.canvasMask;
   const edges = mask === undefined ? undefined : maskEdges(mask, document.width, document.height, false);
+  const contrast = gridEdgeContrast(document, style);
+  const minorColors = { theme: style.gridColor, betweenLight: style.lightStitchGridColor, betweenDark: style.darkStitchGridColor };
+  const majorColors = { theme: style.majorGridColor, betweenLight: style.lightStitchMajorGridColor, betweenDark: style.darkStitchMajorGridColor };
   const clipped = clipToRect(context, bounds);
   try {
     const firstX = Math.ceil(left / interval) * interval;
@@ -561,14 +672,18 @@ function drawGrid(
       // exception: its adaptive step is itself the visible grid.
       const major = lod === RenderLod.Overview || x % configuredInterval === 0;
       if (lod === RenderLod.Compact && !major) continue;
-      const line = (from: number, to: number): void => {
+      const tier = major ? majorColors : minorColors;
+      const width = major ? majorGridWidth(lod) : minorGridWidth(lod);
+      const stroke = (from: number, to: number, color: string): void => {
         const segment = clipSegmentToRect(
           modelToScreen({ x, y: from }, viewport),
           modelToScreen({ x, y: to }, viewport),
           bounds
         );
-        if (segment) gridLine(context, segment.start, segment.end, major ? style.majorGridColor : style.gridColor, major ? majorGridWidth(lod) : minorGridWidth(lod));
+        if (segment) gridLine(context, segment.start, segment.end, color, width);
       };
+      const colorAt = contrast && ((y: number): string => gridTierColor(tier, contrast(x - 1, y, x, y)));
+      const line = (from: number, to: number): void => strokeGridRuns(from, to, colorAt, tier.theme, stroke);
       if (edges === undefined) line(top, bottom);
       else if (edges) forEachCachedRun(edges.vertical, x, top, bottom, line);
     }
@@ -579,14 +694,18 @@ function drawGrid(
       if (screenY < bounds.y || screenY > bounds.y + bounds.height) continue;
       const major = lod === RenderLod.Overview || y % configuredInterval === 0;
       if (lod === RenderLod.Compact && !major) continue;
-      const line = (from: number, to: number): void => {
+      const tier = major ? majorColors : minorColors;
+      const width = major ? majorGridWidth(lod) : minorGridWidth(lod);
+      const stroke = (from: number, to: number, color: string): void => {
         const segment = clipSegmentToRect(
           modelToScreen({ x: from, y }, viewport),
           modelToScreen({ x: to, y }, viewport),
           bounds
         );
-        if (segment) gridLine(context, segment.start, segment.end, major ? style.majorGridColor : style.gridColor, major ? majorGridWidth(lod) : minorGridWidth(lod));
+        if (segment) gridLine(context, segment.start, segment.end, color, width);
       };
+      const colorAt = contrast && ((x: number): string => gridTierColor(tier, contrast(x, y - 1, x, y)));
+      const line = (from: number, to: number): void => strokeGridRuns(from, to, colorAt, tier.theme, stroke);
       if (edges === undefined) line(left, right);
       else if (edges) forEachCachedRun(edges.horizontal, y, left, right, line);
     }
@@ -619,6 +738,8 @@ function drawMidGrid(
   // A masked canvas draws only the edges that border an active cell.
   const mask = document.canvasMask;
   const edges = mask === undefined ? undefined : maskEdges(mask, document.width, document.height, false);
+  const contrast = gridEdgeContrast(document, style);
+  const midColors = { theme: style.midGridColor, betweenLight: style.lightStitchMidGridColor, betweenDark: style.darkStitchMidGridColor };
   const clipped = clipToRect(context, bounds);
   try {
     const firstX = Math.ceil(left / interval) * interval;
@@ -627,14 +748,16 @@ function drawMidGrid(
       if (x === 0 || x === document.width) continue; // Skip document edges (the border owns them).
       const screenX = modelToScreen({ x, y: 0 }, viewport).x;
       if (screenX < bounds.x || screenX > bounds.x + bounds.width) continue;
-      const line = (from: number, to: number): void => {
+      const stroke = (from: number, to: number, color: string): void => {
         const segment = clipSegmentToRect(
           modelToScreen({ x, y: from }, viewport),
           modelToScreen({ x, y: to }, viewport),
           bounds
         );
-        if (segment) gridLine(context, segment.start, segment.end, style.midGridColor, midGridWidth(lod));
+        if (segment) gridLine(context, segment.start, segment.end, color, midGridWidth(lod));
       };
+      const colorAt = contrast && ((y: number): string => gridTierColor(midColors, contrast(x - 1, y, x, y)));
+      const line = (from: number, to: number): void => strokeGridRuns(from, to, colorAt, midColors.theme, stroke);
       if (edges === undefined) line(top, bottom);
       else if (edges) forEachCachedRun(edges.vertical, x, top, bottom, line);
     }
@@ -644,14 +767,16 @@ function drawMidGrid(
       if (y === 0 || y === document.height) continue; // Skip document edges.
       const screenY = modelToScreen({ x: 0, y }, viewport).y;
       if (screenY < bounds.y || screenY > bounds.y + bounds.height) continue;
-      const line = (from: number, to: number): void => {
+      const stroke = (from: number, to: number, color: string): void => {
         const segment = clipSegmentToRect(
           modelToScreen({ x: from, y }, viewport),
           modelToScreen({ x: to, y }, viewport),
           bounds
         );
-        if (segment) gridLine(context, segment.start, segment.end, style.midGridColor, midGridWidth(lod));
+        if (segment) gridLine(context, segment.start, segment.end, color, midGridWidth(lod));
       };
+      const colorAt = contrast && ((x: number): string => gridTierColor(midColors, contrast(x, y - 1, x, y)));
+      const line = (from: number, to: number): void => strokeGridRuns(from, to, colorAt, midColors.theme, stroke);
       if (edges === undefined) line(left, right);
       else if (edges) forEachCachedRun(edges.horizontal, y, left, right, line);
     }
@@ -1027,7 +1152,8 @@ function drawGridForCells(
   metrics: CanvasMetrics,
   style: RendererStyle,
   cells: readonly CellRect[],
-  lod: RenderLod
+  lod: RenderLod,
+  pending?: ReadonlyMap<number, PendingCellState>
 ): void {
   if (!shouldDrawGrid(document, viewport, metrics, style) || lod === RenderLod.Overview || cells.length === 0) return;
   const bounds = patternCanvasRect(document, viewport, metrics);
@@ -1053,6 +1179,9 @@ function drawGridForCells(
       }
     }
   }
+  const contrast = gridEdgeContrast(document, style, pending);
+  const minorColors = { theme: style.gridColor, betweenLight: style.lightStitchGridColor, betweenDark: style.darkStitchGridColor };
+  const majorColors = { theme: style.majorGridColor, betweenLight: style.lightStitchMajorGridColor, betweenDark: style.darkStitchMajorGridColor };
   const clipped = clipToRect(context, bounds);
   try {
     for (const { x, y } of vertical.values()) {
@@ -1063,7 +1192,8 @@ function drawGridForCells(
         modelToScreen({ x, y: y + 1 }, viewport),
         bounds
       );
-      if (segment) gridLine(context, segment.start, segment.end, major ? style.majorGridColor : style.gridColor, major ? majorGridWidth(lod) : minorGridWidth(lod));
+      const color = gridTierColor(major ? majorColors : minorColors, contrast?.(x - 1, y, x, y));
+      if (segment) gridLine(context, segment.start, segment.end, color, major ? majorGridWidth(lod) : minorGridWidth(lod));
     }
     for (const { x, y } of horizontal.values()) {
       const major = y % interval === 0;
@@ -1073,7 +1203,8 @@ function drawGridForCells(
         modelToScreen({ x: x + 1, y }, viewport),
         bounds
       );
-      if (segment) gridLine(context, segment.start, segment.end, major ? style.majorGridColor : style.gridColor, major ? majorGridWidth(lod) : minorGridWidth(lod));
+      const color = gridTierColor(major ? majorColors : minorColors, contrast?.(x, y - 1, x, y));
+      if (segment) gridLine(context, segment.start, segment.end, color, major ? majorGridWidth(lod) : minorGridWidth(lod));
     }
   } finally {
     if (clipped) restore(context);
@@ -1788,16 +1919,22 @@ function bestContrastInk(colors: readonly string[], darkInk: string): string {
 // background for empty cells, unpainted split slots, and out-of-bounds
 // neighbours past the chart edge.
 function visibleCellColors(document: PatternDocument, x: number, y: number, style: RendererStyle): string[] {
-  const patternBackground = patternBackgroundColor(document);
-  if (x < 0 || y < 0 || x >= document.width || y >= document.height) return [patternBackground];
-
+  if (x < 0 || y < 0 || x >= document.width || y >= document.height) return [patternBackgroundColor(document)];
   const index = y * document.width + x;
-  const kind = document.kind[index];
-  if (kind === CellKind.Empty) return [patternBackground];
-
   const offset = index * 4;
-  const colors = document.colors.subarray(offset, offset + 4);
-  const completed = document.completed[index];
+  return cellStateColors(document, document.kind[index], document.colors.subarray(offset, offset + 4), document.completed[index], style);
+}
+
+/** The colors one cell state shows; see visibleCellColors. */
+function cellStateColors(
+  document: PatternDocument,
+  kind: number,
+  colors: ArrayLike<number>,
+  completed: number,
+  style: RendererStyle
+): string[] {
+  const patternBackground = patternBackgroundColor(document);
+  if (kind === CellKind.Empty) return [patternBackground];
 
   let slots: number[];
   if (isLegacyQuarterKind(kind)) {
@@ -1930,12 +2067,14 @@ function drawOverlay(
   save(context);
   context.lineWidth = style.overlayLineWidth;
   let pendingStateCells: CellRect[] = [];
+  const pendingStates = new Map<number, PendingCellState>();
   if (overlay.pendingCellStates !== undefined) {
     pendingStateCells = drawPendingCellStates(context, document, overlay.pendingCellStates, viewport, style, lod, bounds, metrics.dpr);
+    for (const state of overlay.pendingCellStates) pendingStates.set(state.index, state);
   } else {
     drawPendingCells(context, document, overlay.pendingCells, viewport, style, bounds);
   }
-  drawGridForCells(context, document, viewport, metrics, style, pendingStateCells, lod);
+  drawGridForCells(context, document, viewport, metrics, style, pendingStateCells, lod, pendingStates);
   drawBrushPreview(context, document, overlay.brushPreview, viewport, style, lod, bounds);
   drawBackstitchesForCells(context, document, viewport, metrics, style, pendingStateCells, lod, bounds);
   drawPendingBackstitchRemovals(context, document, overlay.pendingBackstitchRemovals, viewport, style, bounds);
