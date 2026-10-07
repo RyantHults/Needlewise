@@ -829,10 +829,30 @@ export function EditorSurface({
     window.clearTimeout(palettePress.current ?? undefined);
     palettePress.current = null;
   };
+  const [pickPulse, setPickPulse] = useState<{ paletteId: number; seq: number } | null>(null);
+  const pendingPick = useRef<{ paletteId: number; seq: number } | null>(null);
+  const paletteIdsKey = palette.map((entry) => entry.id).join(",");
+  useEffect(() => {
+    if (ui?.pickPulse) pendingPick.current = ui.pickPulse;
+    const pending = pendingPick.current;
+    if (!pending || !palette.some((entry) => entry.id === pending.paletteId)) return;
+    pendingPick.current = null;
+    const reduce = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    workspaceRoot.current?.querySelectorAll(`[data-palette-id="${pending.paletteId}"]`).forEach((row) => {
+      if (typeof row.scrollIntoView === "function") row.scrollIntoView({ block: "nearest", inline: "nearest", behavior: reduce ? "auto" : "smooth" });
+    });
+    console.log("SET", pending); setPickPulse(pending);
+  }, [ui?.pickPulse, paletteIdsKey]);
+  useEffect(() => {
+    if (!pickPulse) return;
+    const timer = window.setTimeout(() => setPickPulse(null), 1400);
+    return () => window.clearTimeout(timer);
+  }, [pickPulse]);
   const paletteRow = (x: (typeof palette)[number]) => (
     <div
       className={`palette-row${ui?.paletteId === x.id ? " palette-row-selected" : ""}`}
       key={x.id}
+      data-palette-id={x.id}
       title={x.name}
     >
       <button
@@ -861,6 +881,7 @@ export function EditorSurface({
         }}
       >
         <span className="palette-swatch" style={{ backgroundColor: x.color }} aria-hidden="true">
+          {pickPulse?.paletteId === x.id && <span key={pickPulse.seq} className="palette-pick-pulse" aria-hidden="true" onAnimationEnd={() => { console.log("END"); setPickPulse(null); }} />}
           {paletteOptions.symbols && <span className="palette-swatch-symbol" style={{ color: contrastSymbolInk(x.color, DEFAULT_RENDERER_STYLE.symbolColor) }}><SymbolTile id={x.symbol} /></span>}
           {paletteOptions.numbers && (
             <span className={`palette-number${x.catalog ? "" : " palette-number-hex"}`}>

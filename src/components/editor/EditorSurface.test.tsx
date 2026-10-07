@@ -24,7 +24,7 @@ const f = vi.hoisted(() => ({
   c: { start: vi.fn(), setMetrics: vi.fn(), setDocument: vi.fn(), dispose: vi.fn(), setBrush: vi.fn(), setTool: vi.fn(), setEraserMode: vi.fn(), clearSelection: vi.fn(), setBackstitchMode: vi.fn(), selectPalette: vi.fn(), selectCreatedPalette: vi.fn(), setChartMode: vi.fn(), setGridVisible: vi.fn(), setBrushSize: vi.fn(), setToolBrushSize: vi.fn(), setTouchMovementOnly: vi.fn(), copySelection: vi.fn(), pasteSelection: vi.fn(), moveSelection: vi.fn(), deleteSelection: vi.fn(), handleKeyDown: vi.fn(() => false), getTraceImage: vi.fn(() => undefined), setTraceImage: vi.fn(), setTraceImageSettings: vi.fn(), clearTraceImage: vi.fn() },
   adapter: vi.fn(() => ({ dispose: vi.fn() })),
   r: { dispose: vi.fn() }, resize: undefined as (() => void) | undefined,
-  uiState: { mode: 'color', gridVisible: true, overlay: {}, tool: { tool: 'paint' }, paletteId: 1, canPaste: false, toolBrushSizes: { full: 1, half: 1, 'three-quarter': 1, eraser: 1 } }, createdUiState: null as unknown,
+  uiState: { mode: 'color', gridVisible: true, overlay: {}, tool: { tool: 'paint' }, paletteId: 1, pickPulse: null, canPaste: false, toolBrushSizes: { full: 1, half: 1, 'three-quarter': 1, eraser: 1 } }, createdUiState: null as unknown,
   uiListener: null as ((state: unknown) => void) | null,
   capturedCallback: null as ((bounds: { x: number; y: number; width: number; height: number }) => void) | null
 }));
@@ -94,7 +94,7 @@ const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/
 const toolOptions = () => document.querySelector<HTMLElement>('.canvas-actions section.tool-options')!;
 /** Pushes a new active tool through the mocked UI store, as the controller would. */
 const switchTool = (tool: unknown) => act(() => { f.uiState.tool = tool as never; f.uiListener?.({ ...f.uiState }); });
-beforeEach(() => { vi.clearAllMocks(); (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockReset(); (ws as { getStateSnapshot: ReturnType<typeof vi.fn> }).getStateSnapshot.mockReset(); (ws as { catalogFor: ReturnType<typeof vi.fn> }).catalogFor.mockReturnValue(COMPACT_DMC_DEFINITION); (ws as { availableCatalogs: ReturnType<typeof vi.fn> }).availableCatalogs.mockReturnValue([COMPACT_DMC_DEFINITION]); (ws as { catalogById: ReturnType<typeof vi.fn> }).catalogById.mockImplementation((id: string) => id === COMPACT_DMC_DEFINITION.association.catalogId ? COMPACT_DMC_DEFINITION : undefined); localStorage.clear(); f.createdUiState = null; f.uiListener = null; f.uiState.canPaste = false; f.uiState.overlay = {}; f.uiState.tool = { tool: 'paint' }; f.uiState.gridVisible = true; (ws as { sourceImage: unknown }).sourceImage = undefined; vi.stubGlobal('ResizeObserver', vi.fn(function (cb: () => void) { f.resize = cb; return { observe: vi.fn(), disconnect: vi.fn() }; })); });
+beforeEach(() => { vi.clearAllMocks(); (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockReset(); (ws as { getStateSnapshot: ReturnType<typeof vi.fn> }).getStateSnapshot.mockReset(); (ws as { catalogFor: ReturnType<typeof vi.fn> }).catalogFor.mockReturnValue(COMPACT_DMC_DEFINITION); (ws as { availableCatalogs: ReturnType<typeof vi.fn> }).availableCatalogs.mockReturnValue([COMPACT_DMC_DEFINITION]); (ws as { catalogById: ReturnType<typeof vi.fn> }).catalogById.mockImplementation((id: string) => id === COMPACT_DMC_DEFINITION.association.catalogId ? COMPACT_DMC_DEFINITION : undefined); localStorage.clear(); f.createdUiState = null; f.uiListener = null; f.uiState.canPaste = false; (f.uiState as { pickPulse: unknown }).pickPulse = null; f.uiState.overlay = {}; f.uiState.tool = { tool: 'paint' }; f.uiState.gridVisible = true; (ws as { sourceImage: unknown }).sourceImage = undefined; vi.stubGlobal('ResizeObserver', vi.fn(function (cb: () => void) { f.resize = cb; return { observe: vi.fn(), disconnect: vi.fn() }; })); });
 afterEach(() => { vi.useRealTimers(); localStorage.clear(); });
 
 describe('EditorSurface', () => {
@@ -572,6 +572,25 @@ describe('EditorSurface', () => {
     expect(f.c.setTool).not.toHaveBeenCalled();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Brush settings' })).not.toBeInTheDocument();
+  });
+  it('scrolls to the picked palette row and replays the targeting pulse on every pick, including the same color', () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    render(<EditorSurface workspace={ws} document={two} />);
+    expect(document.querySelector('.palette-pick-pulse')).toBeNull();
+    const pick = (seq: number) => act(() => { (f.uiState as { pickPulse: unknown }).pickPulse = { paletteId: 2, seq }; f.uiListener?.({ ...f.uiState }); });
+    pick(1);
+    const first = document.querySelector('.palette-pick-pulse');
+    expect(first).not.toBeNull();
+    expect(first!.closest('[data-palette-id="2"]')).not.toBeNull();
+    expect(scroll).toHaveBeenCalled();
+    expect(scroll.mock.contexts.some((el) => (el as HTMLElement).dataset.paletteId === '2')).toBe(true);
+    pick(2);
+    const second = document.querySelector('.palette-pick-pulse');
+    expect(second).not.toBeNull();
+    expect(second).not.toBe(first);
+    expect(document.querySelectorAll('.palette-pick-pulse')).toHaveLength(1);
+    delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
   });
   it('keeps the selected non-first palette color when a brush tool is chosen', () => {
     f.uiState.paletteId = 2;

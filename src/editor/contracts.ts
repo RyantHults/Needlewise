@@ -554,6 +554,8 @@ export interface EditorUiState {
   readonly overlay: OverlayState;
   readonly tool: EditorToolState;
   readonly paletteId: number | null;
+  /** Latest eyedropper pick; a new object per pick so re-picking the same color still signals. Transient UI state. */
+  readonly pickPulse: { readonly paletteId: number; readonly seq: number } | null;
   readonly keyboardCursor: ModelPoint | null;
   readonly selectedCell: SelectedCellSemantics | null;
   readonly status: string | null;
@@ -846,6 +848,7 @@ export interface EditorUiStore {
   setBrush(brush: StitchBrush): void;
   setAuthoringBrush(brush: AuthoringStitchBrush): void;
   setPaletteId(paletteId: number | null): void;
+  pulsePick(paletteId: number): void;
   setKeyboardCursor(cursor: ModelPoint | null): void;
   setSelectedCell(selectedCell: SelectedCellSemantics | null): void;
   setStatus(status: string | null): void;

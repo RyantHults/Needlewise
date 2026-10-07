@@ -438,6 +438,37 @@ describe('EditorSurfaceController', () => {
     controller.dispose();
   });
 
+  it('pulses the picked chip on every pick, including re-picking the selected color', () => {
+    const { gateway, uiStore, controller } = controllerFixture();
+    gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    controller.setTool({ tool: 'eyedropper' });
+    expect(uiStore.getState().pickPulse).toBeNull();
+    controller.handlePointerDown(pointer(1, 8, 8));
+    const first = uiStore.getState().pickPulse;
+    expect(first).toEqual({ paletteId: 1, seq: 1 });
+    controller.setTool({ tool: 'eyedropper' });
+    controller.handlePointerDown(pointer(2, 8, 8));
+    const second = uiStore.getState().pickPulse;
+    expect(second).toEqual({ paletteId: 1, seq: 2 });
+    expect(second).not.toBe(first);
+    controller.dispose();
+  });
+
+  it('pulses the new palette id when a reference pick adds a catalog color', () => {
+    const rgb = { r: 18, g: 52, b: 86 };
+    const { gateway, uiStore, controller } = controllerFixture({
+      traceImage: { source: {}, width: 4, height: 4 },
+      traceSampler: () => ({ ...rgb }),
+      catalogDefinition: DEFAULT_CATALOG_DEFINITION
+    });
+    controller.setTool({ tool: 'eyedropper' });
+    controller.handlePointerDown(pointer(1, 8, 8));
+    const added = gateway.getSnapshot().document?.palette.find((entry) => entry.catalog?.code === DEFAULT_CATALOG_DEFINITION.nearest(rgb)!.code);
+    expect(added).toBeDefined();
+    expect(uiStore.getState().pickPulse).toEqual({ paletteId: added!.id, seq: 1 });
+    controller.dispose();
+  });
+
   it('gives a chart-cell custom color precedence over trace sampling', () => {
     const sampled: TraceRgb[] = [];
     const document = createDocument({

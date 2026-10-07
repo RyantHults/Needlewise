@@ -1027,7 +1027,18 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
   .canvas-actions .canvas-actions-group { grid-column:1; }
   .canvas-actions .view-actions { min-inline-size:0; }
 }
+.palette-row .palette-swatch { position:relative; }
+.palette-pick-pulse { position:absolute; inset:-.3rem; z-index:2; pointer-events:none; border-radius:.85rem; box-shadow:0 0 0 .16rem rgba(255,253,249,.95), 0 0 0 .3rem #bc5a3d; animation:palette-pick-target .9s ease-out forwards; }
+.palette-pick-pulse::before { content:""; position:absolute; inset:0; border-radius:inherit; }
+@keyframes palette-pick-target {
+  0% { opacity:0; transform:scale(2.1); }
+  35% { opacity:1; transform:scale(1.05); }
+  70% { opacity:1; transform:scale(1.05); }
+  100% { opacity:0; transform:scale(1); }
+}
+@keyframes palette-pick-highlight { 0%,60% { opacity:1; } 100% { opacity:0; } }
 @media (prefers-reduced-motion: reduce) {
+  .palette-pick-pulse { animation:palette-pick-highlight .7s linear forwards; }
   .button { transition: none; }
   .button:hover { transform: none; }
   .loading-mark { animation: none; }

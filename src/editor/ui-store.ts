@@ -55,6 +55,7 @@ export const DEFAULT_EDITOR_UI_STATE: EditorUiState = {
   overlay: {},
   tool: { tool: 'pan' },
   paletteId: 1,
+  pickPulse: null,
   keyboardCursor: null,
   selectedCell: null,
   status: null,
@@ -74,6 +75,7 @@ function sameState(left: EditorUiState, right: EditorUiState): boolean {
     && left.overlay === right.overlay
     && left.tool === right.tool
     && left.paletteId === right.paletteId
+    && left.pickPulse === right.pickPulse
     && left.keyboardCursor === right.keyboardCursor
     && left.selectedCell === right.selectedCell
     && left.status === right.status
@@ -189,6 +191,10 @@ export function createUiStore(initial: Partial<EditorUiState> = {}): EditorUiSto
 
     setPaletteId(paletteId: number | null): void {
       store.setState({ paletteId });
+    },
+
+    pulsePick(paletteId: number): void {
+      store.setState({ pickPulse: { paletteId, seq: (store.getState().pickPulse?.seq ?? 0) + 1 } });
     },
 
     setKeyboardCursor(cursor: ModelPoint | null): void {

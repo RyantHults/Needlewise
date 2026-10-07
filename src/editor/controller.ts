@@ -2507,6 +2507,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   /** Select a picked color, then the drawing tool for the selected layer's type when it has one. */
   private activatePickedColor(paletteId: number): void {
     this.selectPalette(paletteId);
+    this.uiStore.pulsePick(paletteId);
     const layer = this.gateway.getSnapshot().activeLayer ?? null;
     const paint: EditorToolState = { tool: 'paint', brush: { kind: 'full', paletteId } };
     if (this.toolAvailable(paint, layer).enabled) this.setTool(paint);
