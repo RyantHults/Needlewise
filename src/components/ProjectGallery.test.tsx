@@ -14,12 +14,12 @@ vi.mock('./NewFolderModal', () => ({
 }));
 
 const validThumbnail: NonNullable<ProjectMetadata['thumbnail']> = {
-  version: 1,
+  version: 2,
   revision: 1,
   columns: 2,
   rows: 2,
   palette: ['#f3eee5', '#000000'],
-  indices: [0, 1, 1, 0]
+  indices: Uint8Array.of(0, 1, 1, 0)
 };
 
 function project(
@@ -215,6 +215,89 @@ describe('ProjectGallery', () => {
     fireEvent.click(within(card).getByRole('button', { name: 'Delete Footer project' }));
     expect(onDelete).toHaveBeenCalledOnce();
     expect(onDelete).toHaveBeenCalledWith(selected);
+  });
+
+  it('invokes onDuplicate with the project from the Duplicate button', () => {
+    const selected = project('dup', 'Dup project', 40, 22);
+    const onDuplicate = vi.fn();
+    render(<ProjectGallery projects={[selected]} onOpen={vi.fn()} onDelete={vi.fn()} onDuplicate={onDuplicate} onCreate={vi.fn()} onImport={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Duplicate Dup project' }));
+
+    expect(onDuplicate).toHaveBeenCalledOnce();
+    expect(onDuplicate).toHaveBeenCalledWith(selected);
+  });
+
+  it('omits the Duplicate button without onDuplicate', () => {
+    renderGallery([project('nodup', 'No dup', 40, 22)]);
+
+    expect(screen.queryByRole('button', { name: /^Duplicate/ })).toBeNull();
+  });
+
+  it('disables the Duplicate button when the gallery is disabled', () => {
+    render(<ProjectGallery projects={[project('dis', 'Dis project', 40, 22)]} disabled onOpen={vi.fn()} onDelete={vi.fn()} onDuplicate={vi.fn()} onCreate={vi.fn()} onImport={vi.fn()} />);
+
+    expect(screen.getByRole('button', { name: 'Duplicate Dis project' })).toBeDisabled();
+  });
+
+  describe('inline title rename', () => {
+    function renderRenamable(onRenameProject = vi.fn(), onOpen = vi.fn()) {
+      const selected = project('ren', 'Old title', 40, 22);
+      render(<ProjectGallery projects={[selected]} onOpen={onOpen} onDelete={vi.fn()} onRenameProject={onRenameProject} onCreate={vi.fn()} onImport={vi.fn()} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Rename Old title' }));
+      return { selected, onRenameProject, onOpen, input: screen.getByLabelText('Rename pattern Old title') as HTMLInputElement };
+    }
+
+    it('shows an input when the title is clicked, without opening the pattern', () => {
+      const { onOpen, input } = renderRenamable();
+
+      expect(input).toHaveValue('Old title');
+      expect(onOpen).not.toHaveBeenCalled();
+    });
+
+    it('commits the trimmed title on Enter and only once', () => {
+      const { selected, onRenameProject, input } = renderRenamable();
+
+      fireEvent.change(input, { target: { value: '  New title  ' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+
+      expect(onRenameProject).toHaveBeenCalledOnce();
+      expect(onRenameProject).toHaveBeenCalledWith(selected, 'New title');
+    });
+
+    it('does not rename on Escape, an unchanged value, or an empty value', () => {
+      const first = renderRenamable();
+      fireEvent.change(first.input, { target: { value: 'Changed' } });
+      fireEvent.keyDown(first.input, { key: 'Escape' });
+      expect(first.onRenameProject).not.toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: 'Rename Old title' })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Rename Old title' }));
+      fireEvent.blur(screen.getByLabelText('Rename pattern Old title'));
+      expect(first.onRenameProject).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Rename Old title' }));
+      const input = screen.getByLabelText('Rename pattern Old title');
+      fireEvent.change(input, { target: { value: '   ' } });
+      fireEvent.blur(input);
+      expect(first.onRenameProject).not.toHaveBeenCalled();
+    });
+
+    it('commits on blur', () => {
+      const { selected, onRenameProject, input } = renderRenamable();
+
+      fireEvent.change(input, { target: { value: 'Blurred' } });
+      fireEvent.blur(input);
+
+      expect(onRenameProject).toHaveBeenCalledWith(selected, 'Blurred');
+    });
+
+    it('does not render the title as a button without onRenameProject', () => {
+      renderGallery([project('plain', 'Plain title', 40, 22)]);
+
+      expect(screen.queryByRole('button', { name: 'Rename Plain title' })).toBeNull();
+      expect(screen.getByText('Plain title')).toBeInTheDocument();
+    });
   });
 
   it('uses the externally supplied delete confirmation ID and invokes onDelete', () => {

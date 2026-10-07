@@ -1,8 +1,8 @@
 import { DEFAULT_PATTERN_SETTINGS, MAX_PERSISTABLE_CELL_COUNT, flattenDocument, type LayeredDocument, type PatternDocument } from '../domain';
 import type { ProjectMetadata, ProjectThumbnailSummary } from './types';
 
-export const PROJECT_THUMBNAIL_VERSION = 1 as const;
-export const PROJECT_THUMBNAIL_MAX_AXIS = 128;
+export const PROJECT_THUMBNAIL_VERSION = 2 as const;
+export const PROJECT_THUMBNAIL_MAX_AXIS = 512;
 export const PROJECT_THUMBNAIL_MAX_CELLS = PROJECT_THUMBNAIL_MAX_AXIS * PROJECT_THUMBNAIL_MAX_AXIS;
 /** A stable, deliberately unbranded color for cells without a stitch. */
 export const PROJECT_THUMBNAIL_FABRIC_COLOR = '#f3eee5';
@@ -61,14 +61,21 @@ function cloneThumbnail(thumbnail: ProjectThumbnailSummary): ProjectThumbnailSum
     columns: thumbnail.columns,
     rows: thumbnail.rows,
     palette: [...thumbnail.palette],
-    indices: [...thumbnail.indices]
+    indices: thumbnail.indices.slice()
   };
 }
 
-/** Return a normalized copy, or undefined when an optional thumbnail is unsafe. */
+function createThumbnailIndices(paletteLength: number, length: number): Uint8Array | Uint16Array {
+  return paletteLength <= 256 ? new Uint8Array(length) : new Uint16Array(length);
+}
+
+/**
+ * Return a normalized copy, or undefined when an optional thumbnail is unsafe.
+ * A stored v1 record (a plain number array) is converted to v2.
+ */
 export function sanitizeProjectThumbnail(value: unknown, expectedRevision?: number): ProjectThumbnailSummary | undefined {
   if (!isRecord(value)
-    || value.version !== PROJECT_THUMBNAIL_VERSION
+    || (value.version !== PROJECT_THUMBNAIL_VERSION && value.version !== 1)
     || !isNonNegativeSafeInteger(value.revision)
     || (expectedRevision !== undefined && value.revision !== expectedRevision)
     || !isPositiveSafeInteger(value.columns)
@@ -77,20 +84,30 @@ export function sanitizeProjectThumbnail(value: unknown, expectedRevision?: numb
     || value.rows > PROJECT_THUMBNAIL_MAX_AXIS
     || !isPlainArray(value.palette)
     || value.palette.length < 1
-    || value.palette.length > PROJECT_THUMBNAIL_MAX_CELLS + 1
-    || !isPlainArray(value.indices)
-    || value.indices.length !== value.columns * value.rows) return undefined;
+    || value.palette.length > PROJECT_THUMBNAIL_MAX_CELLS + 1) return undefined;
 
+  const length = value.columns * value.rows;
   const palette: string[] = [];
   for (const color of value.palette) {
     const normalized = normalizeThumbnailColor(color);
     if (normalized === undefined) return undefined;
     palette.push(normalized);
   }
-  const indices: number[] = [];
-  for (const index of value.indices) {
+  const source = value.indices as ArrayLike<unknown>;
+  if (value.version === 1) {
+    if (!isPlainArray(source) || source.length !== length) return undefined;
+  } else {
+    // The narrowest typed-array kind that holds the palette. Compared by tag
+    // rather than constructor identity, because IndexedDB clones can come from
+    // another realm; ArrayBuffer.isView checks the internal slot.
+    const expectedTag = palette.length <= 256 ? '[object Uint8Array]' : '[object Uint16Array]';
+    if (!ArrayBuffer.isView(source) || Object.prototype.toString.call(source) !== expectedTag || source.length !== length) return undefined;
+  }
+  const indices = createThumbnailIndices(palette.length, length);
+  for (let i = 0; i < length; i += 1) {
+    const index = source[i];
     if (!isNonNegativeSafeInteger(index) || index >= palette.length) return undefined;
-    indices.push(index);
+    indices[i] = index;
   }
   return {
     version: PROJECT_THUMBNAIL_VERSION,
@@ -102,15 +119,27 @@ export function sanitizeProjectThumbnail(value: unknown, expectedRevision?: numb
   };
 }
 
+/** Field-wise and element-wise equality of two thumbnail summaries. */
+export function projectThumbnailsEqual(a: ProjectThumbnailSummary | undefined, b: ProjectThumbnailSummary | undefined): boolean {
+  if (a === b) return true;
+  if (a === undefined || b === undefined) return false;
+  if (a.version !== b.version || a.revision !== b.revision || a.columns !== b.columns || a.rows !== b.rows
+    || a.palette.length !== b.palette.length || a.indices.length !== b.indices.length) return false;
+  for (let i = 0; i < a.palette.length; i += 1) if (a.palette[i] !== b.palette[i]) return false;
+  for (let i = 0; i < a.indices.length; i += 1) if (a.indices[i] !== b.indices[i]) return false;
+  return true;
+}
+
 export function isValidProjectThumbnail(value: unknown, expectedRevision?: number): value is ProjectThumbnailSummary {
   return sanitizeProjectThumbnail(value, expectedRevision) !== undefined;
 }
 
-function thumbnailDimensions(document: PatternDocument): { columns: number; rows: number } {
-  const scale = Math.min(1, PROJECT_THUMBNAIL_MAX_AXIS / document.width, PROJECT_THUMBNAIL_MAX_AXIS / document.height);
+/** The thumbnail grid derived for a pattern of this size: 1:1 up to the axis cap, downsampled beyond it. */
+export function expectedThumbnailDimensions(width: number, height: number): { columns: number; rows: number } {
+  const scale = Math.min(1, PROJECT_THUMBNAIL_MAX_AXIS / width, PROJECT_THUMBNAIL_MAX_AXIS / height);
   return {
-    columns: Math.max(1, Math.min(PROJECT_THUMBNAIL_MAX_AXIS, Math.round(document.width * scale))),
-    rows: Math.max(1, Math.min(PROJECT_THUMBNAIL_MAX_AXIS, Math.round(document.height * scale)))
+    columns: Math.max(1, Math.min(PROJECT_THUMBNAIL_MAX_AXIS, Math.round(width * scale))),
+    rows: Math.max(1, Math.min(PROJECT_THUMBNAIL_MAX_AXIS, Math.round(height * scale)))
   };
 }
 
@@ -126,7 +155,7 @@ function isLayeredDocument(document: LayeredDocument | PatternDocument): documen
  */
 export function deriveProjectThumbnail(source: LayeredDocument | PatternDocument): ProjectThumbnailSummary {
   const document = isLayeredDocument(source) ? flattenDocument(source) : source;
-  const { columns, rows } = thumbnailDimensions(document);
+  const { columns, rows } = expectedThumbnailDimensions(document.width, document.height);
   const fabricColor = normalizeThumbnailColor(document.settings?.backgroundColor)
     ?? normalizeThumbnailColor(DEFAULT_PATTERN_SETTINGS.backgroundColor)
     ?? PROJECT_THUMBNAIL_FABRIC_COLOR;
@@ -139,7 +168,8 @@ export function deriveProjectThumbnail(source: LayeredDocument | PatternDocument
   const palette = [fabricColor];
   const paletteIndices = new Map<string, number>();
   paletteIndices.set(fabricColor, 0);
-  const indices: number[] = [];
+  const sampled = new Uint16Array(columns * rows);
+  let cursor = 0;
   for (let row = 0; row < rows; row += 1) {
     // Sampling the center of a destination cell chooses the source cell that
     // contains that center, rather than repeatedly favoring its top edge.
@@ -171,7 +201,8 @@ export function deriveProjectThumbnail(source: LayeredDocument | PatternDocument
         palette.push(color);
         paletteIndices.set(color, paletteIndex);
       }
-      indices.push(paletteIndex);
+      sampled[cursor] = paletteIndex;
+      cursor += 1;
     }
   }
   return {
@@ -180,7 +211,7 @@ export function deriveProjectThumbnail(source: LayeredDocument | PatternDocument
     columns,
     rows,
     palette,
-    indices
+    indices: palette.length <= 256 ? Uint8Array.from(sampled) : sampled
   };
 }
 

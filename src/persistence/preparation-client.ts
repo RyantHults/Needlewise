@@ -111,7 +111,7 @@ export function consumePreparedDocumentCapability<T>(
     thumbnail: {
       ...payload.summary.thumbnail,
       palette: [...payload.summary.thumbnail.palette],
-      indices: [...payload.summary.thumbnail.indices]
+      indices: payload.summary.thumbnail.indices.slice()
     }
   });
 }

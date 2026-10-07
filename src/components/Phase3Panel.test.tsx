@@ -8,30 +8,37 @@ type DocumentOptions = Omit<Parameters<typeof createDocument>[0], 'catalog'>;
 const makeDocument = (options: DocumentOptions) => createDocument({ ...options, catalog: DEFAULT_CATALOG_DEFINITION.association });
 const materialsCatalogBRecord = { sourceId: 'b-source-1', code: '321', name: 'B Ruby', hex: '#BB0000', rgb: [187, 0, 0] as const } as CatalogRecord;
 const materialsCatalogB: CatalogDefinition = { association: { catalogId: 'catalog-b', brandLabel: 'Brand B', colorCount: 1 }, records: [materialsCatalogBRecord], compatibilityLabel: 'Brand B-compatible', snapshot: { association: { catalogId: 'catalog-b', brandLabel: 'Brand B', colorCount: 1 }, records: [materialsCatalogBRecord] }, search: (query, options = {}) => (!query || 'B Ruby 321'.toLowerCase().includes(query.toLowerCase()) ? [materialsCatalogBRecord] : []).slice(0, options.limit), getByHex: (hex) => hex.toUpperCase() === '#BB0000' ? materialsCatalogBRecord : undefined, nearest: () => materialsCatalogBRecord };
-function renderPanel(execute = vi.fn().mockResolvedValue(undefined), metadata: { units?: 'metric' | 'imperial' } | null = null) {
+const materialsCatalogARecord = { sourceId: 'a-source-1', code: '310', name: 'A Black', hex: '#000000', rgb: [0, 0, 0] as const } as CatalogRecord;
+const materialsCatalogA: CatalogDefinition = { ...materialsCatalogB, association: { catalogId: 'catalog-a', brandLabel: 'Brand A', colorCount: 1 }, records: [materialsCatalogARecord], compatibilityLabel: 'Brand A-compatible', snapshot: { association: { catalogId: 'catalog-a', brandLabel: 'Brand A', colorCount: 1 }, records: [materialsCatalogARecord] }, search: () => [materialsCatalogARecord], getByHex: (hex) => hex.toUpperCase() === '#000000' ? materialsCatalogARecord : undefined, nearest: () => materialsCatalogARecord };
+function renderPanel(execute = vi.fn().mockResolvedValue(undefined), metadata: { units?: 'metric' | 'imperial' } | null = null, catalog: CatalogDefinition = DEFAULT_CATALOG_DEFINITION) {
   const updateActiveMetadata = vi.fn().mockResolvedValue(undefined);
-  const workspace = { activeProjectId: 'test', metadata, catalogFor: vi.fn(() => DEFAULT_CATALOG_DEFINITION), availableCatalogs: vi.fn(() => [DEFAULT_CATALOG_DEFINITION]), catalogById: vi.fn(() => DEFAULT_CATALOG_DEFINITION), materialSettings: null, updateActiveMaterialSettings: vi.fn().mockResolvedValue(undefined), updateActiveMetadata } as never;
+  const workspace = { activeProjectId: 'test', metadata, catalogFor: vi.fn(() => catalog), availableCatalogs: vi.fn(() => [catalog]), catalogById: vi.fn(() => catalog), materialSettings: null, updateActiveMaterialSettings: vi.fn().mockResolvedValue(undefined), updateActiveMetadata } as never;
   render(<Phase3Panel document={makeDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Black', color: '#000000' }, { id: 2, name: 'White', color: '#FFFFFF' }] })} metrics={null} sessionStats={null} activity={null} execute={execute} workspace={workspace} open />);
   return { execute, updateActiveMetadata };
 }
 
+// Dialog tests use one-record catalogs: the full DMC grid is hundreds of
+// buttons, and role queries over it are slow under jsdom. Only the offline
+// catalog test, which is about DMC itself, renders it.
 describe('Phase3Panel palette controls', () => {
   it('lets Materials choose a catalog before searching and adds its selected record', async () => {
     const execute = vi.fn().mockResolvedValue(undefined);
-    const workspace = { activeProjectId: 'multi', metadata: null, catalogFor: vi.fn(() => DEFAULT_CATALOG_DEFINITION), availableCatalogs: vi.fn(() => [DEFAULT_CATALOG_DEFINITION, materialsCatalogB]), catalogById: vi.fn((id: string) => id === 'catalog-b' ? materialsCatalogB : DEFAULT_CATALOG_DEFINITION), materialSettings: null, updateActiveMaterialSettings: vi.fn().mockResolvedValue(undefined), updateActiveMetadata: vi.fn().mockResolvedValue(undefined) } as never;
+    const workspace = { activeProjectId: 'multi', metadata: null, catalogFor: vi.fn(() => materialsCatalogA), availableCatalogs: vi.fn(() => [materialsCatalogA, materialsCatalogB]), catalogById: vi.fn((id: string) => id === 'catalog-b' ? materialsCatalogB : materialsCatalogA), materialSettings: null, updateActiveMaterialSettings: vi.fn().mockResolvedValue(undefined), updateActiveMetadata: vi.fn().mockResolvedValue(undefined) } as never;
     render(<Phase3Panel document={makeDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Black', color: '#000000' }] })} metrics={null} sessionStats={null} activity={null} execute={execute} workspace={workspace} open />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a color to the palette' }));
     const dialog = screen.getByRole('dialog', { name: 'Add a thread color' });
-    const selector = within(dialog).getByRole('combobox', { name: 'Catalog' });
-    fireEvent.change(selector, { target: { value: 'catalog-b' } });
+    expect(within(dialog).getByText('Color Catalog')).toHaveClass('section-label');
+    fireEvent.click(within(dialog).getByRole('tab', { name: 'Brand B' }));
     fireEvent.change(within(dialog).getByLabelText('Search Brand B catalog'), { target: { value: '321' } });
     const close = within(dialog).getByRole('button', { name: 'Close catalog dialog' });
-    const last = within(dialog).getByRole('button', { name: 'Add B Ruby' });
+    const last = dialog.querySelector('.custom-color-action') as HTMLButtonElement;
     last.focus();
     fireEvent.keyDown(last, { key: 'Tab' });
     expect(document.activeElement).toBe(close);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Add B Ruby' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'B Ruby, color 321' }));
+    fireEvent.click(within(within(dialog).getByRole('group', { name: 'Selected thread color' })).getByRole('button', { name: 'Add B Ruby' }));
     expect(execute).toHaveBeenCalledWith(expect.objectContaining({ type: 'palette-create', catalog: expect.objectContaining({ catalogId: 'catalog-b', sourceId: 'b-source-1' }) }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add a thread color' })).not.toBeInTheDocument());
   });
   it('renders same-code Materials results without duplicate React keys', () => {
     const records = [
@@ -43,10 +50,40 @@ describe('Phase3Panel palette controls', () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     render(<Phase3Panel document={makeDocument({ width: 2, height: 2, palette: [] })} metrics={null} sessionStats={null} activity={null} execute={vi.fn().mockResolvedValue(undefined)} workspace={workspace} open />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a color to the palette' }));
-    expect(screen.getByRole('button', { name: 'Add Ruby A' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Add Ruby B' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Ruby A, color 321' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Ruby B, color 321' })).toBeInTheDocument();
     expect(error.mock.calls.map(([message]) => String(message))).not.toEqual(expect.arrayContaining([expect.stringMatching(/same key|duplicate key/i)]));
     error.mockRestore();
+  });
+  it('adds an unmatched custom hex as a plain color and returns focus to the launcher', async () => {
+    const { execute } = renderPanel(undefined, null, materialsCatalogB);
+    const plus = screen.getByRole('button', { name: 'Add a color to the palette' });
+    fireEvent.click(plus);
+    const dialog = screen.getByRole('dialog', { name: 'Add a thread color' });
+    fireEvent.change(within(dialog).getByLabelText('Hex color'), { target: { value: '#123' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add #112233' }));
+    expect(execute).toHaveBeenLastCalledWith({ type: 'palette-create', name: '#112233', color: '#112233' });
+    await waitFor(() => expect(document.activeElement).toBe(plus));
+    expect(screen.queryByRole('dialog', { name: 'Add a thread color' })).not.toBeInTheDocument();
+  });
+  it('adds a custom hex that matches a catalog record as that record', () => {
+    const { execute } = renderPanel(undefined, null, materialsCatalogB);
+    fireEvent.click(screen.getByRole('button', { name: 'Add a color to the palette' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add a thread color' });
+    fireEvent.change(within(dialog).getByLabelText('Hex color'), { target: { value: '#bb0000' } });
+    const action = dialog.querySelector('.custom-color-action') as HTMLButtonElement;
+    expect(action).toHaveAccessibleName('Add B Ruby');
+    fireEvent.click(action);
+    expect(execute).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'palette-create', name: 'B Ruby', color: '#BB0000', catalog: expect.objectContaining({ catalogId: 'catalog-b', sourceId: 'b-source-1' }) }));
+  });
+  it('keeps the add dialog open with the error notice when adding fails', async () => {
+    renderPanel(vi.fn().mockRejectedValue(new Error('Palette is full.')), null, materialsCatalogB);
+    fireEvent.click(screen.getByRole('button', { name: 'Add a color to the palette' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add a thread color' });
+    fireEvent.change(within(dialog).getByLabelText('Hex color'), { target: { value: '#123' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Add #112233' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('Palette is full.');
+    expect(screen.getByRole('dialog', { name: 'Add a thread color' })).toBe(dialog);
   });
   it('labels the starter palette Black and White', () => {
     renderPanel();
@@ -63,7 +100,7 @@ describe('Phase3Panel palette controls', () => {
     await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Search DMC catalog')));
 
     fireEvent.change(screen.getByLabelText('Search DMC catalog'), { target: { value: '310' } });
-    fireEvent.click(await screen.findByRole('button', { name: 'Add Black' }));
+    fireEvent.click(within(screen.getByRole('group', { name: 'Selected thread color' })).getByRole('button', { name: 'Add Black' }));
     expect(execute).toHaveBeenCalledWith(expect.objectContaining({ type: 'palette-create', name: 'Black', color: '#000000' }));
     await waitFor(() => expect(document.activeElement).toBe(plus));
   });
@@ -72,13 +109,13 @@ describe('Phase3Panel palette controls', () => {
     const shell = document.createElement('div');
     shell.dataset.application = '';
     document.body.append(shell);
-    renderPanel();
+    renderPanel(undefined, null, materialsCatalogB);
     fireEvent.click(screen.getByRole('button', { name: 'Add a color to the palette' }));
 
     expect(shell).toHaveProperty('inert', true);
     expect(screen.getByRole('dialog', { name: 'Add a thread color' }).closest('[data-application]')).toBeNull();
     expect(screen.getByRole('dialog', { name: 'Plan the thread' })).toBeInTheDocument();
-    fireEvent.keyDown(screen.getByLabelText('Search DMC catalog'), { key: 'Escape' });
+    fireEvent.keyDown(screen.getByLabelText('Search Brand B catalog'), { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add a thread color' })).not.toBeInTheDocument());
     expect(shell).toHaveProperty('inert', true);
     shell.remove();
@@ -86,11 +123,11 @@ describe('Phase3Panel palette controls', () => {
 
   it('keeps the nested catalog open and focused across onClose changes; Escape closes only it', async () => {
     const onClose = vi.fn();
-    const workspace = { activeProjectId: 'nested', catalogFor: vi.fn(() => DEFAULT_CATALOG_DEFINITION), availableCatalogs: vi.fn(() => [DEFAULT_CATALOG_DEFINITION]), catalogById: vi.fn(() => DEFAULT_CATALOG_DEFINITION), materialSettings: null, updateActiveMaterialSettings: vi.fn().mockResolvedValue(undefined), updateActiveMetadata: vi.fn().mockResolvedValue(undefined) } as never;
+    const workspace = { activeProjectId: 'nested', catalogFor: vi.fn(() => materialsCatalogB), availableCatalogs: vi.fn(() => [materialsCatalogB]), catalogById: vi.fn(() => materialsCatalogB), materialSettings: null, updateActiveMaterialSettings: vi.fn().mockResolvedValue(undefined), updateActiveMetadata: vi.fn().mockResolvedValue(undefined) } as never;
     const props = { document: makeDocument({ width: 2, height: 2, palette: [] }), metrics: null, sessionStats: null, activity: null, execute: vi.fn().mockResolvedValue(undefined), workspace, open: true };
     const view = render(<Phase3Panel {...props} onClose={onClose} />);
     fireEvent.click(screen.getByRole('button', { name: 'Add a color to the palette' }));
-    const search = screen.getByLabelText('Search DMC catalog');
+    const search = screen.getByLabelText('Search Brand B catalog');
     await waitFor(() => expect(document.activeElement).toBe(search));
     view.rerender(<Phase3Panel {...props} onClose={() => onClose()} />);
     expect(screen.getByRole('dialog', { name: 'Add a thread color' })).toBeInTheDocument();

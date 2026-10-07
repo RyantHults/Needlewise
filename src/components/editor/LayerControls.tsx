@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { canAddLayer, findLayer, MAX_LAYERS_PER_TYPE, type Layer, type LayeredDocument } from "../../domain";
 import { CANVAS_BASIC_LOCKED_HINT, type CanvasEditMode } from "../../editor/contracts";
 import type { ActiveLayerId } from "./LayersPanel";
+import { ConfirmDialog } from "../ConfirmDialog";
 import { RenameLayerDialog } from "./RenameLayerDialog";
 
 export const AIDA_COUNTS = [11, 14, 16, 18, 22] as const;
@@ -188,28 +189,6 @@ interface LayerProps {
   onDelete: (layerId: number) => void;
 }
 
-function useDialogFocus(open: boolean, dialog: React.RefObject<HTMLDivElement | null>, close: () => void) {
-  useEffect(() => {
-    if (!open) return undefined;
-    const element = dialog.current;
-    if (!element) return undefined;
-    const root = globalThis.document.querySelector<HTMLElement>("[data-application]");
-    const wasInert = root?.inert ?? false;
-    if (root) root.inert = true;
-    element.querySelector<HTMLButtonElement>("[data-dialog-cancel]")?.focus();
-    const key = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { event.preventDefault(); close(); return; }
-      if (event.key !== "Tab") return;
-      const controls = [...element.querySelectorAll<HTMLElement>("button,input,select,textarea")].filter((item) => !item.hasAttribute("disabled"));
-      const first = controls[0], last = controls.at(-1);
-      if (event.shiftKey && globalThis.document.activeElement === first) { event.preventDefault(); last?.focus(); }
-      else if (!event.shiftKey && globalThis.document.activeElement === last) { event.preventDefault(); first?.focus(); }
-    };
-    element.addEventListener("keydown", key);
-    return () => { element.removeEventListener("keydown", key); if (root) root.inert = wasInert; };
-  }, [open]);
-}
-
 function StackLayerControls({ document, layer, onRename, onDuplicate, onMerge, onDelete }: LayerProps) {
   const [renameOpen, setRenameOpen] = useState(false);
   const renameButton = useRef<HTMLButtonElement>(null);
@@ -219,7 +198,6 @@ function StackLayerControls({ document, layer, onRename, onDuplicate, onMerge, o
   const mergeButton = useRef<HTMLButtonElement>(null);
   const mergeMenu = useRef<HTMLDivElement>(null);
   const deleteButton = useRef<HTMLButtonElement>(null);
-  const deleteDialog = useRef<HTMLDivElement>(null);
   const closeRename = useCallback(() => {
     setRenameOpen(false);
     window.setTimeout(() => renameButton.current?.focus(), 0);
@@ -235,8 +213,6 @@ function StackLayerControls({ document, layer, onRename, onDuplicate, onMerge, o
       ? `There is no other visible ${typeWord} layer to merge into.`
       : "Merge into another layer";
 
-  const closeDelete = () => { setDeleteOpen(false); window.setTimeout(() => deleteButton.current?.focus(), 0); };
-  useDialogFocus(deleteOpen, deleteDialog, closeDelete);
 
   useEffect(() => {
     if (!mergeOpen) return undefined;
@@ -305,19 +281,16 @@ function StackLayerControls({ document, layer, onRename, onDuplicate, onMerge, o
         </div>,
         globalThis.document.body,
       )}
-      {deleteOpen && createPortal(
-        <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) closeDelete(); }}>
-          <div ref={deleteDialog} className="catalog-dialog create-modal" role="dialog" aria-modal="true" aria-labelledby="delete-layer-title" aria-describedby="delete-layer-hint">
-            <p className="section-label">Layers</p>
-            <h2 id="delete-layer-title">{`Delete ${layer.name}?`}</h2>
-            <p id="delete-layer-hint" className="modal-hint">Everything on this layer will be removed. You can undo this.</p>
-            <div className="actions">
-              <button className="button button-secondary" data-dialog-cancel type="button" onClick={closeDelete}>Cancel</button>
-              <button className="button button-primary" type="button" onClick={() => { setDeleteOpen(false); onDelete(layer.id); }}>Delete layer</button>
-            </div>
-          </div>
-        </div>,
-        globalThis.document.body,
+      {deleteOpen && (
+        <ConfirmDialog
+          eyebrow="Layers"
+          title={`Delete ${layer.name}?`}
+          message="Everything on this layer will be removed. You can undo this."
+          confirmLabel="Delete layer"
+          returnFocus={deleteButton}
+          onCancel={() => setDeleteOpen(false)}
+          onConfirm={() => { setDeleteOpen(false); onDelete(layer.id); }}
+        />
       )}
     </div>
   );

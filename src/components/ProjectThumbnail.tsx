@@ -21,13 +21,17 @@ function isPlainArray(value: unknown): value is unknown[] {
 }
 
 function isUsableThumbnail(value: ProjectThumbnailSummary | undefined): value is ProjectThumbnailSummary {
-  if (!value || value.version !== 1 || !Number.isSafeInteger(value.revision) || value.revision < 0) return false;
+  if (!value || value.version !== 2 || !Number.isSafeInteger(value.revision) || value.revision < 0) return false;
   if (!Number.isSafeInteger(value.columns) || !Number.isSafeInteger(value.rows) || value.columns < 1 || value.rows < 1) return false;
   if (value.columns > PROJECT_THUMBNAIL_MAX_AXIS || value.rows > PROJECT_THUMBNAIL_MAX_AXIS || value.columns * value.rows > MAX_SAMPLE_CELLS) return false;
-  if (!isPlainArray(value.palette) || !isPlainArray(value.indices) || value.indices.length !== value.columns * value.rows) return false;
-  if (value.palette.length < 1 || colorValue(value.palette[0]) === null) return false;
-  return value.palette.every((entry) => Boolean(colorValue(entry)))
-    && value.indices.every((index) => Number.isInteger(index) && index >= 0 && index < value.palette.length);
+  if (!isPlainArray(value.palette) || value.palette.length < 1 || !value.palette.every((entry) => Boolean(colorValue(entry)))) return false;
+  const { indices } = value;
+  const expectedTag = value.palette.length <= 256 ? '[object Uint8Array]' : '[object Uint16Array]';
+  if (!ArrayBuffer.isView(indices) || Object.prototype.toString.call(indices) !== expectedTag || indices.length !== value.columns * value.rows) return false;
+  for (let index = 0; index < indices.length; index += 1) {
+    if (indices[index] >= value.palette.length) return false;
+  }
+  return true;
 }
 
 function NeutralPreview() {
@@ -79,14 +83,16 @@ export function ProjectThumbnail({ revision, width, height, thumbnail }: Props) 
       };
       context.imageSmoothingEnabled = false;
       const image = context.createImageData(thumbnail.columns, thumbnail.rows);
-      const colors = thumbnail.palette.map((entry) => colorValue(entry) as string);
+      const colors = thumbnail.palette.map((entry) => {
+        const value = parseInt((colorValue(entry) as string).slice(1), 16);
+        return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+      });
       for (let index = 0; index < thumbnail.indices.length; index += 1) {
-        const hex = colors[thumbnail.indices[index]];
-        const value = hex.slice(1);
+        const [red, green, blue] = colors[thumbnail.indices[index]];
         const offset = index * 4;
-        image.data[offset] = parseInt(value.slice(0, 2), 16);
-        image.data[offset + 1] = parseInt(value.slice(2, 4), 16);
-        image.data[offset + 2] = parseInt(value.slice(4, 6), 16);
+        image.data[offset] = red;
+        image.data[offset + 1] = green;
+        image.data[offset + 2] = blue;
         image.data[offset + 3] = 255;
       }
       context.putImageData(image, 0, 0);

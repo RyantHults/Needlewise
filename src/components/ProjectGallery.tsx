@@ -17,6 +17,7 @@ import {
 import { MAX_FOLDER_NAME_CHARS, type ProjectFolder, type ProjectFolderAssignment, type ProjectMetadata } from '../persistence';
 import { ProjectThumbnail } from './ProjectThumbnail';
 import { NewFolderModal } from './NewFolderModal';
+import { CardActionButton } from './CardActionButton';
 import {
   UP_DROP_ID,
   centerOf,
@@ -73,6 +74,8 @@ interface ProjectGalleryProps {
   disabled?: boolean;
   onOpen: (project: ProjectMetadata) => void;
   onDelete: (project: ProjectMetadata) => void;
+  onDuplicate?: (project: ProjectMetadata) => void;
+  onRenameProject?: (project: ProjectMetadata, title: string) => Promise<unknown> | void;
   deleteConfirmId?: string | null;
   onCreate: (button: HTMLButtonElement) => void;
   onImport: () => void;
@@ -269,31 +272,28 @@ function FolderCard({
           <span aria-hidden="true">⠿</span>
         </button>
         {onRenameFolder && !renaming && (
-          <button className="project-gallery-rename" type="button" disabled={disabled} onClick={startRename}>
+          <CardActionButton disabled={disabled} onClick={startRename}>
             Rename
-          </button>
+          </CardActionButton>
         )}
         {onDeleteFolder && (
-          <button
-            className={`project-gallery-delete${confirming ? ' project-gallery-delete-confirming' : ''}`}
-            type="button"
+          <CardActionButton
+            armed={confirming}
             disabled={disabled}
             aria-label={confirming ? `Confirm delete folder ${folder.name}` : `Delete folder ${folder.name}`}
             onClick={() => onDeleteFolder(folder)}
           >
             {confirming ? 'Confirm delete?' : 'Delete'}
-          </button>
+          </CardActionButton>
         )}
-        <button
-          className="project-gallery-footer-open"
-          type="button"
+        <CardActionButton
           disabled={disabled}
           onClick={() => onNavigateFolder?.(folder.id)}
           aria-label={`Open folder: ${folder.name}`}
           aria-describedby={metadataDescriptionId}
         >
           <span aria-hidden="true">Open →</span>
-        </button>
+        </CardActionButton>
       </div>
     </article>
   );
@@ -305,11 +305,47 @@ interface ProjectCardProps {
   confirming: boolean;
   onOpen: (project: ProjectMetadata) => void;
   onDelete: (project: ProjectMetadata) => void;
+  onDuplicate?: (project: ProjectMetadata) => void;
+  onRenameProject?: (project: ProjectMetadata, title: string) => Promise<unknown> | void;
 }
 
-function ProjectCard({ project, disabled, confirming, onOpen, onDelete }: ProjectCardProps) {
+function ProjectCard({ project, disabled, confirming, onOpen, onDelete, onDuplicate, onRenameProject }: ProjectCardProps) {
   const metadataDescriptionId = useId();
-  const { attributes, listeners, setNodeRef, setActivatorNodeRef, isDragging } = useDraggable({ id: projectDragId(project.id), disabled });
+  const renameInputId = useId();
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState(project.title);
+  const renameInputRef = useRef<HTMLInputElement>(null);
+  const settledRef = useRef(false);
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, isDragging } = useDraggable({ id: projectDragId(project.id), disabled: disabled || renaming });
+
+  useEffect(() => {
+    if (renaming) {
+      renameInputRef.current?.focus();
+      renameInputRef.current?.select();
+    }
+  }, [renaming]);
+
+  function startRename() {
+    settledRef.current = false;
+    setRenameValue(project.title);
+    setRenaming(true);
+  }
+
+  function commitRename() {
+    if (settledRef.current) return;
+    settledRef.current = true;
+    const trimmed = renameValue.trim();
+    setRenaming(false);
+    if (trimmed && trimmed !== project.title) onRenameProject?.(project, trimmed);
+  }
+
+  function cancelRename() {
+    if (settledRef.current) return;
+    settledRef.current = true;
+    setRenameValue(project.title);
+    setRenaming(false);
+  }
+
   const size = typeof project.width === 'number' && typeof project.height === 'number'
     && Number.isInteger(project.width) && Number.isInteger(project.height)
     && project.width > 0 && project.height > 0
@@ -331,43 +367,80 @@ function ProjectCard({ project, disabled, confirming, onOpen, onDelete }: Projec
         aria-describedby={metadataDescriptionId}
       >
         <ProjectThumbnail revision={project.revision} width={project.width} height={project.height} thumbnail={project.thumbnail} />
-        <span className="project-gallery-copy">
+        <span className={`project-gallery-copy${onRenameProject ? ' project-gallery-copy-tight' : ''}`}>
           <span id={metadataDescriptionId} className="project-gallery-meta">
             {size} | Edited {editedDate(project.updatedAt)}
           </span>
-          <span className="project-gallery-name">{project.title}</span>
+          {!onRenameProject && <span className="project-gallery-name">{project.title}</span>}
         </span>
       </button>
+      {onRenameProject && (
+        <div className="project-gallery-title-row">
+          {renaming ? (
+            <>
+              <label className="visually-hidden" htmlFor={renameInputId}>Rename pattern {project.title}</label>
+              <input
+                ref={renameInputRef}
+                id={renameInputId}
+                className="project-gallery-title-input"
+                value={renameValue}
+                onChange={(event) => setRenameValue(event.target.value)}
+                onBlur={commitRename}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') { event.preventDefault(); commitRename(); }
+                  else if (event.key === 'Escape') { event.preventDefault(); cancelRename(); }
+                }}
+              />
+            </>
+          ) : (
+            <button
+              className="project-gallery-name project-gallery-name-button"
+              type="button"
+              disabled={disabled}
+              aria-label={`Rename ${project.title}`}
+              onClick={startRename}
+            >
+              {project.title}
+            </button>
+          )}
+        </div>
+      )}
       <div className="project-gallery-card-actions">
         <button
           ref={setActivatorNodeRef}
           className="project-gallery-drag-handle"
           type="button"
-          disabled={disabled}
+          disabled={disabled || renaming}
           aria-label={`Drag ${project.title}`}
           {...attributes}
         >
           <span aria-hidden="true">⠿</span>
         </button>
-        <button
-          className={`project-gallery-delete${confirming ? ' project-gallery-delete-confirming' : ''}`}
-          type="button"
+        {onDuplicate && (
+          <CardActionButton
+            disabled={disabled}
+            aria-label={`Duplicate ${project.title}`}
+            onClick={() => onDuplicate(project)}
+          >
+            Duplicate
+          </CardActionButton>
+        )}
+        <CardActionButton
+          armed={confirming}
           disabled={disabled}
           aria-label={confirming ? `Confirm delete ${project.title}` : `Delete ${project.title}`}
           onClick={() => onDelete(project)}
         >
           {confirming ? 'Confirm delete?' : 'Delete'}
-        </button>
-        <button
-          className="project-gallery-footer-open"
-          type="button"
+        </CardActionButton>
+        <CardActionButton
           disabled={disabled}
           onClick={() => onOpen(project)}
           aria-label={`Open pattern: ${project.title}`}
           aria-describedby={metadataDescriptionId}
         >
           <span aria-hidden="true">Open →</span>
-        </button>
+        </CardActionButton>
       </div>
     </article>
   );
@@ -378,6 +451,8 @@ export function ProjectGallery({
   disabled = false,
   onOpen,
   onDelete,
+  onDuplicate,
+  onRenameProject,
   deleteConfirmId = null,
   onCreate,
   onImport,
@@ -634,6 +709,8 @@ export function ProjectGallery({
                 confirming={deleteConfirmId === project.id}
                 onOpen={onOpen}
                 onDelete={onDelete}
+                onDuplicate={onDuplicate}
+                onRenameProject={onRenameProject}
               />
             ))}
           </div>

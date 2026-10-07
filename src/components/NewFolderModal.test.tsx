@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { NewFolderModal } from './NewFolderModal';
 
@@ -86,6 +86,7 @@ describe('NewFolderModal', () => {
   });
 
   it('inerts the rest of the application while open and restores focus to the trigger on close', () => {
+    vi.useFakeTimers();
     const shell = document.createElement('div');
     shell.dataset.application = '';
     document.body.append(shell);
@@ -98,7 +99,9 @@ describe('NewFolderModal', () => {
 
     unmount();
     expect(shell).toHaveProperty('inert', false);
+    act(() => { vi.runAllTimers(); });
     expect(document.activeElement).toBe(trigger);
+    vi.useRealTimers();
 
     shell.remove();
     trigger.remove();

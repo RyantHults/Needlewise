@@ -63,14 +63,17 @@ export interface SourceImageReplacementInput {
 
 /** The bounded, cacheable color sample used by project listings. */
 export interface ProjectThumbnailSummary {
-  version: 1;
+  version: 2;
   revision: number;
   columns: number;
   rows: number;
   /** Palette index zero is always the neutral fabric color. */
   palette: string[];
-  /** One palette index for every sampled cell, in row-major order. */
-  indices: number[];
+  /**
+   * One palette index for every sampled cell, in row-major order. A
+   * `Uint8Array` when the palette has at most 256 colors, else a `Uint16Array`.
+   */
+  indices: Uint8Array | Uint16Array;
 }
 
 export type ProjectThumbnail = ProjectThumbnailSummary;

@@ -34,6 +34,7 @@ import {
   normalizeSourceImageAsset,
   normalizeSourceImageDescriptor,
   createPersistencePreparationClient,
+  expectedThumbnailDimensions,
   type PersistencePreparationClient
 } from '../persistence';
 import { validateAcceptedConversionDraft, type AcceptedConversionDraft } from '../conversion/image-to-pattern';
@@ -595,6 +596,37 @@ export class ProjectWorkspace {
     }
   }
 
+  /**
+   * Loading a project makes the repository backfill its derived summary, so
+   * loading each out-of-date thumbnail refreshes it. This is deliberately
+   * outside the operation-token protocol: it never changes the active session
+   * or the operation error, and per-project failures are ignored.
+   */
+  async refreshStaleThumbnails(candidates?: readonly ProjectMetadata[]): Promise<number> {
+    let refreshed = 0;
+    try {
+      const projects = candidates ?? await this.repository.listProjects();
+      for (const project of projects) {
+        if (this.disposed) break;
+        if (project.id === this.active?.projectId) continue;
+        const { width, height, thumbnail } = project;
+        if (width === undefined || height === undefined || !Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1) continue;
+        const expected = expectedThumbnailDimensions(width, height);
+        if (thumbnail !== undefined && thumbnail.columns === expected.columns && thumbnail.rows === expected.rows) continue;
+        try {
+          await this.repository.load(project.id);
+          refreshed += 1;
+        } catch {
+          // Best effort: one unreadable project must not stop the others.
+        }
+      }
+    } catch {
+      return refreshed;
+    }
+    if (refreshed > 0 && !this.disposed) this.notify();
+    return refreshed;
+  }
+
   async listProjectMetadata(): Promise<ProjectMetadata[]> {
     return this.listProjects();
   }
@@ -885,6 +917,72 @@ export class ProjectWorkspace {
 
   async saveAsCopy(options: CreateProjectOptions = {}): Promise<ProjectSession> {
     return this.forkActiveProject(options);
+  }
+
+  async renameProject(projectId: string, title: string): Promise<ProjectMetadata> {
+    this.ensureActiveWorkspace();
+    const trimmed = typeof title === 'string' ? title.trim() : '';
+    if (!isProjectId(projectId) || trimmed === '') return this.rememberOperationError(new WorkspaceError('save-failed', 'Project ID or title is invalid.'), 'save-failed', 'Unable to rename the local project.');
+    const token = this.startOperation();
+    try {
+      if (this.active?.projectId === projectId) {
+        // Route through the session so the open editor and its record agree.
+        const session = this.active;
+        session.updateMetadata({ title: trimmed });
+        await session.flush();
+        this.ensureOperation(token);
+        this.operationError = null;
+        this.notify();
+        return session.metadata;
+      }
+      const record = await this.repository.load(projectId);
+      this.ensureOperation(token);
+      if (!record) throw new WorkspaceError('project-not-found', `Project ${projectId} was not found.`);
+      const metadata: ProjectMetadata = { ...record.metadata, title: trimmed };
+      // Retain keeps the stored document snapshot; only the metadata changes.
+      const saveResult = await this.repository.save(projectId, metadata, record.document, undefined, { mode: 'retain', expectedHead: record.head, expectedRevision: record.document.revision });
+      this.ensureOperation(token);
+      if (!saveResult.committed || saveResult.stale) throw new PersistenceError('stale-save', `Project ${projectId} was not committed.`);
+      this.operationError = null;
+      this.notify();
+      return metadata;
+    } catch (error) {
+      if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
+      return this.rememberOperationError(error, 'save-failed', 'Unable to rename the local project.');
+    }
+  }
+
+  async duplicateProject(projectId: string): Promise<ProjectMetadata> {
+    this.ensureActiveWorkspace();
+    if (!isProjectId(projectId)) return this.rememberOperationError(new WorkspaceError('save-failed', 'Project ID is invalid.'), 'save-failed', 'Unable to duplicate the local project.');
+    const token = this.startOperation();
+    try {
+      // Unlike forkActiveProject, the copy is saved without becoming the active
+      // session, so the gallery can duplicate any project in place.
+      const active = this.active?.projectId === projectId ? this.active : null;
+      if (active && active.saveState.status !== 'conflict' && active.saveState.status !== 'error') {
+        await active.flush();
+        this.ensureOperation(token);
+      }
+      const record = await this.repository.load(projectId);
+      this.ensureOperation(token);
+      if (!record) throw new WorkspaceError('project-not-found', `Project ${projectId} was not found.`);
+      const copyId = this.projectIdFactory();
+      if (!isProjectId(copyId)) throw new WorkspaceError('save-failed', 'Generated project ID is invalid.');
+      const document = cloneLayeredDocument(record.document);
+      const { units, materialSettings, sourceImage } = record.metadata;
+      const now = this.clock.now();
+      const metadata: ProjectMetadata = { id: copyId, title: `${record.metadata.title} copy`, notes: record.metadata.notes, createdAt: now, updatedAt: now, revision: document.revision, ...(units === undefined ? {} : { units }), ...(materialSettings === undefined ? {} : { materialSettings }), ...(sourceImage === undefined ? {} : { sourceImage }) };
+      const saveResult = await this.repository.save(copyId, metadata, document, record.assets, { allowLegacyAssetIds: true });
+      this.ensureOperation(token);
+      if (!saveResult.committed || saveResult.stale) throw new PersistenceError('stale-save', `Project ${copyId} was not committed.`);
+      this.operationError = null;
+      this.notify();
+      return metadata;
+    } catch (error) {
+      if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
+      return this.rememberOperationError(error, 'save-failed', 'Unable to duplicate the local project.');
+    }
   }
 
   execute(command: DomainCommand) {

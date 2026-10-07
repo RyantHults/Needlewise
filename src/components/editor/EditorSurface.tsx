@@ -25,9 +25,13 @@ import { TraceImageControls, traceBoundsToWorkspace } from "./TraceImageControls
 import { LayersPanel, LAYER_TYPE_LABELS, type ActiveLayerId } from "./LayersPanel";
 import { LayerControls } from "./LayerControls";
 import { Toast, useToast } from "./Toast";
-import { createCatalogReference, type CatalogRecord } from "../../catalog";
-import { useMemo } from "react";
+import { createCatalogReference, type CatalogDefinition, type CatalogRecord } from "../../catalog";
 import { createPortal } from "react-dom";
+import { Modal } from "../Modal";
+import { ConfirmDialog } from "../ConfirmDialog";
+import { ColorPickerModal } from "../ColorPickerModal";
+import { normalizeHexColor, type ThreadColorPickerProps } from "../ThreadColorPicker";
+import { PaletteManagerModal } from "./PaletteManagerModal";
 import backstitchIcon from "../../assets/editor-tools/backstitch.svg";
 import eraserIcon from "../../assets/editor-tools/eraser.svg";
 import fillIcon from "../../assets/editor-tools/paint-bucket.svg";
@@ -71,14 +75,6 @@ const SELECT_CHOICES: readonly SelectChoice[] = [
 ];
 const STITCH_CHOICES = [["full", "Full stitch"], ["half", "Half stitch"], ["three-quarter", "3/4 stitch"]] as const;
 type StitchKind = (typeof STITCH_CHOICES)[number][0];
-const normalizeHexColor = (value: string): string | undefined => {
-  const digits = value.trim().replace(/^#/, "");
-  if (!/^(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(digits)) return undefined;
-  const expanded = digits.length === 3
-    ? digits.split("").map((digit) => `${digit}${digit}`).join("")
-    : digits;
-  return `#${expanded.toUpperCase()}`;
-};
 const modes = [
   [ChartPresentationMode.Color, "Color"],
   [ChartPresentationMode.Symbol, "Symbol"],
@@ -285,32 +281,15 @@ export function EditorSurface({
   const railSide = preferences.railSide;
   const paletteOptions = preferences.paletteDisplay;
   const pencilModeEnabled = preferences.pencilModeEnabled;
-  const dialog = useRef<HTMLDivElement>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [paletteQuery, setPaletteQuery] = useState("");
-  const [selectedCatalogId, setSelectedCatalogId] = useState(defaultCatalogId);
-  const [selectedCatalogColor, setSelectedCatalogColor] =
-    useState<CatalogColor | null>(null);
   const [swapTarget, setSwapTarget] = useState<number | null>(null);
   const [backgroundPicking, setBackgroundPicking] = useState(false);
-  const [customColorInput, setCustomColorInput] = useState("");
-  const [canonicalCustomColor, setCanonicalCustomColor] = useState("#000000");
   const [paletteNotice, setPaletteNotice] = useState("");
   const addTrigger = useRef<HTMLButtonElement>(null);
-  const preselectedCatalogColor = useRef<CatalogColor | null>(null);
   const paletteTrigger = useRef<HTMLButtonElement | null>(null);
-  const paletteDialog = useRef<HTMLDivElement>(null);
-  const [removeOpen, setRemoveOpen] = useState(false);
-  const [removeQuery, setRemoveQuery] = useState("");
-  const [removeCatalogId, setRemoveCatalogId] = useState(defaultCatalogId);
-  const [removeNotice, setRemoveNotice] = useState("");
-  const [removeTarget, setRemoveTarget] = useState<number | null>(null);
-  const removeDialog = useRef<HTMLDivElement>(null);
-  const removeTrigger = useRef<HTMLButtonElement>(null);
   const [symbolTarget, setSymbolTarget] = useState<number | null>(null);
   const [symbolNotice, setSymbolNotice] = useState("");
   const [symbolFilter, setSymbolFilter] = useState("");
-  const symbolDialog = useRef<HTMLDivElement>(null);
   const symbolTrigger = useRef<HTMLButtonElement | null>(null);
   const [paletteMenu, setPaletteMenu] = useState<number | null>(null);
   const [paletteMenuPosition, setPaletteMenuPosition] = useState({ left: 8, top: 8 });
@@ -318,15 +297,10 @@ export function EditorSurface({
   const menuElement = useRef<HTMLDivElement>(null);
   const [deleteTarget, setDeleteTarget] = useState<number | null>(null);
   const deleteTrigger = useRef<HTMLButtonElement | null>(null);
-  const deleteDialog = useRef<HTMLDivElement>(null);
   const [managerOpen, setManagerOpen] = useState(false);
   const [managerPanel, setManagerPanel] = useState<"swap" | "add" | null>(null);
   const [managerSelectedId, setManagerSelectedId] = useState<number | null>(null);
   const managerTrigger = useRef<HTMLButtonElement | null>(null);
-  const managerDialog = useRef<HTMLDivElement>(null);
-  const managerClose = useRef<HTMLButtonElement>(null);
-  const managerSwapButton = useRef<HTMLButtonElement>(null);
-  const managerAddButton = useRef<HTMLButtonElement>(null);
   const [mobilePanel, setMobilePanel] = useState<"tools" | "colors" | null>(null);
   const mobileDock = useRef<HTMLElement>(null);
   const mobileToolsTrigger = useRef<HTMLButtonElement>(null);
@@ -578,59 +552,17 @@ export function EditorSurface({
       () => undefined,
     );
   };
-  const pickerCatalog = availableCatalogs.find((item) => item.association.catalogId === selectedCatalogId);
-  const replacementCatalog = availableCatalogs.find((item) => item.association.catalogId === removeCatalogId);
-  const catalogResults = useMemo(
-    () => pickerCatalog?.search(paletteQuery) ?? [],
-    [paletteQuery, pickerCatalog],
-  );
-  const installedCatalogIds = availableCatalogs.map((item) => item.association.catalogId).join("\u0000");
-  useEffect(() => {
-    setSelectedCatalogId((current) => availableCatalogs.some((item) => item.association.catalogId === current) ? current : defaultCatalogId);
-    setRemoveCatalogId((current) => availableCatalogs.some((item) => item.association.catalogId === current) ? current : defaultCatalogId);
-    setPaletteQuery((current) => availableCatalogs.some((item) => item.association.catalogId === selectedCatalogId) ? current : "");
-    setRemoveQuery((current) => availableCatalogs.some((item) => item.association.catalogId === removeCatalogId) ? current : "");
-  }, [installedCatalogIds, defaultCatalogId, selectedCatalogId, removeCatalogId]);
-  useEffect(() => {
-    setSelectedCatalogId(defaultCatalogId);
-    setRemoveCatalogId(defaultCatalogId);
-    setPaletteQuery("");
-    setRemoveQuery("");
-    setSelectedCatalogColor(null);
-  }, [workspace.activeProjectId, defaultCatalogId]);
-  useEffect(() => {
-    if (!(paletteOpen || managerPanel)) return;
-    if (
-      selectedCatalogColor &&
-      catalogResults.some((color) => color.sourceId === selectedCatalogColor.sourceId)
-    )
-      return;
-    setSelectedCatalogColor(catalogResults[0] ?? null);
-  }, [catalogResults, paletteOpen, managerPanel, selectedCatalogColor, selectedCatalogId]);
-  useEffect(() => {
-    setPaletteQuery("");
-    const preselected = preselectedCatalogColor.current;
-    preselectedCatalogColor.current = null;
-    setSelectedCatalogColor(preselected ?? pickerCatalog?.search("", { limit: 1 })[0] ?? null);
-  }, [selectedCatalogId]);
-  const resetPicker = () => {
-    setBackgroundPicking(false);
-    setPaletteNotice("");
-    setPaletteQuery("");
-    setCustomColorInput("#000000");
-    setCanonicalCustomColor("#000000");
-    setSelectedCatalogId(defaultCatalogId);
-    setSelectedCatalogColor(availableCatalogs.find((item) => item.association.catalogId === defaultCatalogId)?.search("", { limit: 1 })[0] ?? null);
-  };
   const openPalettePicker = () => {
     paletteTrigger.current = addTrigger.current;
     setSwapTarget(null);
-    resetPicker();
+    setBackgroundPicking(false);
+    setPaletteNotice("");
     setPaletteOpen(true);
   };
   const openSwapPicker = (id: number, trigger: HTMLButtonElement) => {
     paletteTrigger.current = trigger;
-    resetPicker();
+    setBackgroundPicking(false);
+    setPaletteNotice("");
     setSwapTarget(id);
     setPaletteOpen(true);
   };
@@ -648,29 +580,27 @@ export function EditorSurface({
     setManagerOpen(false);
     setManagerPanel(null);
     setSwapTarget(null);
-    window.setTimeout(() => managerTrigger.current?.focus(), 0);
   };
-  const closeManagerPanel = (focus: HTMLButtonElement | null) => {
+  const closeManagerPanel = () => {
     setManagerPanel(null);
     setSwapTarget(null);
-    window.setTimeout(() => focus?.focus(), 0);
   };
   const toggleManagerSwap = () => {
     if (managerPanel === "swap") {
-      closeManagerPanel(managerSwapButton.current);
+      closeManagerPanel();
       return;
     }
     if (!managerEntry) return;
-    resetPicker();
+    setPaletteNotice("");
     setSwapTarget(managerEntry.id);
     setManagerPanel("swap");
   };
   const toggleManagerAdd = () => {
     if (managerPanel === "add") {
-      closeManagerPanel(managerAddButton.current);
+      closeManagerPanel();
       return;
     }
-    resetPicker();
+    setPaletteNotice("");
     setSwapTarget(null);
     setManagerPanel("add");
   };
@@ -687,60 +617,56 @@ export function EditorSurface({
   // The delete confirmation can sit on top of the manager; when the deleted
   // color took the manager's Delete button with it, focus falls back to the
   // manager's close button.
-  const focusAfterDelete = () => window.setTimeout(() => (deleteTrigger.current?.isConnected ? deleteTrigger.current : managerClose.current)?.focus(), 0);
+  const focusAfterDelete = () => window.setTimeout(() => (deleteTrigger.current?.isConnected ? deleteTrigger.current : globalThis.document.querySelector<HTMLElement>(".palette-manager-dialog .modal-close"))?.focus(), 0);
+  const closeDeleteConfirm = () => {
+    setDeleteTarget(null);
+    focusAfterDelete();
+  };
+  const confirmDelete = () => {
+    const id = deleteTarget;
+    if (id === null) return;
+    workspace.execute({ type: 'palette-delete', id } as never);
+    if (ui?.paletteId === id) controllerRef.current?.selectPalette(null);
+    closeDeleteConfirm();
+  };
   const backgroundCatalogMatch = availableCatalogs.flatMap((item) => {
     const record = item.getByHex(documentBackgroundColor);
     return record ? [{ item, record }] : [];
   })[0];
+  const backgroundCatalog = backgroundCatalogMatch?.item ?? availableCatalogs.find((item) => item.association.catalogId === defaultCatalogId);
   const openBackgroundPicker = (trigger: HTMLButtonElement) => {
     paletteTrigger.current = trigger;
-    const defaultCatalog = availableCatalogs.find((item) => item.association.catalogId === defaultCatalogId);
-    const catalog = backgroundCatalogMatch?.item ?? defaultCatalog;
-    const catalogId = catalog?.association.catalogId ?? defaultCatalogId;
-    const color = backgroundCatalogMatch?.record ?? null;
     setSwapTarget(null);
     setBackgroundPicking(true);
     setPaletteNotice("");
-    setPaletteQuery("");
-    setCustomColorInput(documentBackgroundColor);
-    setCanonicalCustomColor(documentBackgroundColor);
-    if (catalogId !== selectedCatalogId) preselectedCatalogColor.current = color;
-    setSelectedCatalogId(catalogId);
-    setSelectedCatalogColor(color ?? catalog?.search("", { limit: 1 })[0] ?? null);
     setPaletteOpen(true);
   };
-  const customColor = normalizeHexColor(customColorInput);
-  const setColorFromHex = (value: string) => {
-    setCustomColorInput(value);
-    const normalized = normalizeHexColor(value);
-    if (normalized) {
-      setCanonicalCustomColor(normalized);
-    }
+  /** The active palette color a custom hex already names, preferring one from the picker's catalog. */
+  const paletteMatchForHex = (hex: string, catalogMatch: CatalogColor | undefined, catalog: CatalogDefinition | undefined) => {
+    const catalogEntry = catalog && catalogMatch
+      ? palette.find((entry) => entry.active && entry.catalog?.catalogId === catalog.association.catalogId && entry.catalog.sourceId === catalogMatch.sourceId && normalizeHexColor(entry.color) === hex)
+      : catalog
+        ? palette.find((entry) => entry.active && entry.catalog?.catalogId === catalog.association.catalogId && normalizeHexColor(entry.color) === hex)
+      : undefined;
+    return catalogEntry ?? palette.find((entry) => entry.active && !entry.catalog && normalizeHexColor(entry.color) === hex);
   };
-  const customCatalogColor = customColor ? pickerCatalog?.getByHex(customColor) : undefined;
-  const selectedCatalogPaletteMatch = customColor && pickerCatalog && customCatalogColor
-    ? palette.find((entry) => entry.active && entry.catalog?.catalogId === pickerCatalog.association.catalogId && entry.catalog.sourceId === customCatalogColor.sourceId && normalizeHexColor(entry.color) === customColor)
-    : customColor && pickerCatalog
-      ? palette.find((entry) => entry.active && entry.catalog?.catalogId === pickerCatalog.association.catalogId && normalizeHexColor(entry.color) === customColor)
-    : undefined;
-  const customPaletteMatch = customColor
-    ? selectedCatalogPaletteMatch ?? palette.find((entry) => entry.active && !entry.catalog && normalizeHexColor(entry.color) === customColor)
-    : undefined;
-  const customActionLabel = backgroundPicking
-    ? customColor ? `Use ${customColor}` : "Use custom color"
-    : swapTarget !== null
-    ? customPaletteMatch ? `Swap with ${customPaletteMatch.name}` : customCatalogColor ? `Swap with ${customCatalogColor.name}` : customColor ? `Replace with ${customColor}` : "Replace custom color"
-    : customPaletteMatch
-    ? `Select ${customPaletteMatch.name}`
-    : customCatalogColor
-      ? `Add ${customCatalogColor.name}`
-      : customColor
-        ? `Add ${customColor}`
-        : "Add custom color";
+  const customActionLabel = (customColor: string | null, customCatalogColor: CatalogColor | undefined, catalog: CatalogDefinition | undefined) => {
+    const customPaletteMatch = customColor ? paletteMatchForHex(customColor, customCatalogColor, catalog) : undefined;
+    return backgroundPicking
+      ? customColor ? `Use ${customColor}` : "Use custom color"
+      : swapTarget !== null
+      ? customPaletteMatch ? `Swap with ${customPaletteMatch.name}` : customCatalogColor ? `Swap with ${customCatalogColor.name}` : customColor ? `Replace with ${customColor}` : "Replace custom color"
+      : customPaletteMatch
+      ? `Select ${customPaletteMatch.name}`
+      : customCatalogColor
+        ? `Add ${customCatalogColor.name}`
+        : customColor
+          ? `Add ${customColor}`
+          : "Add custom color";
+  };
   const closePalettePicker = () => {
     setPaletteOpen(false);
     setBackgroundPicking(false);
-    window.setTimeout(() => paletteTrigger.current?.focus(), 0);
   };
   const useBackgroundColor = (hex: string) => {
     setCanvasBackground(hex);
@@ -752,18 +678,16 @@ export function EditorSurface({
     if (managerPanel === "add") {
       setManagerPanel(null);
       if (id !== null) setManagerSelectedId(id);
-      window.setTimeout(() => managerAddButton.current?.focus(), 0);
       return;
     }
     closePalettePicker();
   };
   const addPaletteColor = async (
     color: CatalogColor,
+    definition: CatalogDefinition,
   ) => {
     try {
       const previousIds = new Set(document.palette.map((entry) => entry.id));
-      const definition = pickerCatalog;
-      if (!definition) return;
       const result = await workspace.execute({
         type: "palette-create",
         name: color.name,
@@ -792,29 +716,26 @@ export function EditorSurface({
     if (managerPanel === "swap") {
       setManagerPanel(null);
       if (replacementId !== null) setManagerSelectedId(replacementId);
-      window.setTimeout(() => managerSwapButton.current?.focus(), 0);
       return;
     }
     closePalettePicker();
   };
-  const swapIntoCatalogColor = (color: CatalogColor) => {
+  const swapIntoCatalogColor = (color: CatalogColor, definition: CatalogDefinition) => {
     const target = swapTarget;
-    const definition = pickerCatalog;
-    if (target === null || !definition) return;
+    if (target === null) return;
     const existing = palette.find((entry) => entry.active && entry.id !== target && entry.catalog?.catalogId === definition.association.catalogId && entry.catalog.sourceId === color.sourceId);
     try {
       if (existing) workspace.execute({ type: "palette-merge", from: target, to: existing.id });
       else workspace.execute({ type: "palette-merge", from: target, createTo: { name: color.name, color: color.hex, catalog: createCatalogReference(definition, color) } });
-      const current = workspace.getStateSnapshot().document;
-      const replacement = existing?.id ?? current?.palette.find((entry) => entry.active && entry.id !== target && entry.catalog?.catalogId === definition.association.catalogId && entry.catalog.sourceId === color.sourceId)?.id ?? null;
+      const replacement = existing?.id ?? workspace.getStateSnapshot().document?.palette.find((entry) => entry.active && entry.id !== target && entry.catalog?.catalogId === definition.association.catalogId && entry.catalog.sourceId === color.sourceId)?.id ?? null;
       finishSwap(replacement);
     } catch (error) {
       setPaletteNotice(error instanceof Error ? error.message : "This color could not be swapped.");
     }
   };
-  const swapIntoCustomColor = () => {
+  const swapIntoCustomColor = (customColor: string) => {
     const target = swapTarget;
-    if (target === null || !customColor) return;
+    if (target === null) return;
     const existing = palette.find((entry) => entry.active && entry.id !== target && normalizeHexColor(entry.color) === customColor);
     try {
       if (existing) workspace.execute({ type: "palette-merge", from: target, to: existing.id });
@@ -825,15 +746,15 @@ export function EditorSurface({
       setPaletteNotice(error instanceof Error ? error.message : "This color could not be swapped.");
     }
   };
-  const addCustomColor = async (): Promise<void> => {
-    if (!customColor) return;
+  const addCustomColor = async (customColor: string, customCatalogColor: CatalogColor | undefined, catalog: CatalogDefinition | undefined): Promise<void> => {
+    const customPaletteMatch = paletteMatchForHex(customColor, customCatalogColor, catalog);
     if (customPaletteMatch) {
       controllerRef.current?.selectPalette(customPaletteMatch.id);
       finishAdd(customPaletteMatch.id);
       return;
     }
-    if (customCatalogColor && pickerCatalog) {
-      await addPaletteColor(customCatalogColor);
+    if (customCatalogColor && catalog) {
+      await addPaletteColor(customCatalogColor, catalog);
       return;
     }
     try {
@@ -861,12 +782,16 @@ export function EditorSurface({
       );
     }
   };
-  const removeEntry =
-    removeTarget === null
-      ? null
-      : (palette.find((x) => x.id === removeTarget) ?? null);
-  const removalCandidates =
-    removeTarget === null ? [] : palette.filter((x) => x.id !== removeTarget);
+  // Shared by the standalone picker and the manager's panel; the mode comes
+  // from backgroundPicking and swapTarget.
+  const pickerProps: ThreadColorPickerProps = {
+    catalogs: availableCatalogs,
+    defaultCatalogId,
+    verb: backgroundPicking ? "Use" : swapTarget === null ? "Add" : "Swap",
+    onPickCatalogColor: (color, definition) => backgroundPicking ? useBackgroundColor(color.hex) : swapTarget === null ? void addPaletteColor(color, definition) : swapIntoCatalogColor(color, definition),
+    onPickCustomColor: (hex, catalogMatch, definition) => backgroundPicking ? useBackgroundColor(hex) : swapTarget === null ? void addCustomColor(hex, catalogMatch, definition) : swapIntoCustomColor(hex),
+    customActionLabel,
+  };
   const catalogIdsByCode = new Map<string, Set<string>>();
   for (const entry of palette) {
     if (!entry.catalog) continue;
@@ -881,21 +806,6 @@ export function EditorSurface({
       : undefined;
   };
   const catalogEntryLabel = (entry: (typeof palette)[number]) => `${catalogEntryBrand(entry) ? `${catalogEntryBrand(entry)} ` : ""}${entry.catalog?.code ?? normalizeHexColor(entry.color) ?? entry.color}`;
-  const removeResults = useMemo(
-    () =>
-      removeTarget !== null && removeQuery.trim()
-        ? (replacementCatalog?.search(removeQuery, { limit: 8 }) ?? [])
-        : [],
-    [removeQuery, removeTarget, replacementCatalog],
-  );
-  const openRemove = (id: number, trigger: HTMLButtonElement) => {
-    removeTrigger.current = trigger;
-    setRemoveTarget(id);
-    setRemoveQuery("");
-    setRemoveCatalogId(defaultCatalogId);
-    setRemoveNotice("");
-    setRemoveOpen(true);
-  };
   const positionPaletteMenu = (anchor: HTMLElement) => {
     const rect = anchor.getBoundingClientRect();
     setPaletteMenuPosition({ left: Math.max(8, Math.min(rect.right + 6, window.innerWidth - 188)), top: Math.max(8, Math.min(rect.top, window.innerHeight - 158)) });
@@ -972,8 +882,8 @@ export function EditorSurface({
         className="palette-remove"
         type="button"
         aria-label={`Remove ${x.name}`}
-        title="Remove or replace this color"
-        onClick={(e) => openRemove(x.id, e.currentTarget)}
+        title="Swap or remove this color"
+        onClick={(e) => openSwapPicker(x.id, e.currentTarget)}
       >
         ×
       </button>
@@ -989,11 +899,6 @@ export function EditorSurface({
       )}
     </div>
   );
-  const closeRemove = () => {
-    setRemoveOpen(false);
-    setRemoveTarget(null);
-    window.setTimeout(() => removeTrigger.current?.focus(), 0);
-  };
   const symbolEntry =
     symbolTarget === null
       ? null
@@ -1008,7 +913,6 @@ export function EditorSurface({
     setSymbolTarget(null);
     setSymbolNotice("");
     setSymbolFilter("");
-    window.setTimeout(() => symbolTrigger.current?.focus(), 0);
   };
   const assignSymbol = (symbol: string) => {
     const target = symbolTarget;
@@ -1040,49 +944,6 @@ export function EditorSurface({
       );
     }
   };
-  const removeIntoExisting = (toId: number) => {
-    const target = removeTarget;
-    if (target === null) return;
-    try {
-      workspace.execute({ type: "palette-merge", from: target, to: toId });
-      controllerRef.current?.selectPalette(toId);
-      closeRemove();
-    } catch (error) {
-      setRemoveNotice(
-        error instanceof Error
-          ? error.message
-          : "This color could not be removed.",
-      );
-    }
-  };
-  const removeIntoNew = (color: CatalogColor) => {
-    const target = removeTarget;
-    if (target === null) return;
-    try {
-      workspace.execute({
-        type: "palette-merge",
-        from: target,
-        createTo: {
-          name: color.name,
-          color: color.hex,
-           catalog: createCatalogReference(replacementCatalog!, color),
-        },
-      });
-      const added = workspace
-        .getStateSnapshot()
-        .document?.palette.find(
-          (x) => x.active && x.catalog?.catalogId === replacementCatalog?.association.catalogId && x.catalog?.sourceId === color.sourceId && x.id !== target,
-        );
-      controllerRef.current?.selectPalette(added?.id ?? null);
-      closeRemove();
-    } catch (error) {
-      setRemoveNotice(
-        error instanceof Error
-          ? error.message
-          : "This color could not be removed.",
-      );
-    }
-  };
   const command = (key: string, ctrlKey = false) => {
     controllerRef.current?.handleKeyDown?.({
       key,
@@ -1091,198 +952,6 @@ export function EditorSurface({
     });
   };
 
-  useEffect(() => {
-    if (!open) return;
-    const el = dialog.current;
-    if (!el) return;
-    const root =
-      globalThis.document.querySelector<HTMLElement>("[data-application]");
-    const wasInert = root?.inert ?? false;
-    if (root) root.inert = true;
-    const all = () => [
-      ...el.querySelectorAll<HTMLElement>("button,input,textarea,select"),
-    ].filter((item) => !item.closest("[hidden]"));
-    all()[0]?.focus();
-    const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        setOpen(false);
-      }
-      if (e.key === "Tab") {
-        const f = all(),
-          first = f[0],
-          last = f.at(-1);
-        if (e.shiftKey && globalThis.document.activeElement === first) {
-          e.preventDefault();
-          last?.focus();
-        } else if (!e.shiftKey && globalThis.document.activeElement === last) {
-          e.preventDefault();
-          first?.focus();
-        }
-      }
-    };
-    el.addEventListener("keydown", key);
-    return () => {
-      el.removeEventListener("keydown", key);
-      if (root) root.inert = wasInert;
-    };
-  }, [open]);
-  useEffect(() => {
-    if (!paletteOpen) return;
-    const el = paletteDialog.current;
-    if (!el) return;
-    const root =
-      globalThis.document.querySelector<HTMLElement>("[data-application]");
-    const wasInert = root?.inert ?? false;
-    if (root) root.inert = true;
-    const search = el.querySelector<HTMLInputElement>("#catalog-search");
-    if (search && !search.disabled) search.focus();
-    else (el.querySelector<HTMLButtonElement>('[role="tab"][aria-selected="true"]') ?? el.querySelector<HTMLButtonElement>(".modal-close"))?.focus();
-    const all = () =>
-      [...el.querySelectorAll<HTMLElement>("button,input,select")].filter(
-        (item) => !item.hasAttribute("disabled") && item.tabIndex >= 0,
-      );
-    const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        closePalettePicker();
-        return;
-      }
-      if (e.key !== "Tab") return;
-      const f = all(),
-        first = f[0],
-        last = f.at(-1);
-      if (e.shiftKey && globalThis.document.activeElement === first) {
-        e.preventDefault();
-        last?.focus();
-      } else if (!e.shiftKey && globalThis.document.activeElement === last) {
-        e.preventDefault();
-        first?.focus();
-      }
-    };
-    el.addEventListener("keydown", key);
-    return () => {
-      el.removeEventListener("keydown", key);
-      if (root) root.inert = wasInert;
-    };
-  }, [paletteOpen]);
-  useEffect(() => {
-    if (!managerOpen) return;
-    const el = managerDialog.current;
-    if (!el) return;
-    const root =
-      globalThis.document.querySelector<HTMLElement>("[data-application]");
-    const wasInert = root?.inert ?? false;
-    if (root) root.inert = true;
-    (el.querySelector<HTMLButtonElement>('.palette-manager-grid [aria-pressed="true"]') ?? managerClose.current)?.focus();
-    // Re-queried on every Tab: the swap panel adds and removes controls.
-    const all = () =>
-      [...el.querySelectorAll<HTMLElement>("button,input,select")].filter(
-        (item) => !item.hasAttribute("disabled") && item.tabIndex >= 0,
-      );
-    const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        // The panel's presence is read from the DOM because this listener
-        // outlives the render that opened the panel.
-        if (el.querySelector("#palette-manager-panel")) closeManagerPanel(el.querySelector('.palette-manager-add[aria-expanded="true"]') ? managerAddButton.current : managerSwapButton.current);
-        else closePaletteManager();
-        return;
-      }
-      if (e.key !== "Tab") return;
-      const f = all(),
-        first = f[0],
-        last = f.at(-1);
-      if (e.shiftKey && globalThis.document.activeElement === first) {
-        e.preventDefault();
-        last?.focus();
-      } else if (!e.shiftKey && globalThis.document.activeElement === last) {
-        e.preventDefault();
-        first?.focus();
-      }
-    };
-    el.addEventListener("keydown", key);
-    return () => {
-      el.removeEventListener("keydown", key);
-      if (root) root.inert = wasInert;
-    };
-  }, [managerOpen]);
-  useEffect(() => {
-    if (!removeOpen) return;
-    const el = removeDialog.current;
-    if (!el) return;
-    const root =
-      globalThis.document.querySelector<HTMLElement>("[data-application]");
-    const wasInert = root?.inert ?? false;
-    if (root) root.inert = true;
-    const search = el.querySelector<HTMLInputElement>("#remove-search");
-    if (search && !search.disabled) search.focus();
-    else (el.querySelector<HTMLSelectElement>("#remove-catalog-choice") ?? el.querySelector<HTMLButtonElement>(".modal-close"))?.focus();
-    const all = () =>
-      [...el.querySelectorAll<HTMLElement>("button,input,select")].filter(
-        (item) => !item.hasAttribute("disabled") && item.tabIndex >= 0,
-      );
-    const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        closeRemove();
-        return;
-      }
-      if (e.key !== "Tab") return;
-      const f = all(),
-        first = f[0],
-        last = f.at(-1);
-      if (e.shiftKey && globalThis.document.activeElement === first) {
-        e.preventDefault();
-        last?.focus();
-      } else if (!e.shiftKey && globalThis.document.activeElement === last) {
-        e.preventDefault();
-        first?.focus();
-      }
-    };
-    el.addEventListener("keydown", key);
-    return () => {
-      el.removeEventListener("keydown", key);
-      if (root) root.inert = wasInert;
-    };
-  }, [removeOpen]);
-  useEffect(() => {
-    if (symbolTarget === null) return;
-    const el = symbolDialog.current;
-    if (!el) return;
-    const root =
-      globalThis.document.querySelector<HTMLElement>("[data-application]");
-    const wasInert = root?.inert ?? false;
-    if (root) root.inert = true;
-    el.querySelector<HTMLInputElement>("#symbol-filter-input")?.focus();
-    const all = () =>
-      [...el.querySelectorAll<HTMLElement>("button,input")].filter(
-        (item) => !item.hasAttribute("disabled") && item.tabIndex >= 0,
-      );
-    const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        closeSymbolPicker();
-        return;
-      }
-      if (e.key !== "Tab") return;
-      const f = all(),
-        first = f[0],
-        last = f.at(-1);
-      if (e.shiftKey && globalThis.document.activeElement === first) {
-        e.preventDefault();
-        last?.focus();
-      } else if (!e.shiftKey && globalThis.document.activeElement === last) {
-        e.preventDefault();
-        first?.focus();
-      }
-    };
-    el.addEventListener("keydown", key);
-    return () => {
-      el.removeEventListener("keydown", key);
-      if (root) root.inert = wasInert;
-    };
-  }, [symbolTarget]);
   useEffect(() => {
     if (paletteMenu === null) return;
     const close = (event: PointerEvent) => {
@@ -1295,27 +964,6 @@ export function EditorSurface({
     globalThis.document.addEventListener("keydown", escape);
     return () => { globalThis.document.removeEventListener("pointerdown", close); globalThis.document.removeEventListener("keydown", escape); };
   }, [paletteMenu]);
-  useEffect(() => {
-    if (deleteTarget === null) return;
-    const dialog = deleteDialog.current;
-    if (!dialog) return;
-    const root = globalThis.document.querySelector<HTMLElement>("[data-application]");
-    const wasInert = root?.inert ?? false;
-    if (root) root.inert = true;
-    dialog.querySelector<HTMLButtonElement>("[data-delete-cancel]")?.focus();
-    const close = () => { setDeleteTarget(null); focusAfterDelete(); };
-    const key = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { event.preventDefault(); close(); return; }
-      if (event.key !== "Tab") return;
-      const controls = [...dialog.querySelectorAll<HTMLElement>("button,input,select,textarea,[tabindex]:not([tabindex='-1'])")]
-        .filter((item) => !item.hasAttribute("disabled") && !item.closest("[hidden]") && item.tabIndex >= 0);
-      const first = controls[0], last = controls.at(-1);
-      if (event.shiftKey && globalThis.document.activeElement === first) { event.preventDefault(); last?.focus(); }
-      else if (!event.shiftKey && globalThis.document.activeElement === last) { event.preventDefault(); first?.focus(); }
-    };
-    dialog.addEventListener("keydown", key);
-    return () => { dialog.removeEventListener("keydown", key); if (root) root.inert = wasInert; };
-  }, [deleteTarget]);
   useEffect(() => {
     if (!mobilePanel) return;
     mobilePopover.current?.focus();
@@ -1431,140 +1079,6 @@ export function EditorSurface({
     else surface?.cancelFloatingPaste?.();
     window.setTimeout(() => frame.current?.focus(), 0);
   };
-  // Shared by the add/swap/background picker and the palette manager's swap
-  // panel; the two are never open together, so the element ids stay unique.
-  const catalogPickerBody = () => (
-    <div className="catalog-box">
-      <div className="catalog-selection" aria-label="Selected thread color" role="group" aria-live="polite">
-      {selectedCatalogColor ? (
-        <>
-          <span
-            className="catalog-selection-swatch swatch"
-            style={{ background: selectedCatalogColor.hex }}
-            aria-hidden="true"
-          />
-          <span className="catalog-selection-details">
-            <strong>{selectedCatalogColor.name}</strong>
-             <span>{pickerCatalog?.association.brandLabel} · #{selectedCatalogColor.code}</span>
-          </span>
-          <button
-            className="small-action"
-            type="button"
-             aria-label={`${backgroundPicking ? "Use" : swapTarget === null ? "Add" : "Swap"} ${selectedCatalogColor.name}`}
-               onClick={() => backgroundPicking ? useBackgroundColor(selectedCatalogColor.hex) : swapTarget === null ? void addPaletteColor(selectedCatalogColor) : swapIntoCatalogColor(selectedCatalogColor)}
-            disabled={!pickerCatalog}
-          >
-             {backgroundPicking ? "Use" : swapTarget === null ? "Add" : "Swap"}
-          </button>
-        </>
-      ) : (
-        <span className="catalog-selection-empty">No color selected</span>
-      )}
-    </div>
-    {availableCatalogs.length > 0 ? <div className="catalog-tabs-area">
-      <div className="catalog-tabs" role="tablist" aria-label="Thread catalogs">
-        {availableCatalogs.map((item) => <button
-          key={item.association.catalogId}
-          id={`editor-catalog-tab-${item.association.catalogId}`}
-          className="catalog-tab"
-          type="button"
-          role="tab"
-          aria-selected={selectedCatalogId === item.association.catalogId}
-          aria-controls="editor-catalog-panel"
-          tabIndex={selectedCatalogId === item.association.catalogId ? 0 : -1}
-          onClick={() => setSelectedCatalogId(item.association.catalogId)}
-          onKeyDown={(event) => {
-            if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) return;
-            event.preventDefault();
-            const index = availableCatalogs.findIndex((catalog) => catalog.association.catalogId === item.association.catalogId);
-            const nextIndex = event.key === "ArrowRight" ? (index + 1) % availableCatalogs.length : event.key === "ArrowLeft" ? (index - 1 + availableCatalogs.length) % availableCatalogs.length : event.key === "Home" ? 0 : event.key === "End" ? availableCatalogs.length - 1 : index;
-            if (nextIndex === index) return;
-            const nextCatalog = availableCatalogs[nextIndex];
-            setSelectedCatalogId(nextCatalog.association.catalogId);
-            window.setTimeout(() => globalThis.document.getElementById(`editor-catalog-tab-${nextCatalog.association.catalogId}`)?.focus(), 0);
-          }}
-        >{item.association.brandLabel}</button>)}
-      </div>
-      {pickerCatalog && <div
-        id="editor-catalog-panel"
-        className="catalog-tabpanel"
-        role="tabpanel"
-        aria-labelledby={`editor-catalog-tab-${pickerCatalog.association.catalogId}`}
-      >
-        <label htmlFor="catalog-search">Search {pickerCatalog?.association.brandLabel ? `${pickerCatalog.association.brandLabel} catalog` : "catalog"}</label>
-        <input
-          id="catalog-search"
-          value={paletteQuery}
-          onChange={(e) => setPaletteQuery(e.target.value)}
-          placeholder={`Name or ${pickerCatalog?.association.brandLabel ?? "catalog"} code`}
-          disabled={!pickerCatalog}
-          aria-label={`Search ${pickerCatalog?.association.brandLabel ? `${pickerCatalog.association.brandLabel} catalog` : "catalog"}`}
-        />
-        <div className="catalog-color-grid" role="list" aria-label="Available thread colors">
-        {pickerCatalog && catalogResults.map((color) => (
-         <div role="listitem" key={`${pickerCatalog.association.catalogId}:${color.sourceId}`}>
-          <button
-            className="catalog-color-button"
-            type="button"
-             aria-label={`${color.name}, color ${color.code}`}
-             aria-pressed={selectedCatalogColor?.sourceId === color.sourceId}
-            onClick={() => setSelectedCatalogColor(color)}
-          >
-            <span
-              className="catalog-color-swatch"
-              style={{ background: color.hex }}
-              aria-hidden="true"
-            />
-          </button>
-        </div>
-      ))}
-      {!catalogResults.length && (
-        <p className="catalog-empty" role="status">
-          No matching colors.
-        </p>
-      )}
-        </div>
-      </div>}
-    </div> : <p className="catalog-unavailable" role="status">Catalog unavailable</p>}
-    <section className="custom-color-section" aria-labelledby="custom-color-title">
-      <h3 id="custom-color-title">Custom color</h3>
-      <div className="custom-color-fields">
-        <label htmlFor="custom-color-picker">Choose custom color</label>
-        <input
-          id="custom-color-picker"
-          type="color"
-           value={canonicalCustomColor}
-           onChange={(e) => setColorFromHex(e.target.value)}
-        />
-        <label htmlFor="custom-color-hex">Hex color</label>
-        <input
-          id="custom-color-hex"
-          type="text"
-          value={customColorInput}
-           onChange={(e) => setColorFromHex(e.target.value)}
-          placeholder="#C72B3B"
-          inputMode="text"
-          autoComplete="off"
-          aria-describedby="custom-color-help"
-       />
-      </div>
-      <p id="custom-color-help" className="custom-color-help" aria-live="polite">
-        {customColorInput && !customColor
-          ? "Enter a 3- or 6-digit hex color."
-          : "Use a three- or six-digit hex value."}
-      </p>
-      <button
-        className="small-action custom-color-action"
-        type="button"
-         disabled={!customColor}
-        aria-label={customActionLabel}
-         onClick={() => backgroundPicking ? customColor && useBackgroundColor(customColor) : swapTarget === null ? void addCustomColor() : swapIntoCustomColor()}
-      >
-        {customActionLabel}
-      </button>
-    </section>
-    </div>
-  );
   return (
     <section ref={workspaceRoot} className="editor-workspace" aria-labelledby="editor-title">
       {/*
@@ -1971,31 +1485,14 @@ export function EditorSurface({
           </div>
         </div>
       </div>
-      {open &&
-        createPortal(
-          <div
-            className="modal-backdrop"
-            role="presentation"
-            onClick={(e) => {
-              if (e.target === e.currentTarget) setOpen(false);
-            }}
-          >
-            <div
-              ref={dialog}
-              className="create-modal details-dialog"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="settings-heading"
+      {open && (
+            <Modal
+              className="details-dialog"
+              closeLabel="Close settings"
+              title="Settings"
+              titleId="settings-heading"
+              onClose={() => setOpen(false)}
             >
-              <button
-                className="modal-close"
-                type="button"
-                aria-label="Close settings"
-                onClick={() => setOpen(false)}
-              >
-                ×
-              </button>
-              <h2 id="settings-heading">Settings</h2>
               <form onSubmit={save}>
                 <div className="settings-tabs" role="tablist" aria-label="Settings sections">
                   {([['project', 'Project'], ['editor', 'Editor']] as const).map(([key, label]) => <button
@@ -2176,281 +1673,64 @@ export function EditorSurface({
                   Save settings
                 </button>
               </form>
-            </div>
-          </div>,
-          globalThis.document.body,
+            </Modal>
         )}{" "}
-      {paletteOpen &&
-        createPortal(
-          <div
-            className="modal-backdrop"
-            role="presentation"
-            onClick={(e) => {
-              if (e.target === e.currentTarget) closePalettePicker();
-            }}
-          >
-            <div
-              ref={paletteDialog}
-              className="catalog-dialog create-modal"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="editor-catalog-title"
-            >
-              <button
-                className="modal-close"
-                type="button"
-                aria-label="Close catalog dialog"
-                onClick={closePalettePicker}
-              >
-                ×
-              </button>
-                 <p className="section-label">{pickerCatalog?.association.brandLabel ?? "Catalog"}</p>
-                <h2 id="editor-catalog-title">{backgroundPicking ? "Choose a background color" : swapTarget === null ? "Add a thread color" : `Swap ${palette.find((entry) => entry.id === swapTarget)?.name ?? "color"} for a thread color`}</h2>
-                {swapTarget !== null && <p className="modal-hint">Stitches and backstitches using {palette.find((entry) => entry.id === swapTarget)?.name ?? "this color"} will be changed.</p>}
-                {catalogPickerBody()}
-              {paletteNotice && (
-                <p className="modal-error" role="alert">
-                  {paletteNotice}
-                </p>
-              )}
-            </div>
-          </div>,
-          globalThis.document.body,
-        )}{" "}
-      {removeOpen &&
-        removeEntry &&
-        createPortal(
-          <div
-            className="modal-backdrop"
-            role="presentation"
-            onClick={(e) => {
-              if (e.target === e.currentTarget) closeRemove();
-            }}
-          >
-            <div
-              ref={removeDialog}
-              className="catalog-dialog create-modal"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="editor-remove-title"
-            >
-              <button
-                className="modal-close"
-                type="button"
-                aria-label="Close remove dialog"
-                onClick={closeRemove}
-              >
-                ×
-              </button>
-              <p className="section-label">Palette</p>
-              <h2 id="editor-remove-title">Remove {removeEntry.name}</h2>
-              <p className="modal-hint">
-                Choose a replacement color. Every stitch and backstitch in{" "}
-                {removeEntry.name} is recolored, then the color is deactivated;
-                history and estimates are preserved.
-              </p>
-              <div className="catalog-box">
-                <h3>Use another palette color</h3>
-                <ul className="catalog-results">
-                  {removalCandidates.map((x) => (
-                    <li key={x.id}>
-                      <span
-                        className="swatch"
-                        style={{ background: x.color }}
-                      />
-                      <span>
-                        {x.name}
-                        {x.catalog ? <small> {catalogEntryLabel(x)}</small> : null}
-                      </span>
-                      <button
-                        className="small-action"
-                        type="button"
-                        aria-label={`Replace with ${x.name}`}
-                        onClick={() => removeIntoExisting(x.id)}
-                      >
-                        Replace
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-                {removalCandidates.length === 0 && (
-                  <p className="control-note">
-                    No other active palette colors yet. Add one, or search the
-                    {replacementCatalog ? ` ${replacementCatalog.association.brandLabel} catalog` : " catalog"} below.
-                  </p>
-                )}
-              </div>
-              <div className="catalog-box">
-                {availableCatalogs.length > 1 && <label className="catalog-choice-label" htmlFor="remove-catalog-choice">Catalog<select id="remove-catalog-choice" value={removeCatalogId} onChange={(event) => { setRemoveCatalogId(event.target.value); setRemoveQuery(""); }}><option value="" disabled>Select catalog</option>{availableCatalogs.map((item) => <option key={item.association.catalogId} value={item.association.catalogId}>{item.association.brandLabel}</option>)}</select></label>}
-                <label htmlFor="remove-search">
-                   Search {replacementCatalog?.association.brandLabel ? `${replacementCatalog.association.brandLabel} catalog` : "catalog"} for a replacement
-                </label>
-               <input
-                 id="remove-search"
-                  value={removeQuery}
-                  onChange={(e) => setRemoveQuery(e.target.value)}
-                   placeholder={`Name or ${replacementCatalog?.association.brandLabel ?? "catalog"} code`}
-                  disabled={!replacementCatalog}
-                />
-                 {!replacementCatalog && <p className="catalog-unavailable" role="status">Catalog unavailable</p>}
-                <ul className="catalog-results">
-                  {removeResults.map((color) => (
-                    <li key={`${replacementCatalog?.association.catalogId}:${color.sourceId}`}>
-                      <span
-                        className="swatch"
-                        style={{ background: color.hex }}
-                      />
-                      <span>
-                         {color.name} <small>{replacementCatalog?.association.brandLabel} #{color.code}</small>
-                      </span>
-                       <button
-                         className="small-action"
-                        type="button"
-                          aria-label={`Replace with ${color.name} from ${replacementCatalog?.association.brandLabel ?? "the catalog"}`}
-                          disabled={!replacementCatalog}
-                        onClick={() => removeIntoNew(color)}
-                      >
-                        Replace
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-              {removeNotice && (
-                <p className="modal-error" role="alert">
-                  {removeNotice}
-                </p>
-              )}
-            </div>
-          </div>,
-          globalThis.document.body,
-        )}{" "}
-      {managerOpen &&
-        createPortal(
-          <div
-            className="modal-backdrop"
-            role="presentation"
-            onClick={(e) => {
-              if (e.target === e.currentTarget) closePaletteManager();
-            }}
-          >
-            <div
-              ref={managerDialog}
-              className={`catalog-dialog create-modal palette-manager-dialog${managerPanel ? " palette-manager-panel-open" : ""}`}
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="palette-manager-title"
-            >
-              <button
-                ref={managerClose}
-                className="modal-close"
-                type="button"
-                aria-label="Close palette manager"
-                onClick={closePaletteManager}
-              >
-                ×
-              </button>
-              <div className="palette-manager-columns">
-                <section className="palette-manager-palette">
-                  <p className="section-label">Manage</p>
-                  <h2 id="palette-manager-title">Color palette</h2>
-                  <div className="catalog-box">
-                    <div className="catalog-selection" aria-label="Selected palette color" role="group">
-                      {managerEntry ? (
-                        <>
-                          <span className="catalog-selection-swatch swatch" style={{ background: managerEntry.color }} aria-hidden="true" />
-                          <span className="catalog-selection-details">
-                            <strong>{managerEntry.name}</strong>
-                            <span>{catalogEntryLabel(managerEntry)}</span>
-                          </span>
-                          <div className="palette-manager-actions">
-                            <button ref={managerSwapButton} className="small-action" type="button" aria-label={`Swap ${managerEntry.name}`} aria-expanded={managerPanel === "swap"} aria-controls="palette-manager-panel" onClick={toggleManagerSwap}>Swap</button>
-                            <button className="small-action palette-manager-delete" type="button" aria-label={`Delete ${managerEntry.name}`} onClick={(e) => deleteFromManager(managerEntry.id, e.currentTarget)}>Delete</button>
-                          </div>
-                        </>
-                      ) : (
-                        <span className="catalog-selection-empty">No colors in this palette yet.</span>
-                      )}
-                    </div>
-                    <div className="catalog-color-grid palette-manager-grid" role="list" aria-label="Palette colors">
-                      <div role="listitem">
-                        <button ref={managerAddButton} className="catalog-color-button palette-manager-add" type="button" aria-label="Add color" title="Add color" aria-expanded={managerPanel === "add"} aria-controls="palette-manager-panel" onClick={toggleManagerAdd}><span className="palette-manager-add-glyph" aria-hidden="true">+</span></button>
-                      </div>
-                      {palette.map((entry) => (
-                        <div role="listitem" key={entry.id}>
-                          <button
-                            className="catalog-color-button"
-                            type="button"
-                            aria-label={`${entry.name}, ${catalogEntryLabel(entry)}`}
-                            aria-pressed={managerEntry?.id === entry.id}
-                            onClick={() => selectManagerEntry(entry.id)}
-                          >
-                            <span className="catalog-color-swatch" style={{ background: entry.color }} aria-hidden="true">
-                              {paletteOptions.symbols && <span className="palette-swatch-symbol" style={{ color: contrastSymbolInk(entry.color, DEFAULT_RENDERER_STYLE.symbolColor) }}><SymbolTile id={entry.symbol} /></span>}
-                            </span>
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </section>
-                {(managerPanel === "add" || (managerPanel === "swap" && managerEntry)) && (
-                  <section id="palette-manager-panel" className="palette-manager-panel" aria-labelledby="palette-manager-panel-title">
-                    <h3 id="palette-manager-panel-title">{managerPanel === "swap" && managerEntry ? `Swap ${managerEntry.name} for a thread color` : "Add a thread color"}</h3>
-                    {managerPanel === "swap" && managerEntry && <p className="modal-hint">Stitches and backstitches using {managerEntry.name} will be changed.</p>}
-                    {catalogPickerBody()}
-                    {paletteNotice && (
-                      <p className="modal-error" role="alert">
-                        {paletteNotice}
-                      </p>
-                    )}
-                  </section>
-                )}
-              </div>
-            </div>
-          </div>,
-          globalThis.document.body,
-        )}{" "}
-      {deleteTarget !== null && createPortal(
-        <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) { setDeleteTarget(null); focusAfterDelete(); } }}>
-          <div ref={deleteDialog} className="catalog-dialog create-modal palette-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="palette-delete-title">
-            <p className="section-label">Palette</p>
-            <h2 id="palette-delete-title">Delete {palette.find((entry) => entry.id === deleteTarget)?.name ?? 'color'}?</h2>
-            <p className="modal-hint">Every stitch using this color, including backstitches, will be deleted.</p>
-            <div className="actions">
-              <button className="button button-secondary" data-delete-cancel type="button" onClick={() => { setDeleteTarget(null); focusAfterDelete(); }}>Cancel</button>
-              <button className="button button-primary" type="button" onClick={() => { const id = deleteTarget; if (id === null) return; workspace.execute({ type: 'palette-delete', id } as never); if (ui?.paletteId === id) controllerRef.current?.selectPalette(null); setDeleteTarget(null); focusAfterDelete(); }}>Delete color</button>
-            </div>
-          </div>
-        </div>, globalThis.document.body
+      {paletteOpen && (
+        <ColorPickerModal
+          {...pickerProps}
+          eyebrow={backgroundPicking ? backgroundCatalog?.association.brandLabel ?? "Catalog" : "Color Catalog"}
+          title={backgroundPicking ? "Choose a background color" : swapTarget === null ? "Add a thread color" : "Swap Color"}
+          hint={swapTarget !== null && <>Stitches and backstitches using {palette.find((entry) => entry.id === swapTarget)?.name ?? "this color"} will be changed.</>}
+          initialCatalogId={backgroundPicking ? backgroundCatalog?.association.catalogId : undefined}
+          initialColor={backgroundPicking ? backgroundCatalogMatch?.record : undefined}
+          initialCustomHex={backgroundPicking ? documentBackgroundColor : undefined}
+          notice={paletteNotice}
+          onClose={closePalettePicker}
+          returnFocus={paletteTrigger}
+        />
+      )}{" "}
+      {managerOpen && (
+        <PaletteManagerModal
+          palette={palette}
+          selected={managerEntry}
+          panel={managerPanel}
+          entryLabel={catalogEntryLabel}
+          swatchContent={paletteOptions.symbols ? (entry) => <span className="palette-swatch-symbol" style={{ color: contrastSymbolInk(entry.color, DEFAULT_RENDERER_STYLE.symbolColor) }}><SymbolTile id={entry.symbol} /></span> : undefined}
+          picker={pickerProps}
+          notice={paletteNotice}
+          onSelect={selectManagerEntry}
+          onToggleSwap={toggleManagerSwap}
+          onToggleAdd={toggleManagerAdd}
+          onClosePanel={closeManagerPanel}
+          onDelete={deleteFromManager}
+          onClose={closePaletteManager}
+          returnFocus={managerTrigger}
+        />
+      )}{" "}
+      {deleteTarget !== null && (
+        <ConfirmDialog
+          className="palette-delete-dialog"
+          eyebrow="Palette"
+          title={`Delete ${palette.find((entry) => entry.id === deleteTarget)?.name ?? "color"}?`}
+          message="Every stitch using this color, including backstitches, will be deleted."
+          confirmLabel="Delete color"
+          onConfirm={confirmDelete}
+          onCancel={closeDeleteConfirm}
+          returnFocus={false}
+        />
       )}{" "}
       {symbolTarget !== null &&
-        symbolEntry &&
-        createPortal(
-          <div
-            className="modal-backdrop"
-            role="presentation"
-            onClick={(e) => {
-              if (e.target === e.currentTarget) closeSymbolPicker();
-            }}
-          >
-            <div
-              ref={symbolDialog}
-              className="catalog-dialog create-modal"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="symbol-picker-title"
+        symbolEntry && (
+            <Modal
+              className="catalog-dialog"
+              closeLabel="Close symbol picker"
+              eyebrow="Palette"
+              title={symbolDialogTitle(symbolEntry.name, symbolEntry.symbol)}
+              titleId="symbol-picker-title"
+              initialFocus="#symbol-filter-input"
+              returnFocus={symbolTrigger}
+              onClose={closeSymbolPicker}
             >
-              <button
-                className="modal-close"
-                type="button"
-                aria-label="Close symbol picker"
-                onClick={closeSymbolPicker}
-              >
-                ×
-              </button>
-              <p className="section-label">Palette</p>
-              <h2 id="symbol-picker-title">{symbolDialogTitle(symbolEntry.name, symbolEntry.symbol)}</h2>
               <p className="modal-hint">
                 Pick a symbol from the pool below. Every symbol is drawn by
                 this application, so the preview matches the chart exactly.
@@ -2502,9 +1782,7 @@ export function EditorSurface({
                   {symbolNotice}
                 </p>
               )}
-            </div>
-          </div>,
-          globalThis.document.body,
+            </Modal>
         )}
     </section>
   );

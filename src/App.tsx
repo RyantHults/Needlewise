@@ -45,6 +45,8 @@ function WorkspaceApp() {
     deleteFolder,
     moveProjectToFolder,
     moveFolder,
+    duplicateProject,
+    renameProject,
   } = useProjectWorkspace({ autoOpenMostRecent: false });
   // The URL is the source of truth for the folder being viewed (so Back
   // works). We only trust it for internal logic (auto-moving newly created
@@ -81,7 +83,6 @@ function WorkspaceApp() {
   const isEditor = location.pathname.endsWith('/edit');
   const routeIdentity = isEditor ? location.pathname : null;
   const [resolvedRoute, setResolvedRoute] = useState<string | null>(null);
-  const createDialogRef = useRef<HTMLDivElement>(null);
   const createTriggerRef = useRef<HTMLButtonElement>(null);
   const appMounted = useRef(true);
   const createLockedRef = useRef(false);
@@ -90,9 +91,6 @@ function WorkspaceApp() {
     return () => { appMounted.current = false; clearConfirmDeleteTimer(); clearConfirmDeleteFolderTimer(); clearUndoMoveTimer(); };
   }, []);
   useEffect(() => installModalScrollLock(), []);
-  const applicationRef = useRef<HTMLDivElement>(null);
-  const restoreFocusRef = useRef<HTMLElement | null>(null);
-  const dialogWasOpen = useRef(false);
 
   const active = isEditor && state.metadata && state.document ? { metadata: state.metadata, document: state.document } : null;
   const capture = (event: string, properties?: Record<string, string | number | boolean>) => {
@@ -125,47 +123,6 @@ function WorkspaceApp() {
       if (attemptedRoute.current === routeIdentity) setRouteIssue('That local project could not be opened.');
     });
   }, [busy, decodedRouteId, initialized, isEditor, openProject, projects, resolvedRoute, routeIdentity, state.projectId]);
-  useEffect(() => {
-    const application = applicationRef.current;
-    if (!createOpen) {
-      if (application) application.inert = false;
-      if (dialogWasOpen.current) {
-        const target = restoreFocusRef.current;
-        const isRestorable = target?.isConnected && target.matches('a,button,input,textarea,select,[tabindex]:not([tabindex="-1"])');
-        (isRestorable ? target : createTriggerRef.current)?.focus();
-      }
-      dialogWasOpen.current = false;
-      return;
-    }
-    dialogWasOpen.current = true;
-    const activeElement = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null;
-    restoreFocusRef.current = activeElement ?? restoreFocusRef.current ?? createTriggerRef.current;
-    if (application) application.inert = true;
-    const dialog = createDialogRef.current;
-    if (!dialog) return;
-    const focusable = () => [...dialog.querySelectorAll<HTMLElement>('button, input, select, textarea, [href], [tabindex]')].filter((item) => !item.hasAttribute('disabled') && item.tabIndex >= 0);
-    focusable().find((item) => item.id === 'new-project-title')?.focus();
-    const handleKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement;
-      if (event.key === 'Escape') { event.preventDefault(); if (!createLockedRef.current) setCreateOpen(false); return; }
-      if (target.getAttribute('role') === 'radio' && ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp'].includes(event.key)) {
-        event.preventDefault();
-        const radios = [...dialog.querySelectorAll<HTMLElement>('[role="radio"]')];
-        const current = radios.indexOf(target);
-        const next = (current + (event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : -1) + radios.length) % radios.length;
-        setCreateMode(next === 0 ? 'blank' : 'image');
-        radios[next]?.focus();
-        return;
-      }
-      if (event.key === 'Tab') {
-        const items = focusable(); const first = items[0]; const last = items[items.length - 1];
-        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-      }
-    };
-    dialog.addEventListener('keydown', handleKeyDown);
-    return () => dialog.removeEventListener('keydown', handleKeyDown);
-  }, [createOpen]);
   const saveMessage = !active
     ? ''
     : saveState.status === 'saved'
@@ -178,7 +135,6 @@ function WorkspaceApp() {
 
   function handleCreate(trigger: HTMLButtonElement) {
     createTriggerRef.current = trigger;
-    restoreFocusRef.current = trigger;
     setCreateError(''); setCreateOpen(true);
   }
   async function moveIntoCurrentFolder(projectId: string, targetFolderId: string | null, failureMessage: string) {
@@ -240,6 +196,30 @@ function WorkspaceApp() {
     void deleteProject(projectId).then(() => { capture('pattern_deleted'); if (appMounted.current) setMessage('Project deleted.'); }).catch(() => {
       if (appMounted.current) setMessage('The project could not be deleted.');
     });
+  }
+
+  async function handleDuplicate(project: ProjectMetadata) {
+    setMessage(`Duplicating “${project.title}”…`);
+    const targetFolderId = currentFolderId;
+    try {
+      const copy = await duplicateProject(project.id);
+      await moveIntoCurrentFolder(copy.id, targetFolderId, 'Pattern duplicated, but it could not be moved into the folder.');
+      capture('pattern_duplicated');
+      if (appMounted.current) setMessage('Pattern duplicated.');
+    } catch {
+      if (appMounted.current) setMessage('The pattern could not be duplicated.');
+    }
+  }
+
+  async function handleRenameProject(project: ProjectMetadata, title: string) {
+    setMessage('');
+    try {
+      await renameProject(project.id, title);
+      capture('pattern_renamed');
+      if (appMounted.current) setMessage('Pattern renamed.');
+    } catch {
+      if (appMounted.current) setMessage('The pattern could not be renamed.');
+    }
   }
 
   function handleNavigateFolder(folderId: string | null) {
@@ -359,7 +339,7 @@ function WorkspaceApp() {
   const routeError = isEditor && Boolean(routeIssue);
   return (
     <>
-    <div ref={applicationRef} inert={createOpen} data-application data-testid="application">
+    <div data-application data-testid="application">
     <div className={`app-shell${isEditor ? ' app-shell-editor' : ''}`}>
       {!isEditor && <header className="topbar">
         <a className="brand" href="/" aria-label="Needlewise home">
@@ -382,6 +362,8 @@ function WorkspaceApp() {
               disabled={actionDisabled}
               onOpen={(project) => navigate(projectPath(project.id))}
               onDelete={(project) => handleDeleteClick(project.id, project.title)}
+              onRenameProject={handleRenameProject}
+              onDuplicate={(project) => void handleDuplicate(project)}
               deleteConfirmId={confirmDeleteId}
               onCreate={handleCreate}
               onImport={() => inputRef.current?.click()}
@@ -408,7 +390,7 @@ function WorkspaceApp() {
       <footer className="footer-note"><span aria-hidden="true">⌁</span> Local archives are your backup path <span className="footer-divider" aria-hidden="true">·</span> Keep a copy somewhere safe</footer>
     </div>
     </div>
-    {createOpen && <div ref={createDialogRef}><CreateModal catalog={DEFAULT_CATALOG_DEFINITION.snapshot} mode={createMode} title={createTitle} width={createWidth} height={createHeight} aida={createAida} backgroundColor={createBackgroundColor} onBackgroundColor={setCreateBackgroundColor} busy={busy} onMode={(next) => { if (!createLockedRef.current) setCreateMode(next); }} onClose={() => { if (!createLockedRef.current) setCreateOpen(false); }} onBlank={(event) => void submitCreate(event)} onDurableCreateChange={(locked) => { createLockedRef.current = locked; }} onConversionCreate={(draft, asset) => { const targetFolderId = currentFolderId; return createProjectFromConversion({ title: createTitle.trim() || 'Untitled sampler', draft, aidaCount: Number(createAida), settings: { backgroundColor: createBackgroundColor }, ...(asset ? { sourceImageAsset: asset } : {}) }).then(async (session) => { await moveIntoCurrentFolder(session.projectId, targetFolderId, 'Pattern created, but it could not be moved into the folder.'); capture('image_pattern_created', { width: draft.document.width, height: draft.document.height, aida_count: Number(createAida), source_image_retained: Boolean(asset) }); return session.projectId; }); }} onCreated={(projectId) => { if (appMounted.current) navigate(projectPath(projectId)); }} onTitle={setCreateTitle} onWidth={setCreateWidth} onHeight={setCreateHeight} onAida={setCreateAida} /></div>}
+    {createOpen && <CreateModal returnFocus={createTriggerRef} catalog={DEFAULT_CATALOG_DEFINITION.snapshot} mode={createMode} title={createTitle} width={createWidth} height={createHeight} aida={createAida} backgroundColor={createBackgroundColor} onBackgroundColor={setCreateBackgroundColor} busy={busy} onMode={(next) => { if (!createLockedRef.current) setCreateMode(next); }} onClose={() => { if (!createLockedRef.current) setCreateOpen(false); }} onBlank={(event) => void submitCreate(event)} onDurableCreateChange={(locked) => { createLockedRef.current = locked; }} onConversionCreate={(draft, asset) => { const targetFolderId = currentFolderId; return createProjectFromConversion({ title: createTitle.trim() || 'Untitled sampler', draft, aidaCount: Number(createAida), settings: { backgroundColor: createBackgroundColor }, ...(asset ? { sourceImageAsset: asset } : {}) }).then(async (session) => { await moveIntoCurrentFolder(session.projectId, targetFolderId, 'Pattern created, but it could not be moved into the folder.'); capture('image_pattern_created', { width: draft.document.width, height: draft.document.height, aida_count: Number(createAida), source_image_retained: Boolean(asset) }); return session.projectId; }); }} onCreated={(projectId) => { if (appMounted.current) navigate(projectPath(projectId)); }} onTitle={setCreateTitle} onWidth={setCreateWidth} onHeight={setCreateHeight} onAida={setCreateAida} />}
     </>
   );
 }

@@ -52,6 +52,8 @@ export interface UseProjectWorkspaceResult {
   openProject(projectId: string): Promise<ProjectSession>;
   selectProject(projectId?: string): Promise<ProjectSession | undefined>;
   deleteProject(projectId: string): Promise<void>;
+  duplicateProject(projectId: string): Promise<ProjectMetadata>;
+  renameProject(projectId: string, title: string): Promise<ProjectMetadata>;
   createFolder(name: string, parentId?: string | null): Promise<ProjectFolder>;
   renameFolder(folderId: string, name: string): Promise<ProjectFolder>;
   deleteFolder(folderId: string): Promise<void>;
@@ -208,6 +210,11 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
       void (async () => {
         try {
           const initialProjects = await refreshProjects(instance);
+          // Out-of-date thumbnails refresh in the background; failures are ignored.
+          void instance.refreshStaleThumbnails?.(initialProjects).then((refreshed) => {
+            if (refreshed > 0 && lifecycleRef.current.mounted && workspaceRef.current === instance) return refreshProjects(instance);
+            return undefined;
+          }).catch(() => undefined);
           if (!lifecycleRef.current.mounted || initializationTokenRef.current !== token || workspaceRef.current !== instance) return;
           if (options.initialProjectId !== undefined) {
             await instance.openProject(options.initialProjectId);
@@ -272,6 +279,8 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
   const importProjectAsCopy = useCallback((input: Uint8Array | ArrayBuffer | Blob, importOptions: ArchiveImportOptions = {}) => runAction((instance) => instance.importProjectAsCopy(input, importOptions)), [runAction]);
   const exportProject = useCallback(() => runAction((instance) => instance.exportActiveProject()), [runAction]);
   const promoteRecovery = useCallback((revision?: number) => runAction((instance) => instance.promoteRecovery(revision)), [runAction]);
+  const duplicateProject = useCallback((projectId: string) => runAction((instance) => instance.duplicateProject(projectId)), [runAction]);
+  const renameProject = useCallback((projectId: string, title: string) => runAction((instance) => instance.renameProject(projectId, title)), [runAction]);
   const saveAsCopy = useCallback((copyOptions: CreateProjectOptions = {}) => runAction((instance) => instance.saveAsCopy(copyOptions)), [runAction]);
   const retrySave = useCallback(() => runAction((instance) => instance.retrySave()), [runAction]);
   const flush = useCallback(() => runAction((instance) => instance.flush()), [runAction]);
@@ -319,6 +328,8 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
     openProject,
     selectProject,
     deleteProject,
+    duplicateProject,
+    renameProject,
     createFolder,
     renameFolder,
     deleteFolder,

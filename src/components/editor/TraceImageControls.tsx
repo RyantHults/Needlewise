@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState, type MutableRefObject } from 'react';
-import { createPortal } from 'react-dom';
 import type { ProjectWorkspace } from '../../application/workspace';
 import type { PatternDocument } from '../../domain';
 import type { SourceImageMimeType } from '../../persistence';
 import type { EditorSurfaceController } from '../../editor';
 import { decodeTraceImage, disposeTraceImage, fitTraceImageBounds, TraceDecodeError } from '../../rendering/trace';
 import { MAX_TRACE_IMAGE_BYTES } from '../../rendering/trace';
+import { ConfirmDialog } from '../ConfirmDialog';
 import { RangeInput } from '../RangeInput';
 
 interface Props {
@@ -68,7 +68,6 @@ export function TraceImageControls({ workspace, document, controller, activeTool
   const opacityStartRef = useRef<number | null>(null);
   const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false);
   const removeTrigger = useRef<HTMLButtonElement>(null);
-  const removeDialog = useRef<HTMLDivElement>(null);
   const originX = document.originX ?? 0;
   const originY = document.originY ?? 0;
   // The decode effect reads the origin at handoff time without re-decoding when it moves.
@@ -157,30 +156,6 @@ export function TraceImageControls({ workspace, document, controller, activeTool
       // Non-fatal: the next render or asset change re-syncs the controller.
     }
   }, [workspace, controller, descriptor?.traceVisible, descriptor?.opacity]);
-
-  // Focus/inert/Escape/Tab-trap for the remove-confirmation dialog, mirroring
-  // the palette-delete dialog pattern in EditorSurface.
-  useEffect(() => {
-    if (!removeConfirmOpen) return;
-    const dialog = removeDialog.current;
-    if (!dialog) return;
-    const root = globalThis.document.querySelector<HTMLElement>('[data-application]');
-    const wasInert = root?.inert ?? false;
-    if (root) root.inert = true;
-    dialog.querySelector<HTMLButtonElement>('[data-remove-cancel]')?.focus();
-    const close = () => { setRemoveConfirmOpen(false); window.setTimeout(() => removeTrigger.current?.focus(), 0); };
-    const key = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { event.preventDefault(); close(); return; }
-      if (event.key !== 'Tab') return;
-      const controls = [...dialog.querySelectorAll<HTMLElement>("button,input,select,textarea,[tabindex]:not([tabindex='-1'])")]
-        .filter((item) => !item.hasAttribute('disabled') && !item.closest('[hidden]') && item.tabIndex >= 0);
-      const first = controls[0], last = controls.at(-1);
-      if (event.shiftKey && globalThis.document.activeElement === first) { event.preventDefault(); last?.focus(); }
-      else if (!event.shiftKey && globalThis.document.activeElement === last) { event.preventDefault(); first?.focus(); }
-    };
-    dialog.addEventListener('keydown', key);
-    return () => { dialog.removeEventListener('keydown', key); if (root) root.inert = wasInert; };
-  }, [removeConfirmOpen]);
 
   const commitSettings = async (next: { traceVisible?: boolean; opacity?: number }, label: string) => {
     const current = workspace.sourceImage;
@@ -288,18 +263,16 @@ export function TraceImageControls({ workspace, document, controller, activeTool
       <button type="button" disabled={!descriptor} className="trace-mode-button bottom-control" aria-label="Resize image" title="Resize image" aria-pressed={activeTool === 'resize-image'} onClick={() => controller?.setTool({ tool: 'resize-image' } as never)}><span aria-hidden="true">↗</span><small>Resize</small></button>
     </div>
     {descriptor && <button type="button" ref={removeTrigger} className="trace-icon-button trace-remove bottom-control" aria-label="Remove image" title="Remove image" onClick={() => setRemoveConfirmOpen(true)}><span aria-hidden="true">×</span><small>Remove</small></button>}
-    {removeConfirmOpen && createPortal(
-      <div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) { setRemoveConfirmOpen(false); window.setTimeout(() => removeTrigger.current?.focus(), 0); } }}>
-        <div ref={removeDialog} className="catalog-dialog create-modal" role="dialog" aria-modal="true" aria-labelledby="remove-trace-image-title">
-          <p className="section-label">Reference image</p>
-          <h2 id="remove-trace-image-title">Remove reference image?</h2>
-          <p className="modal-hint">The reference image will be removed from this project.</p>
-          <div className="actions">
-            <button className="button button-secondary" data-remove-cancel type="button" onClick={() => { setRemoveConfirmOpen(false); window.setTimeout(() => removeTrigger.current?.focus(), 0); }}>Cancel</button>
-            <button className="button button-primary" type="button" onClick={() => { setRemoveConfirmOpen(false); window.setTimeout(() => removeTrigger.current?.focus(), 0); void remove(); }}>Remove image</button>
-          </div>
-        </div>
-      </div>, globalThis.document.body
+    {removeConfirmOpen && (
+      <ConfirmDialog
+        eyebrow="Reference image"
+        title="Remove reference image?"
+        message="The reference image will be removed from this project."
+        confirmLabel="Remove image"
+        returnFocus={removeTrigger}
+        onCancel={() => setRemoveConfirmOpen(false)}
+        onConfirm={() => { setRemoveConfirmOpen(false); void remove(); }}
+      />
     )}
     <label className="trace-opacity"><span className="trace-opacity-label">Transparency</span><RangeInput aria-label={`Reference image opacity ${Math.round(opacity * 100)}%`} disabled={!descriptor} min="0" max="1" step="0.05" value={opacity} onPointerDown={beginOpacityInteraction} onFocus={beginOpacityInteraction} onChange={(event) => handleOpacityChange(Number(event.target.value))} onPointerUp={commitOpacityInteraction} onBlur={commitOpacityInteraction} /></label>
     <span className="trace-status sr-only" role={status?.includes('could not') || status?.includes('missing') ? 'alert' : 'status'}>{status ?? 'Optional local reference; it is not part of the stitch chart.'}</span>

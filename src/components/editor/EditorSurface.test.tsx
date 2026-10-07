@@ -108,7 +108,7 @@ describe('EditorSurface', () => {
     expect(within(menu).getByRole('menuitem', { name: 'Change symbol' })).toBeInTheDocument();
     fireEvent.pointerDown(within(menu).getByRole('menuitem', { name: 'Swap color' }));
     fireEvent.click(within(menu).getByRole('menuitem', { name: 'Swap color' }));
-    const dialog = screen.getByRole('dialog', { name: 'Swap Ruby for a thread color' });
+    const dialog = screen.getByRole('dialog', { name: 'Swap Color' });
     expect(within(dialog).getByText(/stitches and backstitches using Ruby will be changed/i)).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: 'Swap Bright Red' })).toBeInTheDocument();
     expect(within(dialog).getByRole('tablist', { name: 'Thread catalogs' })).toBeInTheDocument();
@@ -118,7 +118,7 @@ describe('EditorSurface', () => {
     const swatch = document.querySelector<HTMLButtonElement>('.palette-button')!;
     fireEvent.contextMenu(swatch);
     fireEvent.click(screen.getByRole('menuitem', { name: 'Swap color' }));
-    const dialog = screen.getByRole('dialog', { name: 'Swap Ruby for a thread color' });
+    const dialog = screen.getByRole('dialog', { name: 'Swap Color' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close catalog dialog' }));
     await waitFor(() => expect(document.activeElement).toBe(swatch));
   });
@@ -305,10 +305,11 @@ describe('EditorSurface', () => {
     workspace.getStateSnapshot.mockReturnValue({ document: doc });
     render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' }));
-    const dialog = screen.getByRole('dialog', { name: 'Remove Ruby' });
-    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Catalog' }), { target: { value: 'catalog-b' } });
-    fireEvent.change(within(dialog).getByLabelText('Search Brand B catalog for a replacement'), { target: { value: '321' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Replace with B Ruby from Brand B' }));
+    const dialog = screen.getByRole('dialog', { name: 'Swap Color' });
+    fireEvent.click(within(dialog).getByRole('tab', { name: 'Brand B' }));
+    fireEvent.change(within(dialog).getByLabelText('Search Brand B catalog'), { target: { value: '321' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'B Ruby, color 321' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Swap B Ruby' }));
     expect(executeMock()).toHaveBeenCalledWith(expect.objectContaining({ type: 'palette-merge', createTo: expect.objectContaining({ catalog: createCatalogReference(catalogB, catalogBRecord) }) }));
   });
   it('renders same-code replacement results as distinct catalog records', () => {
@@ -324,11 +325,11 @@ describe('EditorSurface', () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' }));
-    const dialog = screen.getByRole('dialog', { name: 'Remove Ruby' });
-    fireEvent.change(within(dialog).getByRole('combobox', { name: 'Catalog' }), { target: { value: 'catalog-b' } });
-    fireEvent.change(within(dialog).getByLabelText('Search Brand B catalog for a replacement'), { target: { value: '321' } });
-    expect(within(dialog).getByRole('button', { name: 'Replace with Ruby A from Brand B' })).toBeInTheDocument();
-    expect(within(dialog).getByRole('button', { name: 'Replace with Ruby B from Brand B' })).toBeInTheDocument();
+    const dialog = screen.getByRole('dialog', { name: 'Swap Color' });
+    fireEvent.click(within(dialog).getByRole('tab', { name: 'Brand B' }));
+    fireEvent.change(within(dialog).getByLabelText('Search Brand B catalog'), { target: { value: '321' } });
+    expect(within(dialog).getByRole('button', { name: 'Ruby A, color 321' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Ruby B, color 321' })).toBeInTheDocument();
     expect(error.mock.calls.map(([message]) => String(message))).not.toEqual(expect.arrayContaining([expect.stringMatching(/same key|duplicate key/i)]));
     error.mockRestore();
   });
@@ -1587,16 +1588,16 @@ describe('EditorSurface', () => {
       vi.useRealTimers();
     }
   });
-  it('shows the remove button for an unreferenced palette color', () => { render(<EditorSurface workspace={ws} document={doc} />); expect(screen.getByRole('button', { name: 'Remove Ruby' })).toHaveAttribute('title', 'Remove or replace this color'); });
+  it('shows the remove button for an unreferenced palette color', () => { render(<EditorSurface workspace={ws} document={doc} />); expect(screen.getByRole('button', { name: 'Remove Ruby' })).toHaveAttribute('title', 'Swap or remove this color'); });
   it('shows swap and delete menu items for an unreferenced palette color', () => { render(<EditorSurface workspace={ws} document={doc} />); const swatch = document.querySelector<HTMLButtonElement>('.palette-button')!; fireEvent.contextMenu(swatch); const menu = screen.getByRole('menu', { name: 'Details for Ruby' }); expect(within(menu).getByRole('menuitem', { name: 'Swap color' })).toBeInTheDocument(); expect(within(menu).getByRole('menuitem', { name: 'Delete color' })).toBeInTheDocument(); });
-  it('opens the remove dialog and shows the no-candidates note for a single color', () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); expect(screen.getByRole('dialog', { name: 'Remove Ruby' })).toBeInTheDocument(); expect(screen.getByText('No other active palette colors yet. Add one, or search the DMC catalog below.')).toBeInTheDocument(); });
-  it('replaces the removed color with an existing palette color', () => { render(<EditorSurface workspace={ws} document={two} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); fireEvent.click(screen.getByRole('button', { name: 'Replace with Sky' })); expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).toHaveBeenCalledWith(expect.objectContaining({ type: 'palette-merge', from: 1, to: 2 })); expect(f.c.selectPalette).toHaveBeenCalledWith(2); expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
-  it('replaces the removed color with a catalog color', () => { const match = DEFAULT_CATALOG_DEFINITION.search('salmon')[0]; const merged = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }, { id: 2, name: match.name, color: match.hex, active: true, catalog: { catalogId: 'dmc-compatible-screen-approximation', sourceId: match.sourceId, code: match.code, name: match.name, hex: match.hex, rgb: [...match.rgb] } }], backstitches: { ids: new Uint32Array() } } as never; (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockReturnValue({}); (ws as { getStateSnapshot: ReturnType<typeof vi.fn> }).getStateSnapshot.mockReturnValue({ document: merged }); render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); fireEvent.change(screen.getByLabelText('Search DMC catalog for a replacement'), { target: { value: 'salmon' } }); fireEvent.click(screen.getByRole('button', { name: `Replace with ${match.name} from DMC` })); expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).toHaveBeenCalledWith(expect.objectContaining({ type: 'palette-merge', from: 1, createTo: expect.objectContaining({ name: match.name, color: match.hex }) })); expect(f.c.selectPalette).toHaveBeenCalledWith(2); });
-  it('keeps the dialog open and reports a failed replacement', () => { (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockImplementationOnce(() => { throw new Error('boom'); }); render(<EditorSurface workspace={ws} document={two} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); fireEvent.click(screen.getByRole('button', { name: 'Replace with Sky' })); expect(screen.getByRole('dialog', { name: 'Remove Ruby' })).toBeInTheDocument(); expect(screen.getByRole('alert')).toHaveTextContent('boom'); });
-  it('closes the remove dialog on Escape', () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); fireEvent.keyDown(screen.getByRole('dialog', { name: 'Remove Ruby' }), { key: 'Escape' }); expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
+  it('opens the swap dialog from the remove button', () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); const dialog = screen.getByRole('dialog', { name: 'Swap Color' }); expect(within(dialog).getByText(/stitches and backstitches using Ruby will be changed/i)).toBeInTheDocument(); expect(within(dialog).getByRole('tablist', { name: 'Thread catalogs' })).toBeInTheDocument(); });
+  it('swaps the removed color into an existing palette color that matches the chosen catalog color', () => { const match = DEFAULT_CATALOG_DEFINITION.search('salmon')[0]; const existing = customColorDocument([{ id: 1, name: 'Ruby', color: '#b44', active: true }, { id: 2, name: match.name, color: match.hex, active: true, catalog: createCatalogReference(DEFAULT_CATALOG_DEFINITION, match) }]); (ws as { getStateSnapshot: ReturnType<typeof vi.fn> }).getStateSnapshot.mockReturnValue({ document: existing }); render(<EditorSurface workspace={ws} document={existing} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); const dialog = screen.getByRole('dialog', { name: 'Swap Color' }); fireEvent.change(within(dialog).getByLabelText('Search DMC catalog'), { target: { value: 'salmon' } }); fireEvent.click(within(dialog).getByRole('button', { name: `${match.name}, color ${match.code}` })); fireEvent.click(within(dialog).getByRole('button', { name: `Swap ${match.name}` })); expect(executeMock()).toHaveBeenCalledWith(expect.objectContaining({ type: 'palette-merge', from: 1, to: 2 })); expect(f.c.selectPalette).toHaveBeenCalledWith(2); expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
+  it('swaps the removed color into a newly created catalog color', () => { const match = DEFAULT_CATALOG_DEFINITION.search('salmon')[0]; const merged = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }, { id: 2, name: match.name, color: match.hex, active: true, catalog: { catalogId: 'dmc-compatible-screen-approximation', sourceId: match.sourceId, code: match.code, name: match.name, hex: match.hex, rgb: [...match.rgb] } }], backstitches: { ids: new Uint32Array() } } as never; (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockReturnValue({}); (ws as { getStateSnapshot: ReturnType<typeof vi.fn> }).getStateSnapshot.mockReturnValue({ document: merged }); render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); fireEvent.change(screen.getByLabelText('Search DMC catalog'), { target: { value: 'salmon' } }); fireEvent.click(screen.getByRole('button', { name: `${match.name}, color ${match.code}` })); fireEvent.click(screen.getByRole('button', { name: `Swap ${match.name}` })); expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).toHaveBeenCalledWith(expect.objectContaining({ type: 'palette-merge', from: 1, createTo: expect.objectContaining({ name: match.name, color: match.hex }) })); expect(f.c.selectPalette).toHaveBeenCalledWith(2); });
+  it('keeps the dialog open and reports a failed replacement', () => { (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockImplementationOnce(() => { throw new Error('boom'); }); render(<EditorSurface workspace={ws} document={two} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); fireEvent.change(screen.getByLabelText('Search DMC catalog'), { target: { value: 'salmon' } }); const salmon = DEFAULT_CATALOG_DEFINITION.search('salmon')[0]; fireEvent.click(screen.getByRole('button', { name: `${salmon.name}, color ${salmon.code}` })); fireEvent.click(screen.getByRole('button', { name: `Swap ${salmon.name}` })); expect(screen.getByRole('dialog', { name: 'Swap Color' })).toBeInTheDocument(); expect(screen.getByRole('alert')).toHaveTextContent('boom'); });
+  it('closes the swap dialog opened from the remove button on Escape', () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); fireEvent.keyDown(screen.getByRole('dialog', { name: 'Swap Color' }), { key: 'Escape' }); expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
   it('portals the details dialog outside the application root and closes it from the backdrop', async () => { const shell = document.createElement('div'); shell.dataset.application = ''; document.body.append(shell); render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); const dialog = screen.getByRole('dialog', { name: 'Settings' }); expect(dialog.closest('[data-application]')).toBeNull(); expect(shell).toHaveProperty('inert', true); fireEvent.click(dialog); expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument(); fireEvent.click(dialog.closest('.modal-backdrop') as HTMLElement); await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument()); expect(shell).toHaveProperty('inert', false); shell.remove(); });
   it('portals the add-color dialog outside the application root and closes it from the backdrop', async () => { const shell = document.createElement('div'); shell.dataset.application = ''; document.body.append(shell); render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: /Add new color/ })); const dialog = screen.getByRole('dialog', { name: 'Add a thread color' }); expect(dialog.closest('[data-application]')).toBeNull(); expect(shell).toHaveProperty('inert', true); fireEvent.click(dialog); expect(screen.getByRole('dialog', { name: 'Add a thread color' })).toBeInTheDocument(); fireEvent.click(dialog.closest('.modal-backdrop') as HTMLElement); await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument()); expect(shell).toHaveProperty('inert', false); shell.remove(); });
-  it('portals the remove dialog outside the application root and closes it from the backdrop', async () => { const shell = document.createElement('div'); shell.dataset.application = ''; document.body.append(shell); render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); const dialog = screen.getByRole('dialog', { name: 'Remove Ruby' }); expect(dialog.closest('[data-application]')).toBeNull(); expect(shell).toHaveProperty('inert', true); fireEvent.click(dialog); expect(screen.getByRole('dialog', { name: 'Remove Ruby' })).toBeInTheDocument(); fireEvent.click(dialog.closest('.modal-backdrop') as HTMLElement); await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument()); expect(shell).toHaveProperty('inert', false); shell.remove(); });
+  it('portals the remove-button swap dialog outside the application root and closes it from the backdrop', async () => { const shell = document.createElement('div'); shell.dataset.application = ''; document.body.append(shell); render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); const dialog = screen.getByRole('dialog', { name: 'Swap Color' }); expect(dialog.closest('[data-application]')).toBeNull(); expect(shell).toHaveProperty('inert', true); fireEvent.click(dialog); expect(screen.getByRole('dialog', { name: 'Swap Color' })).toBeInTheDocument(); fireEvent.click(dialog.closest('.modal-backdrop') as HTMLElement); await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument()); expect(shell).toHaveProperty('inert', false); shell.remove(); });
   it('disables the reference image tools without a reference image', () => { render(<EditorSurface workspace={ws} document={doc} />); expect(screen.getByRole('button', { name: 'Move image' })).toBeDisabled(); expect(screen.getByRole('button', { name: 'Resize image' })).toBeDisabled(); expect(screen.getByRole('checkbox', { name: 'Show image' })).toBeDisabled(); });
   it('activates Move image from the compact reference toolbar', async () => { (ws as { sourceImage: unknown }).sourceImage = { assetId: 'trace', mimeType: 'image/png', width: 2, height: 2, crop: { x: 0, y: 0, width: 1, height: 1 }, chartBounds: { x: 0, y: 0, width: 2, height: 2 }, traceVisible: true, opacity: 1 }; (ws as { getAsset: ReturnType<typeof vi.fn> }).getAsset.mockReturnValue({ id: 'trace', name: 'trace.png', mimeType: 'image/png', data: new Uint8Array([1]), checksum: '0'.repeat(64) }); f.uiState.tool = { tool: 'move-image' }; render(<EditorSurface workspace={ws} document={doc} />); const actionRow = document.querySelector('.canvas-actions') as HTMLElement; const toolbar = within(actionRow).getByRole('toolbar', { name: 'Reference image' }); const button = within(toolbar).getByRole('button', { name: 'Move image' }); expect(button).toHaveAttribute('aria-pressed', 'true'); expect(within(toolbar).getByRole('button', { name: 'Resize image' })).toHaveAttribute('aria-pressed', 'false'); expect(button.closest('[role="toolbar"]')).toBe(toolbar); fireEvent.click(button); expect(f.c.setTool).toHaveBeenCalledWith(expect.objectContaining({ tool: 'move-image' })); await waitFor(() => expect(f.c.setTraceImage).toHaveBeenCalled()); });
   it('keeps a persisted visible reference image attached in the canvas action row', async () => {
@@ -2432,7 +2433,7 @@ describe('palette manager', () => {
   const openManager = () => {
     const trigger = screen.getByRole('button', { name: 'Manage palette' });
     fireEvent.click(trigger);
-    return { trigger, dialog: screen.getByRole('dialog', { name: 'Color palette' }) };
+    return { trigger, dialog: screen.getByRole('dialog', { name: 'Manage' }) };
   };
   const gridButton = (dialog: HTMLElement, name: RegExp) => within(within(dialog).getByRole('list', { name: 'Palette colors' })).getByRole('button', { name });
   const chip = (dialog: HTMLElement) => within(dialog).getByRole('group', { name: 'Selected palette color' });
@@ -2470,13 +2471,13 @@ describe('palette manager', () => {
     expect(swap).toHaveAttribute('aria-expanded', 'true');
     const panel = dialog.querySelector<HTMLElement>('#palette-manager-panel')!;
     expect(panel).toBeInTheDocument();
-    expect(within(panel).getByRole('heading', { name: 'Swap Ruby for a thread color' })).toBeInTheDocument();
+    expect(panel).toHaveAccessibleName('Swap Ruby for a thread color'); expect(within(panel).queryByText(/will be changed/i)).toBeNull(); expect(within(panel).queryByRole('heading', { name: /thread color/ })).toBeNull();
     expect(within(panel).getByRole('tablist', { name: 'Thread catalogs' })).toBeInTheDocument();
     expect(within(dialog).getByRole('list', { name: 'Palette colors' })).toBeInTheDocument();
     fireEvent.click(within(panel).getByRole('button', { name: 'Swap Bright Red' }));
     expect(executeMock()).toHaveBeenCalledWith(expect.objectContaining({ type: 'palette-merge', from: 1 }));
     expect(dialog.querySelector('#palette-manager-panel')).toBeNull();
-    expect(screen.getByRole('dialog', { name: 'Color palette' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Manage' })).toBeInTheDocument();
   });
 
   it('delete opens the confirmation and confirming deletes the chip color', () => {
@@ -2496,11 +2497,22 @@ describe('palette manager', () => {
     expect(dialog.querySelector('#palette-manager-panel')).toBeInTheDocument();
     fireEvent.keyDown(dialog, { key: 'Escape' });
     expect(dialog.querySelector('#palette-manager-panel')).toBeNull();
-    expect(screen.getByRole('dialog', { name: 'Color palette' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Manage' })).toBeInTheDocument();
     await waitFor(() => expect(swap).toHaveFocus());
     fireEvent.keyDown(dialog, { key: 'Escape' });
-    expect(screen.queryByRole('dialog', { name: 'Color palette' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Manage' })).not.toBeInTheDocument();
     await waitFor(() => expect(trigger).toHaveFocus());
+  });
+
+  it('Escape on the delete confirmation closes only the confirmation', () => {
+    render(<EditorSurface workspace={ws} document={paletteDetailsDoc} />);
+    const { dialog } = openManager();
+    fireEvent.click(within(chip(dialog)).getByRole('button', { name: 'Delete Ruby' }));
+    const confirmation = screen.getByRole('dialog', { name: 'Delete Ruby?' });
+    fireEvent.keyDown(confirmation, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Delete Ruby?' })).not.toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Manage' })).toBeInTheDocument();
+    expect(executeMock()).not.toHaveBeenCalled();
   });
 
   describe('add color tile', () => {
@@ -2521,7 +2533,7 @@ describe('palette manager', () => {
       fireEvent.click(tile);
       expect(tile).toHaveAttribute('aria-expanded', 'true');
       const panel = dialog.querySelector<HTMLElement>('#palette-manager-panel')!;
-      expect(within(panel).getByRole('heading', { name: 'Add a thread color' })).toBeInTheDocument();
+      expect(panel).toHaveAccessibleName('Add a thread color'); expect(within(panel).queryByRole('heading', { name: /thread color/ })).toBeNull();
       expect(within(panel).getByRole('tablist', { name: 'Thread catalogs' })).toBeInTheDocument();
       expect(within(dialog).getByRole('list', { name: 'Palette colors' })).toBeInTheDocument();
     });
@@ -2538,9 +2550,9 @@ describe('palette manager', () => {
       fireEvent.click(within(dialog.querySelector<HTMLElement>('#palette-manager-panel')!).getByRole('button', { name: 'Add Bright Red' }));
       await waitFor(() => expect(executeMock()).toHaveBeenCalledWith(expect.objectContaining({ type: 'palette-create', name: 'Bright Red' })));
       await waitFor(() => expect(dialog.querySelector('#palette-manager-panel')).toBeNull());
-      expect(screen.getByRole('dialog', { name: 'Color palette' })).toBeInTheDocument();
+      expect(screen.getByRole('dialog', { name: 'Manage' })).toBeInTheDocument();
       rerender(<EditorSurface workspace={ws} document={createdDocument} />);
-      expect(within(chip(screen.getByRole('dialog', { name: 'Color palette' }))).getByRole('button', { name: 'Swap Bright Red' })).toBeInTheDocument();
+      expect(within(chip(screen.getByRole('dialog', { name: 'Manage' }))).getByRole('button', { name: 'Swap Bright Red' })).toBeInTheDocument();
     });
 
     it('toggles closed on a second click and switches modes with Swap', () => {
@@ -2553,7 +2565,7 @@ describe('palette manager', () => {
       fireEvent.click(tile);
       fireEvent.click(within(chip(dialog)).getByRole('button', { name: 'Swap Ruby' }));
       const panel = dialog.querySelector<HTMLElement>('#palette-manager-panel')!;
-      expect(within(panel).getByRole('heading', { name: 'Swap Ruby for a thread color' })).toBeInTheDocument();
+      expect(panel).toHaveAccessibleName('Swap Ruby for a thread color'); expect(within(panel).queryByRole('heading', { name: /thread color/ })).toBeNull();
       expect(tile).toHaveAttribute('aria-expanded', 'false');
     });
 
@@ -2563,9 +2575,9 @@ describe('palette manager', () => {
       fireEvent.click(addTile(dialog));
       fireEvent.keyDown(dialog, { key: 'Escape' });
       expect(dialog.querySelector('#palette-manager-panel')).toBeNull();
-      expect(screen.getByRole('dialog', { name: 'Color palette' })).toBeInTheDocument();
+      expect(screen.getByRole('dialog', { name: 'Manage' })).toBeInTheDocument();
       fireEvent.keyDown(dialog, { key: 'Escape' });
-      expect(screen.queryByRole('dialog', { name: 'Color palette' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('dialog', { name: 'Manage' })).not.toBeInTheDocument();
     });
   });
 });

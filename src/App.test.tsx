@@ -59,6 +59,8 @@ const renameFolder = vi.fn().mockResolvedValue({ id: 'folder-one', name: 'Rename
 const deleteFolder = vi.fn().mockResolvedValue(undefined);
 const moveProjectToFolder = vi.fn().mockResolvedValue(undefined);
 const moveFolder = vi.fn().mockResolvedValue(undefined);
+const renameProject = vi.fn().mockResolvedValue({ id: 'one', title: 'Renamed', notes: '', createdAt: 1, updatedAt: 2, revision: 4 });
+const duplicateProject = vi.fn().mockResolvedValue({ id: 'copy-id', title: 'Garden sampler copy', notes: '', createdAt: 3, updatedAt: 3, revision: 4 });
 const editorWorkspace = { metadata: { title: 'Garden sampler', notes: '', aidaCount: 14 }, catalogFor: () => DEFAULT_CATALOG_DEFINITION, availableCatalogs: () => [DEFAULT_CATALOG_DEFINITION], catalogById: (id: string) => id === DEFAULT_CATALOG_DEFINITION.association.catalogId ? DEFAULT_CATALOG_DEFINITION : undefined };
 
 const baseWorkspace = {
@@ -84,6 +86,8 @@ const baseWorkspace = {
   deleteFolder,
   moveProjectToFolder,
   moveFolder,
+  duplicateProject,
+  renameProject,
 };
 
 beforeEach(() => {
@@ -264,6 +268,73 @@ describe('application shell', () => {
 
     await waitFor(() => expect(openProject).toHaveBeenCalledWith('one'));
     expect(window.location.pathname).toBe('/patterns/one/edit');
+  });
+
+  it('duplicates a pattern from the gallery without opening the copy', async () => {
+    const project = { id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 };
+    mockedWorkspace.mockReturnValue({ ...baseWorkspace, projects: [project] } as never);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Duplicate Garden sampler' }));
+
+    await waitFor(() => expect(duplicateProject).toHaveBeenCalledWith('one'));
+    expect(await screen.findByText('Pattern duplicated.')).toBeInTheDocument();
+    expect(moveProjectToFolder).not.toHaveBeenCalled();
+    expect(openProject).not.toHaveBeenCalled();
+    expect(window.location.pathname).toBe('/patterns');
+  });
+
+  it('moves a duplicated pattern into the folder being viewed', async () => {
+    window.history.replaceState({}, '', '/patterns?folder=folder-one');
+    const folder = { id: 'folder-one', name: 'Crafts', parentId: null, createdAt: 1, updatedAt: 1 };
+    const project = { id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 };
+    mockedWorkspace.mockReturnValue({ ...baseWorkspace, projects: [project], folders: [folder], folderAssignments: [{ projectId: 'one', folderId: 'folder-one' }] } as never);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Duplicate Garden sampler' }));
+
+    await waitFor(() => expect(moveProjectToFolder).toHaveBeenCalledWith('copy-id', 'folder-one'));
+  });
+
+  it('reports a failed duplicate', async () => {
+    const project = { id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 };
+    duplicateProject.mockRejectedValueOnce(new Error('nope'));
+    mockedWorkspace.mockReturnValue({ ...baseWorkspace, projects: [project] } as never);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Duplicate Garden sampler' }));
+
+    expect(await screen.findByText('The pattern could not be duplicated.')).toBeInTheDocument();
+  });
+
+  it('renames a pattern from its gallery card without opening it', async () => {
+    const project = { id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 };
+    mockedWorkspace.mockReturnValue({ ...baseWorkspace, projects: [project] } as never);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rename Garden sampler' }));
+    const input = screen.getByLabelText('Rename pattern Garden sampler');
+    fireEvent.change(input, { target: { value: '  Renamed  ' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => expect(renameProject).toHaveBeenCalledWith('one', 'Renamed'));
+    expect(await screen.findByText('Pattern renamed.')).toBeInTheDocument();
+    expect(openProject).not.toHaveBeenCalled();
+    expect(window.location.pathname).toBe('/patterns');
+  });
+
+  it('reports a failed pattern rename', async () => {
+    const project = { id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 };
+    renameProject.mockRejectedValueOnce(new Error('nope'));
+    mockedWorkspace.mockReturnValue({ ...baseWorkspace, projects: [project] } as never);
+    render(<App />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rename Garden sampler' }));
+    const input = screen.getByLabelText('Rename pattern Garden sampler');
+    fireEvent.change(input, { target: { value: 'Renamed' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(await screen.findByText('The pattern could not be renamed.')).toBeInTheDocument();
   });
 
   it('deletes a project from the landing list through a two-step inline confirm', async () => {

@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest';
 import {
   deriveProjectSummary,
   deriveProjectThumbnail,
+  projectThumbnailsEqual,
+  expectedThumbnailDimensions,
   completeProjectSummary,
   PROJECT_THUMBNAIL_FABRIC_COLOR,
   PROJECT_THUMBNAIL_MAX_AXIS,
@@ -24,7 +26,7 @@ describe('project thumbnail summaries', () => {
     const thumbnail = deriveProjectThumbnail(document);
 
     expect(thumbnail.palette).toEqual(['#123456']);
-    expect(thumbnail.indices).toEqual([0, 0]);
+    expect(Array.from(thumbnail.indices)).toEqual([0, 0]);
     expect(sanitizeProjectThumbnail(thumbnail, document.revision)).toEqual(thumbnail);
   });
 
@@ -38,13 +40,13 @@ describe('project thumbnail summaries', () => {
     const thumbnail = deriveProjectThumbnail({ ...document, canvasMask: new Uint8Array([1, 0, 1]) });
 
     expect(thumbnail.palette).toEqual(['#123456', PROJECT_THUMBNAIL_OFF_CANVAS_COLOR]);
-    expect(thumbnail.indices).toEqual([0, 1, 0]);
+    expect(Array.from(thumbnail.indices)).toEqual([0, 1, 0]);
     expect(sanitizeProjectThumbnail(thumbnail, document.revision)).toEqual(thumbnail);
   });
 
   it('samples destination-cell centres and uses the first occupied slot', () => {
     let document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
-      width: 256,
+      width: 1024,
       height: 1,
       palette: [
         { id: 1, name: 'Red', color: '#d33' },
@@ -55,10 +57,10 @@ describe('project thumbnail summaries', () => {
     document = applyCommand(document, { type: 'set-full', x: 3, y: 0, color: 2 }).document;
     const thumbnail = deriveProjectThumbnail(document);
 
-    expect(thumbnail.columns).toBe(128);
+    expect(thumbnail.columns).toBe(512);
     expect(thumbnail.rows).toBe(1);
-    expect(thumbnail.indices.slice(0, 2)).toEqual([1, 2]);
-    expect(thumbnail.indices).toHaveLength(128);
+    expect(Array.from(thumbnail.indices.slice(0, 2))).toEqual([1, 2]);
+    expect(thumbnail.indices).toHaveLength(512);
 
     let malformedPalette = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
       width: 1,
@@ -71,7 +73,7 @@ describe('project thumbnail summaries', () => {
     malformedPalette = applyCommand(malformedPalette, { type: 'set-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
     malformedPalette = applyCommand(malformedPalette, { type: 'set-quarter', x: 0, y: 0, corner: QuarterCorner.NE, color: 2 }).document;
     expect(deriveProjectThumbnail(malformedPalette).palette).toEqual([PROJECT_THUMBNAIL_FABRIC_COLOR]);
-    expect(deriveProjectThumbnail(malformedPalette).indices).toEqual([0]);
+    expect(Array.from(deriveProjectThumbnail(malformedPalette).indices)).toEqual([0]);
   });
 
   it('does not upscale and bounds both thumbnail axes', () => {
@@ -84,12 +86,93 @@ describe('project thumbnail summaries', () => {
     // persistence boundary.
     const unvalidated = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 1, height: 1 });
     unvalidated.backstitches.ids = new Uint32Array([1]);
-    expect(deriveProjectThumbnail(unvalidated).indices).toEqual([0]);
+    expect(Array.from(deriveProjectThumbnail(unvalidated).indices)).toEqual([0]);
 
-    const large = deriveProjectThumbnail(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 256, height: 192 }));
+    const large = deriveProjectThumbnail(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 1024, height: 768 }));
     expect(large.columns).toBe(PROJECT_THUMBNAIL_MAX_AXIS);
-    expect(large.rows).toBe(96);
-    expect(large.indices).toHaveLength(128 * 96);
+    expect(large.rows).toBe(384);
+    expect(large.indices).toHaveLength(512 * 384);
+  });
+
+  it('samples every stitch of a pattern within the cap, and rounds the downsampled axis beyond it', () => {
+    const exact = deriveProjectThumbnail(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 300, height: 200 }));
+    expect(exact).toMatchObject({ columns: 300, rows: 200 });
+    expect(exact.indices).toHaveLength(300 * 200);
+
+    const wide = deriveProjectThumbnail(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 1000, height: 800 }));
+    expect(wide).toMatchObject({ columns: 512, rows: 410 });
+  });
+
+  it('exposes the dimensions derivation produces', () => {
+    for (const [width, height] of [[1, 1], [300, 200], [512, 512], [1000, 800], [37, 1500]] as const) {
+      const thumbnail = deriveProjectThumbnail(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width, height }));
+      expect(expectedThumbnailDimensions(width, height)).toEqual({ columns: thumbnail.columns, rows: thumbnail.rows });
+    }
+  });
+
+  it('still accepts a stored thumbnail from the former 128-axis cap', () => {
+    const legacy = {
+      version: 1,
+      revision: 3,
+      columns: 128,
+      rows: 96,
+      palette: [PROJECT_THUMBNAIL_FABRIC_COLOR],
+      indices: new Array(128 * 96).fill(0)
+    };
+    expect(sanitizeProjectThumbnail(legacy, 3)).toEqual({ ...legacy, version: 2, indices: new Uint8Array(128 * 96) });
+  });
+
+  it('stores indices as a Uint8Array for small palettes and a Uint16Array beyond 256 colors', () => {
+    const small = deriveProjectThumbnail(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2 }));
+    expect(small.version).toBe(2);
+    expect(small.indices).toBeInstanceOf(Uint8Array);
+
+    const palette = Array.from({ length: 300 }, (_, i) => ({ id: i + 1, name: `C${i}`, color: `#${(i + 1).toString(16).padStart(6, '0')}` }));
+    let document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 300, height: 1, palette });
+    for (let x = 0; x < 300; x += 1) document = applyCommand(document, { type: 'set-full', x, y: 0, color: x + 1 }).document;
+    const wide = deriveProjectThumbnail(document);
+    expect(wide.palette.length).toBe(301);
+    expect(wide.indices).toBeInstanceOf(Uint16Array);
+    expect(wide.indices[299]).toBe(300);
+    expect(sanitizeProjectThumbnail(wide, document.revision)).toEqual(wide);
+  });
+
+  it('converts a v1 number-array thumbnail to v2 with identical values', () => {
+    const v1 = { version: 1, revision: 3, columns: 2, rows: 1, palette: ['#f3eee5', '#dd3333'], indices: [1, 0] };
+    const v2 = sanitizeProjectThumbnail(v1, 3);
+    expect(v2?.version).toBe(2);
+    expect(v2?.indices).toBeInstanceOf(Uint8Array);
+    expect(Array.from(v2?.indices ?? [])).toEqual([1, 0]);
+  });
+
+  it('rejects v2 indices with the wrong width, kind, length, or range', () => {
+    const base = { version: 2, revision: 3, columns: 2, rows: 1, palette: ['#f3eee5', '#dd3333'] };
+    expect(sanitizeProjectThumbnail({ ...base, indices: new Uint8Array([1, 0]) }, 3)).toBeDefined();
+    expect(sanitizeProjectThumbnail({ ...base, indices: new Uint16Array([1, 0]) }, 3)).toBeUndefined();
+    expect(sanitizeProjectThumbnail({ ...base, indices: new Int8Array([1, 0]) }, 3)).toBeUndefined();
+    expect(sanitizeProjectThumbnail({ ...base, indices: [1, 0] }, 3)).toBeUndefined();
+    expect(sanitizeProjectThumbnail({ ...base, indices: new Uint8Array([1]) }, 3)).toBeUndefined();
+    expect(sanitizeProjectThumbnail({ ...base, indices: new Uint8Array([2, 0]) }, 3)).toBeUndefined();
+
+    const widePalette = Array.from({ length: 257 }, () => '#123456');
+    expect(sanitizeProjectThumbnail({ ...base, palette: widePalette, indices: new Uint8Array([1, 0]) }, 3)).toBeUndefined();
+    expect(sanitizeProjectThumbnail({ ...base, palette: widePalette, indices: new Uint16Array([256, 0]) }, 3)).toBeDefined();
+  });
+
+  it('compares thumbnails field-wise and element-wise, and clones independently', () => {
+    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 1 });
+    const a = deriveProjectThumbnail(document);
+    const b = deriveProjectThumbnail(document);
+    expect(projectThumbnailsEqual(a, b)).toBe(true);
+    expect(projectThumbnailsEqual(a, undefined)).toBe(false);
+    expect(projectThumbnailsEqual(a, { ...b, indices: Uint8Array.from([0, 1]) })).toBe(false);
+    expect(projectThumbnailsEqual(a, { ...b, palette: ['#000000'] })).toBe(false);
+    expect(projectThumbnailsEqual(a, { ...b, revision: b.revision + 1 })).toBe(false);
+
+    const metadata = { id: 'c', title: 'C', notes: '', createdAt: 1, updatedAt: 1, revision: a.revision, width: 2, height: 1, thumbnail: a };
+    const cloned = sanitizeProjectMetadata(metadata).thumbnail;
+    a.indices[0] = 0;
+    expect(cloned?.indices).not.toBe(a.indices);
   });
 
   it('normalizes safe cache values and rejects unbounded or non-plain arrays', () => {
@@ -101,7 +184,7 @@ describe('project thumbnail summaries', () => {
       palette: ['#F3EEE5', '#D33'],
       indices: [1]
     }, 3);
-    expect(normalized).toMatchObject({ palette: ['#f3eee5', '#dd3333'], indices: [1] });
+    expect(normalized).toMatchObject({ version: 2, palette: ['#f3eee5', '#dd3333'], indices: new Uint8Array([1]) });
     if (normalized === undefined) throw new Error('expected normalized thumbnail');
 
     expect(sanitizeProjectThumbnail({
@@ -121,12 +204,12 @@ describe('project thumbnail summaries', () => {
       indices: []
     }, 3)).toBeUndefined();
     const maxBound = sanitizeProjectThumbnail({
-      version: 1,
+      version: 2,
       revision: 3,
       columns: PROJECT_THUMBNAIL_MAX_AXIS,
       rows: PROJECT_THUMBNAIL_MAX_AXIS,
       palette: [PROJECT_THUMBNAIL_FABRIC_COLOR],
-      indices: new Array(PROJECT_THUMBNAIL_MAX_CELLS).fill(0)
+      indices: new Uint8Array(PROJECT_THUMBNAIL_MAX_CELLS)
     }, 3);
     expect(maxBound?.indices).toHaveLength(PROJECT_THUMBNAIL_MAX_CELLS);
 
@@ -200,13 +283,13 @@ describe('project thumbnail summaries', () => {
     document.layers.splice(1, 0, top);
     document.nextLayerId = 4;
 
-    expect(deriveProjectThumbnail(document).indices).toEqual([1, 1]);
+    expect(Array.from(deriveProjectThumbnail(document).indices)).toEqual([1, 1]);
     expect(deriveProjectThumbnail(document).palette).toEqual(['#123456', '#3366cc']);
 
     top.visible = false;
     const hidden = deriveProjectSummary(document);
     expect(hidden).toMatchObject({ width: 2, height: 1 });
     expect(hidden.thumbnail.palette).toEqual(['#123456', '#dd3333']);
-    expect(hidden.thumbnail.indices).toEqual([1, 0]);
+    expect(Array.from(hidden.thumbnail.indices)).toEqual([1, 0]);
   });
 });

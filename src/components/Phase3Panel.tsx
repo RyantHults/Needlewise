@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { createCatalogReference, type CatalogRecord } from '../catalog';
+import { useEffect, useRef, useState } from 'react';
+import { createCatalogReference, type CatalogDefinition, type CatalogRecord } from '../catalog';
 import type { DisplayUnits, PatternDocument, PatternMetrics, PaletteMetrics } from '../domain';
 import type { ProgressActivity } from '../persistence';
 import type { SessionProgressStats } from '../application/progress';
 import type { ProjectWorkspace } from '../application/workspace';
+import { ColorPickerModal } from './ColorPickerModal';
+import { Modal } from './Modal';
 
 interface Props { document: PatternDocument; metrics: PatternMetrics | null; sessionStats: SessionProgressStats | null; activity: ProgressActivity | null; execute: (command: { type: string; [key: string]: unknown }) => Promise<unknown>; workspace: ProjectWorkspace; open?: boolean; onClose?: () => void }
 
@@ -35,19 +36,13 @@ function materialYardage(material: PaletteMetrics['material'] | Omit<PaletteMetr
 export function Phase3Panel({ document, metrics, execute, workspace, open: controlledOpen, onClose }: Props) {
   const materialsOpen = controlledOpen ?? true;
   const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState('');
   const catalogs = workspace.availableCatalogs();
   const primaryCatalog = workspace.catalogFor(document);
   const defaultCatalogId = catalogs.some((item) => item.association.catalogId === primaryCatalog?.association.catalogId)
     ? primaryCatalog!.association.catalogId
     : catalogs[0]?.association.catalogId ?? '';
-  const [selectedCatalogId, setSelectedCatalogId] = useState(defaultCatalogId);
   const [notice, setNotice] = useState('');
   const launcher = useRef<HTMLButtonElement>(null);
-  const dialog = useRef<HTMLDivElement>(null);
-  const catalogDialog = useRef<HTMLDivElement>(null);
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
   const settings = workspace.materialSettings ?? { strands: 1, waste: 0 };
   const [form, setForm] = useState({ strands: String(settings.strands), waste: String(settings.waste * 100) });
   const active = document.palette.filter((entry) => entry.active);
@@ -59,57 +54,21 @@ export function Phase3Panel({ document, metrics, execute, workspace, open: contr
     catalogIdsByCode.set(entry.catalog.code, ids);
   }
   const duplicateCodes = new Set([...catalogIdsByCode].filter(([, ids]) => ids.size > 1).map(([code]) => code));
-  const catalogDefinition = catalogs.find((item) => item.association.catalogId === selectedCatalogId);
-  const results = useMemo(() => catalogDefinition?.search(query, { limit: 8 }) ?? [], [query, catalogDefinition]);
+  const catalogDefinition = catalogs.find((item) => item.association.catalogId === defaultCatalogId);
 
   // Material inputs belong to the active project. Do not carry a previous
   // project's draft form into this panel while the workspace is switching.
   useEffect(() => setForm({ strands: String(settings.strands), waste: String(settings.waste * 100) }), [workspace.activeProjectId, settings.strands, settings.waste]);
-  const installedCatalogIds = catalogs.map((item) => item.association.catalogId).join('\u0000');
-  useEffect(() => {
-    if (catalogs.some((item) => item.association.catalogId === selectedCatalogId)) return;
-    setSelectedCatalogId(defaultCatalogId);
-    setQuery('');
-  }, [installedCatalogIds, defaultCatalogId, selectedCatalogId]);
-  useEffect(() => { setSelectedCatalogId(defaultCatalogId); setQuery(''); }, [workspace.activeProjectId, defaultCatalogId]);
 
-  useEffect(() => {
-    if (!materialsOpen) return;
-    const root = globalThis.document.querySelector<HTMLElement>('[data-application]');
-    const wasInert = root?.inert ?? false;
-    if (root) root.inert = true;
-    const el = dialog.current;
-    if (!el) return () => { if (root) root.inert = wasInert; };
-    const focusable = () => [...el.querySelectorAll<HTMLElement>('button, input')].filter((item) => !item.hasAttribute('disabled') && item.tabIndex >= 0);
-    el.querySelector<HTMLElement>('.modal-close')?.focus();
-    const key = (event: KeyboardEvent) => {
-       if (event.key === 'Escape') { event.preventDefault(); onCloseRef.current?.(); return; }
-      if (event.key !== 'Tab') return;
-      const all = focusable(); const first = all[0]; const last = all.at(-1);
-      if (event.shiftKey && globalThis.document.activeElement === first) { event.preventDefault(); last?.focus(); }
-      else if (!event.shiftKey && globalThis.document.activeElement === last) { event.preventDefault(); first?.focus(); }
-    };
-    el.addEventListener('keydown', key);
-    return () => { el.removeEventListener('keydown', key); if (root) root.inert = wasInert; };
-   }, [materialsOpen]);
-
-  useEffect(() => {
-    if (!open) return;
-    window.setTimeout(() => {
-      const search = globalThis.document.querySelector<HTMLInputElement>('#catalog-search');
-      if (search && !search.disabled) search.focus();
-      else (globalThis.document.querySelector<HTMLSelectElement>('#materials-catalog-choice') ?? globalThis.document.querySelector<HTMLButtonElement>('.catalog-dialog .modal-close'))?.focus();
-    }, 0);
-  }, [open]);
-
-  const close = () => { setOpen(false); window.setTimeout(() => launcher.current?.focus(), 0); };
-  const add = async (color: CatalogRecord) => {
+  const create = async (command: { type: 'palette-create'; [key: string]: unknown }) => {
     try {
-      if (!catalogDefinition) return;
-      await execute({ type: 'palette-create', name: color.name, color: color.hex, catalog: createCatalogReference(catalogDefinition, color) });
-      close();
+      await execute(command);
+      setOpen(false);
     } catch (error) { setNotice(error instanceof Error ? error.message : 'This color could not be added.'); }
   };
+  const add = (color: CatalogRecord, catalog: CatalogDefinition) => create({ type: 'palette-create', name: color.name, color: color.hex, catalog: createCatalogReference(catalog, color) });
+  const addCustom = (hex: string, match: CatalogRecord | undefined, catalog: CatalogDefinition | undefined) =>
+    match && catalog ? add(match, catalog) : create({ type: 'palette-create', name: hex, color: hex });
   const save = async (event: React.FormEvent) => {
     event.preventDefault();
     await workspace.updateActiveMaterialSettings({ strands: Number(form.strands), waste: Number(form.waste) / 100 });
@@ -124,36 +83,27 @@ export function Phase3Panel({ document, metrics, execute, workspace, open: contr
     ? `${number(finished.widthCm)} × ${number(finished.heightCm)} cm`
     : `${number(finished.widthInches)} × ${number(finished.heightInches)} in`}, based on ${number(total?.assumptions?.aidaCount ?? document.width / finished.widthInches)}-count Aida.`;
 
-  const catalog = open ? createPortal(
-    <div className="modal-backdrop" role="presentation">
-       <div ref={catalogDialog} className="catalog-dialog create-modal" role="dialog" aria-modal="true" aria-labelledby="catalog-title" onKeyDown={(event) => {
-        if (event.key === 'Escape') { event.stopPropagation(); close(); return; }
-        if (event.key !== 'Tab') return;
-        const items = [...event.currentTarget.querySelectorAll<HTMLElement>('button,input,select')].filter((item) => !item.hasAttribute('disabled') && item.tabIndex >= 0);
-        const first = items[0]; const last = items.at(-1);
-        if (event.shiftKey && globalThis.document.activeElement === first) { event.preventDefault(); last?.focus(); }
-        else if (!event.shiftKey && globalThis.document.activeElement === last) { event.preventDefault(); first?.focus(); }
-      }}>
-        <button className="modal-close" type="button" aria-label="Close catalog dialog" onClick={close}>×</button>
-        <p className="section-label">{catalogDefinition?.association.brandLabel ?? 'Catalog'}</p><h2 id="catalog-title">Add a thread color</h2>
-        <div className="catalog-box">{catalogs.length > 1 && <label className="catalog-choice-label" htmlFor="materials-catalog-choice">Catalog<select id="materials-catalog-choice" value={selectedCatalogId} onChange={(event) => { setSelectedCatalogId(event.target.value); setQuery(''); }}>{catalogs.map((item) => <option key={item.association.catalogId} value={item.association.catalogId}>{item.association.brandLabel}</option>)}</select></label>}<label htmlFor="catalog-search">Search {catalogDefinition?.association.brandLabel ? `${catalogDefinition.association.brandLabel} catalog` : 'catalog'}</label><input id="catalog-search" aria-label={`Search ${catalogDefinition?.association.brandLabel ? `${catalogDefinition.association.brandLabel} catalog` : 'catalog'}`} disabled={!catalogDefinition} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`Name or ${catalogDefinition?.association.brandLabel ?? 'catalog'} code`} />
-           {!catalogDefinition ? <p className="catalog-unavailable" role="status">Catalog unavailable</p> : <ul className="catalog-results">{results.map((color) => <li key={`${catalogDefinition.association.catalogId}:${color.sourceId}`}><span className="swatch" style={{ background: color.hex }} /><span>{color.name} <small>#{color.code}</small></span><button className="small-action" type="button" aria-label={`Add ${color.name}`} onClick={() => void add(color)}>Add</button></li>)}</ul>}
-        </div>
-        {notice && <p className="modal-error" role="alert">{notice}</p>}
-      </div>
-    </div>, globalThis.document.body) : null;
-
   if (!materialsOpen) return null;
-  return createPortal(<div className="modal-backdrop" role="presentation" onClick={(event) => { if (event.target === event.currentTarget) onClose?.(); }}>
-    <div ref={dialog} className="create-modal materials-dialog" role="dialog" aria-modal="true" aria-labelledby="materials-title">
-    <button className="modal-close" type="button" aria-label="Close materials and progress" onClick={() => onClose?.()}>×</button>
+  return <Modal className="materials-dialog" titleId="materials-title" eyebrow="Materials & progress" title="Plan the thread" closeLabel="Close materials and progress" onClose={() => onClose?.()} initialFocus=".modal-close" returnFocus={false}>
     <section className="phase3-panel" aria-labelledby="materials-title">
-      <div className="phase3-heading"><div><p className="section-label">Materials &amp; progress</p><h2 id="materials-title">Plan the thread</h2></div><p className="catalog-disclaimer">{catalogDefinition ? `${catalogDefinition.association.brandLabel}-compatible colors are available in this pattern.` : 'Catalog unavailable'}</p></div>
-      <div className="phase3-grid"><section className="palette-manager" aria-labelledby="palette-title"><div className="palette-title-row"><h3 id="palette-title">{active.length ? active.map((entry) => entry.name).join(' and ') : 'Palette'} </h3><button ref={launcher} className="add-palette-button" type="button" aria-label="Add a color to the palette" disabled={!catalogs.length} onClick={() => { setNotice(''); setSelectedCatalogId(defaultCatalogId); setQuery(''); setOpen(true); }}>+</button></div>
+      <div className="phase3-heading"><p className="catalog-disclaimer">{catalogDefinition ? `${catalogDefinition.association.brandLabel}-compatible colors are available in this pattern.` : 'Catalog unavailable'}</p></div>
+      <div className="phase3-grid"><section className="palette-manager" aria-labelledby="palette-title"><div className="palette-title-row"><h3 id="palette-title">{active.length ? active.map((entry) => entry.name).join(' and ') : 'Palette'} </h3><button ref={launcher} className="add-palette-button" type="button" aria-label="Add a color to the palette" disabled={!catalogs.length} onClick={() => { setNotice(''); setOpen(true); }}>+</button></div>
        {active.map((entry) => { const item = paletteMetrics.get(entry.id); const yards = materialYardage(item?.material); const brand = entry.catalog && duplicateCodes.has(entry.catalog.code) ? workspace.catalogById(entry.catalog.catalogId)?.association.brandLabel : undefined; return <div className="material-row" key={entry.id}><span className="swatch" style={{ background: entry.color }} /><span className="material-main"><strong>{entry.name}{brand && <small className="material-catalog-brand">{brand} · {entry.catalog?.code}</small>}</strong><span>{item ? `${item.full} full · ${item.half} half · ${item.quarter} quarter · ${item.threeQuarter ?? 0} 3/4 · ${item.backstitch} backstitch` : 'No stitches yet'}</span></span><span className="material-estimate">{materialLine(item?.material)}{yards !== null && <span className="material-yards">{yards}</span>}</span></div>; })}
     </section><aside className="catalog-box"><h3>Material model</h3><form onSubmit={(event) => void save(event)}><label htmlFor="material-strands">Strands per stitch</label><input id="material-strands" type="number" min="1" step="1" value={form.strands} onChange={(event) => setForm({ ...form, strands: event.target.value })} /><label htmlFor="material-waste">Waste allowance (%)</label><input id="material-waste" type="number" min="0" step="1" value={form.waste} onChange={(event) => setForm({ ...form, waste: event.target.value })} /><button className="button button-secondary" type="submit">Save material settings</button></form></aside></div>
     <div className="estimate-card"><strong>Finished size and thread total</strong><p>{finishedSize ?? 'Finished size unavailable — no Aida count is set.'}</p><p>Total: {materialLine(total)}{totalYards !== null && <span className="material-yards">{totalYards}</span>}</p><p className="material-note">{modelNote}</p></div>
     {metrics?.progress && <div className="progress-strip"><div><span>Progress</span><strong>{number(metrics.progress.percent)}%</strong><progress max="100" value={metrics.progress.percent} /></div><div><span>Completed</span><strong>{metrics.progress.completedComponents}</strong></div><div><span>Remaining</span><strong>{metrics.progress.remainingComponents}</strong></div><div><span>Total</span><strong>{metrics.progress.totalComponents}</strong></div></div>}
-    {catalog}
-    </section></div></div>, globalThis.document.body);
+    {open && <ColorPickerModal
+      eyebrow="Color Catalog"
+      title="Add a thread color"
+      catalogs={catalogs}
+      defaultCatalogId={defaultCatalogId}
+      verb="Add"
+      onPickCatalogColor={(color, catalog) => void add(color, catalog)}
+      onPickCustomColor={(hex, match, catalog) => void addCustom(hex, match, catalog)}
+      customActionLabel={(hex, match) => match ? `Add ${match.name}` : hex ? `Add ${hex}` : 'Add custom color'}
+      notice={notice}
+      onClose={() => setOpen(false)}
+      returnFocus={launcher}
+    />}
+    </section></Modal>;
 }

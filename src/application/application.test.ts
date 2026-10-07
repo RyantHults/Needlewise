@@ -945,6 +945,153 @@ describe('headless project workspace', () => {
     }
   });
 
+  it('duplicates a non-active project without changing the active session', async () => {
+    const repository = new MemoryRepository();
+    const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'duplicate-copy' });
+    try {
+      await workspace.createProject({ id: 'duplicate-source', title: 'Source', notes: 'keep me', width: 2, height: 2 });
+      await workspace.flush();
+      await workspace.createProject({ id: 'duplicate-active', title: 'Active', width: 1, height: 1 });
+
+      const copy = await workspace.duplicateProject('duplicate-source');
+      expect(copy).toMatchObject({ id: 'duplicate-copy', title: 'Source copy', notes: 'keep me', createdAt: 100, updatedAt: 100 });
+      expect(workspace.metadata?.id).toBe('duplicate-active');
+      const projects = await workspace.listProjects();
+      expect(projects.map((project) => project.id).sort()).toEqual(['duplicate-active', 'duplicate-copy', 'duplicate-source']);
+      const source = await repository.load('duplicate-source');
+      const saved = await repository.load('duplicate-copy');
+      expect(saved?.metadata.title).toBe('Source copy');
+      expect(saved?.document).toEqual(source?.document);
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
+  it('carries the source image asset through project duplication', async () => {
+    const repository = new MemoryRepository();
+    const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'duplicate-image-copy' });
+    try {
+      await workspace.createProject({ id: 'duplicate-image', width: 4, height: 3, assets: [{ id: 'reference', name: 'reference.png', mimeType: 'image/png', data: pngBytes(2, 3) }] });
+      const descriptor = {
+        assetId: 'reference',
+        mimeType: 'image/png' as const,
+        width: 2,
+        height: 3,
+        crop: { x: 0, y: 0, width: 1, height: 1 },
+        chartBounds: { x: 0, y: 0, width: 4, height: 3 },
+        traceVisible: true,
+        opacity: 1
+      };
+      await workspace.setSourceImage(descriptor);
+      await workspace.flush();
+
+      await workspace.duplicateProject('duplicate-image');
+      const saved = await repository.load('duplicate-image-copy');
+      expect(saved?.metadata.sourceImage).toEqual(descriptor);
+      expect(saved?.assets.map((asset) => asset.id)).toEqual(['reference']);
+      expect(workspace.metadata?.id).toBe('duplicate-image');
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
+  it('rejects duplicating an unknown project', async () => {
+    const repository = new MemoryRepository();
+    const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'duplicate-missing-copy' });
+    try {
+      await workspace.createProject({ id: 'duplicate-existing', width: 1, height: 1 });
+      await expect(workspace.duplicateProject('does-not-exist')).rejects.toMatchObject({ code: 'project-not-found' });
+      expect(await repository.load('duplicate-missing-copy')).toBeUndefined();
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
+  it('renames a non-active project without touching its document or the active session', async () => {
+    const repository = new MemoryRepository();
+    const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 } });
+    try {
+      await workspace.createProject({ id: 'rename-source', title: 'Before', width: 2, height: 2 });
+      await workspace.flush();
+      await workspace.createProject({ id: 'rename-active', title: 'Active', width: 1, height: 1 });
+      const before = await repository.load('rename-source');
+
+      const renamed = await workspace.renameProject('rename-source', '  After  ');
+      expect(renamed.title).toBe('After');
+      const after = await repository.load('rename-source');
+      expect(after?.metadata.title).toBe('After');
+      expect(after?.metadata.updatedAt).toBe(before?.metadata.updatedAt);
+      expect(after?.document).toEqual(before?.document);
+      expect(workspace.metadata).toMatchObject({ id: 'rename-active', title: 'Active' });
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
+  it('renames the active project through its session', async () => {
+    const repository = new MemoryRepository();
+    const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 } });
+    try {
+      await workspace.createProject({ id: 'rename-open', title: 'Before', width: 1, height: 1 });
+      const renamed = await workspace.renameProject('rename-open', 'After');
+      expect(renamed.title).toBe('After');
+      expect(workspace.metadata?.title).toBe('After');
+      expect((await repository.load('rename-open'))?.metadata.title).toBe('After');
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
+  it('rejects renaming an unknown project or to an empty title', async () => {
+    const repository = new MemoryRepository();
+    const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 } });
+    try {
+      await workspace.createProject({ id: 'rename-keep', title: 'Keep', width: 1, height: 1 });
+      await workspace.flush();
+      await expect(workspace.renameProject('does-not-exist', 'Name')).rejects.toMatchObject({ code: 'project-not-found' });
+      await expect(workspace.renameProject('rename-keep', '   ')).rejects.toMatchObject({ code: 'save-failed' });
+      expect((await repository.load('rename-keep'))?.metadata.title).toBe('Keep');
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
+  it('refreshes only stale gallery thumbnails in the background', async () => {
+    const repository = new MemoryRepository();
+    const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 } });
+    const thumbnail = (columns: number, rows: number) => ({ version: 2 as const, revision: 1, columns, rows, palette: ['#ffffff'], indices: new Uint8Array(columns * rows) });
+    try {
+      await workspace.createProject({ id: 'thumb-stale', width: 300, height: 200 });
+      await workspace.createProject({ id: 'thumb-fresh', width: 4, height: 3 });
+      await workspace.createProject({ id: 'thumb-active', width: 300, height: 200 });
+      await workspace.flush();
+      const stale = repository.records.get('thumb-stale')!;
+      const fresh = repository.records.get('thumb-fresh')!;
+      const active = repository.records.get('thumb-active')!;
+      stale.metadata = { ...stale.metadata, width: 300, height: 200, thumbnail: thumbnail(128, 85) };
+      fresh.metadata = { ...fresh.metadata, width: 4, height: 3, thumbnail: thumbnail(4, 3) };
+      active.metadata = { ...active.metadata, width: 300, height: 200, thumbnail: thumbnail(128, 85) };
+      // MemoryRepository does not backfill on load like the Dexie repository, so emulate it.
+      const loadedIds: string[] = [];
+      const load = repository.load.bind(repository);
+      vi.spyOn(repository, 'load').mockImplementation(async (projectId) => {
+        loadedIds.push(projectId);
+        const record = repository.records.get(projectId);
+        if (record?.metadata.width !== undefined && record.metadata.height !== undefined) record.metadata = { ...record.metadata, thumbnail: thumbnail(record.metadata.width, record.metadata.height) };
+        return load(projectId);
+      });
+
+      expect(await workspace.refreshStaleThumbnails()).toBe(1);
+      expect(loadedIds).toEqual(['thumb-stale']);
+      const projects = await workspace.listProjects();
+      expect(projects.find((project) => project.id === 'thumb-stale')?.thumbnail).toMatchObject({ columns: 300, rows: 200 });
+      expect(workspace.metadata?.id).toBe('thumb-active');
+      expect(await workspace.refreshStaleThumbnails()).toBe(0);
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
   it('atomically sets, persists, clears, and explicitly retrieves a source image asset', async () => {
     const repository = new MemoryRepository();
     const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'source-image' });

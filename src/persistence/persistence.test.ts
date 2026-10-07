@@ -203,6 +203,12 @@ function webpLosslessBytes(width: number, height: number): Uint8Array {
   return bytes;
 }
 
+/** Thumbnail indices compare as plain arrays: fake-indexeddb clones typed arrays into another realm. */
+function plainSummary<T extends { thumbnail?: { indices: ArrayLike<number> } | undefined }>(value: T | undefined): unknown {
+  if (value?.thumbnail === undefined) return value;
+  return { ...value, thumbnail: { ...value.thumbnail, indices: Array.from(value.thumbnail.indices) } };
+}
+
 function metadata(document: LayeredDocument, id = 'project-1'): ProjectMetadata {
   return { id, title: 'Test project', notes: 'Local notes', createdAt: 1, updatedAt: Date.now(), revision: document.revision };
 }
@@ -1718,7 +1724,7 @@ describe('local project repository', () => {
         undefined,
         { mode: 'retain', expectedHead: head }
       );
-      expect(await repo.db.projects.get('retain-summary')).toMatchObject(summary);
+      expect(plainSummary(await repo.db.projects.get('retain-summary'))).toMatchObject(plainSummary(summary) as object);
 
       // A legacy record with only one summary field is repaired from a
       // complete incoming summary, as one atomic unit.
@@ -1733,7 +1739,7 @@ describe('local project repository', () => {
         undefined,
         { mode: 'retain', expectedHead: head }
       );
-      expect(await repo.db.projects.get('retain-summary')).toMatchObject(summary);
+      expect(plainSummary(await repo.db.projects.get('retain-summary'))).toMatchObject(plainSummary(summary) as object);
 
       // If neither side has a complete valid summary, no summary fields are
       // retained, rather than preserving a misleading partial cache.
@@ -1754,8 +1760,8 @@ describe('local project repository', () => {
       expect(withoutSummary).not.toHaveProperty('width');
       expect(withoutSummary).not.toHaveProperty('height');
       expect(withoutSummary).not.toHaveProperty('thumbnail');
-      expect((await repo.load('retain-summary'))?.metadata).toMatchObject(summary);
-      expect(await repo.db.projects.get('retain-summary')).toMatchObject(summary);
+      expect(plainSummary((await repo.load('retain-summary'))?.metadata)).toMatchObject(plainSummary(summary) as object);
+      expect(plainSummary(await repo.db.projects.get('retain-summary'))).toMatchObject(plainSummary(summary) as object);
     } finally {
       await closeRepository(repo);
     }
@@ -1963,16 +1969,8 @@ describe('local project repository', () => {
       expect(result).toMatchObject({ committed: true, stale: false, revision: revision1.revision, head: { projectId: 'prepared', revision: revision1.revision } });
       expect(encodeSpy).not.toHaveBeenCalled();
       expect(hashSpy.mock.calls.some(([value]) => value instanceof Uint8Array && value.length === rawPrepared.bytes.length && value.every((byte, index) => byte === rawPrepared.bytes[index]))).toBe(false);
-      expect(await repo.db.projects.get('prepared')).toMatchObject({
-        width: preparedSummary.width,
-        height: preparedSummary.height,
-        thumbnail: preparedSummary.thumbnail
-      });
-      expect((await repo.load('prepared'))?.metadata).toMatchObject({
-        width: preparedSummary.width,
-        height: preparedSummary.height,
-        thumbnail: preparedSummary.thumbnail
-      });
+      expect(plainSummary(await repo.db.projects.get('prepared'))).toMatchObject(plainSummary(preparedSummary) as object);
+      expect(plainSummary((await repo.load('prepared'))?.metadata)).toMatchObject(plainSummary(preparedSummary) as object);
       expect((await repo.load('prepared'))?.recovery?.revision).toBe(revision0.revision);
       expect(await repo.db.projectHeads.get('prepared')).toEqual(result.head);
 
@@ -2392,7 +2390,7 @@ describe('local project repository', () => {
         ...metadata(valid, 'malformed-summary'),
         updatedAt: 35,
         width: valid.width,
-        thumbnail: { version: 1, revision: valid.revision, columns: 1, rows: 1, palette: [], indices: [0] }
+        thumbnail: { version: 1, revision: valid.revision, columns: 1, rows: 1, palette: [], indices: [0] } as unknown as ProjectMetadata['thumbnail']
       });
       currentRead.mockClear();
       expect((await repo.listProjects()).map((project) => project.id)).toEqual(['incomplete', 'corrupt', 'malformed-summary', 'valid']);
@@ -2433,6 +2431,33 @@ describe('local project repository', () => {
         projectPut.mockRestore();
         currentRead.mockRestore();
       }
+    } finally {
+      await closeRepository(repo);
+    }
+  });
+
+  it('backfills a downsampled legacy thumbnail at full resolution on load', async () => {
+    const repo = await repository();
+    try {
+      const document = createDocument({ width: 300, height: 200, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+      await repo.save('legacy-thumbnail', metadata(document, 'legacy-thumbnail'), document);
+      const stored = await repo.db.projects.get('legacy-thumbnail');
+      if (!stored) throw new Error('missing legacy thumbnail metadata');
+      // Deliberately a v1 record: plain-array indices from before typed arrays.
+      const legacy = { version: 1, revision: document.revision, columns: 128, rows: 85, palette: ['#f3eee5'], indices: new Array(128 * 85).fill(0) } as unknown as ProjectMetadata['thumbnail'];
+      await repo.db.projects.put({ ...stored, thumbnail: legacy });
+      const beforeLoad = (await repo.listProjects()).find((project) => project.id === 'legacy-thumbnail');
+      expect(beforeLoad?.thumbnail).toMatchObject({ version: 2, columns: 128, rows: 85 });
+      expect(Object.prototype.toString.call(beforeLoad?.thumbnail?.indices)).toBe('[object Uint8Array]');
+
+      await repo.load('legacy-thumbnail');
+
+      const listed = (await repo.listProjects()).find((project) => project.id === 'legacy-thumbnail');
+      expect(listed?.thumbnail).toMatchObject({ version: 2, columns: 300, rows: 200 });
+      expect(listed?.thumbnail?.indices).toHaveLength(300 * 200);
+      const rewritten = await repo.db.projects.get('legacy-thumbnail');
+      expect(rewritten?.thumbnail).toMatchObject({ version: 2, columns: 300, rows: 200 });
+      expect(Object.prototype.toString.call(rewritten?.thumbnail?.indices)).toBe('[object Uint8Array]');
     } finally {
       await closeRepository(repo);
     }
@@ -2487,11 +2512,7 @@ describe('local project repository', () => {
       const loaded = await staleLoader.load('backfill-race');
       expect(loaded?.document.width).toBe(oldDocument.width);
       const newestMetadata = await db.projects.get('backfill-race');
-      expect(newestMetadata).toMatchObject({
-        width: newDocument.width,
-        height: newDocument.height,
-        thumbnail: deriveProjectSummary(newDocument).thumbnail
-      });
+      expect(plainSummary(newestMetadata)).toMatchObject(plainSummary(deriveProjectSummary(newDocument)) as object);
     } finally {
       await staleLoader.close();
       await db.delete();

@@ -17,6 +17,7 @@ import { inspectSourceImage, validateSourceImageDescriptor } from './source-imag
 import {
   completeProjectSummary,
   deriveProjectSummary,
+  projectThumbnailsEqual,
   sanitizeProjectMetadata,
   withProjectSummary,
   type ProjectDocumentSummary
@@ -514,7 +515,7 @@ export class ProjectRepository {
       if (
         existing?.width === summary.width
         && existing.height === summary.height
-        && JSON.stringify(existing.thumbnail) === JSON.stringify(summary.thumbnail)
+        && projectThumbnailsEqual(existing.thumbnail, summary.thumbnail)
       ) return;
       await this.db.transaction('rw', [this.db.projects, this.db.projectHeads], async () => {
         const [metadata, storedHead] = await Promise.all([
@@ -533,7 +534,7 @@ export class ProjectRepository {
         if (
           freshSummary?.width === summary.width
           && freshSummary.height === summary.height
-          && JSON.stringify(freshSummary.thumbnail) === JSON.stringify(summary.thumbnail)
+          && projectThumbnailsEqual(freshSummary.thumbnail, summary.thumbnail)
         ) return;
         // Merge with the row read inside the CAS transaction so unrelated
         // metadata edits made after load are not overwritten by this cache
