@@ -22,7 +22,7 @@ import {
   type PatternFragment
 } from '../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
-import { EditorSurfaceController, backstitchPassesThroughCell, buildBackstitchCellIndex } from './controller';
+import { EditorSurfaceController, type EditorSurfaceControllerOptions, backstitchPassesThroughCell, buildBackstitchCellIndex } from './controller';
 import {
   HIDDEN_LAYER_TOOL_HINT,
   SPECIALTY_LAYER_BACKSTITCH_HINT,
@@ -206,7 +206,7 @@ function addLayer(document: LayeredDocument, type: LayerType): number {
   return applyLayerStructureCommand(document, layerAddCommand(type)).layerId!;
 }
 
-function fixture(document = layeredDocument(), activeLayerId: ActiveLayerId = 1) {
+function fixture(document = layeredDocument(), activeLayerId: ActiveLayerId = 1, options: Partial<EditorSurfaceControllerOptions> = {}) {
   const boundary = new LayeredBoundary(document);
   boundary.activeLayerId = activeLayerId;
   const gateway = createWorkspaceEditorGateway(boundary);
@@ -219,7 +219,8 @@ function fixture(document = layeredDocument(), activeLayerId: ActiveLayerId = 1)
     renderer: rendererFixture(),
     metrics: getCanvasMetrics(128, 128),
     fillClient,
-    onNotice: (message) => notices.push(message)
+    onNotice: (message) => notices.push(message),
+    ...options
   });
   controller.start();
   controller.handleFocus();
@@ -420,6 +421,32 @@ describe('layered editor controller', () => {
     expect(uiStore.getState().paletteId).toBe(2);
 
     boundary.setVisible(top, false);
+    controller.setTool({ tool: 'eyedropper' });
+    controller.handlePointerDown(at(2, 0, 0));
+    expect(uiStore.getState().paletteId).toBe(1);
+    controller.dispose();
+  });
+
+  it('samples the reference image instead of the stitch under the pointer when the reference layer is active', () => {
+    const rgb = { r: 201, g: 102, b: 3 };
+    const matched = DEFAULT_CATALOG_DEFINITION.nearest(rgb)!;
+    const document = createLayeredDocument({
+      width: 8,
+      height: 8,
+      catalog: DEFAULT_CATALOG_DEFINITION.association,
+      palette: [
+        { id: 1, name: 'Red', color: '#d33', active: true },
+        { id: 2, name: 'Match', color: matched.hex, active: true, catalog: { catalogId: DEFAULT_CATALOG_DEFINITION.association.catalogId, sourceId: matched.sourceId, code: matched.code, name: matched.name, hex: matched.hex, rgb: [...matched.rgb] as [number, number, number] } }
+      ]
+    });
+    seed(document, 1, { type: 'set-full', x: 0, y: 0, color: 1 });
+    const { boundary, controller, uiStore } = fixture(document, 'reference', { traceSampler: () => ({ ...rgb }), catalogDefinition: DEFAULT_CATALOG_DEFINITION });
+    controller.setTraceImage({ source: {}, width: 2, height: 2, chartBounds: { x: 0, y: 0, width: 2, height: 2 } });
+    controller.setTool({ tool: 'eyedropper' });
+    controller.handlePointerDown(at(1, 0, 0));
+    expect(uiStore.getState().paletteId).toBe(2);
+
+    boundary.setActiveLayer(1);
     controller.setTool({ tool: 'eyedropper' });
     controller.handlePointerDown(at(2, 0, 0));
     expect(uiStore.getState().paletteId).toBe(1);

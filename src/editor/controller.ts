@@ -2463,11 +2463,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return this.traceSampler(trace, snapshot.document, this.uiStore.getState().viewport, this.metrics, point);
   }
 
-  /** Eyedropper: pick a cell's palette color, otherwise sample the reference image. */
+  /** Eyedropper: pick a cell's palette color, otherwise sample the reference image. The reference layer always samples the image. */
   private eyedropperAt(sample: PointerSample, document: PatternDocument): boolean {
     if (!validScreenSample(sample) || !isFiniteViewport(this.uiStore.getState().viewport)) return false;
     const point = screenToModel({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport);
-    const cell = this.paintHitCell(sample, document);
+    const cell = this.gateway.getSnapshot().activeLayer?.kind === 'reference' ? undefined : this.paintHitCell(sample, document);
     if (cell) {
       const picked = this.pickCellPalette(document, cell, point);
       if (picked !== undefined) {
