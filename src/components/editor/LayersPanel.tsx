@@ -14,6 +14,7 @@ import {
 import { canAddLayer, MAX_LAYERS_PER_TYPE, type Layer, type LayeredDocument, type LayerType, type PaletteEntry } from "../../domain";
 import { createThumbnailQueue, layerContentChanged, paintLayerThumbnail, paletteSignature, renderLayerThumbnailPixels, type ThumbnailQueue } from "../../rendering/layer-thumbnail";
 import { pointerWithinOrClosestCenter } from "../gallery-dnd";
+import stitchIcon from "../../assets/editor-tools/stitch.svg";
 import {
   displayLayerOrder,
   layerDragId,
@@ -35,13 +36,18 @@ export const LAYER_TYPE_LABELS: Record<RowKind, string> = {
 
 /** The only visible type label on a row; each type has its own glyph. */
 export function LayerTypeSymbol({ kind }: { kind: RowKind }) {
-  const path = kind === "stitch"
-    ? <path d="M6 6l12 12M18 6 6 18" />
-    : kind === "specialty"
-      ? <path d="M4 16l5-8 5 8 6-10" />
-      : kind === "canvas"
-        ? <path d="M4 4h16v16H4zM4 10h16M4 15h16M10 4v16M15 4v16" />
-        : <><path d="M4 5h16v14H4z" /><path d="m4 16 5-5 4 4 2-2 5 5" /></>;
+  if (kind === "stitch") {
+    return (
+      <span className={`layer-type-symbol layer-type-${kind}`} title={LAYER_TYPE_LABELS[kind]} aria-hidden="true">
+        <img data-icon="stitch" src={stitchIcon} alt="" aria-hidden="true" />
+      </span>
+    );
+  }
+  const path = kind === "specialty"
+    ? <path d="M4 16l5-8 5 8 6-10" />
+    : kind === "canvas"
+      ? <path d="M4 4h16v16H4zM4 10h16M4 15h16M10 4v16M15 4v16" />
+      : <><path d="M4 5h16v14H4z" /><path d="m4 16 5-5 4 4 2-2 5 5" /></>;
   return (
     <span className={`layer-type-symbol layer-type-${kind}`} title={LAYER_TYPE_LABELS[kind]} aria-hidden="true">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{path}</svg>
@@ -370,8 +376,8 @@ export function LayersPanel({
         </button>
         {menuOpen && (
           <div ref={menu} id="layers-add-menu" className="layers-add-menu" role="menu" aria-label="Add layer">
-            {addOption("stitch", "Stitch layer")}
             {addOption("specialty", "Specialty layer")}
+            {addOption("stitch", "Stitch layer")}
           </div>
         )}
       </div>

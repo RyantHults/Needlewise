@@ -329,7 +329,7 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .canvas-fallback { min-height:42rem; }
 .canvas-frame { position:relative; min-height:42rem; overflow:hidden; border:1px solid #b9b2a8; border-radius:.65rem; background:#f8f5ef; box-shadow:inset 0 0 0 4px rgba(255,255,255,.55); outline-offset:4px; touch-action:none; }
 .editor-heading-actions { display:flex; align-items:center; gap:1rem; }
-.canvas-frame:focus-visible { outline:3px solid #bc5a3d; }
+.canvas-frame:focus, .canvas-frame:focus-visible { outline: none; }
 .canvas-frame canvas { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
 .canvas-fallback { display:grid; height:100%; min-height:28rem; place-content:center; padding:1.5rem; color:#777169; text-align:center; }
 .canvas-instructions { margin-top:.55rem; }
@@ -1189,8 +1189,10 @@ a.button { display: inline-flex; align-items: center; gap: .4rem; text-decoratio
 .layers-group-header:first-child { margin-top:0; }
 .layer-row-name { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .layer-type-symbol { display:grid; flex:0 0 .95rem; place-items:center; width:.95rem; height:.95rem; color:#687568; }
-.layer-type-symbol svg { width:100%; height:100%; }
+.layer-type-symbol svg,
+.layer-type-symbol img { width:100%; height:100%; object-fit:contain; display:block; }
 .layer-type-stitch { color:#88452f; }
+.layer-type-stitch img[data-icon="stitch"] { width:90%; height:90%; }
 .layer-type-specialty { color:#546057; }
 .layer-type-canvas, .layer-type-reference { color:#8a837a; }
 .layer-thumbnail { display:block; flex:0 0 1.5rem; width:1.5rem; height:1.5rem; border:1px solid #e1dbd1; border-radius:.25rem; background:repeating-conic-gradient(#f3eee5 0 25%, #fffdf9 0 50%) 0 0 / .5rem .5rem; object-fit:contain; image-rendering:pixelated; }
