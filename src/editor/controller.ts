@@ -22,6 +22,7 @@ import {
   QuarterCorner,
   LayerType,
   snapBackstitchPoint,
+  colorComponentMask,
   type BulkCellEdit,
   type Layer,
   type StitchLayer,
@@ -29,7 +30,8 @@ import {
   type DomainCommand,
   type PatternDocument,
   type PatternFragment,
-  type FragmentSelection
+  type FragmentSelection,
+  type ProgressCommand
 } from '../domain';
 import type {
   CanvasMetrics,
@@ -43,7 +45,6 @@ import type {
   AuthoringStitchBrush,
   EditorToolState,
   EditorUiStore,
-  EraserMode,
   FixedPoint,
   GridRect,
   Invalidation,
@@ -66,7 +67,7 @@ import type {
   PendingBackstitchRemoval,
   ToolAvailability
 } from './contracts';
-import { CANVAS_BASIC_LOCKED_HINT, DEFAULT_HALF_DIRECTION, normalizeBrushSize, toolStateAvailability } from './contracts';
+import { CANVAS_BASIC_LOCKED_HINT, CHART_EDGE_MARGIN, DEFAULT_HALF_DIRECTION, normalizeBrushSize, toolStateAvailability } from './contracts';
 import {
   fitViewport,
   hitTestCell,
@@ -159,6 +160,11 @@ export interface EditorSurfaceControllerOptions {
   readonly onNotice?: EditorNoticeCallback;
   /** Called after the canvas origin moved, once the view has been shifted to keep the design still. */
   readonly onCanvasOriginChange?: CanvasOriginChangeCallback;
+  /**
+   * Pan and zoom only: tools, history, selection and paste are refused and
+   * every pointer drag pans. Kept for the read-only Track viewer.
+   */
+  readonly readOnly?: boolean;
 }
 
 export type EditorNoticeCallback = (message: string) => void;
@@ -187,7 +193,36 @@ export interface EditorSurfaceControllerLifecycle {
   dispose(): void;
 }
 
-type Gesture = PaintGesture | ShapeGesture | EraserGesture | SelectionGesture | LassoStrokeGesture | BackstitchGesture | TouchActionGesture | PanGesture | PinchGesture | MoveImageGesture | ResizeImageGesture | CanvasBrushGesture | CanvasSelectionGesture;
+type Gesture = PaintGesture | ShapeGesture | EraserGesture | SelectionGesture | LassoStrokeGesture | BackstitchGesture | TouchActionGesture | PanGesture | PinchGesture | MoveImageGesture | ResizeImageGesture | CanvasBrushGesture | CanvasSelectionGesture | MarkGesture;
+
+/** What a Mark press landed on: one component mask of a composite cell, or one backstitch. */
+type MarkTarget =
+  | { readonly kind: 'cell'; readonly index: number; readonly mask: number; readonly done: boolean }
+  | { readonly kind: 'backstitch'; readonly id: number; readonly done: boolean };
+
+/**
+ * Read-only progress marking on the composite. A release within the tap slop
+ * toggles the pressed target; a drag sets or clears everything it crosses,
+ * decided by the first stitch it reaches, and commits as one progress step.
+ */
+interface MarkGesture {
+  readonly kind: 'mark';
+  readonly pointerId: number;
+  readonly token: EditorRevisionToken;
+  /** Only components and backstitches of this palette id are marked; null marks any color. */
+  readonly highlightColor: number | null;
+  readonly tap: MarkTarget | undefined;
+  readonly startScreenX: number;
+  readonly startScreenY: number;
+  readonly slop: number;
+  dragging: boolean;
+  operation: 'set' | 'clear' | undefined;
+  /** Composite cell index to the component mask the drag reached. */
+  readonly cells: Map<number, number>;
+  readonly backstitchIds: Set<number>;
+  lastCell: ModelPoint | undefined;
+  lastPoint: ModelPoint | undefined;
+}
 
 /** Canvas brush (add) or Canvas-layer eraser (remove); commits one canvas-cells on release. */
 interface CanvasBrushGesture {
@@ -251,10 +286,11 @@ interface EraserGesture {
   readonly kind: 'eraser';
   readonly pointerId: number;
   readonly transaction: EditorTransaction;
-  readonly mode: EraserMode;
   readonly brushSize: number;
   readonly cells: Map<string, ModelPoint>;
   readonly components: Map<string, { readonly cell: ModelPoint; readonly corner: number }>;
+  /** The three-quarter side the gesture began on; every cell the drag reaches erases that side only. */
+  startCorner?: 0 | 1 | 2 | 3;
   /** Specialty-layer erase: backstitches on the selected layer the eraser has reached. */
   readonly backstitches?: Map<number, PendingBackstitchRemoval>;
   /** Backstitches bucketed by cell, for a specialty erase wider than one cell. */
@@ -465,6 +501,7 @@ const LASSO_CLOSE_PIXELS = 10;
 const LASSO_TAP_SLOP_PIXELS = 4;
 /** A Move-mode press on a backstitch only selects it until the pointer travels this far. */
 const BACKSTITCH_MOVE_SLOP_PIXELS = 4;
+const MARK_TAP_SLOP_PIXELS = 4;
 const BACKSTITCH_MOVE_TOUCH_SLOP_PIXELS = 8;
 /** The undo and redo timelines each keep at most this many steps, dropping the oldest. */
 const TIMELINE_LIMIT = 200;
@@ -728,6 +765,27 @@ function reachedPaintEntryDepth(from: ModelPoint, to: ModelPoint, local: ModelPo
   return true;
 }
 
+function markCommand(gesture: MarkGesture): ProgressCommand | undefined {
+  const expectedRevision = gesture.token.revision;
+  if (!gesture.dragging) {
+    const tap = gesture.tap;
+    if (!tap) return undefined;
+    return tap.kind === 'cell'
+      ? { cells: { indices: Uint32Array.of(tap.index), masks: Uint8Array.of(tap.mask) }, operation: 'toggle', expectedRevision }
+      : { backstitchIds: Uint32Array.of(tap.id), operation: 'toggle', expectedRevision };
+  }
+  if (gesture.operation === undefined) return undefined;
+  const indices = Uint32Array.from(gesture.cells.keys()).sort();
+  const masks = Uint8Array.from(indices, (index) => gesture.cells.get(index) ?? 0);
+  const backstitchIds = Uint32Array.from(gesture.backstitchIds).sort();
+  return {
+    ...(indices.length > 0 ? { cells: { indices, masks } } : {}),
+    ...(backstitchIds.length > 0 ? { backstitchIds } : {}),
+    operation: gesture.operation,
+    expectedRevision
+  };
+}
+
 function completionTargetForCell(
   document: PatternDocument,
   cell: ModelPoint,
@@ -752,14 +810,14 @@ function completionTargetForCell(
 }
 
 function componentCornerForHit(document: PatternDocument, index: number, corner: 0 | 1 | 2 | 3): 0 | 1 | 2 | 3 | undefined {
-  const kind = document.kind[index];
-  if (isLegacyQuarterKind(kind)) return corner;
-  if (isThreeQuarterKind(kind)) return threeQuarterCornerForKind(kind) === corner ? corner : undefined;
-  if (isThreeQuarterPairKind(kind)) {
-    const colors = document.colors.subarray(index * 4, index * 4 + 4);
-    return threeQuarterPairComponents(colors).some((component) => component.corner === corner) ? corner : undefined;
-  }
-  return undefined;
+  if (!isThreeQuarterPairKind(document.kind[index])) return undefined;
+  const colors = document.colors.subarray(index * 4, index * 4 + 4);
+  return threeQuarterPairComponents(colors).some((component) => component.corner === corner) ? corner : undefined;
+}
+
+/** A three-quarter pair holds two separate stitches, so the eraser removes one triangle; every other kind erases whole. */
+function erasesByComponent(kind: number): boolean {
+  return isThreeQuarterPairKind(kind);
 }
 
 function applyEraseQuarterState(
@@ -936,6 +994,24 @@ function quarterCornerAt(point: ModelPoint): 0 | 1 | 2 | 3 {
   const row = Math.floor((point.y - Math.floor(point.y)) * 2);
   if (row === 0) return column === 0 ? 0 : 1;
   return column === 0 ? 3 : 2;
+}
+
+/** Whether a model point lies in the triangle a three-quarter stitch at `corner` covers. */
+function threeQuarterTriangleContains(corner: 0 | 1 | 2 | 3, point: ModelPoint): boolean {
+  const localX = point.x - Math.floor(point.x);
+  const localY = point.y - Math.floor(point.y);
+  if (corner === 0) return localX + localY <= 1;
+  if (corner === 2) return localX + localY >= 1;
+  return corner === 1 ? localY <= localX : localY >= localX;
+}
+
+/** The corner an eraser touch at `point` hits in `index`: the triangle for a three-quarter cell, else the quadrant. */
+function eraserHitCornerAt(document: PatternDocument, index: number, point: ModelPoint): 0 | 1 | 2 | 3 {
+  const kind = document.kind[index];
+  if (isThreeQuarterPairKind(kind)) return pairCornerAt(point, document.colors.subarray(index * 4, index * 4 + 4));
+  const single = isThreeQuarterKind(kind) ? threeQuarterCornerForKind(kind) : undefined;
+  if (single !== undefined && threeQuarterTriangleContains(single, point)) return single;
+  return quarterCornerAt(point);
 }
 
 function pairCornerAt(point: ModelPoint, colors: ArrayLike<number>): 0 | 1 | 2 | 3 {
@@ -1260,6 +1336,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private touchHistoryCandidate: TouchHistoryCandidate | undefined;
   /** Touch editing is the default; the UI may opt into movement-only input. */
   private touchMovementOnly = false;
+  private readonly readOnly: boolean;
   private lastHoverSample: PointerSample | undefined;
   private spaceHeld = false;
   private commandInFlight = false;
@@ -1313,6 +1390,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.traceBoundsChangeCallback = options.onTraceBoundsChange;
     this.noticeCallback = options.onNotice;
     this.canvasOriginChangeCallback = options.onCanvasOriginChange;
+    this.readOnly = options.readOnly === true;
+    this.touchMovementOnly = this.readOnly;
     if (this.traceImage) this.renderer.setTraceImage?.(this.traceImage);
     this.lastGatewaySnapshot = this.gateway.getSnapshot();
   }
@@ -1396,6 +1475,12 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
    * current tool stays and the tool's hint is sent to the notice callback.
    */
   setTool(tool: EditorToolState): boolean {
+    if (this.readOnly) {
+      if (tool.tool !== 'pan' && tool.tool !== 'mark') return false;
+      this.uiStore.setTool(tool);
+      return true;
+    }
+    if (tool.tool === 'mark') return false;
     const state = this.uiStore.getState();
     const availability = this.toolAvailable(tool, this.gateway.getSnapshot().activeLayer ?? null);
     if (!availability.enabled) {
@@ -1432,12 +1517,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   /** Receive brief user-facing messages: paste routing and disabled-tool hints. */
   setNoticeCallback(callback: EditorNoticeCallback | undefined): void {
     this.noticeCallback = callback;
-  }
-
-  setEraserMode(mode: EraserMode): void {
-    const current = this.uiStore.getState().tool;
-    this.setTool({ tool: 'eraser', mode });
-    if (current.tool === 'eraser' && current.mode === mode) this.uiStore.setTool({ ...current, mode });
   }
 
   /** Select the Backstitch tool in the given mode; refused like `setTool` off a specialty layer. */
@@ -2409,6 +2488,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   setChartMode(mode: Parameters<EditorUiStore['setMode']>[0]): void {
     this.uiStore.setMode(mode);
+    this.uiStore.setThreadView(false);
   }
 
   setMode(mode: Parameters<EditorUiStore['setMode']>[0]): void {
@@ -2417,6 +2497,15 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   setGridVisible(visible: boolean): void {
     this.uiStore.setGridVisible(visible);
+  }
+
+  setThreadView(on: boolean): void {
+    this.uiStore.setThreadView(on);
+  }
+
+  /** Focus one palette color on the Track page: others dim and Mark changes only this color. Null clears it. */
+  setHighlightColor(paletteId: number | null): void {
+    this.uiStore.setState({ highlightColor: paletteId });
   }
 
   setMetrics(metrics: CanvasMetrics): void {
@@ -2812,7 +2901,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       if (this.touchPointers.size === 0) this.beginTouchHistoryCandidate(sample);
       this.touchPointers.set(sample.pointerId, sample);
       this.updateTouchHistoryCandidate(sample);
-      if (this.touchMovementOnly) {
+      if (this.touchMovementOnly && !this.markToolActive()) {
         if (this.touchPointers.size >= 2 && this.gesture?.kind !== 'pinch') this.beginPinch();
         else if (this.touchPointers.size === 1) this.gesture = { kind: 'pan', pointerId: sample.pointerId, lastX: sample.screenX, lastY: sample.screenY };
         return true;
@@ -2825,7 +2914,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if (this.gesture) return false;
     const selectedTool = this.uiStore.getState().tool;
-    const pan = sample.button === 1 || Boolean(sample.buttons && (sample.buttons & 4) !== 0) || this.spaceHeld || selectedTool.tool === 'pan';
+    const pan = (this.readOnly && selectedTool.tool !== 'mark') || sample.button === 1 || Boolean(sample.buttons && (sample.buttons & 4) !== 0) || this.spaceHeld || selectedTool.tool === 'pan';
     if (pan) {
       this.gesture = { kind: 'pan', pointerId: sample.pointerId, lastX: sample.screenX, lastY: sample.screenY };
       return true;
@@ -2833,6 +2922,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if ((sample.button ?? 0) !== 0 || (sample.pointerType !== 'mouse' && sample.pointerType !== 'pen' && sample.pointerType !== 'touch')) return false;
     const snapshot = this.gateway.getSnapshot();
     if (!snapshot.document || !snapshot.projectId || snapshot.revision === null) return false;
+    if (this.readOnly) return selectedTool.tool === 'mark' && this.beginMark(sample, snapshot.document, { projectId: snapshot.projectId, revision: snapshot.revision });
     if (selectedTool.tool === 'move-image') {
       return this.beginMoveImage(sample, snapshot.document);
     }
@@ -2929,11 +3019,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const brushSize = this.getBrushSize();
       const cells = new Map<string, ModelPoint>();
       const components = new Map<string, { readonly cell: ModelPoint; readonly corner: number }>();
-      const mode = selectedTool.mode ?? 'whole-cell';
       const specialty = snapshot.activeLayer?.kind === 'specialty';
       const backstitches = specialty ? new Map<number, PendingBackstitchRemoval>() : undefined;
       const backstitchIndex = specialty && brushSize > 1 ? buildBackstitchCellIndex(surface) : undefined;
-      const gesture: EraserGesture = { kind: 'eraser', pointerId: sample.pointerId, transaction, mode, brushSize, cells, components, backstitches, backstitchIndex, lastCell: cell };
+      const gesture: EraserGesture = { kind: 'eraser', pointerId: sample.pointerId, transaction, brushSize, cells, components, backstitches, backstitchIndex, lastCell: cell };
       this.addEraserSample(gesture, cell, sample, surface);
       this.addEraserBackstitches(gesture, sample, surface);
       this.gesture = gesture;
@@ -2985,7 +3074,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         if (!stationaryHistoryTap) this.updatePinch();
       } else if (this.gesture?.kind === 'pan' && this.gesture.pointerId === sample.pointerId) {
         if (!stationaryHistoryTap) this.updatePan(sample);
-      } else if (this.touchMovementOnly) {
+      } else if (this.touchMovementOnly && !this.markToolActive()) {
         return true;
       }
       // Single-finger touch editing uses the same chart-tool paths as mouse
@@ -3000,6 +3089,16 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if (gesture.kind === 'resize-image') {
       this.updateResizeImage(sample);
+      return true;
+    }
+    if (gesture.kind === 'mark') {
+      const snapshot = this.gateway.getSnapshot();
+      if (!this.isCurrentTransaction(gesture.token, snapshot) || !snapshot.document) {
+        this.cancelGesture();
+        this.setStatus('Marking cancelled: project changed');
+        return true;
+      }
+      this.appendMarkSample(gesture, sample, snapshot.document);
       return true;
     }
     if (gesture.kind === 'shape') {
@@ -3121,7 +3220,9 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       if (touchPointerReleased && this.touchPointers.size === 0) this.finishTouchHistoryCandidate();
       return touchPointerReleased;
     }
-    if (gesture.kind === 'shape') {
+    if (gesture.kind === 'mark') {
+      this.finishMark(gesture, sample);
+    } else if (gesture.kind === 'shape') {
       const document = this.editSurfaceOf(this.gateway.getSnapshot());
       if (document) this.appendShapeSample(gesture, sample, document);
       this.finishShape(true);
@@ -3185,7 +3286,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       else if (this.gesture?.kind === 'pinch') {
         if (this.gesture.pointerIds.includes(sample.pointerId)) this.rebaseTouchGesture();
       } else if (this.gesture?.kind === 'pan' && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
-      else if (!this.touchMovementOnly && this.gesture?.pointerId === sample.pointerId) this.cancelGesture();
+      else if ((!this.touchMovementOnly || this.gesture?.kind === 'mark') && this.gesture?.pointerId === sample.pointerId) this.cancelGesture();
       if (this.touchPointers.size === 0) this.clearTouchHistoryCandidate();
       return true;
     }
@@ -3194,7 +3295,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (gesture.kind === 'shape') this.finishShape(false);
     else if (gesture.kind === 'paint') this.finishPaint(false);
     else if (gesture.kind === 'eraser') this.finishEraser(false);
-    else if (gesture.kind === 'selection' || gesture.kind === 'lasso-stroke' || this.isCanvasGesture(gesture)) this.cancelGesture();
+    else if (gesture.kind === 'selection' || gesture.kind === 'lasso-stroke' || gesture.kind === 'mark' || this.isCanvasGesture(gesture)) this.cancelGesture();
     else if (gesture.kind === 'backstitch') this.resetBackstitchState();
     else if (gesture.kind === 'move-image' || gesture.kind === 'resize-image') this.gesture = undefined;
     else this.gesture = undefined;
@@ -3222,7 +3323,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       else if (this.gesture?.kind === 'pinch') {
         if (this.gesture.pointerIds.includes(sample.pointerId)) this.rebaseTouchGesture();
       } else if (this.gesture?.kind === 'pan' && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
-      else if (!this.touchMovementOnly && this.gesture?.pointerId === sample.pointerId) this.cancelGesture();
+      else if ((!this.touchMovementOnly || this.gesture?.kind === 'mark') && this.gesture?.pointerId === sample.pointerId) this.cancelGesture();
       if (this.touchPointers.size === 0) this.clearTouchHistoryCandidate();
       return true;
     }
@@ -3250,6 +3351,12 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const key = sample.key;
     const lower = key.toLowerCase();
     const modified = Boolean(sample.ctrlKey || sample.metaKey);
+    if (this.readOnly && modified && (lower === 'z' || lower === 'y')) {
+      sample.preventDefault?.();
+      this.progressHistoryAction(lower === 'z' && !sample.shiftKey ? 'undo' : 'redo');
+      return true;
+    }
+    if (this.readOnly && (modified || key === 'Delete' || key === 'Backspace' || key === 'Enter')) return false;
     if (modified && lower === 'z') {
       sample.preventDefault?.();
       this.historyAction(sample.shiftKey ? 'redo' : 'undo');
@@ -3801,13 +3908,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   private addEraserSample(
-    target: Pick<EraserGesture, 'cells' | 'components' | 'mode' | 'brushSize' | 'backstitches' | 'backstitchIndex'>,
+    target: Pick<EraserGesture, 'cells' | 'components' | 'brushSize' | 'backstitches' | 'backstitchIndex' | 'startCorner'>,
     cell: ModelPoint,
     sample: PointerSample,
     document: PatternDocument
   ): void {
     if (!isFiniteViewport(this.uiStore.getState().viewport)) return;
-    const { cells, components, mode } = target;
+    const { cells, components } = target;
     const stamped = brushCells(cell, target.brushSize, document);
     if (target.backstitches) {
       for (const stampedCell of stamped) cells.set(cellKey(stampedCell), stampedCell);
@@ -3816,14 +3923,18 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       if (target.brushSize > 1) backstitchesThroughCells(document, stamped, target.backstitches, target.backstitchIndex);
       return;
     }
-    const corner = mode === 'component'
-      ? quarterCornerAt(screenToModel({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport))
-      : undefined;
+    const point = screenToModel({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport);
+    if (target.startCorner === undefined) {
+      target.startCorner = eraserHitCornerAt(document, cell.y * document.width + cell.x, point);
+    }
     for (const stampedCell of stamped) {
       const key = cellKey(stampedCell);
       cells.set(key, stampedCell);
+      if (target.startCorner === undefined) continue;
       const index = stampedCell.y * document.width + stampedCell.x;
-      const componentCorner = corner === undefined ? undefined : componentCornerForHit(document, index, corner);
+      if (!erasesByComponent(document.kind[index])) continue;
+      // A pair follows the side the gesture began on.
+      const componentCorner = componentCornerForHit(document, index, target.startCorner);
       if (componentCorner !== undefined) components.set(`${key}:${String(componentCorner)}`, { cell: stampedCell, corner: componentCorner });
     }
   }
@@ -3854,6 +3965,147 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const point = screenToModel({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport);
     backstitchesNearPath(document, gesture.lastPoint ?? point, point, this.backstitchHitTolerance(), gesture.backstitches);
     gesture.lastPoint = point;
+  }
+
+  private markToolActive(): boolean {
+    return this.readOnly && this.uiStore.getState().tool.tool === 'mark';
+  }
+
+  private beginMark(sample: PointerSample, document: PatternDocument, token: EditorRevisionToken): boolean {
+    const highlightColor = this.uiStore.getState().highlightColor;
+    const point = this.lassoModelPoint(sample);
+    const cell = this.paintHitCell(sample, document);
+    this.gesture = {
+      kind: 'mark',
+      pointerId: sample.pointerId,
+      token,
+      highlightColor,
+      tap: point ? this.markTargetAt(document, point, cell, highlightColor) : undefined,
+      startScreenX: sample.screenX,
+      startScreenY: sample.screenY,
+      slop: sample.pointerType === 'touch' ? TOUCH_HISTORY_TAP_SLOP_PIXELS : MARK_TAP_SLOP_PIXELS,
+      dragging: false,
+      operation: undefined,
+      cells: new Map<number, number>(),
+      backstitchIds: new Set<number>(),
+      lastCell: cell,
+      lastPoint: point
+    };
+    return true;
+  }
+
+  /**
+   * The stitch a Mark press is on. A backstitch close to the press wins, since
+   * it draws over the cells; otherwise the cell component under it, then any
+   * backstitch within the pick tolerance.
+   */
+  private markTargetAt(document: PatternDocument, point: ModelPoint, cell: ModelPoint | undefined, highlightColor: number | null): MarkTarget | undefined {
+    const tolerance = this.backstitchHitTolerance();
+    const store = document.backstitches;
+    let nearest: { position: number; distance: number } | undefined;
+    for (let position = 0; position < store.ids.length; position += 1) {
+      if (highlightColor !== null && store.colors[position] !== highlightColor) continue;
+      const start = fixedPointToModel({ x: store.x1[position], y: store.y1[position] });
+      const end = fixedPointToModel({ x: store.x2[position], y: store.y2[position] });
+      const distance = distanceToSegment(point, start, end);
+      if (distance <= tolerance && (!nearest || distance < nearest.distance)) nearest = { position, distance };
+    }
+    const backstitch: MarkTarget | undefined = nearest
+      ? { kind: 'backstitch', id: store.ids[nearest.position], done: store.completed[nearest.position] !== 0 }
+      : undefined;
+    if (backstitch && nearest && nearest.distance <= tolerance / 2) return backstitch;
+    if (cell) {
+      const index = cell.y * document.width + cell.x;
+      const local = { x: point.x - cell.x, y: point.y - cell.y };
+      const mask = completionTargetForCell(document, cell, local) & colorComponentMask(document, index, highlightColor);
+      if (mask !== 0) return { kind: 'cell', index, mask, done: (document.completed[index] & mask) === mask };
+    }
+    return backstitch;
+  }
+
+  /** Extend a Mark drag along the pointer's path, and preview the cells it will change. */
+  private appendMarkSample(gesture: MarkGesture, sample: PointerSample, document: PatternDocument): void {
+    if (!gesture.dragging) {
+      if (Math.hypot(sample.screenX - gesture.startScreenX, sample.screenY - gesture.startScreenY) <= gesture.slop) return;
+      gesture.dragging = true;
+      // The first stitch the drag reaches decides whether it sets or clears.
+      if (gesture.tap) gesture.operation = gesture.tap.done ? 'clear' : 'set';
+      if (gesture.lastCell) this.addMarkCell(gesture, document, gesture.lastCell.y * document.width + gesture.lastCell.x);
+    }
+    const point = this.lassoModelPoint(sample);
+    const cell = this.paintHitCell(sample, document);
+    if (point) {
+      this.addMarkBackstitches(gesture, document, gesture.lastPoint ?? point, point);
+      gesture.lastPoint = point;
+    }
+    if (cell) {
+      const path = gesture.lastCell ? bresenhamLine(gesture.lastCell, cell) : [cell];
+      for (const step of path) this.addMarkCell(gesture, document, step.y * document.width + step.x);
+    }
+    // Off-chart travel is a discontinuity, as for paint strokes.
+    gesture.lastCell = cell;
+    this.publishMarkPreview(gesture, document);
+  }
+
+  private addMarkCell(gesture: MarkGesture, document: PatternDocument, index: number): void {
+    if (gesture.cells.has(index)) return;
+    const mask = colorComponentMask(document, index, gesture.highlightColor);
+    if (mask === 0) return;
+    gesture.operation ??= (document.completed[index] & mask) === mask ? 'clear' : 'set';
+    gesture.cells.set(index, mask);
+  }
+
+  private addMarkBackstitches(gesture: MarkGesture, document: PatternDocument, from: ModelPoint, to: ModelPoint): void {
+    const tolerance = this.backstitchHitTolerance();
+    const store = document.backstitches;
+    for (let position = 0; position < store.ids.length; position += 1) {
+      const id = store.ids[position];
+      if (gesture.backstitchIds.has(id)) continue;
+      if (gesture.highlightColor !== null && store.colors[position] !== gesture.highlightColor) continue;
+      const start = fixedPointToModel({ x: store.x1[position], y: store.y1[position] });
+      const end = fixedPointToModel({ x: store.x2[position], y: store.y2[position] });
+      if (distanceBetweenSegments(from, to, start, end) > tolerance) continue;
+      gesture.operation ??= store.completed[position] !== 0 ? 'clear' : 'set';
+      gesture.backstitchIds.add(id);
+    }
+  }
+
+  private publishMarkPreview(gesture: MarkGesture, document: PatternDocument): void {
+    if (gesture.operation === undefined || gesture.cells.size === 0) return;
+    const states: PendingCellState[] = [];
+    for (const [index, mask] of gesture.cells) {
+      const offset = index * 4;
+      const completed = gesture.operation === 'set' ? document.completed[index] | mask : document.completed[index] & ~mask;
+      states.push({
+        index,
+        cell: { x: index % document.width, y: Math.floor(index / document.width) },
+        kind: document.kind[index] as CellKind,
+        colors: [document.colors[offset], document.colors[offset + 1], document.colors[offset + 2], document.colors[offset + 3]],
+        completed
+      });
+    }
+    this.uiStore.setOverlay({ ...this.uiStore.getState().overlay, pendingCellStates: this.activeStatesOnly(states) });
+  }
+
+  /** A tap toggles the pressed target; a drag commits everything it crossed as one progress step. */
+  private finishMark(gesture: MarkGesture, sample: PointerSample): void {
+    const snapshot = this.gateway.getSnapshot();
+    if (!this.isCurrentTransaction(gesture.token, snapshot) || !snapshot.document) {
+      this.cancelGesture();
+      this.setStatus('Marking cancelled: project changed');
+      return;
+    }
+    this.appendMarkSample(gesture, sample, snapshot.document);
+    const command = markCommand(gesture);
+    if (command) this.gateway.markProgress(command);
+    this.gesture = undefined;
+    this.clearPendingCells();
+  }
+
+  private progressHistoryAction(action: 'undo' | 'redo'): void {
+    if (this.gesture?.kind === 'mark') this.cancelGesture();
+    if (action === 'undo') this.gateway.undoProgress();
+    else this.gateway.redoProgress();
   }
 
   private finishPaint(commit: boolean): void {
@@ -3937,12 +4189,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     for (const cell of gesture.cells.values()) {
       const index = cell.y * surface.width + cell.x;
       const kind = surface.kind[index];
-      const componentGeometry = isLegacyQuarterKind(kind) || isThreeQuarterKind(kind) || isThreeQuarterPairKind(kind);
-      if (gesture.mode !== 'component' || !componentGeometry) {
+      if (!erasesByComponent(kind)) {
         wholeIndices.push(index);
       } else if (!targetedIndexes.has(index)) {
-        // A component gesture that misses the persisted 3/4 component is an
-        // intentional no-op, rather than a whole-cell erase.
+        // A pair with no component on the start side is an intentional no-op.
         continue;
       }
     }
@@ -4551,17 +4801,43 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       return;
     }
     const eraser = state.tool.tool === 'eraser' ? state.tool : undefined;
-    const index = cell.y * surface.width + cell.x;
     const corner = eraser?.corner ?? this.eraserCorner;
-    const componentKind = surface.kind[index];
-    const edit: BulkCellEdit = eraser?.mode === 'component'
-      && (isLegacyQuarterKind(componentKind) || isThreeQuarterKind(componentKind) || isThreeQuarterPairKind(componentKind))
-      ? { kind: 'erase-quarter', corner }
-      : { kind: 'erase-cell' };
-    const status = edit.kind === 'erase-quarter'
-      ? `Erased quarter ${String(edit.corner)} at (${String(cell.x)}, ${String(cell.y)})`
-      : `Erased cell (${String(cell.x)}, ${String(cell.y)})`;
-    this.executeCellEdit(cells, edit, status);
+    const wholeIndices: number[] = [];
+    const componentIndices: number[] = [];
+    for (const target of cells) {
+      const index = target.y * surface.width + target.x;
+      if (!erasesByComponent(surface.kind[index])) wholeIndices.push(index);
+      else if (componentCornerForHit(surface, index, corner) !== undefined) componentIndices.push(index);
+    }
+    if (componentIndices.length === 0 && wholeIndices.length === cells.length) {
+      this.executeCellEdit(cells, { kind: 'erase-cell' }, `Erased cell (${String(cell.x)}, ${String(cell.y)})`);
+      return;
+    }
+    if (wholeIndices.length === 0 && componentIndices.length === 0) {
+      this.setStatus('No change');
+      return;
+    }
+    wholeIndices.sort((left, right) => left - right);
+    componentIndices.sort((left, right) => left - right);
+    const command = mixedEraseCommand(
+      new Uint32Array(wholeIndices),
+      new Uint32Array(componentIndices),
+      new Uint8Array(componentIndices.map(() => corner)),
+      snapshot.revision
+    );
+    try {
+      this.commandInFlight = true;
+      const result = this.gateway.execute(this.stamp(command, snapshot), { projectId: snapshot.projectId, revision: snapshot.revision });
+      this.commandInFlight = false;
+      const status = wholeIndices.length === 0 && componentIndices.length === 1
+        ? `Erased quarter ${String(corner)} at (${String(cell.x)}, ${String(cell.y)})`
+        : `Erased cell (${String(cell.x)}, ${String(cell.y)})`;
+      this.projectCommandResult(result, indicesForCells(cells, surface.width), status);
+    } catch (error) {
+      this.commandInFlight = false;
+      if (error instanceof StaleEditorTransactionError) this.setStatus('Action cancelled: project changed');
+      else throw error;
+    }
   }
 
   private executeCellEdit(cells: readonly ModelPoint[], edit: BulkCellEdit, status: string): void {
@@ -4602,6 +4878,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
    * undo or redo with the selection around it.
    */
   private historyAction(action: 'undo' | 'redo'): void {
+    if (this.readOnly) return;
     if (this.floatingPaste) this.discardFloatingPaste();
     const undo = action === 'undo';
     const from = undo ? this.undoTimeline : this.redoTimeline;
@@ -4744,7 +5021,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.floatingPasteTouchCandidate = undefined;
     this.canvasEdgeDrag = undefined;
     this.uiStore.setState({ overlay: {}, keyboardCursor: null, status: null, canvasCropActive: false });
-    if (snapshot.document && this.metrics) this.projectViewport(fitViewport(snapshot.document, this.metrics, 0, this.viewportOptions));
+    if (snapshot.document && this.metrics) this.projectViewport(fitViewport(snapshot.document, this.metrics, CHART_EDGE_MARGIN, this.viewportOptions));
   }
 
   private onUiState(state: ReturnType<EditorUiStore['getState']>, previous: ReturnType<EditorUiStore['getState']>): void {
@@ -4760,14 +5037,26 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if (state.viewport !== previous.viewport) this.renderer.setViewport(state.viewport);
     if (state.mode !== previous.mode) this.renderer.setStyle({ mode: state.mode });
-    if (state.gridVisible !== previous.gridVisible) this.renderer.setStyle({ showGrid: state.gridVisible });
+    if (state.threadView !== previous.threadView) {
+      this.renderer.setStyle({ threadView: state.threadView, showGrid: state.gridVisible && !state.threadView });
+    } else if (state.gridVisible !== previous.gridVisible) {
+      this.renderer.setStyle({ showGrid: state.gridVisible && !state.threadView });
+    }
+    if (state.highlightColor !== previous.highlightColor) this.renderer.setStyle({ highlightColor: state.highlightColor });
     if (state.overlay !== previous.overlay) this.renderer.setOverlay(state.overlay);
     if ((state.tool !== previous.tool || state.brushSize !== previous.brushSize || state.viewport !== previous.viewport) && this.lastHoverSample && !this.gesture) this.updateBrushPreview(this.lastHoverSample);
   }
 
   private projectUiState(state: ReturnType<EditorUiStore['getState']>): void {
     this.renderer.setViewport(state.viewport);
-    this.renderer.setStyle({ mode: state.mode, showGrid: state.gridVisible });
+    this.renderer.setStyle({
+      mode: state.mode,
+      threadView: state.threadView,
+      showGrid: state.gridVisible && !state.threadView,
+      highlightColor: state.highlightColor,
+      // The editor never draws marks; the read-only viewer keeps its own setting.
+      ...(this.readOnly ? {} : { showCompletion: false })
+    });
     this.renderer.setOverlay(state.overlay);
   }
 
@@ -4790,7 +5079,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private pendingEraserStates(
     cells: Map<string, ModelPoint>,
     components: Map<string, { readonly cell: ModelPoint; readonly corner: number }>,
-    mode: EraserMode,
     document: PatternDocument
   ): PendingCellState[] {
     const cornersByIndex = new Map<number, number[]>();
@@ -4805,12 +5093,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const corners = cornersByIndex.get(index) ?? [];
       let state: PendingCellState;
       const originalKind = document.kind[index];
-      const componentGeometry = isLegacyQuarterKind(originalKind) || isThreeQuarterKind(originalKind) || isThreeQuarterPairKind(originalKind);
-      if (mode !== 'component' || !componentGeometry) {
+      if (!erasesByComponent(originalKind)) {
         state = cellState(document, index, { kind: 'erase-cell' });
       } else if (corners.length === 0) {
         continue;
-      } else if (!isLegacyQuarterKind(originalKind)) {
+      } else {
         let kind = originalKind as CellKind;
         let colors: [number, number, number, number] = [
           document.colors[index * 4],
@@ -4826,26 +5113,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
           kind,
           colors,
           completed
-        };
-      } else {
-        const colors: [number, number, number, number] = [
-          document.colors[index * 4],
-          document.colors[index * 4 + 1],
-          document.colors[index * 4 + 2],
-          document.colors[index * 4 + 3]
-        ];
-        let completed = document.completed[index];
-        for (const corner of corners) {
-          colors[corner as 0 | 1 | 2 | 3] = 0;
-          completed &= ~(1 << corner);
-        }
-        const kind = colors.every((color) => color === 0) ? CellKind.Empty : CellKind.Quarters;
-        state = {
-          index,
-          cell: { x: index % document.width, y: Math.floor(index / document.width) },
-          kind,
-          colors,
-          completed: kind === CellKind.Empty ? 0 : completed
         };
       }
       if (cellStateChanged(document, state)) states.push(state);
@@ -5009,9 +5276,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     } else {
       const cells = new Map<string, ModelPoint>();
       const components = new Map<string, { readonly cell: ModelPoint; readonly corner: number }>();
-      const mode = tool.mode ?? 'whole-cell';
-      this.addEraserSample({ cells, components, mode, brushSize }, cell, sample, document);
-      states = this.pendingEraserStates(cells, components, mode, document);
+      this.addEraserSample({ cells, components, brushSize }, cell, sample, document);
+      states = this.pendingEraserStates(cells, components, document);
     }
     this.uiStore.setOverlay({ ...state.overlay, brushPreview: { states: this.activeStatesOnly(states), kind } });
   }
@@ -5351,7 +5617,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   private fit(): void {
     const snapshot = this.gateway.getSnapshot();
-    if (snapshot.document && this.metrics) this.projectViewport(fitViewport(snapshot.document, this.metrics, 0, this.viewportOptions));
+    if (snapshot.document && this.metrics) this.projectViewport(fitViewport(snapshot.document, this.metrics, CHART_EDGE_MARGIN, this.viewportOptions));
   }
 
   private setStatus(status: string): void {
@@ -5461,7 +5727,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       });
       return;
     }
-    this.publishPendingCells(gesture.cells, this.pendingEraserStates(gesture.cells, gesture.components, gesture.mode, document));
+    this.publishPendingCells(gesture.cells, this.pendingEraserStates(gesture.cells, gesture.components, document));
   }
 
   private clearPendingBackstitchRemovals(): void {

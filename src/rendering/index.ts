@@ -4,3 +4,4 @@ export * from './contrast';
 export * from './renderer';
 export * from './colors';
 export * from './trace';
+export * from './thread-preview';

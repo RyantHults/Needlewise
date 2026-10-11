@@ -15,7 +15,8 @@ import {
   type PatternDocument,
   type PatternFragment,
   type PatternSettings,
-  type Point
+  type Point,
+  type ProgressCommand
 } from '../domain';
 import {
   cloneLayeredDocument,
@@ -352,7 +353,9 @@ export class ProjectWorkspace {
       sourceImage: this.sourceImage,
       layeredDocument: this.layeredDocument,
       layers: this.layers,
-      activeLayer: this.activeLayer
+      activeLayer: this.activeLayer,
+      canUndoProgress: this.canUndoProgress,
+      canRedoProgress: this.canRedoProgress
     };
     for (const listener of [...this.listeners]) listener();
   }
@@ -1152,6 +1155,30 @@ export class ProjectWorkspace {
 
   redo() {
     return this.ensureActiveSession().redo();
+  }
+
+  markProgress(command: ProgressCommand) {
+    return this.ensureActiveSession().markProgress(command);
+  }
+
+  undoProgress() {
+    return this.ensureActiveSession().undoProgress();
+  }
+
+  redoProgress() {
+    return this.ensureActiveSession().redoProgress();
+  }
+
+  clearProgressHistory(): void {
+    this.active?.clearProgressHistory();
+  }
+
+  get canUndoProgress(): boolean {
+    return this.active?.canUndoProgress ?? false;
+  }
+
+  get canRedoProgress(): boolean {
+    return this.active?.canRedoProgress ?? false;
   }
 
   async retrySave(): Promise<void> {

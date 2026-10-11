@@ -816,6 +816,34 @@ describe('CreateModal image lifecycle', () => {
     expect((conversion.convert.mock.calls[0][0] as File).name).toBe('dropped.png');
   });
 
+  it('converts an image pasted from the clipboard like a chosen one', async () => {
+    render(<ControlledModal />);
+    const paste = (files: File[]) => {
+      const event = new Event('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'clipboardData', { value: { files } });
+      document.body.dispatchEvent(event);
+      return event;
+    };
+    expect(screen.getByLabelText(/Choose a PNG/).closest('label')).toHaveTextContent('paste');
+    expect(paste([]).defaultPrevented).toBe(false);
+    expect(images).toHaveLength(0);
+    const event = paste([new File(['one'], 'pasted.png', { type: 'image/png' })]);
+    expect(event.defaultPrevented).toBe(true);
+    act(() => { images[0].onload?.(); });
+    act(() => { vi.advanceTimersByTime(300); });
+    await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(1));
+    expect((conversion.convert.mock.calls[0][0] as File).name).toBe('pasted.png');
+  });
+
+  it('ignores pasted images in blank mode', () => {
+    render(<CreateModal {...props()} mode="blank" />);
+    const event = new Event('paste', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'clipboardData', { value: { files: [new File(['one'], 'pasted.png', { type: 'image/png' })] } });
+    document.body.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+    expect(images).toHaveLength(0);
+  });
+
   it('rejects a dropped file that is not a supported image', () => {
     render(<ControlledModal />);
     const zone = screen.getByLabelText(/Choose a PNG/).closest('label') as HTMLElement;
@@ -893,7 +921,7 @@ describe('CreateModal image lifecycle', () => {
     expect(nearCorner.lensLeft).toBe(0);
     expect(nearCorner.lensTop).toBe(0);
     // Pointer at the canvas bottom-right corner (110,100): the sample cannot
-    // fit the 80px-in-both-axes lens into a 60px-tall bitmap, so it clamps to
+    // fit the ~107px-in-both-axes lens into a 60px-tall bitmap, so it clamps to
     // the corner (0,0). The frame (120px) is smaller than the 160px lens, so
     // the box pins to the origin to stay fully inside the frame.
     const farCorner = previewLensGeometry(80, 60, 100, 80, frame, rect, 110, 100);
@@ -922,7 +950,7 @@ describe('CreateModal image lifecycle', () => {
     expect(geometry.sourceTop).toBe(previewLensGeometry(80, 60, 100, 80, frame, rect, 50, 10).sourceTop);
   });
 
-  it('shows and moves a decorative 2x preview lens while the pointer hovers', async () => {
+  it('shows and moves a decorative 1.5x preview lens while the pointer hovers', async () => {
     render(<ControlledModal />);
     fireEvent.change(screen.getByLabelText(/Choose a PNG/), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } });
     act(() => { images[0].onload?.(); });

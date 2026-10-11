@@ -4,6 +4,7 @@ import App from './App';
 import { useProjectWorkspace } from './application/react';
 import { ProjectGallery } from './components/ProjectGallery';
 import { DEFAULT_CATALOG_DEFINITION } from './catalog';
+import { createDocument } from './domain';
 
 vi.mock('./application/react', () => ({ useProjectWorkspace: vi.fn() }));
 // Wraps the real gallery so every existing test still renders it unchanged;
@@ -61,7 +62,7 @@ const moveProjectToFolder = vi.fn().mockResolvedValue(undefined);
 const moveFolder = vi.fn().mockResolvedValue(undefined);
 const renameProject = vi.fn().mockResolvedValue({ id: 'one', title: 'Renamed', notes: '', createdAt: 1, updatedAt: 2, revision: 4 });
 const duplicateProject = vi.fn().mockResolvedValue({ id: 'copy-id', title: 'Garden sampler copy', notes: '', createdAt: 3, updatedAt: 3, revision: 4 });
-const editorWorkspace = { metadata: { title: 'Garden sampler', notes: '', aidaCount: 14 }, catalogFor: () => DEFAULT_CATALOG_DEFINITION, availableCatalogs: () => [DEFAULT_CATALOG_DEFINITION], catalogById: (id: string) => id === DEFAULT_CATALOG_DEFINITION.association.catalogId ? DEFAULT_CATALOG_DEFINITION : undefined };
+const editorWorkspace = { metadata: { title: 'Garden sampler', notes: '', aidaCount: 14 }, canUndoProgress: false, canRedoProgress: false, clearProgressHistory: vi.fn(), catalogFor: () => DEFAULT_CATALOG_DEFINITION, availableCatalogs: () => [DEFAULT_CATALOG_DEFINITION], catalogById: (id: string) => id === DEFAULT_CATALOG_DEFINITION.association.catalogId ? DEFAULT_CATALOG_DEFINITION : undefined };
 
 const baseWorkspace = {
   initialized: true,
@@ -131,23 +132,6 @@ describe('application shell', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(importError.message);
   });
 
-  it('exports an archive through a downloaded blob', async () => {
-    window.history.replaceState({}, '', '/patterns/one/edit');
-    const createObjectURL = vi.fn().mockReturnValue('blob:needlewise');
-    const revokeObjectURL = vi.fn();
-    Object.defineProperty(URL, 'createObjectURL', { value: createObjectURL, configurable: true });
-    Object.defineProperty(URL, 'revokeObjectURL', { value: revokeObjectURL, configurable: true });
-    mockedWorkspace.mockReturnValue({ ...baseWorkspace, workspace: editorWorkspace, state: { ...baseWorkspace.state, projectId: 'one', metadata: { id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 }, document: { width: 16, height: 16, palette: [], colors: new Uint16Array(), backstitches: { ids: new Uint32Array() } } }, saveState: { ...baseWorkspace.saveState, status: 'saved' } } as never);
-    render(<App />);
-    const editorDownload = await screen.findByRole('button', { name: 'Download Pattern' });
-    expect(editorDownload).toBeInTheDocument();
-    fireEvent.click(editorDownload);
-
-    await waitFor(() => expect(exportProject).toHaveBeenCalledOnce());
-    expect(createObjectURL).toHaveBeenCalledOnce();
-    expect(revokeObjectURL).toHaveBeenCalledWith('blob:needlewise');
-  });
-
   it('flushes before explicitly activating an available update', async () => {
     window.history.replaceState({}, '', '/patterns/one/edit');
     pwaControls.adapter.state.updateAvailable = true;
@@ -188,30 +172,86 @@ describe('application shell', () => {
     expect(screen.queryByRole('heading', { name: 'Cross-stitch patterns' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Tools & shortcuts' })).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Projects' })).not.toBeInTheDocument();
-    expect(await screen.findByRole('button', { name: 'Download Pattern' })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Export pattern' })).toBeInTheDocument();
   });
 
-  it('opens Materials and progress from the editor header and closes the modal accessibly', async () => {
+  it('shows an Edit | Track switch with Track enabled and no materials button', async () => {
     window.history.replaceState({}, '', '/patterns/one/edit');
-    mockedWorkspace.mockReturnValue({ ...baseWorkspace, workspace: editorWorkspace, state: { ...baseWorkspace.state, projectId: 'one', metadata: { id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 }, document: { width: 16, height: 16, palette: [], colors: new Uint16Array(), backstitches: { ids: new Uint32Array() } } } } as never);
+    mockedWorkspace.mockReturnValue({ ...baseWorkspace, workspace: editorWorkspace, state: { ...baseWorkspace.state, projectId: 'one', metadata: { id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 }, document: { width: 16, height: 16, palette: [], colors: new Uint16Array(), backstitches: { ids: new Uint32Array() } } }, projects: [{ id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 }] } as never);
     render(<App />);
 
-    expect(screen.queryByRole('heading', { name: 'Plan the thread' })).not.toBeInTheDocument();
-    const info = await screen.findByRole('button', { name: 'Materials and progress' });
-    fireEvent.click(info);
-    const dialog = await screen.findByRole('dialog', { name: 'Plan the thread' });
-    expect(within(dialog).getByRole('heading', { name: 'Material model' })).toBeInTheDocument();
-    expect(within(dialog).getByRole('button', { name: 'Save material settings' })).toBeInTheDocument();
-    expect(screen.getByTestId('application')).toHaveProperty('inert', true);
+    expect(await screen.findByRole('button', { name: 'Export pattern' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Materials and progress' })).not.toBeInTheDocument();
+    const nav = screen.getByRole('navigation', { name: 'Pattern view' });
+    expect(within(nav).getByRole('button', { name: 'Edit' })).toHaveAttribute('aria-current', 'page');
+    expect(within(nav).getByRole('button', { name: 'Track' })).toBeEnabled();
+  });
 
-    fireEvent.keyDown(dialog, { key: 'Escape' });
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Plan the thread' })).not.toBeInTheDocument());
-    expect(document.activeElement).toBe(info);
+  it('opens the project on /track and shows the Track page', async () => {
+    window.history.replaceState({}, '', '/patterns/one/track');
+    const projects = [{ id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 }];
+    mockedWorkspace.mockReturnValue({ ...baseWorkspace, workspace: editorWorkspace, projects } as never);
+    const view = render(<App />);
+    await waitFor(() => expect(openProject).toHaveBeenCalledWith('one'));
 
-    fireEvent.click(info);
-    const reopened = await screen.findByRole('dialog', { name: 'Plan the thread' });
-    fireEvent.click(reopened.closest('.modal-backdrop') as HTMLElement);
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Plan the thread' })).not.toBeInTheDocument());
+    mockedWorkspace.mockReturnValue({ ...baseWorkspace, workspace: editorWorkspace, state: { ...baseWorkspace.state, projectId: 'one', metadata: projects[0], document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#AA0000' }] }) }, projects } as never);
+    view.rerender(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Garden sampler' })).toBeInTheDocument();
+    expect(within(screen.getByRole('navigation', { name: 'Pattern view' })).getByRole('button', { name: 'Track' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('button', { name: 'Undo mark' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Export pattern' })).toBeInTheDocument();
+    expect(screen.getByRole('main')).toHaveAttribute('data-page', 'track');
+  });
+
+  it('renames the open pattern from the Track title', async () => {
+    window.history.replaceState({}, '', '/patterns/one/track');
+    const projects = [{ id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 }];
+    mockedWorkspace.mockReturnValue({ ...baseWorkspace, workspace: editorWorkspace, state: { ...baseWorkspace.state, projectId: 'one', metadata: projects[0], document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#AA0000' }] }) }, projects } as never);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Rename Garden sampler' }));
+    const input = screen.getByRole('textbox', { name: 'Rename pattern Garden sampler' });
+    fireEvent.change(input, { target: { value: 'Winter sampler' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => expect(renameProject).toHaveBeenCalledWith('one', 'Winter sampler'));
+    expect(await screen.findByText('Pattern renamed.')).toBeInTheDocument();
+  });
+
+  it('switches between Edit and Track without reopening the project', async () => {
+    window.history.replaceState({}, '', '/patterns/one/edit');
+    mockedWorkspace.mockReturnValue({ ...baseWorkspace, workspace: editorWorkspace, state: { ...baseWorkspace.state, projectId: 'one', metadata: { id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 }, document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#AA0000' }] }) }, projects: [{ id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 }] } as never);
+    render(<App />);
+
+    expect(await screen.findByRole('button', { name: 'Export pattern' })).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Pattern view' })).getByRole('button', { name: 'Track' }));
+    expect(await screen.findByRole('button', { name: 'Undo mark' })).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/patterns/one/track');
+
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Pattern view' })).getByRole('button', { name: 'Edit' }));
+    expect(await screen.findByRole('button', { name: 'Export pattern' })).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/patterns/one/edit');
+    expect(screen.queryByRole('heading', { name: 'Opening your workspace…' })).not.toBeInTheDocument();
+    expect(openProject).not.toHaveBeenCalled();
+  });
+
+  it('opens the export dialog from the editor header', async () => {
+    window.history.replaceState({}, '', '/patterns/one/edit');
+    mockedWorkspace.mockReturnValue({ ...baseWorkspace, workspace: { ...editorWorkspace, activeProjectId: 'one', materialSettings: { strands: 2, backstitchStrands: 1, waste: 0.1, skeinLengthMeters: 8 }, updateActiveMaterialSettings: vi.fn(), updateActiveMetadata: vi.fn(), updateActiveAidaCount: vi.fn() }, state: { ...baseWorkspace.state, projectId: 'one', metadata: { id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 }, document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 16, height: 16, palette: [{ id: 1, name: 'Ruby', color: '#AA0000' }] }) }, projects: [{ id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 }] } as never);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Export pattern' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Export pattern' });
+    expect(within(dialog).getByRole('region', { name: 'Thread totals' })).toBeInTheDocument();
+  });
+
+  it('no longer routes /preview to the editor', async () => {
+    window.history.replaceState({}, '', '/patterns/one/preview');
+    render(<App />);
+
+    expect(screen.queryByRole('button', { name: 'Export pattern' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('navigation', { name: 'Pattern view' })).not.toBeInTheDocument();
   });
 
   it('owns focus and makes the complete application inert while create is open', async () => {

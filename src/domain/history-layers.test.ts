@@ -8,6 +8,7 @@ import {
   DocumentEditor,
   DOCUMENT_EDITOR_HISTORY_VERSION,
   DomainError,
+  HalfDirection,
   LayerErrorCode,
   layerAddCommand,
   layerDeleteCommand,
@@ -24,6 +25,7 @@ import {
   type DomainCommand,
   type Layer,
   type LayeredDocument,
+  type ProgressCommand,
   type SpecialtyLayer,
   type StitchLayer
 } from './index';
@@ -135,7 +137,7 @@ describe('layered DocumentEditor: layer-scoped commands', () => {
     expect(editor.revision).toBe(revision + 1);
   });
 
-  it('refuses progress edits because completion is not stored per layer', () => {
+  it('refuses completion commands, which go through applyProgress instead', () => {
     const editor = editorFor();
     editor.execute(full(0, 0, 1));
     expect(errorCode(() => editor.execute({ type: 'set-completion', x: 0, y: 0, completed: true, layerId: STITCHES }))).toBe('invalid-command');
@@ -1005,6 +1007,270 @@ describe('layered DocumentEditor: canvas edits', () => {
     }), removalIndex));
     rejects({ ...exported, redo: exported.redo.map((entry) => entry.kind === 'canvas' ? { ...entry, command: { ...entry.command, operation: 'flip' } } : entry) });
     // The untouched export still imports.
+    expect(createEditorFromHistory(editor.document, exported).undoDepth).toBe(editor.undoDepth);
+  });
+});
+
+describe('layered DocumentEditor: Track progress', () => {
+  function markCells(editor: DocumentEditor, indices: number[], operation: ProgressCommand['operation'] = 'set', masks = indices.map(() => 1)) {
+    return editor.applyProgress({ cells: { indices: Uint32Array.from(indices), masks: Uint8Array.from(masks) }, operation });
+  }
+
+  function completed(document: LayeredDocument, layerId: number, index: number): number {
+    return stitch(document, layerId).completed[index];
+  }
+
+  it('marks the covering layer without touching document history, and replays the entry both ways', () => {
+    const editor = editorFor();
+    editor.execute(layerAddCommand(LayerType.Stitch));
+    editor.execute(full(0, 0, 1));
+    editor.execute(full(1, 0, 1));
+    editor.execute(full(1, 0, 2, 3));
+    const undoDepth = editor.undoDepth;
+    const revision = editor.revision;
+
+    const marked = markCells(editor, [1, 0, 2]);
+    if (marked === null) throw new Error('Expected a change.');
+    expect(editor.undoDepth).toBe(undoDepth);
+    expect(editor.canRedo).toBe(false);
+    expect(editor.revision).toBe(revision + 1);
+    expect(marked.result.revision).toBe(revision + 1);
+    expect(marked.result.document).toBe(editor.composite);
+    // Cell 1 is supplied by the upper layer, cell 0 by the lower one; empty cell 2 is skipped.
+    expect([completed(editor.document, 3, 1), completed(editor.document, STITCHES, 1), completed(editor.document, STITCHES, 0)]).toEqual([1, 0, 1]);
+    expect(Array.from(marked.result.compositeChangedIndices ?? [])).toEqual([0, 1]);
+    expect(marked.result.progress).toMatchObject({ marked: 2, unmarked: 0 });
+    expect(Array.from(editor.composite.completed.subarray(0, 3))).toEqual([1, 1, 0]);
+    expect(marked.entry.parts.map((part) => part.layerId)).toEqual([STITCHES, 3]);
+
+    // Marking again changes nothing.
+    expect(markCells(editor, [0, 1])).toBeNull();
+
+    const undone = editor.applyProgressEntry(marked.entry, false);
+    expect(undone.changed).toBe(true);
+    expect(undone.progress).toMatchObject({ marked: 0, unmarked: 2 });
+    expect(Array.from(editor.composite.completed.subarray(0, 3))).toEqual([0, 0, 0]);
+    editor.applyProgressEntry(marked.entry, true);
+    expect(Array.from(editor.composite.completed.subarray(0, 3))).toEqual([1, 1, 0]);
+    expect(editor.undoDepth).toBe(undoDepth);
+
+    // Document undo never reverts a mark.
+    editor.undo();
+    expect(completed(editor.document, STITCHES, 0)).toBe(1);
+  });
+
+  it('toggles, clears and checks the expected revision', () => {
+    const editor = editorFor();
+    editor.execute(full(0, 0, 1));
+    editor.execute(full(1, 0, 1));
+    markCells(editor, [0]);
+    markCells(editor, [0, 1], 'toggle');
+    expect(Array.from(editor.composite.completed.subarray(0, 2))).toEqual([0, 1]);
+    markCells(editor, [1], 'clear');
+    expect(editor.composite.completed[1]).toBe(0);
+    expect(errorCode(() => editor.applyProgress({ cells: { indices: Uint32Array.of(0), masks: Uint8Array.of(1) }, operation: 'set', expectedRevision: editor.revision - 1 }))).toBe('stale-command');
+    expect(errorCode(() => editor.applyProgress({ cells: { indices: Uint32Array.of(0), masks: Uint8Array.of(2) }, operation: 'set' }))).toBe('invalid-completion-target');
+  });
+
+  it('marks quarter components by mask', () => {
+    const editor = editorFor();
+    editor.execute({ type: 'set-quarter', x: 0, y: 0, corner: 0, color: 1, layerId: STITCHES });
+    editor.execute({ type: 'set-quarter', x: 0, y: 0, corner: 2, color: 2, layerId: STITCHES });
+    markCells(editor, [0], 'set', [0b0100]);
+    expect(completed(editor.document, STITCHES, 0)).toBe(0b0100);
+  });
+
+  it('marks backstitches on the layer that shows them', () => {
+    const editor = editorFor();
+    editor.execute(line(0, 0, 1, 0, 1));
+    const id = specialty(editor.document, SPECIALTY).backstitches.ids[0];
+    const marked = editor.applyProgress({ backstitchIds: Uint32Array.of(id), operation: 'toggle' });
+    if (marked === null) throw new Error('Expected a change.');
+    expect(Array.from(marked.result.progress?.backstitchIds ?? [])).toEqual([id]);
+    expect(specialty(editor.document, SPECIALTY).backstitches.completed[0]).toBe(1);
+    expect(editor.composite.backstitches.completed[0]).toBe(1);
+    editor.applyProgressEntry(marked.entry, false);
+    expect(editor.composite.backstitches.completed[0]).toBe(0);
+  });
+
+  it('applies the parts of an entry whose other layer was deleted', () => {
+    const editor = editorFor();
+    editor.execute(layerAddCommand(LayerType.Stitch));
+    editor.execute(full(0, 0, 1));
+    editor.execute(full(1, 0, 2, 3));
+    const marked = markCells(editor, [0, 1]);
+    if (marked === null) throw new Error('Expected a change.');
+    editor.applyProgressEntry(marked.entry, false);
+    editor.execute(layerDeleteCommand(3));
+    const redone = editor.applyProgressEntry(marked.entry, true);
+    expect(redone.changed).toBe(true);
+    expect(Array.from(redone.compositeChangedIndices ?? [])).toEqual([0]);
+    expect(completed(editor.document, STITCHES, 0)).toBe(1);
+  });
+
+  it('keeps marks through undo and redo of layer delete, duplicate and merge', () => {
+    const editor = editorFor();
+    editor.execute(layerAddCommand(LayerType.Stitch));
+    editor.execute(full(0, 0, 1));
+    editor.execute(full(1, 0, 1));
+    editor.execute(full(1, 0, 2, 3));
+    editor.execute(full(2, 0, 2, 3));
+    // Cells 0 and 1 are marked on their covering layers; the lower cell 1 is unmarked under the upper one.
+    markCells(editor, [0, 1, 2]);
+    const expectMarks = (): void => expect(Array.from(editor.composite.completed.subarray(0, 3))).toEqual([1, 1, 1]);
+
+    editor.execute(layerDeleteCommand(3));
+    expect(Array.from(editor.composite.completed.subarray(0, 3))).toEqual([1, 0, 0]);
+    editor.undo();
+    expectMarks();
+    expect(completed(editor.document, 3, 2)).toBe(1);
+    editor.redo();
+    editor.undo();
+    expectMarks();
+
+    editor.execute(layerDuplicateCommand(STITCHES));
+    expect(ids(editor.document)).toContain(4);
+    expect(completed(editor.document, 4, 0)).toBe(1);
+    editor.undo();
+    editor.redo();
+    expect(completed(editor.document, 4, 0)).toBe(1);
+    editor.undo();
+
+    editor.execute(layerMergeCommand(3, STITCHES));
+    expectMarks();
+    expect(Array.from(stitch(editor.document, STITCHES).completed.subarray(0, 3))).toEqual([1, 1, 1]);
+    // An unmark made after the merge survives undoing it, because the restored cell is unchanged.
+    markCells(editor, [0], 'clear');
+    editor.undo();
+    expect(Array.from(editor.composite.completed.subarray(0, 3))).toEqual([0, 1, 1]);
+    expect([completed(editor.document, 3, 1), completed(editor.document, 3, 2)]).toEqual([1, 1]);
+    editor.redo();
+    expect(Array.from(stitch(editor.document, STITCHES).completed.subarray(0, 3))).toEqual([0, 1, 1]);
+  });
+
+  it('keeps marks made after an edit when that edit is undone', () => {
+    const editor = editorFor();
+    editor.execute(full(0, 0, 1));
+    editor.execute({ type: 'palette-merge', from: 1, to: 2 });
+    markCells(editor, [0]);
+    editor.undo();
+    expect(stitch(editor.document, STITCHES).colors[0]).toBe(1);
+    expect(completed(editor.document, STITCHES, 0)).toBe(1);
+
+    editor.execute(line(0, 0, 1, 0, 1));
+    const first = specialty(editor.document, SPECIALTY).backstitches.ids[0];
+    editor.execute(line(0, 1, 1, 1, 1));
+    editor.applyProgress({ backstitchIds: Uint32Array.of(first), operation: 'set' });
+    editor.undo();
+    expect(Array.from(specialty(editor.document, SPECIALTY).backstitches.completed)).toEqual([1]);
+    editor.redo();
+    expect(Array.from(specialty(editor.document, SPECIALTY).backstitches.completed)).toEqual([1, 0]);
+  });
+
+  it('restores a mark when the edit that cleared it is undone', () => {
+    const editor = editorFor();
+    editor.execute(full(0, 0, 1));
+    markCells(editor, [0]);
+    editor.execute({ type: 'set-half', x: 0, y: 0, direction: HalfDirection.Slash, color: 1, layerId: STITCHES });
+    expect(completed(editor.document, STITCHES, 0)).toBe(0);
+    editor.undo();
+    expect(completed(editor.document, STITCHES, 0)).toBe(1);
+    expect(editor.composite.completed[0]).toBe(1);
+    editor.redo();
+    expect(completed(editor.document, STITCHES, 0)).toBe(0);
+
+    editor.undo();
+    editor.execute(line(0, 0, 1, 0, 1));
+    const id = specialty(editor.document, SPECIALTY).backstitches.ids[0];
+    editor.applyProgress({ backstitchIds: Uint32Array.of(id), operation: 'set' });
+    editor.execute({ type: 'remove-backstitch', id, layerId: SPECIALTY });
+    editor.undo();
+    expect(Array.from(specialty(editor.document, SPECIALTY).backstitches.completed)).toEqual([1]);
+  });
+
+  it('keeps marks through undo and redo of canvas resizes', () => {
+    const editor = editorFor(3, 2);
+    editor.execute(full(0, 0, 1));
+    editor.execute(full(2, 1, 2));
+    markCells(editor, [0, 5]);
+    editor.execute({ type: 'canvas-resize', edges: { top: 0, right: 0, bottom: 0, left: 1 } });
+    expect(completed(editor.document, STITCHES, 1)).toBe(1);
+    editor.undo();
+    expect([completed(editor.document, STITCHES, 0), completed(editor.document, STITCHES, 5)]).toEqual([1, 1]);
+    // Shrinking drops the marked corner cell; undo puts back both the cell and its mark.
+    editor.execute({ type: 'canvas-resize', edges: { top: 0, right: -1, bottom: 0, left: 0 } });
+    expect(Array.from(stitch(editor.document, STITCHES).completed)).toEqual([1, 0, 0, 0]);
+    editor.undo();
+    expect([completed(editor.document, STITCHES, 0), completed(editor.document, STITCHES, 5)]).toEqual([1, 1]);
+    expect(editor.composite.completed[5]).toBe(1);
+    editor.redo();
+    editor.undo();
+    expect(completed(editor.document, STITCHES, 5)).toBe(1);
+  });
+
+  it('round-trips marked layer content and canvas removals through the history DTO', () => {
+    const editor = editorFor(3, 2);
+    editor.execute(full(0, 0, 1));
+    editor.execute(full(2, 1, 2));
+    markCells(editor, [0, 5]);
+    editor.execute({ type: 'canvas-resize', edges: { top: 0, right: -1, bottom: 0, left: 0 } });
+    editor.execute(layerDeleteCommand(STITCHES));
+    const exported = editor.exportHistory();
+    const layers = exported.undo.find((entry) => entry.kind === 'layers');
+    const canvas = exported.undo.find((entry) => entry.kind === 'canvas');
+    if (layers?.kind !== 'layers' || canvas?.kind !== 'canvas') throw new Error('Expected layers and canvas entries.');
+    expect(Array.from(layers.before.layers.find((layer) => layer.id === STITCHES)?.completed ?? [])).toEqual([1, 0, 0, 0]);
+    expect(Array.from(canvas.removal.cells[0].completed ?? [])).toEqual([1]);
+
+    const restored = createEditorFromHistory(editor.document, exported);
+    expect(restored.historyBytes).toBe(editor.historyBytes);
+    restored.undo();
+    expect(Array.from(stitch(restored.document, STITCHES).completed)).toEqual([1, 0, 0, 0]);
+    restored.undo();
+    expect(Array.from(stitch(restored.document, STITCHES).completed)).toEqual([1, 0, 0, 0, 0, 1]);
+    expect(restored.composite.completed[5]).toBe(1);
+
+    // History written before progress was stored has no completion fields and imports as unmarked.
+    const withoutCompleted = <T extends { completed?: Uint8Array }>(value: T): T => {
+      const copy = { ...value };
+      delete copy.completed;
+      return copy;
+    };
+    const legacy = {
+      ...exported,
+      undo: exported.undo.map((entry) => {
+        if (entry.kind === 'canvas') {
+          const cells = entry.removal.cells.map(withoutCompleted);
+          const stripped = { ...entry, removal: { ...entry.removal, cells } };
+          return { ...stripped, bytes: entry.bytes - entry.removal.cells.reduce((total, part) => total + (part.completed?.byteLength ?? 0), 0) };
+        }
+        if (entry.kind !== 'layers') return entry;
+        const strip = (side: typeof entry.before) => ({ ...side, layers: side.layers.map(withoutCompleted) });
+        const removed = [...entry.before.layers, ...entry.after.layers].reduce((total, layer) => total + (layer.completed?.byteLength ?? 0), 0);
+        return { ...entry, before: strip(entry.before), after: strip(entry.after), bytes: entry.bytes - removed };
+      })
+    };
+    const plain = createEditorFromHistory(editor.document, legacy);
+    plain.undo();
+    expect(Array.from(stitch(plain.document, STITCHES).completed)).toEqual([0, 0, 0, 0]);
+    plain.undo();
+    expect(Array.from(stitch(plain.document, STITCHES).completed)).toEqual([0, 0, 0, 0, 0, 0]);
+  });
+
+  it('rejects imported progress that does not fit the stitch', () => {
+    const editor = editorFor(3, 2);
+    editor.execute(full(0, 0, 1));
+    markCells(editor, [0]);
+    editor.execute(layerDeleteCommand(STITCHES));
+    const exported = editor.exportHistory();
+    const forged = {
+      ...exported,
+      undo: exported.undo.map((entry) => entry.kind !== 'layers' ? entry : {
+        ...entry,
+        before: { ...entry.before, layers: entry.before.layers.map((layer) => layer.completed === undefined ? layer : { ...layer, completed: Uint8Array.from(layer.completed, (value) => value === 0 ? 0 : 2) }) }
+      })
+    };
+    expect(errorCode(() => new DocumentEditor(editor.document).importHistory(forged))).toBe('invalid-history-state');
     expect(createEditorFromHistory(editor.document, exported).undoDepth).toBe(editor.undoDepth);
   });
 });

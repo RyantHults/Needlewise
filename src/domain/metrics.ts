@@ -18,6 +18,8 @@ import { isThreeQuarterPairKind, isThreeQuarterSingleKind } from './model';
  */
 export interface MaterialSettingsV2 {
   readonly strands?: number;
+  /** Strands used for backstitch lines; independent of the cross-stitch `strands`. */
+  readonly backstitchStrands?: number;
   readonly waste?: number;
   readonly wastePercent?: number;
   /** Calibrated physical length represented by one abstract stitch unit. */
@@ -35,6 +37,10 @@ export const DEFAULT_AIDA_COUNT = 14;
 /** One standard skein holds 8.7 yards. Estimates fall back to it when no skein length is calibrated. */
 export const DEFAULT_SKEIN_LENGTH_METERS = 8.7 * 0.9144;
 const THREE_QUARTER_WEIGHT = 0.75;
+/** Thread for one full cross at one strand and 14-count. */
+const STITCH_THREAD_INCHES_AT_14 = 0.8;
+/** A backstitch line costs half a cross per cell: one diagonal against a cross's two. */
+const BACKSTITCH_CROSS_FRACTION = 0.5;
 
 export function normalizeAidaCount(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
@@ -55,6 +61,7 @@ export function normalizeDisplayUnits(value: unknown): DisplayUnits {
 
 export interface MaterialSettingsUpdate {
   readonly strands?: number;
+  readonly backstitchStrands?: number;
   readonly waste?: number;
   readonly stitchLengthMeters?: number | null;
   readonly skeinLengthMeters?: number | null;
@@ -70,6 +77,7 @@ export interface MetricsOptions extends MaterialSettingsV2 {
 
 export interface NormalizedMaterialSettings {
   readonly strands: number;
+  readonly backstitchStrands: number;
   readonly waste: number;
   readonly stitchLengthMeters?: number;
   readonly skeinLengthMeters?: number;
@@ -94,7 +102,6 @@ export interface MaterialEstimateAssumptions {
   readonly waste: number;
   readonly singleStrandFullCrossInchesAt14?: number;
   readonly backstitchStrands?: number;
-  readonly backstitchUndersideMultiplier?: number;
   readonly note: string;
 }
 
@@ -184,6 +191,7 @@ export interface PatternMetrics {
 
 export const DEFAULT_MATERIAL_SETTINGS: NormalizedMaterialSettings = {
   strands: 1,
+  backstitchStrands: 1,
   waste: 0
 };
 
@@ -202,6 +210,11 @@ function readFirst(record: MaterialSettingsRecord, keys: readonly string[]): unk
 
 function requiredPositive(value: unknown, label: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) throw new DomainError('invalid-material-settings', `${label} must be a finite number greater than zero.`);
+  return value;
+}
+
+function requiredPositiveInteger(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) throw new DomainError('invalid-material-settings', `${label} must be a whole number greater than zero.`);
   return value;
 }
 
@@ -250,16 +263,22 @@ export function normalizeMaterialAssumptions(value: MaterialSettingsV2 | undefin
       // one is not silently reinterpreted as a percentage on a later load.
       : requiredNonNegative(rawWaste, 'Waste');
   const strandsValue = readFirst(source, ['strands', 'strandCount', 'strandsPerStitch']);
+  const backstitchStrandsValue = readFirst(source, ['backstitchStrands', 'backstitchStrandCount']);
   const stitchLengthValue = readFirst(source, ['stitchLengthMeters', 'metersPerStitch']);
   const skeinLengthValue = readFirst(source, ['skeinLengthMeters', 'skeinLength', 'metersPerSkein']);
   // Aida projects have useful physical estimates without a manual calibration.
   // Keep the historical abstract defaults for documents that have no project
   // fabric metadata, while allowing either Aida default to be overridden.
   const strands = strandsValue === undefined ? (aidaCount === undefined ? DEFAULT_MATERIAL_SETTINGS.strands : 2) : requiredPositive(strandsValue, 'Strands');
+  // Backstitch is conventionally one strand, including on Aida.
+  const backstitchStrands = backstitchStrandsValue === undefined
+    ? DEFAULT_MATERIAL_SETTINGS.backstitchStrands
+    : requiredPositiveInteger(backstitchStrandsValue, 'Backstitch strands');
   const stitchLengthMeters = stitchLengthValue === undefined ? undefined : requiredPositive(stitchLengthValue, 'Stitch length');
   const skeinLengthMeters = skeinLengthValue === undefined ? undefined : requiredPositive(skeinLengthValue, 'Skein length');
   return {
     strands,
+    backstitchStrands,
     waste,
     ...(stitchLengthMeters === undefined ? {} : { stitchLengthMeters }),
     ...(skeinLengthMeters === undefined ? {} : { skeinLengthMeters })
@@ -429,31 +448,31 @@ export function materialEstimateFromCounts(
   // a three-quarter stitch is three quarters of a full-cell equivalent.
   const threeQuarter = counts.threeQuarter ?? 0;
   // Backstitches already carry their geometric length in cell units.
-  const stitchUnits = counts.full
+  const backstitchCells = counts.backstitchLengthFixed / FIXED_POINT_UNITS_PER_CELL;
+  const crossUnits = counts.full
     + counts.half / 2
     + counts.quarter / 4
-    + threeQuarter * THREE_QUARTER_WEIGHT
-    + counts.backstitchLengthFixed / FIXED_POINT_UNITS_PER_CELL;
-  const strandLength = stitchUnits * settings.strands;
+    + threeQuarter * THREE_QUARTER_WEIGHT;
+  const stitchUnits = crossUnits + backstitchCells;
+  // A backstitch cell costs half of one full cross, so the physical paths
+  // below weight backstitch cells by 0.5; the abstract units keep raw cells.
+  // Backstitch takes its own strand count, not the cross-stitch one.
+  const strandLength = crossUnits * settings.strands + backstitchCells * settings.backstitchStrands;
   const calibratedStitchLength = settings.stitchLengthMeters;
   const estimatedLength = strandLength * (1 + settings.waste);
   const count = aidaCount === undefined ? undefined : normalizeAidaCount(aidaCount);
-  const calibratedBaseMeters = calibratedStitchLength === undefined ? undefined : strandLength * calibratedStitchLength;
+  const calibratedBaseMeters = calibratedStitchLength === undefined
+    ? undefined
+    : (crossUnits * settings.strands + backstitchCells * BACKSTITCH_CROSS_FRACTION * settings.backstitchStrands) * calibratedStitchLength;
   const aidaBaseMeters = count === undefined
     ? undefined
     : (
-      // Full crosses are 0.8 single-strand inches at 14-count. Backstitches
-      // use their physical drawn line plus an underside allowance.
+      // Full crosses are 0.8 single-strand inches at 14-count. A backstitch
+      // runs one line where a cross runs two, so each cell of backstitch
+      // costs half a cross at the backstitch strand count.
       (
-        (
-          counts.full * 0.8 * (14 / count)
-          + counts.half * 0.8 * (14 / count) / 2
-          + counts.quarter * 0.8 * (14 / count) / 4
-          + threeQuarter * 0.8 * (14 / count) * THREE_QUARTER_WEIGHT
-        ) * settings.strands
-        // Backstitch is reported as one physical line of thread; it does not
-        // inherit the cross-stitch strand multiplier.
-        + (counts.backstitchLengthFixed / FIXED_POINT_UNITS_PER_CELL) * (1 / count) * 1.5
+        crossUnits * STITCH_THREAD_INCHES_AT_14 * (14 / count) * settings.strands
+        + backstitchCells * STITCH_THREAD_INCHES_AT_14 * (14 / count) * BACKSTITCH_CROSS_FRACTION * settings.backstitchStrands
       ) / 39.37007874015748
     );
   // Manual calibration wins over the Aida model when both are supplied.
@@ -469,6 +488,7 @@ export function materialEstimateFromCounts(
       ? {
         model: 'manual-calibration',
         strands: settings.strands,
+        backstitchStrands: settings.backstitchStrands,
         waste: settings.waste,
         note: 'Estimated from the manually calibrated thread length per abstract stitch unit; actual use varies.'
       }
@@ -476,10 +496,11 @@ export function materialEstimateFromCounts(
         model: calibratedStitchLength === undefined ? 'aida' : 'manual-calibration',
         aidaCount: count,
         strands: settings.strands,
+        backstitchStrands: settings.backstitchStrands,
         waste: settings.waste,
-        ...(calibratedStitchLength === undefined ? { singleStrandFullCrossInchesAt14: 0.8, backstitchStrands: 1, backstitchUndersideMultiplier: 1.5 } : {}),
+        ...(calibratedStitchLength === undefined ? { singleStrandFullCrossInchesAt14: STITCH_THREAD_INCHES_AT_14 } : {}),
         note: calibratedStitchLength === undefined
-          ? 'Aida estimate: 0.8 single-strand inches (2.03 cm) per full cross at 14-count, scaled by count; half and quarter stitches are proportional and backstitch includes 1.5× underside.'
+          ? 'Aida estimate: 0.8 single-strand inches (2.03 cm) per full cross at 14-count, scaled by count; half and quarter stitches are proportional; backstitch is half a cross per cell of line length at its own strand count.'
           : 'Manual stitch-length calibration overrides the Aida thread-length model; actual use varies.'
       };
   const estimateRange: MaterialEstimateRange | undefined = baseMeters === undefined || estimatedMeters === undefined

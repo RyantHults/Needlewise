@@ -153,6 +153,9 @@ export interface ActiveWorkspaceState {
   layeredDocument?: LayeredDocument | null;
   layers?: readonly LayerSummary[];
   activeLayer?: ActiveLayerInfo | null;
+  /** Track's in-memory mark history; see `ProjectSession.markProgress`. */
+  canUndoProgress?: boolean;
+  canRedoProgress?: boolean;
 }
 
 export type MaterialSettingsChanges = MaterialSettingsUpdate;

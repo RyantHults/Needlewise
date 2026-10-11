@@ -472,11 +472,14 @@ export function createCatalogReference(
   };
 }
 
+/** Codes the catalog once used, still accepted by lookups. */
+const DMC_CODE_ALIASES: ReadonlyMap<string, string> = new Map([['WHITE', 'BLANC']]);
+
 /** Look up a code such as "09", "B5200", or "Ecru". Numeric callers cannot express leading zeroes. */
 export function getDmcColor(code: string | number): DmcCatalogColor | undefined {
   const value = String(code).trim().toUpperCase();
   const normalized = value.startsWith('DMC-') ? value.slice(4) : value;
-  return normalized ? dmcByCode.get(normalized) : undefined;
+  return normalized ? dmcByCode.get(DMC_CODE_ALIASES.get(normalized) ?? normalized) : undefined;
 }
 
 export function getDmcColorByHex(value: string): DmcCatalogColor | undefined {

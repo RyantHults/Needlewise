@@ -29,17 +29,21 @@ import {
 } from './limits';
 
 const MAGIC = new Uint8Array([0x4e, 0x57, 0x44, 0x4f, 0x43, 0x31, 0x01, 0x00]);
-export const BINARY_SCHEMA_VERSION = 4 as const;
+export const BINARY_SCHEMA_VERSION = 5 as const;
 /** First layered schema. Layered documents before v4 have no origin or canvas mask. */
 const LAYERED_SCHEMA_VERSION = 3;
+/** First schema that stores completion for stitch layers and backstitches. */
+const COMPLETION_SCHEMA_VERSION = 5;
+/** First schema with an origin, canvas mask, and header flags. */
+const CANVAS_SCHEMA_VERSION = 4;
 /** v4 header flags byte: bit 0 means a canvas mask follows the origin. */
 const FLAG_CANVAS_MASK = 1;
 const LITTLE_ENDIAN_MARKER = 1;
 const HEADER_BYTES = 40;
-/** v1/v2 backstitch record: id, x1, y1, x2, y2, color, completed. */
-const LEGACY_BACKSTITCH_BYTES = 23;
-/** v3 backstitch record: id, x1, y1, x2, y2, color. Completion is not stored. */
-const BACKSTITCH_BYTES = 22;
+/** v3/v4 backstitch record: id, x1, y1, x2, y2, color. Completion is not stored. */
+const UNMARKED_BACKSTITCH_BYTES = 22;
+/** v1/v2 and v5 backstitch record: id, x1, y1, x2, y2, color, completed. */
+const BACKSTITCH_BYTES = 23;
 const LAYER_TYPE_CODES: Record<LayerType, number> = { [LayerType.Stitch]: 0, [LayerType.Specialty]: 1 };
 const MAX_LAYERS = MAX_LAYERS_PER_TYPE * 2;
 
@@ -132,7 +136,7 @@ function byteLengthFor(document: LayeredDocument): number {
   if (document.canvasMask !== undefined) length += BigInt(Math.ceil(document.width * document.height / 8));
   for (const layer of document.layers) {
     length += 4n + 1n + 1n + 4n + BigInt(stringBytes(layer.name, 'Layer name').length);
-    if (layer.type === LayerType.Stitch) length += BigInt(layer.kind.length) + BigInt(layer.colors.length) * 2n;
+    if (layer.type === LayerType.Stitch) length += BigInt(layer.kind.length) * 2n + BigInt(layer.colors.length) * 2n;
     else length += 4n + BigInt(layer.backstitches.ids.length) * BigInt(BACKSTITCH_BYTES);
   }
   if (length > BigInt(MAX_DOCUMENT_BYTES) || length > BigInt(Number.MAX_SAFE_INTEGER)) fail('Document snapshot exceeds the size limit.');
@@ -185,13 +189,15 @@ function writePalette(view: DataView, bytes: Uint8Array, offset: number, palette
   return offset;
 }
 
-function writeStitchLayer(view: DataView, bytes: Uint8Array, offset: number, kind: Uint8Array, colors: Uint16Array): number {
+function writeStitchLayer(view: DataView, bytes: Uint8Array, offset: number, kind: Uint8Array, colors: Uint16Array, completed: Uint8Array): number {
   bytes.set(kind, offset);
   offset += kind.length;
   for (const color of colors) {
     view.setUint16(offset, color, true);
     offset += 2;
   }
+  bytes.set(completed, offset);
+  offset += completed.length;
   return offset;
 }
 
@@ -211,17 +217,19 @@ function writeBackstitches(view: DataView, offset: number, store: BackstitchStor
     offset += 4;
     view.setUint16(offset, store.colors[index], true);
     offset += 2;
+    view.setUint8(offset, store.completed[index]);
+    offset += 1;
   }
   return offset;
 }
 
 /**
- * Encodes the v4 layered format: header, catalog, palette, settings (including
+ * Encodes the v5 layered format: header, catalog, palette, settings (including
  * aidaCount), nextLayerId, originX/originY (int32), the canvas mask bitset when
  * header flag bit 0 is set (LSB first, trailing bits zero), then the layer table
  * bottom to top. Stitch layers
- * store kind and color planes; specialty layers store their backstitches.
- * Completion is never stored.
+ * store kind, color, and completion planes; specialty layers store their
+ * backstitches, each with a completion byte.
  */
 export function encodeDocument(document: LayeredDocument): Uint8Array {
   checkedDocumentDimensions(document.width, document.height);
@@ -278,7 +286,7 @@ export function encodeDocument(document: LayeredDocument): Uint8Array {
     offset += 1;
     offset = writeString(view, bytes, offset, layer.name, 'Layer name');
     offset = layer.type === LayerType.Stitch
-      ? writeStitchLayer(view, bytes, offset, layer.kind, layer.colors)
+      ? writeStitchLayer(view, bytes, offset, layer.kind, layer.colors, layer.completed)
       : writeBackstitches(view, offset, layer.backstitches);
   }
   if (offset !== length) fail('Document snapshot length is inconsistent.');
@@ -394,7 +402,7 @@ function readBackstitches(view: DataView, offset: number, count: number, recordB
     offset += 4;
     colors[index] = view.getUint16(offset, true);
     offset += 2;
-    if (recordBytes === LEGACY_BACKSTITCH_BYTES) {
+    if (recordBytes === BACKSTITCH_BYTES) {
       completed[index] = view.getUint8(offset);
       offset += 1;
     }
@@ -421,7 +429,7 @@ function readHeader(bytes: Uint8Array, view: DataView): DecodedHeader {
   if (binaryVersion < 1 || binaryVersion > BINARY_SCHEMA_VERSION) throw new PersistenceError('unsupported-version', 'Document binary schema is unsupported.');
   if (view.getUint8(10) !== LITTLE_ENDIAN_MARKER) fail('Document byte order is unsupported.');
   const flags = view.getUint8(11);
-  if (flags !== 0 && (binaryVersion < BINARY_SCHEMA_VERSION || (flags & ~FLAG_CANVAS_MASK) !== 0)) fail('Document header flags are invalid.');
+  if (flags !== 0 && (binaryVersion < CANVAS_SCHEMA_VERSION || (flags & ~FLAG_CANVAS_MASK) !== 0)) fail('Document header flags are invalid.');
   const width = view.getUint32(12, true);
   const height = view.getUint32(16, true);
   const cellCount = checkedDocumentDimensions(width, height);
@@ -465,7 +473,7 @@ function decodeLegacyDocument(bytes: Uint8Array, view: DataView, header: Decoded
   const minimumPayload = 12n
     + BigInt(paletteCount) * 29n
     + BigInt(cellCount) * 10n
-    + BigInt(backstitchCount) * BigInt(LEGACY_BACKSTITCH_BYTES)
+    + BigInt(backstitchCount) * BigInt(BACKSTITCH_BYTES)
     + (binaryVersion === 1 ? 8n : 12n);
   if (minimumPayload > BigInt(bytes.length - HEADER_BYTES)) fail('Document counts exceed the remaining payload.');
 
@@ -489,11 +497,11 @@ function decodeLegacyDocument(bytes: Uint8Array, view: DataView, header: Decoded
   offset += cellCount * 4 * 2;
   const completedBytes = take(bytes, offset, cellCount, 'cell completion');
   offset += cellCount;
-  const expectedBackstitchBytesBig = BigInt(backstitchCount) * BigInt(LEGACY_BACKSTITCH_BYTES);
+  const expectedBackstitchBytesBig = BigInt(backstitchCount) * BigInt(BACKSTITCH_BYTES);
   if (expectedBackstitchBytesBig > BigInt(bytes.length - offset)) fail('Backstitch payload exceeds the document size limit.');
   const expectedBackstitchBytes = Number(expectedBackstitchBytesBig);
   if (offset + expectedBackstitchBytes !== bytes.length) fail('Document contains an invalid trailing payload.');
-  const backstitches = readBackstitches(view, offset, backstitchCount, LEGACY_BACKSTITCH_BYTES);
+  const backstitches = readBackstitches(view, offset, backstitchCount, BACKSTITCH_BYTES);
 
   const surface: PatternDocument = {
     version: DOCUMENT_SCHEMA_VERSION,
@@ -522,7 +530,7 @@ function decodeLayeredDocument(bytes: Uint8Array, view: DataView, header: Decode
   const { binaryVersion, hasMask, width, height, cellCount, revision, nextBackstitchId, nextPaletteId, paletteCount } = header;
   const layerCount = header.tableCount;
   if (layerCount > MAX_LAYERS) fail('Layer count exceeds the size limit.');
-  const minimumPayload = 12n + BigInt(paletteCount) * 29n + 12n + 8n + 4n + (binaryVersion >= BINARY_SCHEMA_VERSION ? 8n : 0n) + BigInt(layerCount) * 10n;
+  const minimumPayload = 12n + BigInt(paletteCount) * 29n + 12n + 8n + 4n + (binaryVersion >= CANVAS_SCHEMA_VERSION ? 8n : 0n) + BigInt(layerCount) * 10n;
   if (minimumPayload > BigInt(bytes.length - HEADER_BYTES)) fail('Document counts exceed the remaining payload.');
 
   const catalogResult = readCatalog(bytes, view, HEADER_BYTES);
@@ -543,7 +551,7 @@ function decodeLayeredDocument(bytes: Uint8Array, view: DataView, header: Decode
   let originX = 0;
   let originY = 0;
   let canvasMask: Uint8Array | undefined;
-  if (binaryVersion >= BINARY_SCHEMA_VERSION) {
+  if (binaryVersion >= CANVAS_SCHEMA_VERSION) {
     if (offset + 8 > bytes.length) fail('Document ended while reading the canvas origin.');
     originX = view.getInt32(offset, true);
     originY = view.getInt32(offset + 4, true);
@@ -570,21 +578,25 @@ function decodeLayeredDocument(bytes: Uint8Array, view: DataView, header: Decode
     const name = readString(bytes, view, offset, 'Layer name');
     offset = name.offset;
     if (typeCode === LAYER_TYPE_CODES[LayerType.Stitch]) {
-      // Both planes are bounds-checked by `take` before any allocation.
-      if (BigInt(cellCount) * 9n > BigInt(bytes.length - offset)) fail('Document ended while reading layer cells.');
+      // Every plane is bounds-checked by `take` before any allocation.
+      const planeBytes = binaryVersion >= COMPLETION_SCHEMA_VERSION ? 10n : 9n;
+      if (BigInt(cellCount) * planeBytes > BigInt(bytes.length - offset)) fail('Document ended while reading layer cells.');
       const kind = new Uint8Array(take(bytes, offset, cellCount, 'cell kinds'));
       offset += cellCount;
       const colors = readColorPlane(bytes, offset, cellCount);
       offset += cellCount * 4 * 2;
-      layers.push({ id, type: LayerType.Stitch, name: name.value, visible: visibleValue === 1, kind, colors, completed: new Uint8Array(cellCount) });
+      const completed = binaryVersion >= COMPLETION_SCHEMA_VERSION ? new Uint8Array(take(bytes, offset, cellCount, 'cell completion')) : new Uint8Array(cellCount);
+      if (binaryVersion >= COMPLETION_SCHEMA_VERSION) offset += cellCount;
+      layers.push({ id, type: LayerType.Stitch, name: name.value, visible: visibleValue === 1, kind, colors, completed });
     } else if (typeCode === LAYER_TYPE_CODES[LayerType.Specialty]) {
       if (offset + 4 > bytes.length) fail('Document ended while reading a backstitch count.');
       const count = view.getUint32(offset, true);
       offset += 4;
       if (count > 0x1000000) fail('Backstitch count exceeds the size limit.');
-      const recordBytes = BigInt(count) * BigInt(BACKSTITCH_BYTES);
+      const recordSize = binaryVersion >= COMPLETION_SCHEMA_VERSION ? BACKSTITCH_BYTES : UNMARKED_BACKSTITCH_BYTES;
+      const recordBytes = BigInt(count) * BigInt(recordSize);
       if (recordBytes > BigInt(bytes.length - offset)) fail('Backstitch payload exceeds the document size limit.');
-      const backstitches = readBackstitches(view, offset, count, BACKSTITCH_BYTES);
+      const backstitches = readBackstitches(view, offset, count, recordSize);
       offset += Number(recordBytes);
       layers.push({ id, type: LayerType.Specialty, name: name.value, visible: visibleValue === 1, backstitches });
     } else {

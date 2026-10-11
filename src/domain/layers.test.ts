@@ -241,6 +241,47 @@ describe('flattening', () => {
     expect(cache.update(small).kind).toHaveLength(4);
   });
 
+  it('shows the covering layer\'s marks, and a hidden top layer reveals the lower layer\'s own marks', () => {
+    const doc = twoStitchLayers();
+    run(doc, 1, { type: 'set-full', x: 0, y: 0, color: 1 }, { type: 'set-full', x: 1, y: 0, color: 1 });
+    run(doc, 3, { type: 'set-full', x: 0, y: 0, color: 2 });
+    stitch(doc, 1).completed[0] = 1;
+    stitch(doc, 1).completed[1] = 1;
+    // The top layer covers cell 0 unmarked; cell 1 shows through from below.
+    expect(Array.from(flattenDocument(doc).completed.subarray(0, 2))).toEqual([0, 1]);
+    stitch(doc, 3).completed[0] = 1;
+    stitch(doc, 1).completed[0] = 0;
+    expect(flattenDocument(doc).completed[0]).toBe(1);
+    applyLayerStructureCommand(doc, layerSetVisibilityCommand(3, false));
+    expect(flattenDocument(doc).completed[0]).toBe(0);
+    applyLayerStructureCommand(doc, layerSetVisibilityCommand(3, true));
+    expect(flattenDocument(doc).completed[0]).toBe(1);
+    // Reordering carries marks with their layers.
+    applyLayerStructureCommand(doc, layerMoveCommand(3, 0));
+    expect(flattenDocument(doc).completed[0]).toBe(0);
+    expect(stitch(doc, 3).completed[0]).toBe(1);
+  });
+
+  it('refreshes completion for changed cells in FlattenCache.update without writing earlier composites', () => {
+    const doc = twoStitchLayers();
+    run(doc, 1, { type: 'set-full', x: 0, y: 0, color: 1 }, { type: 'set-full', x: 1, y: 0, color: 1 });
+    const cache = new FlattenCache();
+    const before = cache.full(doc);
+    stitch(doc, 1).completed[0] = 1;
+    stitch(doc, 1).completed[1] = 1;
+    const updated = cache.update(doc, new Uint32Array([0]));
+    expect(updated.completed).not.toBe(before.completed);
+    expect(before.completed[0]).toBe(0);
+    // Only the changed indices are recomputed.
+    expect(Array.from(updated.completed.subarray(0, 2))).toEqual([1, 0]);
+    expect(cache.update(doc, new Uint32Array([1])).completed[1]).toBe(1);
+    expect(cache.document!.completed).toEqual(flattenDocument(doc).completed);
+    // An emptied cell drops its mark from the composite.
+    run(doc, 1, { type: 'erase-cell', x: 0, y: 0 });
+    expect(cache.update(doc, new Uint32Array([0])).completed[0]).toBe(0);
+    expect(cache.touch(doc).completed).toBe(cache.document!.completed);
+  });
+
   it('shares the canvas fields with surfaces and the composite, and rebuilds when they change', () => {
     const doc = layered(2, 2);
     expect('canvasMask' in flattenDocument(doc)).toBe(false);
@@ -378,12 +419,17 @@ describe('layer structure commands', () => {
     const doc = layered();
     run(doc, 1, { type: 'set-full', x: 0, y: 0, color: 1 });
     run(doc, 2, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 });
+    stitch(doc, 1).completed[0] = 1;
+    specialty(doc, 2).backstitches.completed[0] = 1;
     const stitchCopy = applyLayerStructureCommand(doc, layerDuplicateCommand(1));
     const lineCopy = applyLayerStructureCommand(doc, layerDuplicateCommand(2));
     expect(doc.layers.map((layer) => [layer.id, layer.name])).toEqual([[1, 'Stitches'], [3, 'Stitches copy'], [2, 'Specialty'], [4, 'Specialty copy']]);
     expect(stitch(doc, stitchCopy.layerId!).kind).not.toBe(stitch(doc, 1).kind);
     expect(stitch(doc, 3).kind[0]).toBe(CellKind.Full);
+    expect(stitch(doc, 3).completed[0]).toBe(1);
+    expect(specialty(doc, lineCopy.layerId!).backstitches.completed[0]).toBe(1);
     expect(Array.from(specialty(doc, lineCopy.layerId!).backstitches.ids)).toEqual([2]);
+    expect(stitch(doc, 3).completed).not.toBe(stitch(doc, 1).completed);
     expect(doc.nextBackstitchId).toBe(3);
     applyLayerStructureCommand(doc, layerRenameCommand(1, 'y'.repeat(60)));
     applyLayerStructureCommand(doc, layerDeleteCommand(3));
@@ -404,6 +450,9 @@ describe('layer structure commands', () => {
     applyLayerStructureCommand(doc, layerAddCommand(LayerType.Stitch, { name: 'Top' }));
     run(doc, 1, { type: 'set-full', x: 0, y: 0, color: 1 }, { type: 'set-full', x: 1, y: 0, color: 1 });
     run(doc, 3, { type: 'set-full', x: 0, y: 0, color: 2 }, { type: 'set-full', x: 2, y: 0, color: 2 });
+    // Marks follow the winning cell: the lower mark on cell 0 is covered, the upper one on cell 2 wins.
+    stitch(doc, 1).completed.set([1, 1]);
+    stitch(doc, 3).completed[2] = 1;
     const oldTarget = findLayer(doc, 1);
     const prior = [...doc.layers];
     // Merge the higher layer down into the lower one: the higher content still wins.
@@ -412,6 +461,7 @@ describe('layer structure commands', () => {
     expect(doc.layers.map((layer) => [layer.id, layer.name])).toEqual([[1, 'Stitches'], [2, 'Specialty']]);
     const target = stitch(doc, 1);
     expect([target.colors[0], target.colors[4], target.colors[8]]).toEqual([2, 1, 2]);
+    expect(Array.from(target.completed.subarray(0, 3))).toEqual([0, 1, 1]);
     // The original target is untouched, so undo restores it.
     expect(oldTarget).not.toBe(target);
     expect((oldTarget as StitchLayer).colors[0]).toBe(1);
@@ -429,10 +479,13 @@ describe('layer structure commands', () => {
     applyLayerStructureCommand(doc, layerAddCommand(LayerType.Specialty));
     run(doc, 2, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 }, { type: 'add-backstitch', start: { x: 0, y: 4 }, end: { x: 4, y: 4 }, color: 1 });
     run(doc, 3, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 3 });
+    specialty(doc, 2).backstitches.completed[1] = 1;
+    specialty(doc, 3).backstitches.completed[0] = 1;
     applyLayerStructureCommand(doc, layerMergeCommand(3, 2));
     const store = specialty(doc, 2).backstitches;
     expect(Array.from(store.ids)).toEqual([2, 3]);
     expect(Array.from(store.colors)).toEqual([1, 3]);
+    expect(Array.from(store.completed)).toEqual([1, 1]);
     assertValidLayeredDocument(doc);
   });
 

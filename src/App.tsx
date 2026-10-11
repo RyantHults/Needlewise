@@ -2,7 +2,8 @@ import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { useProjectWorkspace } from './application/react';
 import { createPwaUpdateAdapter, type PwaUpdateAdapter, type PwaUpdateState } from './pwa';
 import { EditorSurface } from './components/editor/EditorSurface';
-import { Phase3Panel } from './components/Phase3Panel';
+import type { PatternView } from './components/editor/ViewSwitch';
+import { TrackSurface } from './components/track/TrackSurface';
 import { CreateModal } from './components/CreateModal';
 import { ProjectGallery } from './components/ProjectGallery';
 import { HomePage } from './components/HomePage';
@@ -12,7 +13,10 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate, usePa
 import type { ProjectFolder, ProjectMetadata } from './persistence';
 import { isPostHogConfigured, posthog, posthogLogger } from './posthog';
 
-const projectPath = (id: string) => `/patterns/${encodeURIComponent(id)}/edit`;
+const projectPath = (id: string, view: PatternView = 'edit') => `/patterns/${encodeURIComponent(id)}/${view}`;
+/** The pattern page a path names: `/patterns/:projectId/edit` or `/track`. */
+const patternView = (pathname: string): PatternView | null =>
+  pathname.endsWith('/edit') ? 'edit' : pathname.endsWith('/track') ? 'track' : null;
 interface UndoableMove { kind: 'project' | 'folder'; id: string; name: string; from: string | null; to: string | null }
 function WorkspaceApp() {
   const navigate = useNavigate();
@@ -28,18 +32,12 @@ function WorkspaceApp() {
     folders,
     folderAssignments,
     error,
-    saveState,
     createProject,
     createProjectFromConversion,
     openProject,
     deleteProject,
     importProjectAsCopy,
-    exportProject,
     flush,
-    metrics,
-    sessionStats,
-    activity,
-    execute,
     createFolder,
     renameFolder,
     deleteFolder,
@@ -61,7 +59,6 @@ function WorkspaceApp() {
   const [pwaState, setPwaState] = useState<PwaUpdateState>({ supported: false, registered: false, updateAvailable: false, offlineReady: false, error: null });
   const [updating, setUpdating] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
-  const [materialsOpen, setMaterialsOpen] = useState(false);
   const [createMode, setCreateMode] = useState<'blank' | 'image'>('blank');
   const [createTitle, setCreateTitle] = useState('Untitled sampler');
   const [createWidth, setCreateWidth] = useState('100');
@@ -80,8 +77,10 @@ function WorkspaceApp() {
   const undoMoveTimer = useRef<number | null>(null);
   const clearUndoMoveTimer = () => { if (undoMoveTimer.current !== null) { window.clearTimeout(undoMoveTimer.current); undoMoveTimer.current = null; } };
   const attemptedRoute = useRef<string | null>(null);
-  const isEditor = location.pathname.endsWith('/edit');
-  const routeIdentity = isEditor ? location.pathname : null;
+  const view = patternView(location.pathname);
+  const isProjectPage = view !== null;
+  // The project, not the page: switching between Edit and Track keeps the open project.
+  const routeIdentity = isProjectPage ? location.pathname.slice(0, location.pathname.lastIndexOf('/')) : null;
   const [resolvedRoute, setResolvedRoute] = useState<string | null>(null);
   const createTriggerRef = useRef<HTMLButtonElement>(null);
   const appMounted = useRef(true);
@@ -92,7 +91,7 @@ function WorkspaceApp() {
   }, []);
   useEffect(() => installModalScrollLock(), []);
 
-  const active = isEditor && state.metadata && state.document ? { metadata: state.metadata, document: state.document } : null;
+  const active = isProjectPage && state.metadata && state.document ? { metadata: state.metadata, document: state.document } : null;
   const capture = (event: string, properties?: Record<string, string | number | boolean>) => {
     if (isPostHogConfigured) posthog.capture(event, properties);
   };
@@ -112,7 +111,7 @@ function WorkspaceApp() {
     attemptedRoute.current = null;
   }, [resolvedRoute, routeIdentity]);
   useEffect(() => {
-    if (!isEditor || resolvedRoute !== routeIdentity || !initialized || state.projectId === decodedRouteId || busy || attemptedRoute.current === routeIdentity) return;
+    if (!isProjectPage || resolvedRoute !== routeIdentity || !initialized || state.projectId === decodedRouteId || busy || attemptedRoute.current === routeIdentity) return;
     attemptedRoute.current = routeIdentity;
     if (typeof decodedRouteId !== 'string' || decodedRouteId.length === 0 || decodedRouteId.trim() !== decodedRouteId || decodedRouteId.includes('/')) {
       setRouteIssue('This project link is malformed. Return to your patterns.');
@@ -122,16 +121,7 @@ function WorkspaceApp() {
     void openProject(decodedRouteId).catch(() => {
       if (attemptedRoute.current === routeIdentity) setRouteIssue('That local project could not be opened.');
     });
-  }, [busy, decodedRouteId, initialized, isEditor, openProject, projects, resolvedRoute, routeIdentity, state.projectId]);
-  const saveMessage = !active
-    ? ''
-    : saveState.status === 'saved'
-      ? 'Saved locally'
-      : saveState.status === 'pending' || saveState.status === 'saving'
-        ? 'Saving locally…'
-        : saveState.status === 'error'
-          ? 'Local save needs attention'
-          : 'Local project loaded';
+  }, [busy, decodedRouteId, initialized, isProjectPage, openProject, projects, resolvedRoute, routeIdentity, state.projectId]);
 
   function handleCreate(trigger: HTMLButtonElement) {
     createTriggerRef.current = trigger;
@@ -311,43 +301,20 @@ function WorkspaceApp() {
     });
   }
 
-  async function handleExport() {
-    setMessage('');
-    try {
-      const bytes = await exportProject();
-      const blob = new Blob([bytes as unknown as BlobPart], { type: 'application/octet-stream' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${(active?.metadata.title || 'needlewise-project').replace(/[^a-z0-9-_]+/gi, '-').toLowerCase()}.needlewise`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 0);
-      const width = active?.document.width ?? 0;
-      const height = active?.document.height ?? 0;
-      capture('pattern_exported', { width, height });
-      posthogLogger.info('local archive exported', { width, height });
-      setMessage('Local archive exported.');
-    } catch {
-      // The adapter error is rendered below.
-    }
-  }
-
   const actionDisabled = !initialized || busy || updating;
-  const routePending = isEditor && (resolvedRoute !== routeIdentity || (!routeIssue && state.projectId !== decodedRouteId));
-  const routeError = isEditor && Boolean(routeIssue);
+  const routePending = isProjectPage && (resolvedRoute !== routeIdentity || (!routeIssue && state.projectId !== decodedRouteId));
+  const routeError = isProjectPage && Boolean(routeIssue);
   return (
     <>
     <div data-application data-testid="application">
-    <div className={`app-shell${isEditor ? ' app-shell-editor' : ''}`}>
-      {!isEditor && <header className="topbar">
+    <div className={`app-shell${isProjectPage ? ' app-shell-editor' : ''}`}>
+      {!isProjectPage && <header className="topbar">
         <a className="brand" href="/" aria-label="Needlewise home">
           <span className="brand-mark" aria-hidden="true">✣</span><span>Needlewise</span>
         </a>
       </header>}
 
-      <main id="workspace" data-page={isEditor ? 'editor' : 'patterns'}>
+      <main id="workspace" data-page={view === 'track' ? 'track' : isProjectPage ? 'editor' : 'patterns'}>
         {!initialized || routePending || routeError ? (
           <section className={`loading-panel${routeError ? ' not-found-panel' : ''}`} aria-busy={routeError ? undefined : 'true'} aria-labelledby="loading-title">
             <span className="loading-mark" aria-hidden="true">✣</span>
@@ -357,7 +324,7 @@ function WorkspaceApp() {
           </section>
         ) : (
           <>
-            {!isEditor && <ProjectGallery
+            {!isProjectPage && <ProjectGallery
               projects={projects}
               disabled={actionDisabled}
               onOpen={(project) => navigate(projectPath(project.id))}
@@ -378,14 +345,14 @@ function WorkspaceApp() {
               onMoveProject={handleMoveProject}
               onMoveFolder={handleMoveFolder}
             />}
-            {active && workspace && state.document && !state.usingRecovery && <EditorSurface key={state.projectId} workspace={workspace} document={state.document} onExport={() => void handleExport()} exportDisabled={actionDisabled} saveMessage={saveMessage} saveStatus={saveState.status} onOpenMaterials={() => setMaterialsOpen(true)} />}
-            {isEditor && active && workspace && state.document && !state.usingRecovery && <Phase3Panel document={state.document} workspace={workspace} metrics={metrics} sessionStats={sessionStats} activity={activity} execute={execute} open={materialsOpen} onClose={() => { setMaterialsOpen(false); window.setTimeout(() => document.querySelector<HTMLButtonElement>('.info-button')?.focus(), 0); }} />}
+            {view === 'edit' && active && workspace && state.document && !state.usingRecovery && <EditorSurface key={state.projectId} workspace={workspace} document={state.document} onNavigate={(next) => navigate(projectPath(active.metadata.id, next))} onRenameTitle={(title) => void handleRenameProject(active.metadata, title)} />}
+            {view === 'track' && active && workspace && state.document && !state.usingRecovery && <TrackSurface key={state.projectId} workspace={workspace} document={state.document} title={active.metadata.title} metrics={state.metrics ?? null} onNavigate={(next) => navigate(projectPath(active.metadata.id, next))} onRenameTitle={(title) => void handleRenameProject(active.metadata, title)} />}
           </>
         )}
         {!routeError && <input ref={inputRef} className="visually-hidden" type="file" accept=".needlewise,application/octet-stream" aria-label="Choose a Needlewise project archive" disabled={actionDisabled} onChange={(event) => { const file = event.target.files?.[0]; if (file) void handleImport(file); }} />}
         {!routeError && <div className="feedback" aria-live="polite" role={error && !active ? 'alert' : undefined}>{error ? error.message : message}</div>}
       </main>
-      {!isEditor && !routeError && undoMove && <div className="undo-toast" role="status"><span className="undo-toast-text">Moved “{undoMove.name}” to {folderName(undoMove.to)}</span><button className="undo-toast-action" type="button" onClick={handleUndoMove}>Undo</button></div>}
+      {!isProjectPage && !routeError && undoMove && <div className="undo-toast" role="status"><span className="undo-toast-text">Moved “{undoMove.name}” to {folderName(undoMove.to)}</span><button className="undo-toast-action" type="button" onClick={handleUndoMove}>Undo</button></div>}
       {pwaState.updateAvailable && !routeError && <div className="update-notice" role="status"><strong>A Needlewise update is ready.</strong><span>Your current document will be saved before the update is applied.</span><button className="button button-primary" type="button" disabled={updating} onClick={() => void handleUpdate()}>{updating ? 'Updating…' : 'Update now'}</button></div>}
       <footer className="footer-note"><span aria-hidden="true">⌁</span> Local archives are your backup path <span className="footer-divider" aria-hidden="true">·</span> Keep a copy somewhere safe</footer>
     </div>
@@ -411,6 +378,7 @@ export default function App() {
         <Route path="/" element={<HomePage />} />
         <Route path="/patterns" element={<WorkspaceApp />} />
         <Route path="/patterns/:projectId/edit" element={<WorkspaceApp />} />
+        <Route path="/patterns/:projectId/track" element={<WorkspaceApp />} />
         {SymbolPickerPage && (
           <Route
             path="/__symbols"

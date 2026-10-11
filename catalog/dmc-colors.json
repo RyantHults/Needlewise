@@ -4557,9 +4557,9 @@
       ]
     },
     {
-      "sourceId": "dmc-WHITE",
-      "code": "White",
-      "name": "White",
+      "sourceId": "dmc-BLANC",
+      "code": "Blanc",
+      "name": "Blanc",
       "hex": "#FCFBF8",
       "rgb": [
         252,

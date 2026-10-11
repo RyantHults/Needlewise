@@ -58,8 +58,9 @@ describe('derived pattern metrics', () => {
         material: {
           paletteId: 7,
           stitchUnits: 1.75 + Math.SQRT2,
-          strandLength: (1.75 + Math.SQRT2) * 2,
-          estimatedLength: (1.75 + Math.SQRT2) * 2.2,
+          // Cross units take the cross strands; backstitch cells take backstitchStrands (1).
+          strandLength: 1.75 * 2 + Math.SQRT2,
+          estimatedLength: (1.75 * 2 + Math.SQRT2) * 1.1,
           materialUnit: 'skeins'
         }
       },
@@ -77,8 +78,8 @@ describe('derived pattern metrics', () => {
         material: {
           paletteId: 2,
           stitchUnits: 1.25,
-          strandLength: 2.5,
-          estimatedLength: 2.75,
+          strandLength: 0.25 * 2 + 1,
+          estimatedLength: 1.5 * 1.1,
           materialUnit: 'skeins'
         }
       }
@@ -207,13 +208,13 @@ describe('derived pattern metrics', () => {
 
     const metrics = computePatternMetrics(pattern, { aidaCount: 14 });
     const material = metrics.palettes[0].material;
-    const expectedBaseMeters = ((0.8 + 0.4) * 2 + 1.5 / 14) / 39.37007874015748;
+    const expectedBaseMeters = ((0.8 + 0.4) * 2 + 0.8 * 0.5) / 39.37007874015748;
     expect(metrics.finishedSize).toEqual({ widthInches: 1, heightInches: 0.5, widthCm: 2.54, heightCm: 1.27 });
-    expect(metrics.materialSettings).toMatchObject({ strands: 2, waste: 0 });
+    expect(metrics.materialSettings).toMatchObject({ strands: 2, backstitchStrands: 1, waste: 0 });
     expect(material.estimatedMeters).toBeCloseTo(expectedBaseMeters);
     expect(material.estimatedSkeins).toBeCloseTo(expectedBaseMeters / DEFAULT_SKEIN_LENGTH_METERS);
     expect(material.requiredSkeins).toBe(1);
-    expect(material.assumptions).toMatchObject({ model: 'aida', aidaCount: 14, strands: 2, waste: 0, singleStrandFullCrossInchesAt14: 0.8, backstitchUndersideMultiplier: 1.5 });
+    expect(material.assumptions).toMatchObject({ model: 'aida', aidaCount: 14, strands: 2, backstitchStrands: 1, waste: 0, singleStrandFullCrossInchesAt14: 0.8 });
     expect(material.estimateRange?.meters).toEqual({ min: expectedBaseMeters, max: expectedBaseMeters });
     expect(material.estimateRange?.skeins?.min).toBeCloseTo(expectedBaseMeters / DEFAULT_SKEIN_LENGTH_METERS);
     expect(material.estimateRange?.skeins?.max).toBeCloseTo(expectedBaseMeters / DEFAULT_SKEIN_LENGTH_METERS);
@@ -265,5 +266,67 @@ describe('derived pattern metrics', () => {
     const first = computePatternMetrics(pattern, { aidaCount: 14, strands: canonical.strands, waste: canonical.waste });
     const second = computePatternMetrics(pattern, { aidaCount: 14, ...canonical });
     expect(second.palettes[0].material.estimatedMeters).toBe(first.palettes[0].material.estimatedMeters);
+  });
+
+  describe('backstitch thread length', () => {
+    const INCHES_PER_METER = 39.37007874015748;
+    // Backstitch endpoints are quarter-cell values; the helper takes whole cells.
+    const backstitchMeters = (
+      segments: ReadonlyArray<readonly [number, number, number, number]>,
+      options: Parameters<typeof computePatternMetrics>[1]
+    ) => {
+      let pattern = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 10, height: 10, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+      for (const [x1, y1, x2, y2] of segments) {
+        pattern = applyCommand(pattern, { type: 'add-backstitch', start: { x: x1 * 4, y: y1 * 4 }, end: { x: x2 * 4, y: y2 * 4 }, color: 1 }).document;
+      }
+      return computePatternMetrics(pattern, options).palettes[0].material.estimatedMeters ?? Number.NaN;
+    };
+
+    it('charges half a cross per cell of line at one strand', () => {
+      // 14-count, one strand: a full cross is 0.8 in, a 1-cell backstitch 0.4 in.
+      expect(backstitchMeters([[0, 0, 1, 0]], { aidaCount: 14 })).toBeCloseTo(0.01016);
+      expect(backstitchMeters([[0, 0, 1, 0]], { aidaCount: 14 })).toBeCloseTo(0.4 / INCHES_PER_METER);
+    });
+
+    it('uses the segment geometry for diagonal and multi-segment paths', () => {
+      expect(backstitchMeters([[0, 0, 1, 1]], { aidaCount: 14 })).toBeCloseTo(Math.SQRT2 * 0.4 / INCHES_PER_METER);
+      expect(backstitchMeters([[0, 0, 3, 0], [3, 0, 3, 4], [3, 4, 0, 0]], { aidaCount: 14 })).toBeCloseTo((3 + 4 + 5) * 0.4 / INCHES_PER_METER);
+    });
+
+    it('scales with the fabric count', () => {
+      expect(backstitchMeters([[0, 0, 1, 0]], { aidaCount: 18 })).toBeCloseTo(0.4 * (14 / 18) / INCHES_PER_METER);
+    });
+
+    it('scales with backstitchStrands and ignores the cross-stitch strands', () => {
+      const one = backstitchMeters([[0, 0, 2, 0]], { aidaCount: 14, backstitchStrands: 1 });
+      expect(backstitchMeters([[0, 0, 2, 0]], { aidaCount: 14, backstitchStrands: 2 })).toBeCloseTo(one * 2);
+      expect(backstitchMeters([[0, 0, 2, 0]], { aidaCount: 14, backstitchStrands: 1, strands: 6 })).toBeCloseTo(one);
+    });
+
+    it('applies the same half-cross factor to a calibrated stitch length', () => {
+      expect(backstitchMeters([[0, 0, 4, 0]], { stitchLengthMeters: 0.1 })).toBeCloseTo(4 * 0.5 * 0.1);
+      expect(backstitchMeters([[0, 0, 4, 0]], { stitchLengthMeters: 0.1, backstitchStrands: 2 })).toBeCloseTo(4 * 0.5 * 2 * 0.1);
+    });
+
+    it('reads a missing backstitchStrands as 1 and accepts the alias', () => {
+      expect(normalizeMaterialAssumptions({}).backstitchStrands).toBe(1);
+      expect(normalizeMaterialAssumptions({ aidaCount: 14 } as never).backstitchStrands).toBe(1);
+      expect(normalizeMaterialAssumptions({ backstitchStrandCount: 3 } as never).backstitchStrands).toBe(3);
+      const settings = normalizeMaterialAssumptions({ backstitchStrands: 2 });
+      expect(normalizeMaterialAssumptions(settings)).toEqual(settings);
+    });
+
+    it('reports backstitchStrands in the assumptions', () => {
+      let pattern = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+      pattern = applyCommand(pattern, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 1, y: 0 }, color: 1 }).document;
+      const assumptions = computePatternMetrics(pattern, { aidaCount: 14, backstitchStrands: 2 }).palettes[0].material.assumptions;
+      expect(assumptions).toMatchObject({ model: 'aida', backstitchStrands: 2 });
+    });
+
+    it.each([0, -1, 1.5, Number.NaN])('rejects invalid backstitchStrands %s', (value) => {
+      expect(() => normalizeMaterialAssumptions({ backstitchStrands: value })).toThrowError(
+        expect.objectContaining({ code: 'invalid-material-settings' })
+      );
+    });
   });
 });

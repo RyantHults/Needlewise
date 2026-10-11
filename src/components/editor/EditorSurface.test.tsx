@@ -21,13 +21,15 @@ const COMPACT_DMC_DEFINITION: CatalogDefinition = {
 };
 
 const f = vi.hoisted(() => ({
-  c: { start: vi.fn(), setMetrics: vi.fn(), setDocument: vi.fn(), dispose: vi.fn(), setBrush: vi.fn(), setTool: vi.fn(), setEraserMode: vi.fn(), clearSelection: vi.fn(), setBackstitchMode: vi.fn(), selectPalette: vi.fn(), selectCreatedPalette: vi.fn(), setChartMode: vi.fn(), setGridVisible: vi.fn(), setBrushSize: vi.fn(), setToolBrushSize: vi.fn(), setTouchMovementOnly: vi.fn(), copySelection: vi.fn(), pasteSelection: vi.fn(), moveSelection: vi.fn(), deleteSelection: vi.fn(), handleKeyDown: vi.fn(() => false), getTraceImage: vi.fn(() => undefined), setTraceImage: vi.fn(), setTraceImageSettings: vi.fn(), clearTraceImage: vi.fn() },
+  c: { start: vi.fn(), setMetrics: vi.fn(), setDocument: vi.fn(), dispose: vi.fn(), setBrush: vi.fn(), setTool: vi.fn(), clearSelection: vi.fn(), setBackstitchMode: vi.fn(), selectPalette: vi.fn(), selectCreatedPalette: vi.fn(), setChartMode: vi.fn(), setThreadView: vi.fn(), setGridVisible: vi.fn(), setBrushSize: vi.fn(), setToolBrushSize: vi.fn(), setTouchMovementOnly: vi.fn(), copySelection: vi.fn(), pasteSelection: vi.fn(), moveSelection: vi.fn(), deleteSelection: vi.fn(), handleKeyDown: vi.fn(() => false), getTraceImage: vi.fn(() => undefined), setTraceImage: vi.fn(), setTraceImageSettings: vi.fn(), clearTraceImage: vi.fn() },
   adapter: vi.fn(() => ({ dispose: vi.fn() })),
   r: { dispose: vi.fn() }, resize: undefined as (() => void) | undefined,
   uiState: { mode: 'color', gridVisible: true, overlay: {}, tool: { tool: 'paint' }, paletteId: 1, pickPulse: null, canPaste: false, toolBrushSizes: { full: 1, half: 1, 'three-quarter': 1, eraser: 1 } }, createdUiState: null as unknown,
   uiListener: null as ((state: unknown) => void) | null,
   capturedCallback: null as ((bounds: { x: number; y: number; width: number; height: number }) => void) | null
 }));
+vi.mock('../export/ExportPanel', () => ({ ExportDialog: ({ onClose }: { onClose: () => void }) => <div role="dialog" aria-label="Export pattern"><button type="button" onClick={onClose}>Close export</button></div> }));
+vi.mock('../export/export-pdf', () => ({ createExportPdf: vi.fn(() => vi.fn()) }));
 vi.mock('../../rendering/context', () => ({ createCanvasTarget: vi.fn(() => ({ context: {} })) }));
 vi.mock('../../rendering/renderer', () => ({ createCanvasRenderer: vi.fn(() => f.r) }));
 vi.mock('../../rendering/trace', async () => {
@@ -94,10 +96,38 @@ const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/
 const toolOptions = () => document.querySelector<HTMLElement>('.canvas-actions section.tool-options')!;
 /** Pushes a new active tool through the mocked UI store, as the controller would. */
 const switchTool = (tool: unknown) => act(() => { f.uiState.tool = tool as never; f.uiListener?.({ ...f.uiState }); });
-beforeEach(() => { vi.clearAllMocks(); (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockReset(); (ws as { getStateSnapshot: ReturnType<typeof vi.fn> }).getStateSnapshot.mockReset(); (ws as { catalogFor: ReturnType<typeof vi.fn> }).catalogFor.mockReturnValue(COMPACT_DMC_DEFINITION); (ws as { availableCatalogs: ReturnType<typeof vi.fn> }).availableCatalogs.mockReturnValue([COMPACT_DMC_DEFINITION]); (ws as { catalogById: ReturnType<typeof vi.fn> }).catalogById.mockImplementation((id: string) => id === COMPACT_DMC_DEFINITION.association.catalogId ? COMPACT_DMC_DEFINITION : undefined); localStorage.clear(); f.createdUiState = null; f.uiListener = null; f.uiState.canPaste = false; (f.uiState as { pickPulse: unknown }).pickPulse = null; f.uiState.overlay = {}; f.uiState.tool = { tool: 'paint' }; f.uiState.gridVisible = true; (ws as { sourceImage: unknown }).sourceImage = undefined; vi.stubGlobal('ResizeObserver', vi.fn(function (cb: () => void) { f.resize = cb; return { observe: vi.fn(), disconnect: vi.fn() }; })); });
+beforeEach(() => { vi.clearAllMocks(); (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockReset(); (ws as { getStateSnapshot: ReturnType<typeof vi.fn> }).getStateSnapshot.mockReset(); (ws as { catalogFor: ReturnType<typeof vi.fn> }).catalogFor.mockReturnValue(COMPACT_DMC_DEFINITION); (ws as { availableCatalogs: ReturnType<typeof vi.fn> }).availableCatalogs.mockReturnValue([COMPACT_DMC_DEFINITION]); (ws as { catalogById: ReturnType<typeof vi.fn> }).catalogById.mockImplementation((id: string) => id === COMPACT_DMC_DEFINITION.association.catalogId ? COMPACT_DMC_DEFINITION : undefined); localStorage.clear(); f.createdUiState = null; f.uiListener = null; f.uiState.canPaste = false; (f.uiState as { pickPulse: unknown }).pickPulse = null; f.uiState.overlay = {}; f.uiState.tool = { tool: 'paint' }; f.uiState.gridVisible = true; f.uiState.mode = 'color'; (f.uiState as { threadView?: boolean }).threadView = false; (ws as { sourceImage: unknown }).sourceImage = undefined; vi.stubGlobal('ResizeObserver', vi.fn(function (cb: () => void) { f.resize = cb; return { observe: vi.fn(), disconnect: vi.fn() }; })); });
 afterEach(() => { vi.useRealTimers(); localStorage.clear(); });
 
 describe('EditorSurface', () => {
+  it('navigates to Track from the header switch', () => {
+    const onNavigate = vi.fn();
+    render(<EditorSurface workspace={ws} document={doc} onNavigate={onNavigate} />);
+    const nav = screen.getByRole('navigation', { name: 'Pattern view' });
+
+    expect(within(nav).getByRole('button', { name: 'Edit' })).toHaveAttribute('aria-current', 'page');
+    fireEvent.click(within(nav).getByRole('button', { name: 'Edit' }));
+    expect(onNavigate).not.toHaveBeenCalled();
+    fireEvent.click(within(nav).getByRole('button', { name: 'Track' }));
+    expect(onNavigate).toHaveBeenCalledWith('track');
+  });
+
+  it('renames the pattern from the header title', () => {
+    const onRenameTitle = vi.fn();
+    const name = (ws as { metadata?: { title?: string } }).metadata?.title ?? 'Untitled pattern';
+    render(<EditorSurface workspace={ws} document={doc} onRenameTitle={onRenameTitle} />);
+
+    fireEvent.click(screen.getByRole('button', { name: `Rename ${name}` }));
+    fireEvent.change(screen.getByRole('textbox', { name: `Rename pattern ${name}` }), { target: { value: '  Renamed  ' } });
+    fireEvent.keyDown(screen.getByRole('textbox', { name: `Rename pattern ${name}` }), { key: 'Enter' });
+    expect(onRenameTitle).toHaveBeenCalledWith('Renamed');
+
+    fireEvent.click(screen.getByRole('button', { name: `Rename ${name}` }));
+    fireEvent.change(screen.getByRole('textbox', { name: `Rename pattern ${name}` }), { target: { value: 'Other' } });
+    fireEvent.keyDown(screen.getByRole('textbox', { name: `Rename pattern ${name}` }), { key: 'Escape' });
+    expect(onRenameTitle).toHaveBeenCalledTimes(1);
+  });
+
   it('portals palette details outside the workspace and offers separate swap and delete actions', () => {
     render(<EditorSurface workspace={ws} document={paletteDetailsDoc} />);
     const swatch = document.querySelector<HTMLButtonElement>('.palette-button')!;
@@ -611,7 +641,6 @@ describe('EditorSurface', () => {
     const view = render(<EditorSurface workspace={ws} document={doc} />);
     const halfOption = () => within(within(toolOptions()).getByRole('group', { name: 'Stitch type' })).getByRole('button', { name: 'Half stitch' });
     const half = halfOption();
-    expect(half.querySelector('.stitch-brush-icon-half')).not.toHaveClass('stitch-brush-icon-half-backslash');
     const group = within(toolOptions()).getByRole('group', { name: 'Half stitch direction' });
     const slash = within(group).getByRole('button', { name: 'Bottom-left to top-right' });
     const backslash = within(group).getByRole('button', { name: 'Top-left to bottom-right' });
@@ -620,19 +649,18 @@ describe('EditorSurface', () => {
     const size = within(toolOptions()).getByRole('slider', { name: 'Half stitch brush size' });
     expect(group.compareDocumentPosition(size) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(slash).toHaveTextContent(''); expect(backslash).toHaveTextContent('');
-    expect(slash.querySelector('.stitch-brush-icon-half')).not.toHaveClass('stitch-brush-icon-half-backslash');
-    expect(backslash.querySelector('.stitch-brush-icon-half')).toHaveClass('stitch-brush-icon-half-backslash');
-    expect(slash.querySelector('.stitch-brush-icon-half')).toHaveAttribute('aria-hidden', 'true');
+    expect(backslash.querySelector('.stitch-direction-icon')).toHaveClass('stitch-direction-icon-backslash');
+    expect(slash.querySelector('.stitch-direction-icon')).not.toHaveClass('stitch-direction-icon-backslash');
+    expect(slash.querySelector('.stitch-direction-icon')).toHaveAttribute('aria-hidden', 'true');
+    // The slideout sits in the same row as, and tinted together with, the active stitch button.
+    expect(group.closest('.stitch-slideout')).toContainElement(half);
     expect(slash).toHaveAttribute('aria-pressed', 'true'); expect(backslash).toHaveAttribute('aria-pressed', 'false');
     fireEvent.click(backslash);
     expect(f.c.setBrush).toHaveBeenLastCalledWith({ kind: 'half', direction: '\\', paletteId: 1 });
     expect(backslash).toHaveAttribute('aria-pressed', 'true'); expect(slash).toHaveAttribute('aria-pressed', 'false');
-    expect(half.querySelector('.stitch-brush-icon-half')).toHaveClass('stitch-brush-icon-half-backslash');
     expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null').halfStitchDirection).toBe('\\');
     fireEvent.click(slash);
-    expect(half.querySelector('.stitch-brush-icon-half')).not.toHaveClass('stitch-brush-icon-half-backslash');
     fireEvent.click(backslash);
-    expect(half.querySelector('.stitch-brush-icon-half')).toHaveClass('stitch-brush-icon-half-backslash');
     f.c.setBrush.mockClear();
     fireEvent.click(screen.getByRole('button', { name: 'Stitch' }));
     expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'half', direction: '\\', paletteId: 1 });
@@ -647,6 +675,15 @@ describe('EditorSurface', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(within(within(toolOptions()).getByRole('group', { name: 'Stitch type' })).getByRole('button', { name: 'Half stitch' }));
     expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'half', direction: '/', paletteId: 1 });
+  });
+  it('renders 3/4 stitch as a plain stitch-type button with no direction slideout', () => {
+    f.uiState.tool = { tool: 'paint', brush: { kind: 'three-quarter', paletteId: 1 } } as never;
+    render(<EditorSurface workspace={ws} document={doc} />);
+    expect(within(toolOptions()).queryByRole('group', { name: 'Half stitch direction' })).not.toBeInTheDocument();
+    expect(within(toolOptions()).queryByRole('group', { name: 'Three-quarter stitch direction' })).not.toBeInTheDocument();
+    f.c.setBrush.mockClear();
+    fireEvent.click(within(within(toolOptions()).getByRole('group', { name: 'Stitch type' })).getByRole('button', { name: '3/4 stitch' }));
+    expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'three-quarter', paletteId: 1 });
   });
   it.each([
     ['Full stitch brush size', { tool: 'paint', brush: { kind: 'full', paletteId: 1 } }, 'full'],
@@ -925,7 +962,7 @@ describe('EditorSurface', () => {
     expect(stitch).toHaveAttribute('aria-pressed', 'true');
     expect(stitch.querySelector('img[data-icon="stitch"]')).toBeInTheDocument();
     const group = within(toolOptions()).getByRole('group', { name: 'Stitch type' });
-    const items = within(group).getAllByRole('button');
+    const items = within(group).getAllByRole('button').filter((item) => !item.classList.contains('stitch-slideout-option'));
     expect(items.map((item) => item.getAttribute('aria-label'))).toEqual(['Full stitch', 'Half stitch', '3/4 stitch']);
     for (const item of items) { expect(item).toHaveClass('tool-option-button'); expect(item.getAttribute('title')).toBe(item.getAttribute('aria-label')); }
     expect(items.map((item) => item.getAttribute('aria-pressed'))).toEqual(['full', 'half', 'three-quarter'].map((k) => String(k === kind)));
@@ -992,17 +1029,40 @@ describe('EditorSurface', () => {
     expect(paletteRegion).toHaveClass('palette-rail');
     expect(rail.querySelector('nav.editor-rail')).toBeInTheDocument();
   });
-  it('keeps the condensed export and save indicators semantic', () => {
-    render(<EditorSurface workspace={ws} document={doc} onExport={vi.fn()} exportDisabled saveMessage="Local save needs attention" saveStatus="error" />);
-    const download = screen.getByRole('button', { name: 'Download Pattern' });
-    expect(download).toBeDisabled();
-    expect(download).toHaveAttribute('title', 'Download Pattern');
-    expect(download.querySelector('[data-icon="download"]')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Needlewise home' }).compareDocumentPosition(download) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    const saveStatus = screen.getByRole('status', { name: 'Local save needs attention' });
-    expect(saveStatus).toHaveAttribute('title', 'Local save needs attention');
-    expect(saveStatus.querySelector('.save-dot')).toHaveClass('save-dot-error');
-    expect(screen.queryByText('Local save needs attention')).not.toBeInTheDocument();
+  it('keeps the condensed export button semantic', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const exportButton = screen.getByRole('button', { name: 'Export pattern' });
+    expect(exportButton).toHaveAttribute('title', 'Export pattern');
+    expect(exportButton.querySelector('[data-icon="download"]')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Download Pattern' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Needlewise home' }).compareDocumentPosition(exportButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+  it('sets thread view from the Render button and shows only it pressed while on', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const view = screen.getByRole('group', { name: 'View settings' });
+    fireEvent.click(within(view).getByRole('button', { name: 'Render' }));
+    expect(f.c.setThreadView).toHaveBeenCalledWith(true);
+    expect(f.c.setChartMode).not.toHaveBeenCalled();
+    expect(within(view).getByRole('button', { name: 'Render' })).toHaveAttribute('aria-pressed', 'false');
+    act(() => { (f.uiState as { threadView?: boolean }).threadView = true; f.uiListener?.({ ...f.uiState }); });
+    expect(within(view).getByRole('button', { name: 'Render' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(view).getByRole('button', { name: 'Color' })).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(within(view).getByRole('button', { name: 'Symbol' }));
+    expect(f.c.setChartMode).toHaveBeenCalledWith('symbol');
+  });
+  it('renders the canvas actions above the canvas frame', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const actions = document.querySelector('.canvas-actions')!;
+    const frame = document.querySelector('.canvas-frame')!;
+    expect(actions.compareDocumentPosition(frame) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+  it('opens the export dialog from the header and returns focus on close', async () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const trigger = screen.getByRole('button', { name: 'Export pattern' });
+    trigger.focus();
+    fireEvent.click(trigger);
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Export pattern' })).getByRole('button', { name: 'Close export' }));
+    expect(screen.queryByRole('dialog', { name: 'Export pattern' })).not.toBeInTheDocument();
   });
   it('places Tool options in the canvas action row between the reference controls and View settings', () => {
     f.uiState.tool = { tool: 'paint', brush: { kind: 'full', paletteId: 1 } } as never;
@@ -1205,7 +1265,8 @@ describe('EditorSurface', () => {
     fireEvent.click(editor);
     const panel = within(dialog).getByRole('tabpanel');
     expect(panel).toHaveAttribute('aria-labelledby', editor.id);
-    expect(within(panel).getByRole('checkbox', { name: 'Show palette symbols' })).toBeInTheDocument();
+    expect(within(panel).queryByRole('checkbox', { name: 'Show palette symbols' })).toBeNull();
+    expect(within(panel).getByRole('checkbox', { name: 'Show palette numbers' })).toBeInTheDocument();
     fireEvent.click(project);
     expect(within(dialog).getByLabelText('Title')).toHaveValue('Draft title');
     expect(within(dialog).queryByLabelText(/Background color|Stitch count|Aida count/)).not.toBeInTheDocument();
@@ -1235,7 +1296,6 @@ describe('EditorSurface', () => {
     let settings = screen.getByRole('dialog', { name: 'Settings' });
     fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' }));
     expect(within(settings).getByRole('button', { name: 'Right' })).toHaveAttribute('aria-pressed', 'true');
-    expect(within(settings).getByRole('checkbox', { name: 'Show palette symbols' })).not.toBeChecked();
     expect(within(settings).getByRole('checkbox', { name: 'Show palette numbers' })).not.toBeChecked();
     view.unmount();
 
@@ -1246,7 +1306,6 @@ describe('EditorSurface', () => {
     settings = screen.getByRole('dialog', { name: 'Settings' });
     fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' }));
     expect(within(settings).getByRole('button', { name: 'Right' })).toHaveAttribute('aria-pressed', 'true');
-    expect(within(settings).getByRole('checkbox', { name: 'Show palette symbols' })).not.toBeChecked();
     expect(within(settings).getByRole('checkbox', { name: 'Show palette numbers' })).not.toBeChecked();
   });
   it('writes the complete global editor preferences envelope immediately', async () => {
@@ -1254,8 +1313,8 @@ describe('EditorSurface', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
     fireEvent.click(screen.getByRole('tab', { name: 'Editor' }));
     fireEvent.click(screen.getByRole('button', { name: 'Right' }));
-    fireEvent.click(within(screen.getByRole('dialog', { name: 'Settings' })).getByRole('checkbox', { name: 'Show palette symbols' }));
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'right', paletteDisplay: { symbols: false, numbers: true }, pencilModeEnabled: false, halfStitchDirection: '/' }));
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Settings' })).getByRole('checkbox', { name: 'Show palette numbers' }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'right', paletteDisplay: { numbers: false }, pencilModeEnabled: false, halfStitchDirection: '/' }));
   });
   it('falls back to default editor preferences for malformed global storage', () => {
     localStorage.setItem('needlewise-editor-preferences:v1', '{not-json');
@@ -1265,7 +1324,6 @@ describe('EditorSurface', () => {
     const settings = screen.getByRole('dialog', { name: 'Settings' });
     fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' }));
     expect(within(settings).getByRole('button', { name: 'Left' })).toHaveAttribute('aria-pressed', 'true');
-    expect(within(settings).getByRole('checkbox', { name: 'Show palette symbols' })).toBeChecked();
     expect(within(settings).getByRole('checkbox', { name: 'Show palette numbers' })).toBeChecked();
   });
   it('falls back to default editor preferences for invalid global fields', () => {
@@ -1276,7 +1334,6 @@ describe('EditorSurface', () => {
     const settings = screen.getByRole('dialog', { name: 'Settings' });
     fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' }));
     expect(within(settings).getByRole('button', { name: 'Left' })).toHaveAttribute('aria-pressed', 'true');
-    expect(within(settings).getByRole('checkbox', { name: 'Show palette symbols' })).toBeChecked();
     expect(within(settings).getByRole('checkbox', { name: 'Show palette numbers' })).toBeChecked();
   });
   it('migrates legacy palette display preferences into the global envelope', async () => {
@@ -1286,9 +1343,8 @@ describe('EditorSurface', () => {
     const settings = screen.getByRole('dialog', { name: 'Settings' });
     fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' }));
     expect(within(settings).getByRole('button', { name: 'Left' })).toHaveAttribute('aria-pressed', 'true');
-    expect(within(settings).getByRole('checkbox', { name: 'Show palette symbols' })).not.toBeChecked();
     expect(within(settings).getByRole('checkbox', { name: 'Show palette numbers' })).toBeChecked();
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'left', paletteDisplay: { symbols: false, numbers: true }, pencilModeEnabled: false, halfStitchDirection: '/' }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'left', paletteDisplay: { numbers: true }, pencilModeEnabled: false, halfStitchDirection: '/' }));
   });
   it('defaults pencil mode off and updates the controller', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
@@ -1310,7 +1366,7 @@ describe('EditorSurface', () => {
     fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' }));
     expect(within(settings).getByRole('checkbox', { name: 'Enable pencil mode' })).toBeChecked();
     expect(f.c.setTouchMovementOnly).toHaveBeenCalledWith(true);
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'left', paletteDisplay: { symbols: true, numbers: true }, pencilModeEnabled: true, halfStitchDirection: '/' }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'left', paletteDisplay: { numbers: true }, pencilModeEnabled: true, halfStitchDirection: '/' }));
   });
   it('provides an accessible pencil mode tooltip trigger', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
@@ -1323,21 +1379,31 @@ describe('EditorSurface', () => {
     expect(tooltip).toHaveTextContent(/Normal touch can only move or zoom/);
     expect(info).toHaveAttribute('type', 'button');
   });
-  it('independently toggles the palette symbol and number settings', () => {
+  it('toggles the palette number setting without a palette symbol setting', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
     const settings = screen.getByRole('dialog', { name: 'Settings' });
     fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' }));
-    const symbols = within(settings).getByRole('checkbox', { name: 'Show palette symbols' });
+    expect(within(settings).queryByRole('checkbox', { name: 'Show palette symbols' })).toBeNull();
     const numbers = within(settings).getByRole('checkbox', { name: 'Show palette numbers' });
-    expect(symbols).toBeChecked();
-    expect(numbers).toBeChecked();
-    fireEvent.click(symbols);
-    expect(symbols).not.toBeChecked();
     expect(numbers).toBeChecked();
     fireEvent.click(numbers);
-    expect(symbols).not.toBeChecked();
     expect(numbers).not.toBeChecked();
+  });
+  it('shows palette swatch symbols only in symbol and combined view modes', () => {
+    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: SYMBOL_IDS[0], catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
+    const swatch = () => screen.getByRole('button', { name: '321Ruby' }).querySelector('.palette-swatch-symbol');
+    render(<EditorSurface workspace={ws} document={symDoc} />);
+    expect(swatch()).toBeNull();
+    for (const [mode, shown] of [['symbol', true], ['grayscale', false], ['combined', true], ['color', false]] as const) {
+      act(() => { f.uiState.mode = mode as never; f.uiListener?.({ ...f.uiState }); });
+      expect(swatch() !== null, mode).toBe(shown);
+    }
+  });
+  it('keeps loading stored preferences that still carry the retired symbols flag', () => {
+    localStorage.setItem('needlewise-editor-preferences:v1', JSON.stringify({ version: 1, railSide: 'right', paletteDisplay: { symbols: false, numbers: false } }));
+    render(<EditorSurface workspace={ws} document={doc} />);
+    expect(document.querySelector('.editor-layout')).toHaveClass('rail-right');
   });
   it('defaults project details to metric units and saves a switch through metadata', () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); expect(screen.getByRole('button', { name: 'Metric' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: 'Imperial' })).toHaveAttribute('aria-pressed', 'false'); fireEvent.click(screen.getByRole('button', { name: 'Imperial' })); expect(screen.getByRole('button', { name: 'Imperial' })).toHaveAttribute('aria-pressed', 'true'); fireEvent.click(screen.getByRole('button', { name: 'Save settings' })); expect((ws as { updateActiveMetadata: ReturnType<typeof vi.fn> }).updateActiveMetadata).toHaveBeenCalledWith({ title: 'Sampler', notes: '', units: 'imperial' }); });
   it('reflects a stored imperial preference when project details opens', () => { const base = ws as unknown as { metadata: Record<string, unknown> }; const imperialWs = { ...base, metadata: { ...base.metadata, units: 'imperial' } } as never; render(<EditorSurface workspace={imperialWs} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); expect(screen.getByRole('button', { name: 'Imperial' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: 'Metric' })).toHaveAttribute('aria-pressed', 'false'); });
@@ -1776,6 +1842,7 @@ describe('EditorSurface', () => {
   it('draws the palette symbols from the shared sprite instead of printing the pool slug', () => {
     const assigned = SYMBOL_IDS[0];
     const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: assigned, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
+    f.uiState.mode = 'symbol';
     render(<EditorSurface workspace={ws} document={symDoc} />);
     const row = screen.getByRole('button', { name: '321Ruby' });
     const swatchSymbol = row.querySelector('.palette-swatch-symbol');
@@ -1789,6 +1856,7 @@ describe('EditorSurface', () => {
   it('inks palette swatch symbols black or white by swatch color like the chart', () => {
     const entry = (id: number, name: string, color: string) => ({ id, name, color, active: true, symbol: SYMBOL_IDS[0], catalog: { code: String(id), name, hex: color, rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } });
     const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [entry(1, 'Straw', '#f0e68c'), entry(2, 'Night', '#1a1a40')], backstitches: { ids: new Uint32Array() } } as never;
+    f.uiState.mode = 'symbol';
     render(<EditorSurface workspace={ws} document={symDoc} />);
     const ink = (label: string) => (screen.getByRole('button', { name: label }).querySelector('.palette-swatch-symbol') as HTMLElement).style.color;
     expect(ink('1Straw')).toBe('rgb(36, 36, 36)');
@@ -1998,7 +2066,7 @@ describe('EditorSurface layers', () => {
   it('always confirms before deleting a layer', () => {
     const session = useSession(layerSession(layeredDocument()));
     render(<EditorSurface workspace={ws} document={doc} />);
-    expect(screen.getByRole('heading', { name: 'Stitch layer · Stitches' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Stitch layer' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Delete layer' }));
     let dialog = screen.getByRole('dialog', { name: 'Delete Stitches?' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
@@ -2304,7 +2372,6 @@ describe('EditorSurface on the Canvas layer', () => {
     fireEvent.change(within(toolOptions()).getByRole('slider', { name: 'Canvas eraser size' }), { target: { value: '3' } });
     expect(f.c.setToolBrushSize).toHaveBeenCalledWith('eraser', 3);
     fireEvent.click(eraser);
-    expect(f.c.setEraserMode).not.toHaveBeenCalled();
     expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'eraser' });
     for (const name of ['Select', 'Pan']) expect(screen.getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
     expect(screen.queryByRole('group', { name: 'Resize canvas' })).not.toBeInTheDocument();

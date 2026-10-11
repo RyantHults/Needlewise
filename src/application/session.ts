@@ -30,7 +30,9 @@ import {
   type LayeredDocument,
   type PatternDocument,
   type PatternFragment,
-  type Point
+  type Point,
+  type ProgressCommand,
+  type ProgressEntry
 } from '../domain';
 import { cloneLayeredDocument, PersistenceError } from '../persistence';
 import {
@@ -113,6 +115,9 @@ interface SaveAttempt {
 }
 
 export const MAX_AUTOSAVE_DIRTY_AGE_MS = 5_000;
+
+/** Track keeps this many mark steps to undo. */
+export const MAX_PROGRESS_HISTORY_STEPS = 200;
 
 export interface TraceImageHistoryOptions {
   label?: string;
@@ -353,6 +358,8 @@ export class ProjectSession {
   private traceRedoStack: TraceHistoryEntry[] = [];
   private historyKindsUndo: Array<'document' | 'trace'> = [];
   private historyKindsRedo: Array<'document' | 'trace'> = [];
+  private progressUndoStack: ProgressEntry[] = [];
+  private progressRedoStack: ProgressEntry[] = [];
   private activeLayerIdState: ActiveLayerId;
   private layerSummaries: readonly LayerSummary[] = [];
   private activeLayerInfo: ActiveLayerInfo | null = null;
@@ -626,6 +633,14 @@ export class ProjectSession {
 
   get canRedo(): boolean {
     return this.historyKindsRedo.length > 0;
+  }
+
+  get canUndoProgress(): boolean {
+    return this.progressUndoStack.length > 0;
+  }
+
+  get canRedoProgress(): boolean {
+    return this.progressRedoStack.length > 0;
   }
 
   getAsset(assetId: string): ProjectAsset | undefined {
@@ -1070,6 +1085,63 @@ export class ProjectSession {
   }
 
   /**
+   * Marks stitches done or not done on the visible composite. Marks bypass
+   * document history: each one is a step on Track's own in-memory stack,
+   * which `clearProgressHistory` empties when Track closes.
+   */
+  markProgress(command: ProgressCommand): SessionCommandResult {
+    this.ensureWritable();
+    const applied = this.editor.applyProgress(command);
+    if (applied === null || !applied.result.changed) return applied?.result ?? this.unchangedResult();
+    this.progressUndoStack.push(applied.entry);
+    if (this.progressUndoStack.length > MAX_PROGRESS_HISTORY_STEPS) this.progressUndoStack.shift();
+    this.progressRedoStack = [];
+    this.applyProgressChange(applied.result);
+    return applied.result;
+  }
+
+  undoProgress(): CommandResult {
+    this.ensureWritable();
+    const entry = this.progressUndoStack.pop();
+    if (entry === undefined) return this.unchangedResult();
+    this.progressRedoStack.push(entry);
+    const result = this.editor.applyProgressEntry(entry, false);
+    this.applyProgressChange(result);
+    return result;
+  }
+
+  redoProgress(): CommandResult {
+    this.ensureWritable();
+    const entry = this.progressRedoStack.pop();
+    if (entry === undefined) return this.unchangedResult();
+    this.progressUndoStack.push(entry);
+    const result = this.editor.applyProgressEntry(entry, true);
+    this.applyProgressChange(result);
+    return result;
+  }
+
+  clearProgressHistory(): void {
+    if (this.progressUndoStack.length === 0 && this.progressRedoStack.length === 0) return;
+    this.progressUndoStack = [];
+    this.progressRedoStack = [];
+    this.notify();
+  }
+
+  /** A step whose layers are all gone changes nothing but still moves between the stacks. */
+  private applyProgressChange(result: CommandResult): void {
+    if (!result.changed) {
+      this.notify();
+      return;
+    }
+    this.applyDocumentChange(result);
+    if (result.progress !== undefined) {
+      this.sessionMarked += result.progress.marked;
+      this.sessionUnmarked += result.progress.unmarked;
+    }
+    this.scheduleSave();
+  }
+
+  /**
    * Title, notes and display units are project metadata. A non-null
    * `aidaCount` is the Canvas stitch count and becomes an undoable document
    * settings change; `null` is ignored because the count is always set.
@@ -1104,6 +1176,7 @@ export class ProjectSession {
     this.ensureWritable();
     const next = updateMaterialSettings(this.materialAssumptionsState, changes);
     if (next.strands === this.materialAssumptionsState.strands
+      && next.backstitchStrands === this.materialAssumptionsState.backstitchStrands
       && next.waste === this.materialAssumptionsState.waste
       && next.stitchLengthMeters === this.materialAssumptionsState.stitchLengthMeters
       && next.skeinLengthMeters === this.materialAssumptionsState.skeinLengthMeters) return;

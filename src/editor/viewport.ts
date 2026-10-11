@@ -1,4 +1,5 @@
 import {
+  CHART_EDGE_MARGIN,
   DEFAULT_LOD_THRESHOLDS,
   RenderLod,
   type CanvasMetrics,
@@ -47,7 +48,7 @@ export function createViewport(
   metrics: Pick<CanvasMetrics, 'cssWidth' | 'cssHeight'>,
   options: ViewportOptions = {}
 ): Viewport {
-  return fitViewport(documentSize, metrics, 0, options);
+  return fitViewport(documentSize, metrics, CHART_EDGE_MARGIN, options);
 }
 
 export function fitToViewport(

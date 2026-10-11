@@ -52,6 +52,8 @@ export const DEFAULT_EDITOR_UI_STATE: EditorUiState = {
   toolBrushSizes: DEFAULT_TOOL_BRUSH_SIZES,
   mode: ChartPresentationMode.Color,
   gridVisible: true,
+  threadView: false,
+  highlightColor: null,
   overlay: {},
   tool: { tool: 'pan' },
   paletteId: 1,
@@ -72,6 +74,8 @@ function sameState(left: EditorUiState, right: EditorUiState): boolean {
     && left.toolBrushSizes === right.toolBrushSizes
     && left.mode === right.mode
     && left.gridVisible === right.gridVisible
+    && left.threadView === right.threadView
+    && left.highlightColor === right.highlightColor
     && left.overlay === right.overlay
     && left.tool === right.tool
     && left.paletteId === right.paletteId
@@ -171,6 +175,10 @@ export function createUiStore(initial: Partial<EditorUiState> = {}): EditorUiSto
 
     setGridVisible(visible: boolean): void {
       store.setState({ gridVisible: visible });
+    },
+
+    setThreadView(on: boolean): void {
+      store.setState({ threadView: on });
     },
 
     setOverlay(overlay: OverlayState): void {

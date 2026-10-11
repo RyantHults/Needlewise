@@ -163,6 +163,9 @@ export interface LodThresholds {
   readonly compactMaxZoom: number;
 }
 
+/** CSS pixels kept clear around the chart at fit, so the edge stitch numbers have room. */
+export const CHART_EDGE_MARGIN = 24;
+
 export const DEFAULT_LOD_THRESHOLDS: LodThresholds = {
   overviewMaxZoom: 4,
   compactMaxZoom: 12
@@ -389,10 +392,16 @@ export interface RendererStyle extends RendererTheme {
   readonly midGridInterval: number;
   readonly showGrid: boolean;
   readonly showSymbols: boolean;
+  /** Whether completion marks and dimming are drawn. The Preview renders with this off. */
+  readonly showCompletion: boolean;
+  /** Draw stitches as rendered thread instead of flat fills; ignored below a few pixels per cell. */
+  readonly threadView: boolean;
   readonly completedOpacity: number;
   readonly completedMarkWidth: number;
   readonly overlayLineWidth: number;
   readonly pendingCellOpacity: number;
+  /** Palette id whose stitches stay at full strength; every other color is dimmed. Null dims nothing. */
+  readonly highlightColor: number | null;
 }
 
 export const DEFAULT_RENDERER_STYLE: RendererStyle = {
@@ -424,10 +433,13 @@ export const DEFAULT_RENDERER_STYLE: RendererStyle = {
   midGridInterval: 5,
   showGrid: true,
   showSymbols: true,
+  showCompletion: true,
+  threadView: false,
   completedOpacity: 0.62,
   completedMarkWidth: 1,
   overlayLineWidth: 2,
-  pendingCellOpacity: 0.34
+  pendingCellOpacity: 0.34,
+  highlightColor: null
 };
 
 /** A deliberately small Canvas 2D surface used by the renderer. */
@@ -551,6 +563,10 @@ export interface EditorUiState {
   readonly mode: ChartPresentationMode;
   /** Session-scoped chart-grid visibility; a view preference, never persisted or undoable. */
   readonly gridVisible: boolean;
+  /** Session-scoped thread-preview view; a view preference, never persisted or undoable. */
+  readonly threadView: boolean;
+  /** Session-scoped palette id highlighted on the Track page; a view preference, never persisted or undoable. */
+  readonly highlightColor: number | null;
   readonly overlay: OverlayState;
   readonly tool: EditorToolState;
   readonly paletteId: number | null;
@@ -683,11 +699,8 @@ export interface PanToolState {
   readonly tool: 'pan';
 }
 
-export type EraserMode = 'whole-cell' | 'component';
-
 export interface EraserToolState {
   readonly tool: 'eraser';
-  readonly mode?: EraserMode;
   readonly corner?: 0 | 1 | 2 | 3;
 }
 
@@ -720,6 +733,11 @@ export interface BackstitchToolState {
   readonly mode?: BackstitchMode;
 }
 
+/** Read-only completion marking on the Track page; never edits the chart. */
+export interface MarkToolState {
+  readonly tool: 'mark';
+}
+
 export interface EyedropperToolState {
   readonly tool: 'eyedropper';
 }
@@ -744,7 +762,7 @@ export interface ResizeImageToolState {
   readonly tool: 'resize-image';
 }
 
-export type EditorToolState = PaintToolState | PanToolState | EraserToolState | SelectToolState | LassoToolState | FillToolState | BackstitchToolState | EyedropperToolState | ShapeToolState | CanvasBrushToolState | MoveImageToolState | ResizeImageToolState;
+export type EditorToolState = PaintToolState | PanToolState | EraserToolState | SelectToolState | LassoToolState | FillToolState | BackstitchToolState | EyedropperToolState | ShapeToolState | CanvasBrushToolState | MoveImageToolState | ResizeImageToolState | MarkToolState;
 export type ToolState = EditorToolState;
 export type ActiveStitchBrush = StitchBrush;
 
@@ -777,7 +795,7 @@ export const CANVAS_CROP_OFF_HINT = 'Turn on Crop to edit the canvas.';
 
 /** Tools that change the selected layer; Pan, Eyedropper and the reference-image tools never do. */
 function isEditingTool(tool: EditorToolKind | EditorToolState['tool']): boolean {
-  return tool !== 'pan' && tool !== 'eyedropper' && tool !== 'move-image' && tool !== 'resize-image';
+  return tool !== 'pan' && tool !== 'mark' && tool !== 'eyedropper' && tool !== 'move-image' && tool !== 'resize-image';
 }
 
 /**
@@ -843,6 +861,7 @@ export interface EditorUiStore {
   setToolBrushSize(tool: BrushSizeTool, size: number): void;
   setMode(mode: ChartPresentationMode): void;
   setGridVisible(visible: boolean): void;
+  setThreadView(on: boolean): void;
   setOverlay(overlay: OverlayState): void;
   setTool(tool: EditorToolState): void;
   setBrush(brush: StitchBrush): void;

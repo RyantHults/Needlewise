@@ -32,8 +32,8 @@ import {
   type SessionHistoryEnvelope
 } from '../persistence';
 import { consumePreparedDocumentCapability } from '../persistence/preparation-client';
-import { createStarterDocument, ProjectWorkspace } from './index';
-import { ProjectSession } from './session';
+import { createStarterDocument, paletteProgress, ProjectWorkspace } from './index';
+import { MAX_PROGRESS_HISTORY_STEPS, ProjectSession } from './session';
 import type { WorkspaceRepository } from './types';
 import { acceptConversionDraft, type AcceptedConversionDraft } from '../conversion/image-to-pattern';
 import { decodeTraceImage } from '../rendering/trace';
@@ -889,12 +889,12 @@ describe('headless project workspace', () => {
       session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
       const designRevision = session.document.revision;
       expect(session.document.settings.aidaCount).toBe(14);
-      expect(session.materialSettings).toEqual({ strands: 2, waste: 0 });
+      expect(session.materialSettings).toEqual({ strands: 2, backstitchStrands: 1, waste: 0 });
       expect(session.metrics.palettes[0].material.estimatedMeters).toBeCloseTo(0.04064);
 
-      await workspace.updateActiveMaterialSettings({ strands: 2, waste: 0.1, stitchLengthMeters: 0.1, skeinLengthMeters: 8 });
+      await workspace.updateActiveMaterialSettings({ strands: 2, backstitchStrands: 2, waste: 0.1, stitchLengthMeters: 0.1, skeinLengthMeters: 8 });
       await workspace.flush();
-      expect(workspace.materialSettings).toEqual({ strands: 2, waste: 0.1, stitchLengthMeters: 0.1, skeinLengthMeters: 8 });
+      expect(workspace.materialSettings).toEqual({ strands: 2, backstitchStrands: 2, waste: 0.1, stitchLengthMeters: 0.1, skeinLengthMeters: 8 });
       expect(workspace.document?.revision).toBe(designRevision);
       expect(workspace.metrics?.palettes[0].material.requiredSkeins).toBe(1);
 
@@ -902,11 +902,30 @@ describe('headless project workspace', () => {
       await workspace.flush();
       expect(workspace.materialSettings?.stitchLengthMeters).toBeUndefined();
       expect(workspace.metrics?.palettes[0].material.estimatedMeters).toBeCloseTo(0.04064);
-      expect((await repository.load('material-settings'))?.metadata.materialSettings).toEqual({ strands: 2, waste: 0.1, skeinLengthMeters: 8 });
+      expect((await repository.load('material-settings'))?.metadata.materialSettings).toEqual({ strands: 2, backstitchStrands: 2, waste: 0.1, skeinLengthMeters: 8 });
 
       await workspace.openProject('material-settings');
-      expect(workspace.materialSettings).toEqual({ strands: 2, waste: 0.1, skeinLengthMeters: 8 });
+      expect(workspace.materialSettings).toEqual({ strands: 2, backstitchStrands: 2, waste: 0.1, skeinLengthMeters: 8 });
       expect(workspace.metrics?.palettes[0].material.requiredSkeins).toBe(1);
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
+  it('persists backstitchStrands without bumping the document revision and rejects invalid values', async () => {
+    const repository = new MemoryRepository();
+    const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'backstitch-strands' });
+    try {
+      await workspace.createProject({ width: 1, height: 1 });
+      const revision = workspace.document?.revision;
+      expect(workspace.materialSettings?.backstitchStrands).toBe(1);
+      await workspace.updateActiveMaterialSettings({ backstitchStrands: 2 });
+      await workspace.flush();
+      expect(workspace.materialSettings?.backstitchStrands).toBe(2);
+      expect(workspace.document?.revision).toBe(revision);
+      expect((await repository.load('backstitch-strands'))?.metadata.materialSettings?.backstitchStrands).toBe(2);
+      await expect(workspace.updateActiveMaterialSettings({ backstitchStrands: 0 })).rejects.toMatchObject({ code: 'invalid-material-settings' });
+      expect(workspace.materialSettings?.backstitchStrands).toBe(2);
     } finally {
       await workspace.dispose();
     }
@@ -917,7 +936,7 @@ describe('headless project workspace', () => {
     const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'material-copy' });
     try {
       await workspace.createProject({ id: 'material-source', width: 1, height: 1 });
-      const settings = { strands: 3, waste: 0.18, stitchLengthMeters: 0.125, skeinLengthMeters: 8.4 };
+      const settings = { strands: 3, backstitchStrands: 2, waste: 0.18, stitchLengthMeters: 0.125, skeinLengthMeters: 8.4 };
       await workspace.updateActiveMaterialSettings(settings);
       await workspace.flush();
 
@@ -1407,6 +1426,146 @@ describe('headless project workspace', () => {
       expect(workspace.activeProjectId).toBe('known');
       expect(repository.records.has('known')).toBe(true);
       await expect(workspace.deleteProject('missing')).resolves.toBeUndefined();
+    } finally {
+      await workspace.dispose();
+    }
+  });
+});
+
+describe('Track progress marks', () => {
+  const twoColors = (): PatternDocument => createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }, { id: 2, name: 'Blue', color: '#36c' }] });
+  const markCell = (index: number, operation: 'toggle' | 'set' | 'clear' = 'toggle') => ({ cells: { indices: Uint32Array.of(index), masks: Uint8Array.of(1) }, operation });
+
+  async function paintedWorkspace(id: string, repository: WorkspaceRepository = new MemoryRepository()) {
+    const workspace = new ProjectWorkspace({ repository, debounceMs: 30, clock: { now: () => 100 }, projectIdFactory: () => id });
+    const session = await workspace.createProject({ width: 4, height: 4, document: twoColors() });
+    session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    session.execute({ type: 'set-full', x: 1, y: 0, color: 1 });
+    session.execute({ type: 'set-full', x: 2, y: 0, color: 2 });
+    return { workspace, session };
+  }
+
+  it('marks, undoes and redoes on its own stack without touching document history', async () => {
+    const { workspace, session } = await paintedWorkspace('marks');
+    try {
+      const documentDepth = session.historyUndoDepth;
+      const marked = session.markProgress(markCell(0));
+      expect(marked.changed).toBe(true);
+      expect(session.document.completed[0] & 1).toBe(1);
+      expect(session.canUndoProgress).toBe(true);
+      expect(session.canRedoProgress).toBe(false);
+      expect(session.historyUndoDepth).toBe(documentDepth);
+
+      expect(session.undoProgress().changed).toBe(true);
+      expect(session.document.completed[0] & 1).toBe(0);
+      expect(session.canUndoProgress).toBe(false);
+      expect(session.canRedoProgress).toBe(true);
+
+      expect(session.redoProgress().changed).toBe(true);
+      expect(session.document.completed[0] & 1).toBe(1);
+      expect(session.canRedoProgress).toBe(false);
+
+      session.undoProgress();
+      session.markProgress(markCell(1));
+      expect(session.canRedoProgress).toBe(false);
+      expect(session.undoProgress().changed).toBe(true);
+      expect(session.undoProgress().changed).toBe(false);
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
+  it('clears the mark history and reports it through the workspace snapshot', async () => {
+    const { workspace, session } = await paintedWorkspace('clear-marks');
+    try {
+      session.markProgress(markCell(0));
+      session.markProgress(markCell(1));
+      session.undoProgress();
+      expect(workspace.getStateSnapshot()).toMatchObject({ canUndoProgress: true, canRedoProgress: true });
+      const listener = vi.fn();
+      const unsubscribe = workspace.subscribe(listener);
+      workspace.clearProgressHistory();
+      unsubscribe();
+      expect(listener).toHaveBeenCalled();
+      expect(session.canUndoProgress).toBe(false);
+      expect(session.canRedoProgress).toBe(false);
+      expect(workspace.getStateSnapshot()).toMatchObject({ canUndoProgress: false, canRedoProgress: false });
+      expect(session.document.completed[0] & 1).toBe(1);
+      expect(session.undoProgress().changed).toBe(false);
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
+  it('caps the mark history at its step limit', async () => {
+    const { workspace, session } = await paintedWorkspace('capped-marks');
+    try {
+      for (let step = 0; step < MAX_PROGRESS_HISTORY_STEPS + 1; step += 1) session.markProgress(markCell(0));
+      let undone = 0;
+      while (session.canUndoProgress) {
+        session.undoProgress();
+        undone += 1;
+      }
+      expect(undone).toBe(MAX_PROGRESS_HISTORY_STEPS);
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
+  it('never reverts a mark through document undo', async () => {
+    const { workspace, session } = await paintedWorkspace('document-undo');
+    try {
+      session.markProgress(markCell(0));
+      expect(session.undo().changed).toBe(true);
+      expect(session.document.kind[2]).toBe(0);
+      expect(session.document.completed[0] & 1).toBe(1);
+      expect(session.canUndoProgress).toBe(true);
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
+  it('autosaves a mark', async () => {
+    const repository = new MemoryRepository();
+    const { workspace, session } = await paintedWorkspace('saved-marks', repository);
+    try {
+      await workspace.flush();
+      const saves = repository.saveCalls.length;
+      session.markProgress(markCell(0));
+      expect(session.saveState.dirty).toBe(true);
+      await wait(40);
+      await workspace.flush();
+      expect(repository.saveCalls.length).toBeGreaterThan(saves);
+      const saved = await repository.load('saved-marks');
+      expect(saved === undefined ? 0 : flattenDocument(saved.document).completed[0] & 1).toBe(1);
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
+  it('updates per-color progress after a mark, backstitches included', async () => {
+    const { workspace, session } = await paintedWorkspace('color-progress');
+    try {
+      session.addLayer(LayerType.Specialty);
+      const added = session.execute({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 2, y: 0 }, color: 1 });
+      const backstitchId = added.backstitchId ?? -1;
+      expect(paletteProgress(session.metrics, 1)).toMatchObject({ completedComponents: 0, totalComponents: 3, percent: 0 });
+
+      session.markProgress(markCell(0));
+      expect(paletteProgress(session.metrics, 1)).toMatchObject({ completedComponents: 1, totalComponents: 3, remainingComponents: 2 });
+      expect(paletteProgress(session.metrics, 2)).toMatchObject({ completedComponents: 0, totalComponents: 1 });
+      const stateMetrics = workspace.getStateSnapshot().metrics;
+      expect(stateMetrics?.byPalette.get(1)).toMatchObject({ completedComponents: 1, totalComponents: 3 });
+      expect(stateMetrics?.progress).toMatchObject({ completedComponents: 1, totalComponents: 4, percent: 25 });
+
+      session.markProgress({ backstitchIds: Uint32Array.of(backstitchId), operation: 'set' });
+      expect(paletteProgress(session.metrics, 1).fraction).toBeCloseTo(2 / 3);
+      expect(paletteProgress(session.metrics, null)).toMatchObject({ completedComponents: 2, totalComponents: 4, percent: 50 });
+      expect(paletteProgress(session.metrics, 99)).toMatchObject({ completedComponents: 0, totalComponents: 0, percent: 0 });
+
+      session.undoProgress();
+      session.undoProgress();
+      expect(paletteProgress(session.metrics, null).completedComponents).toBe(0);
     } finally {
       await workspace.dispose();
     }

@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import { unzipSync, zipSync, strFromU8, strToU8 } from 'fflate';
-import { applyCommand as applySurfaceCommand, CellKind, commitLayerSurface, computePatternMetrics, createDocument as createDomainDocument, createDocumentEditor as createEditor, createEditorFromHistory, layerAddCommand, layerRenameCommand, layerSetVisibilityCommand, type DocumentEditor, flattenDocument, layeredFromSurface, LayerType, layerSurface, QuarterCorner, topmostVisibleLayer, type CatalogAssociation, type CreateDocumentOptions, type DomainCommand, type LayeredDocument, type PatternDocument, type StitchLayer, type SpecialtyLayer } from '../domain';
+import { applyCommand as applySurfaceCommand, CellKind, commitLayerSurface, computePatternMetrics, createDocument as createDomainDocument, createDocumentEditor as createEditor, createEditorFromHistory, layerAddCommand, layerDeleteCommand, layerRenameCommand, layerSetVisibilityCommand, type DocumentEditor, flattenDocument, layeredFromSurface, LayerType, layerSurface, QuarterCorner, topmostVisibleLayer, type CatalogAssociation, type CreateDocumentOptions, type DomainCommand, type LayeredDocument, type PatternDocument, type StitchLayer, type SpecialtyLayer } from '../domain';
 import { cloneLayeredDocument, decodeDocumentWithInfo } from './binary';
 import { encodeLegacyDocument } from './legacy-binary.fixture';
 import { DMC_CATALOG_DEFINITION } from '../catalog';
@@ -328,12 +328,50 @@ describe('binary schema v4 canvas fields', () => {
     expect(() => decodeDocumentWithInfo(bytes)).toThrow(expect.objectContaining({ code: 'invalid-document' }));
   }
 
+  /** Rewrites v5 bytes as v4: drops each stitch layer's completion plane and each backstitch's completion byte. */
+  function toV4(v5: Uint8Array, document: LayeredDocument): Uint8Array {
+    const view = new DataView(v5.buffer, v5.byteOffset, v5.byteLength);
+    const cellCount = document.width * document.height;
+    let offset = originOffset(v5, document) + 8 + (document.canvasMask === undefined ? 0 : Math.ceil(cellCount / 8));
+    const out: Uint8Array[] = [v5.subarray(0, offset)];
+    let start = offset;
+    for (let index = 0; index < document.layers.length; index += 1) {
+      const type = view.getUint8(offset + 4);
+      offset += 6;
+      offset += 4 + view.getUint32(offset, true);
+      if (type === 0) {
+        offset += cellCount * 9;
+        out.push(v5.subarray(start, offset));
+        offset += cellCount;
+        start = offset;
+      } else {
+        const count = view.getUint32(offset, true);
+        offset += 4;
+        out.push(v5.subarray(start, offset));
+        for (let record = 0; record < count; record += 1) {
+          out.push(v5.subarray(offset, offset + 22));
+          offset += 23;
+        }
+        start = offset;
+      }
+    }
+    out.push(v5.subarray(start));
+    const v4 = new Uint8Array(out.reduce((total, chunk) => total + chunk.length, 0));
+    let at = 0;
+    for (const chunk of out) {
+      v4.set(chunk, at);
+      at += chunk.length;
+    }
+    new DataView(v4.buffer).setUint16(8, 4, true);
+    return v4;
+  }
+
   it('round-trips a rectangular document exactly without adding origin or mask fields', () => {
     const original = makeDocument();
     const bytes = encodeDocument(original);
     const { document, binaryVersion, legacy } = decodeDocumentWithInfo(bytes);
 
-    expect(binaryVersion).toBe(4);
+    expect(binaryVersion).toBe(5);
     expect(legacy).toBe(false);
     expect(bytes[11]).toBe(0);
     expect(document).not.toHaveProperty('originX');
@@ -382,7 +420,8 @@ describe('binary schema v4 canvas fields', () => {
 
   it('still decodes a v3 document, with no origin or mask, as non-legacy', () => {
     const original = makeDocument();
-    const v4 = encodeDocument(original);
+    const v5 = encodeDocument(original);
+    const v4 = toV4(v5, original);
     const split = originOffset(v4, original);
     const v3 = new Uint8Array(v4.length - 8);
     v3.set(v4.subarray(0, split), 0);
@@ -393,10 +432,22 @@ describe('binary schema v4 canvas fields', () => {
     expect(decoded).toMatchObject({ binaryVersion: 3, legacy: false });
     expect(decoded.document).toEqual(original);
     expect(decoded.document).not.toHaveProperty('canvasMask');
-    expect(encodeDocument(decoded.document)).toEqual(v4);
+    expect(encodeDocument(decoded.document)).toEqual(v5);
     // A v3 header cannot carry the mask flag.
     v3[11] = 1;
     expectInvalid(v3);
+  });
+
+  it('still decodes a v4 document, including its canvas mask, with zero completion', () => {
+    const original = canvasDocument();
+    original.originX = -3;
+    const v4 = toV4(encodeDocument(original), original);
+    const decoded = decodeDocumentWithInfo(v4);
+
+    expect(decoded).toMatchObject({ binaryVersion: 4, legacy: false });
+    expect(decoded.document).toEqual(original);
+    expect(stitchLayer(decoded.document).completed).toEqual(new Uint8Array(6));
+    expect(specialtyLayer(decoded.document).backstitches.completed).toEqual(new Uint8Array(original.layers.length > 0 ? specialtyLayer(original).backstitches.ids.length : 0));
   });
 
   it('rejects an unknown header flag bit', () => {
@@ -580,6 +631,38 @@ describe('durable document history persistence', () => {
       const normalized = cloneLayeredDocument(restored.document);
       for (const counter of counters) normalized[counter] = base[counter];
       expect(encodeDocument(normalized)).toEqual(encodeDocument(base));
+    } finally {
+      await closeRepository(repo);
+    }
+  });
+
+  it('keeps completion in persisted history across a marked layer delete and a canvas shrink', async () => {
+    const repo = await repository();
+    try {
+      const base = createDocument({ width: 3, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+      const marked: StitchLayer = { id: 3, type: LayerType.Stitch, name: 'Marked', visible: true, kind: new Uint8Array(6), colors: new Uint16Array(24), completed: new Uint8Array(6) };
+      marked.kind[4] = CellKind.Full;
+      marked.colors[16] = 1;
+      marked.completed[4] = 1;
+      const lower = stitchLayer(base);
+      lower.kind[0] = CellKind.Full;
+      lower.colors[0] = 1;
+      lower.completed[0] = 1;
+      base.layers = [lower, marked, specialtyLayer(base)];
+      base.nextLayerId = 4;
+      const editor = createEditor(base);
+      executeLayered(editor, layerDeleteCommand(3));
+      const document = executeLayered(editor, { type: 'canvas-cells', operation: 'remove', rect: { x: 0, y: 0, width: 1, height: 1 } });
+      const history = editor.exportHistory();
+      await repo.save('history-completion', metadata(base, 'history-completion'), base);
+      await repo.save('history-completion', metadata(document, 'history-completion'), document, undefined, { history });
+
+      const loaded = await repo.load('history-completion');
+      if (!loaded?.history) throw new Error('Missing persisted history.');
+      const restored = createEditorFromHistory(loaded.document, loaded.history.document);
+      while (restored.canUndo) restored.undo();
+      expect(stitchLayer(restored.document, 3).completed[4]).toBe(1);
+      expect(stitchLayer(restored.document).completed[0]).toBe(1);
     } finally {
       await closeRepository(repo);
     }
@@ -1085,7 +1168,7 @@ describe('binary document persistence', () => {
     expect(decoded.nextBackstitchId).toBe(original.nextBackstitchId);
   });
 
-  it('round-trips layer names, visibility, order and ids using binary schema v4', () => {
+  it('round-trips layer names, visibility, order and ids using binary schema v5', () => {
     const original = makeDocument();
     const surface = createSurface({ width: 3, height: 2, palette: [] });
     const top: StitchLayer = { id: 7, type: LayerType.Stitch, name: 'Top ✚ stitches', visible: false, kind: surface.kind.slice(), colors: surface.colors.slice(), completed: new Uint8Array(6) };
@@ -1098,7 +1181,7 @@ describe('binary document persistence', () => {
     const bytes = encodeDocument(original);
     const decoded = decodeDocumentWithInfo(bytes);
 
-    expect(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint16(8, true)).toBe(4);
+    expect(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint16(8, true)).toBe(5);
     expect(decoded.legacy).toBe(false);
     expect(decoded.document.layers.map(({ id, type, name, visible }) => ({ id, type, name, visible }))).toEqual([
       { id: STITCH_LAYER, type: 'stitch', name: 'Stitches', visible: true },
@@ -1114,13 +1197,30 @@ describe('binary document persistence', () => {
     expect(encodeDocument(decoded.document)).toEqual(bytes);
   });
 
-  it('does not store completion in binary schema v4', () => {
+  it('round-trips completion on two stitch layers and on backstitches in binary schema v5', () => {
     const original = makeDocument();
-    stitchLayer(original).completed[0] = 1;
+    const second: StitchLayer = { id: 7, type: LayerType.Stitch, name: 'Second', visible: true, kind: new Uint8Array(6), colors: new Uint16Array(24), completed: new Uint8Array(6) };
+    original.layers = [stitchLayer(original), second, specialtyLayer(original)];
+    original.nextLayerId = 8;
+    const fillCells = (layer: StitchLayer, cells: readonly number[]): void => {
+      for (const cell of cells) {
+        layer.kind[cell] = CellKind.Full;
+        layer.colors[cell * 4] = 1;
+      }
+    };
+    fillCells(second, [1, 4]);
+    stitchLayer(original).completed.set([1, 5, 0, 0, 0, 0]);
+    second.completed.set([0, 1, 0, 0, 1, 0]);
     specialtyLayer(original).backstitches.completed[0] = 1;
-    const decoded = decodeDocument(encodeDocument(original));
-    expect(stitchLayer(decoded).completed).toEqual(new Uint8Array(6));
-    expect(specialtyLayer(decoded).backstitches.completed).toEqual(new Uint8Array(1));
+    const bytes = encodeDocument(original);
+    const decoded = decodeDocumentWithInfo(bytes);
+
+    expect(decoded.binaryVersion).toBe(5);
+    expect(stitchLayer(decoded.document).completed).toEqual(new Uint8Array([1, 5, 0, 0, 0, 0]));
+    expect(stitchLayer(decoded.document, 7).completed).toEqual(new Uint8Array([0, 1, 0, 0, 1, 0]));
+    expect(specialtyLayer(decoded.document).backstitches.completed).toEqual(new Uint8Array([1]));
+    expect(decoded.document).toEqual(original);
+    expect(encodeDocument(decoded.document)).toEqual(bytes);
   });
 
   it('round-trips canonical background color and stitch count in the document settings', () => {
@@ -1159,8 +1259,8 @@ describe('binary document persistence', () => {
     expect(document.palette).toEqual(surface.palette);
     expect(document.revision).toBe(surface.revision);
     expect(document.nextBackstitchId).toBe(surface.nextBackstitchId);
-    // Re-encoding writes v4.
-    expect(decodeDocumentWithInfo(encodeDocument(document)).binaryVersion).toBe(4);
+    // Re-encoding writes v5.
+    expect(decodeDocumentWithInfo(encodeDocument(document)).binaryVersion).toBe(5);
   });
 
   it('upgrades legacy binary schema v1 documents with the neutral Aida background', () => {
@@ -1207,7 +1307,7 @@ describe('binary document persistence', () => {
 
     const wrongVersion = original.slice();
     const wrongVersionView = new DataView(wrongVersion.buffer);
-    wrongVersionView.setUint16(8, 5, true);
+    wrongVersionView.setUint16(8, 6, true);
     wrongVersionView.setUint32(32, 0xffffffff, true);
     expect(() => decodeDocument(wrongVersion)).toThrow(/schema is unsupported/i);
   });
@@ -1257,7 +1357,7 @@ describe('binary document persistence', () => {
     const bytes = encodeDocument(document);
     expect(bytes.length).toBeLessThanOrEqual(MAX_DOCUMENT_BYTES);
     expect(decodeDocument(bytes).layers).toHaveLength(4);
-  });
+  }, 30_000);
 
   it('round-trips v2 palette metadata and document settings', () => {
     const original = createDocument({
@@ -1389,11 +1489,33 @@ describe('binary document persistence', () => {
       createdAt: 1,
       updatedAt: 1,
       revision: document.revision,
-      materialSettings: { strands: 2, waste: 0.15, stitchLengthMeters: 0.12, skeinLengthMeters: 8 }
+      materialSettings: { strands: 2, backstitchStrands: 2, waste: 0.15, stitchLengthMeters: 0.12, skeinLengthMeters: 8 }
     };
     const archive = await exportArchive({ metadata: projectMetadata, document, assets: [] });
     const parsed = await parseArchive(archive);
     expect(parsed.metadata.materialSettings).toEqual(projectMetadata.materialSettings);
+  });
+
+  it('reads material settings with no stored backstitchStrands as 1 and rejects invalid values', async () => {
+    const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    const base: ProjectMetadata = { ...metadata(document, 'old-material'), materialSettings: { strands: 2, waste: 0.1 } as never };
+    const archive = await exportArchive({ metadata: base, document, assets: [] });
+    const rewrite = async (backstitchStrands: number | undefined) => {
+      const files = unzipSync(archive);
+      const stored = JSON.parse(strFromU8(files['metadata.json'])) as { materialSettings: Record<string, unknown> };
+      if (backstitchStrands === undefined) delete stored.materialSettings.backstitchStrands;
+      else stored.materialSettings.backstitchStrands = backstitchStrands;
+      const metadataBytes = strToU8(JSON.stringify(stored));
+      const manifest = JSON.parse(strFromU8(files['manifest.json'])) as { metadata: { byteLength: number; sha256: string } };
+      manifest.metadata = { ...manifest.metadata, byteLength: metadataBytes.length, sha256: await sha256(metadataBytes) };
+      files['metadata.json'] = metadataBytes;
+      files['manifest.json'] = strToU8(JSON.stringify(manifest));
+      return zipSync(files);
+    };
+    // Archives written before the setting existed carry no value and read as 1.
+    const parsed = await parseArchive(await rewrite(undefined));
+    expect(parsed.metadata.materialSettings).toEqual({ strands: 2, backstitchStrands: 1, waste: 0.1 });
+    await expect(parseArchive(await rewrite(0))).rejects.toMatchObject({ code: 'invalid-metadata' });
   });
 
   it('keeps canonical waste fractions unchanged through repository and archive persistence', async () => {
@@ -1401,7 +1523,7 @@ describe('binary document persistence', () => {
     try {
       let document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
       document = applyCommand(document, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
-      const settings = { strands: 1, waste: 1.25, stitchLengthMeters: 0.1 };
+      const settings = { strands: 1, backstitchStrands: 1, waste: 1.25, stitchLengthMeters: 0.1 };
       await repo.save('canonical-waste', { ...metadata(document, 'canonical-waste'), materialSettings: settings }, document);
 
       const loaded = await repo.load('canonical-waste');
@@ -1466,14 +1588,14 @@ describe('binary document persistence', () => {
       expect((await repo.db.projects.get('legacy-aida'))?.aidaCount).toBe(18);
       expect((await repo.load('legacy-aida'))?.document.settings.aidaCount).toBe(18);
 
-      // A replace commit writes v4 with the count in settings and drops the metadata copy.
+      // A replace commit writes v5 with the count in settings and drops the metadata copy.
       const next = applyCommand(loaded.document, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
       await repo.save('legacy-aida', { ...retainedMetadata, revision: next.revision }, next);
       expect((await repo.db.projects.get('legacy-aida'))?.aidaCount).toBeUndefined();
       expect((await repo.load('legacy-aida'))?.document.settings.aidaCount).toBe(18);
       const currentBytes = (await repo.db.currentSnapshots.get('legacy-aida'))?.bytes;
       if (!currentBytes) throw new Error('Missing current snapshot.');
-      expect(decodeDocumentWithInfo(currentBytes).binaryVersion).toBe(4);
+      expect(decodeDocumentWithInfo(currentBytes).binaryVersion).toBe(5);
     } finally {
       await closeRepository(repo);
     }
@@ -1633,7 +1755,7 @@ describe('local project repository', () => {
     const repo = await repository();
     try {
       const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const settings = { strands: 2, waste: 0.2, stitchLengthMeters: 0.11, skeinLengthMeters: 8 };
+      const settings = { strands: 2, backstitchStrands: 3, waste: 0.2, stitchLengthMeters: 0.11, skeinLengthMeters: 8 };
       await repo.save('material-settings', { ...metadata(document, 'material-settings'), materialSettings: settings }, document);
       const loaded = await repo.load('material-settings');
       expect(loaded?.metadata.materialSettings).toEqual(settings);

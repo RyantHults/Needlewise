@@ -6,7 +6,8 @@ import {
   type LayeredDocument,
   type LayerType,
   type PatternDocument,
-  type PatternFragment
+  type PatternFragment,
+  type ProgressCommand
 } from '../domain';
 import type { ProjectWorkspace } from '../application/workspace';
 import type { EditorActiveLayer, Invalidation } from './contracts';
@@ -134,6 +135,10 @@ export interface WorkspaceEditorBoundary {
   executeBatch(commands: readonly DomainCommand[]): CommandResult;
   undo(): CommandResult;
   redo(): CommandResult;
+  /** The Track page's mark history, kept apart from document history; absent when the boundary cannot record progress. */
+  markProgress?(command: ProgressCommand): CommandResult;
+  undoProgress?(): CommandResult;
+  redoProgress?(): CommandResult;
 }
 
 export interface EditorTransaction {
@@ -155,6 +160,10 @@ export interface WorkspaceEditorGateway {
   resolvePaste?(type: LayerType): PasteDestination;
   /** Paste as one history entry, creating the destination layer when needed. */
   commitPaste?(fragment: PatternFragment, position: { x: number; y: number }, destination: PasteDestination, expected?: EditorRevisionToken): PasteCommitResult;
+  /** Record stitch progress outside document history; true when a mark changed. */
+  markProgress(command: ProgressCommand): boolean;
+  undoProgress(): boolean;
+  redoProgress(): boolean;
   dispose(): void;
 }
 
@@ -302,11 +311,32 @@ class WorkspaceEditorGatewayImpl implements WorkspaceEditorGateway {
     return outcome;
   }
 
+  markProgress(command: ProgressCommand): boolean {
+    return this.progress(this.boundary.markProgress && (() => this.boundary.markProgress!(command)));
+  }
+
+  undoProgress(): boolean {
+    return this.progress(this.boundary.undoProgress && (() => this.boundary.undoProgress!()));
+  }
+
+  redoProgress(): boolean {
+    return this.progress(this.boundary.redoProgress && (() => this.boundary.redoProgress!()));
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     this.unsubscribeBoundary();
     this.listeners.clear();
+  }
+
+  private progress(apply: (() => CommandResult) | undefined): boolean {
+    this.ensureLive();
+    this.refreshFromBoundary();
+    if (!apply || this.snapshot.projectId === null) return false;
+    const result = apply();
+    this.refresh();
+    return result.changed;
   }
 
   private ensureLive(): void {

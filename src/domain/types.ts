@@ -402,7 +402,7 @@ export interface MoveFragmentCommand extends DomainCommand {
   readonly expectedRevision?: number;
 }
 
-/** A single component-mode eraser gesture over whole cells and quarter slots. */
+/** A single eraser gesture over whole cells and the quarter slots of three-quarter pairs. */
 export interface MixedEraseCommand extends DomainCommand {
   readonly type: 'mixed-erase';
   readonly wholeCellIndices: Uint32Array;

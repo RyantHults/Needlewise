@@ -3,6 +3,7 @@ import {
   type PatternDocument
 } from '../domain';
 import {
+  CHART_EDGE_MARGIN,
   ChartPresentationMode,
   DEFAULT_LOD_THRESHOLDS,
   DEFAULT_RENDERER_STYLE,
@@ -55,6 +56,14 @@ import { clearTarget, defaultAtlasTargetFactory, drawImage, prepareTarget, resto
 import { grayscaleColor } from './colors';
 import { contrastSymbolInk, isDarkColor, relativeLuminance } from './contrast';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
+import {
+  createThreadSpriteCache,
+  drawThreadBackstitch,
+  drawThreadFabric,
+  drawThreadStitch,
+  THREAD_MIN_DETAIL_CELL_PX,
+  type ThreadSpriteCache
+} from './thread-preview';
 import { createTraceImageProjection, drawTraceImage } from './trace';
 import { isLegacyQuarterKind, isThreeQuarterKind, isThreeQuarterPairKind, threeQuarterPairComponents } from '../editor/cell-kinds';
 import { selectionBoundarySegments } from '../editor/lasso';
@@ -199,6 +208,26 @@ function snapToDevicePixel(value: number, pixelRatio: number): number {
   return Math.round(value * ratio) / ratio;
 }
 
+function snapRectToDevicePixels(rect: Rect, pixelRatio: number): Rect {
+  const x0 = snapToDevicePixel(rect.x, pixelRatio);
+  const x1 = snapToDevicePixel(rect.x + rect.width, pixelRatio);
+  const y0 = snapToDevicePixel(rect.y, pixelRatio);
+  const y1 = snapToDevicePixel(rect.y + rect.height, pixelRatio);
+  return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+}
+
+/** Alpha for stitches outside the highlighted color; the highlighted color and an unset highlight stay opaque. */
+const HIGHLIGHT_DIM_ALPHA = 0.25;
+
+function highlightAlpha(style: RendererStyle, id: number): number {
+  return style.highlightColor === null || id === style.highlightColor ? 1 : HIGHLIGHT_DIM_ALPHA;
+}
+
+/** Completion bits as the style shows them: none at all unless `showCompletion` is on. */
+function shownCompletion(style: RendererStyle, completed: number): number {
+  return style.showCompletion ? completed : 0;
+}
+
 function drawCellState(
   context: CanvasContextAdapter,
   document: PatternDocument,
@@ -214,24 +243,26 @@ function drawCellState(
   pixelRatio = 1
 ): boolean {
   if (kind === CellKind.Empty) return false;
-  const rect = cellToScreenRect({ x, y, width: 1, height: 1 }, viewport);
+  completed = shownCompletion(style, completed);
+  // Snap the start and end edges independently (not the width) so neighbouring
+  // cells tile with no gap or overlap, and so every shape, seam and mark in the
+  // cell shares the same device-pixel rect.
+  const rect = snapRectToDevicePixels(cellToScreenRect({ x, y, width: 1, height: 1 }, viewport), pixelRatio);
   const symbolMode = style.mode === ChartPresentationMode.Symbol;
   const paintShape = (id: number, completed: boolean, slot?: number, geometryKind = kind): void => {
     save(context);
     context.fillStyle = symbolMode ? style.symbolBackgroundColor : styleColor(document, id, style);
-    setAlpha(context, (completed ? style.completedOpacity : 1) * dimAlpha);
-    if (geometryKind === CellKind.Full) {
-      // Snap the start and end edges independently (not the width) so
-      // neighbouring cells tile with no gap or overlap between them.
-      const x0 = snapToDevicePixel(rect.x, pixelRatio);
-      const x1 = snapToDevicePixel(rect.x + rect.width, pixelRatio);
-      const y0 = snapToDevicePixel(rect.y, pixelRatio);
-      const y1 = snapToDevicePixel(rect.y + rect.height, pixelRatio);
-      context.fillRect(x0, y0, x1 - x0, y1 - y0);
-    } else drawStitchGeometry(context, geometryKind, rect, slot);
+    setAlpha(context, (completed ? style.completedOpacity : 1) * dimAlpha * highlightAlpha(style, id));
+    drawStitchGeometry(context, geometryKind, rect, slot);
     restore(context);
   };
   const paintMarks = (id: number, completed: boolean, slot?: number): void => {
+    const markAlpha = dimAlpha * highlightAlpha(style, id);
+    if (markAlpha < dimAlpha) {
+      // Symbols draw at the ambient alpha, so a dimmed color needs its own scope.
+      save(context);
+      setAlpha(context, markAlpha);
+    }
     if (lod === RenderLod.Detail || symbolMode) drawSymbol(context, document, id, rect, style, slot);
     if (completed && lod === RenderLod.Detail) {
       const completionRect = slot === undefined ? rect : {
@@ -240,8 +271,9 @@ function drawCellState(
         width: rect.width / 2,
         height: rect.height / 2
       };
-      completedMark(context, completionRect, style, dimAlpha);
+      completedMark(context, completionRect, style, markAlpha);
     }
+    if (markAlpha < dimAlpha) restore(context);
   };
   const fill = (id: number, completed: boolean, slot?: number, geometryKind = kind): void => {
     paintShape(id, completed, slot, geometryKind);
@@ -270,7 +302,7 @@ function drawCellState(
         style.symbolColor
       );
       context.lineWidth = Math.max(1, Math.min(2, viewport.zoom * 0.06));
-      setAlpha(context, ((completed & (1 << first.slot)) !== 0 ? style.completedOpacity : 1) * dimAlpha);
+      setAlpha(context, ((completed & (1 << first.slot)) !== 0 ? style.completedOpacity : 1) * dimAlpha * highlightAlpha(style, firstId));
       linePath(
         context,
         backslashSeam ? { x: rect.x + rect.width, y: rect.y } : { x: rect.x, y: rect.y },
@@ -283,6 +315,46 @@ function drawCellState(
     }
   } else {
     fill(colors[0] ?? 0, (completed & 1) !== 0);
+  }
+  return true;
+}
+
+/**
+ * Thread view of one cell: kinds and palette colors only. Completion bits are
+ * never read here, so this path cannot draw them.
+ */
+function drawThreadCell(
+  context: CanvasContextAdapter,
+  document: PatternDocument,
+  x: number,
+  y: number,
+  style: RendererStyle,
+  viewport: Viewport,
+  sprites: ThreadSpriteCache,
+  dimAlpha = 1
+): boolean {
+  const index = y * document.width + x;
+  const kind = document.kind[index];
+  if (kind === CellKind.Empty) return false;
+  const colors = document.colors.subarray(index * 4, index * 4 + 4);
+  const rect = cellToScreenRect({ x, y, width: 1, height: 1 }, viewport);
+  const stitch = (id: number, stitchKind: number, slot: number): void => {
+    if (id === 0) return;
+    const color = styleColor(document, id, style);
+    const alpha = dimAlpha * highlightAlpha(style, id);
+    if (alpha < dimAlpha) {
+      save(context);
+      setAlpha(context, alpha);
+    }
+    if (!sprites.draw(context, color, stitchKind, rect, slot)) drawThreadStitch(context, stitchKind, rect, color, slot);
+    if (alpha < dimAlpha) restore(context);
+  };
+  if (isLegacyQuarterKind(kind)) {
+    for (let slot = 0; slot < 4; slot += 1) stitch(colors[slot] ?? 0, kind, slot);
+  } else if (isThreeQuarterPairKind(kind)) {
+    for (const component of threeQuarterPairComponents(colors)) stitch(colors[component.slot] ?? 0, component.kind, component.slot);
+  } else {
+    stitch(colors[0] ?? 0, kind, 0);
   }
   return true;
 }
@@ -604,12 +676,15 @@ function minorGridWidth(lod: RenderLod): number {
   return lod === RenderLod.Detail ? 0.35 : 0.65;
 }
 
+/** Below this many px per cell the 5-cell tier is dropped, between the 1-cell tier (12) and overview (4). */
+const MID_GRID_MIN_ZOOM = 8;
+
 function midGridWidth(lod: RenderLod): number {
   return lod === RenderLod.Detail ? 1 : 1.5;
 }
 
 function majorGridWidth(lod: RenderLod): number {
-  return lod === RenderLod.Detail ? 2.5 : 2.25;
+  return lod === RenderLod.Detail ? 1.9 : 1.7;
 }
 
 function shouldDrawGrid(
@@ -620,7 +695,7 @@ function shouldDrawGrid(
 ): boolean {
   if (!style.showGrid) return false;
   const currentZoom = viewport.zoom > 0 && Number.isFinite(viewport.zoom) ? viewport.zoom : 1;
-  const fitZoom = fitViewport(document, metrics, 0).zoom;
+  const fitZoom = fitViewport(document, metrics, CHART_EDGE_MARGIN).zoom;
   return currentZoom >= fitZoom * GRID_SHOW_AT_FIT_RATIO;
 }
 
@@ -725,6 +800,7 @@ function drawMidGrid(
   lod: RenderLod
 ): void {
   if (!shouldDrawGrid(document, viewport, metrics, style) || lod === RenderLod.Overview || visible.width === 0 || visible.height === 0) return;
+  if (viewport.zoom < MID_GRID_MIN_ZOOM) return;
   const bounds = patternCanvasRect(document, viewport, metrics);
   if (!bounds) return;
   const interval = Number.isFinite(style.midGridInterval) ? Math.max(1, Math.floor(style.midGridInterval)) : 5;
@@ -794,6 +870,57 @@ function adaptiveGridStep(minimumCellStep: number, configuredInterval: number): 
     if (candidate >= minimumCellStep) return candidate;
   }
   return magnitude * 10;
+}
+
+/**
+ * Stitch counts in the margin outside the chart: column numbers above the top
+ * edge and row numbers left of the left edge, at every mid-grid interval while
+ * that tier shows and every grid interval below it. The label
+ * names the 1-based column or row that ends at that grid line, so "10" sits
+ * over the tenth stitch. Drawn only while the grid is, and not clipped to the
+ * chart, so the margin outside it is used.
+ */
+function drawStitchNumbers(
+  context: CanvasContextAdapter,
+  document: PatternDocument,
+  viewport: Viewport,
+  metrics: CanvasMetrics,
+  style: RendererStyle
+): void {
+  if (!shouldDrawGrid(document, viewport, metrics, style) || context.fillText === undefined) return;
+  const gridInterval = Number.isFinite(style.gridInterval) ? Math.max(1, Math.floor(style.gridInterval)) : 1;
+  const midInterval = Number.isFinite(style.midGridInterval) ? Math.max(1, Math.floor(style.midGridInterval)) : 5;
+  const zoom = viewport.zoom > 0 && Number.isFinite(viewport.zoom) ? viewport.zoom : 1;
+  // The 5-cell tier is drawn from MID_GRID_MIN_ZOOM up; the numbers follow it.
+  const interval = zoom >= MID_GRID_MIN_ZOOM && midInterval > 1 ? midInterval : gridInterval;
+  const size = Math.min(12, Math.max(8, zoom * 0.9));
+  const gap = 4;
+  const origin = modelToScreen({ x: 0, y: 0 }, viewport);
+  // Widest label sets the stride: skip whole intervals rather than overlap.
+  const digits = String(Math.max(document.width, document.height)).length;
+  const columnStride = Math.max(1, Math.ceil((digits * size * 0.6 + gap) / (interval * zoom)));
+  const rowStride = Math.max(1, Math.ceil((size + gap) / (interval * zoom)));
+  save(context);
+  context.fillStyle = style.chartBorderColor;
+  context.font = `${size}px sans-serif`;
+  try {
+    context.textAlign = 'center';
+    context.textBaseline = 'bottom';
+    for (let n = interval * columnStride; n <= document.width; n += interval * columnStride) {
+      const x = origin.x + (n - 0.5) * zoom;
+      if (x < 0 || x > metrics.cssWidth) continue;
+      context.fillText(String(n), x, origin.y - gap);
+    }
+    context.textAlign = 'right';
+    context.textBaseline = 'middle';
+    for (let n = interval * rowStride; n <= document.height; n += interval * rowStride) {
+      const y = origin.y + (n - 0.5) * zoom;
+      if (y < 0 || y > metrics.cssHeight) continue;
+      context.fillText(String(n), origin.x - gap, y);
+    }
+  } finally {
+    restore(context);
+  }
 }
 
 /** Draw only the visible portions of the document border. */
@@ -1294,6 +1421,37 @@ function drawBackstitches(
   return drawn;
 }
 
+/** Thread view of the backstitches: the same segments as `drawBackstitches`, drawn as round-capped thread. */
+function drawThreadBackstitches(
+  context: CanvasContextAdapter,
+  document: PatternDocument,
+  viewport: Viewport,
+  metrics: CanvasMetrics,
+  style: RendererStyle,
+  dirtyModelRect?: Rect,
+  dimAlpha = 1
+): number {
+  const visible = viewportModelRect(viewport, metrics);
+  const store = document.backstitches;
+  const origin = modelToScreen({ x: 0, y: 0 }, viewport);
+  let drawn = 0;
+  for (let index = 0; index < store.ids.length; index += 1) {
+    const start = fixedToModel({ x: store.x1[index], y: store.y1[index] });
+    const end = fixedToModel({ x: store.x2[index], y: store.y2[index] });
+    if (!segmentIntersectsRect(start, end, visible)) continue;
+    if (dirtyModelRect && !segmentIntersectsRect(start, end, dirtyModelRect)) continue;
+    const alpha = dimAlpha * highlightAlpha(style, store.colors[index]);
+    if (alpha < dimAlpha) {
+      save(context);
+      setAlpha(context, alpha);
+    }
+    drawThreadBackstitch(context, start, end, viewport.zoom, styleColor(document, store.colors[index], style), origin);
+    if (alpha < dimAlpha) restore(context);
+    drawn += 1;
+  }
+  return drawn;
+}
+
 function drawBackstitchSegment(
   context: CanvasContextAdapter,
   document: PatternDocument,
@@ -1332,7 +1490,7 @@ function drawBackstitchScreenSegment(
   save(context);
   context.strokeStyle = styleColor(document, colorId, style);
   context.lineWidth = Math.max(2, Math.min(6, viewport.zoom * 0.2));
-  setAlpha(context, (completed ? style.completedOpacity : 1) * dimAlpha);
+  setAlpha(context, (completed && style.showCompletion ? style.completedOpacity : 1) * dimAlpha * highlightAlpha(style, colorId));
   linePath(context, start, end);
   restore(context);
 }
@@ -1407,23 +1565,29 @@ function drawOverviewFallback(
   document: PatternDocument,
   viewport: Viewport,
   metrics: CanvasMetrics,
-  style: RendererStyle
+  style: RendererStyle,
+  dimAlpha = 1
 ): { visitedCells: number; drawnCells: number } {
   const visible = visibleCellRect(viewport, metrics, document);
   let drawnCells = 0;
+  // The color atlas cannot dim by color, so a highlight reaches the Overview through this path.
+  const fill = (id: number): void => {
+    context.fillStyle = overviewColorForPaletteId(document, id, style);
+    if (style.highlightColor !== null) setAlpha(context, dimAlpha * highlightAlpha(style, id));
+  };
   for (let y = visible.y; y < visible.y + visible.height; y += 1) {
     for (let x = visible.x; x < visible.x + visible.width; x += 1) {
       const index = y * document.width + x;
       if (document.kind[index] === CellKind.Empty) continue;
       const offset = index * 4;
-      const rect = cellToScreenRect({ x, y, width: 1, height: 1 }, viewport);
+      const rect = snapRectToDevicePixels(cellToScreenRect({ x, y, width: 1, height: 1 }, viewport), metrics.dpr);
       if (isLegacyQuarterKind(document.kind[index])) {
         const halfWidth = rect.width / 2;
         const halfHeight = rect.height / 2;
         for (let slot = 0; slot < 4; slot += 1) {
           const id = document.colors[offset + slot];
           if (id === 0) continue;
-          context.fillStyle = overviewColorForPaletteId(document, id, style);
+          fill(id);
           context.fillRect(
             rect.x + (slot === 1 || slot === 2 ? halfWidth : 0),
             rect.y + (slot === 2 || slot === 3 ? halfHeight : 0),
@@ -1435,17 +1599,18 @@ function drawOverviewFallback(
         for (const component of threeQuarterPairComponents(document.colors.subarray(offset, offset + 4))) {
           const id = document.colors[offset + component.slot];
           if (id === 0) continue;
-          context.fillStyle = overviewColorForPaletteId(document, id, style);
+          fill(id);
           drawStitchGeometry(context, component.kind, rect);
         }
       } else {
-        context.fillStyle = overviewColorForPaletteId(document, document.colors[offset], style);
+        fill(document.colors[offset]);
         if (document.kind[index] === CellKind.Full) context.fillRect(rect.x, rect.y, rect.width, rect.height);
         else drawStitchGeometry(context, document.kind[index], rect);
       }
       drawnCells += 1;
     }
   }
+  if (style.highlightColor !== null) setAlpha(context, dimAlpha);
   return { visitedCells: visible.width * visible.height, drawnCells };
 }
 
@@ -1454,13 +1619,14 @@ function drawOverviewSymbolFallback(
   document: PatternDocument,
   viewport: Viewport,
   metrics: CanvasMetrics,
-  style: RendererStyle
+  style: RendererStyle,
+  dimAlpha = 1
 ): { visitedCells: number; drawnCells: number } {
   const visible = visibleCellRect(viewport, metrics, document);
   let drawnCells = 0;
   for (let y = visible.y; y < visible.y + visible.height; y += 1) {
     for (let x = visible.x; x < visible.x + visible.width; x += 1) {
-      if (drawCell(context, document, x, y, style, viewport, RenderLod.Overview, 1, metrics.dpr)) drawnCells += 1;
+      if (drawCell(context, document, x, y, style, viewport, RenderLod.Overview, dimAlpha, metrics.dpr)) drawnCells += 1;
     }
   }
   return { visitedCells: visible.width * visible.height, drawnCells };
@@ -1935,6 +2101,7 @@ function cellStateColors(
 ): string[] {
   const patternBackground = patternBackgroundColor(document);
   if (kind === CellKind.Empty) return [patternBackground];
+  completed = shownCompletion(style, completed);
 
   let slots: number[];
   if (isLegacyQuarterKind(kind)) {
@@ -2182,6 +2349,7 @@ export class Canvas2DRenderer implements CanvasRenderer {
   private thresholds: LodThresholds;
   private readonly atlas = new ColorAtlasCache();
   private readonly symbolAtlas = new SymbolAtlasCache();
+  private threadSprites: ThreadSpriteCache | undefined;
   private readonly atlasFactory: CanvasRendererOptions['atlasTargetFactory'];
   private readonly requestFrame: (callback: (time: number) => void) => number;
   private readonly cancelFrame: (handle: number) => void;
@@ -2430,10 +2598,11 @@ export class Canvas2DRenderer implements CanvasRenderer {
     if (lod === RenderLod.Overview) {
       if (dimAlpha < 1) save(context);
       if (dimAlpha < 1) setAlpha(context, dimAlpha);
-      const cells = this.drawOverviewCells(context);
+      const cells = this.drawOverviewCells(context, dimAlpha);
       const visible = visibleCellRect(this.viewport, this.metrics, this.document);
       drawGrid(context, this.document, this.viewport, this.metrics, this.style, visible, lod);
       drawChartBorder(context, this.document, this.viewport, this.metrics, this.style);
+      drawStitchNumbers(context, this.document, this.viewport, this.metrics, this.style);
       const drawnBackstitches = drawBackstitches(context, this.document, this.viewport, this.metrics, this.style, undefined, dimAlpha);
       if (dimAlpha < 1) restore(context);
       drawTraceImage(context, this.traceImage, this.document, this.viewport, this.metrics);
@@ -2450,33 +2619,60 @@ export class Canvas2DRenderer implements CanvasRenderer {
     let drawnCells = 0;
     if (dimAlpha < 1) save(context);
     if (dimAlpha < 1) setAlpha(context, dimAlpha);
+    const sprites = this.style.threadView && this.viewport.zoom >= THREAD_MIN_DETAIL_CELL_PX ? this.threadSpritesFor() : undefined;
+    if (sprites && this.document.canvasMask === undefined) {
+      // The weave is aligned to whole cells, so a clipped redraw lines up with the rest.
+      const origin = cellToScreenRect({ x: dirtyCells.x, y: dirtyCells.y, width: 1, height: 1 }, this.viewport);
+      drawThreadFabric(
+        context,
+        { x: origin.x, y: origin.y, width: dirtyCells.width * this.viewport.zoom, height: dirtyCells.height * this.viewport.zoom },
+        this.viewport.zoom,
+        patternBackground
+      );
+    }
     for (let y = dirtyCells.y; y < dirtyCells.y + dirtyCells.height; y += 1) {
       for (let x = dirtyCells.x; x < dirtyCells.x + dirtyCells.width; x += 1) {
-        if (drawCell(context, this.document, x, y, this.style, this.viewport, lod, dimAlpha, this.metrics.dpr)) drawnCells += 1;
+        const drawn = sprites
+          ? drawThreadCell(context, this.document, x, y, this.style, this.viewport, sprites, dimAlpha)
+          : drawCell(context, this.document, x, y, this.style, this.viewport, lod, dimAlpha, this.metrics.dpr);
+        if (drawn) drawnCells += 1;
       }
     }
     drawGrid(context, this.document, this.viewport, this.metrics, this.style, dirtyCells, lod);
     drawMidGrid(context, this.document, this.viewport, this.metrics, this.style, dirtyCells, lod);
     drawChartBorder(context, this.document, this.viewport, this.metrics, this.style);
+    drawStitchNumbers(context, this.document, this.viewport, this.metrics, this.style);
     const dirtyModel = partial ? {
       x: this.viewport.x + invalidationRect.x / this.viewport.zoom,
       y: this.viewport.y + invalidationRect.y / this.viewport.zoom,
       width: invalidationRect.width / this.viewport.zoom,
       height: invalidationRect.height / this.viewport.zoom
     } : undefined;
-    const drawnBackstitches = drawBackstitches(context, this.document, this.viewport, this.metrics, this.style, dirtyModel, dimAlpha);
+    const drawnBackstitches = sprites
+      ? drawThreadBackstitches(context, this.document, this.viewport, this.metrics, this.style, dirtyModel, dimAlpha)
+      : drawBackstitches(context, this.document, this.viewport, this.metrics, this.style, dirtyModel, dimAlpha);
     if (dimAlpha < 1) restore(context);
     drawTraceImage(context, this.traceImage, this.document, this.viewport, this.metrics);
     if (partial) restore(context);
     return { visitedCells: dirtyCells.width * dirtyCells.height, drawnCells, drawnBackstitches };
   }
 
+  /** Thread sprites at the current pixels per cell; a new size starts a new cache. */
+  private threadSpritesFor(): ThreadSpriteCache {
+    const cellPx = Math.max(1, Math.round(this.viewport.zoom * this.metrics.dpr));
+    if (!this.threadSprites || this.threadSprites.cellPx !== cellPx) {
+      this.threadSprites = createThreadSpriteCache(this.atlasFactory ?? defaultAtlasTargetFactory, cellPx);
+    }
+    return this.threadSprites;
+  }
+
   /** Draw the Overview cells from the cached atlas when the adapter can, else
    * cell by cell; the caller draws the grid, border, and backstitches over them. */
-  private drawOverviewCells(context: CanvasContextAdapter): { visitedCells: number; drawnCells: number } {
+  private drawOverviewCells(context: CanvasContextAdapter, dimAlpha: number): { visitedCells: number; drawnCells: number } {
     if (this.style.mode === ChartPresentationMode.Symbol) {
       const symbolAtlas = this.symbolAtlas.get(this.document, this.style, this.atlasFactory);
       const canDrawCachedSymbols = Boolean(
+        this.style.highlightColor === null &&
         symbolAtlas.source &&
         context.drawImage &&
         isCanvasImageSource(symbolAtlas.source)
@@ -2506,16 +2702,16 @@ export class Canvas2DRenderer implements CanvasRenderer {
         if (drawnFromAtlas) return { visitedCells: 0, drawnCells: 0 };
       }
       this.fillMaskedOverviewFabric(context);
-      return drawOverviewSymbolFallback(context, this.document, this.viewport, this.metrics, this.style);
+      return drawOverviewSymbolFallback(context, this.document, this.viewport, this.metrics, this.style, dimAlpha);
     }
     context.imageSmoothingEnabled = false;
-    const atlas = this.atlas.get(this.document, this.style, this.atlasFactory);
-    if (atlas.source && context.drawImage && isCanvasImageSource(atlas.source)) {
+    const atlas = this.style.highlightColor === null ? this.atlas.get(this.document, this.style, this.atlasFactory) : undefined;
+    if (atlas?.source && context.drawImage && isCanvasImageSource(atlas.source)) {
       drawImage(context, atlas.source, atlas.width, atlas.height, -this.viewport.x * this.viewport.zoom, -this.viewport.y * this.viewport.zoom, this.document.width * this.viewport.zoom, this.document.height * this.viewport.zoom);
       return { visitedCells: 0, drawnCells: 0 };
     }
     this.fillMaskedOverviewFabric(context);
-    return drawOverviewFallback(context, this.document, this.viewport, this.metrics, this.style);
+    return drawOverviewFallback(context, this.document, this.viewport, this.metrics, this.style, dimAlpha);
   }
 
   /** Without an atlas, a masked canvas's fabric is filled run by run like the other levels of detail. */

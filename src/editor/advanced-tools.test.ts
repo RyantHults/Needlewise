@@ -12,6 +12,7 @@ import { createFillWorkerClient, createFillResult, type FillWorkerClient, type F
 import { getCanvasMetrics } from './coordinates';
 import { EditorSurfaceController } from './controller';
 import { createUiStore } from './ui-store';
+import { ThreeQuarterPair } from './cell-kinds';
 import type {
   CanvasRenderer,
   RendererStyle,
@@ -29,6 +30,18 @@ class FakeGateway implements WorkspaceEditorGateway {
 
   constructor(document: PatternDocument) {
     this.editor = createEditor(document);
+  }
+
+  markProgress(): boolean {
+    return false;
+  }
+
+  undoProgress(): boolean {
+    return false;
+  }
+
+  redoProgress(): boolean {
+    return false;
   }
 
   getSnapshot(): WorkspaceEditorSnapshot {
@@ -230,19 +243,28 @@ function fixture(document = documentWithStitches(), providedFillClient?: FillWor
 }
 
 describe('advanced headless editor tools', () => {
-  it('erases whole cells and quarter components, including keyboard Delete mode', () => {
-    const { controller, gateway, uiStore } = fixture();
-    controller.setTool({ tool: 'eraser', mode: 'whole-cell' });
+  it('erases whole cells, one pair triangle by touch, and honors keyboard Delete on emptied cells', () => {
+    const document = documentWithStitches();
+    document.kind[3] = ThreeQuarterPair;
+    document.colors.set([1, 0, 2, 0], 12);
+    const { controller, gateway, uiStore } = fixture(document);
+    controller.setTool({ tool: 'eraser' });
     controller.handlePointerDown(pointer(1, 8, 8));
     expect(uiStore.getState().overlay.pendingCellStates).toMatchObject([{ index: 0, kind: CellKind.Empty, colors: [0, 0, 0, 0], completed: 0 }]);
     controller.handlePointerUp(pointer(1, 8, 8));
     expect(gateway.commands.at(-1)).toMatchObject({ type: 'mixed-erase', wholeCellIndices: new Uint32Array([0]) });
 
-    controller.setTool({ tool: 'eraser', mode: 'component', corner: 1 });
+    // Legacy quarters are erased as a whole cell, whichever quadrant is touched.
     controller.handlePointerDown(pointer(2, 28, 4));
-    expect(uiStore.getState().overlay.pendingCellStates).toMatchObject([{ index: 1, kind: CellKind.Quarters, colors: [1, 0, 0, 0] }]);
+    expect(uiStore.getState().overlay.pendingCellStates).toMatchObject([{ index: 1, kind: CellKind.Empty, colors: [0, 0, 0, 0] }]);
     controller.handlePointerUp(pointer(2, 28, 4));
-    expect(gateway.commands.at(-1)).toMatchObject({ type: 'mixed-erase', componentCellIndices: new Uint32Array([1]), componentCorners: new Uint8Array([1]) });
+    expect(gateway.commands.at(-1)).toMatchObject({ type: 'mixed-erase', wholeCellIndices: new Uint32Array([1]) });
+
+    // A pair loses only the triangle under the touch (NE quadrant, inside the NW triangle).
+    controller.handlePointerDown(pointer(3, 60, 2));
+    expect(uiStore.getState().overlay.pendingCellStates).toMatchObject([{ index: 3, kind: CellKind.ThreeQuarterSE, colors: [2, 0, 0, 0] }]);
+    controller.handlePointerUp(pointer(3, 60, 2));
+    expect(gateway.commands.at(-1)).toMatchObject({ type: 'mixed-erase', componentCellIndices: new Uint32Array([3]), componentCorners: new Uint8Array([0]) });
 
     controller.handleKeyDown({ key: 'ArrowRight', preventDefault: () => undefined });
     const commandCountBeforeNoop = gateway.commands.length;
@@ -251,52 +273,70 @@ describe('advanced headless editor tools', () => {
     controller.dispose();
   });
 
-  it('uses every configured corner for keyboard component erasing and publishes the corner status', () => {
-    const editor = createEditor(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [
+  it('uses the configured corner for keyboard erasing of a pair and publishes the corner status', () => {
+    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [
       { id: 1, name: 'Red', color: '#d33' },
-      { id: 2, name: 'Blue', color: '#36c' },
-      { id: 3, name: 'Gold', color: '#da2' },
-      { id: 4, name: 'Green', color: '#2a5' }
-    ] }));
-    editor.execute({ type: 'set-quarter', x: 0, y: 0, corner: 0, color: 1 });
-    editor.execute({ type: 'set-quarter', x: 0, y: 0, corner: 1, color: 2 });
-    editor.execute({ type: 'set-quarter', x: 0, y: 0, corner: 2, color: 3 });
-    editor.execute({ type: 'set-quarter', x: 0, y: 0, corner: 3, color: 4 });
-    const { controller, gateway, uiStore } = fixture(editor.document);
-    controller.setTool({ tool: 'eraser', mode: 'component' });
+      { id: 2, name: 'Blue', color: '#36c' }
+    ] });
+    document.kind[0] = ThreeQuarterPair;
+    document.colors.set([1, 0, 2, 0], 0);
+    document.kind[1] = ThreeQuarterPair;
+    document.colors.set([0, 1, 0, 2], 4);
+    const { controller, gateway, uiStore } = fixture(document);
+    controller.setTool({ tool: 'eraser' });
     uiStore.setKeyboardCursor({ x: 0, y: 0 });
-    for (const corner of [0, 1, 2, 3] as const) {
-      controller.setEraserCorner(corner);
-      controller.handleKeyDown({ key: 'Backspace', preventDefault: () => undefined });
-      expect(gateway.getSnapshot().document?.colors[corner]).toBe(0);
-      expect(uiStore.getState().status).toContain(`quarter ${String(corner)}`);
-    }
-    expect(gateway.commands.filter((command) => command.type === 'bulk-cell')).toHaveLength(4);
+    // A corner the pair has no component on leaves it alone.
+    controller.setEraserCorner(1);
+    controller.handleKeyDown({ key: 'Backspace', preventDefault: () => undefined });
+    expect(gateway.commands).toHaveLength(0);
+    controller.setEraserCorner(0);
+    controller.handleKeyDown({ key: 'Backspace', preventDefault: () => undefined });
+    expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.ThreeQuarterSE);
+    expect(gateway.getSnapshot().document?.colors[0]).toBe(2);
+    expect(uiStore.getState().status).toContain('quarter 0');
+    uiStore.setKeyboardCursor({ x: 1, y: 0 });
+    controller.setEraserCorner(1);
+    controller.handleKeyDown({ key: 'Backspace', preventDefault: () => undefined });
+    expect(gateway.getSnapshot().document?.kind[1]).toBe(CellKind.ThreeQuarterSW);
+    expect(uiStore.getState().status).toContain('quarter 1');
+    expect(gateway.commands.filter((command) => command.type === 'mixed-erase')).toHaveLength(2);
+    // A single three-quarter left behind erases as a whole cell.
+    uiStore.setKeyboardCursor({ x: 0, y: 0 });
+    controller.handleKeyDown({ key: 'Backspace', preventDefault: () => undefined });
+    expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
     controller.dispose();
   });
 
-  it('uses one mixed-erase command and one history entry across primary and differently-cornered quarters', () => {
-    const { controller, gateway } = fixture();
-    controller.setTool({ tool: 'eraser', mode: 'component' });
-    controller.handlePointerDown(pointer(1, 8, 8));
+  it('uses one mixed-erase command and one history entry across a whole cell and pair components', () => {
+    const document = documentWithStitches();
+    document.kind[1] = ThreeQuarterPair;
+    document.colors.set([1, 0, 2, 0], 4);
+    document.kind[2] = ThreeQuarterPair;
+    document.colors.set([0, 1, 0, 2], 8);
+    const { controller, gateway } = fixture(document);
+    controller.setTool({ tool: 'eraser' });
+    // Starts in the NW quadrant of the full cell, so the drag fixes the NW side.
+    controller.handlePointerDown(pointer(1, 4, 4));
     controller.handlePointerMove(pointer(1, 28, 4));
     controller.handlePointerMove(pointer(1, 44, 12));
     controller.handlePointerUp(pointer(1, 44, 12));
     expect(gateway.commands).toHaveLength(1);
     expect(gateway.commands[0]).toMatchObject({ type: 'mixed-erase' });
     expect(gateway.commands[0].wholeCellIndices).toEqual(new Uint32Array([0]));
-    expect(gateway.commands[0].componentCellIndices).toEqual(new Uint32Array([1, 2]));
-    expect(gateway.commands[0].componentCorners).toEqual(new Uint8Array([1, 2]));
+    expect(gateway.commands[0].componentCellIndices).toEqual(new Uint32Array([1]));
+    expect(gateway.commands[0].componentCorners).toEqual(new Uint8Array([0]));
     expect(gateway.undoDepth).toBe(1);
     expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
-    expect(gateway.getSnapshot().document?.colors.slice(4, 8)).toEqual(new Uint16Array([1, 0, 0, 0]));
-    expect(gateway.getSnapshot().document?.colors.slice(8, 12)).toEqual(new Uint16Array([0, 0, 0, 2]));
+    expect(gateway.getSnapshot().document?.kind[1]).toBe(CellKind.ThreeQuarterSE);
+    // The NE/SW pair has no NW component, so the drag skips it.
+    expect(gateway.getSnapshot().document?.kind[2]).toBe(ThreeQuarterPair);
+    expect(gateway.getSnapshot().document?.colors.slice(8, 12)).toEqual(new Uint16Array([0, 1, 0, 2]));
 
     controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
     expect(gateway.undoDepth).toBe(0);
     expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Full);
-    expect(gateway.getSnapshot().document?.colors.slice(4, 8)).toEqual(new Uint16Array([1, 2, 0, 0]));
-    expect(gateway.getSnapshot().document?.colors.slice(8, 12)).toEqual(new Uint16Array([0, 0, 1, 2]));
+    expect(gateway.getSnapshot().document?.kind[1]).toBe(ThreeQuarterPair);
+    expect(gateway.getSnapshot().document?.colors.slice(4, 8)).toEqual(new Uint16Array([1, 0, 2, 0]));
     controller.handleKeyDown({ key: 'y', ctrlKey: true, preventDefault: () => undefined });
     expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
     controller.dispose();

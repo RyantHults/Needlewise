@@ -499,7 +499,7 @@ describe('canvas editing in the controller', () => {
     const { boundary, controller, uiStore } = fixture();
     controller.setCanvasMode('advanced');
     controller.setCanvasCropActive(true);
-    controller.setTool({ tool: 'eraser', mode: 'component' });
+    controller.setTool({ tool: 'eraser' });
     controller.handlePointerDown(at(uiStore, 1, -3, 4));
     controller.handlePointerMove(at(uiStore, 1, 1, 4));
     expect(uiStore.getState().overlay.canvasEditing?.preview).toMatchObject({ kind: 'remove', rect: { x: 0, y: 4, width: 2, height: 1 } });

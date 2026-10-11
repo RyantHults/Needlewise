@@ -23,7 +23,7 @@ import type {
 } from './types';
 import type { ArchiveImportOptions, ProgressActivity, ProjectFolder, ProjectFolderAssignment, ProjectMetadata } from '../persistence';
 import type { ProjectSession } from './session';
-import type { CommandResult, DomainCommand, LayerType, PatternFragment, PatternMetrics, Point } from '../domain';
+import type { CommandResult, DomainCommand, LayerType, PatternFragment, PatternMetrics, Point, ProgressCommand } from '../domain';
 import type { SessionProgressStats } from './progress';
 
 export interface UseProjectWorkspaceOptions extends WorkspaceOptions {
@@ -88,6 +88,13 @@ export interface UseProjectWorkspaceResult {
   setAidaCount(aidaCount: number): CommandResult;
   resolvePaste(fragmentType: LayerType): PasteDestination;
   commitPaste(fragment: PatternFragment, at: Point, destination: PasteDestination, expectedRevision?: number): PasteCommitResult;
+  // Track's marks: synchronous, autosaved, and undone on their own stack.
+  canUndoProgress: boolean;
+  canRedoProgress: boolean;
+  markProgress(command: ProgressCommand): CommandResult;
+  undoProgress(): CommandResult;
+  redoProgress(): CommandResult;
+  clearProgressHistory(): void;
 }
 
 const NO_LAYERS: readonly LayerSummary[] = [];
@@ -307,6 +314,10 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
   const setAidaCount = useCallback((aidaCount: number) => readyWorkspace().setAidaCount(aidaCount), [readyWorkspace]);
   const resolvePaste = useCallback((fragmentType: LayerType) => readyWorkspace().resolvePaste(fragmentType), [readyWorkspace]);
   const commitPaste = useCallback((fragment: PatternFragment, at: Point, destination: PasteDestination, expectedRevision?: number) => readyWorkspace().commitPaste(fragment, at, destination, expectedRevision), [readyWorkspace]);
+  const markProgress = useCallback((command: ProgressCommand) => readyWorkspace().markProgress(command), [readyWorkspace]);
+  const undoProgress = useCallback(() => readyWorkspace().undoProgress(), [readyWorkspace]);
+  const redoProgress = useCallback(() => readyWorkspace().redoProgress(), [readyWorkspace]);
+  const clearProgressHistory = useCallback(() => { workspaceRef.current?.clearProgressHistory(); }, []);
 
   return {
     workspace,
@@ -360,7 +371,13 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
     mergeLayer,
     setAidaCount,
     resolvePaste,
-    commitPaste
+    commitPaste,
+    canUndoProgress: state.canUndoProgress ?? false,
+    canRedoProgress: state.canRedoProgress ?? false,
+    markProgress,
+    undoProgress,
+    redoProgress,
+    clearProgressHistory
   };
 }
 

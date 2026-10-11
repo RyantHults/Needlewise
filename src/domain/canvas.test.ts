@@ -220,9 +220,10 @@ describe('canvas-resize', () => {
 
   it('shrinks an edge, capturing the content it removes and keeping lines on the new border', () => {
     const doc = seeded();
+    stitch(doc).completed[5] = 1;
     const right = apply(doc, canvasResizeCommand({ top: 0, right: -1, bottom: 0, left: 0 }));
     expect([right.document.width, right.document.height]).toEqual([2, 2]);
-    expect(right.removal.cells).toEqual([{ layerId: 1, indices: new Uint32Array([5]), kind: new Uint8Array([CellKind.Full]), colors: new Uint16Array([2, 0, 0, 0]) }]);
+    expect(right.removal.cells).toEqual([{ layerId: 1, indices: new Uint32Array([5]), kind: new Uint8Array([CellKind.Full]), colors: new Uint16Array([2, 0, 0, 0]), completed: new Uint8Array([1]) }]);
     // x = 8 is the new right border.
     expect(lines(right.document)).toEqual([[0, 0, 4, 0], [8, 0, 8, 4]]);
 
@@ -230,6 +231,9 @@ describe('canvas-resize', () => {
     expect([left.document.width, left.document.originX]).toEqual([2, 1]);
     expect(Array.from(left.removal.cells[0].indices)).toEqual([0]);
     expect(stitch(left.document).kind[3]).toBe(CellKind.Full);
+    // Kept cells keep their marks as they move.
+    expect(Array.from(stitch(left.document).completed)).toEqual([0, 0, 0, 1]);
+    expect(Array.from(left.removal.cells[0].completed)).toEqual([0]);
     expect(lines(left.document)).toEqual([[4, 0, 4, 4]]);
     expect(left.removal.backstitches).toHaveLength(1);
     expect(left.removal.backstitches[0]).toMatchObject({ layerId: 2, records: [{ x1: 0, y1: 0, x2: 4, y2: 0, start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1, completed: false }] });
@@ -327,7 +331,7 @@ describe('canvas-cells', () => {
     expect(Array.from(document.canvasMask!)).toEqual([1, 1, 1, 1, 0, 1, 1, 1, 1]);
     expect(stitch(document, 3).kind[4]).toBe(CellKind.Empty);
     expect(stitch(document, 3).colors[16]).toBe(0);
-    expect(removal.cells).toEqual([{ layerId: 3, indices: new Uint32Array([4]), kind: new Uint8Array([CellKind.Full]), colors: new Uint16Array([2, 0, 0, 0]) }]);
+    expect(removal.cells).toEqual([{ layerId: 3, indices: new Uint32Array([4]), kind: new Uint8Array([CellKind.Full]), colors: new Uint16Array([2, 0, 0, 0]), completed: new Uint8Array([0]) }]);
     // Layers the edit leaves alone keep their objects.
     expect(findLayer(document, 1)).toBe(findLayer(doc, 1));
     expect(findLayer(document, 2)).toBe(findLayer(doc, 2));

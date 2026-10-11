@@ -13,6 +13,8 @@ const inspectedRepositorySha = '1474067bf9c75a4acc15990eb086846f23e025b5';
 const expectedRecordCount = 489;
 const minimumRecordCount = 480;
 const maximumRecordCount = 520;
+// Upstream's English label for DMC's white thread; DMC's own code is Blanc.
+const codeRenames = new Map([['White', { code: 'Blanc', name: 'Blanc' }]]);
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const defaults = {
@@ -125,6 +127,15 @@ function parseRows(html) {
     seenCodes.add(code.toUpperCase());
     seenSourceIds.add(sourceId);
     seenHex.add(hex);
+    const rename = codeRenames.get(code);
+    if (rename) {
+      const renamedSourceId = `dmc-${rename.code.toUpperCase()}`;
+      if (seenCodes.has(rename.code.toUpperCase())) throw new Error(`Duplicate DMC code: ${rename.code}.`);
+      seenCodes.add(rename.code.toUpperCase());
+      seenSourceIds.add(renamedSourceId);
+      records.push({ sourceId: renamedSourceId, code: rename.code, name: rename.name, hex, rgb });
+      continue;
+    }
     records.push({ sourceId, code, name, hex, rgb });
   }
 
@@ -208,6 +219,7 @@ function build(args) {
         'Require 480-520 DMC data rows and exactly 489 rows from this captured source; reject any seven-cell table row that is not a DMC data row.',
         'Require seven cells, alphanumeric source code matching its link text, non-empty name, and matching style/link HEX values.',
         'Normalize source IDs to dmc-{CODE} with uppercase code while preserving the displayed code.',
+        'Rename upstream code White to the DMC code Blanc (dmc-BLANC) after validating the source row.',
         'Derive normalized RGB bytes from the validated six-digit HEX value so every committed record is internally consistent.',
         'Record, but do not silently use, upstream decimal RGB cells when they disagree with HEX; malformed values fail closed.',
         'Reject duplicate codes, source IDs, HEX values, malformed records, invalid RGB bytes, and HEX/RGB mismatches.'

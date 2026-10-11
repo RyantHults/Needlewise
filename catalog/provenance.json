@@ -13,7 +13,7 @@
     "retrievedAt": "2026-08-30T22:47:01Z",
     "htmlSha256": "80b8cf1994d160836f1cb0cea8c6f49963707ee02a56a42a11ba640c94d9c086",
     "dataSha256": "80b8cf1994d160836f1cb0cea8c6f49963707ee02a56a42a11ba640c94d9c086",
-    "normalizedCatalogSha256": "92944307643514d24d828d1628f1766530843e4f5ed848414b9e180d54853de9",
+    "normalizedCatalogSha256": "9e098b34e2d1bf1c699448197345ae96f6289269fcbce362ccaec5e2113b1a94",
     "observedHtmlTableRows": 502,
     "observedDmcRecordCount": 489,
     "sourceRgbMismatchCount": 11,
@@ -170,6 +170,7 @@
       "Require 480-520 DMC data rows and exactly 489 rows from this captured source; reject any seven-cell table row that is not a DMC data row.",
       "Require seven cells, alphanumeric source code matching its link text, non-empty name, and matching style/link HEX values.",
       "Normalize source IDs to dmc-{CODE} with uppercase code while preserving the displayed code.",
+      "Rename upstream code White to the DMC code Blanc (dmc-BLANC) after validating the source row.",
       "Derive normalized RGB bytes from the validated six-digit HEX value so every committed record is internally consistent.",
       "Record, but do not silently use, upstream decimal RGB cells when they disagree with HEX; malformed values fail closed.",
       "Reject duplicate codes, source IDs, HEX values, malformed records, invalid RGB bytes, and HEX/RGB mismatches."

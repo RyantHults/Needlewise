@@ -41,6 +41,8 @@ import {
   preflightDeleteRegionCommand,
   preflightDeleteCellSetCommand,
   deriveExplicitCompletionProgress,
+  bulkCompletionCommand,
+  bulkBackstitchCompletionCommand,
   type MutationInfo,
   type SparseMutationDelta
 } from './commands';
@@ -60,7 +62,8 @@ import type {
   PatternDocument,
   Point,
   QuarterCorner,
-  ProgressChangeSet
+  ProgressChangeSet,
+  StitchLayer
 } from './types';
 import { CellKind, DEFAULT_PATTERN_SETTINGS, DOCUMENT_SCHEMA_VERSION, DomainError, LAYERED_DOCUMENT_VERSION, LayerType, MAX_LAYER_NAME_CHARS, MAX_LAYERS_PER_TYPE, MaterialUnit, MAX_PERSISTABLE_CELL_COUNT, PALETTE_ID_MAX } from './types';
 import { assertValidDocument, collectValidationErrors } from './validation';
@@ -78,6 +81,7 @@ import {
   layerSurface,
   requireEditableLayer
 } from './layers';
+import { coveringBackstitchLayerId, coveringLayerId, type ProgressCommand, type ProgressEntry, type ProgressEntryPart } from './progress';
 import { applyCanvasCommand, backstitchWithinCanvas, canvasCellsCommand, canvasFields, canvasResizeCommand, isValidCanvasOrigin, packCanvasMask, unpackCanvasMask, type CanvasRemoval } from './canvas';
 
 export const DEFAULT_HISTORY_LIMIT_BYTES = 64 * 1024 * 1024;
@@ -885,6 +889,16 @@ function historyStoreEqual(left: BackstitchStore, right: BackstitchStore): boole
     && historyTypedArraysEqual(left.y2, right.y2)
     && historyTypedArraysEqual(left.colors, right.colors)
     && historyTypedArraysEqual(left.completed, right.completed);
+}
+
+/** Equal stores apart from progress, which marks change outside history. */
+function sameLines(left: BackstitchStore, right: BackstitchStore): boolean {
+  return historyTypedArraysEqual(left.ids, right.ids)
+    && historyTypedArraysEqual(left.x1, right.x1)
+    && historyTypedArraysEqual(left.y1, right.y1)
+    && historyTypedArraysEqual(left.x2, right.x2)
+    && historyTypedArraysEqual(left.y2, right.y2)
+    && historyTypedArraysEqual(left.colors, right.colors);
 }
 
 function historyDocumentCompatible(actual: PatternDocument, expected: PatternDocument): boolean {
@@ -1936,6 +1950,8 @@ export interface HistoryLayerDto {
   readonly empty?: true;
   readonly kind?: Uint8Array;
   readonly colors?: Uint16Array;
+  /** Stitch progress, one value per cell. Only present with `kind` and `colors`, and absent when no cell is marked. */
+  readonly completed?: Uint8Array;
   readonly backstitches?: BackstitchStore;
 }
 
@@ -1985,6 +2001,8 @@ export interface HistoryCanvasRemovedCellsDto {
   readonly indices: Uint32Array;
   readonly kind: Uint8Array;
   readonly colors: Uint16Array;
+  /** Stitch progress aligned with `indices`; absent when none of the removed cells was marked. */
+  readonly completed?: Uint8Array;
 }
 
 /** Backstitches a canvas edit dropped from one layer, with their ascending positions in the before store. */
@@ -2028,13 +2046,15 @@ export interface DocumentEditorHistoryDto {
 interface StitchContent {
   readonly kind: Uint8Array;
   readonly colors: Uint16Array;
+  /** Absent when no cell is marked. */
+  readonly completed?: Uint8Array;
 }
 
 interface SpecialtyContent {
   readonly backstitches: BackstitchStore;
 }
 
-/** `completed` planes are always zero, so they are never stored; `'empty'` is an all-zero layer. */
+/** `'empty'` is an all-zero layer. */
 type LayerContent = StitchContent | SpecialtyContent | 'empty';
 
 interface LayerRecord {
@@ -2084,7 +2104,7 @@ interface CanvasEntry {
   command: CanvasResizeCommand | CanvasCellsCommand;
   before: HistoryCanvasFrameDto;
   removal: {
-    cells: CanvasRemoval['cells'];
+    cells: readonly HistoryCanvasRemovedCellsDto[];
     backstitches: readonly HistoryCanvasRemovedLinesDto[];
   };
   bytes: number;
@@ -2104,11 +2124,12 @@ const EMPTY_KIND = new Uint8Array(0);
 const EMPTY_COLORS = new Uint16Array(0);
 
 function layerContent(layer: Layer): StitchContent | SpecialtyContent {
-  return layer.type === LayerType.Stitch ? { kind: layer.kind, colors: layer.colors } : { backstitches: layer.backstitches };
+  if (layer.type === LayerType.Specialty) return { backstitches: layer.backstitches };
+  return hasNonZero(layer.completed) ? { kind: layer.kind, colors: layer.colors, completed: layer.completed } : { kind: layer.kind, colors: layer.colors };
 }
 
 function sameLayerContent(left: Layer, right: Layer): boolean {
-  if (left.type === LayerType.Stitch && right.type === LayerType.Stitch) return left.kind === right.kind && left.colors === right.colors;
+  if (left.type === LayerType.Stitch && right.type === LayerType.Stitch) return left.kind === right.kind && left.colors === right.colors && left.completed === right.completed;
   if (left.type === LayerType.Specialty && right.type === LayerType.Specialty) return left.backstitches === right.backstitches;
   return false;
 }
@@ -2122,13 +2143,53 @@ function isEmptyLayer(layer: Layer): boolean {
   return layer.type === LayerType.Stitch ? !hasNonZero(layer.kind) && !hasNonZero(layer.colors) : layer.backstitches.ids.length === 0;
 }
 
-function buildLayer(record: LayerRecord, content: LayerContent, cellCount: number, completed?: Uint8Array): Layer {
+/**
+ * Builds a layer from a record. Marks are made outside document history, so
+ * when `current` is the same layer, every stitch or line whose geometry the
+ * record leaves unchanged keeps its current progress; the stored progress
+ * applies only to geometry the entry restores. Completion records no color,
+ * so a recolor alone never moves a mark.
+ */
+function buildLayer(record: LayerRecord, content: LayerContent, cellCount: number, current?: Layer): Layer {
   if (record.type === LayerType.Stitch) {
     const cells = content === 'empty' ? { kind: new Uint8Array(cellCount), colors: new Uint16Array(cellCount * 4) } : content as StitchContent;
-    return { id: record.id, type: LayerType.Stitch, name: record.name, visible: record.visible, kind: cells.kind, colors: cells.colors, completed: completed ?? new Uint8Array(cellCount) };
+    const completed = current?.type === LayerType.Stitch && current.kind.length === cellCount
+      ? keepCellCompletion(cells.kind, cells.colors, cells.completed, current)
+      : cells.completed ?? new Uint8Array(cellCount);
+    return { id: record.id, type: LayerType.Stitch, name: record.name, visible: record.visible, kind: cells.kind, colors: cells.colors, completed };
   }
   const backstitches = content === 'empty' ? emptyBackstitches() : (content as SpecialtyContent).backstitches;
-  return { id: record.id, type: LayerType.Specialty, name: record.name, visible: record.visible, backstitches };
+  return { id: record.id, type: LayerType.Specialty, name: record.name, visible: record.visible, backstitches: current?.type === LayerType.Specialty ? keepLineCompletion(backstitches, current.backstitches) : backstitches };
+}
+
+/** The progress plane for restored cells: cells with the same kind and occupied slots keep `current`'s progress, the rest take `stored` (zero when absent). */
+function keepCellCompletion(kind: Uint8Array, colors: Uint16Array, stored: Uint8Array | undefined, current: StitchLayer): Uint8Array {
+  if (current.kind === kind && current.colors === colors) return current.completed;
+  const completed = stored === undefined ? new Uint8Array(kind.length) : stored.slice();
+  for (let index = 0; index < kind.length; index += 1) {
+    const offset = index * 4;
+    if (kind[index] === current.kind[index]
+      && (colors[offset] === 0) === (current.colors[offset] === 0)
+      && (colors[offset + 1] === 0) === (current.colors[offset + 1] === 0)
+      && (colors[offset + 2] === 0) === (current.colors[offset + 2] === 0)
+      && (colors[offset + 3] === 0) === (current.colors[offset + 3] === 0)) completed[index] = current.completed[index];
+  }
+  return completed;
+}
+
+/** A restored store whose lines that `current` still holds at the same ends keep their current progress. */
+function keepLineCompletion(restored: BackstitchStore, current: BackstitchStore): BackstitchStore {
+  if (restored === current || current.ids.length === 0 || restored.ids.length === 0) return restored;
+  const positionOf = new Map(Array.from(current.ids, (id, index) => [id, index]));
+  let completed: Uint8Array | undefined;
+  for (let index = 0; index < restored.ids.length; index += 1) {
+    const position = positionOf.get(restored.ids[index]);
+    if (position === undefined || current.completed[position] === restored.completed[index]) continue;
+    if (current.x1[position] !== restored.x1[index] || current.y1[position] !== restored.y1[index] || current.x2[position] !== restored.x2[index] || current.y2[position] !== restored.y2[index]) continue;
+    completed ??= restored.completed.slice();
+    completed[index] = current.completed[position];
+  }
+  return completed === undefined ? restored : { ...restored, completed };
 }
 
 function storeBytes(store: BackstitchStore): number {
@@ -2137,7 +2198,7 @@ function storeBytes(store: BackstitchStore): number {
 
 function layerContentBytes(content: LayerContent): number {
   if (content === 'empty') return 0;
-  return 'backstitches' in content ? storeBytes(content.backstitches) : content.kind.byteLength + content.colors.byteLength;
+  return 'backstitches' in content ? storeBytes(content.backstitches) : content.kind.byteLength + content.colors.byteLength + (content.completed?.byteLength ?? 0);
 }
 
 function layeredSideBytes(side: LayeredSide): number {
@@ -2194,13 +2255,13 @@ function restoreLayeredSide(current: LayeredDocument, side: LayeredSide): Layere
   const currentById = new Map(current.layers.map((layer) => [layer.id, layer]));
   const cellCount = side.width * side.height;
   const layers = side.layers.map((record) => {
-    if (record.content !== null) return buildLayer(record, record.content, cellCount);
     const existing = currentById.get(record.id);
+    if (record.content !== null) return buildLayer(record, record.content, cellCount, existing?.type === record.type ? existing : undefined);
     // Unchanged cell planes only fit the same dimensions; an unchanged backstitch store is valid in both.
     if (existing === undefined || existing.type !== record.type || (existing.type === LayerType.Stitch && (current.width !== side.width || current.height !== side.height))) {
       throw new DomainError('invalid-history-state', `History layer ${String(record.id)} is incompatible with the current document.`);
     }
-    return buildLayer(record, layerContent(existing), cellCount, existing.type === LayerType.Stitch ? existing.completed : undefined);
+    return buildLayer(record, layerContent(existing), cellCount, existing);
   });
   return {
     ...current,
@@ -2236,7 +2297,7 @@ function canonicalCanvasCommand(command: DomainCommand): CanvasResizeCommand | C
 
 function canvasEntryBytes(entry: CanvasEntry): number {
   let bytes = 128 + (entry.before.canvasMaskBits?.byteLength ?? 0) + (entry.command.type === 'canvas-cells' ? entry.command.cells?.byteLength ?? 0 : 0);
-  for (const cells of entry.removal.cells) bytes += 32 + cells.indices.byteLength + cells.kind.byteLength + cells.colors.byteLength;
+  for (const cells of entry.removal.cells) bytes += 32 + cells.indices.byteLength + cells.kind.byteLength + cells.colors.byteLength + (cells.completed?.byteLength ?? 0);
   for (const lines of entry.removal.backstitches) bytes += 32 + lines.positions.byteLength + storeBytes(lines.backstitches);
   return bytes;
 }
@@ -2263,6 +2324,11 @@ function storeFromRecords(records: CanvasRemoval['backstitches'][number]['record
   return store;
 }
 
+/** Removed cells as stored: progress is kept only when some removed cell was marked. */
+function removedCells(removal: CanvasRemoval): HistoryCanvasRemovedCellsDto[] {
+  return removal.cells.map(({ layerId, indices, kind, colors, completed }) => hasNonZero(completed) ? { layerId, indices, kind, colors, completed } : { layerId, indices, kind, colors });
+}
+
 /** Removed lines with the positions they held in the before store, so undo restores the store order exactly. */
 function removedLines(before: LayeredDocument, removal: CanvasRemoval): HistoryCanvasRemovedLinesDto[] {
   return removal.backstitches.map(({ layerId, records }) => {
@@ -2279,7 +2345,7 @@ function captureCanvasEntry(before: LayeredDocument, command: DomainCommand, rem
     kind: 'canvas',
     command: canonicalCanvasCommand(command),
     before: canvasFrame(before),
-    removal: { cells: removal.cells, backstitches: removedLines(before, removal) },
+    removal: { cells: removedCells(removal), backstitches: removedLines(before, removal) },
     bytes: 0
   };
   entry.bytes = canvasEntryBytes(entry);
@@ -2350,12 +2416,14 @@ function restoreCanvasFrame(current: LayeredDocument, entry: CanvasEntry): Layer
     }
     const kind = new Uint8Array(cellCount);
     const colors = new Uint16Array(cellCount * 4);
+    const completed = new Uint8Array(cellCount);
     if (startX < endX) {
       for (let y = Math.max(0, -offsetY); y < Math.min(current.height, before.height - offsetY); y += 1) {
         const from = y * current.width;
         const to = (y + offsetY) * before.width + offsetX;
         kind.set(layer.kind.subarray(from + startX, from + endX), to + startX);
         colors.set(layer.colors.subarray((from + startX) * 4, (from + endX) * 4), (to + startX) * 4);
+        completed.set(layer.completed.subarray(from + startX, from + endX), to + startX);
       }
     }
     const removed = cellsById.get(layer.id);
@@ -2363,9 +2431,10 @@ function restoreCanvasFrame(current: LayeredDocument, entry: CanvasEntry): Layer
       removed.indices.forEach((index, position) => {
         kind[index] = removed.kind[position];
         colors.set(removed.colors.subarray(position * 4, position * 4 + 4), index * 4);
+        completed[index] = removed.completed?.[position] ?? 0;
       });
     }
-    return { ...layer, kind, colors, completed: new Uint8Array(cellCount) };
+    return { ...layer, kind, colors, completed };
   });
   const document: LayeredDocument = { ...current, width: before.width, height: before.height, layers, revision: current.revision + 1 };
   delete document.originX;
@@ -2386,7 +2455,13 @@ function canvasEntryToDto(entry: CanvasEntry): HistoryCanvasEntryDto {
     command: canonicalCanvasCommand(entry.command),
     before: { ...entry.before, ...(entry.before.canvasMaskBits === undefined ? {} : { canvasMaskBits: entry.before.canvasMaskBits.slice() }) },
     removal: {
-      cells: entry.removal.cells.map((cells) => ({ layerId: cells.layerId, indices: cells.indices.slice(), kind: cells.kind.slice(), colors: cells.colors.slice() })),
+      cells: entry.removal.cells.map((cells) => ({
+        layerId: cells.layerId,
+        indices: cells.indices.slice(),
+        kind: cells.kind.slice(),
+        colors: cells.colors.slice(),
+        ...(cells.completed === undefined ? {} : { completed: cells.completed.slice() })
+      })),
       backstitches: entry.removal.backstitches.map((lines) => ({ layerId: lines.layerId, positions: lines.positions.slice(), backstitches: cloneHistoryStore(lines.backstitches) }))
     },
     bytes: entry.bytes
@@ -2605,13 +2680,14 @@ function assertChangedLayersValid(before: LayeredDocument, after: LayeredDocumen
  */
 type CompositeRebuild = 'full' | 'diff' | 'metadata' | 'none' | Uint32Array;
 
-/** Cells whose kind or colors differ between two composites of the same size. */
+/** Cells whose kind, colors or progress differ between two composites of the same size. */
 function diffCompositeCells(previous: PatternDocument, next: PatternDocument): Uint32Array {
   const changed: number[] = [];
-  const { kind, colors } = next;
+  const { kind, colors, completed } = next;
   for (let index = 0; index < kind.length; index += 1) {
     const offset = index * 4;
     if (kind[index] !== previous.kind[index]
+      || completed[index] !== previous.completed[index]
       || colors[offset] !== previous.colors[offset]
       || colors[offset + 1] !== previous.colors[offset + 1]
       || colors[offset + 2] !== previous.colors[offset + 2]
@@ -2797,7 +2873,11 @@ function applyLayeredEntry(document: LayeredDocument, entry: LayeredHistoryEntry
       const layer = entry.layerId === null ? undefined : document.layers.find((candidate) => candidate.id === entry.layerId);
       if (entry.layerId !== null && layer === undefined) throw new DomainError('invalid-history-state', `History layer ${String(entry.layerId)} no longer exists.`);
       const surface = layer === undefined ? metadataSurface(document) : layerSurface(document, layer.id);
-      const next = applyDelta(surface, entry.delta, useAfter);
+      const applied = applyDelta(surface, entry.delta, useAfter);
+      // A store snapshot predates any marks made since; lines it leaves unchanged keep them.
+      const next = layer?.type === LayerType.Specialty && applied.backstitches !== surface.backstitches
+        ? { ...applied, backstitches: keepLineCompletion(applied.backstitches, layer.backstitches) }
+        : applied;
       const commandResult = result(next, true, undefined, undefined, {
         changed: true,
         snapshot: false,
@@ -2833,7 +2913,8 @@ function recordToDto(record: LayerRecord): HistoryLayerDto {
   if (record.content === null) return header;
   if (record.content === 'empty') return { ...header, empty: true };
   if ('backstitches' in record.content) return { ...header, backstitches: cloneHistoryStore(record.content.backstitches) };
-  return { ...header, kind: record.content.kind.slice(), colors: record.content.colors.slice() };
+  const { kind, colors, completed } = record.content;
+  return { ...header, kind: kind.slice(), colors: colors.slice(), ...(completed === undefined ? {} : { completed: completed.slice() }) };
 }
 
 function sideToDto(side: LayeredSide): HistoryLayeredSideDto {
@@ -2863,13 +2944,13 @@ function layeredEntryToDto(entry: LayeredHistoryEntry): DocumentEditorHistoryEnt
 
 function historyLayerDto(value: unknown, width: number, height: number, label: string): asserts value is HistoryLayerDto {
   const layer = historyRecord(value, label);
-  historyKeys(layer, ['id', 'type', 'name', 'visible'], ['empty', 'kind', 'colors', 'backstitches'], label);
+  historyKeys(layer, ['id', 'type', 'name', 'visible'], ['empty', 'kind', 'colors', 'completed', 'backstitches'], label);
   historySafeInteger(layer.id, `${label}.id`, 1);
   if (typeof layer.name !== 'string') throw new DomainError('invalid-history-state', `${label}.name is invalid.`);
   const nameLength = Array.from(layer.name).length;
   if (nameLength < 1 || nameLength > MAX_LAYER_NAME_CHARS) throw new DomainError('invalid-history-state', `${label}.name is invalid.`);
   historyBoolean(layer.visible, `${label}.visible`);
-  if (layer.empty !== undefined && (layer.empty !== true || layer.kind !== undefined || layer.colors !== undefined || layer.backstitches !== undefined)) throw new DomainError('invalid-history-state', `${label}.empty is invalid.`);
+  if (layer.empty !== undefined && (layer.empty !== true || layer.kind !== undefined || layer.colors !== undefined || layer.completed !== undefined || layer.backstitches !== undefined)) throw new DomainError('invalid-history-state', `${label}.empty is invalid.`);
   if (layer.type === LayerType.Stitch) {
     if (layer.backstitches !== undefined) throw new DomainError('invalid-history-state', `${label} is a stitch layer with backstitches.`);
     if ((layer.kind === undefined) !== (layer.colors === undefined)) throw new DomainError('invalid-history-state', `${label} cell planes must be paired.`);
@@ -2879,8 +2960,13 @@ function historyLayerDto(value: unknown, width: number, height: number, label: s
       historyLength(layer.kind, width * height, `${label}.kind`);
       historyLength(layer.colors as Uint16Array, width * height * 4, `${label}.colors`);
     }
+    if (layer.completed !== undefined) {
+      if (layer.kind === undefined) throw new DomainError('invalid-history-state', `${label}.completed requires cell planes.`);
+      historyUint8(layer.completed, `${label}.completed`);
+      historyLength(layer.completed, width * height, `${label}.completed`);
+    }
   } else if (layer.type === LayerType.Specialty) {
-    if (layer.kind !== undefined || layer.colors !== undefined) throw new DomainError('invalid-history-state', `${label} is a specialty layer with cells.`);
+    if (layer.kind !== undefined || layer.colors !== undefined || layer.completed !== undefined) throw new DomainError('invalid-history-state', `${label} is a specialty layer with cells.`);
     if (layer.backstitches !== undefined) historyBackstitches(layer.backstitches, `${label}.backstitches`);
   } else {
     throw new DomainError('invalid-history-state', `${label}.type is unsupported.`);
@@ -2964,7 +3050,7 @@ function historyCanvasEntry(entry: HistoryRecord, label: string): void {
   historyArray(removal.cells, `${label}.removal.cells`).forEach((value, index) => {
     const cellsLabel = `${label}.removal.cells[${String(index)}]`;
     const cells = historyRecord(value, cellsLabel);
-    historyKeys(cells, ['layerId', 'indices', 'kind', 'colors'], [], cellsLabel);
+    historyKeys(cells, ['layerId', 'indices', 'kind', 'colors'], ['completed'], cellsLabel);
     const layerId = historySafeInteger(cells.layerId, `${cellsLabel}.layerId`, 1);
     if (layerIds.has(layerId)) throw new DomainError('invalid-history-state', `${cellsLabel}.layerId is duplicated.`);
     layerIds.add(layerId);
@@ -2973,6 +3059,10 @@ function historyCanvasEntry(entry: HistoryRecord, label: string): void {
     historyUint16(cells.colors, `${cellsLabel}.colors`);
     historyLength(cells.kind, cells.indices.length, `${cellsLabel}.kind`);
     historyLength(cells.colors, cells.indices.length * 4, `${cellsLabel}.colors`);
+    if (cells.completed !== undefined) {
+      historyUint8(cells.completed, `${cellsLabel}.completed`);
+      historyLength(cells.completed, cells.indices.length, `${cellsLabel}.completed`);
+    }
   });
   historyArray(removal.backstitches, `${label}.removal.backstitches`).forEach((value, index) => {
     const linesLabel = `${label}.removal.backstitches[${String(index)}]`;
@@ -3024,7 +3114,7 @@ function recordFromDto(layer: HistoryLayerDto): LayerRecord {
   if (layer.empty === true) return { ...header, content: 'empty' };
   if (layer.type === LayerType.Specialty) return { ...header, content: layer.backstitches === undefined ? null : { backstitches: cloneHistoryStore(layer.backstitches) } };
   if (layer.kind === undefined || layer.colors === undefined) return { ...header, content: null };
-  return { ...header, content: { kind: layer.kind.slice(), colors: layer.colors.slice() } };
+  return { ...header, content: { kind: layer.kind.slice(), colors: layer.colors.slice(), ...(layer.completed === undefined ? {} : { completed: layer.completed.slice() }) } };
 }
 
 function sideFromDto(side: HistoryLayeredSideDto): LayeredSide {
@@ -3135,8 +3225,8 @@ function chainFromDocument(document: LayeredDocument): ChainState {
   };
 }
 
-/** Validates written cells as a one-row surface, so the cost follows the number of cells written. */
-function assertWrittenCellsValid(state: ChainState, kind: Uint8Array, colors: Uint16Array, palette: readonly PaletteEntry[], label: string): void {
+/** Validates written cells and their progress as a one-row surface, so the cost follows the number of cells written. */
+function assertWrittenCellsValid(state: ChainState, kind: Uint8Array, colors: Uint16Array, completed: Uint8Array | undefined, palette: readonly PaletteEntry[], label: string): void {
   if (kind.length === 0) return;
   const probe: PatternDocument = {
     version: DOCUMENT_SCHEMA_VERSION,
@@ -3145,7 +3235,7 @@ function assertWrittenCellsValid(state: ChainState, kind: Uint8Array, colors: Ui
     height: 1,
     kind,
     colors,
-    completed: new Uint8Array(kind.length),
+    completed: completed ?? new Uint8Array(kind.length),
     backstitches: emptyBackstitches(),
     palette: [...palette],
     settings: state.settings,
@@ -3175,7 +3265,7 @@ function assertWrittenLinesValid(state: ChainState, layerId: number, store: Back
     if (x1 > width * 4 || x2 > width * 4 || y1 > height * 4 || y2 > height * 4) fail();
     if ((x1 === x2 && y1 === y2) || x1 > x2 || (x1 === x2 && y1 > y2)) fail();
     const key = `${String(x1)},${String(y1)},${String(x2)},${String(y2)}`;
-    if (segments.has(key) || !active.has(store.colors[index]) || store.completed[index] !== 0) fail();
+    if (segments.has(key) || !active.has(store.colors[index]) || store.completed[index] > 1) fail();
     if (mask !== undefined && !backstitchWithinCanvas({ width, height, canvasMask: mask }, x1, y1, x2, y2)) fail();
     ids.add(id);
     segments.add(key);
@@ -3210,7 +3300,7 @@ function chainMatchesSide(state: ChainState, side: LayeredSide, label: string): 
       return;
     }
     if ('backstitches' in record.content) {
-      if (layer.type !== LayerType.Specialty || !historyStoreEqual(layer.backstitches, record.content.backstitches)) historyStateMismatch(`${label}.layers[${String(index)}]`);
+      if (layer.type !== LayerType.Specialty || !sameLines(layer.backstitches, record.content.backstitches)) historyStateMismatch(`${label}.layers[${String(index)}]`);
     } else if (layer.type !== LayerType.Stitch || (!typedEqual(layer.kind, record.content.kind) || !typedEqual(layer.colors, record.content.colors))) {
       historyStateMismatch(`${label}.layers[${String(index)}]`);
     }
@@ -3223,7 +3313,7 @@ function chainMatchesSide(state: ChainState, side: LayeredSide, label: string): 
     const recordLabel = `${label}.layers[${String(index)}]`;
     if ('backstitches' in record.content) assertWrittenLinesValid(state, record.id, record.content.backstitches, side.width, side.height, state.palette, state.layers, recordLabel);
     else {
-      assertWrittenCellsValid(state, record.content.kind, record.content.colors, state.palette, recordLabel);
+      assertWrittenCellsValid(state, record.content.kind, record.content.colors, record.content.completed, state.palette, recordLabel);
       assertCellsInCanvas(state, record.content.kind, recordLabel);
     }
   });
@@ -3255,7 +3345,7 @@ function chainToSide(state: ChainState, side: LayeredSide, label: string): void 
       const store = record.content.backstitches;
       return { ...header, type: LayerType.Specialty, backstitches: store, colorUse: countColors(store.colors), lineIds: new Set(store.ids) };
     }
-    assertWrittenCellsValid(state, record.content.kind, record.content.colors, palette, recordLabel);
+    assertWrittenCellsValid(state, record.content.kind, record.content.colors, record.content.completed, palette, recordLabel);
     assertCellsInCanvas(state, record.content.kind, recordLabel);
     return { ...header, type: LayerType.Stitch, kind: record.content.kind, colors: record.content.colors, ownsPlanes: false, colorUse: countColors(record.content.colors), lineIds: new Set() };
   });
@@ -3295,7 +3385,6 @@ function stepDeltaForValidation(state: ChainState, entry: LayerDeltaEntry, useAf
   const palette = toPalette ?? state.palette;
   const from = packedCellsSide(cells, !useAfter);
   const to = packedCellsSide(cells, useAfter);
-  if (hasNonZero(from.completed) || hasNonZero(to.completed)) historyStateMismatch(`${label}.progress`);
 
   if (entry.layerId !== null) {
     const layer = state.layers.find((candidate) => candidate.id === entry.layerId);
@@ -3309,8 +3398,8 @@ function stepDeltaForValidation(state: ChainState, entry: LayerDeltaEntry, useAf
 
     if (layer.type === LayerType.Stitch && cells.indices.length > 0) {
       // Undo writes one side and redo the other, so both must be valid against the palette in effect there.
-      assertWrittenCellsValid(state, from.kind, from.colors, state.palette, `${label}.cells`);
-      assertWrittenCellsValid(state, to.kind, to.colors, palette, `${label}.cells`);
+      assertWrittenCellsValid(state, from.kind, from.colors, from.completed, state.palette, `${label}.cells`);
+      assertWrittenCellsValid(state, to.kind, to.colors, to.completed, palette, `${label}.cells`);
       const mask = state.canvasMask;
       if (mask !== undefined) {
         cells.indices.forEach((index, position) => {
@@ -3339,7 +3428,7 @@ function stepDeltaForValidation(state: ChainState, entry: LayerDeltaEntry, useAf
       }
     }
     if (layer.type === LayerType.Specialty && fromStore !== undefined && toStore !== undefined) {
-      if (!historyStoreEqual(layer.backstitches, fromStore)) historyStateMismatch(`${label}.backstitches`);
+      if (!sameLines(layer.backstitches, fromStore)) historyStateMismatch(`${label}.backstitches`);
       assertWrittenLinesValid(state, layer.id, fromStore, state.width, state.height, state.palette, state.layers, label);
       assertWrittenLinesValid(state, layer.id, toStore, state.width, state.height, palette, state.layers, label);
       layer.backstitches = toStore;
@@ -3406,10 +3495,11 @@ function sameLayeredGeometry(left: LayeredDocument, right: LayeredDocument): boo
       const other = right.layers[index];
       if (layer.id !== other.id) return false;
       if (layer.type === LayerType.Stitch) return other.type === LayerType.Stitch && typedEqual(layer.kind, other.kind) && typedEqual(layer.colors, other.colors);
-      return other.type === LayerType.Specialty && historyStoreEqual(layer.backstitches, other.backstitches);
+      return other.type === LayerType.Specialty && sameLines(layer.backstitches, other.backstitches);
     });
 }
 
+/** Compares removed content; progress is ignored because the chain does not track marks, which change outside history. */
 function sameCanvasRemoval(left: CanvasEntry['removal'], right: CanvasEntry['removal']): boolean {
   return left.cells.length === right.cells.length
     && left.cells.every((cells, index) => {
@@ -3419,7 +3509,7 @@ function sameCanvasRemoval(left: CanvasEntry['removal'], right: CanvasEntry['rem
     && left.backstitches.length === right.backstitches.length
     && left.backstitches.every((lines, index) => {
       const other = right.backstitches[index];
-      return lines.layerId === other.layerId && typedEqual(lines.positions, other.positions) && historyStoreEqual(lines.backstitches, other.backstitches);
+      return lines.layerId === other.layerId && typedEqual(lines.positions, other.positions) && sameLines(lines.backstitches, other.backstitches);
     });
 }
 
@@ -3433,7 +3523,7 @@ function replayCanvasForValidation(document: LayeredDocument, entry: CanvasEntry
     throw error;
   }
   if (!applied.changed) historyStateMismatch(`${label}.command`);
-  return { document: applied.document, cells: applied.removal.cells, backstitches: removedLines(document, applied.removal) };
+  return { document: applied.document, cells: removedCells(applied.removal), backstitches: removedLines(document, applied.removal) };
 }
 
 /**
@@ -3521,6 +3611,63 @@ function hydrateLayeredHistory(value: unknown, current: LayeredDocument, configu
   const redoChain = chainFromDocument(current);
   for (let index = redo.length - 1; index >= 0; index -= 1) stepLayeredEntryForValidation(redoChain, redo[index], true, `redo[${String(index)}]`);
   return { undo, redo, undoBytes, redoBytes };
+}
+
+/** One layer's share of a Track mark: composite cells with their masks, or backstitch ids. */
+interface ProgressTarget {
+  readonly layerId: number;
+  readonly cells: Map<number, number>;
+  readonly lines: Set<number>;
+}
+
+/**
+ * Splits a composite-space mark by the layer that supplies each visible cell
+ * or line, in stack order. Empty and hidden targets are dropped, and masks
+ * for a repeated cell are combined.
+ */
+function progressTargets(document: LayeredDocument, command: ProgressCommand): ProgressTarget[] {
+  const byLayer = new Map<number, ProgressTarget>();
+  const targetFor = (layerId: number): ProgressTarget => {
+    let target = byLayer.get(layerId);
+    if (target === undefined) {
+      target = { layerId, cells: new Map(), lines: new Set() };
+      byLayer.set(layerId, target);
+    }
+    return target;
+  };
+  const cells = command.cells;
+  if (cells !== undefined) {
+    if (!(cells.indices instanceof Uint32Array) || !(cells.masks instanceof Uint8Array) || cells.masks.length !== cells.indices.length) {
+      throw new DomainError('invalid-completion-targets', 'Progress cells need a Uint32Array of indices and one Uint8Array mask per index.');
+    }
+    const cellCount = document.width * document.height;
+    for (let position = 0; position < cells.indices.length; position += 1) {
+      const index = cells.indices[position];
+      if (index >= cellCount) throw new DomainError('out-of-bounds', `Progress cell index ${String(index)} is out of bounds.`);
+      const mask = cells.masks[position];
+      if (mask === 0) continue;
+      const layerId = coveringLayerId(document, index);
+      if (layerId === null) continue;
+      const target = targetFor(layerId).cells;
+      target.set(index, (target.get(index) ?? 0) | mask);
+    }
+  }
+  const ids = command.backstitchIds;
+  if (ids !== undefined) {
+    if (!(ids instanceof Uint32Array)) throw new DomainError('invalid-completion-targets', 'Progress backstitch ids must be a Uint32Array.');
+    for (const id of ids) {
+      const layerId = coveringBackstitchLayerId(document, id);
+      if (layerId !== null) targetFor(layerId).lines.add(id);
+    }
+  }
+  return document.layers.flatMap((layer) => byLayer.get(layer.id) ?? []);
+}
+
+/** The completion command a target runs on its layer's surface. */
+function progressTargetCommand(target: ProgressTarget, operation: ProgressCommand['operation']): DomainCommand {
+  if (target.lines.size > 0) return bulkBackstitchCompletionCommand(Uint32Array.from(target.lines).sort(), operation);
+  const indices = Uint32Array.from(target.cells.keys()).sort();
+  return bulkCompletionCommand(indices, operation, undefined, undefined, Uint8Array.from(indices, (index) => target.cells.get(index) ?? 0));
 }
 
 /**
@@ -3639,6 +3786,72 @@ export class DocumentEditor {
     return this.executeBatch(commands);
   }
 
+  /**
+   * Applies a Track mark outside document history. Composite cells and lines
+   * are split by the layer that supplies them and marked there with the
+   * completion planners. Returns null when nothing changed.
+   */
+  applyProgress(command: ProgressCommand): { result: CommandResult; entry: ProgressEntry } | null {
+    if (command.expectedRevision !== undefined && command.expectedRevision !== this.layered.revision) {
+      throw new DomainError('stale-command', `Progress expected revision ${String(command.expectedRevision)} but the document is at revision ${String(this.layered.revision)}.`);
+    }
+    const revision = this.layered.revision + 1;
+    let document = this.layered;
+    const parts: ProgressEntryPart[] = [];
+    const cellIndices: number[] = [];
+    const backstitchIds: number[] = [];
+    let marked = 0;
+    let unmarked = 0;
+    for (const target of progressTargets(document, command)) {
+      // Progress never enters document history, so the history byte limit does not apply.
+      const run = runSurfaceCommand(layerSurface(document, target.layerId), progressTargetCommand(target, command.operation), Number.MAX_SAFE_INTEGER);
+      if (run.next === undefined || run.entry?.kind !== 'delta') continue;
+      const { cellCompletions, backstitchCompletions } = run.entry.delta;
+      document = commitSurfaceToLayer(document, target.layerId, run.next, revision);
+      parts.push({ layerId: target.layerId, ...(cellCompletions === undefined ? {} : { cells: cellCompletions }), ...(backstitchCompletions === undefined ? {} : { backstitches: backstitchCompletions }) });
+      cellIndices.push(...run.entry.progress.cellIndices);
+      backstitchIds.push(...run.entry.progress.backstitchIds);
+      marked += run.entry.progress.marked;
+      unmarked += run.entry.progress.unmarked;
+    }
+    if (parts.length === 0) return null;
+    this.layered = document;
+    return { result: this.publishProgress({ marked, unmarked, cellIndices: Uint32Array.from(cellIndices).sort(), backstitchIds: Uint32Array.from(backstitchIds).sort() }), entry: { parts } };
+  }
+
+  /**
+   * Replays a Track mark: `forward` writes its after values (redo), otherwise
+   * its before values (undo). Parts whose layer no longer exists are skipped.
+   */
+  applyProgressEntry(entry: ProgressEntry, forward: boolean): CommandResult {
+    const revision = this.layered.revision + 1;
+    let document = this.layered;
+    const cellIndices: number[] = [];
+    const backstitchIds: number[] = [];
+    let marked = 0;
+    let unmarked = 0;
+    for (const part of entry.parts) {
+      const layer = document.layers.find((candidate) => candidate.id === part.layerId);
+      if (layer === undefined || (layer.type === LayerType.Stitch ? part.cells === undefined : part.backstitches === undefined)) continue;
+      const surface = layerSurface(document, layer.id);
+      const delta: SparseMutationDelta = {
+        cells: { indices: new Uint32Array(0), beforeKind: EMPTY_KIND, beforeColors: EMPTY_COLORS, beforeCompleted: EMPTY_KIND, afterKind: EMPTY_KIND, afterColors: EMPTY_COLORS, afterCompleted: EMPTY_KIND },
+        ...(part.cells === undefined ? {} : { cellCompletions: part.cells }),
+        ...(part.backstitches === undefined ? {} : { backstitchCompletions: part.backstitches })
+      };
+      const next = applyDelta(surface, delta, forward);
+      const changed = deriveExplicitCompletionProgress(surface, next, part.cells?.indices, part.backstitches?.ids);
+      document = commitSurfaceToLayer(document, layer.id, next, revision);
+      cellIndices.push(...changed.cellIndices);
+      backstitchIds.push(...changed.backstitchIds);
+      marked += changed.marked;
+      unmarked += changed.unmarked;
+    }
+    if (document === this.layered) return result(this.composite, false);
+    this.layered = document;
+    return this.publishProgress({ marked, unmarked, cellIndices: Uint32Array.from(cellIndices).sort(), backstitchIds: Uint32Array.from(backstitchIds).sort() });
+  }
+
   undo(): CommandResult {
     const entry = this.undoStack.pop();
     if (!entry) return result(this.composite, false);
@@ -3720,6 +3933,18 @@ export class DocumentEditor {
       recalculateMetrics: linesChanged,
       ...(changedIndices.length === 0 && !linesChanged ? { compositeUnchanged: true } : {})
     };
+  }
+
+  /** Publishes a progress-only change: the composite refreshes the marked cells, and backstitches are recomputed as usual. */
+  private publishProgress(progress: ProgressChangeSet): CommandResult {
+    const base = result(metadataSurface(this.layered), true, undefined, undefined, {
+      changed: true,
+      snapshot: false,
+      changedIndices: progress.cellIndices,
+      changedBackstitchIds: progress.backstitchIds,
+      progress
+    });
+    return this.publish(base, progress.cellIndices);
   }
 
   private pushHistory(entry: LayeredHistoryEntry): void {

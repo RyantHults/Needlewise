@@ -14,7 +14,8 @@ import {
   type NormalizedMaterialSettings,
   type PatternDocument,
   type PatternMetrics,
-  type PatternSettings
+  type PatternSettings,
+  type ProgressMetrics
 } from '../domain';
 import {
   deleteMetricsImpactForResult,
@@ -431,6 +432,19 @@ function applyDeleteMetricsImpact(
     nextCounts.set(entry.paletteId, next);
   }
   return hasDeletedComponent ? nextCounts : undefined;
+}
+
+/**
+ * One palette color's progress, backstitches included, or the whole
+ * pattern's for `null`. A color with no stitches is zero of zero.
+ */
+export function paletteProgress(metrics: PatternMetrics, paletteId: number | null): ProgressMetrics {
+  if (paletteId === null) return metrics.progress;
+  const palette = metrics.byPalette.get(paletteId);
+  const totalComponents = palette?.totalComponents ?? 0;
+  const completedComponents = palette?.completedComponents ?? 0;
+  const fraction = totalComponents === 0 ? 0 : completedComponents / totalComponents;
+  return { completedComponents, remainingComponents: totalComponents - completedComponents, totalComponents, fraction, percent: fraction * 100 };
 }
 
 /**

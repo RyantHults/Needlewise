@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { CellKind, collectValidationErrors, createDocument, createEditor, type BulkCellCommand, type CommandResult, type DomainCommand, type PatternDocument } from '../domain';
+import { CellKind, collectValidationErrors, createBackstitchCommand, createDocument, createEditor, QuarterCorner, quarterCommandFor, type BulkCellCommand, type CommandResult, type DomainCommand, type PatternDocument, type ProgressCommand } from '../domain';
 import { getCanvasMetrics } from './coordinates';
 import { EditorSurfaceController, selectedCellSemantics, type EditorSurfaceControllerOptions } from './controller';
 import { StaleEditorTransactionError, type EditorRevisionToken, type EditorTransaction, type WorkspaceEditorGateway, type WorkspaceEditorSnapshot } from './gateway';
@@ -7,13 +7,16 @@ import { createUiStore } from './ui-store';
 import { ThreeQuarterPair } from './cell-kinds';
 import { DEFAULT_CATALOG_DEFINITION, type CatalogDefinition, type CatalogRecord } from '../catalog';
 import type { CanvasRenderer, Invalidation, OverlayState, RendererStyle, RenderStats, TraceImage, TraceRgb, Viewport } from './contracts';
-import type { PointerSample } from './input';
+import { CHART_EDGE_MARGIN } from './contracts';
+import type { KeyboardSample, PointerSample } from './input';
 
 class FakeGateway implements WorkspaceEditorGateway {
   private editor: ReturnType<typeof createEditor>;
   private project = 'project-a';
   private readonly listeners = new Set<(snapshot: WorkspaceEditorSnapshot) => void>();
   readonly commands: DomainCommand[] = [];
+  readonly progress: ProgressCommand[] = [];
+  readonly progressHistory: Array<'undo' | 'redo'> = [];
 
   constructor(document = createDocument({ width: 8, height: 8, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Thread', color: '#123456' }] })) {
     this.editor = createEditor(document);
@@ -83,6 +86,21 @@ class FakeGateway implements WorkspaceEditorGateway {
     const result = this.editor.redo();
     this.emit();
     return result;
+  }
+
+  markProgress(command: ProgressCommand): boolean {
+    this.progress.push(command);
+    return true;
+  }
+
+  undoProgress(): boolean {
+    this.progressHistory.push('undo');
+    return true;
+  }
+
+  redoProgress(): boolean {
+    this.progressHistory.push('redo');
+    return true;
   }
 
   switchProject(): void {
@@ -1370,7 +1388,7 @@ describe('EditorSurfaceController', () => {
     controller.handleKeyDown({ key: '0', preventDefault: () => undefined });
     const viewport = uiStore.getState().viewport;
     const document = gateway.getSnapshot().document!;
-    expect(viewport.zoom).toBe(128 / Math.max(document.width, document.height));
+    expect(viewport.zoom).toBe((128 - 2 * CHART_EDGE_MARGIN) / Math.max(document.width, document.height));
     expect(viewport.x).toBeLessThanOrEqual(0);
     expect(viewport.y).toBeLessThanOrEqual(0);
     expect(viewport.x + 128 / viewport.zoom).toBeGreaterThanOrEqual(document.width);
@@ -1476,6 +1494,22 @@ describe('EditorSurfaceController', () => {
     controller.setGridVisible(true);
     expect(uiStore.getState().gridVisible).toBe(true);
     expect(calls.setStyle.at(-1)).toEqual({ showGrid: true });
+    expect(gateway.undoDepth).toBe(0);
+    controller.dispose();
+  });
+
+  it('suppresses the grid in thread view and leaves it when a chart mode is chosen', () => {
+    const { uiStore, controller, calls, gateway } = controllerFixture();
+    expect(uiStore.getState().threadView).toBe(false);
+    expect(calls.setStyle[0]).toMatchObject({ threadView: false, showGrid: true });
+    controller.setThreadView(true);
+    expect(calls.setStyle.at(-1)).toEqual({ threadView: true, showGrid: false });
+    controller.setGridVisible(false);
+    controller.setGridVisible(true);
+    expect(calls.setStyle.at(-1)).toEqual({ showGrid: false });
+    controller.setChartMode('symbol');
+    expect(uiStore.getState().threadView).toBe(false);
+    expect(calls.setStyle.at(-1)).toEqual({ threadView: false, showGrid: true });
     expect(gateway.undoDepth).toBe(0);
     controller.dispose();
   });
@@ -1877,7 +1911,7 @@ describe('EditorSurfaceController', () => {
     erasedDocument.kind[0] = ThreeQuarterPair;
     erasedDocument.colors.set([1, 0, 2, 0], 0);
     erasedDocument.completed[0] = 5;
-    erased.controller.setTool({ tool: 'eraser', mode: 'component' });
+    erased.controller.setTool({ tool: 'eraser' });
     erased.controller.handlePointerDown(pointer(4, 4, 4));
     expect(erased.uiStore.getState().overlay.pendingCellStates).toMatchObject([
       { kind: CellKind.ThreeQuarterSE, colors: [2, 0, 0, 0], completed: 1 }
@@ -1939,7 +1973,7 @@ describe('EditorSurfaceController', () => {
     document.kind[0] = ThreeQuarterPair;
     document.colors.set([1, 0, 2, 0], 0);
     document.completed[0] = 5;
-    fixture.controller.setTool({ tool: 'eraser', mode: 'component' });
+    fixture.controller.setTool({ tool: 'eraser' });
     fixture.controller.handlePointerDown(pointer(1, 4, 4));
     fixture.controller.handlePointerUp(pointer(1, 4, 4));
     expect(fixture.gateway.commands.at(-1)).toMatchObject({ type: 'mixed-erase' });
@@ -1955,12 +1989,116 @@ describe('EditorSurfaceController', () => {
     fixture.controller.dispose();
   });
 
+  describe('eraser on three-quarter stitches', () => {
+    function eraserFixture() {
+      const fixture = controllerFixture();
+      const document = fixture.gateway.getSnapshot().document!;
+      fixture.controller.setTool({ tool: 'eraser' });
+      return { ...fixture, document };
+    }
+    function tap(fixture: ReturnType<typeof eraserFixture>, x: number, y: number): void {
+      fixture.controller.handlePointerDown(pointer(1, x, y));
+      fixture.controller.handlePointerUp(pointer(1, x, y));
+    }
+
+    it('erases the pair component whose triangle holds the touch, whatever quadrant it is in', () => {
+      const cases: Array<{ colors: number[]; x: number; y: number; kind: CellKind; colorsAfter: number[] }> = [
+        // NW/SE pair split by u+v=1: NE quadrant inside the NW triangle erases NW.
+        { colors: [1, 0, 2, 0], x: 12, y: 4, kind: CellKind.ThreeQuarterSE, colorsAfter: [2, 0, 0, 0] },
+        // SW quadrant inside the SE triangle erases SE.
+        { colors: [1, 0, 2, 0], x: 6, y: 12, kind: CellKind.ThreeQuarterNW, colorsAfter: [1, 0, 0, 0] },
+        // NE/SW pair split by v=u: NW quadrant inside the NE triangle erases NE.
+        { colors: [0, 1, 0, 2], x: 7, y: 2, kind: CellKind.ThreeQuarterSW, colorsAfter: [2, 0, 0, 0] },
+        // NW quadrant inside the SW triangle erases SW.
+        { colors: [0, 1, 0, 2], x: 2, y: 7, kind: CellKind.ThreeQuarterNE, colorsAfter: [1, 0, 0, 0] }
+      ];
+      for (const entry of cases) {
+        const fixture = eraserFixture();
+        fixture.gateway.execute({ type: 'palette-create', name: 'Blue', color: '#00f' });
+        fixture.document.kind[0] = ThreeQuarterPair;
+        fixture.document.colors.set(entry.colors, 0);
+        tap(fixture, entry.x, entry.y);
+        const after = fixture.gateway.getSnapshot().document!;
+        expect(after.kind[0]).toBe(entry.kind);
+        expect(Array.from(after.colors.slice(0, 4))).toEqual(entry.colorsAfter);
+        fixture.controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
+        const undone = fixture.gateway.getSnapshot().document!;
+        expect(undone.kind[0]).toBe(ThreeQuarterPair);
+        expect(Array.from(undone.colors.slice(0, 4))).toEqual(entry.colors);
+        fixture.controller.dispose();
+      }
+    });
+
+    it('erases a single three-quarter, half or full cell whole wherever it is touched', () => {
+      for (const kind of [CellKind.ThreeQuarterNW, CellKind.Full, CellKind.HalfSlash]) {
+        const fixture = eraserFixture();
+        fixture.document.kind[0] = kind;
+        fixture.document.colors[0] = 1;
+        // The NE quadrant's bare corner: outside a three-quarter NW triangle, still the whole cell.
+        tap(fixture, 14, 10);
+        expect(fixture.gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
+        fixture.controller.dispose();
+      }
+    });
+
+    it('erases only the side the drag started on and previews the same state', () => {
+      const build = () => {
+        const fixture = eraserFixture();
+        fixture.document.kind[0] = ThreeQuarterPair;
+        fixture.document.colors.set([1, 0, 1, 0], 0);
+        fixture.document.kind[1] = ThreeQuarterPair;
+        fixture.document.colors.set([1, 0, 1, 0], 4);
+        fixture.document.kind[2] = ThreeQuarterPair;
+        fixture.document.colors.set([0, 1, 0, 1], 8);
+        fixture.document.kind[3] = CellKind.ThreeQuarterNW;
+        fixture.document.colors[12] = 1;
+        return fixture;
+      };
+      {
+        const fixture = build();
+        // Start in the NW triangle of cell 0 (NE quadrant); later samples sit in SE-ish spots.
+        fixture.controller.handlePointerDown(pointer(1, 12, 4));
+        fixture.controller.handlePointerMove(pointer(1, 20, 14));
+        fixture.controller.handlePointerMove(pointer(1, 36, 14));
+        fixture.controller.handlePointerMove(pointer(1, 52, 14));
+        expect(fixture.uiStore.getState().overlay.pendingCellStates).toMatchObject([
+          { index: 0, kind: CellKind.ThreeQuarterSE },
+          { index: 1, kind: CellKind.ThreeQuarterSE },
+          { index: 3, kind: CellKind.Empty }
+        ]);
+        fixture.controller.handlePointerUp(pointer(1, 52, 14));
+        const after = fixture.gateway.getSnapshot().document!;
+        expect(after.kind[0]).toBe(CellKind.ThreeQuarterSE);
+        expect(after.kind[1]).toBe(CellKind.ThreeQuarterSE);
+        expect(after.kind[2]).toBe(ThreeQuarterPair);
+        expect(after.kind[3]).toBe(CellKind.Empty);
+        fixture.controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
+        const undone = fixture.gateway.getSnapshot().document!;
+        expect(undone.kind[0]).toBe(ThreeQuarterPair);
+        expect(undone.kind[1]).toBe(ThreeQuarterPair);
+        expect(undone.kind[3]).toBe(CellKind.ThreeQuarterNW);
+        fixture.controller.dispose();
+      }
+
+      // A drag that holds a full cell erases it whole while the pair keeps its other side.
+      const mixed = build();
+      mixed.document.kind[3] = CellKind.Full;
+      mixed.document.colors[12] = 1;
+      mixed.controller.handlePointerDown(pointer(1, 12, 4));
+      mixed.controller.handlePointerMove(pointer(1, 52, 14));
+      mixed.controller.handlePointerUp(pointer(1, 52, 14));
+      const mixedAfter = mixed.gateway.getSnapshot().document!;
+      expect([0, 1, 2, 3].map((index) => mixedAfter.kind[index])).toEqual([CellKind.ThreeQuarterSE, CellKind.ThreeQuarterSE, ThreeQuarterPair, CellKind.Empty]);
+      mixed.controller.dispose();
+    });
+  });
+
   it('erases a clipped multi-cell brush as one command and suppresses no-op stamps', () => {
     const { gateway, uiStore, controller } = controllerFixture();
     gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
     gateway.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
     gateway.commands.length = 0;
-    controller.setTool({ tool: 'eraser', mode: 'whole-cell' });
+    controller.setTool({ tool: 'eraser' });
     controller.setBrushSize(2);
     controller.handlePointerDown(pointer(1, 24, 24));
     expect(uiStore.getState().overlay.pendingCellStates).toMatchObject([
@@ -2528,7 +2666,7 @@ describe('EditorSurfaceController', () => {
     gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
     gateway.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
     gateway.commands.length = 0;
-    controller.setTool({ tool: 'eraser', mode: 'whole-cell' });
+    controller.setTool({ tool: 'eraser' });
     controller.setBrushSize(2);
     uiStore.setKeyboardCursor({ x: 1, y: 1 });
     const historyBeforeErase = gateway.undoDepth;
@@ -2544,7 +2682,7 @@ describe('EditorSurfaceController', () => {
 
     gateway.commands.length = 0;
     controller.setBrushSize(1);
-    controller.setTool({ tool: 'eraser', mode: 'whole-cell' });
+    controller.setTool({ tool: 'eraser' });
     uiStore.setKeyboardCursor({ x: 0, y: 1 });
     controller.handleKeyDown({ key: 'Backspace', preventDefault: () => undefined });
     expect(gateway.commands).toHaveLength(0);
@@ -2564,7 +2702,7 @@ describe('EditorSurfaceController', () => {
     expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(false);
     expect(gateway.commands).toHaveLength(0);
     controller.handleKeyDown({ key: '0', preventDefault: () => undefined });
-    expect(uiStore.getState().viewport).toEqual({ x: 0, y: 0, zoom: 16 });
+    expect(uiStore.getState().viewport).toEqual({ x: -CHART_EDGE_MARGIN / 10, y: -CHART_EDGE_MARGIN / 10, zoom: 10 });
     controller.dispose();
   });
 
@@ -2603,5 +2741,214 @@ describe('EditorSurfaceController', () => {
     expect(pinch.uiStore.getState().viewport).toEqual(beforeResize);
     expect(pinch.gateway.commands).toHaveLength(0);
     pinch.controller.dispose();
+  });
+});
+
+describe('EditorSurfaceController read-only mode', () => {
+  it('pans on every drag and never commits a document command', () => {
+    const { gateway, uiStore, controller } = controllerFixture({ readOnly: true });
+    uiStore.setKeyboardCursor({ x: 1, y: 1 });
+    expect(controller.handlePointerDown(pointer(1, 32, 32))).toBe(true);
+    controller.handlePointerMove(pointer(1, 48, 40));
+    controller.handlePointerUp(pointer(1, 48, 40));
+    expect(controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined })).toBe(false);
+    expect(controller.handleKeyDown({ key: 'Delete', preventDefault: () => undefined })).toBe(false);
+    expect(controller.handleKeyDown({ key: 'c', ctrlKey: true, preventDefault: () => undefined })).toBe(false);
+    expect(gateway.commands).toHaveLength(0);
+    expect(gateway.undoDepth).toBe(0);
+    expect(gateway.progress).toHaveLength(0);
+    controller.dispose();
+  });
+
+  it('refuses editing tools but still zooms from the keyboard', () => {
+    const { uiStore, controller } = controllerFixture({ readOnly: true });
+    expect(controller.setTool({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } })).toBe(false);
+    expect(controller.setTool({ tool: 'pan' })).toBe(true);
+    const before = uiStore.getState().viewport.zoom;
+    expect(controller.handleKeyDown({ key: '+', preventDefault: () => undefined })).toBe(true);
+    expect(uiStore.getState().viewport.zoom).toBeGreaterThan(before);
+    controller.dispose();
+  });
+
+  it('ignores the two-finger undo tap', () => {
+    const { gateway, controller } = controllerFixture({ readOnly: true });
+    controller.handlePointerDown(pointer(1, 20, 20, 'touch', 0, { timeStamp: 0 }));
+    controller.handlePointerDown(pointer(2, 60, 20, 'touch', 0, { timeStamp: 10 }));
+    controller.handlePointerUp(pointer(1, 20, 20, 'touch', 0, { timeStamp: 40 }));
+    controller.handlePointerUp(pointer(2, 60, 20, 'touch', 0, { timeStamp: 50 }));
+    expect(gateway.undoDepth).toBe(0);
+    expect(gateway.commands).toHaveLength(0);
+    controller.dispose();
+  });
+
+  it('routes undo and redo keys to the progress history', () => {
+    const { gateway, controller } = controllerFixture({ readOnly: true });
+    const key = (sample: Partial<KeyboardSample>) => controller.handleKeyDown({ key: 'z', preventDefault: () => undefined, ...sample });
+    expect(key({ ctrlKey: true })).toBe(true);
+    expect(key({ metaKey: true, shiftKey: true })).toBe(true);
+    expect(key({ key: 'y', ctrlKey: true })).toBe(true);
+    expect(key({ key: 'v', ctrlKey: true })).toBe(false);
+    expect(gateway.progressHistory).toEqual(['undo', 'redo', 'redo']);
+    expect(gateway.undoDepth).toBe(0);
+    controller.dispose();
+  });
+
+  it('accepts only pan and mark', () => {
+    const { uiStore, controller } = controllerFixture({ readOnly: true });
+    expect(controller.setTool({ tool: 'mark' })).toBe(true);
+    expect(uiStore.getState().tool).toEqual({ tool: 'mark' });
+    expect(controller.setTool({ tool: 'eraser' })).toBe(false);
+    expect(controller.setTool({ tool: 'pan' })).toBe(true);
+    controller.dispose();
+  });
+
+  it('pushes the highlight color to the renderer and leaves completion to the viewer', () => {
+    const { controller, calls } = controllerFixture({ readOnly: true });
+    expect(calls.setStyle[0]).toMatchObject({ highlightColor: null });
+    expect(calls.setStyle[0]).not.toHaveProperty('showCompletion');
+    controller.setHighlightColor(2);
+    expect(calls.setStyle.at(-1)).toEqual({ highlightColor: 2 });
+    controller.setHighlightColor(null);
+    expect(calls.setStyle.at(-1)).toEqual({ highlightColor: null });
+    controller.dispose();
+  });
+});
+
+describe('EditorSurfaceController mark tool', () => {
+  function markFixture() {
+    const document = createDocument({
+      width: 8,
+      height: 8,
+      catalog: DEFAULT_CATALOG_DEFINITION.association,
+      palette: [{ id: 1, name: 'One', color: '#123456' }, { id: 2, name: 'Two', color: '#654321' }]
+    });
+    const fixture = controllerFixture({ readOnly: true }, document);
+    fixture.uiStore.setViewport({ x: 0, y: 0, zoom: 16 });
+    expect(fixture.controller.setTool({ tool: 'mark' })).toBe(true);
+    return fixture;
+  }
+
+  /** The screen point at a model position for the fixture's 16px-per-cell viewport. */
+  const at = (x: number, y: number) => ({ x: x * 16, y: y * 16 });
+
+  function drag(controller: EditorSurfaceController, points: ReadonlyArray<{ x: number; y: number }>, pointerType = 'mouse') {
+    const [first, ...rest] = points;
+    controller.handlePointerDown(pointer(1, first.x, first.y, pointerType));
+    for (const point of rest) controller.handlePointerMove(pointer(1, point.x, point.y, pointerType));
+    const last = points[points.length - 1];
+    controller.handlePointerUp(pointer(1, last.x, last.y, pointerType));
+  }
+
+  it('toggles the one component under a tap', () => {
+    const { gateway, controller } = markFixture();
+    gateway.execute(quarterCommandFor(1, 1, QuarterCorner.NW, 1));
+    gateway.execute(quarterCommandFor(1, 1, QuarterCorner.NE, 2));
+    const tap = at(1.75, 1.25);
+    drag(controller, [tap], 'touch');
+    expect(gateway.progress).toHaveLength(1);
+    const command = gateway.progress[0];
+    expect(command.operation).toBe('toggle');
+    expect([...command.cells!.indices]).toEqual([9]);
+    expect([...command.cells!.masks]).toEqual([1 << QuarterCorner.NE]);
+    expect(command.backstitchIds).toBeUndefined();
+    controller.dispose();
+  });
+
+  it('ignores a tap on an empty cell', () => {
+    const { gateway, controller } = markFixture();
+    const tap = at(2.5, 2.5);
+    drag(controller, [tap]);
+    expect(gateway.progress).toHaveLength(0);
+    controller.dispose();
+  });
+
+  it('sets every stitch a drag crosses in one call and previews the marks', () => {
+    const { gateway, uiStore, controller } = markFixture();
+    for (let x = 1; x <= 4; x += 1) gateway.execute({ type: 'set-full', x, y: 2, color: 1 });
+    gateway.execute(createBackstitchCommand({ x: 12, y: 8 }, { x: 12, y: 12 }, 1));
+    controller.handlePointerDown(pointer(1, at(1.5, 2.5).x, at(1.5, 2.5).y));
+    controller.handlePointerMove(pointer(1, at(2.5, 2.5).x, at(2.5, 2.5).y));
+    const preview = uiStore.getState().overlay.pendingCellStates;
+    expect(preview?.map((state) => [state.index, state.completed])).toEqual([[17, 1], [18, 1]]);
+    controller.handlePointerMove(pointer(1, at(4.5, 2.5).x, at(4.5, 2.5).y));
+    controller.handlePointerUp(pointer(1, at(4.5, 2.5).x, at(4.5, 2.5).y));
+    expect(gateway.progress).toHaveLength(1);
+    const command = gateway.progress[0];
+    expect(command.operation).toBe('set');
+    expect([...command.cells!.indices]).toEqual([17, 18, 19, 20]);
+    expect([...command.cells!.masks]).toEqual([1, 1, 1, 1]);
+    expect(command.backstitchIds?.length).toBe(1);
+    expect(uiStore.getState().overlay.pendingCellStates).toBeUndefined();
+    expect(gateway.undoDepth).toBe(5);
+    controller.dispose();
+  });
+
+  it('clears a drag when the first stitch it reaches is already done', () => {
+    const { gateway, controller } = markFixture();
+    gateway.execute({ type: 'set-full', x: 1, y: 2, color: 1 });
+    gateway.execute({ type: 'set-full', x: 2, y: 2, color: 1 });
+    // The fake's plain editor refuses progress commands, so mark the composite directly.
+    gateway.getSnapshot().document!.completed[17] = 1;
+    drag(controller, [at(1.5, 2.5), at(2.5, 2.5)]);
+    expect(gateway.progress).toHaveLength(1);
+    expect(gateway.progress[0].operation).toBe('clear');
+    expect([...gateway.progress[0].cells!.indices]).toEqual([17, 18]);
+    controller.dispose();
+  });
+
+  it('marks only the highlighted color', () => {
+    const { gateway, controller } = markFixture();
+    gateway.execute({ type: 'set-full', x: 1, y: 2, color: 1 });
+    gateway.execute({ type: 'set-full', x: 2, y: 2, color: 2 });
+    gateway.execute({ type: 'set-full', x: 3, y: 2, color: 1 });
+    gateway.execute(quarterCommandFor(4, 2, QuarterCorner.NW, 1));
+    gateway.execute(quarterCommandFor(4, 2, QuarterCorner.SE, 2));
+    controller.setHighlightColor(2);
+    drag(controller, [at(1.5, 2.5), at(4.5, 2.5)]);
+    expect(gateway.progress).toHaveLength(1);
+    const command = gateway.progress[0];
+    expect(command.operation).toBe('set');
+    expect([...command.cells!.indices]).toEqual([18, 20]);
+    expect([...command.cells!.masks]).toEqual([1, 1 << QuarterCorner.SE]);
+    drag(controller, [at(1.5, 2.5)]);
+    expect(gateway.progress).toHaveLength(1);
+    controller.dispose();
+  });
+
+  it('pinches instead of marking when a second finger lands', () => {
+    const { gateway, uiStore, controller } = markFixture();
+    for (let x = 1; x <= 4; x += 1) gateway.execute({ type: 'set-full', x, y: 2, color: 1 });
+    const before = uiStore.getState().viewport;
+    controller.handlePointerDown(pointer(1, at(1.5, 2.5).x, at(1.5, 2.5).y, 'touch'));
+    controller.handlePointerMove(pointer(1, at(3.5, 2.5).x, at(3.5, 2.5).y, 'touch'));
+    controller.handlePointerDown(pointer(2, at(6.5, 6.5).x, at(6.5, 6.5).y, 'touch'));
+    controller.handlePointerMove(pointer(2, at(7.5, 7.5).x, at(7.5, 7.5).y, 'touch'));
+    expect(uiStore.getState().overlay.pendingCellStates).toBeUndefined();
+    controller.handlePointerUp(pointer(2, at(7.5, 7.5).x, at(7.5, 7.5).y, 'touch'));
+    controller.handlePointerUp(pointer(1, at(3.5, 2.5).x, at(3.5, 2.5).y, 'touch'));
+    expect(gateway.progress).toHaveLength(0);
+    expect(uiStore.getState().viewport).not.toEqual(before);
+    controller.dispose();
+  });
+
+  it('still pans with the middle button', () => {
+    const { gateway, uiStore, controller } = markFixture();
+    gateway.execute({ type: 'set-full', x: 1, y: 2, color: 1 });
+    const before = uiStore.getState().viewport;
+    controller.handlePointerDown(pointer(1, at(1.5, 2.5).x, at(1.5, 2.5).y, 'mouse', 1));
+    controller.handlePointerMove(pointer(1, at(3.5, 2.5).x, at(3.5, 2.5).y, 'mouse', 1));
+    controller.handlePointerUp(pointer(1, at(3.5, 2.5).x, at(3.5, 2.5).y, 'mouse', 1));
+    expect(gateway.progress).toHaveLength(0);
+    expect(uiStore.getState().viewport.x).not.toBe(before.x);
+    controller.dispose();
+  });
+});
+
+describe('EditorSurfaceController editor style', () => {
+  it('never draws completion marks and refuses the mark tool', () => {
+    const { controller, calls } = controllerFixture();
+    expect(calls.setStyle[0]).toMatchObject({ showCompletion: false, highlightColor: null });
+    expect(controller.setTool({ tool: 'mark' })).toBe(false);
+    controller.dispose();
   });
 });

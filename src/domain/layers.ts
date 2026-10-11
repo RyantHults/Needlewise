@@ -293,8 +293,8 @@ function visibleStitchLayers(document: LayeredDocument): StitchLayer[] {
   return document.layers.filter((layer): layer is StitchLayer => layer.type === LayerType.Stitch && layer.visible);
 }
 
-/** Writes the covering result for one cell: the topmost visible non-empty stitch cell. */
-function flattenCell(stitchLayers: readonly StitchLayer[], kind: Uint8Array, colors: Uint16Array, index: number): void {
+/** Writes the covering result for one cell: the topmost visible non-empty stitch cell, with its completion. */
+function flattenCell(stitchLayers: readonly StitchLayer[], kind: Uint8Array, colors: Uint16Array, completed: Uint8Array, index: number): void {
   const offset = index * 4;
   for (let layerIndex = stitchLayers.length - 1; layerIndex >= 0; layerIndex -= 1) {
     const layer = stitchLayers[layerIndex];
@@ -304,6 +304,7 @@ function flattenCell(stitchLayers: readonly StitchLayer[], kind: Uint8Array, col
     colors[offset + 1] = layer.colors[offset + 1];
     colors[offset + 2] = layer.colors[offset + 2];
     colors[offset + 3] = layer.colors[offset + 3];
+    completed[index] = layer.completed[index];
     return;
   }
   kind[index] = CellKind.Empty;
@@ -311,12 +312,14 @@ function flattenCell(stitchLayers: readonly StitchLayer[], kind: Uint8Array, col
   colors[offset + 1] = 0;
   colors[offset + 2] = 0;
   colors[offset + 3] = 0;
+  completed[index] = 0;
 }
 
-function flattenCells(document: LayeredDocument, kind: Uint8Array, colors: Uint16Array): void {
+function flattenCells(document: LayeredDocument, kind: Uint8Array, colors: Uint16Array, completed: Uint8Array): void {
   const stitchLayers = visibleStitchLayers(document);
   kind.fill(0);
   colors.fill(0);
+  completed.fill(0);
   for (const layer of stitchLayers) {
     const source = layer.kind;
     for (let index = 0; index < source.length; index += 1) {
@@ -327,20 +330,22 @@ function flattenCells(document: LayeredDocument, kind: Uint8Array, colors: Uint1
       colors[offset + 1] = layer.colors[offset + 1];
       colors[offset + 2] = layer.colors[offset + 2];
       colors[offset + 3] = layer.colors[offset + 3];
+      completed[index] = layer.completed[index];
     }
   }
 }
 
 /**
  * The visible composite as a single surface. Stitch cells follow the covering
- * rule, `completed` is zero, backstitches are the visible specialty layers
+ * rule, completion included; backstitches are the visible specialty layers
  * bottom to top, and palette/settings are shared by reference.
  */
 export function flattenDocument(document: LayeredDocument): PatternDocument {
   const cellCount = document.width * document.height;
   const kind = new Uint8Array(cellCount);
   const colors = new Uint16Array(cellCount * 4);
-  flattenCells(document, kind, colors);
+  const completed = new Uint8Array(cellCount);
+  flattenCells(document, kind, colors, completed);
   return {
     version: DOCUMENT_SCHEMA_VERSION,
     catalog: document.catalog,
@@ -348,7 +353,7 @@ export function flattenDocument(document: LayeredDocument): PatternDocument {
     height: document.height,
     kind,
     colors,
-    completed: new Uint8Array(cellCount),
+    completed,
     backstitches: flattenBackstitches(document),
     palette: document.palette,
     settings: document.settings,
@@ -371,9 +376,9 @@ function frameChanged(previous: PatternDocument, document: LayeredDocument): boo
 
 /**
  * Keeps one composite up to date. Composites are immutable snapshots: `update`
- * returns a new composite each call, copying the kind/colors planes before
- * recomputing `changedIndices`, and always recomputes backstitches and
- * refreshes shared fields. The completed plane stays shared. Structure changes
+ * returns a new composite each call, copying the kind/colors/completed planes
+ * before recomputing `changedIndices`, and always recomputes backstitches and
+ * refreshes shared fields. Structure changes
  * (visibility, order, delete, merge) and canvas changes need `full`; `update`
  * and `touch` fall back to it when the size, origin or mask no longer match.
  */
@@ -394,16 +399,19 @@ export class FlattenCache {
     if (!previous || frameChanged(previous, document)) return this.full(document);
     let kind = previous.kind;
     let colors = previous.colors;
+    let completed = previous.completed;
     if (changedIndices && changedIndices.length > 0) {
       kind = kind.slice();
       colors = colors.slice();
+      completed = completed.slice();
       const stitchLayers = visibleStitchLayers(document);
-      for (const index of changedIndices) flattenCell(stitchLayers, kind, colors, index);
+      for (const index of changedIndices) flattenCell(stitchLayers, kind, colors, completed, index);
     }
     this.composite = {
       ...previous,
       kind,
       colors,
+      completed,
       backstitches: flattenBackstitches(document),
       palette: document.palette,
       settings: document.settings,
@@ -668,7 +676,7 @@ export function applyLayerStructureCommand(document: LayeredDocument, command: D
       const name = duplicateName(source.name);
       let copy: Layer;
       if (source.type === LayerType.Stitch) {
-        copy = { id, type: LayerType.Stitch, name, visible: source.visible, kind: source.kind.slice(), colors: source.colors.slice(), completed: new Uint8Array(source.kind.length) };
+        copy = { id, type: LayerType.Stitch, name, visible: source.visible, kind: source.kind.slice(), colors: source.colors.slice(), completed: source.completed.slice() };
       } else {
         const count = source.backstitches.ids.length;
         if (document.nextBackstitchId + count > UINT32_MAX + 1) throw new DomainError('backstitch-id-exhausted', 'No backstitch IDs remain for this duplicate.');
@@ -703,21 +711,23 @@ export function applyLayerStructureCommand(document: LayeredDocument, command: D
   }
 }
 
-/** A new layer with the target's identity and the combined content; `upper` wins conflicts. */
+/** A new layer with the target's identity and the combined content; `upper` wins conflicts, completion included. */
 function mergeLayers(target: Layer, lower: Layer, upper: Layer): Layer {
   if (target.type === LayerType.Stitch && lower.type === LayerType.Stitch && upper.type === LayerType.Stitch) {
     const kind = lower.kind.slice();
     const colors = lower.colors.slice();
+    const completed = lower.completed.slice();
     for (let index = 0; index < kind.length; index += 1) {
       if (upper.kind[index] === CellKind.Empty) continue;
       kind[index] = upper.kind[index];
+      completed[index] = upper.completed[index];
       const offset = index * 4;
       colors[offset] = upper.colors[offset];
       colors[offset + 1] = upper.colors[offset + 1];
       colors[offset + 2] = upper.colors[offset + 2];
       colors[offset + 3] = upper.colors[offset + 3];
     }
-    return { id: target.id, type: LayerType.Stitch, name: target.name, visible: target.visible, kind, colors, completed: new Uint8Array(kind.length) };
+    return { id: target.id, type: LayerType.Stitch, name: target.name, visible: target.visible, kind, colors, completed };
   }
   if (target.type === LayerType.Specialty && lower.type === LayerType.Specialty && upper.type === LayerType.Specialty) {
     const upperKeys = new Set<string>();

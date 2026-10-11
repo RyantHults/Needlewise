@@ -216,6 +216,10 @@ describe('offline DMC-compatible catalog', () => {
     expect(getDmcColor('dmc-09')).toMatchObject({ sourceId: 'dmc-09', code: '09' });
     expect(getDmcColor('B5200')).toMatchObject({ sourceId: 'dmc-B5200' });
     expect(getDmcColor('Ecru')).toMatchObject({ sourceId: 'dmc-ECRU' });
+    expect(getDmcColor('Blanc')).toMatchObject({ sourceId: 'dmc-BLANC', code: 'Blanc', name: 'Blanc', hex: '#FCFBF8' });
+    expect(getDmcColor('White')).toBe(getDmcColor('Blanc'));
+    expect(getDmcColor('dmc-WHITE')).toBe(getDmcColor('Blanc'));
+    expect(getDmcColor('B5200')).toMatchObject({ name: 'Snow White' });
     expect(getDmcColor(3713)?.code).toBe('3713');
     expect(getDmcColor('missing')).toBeUndefined();
     expect(DMC_CATALOG_DEFINITION.getByHex('#ffe2e2')).toMatchObject({

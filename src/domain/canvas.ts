@@ -200,8 +200,8 @@ export function isCanvasCommand(command: DomainCommand): boolean {
 }
 
 export interface CanvasRemoval {
-  /** Per stitch layer: before-frame cell indices that held content, with their kind/colors. */
-  readonly cells: ReadonlyArray<{ layerId: number; indices: Uint32Array; kind: Uint8Array; colors: Uint16Array }>;
+  /** Per stitch layer: before-frame cell indices that held content, with their kind/colors/completion. */
+  readonly cells: ReadonlyArray<{ layerId: number; indices: Uint32Array; kind: Uint8Array; colors: Uint16Array; completed: Uint8Array }>;
   /** Per specialty layer: full records of the removed backstitches. */
   readonly backstitches: ReadonlyArray<{ layerId: number; records: BackstitchRecord[] }>;
 }
@@ -385,20 +385,24 @@ function reframe(doc: LayeredDocument, box: CropRect, mask: Uint8Array | undefin
       if (indices.length > 0) {
         const kind = new Uint8Array(indices.length);
         const colors = new Uint16Array(indices.length * 4);
+        const completed = new Uint8Array(indices.length);
         indices.forEach((index, position) => {
           kind[position] = layer.kind[index];
           colors.set(layer.colors.subarray(index * 4, index * 4 + 4), position * 4);
+          completed[position] = layer.completed[index];
         });
-        removedCells.push({ layerId: layer.id, indices: Uint32Array.from(indices), kind, colors });
+        removedCells.push({ layerId: layer.id, indices: Uint32Array.from(indices), kind, colors, completed });
       }
       const kind = new Uint8Array(cellCount);
       const colors = new Uint16Array(cellCount * 4);
+      const completed = new Uint8Array(cellCount);
       // The boxes may not overlap at all, for example after shrinking one edge and growing the opposite one.
       for (let y = overlapY; overlapX < overlapRight && y < overlapBottom; y += 1) {
         const from = y * oldWidth;
         const to = (y - box.y) * box.width - box.x;
         kind.set(layer.kind.subarray(from + overlapX, from + overlapRight), to + overlapX);
         colors.set(layer.colors.subarray((from + overlapX) * 4, (from + overlapRight) * 4), (to + overlapX) * 4);
+        completed.set(layer.completed.subarray(from + overlapX, from + overlapRight), to + overlapX);
       }
       for (const index of indices) {
         const x = index % oldWidth - box.x;
@@ -407,8 +411,9 @@ function reframe(doc: LayeredDocument, box: CropRect, mask: Uint8Array | undefin
         const target = y * box.width + x;
         kind[target] = CellKind.Empty;
         colors.fill(0, target * 4, target * 4 + 4);
+        completed[target] = 0;
       }
-      return { ...layer, kind, colors, completed: sameBox ? layer.completed : new Uint8Array(cellCount) };
+      return { ...layer, kind, colors, completed };
     }
     const store = layer.backstitches;
     const dx = box.x * UNITS;
