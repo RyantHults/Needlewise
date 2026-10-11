@@ -1,0 +1,14 @@
+.viewer-main { display:flex; flex-direction:column; gap:.4rem; min-width:0; }
+.viewer-canvas { min-height:28rem; touch-action:none; }
+.viewer-hover { min-height:1.4rem; margin:0; color:#5f574f; font-size:.85rem; }
+.viewer-hover-swatch { display:inline-block; width:.8rem; height:.8rem; margin-right:.4rem; border:1px solid #b9b2a8; border-radius:2px; vertical-align:-.1rem; }
+@media (min-width: 800px) {
+  .app-shell-editor .viewer-main { flex:1 1 auto; min-height:0; }
+  .app-shell-editor .viewer-canvas { min-height:0; }
+}
+@media (max-width: 62rem) {
+  .viewer-canvas { min-height:22rem; }
+}
+@media (max-width: 700px) {
+  .viewer-canvas { min-height:clamp(18rem, 52svh, 32rem); }
+}

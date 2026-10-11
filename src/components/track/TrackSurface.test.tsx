@@ -1,0 +1,260 @@
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { useEffect } from 'react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { applyCommand, computePatternMetrics, createDocument, type PatternDocument } from '../../domain';
+import { DEFAULT_CATALOG_DEFINITION } from '../../catalog';
+import type { ProjectWorkspace } from '../../application/workspace';
+import { ChartPresentationMode, type EditorUiState } from '../../editor';
+import { TrackSurface } from './TrackSurface';
+import { patternDimensionSummary } from '../editor/pattern-dimensions';
+
+// The export and settings dialogs have their own suites; here only that the page opens them.
+vi.mock('../export/ExportPanel', () => ({
+  ExportDialog: ({ title, onClose }: { title: string; onClose: () => void }) => (
+    <div role="dialog" aria-label="Export stub">{title}<button type="button" onClick={onClose}>Close export</button></div>
+  )
+}));
+vi.mock('../editor/PatternSettingsDialog', () => ({
+  PatternSettingsDialog: ({ editorOptions, onClose }: { editorOptions: string; onClose: () => void }) => (
+    <div role="dialog" aria-label="Settings stub" data-options={editorOptions}><button type="button" onClick={onClose}>Close settings</button></div>
+  )
+}));
+vi.mock('../export/export-pdf', () => ({ createExportPdf: () => vi.fn() }));
+
+// The canvas viewer is covered by the controller and renderer suites; here it
+// records what the page asks of it and hands the page a stand-in controller.
+const viewer = vi.hoisted(() => ({
+  props: [] as Record<string, unknown>[],
+  controller: { setChartMode: vi.fn(), setThreadView: vi.fn(), handleKeyDown: vi.fn() }
+}));
+vi.mock('./PatternViewer', () => ({
+  PatternViewer: (props: { onReady?: (controller: unknown) => void } & Record<string, unknown>) => {
+    viewer.props.push(props);
+    useEffect(() => {
+      props.onReady?.(viewer.controller);
+    }, []);
+    return <div data-testid="pattern-viewer" />;
+  }
+}));
+
+const lastViewerProps = () => viewer.props[viewer.props.length - 1];
+const publishUiState = (state: Partial<EditorUiState>) =>
+  act(() => (lastViewerProps().onUiState as (state: EditorUiState) => void)(state as EditorUiState));
+
+function trackedDocument(): PatternDocument {
+  let pattern = createDocument({
+    catalog: DEFAULT_CATALOG_DEFINITION.association,
+    width: 3,
+    height: 2,
+    palette: [
+      { id: 7, name: 'Ruby', color: '#AA0000' },
+      { id: 2, name: 'Sky', color: '#3366CC' },
+      { id: 4, name: 'Unused', color: '#00AA00' }
+    ]
+  });
+  const apply = (command: Parameters<typeof applyCommand>[1]) => {
+    pattern = applyCommand(pattern, command).document;
+  };
+  for (let x = 0; x < 3; x += 1) apply({ type: 'set-full', x, y: 0, color: 7 });
+  apply({ type: 'set-full', x: 0, y: 1, color: 7 });
+  apply({ type: 'set-full', x: 1, y: 1, color: 2 });
+  apply({ type: 'set-full', x: 2, y: 1, color: 2 });
+  apply({ type: 'set-completion', x: 0, y: 0, completed: true });
+  apply({ type: 'set-completion', x: 1, y: 1, completed: true });
+  apply({ type: 'set-completion', x: 2, y: 1, completed: true });
+  return pattern;
+}
+
+function setup(progressState: { canUndoProgress?: boolean; canRedoProgress?: boolean } = {}, onRenameTitle?: (title: string) => void) {
+  const workspace = {
+    canUndoProgress: progressState.canUndoProgress ?? false,
+    canRedoProgress: progressState.canRedoProgress ?? false,
+    undoProgress: vi.fn(),
+    redoProgress: vi.fn(),
+    clearProgressHistory: vi.fn(),
+    availableCatalogs: () => []
+  };
+  const document = trackedDocument();
+  const onNavigate = vi.fn();
+  const view = render(
+    <TrackSurface workspace={workspace as unknown as ProjectWorkspace} document={document} title="Garden sampler" metrics={computePatternMetrics(document)} onNavigate={onNavigate} onRenameTitle={onRenameTitle} />
+  );
+  return { workspace, onNavigate, view };
+}
+
+beforeEach(() => {
+  viewer.props.length = 0;
+  vi.clearAllMocks();
+});
+
+describe('TrackSurface', () => {
+  it('shows overall progress and opens with the Mark tool and completion drawn', () => {
+    setup();
+
+    const strip = screen.getByRole('region', { name: 'Progress' });
+    expect(strip).toHaveTextContent('All colors');
+    expect(strip).toHaveTextContent('50%');
+    expect(strip).toHaveTextContent('3 of 6 stitches done');
+    expect(screen.getByRole('button', { name: 'Mark' })).toHaveAttribute('aria-pressed', 'true');
+    expect(lastViewerProps()).toMatchObject({ tool: 'mark', showCompletion: true, highlightColor: null });
+  });
+
+  it('lists only the colors in use, each with its percent', () => {
+    setup();
+
+    const colors = screen.getByRole('list', { name: 'Colors' });
+    expect(within(colors).getByRole('button', { name: '#AA0000 Ruby, 25% done' })).toBeInTheDocument();
+    expect(within(colors).getByRole('button', { name: '#3366CC Sky, 100% done' })).toBeInTheDocument();
+    expect(within(colors).queryByRole('button', { name: /^Unused/ })).not.toBeInTheDocument();
+  });
+
+  it('focuses a color on tap, shows its percent, and clears it on a second tap', () => {
+    setup();
+    const ruby = screen.getByRole('button', { name: '#AA0000 Ruby, 25% done' });
+
+    fireEvent.click(ruby);
+    expect(ruby).toHaveAttribute('aria-pressed', 'true');
+    expect(lastViewerProps()).toMatchObject({ highlightColor: 7 });
+    const strip = screen.getByRole('region', { name: 'Progress' });
+    expect(strip).toHaveTextContent('#AA0000 · Ruby');
+    expect(strip).toHaveTextContent('25%');
+    expect(strip).toHaveTextContent('1 of 4 stitches done');
+
+    fireEvent.click(ruby);
+    expect(ruby).toHaveAttribute('aria-pressed', 'false');
+    expect(lastViewerProps()).toMatchObject({ highlightColor: null });
+    expect(screen.getByRole('region', { name: 'Progress' })).toHaveTextContent('All colors');
+  });
+
+  it('switches between Pan and Mark from the Tools section of the canvas actions', () => {
+    setup();
+    const tools = screen.getByRole('region', { name: 'Tools' });
+    const pan = within(tools).getByRole('button', { name: 'Pan' });
+
+    expect(tools.closest('.canvas-actions')).not.toBeNull();
+    expect(screen.queryByRole('navigation', { name: 'Track tools' })).not.toBeInTheDocument();
+    fireEvent.click(pan);
+    expect(pan).toHaveAttribute('aria-pressed', 'true');
+    expect(lastViewerProps()).toMatchObject({ tool: 'pan' });
+    fireEvent.click(within(tools).getByRole('button', { name: 'Mark' }));
+    expect(within(tools).getByRole('button', { name: 'Mark' })).toHaveAttribute('aria-pressed', 'true');
+    expect(lastViewerProps()).toMatchObject({ tool: 'mark' });
+  });
+
+  it("drives view settings through the viewer's controller and shows its UI state", () => {
+    setup();
+    const view = screen.getByRole('group', { name: 'View settings' });
+
+    fireEvent.click(within(view).getByRole('button', { name: 'Symbol' }));
+    expect(viewer.controller.setChartMode).toHaveBeenCalledWith(ChartPresentationMode.Symbol);
+    fireEvent.click(within(view).getByRole('button', { name: 'Render' }));
+    expect(viewer.controller.setThreadView).toHaveBeenCalledWith(true);
+
+    publishUiState({ mode: ChartPresentationMode.Symbol, threadView: false });
+    expect(within(view).getByRole('button', { name: 'Symbol' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(view).getByRole('button', { name: 'Color' })).toHaveAttribute('aria-pressed', 'false');
+    publishUiState({ mode: ChartPresentationMode.Symbol, threadView: true });
+    expect(within(view).getByRole('button', { name: 'Render' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(view).getByRole('button', { name: 'Symbol' })).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('zooms with the canvas controls', () => {
+    setup();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom out' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Fit' }));
+    expect(viewer.controller.handleKeyDown.mock.calls.map(([event]) => event)).toEqual([{ key: '+' }, { key: '-' }, { key: '0' }]);
+  });
+
+  it('opens the Colors popover from the mobile completion button', () => {
+    setup();
+    const total = screen.getByRole('button', { name: 'Color completion: Total, 50% done' });
+
+    expect(screen.getByText('Color completion', { selector: '.mobile-dock-title' })).toBeInTheDocument();
+    expect(total.querySelector('.mobile-dock-color-swatch')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Tools' })).not.toBeInTheDocument();
+    fireEvent.click(total);
+    expect(total).toHaveAttribute('aria-expanded', 'true');
+    expect(within(screen.getByRole('dialog', { name: 'Colors' })).getByRole('list', { name: 'Colors' })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(total).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('shows the focused color code, swatch and percent on the mobile completion button', () => {
+    setup();
+
+    fireEvent.click(screen.getByRole('button', { name: '#AA0000 Ruby, 25% done' }));
+    const trigger = screen.getByRole('button', { name: 'Color completion: #AA0000, 25% done' });
+    expect(trigger).toHaveTextContent('#AA0000');
+    expect(trigger).toHaveTextContent('25%');
+    expect(trigger.querySelector('.mobile-dock-color-swatch')).not.toBeNull();
+  });
+
+  it('puts export and settings after redo and opens their dialogs', () => {
+    setup();
+    const labels = within(document.querySelector('.editor-heading-controls') as HTMLElement)
+      .getAllByRole('button')
+      .map((button) => button.getAttribute('aria-label'));
+    expect(labels).toEqual(['Undo mark', 'Redo mark', 'Export pattern', 'Open settings']);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Export pattern' }));
+    expect(screen.getByRole('dialog', { name: 'Export stub' })).toHaveTextContent('Garden sampler');
+    fireEvent.click(screen.getByRole('button', { name: 'Close export' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    expect(screen.getByRole('dialog', { name: 'Settings stub' })).toHaveAttribute('data-options', 'placement');
+  });
+
+  it('shows the same dimension summary as the editor in the header', () => {
+    setup();
+
+    expect(document.querySelector('.editor-heading-info .editor-dimensions')).toHaveTextContent(
+      patternDimensionSummary({ width: 3, height: 2, aidaCount: 14, units: 'metric' })
+    );
+    expect(document.querySelector('.editor-dimensions')?.textContent).toMatch(/^3 × 2 stitches · /);
+  });
+
+  it('renames the pattern from the header title', () => {
+    const onRenameTitle = vi.fn();
+    setup({}, onRenameTitle);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rename Garden sampler' }));
+    const input = screen.getByRole('textbox', { name: 'Rename pattern Garden sampler' });
+    fireEvent.change(input, { target: { value: 'Winter sampler' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onRenameTitle).toHaveBeenCalledWith('Winter sampler');
+  });
+
+  it('undoes and redoes marks through the workspace', () => {
+    const { workspace } = setup({ canUndoProgress: true, canRedoProgress: true });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo mark' }));
+    expect(workspace.undoProgress).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: 'Redo mark' }));
+    expect(workspace.redoProgress).toHaveBeenCalledOnce();
+  });
+
+  it('disables undo and redo when there is nothing to replay', () => {
+    setup();
+
+    expect(screen.getByRole('button', { name: 'Undo mark' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Redo mark' })).toBeDisabled();
+  });
+
+  it('navigates to Edit from the header switch', () => {
+    const { onNavigate } = setup();
+    const nav = screen.getByRole('navigation', { name: 'Pattern view' });
+
+    expect(within(nav).getByRole('button', { name: 'Track' })).toHaveAttribute('aria-current', 'page');
+    fireEvent.click(within(nav).getByRole('button', { name: 'Edit' }));
+    expect(onNavigate).toHaveBeenCalledWith('edit');
+  });
+
+  it('clears the Track undo history when the page unmounts', () => {
+    const { workspace, view } = setup();
+
+    expect(workspace.clearProgressHistory).not.toHaveBeenCalled();
+    view.unmount();
+    expect(workspace.clearProgressHistory).toHaveBeenCalledOnce();
+  });
+});

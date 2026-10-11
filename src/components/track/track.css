@@ -1,0 +1,37 @@
+/* The Track page reuses the editor layout; these rules size its colors column and swatches. */
+.canvas-actions .track-tools [role="group"] { display:flex; align-items:center; gap:.25rem; }
+.track-colors { display:flex; flex-direction:column; gap:.75rem; min-width:0; min-height:0; overflow-y:auto; }
+.progress-strip { display:grid; gap:.45rem; padding:.75rem .85rem; border:1px solid #e4ddd3; border-radius:.75rem; background:#fbf7f1; }
+.progress-strip p { margin:0; }
+.progress-strip-label { display:flex; align-items:center; gap:.5rem; color:#272321; font-weight:600; }
+.progress-strip-name { flex:1 1 auto; min-width:0; font-size:.8rem; line-height:1.15; overflow-wrap:anywhere; text-overflow:clip; white-space:normal; }
+.progress-strip-percent { color:#88452f; font-size:1.35rem; }
+.progress-strip-swatch { flex:0 0 auto; width:1.1rem; height:1.1rem; border:1px solid #b9b2a8; border-radius:.25rem; }
+.progress-strip-bar { height:.6rem; overflow:hidden; border-radius:999px; background:#e9e1d6; }
+.progress-strip-fill { display:block; height:100%; border-radius:inherit; background:#bc5a3d; }
+.progress-strip-count { color:#5f574f; font-size:.85rem; }
+.track-palette { display:grid; grid-template-columns:minmax(0,1fr); gap:.4rem; margin:0; padding:0; list-style:none; }
+.track-swatch { display:grid; grid-template-columns:auto minmax(0,1fr) auto; column-gap:.55rem; align-items:center; width:100%; min-height:2.9rem; padding:.3rem .55rem; border:1px solid #d5cec3; border-radius:.55rem; background:#fffdf9; color:#3a342f; font:inherit; text-align:left; cursor:pointer; touch-action:manipulation; }
+.track-swatch:focus-visible { outline:2px solid #bc5a3d; outline-offset:2px; }
+.track-swatch[aria-pressed="true"] { border-color:#bc5a3d; background:#f1e4da; box-shadow:inset 0 0 0 1px #bc5a3d; }
+.track-swatch-chip { width:2rem; height:2rem; border:1px solid rgba(39,35,33,.25); border-radius:.45rem; }
+.track-swatch-text { display:flex; flex-direction:column; min-width:0; }
+.track-swatch-code { font-size:.85rem; font-weight:700; line-height:1.15; overflow-wrap:normal; white-space:nowrap; }
+.track-swatch-name { min-width:0; font-size:.7rem; line-height:1.15; overflow-wrap:anywhere; text-overflow:clip; white-space:normal; }
+.track-swatch-percent { color:#88452f; font-size:.9rem; font-weight:700; }
+.track-palette-empty { margin:0; color:#5f574f; font-size:.9rem; }
+@media (min-width: 701px) {
+  .editor-rail-shell .track-colors { grid-column:1; grid-row:1; margin-right:.35rem; }
+  .rail-right .editor-rail-shell .track-colors { grid-column:2; margin-right:0; margin-left:.35rem; }
+}
+.mobile-dock-title { display:none; }
+@media (max-width: 700px) {
+  .mobile-dock-title { display:block; margin:.55rem 0 0; color:#625c55; font-size:.75rem; font-weight:700; letter-spacing:.06em; text-transform:uppercase; }
+  .mobile-dock-title + .mobile-dock-card { margin-top:.25rem; }
+  .mobile-dock-trigger.mobile-completion-trigger { display:flex; flex-direction:row; flex-wrap:nowrap; align-items:center; justify-content:center; gap:.5rem; width:100%; padding:0 .75rem; }
+  .mobile-completion-percent { flex:0 0 auto; }
+  .mobile-completion-code { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .track-colors { overflow:visible; }
+  .canvas-actions .track-tools { grid-column:1 / -1; min-height:0; }
+  .track-palette { grid-template-columns:repeat(auto-fill, minmax(9rem, 1fr)); }
+}
