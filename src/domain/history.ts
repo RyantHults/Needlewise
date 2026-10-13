@@ -2148,7 +2148,9 @@ function isEmptyLayer(layer: Layer): boolean {
  * when `current` is the same layer, every stitch or line whose geometry the
  * record leaves unchanged keeps its current progress; the stored progress
  * applies only to geometry the entry restores. Completion records no color,
- * so a recolor alone never moves a mark.
+ * so a recolor alone never moves a mark. Visibility is also set outside
+ * history, so `current` keeps its own; only a layer the entry re-creates
+ * takes the recorded value.
  */
 function buildLayer(record: LayerRecord, content: LayerContent, cellCount: number, current?: Layer): Layer {
   if (record.type === LayerType.Stitch) {
@@ -2156,10 +2158,10 @@ function buildLayer(record: LayerRecord, content: LayerContent, cellCount: numbe
     const completed = current?.type === LayerType.Stitch && current.kind.length === cellCount
       ? keepCellCompletion(cells.kind, cells.colors, cells.completed, current)
       : cells.completed ?? new Uint8Array(cellCount);
-    return { id: record.id, type: LayerType.Stitch, name: record.name, visible: record.visible, kind: cells.kind, colors: cells.colors, completed };
+    return { id: record.id, type: LayerType.Stitch, name: record.name, visible: current?.visible ?? record.visible, kind: cells.kind, colors: cells.colors, completed };
   }
   const backstitches = content === 'empty' ? emptyBackstitches() : (content as SpecialtyContent).backstitches;
-  return { id: record.id, type: LayerType.Specialty, name: record.name, visible: record.visible, backstitches: current?.type === LayerType.Specialty ? keepLineCompletion(backstitches, current.backstitches) : backstitches };
+  return { id: record.id, type: LayerType.Specialty, name: record.name, visible: current?.visible ?? record.visible, backstitches: current?.type === LayerType.Specialty ? keepLineCompletion(backstitches, current.backstitches) : backstitches };
 }
 
 /** The progress plane for restored cells: cells with the same kind and occupied slots keep `current`'s progress, the rest take `stored` (zero when absent). */
@@ -3292,7 +3294,8 @@ function chainMatchesSide(state: ChainState, side: LayeredSide, label: string): 
   if (state.width !== side.width || state.height !== side.height || state.layers.length !== side.layers.length) historyStateMismatch(label);
   side.layers.forEach((record, index) => {
     const layer = state.layers[index];
-    if (layer.id !== record.id || layer.type !== record.type || layer.name !== record.name || layer.visible !== record.visible) historyStateMismatch(`${label}.layers[${String(index)}]`);
+    // Visibility changes outside history, so a recorded flag need not match.
+    if (layer.id !== record.id || layer.type !== record.type || layer.name !== record.name) historyStateMismatch(`${label}.layers[${String(index)}]`);
     if (record.content === null) return;
     if (record.content === 'empty') {
       const hasContent = layer.type === LayerType.Stitch ? hasNonZero(layer.kind) : layer.backstitches.ids.length > 0;
@@ -3333,9 +3336,11 @@ function chainToSide(state: ChainState, side: LayeredSide, label: string): void 
       const existing = state.layers.find((layer) => layer.id === record.id);
       if (existing === undefined || existing.type !== record.type) historyStateMismatch(recordLabel);
       if (record.type === LayerType.Stitch && (state.width !== side.width || state.height !== side.height)) historyStateMismatch(recordLabel);
-      return { ...existing, name: record.name, visible: record.visible };
+      return { ...existing, name: record.name };
     }
-    const header = { id: record.id, name: record.name, visible: record.visible };
+    // As in `buildLayer`, a layer that still exists keeps its visibility.
+    const kept = state.layers.find((layer) => layer.id === record.id && layer.type === record.type);
+    const header = { id: record.id, name: record.name, visible: kept?.visible ?? record.visible };
     if (record.content === 'empty') {
       return record.type === LayerType.Stitch
         ? { ...header, type: LayerType.Stitch, kind: new Uint8Array(cellCount), colors: new Uint16Array(cellCount * 4), ownsPlanes: true, colorUse: new Map(), lineIds: new Set() }
@@ -3771,6 +3776,13 @@ export class DocumentEditor {
     const plan = planSingleCommand(this.layered, command, this.historyLimit);
     if (plan.document === undefined || plan.entry === undefined || plan.rebuild === undefined) {
       return { ...plan.result, document: this.composite, revision: this.layered.revision };
+    }
+    // Visibility is saved with the document but is not an undo step, so a
+    // toggle neither adds an entry nor clears redo. Only a top-level toggle
+    // skips history; one inside a batch is part of that batch's entry.
+    if (command.type === 'layer-set-visibility') {
+      this.layered = plan.document;
+      return this.publish(plan.result, plan.rebuild);
     }
     ensureHistoryEntryFits(plan.entry.bytes, this.historyLimit);
     this.layered = plan.document;

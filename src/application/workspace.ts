@@ -1095,7 +1095,8 @@ export class ProjectWorkspace {
   /**
    * Interleaved entry point for descriptor-only reference changes (move,
    * resize, opacity, visibility). One call pushes exactly one history entry
-   * shared with document edits. Gesture layers coalesce before calling:
+   * shared with document edits; a visibility toggle is saved without one.
+   * Gesture layers coalesce before calling:
    * one call per drag commit, one per arrow nudge, one per slider release.
    */
   async applyTraceImageChange(next: SourceImageDescriptor | undefined, options?: { label?: string }): Promise<void> {

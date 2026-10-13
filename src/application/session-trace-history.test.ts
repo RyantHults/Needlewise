@@ -550,7 +550,7 @@ describe('trace image unified history', () => {
     }
   });
 
-  it('coalesces one drag to one entry, three arrows to three entries, and a toggle to one entry', async () => {
+  it('coalesces one drag to one entry, three arrows to three entries, and a toggle to none', async () => {
     const workspace = await openTracedWorkspace('trace-coalesce');
     try {
       const session = workspace.session;
@@ -582,14 +582,23 @@ describe('trace image unified history', () => {
       session.undo();
       expect(session.sourceImage?.chartBounds).toEqual({ x: 2, y: 1, width: 2, height: 2 });
 
-      // One visibility toggle is one entry.
+      // A visibility toggle is saved but is no entry, and it keeps redo.
       const toggled = session.sourceImage;
       if (!toggled) throw new Error('Missing descriptor.');
       const depthBeforeToggle = session.traceUndoDepth;
       session.applyTraceImageChange({ ...toggled, traceVisible: false }, { label: 'trace-image-visibility' });
-      expect(session.traceUndoDepth).toBe(depthBeforeToggle + 1);
+      expect(session.traceUndoDepth).toBe(depthBeforeToggle);
+      expect(session.canRedo).toBe(true);
       expect(session.sourceImage?.traceVisible).toBe(false);
+      expect(session.saveState.status).toBe('pending');
+      // Undo and redo move the reference without showing it again.
       session.undo();
+      expect(session.sourceImage?.chartBounds).toEqual({ x: 0, y: 0, width: 2, height: 2 });
+      expect(session.sourceImage?.traceVisible).toBe(false);
+      session.redo();
+      expect(session.sourceImage?.chartBounds).toEqual({ x: 2, y: 1, width: 2, height: 2 });
+      expect(session.sourceImage?.traceVisible).toBe(false);
+      session.applyTraceImageChange({ ...session.sourceImage!, traceVisible: true }, { label: 'trace-image-visibility' });
       expect(session.sourceImage?.traceVisible).toBe(true);
 
       // One slider interaction commits once.

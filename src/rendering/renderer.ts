@@ -1,5 +1,6 @@
 import {
   CellKind,
+  colorComponentMask,
   type PatternDocument
 } from '../domain';
 import {
@@ -221,6 +222,76 @@ const HIGHLIGHT_DIM_ALPHA = 0.25;
 
 function highlightAlpha(style: RendererStyle, id: number): number {
   return style.highlightColor === null || id === style.highlightColor ? 1 : HIGHLIGHT_DIM_ALPHA;
+}
+
+/** Below this many CSS px per cell the highlight outline is noise, so it is not drawn. */
+const HIGHLIGHT_OUTLINE_MIN_CELL_PX = 4;
+/** Highlight outline strokes in CSS px, independent of zoom: a light halo under a dark core. */
+const HIGHLIGHT_HALO_WIDTH = 3;
+const HIGHLIGHT_OUTLINE_WIDTH = 1.25;
+
+/** Whether a cell on the canvas holds the highlighted color in any component; off-chart counts as out. */
+function holdsHighlight(document: PatternDocument, x: number, y: number, color: number): boolean {
+  if (x < 0 || y < 0 || x >= document.width || y >= document.height) return false;
+  const index = y * document.width + x;
+  if (document.canvasMask !== undefined && document.canvasMask[index] !== 1) return false;
+  return colorComponentMask(document, index, color) !== 0;
+}
+
+/**
+ * Trace the boundary of every connected group of the highlighted color within
+ * `cells`: the cell edges between a cell that holds the color and one that does
+ * not, merged into straight runs, so cells inside a group get no lines.
+ */
+function drawHighlightOutline(context: CanvasContextAdapter, document: PatternDocument, viewport: Viewport, style: RendererStyle, cells: CellRect): void {
+  const color = style.highlightColor;
+  if (color === null) return;
+  const left = Math.max(0, cells.x);
+  const top = Math.max(0, cells.y);
+  const right = Math.min(document.width, cells.x + cells.width);
+  const bottom = Math.min(document.height, cells.y + cells.height);
+  if (right <= left || bottom <= top) return;
+  const segments: Array<readonly [number, number, number, number]> = [];
+  // Horizontal edges on grid lines top..bottom, then vertical edges on left..right.
+  for (let line = top; line <= bottom; line += 1) {
+    let start: number | undefined;
+    for (let x = left; x <= right; x += 1) {
+      const edge = x < right && holdsHighlight(document, x, line - 1, color) !== holdsHighlight(document, x, line, color);
+      if (edge && start === undefined) start = x;
+      if (!edge && start !== undefined) {
+        segments.push([start, line, x, line]);
+        start = undefined;
+      }
+    }
+  }
+  for (let line = left; line <= right; line += 1) {
+    let start: number | undefined;
+    for (let y = top; y <= bottom; y += 1) {
+      const edge = y < bottom && holdsHighlight(document, line - 1, y, color) !== holdsHighlight(document, line, y, color);
+      if (edge && start === undefined) start = y;
+      if (!edge && start !== undefined) {
+        segments.push([line, start, line, y]);
+        start = undefined;
+      }
+    }
+  }
+  if (segments.length === 0) return;
+  const toScreen = (value: number, origin: number): number => (value - origin) * viewport.zoom;
+  save(context);
+  setAlpha(context, 1);
+  // Square caps close the corner where a horizontal and a vertical run meet.
+  context.lineCap = 'square';
+  for (const [strokeStyle, lineWidth] of [[style.highlightHaloColor, HIGHLIGHT_HALO_WIDTH], [style.highlightOutlineColor, HIGHLIGHT_OUTLINE_WIDTH]] as const) {
+    context.strokeStyle = strokeStyle;
+    context.lineWidth = lineWidth;
+    context.beginPath();
+    for (const [x1, y1, x2, y2] of segments) {
+      context.moveTo(toScreen(x1, viewport.x), toScreen(y1, viewport.y));
+      context.lineTo(toScreen(x2, viewport.x), toScreen(y2, viewport.y));
+    }
+    context.stroke();
+  }
+  restore(context);
 }
 
 /** Completion bits as the style shows them: none at all unless `showCompletion` is on. */
@@ -1538,6 +1609,14 @@ function intersectCellRects(left: CellRect, right: CellRect): CellRect {
   return { x, y, width: Math.max(0, rightEdge - x), height: Math.max(0, bottomEdge - y) };
 }
 
+function growCellRect(rect: CellRect, cells: number): CellRect {
+  return cells === 0 ? rect : { x: rect.x - cells, y: rect.y - cells, width: rect.width + cells * 2, height: rect.height + cells * 2 };
+}
+
+function growRect(rect: Rect, amount: number): Rect {
+  return { x: rect.x - amount, y: rect.y - amount, width: rect.width + amount * 2, height: rect.height + amount * 2 };
+}
+
 function screenRectToCellRect(rect: Rect, viewport: Viewport): CellRect {
   const zoom = viewport.zoom > 0 ? viewport.zoom : 1;
   const x = Math.floor(viewport.x + rect.x / zoom);
@@ -2574,8 +2653,14 @@ export class Canvas2DRenderer implements CanvasRenderer {
     prepareTarget(target, this.metrics);
     const context = target.context;
     const patternBackground = patternBackgroundColor(this.document);
-    const cellInvalidationRect = invalidation.cellRect ? cellToScreenRect(invalidation.cellRect, this.viewport) : undefined;
-    const rawInvalidationRect = unionRect(invalidation.rect, cellInvalidationRect);
+    // A highlight outline straddles cell edges, and a changed cell can add or remove
+    // an edge on its neighbors, so a partial redraw covers one more cell around it.
+    const outlineMargin = this.style.highlightColor === null ? 0 : 1;
+    const cellInvalidationRect = invalidation.cellRect ? cellToScreenRect(growCellRect(invalidation.cellRect, outlineMargin), this.viewport) : undefined;
+    const screenInvalidationRect = invalidation.rect && outlineMargin > 0
+      ? growRect(invalidation.rect, outlineMargin * this.viewport.zoom)
+      : invalidation.rect;
+    const rawInvalidationRect = unionRect(screenInvalidationRect, cellInvalidationRect);
     const invalidationRect = rawInvalidationRect ? expandDirtyRect(rawInvalidationRect, this.metrics.dpr) : undefined;
     const partial = !fullInvalidation && lod !== RenderLod.Overview && invalidationRect !== undefined && clipToRect(context, invalidationRect);
     const fillArea = partial ? invalidationRect : { x: 0, y: 0, width: this.metrics.cssWidth, height: this.metrics.cssHeight };
@@ -2642,6 +2727,8 @@ export class Canvas2DRenderer implements CanvasRenderer {
     drawMidGrid(context, this.document, this.viewport, this.metrics, this.style, dirtyCells, lod);
     drawChartBorder(context, this.document, this.viewport, this.metrics, this.style);
     drawStitchNumbers(context, this.document, this.viewport, this.metrics, this.style);
+    // Edges of cells just outside the redraw can reach into its clip, so trace one cell further.
+    if (this.viewport.zoom >= HIGHLIGHT_OUTLINE_MIN_CELL_PX) drawHighlightOutline(context, this.document, this.viewport, this.style, growCellRect(dirtyCells, 1));
     const dirtyModel = partial ? {
       x: this.viewport.x + invalidationRect.x / this.viewport.zoom,
       y: this.viewport.y + invalidationRect.y / this.viewport.zoom,

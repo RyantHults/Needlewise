@@ -119,6 +119,9 @@ export const MAX_AUTOSAVE_DIRTY_AGE_MS = 5_000;
 /** Track keeps this many mark steps to undo. */
 export const MAX_PROGRESS_HISTORY_STEPS = 200;
 
+/** The label reference visibility toggles use; such a change is saved but is not recorded in history. */
+const TRACE_VISIBILITY_LABEL = 'trace-image-visibility';
+
 export interface TraceImageHistoryOptions {
   label?: string;
 }
@@ -817,11 +820,14 @@ export class ProjectSession {
     const result = this.editor.execute(typeof active === 'number' ? stampLayerId(command, active) : command);
     if (result.changed) {
       this.applyDocumentChange(result);
-      this.historyKindsUndo.push('document');
-      this.historyKindsRedo = [];
-      this.traceRedoStack = [];
-      this.historyVersion += 1;
-      this.reconcileHistoryMarkers();
+      // The editor keeps a top-level visibility toggle out of history, so it leaves both stacks alone.
+      if (command.type !== 'layer-set-visibility') {
+        this.historyKindsUndo.push('document');
+        this.historyKindsRedo = [];
+        this.traceRedoStack = [];
+        this.historyVersion += 1;
+        this.reconcileHistoryMarkers();
+      }
       this.scheduleSave();
     }
     return result;
@@ -913,6 +919,7 @@ export class ProjectSession {
     return this.execute(layerRenameCommand(layerId, name));
   }
 
+  /** Saved with the document but not an undo step: undo and redo skip over it. */
   setLayerVisibility(layerId: number, visible: boolean): SessionCommandResult {
     return this.execute(layerSetVisibilityCommand(layerId, visible));
   }
@@ -954,8 +961,11 @@ export class ProjectSession {
     this.reconcileHistoryMarkers();
   }
 
+  /** A reference that is still there keeps its current visibility, which is set outside history. */
   private restoreTraceSide(entry: TraceHistoryEntry, side: 'before' | 'after'): void {
-    const targetDescriptor = side === 'before' ? entry.beforeDescriptor : entry.afterDescriptor;
+    const recorded = side === 'before' ? entry.beforeDescriptor : entry.afterDescriptor;
+    const current = this.projectMetadata.sourceImage;
+    const targetDescriptor = recorded === undefined || current === undefined ? recorded : { ...recorded, traceVisible: current.traceVisible };
     const targetAsset = side === 'before' ? entry.beforeAsset : entry.afterAsset;
     const involvesAssets = entry.beforeAsset !== undefined || entry.afterAsset !== undefined;
     if (involvesAssets) {
@@ -1213,9 +1223,10 @@ export class ProjectSession {
    * The single interleaved entry point for descriptor-only reference changes
    * (move, resize, opacity, visibility). Snapshots the current descriptor,
    * applies the next descriptor, persists via the normal autosave, and pushes
-   * exactly one history entry interleaved with document entries. Callers
-   * coalesce before reaching here: one call per drag commit, one per arrow
-   * nudge, one per slider interaction, one per toggle.
+   * exactly one history entry interleaved with document entries, except for
+   * a visibility toggle, which is saved without one. Callers coalesce before
+   * reaching here: one call per drag commit, one per arrow nudge, one per
+   * slider interaction.
    */
   applyTraceImageChange(next: SourceImageDescriptor | undefined, options?: TraceImageHistoryOptions): void {
     this.ensureWritable();
@@ -1252,6 +1263,11 @@ export class ProjectSession {
       }
       this.metadataVersion += 1;
       this.refreshLayerState(false);
+      // Showing or hiding the reference, like any layer, is saved but is not an undo step.
+      if (label === TRACE_VISIBILITY_LABEL) {
+        this.scheduleSave();
+        return;
+      }
       const entry: TraceHistoryEntry = {
         label,
         beforeDescriptor: before,

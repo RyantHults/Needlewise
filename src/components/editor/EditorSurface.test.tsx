@@ -21,7 +21,7 @@ const COMPACT_DMC_DEFINITION: CatalogDefinition = {
 };
 
 const f = vi.hoisted(() => ({
-  c: { start: vi.fn(), setMetrics: vi.fn(), setDocument: vi.fn(), dispose: vi.fn(), setBrush: vi.fn(), setTool: vi.fn(), clearSelection: vi.fn(), setBackstitchMode: vi.fn(), selectPalette: vi.fn(), selectCreatedPalette: vi.fn(), setChartMode: vi.fn(), setThreadView: vi.fn(), setGridVisible: vi.fn(), setBrushSize: vi.fn(), setToolBrushSize: vi.fn(), setTouchMovementOnly: vi.fn(), copySelection: vi.fn(), pasteSelection: vi.fn(), moveSelection: vi.fn(), deleteSelection: vi.fn(), handleKeyDown: vi.fn(() => false), getTraceImage: vi.fn(() => undefined), setTraceImage: vi.fn(), setTraceImageSettings: vi.fn(), clearTraceImage: vi.fn() },
+  c: { start: vi.fn(), setMetrics: vi.fn(), setDocument: vi.fn(), dispose: vi.fn(), setBrush: vi.fn(), setTool: vi.fn(), toggleFocusColor: vi.fn(), clearSelection: vi.fn(), setBackstitchMode: vi.fn(), selectPalette: vi.fn(), selectCreatedPalette: vi.fn(), setChartMode: vi.fn(), setThreadView: vi.fn(), setGridVisible: vi.fn(), setBrushSize: vi.fn(), setToolBrushSize: vi.fn(), setTouchMovementOnly: vi.fn(), copySelection: vi.fn(), pasteSelection: vi.fn(), moveSelection: vi.fn(), deleteSelection: vi.fn(), handleKeyDown: vi.fn(() => false), getTraceImage: vi.fn(() => undefined), setTraceImage: vi.fn(), setTraceImageSettings: vi.fn(), clearTraceImage: vi.fn() },
   adapter: vi.fn(() => ({ dispose: vi.fn() })),
   r: { dispose: vi.fn() }, resize: undefined as (() => void) | undefined,
   uiState: { mode: 'color', gridVisible: true, overlay: {}, tool: { tool: 'paint' }, paletteId: 1, pickPulse: null, canPaste: false, toolBrushSizes: { full: 1, half: 1, 'three-quarter': 1, eraser: 1 } }, createdUiState: null as unknown,
@@ -783,6 +783,26 @@ describe('EditorSurface', () => {
     expect(rightTrianglePath).not.toContain('M8 16');
     const ovalPath = group.querySelector('[data-shape-icon="oval"] path')?.getAttribute('d');
     expect(ovalPath).toBe('M12 4a8 6 0 1 0 0 12 8 6 0 0 0 0-12');
+  });
+  describe('Focus Color button', () => {
+    it('renders beside Add and Manage and reflects the ui state in aria-pressed', () => {
+      render(<EditorSurface workspace={ws} document={doc} />);
+      const button = screen.getByRole('button', { name: 'Focus Color' });
+      expect(button.previousElementSibling).toBe(screen.getByRole('button', { name: 'Manage palette' }));
+      expect(button).toHaveAttribute('aria-pressed', 'false');
+      act(() => { (f.uiState as Record<string, unknown>).focusColor = true; f.uiListener?.({ ...f.uiState }); });
+      expect(screen.getByRole('button', { name: 'Focus Color' })).toHaveAttribute('aria-pressed', 'true');
+      act(() => { delete (f.uiState as Record<string, unknown>).focusColor; f.uiListener?.({ ...f.uiState }); });
+    });
+    it('toggles through the controller on click', () => {
+      render(<EditorSurface workspace={ws} document={doc} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Focus Color' }));
+      expect(f.c.toggleFocusColor).toHaveBeenCalledTimes(1);
+    });
+    it('is disabled with an empty palette', () => {
+      render(<EditorSurface workspace={ws} document={{ ...(doc as object), palette: [] } as never} />);
+      expect(screen.getByRole('button', { name: 'Focus Color' })).toBeDisabled();
+    });
   });
   it('disables shape without an active thread', () => {
     const empty = { ...(doc as object), palette: [] } as never;

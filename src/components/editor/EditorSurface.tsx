@@ -37,6 +37,7 @@ import { normalizeHexColor, type ThreadColorPickerProps } from "../ThreadColorPi
 import { PaletteManagerModal } from "./PaletteManagerModal";
 import backstitchIcon from "../../assets/editor-tools/backstitch.svg";
 import eraserIcon from "../../assets/editor-tools/eraser.svg";
+import focusIcon from "../../assets/editor-tools/focus.svg";
 import fillIcon from "../../assets/editor-tools/paint-bucket.svg";
 import selectIcon from "../../assets/editor-tools/select.svg";
 import selectOvalIcon from "../../assets/editor-tools/select-oval.svg";
@@ -1061,6 +1062,15 @@ export function EditorSurface({
                 title="Manage palette"
                 onClick={(e) => openPaletteManager(e.currentTarget)}
               ><span className="palette-manage-glyph" aria-hidden="true"><svg viewBox="0 0 16 16" width="16" height="16" focusable="false"><rect x="2" y="2" width="5" height="5" rx="1" fill="currentColor" /><rect x="9" y="2" width="5" height="5" rx="1" fill="currentColor" /><rect x="2" y="9" width="5" height="5" rx="1" fill="currentColor" /><rect x="9" y="9" width="5" height="5" rx="1" fill="currentColor" /></svg></span></button>
+              <button
+                className="palette-focus-rail"
+                type="button"
+                aria-label="Focus Color"
+                aria-pressed={ui?.focusColor ?? false}
+                title="Focus Color"
+                disabled={palette.length === 0}
+                onClick={() => controllerRef.current?.toggleFocusColor()}
+              ><span className="palette-focus-glyph" aria-hidden="true"><img data-icon="focus" src={focusIcon} alt="" aria-hidden="true" /></span></button>
             </div>
             <div className="palette-rail-items">
               {palette.map(paletteRow)}

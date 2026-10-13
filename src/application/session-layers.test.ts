@@ -240,8 +240,34 @@ describe('project session layers', () => {
     expect(session.metrics.totals.full).toBe(2);
     session.setLayerVisibility(1, false);
     expect(session.metrics.totals.full).toBe(0);
-    session.undo();
+    session.setLayerVisibility(1, true);
     expect(session.metrics.totals.full).toBe(2);
+  });
+
+  it('keeps layer visibility out of undo history without clearing redo', () => {
+    const session = openSession(layeredDocument());
+    session.setActiveLayer(1);
+    session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    session.execute({ type: 'set-full', x: 1, y: 0, color: 1 });
+    session.undo();
+    expect(session.canRedo).toBe(true);
+    const revision = session.layeredDocument.revision;
+    session.setLayerVisibility(1, false);
+    expect(session.layeredDocument.revision).toBe(revision + 1);
+    expect(session.layers.find((layer) => layer.id === 1)?.visible).toBe(false);
+    expect(session.metrics.totals.full).toBe(0);
+    expect(session.canRedo).toBe(true);
+
+    // Undo steps over the toggle to the edit before it; the layer stays hidden.
+    session.undo();
+    const stitches = session.layeredDocument.layers.find((layer) => layer.id === 1) as StitchLayer;
+    expect(stitches.kind[0]).toBe(CellKind.Empty);
+    expect(stitches.visible).toBe(false);
+    expect(session.canUndo).toBe(false);
+    session.redo();
+    session.redo();
+    expect((session.layeredDocument.layers.find((layer) => layer.id === 1) as StitchLayer).kind[1]).toBe(CellKind.Full);
+    expect(session.layers.find((layer) => layer.id === 1)?.visible).toBe(false);
   });
 });
 
@@ -280,6 +306,22 @@ describe('workspace layered projects', () => {
       expect(session.document.kind[4]).toBe(CellKind.Full);
       expect(session.document.settings.aidaCount).toBe(16);
       expect(session.metrics.totals.full).toBe(1);
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
+  it('saves a layer visibility toggle that is not an undo step', async () => {
+    const repository = new LayeredMemoryRepository();
+    const workspace = new ProjectWorkspace({ repository, preparationClient: unusedPreparationClient, debounceMs: 60_000, projectIdFactory: () => 'visibility' });
+    try {
+      const session = await workspace.createProject({ width: 4, height: 4 });
+      await workspace.flush();
+      workspace.setLayerVisibility(2, false);
+      expect(session.canUndo).toBe(false);
+      await workspace.flush();
+      const saved = await repository.load('visibility');
+      expect(saved?.document.layers.find((layer) => layer.id === 2)?.visible).toBe(false);
     } finally {
       await workspace.dispose();
     }

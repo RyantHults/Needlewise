@@ -3747,3 +3747,88 @@ describe('canvas mask and canvas editing', () => {
     renderer.dispose();
   });
 });
+
+describe('highlight outline', () => {
+  const { highlightHaloColor: HALO, highlightOutlineColor: OUTLINE } = DEFAULT_RENDERER_STYLE;
+
+  /** A 6×3 chart with a 3×1 run of color 1 in row 1 and a lone color-35 cell after it. */
+  function runChart() {
+    const document = chart(6, 3);
+    for (const x of [1, 2, 3]) {
+      document.kind[1 * 6 + x] = CellKind.Full;
+      document.colors[(1 * 6 + x) * 4] = 1;
+    }
+    document.kind[1 * 6 + 4] = CellKind.Full;
+    document.colors[(1 * 6 + 4) * 4] = 35;
+    return document;
+  }
+
+  function renderOutline(style: Partial<RendererStyle>, zoom = 16) {
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document: runChart(),
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(160, 160, { dpr: 1 }),
+      viewport: { x: 0, y: 0, zoom },
+      style
+    });
+    renderer.renderNow();
+    return { base, renderer };
+  }
+
+  /** The segments of the stroke drawn in `strokeStyle`, as "x1,y1-x2,y2" screen strings. */
+  function outlineSegments(base: RecordingContext, strokeStyle: string): string[] {
+    const end = base.records.findIndex((call) => call.name === 'stroke' && call.strokeStyle === strokeStyle);
+    if (end < 0) return [];
+    let start = end;
+    while (start > 0 && base.records[start].name !== 'beginPath') start -= 1;
+    const segments: string[] = [];
+    for (let position = start; position < end; position += 1) {
+      const call = base.records[position];
+      if (call.name === 'lineTo') segments.push(`${base.records[position - 1].args.join(',')}-${call.args.join(',')}`);
+    }
+    return segments.sort();
+  }
+
+  it('traces only the outer edges of a group of the highlighted color, halo first', () => {
+    const { base, renderer } = renderOutline({ highlightColor: 1 });
+    const expected = ['16,16-64,16', '16,32-64,32', '16,16-16,32', '64,16-64,32'].sort();
+    expect(outlineSegments(base, HALO)).toEqual(expected);
+    expect(outlineSegments(base, OUTLINE)).toEqual(expected);
+    const halo = base.records.find((call) => call.name === 'stroke' && call.strokeStyle === HALO)!;
+    const core = base.records.find((call) => call.name === 'stroke' && call.strokeStyle === OUTLINE)!;
+    expect(base.records.indexOf(halo)).toBeLessThan(base.records.indexOf(core));
+    expect(halo.lineWidth).toBeGreaterThan(core.lineWidth);
+    renderer.dispose();
+  });
+
+  it('draws no outline without a highlight or in the Overview', () => {
+    for (const [style, zoom] of [[{}, 16], [{ highlightColor: 1 }, 3]] as const) {
+      const { base, renderer } = renderOutline(style, zoom);
+      expect(base.records.some((call) => call.name === 'stroke' && (call.strokeStyle === HALO || call.strokeStyle === OUTLINE))).toBe(false);
+      renderer.dispose();
+    }
+  });
+
+  it('widens a partial redraw by one cell only while a color is highlighted', () => {
+    const clearedRect = (highlightColor: number | null): string | undefined => {
+      const base = recordingContext();
+      const renderer = createCanvasRenderer({
+        document: chart(20, 20),
+        targets: { base: target(base), overlay: target(recordingContext()) },
+        metrics: getCanvasMetrics(320, 320, { dpr: 1 }),
+        viewport: { x: 0, y: 0, zoom: 16 },
+        style: { highlightColor }
+      });
+      renderer.renderNow();
+      base.records.length = 0;
+      renderer.invalidate({ layer: 'base', cellRect: { x: 5, y: 6, width: 1, height: 1 }, reason: 'paint-cell' });
+      renderer.renderNow();
+      renderer.dispose();
+      return base.records.find((call) => call.name === 'clearRect')?.args.join(',');
+    };
+    // The cell is 80,96 16×16; the 2px seam margin always applies.
+    expect(clearedRect(null)).toBe('78,94,20,20');
+    expect(clearedRect(1)).toBe('62,78,52,52');
+  });
+});

@@ -402,6 +402,10 @@ export interface RendererStyle extends RendererTheme {
   readonly pendingCellOpacity: number;
   /** Palette id whose stitches stay at full strength; every other color is dimmed. Null dims nothing. */
   readonly highlightColor: number | null;
+  /** Thin line traced around each connected group of the highlighted color. */
+  readonly highlightOutlineColor: string;
+  /** Wider light halo under the highlight outline, so the edge reads on any fabric or neighbor. */
+  readonly highlightHaloColor: string;
 }
 
 export const DEFAULT_RENDERER_STYLE: RendererStyle = {
@@ -439,7 +443,9 @@ export const DEFAULT_RENDERER_STYLE: RendererStyle = {
   completedMarkWidth: 1,
   overlayLineWidth: 2,
   pendingCellOpacity: 0.34,
-  highlightColor: null
+  highlightColor: null,
+  highlightOutlineColor: 'rgba(36, 36, 36, 0.7)',
+  highlightHaloColor: 'rgba(255, 255, 255, 0.75)'
 };
 
 /** A deliberately small Canvas 2D surface used by the renderer. */
@@ -567,6 +573,11 @@ export interface EditorUiState {
   readonly threadView: boolean;
   /** Session-scoped palette id highlighted on the Track page; a view preference, never persisted or undoable. */
   readonly highlightColor: number | null;
+  /**
+   * Session-scoped Focus Color mode: the active palette color is highlighted and
+   * only stitches of that color can change. Off by default, never persisted.
+   */
+  readonly focusColor: boolean;
   readonly overlay: OverlayState;
   readonly tool: EditorToolState;
   readonly paletteId: number | null;
@@ -785,6 +796,10 @@ export const HIDDEN_LAYER_TOOL_HINT = 'Show this layer to edit it.';
 export const STITCH_LAYER_TOOL_HINT = 'Select a stitch layer to use this tool.';
 export const SPECIALTY_LAYER_BACKSTITCH_HINT = 'Select a specialty layer to use Backstitch.';
 export const EDITABLE_LAYER_TOOL_HINT = 'Select a stitch or specialty layer to use this tool.';
+/** Why the eyedropper does nothing while the active layer is hidden. */
+export const HIDDEN_LAYER_PICK_HINT = 'Select a visible layer to pick a color.';
+/** Why an edit changed nothing while Focus Color protects every other color. */
+export const FOCUS_COLOR_PROTECTED_HINT = 'Focus Color is on: only the focused color can change. Turn it off to edit other colors.';
 export const CANVAS_BRUSH_LAYER_HINT = 'Select the Canvas layer to use the canvas brush.';
 export const CANVAS_BASIC_TOOL_HINT = 'Switch the canvas to Advanced to use this tool.';
 export const CANVAS_ADVANCED_TOOL_HINT = 'Select a stitch or specialty layer to use this tool.';

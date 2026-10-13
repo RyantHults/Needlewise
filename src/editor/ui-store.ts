@@ -54,6 +54,7 @@ export const DEFAULT_EDITOR_UI_STATE: EditorUiState = {
   gridVisible: true,
   threadView: false,
   highlightColor: null,
+  focusColor: false,
   overlay: {},
   tool: { tool: 'pan' },
   paletteId: 1,
@@ -76,6 +77,7 @@ function sameState(left: EditorUiState, right: EditorUiState): boolean {
     && left.gridVisible === right.gridVisible
     && left.threadView === right.threadView
     && left.highlightColor === right.highlightColor
+    && left.focusColor === right.focusColor
     && left.overlay === right.overlay
     && left.tool === right.tool
     && left.paletteId === right.paletteId

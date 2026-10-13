@@ -23,6 +23,7 @@ import {
   LayerType,
   snapBackstitchPoint,
   colorComponentMask,
+  layerSurface,
   type BulkCellEdit,
   type Layer,
   type StitchLayer,
@@ -67,7 +68,17 @@ import type {
   PendingBackstitchRemoval,
   ToolAvailability
 } from './contracts';
-import { CANVAS_BASIC_LOCKED_HINT, CHART_EDGE_MARGIN, DEFAULT_HALF_DIRECTION, normalizeBrushSize, toolStateAvailability } from './contracts';
+import { CANVAS_BASIC_LOCKED_HINT, CHART_EDGE_MARGIN, DEFAULT_HALF_DIRECTION, FOCUS_COLOR_PROTECTED_HINT, HIDDEN_LAYER_PICK_HINT, normalizeBrushSize, toolStateAvailability } from './contracts';
+import {
+  backstitchColor,
+  cellEditableUnderFocus,
+  componentEditableUnderFocus,
+  filterEditableIndices,
+  focusBackstitchIds,
+  focusColorIndices,
+  focusPasteFragment,
+  moveOverwritesProtected
+} from './focus-color';
 import {
   fitViewport,
   hitTestCell,
@@ -183,6 +194,9 @@ export interface EditorSurfaceControllerLifecycle {
   confirmFloatingPaste(): boolean;
   /** Remove a floating paste or undo a floating move, restoring the earlier selection; false when nothing is floating. */
   cancelFloatingPaste(): boolean;
+  /** Turn Focus Color on or off: highlight the active palette color and let edits change only that color. */
+  setFocusColor(on: boolean): void;
+  toggleFocusColor(): void;
   /** Replace the rendered document without recreating editor interaction state. */
   setDocument(document: PatternDocument, invalidation?: Invalidation): void;
   setMetrics(metrics: CanvasMetrics): void;
@@ -428,6 +442,8 @@ interface FloatingPasteState {
   readonly moveSelection?: FragmentSelection;
   readonly completion?: Uint8Array;
   readonly backstitches?: FloatingPasteBackstitches;
+  /** A Focus Color move of backstitches only: these ids commit as one batch of move-backstitch. */
+  readonly focusBackstitchIds?: readonly number[];
   readonly destination: GridRect;
   readonly token: EditorRevisionToken;
   readonly previousSelection: FinalizedSelection | undefined;
@@ -1073,6 +1089,22 @@ function backstitchesNearPath(
 }
 
 /**
+ * Whether a backstitch drawn from `start` to `end` would lie over a stitch of
+ * another color than `focus`: the domain recolors or replaces a stitch on the
+ * same segment, so Focus Color refuses it. `ignoreId` is the stitch being moved.
+ */
+function backstitchCoversProtected(document: PatternDocument, start: FixedPoint, end: FixedPoint, focus: number, ignoreId?: number): boolean {
+  const onSegment = (x: number, y: number): boolean => (end.x - start.x) * (y - start.y) === (end.y - start.y) * (x - start.x)
+    && x >= Math.min(start.x, end.x) && x <= Math.max(start.x, end.x) && y >= Math.min(start.y, end.y) && y <= Math.max(start.y, end.y);
+  const store = document.backstitches;
+  for (let position = 0; position < store.ids.length; position += 1) {
+    if (store.colors[position] === focus || store.ids[position] === ignoreId) continue;
+    if (onSegment(store.x1[position], store.y1[position]) && onSegment(store.x2[position], store.y2[position])) return true;
+  }
+  return false;
+}
+
+/**
  * True when a fixed-point backstitch runs through a cell for a positive length.
  * A stitch along a cell edge passes through both cells beside it; one that only
  * touches a corner passes through neither.
@@ -1210,6 +1242,64 @@ function isEmptyFragment(fragment: PatternFragment): boolean {
 function fragmentLayerType(fragment: PatternFragment): LayerType {
   for (const kind of fragment.kind) if (kind !== CellKind.Empty) return LayerType.Stitch;
   return fragment.backstitches.x1.length > 0 ? LayerType.Specialty : LayerType.Stitch;
+}
+
+/** Ids of the backstitches whose endpoints lie inside the union of `indices`. */
+function containedBackstitchIds(document: PatternDocument, indices: Uint32Array): number[] {
+  const store = document.backstitches;
+  const ids: number[] = [];
+  for (let position = 0; position < store.ids.length; position += 1) {
+    if (backstitchEndpointsContainedInCellUnion(store.x1[position], store.y1[position], store.x2[position], store.y2[position], document.width, document.height, indices)) ids.push(store.ids[position]);
+  }
+  return ids;
+}
+
+/**
+ * A selection's content under Focus Color: its focus-color cells, the
+ * focus-color backstitches inside it, and whether it holds stitches of any
+ * other color.
+ */
+function focusSelectionContent(surface: PatternDocument, selection: FinalizedSelection, focus: number): { cells: Uint32Array; backstitchIds: number[]; protectedContent: boolean } {
+  const indices = finalizedSelectionIndices(selection, surface) ?? new Uint32Array();
+  const cells = focusColorIndices(surface, indices, focus);
+  const contained = containedBackstitchIds(surface, indices);
+  const backstitchIds = focusBackstitchIds(surface, contained, focus);
+  const occupied = indices.reduce((count, index) => count + (surface.kind[index] === CellKind.Empty ? 0 : 1), 0);
+  return { cells, backstitchIds, protectedContent: occupied > cells.length || contained.length > backstitchIds.length };
+}
+
+function fragmentSelectionIndices(selection: FragmentSelection, document: PatternDocument): Uint32Array {
+  if ('kind' in selection && selection.kind === 'sparse') return selection.indices;
+  return selectionRectToIndices('kind' in selection ? selection.rect : selection, document.width, document.height);
+}
+
+/** The floating backstitches of the focus color only. */
+function focusFloatingBackstitches(backstitches: FloatingPasteBackstitches, focus: number): FloatingPasteBackstitches {
+  const kept: number[] = [];
+  for (let position = 0; position < backstitches.ids.length; position += 1) if (backstitches.colors[position] === focus) kept.push(position);
+  return {
+    ids: Uint32Array.from(kept, (position) => backstitches.ids[position]),
+    x1: Uint32Array.from(kept, (position) => backstitches.x1[position]),
+    y1: Uint32Array.from(kept, (position) => backstitches.y1[position]),
+    x2: Uint32Array.from(kept, (position) => backstitches.x2[position]),
+    y2: Uint32Array.from(kept, (position) => backstitches.y2[position]),
+    colors: Uint16Array.from(kept, (position) => backstitches.colors[position]),
+    completed: Uint8Array.from(kept, (position) => backstitches.completed[position])
+  };
+}
+
+/**
+ * A Focus Color backstitch move: every carried stitch shifts by the float's
+ * offset, as one history entry. A stitch moved onto another replaces it, so the
+ * stitches furthest along the move go first and none lands on one still to move.
+ */
+function focusBackstitchMoveCommand(floating: FloatingPasteState): DomainCommand {
+  const dx = (floating.destination.x - floating.copySelection.rect.x) * 4;
+  const dy = (floating.destination.y - floating.copySelection.rect.y) * 4;
+  const moved = floating.backstitches;
+  const lead = (position: number): number => moved ? (moved.x1[position] + moved.x2[position]) * dx + (moved.y1[position] + moved.y2[position]) * dy : 0;
+  const order = (floating.focusBackstitchIds ?? []).map((id, position) => ({ id, lead: lead(position) })).sort((left, right) => right.lead - left.lead);
+  return { type: 'batch', commands: order.map(({ id }): DomainCommand => ({ type: 'move-backstitch', id, dx, dy })) };
 }
 
 export function cellRectForIndices(indices: Uint32Array, width: number, height: number): CellRect | undefined {
@@ -1352,6 +1442,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private floatingPasteTouchCandidate: FloatingPasteTouchCandidate | undefined;
   private lassoPath: LassoPath | undefined;
   private eraserCorner: 0 | 1 | 2 | 3 = 0;
+  /** The stitch brush the user last painted with, reapplied when the eyedropper picks a color. */
+  private lastPaintBrush: { kind: 'full' | 'three-quarter' } | { kind: 'half'; direction?: '\\' | '/' } = { kind: 'full' };
   private selectedBackstitchId: number | undefined;
   private keyboardBackstitchAnchor: FixedPoint | undefined;
   private keyboardBackstitchToken: EditorRevisionToken | undefined;
@@ -1706,29 +1798,34 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (!snapshot.document || !this.selection) return undefined;
     const surface = this.editableSurface(snapshot, { tool: 'select' }, true);
     if (!surface) return undefined;
-    const bounds = finalizedSelectionBounds(this.selection);
+    const focus = this.focusColorId();
+    const selection = focus === undefined ? this.selection : this.focusSelection(surface, this.selection, focus);
+    if (!selection) return undefined;
+    const bounds = finalizedSelectionBounds(selection);
     if (!bounds) return undefined;
-    const indices = finalizedSelectionIndices(this.selection, surface);
-    const copySelection: ClipboardSelectionGeometry = this.selection.kind === 'sparse'
+    const indices = finalizedSelectionIndices(selection, surface);
+    const copySelection: ClipboardSelectionGeometry = selection.kind === 'sparse'
       ? {
         kind: 'sparse',
         rect: { ...bounds },
-        boundaries: this.selection.boundaries.map((boundary) => ({
+        boundaries: selection.boundaries.map((boundary) => ({
           start: { x: boundary.start.x - bounds.x, y: boundary.start.y - bounds.y },
           end: { x: boundary.end.x - bounds.x, y: boundary.end.y - bounds.y },
           kind: boundary.kind
         }))
       }
       : { kind: 'rect', rect: { ...bounds } };
-    this.clipboard = clonePatternFragment(this.selection.kind === 'sparse' && indices
+    const fragment = selection.kind === 'sparse' && indices
       ? createPatternFragmentFromCells(surface, indices)
-      : createPatternFragment(surface, bounds));
+      : createPatternFragment(surface, bounds);
+    // Under Focus Color the copy holds only focus-color backstitches.
+    this.clipboard = clonePatternFragment(focus === undefined ? fragment : focusPasteFragment(fragment, surface, bounds, focus));
     this.clipboardSelection = copySelection;
     const activeKind = snapshot.activeLayer?.kind;
     this.clipboardLayerType = activeKind === 'specialty' ? LayerType.Specialty : activeKind === 'stitch' ? LayerType.Stitch : undefined;
     this.uiStore.setCanPaste(true);
-    this.setStatus(this.selection.kind === 'sparse'
-      ? `Copied ${String(this.selection.indices.length)} cells`
+    this.setStatus(selection.kind === 'sparse'
+      ? `Copied ${String(selection.indices.length)} cells`
       : `Copied ${String(bounds.width)}×${String(bounds.height)} cells`);
     return clonePatternFragment(this.clipboard);
   }
@@ -1739,9 +1836,17 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (!snapshot.document || !snapshot.projectId || snapshot.revision === null || !this.selection) return false;
     const surface = this.editableSurface(snapshot, { tool: 'select' }, true);
     if (!surface) return false;
-    const captured = this.captureMoveSelection(surface, this.selection);
+    const focus = this.focusColorId();
+    const selection = focus === undefined ? this.selection : this.focusSelection(surface, this.selection, focus);
+    if (!selection) return false;
+    let captured = this.captureMoveSelection(surface, selection);
     if (!captured) return false;
-    const destination = clampFloatingDestination(finalizedSelectionBounds(this.selection) ?? captured.geometry.rect, captured.fragment, snapshot.document);
+    // With no focus-color cells, a Focus Color move carries only the focus-color backstitches.
+    const focusBackstitches = focus !== undefined && selection === this.selection ? focusFloatingBackstitches(captured.backstitches, focus) : undefined;
+    if (focus !== undefined && focusBackstitches) {
+      captured = { ...captured, fragment: focusPasteFragment(captured.fragment, surface, captured.geometry.rect, focus), backstitches: focusBackstitches };
+    }
+    const destination = clampFloatingDestination(finalizedSelectionBounds(selection) ?? captured.geometry.rect, captured.fragment, snapshot.document);
     const previousSelection = this.selection;
     const previousSelectionAnchor = this.selectionAnchor;
     this.floatingPasteMoveGesture = undefined;
@@ -1756,6 +1861,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       moveSelection: captured.source,
       completion: captured.completion,
       backstitches: captured.backstitches,
+      ...(focusBackstitches ? { focusBackstitchIds: Array.from(focusBackstitches.ids) } : {}),
       destination,
       token: { projectId: snapshot.projectId, revision: snapshot.revision },
       previousSelection,
@@ -1836,11 +1942,25 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if (floating.mode === 'paste' && snapshot.layeredDocument && this.gateway.resolvePaste && this.gateway.commitPaste) return this.commitLayeredPaste(floating, snapshot);
     const moveSurface = floating.mode === 'move' ? this.editableSurface(snapshot, { tool: 'select' }, true) : snapshot.document;
+    const focus = this.focusColorId();
+    if (focus !== undefined && floating.mode === 'move' && moveSurface && this.focusMoveRefused(floating, moveSurface, focus)) {
+      this.notifyFocusProtected();
+      return false;
+    }
+    const fragment = focus !== undefined && floating.mode === 'paste'
+      ? focusPasteFragment(floating.fragment, this.editSurfaceOf(snapshot) ?? snapshot.document, floating.destination, focus)
+      : floating.fragment;
+    if (isEmptyFragment(fragment) && !isEmptyFragment(floating.fragment)) {
+      this.notifyFocusProtected();
+      return false;
+    }
     const command = floating.mode === 'move'
       ? floating.moveSelection && moveSurface
-        ? moveFragmentCommand(floating.moveSelection, { x: floating.destination.x, y: floating.destination.y }, snapshot.revision)
+        ? floating.focusBackstitchIds
+          ? focusBackstitchMoveCommand(floating)
+          : moveFragmentCommand(floating.moveSelection, { x: floating.destination.x, y: floating.destination.y }, snapshot.revision)
         : undefined
-      : pasteFragmentCommand(floating.fragment, { x: floating.destination.x, y: floating.destination.y }, snapshot.revision);
+      : pasteFragmentCommand(fragment, { x: floating.destination.x, y: floating.destination.y }, snapshot.revision);
     if (!command) {
       this.discardFloatingPaste();
       return false;
@@ -1911,10 +2031,23 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     const position = { x: floating.destination.x, y: floating.destination.y };
     const token: EditorRevisionToken = { projectId: snapshot.projectId, revision: snapshot.revision };
+    const activeId = snapshot.activeLayer?.id;
+    const focus = this.focusColorId();
+    let fragment = floating.fragment;
+    if (focus !== undefined) {
+      const target = destination.create || destination.layerId === null
+        ? undefined
+        : destination.layerId === activeId && snapshot.editSurface ? snapshot.editSurface : layerSurface(snapshot.layeredDocument!, destination.layerId);
+      // A new layer is empty, so only the fragment's own colors matter: place it off the surface.
+      fragment = focusPasteFragment(fragment, target ?? snapshot.document!, target ? position : { x: -fragment.width, y: 0 }, focus);
+      if (isEmptyFragment(fragment)) {
+        this.notifyFocusProtected();
+        return false;
+      }
+    }
     try {
-      const activeId = snapshot.activeLayer?.id;
       if (!destination.create && destination.layerId === activeId && snapshot.editSurface) {
-        const preflight = preflightPasteFragmentCommand(snapshot.editSurface, pasteFragmentCommand(floating.fragment, position, snapshot.revision));
+        const preflight = preflightPasteFragmentCommand(snapshot.editSurface, pasteFragmentCommand(fragment, position, snapshot.revision));
         if (preflight.changedCellCount === 0 && preflight.newBackstitchCount === 0) {
           this.discardFloatingPaste();
           this.setStatus('No change');
@@ -1922,7 +2055,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         }
       }
       this.commandInFlight = true;
-      const outcome = this.gateway.commitPaste!(floating.fragment, position, destination, token);
+      const outcome = this.gateway.commitPaste!(fragment, position, destination, token);
       this.commandInFlight = false;
       if (!outcome.result.changed) {
         this.discardFloatingPaste();
@@ -1989,7 +2122,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const id = this.selectedBackstitchId;
     const snapshot = this.gateway.getSnapshot();
     if (id === undefined || !snapshot.projectId || snapshot.revision === null) return false;
-    if (!this.editableSurface(snapshot, { tool: 'backstitch' }, true)) return false;
+    const surface = this.editableSurface(snapshot, { tool: 'backstitch' }, true);
+    if (!surface) return false;
+    const focus = this.focusColorId();
+    if (focus !== undefined && backstitchColor(surface, id) !== focus) {
+      this.notifyFocusProtected();
+      return false;
+    }
     const result = this.executeCommandWithToken(
       { type: 'remove-backstitch', id },
       `Deleted backstitch ${String(id)}`
@@ -2010,13 +2149,16 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const surface = this.editableSurface(snapshot, { tool: 'select' }, true);
     if (!surface) return false;
     const indices = finalizedSelectionIndices(currentSelection, surface);
-    const command = currentSelection.kind === 'sparse' && indices
-      ? deleteCellSetCommand(indices, snapshot.revision)
-      : deleteRegionCommand(bounds, snapshot.revision);
-    const result = this.executeCommandWithToken(
-      command,
-      `Deleted ${String(currentSelection.kind === 'sparse' ? currentSelection.indices.length : bounds.width * bounds.height)} cell${(currentSelection.kind === 'sparse' ? currentSelection.indices.length : bounds.width * bounds.height) === 1 ? '' : 's'}`
-    );
+    const focus = this.focusColorId();
+    const result = focus === undefined
+      ? this.executeCommandWithToken(
+        currentSelection.kind === 'sparse' && indices
+          ? deleteCellSetCommand(indices, snapshot.revision)
+          : deleteRegionCommand(bounds, snapshot.revision),
+        `Deleted ${String(currentSelection.kind === 'sparse' ? currentSelection.indices.length : bounds.width * bounds.height)} cell${(currentSelection.kind === 'sparse' ? currentSelection.indices.length : bounds.width * bounds.height) === 1 ? '' : 's'}`
+      )
+      : this.deleteFocusSelection(surface, currentSelection, focus, snapshot.revision);
+    if (result === undefined) return false;
     const after = this.editSurfaceOf(this.gateway.getSnapshot());
     if (result && selectedBackstitchId !== undefined && after && !after.backstitches.ids.some((id) => id === selectedBackstitchId)) this.resetBackstitchState();
     if (result) {
@@ -2555,6 +2697,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   /** Eyedropper: pick a cell's palette color, otherwise sample the reference image. The reference layer always samples the image. */
   private eyedropperAt(sample: PointerSample, document: PatternDocument): boolean {
     if (!validScreenSample(sample) || !isFiniteViewport(this.uiStore.getState().viewport)) return false;
+    if (this.notifyHiddenLayerPick()) return false;
     const point = screenToModel({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport);
     const cell = this.gateway.getSnapshot().activeLayer?.kind === 'reference' ? undefined : this.paintHitCell(sample, document);
     if (cell) {
@@ -2567,6 +2710,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const rgb = this.sampleTraceAt({ x: sample.screenX, y: sample.screenY });
     if (!rgb) return false;
     return this.activateSampledColor(rgb);
+  }
+
+  /** Tell the user the eyedropper needs a visible layer; true when the active layer is hidden. */
+  private notifyHiddenLayerPick(): boolean {
+    if (this.gateway.getSnapshot().activeLayer?.visible !== false) return false;
+    this.notify(HIDDEN_LAYER_PICK_HINT);
+    return true;
   }
 
   private pickCellPalette(document: PatternDocument, cell: ModelPoint, point?: ModelPoint): number | undefined {
@@ -2598,7 +2748,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.selectPalette(paletteId);
     this.uiStore.pulsePick(paletteId);
     const layer = this.gateway.getSnapshot().activeLayer ?? null;
-    const paint: EditorToolState = { tool: 'paint', brush: { kind: 'full', paletteId } };
+    const remembered = this.lastPaintBrush;
+    const brush: StitchBrush = remembered.kind === 'half'
+      ? { kind: 'half', ...(remembered.direction === undefined ? {} : { direction: remembered.direction }), paletteId }
+      : { kind: remembered.kind, paletteId };
+    const paint: EditorToolState = { tool: 'paint', brush };
     if (this.toolAvailable(paint, layer).enabled) {
       this.setTool(paint);
     } else if (layer?.kind === 'specialty' && this.toolAvailable({ tool: 'backstitch' }, layer).enabled) {
@@ -2988,7 +3142,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       };
       this.gesture = gesture;
       this.updateShapeCells(gesture, cell, surface);
-      this.publishPendingCells(gesture.cells, this.pendingPaintStates(gesture.cells, gesture.edit, transaction.token.revision, surface));
+      this.publishPendingPaint(gesture.cells, gesture.edit, transaction.token.revision, surface);
       return true;
     }
     if (selectedTool.tool === 'fill') {
@@ -3038,7 +3192,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     stampBrush(cells, cell, brushSize, surface);
     const edit = editForBrush(selectedTool.brush, this.paintCorner(sample));
     this.gesture = { kind: 'paint', pointerId: sample.pointerId, transaction, brush: selectedTool.brush, edit, brushSize, cells, lastCell: cell };
-    this.publishPendingCells(cells, this.pendingPaintStates(cells, edit, transaction.token.revision, surface));
+    this.publishPendingPaint(cells, edit, transaction.token.revision, surface);
     return true;
   }
 
@@ -3111,7 +3265,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const document = this.editSurfaceOf(snapshot);
       if (!document) return false;
       this.appendShapeSample(gesture, sample, document);
-      this.publishPendingCells(gesture.cells, this.pendingPaintStates(gesture.cells, gesture.edit, gesture.transaction.token.revision, document));
+      this.publishPendingPaint(gesture.cells, gesture.edit, gesture.transaction.token.revision, document);
       return true;
     }
     if (gesture.kind === 'paint') {
@@ -3124,7 +3278,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const document = this.editSurfaceOf(snapshot);
       if (!document) return false;
       this.appendPaintSample(gesture, sample, document);
-      this.publishPendingCells(gesture.cells, this.pendingPaintStates(gesture.cells, gesture.edit, gesture.transaction.token.revision, document));
+      this.publishPendingPaint(gesture.cells, gesture.edit, gesture.transaction.token.revision, document);
       return true;
     }
     if (gesture.kind === 'eraser') {
@@ -4127,7 +4281,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const snapshot = this.gateway.getSnapshot();
     const surface = this.editSurfaceOf(snapshot);
     if (!snapshot.document || !surface) return;
-    const indices = indicesForCells([...gesture.cells.values()], surface.width);
+    const indices = this.focusEditableIndices(surface, indicesForCells([...gesture.cells.values()], surface.width), gesture.edit);
+    if (!indices) return;
     const command: DomainCommand = {
       type: 'bulk-cell',
       indices,
@@ -4177,16 +4332,17 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const surface = this.editSurfaceOf(snapshot);
     if (!snapshot.document || !surface) return;
     if (gesture.backstitches) {
-      this.finishBackstitchErase(gesture, gesture.backstitches, snapshot);
+      this.finishBackstitchErase(gesture, gesture.backstitches, snapshot, surface);
       return;
     }
+    const targets = this.focusEraserTargets(gesture.cells, gesture.components, surface);
     const wholeIndices: number[] = [];
     const componentTargets: Array<{ index: number; corner: number }> = [];
-    for (const { cell, corner } of gesture.components.values()) {
+    for (const { cell, corner } of targets.components.values()) {
       componentTargets.push({ index: cell.y * surface.width + cell.x, corner });
     }
     const targetedIndexes = new Set(componentTargets.map((target) => target.index));
-    for (const cell of gesture.cells.values()) {
+    for (const cell of targets.cells.values()) {
       const index = cell.y * surface.width + cell.x;
       const kind = surface.kind[index];
       if (!erasesByComponent(kind)) {
@@ -4195,6 +4351,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         // A pair with no component on the start side is an intentional no-op.
         continue;
       }
+    }
+    if (targets.blocked && wholeIndices.length === 0 && componentTargets.length === 0) {
+      this.notifyFocusProtected();
+      return;
     }
     wholeIndices.sort((left, right) => left - right);
     componentTargets.sort((left, right) => left.index - right.index || left.corner - right.corner);
@@ -4217,13 +4377,14 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       }
       const preflight = preflightMixedEraseCommand(surface, command);
       if (preflight.changedCellCount === 0) {
-        this.setStatus('No change');
+        if (targets.blocked) this.notifyFocusProtected();
+        else this.setStatus('No change');
         return;
       }
       this.commandInFlight = true;
       const result = gesture.transaction.commit(this.stamp(command, snapshot));
       this.commandInFlight = false;
-      this.projectCommandResult(result, indicesForCells([...gesture.cells.values()], surface.width), `Erased ${String(gesture.cells.size)} cell${gesture.cells.size === 1 ? '' : 's'}`);
+      this.projectCommandResult(result, indicesForCells([...targets.cells.values()], surface.width), `Erased ${String(targets.cells.size)} cell${targets.cells.size === 1 ? '' : 's'}`);
     } catch (error) {
       this.commandInFlight = false;
       if (error instanceof StaleEditorTransactionError) this.setStatus('Erase cancelled: project changed');
@@ -4232,9 +4393,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   /** Remove the touched backstitches of the selected specialty layer as one history entry. */
-  private finishBackstitchErase(gesture: EraserGesture, removals: Map<number, PendingBackstitchRemoval>, snapshot: WorkspaceEditorSnapshot): void {
+  private finishBackstitchErase(gesture: EraserGesture, touched: Map<number, PendingBackstitchRemoval>, snapshot: WorkspaceEditorSnapshot, surface: PatternDocument): void {
+    const removals = this.focusRemovals(touched, surface);
     if (removals.size === 0) {
-      this.setStatus('No change');
+      if (touched.size > 0) this.notifyFocusProtected();
+      else this.setStatus('No change');
       return;
     }
     if (!this.isCurrentTransaction(gesture.transaction.token, snapshot)) {
@@ -4283,7 +4446,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       floatingPaste: this.floatingPaste
         ? {
             mode: this.floatingPaste.mode,
-            fragment: this.floatingPaste.fragment,
+            fragment: this.floatingPasteFragment(this.floatingPaste),
             destination: { ...this.floatingPaste.destination },
             copySelection: this.floatingPaste.copySelection,
             sourceSelection: this.floatingPaste.sourceSelection,
@@ -4293,6 +4456,15 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
           }
         : undefined
     });
+  }
+
+  /** The fragment a floating paste shows: under Focus Color, only what a commit here would paste. */
+  private floatingPasteFragment(floating: FloatingPasteState): PatternFragment {
+    const focus = this.focusColorId();
+    const snapshot = this.gateway.getSnapshot();
+    const surface = this.editSurfaceOf(snapshot) ?? snapshot.document;
+    if (focus === undefined || floating.mode !== 'paste' || !surface) return floating.fragment;
+    return focusPasteFragment(floating.fragment, surface, floating.destination, focus);
   }
 
   private discardFloatingPaste(): void {
@@ -4378,11 +4550,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return Math.max(0.25, 8 / Math.max(0.01, this.uiStore.getState().viewport.zoom));
   }
 
-  private addBackstitchHit(document: PatternDocument, point: ModelPoint): { id: number; start: FixedPoint; end: FixedPoint } | undefined {
+  /** The nearest backstitch within the pick tolerance; with `focus`, only stitches of that color. */
+  private addBackstitchHit(document: PatternDocument, point: ModelPoint, focus?: number): { id: number; start: FixedPoint; end: FixedPoint } | undefined {
     const tolerance = this.backstitchHitTolerance();
     let best: { id: number; distance: number; start: FixedPoint; end: FixedPoint } | undefined;
     const store = document.backstitches;
     for (let index = 0; index < store.ids.length; index += 1) {
+      if (focus !== undefined && store.colors[index] !== focus) continue;
       const start = { x: store.x1[index], y: store.y1[index] };
       const end = { x: store.x2[index], y: store.y2[index] };
       const distance = distanceToSegment(point, fixedPointToModel(start), fixedPointToModel(end));
@@ -4406,9 +4580,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (tool.tool === 'backstitch' && tool.mode === 'move') {
       // Move mode only picks up the selected layer's backstitches; a miss draws
       // nothing and drops the selection.
-      const hit = this.addBackstitchHit(surface, point);
+      const focus = this.focusColorId();
+      const hit = this.addBackstitchHit(surface, point, focus);
       if (!hit) {
         this.selectedBackstitchId = undefined;
+        if (focus !== undefined && this.addBackstitchHit(surface, point)) this.notifyFocusProtected();
         return false;
       }
       this.selectedBackstitchId = hit.id;
@@ -4476,6 +4652,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         this.resetBackstitchState();
         return;
       }
+      if (this.backstitchProtected(snapshot, gesture.start, gesture.end)) {
+        this.resetBackstitchState();
+        return;
+      }
       const created = this.executeCommandResult({
         type: 'add-backstitch',
         start: gesture.start,
@@ -4487,6 +4667,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     // A tap that never left the slop selected the stitch and changes nothing.
     if (gesture.selectedId === undefined || !gesture.dragging) return;
+    if (this.backstitchProtected(snapshot, gesture.start, gesture.end, gesture.selectedId)) {
+      this.selectedBackstitchId = gesture.selectedId;
+      return;
+    }
     const changed = this.executeCommandWithToken({
       type: 'move-backstitch',
       id: gesture.selectedId,
@@ -4526,6 +4710,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.keyboardBackstitchAnchor = undefined;
     this.keyboardBackstitchToken = undefined;
     this.clearBackstitchPreview();
+    if (this.backstitchProtected(snapshot, anchor, point)) return;
     const created = this.executeCommandResult({
       type: 'add-backstitch',
       start: anchor,
@@ -4533,6 +4718,21 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       color: this.uiStore.getState().paletteId ?? 1
     }, 'Created backstitch', token);
     if (created?.changed) this.selectedBackstitchId = this.createdBackstitchId(created);
+  }
+
+  /**
+   * True, after the notice, when Focus Color forbids drawing or moving a
+   * backstitch to `start`–`end`: the moved stitch is another color, or the
+   * segment lies over a stitch of another color.
+   */
+  private backstitchProtected(snapshot: WorkspaceEditorSnapshot, start: FixedPoint, end: FixedPoint, movingId?: number): boolean {
+    const focus = this.focusColorId();
+    const surface = this.editSurfaceOf(snapshot);
+    if (focus === undefined || !surface) return false;
+    const color = movingId === undefined ? this.uiStore.getState().paletteId ?? 1 : backstitchColor(surface, movingId);
+    const blocked = color !== focus || backstitchCoversProtected(surface, start, end, focus, movingId);
+    if (blocked) this.notifyFocusProtected();
+    return blocked;
   }
 
   /** The id of a just-created backstitch, read from the selected layer rather than the composite. */
@@ -4612,6 +4812,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.setStatus('No change');
       return true;
     }
+    // A recolor always changes another color; filling empty cells with the focus color is allowed.
+    if (!isEmptyStart && this.focusColorId() !== undefined) {
+      this.notifyFocusProtected();
+      return true;
+    }
     const token: EditorRevisionToken = { projectId: snapshot.projectId, revision: snapshot.revision };
     let job: FillJob;
     try {
@@ -4668,6 +4873,12 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       || result.height !== currentSurface.height
       || result.startIndex < 0) {
       this.setStatus('Fill discarded: project changed');
+      return;
+    }
+    const focus = this.focusColorId();
+    if (capturedRecolor && focus !== undefined && (capturedRecolor.kind === 'recolor' || capturedRecolor.toColor !== focus)) {
+      // Focus Color turned on, or moved, while the fill ran.
+      this.notifyFocusProtected();
       return;
     }
     if (capturedRecolor?.kind === 'empty-region') {
@@ -4748,6 +4959,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const state = this.uiStore.getState();
     const cursor = state.keyboardCursor ?? { x: 0, y: 0 };
     if (!isFiniteModelPoint(cursor) || !isFiniteViewport(state.viewport)) return;
+    if (this.notifyHiddenLayerPick()) return;
     const rgb = this.sampleTraceAt({
       x: (cursor.x + 0.5 - state.viewport.x) * state.viewport.zoom,
       y: (cursor.y + 0.5 - state.viewport.y) * state.viewport.zoom
@@ -4779,11 +4991,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (cell.x < 0 || cell.y < 0 || cell.x >= surface.width || cell.y >= surface.height) return;
     const cells = brushCells(cell, this.getBrushSize(), surface);
     if (snapshot.activeLayer?.kind === 'specialty') {
-      const removals = new Map<number, PendingBackstitchRemoval>();
-      backstitchesThroughCells(surface, cells, removals);
+      const touched = new Map<number, PendingBackstitchRemoval>();
+      backstitchesThroughCells(surface, cells, touched);
+      const removals = this.focusRemovals(touched, surface);
       const ids = [...removals.keys()].sort((left, right) => left - right);
       if (ids.length === 0) {
-        this.setStatus('No change');
+        if (touched.size > 0) this.notifyFocusProtected();
+        else this.setStatus('No change');
         return;
       }
       const token: EditorRevisionToken = { projectId: snapshot.projectId, revision: snapshot.revision };
@@ -4802,11 +5016,17 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     const eraser = state.tool.tool === 'eraser' ? state.tool : undefined;
     const corner = eraser?.corner ?? this.eraserCorner;
+    const focus = this.focusColorId();
     const wholeIndices: number[] = [];
     const componentIndices: number[] = [];
+    let blocked = false;
     for (const target of cells) {
       const index = target.y * surface.width + target.x;
-      if (!erasesByComponent(surface.kind[index])) wholeIndices.push(index);
+      const editable = focus === undefined || (erasesByComponent(surface.kind[index])
+        ? componentEditableUnderFocus(surface, index, corner, focus)
+        : cellEditableUnderFocus(surface, index, focus));
+      if (!editable) blocked = true;
+      else if (!erasesByComponent(surface.kind[index])) wholeIndices.push(index);
       else if (componentCornerForHit(surface, index, corner) !== undefined) componentIndices.push(index);
     }
     if (componentIndices.length === 0 && wholeIndices.length === cells.length) {
@@ -4814,7 +5034,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       return;
     }
     if (wholeIndices.length === 0 && componentIndices.length === 0) {
-      this.setStatus('No change');
+      if (blocked) this.notifyFocusProtected();
+      else this.setStatus('No change');
       return;
     }
     wholeIndices.sort((left, right) => left - right);
@@ -4844,7 +5065,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const snapshot = this.gateway.getSnapshot();
     const surface = this.editSurfaceOf(snapshot);
     if (!snapshot.document || !surface || !snapshot.projectId || snapshot.revision === null) return;
-    const indices = indicesForCells(cells, surface.width);
+    const indices = this.focusEditableIndices(surface, indicesForCells(cells, surface.width), edit);
+    if (!indices) return;
     const command: DomainCommand = { type: 'bulk-cell', indices, edit, expectedRevision: snapshot.revision };
     try {
       const preflight = preflightBulkCellCommand(surface, command);
@@ -5020,13 +5242,25 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.touchPointers.clear();
     this.floatingPasteTouchCandidate = undefined;
     this.canvasEdgeDrag = undefined;
-    this.uiStore.setState({ overlay: {}, keyboardCursor: null, status: null, canvasCropActive: false });
+    this.uiStore.setState({
+      overlay: {},
+      keyboardCursor: null,
+      status: null,
+      canvasCropActive: false,
+      // Focus Color is a per-project session mode.
+      ...(this.uiStore.getState().focusColor ? { focusColor: false, highlightColor: null } : {})
+    });
     if (snapshot.document && this.metrics) this.projectViewport(fitViewport(snapshot.document, this.metrics, CHART_EDGE_MARGIN, this.viewportOptions));
   }
 
   private onUiState(state: ReturnType<EditorUiStore['getState']>, previous: ReturnType<EditorUiStore['getState']>): void {
     if (!this.started || this.disposed) return;
     if (state.tool.tool === 'eraser' && state.tool.corner !== undefined) this.eraserCorner = state.tool.corner;
+    if (state.tool.tool === 'paint' && state.tool.brush) {
+      const brush = state.tool.brush;
+      if (brush.kind === 'half') this.lastPaintBrush = brush.direction === undefined ? { kind: 'half' } : { kind: 'half', direction: brush.direction };
+      else if (brush.kind === 'full' || brush.kind === 'three-quarter') this.lastPaintBrush = { kind: brush.kind };
+    }
     if (state.tool.tool !== previous.tool.tool) {
       if (this.floatingPaste) this.discardFloatingPaste();
       this.resetToolTransient();
@@ -5045,6 +5279,16 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (state.highlightColor !== previous.highlightColor) this.renderer.setStyle({ highlightColor: state.highlightColor });
     if (state.overlay !== previous.overlay) this.renderer.setOverlay(state.overlay);
     if ((state.tool !== previous.tool || state.brushSize !== previous.brushSize || state.viewport !== previous.viewport) && this.lastHoverSample && !this.gesture) this.updateBrushPreview(this.lastHoverSample);
+    if (state.focusColor !== previous.focusColor || (state.focusColor && state.paletteId !== previous.paletteId)) this.onFocusColorChange();
+  }
+
+  /** Focus Color follows the active palette color: keep the highlight on it and the previews to what it allows. */
+  private onFocusColorChange(): void {
+    const state = this.uiStore.getState();
+    const highlightColor = state.focusColor ? state.paletteId : null;
+    if (state.highlightColor !== highlightColor) this.uiStore.setState({ highlightColor });
+    if (this.floatingPaste) this.publishFloatingPasteOverlay();
+    if (this.lastHoverSample && !this.gesture) this.updateBrushPreview(this.lastHoverSample);
   }
 
   private projectUiState(state: ReturnType<EditorUiStore['getState']>): void {
@@ -5062,6 +5306,64 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   private isCurrentTransaction(token: EditorRevisionToken, snapshot: WorkspaceEditorSnapshot): boolean {
     return token.projectId === snapshot.projectId && token.revision === snapshot.revision && snapshot.document !== null;
+  }
+
+  /** Preview a paint or shape stroke over the cells Focus Color leaves editable. */
+  private publishPendingPaint(cells: Map<string, ModelPoint>, edit: BulkCellEdit, revision: number, document: PatternDocument): void {
+    const editable = this.focusEditableCells(cells, document);
+    this.publishPendingCells(editable, editable.size > 0 ? this.pendingPaintStates(editable, edit, revision, document) : []);
+  }
+
+  /** The cells Focus Color leaves editable: empty, or only the focus color. All of them while it is off. */
+  private focusEditableCells(cells: Map<string, ModelPoint>, document: PatternDocument): Map<string, ModelPoint> {
+    const focus = this.focusColorId();
+    if (focus === undefined) return cells;
+    return new Map([...cells].filter(([, cell]) => cellEditableUnderFocus(document, cell.y * document.width + cell.x, focus)));
+  }
+
+  /**
+   * The indices Focus Color lets `edit` change; undefined, after the notice,
+   * when it protects every one or the edit stitches another color.
+   */
+  private focusEditableIndices(surface: PatternDocument, indices: Uint32Array, edit: BulkCellEdit): Uint32Array | undefined {
+    const focus = this.focusColorId();
+    if (focus === undefined) return indices;
+    if ('color' in edit && edit.color !== focus) {
+      this.notifyFocusProtected();
+      return undefined;
+    }
+    const editable = filterEditableIndices(surface, indices, focus);
+    if (editable.length > 0 || indices.length === 0) return editable;
+    this.notifyFocusProtected();
+    return undefined;
+  }
+
+  /**
+   * The eraser targets Focus Color leaves editable: whole cells that are empty
+   * or only the focus color, and the focus-color triangles of three-quarter
+   * pairs, with the pair cells they belong to.
+   */
+  private focusEraserTargets(
+    cells: Map<string, ModelPoint>,
+    components: Map<string, { readonly cell: ModelPoint; readonly corner: number }>,
+    document: PatternDocument
+  ): { cells: Map<string, ModelPoint>; components: Map<string, { readonly cell: ModelPoint; readonly corner: number }>; blocked: boolean } {
+    const focus = this.focusColorId();
+    if (focus === undefined) return { cells, components, blocked: false };
+    const keptComponents = new Map([...components].filter(([, { cell, corner }]) => componentEditableUnderFocus(document, cell.y * document.width + cell.x, corner, focus)));
+    const componentIndices = new Set([...keptComponents.values()].map(({ cell }) => cell.y * document.width + cell.x));
+    const keptCells = new Map([...cells].filter(([, cell]) => {
+      const index = cell.y * document.width + cell.x;
+      return componentIndices.has(index) || cellEditableUnderFocus(document, index, focus);
+    }));
+    return { cells: keptCells, components: keptComponents, blocked: keptCells.size < cells.size || keptComponents.size < components.size };
+  }
+
+  /** The backstitch removals Focus Color allows: focus-color stitches only. */
+  private focusRemovals(removals: Map<number, PendingBackstitchRemoval>, document: PatternDocument): Map<number, PendingBackstitchRemoval> {
+    const focus = this.focusColorId();
+    if (focus === undefined) return removals;
+    return new Map([...removals].filter(([id]) => backstitchColor(document, id) === focus));
   }
 
   private pendingPaintStates(cells: Map<string, ModelPoint>, edit: BulkCellEdit, revision: number, document: PatternDocument): PendingCellState[] {
@@ -5264,7 +5566,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         const point = screenToModel({ x: sample.screenX, y: sample.screenY }, state.viewport);
         backstitchesNearPath(document, point, point, this.backstitchHitTolerance(), removals);
       }
-      this.uiStore.setOverlay({ ...state.overlay, brushPreview: { states: this.activeStatesOnly(states), kind }, pendingBackstitchRemovals: removals.size ? [...removals.values()] : undefined });
+      const allowed = this.focusRemovals(removals, document);
+      this.uiStore.setOverlay({ ...state.overlay, brushPreview: { states: this.activeStatesOnly(states), kind }, pendingBackstitchRemovals: allowed.size ? [...allowed.values()] : undefined });
       return;
     } else if (tool.tool === 'paint') {
       const cells = new Map<string, ModelPoint>();
@@ -5272,12 +5575,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       // The hover outline marks the brush footprint, so keep cells the stroke
       // would leave unchanged (e.g. stitches already in the selected color).
       const edit = editForBrush(tool.brush, this.paintCorner(sample));
-      states = Array.from(indicesForCells([...cells.values()], document.width), (index) => cellState(document, index, edit));
+      states = Array.from(indicesForCells([...this.focusEditableCells(cells, document).values()], document.width), (index) => cellState(document, index, edit));
     } else {
       const cells = new Map<string, ModelPoint>();
       const components = new Map<string, { readonly cell: ModelPoint; readonly corner: number }>();
       this.addEraserSample({ cells, components, brushSize }, cell, sample, document);
-      states = this.pendingEraserStates(cells, components, document);
+      const targets = this.focusEraserTargets(cells, components, document);
+      states = this.pendingEraserStates(targets.cells, targets.components, document);
     }
     this.uiStore.setOverlay({ ...state.overlay, brushPreview: { states: this.activeStatesOnly(states), kind } });
   }
@@ -5628,6 +5932,90 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.noticeCallback?.(message);
   }
 
+  /** Turn Focus Color on or off. The read-only viewer keeps its own highlight and never focuses. */
+  setFocusColor(on: boolean): void {
+    if (this.readOnly) return;
+    const state = this.uiStore.getState();
+    if (state.focusColor === on) return;
+    this.uiStore.setState({ focusColor: on, highlightColor: on ? state.paletteId : null });
+  }
+
+  toggleFocusColor(): void {
+    this.setFocusColor(!this.uiStore.getState().focusColor);
+  }
+
+  /**
+   * The palette id Focus Color protects every other color from, or undefined
+   * while it is off. With no active color nothing but empty cells is editable.
+   */
+  private focusColorId(): number | undefined {
+    const state = this.uiStore.getState();
+    return state.focusColor && !this.readOnly ? state.paletteId ?? 0 : undefined;
+  }
+
+  private notifyFocusProtected(): void {
+    this.notify(FOCUS_COLOR_PROTECTED_HINT);
+    this.setStatus(FOCUS_COLOR_PROTECTED_HINT);
+  }
+
+  /**
+   * The part of a selection Focus Color lets copy and move act on: its
+   * focus-color cells as a sparse selection or, with none, the selection itself
+   * for its focus-color backstitches. Undefined when it holds nothing of the
+   * focus color, after the notice when it holds other colors.
+   */
+  private focusSelection(surface: PatternDocument, selection: FinalizedSelection, focus: number): FinalizedSelection | undefined {
+    const content = focusSelectionContent(surface, selection, focus);
+    if (content.cells.length > 0) {
+      const sparse = sparseSelectionGeometry(content.cells, surface.width, surface.height);
+      return sparse ? { kind: 'sparse', ...sparse, documentWidth: surface.width, documentHeight: surface.height } : undefined;
+    }
+    if (content.backstitchIds.length > 0) return selection;
+    if (content.protectedContent) this.notifyFocusProtected();
+    return undefined;
+  }
+
+  /** Delete only the selection's focus-color cells and backstitches; undefined, after the notice, when it holds only other colors. */
+  private deleteFocusSelection(surface: PatternDocument, selection: FinalizedSelection, focus: number, revision: number): boolean | undefined {
+    const { cells, backstitchIds, protectedContent } = focusSelectionContent(surface, selection, focus);
+    const commands: DomainCommand[] = [
+      ...(cells.length > 0 ? [deleteCellSetCommand(cells, revision)] : []),
+      ...backstitchIds.map((id): DomainCommand => ({ type: 'remove-backstitch', id }))
+    ];
+    if (commands.length === 0) {
+      if (protectedContent) {
+        this.notifyFocusProtected();
+        return undefined;
+      }
+      this.setStatus('No change');
+      return false;
+    }
+    const status = cells.length > 0
+      ? `Deleted ${String(cells.length)} cell${cells.length === 1 ? '' : 's'}`
+      : `Deleted ${String(backstitchIds.length)} backstitch${backstitchIds.length === 1 ? '' : 'es'}`;
+    return this.executeCommandWithToken(commands.length === 1 ? commands[0] : { type: 'batch', commands }, status);
+  }
+
+  /** Whether committing a floating move now would change a stitch of another color than `focus`. */
+  private focusMoveRefused(floating: FloatingPasteState, surface: PatternDocument, focus: number): boolean {
+    const moved = floating.backstitches;
+    if (moved && moved.colors.some((color) => color !== focus)) return true;
+    const dx = floating.destination.x - floating.copySelection.rect.x;
+    const dy = floating.destination.y - floating.copySelection.rect.y;
+    if (floating.focusBackstitchIds) {
+      if (!moved) return false;
+      for (let position = 0; position < moved.ids.length; position += 1) {
+        const start = { x: moved.x1[position] + floating.destination.x * 4, y: moved.y1[position] + floating.destination.y * 4 };
+        const end = { x: moved.x2[position] + floating.destination.x * 4, y: moved.y2[position] + floating.destination.y * 4 };
+        if (backstitchCoversProtected(surface, start, end, focus, moved.ids[position])) return true;
+      }
+      return false;
+    }
+    if (!floating.moveSelection) return false;
+    const source = fragmentSelectionIndices(floating.moveSelection, surface);
+    return filterEditableIndices(surface, source, focus) !== source || moveOverwritesProtected(surface, source, dx, dy, focus);
+  }
+
   /**
    * The selected layer's own content, which editor tools read. Without layer
    * information it is the whole document; on Canvas or Reference it is null.
@@ -5723,11 +6111,12 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         ...state.overlay,
         pendingCells: this.activeCellsOnly([...gesture.cells.values()]),
         pendingCellStates: undefined,
-        pendingBackstitchRemovals: [...gesture.backstitches.values()]
+        pendingBackstitchRemovals: [...this.focusRemovals(gesture.backstitches, document).values()]
       });
       return;
     }
-    this.publishPendingCells(gesture.cells, this.pendingEraserStates(gesture.cells, gesture.components, document));
+    const targets = this.focusEraserTargets(gesture.cells, gesture.components, document);
+    this.publishPendingCells(targets.cells, this.pendingEraserStates(targets.cells, targets.components, document));
   }
 
   private clearPendingBackstitchRemovals(): void {

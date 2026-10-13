@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import { unzipSync, zipSync, strFromU8, strToU8 } from 'fflate';
-import { applyCommand as applySurfaceCommand, CellKind, commitLayerSurface, computePatternMetrics, createDocument as createDomainDocument, createDocumentEditor as createEditor, createEditorFromHistory, layerAddCommand, layerDeleteCommand, layerRenameCommand, layerSetVisibilityCommand, type DocumentEditor, flattenDocument, layeredFromSurface, LayerType, layerSurface, QuarterCorner, topmostVisibleLayer, type CatalogAssociation, type CreateDocumentOptions, type DomainCommand, type LayeredDocument, type PatternDocument, type StitchLayer, type SpecialtyLayer } from '../domain';
+import { applyCommand as applySurfaceCommand, CellKind, commitLayerSurface, computePatternMetrics, createDocument as createDomainDocument, createDocumentEditor as createEditor, createEditorFromHistory, layerAddCommand, layerDeleteCommand, layerRenameCommand, type DocumentEditor, flattenDocument, layeredFromSurface, LayerType, layerSurface, QuarterCorner, topmostVisibleLayer, type CatalogAssociation, type CreateDocumentOptions, type DomainCommand, type LayeredDocument, type PatternDocument, type StitchLayer, type SpecialtyLayer } from '../domain';
 import { cloneLayeredDocument, decodeDocumentWithInfo } from './binary';
 import { encodeLegacyDocument } from './legacy-binary.fixture';
 import { DMC_CATALOG_DEFINITION } from '../catalog';
@@ -677,7 +677,7 @@ describe('durable document history persistence', () => {
       await repo.save('history-save-path', metadata(base, 'history-save-path'), base);
       const editor = createEditor(base);
       for (let step = 0; step < 20; step += 1) executeLayered(editor, { type: 'document-settings-update', settings: { aidaCount: 15 + step } });
-      for (let step = 0; step < 20; step += 1) executeLayered(editor, layerSetVisibilityCommand(SPECIALTY_LAYER, step % 2 === 1));
+      for (let step = 0; step < 20; step += 1) executeLayered(editor, { type: 'document-settings-update', settings: { aidaCount: 40 + step } });
       const document = cloneLayeredDocument(editor.document);
       const history = editor.exportHistory();
       rebuildSpy.mockClear();

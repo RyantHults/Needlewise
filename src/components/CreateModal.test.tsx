@@ -920,15 +920,15 @@ describe('CreateModal image lifecycle', () => {
     expect(nearCorner.sourceTop).toBe(0);
     expect(nearCorner.lensLeft).toBe(0);
     expect(nearCorner.lensTop).toBe(0);
-    // Pointer at the canvas bottom-right corner (110,100): the sample cannot
-    // fit the ~107px-in-both-axes lens into a 60px-tall bitmap, so it clamps to
-    // the corner (0,0). The frame (120px) is smaller than the 160px lens, so
-    // the box pins to the origin to stay fully inside the frame.
+    // Pointer at the canvas bottom-right corner (110,100): the 64px sample
+    // clamps against the bitmap edge (80 - 64 = 16 across; the 60px-tall
+    // bitmap is shorter than the sample, so it pins to 0 down). The 120px
+    // frame fits the 96px lens, so the box clamps to its far edge (120 - 96).
     const farCorner = previewLensGeometry(80, 60, 100, 80, frame, rect, 110, 100);
-    expect(farCorner.sourceLeft).toBe(0);
+    expect(farCorner.sourceLeft).toBe(16);
     expect(farCorner.sourceTop).toBe(0);
-    expect(farCorner.lensLeft).toBe(0);
-    expect(farCorner.lensTop).toBe(0);
+    expect(farCorner.lensLeft).toBe(120 - PREVIEW_LENS_SIZE);
+    expect(farCorner.lensTop).toBe(120 - PREVIEW_LENS_SIZE);
   });
 
   it('places the "above" lens by its bottom edge and leaves a negative top unclamped', () => {
@@ -960,14 +960,14 @@ describe('CreateModal image lifecycle', () => {
     const lens = preview.parentElement!.querySelector('.preview-lens') as HTMLCanvasElement;
     expect(lens).toBeInTheDocument();
     expect(lens).toHaveAttribute('aria-hidden', 'true');
-    expect(lens).toHaveAttribute('width', '160');
-    expect(lens).toHaveAttribute('height', '160');
+    expect(lens).toHaveAttribute('width', String(PREVIEW_LENS_SIZE));
+    expect(lens).toHaveAttribute('height', String(PREVIEW_LENS_SIZE));
     expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 0'));
     expect(lens).toHaveAttribute('style', expect.stringContaining('pointer-events: none'));
 
     const rect = { left: 10, top: 20, width: 100, height: 80, right: 110, bottom: 100, toJSON: () => undefined };
     vi.spyOn(preview, 'getBoundingClientRect').mockReturnValue(rect as DOMRect);
-    // Frame larger than the 160px lens so the box can follow the pointer.
+    // Frame larger than the PREVIEW_LENS_SIZE lens so the box can follow the pointer.
     vi.spyOn(preview.parentElement!, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 200, height: 200, right: 200, bottom: 200, toJSON: () => undefined } as DOMRect);
 
     // The lens context is unavailable in jsdom; drawing must be guarded and
@@ -975,13 +975,13 @@ describe('CreateModal image lifecycle', () => {
     fireEvent.pointerEnter(preview, { pointerType: 'mouse', clientX: 30, clientY: 40 });
     fireEvent.pointerMove(preview, { pointerType: 'mouse', clientX: 60, clientY: 70 });
     expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 1'));
-    // 60 - 160/2 = -20 clamped into the frame -> 0; 70 - 80 = -10 -> 0.
-    expect(lens.style.left).toBe('0px');
-    expect(lens.style.top).toBe('0px');
+    // 60 - 96/2 = 12; 70 - 48 = 22.
+    expect(lens.style.left).toBe('12px');
+    expect(lens.style.top).toBe('22px');
     // An in-bounds move updates the box position (follow behavior).
     fireEvent.pointerMove(preview, { pointerType: 'mouse', clientX: 100, clientY: 95 });
-    expect(lens.style.left).toBe('20px');
-    expect(lens.style.top).toBe('15px');
+    expect(lens.style.left).toBe('52px');
+    expect(lens.style.top).toBe('47px');
     // Leaving hides it again.
     fireEvent.pointerLeave(preview);
     expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 0'));
@@ -1005,14 +1005,14 @@ describe('CreateModal image lifecycle', () => {
       fireEvent.pointerDown(preview, { pointerType: 'touch', clientX: 30, clientY: 40 });
       expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 1'));
       // Touch places the lens 'above' the tap point: its bottom edge sits on
-      // it (40 - 160 = -120), unclamped so it can rise above the frame.
+      // it (40 - 96 = -56), unclamped so it can rise above the frame.
       expect(lens.style.left).toBe('0px');
-      expect(lens.style.top).toBe('-120px');
+      expect(lens.style.top).toBe('-56px');
       // A tap-drag still follows, same as hover does for mouse, keeping the
-      // bottom edge on the new point (70 - 160 = -90).
+      // bottom edge on the new point (70 - 96 = -26).
       fireEvent.pointerMove(preview, { pointerType: 'touch', clientX: 60, clientY: 70 });
-      expect(lens.style.left).toBe('0px');
-      expect(lens.style.top).toBe('-90px');
+      expect(lens.style.left).toBe('12px');
+      expect(lens.style.top).toBe('-26px');
       // Neither pointerup nor pointerleave hides a touch-shown lens.
       fireEvent.pointerUp(preview, { pointerType: 'touch', clientX: 60, clientY: 70 });
       expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 1'));
@@ -1042,7 +1042,7 @@ describe('CreateModal image lifecycle', () => {
       fireEvent.pointerMove(preview, { pointerType: 'mouse', clientX: 40, clientY: 50 });
       expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 1'));
       // Mouse keeps the centered placement: box centered on the pointer.
-      expect(lens.style.top).toBe('0px');
+      expect(lens.style.top).toBe('2px');
       fireEvent.pointerLeave(preview, { pointerType: 'mouse' });
       expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 0'));
     });
@@ -1052,9 +1052,9 @@ describe('CreateModal image lifecycle', () => {
       fireEvent.pointerEnter(preview, { pointerType: 'pen', clientX: 30, clientY: 40 });
       expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 1'));
       // Same 'above' math as the touch tap test: bottom edge on the point.
-      expect(lens.style.top).toBe('-120px');
+      expect(lens.style.top).toBe('-56px');
       fireEvent.pointerMove(preview, { pointerType: 'pen', clientX: 60, clientY: 70 });
-      expect(lens.style.top).toBe('-90px');
+      expect(lens.style.top).toBe('-26px');
       fireEvent.pointerLeave(preview, { pointerType: 'pen' });
       expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 0'));
     });

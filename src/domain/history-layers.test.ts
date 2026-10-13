@@ -174,15 +174,13 @@ describe('layered DocumentEditor: layer-scoped commands', () => {
 });
 
 describe('layered DocumentEditor: structure commands', () => {
-  it('undoes and redoes add, rename, visibility, move, duplicate, delete, and merge', () => {
+  it('undoes and redoes add, rename, move, duplicate, delete, and merge', () => {
     const editor = editorFor();
     editor.execute(full(0, 0, 1));
     const snapshots: LayeredDocument[] = [editor.document];
     const commands: DomainCommand[] = [
       layerAddCommand(LayerType.Stitch),
       layerRenameCommand(3, 'Outline'),
-      layerSetVisibilityCommand(3, false),
-      layerSetVisibilityCommand(3, true),
       layerMoveCommand(3, 0),
       layerDuplicateCommand(STITCHES),
       layerDeleteCommand(SPECIALTY),
@@ -214,6 +212,71 @@ describe('layered DocumentEditor: structure commands', () => {
       editor.redo();
       expect(editor.document.layers.map(describeLayer), commands[index].type).toEqual(snapshots[index + 1].layers.map(describeLayer));
     }
+  });
+
+  it('keeps visibility out of history but saves it with the document', () => {
+    const editor = editorFor();
+    editor.execute(full(0, 0, 1));
+    editor.execute(full(1, 0, 1));
+    editor.undo();
+    expect(editor.undoDepth).toBe(1);
+    expect(editor.redoDepth).toBe(1);
+    const revision = editor.revision;
+    const hidden = editor.execute(layerSetVisibilityCommand(STITCHES, false));
+    expect(hidden.changed).toBe(true);
+    expect(Array.from(hidden.compositeChangedIndices ?? [])).toEqual([0]);
+    expect(editor.revision).toBe(revision + 1);
+    // No entry is added and redo survives.
+    expect(editor.undoDepth).toBe(1);
+    expect(editor.redoDepth).toBe(1);
+    expect(stitch(editor.document, STITCHES).visible).toBe(false);
+
+    // Undo and redo move the earlier edits; the layer stays hidden.
+    editor.redo();
+    expect(stitch(editor.document, STITCHES).kind[1]).toBe(CellKind.Full);
+    expect(stitch(editor.document, STITCHES).visible).toBe(false);
+    editor.undo();
+    editor.undo();
+    expect(stitch(editor.document, STITCHES).kind[0]).toBe(CellKind.Empty);
+    expect(stitch(editor.document, STITCHES).visible).toBe(false);
+    expect(editor.canUndo).toBe(false);
+  });
+
+  it('keeps current visibility through structure undo and restores the recorded one for a re-created layer', () => {
+    const editor = editorFor();
+    editor.execute(layerRenameCommand(SPECIALTY, 'Lines'));
+    editor.execute(layerSetVisibilityCommand(SPECIALTY, false));
+    editor.undo();
+    expect(specialty(editor.document, SPECIALTY).name).toBe('Specialty');
+    expect(specialty(editor.document, SPECIALTY).visible).toBe(false);
+    editor.redo();
+    expect(specialty(editor.document, SPECIALTY).visible).toBe(false);
+
+    editor.execute(layerDeleteCommand(SPECIALTY));
+    editor.undo();
+    expect(specialty(editor.document, SPECIALTY).visible).toBe(false);
+  });
+
+  it('imports history recorded before a visibility change', () => {
+    const editor = editorFor();
+    editor.execute(full(0, 0, 1));
+    editor.execute(layerRenameCommand(STITCHES, 'Cross'));
+    editor.execute(layerSetVisibilityCommand(STITCHES, false));
+    const restored = createEditorFromHistory(editor.document, editor.exportHistory());
+    expect(restored.undoDepth).toBe(2);
+    restored.undo();
+    restored.undo();
+    expect(stitch(restored.document, STITCHES).name).toBe('Stitches');
+    expect(stitch(restored.document, STITCHES).kind[0]).toBe(CellKind.Empty);
+    expect(stitch(restored.document, STITCHES).visible).toBe(false);
+  });
+
+  it('still records a visibility change inside a batch', () => {
+    const editor = editorFor();
+    editor.execute({ type: 'batch', commands: [layerSetVisibilityCommand(STITCHES, false), layerRenameCommand(STITCHES, 'Hidden')] });
+    expect(editor.undoDepth).toBe(1);
+    editor.undo();
+    expect(stitch(editor.document, STITCHES).name).toBe('Stitches');
   });
 
   it('treats unchanged structure commands as no-ops without history', () => {
@@ -347,11 +410,16 @@ describe('layered DocumentEditor: exact composite invalidation for structure cha
     return Array.from(result.compositeChangedIndices ?? []);
   }
 
-  it('reports only the cells that visibility, move, duplicate, merge and delete change, and the same on undo and redo', () => {
+  it('reports only the cells that visibility changes', () => {
     const editor = layeredEditor();
+    expect(changed(editor.execute(layerSetVisibilityCommand(3, false)))).toEqual([1, 10]);
+    expect(changed(editor.execute(layerSetVisibilityCommand(3, true)))).toEqual([1, 10]);
+  });
+
+  it('reports only the cells that move, duplicate, merge and delete change, and the same on undo and redo', () => {
+    const editor = layeredEditor();
+    editor.execute(layerSetVisibilityCommand(3, true));
     const cases: Array<[DomainCommand, number[]]> = [
-      [layerSetVisibilityCommand(3, false), [1, 10]],
-      [layerSetVisibilityCommand(3, true), [1, 10]],
       [layerMoveCommand(3, 0), [1]],
       [layerDuplicateCommand(3), []],
       [layerMergeCommand(4, STITCHES), []],
@@ -580,7 +648,8 @@ describe('layered DocumentEditor: structural import validation', () => {
 
   it('accepts a chain across a document-wide palette merge', () => {
     const { editor, exported } = mergedHistory();
-    expect(exported.undo.map((entry) => entry.kind)).toEqual(['delta', 'layers', 'layers', 'layers']);
+    // The visibility toggles around the merge add no entries.
+    expect(exported.undo.map((entry) => entry.kind)).toEqual(['delta', 'layers']);
     const restored = createEditorFromHistory(editor.document, exported);
     while (restored.canUndo) restored.undo();
     expect([restored.document.width, restored.document.height]).toEqual([4, 2]);

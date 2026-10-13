@@ -7,7 +7,7 @@ import { createUiStore } from './ui-store';
 import { ThreeQuarterPair } from './cell-kinds';
 import { DEFAULT_CATALOG_DEFINITION, type CatalogDefinition, type CatalogRecord } from '../catalog';
 import type { CanvasRenderer, Invalidation, OverlayState, RendererStyle, RenderStats, TraceImage, TraceRgb, Viewport } from './contracts';
-import { CHART_EDGE_MARGIN } from './contracts';
+import { CHART_EDGE_MARGIN, HIDDEN_LAYER_PICK_HINT } from './contracts';
 import type { KeyboardSample, PointerSample } from './input';
 
 class FakeGateway implements WorkspaceEditorGateway {
@@ -22,8 +22,10 @@ class FakeGateway implements WorkspaceEditorGateway {
     this.editor = createEditor(document);
   }
 
+  activeLayer: WorkspaceEditorSnapshot['activeLayer'];
+
   getSnapshot(): WorkspaceEditorSnapshot {
-    return { projectId: this.project, revision: this.editor.revision, document: this.editor.document };
+    return { projectId: this.project, revision: this.editor.revision, document: this.editor.document, ...(this.activeLayer === undefined ? {} : { activeLayer: this.activeLayer }) };
   }
 
   get undoDepth(): number {
@@ -453,6 +455,61 @@ describe('EditorSurfaceController', () => {
     expect(uiStore.getState().paletteId).toBe(1);
     expect(uiStore.getState().tool).toEqual({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
     expect(gateway.commands.length).toBe(before);
+    controller.dispose();
+  });
+
+  it('picks with the last stitch brush: full by default, then half direction and three-quarter', () => {
+    const { gateway, uiStore, controller } = controllerFixture();
+    gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    controller.setTool({ tool: 'eyedropper' });
+    controller.handlePointerDown(pointer(1, 8, 8));
+    expect(uiStore.getState().tool).toEqual({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
+
+    controller.setTool({ tool: 'paint', brush: { kind: 'half', direction: '\\', paletteId: 1 } });
+    controller.setTool({ tool: 'eyedropper' });
+    controller.handlePointerDown(pointer(2, 8, 8));
+    expect(uiStore.getState().tool).toEqual({ tool: 'paint', brush: { kind: 'half', direction: '\\', paletteId: 1 } });
+
+    controller.setTool({ tool: 'paint', brush: { kind: 'three-quarter', paletteId: 1 } });
+    controller.setTool({ tool: 'eyedropper' });
+    controller.handlePointerDown(pointer(3, 8, 8));
+    expect(uiStore.getState().tool).toEqual({ tool: 'paint', brush: { kind: 'three-quarter', paletteId: 1 } });
+
+    controller.setTool({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
+    controller.setTool({ tool: 'eyedropper' });
+    controller.handlePointerDown(pointer(4, 8, 8));
+    expect(uiStore.getState().tool).toEqual({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
+    controller.dispose();
+  });
+
+  it('tells the user to select a visible layer instead of picking on a hidden layer', () => {
+    const notices: string[] = [];
+    const { gateway, uiStore, controller } = controllerFixture({ onNotice: (message) => notices.push(message) });
+    gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    gateway.activeLayer = { id: 1, kind: 'stitch', visible: false };
+    controller.setTool({ tool: 'eyedropper' });
+    const before = uiStore.getState();
+    controller.handlePointerDown(pointer(1, 8, 8));
+    expect(notices).toEqual([HIDDEN_LAYER_PICK_HINT]);
+    expect(uiStore.getState().tool).toEqual({ tool: 'eyedropper' });
+    expect(uiStore.getState().paletteId).toBe(before.paletteId);
+
+    uiStore.setKeyboardCursor({ x: 0, y: 0 });
+    controller.handleKeyDown({ key: 'Enter' });
+    expect(notices).toEqual([HIDDEN_LAYER_PICK_HINT, HIDDEN_LAYER_PICK_HINT]);
+    expect(uiStore.getState().tool).toEqual({ tool: 'eyedropper' });
+    controller.dispose();
+  });
+
+  it('does not show the hidden-layer notice when the active layer is visible', () => {
+    const notices: string[] = [];
+    const { gateway, uiStore, controller } = controllerFixture({ onNotice: (message) => notices.push(message) });
+    gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    gateway.activeLayer = { id: 1, kind: 'stitch', visible: true };
+    controller.setTool({ tool: 'eyedropper' });
+    controller.handlePointerDown(pointer(1, 8, 8));
+    expect(notices).toEqual([]);
+    expect(uiStore.getState().tool.tool).toBe('paint');
     controller.dispose();
   });
 
