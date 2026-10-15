@@ -193,6 +193,73 @@ describe('TraceImageControls reference image tools', () => {
     expect(sourceImage).toMatchObject({ traceVisible: true, opacity: 0.3 });
   });
 
+  describe('slider shows and hides the reference', () => {
+    const setup = (overrides: Partial<typeof descriptor>) => {
+      const sourceImage = { ...descriptor, ...overrides };
+      const applyTraceImageChange = vi.fn(async (next: typeof sourceImage) => { Object.assign(sourceImage, next); });
+      const setTraceImageSettings = vi.fn();
+      const visibilityRef = { current: null as ((visible: boolean) => void) | null };
+      const workspace = { sourceImage, getAsset: () => undefined, applyTraceImageChange } as never;
+      render(<TraceImageControls workspace={workspace} document={{ width: 2, height: 2 } as never} controller={{ setTraceImageSettings } as never} visibilityRef={visibilityRef} />);
+      return { sourceImage, applyTraceImageChange, setTraceImageSettings, visibilityRef, slider: screen.getByRole('slider'), checkbox: screen.getByRole('checkbox', { name: 'Show image' }) };
+    };
+
+    it('shows a hidden reference live and saves the new opacity', async () => {
+      const { slider, checkbox, applyTraceImageChange, setTraceImageSettings } = setup({ traceVisible: false, opacity: 0.6 });
+      expect(slider).toHaveValue('0');
+      fireEvent.pointerDown(slider);
+      fireEvent.input(slider, { target: { value: '0.4' } });
+      expect(checkbox).toBeChecked();
+      expect(setTraceImageSettings).toHaveBeenLastCalledWith({ visible: true, opacity: 0.4 });
+      fireEvent.change(slider);
+      await waitFor(() => expect(applyTraceImageChange).toHaveBeenCalledTimes(1));
+      expect(applyTraceImageChange).toHaveBeenCalledWith(expect.objectContaining({ traceVisible: true, opacity: 0.4 }), expect.objectContaining({ label: 'trace-image-opacity' }));
+    });
+
+    it('hides at the minimum and keeps the pre-drag opacity, which the checkbox restores', async () => {
+      const { slider, checkbox, sourceImage, applyTraceImageChange, setTraceImageSettings } = setup({ opacity: 0.6 });
+      fireEvent.pointerDown(slider);
+      fireEvent.input(slider, { target: { value: '0.2' } });
+      fireEvent.input(slider, { target: { value: '0' } });
+      expect(checkbox).not.toBeChecked();
+      expect(slider).toHaveValue('0');
+      expect(setTraceImageSettings).toHaveBeenLastCalledWith({ visible: false, opacity: 0 });
+      fireEvent.change(slider);
+      await waitFor(() => expect(applyTraceImageChange).toHaveBeenCalledTimes(1));
+      expect(applyTraceImageChange).toHaveBeenCalledWith(expect.objectContaining({ traceVisible: false, opacity: 0.6 }), expect.objectContaining({ label: 'trace-image-visibility' }));
+      fireEvent.pointerUp(slider);
+      expect(applyTraceImageChange).toHaveBeenCalledTimes(1);
+      fireEvent.click(checkbox);
+      expect(slider).toHaveValue('0.6');
+      await waitFor(() => expect(applyTraceImageChange).toHaveBeenCalledTimes(2));
+      expect(sourceImage).toMatchObject({ traceVisible: true, opacity: 0.6 });
+    });
+
+    it('restores the pre-drag opacity through the visibility ref after a slider hide', async () => {
+      const { slider, visibilityRef, sourceImage, applyTraceImageChange } = setup({ opacity: 0.6 });
+      fireEvent.pointerDown(slider);
+      fireEvent.input(slider, { target: { value: '0' } });
+      fireEvent.change(slider);
+      await waitFor(() => expect(sourceImage.traceVisible).toBe(false));
+      act(() => visibilityRef.current?.(true));
+      expect(slider).toHaveValue('0.6');
+      await waitFor(() => expect(applyTraceImageChange).toHaveBeenCalledTimes(2));
+      expect(sourceImage).toMatchObject({ traceVisible: true, opacity: 0.6 });
+    });
+
+    it('stays visible and saves the final value when a drag dips to the minimum and returns', async () => {
+      const { slider, checkbox, applyTraceImageChange } = setup({ opacity: 0.6 });
+      fireEvent.pointerDown(slider);
+      fireEvent.input(slider, { target: { value: '0' } });
+      expect(checkbox).not.toBeChecked();
+      fireEvent.input(slider, { target: { value: '0.3' } });
+      expect(checkbox).toBeChecked();
+      fireEvent.change(slider);
+      await waitFor(() => expect(applyTraceImageChange).toHaveBeenCalledTimes(1));
+      expect(applyTraceImageChange).toHaveBeenCalledWith(expect.objectContaining({ traceVisible: true, opacity: 0.3 }), expect.objectContaining({ label: 'trace-image-opacity' }));
+    });
+  });
+
   it('sets hidden opacity to zero and restores the persisted opacity when shown again', async () => {
     const sourceImage = { ...descriptor, opacity: 0.65 };
     const applyTraceImageChange = vi.fn(async (next: typeof sourceImage) => { Object.assign(sourceImage, next); });

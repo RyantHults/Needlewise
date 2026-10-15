@@ -70,7 +70,9 @@ export function TraceImageControls({ workspace, document, controller, activeTool
   const opacityStartRef = useRef<number | null>(null);
   const opacityLabelRef = useRef<HTMLLabelElement>(null);
   const commitOpacityRef = useRef<() => void>(() => undefined);
-  const lastCommittedOpacityRef = useRef<number | null>(null);
+  const lastCommittedRef = useRef<{ visible: boolean; opacity: number } | null>(null);
+  // Visibility the slider itself chose (0 hides, above 0 shows); null until it moves, and after any external change.
+  const sliderVisibleRef = useRef<boolean | null>(null);
   const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false);
   const removeTrigger = useRef<HTMLButtonElement>(null);
   const originX = document.originX ?? 0;
@@ -97,7 +99,7 @@ export function TraceImageControls({ workspace, document, controller, activeTool
     const asset = source ? workspace.getAsset(source.assetId) : undefined;
     if (!source) { decodedAssetRef.current = null; controller?.clearTraceImage?.(); return undefined; }
     if (!asset) { setStatus('Reference image is missing; the chart is still available.'); controller?.clearTraceImage?.(); return undefined; }
-    opacityRestoreRef.current = source.opacity; lastCommittedOpacityRef.current = null; setVisible(source.traceVisible); setOpacity(source.traceVisible ? source.opacity : 0); setLoading(true); setStatus('Loading reference image…');
+    opacityRestoreRef.current = source.opacity; lastCommittedRef.current = null; sliderVisibleRef.current = null; setVisible(source.traceVisible); setOpacity(source.traceVisible ? source.opacity : 0); setLoading(true); setStatus('Loading reference image…');
     const retained = handedOffReplacement.current?.assetId === source.assetId ? handedOffReplacement.current.trace : undefined;
     if (retained) handedOffReplacement.current = null;
     void (retained ? Promise.resolve(retained) : decodeTraceImage(new Blob([new Uint8Array(asset.data) as unknown as ArrayBuffer], { type: asset.mimeType }))).then((trace) => {
@@ -147,7 +149,7 @@ export function TraceImageControls({ workspace, document, controller, activeTool
   useEffect(() => {
     const source = workspace.sourceImage;
     if (!source) return;
-    lastCommittedOpacityRef.current = null;
+    lastCommittedRef.current = null; sliderVisibleRef.current = null;
     setVisible(source.traceVisible);
     if (source.traceVisible) {
       opacityRestoreRef.current = source.opacity;
@@ -197,12 +199,14 @@ export function TraceImageControls({ workspace, document, controller, activeTool
     const current = workspace.sourceImage;
     if (!current) return;
     // The live slider already moved the controller; persist exactly one
-    // history entry for the whole interaction (or none when unchanged). The
-    // pointer, blur, and native change paths can all land here for one release.
-    const nextOpacity = opacityRestoreRef.current ?? current.opacity;
-    if (nextOpacity === current.opacity || nextOpacity === lastCommittedOpacityRef.current) return;
-    lastCommittedOpacityRef.current = nextOpacity;
-    void commitSettings({ opacity: nextOpacity }, 'trace-image-opacity');
+    // entry for the whole interaction (or none when unchanged). The pointer,
+    // blur, and native change paths can all land here for one release.
+    const next = { visible: sliderVisibleRef.current ?? current.traceVisible, opacity: opacityRestoreRef.current ?? current.opacity };
+    if (next.opacity === current.opacity && next.visible === current.traceVisible) return;
+    const last = lastCommittedRef.current;
+    if (last && last.visible === next.visible && last.opacity === next.opacity) return;
+    lastCommittedRef.current = next;
+    void commitSettings({ traceVisible: next.visible, opacity: next.opacity }, next.opacity !== current.opacity ? 'trace-image-opacity' : 'trace-image-visibility');
   };
   commitOpacityRef.current = commitOpacityInteraction;
 
@@ -217,20 +221,27 @@ export function TraceImageControls({ workspace, document, controller, activeTool
   }, []);
 
   const handleOpacityChange = (nextOpacity: number) => {
-    opacityRestoreRef.current = nextOpacity;
-    lastCommittedOpacityRef.current = null;
-    if (!visible) {
+    lastCommittedRef.current = null;
+    if (nextOpacity <= 0) {
+      // Reaching the minimum hides the image but keeps the pre-drag opacity to restore.
+      opacityRestoreRef.current = opacityStartRef.current ?? opacityRestoreRef.current ?? workspace.sourceImage?.opacity ?? 1;
+      sliderVisibleRef.current = false;
+      setVisible(false);
       setOpacity(0);
       try { controller?.setTraceImageSettings?.({ visible: false, opacity: 0 }); } catch { /* Non-fatal: the next sync re-applies the hidden state. */ }
       return;
     }
+    opacityRestoreRef.current = nextOpacity;
+    sliderVisibleRef.current = true;
+    setVisible(true);
     setOpacity(nextOpacity);
-    try { controller?.setTraceImageSettings?.({ opacity: nextOpacity }); } catch { /* Non-fatal: the next sync re-applies the value. */ }
+    try { controller?.setTraceImageSettings?.({ visible: true, opacity: nextOpacity }); } catch { /* Non-fatal: the next sync re-applies the value. */ }
   };
 
   const handleVisibilityChange = (nextVisible: boolean) => {
     const current = workspace.sourceImage;
     if (!current) return;
+    sliderVisibleRef.current = null;
     if (nextVisible) {
       const restoredOpacity = opacityRestoreRef.current ?? current.opacity ?? 1;
       opacityRestoreRef.current = restoredOpacity;

@@ -33,6 +33,7 @@ import {
   normalizeSourceImageAsset,
   normalizeSourceImageDescriptor,
   sha256,
+  validateSourceImageDescriptor,
   traceStateFingerprint,
   type ProjectMetadata,
   type PreparedDocumentCapability,
@@ -1659,6 +1660,16 @@ describe('binary document persistence', () => {
     expect(degraded.document.width).toBe(4);
     expect(degraded.assets).toHaveLength(0);
     expect(degraded.warnings?.join(' ')).toContain('ignored');
+  });
+
+  it.each([true, false])('stores a loaded reference opacity of zero as hidden at full opacity (visible %s)', (traceVisible) => {
+    const descriptor = {
+      assetId: 'reference', mimeType: 'image/png' as const, width: 2, height: 2,
+      crop: { x: 0, y: 0, width: 1, height: 1 }, chartBounds: { x: 0, y: 0, width: 2, height: 2 }, traceVisible, opacity: 0
+    };
+    expect(validateSourceImageDescriptor(descriptor)).toMatchObject({ traceVisible: false, opacity: 1 });
+    expect(validateSourceImageDescriptor({ ...descriptor, opacity: 0.05 })).toMatchObject({ traceVisible, opacity: 0.05 });
+    expect(() => validateSourceImageDescriptor({ ...descriptor, opacity: -0.1 })).toThrow();
   });
 
   it('omits corrupt optional source image data and metadata during export without changing the pattern', async () => {

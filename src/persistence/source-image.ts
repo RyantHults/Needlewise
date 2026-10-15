@@ -225,6 +225,9 @@ function validateChartBounds(value: unknown): SourceImageChartBounds {
 
 export function validateSourceImageDescriptor(value: unknown): SourceImageDescriptor {
   if (!isRecord(value) || !isValidAssetId(value.assetId) || !isSupportedMimeType(value.mimeType) || (value.orientation !== undefined && !isOrientation(value.orientation)) || !isFinitePositiveInteger(value.width) || !isFinitePositiveInteger(value.height) || !isWithinImageDecodeBounds(value.width, value.height) || typeof value.traceVisible !== 'boolean' || typeof value.opacity !== 'number' || !Number.isFinite(value.opacity) || value.opacity < 0 || value.opacity > 1) invalidMetadata('Source image descriptor is malformed.');
+  // Opacity 0 is never stored: hiding is `traceVisible`. A reference at 0 was
+  // already invisible, so hidden at full opacity looks the same and shows usably later.
+  const zeroOpacity = value.opacity === 0;
   return {
     assetId: value.assetId,
     mimeType: value.mimeType.toLowerCase() as SourceImageMimeType,
@@ -233,8 +236,8 @@ export function validateSourceImageDescriptor(value: unknown): SourceImageDescri
     ...(value.orientation === undefined ? {} : { orientation: value.orientation }),
     crop: validateCrop(value.crop),
     chartBounds: validateChartBounds(value.chartBounds),
-    traceVisible: value.traceVisible,
-    opacity: value.opacity
+    traceVisible: zeroOpacity ? false : value.traceVisible,
+    opacity: zeroOpacity ? 1 : value.opacity
   };
 }
 

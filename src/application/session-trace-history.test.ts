@@ -214,6 +214,18 @@ describe('trace image unified history', () => {
     }
   });
 
+  it('never saves a reference opacity of zero, hiding at full opacity instead', async () => {
+    const workspace = await openTracedWorkspace('zero-opacity');
+    try {
+      const session = workspace.session;
+      if (!session) throw new Error('Missing session.');
+      session.applyTraceImageChange({ ...TRACE_DESCRIPTOR, opacity: 0 }, { label: 'trace-image-opacity' });
+      expect(session.sourceImage).toMatchObject({ traceVisible: false, opacity: 1 });
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
   it('restores an interleaved paint/trace/paint order across refresh', async () => {
     const repository = new MemoryRepository();
     const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'refresh-interleave', debounceMs: 0 });
