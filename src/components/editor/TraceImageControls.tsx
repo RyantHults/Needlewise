@@ -66,6 +66,7 @@ export function TraceImageControls({ workspace, document, controller, activeTool
   const handedOffReplacement = useRef<{ assetId: string; trace: Awaited<ReturnType<typeof decodeTraceImage>> } | null>(null);
   const decodedAssetRef = useRef<string | null>(null);
   const opacityStartRef = useRef<number | null>(null);
+  const opacityReleaseCleanupRef = useRef<(() => void) | null>(null);
   const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false);
   const removeTrigger = useRef<HTMLButtonElement>(null);
   const originX = document.originX ?? 0;
@@ -74,7 +75,7 @@ export function TraceImageControls({ workspace, document, controller, activeTool
   const originRef = useRef<CanvasOrigin>({ originX, originY });
   originRef.current = { originX, originY };
 
-  useEffect(() => () => { mountedRef.current = false; importRequestRef.current += 1; }, []);
+  useEffect(() => () => { mountedRef.current = false; importRequestRef.current += 1; opacityReleaseCleanupRef.current?.(); }, []);
 
   useEffect(() => {
     if (!filePickerRef) return undefined;
@@ -184,9 +185,21 @@ export function TraceImageControls({ workspace, document, controller, activeTool
     if (opacityStartRef.current === null) {
       opacityStartRef.current = opacityRestoreRef.current ?? workspace.sourceImage?.opacity ?? opacity;
     }
+    // A drag released off the slider, or ended by pointercancel, never reaches
+    // the slider's own handlers; the window sees it however it ends.
+    if (opacityReleaseCleanupRef.current) return;
+    const release = () => commitOpacityInteraction();
+    window.addEventListener('pointerup', release);
+    window.addEventListener('pointercancel', release);
+    opacityReleaseCleanupRef.current = () => {
+      window.removeEventListener('pointerup', release);
+      window.removeEventListener('pointercancel', release);
+      opacityReleaseCleanupRef.current = null;
+    };
   };
 
   const commitOpacityInteraction = () => {
+    opacityReleaseCleanupRef.current?.();
     const start = opacityStartRef.current;
     opacityStartRef.current = null;
     if (start === null) return;
@@ -194,7 +207,8 @@ export function TraceImageControls({ workspace, document, controller, activeTool
     if (!current) return;
     // The live slider already moved the controller; persist exactly one
     // history entry for the whole interaction (or none when unchanged).
-    const nextOpacity = visible ? opacity : opacityRestoreRef.current ?? current.opacity;
+    // Refs only: the window listener's closure predates the drag's renders.
+    const nextOpacity = opacityRestoreRef.current ?? current.opacity;
     if (nextOpacity === start && current.opacity === nextOpacity) return;
     void commitSettings({ opacity: nextOpacity }, 'trace-image-opacity');
   };
