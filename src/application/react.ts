@@ -21,7 +21,7 @@ import type {
   WorkspaceInitializationOptions,
   WorkspaceOptions
 } from './types';
-import type { ArchiveImportOptions, ProgressActivity, ProjectFolder, ProjectFolderAssignment, ProjectMetadata } from '../persistence';
+import type { ProgressActivity, ProjectFolder, ProjectFolderAssignment, ProjectMetadata } from '../persistence';
 import type { ProjectSession } from './session';
 import type { CommandResult, DomainCommand, LayerType, PatternFragment, PatternMetrics, Point, ProgressCommand } from '../domain';
 import type { SessionProgressStats } from './progress';
@@ -59,8 +59,6 @@ export interface UseProjectWorkspaceResult {
   deleteFolder(folderId: string): Promise<void>;
   moveProjectToFolder(projectId: string, folderId: string | null): Promise<void>;
   moveFolder(folderId: string, parentId: string | null): Promise<void>;
-  importProject(input: Uint8Array | ArrayBuffer | Blob, options?: ArchiveImportOptions): Promise<ProjectSession>;
-  importProjectAsCopy(input: Uint8Array | ArrayBuffer | Blob, options?: ArchiveImportOptions): Promise<ProjectSession>;
   exportProject(): Promise<Uint8Array>;
   promoteRecovery(revision?: number): Promise<ProjectSession>;
   saveAsCopy(options?: CreateProjectOptions): Promise<ProjectSession>;
@@ -282,8 +280,6 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
   const deleteFolder = useCallback((folderId: string) => runAction((instance) => instance.deleteFolder(folderId)), [runAction]);
   const moveProjectToFolder = useCallback((projectId: string, folderId: string | null) => runAction((instance) => instance.moveProjectToFolder(projectId, folderId)), [runAction]);
   const moveFolder = useCallback((folderId: string, parentId: string | null) => runAction((instance) => instance.moveFolder(folderId, parentId)), [runAction]);
-  const importProject = useCallback((input: Uint8Array | ArrayBuffer | Blob, importOptions: ArchiveImportOptions = {}) => runAction((instance) => instance.importProject(input, importOptions)), [runAction]);
-  const importProjectAsCopy = useCallback((input: Uint8Array | ArrayBuffer | Blob, importOptions: ArchiveImportOptions = {}) => runAction((instance) => instance.importProjectAsCopy(input, importOptions)), [runAction]);
   const exportProject = useCallback(() => runAction((instance) => instance.exportActiveProject()), [runAction]);
   const promoteRecovery = useCallback((revision?: number) => runAction((instance) => instance.promoteRecovery(revision)), [runAction]);
   const duplicateProject = useCallback((projectId: string) => runAction((instance) => instance.duplicateProject(projectId)), [runAction]);
@@ -346,8 +342,6 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
     deleteFolder,
     moveProjectToFolder,
     moveFolder,
-    importProject,
-    importProjectAsCopy,
     exportProject,
     promoteRecovery,
     saveAsCopy,

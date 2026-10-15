@@ -1,4 +1,4 @@
-export type WorkspaceErrorCode = 'no-active-project' | 'project-not-found' | 'disposed' | 'save-failed' | 'import-failed' | 'save-conflict' | 'recovery-promotion-required' | 'stale-operation';
+export type WorkspaceErrorCode = 'no-active-project' | 'project-not-found' | 'disposed' | 'save-failed' | 'save-conflict' | 'recovery-promotion-required' | 'stale-operation';
 
 export class WorkspaceError extends Error {
   readonly code: WorkspaceErrorCode;

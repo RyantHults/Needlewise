@@ -4,7 +4,7 @@ import { PDFArray, PDFDocument, decodePDFRawStream, type PDFRawStream } from 'pd
 import { describe, expect, it } from 'vitest';
 import { applyCommand, CellKind, computePatternMetrics, createDocument, HalfDirection, QuarterCorner, type PatternDocument } from '../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
-import { SYMBOL_POOL_VERSION } from '../symbols';
+import { getSymbolOutline, SYMBOL_POOL_VERSION } from '../symbols';
 import { DEFAULT_EXPORT_SETTINGS, type ExportSettings } from './export-settings';
 import { PAPER_SIZES_PT } from './export-settings';
 import { estimateTotalPages, layoutChartPages, pageGeometry, AXIS_GUTTER_PT, HEADER_RESERVE_PT } from './layout';
@@ -257,6 +257,26 @@ describe('writePatternPdf', () => {
     await expect(writePatternPdf(input, { signal: aborted.signal })).rejects.toMatchObject({ name: 'AbortError' });
   });
 });
+
+describe('quadratic symbols', () => {
+  it('draws pool symbols as exact cubics, never as the `v` approximation', async () => {
+    const document = withStitches(3, 2);
+    const quadratic = document.palette.filter((entry) => /[QqTt]/.test(getSymbolOutline(entry.symbol)?.d ?? ''));
+    expect(quadratic.length).toBeGreaterThan(0);
+    const bytes = await writePatternPdf(inputFor(document));
+    const pdf = await load(bytes);
+    const operators = pageContent(pdf, pdf.getPageCount() - 1).split('\n').map((line) => line.trim().split(/\s+/).pop());
+    expect(operators).toContain('c');
+    expect(operators).not.toContain('v');
+    expect(operators).not.toContain('y');
+  });
+});
+
+function pageContent(pdf: PDFDocument, pageIndex: number): string {
+  const contents = pdf.getPage(pageIndex).node.Contents();
+  const streams = contents instanceof PDFArray ? contents.asArray().map((ref) => pdf.context.lookup(ref)) : [contents];
+  return streams.map((stream) => new TextDecoder().decode(decodePDFRawStream(stream as PDFRawStream).decode())).join('\n');
+}
 
 /** Backstitch segments (stroked in palette color 2, #113) on one page, in page points, y-up. */
 async function backstitchSegments(bytes: Uint8Array, pageIndex: number): Promise<Array<[number, number, number, number]>> {

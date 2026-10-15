@@ -49,10 +49,6 @@ class LayeredMemoryRepository implements WorkspaceRepository {
   async exportProject(): Promise<Uint8Array> {
     throw new Error('Not used by these tests.');
   }
-
-  async importProject(): Promise<ProjectRecord> {
-    throw new Error('Not used by these tests.');
-  }
 }
 
 const unusedPreparationClient: PersistencePreparationClient = {

@@ -32,7 +32,9 @@ const pwaOptions = {
     ]
   },
   workbox: {
-    globPatterns: ['**/*.{js,css,html,svg,ico,png}'],
+    // `mjs` covers the pdf.js parser (about 1.3 MB, under workbox's 2 MiB
+    // default limit), which is emitted as an asset so PDF import works offline.
+    globPatterns: ['**/*.{js,mjs,css,html,svg,ico,png}'],
     cleanupOutdatedCaches: true,
     navigateFallback: 'index.html',
     // Only the generated application shell and static assets are precached.

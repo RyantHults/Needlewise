@@ -1985,7 +1985,7 @@ describe('Canvas 2D chart renderer', () => {
     renderer.dispose();
   });
 
-  it('keeps compact geometry and Symbol outlines while Combined remains detail-only', () => {
+  it('keeps compact geometry and draws Symbol and Combined outlines from 8 px per cell', () => {
     const compactContext = recordingContext();
     const compactDocument = chart(5, 5);
     compactDocument.palette[0] = { ...compactDocument.palette[0], symbol: STAR_ID };
@@ -2015,7 +2015,7 @@ describe('Canvas 2D chart renderer', () => {
     const detail = createCanvasRenderer({
       document: compactDocument,
       targets: { base: target(detailContext), overlay: target(recordingContext()) },
-      metrics: getCanvasMetrics(64, 64),
+      metrics: getCanvasMetrics(40, 40),
       viewport: { x: 0, y: 0, zoom: 16 },
       style: { mode: 'combined', gridInterval: 2 }
     });
@@ -2024,21 +2024,49 @@ describe('Canvas 2D chart renderer', () => {
     expect(compactCombined.lastStats.lod).toBe('compact');
     expect(detail.lastStats.lod).toBe('detail');
     expect(symbolInkCalls(compactContext).length).toBeGreaterThan(0);
-    expect(symbolInkCalls(compactCombinedContext).length).toBe(0);
+    expect(symbolInkCalls(compactCombinedContext).length).toBeGreaterThan(0);
     expect(symbolInkCalls(detailContext).length).toBeGreaterThan(0);
-    expect(compactContext.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#d8d8d8')).toBe(false);
-    expect(compactCombinedContext.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#d8d8d8')).toBe(false);
-    expect(detailContext.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#d8d8d8')).toBe(true);
+    // Grid tiers follow zoom relative to fit; LOD only picks the line width.
+    expect(compactContext.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#d8d8d8' && call.lineWidth === 0.65)).toBe(true);
+    expect(compactCombinedContext.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#d8d8d8' && call.lineWidth === 0.65)).toBe(true);
     expect(detailContext.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#d8d8d8' && call.lineWidth === 0.35)).toBe(true);
-    expect(detailContext.records.filter((call) => call.name === 'stroke').length).toBeGreaterThan(compactCombinedContext.records.filter((call) => call.name === 'stroke').length);
     expect(compactContext.records.some((call) => call.name === 'fillRect' && call.globalAlpha === 0.62)).toBe(true);
     compact.dispose();
     compactCombined.dispose();
     detail.dispose();
   });
 
+  it('draws full-size Combined symbols from 8 px per cell and slotted ones only at Detail LOD', () => {
+    const draw = (zoom: number, slotted: boolean) => {
+      const document = chart(2, 2);
+      document.palette[0] = { ...document.palette[0], symbol: STAR_ID };
+      document.kind[0] = slotted ? ThreeQuarterPair : CellKind.Full;
+      if (slotted) document.colors.set([1, 0, 1, 0], 0);
+      else document.colors[0] = 1;
+      const base = recordingContext();
+      const renderer = createCanvasRenderer({
+        document,
+        targets: { base: target(base), overlay: target(recordingContext()) },
+        metrics: getCanvasMetrics(40, 40),
+        viewport: { x: 0, y: 0, zoom },
+        style: { mode: 'combined', showGrid: false }
+      });
+      const lod = renderer.renderNow().lod;
+      renderer.dispose();
+      return { lod, ink: symbolInkCalls(base).length };
+    };
+    expect(draw(7.9, false)).toEqual({ lod: 'compact', ink: 0 });
+    const atEight = draw(8, false);
+    expect(atEight.lod).toBe('compact');
+    expect(atEight.ink).toBeGreaterThan(0);
+    expect(draw(11.9, true)).toEqual({ lod: 'compact', ink: 0 });
+    const detail = draw(12, true);
+    expect(detail.lod).toBe('detail');
+    expect(detail.ink).toBeGreaterThan(0);
+  });
+
   it('draws the 5-cell highlight tier between the stitch grid and the 10-cell grid', () => {
-    const document = chart(20, 10);
+    const document = chart(200, 100);
     const base = recordingContext();
     const renderer = createCanvasRenderer({
       document,
@@ -2051,7 +2079,7 @@ describe('Canvas 2D chart renderer', () => {
     // Mid-grid lines use the distinct mid color and the middle width tier.
     const midSegments = base.records.filter((call) => call.name === 'lineTo' && call.strokeStyle === '#0000ff');
     expect(midSegments.length).toBe(4); // x at 5,10,15 and y at 5.
-    expect(new Set(midSegments.map((call) => call.lineWidth))).toEqual(new Set([1]));
+    expect(new Set(midSegments.map((call) => call.lineWidth))).toEqual(new Set([(0.35 + 1.9) / 2]));
     const baselineSegments = base.records.filter((call) => call.name === 'lineTo' && call.strokeStyle === '#00ff00');
     const majorSegments = base.records.filter((call) => call.name === 'lineTo' && call.strokeStyle === '#ff0000');
     expect(baselineSegments.length).toBeGreaterThan(0);
@@ -2067,7 +2095,7 @@ describe('Canvas 2D chart renderer', () => {
     expect(horizontal).toBeDefined();
     // No mid line at the document edges: the only mid segments are the three
     // verticals at interior multiples of 5 (x=100,200,300 for cells 5,10,15)
-    // and the single horizontal at y=100 (cell 5). No vertical at x=0/x=400.
+    // and the single horizontal at y=100 (cell 5). No vertical at x=0.
     const midMoves = base.records
       .filter((call) => call.name === 'moveTo' && call.strokeStyle === '#0000ff')
       .map((call) => call.args as number[]);
@@ -2077,82 +2105,125 @@ describe('Canvas 2D chart renderer', () => {
     renderer.dispose();
   });
 
-  it('drops the 1-cell tier in compact LOD while retaining the 10-cell grid', () => {
+  it('draws only the tiers its zoom allows, whatever the LOD', () => {
     const base = recordingContext();
     const renderer = createCanvasRenderer({
-      document: chart(20, 10),
+      document: chart(100, 100),
       targets: { base: target(base), overlay: target(recordingContext()) },
-      metrics: getCanvasMetrics(80, 40),
+      metrics: getCanvasMetrics(400, 400),
       viewport: { x: 0, y: 0, zoom: 8 },
       style: { gridColor: '#00ff00', midGridColor: '#0000ff', majorGridColor: '#ff0000', gridInterval: 10, midGridInterval: 5 }
     });
-    renderer.renderNow();
+    expect(renderer.renderNow().lod).toBe('compact');
 
+    // Fit is 3.52, so 8 px per cell clears the 10-cell threshold but not the 5-cell one.
     const gridLines = base.records.filter((call) => call.name === 'stroke');
     expect(gridLines.some((call) => call.strokeStyle === '#00ff00')).toBe(false);
+    expect(gridLines.some((call) => call.strokeStyle === '#0000ff')).toBe(false);
     expect(gridLines.some((call) => call.strokeStyle === '#ff0000')).toBe(true);
     renderer.dispose();
   });
 
-  it('shows every grid tier at and above 120% of the rectangular fit zoom', () => {
-    const document = chart(20, 10);
+  it('adds the 10, 5 and 1-cell tiers at 1/0.9, 1/0.4 and 1/0.1 of the fit zoom', () => {
+    const document = chart(200, 100);
     const metrics = getCanvasMetrics(640, 320, { dpr: 2 });
     const fitZoom = fitViewport(document, metrics, CHART_EDGE_MARGIN).zoom;
     const cases = [
-      { ratio: 1, visible: false },
-      { ratio: 1.1999, visible: false },
-      { ratio: 1.2, visible: true },
-      { ratio: 1.2001, visible: true }
+      { zoom: fitZoom, tiers: [] },
+      { zoom: (fitZoom / 0.9) * 0.999, tiers: [] },
+      { zoom: fitZoom / 0.9, tiers: ['#ff0000'] },
+      { zoom: (fitZoom / 0.4) * 0.999, tiers: ['#ff0000'] },
+      { zoom: fitZoom / 0.4, tiers: ['#ff0000', '#0000ff'] },
+      { zoom: (fitZoom / 0.1) * 0.999, tiers: ['#ff0000', '#0000ff'] },
+      { zoom: fitZoom / 0.1, tiers: ['#ff0000', '#0000ff', '#00ff00'] }
     ];
 
-    for (const { ratio, visible } of cases) {
+    for (const { zoom, tiers } of cases) {
       const base = recordingContext();
       const renderer = createCanvasRenderer({
         document,
         targets: { base: target(base), overlay: target(recordingContext()) },
         metrics,
-        viewport: { x: 0, y: 0, zoom: fitZoom * ratio },
-        style: { gridColor: '#00ff00', midGridColor: '#0000ff', majorGridColor: '#ff0000', gridInterval: 10, midGridInterval: 5 }
-      });
-      renderer.renderNow();
-      const gridRecords = base.records.filter((call) =>
-        call.name === 'stroke' && (call.strokeStyle === '#00ff00' || call.strokeStyle === '#0000ff' || call.strokeStyle === '#ff0000')
-      );
-      if (visible) {
-        expect(gridRecords.some((call) => call.strokeStyle === '#ff0000')).toBe(true);
-        expect(gridRecords.some((call) => call.strokeStyle === '#0000ff')).toBe(true);
-      } else {
-        expect(gridRecords).toEqual([]);
-      }
-      renderer.dispose();
-    }
-  });
-
-  it('drops the 5-cell tier below 8 px per cell but keeps the 10-cell grid', () => {
-    const draw = (zoom: number) => {
-      const base = recordingContext();
-      const renderer = createCanvasRenderer({
-        document: chart(40, 20),
-        targets: { base: target(base), overlay: target(recordingContext()) },
-        metrics: getCanvasMetrics(100, 60),
         viewport: { x: 0, y: 0, zoom },
         style: { gridColor: '#00ff00', midGridColor: '#0000ff', majorGridColor: '#ff0000', gridInterval: 10, midGridInterval: 5 }
       });
       renderer.renderNow();
+      const colors = new Set(
+        base.records
+          .filter((call) => call.name === 'stroke' && (call.strokeStyle === '#00ff00' || call.strokeStyle === '#0000ff' || call.strokeStyle === '#ff0000'))
+          .map((call) => call.strokeStyle)
+      );
+      expect(colors, `zoom ${String(zoom)}`).toEqual(new Set(tiers));
       renderer.dispose();
-      return base.records.filter((call) => call.name === 'stroke');
+    }
+  });
+
+  it('draws the 10-cell lines at 1px below the 5-cell breakpoint and restores them at it', () => {
+    const document = chart(200, 100);
+    const metrics = getCanvasMetrics(640, 320, { dpr: 2 });
+    const fitZoom = fitViewport(document, metrics, CHART_EDGE_MARGIN).zoom;
+    const majorWidths = (zoom: number, midGridInterval: number) => {
+      const base = recordingContext();
+      const renderer = createCanvasRenderer({
+        document,
+        targets: { base: target(base), overlay: target(recordingContext()) },
+        metrics,
+        viewport: { x: 0, y: 0, zoom },
+        style: { gridColor: '#00ff00', midGridColor: '#0000ff', majorGridColor: '#ff0000', gridInterval: 10, midGridInterval }
+      });
+      expect(renderer.renderNow().lod).toBe('compact');
+      renderer.dispose();
+      return new Set(base.records.filter((call) => call.name === 'stroke' && call.strokeStyle === '#ff0000').map((call) => call.lineWidth));
     };
-    const atEight = draw(8);
-    expect(atEight.some((call) => call.strokeStyle === '#0000ff')).toBe(true);
-    const belowEight = draw(7.9);
-    expect(belowEight.some((call) => call.strokeStyle === '#0000ff')).toBe(false);
-    expect(belowEight.some((call) => call.strokeStyle === '#ff0000')).toBe(true);
+    const breakpoint = fitZoom / 0.4;
+    for (const midGridInterval of [5, 1]) {
+      expect(majorWidths(breakpoint * 0.999, midGridInterval)).toEqual(new Set([1]));
+      expect(majorWidths(breakpoint, midGridInterval)).toEqual(new Set([1.7]));
+    }
+  });
+
+  it('draws the 5-cell tier at overview LOD once it clears its threshold', () => {
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document: chart(1_000, 1_000),
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(400, 400),
+      viewport: { x: 0, y: 0, zoom: 3 },
+      atlasTargetFactory: (width, height) => target(recordingContext(), new FakeCanvasImageSource(width, height)),
+      style: { gridColor: '#00ff00', midGridColor: '#0000ff', majorGridColor: '#ff0000', gridInterval: 10, midGridInterval: 5 }
+    });
+    // Fit is 0.352: 3 px per cell is past the 5-cell threshold (0.88) and below the 1-cell floor.
+    expect(renderer.renderNow().lod).toBe('overview');
+    const colors = new Set(base.records.filter((call) => call.name === 'stroke').map((call) => call.strokeStyle));
+    expect(colors.has('#0000ff')).toBe(true);
+    expect(colors.has('#ff0000')).toBe(true);
+    expect(colors.has('#00ff00')).toBe(false);
+    renderer.dispose();
+  });
+
+  it('draws the 5-cell tier thicker than the 1-cell tier and thinner than the 10-cell tier', () => {
+    const widths = (lod: 'detail' | 'compact') => {
+      const base = recordingContext();
+      const renderer = createCanvasRenderer({
+        document: chart(1_000, 500),
+        targets: { base: target(base), overlay: target(recordingContext()) },
+        metrics: getCanvasMetrics(640, 320),
+        viewport: { x: 0, y: 0, zoom: lod === 'detail' ? 30 : 10 },
+        style: { gridColor: '#00ff00', midGridColor: '#0000ff', majorGridColor: '#ff0000', gridInterval: 10, midGridInterval: 5 }
+      });
+      expect(renderer.renderNow().lod).toBe(lod);
+      const width = (color: string) => base.records.find((call) => call.name === 'stroke' && call.strokeStyle === color)?.lineWidth;
+      renderer.dispose();
+      return [width('#00ff00'), width('#0000ff'), width('#ff0000')];
+    };
+    expect(widths('detail')).toEqual([0.35, (0.35 + 1.9) / 2, 1.9]);
+    expect(widths('compact')).toEqual([0.65, (0.65 + 1.7) / 2, 1.7]);
   });
 
   it('numbers every 5th column and row while the 5-cell tier shows', () => {
     const base = recordingContext();
     const renderer = createCanvasRenderer({
-      document: chart(30, 30),
+      document: chart(300, 300),
       targets: { base: target(base), overlay: target(recordingContext()) },
       metrics: getCanvasMetrics(800, 800),
       viewport: { x: -1, y: -1, zoom: 31 },
@@ -2230,12 +2301,12 @@ describe('Canvas 2D chart renderer', () => {
     renderer.dispose();
   });
 
-  it('omits the 5-cell tier at overview zoom and on tiny charts', () => {
+  it('omits the 5-cell tier below 250% of fit and on tiny charts', () => {
     const overview = recordingContext();
     const renderer = createCanvasRenderer({
       document: chart(100, 100),
       targets: { base: target(overview), overlay: target(recordingContext()) },
-      metrics: getCanvasMetrics(40, 32, { dpr: 2 }),
+      metrics: getCanvasMetrics(400, 320, { dpr: 2 }),
       viewport: { x: 3.25, y: 4.5, zoom: 1 },
       style: { midGridColor: '#0000ff' }
     });
@@ -2272,7 +2343,7 @@ describe('Canvas 2D chart renderer', () => {
         targets: { base: target(base), overlay: target(recordingContext()) },
         metrics: testCase.metrics,
         viewport: testCase.viewport,
-        style: { gridColor: '#00ff00', majorGridColor: '#ff0000', gridInterval: 2 }
+        style: { gridColor: '#00ff00', midGridColor: '#0000ff', majorGridColor: '#ff0000', gridInterval: 2 }
       });
       renderer.renderNow();
 
@@ -2283,7 +2354,7 @@ describe('Canvas 2D chart renderer', () => {
       const bottom = Math.min(testCase.metrics.cssHeight, pattern.y + pattern.height);
       const gridCoordinates = base.records
         .filter((call) => call.name === 'moveTo' || call.name === 'lineTo')
-        .filter((call) => call.strokeStyle === '#00ff00' || call.strokeStyle === '#ff0000')
+        .filter((call) => call.strokeStyle === '#00ff00' || call.strokeStyle === '#0000ff' || call.strokeStyle === '#ff0000')
         .flatMap((call) => [call.args as number[]]);
 
 
@@ -2777,7 +2848,7 @@ describe('Canvas 2D chart renderer', () => {
     const renderer = createCanvasRenderer({
       document,
       targets: { base: target(recordingContext()), overlay: target(overlay) },
-      metrics: getCanvasMetrics(32, 16),
+      metrics: getCanvasMetrics(80, 80),
       viewport: { x: 0, y: 0, zoom: 1 },
       style: { gridColor: '#00aa00', majorGridColor: '#00aa00' },
       overlay: {
@@ -2813,8 +2884,8 @@ describe('Canvas 2D chart renderer', () => {
     const combined = modeColor('combined');
     expect(color).toBe('#f00');
     expect(grayscale).toMatch(/^#([0-9a-f]{2})\1\1$/i);
-    expect(combined).not.toBe(color);
-    expect(combined).not.toBe(grayscale);
+    // Overview draws no symbols, so Combined keeps the plain stitch color.
+    expect(combined).toBe(color);
 
     const sourceContext = recordingContext();
     const base = recordingContext();
@@ -3314,13 +3385,13 @@ describe('Canvas 2D chart renderer', () => {
     }
   });
 
-  it('keeps an adaptive overview grid visible and bounded at low zoom', () => {
+  it('keeps the overview grid visible and bounded once its lines are legible', () => {
     const base = recordingContext();
     const renderer = createCanvasRenderer({
       document: chart(1_000, 1_000),
       targets: { base: target(base), overlay: target(recordingContext()) },
       metrics: getCanvasMetrics(160, 120),
-      viewport: { x: 500, y: 500, zoom: 0.15 },
+      viewport: { x: 500, y: 500, zoom: 0.5 },
       atlasTargetFactory: (width, height) => target(recordingContext(), new FakeCanvasImageSource(width, height)),
       style: { gridColor: '#00ff00', majorGridColor: '#ff0000' }
     });
@@ -3331,7 +3402,7 @@ describe('Canvas 2D chart renderer', () => {
       && (call.strokeStyle === '#00ff00' || call.strokeStyle === '#ff0000')
     );
     expect(gridLines.length).toBeGreaterThan(0);
-    expect(gridLines.length).toBeLessThanOrEqual(2 * (160 / 8 + 2 + 120 / 8 + 2));
+    expect(gridLines.length).toBeLessThanOrEqual(2 * (160 / 5 + 2 + 120 / 5 + 2));
     expect(base.records.some((call) => call.name === 'moveTo' && call.strokeStyle === '#4b4b4b')).toBe(true);
     renderer.dispose();
   });
@@ -3436,7 +3507,7 @@ describe('canvas mask and canvas editing', () => {
     const renderer = createCanvasRenderer({
       document,
       targets: { base: target(base), overlay: target(recordingContext()) },
-      metrics: getCanvasMetrics(64, 64, { dpr: 1 }),
+      metrics: getCanvasMetrics(64, 48, { dpr: 1 }),
       viewport: { x: 0, y: 0, zoom: 20 },
       style: { gridColor: '#00ff00', midGridColor: '#0000ff', majorGridColor: '#ff0000', gridInterval: 10, midGridInterval: 5, chartBorderColor: '#222222' }
     });
@@ -3449,8 +3520,8 @@ describe('canvas mask and canvas editing', () => {
     expect(rowOne).toEqual([[0, 20, 20, 20], [60, 20, 64, 20]]);
     const outline = strokes(base, '#222222');
     // The hole column's sides run the full visible height as single outline segments.
-    expect(outline).toContainEqual([20, 0, 20, 64]);
-    expect(outline).toContainEqual([60, 0, 60, 64]);
+    expect(outline).toContainEqual([20, 0, 20, 48]);
+    expect(outline).toContainEqual([60, 0, 60, 48]);
     expect(outline.some(([x1, , x2]) => x1 === 40 && x2 === 40)).toBe(false);
     renderer.dispose();
   });

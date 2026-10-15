@@ -1,5 +1,5 @@
 import { assertValidLayeredDocument, normalizeAidaCount, normalizeDisplayUnits, normalizeMaterialAssumptions, type LayeredDocument } from '../domain';
-import { exportArchive, importArchive } from './archive';
+import { exportArchive } from './archive';
 import { NeedlewiseDatabase } from './database';
 import { PersistenceError } from './errors';
 import {
@@ -23,7 +23,6 @@ import {
   type ProjectDocumentSummary
 } from './project-thumbnail';
 import type {
-  ArchiveImportOptions,
   CreateFolderInput,
   ProjectAsset,
   ProjectAssetInput,
@@ -1431,92 +1430,6 @@ export class ProjectRepository {
     );
     this.exportWarningState = warnings;
     return archive;
-  }
-
-  async importProject(input: Uint8Array | ArrayBuffer | Blob, options: ArchiveImportOptions = {}): Promise<ProjectRecord> {
-    // Parsing, migration, checksums, asset limits, and domain validation all
-    // complete before the write transaction begins.
-    const bundle = await importArchive(input, options);
-    this.clearVerifiedCurrentCache(bundle.metadata.id);
-    const importedMetadata = withProjectSummary(bundle.metadata, deriveProjectSummary(bundle.document));
-    const bytes = encodeDocument(bundle.document);
-    const checksum = await sha256(bytes);
-    const savedAt = this.now();
-    try {
-      const [preflightMetadata, preflightCurrent, preflightRecovery] = await this.db.transaction('r', [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.documentHistories], async () => Promise.all([
-        this.db.projects.get(bundle.metadata.id),
-        this.db.currentSnapshots.get(bundle.metadata.id),
-        this.db.recoverySnapshots.get(bundle.metadata.id)
-      ]));
-      let replacementRecovery: StoredDocumentSnapshot | undefined;
-      let replacementSourceChecksum: string | undefined;
-      if (preflightCurrent && preflightCurrent.projectId === bundle.metadata.id && preflightMetadata && isMetadataRecord(bundle.metadata.id, preflightMetadata) && preflightMetadata.revision === preflightCurrent.revision) {
-        try {
-          await verifySnapshot(preflightCurrent);
-          replacementRecovery = { ...preflightCurrent, bytes: storedBytes(preflightCurrent.bytes)?.slice() ?? preflightCurrent.bytes };
-          replacementSourceChecksum = preflightCurrent.checksum;
-        } catch {
-          // Do not make an unverified current snapshot into recovery data.
-        }
-      }
-      if (!replacementRecovery && preflightRecovery) {
-        try {
-          await verifySnapshot(preflightRecovery);
-          replacementRecovery = { ...preflightRecovery, bytes: storedBytes(preflightRecovery.bytes)?.slice() ?? preflightRecovery.bytes };
-          replacementSourceChecksum = preflightRecovery.checksum;
-        } catch {
-          // A corrupt prior recovery is discarded during explicit replacement.
-        }
-      }
-      await this.db.transaction('rw', [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.documentHistories, this.db.assets, this.db.dailyActivity], async () => {
-        const [existingMetadata, existing, existingRecovery, existingHistory, existingHead, existingAssets, existingActivity] = await Promise.all([
-          this.db.projects.get(bundle.metadata.id),
-          this.db.currentSnapshots.get(bundle.metadata.id),
-          this.db.recoverySnapshots.get(bundle.metadata.id),
-          this.db.documentHistories.get(bundle.metadata.id),
-          this.db.projectHeads.get(bundle.metadata.id),
-          this.db.assets.where('projectId').equals(bundle.metadata.id).toArray(),
-          this.db.dailyActivity.where('projectId').equals(bundle.metadata.id).toArray()
-        ]);
-        const knownProject = existingMetadata !== undefined || existing !== undefined || existingRecovery !== undefined || existingHistory !== undefined || existingAssets.length > 0 || existingActivity.length > 0;
-        if ((options.collision ?? 'reject') === 'reject' && knownProject) throw new PersistenceError('import-collision', `Project ${bundle.metadata.id} already exists.`);
-
-        // Replacement is the only operation allowed to touch an existing ID.
-        // Prefer a verified current snapshot as recovery, but never copy an
-        // unverified current record. If the head is bad, preserve a verified
-        // prior recovery revision instead of poisoning it with that head.
-        if ((options.collision ?? 'reject') === 'replace') {
-          await this.db.recoverySnapshots.delete(bundle.metadata.id);
-          await this.db.documentHistories.delete(bundle.metadata.id);
-          if (replacementRecovery && replacementSourceChecksum !== undefined) {
-            const sourceStillMatches = existing?.checksum === replacementSourceChecksum || existingRecovery?.checksum === replacementSourceChecksum;
-            if (sourceStillMatches) await this.db.recoverySnapshots.put(replacementRecovery);
-          }
-        }
-        await this.db.projects.put(importedMetadata);
-        await this.db.currentSnapshots.put(toStoredSnapshot(bundle.metadata.id, bundle.document, bytes, checksum, savedAt));
-        const generation = nextHistoryGeneration(existingHead, isStoredHistory(bundle.metadata.id, existingHistory) ? existingHistory : undefined);
-        await this.db.projectHeads.put(toStoredHead(bundle.metadata.id, bundle.document.revision, checksum, generation));
-        await this.db.assets.where('projectId').equals(bundle.metadata.id).delete();
-        const storedAssets: StoredProjectAsset[] = bundle.assets.map((asset) => ({ ...asset, projectId: bundle.metadata.id, data: asset.data.slice() }));
-        if (storedAssets.length > 0) await this.db.assets.bulkPut(storedAssets);
-        await this.db.dailyActivity.where('projectId').equals(bundle.metadata.id).delete();
-        if (bundle.activity !== undefined) {
-          const activity = normalizeProgressActivity(bundle.activity);
-          const storedActivity = toStoredActivity(bundle.metadata.id, activity);
-          if (storedActivity.length > 0) await this.db.dailyActivity.bulkPut(storedActivity);
-        }
-      });
-    } catch (error) {
-      if (error instanceof PersistenceError) throw error;
-      throw new PersistenceError('storage-failure', 'Unable to import the project locally.', error);
-    }
-    const project = await this.load(bundle.metadata.id);
-    if (!project) throw new PersistenceError('storage-failure', 'Imported project could not be read back.');
-    if (bundle.warnings && bundle.warnings.length > 0 && project.health) {
-      project.health = { ...project.health, warnings: [...project.health.warnings, ...bundle.warnings] };
-    }
-    return project;
   }
 
   async deleteProject(projectId: string): Promise<void> {

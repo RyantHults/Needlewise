@@ -52,10 +52,6 @@ class BinaryMemoryRepository implements WorkspaceRepository {
   async exportProject(): Promise<Uint8Array> {
     throw new PersistenceError('storage-failure', 'Not used in canvas tests.');
   }
-
-  async importProject(): Promise<ProjectRecord> {
-    throw new PersistenceError('storage-failure', 'Not used in canvas tests.');
-  }
 }
 
 function blank() {

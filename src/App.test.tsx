@@ -47,10 +47,19 @@ class MockImage {
   set src(_value: string) { images.push(this); }
 }
 
+vi.mock('./import/registry', () => ({
+  importerAccept: () => '.pdf,application/pdf',
+  findImporter: (head: Uint8Array) => (new TextDecoder().decode(head).startsWith('%PDF-') ? { id: 'pdf' } : undefined)
+}));
+vi.mock('./components/import/ImportReviewDialog', () => ({
+  ImportReviewDialog: ({ file, onCreate }: { file: File; onCreate: (request: unknown) => Promise<void> }) => (
+    <div role="dialog" aria-label="Import review">{file.name}<button type="button" onClick={() => void onCreate({ document: { width: 1, height: 1 }, title: 'Imported', aidaCount: 14, format: 'pdf' })}>Finish import</button></div>
+  )
+}));
+
 const mockedWorkspace = vi.mocked(useProjectWorkspace);
 const createProject = vi.fn().mockResolvedValue({ projectId: 'new-project' });
 const createProjectFromConversion = vi.fn().mockResolvedValue({ projectId: 'new-project' });
-const importProjectAsCopy = vi.fn().mockResolvedValue(undefined);
 const exportProject = vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3]));
 const openProject = vi.fn().mockResolvedValue(undefined);
 const flush = vi.fn().mockResolvedValue(undefined);
@@ -79,7 +88,6 @@ const baseWorkspace = {
   openProject,
   selectProject: vi.fn(),
   deleteProject,
-  importProjectAsCopy,
   exportProject,
   flush,
   createFolder,
@@ -110,6 +118,16 @@ describe('application shell', () => {
 
     expect(screen.getByRole('heading', { name: 'Opening your workspace…' })).toBeInTheDocument();
     expect(screen.queryByText('Saved locally')).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Needlewise home' }).closest('header')).toHaveClass('topbar');
+  });
+
+  it('puts the brand in the gallery header instead of the topbar once the gallery shows', () => {
+    window.history.replaceState({}, '', '/patterns');
+    render(<App />);
+    const brands = screen.getAllByRole('link', { name: 'Needlewise home' });
+    expect(brands).toHaveLength(1);
+    expect(brands[0].closest('header')).toHaveClass('project-gallery-header');
+    expect(document.querySelector('header.topbar')).toBeNull();
   });
 
   it('creates the starter project from the empty workspace', async () => {
@@ -120,16 +138,42 @@ describe('application shell', () => {
     await waitFor(() => expect(createProject).toHaveBeenCalledOnce());
   });
 
-  it('sends a selected archive to the adapter and reports import failures', async () => {
-    const importError = new Error('Archive is not a valid Needlewise project.');
-    importProjectAsCopy.mockRejectedValueOnce(importError);
-    mockedWorkspace.mockReturnValue({ ...baseWorkspace, error: importError } as never);
+  it('opens the import review for a chosen PDF and creates the project from it', async () => {
+    window.history.replaceState({}, '', '/patterns?folder=folder-one');
+    mockedWorkspace.mockReturnValue({ ...baseWorkspace, projects: [{ id: 'one', title: 'One', notes: '', createdAt: 1, updatedAt: 2, revision: 1 }], folders: [{ id: 'folder-one', name: 'Folder', parentId: null, createdAt: 1, updatedAt: 1 }] } as never);
     render(<App />);
-    const file = new File(['bad'], 'broken.needlewise', { type: 'application/octet-stream' });
-    fireEvent.change(screen.getByLabelText('Choose a Needlewise project archive'), { target: { files: [file] } });
+    expect(screen.queryByLabelText('Choose a pattern file to import')).not.toBeInTheDocument();
+    const importButton = screen.getAllByRole('button', { name: 'Import Pattern' })[0];
+    importButton.focus();
+    fireEvent.click(importButton);
+    const upload = screen.getByRole('dialog', { name: 'Import a pattern' });
+    const input = within(upload).getByLabelText('Choose a pattern file to import');
+    expect(input).toHaveAttribute('accept', '.pdf,application/pdf');
 
-    await waitFor(() => expect(importProjectAsCopy).toHaveBeenCalledWith(file));
-    expect(screen.getByRole('alert')).toHaveTextContent(importError.message);
+    fireEvent.change(input, { target: { files: [new File(['plain text'], 'notes.txt', { type: 'text/plain' })] } });
+    expect(await within(upload).findByRole('alert')).toHaveTextContent('not a pattern Needlewise can import');
+    expect(screen.queryByRole('dialog', { name: 'Import review' })).not.toBeInTheDocument();
+
+    const file = new File(['%PDF-'], 'garden.pdf', { type: 'application/pdf' });
+    fireEvent.change(input, { target: { files: [file] } });
+    expect(await screen.findByRole('dialog', { name: 'Import review' })).toHaveTextContent('garden.pdf');
+    expect(screen.queryByRole('dialog', { name: 'Import a pattern' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Finish import' }));
+    await waitFor(() => expect(createProject).toHaveBeenCalledWith({ title: 'Imported', document: { width: 1, height: 1 }, aidaCount: 14 }));
+    await waitFor(() => expect(moveProjectToFolder).toHaveBeenCalledWith('new-project', 'folder-one'));
+    await waitFor(() => expect(window.location.pathname).toBe('/patterns/new-project/edit'));
+  });
+
+  it('returns focus to the gallery Import Pattern button when the upload modal is closed', async () => {
+    mockedWorkspace.mockReturnValue({ ...baseWorkspace, projects: [{ id: 'one', title: 'One', notes: '', createdAt: 1, updatedAt: 2, revision: 1 }] } as never);
+    render(<App />);
+    const importButton = screen.getAllByRole('button', { name: 'Import Pattern' })[0];
+    importButton.focus();
+    fireEvent.click(importButton);
+    fireEvent.keyDown(screen.getByRole('dialog', { name: 'Import a pattern' }), { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Import a pattern' })).not.toBeInTheDocument();
+    await waitFor(() => expect(importButton).toHaveFocus());
   });
 
   it('flushes before explicitly activating an available update', async () => {

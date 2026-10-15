@@ -22,7 +22,6 @@ import {
   cloneLayeredDocument,
   PersistenceError,
   ProjectRepository,
-  type ArchiveImportOptions,
   type ProjectFolder,
   type ProjectFolderIndex,
   type ProjectHealth,
@@ -390,7 +389,7 @@ export class ProjectWorkspace {
     return this.active;
   }
 
-  private rememberOperationError(error: unknown, code: 'import-failed' | 'save-failed', message: string): never {
+  private rememberOperationError(error: unknown, code: 'save-failed', message: string): never {
     const normalized = error instanceof Error ? error : new WorkspaceError(code, message, error);
     this.operationError = normalized;
     this.notify();
@@ -852,34 +851,6 @@ export class ProjectWorkspace {
 
   async restoreRecovery(revision?: number): Promise<ProjectSession> {
     return this.promoteRecovery(revision);
-  }
-
-  async importProject(input: Uint8Array | ArrayBuffer | Blob, options: ArchiveImportOptions = {}): Promise<ProjectSession> {
-    const token = this.startOperation();
-    await this.flushActiveBeforeSwitch(token);
-    this.ensureOperation(token);
-    const importOptions: ArchiveImportOptions = { ...options, collision: options.collision ?? 'reject' };
-    try {
-      const record = await this.repository.importProject(input, importOptions);
-      this.ensureOperation(token);
-      const session = this.makeSession(record, false, record.health ?? null);
-      this.ensureOperation(token);
-      this.setActive(session);
-      this.operationError = null;
-      this.notify();
-      return session;
-    } catch (error) {
-      if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
-      return this.rememberOperationError(error, 'import-failed', 'Unable to import the local project archive.');
-    }
-  }
-
-  async importProjectArchive(input: Uint8Array | ArrayBuffer | Blob, options: ArchiveImportOptions = {}): Promise<ProjectSession> {
-    return this.importProject(input, options);
-  }
-
-  async importProjectAsCopy(input: Uint8Array | ArrayBuffer | Blob, options: ArchiveImportOptions = {}): Promise<ProjectSession> {
-    return this.importProject(input, { ...options, targetProjectId: options.targetProjectId ?? this.projectIdFactory(), collision: options.collision ?? 'reject' });
   }
 
   async exportActiveProject(): Promise<Uint8Array> {

@@ -633,26 +633,31 @@ function indicesForCells(cells: readonly ModelPoint[], width: number): Uint32Arr
 }
 
 /**
- * Return the clipped, deterministic disk stamp centered on a hit cell.
+ * Return the clipped, deterministic disk stamp anchored on a hit cell.
  *
- * Brush size is the disk diameter in cell units. Cell centers are integer
- * offsets from the hit cell, so a size-1 brush has a radius of 0.5 and still
- * selects exactly the hit cell.
+ * Brush size is the disk diameter in cell units. An odd size centers the disk
+ * on the hit cell's center. An even size centers it on the hit cell's
+ * bottom-right corner, so the hit cell is the top-left of the stamp and size 2
+ * is a 2x2 square rather than a cross. A cell is included when its center lies
+ * within the radius, so a size-1 brush selects exactly the hit cell.
  */
 function brushCells(center: ModelPoint, size: number, document: PatternDocument): ModelPoint[] {
   const cellX = Math.floor(center.x);
   const cellY = Math.floor(center.y);
   const radius = size / 2;
   const radiusSquared = radius * radius;
+  const offset = size % 2 === 0 ? 1 : 0.5;
+  const cx = cellX + offset;
+  const cy = cellY + offset;
   const cells: ModelPoint[] = [];
-  const minX = Math.max(0, Math.ceil(cellX - radius));
-  const maxX = Math.min(document.width - 1, Math.floor(cellX + radius));
-  const minY = Math.max(0, Math.ceil(cellY - radius));
-  const maxY = Math.min(document.height - 1, Math.floor(cellY + radius));
+  const minX = Math.max(0, Math.ceil(cx - radius - 0.5));
+  const maxX = Math.min(document.width - 1, Math.floor(cx + radius - 0.5));
+  const minY = Math.max(0, Math.ceil(cy - radius - 0.5));
+  const maxY = Math.min(document.height - 1, Math.floor(cy + radius - 0.5));
   for (let y = minY; y <= maxY; y += 1) {
     for (let x = minX; x <= maxX; x += 1) {
-      const dx = x - cellX;
-      const dy = y - cellY;
+      const dx = x + 0.5 - cx;
+      const dy = y + 0.5 - cy;
       if (dx * dx + dy * dy <= radiusSquared) cells.push({ x, y });
     }
   }

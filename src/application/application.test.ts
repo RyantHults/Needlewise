@@ -13,13 +13,12 @@ import {
   decodeDocument,
   encodeDocument,
   exportArchive,
-  importArchive,
+  parseArchive,
   cloneLayeredDocument,
   cloneSessionHistory,
   PersistenceError,
   PersistencePreparationWorkerClient,
   sha256,
-  type ArchiveImportOptions,
   type ProjectAsset,
   type ProjectAssetInput,
   type ProjectMetadata,
@@ -152,13 +151,6 @@ class MemoryRepository implements WorkspaceRepository {
     const record = this.records.get(projectId);
     if (!record) throw new PersistenceError('storage-failure', 'Missing test project.');
     return exportArchive({ metadata: record.metadata, document: record.document, assets: record.assets });
-  }
-
-  async importProject(input: Uint8Array | ArrayBuffer | Blob, options: ArchiveImportOptions = {}): Promise<ProjectRecord> {
-    const bundle = await importArchive(input, options);
-    const record: ProjectRecord = { metadata: bundle.metadata, document: bundle.document, head: { projectId: bundle.metadata.id, revision: bundle.document.revision, checksum: await sha256(encodeDocument(bundle.document)) }, recovery: null, assets: bundle.assets };
-    this.records.set(bundle.metadata.id, copyRecord(record));
-    return copyRecord(record);
   }
 }
 
@@ -1344,24 +1336,19 @@ describe('headless project workspace', () => {
     }
   });
 
-  it('exports and imports the active project only after archive validation', async () => {
+  it('exports the active project as a valid archive', async () => {
     const sourceRepository = new MemoryRepository();
     const source = new ProjectWorkspace({ repository: sourceRepository, clock: { now: () => 100 }, projectIdFactory: () => 'source' });
-    const targetRepository = new MemoryRepository();
-    const target = new ProjectWorkspace({ repository: targetRepository, clock: { now: () => 200 }, projectIdFactory: () => 'target' });
     try {
       await source.createProject({ width: 4, height: 4, document: createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }), assets: [{ id: 'reference', name: 'reference.bin', mimeType: 'application/octet-stream', data: new Uint8Array([4, 5, 6]) }] });
       source.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
       const archive = await source.exportActiveProject();
-      await target.importProject(archive);
-      expect(target.activeProjectId).toBe('source');
-      expect(target.document?.kind[0]).toBe(CellKind.Full);
-      expect(target.session?.assets[0].data).toEqual(new Uint8Array([4, 5, 6]));
-      await expect(target.importProject(new Uint8Array([1, 2, 3]))).rejects.toMatchObject({ code: 'invalid-archive' });
-      expect(target.activeProjectId).toBe('source');
+      const parsed = await parseArchive(archive);
+      expect(parsed.metadata.id).toBe('source');
+      expect(source.document?.kind[0]).toBe(CellKind.Full);
+      expect(parsed.assets[0].data).toEqual(new Uint8Array([4, 5, 6]));
     } finally {
       await source.dispose();
-      await target.dispose();
     }
   });
 

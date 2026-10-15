@@ -32,6 +32,19 @@ export interface SymbolOutline {
   readonly d: string;
 }
 
+const outlinePaths = new WeakMap<SymbolOutline, Path2D>();
+
+function outlinePath(outline: SymbolOutline): Path2D {
+  // A host without Path2D must still throw so the caller's fallback runs,
+  // even for an outline cached before the capability disappeared.
+  let path = typeof Path2D === 'function' ? outlinePaths.get(outline) : undefined;
+  if (!path) {
+    path = new Path2D(outline.d);
+    outlinePaths.set(outline, path);
+  }
+  return path;
+}
+
 /**
  * Paint a normalized outline centered on `position` and scaled to `cellSize`.
  *
@@ -50,7 +63,7 @@ export function drawSymbolOutline(
     context.translate?.(position.x, position.y);
     context.scale?.(cellSize, cellSize);
     context.fillStyle = ink;
-    context.fill(new Path2D(outline.d));
+    context.fill(outlinePath(outline));
   } finally {
     context.restore?.();
   }
@@ -152,11 +165,25 @@ function paletteSymbol(document: PatternDocument, id: number): string {
   return document.palette.find((entry) => entry.id === id)?.symbol ?? defaultPaletteSymbol(id);
 }
 
+const MAX_COMBINED_INK_ENTRIES = 512;
+const combinedInks = new Map<string, string>();
+
+function combinedInk(stitchColor: string, symbolColor: string): string {
+  const key = `${stitchColor}|${symbolColor}`;
+  let ink = combinedInks.get(key);
+  if (ink === undefined) {
+    if (combinedInks.size >= MAX_COMBINED_INK_ENTRIES) combinedInks.clear();
+    ink = contrastSymbolInk(stitchColor, symbolColor);
+    combinedInks.set(key, ink);
+  }
+  return ink;
+}
+
 function symbolInkColor(document: PatternDocument, id: number, style: RendererStyle): string {
   const color = paletteColor(document, id, style.missingPaletteColor);
   const stitchColor = style.mode === ChartPresentationMode.Grayscale ? grayscaleColor(color) : color;
   return style.mode === ChartPresentationMode.Combined
-    ? contrastSymbolInk(stitchColor, style.symbolColor)
+    ? combinedInk(stitchColor, style.symbolColor)
     : style.symbolColor;
 }
 

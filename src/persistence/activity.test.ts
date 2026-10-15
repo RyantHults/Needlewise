@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import { createDocument as createDomainDocument, layeredFromSurface, type CatalogAssociation, type CreateDocumentOptions, type LayeredDocument } from '../domain';
 import {
   exportArchive,
-  importArchive,
   parseArchive,
   ProjectRepository,
   recordDailyProgress,
@@ -31,7 +30,6 @@ function metadata(id: string, revision: number): ProjectMetadata {
 describe('durable progress activity', () => {
   it('round-trips bounded daily aggregates through repository saves and archives', async () => {
     const repo = nextRepository();
-    const importedRepo = nextRepository();
     try {
       const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
       let activity = recordDailyProgress(undefined, '2026-08-30', 4, 1);
@@ -48,17 +46,12 @@ describe('durable progress activity', () => {
       const parsed = await parseArchive(archive);
       expect(parsed.document.catalog).toEqual(document.catalog);
       expect(parsed.activity).toEqual(loaded?.activity);
-      const imported = await importedRepo.importProject(archive);
-      expect(imported.document.catalog).toEqual(document.catalog);
-      expect(imported.activity).toEqual(loaded?.activity);
 
       const directArchive = await exportArchive({ metadata: metadata('direct', 0), document, assets: [] });
-      expect((await importArchive(directArchive)).activity).toBeUndefined();
+      expect((await parseArchive(directArchive)).activity).toBeUndefined();
     } finally {
       await repo.close();
-      await importedRepo.close();
       await repo.db.delete();
-      await importedRepo.db.delete();
     }
   });
 

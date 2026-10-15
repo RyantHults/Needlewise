@@ -5,6 +5,8 @@ import { EditorSurface } from './components/editor/EditorSurface';
 import type { PatternView } from './components/editor/ViewSwitch';
 import { TrackSurface } from './components/track/TrackSurface';
 import { CreateModal } from './components/CreateModal';
+import { ImportReviewDialog, type ImportedPatternRequest } from './components/import/ImportReviewDialog';
+import { ImportUploadModal } from './components/import/ImportUploadModal';
 import { ProjectGallery } from './components/ProjectGallery';
 import { HomePage } from './components/HomePage';
 import { installModalScrollLock } from './components/modal-scroll-lock';
@@ -36,7 +38,6 @@ function WorkspaceApp() {
     createProjectFromConversion,
     openProject,
     deleteProject,
-    importProjectAsCopy,
     flush,
     createFolder,
     renameFolder,
@@ -53,13 +54,15 @@ function WorkspaceApp() {
   // which falls back to the top level on its own.
   const folderIdParam = searchParams.get('folder');
   const currentFolderId = folderIdParam !== null && folders.some((folder) => folder.id === folderIdParam) ? folderIdParam : null;
-  const inputRef = useRef<HTMLInputElement>(null);
   const [message, setMessage] = useState('');
   const [pwa, setPwa] = useState<PwaUpdateAdapter | null>(null);
   const [pwaState, setPwaState] = useState<PwaUpdateState>({ supported: false, registered: false, updateAvailable: false, offlineReady: false, error: null });
   const [updating, setUpdating] = useState(false);
+  const [importUploadOpen, setImportUploadOpen] = useState(false);
+  const importReturnRef = useRef<HTMLElement | null>(null);
+  const [importFile, setImportFile] = useState<File | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [createMode, setCreateMode] = useState<'blank' | 'image'>('blank');
+  const [createMode, setCreateMode] = useState<'blank' | 'image' | 'import'>('blank');
   const [createTitle, setCreateTitle] = useState('Untitled sampler');
   const [createWidth, setCreateWidth] = useState('100');
   const [createHeight, setCreateHeight] = useState('100');
@@ -148,21 +151,14 @@ function WorkspaceApp() {
     } catch { setCreateError('The pattern could not be saved locally.'); }
   }
 
-  async function handleImport(file: File) {
-    setMessage('');
+  async function handleImportCreate({ document, title, aidaCount, format }: ImportedPatternRequest) {
     const targetFolderId = currentFolderId;
-    try {
-      const session = await importProjectAsCopy(file);
-      setMessage('Project imported and saved locally.');
-      await moveIntoCurrentFolder(session.projectId, targetFolderId, 'Project imported, but it could not be moved into the folder.');
-      capture('pattern_imported');
-      posthogLogger.info('local archive imported', { placed_in_folder: targetFolderId !== null });
-      navigate(projectPath(session.projectId));
-    } catch {
-      // The accessible error below is sourced from the adapter.
-    } finally {
-      if (inputRef.current) inputRef.current.value = '';
-    }
+    const session = await createProject({ title, document, aidaCount });
+    setImportFile(null);
+    await moveIntoCurrentFolder(session.projectId, targetFolderId, 'Pattern imported, but it could not be moved into the folder.');
+    capture('pattern_imported', { format });
+    posthogLogger.info('pattern imported', { format, placed_in_folder: targetFolderId !== null });
+    navigate(projectPath(session.projectId));
   }
 
   async function handleUpdate() {
@@ -304,15 +300,18 @@ function WorkspaceApp() {
   const actionDisabled = !initialized || busy || updating;
   const routePending = isProjectPage && (resolvedRoute !== routeIdentity || (!routeIssue && state.projectId !== decodedRouteId));
   const routeError = isProjectPage && Boolean(routeIssue);
+  // The gallery carries the brand in its own header; other non-project states keep the plain topbar.
+  const galleryVisible = !isProjectPage && initialized;
+  const brand = (
+    <a className="brand" href="/" aria-label="Needlewise home">
+      <span className="brand-mark" aria-hidden="true">✣</span><span>Needlewise</span>
+    </a>
+  );
   return (
     <>
     <div data-application data-testid="application">
     <div className={`app-shell${isProjectPage ? ' app-shell-editor' : ''}`}>
-      {!isProjectPage && <header className="topbar">
-        <a className="brand" href="/" aria-label="Needlewise home">
-          <span className="brand-mark" aria-hidden="true">✣</span><span>Needlewise</span>
-        </a>
-      </header>}
+      {!isProjectPage && !galleryVisible && <header className="topbar">{brand}</header>}
 
       <main id="workspace" data-page={view === 'track' ? 'track' : isProjectPage ? 'editor' : 'patterns'}>
         {!initialized || routePending || routeError ? (
@@ -325,6 +324,7 @@ function WorkspaceApp() {
         ) : (
           <>
             {!isProjectPage && <ProjectGallery
+              brand={brand}
               projects={projects}
               disabled={actionDisabled}
               onOpen={(project) => navigate(projectPath(project.id))}
@@ -333,7 +333,7 @@ function WorkspaceApp() {
               onDuplicate={(project) => void handleDuplicate(project)}
               deleteConfirmId={confirmDeleteId}
               onCreate={handleCreate}
-              onImport={() => inputRef.current?.click()}
+              onImport={() => { importReturnRef.current = globalThis.document.activeElement as HTMLElement | null; setImportUploadOpen(true); }}
               folders={folders}
               folderAssignments={folderAssignments}
               currentFolderId={folderIdParam}
@@ -349,15 +349,16 @@ function WorkspaceApp() {
             {view === 'track' && active && workspace && state.document && !state.usingRecovery && <TrackSurface key={state.projectId} workspace={workspace} document={state.document} title={active.metadata.title} metrics={state.metrics ?? null} onNavigate={(next) => navigate(projectPath(active.metadata.id, next))} onRenameTitle={(title) => void handleRenameProject(active.metadata, title)} />}
           </>
         )}
-        {!routeError && <input ref={inputRef} className="visually-hidden" type="file" accept=".needlewise,application/octet-stream" aria-label="Choose a Needlewise project archive" disabled={actionDisabled} onChange={(event) => { const file = event.target.files?.[0]; if (file) void handleImport(file); }} />}
         {!routeError && <div className="feedback" aria-live="polite" role={error && !active ? 'alert' : undefined}>{error ? error.message : message}</div>}
       </main>
       {!isProjectPage && !routeError && undoMove && <div className="undo-toast" role="status"><span className="undo-toast-text">Moved “{undoMove.name}” to {folderName(undoMove.to)}</span><button className="undo-toast-action" type="button" onClick={handleUndoMove}>Undo</button></div>}
       {pwaState.updateAvailable && !routeError && <div className="update-notice" role="status"><strong>A Needlewise update is ready.</strong><span>Your current document will be saved before the update is applied.</span><button className="button button-primary" type="button" disabled={updating} onClick={() => void handleUpdate()}>{updating ? 'Updating…' : 'Update now'}</button></div>}
-      <footer className="footer-note"><span aria-hidden="true">⌁</span> Local archives are your backup path <span className="footer-divider" aria-hidden="true">·</span> Keep a copy somewhere safe</footer>
+      <footer className="footer-note"><span aria-hidden="true">⌁</span> Stored on this device <span className="footer-divider" aria-hidden="true">·</span> Works offline</footer>
     </div>
     </div>
-    {createOpen && <CreateModal returnFocus={createTriggerRef} catalog={DEFAULT_CATALOG_DEFINITION.snapshot} mode={createMode} title={createTitle} width={createWidth} height={createHeight} aida={createAida} backgroundColor={createBackgroundColor} onBackgroundColor={setCreateBackgroundColor} busy={busy} onMode={(next) => { if (!createLockedRef.current) setCreateMode(next); }} onClose={() => { if (!createLockedRef.current) setCreateOpen(false); }} onBlank={(event) => void submitCreate(event)} onDurableCreateChange={(locked) => { createLockedRef.current = locked; }} onConversionCreate={(draft, asset) => { const targetFolderId = currentFolderId; return createProjectFromConversion({ title: createTitle.trim() || 'Untitled sampler', draft, aidaCount: Number(createAida), settings: { backgroundColor: createBackgroundColor }, ...(asset ? { sourceImageAsset: asset } : {}) }).then(async (session) => { await moveIntoCurrentFolder(session.projectId, targetFolderId, 'Pattern created, but it could not be moved into the folder.'); capture('image_pattern_created', { width: draft.document.width, height: draft.document.height, aida_count: Number(createAida), source_image_retained: Boolean(asset) }); return session.projectId; }); }} onCreated={(projectId) => { if (appMounted.current) navigate(projectPath(projectId)); }} onTitle={setCreateTitle} onWidth={setCreateWidth} onHeight={setCreateHeight} onAida={setCreateAida} />}
+    {importUploadOpen && <ImportUploadModal returnFocus={importReturnRef} onClose={() => setImportUploadOpen(false)} onFile={(chosen) => { setImportUploadOpen(false); setImportFile(chosen); }} />}
+    {importFile && <ImportReviewDialog file={importFile} returnFocus={importReturnRef} onClose={() => setImportFile(null)} onCreate={handleImportCreate} />}
+    {createOpen && <CreateModal onImportFile={(chosen) => { importReturnRef.current = createTriggerRef.current; setCreateOpen(false); setImportFile(chosen); }} returnFocus={createTriggerRef} catalog={DEFAULT_CATALOG_DEFINITION.snapshot} mode={createMode} title={createTitle} width={createWidth} height={createHeight} aida={createAida} backgroundColor={createBackgroundColor} onBackgroundColor={setCreateBackgroundColor} busy={busy} onMode={(next) => { if (!createLockedRef.current) setCreateMode(next); }} onClose={() => { if (!createLockedRef.current) setCreateOpen(false); }} onBlank={(event) => void submitCreate(event)} onDurableCreateChange={(locked) => { createLockedRef.current = locked; }} onConversionCreate={(draft, asset) => { const targetFolderId = currentFolderId; return createProjectFromConversion({ title: createTitle.trim() || 'Untitled sampler', draft, aidaCount: Number(createAida), settings: { backgroundColor: createBackgroundColor }, ...(asset ? { sourceImageAsset: asset } : {}) }).then(async (session) => { await moveIntoCurrentFolder(session.projectId, targetFolderId, 'Pattern created, but it could not be moved into the folder.'); capture('image_pattern_created', { width: draft.document.width, height: draft.document.height, aida_count: Number(createAida), source_image_retained: Boolean(asset) }); return session.projectId; }); }} onCreated={(projectId) => { if (appMounted.current) navigate(projectPath(projectId)); }} onTitle={setCreateTitle} onWidth={setCreateWidth} onHeight={setCreateHeight} onAida={setCreateAida} />}
     </>
   );
 }

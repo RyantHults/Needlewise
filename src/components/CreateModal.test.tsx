@@ -5,6 +5,8 @@ import { calculatePreviewSize, CreateModal, PREVIEW_LENS_SIZE, previewFinishedSi
 import { DEFAULT_CATALOG_DEFINITION, type CatalogSnapshot } from '../catalog';
 import { MAX_CONFETTI_DISTANCE } from '../conversion/image-to-pattern';
 
+vi.mock('../import/registry', () => ({ importerAccept: () => '.pdf,application/pdf' }));
+
 const DEFAULT_CATALOG_COLOR_COUNT = DEFAULT_CATALOG_DEFINITION.snapshot.association.colorCount;
 
 const conversion = vi.hoisted(() => ({ convert: vi.fn() }));
@@ -1236,5 +1238,38 @@ describe('CreateModal image lifecycle', () => {
     // 1568×784 at the default 14-count Aida prefills 196×98 (~14in long side).
     expect(screen.getByLabelText('Width')).toHaveValue('196');
     expect(screen.getByLabelText('Height')).toHaveValue('98');
+  });
+});
+
+describe('CreateModal import mode', () => {
+  it('offers a PDF picker and hands the chosen file to the importer', () => {
+    const onImportFile = vi.fn();
+    render(<CreateModal {...props()} mode="import" onImportFile={onImportFile} />);
+    expect(screen.getByRole('radio', { name: 'Import PDF' })).toHaveAttribute('aria-checked', 'true');
+    const input = screen.getByLabelText('Choose a PDF pattern file');
+    expect(input).toHaveAttribute('accept', '.pdf,application/pdf');
+    const file = new File(['%PDF-'], 'chart.pdf', { type: 'application/pdf' });
+    fireEvent.change(input, { target: { files: [file] } });
+    expect(onImportFile).toHaveBeenCalledWith(file);
+    expect(screen.queryByText('Background color')).not.toBeInTheDocument();
+  });
+
+  it('hands a PDF dropped onto the import zone to the importer', () => {
+    const onImportFile = vi.fn();
+    render(<CreateModal {...props()} mode="import" onImportFile={onImportFile} />);
+    const zone = screen.getByLabelText('Choose a PDF pattern file').closest('label') as HTMLElement;
+    fireEvent.dragOver(zone, { dataTransfer: dropData() });
+    expect(zone).toHaveClass('file-drop-active');
+    const file = new File(['%PDF-'], 'dropped.pdf', { type: 'application/pdf' });
+    fireEvent.drop(zone, { dataTransfer: dropData(file) });
+    expect(zone).not.toHaveClass('file-drop-active');
+    expect(onImportFile).toHaveBeenCalledWith(file);
+  });
+
+  it('moves between the three modes with the arrow keys', () => {
+    const p = props();
+    render(<CreateModal {...p} mode="image" />);
+    fireEvent.keyDown(screen.getByRole('radio', { name: 'From image' }), { key: 'ArrowRight' });
+    expect(p.onMode).toHaveBeenCalledWith('import');
   });
 });

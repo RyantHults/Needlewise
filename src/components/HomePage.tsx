@@ -37,11 +37,11 @@ export function HomePage() {
           </li>
           <li className="home-feature">
             <h2>Private and offline</h2>
-            <p>Projects stay on this device and work without a connection. Download a .needlewise archive to back one up.</p>
+            <p>Projects stay on this device and work without a connection.</p>
           </li>
         </ul>
       </main>
-      <footer className="footer-note"><span aria-hidden="true">⌁</span> Local archives are your backup path <span className="footer-divider" aria-hidden="true">·</span> Keep a copy somewhere safe</footer>
+      <footer className="footer-note"><span aria-hidden="true">⌁</span> Stored on this device <span className="footer-divider" aria-hidden="true">·</span> Works offline</footer>
     </div>
   );
 }

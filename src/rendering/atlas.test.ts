@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { CellKind, createDocumentEditor, createLayeredDocument, layerSetVisibilityCommand, layerAddCommand, type PatternDocument } from '../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { DEFAULT_RENDERER_STYLE, type CanvasContextAdapter, type CanvasTarget, type RendererStyle } from '../editor/contracts';
-import { ColorAtlasCache, SymbolAtlasCache } from './atlas';
+import { ColorAtlasCache, SymbolAtlasCache, overviewColorForPaletteId } from './atlas';
 
 /** A context that paints fillRect into a pixel grid and counts full-atlas rebuilds. */
 function pixelTarget(width: number, height: number): CanvasTarget & { pixels: string[][]; fills: number } {
@@ -170,5 +170,14 @@ describe('overview atlas caches', () => {
     expect(targets).toHaveLength(1);
     expect(atlas.revision).toBe(erased.revision);
     expect(atlas.source).toBe(targets[0].source);
+  });
+
+  it('uses the plain palette color for the combined-mode overview', () => {
+    const document = editorWithTwoStitchLayers().composite;
+    const combined: RendererStyle = { ...DEFAULT_RENDERER_STYLE, mode: 'combined' };
+    const color: RendererStyle = { ...DEFAULT_RENDERER_STYLE, mode: 'color' };
+    expect(overviewColorForPaletteId(document, 1, combined)).toBe('#ff0000');
+    expect(overviewColorForPaletteId(document, 2, combined)).toBe('#0000ff');
+    expect(overviewColorForPaletteId(document, 1, combined)).toBe(overviewColorForPaletteId(document, 1, color));
   });
 });

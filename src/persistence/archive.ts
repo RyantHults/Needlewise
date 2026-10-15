@@ -13,7 +13,6 @@ import {
   type ArchiveAssetManifest,
   type ArchiveBundle,
   type ArchiveExportOptions,
-  type ArchiveImportOptions,
   type ArchiveManifest,
   type ProjectAsset,
   type ProjectMetadata
@@ -651,7 +650,7 @@ export async function exportArchive(bundle: Omit<ArchiveBundle, 'manifest'>, opt
   return archive;
 }
 
-export async function parseArchive(input: Uint8Array | ArrayBuffer | Blob, options: Pick<ArchiveImportOptions, 'signal'> = {}): Promise<ArchiveBundle> {
+export async function parseArchive(input: Uint8Array | ArrayBuffer | Blob, options: { signal?: AbortSignal } = {}): Promise<ArchiveBundle> {
   const bytes = await bytesOfArchive(input);
   if (bytes.length > MAX_ARCHIVE_BYTES) throw new PersistenceError('archive-too-large', 'Archive exceeds the maximum supported size.');
   if (options.signal?.aborted) cancelled();
@@ -755,17 +754,5 @@ export async function parseArchive(input: Uint8Array | ArrayBuffer | Blob, optio
   return { manifest, metadata, document, assets, ...(activity === undefined ? {} : { activity }), ...(warnings.length === 0 ? {} : { warnings }) };
 }
 
-export async function importArchive(input: Uint8Array | ArrayBuffer | Blob, options: ArchiveImportOptions = {}): Promise<ArchiveBundle> {
-  if (options.collision !== undefined && options.collision !== 'reject' && options.collision !== 'replace') throw new PersistenceError('invalid-archive', 'Archive collision behavior is invalid.');
-  const bundle = await parseArchive(input, options);
-  if (options.targetProjectId !== undefined) {
-    if (!isProjectId(options.targetProjectId)) throw new PersistenceError('invalid-metadata', 'Target project ID is invalid.');
-    bundle.metadata = { ...bundle.metadata, id: options.targetProjectId };
-    bundle.manifest = { ...bundle.manifest, projectId: options.targetProjectId };
-  }
-  return bundle;
-}
-
 export const exportProjectArchive = exportArchive;
-export const importProjectArchive = importArchive;
 export const decodeArchive = parseArchive;
