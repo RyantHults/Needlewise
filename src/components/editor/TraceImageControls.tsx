@@ -15,6 +15,8 @@ interface Props {
   activeTool?: string;
   /** Receives a function that opens the image picker, for the layers panel's "Add image" row. */
   filePickerRef?: MutableRefObject<(() => void) | null>;
+  /** Receives the visibility handler, so the layers panel's eye shares the Show checkbox's path. */
+  visibilityRef?: MutableRefObject<((visible: boolean) => void) | null>;
 }
 
 type Bounds = { x: number; y: number; width: number; height: number };
@@ -53,7 +55,7 @@ function handoffTrace(
   }
 }
 
-export function TraceImageControls({ workspace, document, controller, activeTool, filePickerRef }: Props) {
+export function TraceImageControls({ workspace, document, controller, activeTool, filePickerRef, visibilityRef }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -66,7 +68,9 @@ export function TraceImageControls({ workspace, document, controller, activeTool
   const handedOffReplacement = useRef<{ assetId: string; trace: Awaited<ReturnType<typeof decodeTraceImage>> } | null>(null);
   const decodedAssetRef = useRef<string | null>(null);
   const opacityStartRef = useRef<number | null>(null);
-  const opacityReleaseCleanupRef = useRef<(() => void) | null>(null);
+  const opacityLabelRef = useRef<HTMLLabelElement>(null);
+  const commitOpacityRef = useRef<() => void>(() => undefined);
+  const lastCommittedOpacityRef = useRef<number | null>(null);
   const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false);
   const removeTrigger = useRef<HTMLButtonElement>(null);
   const originX = document.originX ?? 0;
@@ -75,7 +79,7 @@ export function TraceImageControls({ workspace, document, controller, activeTool
   const originRef = useRef<CanvasOrigin>({ originX, originY });
   originRef.current = { originX, originY };
 
-  useEffect(() => () => { mountedRef.current = false; importRequestRef.current += 1; opacityReleaseCleanupRef.current?.(); }, []);
+  useEffect(() => () => { mountedRef.current = false; importRequestRef.current += 1; }, []);
 
   useEffect(() => {
     if (!filePickerRef) return undefined;
@@ -93,7 +97,7 @@ export function TraceImageControls({ workspace, document, controller, activeTool
     const asset = source ? workspace.getAsset(source.assetId) : undefined;
     if (!source) { decodedAssetRef.current = null; controller?.clearTraceImage?.(); return undefined; }
     if (!asset) { setStatus('Reference image is missing; the chart is still available.'); controller?.clearTraceImage?.(); return undefined; }
-    opacityRestoreRef.current = source.opacity; setVisible(source.traceVisible); setOpacity(source.traceVisible ? source.opacity : 0); setLoading(true); setStatus('Loading reference image…');
+    opacityRestoreRef.current = source.opacity; lastCommittedOpacityRef.current = null; setVisible(source.traceVisible); setOpacity(source.traceVisible ? source.opacity : 0); setLoading(true); setStatus('Loading reference image…');
     const retained = handedOffReplacement.current?.assetId === source.assetId ? handedOffReplacement.current.trace : undefined;
     if (retained) handedOffReplacement.current = null;
     void (retained ? Promise.resolve(retained) : decodeTraceImage(new Blob([new Uint8Array(asset.data) as unknown as ArrayBuffer], { type: asset.mimeType }))).then((trace) => {
@@ -143,6 +147,7 @@ export function TraceImageControls({ workspace, document, controller, activeTool
   useEffect(() => {
     const source = workspace.sourceImage;
     if (!source) return;
+    lastCommittedOpacityRef.current = null;
     setVisible(source.traceVisible);
     if (source.traceVisible) {
       opacityRestoreRef.current = source.opacity;
@@ -185,36 +190,35 @@ export function TraceImageControls({ workspace, document, controller, activeTool
     if (opacityStartRef.current === null) {
       opacityStartRef.current = opacityRestoreRef.current ?? workspace.sourceImage?.opacity ?? opacity;
     }
-    // A drag released off the slider, or ended by pointercancel, never reaches
-    // the slider's own handlers; the window sees it however it ends.
-    if (opacityReleaseCleanupRef.current) return;
-    const release = () => commitOpacityInteraction();
-    window.addEventListener('pointerup', release);
-    window.addEventListener('pointercancel', release);
-    opacityReleaseCleanupRef.current = () => {
-      window.removeEventListener('pointerup', release);
-      window.removeEventListener('pointercancel', release);
-      opacityReleaseCleanupRef.current = null;
-    };
   };
 
   const commitOpacityInteraction = () => {
-    opacityReleaseCleanupRef.current?.();
-    const start = opacityStartRef.current;
     opacityStartRef.current = null;
-    if (start === null) return;
     const current = workspace.sourceImage;
     if (!current) return;
     // The live slider already moved the controller; persist exactly one
-    // history entry for the whole interaction (or none when unchanged).
-    // Refs only: the window listener's closure predates the drag's renders.
+    // history entry for the whole interaction (or none when unchanged). The
+    // pointer, blur, and native change paths can all land here for one release.
     const nextOpacity = opacityRestoreRef.current ?? current.opacity;
-    if (nextOpacity === start && current.opacity === nextOpacity) return;
+    if (nextOpacity === current.opacity || nextOpacity === lastCommittedOpacityRef.current) return;
+    lastCommittedOpacityRef.current = nextOpacity;
     void commitSettings({ opacity: nextOpacity }, 'trace-image-opacity');
   };
+  commitOpacityRef.current = commitOpacityInteraction;
+
+  // React's onChange is the input event; the native change event fires once when
+  // a drag is released or a keyboard step lands, even where pointerup/blur do not.
+  useEffect(() => {
+    const slider = opacityLabelRef.current?.querySelector('input');
+    if (!slider) return undefined;
+    const onChange = () => commitOpacityRef.current();
+    slider.addEventListener('change', onChange);
+    return () => slider.removeEventListener('change', onChange);
+  }, []);
 
   const handleOpacityChange = (nextOpacity: number) => {
     opacityRestoreRef.current = nextOpacity;
+    lastCommittedOpacityRef.current = null;
     if (!visible) {
       setOpacity(0);
       try { controller?.setTraceImageSettings?.({ visible: false, opacity: 0 }); } catch { /* Non-fatal: the next sync re-applies the hidden state. */ }
@@ -241,8 +245,16 @@ export function TraceImageControls({ workspace, document, controller, activeTool
     setVisible(false);
     setOpacity(0);
     try { controller?.setTraceImageSettings?.({ visible: false, opacity: 0 }); } catch { /* Non-fatal: the next sync re-applies the hidden state. */ }
-    void commitSettings({ traceVisible: false }, 'trace-image-visibility');
+    void commitSettings({ traceVisible: false, opacity: restoreOpacity }, 'trace-image-visibility');
   };
+
+  const handleVisibilityRef = useRef(handleVisibilityChange);
+  handleVisibilityRef.current = handleVisibilityChange;
+  useEffect(() => {
+    if (!visibilityRef) return undefined;
+    visibilityRef.current = (next) => handleVisibilityRef.current(next);
+    return () => { visibilityRef.current = null; };
+  }, [visibilityRef]);
 
   const importFile = async (file: File) => {
     const request = importRequestRef.current + 1;
@@ -288,7 +300,7 @@ export function TraceImageControls({ workspace, document, controller, activeTool
         onConfirm={() => { setRemoveConfirmOpen(false); void remove(); }}
       />
     )}
-    <label className="trace-opacity"><span className="trace-opacity-label">Transparency</span><RangeInput aria-label={`Reference image opacity ${Math.round(opacity * 100)}%`} disabled={!descriptor} min="0" max="1" step="0.05" value={opacity} onPointerDown={beginOpacityInteraction} onFocus={beginOpacityInteraction} onChange={(event) => handleOpacityChange(Number(event.target.value))} onPointerUp={commitOpacityInteraction} onBlur={commitOpacityInteraction} /></label>
+    <label ref={opacityLabelRef} className="trace-opacity"><span className="trace-opacity-label">Transparency</span><RangeInput aria-label={`Reference image opacity ${Math.round(opacity * 100)}%`} disabled={!descriptor} min="0" max="1" step="0.05" value={opacity} onPointerDown={beginOpacityInteraction} onFocus={beginOpacityInteraction} onChange={(event) => handleOpacityChange(Number(event.target.value))} onPointerUp={commitOpacityInteraction} onBlur={commitOpacityInteraction} /></label>
     <span className="trace-status sr-only" role={status?.includes('could not') || status?.includes('missing') ? 'alert' : 'status'}>{status ?? 'Optional local reference; it is not part of the stitch chart.'}</span>
   </div>;
 }

@@ -1,5 +1,5 @@
 import { StrictMode } from 'react';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { TraceImageControls } from './TraceImageControls';
 
@@ -138,8 +138,8 @@ describe('TraceImageControls reference image tools', () => {
     expect(slider).toBeInTheDocument();
     expect(screen.getByText('Transparency')).toBeInTheDocument();
     fireEvent.focus(slider);
-    fireEvent.change(slider, { target: { value: '0.5' } });
-    fireEvent.change(slider, { target: { value: '0.4' } });
+    fireEvent.input(slider, { target: { value: '0.5' } });
+    fireEvent.input(slider, { target: { value: '0.4' } });
     expect(applyTraceImageChange).not.toHaveBeenCalled();
     expect(setTraceImageSettings).toHaveBeenCalledWith(expect.objectContaining({ opacity: 0.5 }));
     fireEvent.blur(slider);
@@ -148,37 +148,47 @@ describe('TraceImageControls reference image tools', () => {
     unmount();
   });
 
-  it.each([['pointerUp', fireEvent.pointerUp], ['pointerCancel', fireEvent.pointerCancel]] as const)('commits an opacity drag released off the slider via window %s', async (_name, fire) => {
+  it('commits an opacity drag on the native change event, once alongside pointerup and blur', async () => {
     const applyTraceImageChange = vi.fn(async () => undefined);
     const workspace = { sourceImage: { ...descriptor }, getAsset: () => undefined, applyTraceImageChange } as never;
     render(<TraceImageControls workspace={workspace} document={{ width: 2, height: 2 } as never} controller={{ setTraceImageSettings: vi.fn() } as never} />);
     const slider = screen.getByRole('slider');
     fireEvent.pointerDown(slider);
-    fireEvent.change(slider, { target: { value: '0.3' } });
+    fireEvent.input(slider, { target: { value: '0.3' } });
     expect(applyTraceImageChange).not.toHaveBeenCalled();
-    fire(window);
+    fireEvent.change(slider);
     await waitFor(() => expect(applyTraceImageChange).toHaveBeenCalledTimes(1));
     expect(applyTraceImageChange).toHaveBeenCalledWith(expect.objectContaining({ opacity: 0.3 }), expect.objectContaining({ label: 'trace-image-opacity' }));
-    fire(window);
+    fireEvent.pointerUp(slider);
     fireEvent.blur(slider);
     expect(applyTraceImageChange).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps a window-committed opacity through a hide and show', async () => {
-    const sourceImage = { ...descriptor };
-    const applyTraceImageChange = vi.fn(async (next: typeof sourceImage) => { Object.assign(sourceImage, next); });
-    const workspace = { sourceImage, getAsset: () => undefined, applyTraceImageChange } as never;
+  it('commits a pointerup followed by a native change as one history entry', async () => {
+    const applyTraceImageChange = vi.fn(async () => undefined);
+    const workspace = { sourceImage: { ...descriptor }, getAsset: () => undefined, applyTraceImageChange } as never;
     render(<TraceImageControls workspace={workspace} document={{ width: 2, height: 2 } as never} controller={{ setTraceImageSettings: vi.fn() } as never} />);
     const slider = screen.getByRole('slider');
     fireEvent.pointerDown(slider);
-    fireEvent.change(slider, { target: { value: '0.3' } });
-    fireEvent.pointerUp(window);
-    await waitFor(() => expect(sourceImage.opacity).toBe(0.3));
-    const checkbox = screen.getByRole('checkbox', { name: 'Show image' });
-    fireEvent.click(checkbox);
+    fireEvent.input(slider, { target: { value: '0.3' } });
+    fireEvent.pointerUp(slider);
+    fireEvent.change(slider);
+    await waitFor(() => expect(applyTraceImageChange).toHaveBeenCalledTimes(1));
+  });
+
+  it('keeps the live opacity through a hide and show from the visibility ref without any release event', async () => {
+    const sourceImage = { ...descriptor };
+    const applyTraceImageChange = vi.fn(async (next: typeof sourceImage) => { Object.assign(sourceImage, next); });
+    const workspace = { sourceImage, getAsset: () => undefined, applyTraceImageChange } as never;
+    const visibilityRef = { current: null as ((visible: boolean) => void) | null };
+    render(<TraceImageControls workspace={workspace} document={{ width: 2, height: 2 } as never} controller={{ setTraceImageSettings: vi.fn() } as never} visibilityRef={visibilityRef} />);
+    const slider = screen.getByRole('slider');
+    fireEvent.input(slider, { target: { value: '0.3' } });
+    act(() => visibilityRef.current?.(false));
+    await waitFor(() => expect(applyTraceImageChange).toHaveBeenCalledTimes(1));
+    expect(applyTraceImageChange).toHaveBeenLastCalledWith(expect.objectContaining({ traceVisible: false, opacity: 0.3 }), expect.objectContaining({ label: 'trace-image-visibility' }));
+    act(() => visibilityRef.current?.(true));
     await waitFor(() => expect(applyTraceImageChange).toHaveBeenCalledTimes(2));
-    fireEvent.click(checkbox);
-    await waitFor(() => expect(applyTraceImageChange).toHaveBeenCalledTimes(3));
     expect(slider).toHaveValue('0.3');
     expect(sourceImage).toMatchObject({ traceVisible: true, opacity: 0.3 });
   });

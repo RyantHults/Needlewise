@@ -168,6 +168,7 @@ export function EditorSurface({
   const showToastRef = useRef(showToast);
   showToastRef.current = showToast;
   const traceFilePicker = useRef<(() => void) | null>(null);
+  const referenceVisibility = useRef<((visible: boolean) => void) | null>(null);
   // The layer stack lives on the session; the `document` prop is its flattened composite.
   const session = workspace.session as ProjectSession | null | undefined;
   const layeredDocument = session?.layeredDocument ?? null;
@@ -412,9 +413,7 @@ export function EditorSurface({
   const selectLayer = (id: ActiveLayerId) => runLayerAction(() => session?.setActiveLayer(id));
   const addLayer = (type: LayerType) => runLayerAction(() => session?.addLayer(type));
   const setReferenceVisible = (visible: boolean) => {
-    const current = workspace.sourceImage;
-    if (!current) return;
-    void workspace.applyTraceImageChange({ ...current, traceVisible: visible }, { label: "trace-image-visibility" }).catch(() => undefined);
+    referenceVisibility.current?.(visible);
   };
   const setCanvasBackground = (color: string) =>
     runLayerAction(() => workspace.execute({ type: "document-settings-update", settings: { backgroundColor: color } } as never));
@@ -1120,7 +1119,7 @@ export function EditorSurface({
               )}
               {/* Always mounted: it owns decoding the reference image for the canvas. */}
               <div className="reference-layer-controls" hidden={Boolean(layeredDocument) && activeLayerId !== "reference"}>
-                <TraceImageControls workspace={workspace} document={document} controller={controller} activeTool={ui?.tool.tool} filePickerRef={traceFilePicker} />
+                <TraceImageControls workspace={workspace} document={document} controller={controller} activeTool={ui?.tool.tool} filePickerRef={traceFilePicker} visibilityRef={referenceVisibility} />
               </div>
             </ActionSection>
             {toolOptionsHeading && (
