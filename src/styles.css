@@ -457,7 +457,7 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .canvas-actions .bottom-control { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.05rem; }
 .canvas-actions .bottom-control small { color:#625c55; font-size:.56rem; font-weight:700; line-height:1; }
 .canvas-actions .canvas-actions-group { gap:.25rem; }
-.canvas-actions .canvas-actions-group .bottom-control { display:grid; place-items:center; width:2.5rem; height:2.4rem; padding:0; }
+.canvas-actions .canvas-actions-group .bottom-control { display:grid; place-items:center; width:2.75rem; height:2.4rem; padding:0; }
 .canvas-actions .reference-actions { margin-right:auto; }
 .canvas-actions .tool-options { margin-inline:auto; }
 .canvas-actions .view-actions { margin-left:auto; }
@@ -502,7 +502,7 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .canvas-actions .trace-controls button:disabled, .canvas-actions .trace-controls label:has(input:disabled), .canvas-actions .trace-controls input:disabled { color:#aaa49c; border-color:#e3ded7; cursor:not-allowed; opacity:.58; }
 .canvas-actions .chart-view { display:flex; align-items:center; gap:.35rem; margin:0; padding:.55rem; border:1px solid #e1dbd1; border-radius:.55rem; }
 .canvas-actions .chart-view legend { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
-.canvas-actions .chart-view button { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.05rem; width:2.5rem; height:2.4rem; padding:0; }
+.canvas-actions .chart-view button { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.05rem; width:2.75rem; height:2.4rem; padding:0; }
 .canvas-actions .chart-view button small, .canvas-actions .chart-view .trace-toggle small { color:#625c55; font-size:.56rem; font-weight:700; line-height:1; }
 .canvas-actions .chart-view button span { font-size:1.1rem; }
 .canvas-actions .chart-view .trace-toggle { margin:0; padding:0 .35rem; }
