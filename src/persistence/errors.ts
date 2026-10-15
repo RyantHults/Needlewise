@@ -10,7 +10,6 @@ export type PersistenceErrorCode =
   | 'invalid-activity'
   | 'storage-failure'
   | 'stale-save'
-  | 'import-collision'
   | 'cancelled';
 
 export class PersistenceError extends Error {

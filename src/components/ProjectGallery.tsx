@@ -71,6 +71,8 @@ function prefersReducedMotion(): boolean {
 
 interface ProjectGalleryProps {
   projects: readonly ProjectMetadata[];
+  /** The header's left cell, e.g. the app brand link. */
+  brand?: React.ReactNode;
   disabled?: boolean;
   onOpen: (project: ProjectMetadata) => void;
   onDelete: (project: ProjectMetadata) => void;
@@ -78,7 +80,7 @@ interface ProjectGalleryProps {
   onRenameProject?: (project: ProjectMetadata, title: string) => Promise<unknown> | void;
   deleteConfirmId?: string | null;
   onCreate: (button: HTMLButtonElement) => void;
-  onImport: () => void;
+  onImport?: () => void;
   folders?: readonly ProjectFolder[];
   folderAssignments?: readonly ProjectFolderAssignment[];
   currentFolderId?: string | null;
@@ -465,7 +467,8 @@ export function ProjectGallery({
   onDeleteFolder,
   folderDeleteConfirmId = null,
   onMoveProject,
-  onMoveFolder
+  onMoveFolder,
+  brand
 }: ProjectGalleryProps) {
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
@@ -614,7 +617,8 @@ export function ProjectGallery({
     >
       <section className="project-gallery" aria-labelledby="projects-title">
         <header className="project-gallery-header">
-          <div>
+          {brand && <div className="project-gallery-brand">{brand}</div>}
+          <div className="project-gallery-heading">
             {currentFolder && (
               <nav className="project-gallery-breadcrumb" aria-label="Folder breadcrumb">
                 <button type="button" onClick={() => onNavigateFolder?.(null)}>Projects</button>
@@ -637,9 +641,11 @@ export function ProjectGallery({
                   New folder
                 </button>
               )}
-              <button className="button button-secondary" type="button" disabled={disabled} onClick={onImport}>
-                Import Pattern
-              </button>
+              {onImport && (
+                <button className="button button-secondary" type="button" disabled={disabled} onClick={onImport}>
+                  Import Pattern
+                </button>
+              )}
               <button className="button button-primary" type="button" disabled={disabled} onClick={(event) => onCreate(event.currentTarget)}>
                 <span aria-hidden="true">＋</span> New Pattern
               </button>
@@ -663,14 +669,16 @@ export function ProjectGallery({
         {isTopLevel && isEmpty ? (
           <div className="project-gallery-empty project-gallery-empty-start" role="status">
             <h2>Your canvas is ready</h2>
-            <p>Start a new pattern from scratch or an image, or import a .needlewise archive.</p>
+            <p>Start a new pattern from scratch or an image, or import a PDF pattern.</p>
             <div className="project-gallery-start-actions">
               <button className="button button-primary project-gallery-start-button" type="button" disabled={disabled} onClick={(event) => onCreate(event.currentTarget)}>
                 <span aria-hidden="true">＋</span> New Pattern
               </button>
-              <button className="button button-secondary project-gallery-start-button" type="button" disabled={disabled} onClick={onImport}>
-                Import Pattern
-              </button>
+              {onImport && (
+                <button className="button button-secondary project-gallery-start-button" type="button" disabled={disabled} onClick={onImport}>
+                  Import Pattern
+                </button>
+              )}
             </div>
           </div>
         ) : !isTopLevel && isEmpty ? (

@@ -12,7 +12,6 @@ import type {
   PatternSettings
 } from '../domain';
 import type {
-  ArchiveImportOptions,
   CreateFolderInput,
   ProjectAsset,
   ProjectAssetInput,
@@ -66,7 +65,6 @@ export interface WorkspaceRepository {
   listProjects(): Promise<ProjectMetadata[]>;
   deleteProject(projectId: string): Promise<void>;
   exportProject(projectId: string): Promise<Uint8Array>;
-  importProject(input: Uint8Array | ArrayBuffer | Blob, options?: ArchiveImportOptions): Promise<ProjectRecord>;
   getAsset?(projectId: string, assetId: string): Promise<ProjectAsset | undefined>;
   listProjectHealth?(): Promise<ProjectHealth[]>;
   inspectProjectHealth?(projectId: string): Promise<ProjectHealth | undefined>;

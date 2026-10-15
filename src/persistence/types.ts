@@ -364,13 +364,6 @@ export interface ArchiveExportOptions {
   onWarning?: (warning: string) => void;
 }
 
-export interface ArchiveImportOptions {
-  targetProjectId?: string;
-  /** Import rejects an existing project unless replacement is explicitly requested. */
-  collision?: 'reject' | 'replace';
-  signal?: AbortSignal;
-}
-
 export interface RepositoryOptions {
   databaseName?: string;
   now?: () => number;

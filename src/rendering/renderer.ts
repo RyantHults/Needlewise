@@ -219,6 +219,8 @@ function snapRectToDevicePixels(rect: Rect, pixelRatio: number): Rect {
 
 /** Alpha for stitches outside the highlighted color; the highlighted color and an unset highlight stay opaque. */
 const HIGHLIGHT_DIM_ALPHA = 0.25;
+/** Combined mode draws full-size symbols from this many CSS px per cell, below Detail LOD (half-size slotted ones wait for Detail). */
+const COMBINED_SYMBOL_MIN_CELL_PX = 8;
 
 function highlightAlpha(style: RendererStyle, id: number): number {
   return style.highlightColor === null || id === style.highlightColor ? 1 : HIGHLIGHT_DIM_ALPHA;
@@ -334,7 +336,8 @@ function drawCellState(
       save(context);
       setAlpha(context, markAlpha);
     }
-    if (lod === RenderLod.Detail || symbolMode) drawSymbol(context, document, id, rect, style, slot);
+    const combinedSymbol = slot === undefined && viewport.zoom >= COMBINED_SYMBOL_MIN_CELL_PX;
+    if (lod === RenderLod.Detail || symbolMode || combinedSymbol) drawSymbol(context, document, id, rect, style, slot);
     if (completed && lod === RenderLod.Detail) {
       const completionRect = slot === undefined ? rect : {
         x: rect.x + (slot === 1 || slot === 2 ? rect.width / 2 : 0),
@@ -741,33 +744,63 @@ function fillCanvasFabric(
   }
 }
 
-const GRID_SHOW_AT_FIT_RATIO = 1.2;
+/**
+ * Each grid tier appears once the chart is zoomed in past this fraction of fit
+ * (a tier shows at zoom >= fit / fraction), independent of the render LOD.
+ */
+const MAJOR_GRID_FIT_FRACTION = 0.9;
+const MID_GRID_FIT_FRACTION = 0.4;
+const MINOR_GRID_FIT_FRACTION = 0.1;
+/** A tier is skipped while its line spacing is below this many CSS px. */
+const GRID_MIN_SPACING_PX = 4;
+/** Width in CSS px of the 10-cell lines while zoomed out below the 5-cell breakpoint. */
+const MAJOR_GRID_ZOOMED_OUT_WIDTH = 1;
 
 function minorGridWidth(lod: RenderLod): number {
   return lod === RenderLod.Detail ? 0.35 : 0.65;
-}
-
-/** Below this many px per cell the 5-cell tier is dropped, between the 1-cell tier (12) and overview (4). */
-const MID_GRID_MIN_ZOOM = 8;
-
-function midGridWidth(lod: RenderLod): number {
-  return lod === RenderLod.Detail ? 1 : 1.5;
 }
 
 function majorGridWidth(lod: RenderLod): number {
   return lod === RenderLod.Detail ? 1.9 : 1.7;
 }
 
-function shouldDrawGrid(
+function tierMajorWidth(lod: RenderLod, tiers: GridTiers): number {
+  return tiers.belowMidBreakpoint ? MAJOR_GRID_ZOOMED_OUT_WIDTH : majorGridWidth(lod);
+}
+
+function midGridWidth(lod: RenderLod): number {
+  return (minorGridWidth(lod) + majorGridWidth(lod)) / 2;
+}
+
+interface GridTiers {
+  major: boolean;
+  mid: boolean;
+  minor: boolean;
+  /** Zoom is under the 5-cell breakpoint, whether or not that tier shows. */
+  belowMidBreakpoint: boolean;
+}
+
+/** Which grid tiers show at this zoom; every grid caller goes through this. */
+function gridTierVisibility(
   document: PatternDocument,
   viewport: Viewport,
   metrics: CanvasMetrics,
   style: RendererStyle
-): boolean {
-  if (!style.showGrid) return false;
-  const currentZoom = viewport.zoom > 0 && Number.isFinite(viewport.zoom) ? viewport.zoom : 1;
+): GridTiers {
+  if (!style.showGrid) return { major: false, mid: false, minor: false, belowMidBreakpoint: false };
+  const zoom = viewport.zoom > 0 && Number.isFinite(viewport.zoom) ? viewport.zoom : 1;
   const fitZoom = fitViewport(document, metrics, CHART_EDGE_MARGIN).zoom;
-  return currentZoom >= fitZoom * GRID_SHOW_AT_FIT_RATIO;
+  const majorInterval = Number.isFinite(style.gridInterval) ? Math.max(1, Math.floor(style.gridInterval)) : 1;
+  const midInterval = Number.isFinite(style.midGridInterval) ? Math.max(1, Math.floor(style.midGridInterval)) : 5;
+  const tier = (fraction: number, interval: number): boolean =>
+    zoom >= fitZoom / fraction && interval * zoom >= GRID_MIN_SPACING_PX;
+  return {
+    major: tier(MAJOR_GRID_FIT_FRACTION, majorInterval),
+    // An interval of 1 is identical to the per-stitch grid.
+    mid: midInterval > 1 && tier(MID_GRID_FIT_FRACTION, midInterval),
+    minor: tier(MINOR_GRID_FIT_FRACTION, 1),
+    belowMidBreakpoint: zoom < fitZoom / MID_GRID_FIT_FRACTION
+  };
 }
 
 function drawGrid(
@@ -779,21 +812,13 @@ function drawGrid(
   visible: CellRect,
   lod: RenderLod
 ): void {
-  if (!shouldDrawGrid(document, viewport, metrics, style) || visible.width === 0 || visible.height === 0) return;
+  const tiers = gridTierVisibility(document, viewport, metrics, style);
+  if ((!tiers.major && !tiers.minor) || visible.width === 0 || visible.height === 0) return;
   const bounds = patternCanvasRect(document, viewport, metrics);
   if (!bounds) return;
   const configuredInterval = Number.isFinite(style.gridInterval) ? Math.max(1, Math.floor(style.gridInterval)) : 1;
-  const zoom = viewport.zoom > 0 && Number.isFinite(viewport.zoom) ? viewport.zoom : 1;
-  // At overview/minimum zoom, drawing every cell line either makes the grid
-  // disappear into sub-pixel strokes or makes work proportional to the chart
-  // size. Select a stable cell step that keeps lines legible and only visit
-  // coordinates which can produce pixels in this viewport.
-  const minimumCellStep = Math.max(1, Math.ceil(8 / zoom));
-  const interval = lod === RenderLod.Overview
-    ? adaptiveGridStep(minimumCellStep, 1)
-    : lod === RenderLod.Detail
-      ? 1
-      : Math.max(configuredInterval, minimumCellStep);
+  // The per-stitch tier visits every cell line; below it only the 10-cell lines are walked.
+  const interval = tiers.minor ? 1 : configuredInterval;
   const viewportRect = viewportModelRect(viewport, metrics);
   const left = Math.max(0, visible.x, Math.floor(viewportRect.x));
   const right = Math.min(document.width, visible.x + visible.width, Math.ceil(viewportRect.x + viewportRect.width));
@@ -813,13 +838,9 @@ function drawGrid(
     for (let x = firstX; x <= lastX; x += interval) {
       const screenX = modelToScreen({ x, y: 0 }, viewport).x;
       if (screenX < bounds.x || screenX > bounds.x + bounds.width) continue;
-      // Compact LOD keeps the configured hierarchy (the 5-cell tier is
-      // drawn separately), but drops the per-cell lines. Overview is the
-      // exception: its adaptive step is itself the visible grid.
-      const major = lod === RenderLod.Overview || x % configuredInterval === 0;
-      if (lod === RenderLod.Compact && !major) continue;
+      const major = x % configuredInterval === 0;
       const tier = major ? majorColors : minorColors;
-      const width = major ? majorGridWidth(lod) : minorGridWidth(lod);
+      const width = major ? tierMajorWidth(lod, tiers) : minorGridWidth(lod);
       const stroke = (from: number, to: number, color: string): void => {
         const segment = clipSegmentToRect(
           modelToScreen({ x, y: from }, viewport),
@@ -838,10 +859,9 @@ function drawGrid(
     for (let y = firstY; y <= lastY; y += interval) {
       const screenY = modelToScreen({ x: 0, y }, viewport).y;
       if (screenY < bounds.y || screenY > bounds.y + bounds.height) continue;
-      const major = lod === RenderLod.Overview || y % configuredInterval === 0;
-      if (lod === RenderLod.Compact && !major) continue;
+      const major = y % configuredInterval === 0;
       const tier = major ? majorColors : minorColors;
-      const width = major ? majorGridWidth(lod) : minorGridWidth(lod);
+      const width = major ? tierMajorWidth(lod, tiers) : minorGridWidth(lod);
       const stroke = (from: number, to: number, color: string): void => {
         const segment = clipSegmentToRect(
           modelToScreen({ x: from, y }, viewport),
@@ -870,12 +890,10 @@ function drawMidGrid(
   visible: CellRect,
   lod: RenderLod
 ): void {
-  if (!shouldDrawGrid(document, viewport, metrics, style) || lod === RenderLod.Overview || visible.width === 0 || visible.height === 0) return;
-  if (viewport.zoom < MID_GRID_MIN_ZOOM) return;
+  if (!gridTierVisibility(document, viewport, metrics, style).mid || visible.width === 0 || visible.height === 0) return;
   const bounds = patternCanvasRect(document, viewport, metrics);
   if (!bounds) return;
-  const interval = Number.isFinite(style.midGridInterval) ? Math.max(1, Math.floor(style.midGridInterval)) : 5;
-  if (interval === 1) return; // Degenerate: identical to the per-stitch grid.
+  const interval = Math.max(1, Math.floor(style.midGridInterval));
   const viewportRect = viewportModelRect(viewport, metrics);
   const left = Math.max(0, visible.x, Math.floor(viewportRect.x));
   const right = Math.min(document.width, visible.x + visible.width, Math.ceil(viewportRect.x + viewportRect.width));
@@ -932,17 +950,6 @@ function drawMidGrid(
   }
 }
 
-function adaptiveGridStep(minimumCellStep: number, configuredInterval: number): number {
-  if (configuredInterval >= minimumCellStep) return configuredInterval;
-  let magnitude = 1;
-  while (magnitude * 10 < minimumCellStep) magnitude *= 10;
-  for (const multiple of [1, 2, 5, 10]) {
-    const candidate = multiple * magnitude;
-    if (candidate >= minimumCellStep) return candidate;
-  }
-  return magnitude * 10;
-}
-
 /**
  * Stitch counts in the margin outside the chart: column numbers above the top
  * edge and row numbers left of the left edge, at every mid-grid interval while
@@ -958,12 +965,14 @@ function drawStitchNumbers(
   metrics: CanvasMetrics,
   style: RendererStyle
 ): void {
-  if (!shouldDrawGrid(document, viewport, metrics, style) || context.fillText === undefined) return;
+  if (context.fillText === undefined) return;
+  const tiers = gridTierVisibility(document, viewport, metrics, style);
+  if (!tiers.major && !tiers.mid) return;
   const gridInterval = Number.isFinite(style.gridInterval) ? Math.max(1, Math.floor(style.gridInterval)) : 1;
   const midInterval = Number.isFinite(style.midGridInterval) ? Math.max(1, Math.floor(style.midGridInterval)) : 5;
   const zoom = viewport.zoom > 0 && Number.isFinite(viewport.zoom) ? viewport.zoom : 1;
-  // The 5-cell tier is drawn from MID_GRID_MIN_ZOOM up; the numbers follow it.
-  const interval = zoom >= MID_GRID_MIN_ZOOM && midInterval > 1 ? midInterval : gridInterval;
+  // The numbers follow the 5-cell tier while it shows.
+  const interval = tiers.mid ? midInterval : gridInterval;
   const size = Math.min(12, Math.max(8, zoom * 0.9));
   const gap = 4;
   const origin = modelToScreen({ x: 0, y: 0 }, viewport);
@@ -1353,10 +1362,22 @@ function drawGridForCells(
   lod: RenderLod,
   pending?: ReadonlyMap<number, PendingCellState>
 ): void {
-  if (!shouldDrawGrid(document, viewport, metrics, style) || lod === RenderLod.Overview || cells.length === 0) return;
+  const tiers = gridTierVisibility(document, viewport, metrics, style);
+  if ((!tiers.major && !tiers.mid && !tiers.minor) || cells.length === 0) return;
   const bounds = patternCanvasRect(document, viewport, metrics);
   if (!bounds) return;
   const interval = Math.max(1, Math.floor(style.gridInterval));
+  const midInterval = Number.isFinite(style.midGridInterval) ? Math.max(1, Math.floor(style.midGridInterval)) : 5;
+  const minorColors = { theme: style.gridColor, betweenLight: style.lightStitchGridColor, betweenDark: style.darkStitchGridColor };
+  const majorColors = { theme: style.majorGridColor, betweenLight: style.lightStitchMajorGridColor, betweenDark: style.darkStitchMajorGridColor };
+  const midColors = { theme: style.midGridColor, betweenLight: style.lightStitchMidGridColor, betweenDark: style.darkStitchMidGridColor };
+  // Strongest tier that is both visible and owns this line, if any.
+  const tierAt = (n: number): { colors: typeof majorColors; width: number } | undefined => {
+    if (tiers.major && n % interval === 0) return { colors: majorColors, width: tierMajorWidth(lod, tiers) };
+    if (tiers.mid && n % midInterval === 0) return { colors: midColors, width: midGridWidth(lod) };
+    if (tiers.minor) return { colors: minorColors, width: minorGridWidth(lod) };
+    return undefined;
+  };
   const vertical = new Map<string, { x: number; y: number }>();
   const horizontal = new Map<string, { x: number; y: number }>();
   for (const cell of cells) {
@@ -1378,31 +1399,29 @@ function drawGridForCells(
     }
   }
   const contrast = gridEdgeContrast(document, style, pending);
-  const minorColors = { theme: style.gridColor, betweenLight: style.lightStitchGridColor, betweenDark: style.darkStitchGridColor };
-  const majorColors = { theme: style.majorGridColor, betweenLight: style.lightStitchMajorGridColor, betweenDark: style.darkStitchMajorGridColor };
   const clipped = clipToRect(context, bounds);
   try {
     for (const { x, y } of vertical.values()) {
-      const major = x % interval === 0;
-      if (lod === RenderLod.Compact && !major) continue;
+      const tier = tierAt(x);
+      if (!tier) continue;
       const segment = clipSegmentToRect(
         modelToScreen({ x, y }, viewport),
         modelToScreen({ x, y: y + 1 }, viewport),
         bounds
       );
-      const color = gridTierColor(major ? majorColors : minorColors, contrast?.(x - 1, y, x, y));
-      if (segment) gridLine(context, segment.start, segment.end, color, major ? majorGridWidth(lod) : minorGridWidth(lod));
+      const color = gridTierColor(tier.colors, contrast?.(x - 1, y, x, y));
+      if (segment) gridLine(context, segment.start, segment.end, color, tier.width);
     }
     for (const { x, y } of horizontal.values()) {
-      const major = y % interval === 0;
-      if (lod === RenderLod.Compact && !major) continue;
+      const tier = tierAt(y);
+      if (!tier) continue;
       const segment = clipSegmentToRect(
         modelToScreen({ x, y }, viewport),
         modelToScreen({ x: x + 1, y }, viewport),
         bounds
       );
-      const color = gridTierColor(major ? majorColors : minorColors, contrast?.(x, y - 1, x, y));
-      if (segment) gridLine(context, segment.start, segment.end, color, major ? majorGridWidth(lod) : minorGridWidth(lod));
+      const color = gridTierColor(tier.colors, contrast?.(x, y - 1, x, y));
+      if (segment) gridLine(context, segment.start, segment.end, color, tier.width);
     }
   } finally {
     if (clipped) restore(context);
@@ -2686,6 +2705,7 @@ export class Canvas2DRenderer implements CanvasRenderer {
       const cells = this.drawOverviewCells(context, dimAlpha);
       const visible = visibleCellRect(this.viewport, this.metrics, this.document);
       drawGrid(context, this.document, this.viewport, this.metrics, this.style, visible, lod);
+      drawMidGrid(context, this.document, this.viewport, this.metrics, this.style, visible, lod);
       drawChartBorder(context, this.document, this.viewport, this.metrics, this.style);
       drawStitchNumbers(context, this.document, this.viewport, this.metrics, this.style);
       const drawnBackstitches = drawBackstitches(context, this.document, this.viewport, this.metrics, this.style, undefined, dimAlpha);

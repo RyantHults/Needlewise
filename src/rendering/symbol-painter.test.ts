@@ -60,6 +60,19 @@ function named(context: RecordingContext, name: string): ContextRecord | undefin
 }
 
 describe('drawSymbolOutline', () => {
+  it('reuses one Path2D per outline across draws', () => {
+    const context = recordingContext();
+    const outline = { d: 'M0 0L1 0L1 1Z' };
+
+    drawSymbolOutline(context, outline, { x: 0, y: 0 }, 8, '#000');
+    drawSymbolOutline(context, outline, { x: 9, y: 9 }, 8, '#000');
+    drawSymbolOutline(context, { d: outline.d }, { x: 0, y: 0 }, 8, '#000');
+
+    const [first, second, third] = context.records.filter((entry) => entry.name === 'fill').map((entry) => entry.args[0]);
+    expect(second).toBe(first);
+    expect(third).not.toBe(first);
+  });
+
   it('translates the outline to the requested cell position', () => {
     const context = recordingContext();
 
@@ -247,5 +260,18 @@ describe('drawPaletteSymbol', () => {
     expect(() =>
       drawPaletteSymbol(context, documentWith(SYMBOL_IDS[0]), 1, rect, style({ mode: ChartPresentationMode.Symbol }))
     ).not.toThrow();
+  });
+
+  it('gives a stable Combined ink for repeated draws and many distinct colors', () => {
+    const inkFor = (color: string): string => {
+      const context = recordingContext();
+      const doc = { palette: [{ id: 1, name: 'C', color, symbol: SYMBOL_IDS[0] }] } as unknown as PatternDocument;
+      drawPaletteSymbol(context, doc, 1, rect, style({ mode: ChartPresentationMode.Combined }));
+      return named(context, 'fill')?.fillStyle ?? '';
+    };
+    const first = inkFor('#102030');
+    for (let n = 0; n < 600; n += 1) inkFor(`#${(n + 0x100000).toString(16)}`);
+    expect(inkFor('#102030')).toBe(first);
+    expect(inkFor('#102030')).toBe(first);
   });
 });

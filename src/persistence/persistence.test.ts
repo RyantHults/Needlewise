@@ -776,7 +776,7 @@ describe('durable document history persistence', () => {
     }
   });
 
-  it('clears history when replacing, promoting recovery, importing, or deleting a project', async () => {
+  it('clears history when replacing, promoting recovery, or deleting a project', async () => {
     const repo = await repository();
     try {
       const base = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] });
@@ -784,10 +784,6 @@ describe('durable document history persistence', () => {
       const document = executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER, x: 0, y: 0, color: 1 });
       await repo.save('history-lifecycle', metadata(document, 'history-lifecycle'), document, undefined, { history: editor.exportHistory() });
       expect(await repo.db.documentHistories.get('history-lifecycle')).toBeDefined();
-
-      const archive = await repo.exportProject('history-lifecycle');
-      await repo.importProject(archive, { collision: 'replace' });
-      expect(await repo.db.documentHistories.get('history-lifecycle')).toBeUndefined();
 
       const replacement = applyCommand(document, { type: 'set-full', x: 1, y: 0, color: 1 }).document;
       await repo.save('history-lifecycle', metadata(replacement, 'history-lifecycle'), replacement);
@@ -1029,22 +1025,6 @@ describe('session history lifecycle transaction rollback', () => {
       await expect(repo.promoteRecovery('rollback-target')).rejects.toBeInstanceOf(PersistenceError);
       deleteForPromotion.mockRestore();
       expect(await repo.db.currentSnapshots.get('rollback-target')).toEqual(currentBeforePromotion);
-      expect(await repo.db.documentHistories.get('rollback-target')).toEqual(historyBeforePromotion);
-
-      const archiveSource = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Blue', color: '#36c' }] });
-      const sourceRepo = await repository();
-      let archive: Uint8Array;
-      try {
-        await sourceRepo.save('rollback-source', metadata(archiveSource, 'rollback-source'), archiveSource);
-        archive = await sourceRepo.exportProject('rollback-source');
-      } finally {
-        await closeRepository(sourceRepo);
-      }
-      const currentBeforeImport = await repo.db.currentSnapshots.get('rollback-target');
-      const deleteForImport = vi.spyOn(repo.db.documentHistories, 'delete').mockRejectedValueOnce(new Error('import history cleanup failed'));
-      await expect(repo.importProject(archive, { targetProjectId: 'rollback-target', collision: 'replace' })).rejects.toBeInstanceOf(PersistenceError);
-      deleteForImport.mockRestore();
-      expect(await repo.db.currentSnapshots.get('rollback-target')).toEqual(currentBeforeImport);
       expect(await repo.db.documentHistories.get('rollback-target')).toEqual(historyBeforePromotion);
 
       const currentBeforeDelete = await repo.db.currentSnapshots.get('rollback-target');
@@ -1743,7 +1723,7 @@ describe('local project repository', () => {
       expect(await repo.getAsset('corrupt-source', 'reference')).toBeDefined();
       const exported = await repo.exportProject('corrupt-source');
       expect(repo.exportWarnings.join(' ')).toContain('omitted');
-      const reimported = await repo.importProject(exported, { targetProjectId: 'corrupt-source-copy' });
+      const reimported = await parseArchive(exported);
       expect(reimported.document.width).toBe(2);
       expect(reimported.metadata.sourceImage).toBeUndefined();
     } finally {
@@ -2279,7 +2259,7 @@ describe('local project repository', () => {
     }
   });
 
-  it('keeps one cache entry, refreshes it after import/promotion, and clears it on delete/close', async () => {
+  it('keeps one cache entry, refreshes it after promotion, and clears it on delete/close', async () => {
     const repo = await repository();
     try {
       const first = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
@@ -2290,9 +2270,7 @@ describe('local project repository', () => {
       expect(cachedCurrent(repo)).toMatchObject({ projectId: 'evict-second', revision: second.revision });
 
       const imported = createDocument({ width: 3, height: 1, palette: [{ id: 1, name: 'Green', color: '#3c3' }] });
-      const archive = await exportArchive({ metadata: metadata(imported, 'lifecycle'), document: imported, assets: [] });
-      await repo.save('lifecycle', metadata(first, 'lifecycle'), first);
-      await repo.importProject(archive, { collision: 'replace' });
+      await repo.save('lifecycle', metadata(imported, 'lifecycle'), imported);
       expect(cachedCurrent(repo)).toMatchObject({ projectId: 'lifecycle', revision: imported.revision });
 
       const advanced = applyCommand(imported, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
@@ -2643,7 +2621,6 @@ describe('local project repository', () => {
 
   it('round-trips an archive and an optional local asset', async () => {
     const repo = await repository();
-    const importedRepo = await repository();
     try {
       const document = makeDocument();
       const asset = new Uint8Array([1, 2, 3, 4, 5]);
@@ -2659,18 +2636,8 @@ describe('local project repository', () => {
       expect(parsed.document.catalog).toEqual(document.catalog);
       expect(parsed.metadata).not.toHaveProperty('thumbnail');
       expect(parsed.metadata).toMatchObject({ width: document.width, height: document.height });
-      const imported = await importedRepo.importProject(archive);
-      expect(imported.metadata).toMatchObject(projectMetadata);
-      expect(imported.metadata).toMatchObject({ width: document.width, height: document.height, thumbnail: deriveProjectSummary(document).thumbnail });
-      expect(stitchLayer(imported.document).kind).toEqual(stitchLayer(document).kind);
-      expect(stitchLayer(imported.document).colors).toEqual(stitchLayer(document).colors);
-      expect(imported.document.catalog).toEqual(document.catalog);
-      expect(imported.head).toMatchObject({ projectId: 'project-1', revision: document.revision, checksum: (await importedRepo.db.currentSnapshots.get('project-1'))?.checksum });
-      expect(imported.assets).toHaveLength(1);
-      expect(imported.assets[0].data).toEqual(asset);
     } finally {
       await closeRepository(repo);
-      await closeRepository(importedRepo);
     }
   });
 
@@ -2705,52 +2672,7 @@ describe('local project repository', () => {
     }
   });
 
-  it('rejects import ID collisions by default and replaces only explicitly', async () => {
-    const source = await repository();
-    const target = await repository();
-    try {
-      const sourceDocument = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      await source.save('collision', metadata(sourceDocument, 'collision'), sourceDocument);
-      const archive = await source.exportProject('collision');
-      const targetDocument = createDocument({ width: 3, height: 3, palette: [{ id: 1, name: 'Blue', color: '#36c' }] });
-      await target.save('collision', metadata(targetDocument, 'collision'), targetDocument);
-
-      await expect(target.importProject(archive)).rejects.toMatchObject({ code: 'import-collision' });
-      expect((await target.load('collision'))?.document.width).toBe(3);
-      await expect(target.importProject(archive, { collision: 'replace' })).resolves.toMatchObject({ document: { width: 2 } });
-    } finally {
-      await closeRepository(source);
-      await closeRepository(target);
-    }
-  });
-
-  it('does not copy a corrupt current snapshot into recovery during replacement', async () => {
-    const source = await repository();
-    const target = await repository();
-    try {
-      const old0 = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const old1 = applyCommand(old0, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
-      await target.save('replace-corrupt', metadata(old0, 'replace-corrupt'), old0);
-      await target.save('replace-corrupt', metadata(old1, 'replace-corrupt'), old1);
-      const current = await target.db.currentSnapshots.get('replace-corrupt');
-      if (!current) throw new Error('missing current test snapshot');
-      current.bytes = corruptBytes(current.bytes);
-      await target.db.currentSnapshots.put(current);
-
-      const importedDocument = applyCommand(old1, { type: 'set-full', x: 1, y: 1, color: 1 }).document;
-      await source.save('replace-corrupt', metadata(importedDocument, 'replace-corrupt'), importedDocument);
-      await target.importProject(await source.exportProject('replace-corrupt'), { collision: 'replace' });
-      const loaded = await target.load('replace-corrupt');
-      expect(loaded?.document.revision).toBe(importedDocument.revision);
-      expect(loaded?.recovery?.revision).toBe(old0.revision);
-      expect(loaded?.health?.recovery.status).toBe('valid');
-    } finally {
-      await closeRepository(source);
-      await closeRepository(target);
-    }
-  });
-
-  it('does not write when archive checksum or manifest validation fails', async () => {
+  it('rejects archives when checksum or manifest validation fails', async () => {
     const repo = await repository();
     try {
       const original = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
@@ -2761,14 +2683,14 @@ describe('local project repository', () => {
       damagedDocument[damagedDocument.length - 1] ^= 0xff;
       files['document.bin'] = damagedDocument;
       const damagedArchive = zipSync(files);
-      await expect(repo.importProject(damagedArchive)).rejects.toMatchObject({ code: 'checksum-mismatch' });
+      await expect(parseArchive(damagedArchive)).rejects.toMatchObject({ code: 'checksum-mismatch' });
       expect((await repo.load('project-1'))?.document.revision).toBe(original.revision);
 
       const manifest = JSON.parse(strFromU8(files['manifest.json'])) as { document: { sha256: string } };
       manifest.document.sha256 = '0'.repeat(64);
       files['manifest.json'] = strToU8(JSON.stringify(manifest));
       const damagedManifestArchive = zipSync(files);
-      await expect(repo.importProject(damagedManifestArchive)).rejects.toBeInstanceOf(PersistenceError);
+      await expect(parseArchive(damagedManifestArchive)).rejects.toBeInstanceOf(PersistenceError);
       expect((await repo.load('project-1'))?.recovery).toBeNull();
     } finally {
       await closeRepository(repo);

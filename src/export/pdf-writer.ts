@@ -6,6 +6,7 @@ import { isLegacyQuarterKind, isThreeQuarterPairKind, threeQuarterPairComponents
 import { contrastSymbolInk, relativeLuminance } from '../rendering/contrast';
 import { drawStitchGeometry } from '../rendering/symbol-painter';
 import { getSymbolOutline, SYMBOL_POOL_VERSION } from '../symbols';
+import { toCubicSvgPath } from '../import/pdf/outline';
 import { ChartPresentationMode } from '../editor/contracts';
 import type { ExportSettings } from './export-settings';
 import {
@@ -235,11 +236,19 @@ function rect(ctx: Context, page: PDFPage, x: number, top: number, width: number
   page.drawRectangle({ x, y: page.getHeight() - top - height, width, height, color: color(ctx, hex), borderWidth: 0, ...(opacity === undefined ? {} : { opacity }) });
 }
 
+// pdf-lib draws `Q` as an inexact `v`, so symbols are drawn from exact cubics.
+const cubicSymbolPaths = new Map<string, string>();
+
 function drawSymbol(ctx: Context, page: PDFPage, slug: string, left: number, top: number, size: number, ink: string, scale = 1): void {
   const outline = getSymbolOutline(slug);
   if (!outline) return;
+  let d = cubicSymbolPaths.get(slug);
+  if (d === undefined) {
+    d = toCubicSvgPath(outline.d);
+    cubicSymbolPaths.set(slug, d);
+  }
   const placement = symbolPlacement(left, top, size, page.getHeight(), scale);
-  page.drawSvgPath(outline.d, { ...placement, color: color(ctx, ink) });
+  page.drawSvgPath(d, { ...placement, color: color(ctx, ink) });
 }
 
 function drawPolygon(ctx: Context, page: PDFPage, polygon: Polygon, left: number, top: number, size: number, hex: string): void {

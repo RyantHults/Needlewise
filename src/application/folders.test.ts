@@ -24,10 +24,7 @@ function minimalRepository(): WorkspaceRepository {
     load: async (): Promise<ProjectRecord | undefined> => undefined,
     listProjects: async (): Promise<ProjectMetadata[]> => [],
     deleteProject: async (): Promise<void> => undefined,
-    exportProject: async (): Promise<Uint8Array> => new Uint8Array(),
-    importProject: async (): Promise<ProjectRecord> => {
-      throw new Error('importProject was not expected in this test.');
-    }
+    exportProject: async (): Promise<Uint8Array> => new Uint8Array()
   };
 }
 

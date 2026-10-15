@@ -88,10 +88,6 @@ class MemoryRepository implements WorkspaceRepository {
   async exportProject(): Promise<Uint8Array> {
     throw new PersistenceError('storage-failure', 'Not used in trace-history tests.');
   }
-
-  async importProject(): Promise<ProjectRecord> {
-    throw new PersistenceError('storage-failure', 'Not used in trace-history tests.');
-  }
 }
 
 function pngBytes(width: number, height: number): Uint8Array {

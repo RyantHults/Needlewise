@@ -64,6 +64,7 @@ interface RenderOptions {
   currentFolderId?: string | null;
   folderDeleteConfirmId?: string | null;
   withFolderHandlers?: boolean;
+  brand?: React.ReactNode;
 }
 
 function renderGallery(projects: readonly ProjectMetadata[], deleteConfirmId?: string | null, options: RenderOptions = {}) {
@@ -96,6 +97,7 @@ function renderGallery(projects: readonly ProjectMetadata[], deleteConfirmId?: s
       onDeleteFolder={withFolderHandlers ? onDeleteFolder : undefined}
       onMoveProject={withFolderHandlers ? onMoveProject : undefined}
       onMoveFolder={withFolderHandlers ? onMoveFolder : undefined}
+      brand={options.brand}
     />
   );
   return { view, onOpen, onDelete, onCreate, onImport, onNavigateFolder, onCreateFolder, onRenameFolder, onDeleteFolder, onMoveProject, onMoveFolder };
@@ -339,7 +341,7 @@ describe('ProjectGallery', () => {
     const { onCreate, onImport } = renderGallery([]);
 
     expect(screen.getByText('Your canvas is ready')).toBeInTheDocument();
-    expect(screen.getByText('Start a new pattern from scratch or an image, or import a .needlewise archive.')).toBeInTheDocument();
+    expect(screen.getByText('Start a new pattern from scratch or an image, or import a PDF pattern.')).toBeInTheDocument();
     expect(screen.queryByRole('article')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'New Pattern' }));
@@ -355,6 +357,31 @@ describe('ProjectGallery', () => {
     expect(screen.queryByRole('button', { name: 'New folder' })).not.toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'New Pattern' })).toHaveLength(1);
     expect(screen.getAllByRole('button', { name: 'Import Pattern' })).toHaveLength(1);
+  });
+
+  it('renders the brand, title and actions in one header, in that order', () => {
+    renderGallery([project('one', 'One', 5, 6)], null, { folders: [folder('f', 'Charts')], currentFolderId: 'f', brand: <a href="/">Needlewise</a> });
+
+    const header = screen.getByRole('heading', { level: 1, name: 'Charts' }).closest('header') as HTMLElement;
+    const cells = [...header.children].map((cell) => cell.className);
+    expect(cells).toEqual(['project-gallery-brand', 'project-gallery-heading', 'project-gallery-actions']);
+    expect(within(header).getByRole('link', { name: 'Needlewise' })).toBeInTheDocument();
+    expect(within(header).getByRole('navigation', { name: 'Folder breadcrumb' })).toBeInTheDocument();
+    expect(within(header).getByRole('button', { name: 'New Pattern' })).toBeInTheDocument();
+  });
+
+  it('keeps the brand but no actions in the top-level empty state', () => {
+    renderGallery([], null, { brand: <a href="/">Needlewise</a> });
+
+    const header = screen.getByRole('heading', { level: 1, name: 'Projects' }).closest('header') as HTMLElement;
+    expect(within(header).getByRole('link', { name: 'Needlewise' })).toBeInTheDocument();
+    expect(within(header).queryByRole('button')).not.toBeInTheDocument();
+  });
+
+  it('renders no brand cell without a brand', () => {
+    renderGallery([project('one', 'One', 5, 6)]);
+
+    expect(document.querySelector('.project-gallery-brand')).toBeNull();
   });
 
   it('shows header actions when projects are present at the top level', () => {

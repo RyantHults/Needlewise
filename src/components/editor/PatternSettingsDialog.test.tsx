@@ -58,6 +58,18 @@ describe("PatternSettingsDialog", () => {
     expect(screen.getByRole("checkbox", { name: "Enable pencil mode" })).toBeInTheDocument();
   });
 
+  it("opens the pencil mode tip on click without toggling pencil mode", () => {
+    const { onPreferencesChange } = setup("all");
+    fireEvent.click(screen.getByRole("tab", { name: "Editor" }));
+    const info = screen.getByRole("button", { name: "Pencil mode information" });
+    expect(info).toHaveAttribute("aria-describedby", "pencil-mode-tooltip");
+    expect(info).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(info);
+    expect(info).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("tooltip")).toHaveTextContent("only a pencil or stylus can make changes");
+    expect(onPreferencesChange).not.toHaveBeenCalled();
+  });
+
   it("shows only control placement in placement mode", () => {
     const { onPreferencesChange } = setup("placement");
     fireEvent.click(screen.getByRole("tab", { name: "Editor" }));

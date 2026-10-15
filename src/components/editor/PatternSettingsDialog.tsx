@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ProjectWorkspace } from "../../application/workspace";
 import type { DisplayUnits } from "../../domain";
+import { InfoTip } from "../InfoTip";
 import { Modal } from "../Modal";
 import type { EditorPreferences } from "./editor-preferences";
 
@@ -166,19 +167,9 @@ export function PatternSettingsDialog({
                 <label className="check-row palette-display-toggle" htmlFor="enable-pencil-mode">
                   <span className="pencil-mode-label">
                     Enable pencil mode
-                    <span className="settings-info-wrap">
-                      <button
-                        className="settings-info-button"
-                        type="button"
-                        aria-label="Pencil mode information"
-                        aria-describedby="pencil-mode-tooltip"
-                      >
-                        i
-                      </button>
-                      <span id="pencil-mode-tooltip" className="settings-info-tooltip" role="tooltip">
-                        In pencil mode, only a pencil or stylus can make changes to the pattern. Normal touch can only move or zoom.
-                      </span>
-                    </span>
+                    <InfoTip label="Pencil mode information" id="pencil-mode-tooltip">
+                      In pencil mode, only a pencil or stylus can make changes to the pattern. Normal touch can only move or zoom.
+                    </InfoTip>
                   </span>
                   <input
                     id="enable-pencil-mode"

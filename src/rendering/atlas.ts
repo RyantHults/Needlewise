@@ -116,23 +116,6 @@ function rgbHex(red: number, green: number, blue: number): string {
   return `#${channel(red)}${channel(green)}${channel(blue)}`;
 }
 
-function combinedSymbolHashGrey(id: number): string {
-  // Combined mode uses a stable monochrome signal only when its source color
-  // cannot be parsed. Symbol mode has a dedicated glyph atlas and never uses
-  // this hash as a substitute for its actual palette symbol.
-  let hash = (id * 2_654_435_761) >>> 0;
-  hash ^= hash >>> 16;
-  const value = 48 + (hash % 160);
-  return rgbHex(value, value, value);
-}
-
-function combinedOverviewColor(color: string, id: number): string {
-  const rgb = parseRgb(color);
-  if (!rgb) return combinedSymbolHashGrey(id);
-  const symbol = Number.parseInt(combinedSymbolHashGrey(id).slice(1, 3), 16);
-  return rgbHex(rgb[0] * 0.8 + symbol * 0.2, rgb[1] * 0.8 + symbol * 0.2, rgb[2] * 0.8 + symbol * 0.2);
-}
-
 const COLOR_ATLAS_MAX_DIMENSION = 32_767;
 
 /** Pair cells need a 2×2 source footprint so their two colors survive rasterization. */
@@ -170,7 +153,6 @@ export function overviewColorForPaletteId(
     const value = Math.round(rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722);
     return rgbHex(value, value, value);
   }
-  if (style.mode === 'combined') return combinedOverviewColor(color, id);
   return color;
 }
 

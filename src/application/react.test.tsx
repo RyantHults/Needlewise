@@ -207,7 +207,7 @@ describe('ProjectWorkspace observable adapter', () => {
     }
   });
 
-  it('rejects invalid imports, exposes the error, and cleans up subscriptions', async () => {
+  it('cleans up subscriptions', async () => {
     const repository = makeRepository();
     const rendered = renderHook(() => useProjectWorkspace({ repository, projectIdFactory: () => 'created' }));
     try {
@@ -215,11 +215,7 @@ describe('ProjectWorkspace observable adapter', () => {
       await act(async () => {
         await rendered.result.current.createProject({ width: 2, height: 2, document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] }) });
       });
-      await act(async () => {
-        await expect(rendered.result.current.importProject(new Uint8Array([1, 2, 3]))).rejects.toMatchObject({ code: 'invalid-archive' });
-      });
       expect(rendered.result.current.state.projectId).toBe('created');
-      expect(rendered.result.current.error).toMatchObject({ code: 'invalid-archive' });
 
       const workspace = rendered.result.current.workspace;
       expect(workspace).not.toBeNull();
