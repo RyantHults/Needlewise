@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import targetSvg from '../assets/ui-icons/target.svg?raw';
 import { CellKind, createDocument, createPatternFragment } from '../domain';
 import { cellToScreenRect, fitViewport, getCanvasMetrics, visibleCellRect } from '../editor/coordinates';
 import { CHART_EDGE_MARGIN, DEFAULT_RENDERER_STYLE, type CanvasContextAdapter, type CanvasTarget, type PendingCellState, type RendererStyle, type TraceImage } from '../editor/contracts';
@@ -2230,7 +2231,8 @@ describe('Canvas 2D chart renderer', () => {
       style: { gridInterval: 10, midGridInterval: 5, chartBorderColor: '#123456' }
     });
     renderer.renderNow();
-    const labels = base.records.filter((call) => call.name === 'fillText');
+    // The per-stitch tier shows here too; its smaller labels are covered separately.
+    const labels = base.records.filter((call) => call.name === 'fillText' && call.font === '12px sans-serif');
     // The chart origin is at (31, 31); label n is centered on the nth column or row.
     // Labels from 30 on would sit past the canvas edge and are not drawn.
     const columns = labels.filter((call) => call.textAlign === 'center');
@@ -2258,6 +2260,53 @@ describe('Canvas 2D chart renderer', () => {
     const labels = base.records.filter((call) => call.name === 'fillText');
     expect(labels.filter((call) => call.textAlign === 'center').map((call) => call.args[0])).toEqual(['10', '20', '30', '40', '50']);
     renderer.dispose();
+  });
+
+  describe('per-stitch numbers', () => {
+    function renderNumbers(width: number, zoom: number, viewWidth = 800) {
+      const base = recordingContext();
+      const renderer = createCanvasRenderer({
+        document: chart(width, width),
+        targets: { base: target(base), overlay: target(recordingContext()) },
+        metrics: getCanvasMetrics(viewWidth, viewWidth),
+        viewport: { x: -1, y: -1, zoom },
+        style: { gridInterval: 10, midGridInterval: 5, chartBorderColor: '#123456' }
+      });
+      renderer.renderNow();
+      renderer.dispose();
+      const labels = base.records.filter((call) => call.name === 'fillText');
+      return { main: labels.filter((call) => call.globalAlpha === 1), minor: labels.filter((call) => call.globalAlpha !== 1) };
+    }
+
+    it('labels the lines between the 5-cell labels smaller and lighter', () => {
+      const { main, minor } = renderNumbers(300, 31);
+      const columns = minor.filter((call) => call.textAlign === 'center');
+      const rows = minor.filter((call) => call.textAlign === 'right');
+      expect(main.length).toBeGreaterThan(0);
+      expect(columns.map((call) => call.args[0])).toEqual(['1', '2', '3', '4', '6', '7', '8', '9', '11', '12', '13', '14', '16', '17', '18', '19', '21', '22', '23', '24']);
+      expect(rows).toHaveLength(columns.length);
+      for (const call of minor) {
+        expect(call.globalAlpha).toBe(0.55);
+        expect(call.fillStyle).toBe('#123456');
+        expect(call.font).toBe(`${12 * 0.8}px sans-serif`);
+      }
+      expect(columns[0].args[1]).toBe(31 + 0.5 * 31);
+      expect(rows[0].args[2]).toBe(31 + 0.5 * 31);
+    });
+
+    it('draws no minor labels while the per-stitch tier is hidden', () => {
+      const { main, minor } = renderNumbers(60, 7.5, 400);
+      expect(main.length).toBeGreaterThan(0);
+      expect(minor).toHaveLength(0);
+    });
+
+    it('skips minor labels when they cannot all fit', () => {
+      // 4-digit column labels would overlap at this zoom, but the rows still fit.
+      const { main, minor } = renderNumbers(1000, 26, 800);
+      expect(main.length).toBeGreaterThan(0);
+      expect(minor.filter((call) => call.textAlign === 'center')).toHaveLength(0);
+      expect(minor.filter((call) => call.textAlign === 'right').length).toBeGreaterThan(0);
+    });
   });
 
   it('skips stitch numbers when the grid is hidden', () => {
@@ -2560,6 +2609,68 @@ describe('Canvas 2D chart renderer', () => {
       }
     }
     renderer.dispose();
+  });
+
+  describe('center mark', () => {
+    function renderCenter(style: Record<string, unknown>, viewport = { x: 0, y: 0, zoom: 10 }): RecordingContext {
+      const overlay = recordingContext();
+      const renderer = createCanvasRenderer({
+        document: chart(4, 4),
+        targets: { base: target(recordingContext()), overlay: target(overlay) },
+        metrics: getCanvasMetrics(40, 40),
+        viewport,
+        style
+      });
+      renderer.renderNow();
+      renderer.dispose();
+      return overlay;
+    }
+
+    const strokesIn = (context: RecordingContext, color: string) =>
+      context.records.filter((call) => call.name === 'stroke' && call.strokeStyle === color);
+    const pathFills = (context: RecordingContext, color: string) =>
+      context.records.filter((call) => call.name === 'fill' && call.fillStyle === color && call.args[0] !== undefined);
+    const targetD = /<path[^>]*\sd="([^"]+)"/.exec(targetSvg)?.[1];
+
+    it('strokes center lines to the pattern edges and fills the target icon', () => {
+      const overlay = renderCenter({ showCenterMark: true, centerMarkColor: '#123abc' });
+
+      const moves = overlay.records.filter((call) => call.name === 'moveTo' && call.strokeStyle === '#123abc');
+      const lines = overlay.records.filter((call) => call.name === 'lineTo' && call.strokeStyle === '#123abc');
+      expect(moves.map((call) => call.args)).toEqual([[0, 20], [34, 20], [20, 0], [20, 34]]);
+      expect(lines.map((call) => call.args)).toEqual([[6, 20], [40, 20], [20, 6], [20, 40]]);
+      // r = 10 + 4 gap, so nothing is stroked within 14px of the center.
+      for (const call of [...moves, ...lines]) expect(Math.hypot((call.args[0] as number) - 20, (call.args[1] as number) - 20)).toBeGreaterThanOrEqual(14);
+      expect(strokesIn(overlay, '#123abc').some((call) => call.lineWidth === 1)).toBe(true);
+      expect(strokesIn(overlay, 'rgba(255, 255, 255, 0.85)').length).toBeGreaterThanOrEqual(2);
+      const fills = pathFills(overlay, '#123abc');
+      expect(fills).toHaveLength(1);
+      expect((fills[0].args[0] as { d: string }).d).toBe(targetD);
+      expect(overlay.records.some((call) => call.name === 'translate' && call.args[0] === 20 && call.args[1] === 20)).toBe(true);
+    });
+
+    it('draws the whole mark at the center mark opacity', () => {
+      for (const [style, alpha] of [[{}, 0.5], [{ centerMarkOpacity: 0.8 }, 0.8]] as const) {
+        const overlay = renderCenter({ showCenterMark: true, centerMarkColor: '#123abc', ...style });
+        const marks = overlay.records.filter((call) => (call.name === 'stroke' || call.name === 'fill') && (call.strokeStyle === '#123abc' || call.strokeStyle === 'rgba(255, 255, 255, 0.85)') && call.args.length <= 1 && (call.name === 'stroke' || call.fillStyle === '#123abc'));
+        expect(marks).toHaveLength(4);
+        expect(marks.every((call) => call.globalAlpha === alpha)).toBe(true);
+      }
+    });
+
+    it('draws nothing by default', () => {
+      const overlay = renderCenter({ centerMarkColor: '#123abc' });
+
+      expect(strokesIn(overlay, '#123abc')).toHaveLength(0);
+      expect(pathFills(overlay, '#123abc')).toHaveLength(0);
+    });
+
+    it('draws neither lines nor icon when the center is scrolled out of view', () => {
+      const overlay = renderCenter({ showCenterMark: true, centerMarkColor: '#123abc' }, { x: 5000, y: 5000, zoom: 10 });
+
+      expect(strokesIn(overlay, '#123abc')).toHaveLength(0);
+      expect(pathFills(overlay, '#123abc')).toHaveLength(0);
+    });
   });
 
   describe('lasso start dot', () => {

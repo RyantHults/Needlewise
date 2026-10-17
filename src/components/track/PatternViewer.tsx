@@ -21,6 +21,8 @@ interface Props {
   document: PatternDocument;
   /** Draw completion marks. The editor does not use this viewer; only the Track page turns it on. */
   showCompletion?: boolean;
+  /** Draw the center guides. Only the Track page turns it on. */
+  showCenterMark?: boolean;
   /** Pan moves the view; Mark taps or drags stitches done. Two-finger pan and zoom works with either. */
   tool?: 'pan' | 'mark';
   /** The focused palette id: other colors are dimmed and Mark only changes this color. */
@@ -43,7 +45,7 @@ interface HoverInfo {
  * here can edit the pattern; the Mark tool only changes stitch progress. The
  * page drives view mode and zoom through the controller handed to `onReady`.
  */
-export function PatternViewer({ workspace, document, showCompletion = false, tool = 'pan', highlightColor = null, onReady, onUiState }: Props) {
+export function PatternViewer({ workspace, document, showCompletion = false, showCenterMark = false, tool = 'pan', highlightColor = null, onReady, onUiState }: Props) {
   const frame = useRef<HTMLDivElement>(null);
   const base = useRef<HTMLCanvasElement>(null);
   const overlay = useRef<HTMLCanvasElement>(null);
@@ -141,6 +143,11 @@ export function PatternViewer({ workspace, document, showCompletion = false, too
     if (!ready) return;
     rendererRef.current?.setStyle({ showCompletion });
   }, [showCompletion, ready]);
+
+  useEffect(() => {
+    if (!ready) return;
+    rendererRef.current?.setStyle({ showCenterMark });
+  }, [showCenterMark, ready]);
 
   useEffect(() => {
     if (!ready) return;

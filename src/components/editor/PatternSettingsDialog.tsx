@@ -27,7 +27,7 @@ export function PatternSettingsDialog({
   const [title, setTitle] = useState(workspace.metadata?.title ?? "");
   const [notes, setNotes] = useState(workspace.metadata?.notes ?? "");
   const [units, setUnits] = useState<DisplayUnits>(workspace.metadata?.units ?? "metric");
-  const { railSide, paletteDisplay: paletteOptions, pencilModeEnabled } = preferences;
+  const { railSide, paletteDisplay: paletteOptions, pencilModeEnabled, showCenterMark } = preferences;
 
   useEffect(() => {
     setTitle(workspace.metadata?.title ?? "");
@@ -156,12 +156,13 @@ export function PatternSettingsDialog({
                   <input
                     type="checkbox"
                     checked={paletteOptions.numbers}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      const numbers = event.target.checked;
                       onPreferencesChange((current) => ({
                         ...current,
-                        paletteDisplay: { ...current.paletteDisplay, numbers: event.target.checked },
-                      }))
-                    }
+                        paletteDisplay: { ...current.paletteDisplay, numbers },
+                      }));
+                    }}
                   />
                 </label>
                 <label className="check-row palette-display-toggle" htmlFor="enable-pencil-mode">
@@ -176,15 +177,27 @@ export function PatternSettingsDialog({
                     type="checkbox"
                     aria-label="Enable pencil mode"
                     checked={pencilModeEnabled}
-                    onChange={(event) =>
-                      onPreferencesChange((current) => ({
-                        ...current,
-                        pencilModeEnabled: event.target.checked,
-                      }))
-                    }
+                    onChange={(event) => {
+                      const pencilModeEnabled = event.target.checked;
+                      onPreferencesChange((current) => ({ ...current, pencilModeEnabled }));
+                    }}
                   />
                 </label>
               </>
+            )}
+            {editorOptions === "placement" && (
+              <label className="check-row palette-display-toggle">
+                Show center guides
+                <input
+                  type="checkbox"
+                  checked={showCenterMark}
+                  onChange={(event) => {
+                    // Read now: the updater runs after React resets the controlled input.
+                    const showCenterMark = event.target.checked;
+                    onPreferencesChange((current) => ({ ...current, showCenterMark }));
+                  }}
+                />
+              </label>
             )}
           </section>
         </div>

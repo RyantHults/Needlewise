@@ -10,6 +10,8 @@ export interface ExportSettings {
   readonly orientation: ExportOrientation;
   readonly margins: ExportMargins;
   readonly pageNumbers: boolean;
+  /** Draw the grid lines around the pattern's center bold red. The margin ticks print either way. */
+  readonly centerMark: boolean;
   /** Cells repeated between adjacent chart pages, 0 to 3. */
   readonly overlap: number;
   readonly cellSizeMm: number;
@@ -45,6 +47,7 @@ export const DEFAULT_EXPORT_SETTINGS: ExportSettings = {
   orientation: 'portrait',
   margins: 'standard',
   pageNumbers: true,
+  centerMark: false,
   overlap: 0,
   cellSizeMm: 4,
   chartStyle: ChartPresentationMode.Symbol
@@ -68,6 +71,7 @@ export function normalizeExportSettings(value: unknown): ExportSettings {
     orientation: oneOf(source.orientation, EXPORT_ORIENTATIONS, defaults.orientation),
     margins: oneOf(source.margins, EXPORT_MARGINS, defaults.margins),
     pageNumbers: typeof source.pageNumbers === 'boolean' ? source.pageNumbers : defaults.pageNumbers,
+    centerMark: typeof source.centerMark === 'boolean' ? source.centerMark : defaults.centerMark,
     overlap,
     cellSizeMm: oneOf(source.cellSizeMm, EXPORT_CELL_SIZES_MM, defaults.cellSizeMm),
     chartStyle: oneOf(source.chartStyle, EXPORT_CHART_STYLES, defaults.chartStyle)

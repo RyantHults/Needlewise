@@ -81,6 +81,22 @@ describe("PatternSettingsDialog", () => {
     expect(updater(readEditorPreferences("p1")).railSide).toBe("left");
   });
 
+  it("offers the center guides only in placement mode", () => {
+    setup("all");
+    fireEvent.click(screen.getByRole("tab", { name: "Editor" }));
+    expect(screen.queryByLabelText("Show center guides")).toBeNull();
+  });
+
+  it("toggles the center guides in placement mode", () => {
+    const { onPreferencesChange } = setup("placement");
+    fireEvent.click(screen.getByRole("tab", { name: "Editor" }));
+    const toggle = screen.getByLabelText("Show center guides");
+    expect(toggle).not.toBeChecked();
+    fireEvent.click(toggle);
+    const updater = onPreferencesChange.mock.calls[0]![0];
+    expect(updater(readEditorPreferences("p1")).showCenterMark).toBe(true);
+  });
+
   it("moves between tabs with the arrow keys", async () => {
     setup();
     const project = screen.getByRole("tab", { name: "Project" });

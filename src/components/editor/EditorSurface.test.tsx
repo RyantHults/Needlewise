@@ -1334,7 +1334,13 @@ describe('EditorSurface', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Editor' }));
     fireEvent.click(screen.getByRole('button', { name: 'Right' }));
     fireEvent.click(within(screen.getByRole('dialog', { name: 'Settings' })).getByRole('checkbox', { name: 'Show palette numbers' }));
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'right', paletteDisplay: { numbers: false }, pencilModeEnabled: false, halfStitchDirection: '/' }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'right', paletteDisplay: { numbers: false }, pencilModeEnabled: false, halfStitchDirection: '/', showCenterMark: false }));
+  });
+  it('does not offer center guides in the editor', () => {
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Editor' }));
+    expect(within(screen.getByRole('dialog', { name: 'Settings' })).queryByRole('checkbox', { name: 'Show center guides' })).toBeNull();
   });
   it('falls back to default editor preferences for malformed global storage', () => {
     localStorage.setItem('needlewise-editor-preferences:v1', '{not-json');
@@ -1364,7 +1370,7 @@ describe('EditorSurface', () => {
     fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' }));
     expect(within(settings).getByRole('button', { name: 'Left' })).toHaveAttribute('aria-pressed', 'true');
     expect(within(settings).getByRole('checkbox', { name: 'Show palette numbers' })).toBeChecked();
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'left', paletteDisplay: { numbers: true }, pencilModeEnabled: false, halfStitchDirection: '/' }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'left', paletteDisplay: { numbers: true }, pencilModeEnabled: false, halfStitchDirection: '/', showCenterMark: false }));
   });
   it('defaults pencil mode off and updates the controller', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
@@ -1386,7 +1392,7 @@ describe('EditorSurface', () => {
     fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' }));
     expect(within(settings).getByRole('checkbox', { name: 'Enable pencil mode' })).toBeChecked();
     expect(f.c.setTouchMovementOnly).toHaveBeenCalledWith(true);
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'left', paletteDisplay: { numbers: true }, pencilModeEnabled: true, halfStitchDirection: '/' }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'left', paletteDisplay: { numbers: true }, pencilModeEnabled: true, halfStitchDirection: '/', showCenterMark: false }));
   });
   it('provides an accessible pencil mode tooltip trigger', () => {
     render(<EditorSurface workspace={ws} document={doc} />);

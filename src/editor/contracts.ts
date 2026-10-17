@@ -384,6 +384,8 @@ export interface RendererTheme {
   readonly canvasAddColor: string;
   /** Hatch for cells a pending canvas edit would remove. */
   readonly canvasRemoveColor: string;
+  /** Stroke for the mark at the pattern's center point. */
+  readonly centerMarkColor: string;
 }
 
 export interface RendererStyle extends RendererTheme {
@@ -394,6 +396,10 @@ export interface RendererStyle extends RendererTheme {
   readonly showSymbols: boolean;
   /** Whether completion marks and dimming are drawn. The Preview renders with this off. */
   readonly showCompletion: boolean;
+  /** Draw a fixed-size mark at the pattern's center point. */
+  readonly showCenterMark: boolean;
+  /** Opacity of the center lines and marker, halos included. */
+  readonly centerMarkOpacity: number;
   /** Draw stitches as rendered thread instead of flat fills; ignored below a few pixels per cell. */
   readonly threadView: boolean;
   readonly completedOpacity: number;
@@ -433,11 +439,14 @@ export const DEFAULT_RENDERER_STYLE: RendererStyle = {
   ghostMajorGridColor: '#bdb8b0',
   canvasAddColor: '#2a9d5c',
   canvasRemoveColor: '#cc3333',
+  centerMarkColor: '#d62f2f',
   gridInterval: 10,
   midGridInterval: 5,
   showGrid: true,
   showSymbols: true,
   showCompletion: true,
+  showCenterMark: false,
+  centerMarkOpacity: 0.5,
   threadView: false,
   completedOpacity: 0.62,
   completedMarkWidth: 1,

@@ -9,6 +9,7 @@ import { DEFAULT_EXPORT_SETTINGS, type ExportSettings } from './export-settings'
 import { PAPER_SIZES_PT } from './export-settings';
 import { estimateTotalPages, layoutChartPages, pageGeometry, AXIS_GUTTER_PT, HEADER_RESERVE_PT } from './layout';
 import {
+  centerMarkSegments,
   clipSegment,
   fitCoverImage,
   landscapeCoverColumns,
@@ -278,13 +279,15 @@ function pageContent(pdf: PDFDocument, pageIndex: number): string {
   return streams.map((stream) => new TextDecoder().decode(decodePDFRawStream(stream as PDFRawStream).decode())).join('\n');
 }
 
-/** Backstitch segments (stroked in palette color 2, #113) on one page, in page points, y-up. */
-async function backstitchSegments(bytes: Uint8Array, pageIndex: number): Promise<Array<[number, number, number, number]>> {
+/** Line segments stroked in `rgb` (0-1 channels, 3 decimals) on one page, in page points, y-up. */
+async function strokedSegments(bytes: Uint8Array, pageIndex: number, rgb: string): Promise<Array<[number, number, number, number]>> {
   const pdf = await load(bytes);
   const contents = pdf.getPage(pageIndex).node.Contents();
   const streams = contents instanceof PDFArray ? contents.asArray().map((ref) => pdf.context.lookup(ref)) : [contents];
   const text = streams.map((stream) => new TextDecoder().decode(decodePDFRawStream(stream as PDFRawStream).decode())).join('\n');
   const out: Array<[number, number, number, number]> = [];
+  // Filled symbol outlines use `l` too, so a path's segments count only once it is stroked.
+  let path: Array<[number, number, number, number]> = [];
   let stroke = '';
   let from: [number, number] | undefined;
   for (const raw of text.split('\n')) {
@@ -293,10 +296,53 @@ async function backstitchSegments(bytes: Uint8Array, pageIndex: number): Promise
     const nums = op.slice(0, -1).map(Number);
     if (name === 'RG') stroke = nums.map((n) => n.toFixed(3)).join(' ');
     else if (name === 'm') from = [nums[0], nums[1]];
-    else if (name === 'l' && from && stroke === '0.067 0.067 0.200') out.push([from[0], from[1], nums[0], nums[1]]);
+    else if (name === 'l' && from) path.push([from[0], from[1], nums[0], nums[1]]);
+    else if (name === 'S' || name === 'f' || name === 'B' || name === 'n') {
+      if (name === 'S' && stroke === rgb) out.push(...path);
+      path = [];
+    }
   }
   return out;
 }
+
+/** Backstitch segments (stroked in palette color 2, #113) on one page, in page points, y-up. */
+const backstitchSegments = (bytes: Uint8Array, pageIndex: number): Promise<Array<[number, number, number, number]>> =>
+  strokedSegments(bytes, pageIndex, '0.067 0.067 0.200');
+
+describe('center mark', () => {
+  /** The center ink, #cc4422. */
+  const CENTER = '0.800 0.267 0.133';
+  const length = ([x1, y1, x2, y2]: [number, number, number, number]): number => Math.hypot(x2 - x1, y2 - y1);
+
+  it('prints only the margin ticks by default', async () => {
+    const bytes = await writePatternPdf(inputFor(withStitches(10, 10)));
+    const segments = await strokedSegments(bytes, 2, CENTER);
+    expect(segments).toHaveLength(4);
+    segments.forEach((segment) => { expect(length(segment)).toBeLessThanOrEqual(5); });
+  });
+
+  it.each([
+    // Both odd outlines the center cell; both even is a plus; a mix is an H or an I.
+    ['a box', 9, 9, [['h', 1], ['h', 1], ['v', 1], ['v', 1]]],
+    ['a plus', 10, 10, [['h', 2], ['v', 2]]],
+    ['an H', 9, 10, [['h', 1], ['v', 2], ['v', 2]]],
+    ['an I', 10, 9, [['h', 2], ['h', 2], ['v', 1]]]
+  ] as const)('draws %s around a %ix%i center when enabled', async (_, width, height, expected) => {
+    const settings = { ...DEFAULT_EXPORT_SETTINGS, centerMark: true };
+    const cs = pageGeometry(settings).cellSizePt;
+    const bytes = await writePatternPdf(inputFor(withStitches(width, height), { settings }));
+    const marks = (await strokedSegments(bytes, 2, CENTER))
+      .filter((segment) => length(segment) > 5)
+      .map((segment) => [segment[0] === segment[2] ? 'v' : 'h', Math.round(length(segment) / cs)] as const)
+      .sort();
+    expect(marks).toEqual(expected);
+  });
+
+  it('places the segments in cell units', () => {
+    expect(centerMarkSegments(10, 10)).toEqual([[5, 4, 5, 6], [4, 5, 6, 5]]);
+    expect(centerMarkSegments(9, 10)).toEqual([[4, 4, 4, 6], [5, 4, 5, 6], [4, 5, 5, 5]]);
+  });
+});
 
 describe('backstitch coordinates (fixed-point store, 4 units per cell)', () => {
   const cellsToPoints = (settings: ExportSettings, column: number, row: number, x0 = 0, y0 = 0): [number, number] => {

@@ -127,9 +127,11 @@ describe('ExportPanel', () => {
     fireEvent.change(screen.getByLabelText('Orientation'), { target: { value: 'landscape' } });
     fireEvent.change(screen.getByLabelText('Margins'), { target: { value: 'narrow' } });
     fireEvent.click(screen.getByLabelText('Page numbers'));
+    expect(screen.getByLabelText('Center mark')).toHaveAttribute('aria-checked', 'false');
+    fireEvent.click(screen.getByLabelText('Center mark'));
     fireEvent.change(screen.getByLabelText('Chart style'), { target: { value: 'combined' } });
     const saved = JSON.parse(storage.data.get(EXPORT_SETTINGS_STORAGE_KEY) ?? '{}');
-    expect(saved).toEqual({ paper: 'a4', orientation: 'landscape', margins: 'narrow', pageNumbers: false, overlap: 3, cellSizeMm: 5, chartStyle: 'combined' });
+    expect(saved).toEqual({ paper: 'a4', orientation: 'landscape', margins: 'narrow', pageNumbers: false, centerMark: true, overlap: 3, cellSizeMm: 5, chartStyle: 'combined' });
 
     view.unmount();
     render(<ExportPanel {...props} />);
@@ -137,6 +139,7 @@ describe('ExportPanel', () => {
     expect(screen.getByLabelText('Orientation')).toHaveValue('landscape');
     expect(screen.getByLabelText('Page overlap (cells)')).toHaveValue('3');
     expect(screen.getByRole('switch', { name: 'Page numbers' })).not.toBeChecked();
+    expect(screen.getByRole('switch', { name: 'Center mark' })).toBeChecked();
   });
 
   it('downloads a PDF blob and reports progress', async () => {
@@ -265,6 +268,24 @@ describe('ExportPanel', () => {
     expect(onClose).toHaveBeenCalled();
     view.unmount();
     expect(signal?.aborted).toBe(true);
+  });
+
+  it('closes the dialog once the PDF is downloaded', async () => {
+    const onClose = vi.fn();
+    const ws = makeWorkspace();
+    render(<ExportDialog document={makeDocument(true)} title="Quilt" workspace={ws.workspace} exportPdf={vi.fn<ExportPdf>(async () => new Uint8Array([1]))} storage={memoryStorage()} onClose={onClose} />);
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Export pattern' })).getByRole('button', { name: 'Export PDF' }));
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(URL.createObjectURL).toHaveBeenCalled();
+  });
+
+  it('does not close the dialog when the export fails', async () => {
+    const onClose = vi.fn();
+    const ws = makeWorkspace();
+    render(<ExportDialog document={makeDocument(true)} title="Quilt" workspace={ws.workspace} exportPdf={vi.fn<ExportPdf>(async () => { throw new Error('Boom.'); })} storage={memoryStorage()} onClose={onClose} />);
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Export pattern' })).getByRole('button', { name: 'Export PDF' }));
+    await screen.findByText('Boom.');
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('shows thread totals and no separate stitch counts in the dialog', () => {

@@ -116,6 +116,7 @@ export function TrackSurface({ workspace, document, title, metrics, onNavigate, 
             workspace={workspace}
             document={document}
             showCompletion
+            showCenterMark={preferences.showCenterMark}
             tool={tool}
             highlightColor={focused?.id ?? null}
             onReady={(controller) => { controllerRef.current = controller; }}

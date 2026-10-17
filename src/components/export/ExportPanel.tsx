@@ -42,6 +42,8 @@ export interface ExportPanelProps {
   exportPdf: ExportPdf;
   /** Where export settings persist; defaults to `localStorage`. */
   storage?: ExportSettingsStorage;
+  /** Called once the PDF has been handed to the browser to download. */
+  onExported?: () => void;
 }
 
 export interface ExportDialogProps extends ExportPanelProps {
@@ -79,7 +81,7 @@ function validateDraft(draft: MaterialDraft): Partial<Record<keyof MaterialDraft
 }
 
 /** Material settings, thread totals, export settings, and the PDF export. Content only; wrap in `ExportDialog` for a modal. */
-export function ExportPanel({ document: pattern, title, workspace, exportPdf, storage }: ExportPanelProps) {
+export function ExportPanel({ document: pattern, title, workspace, exportPdf, storage, onExported }: ExportPanelProps) {
   const [materialSettings, setMaterialSettings] = useState(workspace.materialSettings);
   const [units, setUnits] = useState<DisplayUnits>(workspace.metadata?.units ?? 'metric');
   const [draft, setDraft] = useState<MaterialDraft>(() => draftOf(workspace.materialSettings));
@@ -236,6 +238,7 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
       }
       download(bytes);
       setRun({ status: 'done', message: `Exported ${pdfFilename(title)}.` });
+      onExported?.();
     } catch (error) {
       if (abort.signal.aborted || (error instanceof Error && error.name === 'PdfExportCancelled')) setRun({ status: 'cancelled', message: 'Export cancelled.' });
       else setRun({ status: 'error', message: error instanceof Error && error.message ? error.message : 'The PDF could not be exported.' });
@@ -379,6 +382,22 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
               <span className="export-toggle-text">{settings.pageNumbers ? 'On' : 'Off'}</span>
             </button>
           </div>
+          <div className="export-field">
+            <span id="export-center-mark-label" className="export-label">Center mark</span>
+            <button
+              id="export-center-mark"
+              type="button"
+              role="switch"
+              className="export-toggle"
+              aria-checked={settings.centerMark}
+              aria-labelledby="export-center-mark-label"
+              disabled={running}
+              onClick={() => changeSettings({ centerMark: !settings.centerMark })}
+            >
+              <span className="export-toggle-track" aria-hidden="true"><span className="export-toggle-thumb" /></span>
+              <span className="export-toggle-text">{settings.centerMark ? 'On' : 'Off'}</span>
+            </button>
+          </div>
         </div>
         <p className="export-pages" data-testid="export-page-count">Estimated length: {pages} {pages === 1 ? 'page' : 'pages'}</p>
       </section>
@@ -405,11 +424,11 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
   );
 }
 
-/** `ExportPanel` in a modal. Closing mid-export cancels it. */
+/** `ExportPanel` in a modal. Closing mid-export cancels it; a finished export closes it. */
 export function ExportDialog({ onClose, ...panel }: ExportDialogProps) {
   return (
     <Modal className="export-dialog" titleId="export-title" eyebrow="Export" title="Export pattern" closeLabel="Close export" onClose={onClose}>
-      <ExportPanel {...panel} />
+      <ExportPanel {...panel} onExported={onClose} />
     </Modal>
   );
 }

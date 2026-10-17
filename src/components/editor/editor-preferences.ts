@@ -12,6 +12,8 @@ export type EditorPreferences = {
   pencilModeEnabled: boolean;
   /** Which diagonal a half stitch is stamped along. */
   halfStitchDirection: HalfStitchDirection;
+  /** Draws the pattern's center guides on the Track canvas. The editor never draws them. */
+  showCenterMark: boolean;
 };
 
 export const defaultEditorPreferences = (): EditorPreferences => ({
@@ -20,6 +22,7 @@ export const defaultEditorPreferences = (): EditorPreferences => ({
   paletteDisplay: { numbers: true },
   pencilModeEnabled: false,
   halfStitchDirection: DEFAULT_HALF_DIRECTION,
+  showCenterMark: false,
 });
 
 export const isEditorPreferences = (value: unknown): value is EditorPreferences => {
@@ -39,6 +42,8 @@ export const isEditorPreferences = (value: unknown): value is EditorPreferences 
     typeof paletteDisplay.numbers === "boolean" &&
     (candidate.pencilModeEnabled === undefined ||
       typeof candidate.pencilModeEnabled === "boolean") &&
+    (candidate.showCenterMark === undefined ||
+      typeof candidate.showCenterMark === "boolean") &&
     (candidate.touchEditingEnabled === undefined ||
       typeof candidate.touchEditingEnabled === "boolean")
   );
@@ -58,6 +63,7 @@ export const normalizeEditorPreferences = (value: EditorPreferences): EditorPref
         ? false
         : !legacy.touchEditingEnabled),
     halfStitchDirection: value.halfStitchDirection === "\\" || value.halfStitchDirection === "/" ? value.halfStitchDirection : DEFAULT_HALF_DIRECTION,
+    showCenterMark: value.showCenterMark === true,
   };
 };
 

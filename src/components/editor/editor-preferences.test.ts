@@ -22,4 +22,19 @@ describe("editor preferences", () => {
     const base = defaultEditorPreferences();
     expect(normalizeEditorPreferences({ ...base, halfStitchDirection: "x" as never }).halfStitchDirection).toBe("/");
   });
+
+  it("defaults the center mark off and reads legacy stored preferences as off", () => {
+    expect(defaultEditorPreferences().showCenterMark).toBe(false);
+    const legacy = { version: 1, railSide: "left", paletteDisplay: { numbers: true } };
+    expect(isEditorPreferences(legacy)).toBe(true);
+    localStorage.setItem(EDITOR_PREFERENCES_KEY, JSON.stringify(legacy));
+    expect(readEditorPreferences("p1").showCenterMark).toBe(false);
+  });
+
+  it("round-trips an enabled center mark and rejects non-boolean values", () => {
+    const enabled = { ...defaultEditorPreferences(), showCenterMark: true };
+    localStorage.setItem(EDITOR_PREFERENCES_KEY, JSON.stringify(enabled));
+    expect(readEditorPreferences("p1").showCenterMark).toBe(true);
+    expect(isEditorPreferences({ ...enabled, showCenterMark: "yes" })).toBe(false);
+  });
 });

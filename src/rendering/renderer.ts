@@ -65,6 +65,7 @@ import {
   THREAD_MIN_DETAIL_CELL_PX,
   type ThreadSpriteCache
 } from './thread-preview';
+import targetSvg from '../assets/ui-icons/target.svg?raw';
 import { createTraceImageProjection, drawTraceImage } from './trace';
 import { isLegacyQuarterKind, isThreeQuarterKind, isThreeQuarterPairKind, threeQuarterPairComponents } from '../editor/cell-kinds';
 import { selectionBoundarySegments } from '../editor/lasso';
@@ -753,6 +754,8 @@ const MID_GRID_FIT_FRACTION = 0.4;
 const MINOR_GRID_FIT_FRACTION = 0.1;
 /** A tier is skipped while its line spacing is below this many CSS px. */
 const GRID_MIN_SPACING_PX = 4;
+const MINOR_NUMBER_SIZE_RATIO = 0.8;
+const MINOR_NUMBER_ALPHA = 0.55;
 /** Width in CSS px of the 10-cell lines while zoomed out below the 5-cell breakpoint. */
 const MAJOR_GRID_ZOOMED_OUT_WIDTH = 1;
 
@@ -953,7 +956,9 @@ function drawMidGrid(
 /**
  * Stitch counts in the margin outside the chart: column numbers above the top
  * edge and row numbers left of the left edge, at every mid-grid interval while
- * that tier shows and every grid interval below it. The label
+ * that tier shows and every grid interval below it. While the per-stitch grid
+ * shows and a label fits at every line, the lines between are numbered too,
+ * smaller and fainter. The label
  * names the 1-based column or row that ends at that grid line, so "10" sits
  * over the tenth stitch. Drawn only while the grid is, and not clipped to the
  * chart, so the margin outside it is used.
@@ -997,6 +1002,34 @@ function drawStitchNumbers(
       const y = origin.y + (n - 0.5) * zoom;
       if (y < 0 || y > metrics.cssHeight) continue;
       context.fillText(String(n), origin.x - gap, y);
+    }
+    if (tiers.minor) {
+      const minorSize = Math.max(7, size * MINOR_NUMBER_SIZE_RATIO);
+      // Per-stitch labels are never thinned: an axis that cannot fit them all gets none.
+      const minorColumns = columnStride === 1 && digits * minorSize * 0.6 + gap <= zoom;
+      const minorRows = rowStride === 1 && minorSize + gap <= zoom;
+      setAlpha(context, MINOR_NUMBER_ALPHA);
+      context.font = `${minorSize}px sans-serif`;
+      if (minorColumns) {
+        context.textAlign = 'center';
+        context.textBaseline = 'bottom';
+        for (let n = 1; n <= document.width; n += 1) {
+          if (n % interval === 0) continue;
+          const x = origin.x + (n - 0.5) * zoom;
+          if (x < 0 || x > metrics.cssWidth) continue;
+          context.fillText(String(n), x, origin.y - gap);
+        }
+      }
+      if (minorRows) {
+        context.textAlign = 'right';
+        context.textBaseline = 'middle';
+        for (let n = 1; n <= document.height; n += 1) {
+          if (n % interval === 0) continue;
+          const y = origin.y + (n - 0.5) * zoom;
+          if (y < 0 || y > metrics.cssHeight) continue;
+          context.fillText(String(n), origin.x - gap, y);
+        }
+      }
     }
   } finally {
     restore(context);
@@ -2406,9 +2439,67 @@ function drawOverlay(
       }
     }
   }
+  drawCenterMark(context, document, viewport, style, bounds);
   restore(context);
   if (patternClip) restore(context);
   if (partial) restore(context);
+}
+
+const CENTER_HALO = 'rgba(255, 255, 255, 0.85)';
+const TARGET_ICON_VIEWBOX = 1024;
+const TARGET_ICON_SIZE = 20;
+const TARGET_ICON_GAP = 4;
+const TARGET_ICON_D = /<path[^>]*\sd="([^"]+)"/.exec(targetSvg)?.[1] ?? '';
+let targetIconPath: Path2D | undefined;
+
+function targetIcon(): Path2D | undefined {
+  if (typeof Path2D !== 'function' || !TARGET_ICON_D) return undefined;
+  targetIconPath ??= new Path2D(TARGET_ICON_D);
+  return targetIconPath;
+}
+
+function drawCenterMark(context: CanvasContextAdapter, document: PatternDocument, viewport: Viewport, style: RendererStyle, bounds: Rect): void {
+  if (!style.showCenterMark || document.width <= 0 || document.height <= 0) return;
+  const center = modelToScreen({ x: document.width / 2, y: document.height / 2 }, viewport);
+  const inX = center.x >= bounds.x && center.x <= bounds.x + bounds.width;
+  const inY = center.y >= bounds.y && center.y <= bounds.y + bounds.height;
+  if (!inX && !inY) return;
+  save(context);
+  setAlpha(context, style.centerMarkOpacity);
+  context.setLineDash?.([]);
+  const path = inX && inY ? targetIcon() : undefined;
+  // The lines span the pattern rect, stopping short of the icon.
+  const r = path ? TARGET_ICON_SIZE / 2 + TARGET_ICON_GAP : 0;
+  const right = bounds.x + bounds.width;
+  const bottom = bounds.y + bounds.height;
+  type Segment = [number, number, number, number];
+  const segments: Segment[] = [];
+  if (inY) segments.push(...(path ? [[bounds.x, center.y, center.x - r, center.y], [center.x + r, center.y, right, center.y]] : [[bounds.x, center.y, right, center.y]]) as Segment[]);
+  if (inX) segments.push(...(path ? [[center.x, bounds.y, center.x, center.y - r], [center.x, center.y + r, center.x, bottom]] : [[center.x, bounds.y, center.x, bottom]]) as Segment[]);
+  for (const [color, width] of [[CENTER_HALO, 3], [style.centerMarkColor, 1]] as const) {
+    context.strokeStyle = color;
+    context.lineWidth = width;
+    context.beginPath();
+    for (const [x1, y1, x2, y2] of segments) {
+      if (x2 - x1 <= 0 && y2 - y1 <= 0) continue;
+      context.moveTo(x1, y1);
+      context.lineTo(x2, y2);
+    }
+    context.stroke();
+  }
+  if (path) {
+    const s = TARGET_ICON_SIZE / TARGET_ICON_VIEWBOX;
+    context.translate?.(center.x, center.y);
+    context.scale?.(s, s);
+    context.translate?.(-TARGET_ICON_VIEWBOX / 2, -TARGET_ICON_VIEWBOX / 2);
+    context.strokeStyle = CENTER_HALO;
+    context.lineWidth = 3 / s;
+    context.lineJoin = 'round';
+    context.stroke(path);
+    context.fillStyle = style.centerMarkColor;
+    context.fill(path);
+  }
+  restore(context);
 }
 
 /** The cells a document invalidation says changed; undefined when unknown. */

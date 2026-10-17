@@ -251,6 +251,26 @@ function drawSymbol(ctx: Context, page: PDFPage, slug: string, left: number, top
   page.drawSvgPath(d, { ...placement, color: color(ctx, ink) });
 }
 
+/**
+ * The grid lines that outline a pattern's center, in cells. Per axis, an odd
+ * count puts the center inside a cell, bracketed by the two lines around it,
+ * and an even count puts it on a line, which runs one cell to either side.
+ * Both odd outlines the center cell, both even draws a plus, and a mix draws
+ * an H or an I.
+ */
+export function centerMarkSegments(width: number, height: number): Array<[number, number, number, number]> {
+  const axis = (n: number): { lines: number[]; from: number; to: number } => {
+    const mid = Math.floor(n / 2);
+    return n % 2 === 1 ? { lines: [mid, mid + 1], from: mid, to: mid + 1 } : { lines: [mid], from: mid - 1, to: mid + 1 };
+  };
+  const x = axis(width);
+  const y = axis(height);
+  return [
+    ...x.lines.map((c): [number, number, number, number] => [c, y.from, c, y.to]),
+    ...y.lines.map((r): [number, number, number, number] => [x.from, r, x.to, r])
+  ];
+}
+
 function drawPolygon(ctx: Context, page: PDFPage, polygon: Polygon, left: number, top: number, size: number, hex: string): void {
   const d = `${polygon.map(([u, v], i) => `${i === 0 ? 'M' : 'L'} ${u} ${v}`).join(' ')} Z`;
   page.drawSvgPath(d, { x: left, y: page.getHeight() - top, scale: size, color: color(ctx, hex) });
@@ -653,6 +673,15 @@ function drawChartPage(ctx: Context, chartPage: ChartPage): void {
   for (let r = chartPage.y0; r <= chartPage.y1; r += 1) {
     const [thickness, hex] = gridStyle(r);
     line(ctx, page, left, rowY(r), left + cols * cs, rowY(r), thickness, hex);
+  }
+
+  if (settings.centerMark && document.width > 0 && document.height > 0) {
+    // Over the grid and under the symbols, so the bold lines never cut through a mark.
+    for (const segment of centerMarkSegments(document.width, document.height)) {
+      const clipped = clipSegment(...segment, chartPage.x0, chartPage.y0, chartPage.x1, chartPage.y1);
+      if (!clipped || Math.hypot(clipped[2] - clipped[0], clipped[3] - clipped[1]) < 1e-6) continue;
+      line(ctx, page, colX(clipped[0]), rowY(clipped[1]), colX(clipped[2]), rowY(clipped[3]), 1.6, CENTER_MARK);
+    }
   }
 
   symbolPass.forEach((run) => { run(); });
