@@ -2024,7 +2024,7 @@ function drawFloatingSelectionContour(
 
 function drawFloatingPaste(
   context: CanvasContextAdapter,
-  document: PatternDocument,
+  target: PatternDocument,
   preview: FloatingPasteOverlay | null | undefined,
   viewport: Viewport,
   metrics: CanvasMetrics,
@@ -2033,6 +2033,10 @@ function drawFloatingPaste(
   bounds: Rect
 ): void {
   if (!preview) return;
+  // A cross-pattern paste previews its new palette entries as if already created.
+  const document = preview.pendingPalette && preview.pendingPalette.length > 0
+    ? { ...target, palette: [...target.palette, ...preview.pendingPalette] }
+    : target;
   const destination = preview.destination;
   const chart = { x: 0, y: 0, width: document.width, height: document.height };
   if (preview.mode === 'move' && preview.sourceSelection) {

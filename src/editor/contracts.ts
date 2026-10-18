@@ -1,4 +1,4 @@
-import type { CellKind, PatternDocument, PatternFragment } from '../domain';
+import type { CellKind, PaletteEntry, PatternDocument, PatternFragment } from '../domain';
 
 /** The four ways in which a chart can present a stitch. */
 export const ChartPresentationMode = {
@@ -303,6 +303,8 @@ export interface FloatingPasteOverlay {
   readonly completion?: ArrayLike<number>;
   readonly backstitches?: FloatingPasteBackstitchOverlay;
   readonly color?: string;
+  /** Palette entries a cross-pattern paste creates on commit; the preview resolves its colors through them. */
+  readonly pendingPalette?: readonly PaletteEntry[];
 }
 
 export interface FloatingPasteBackstitchOverlay {
@@ -592,6 +594,8 @@ export interface EditorUiState {
   readonly paletteId: number | null;
   /** Latest eyedropper pick; a new object per pick so re-picking the same color still signals. Transient UI state. */
   readonly pickPulse: { readonly paletteId: number; readonly seq: number } | null;
+  /** Latest Ctrl+C or Ctrl+V that registered, so the matching toolbar button can flash. Transient UI state. */
+  readonly clipboardPulse: { readonly action: 'copy' | 'paste'; readonly seq: number } | null;
   readonly keyboardCursor: ModelPoint | null;
   readonly selectedCell: SelectedCellSemantics | null;
   readonly status: string | null;
@@ -892,6 +896,7 @@ export interface EditorUiStore {
   setAuthoringBrush(brush: AuthoringStitchBrush): void;
   setPaletteId(paletteId: number | null): void;
   pulsePick(paletteId: number): void;
+  pulseClipboard(action: 'copy' | 'paste'): void;
   setKeyboardCursor(cursor: ModelPoint | null): void;
   setSelectedCell(selectedCell: SelectedCellSemantics | null): void;
   setStatus(status: string | null): void;

@@ -319,6 +319,14 @@ export function EditorSurface({
         ),
       );
       c.handleKeyDown?.({ key: "0", preventDefault: () => undefined });
+      // Opening a pattern leaves focus on the page body, where shortcuts such as
+      // Ctrl+V never reach the editor; start with the editor focused instead,
+      // unless a text field or dialog already holds focus.
+      const active = globalThis.document.activeElement;
+      if (!(active instanceof Element && active.closest('input, textarea, select, [contenteditable="true"], [role="dialog"], dialog'))) {
+        el.focus({ preventScroll: true });
+        c.handleFocus?.();
+      }
       return () => {
         el.removeEventListener("pointerdown", focusFrame, true);
         observer?.disconnect();
@@ -696,13 +704,21 @@ export function EditorSurface({
     workspaceRoot.current?.querySelectorAll(`[data-palette-id="${pending.paletteId}"]`).forEach((row) => {
       if (typeof row.scrollIntoView === "function") row.scrollIntoView({ block: "nearest", inline: "nearest", behavior: reduce ? "auto" : "smooth" });
     });
-    console.log("SET", pending); setPickPulse(pending);
+    setPickPulse(pending);
   }, [ui?.pickPulse, paletteIdsKey]);
   useEffect(() => {
     if (!pickPulse) return;
     const timer = window.setTimeout(() => setPickPulse(null), 1400);
     return () => window.clearTimeout(timer);
   }, [pickPulse]);
+  // A Ctrl+C or Ctrl+V that registered flashes its toolbar button once.
+  const [clipboardPulse, setClipboardPulse] = useState<EditorUiState["clipboardPulse"]>(null);
+  useEffect(() => {
+    if (!ui?.clipboardPulse) return;
+    setClipboardPulse(ui.clipboardPulse);
+    const timer = window.setTimeout(() => setClipboardPulse(null), 1400);
+    return () => window.clearTimeout(timer);
+  }, [ui?.clipboardPulse]);
   const paletteRow = (x: (typeof palette)[number]) => (
     <div
       className={`palette-row${ui?.paletteId === x.id ? " palette-row-selected" : ""}`}
@@ -736,7 +752,7 @@ export function EditorSurface({
         }}
       >
         <span className="palette-swatch" style={{ backgroundColor: x.color }} aria-hidden="true">
-          {pickPulse?.paletteId === x.id && <span key={pickPulse.seq} className="palette-pick-pulse" aria-hidden="true" onAnimationEnd={() => { console.log("END"); setPickPulse(null); }} />}
+          {pickPulse?.paletteId === x.id && <span key={pickPulse.seq} className="palette-pick-pulse" aria-hidden="true" onAnimationEnd={() => setPickPulse(null)} />}
           {showPaletteSymbols && <span className="palette-swatch-symbol" style={{ color: contrastSymbolInk(x.color, DEFAULT_RENDERER_STYLE.symbolColor) }}><SymbolTile id={x.symbol} /></span>}
           {paletteOptions.numbers && (
             <span className={`palette-number${x.catalog ? "" : " palette-number-hex"}`}>
@@ -1185,7 +1201,10 @@ export function EditorSurface({
                         ? ([["add-cells", "Add", "Add selected cells to the canvas", !ui?.overlay.canvasEditing?.selection], ["delete-cells", "Delete", "Delete selected cells from the canvas", !ui?.overlay.canvasEditing?.selection]] as const)
                         : ([["copy", "Copy", "Copy selection", !ui?.overlay.selection], ["paste", "Paste", "Paste selection", !ui?.canPaste], ["move", "Move", "Move selection", !ui?.overlay.selection], ["delete", "Delete", "Delete selection", !ui?.overlay.selection]] as const)
                       ).map(([action, text, label, disabled]) => (
-                        <button key={action} className="tool-option-button" type="button" aria-label={label} title={label} disabled={disabled} onClick={() => runSelectionAction(action)}>{text}</button>
+                        <button key={action} className="tool-option-button" type="button" aria-label={label} title={label} disabled={disabled} onClick={() => runSelectionAction(action)}>
+                          {text}
+                          {clipboardPulse?.action === action && <span key={clipboardPulse.seq} className="clipboard-pulse" aria-hidden="true" />}
+                        </button>
                       ))}
                     </div>
                   </>

@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { clearClipboard } from './clipboard-store';
 import {
   CellKind,
   createDocument,
@@ -241,6 +242,9 @@ function fixture(document = documentWithStitches(), providedFillClient?: FillWor
   controller.handleFocus();
   return { gateway, uiStore, worker, controller };
 }
+
+// The clipboard outlives controllers, so each case starts without one.
+beforeEach(clearClipboard);
 
 describe('advanced headless editor tools', () => {
   it('erases whole cells, one pair triangle by touch, and honors keyboard Delete on emptied cells', () => {
@@ -661,7 +665,9 @@ describe('advanced headless editor tools', () => {
     controller.handleBlur();
     expect(controller.handleKeyDown({ key: 'c', ctrlKey: true })).toBe(false);
     gateway.switchProject();
-    expect(controller.getClipboard()).toBeUndefined();
+    // The clipboard outlives the project.
+    expect(controller.getClipboard()).toBeDefined();
+    expect(uiStore.getState().canPaste).toBe(true);
     controller.dispose();
   });
 

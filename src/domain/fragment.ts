@@ -311,6 +311,38 @@ export function clonePatternFragment(fragment: PatternFragment): PatternFragment
   };
 }
 
+/** Keeps the cells in `rect` (fragment coordinates) and the backstitches wholly inside it, rebased to the origin. */
+export function cropPatternFragment(fragment: PatternFragment, rect: CropRect): PatternFragment {
+  assertValidPatternFragment(fragment);
+  if (!Number.isInteger(rect.x) || !Number.isInteger(rect.y) || !Number.isInteger(rect.width) || !Number.isInteger(rect.height) || rect.x < 0 || rect.y < 0 || rect.width < 1 || rect.height < 1 || rect.x + rect.width > fragment.width || rect.y + rect.height > fragment.height) {
+    throw new DomainError('invalid-selection', 'Fragment crop must be a non-empty rectangle inside the fragment.');
+  }
+  const kind = new Uint8Array(rect.width * rect.height);
+  const colors = new Uint16Array(kind.length * 4);
+  for (let y = 0; y < rect.height; y += 1) {
+    const source = (rect.y + y) * fragment.width + rect.x;
+    kind.set(fragment.kind.subarray(source, source + rect.width), y * rect.width);
+    colors.set(fragment.colors.subarray(source * 4, (source + rect.width) * 4), y * rect.width * 4);
+  }
+  const left = rect.x * FIXED_POINT_UNITS_PER_CELL;
+  const top = rect.y * FIXED_POINT_UNITS_PER_CELL;
+  const right = left + rect.width * FIXED_POINT_UNITS_PER_CELL;
+  const bottom = top + rect.height * FIXED_POINT_UNITS_PER_CELL;
+  const store = fragment.backstitches;
+  const kept: number[] = [];
+  for (let index = 0; index < store.x1.length; index += 1) {
+    if (store.x1[index] >= left && store.x1[index] <= right && store.x2[index] >= left && store.x2[index] <= right && store.y1[index] >= top && store.y1[index] <= bottom && store.y2[index] >= top && store.y2[index] <= bottom) kept.push(index);
+  }
+  const backstitches: PatternFragmentBackstitches = {
+    x1: Uint32Array.from(kept, (index) => store.x1[index] - left),
+    y1: Uint32Array.from(kept, (index) => store.y1[index] - top),
+    x2: Uint32Array.from(kept, (index) => store.x2[index] - left),
+    y2: Uint32Array.from(kept, (index) => store.y2[index] - top),
+    colors: Uint16Array.from(kept, (index) => store.colors[index])
+  };
+  return { version: PATTERN_FRAGMENT_VERSION, width: rect.width, height: rect.height, kind, colors, backstitches };
+}
+
 export function readPatternFragmentCell(fragment: PatternFragment, x: number, y: number): { x: number; y: number; kind: CellKind; colors: Uint16Array } {
   assertValidPatternFragment(fragment);
   if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x >= fragment.width || y >= fragment.height) throw new DomainError('out-of-bounds', `Fragment cell (${String(x)}, ${String(y)}) is out of bounds.`);

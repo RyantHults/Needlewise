@@ -174,6 +174,43 @@ describe('project session layers', () => {
     expect(session.activeLayerId).toBe(1);
   });
 
+  it('commits a paste with new palette entries as one undo step, onto an existing and a new layer', () => {
+    const entries = [{ id: 3, name: 'Green', color: '#3a3' }, { id: 4, name: 'Gold', color: '#da3' }];
+    const paletteIds = (session: ProjectSession) => session.document.palette.map((entry) => entry.id);
+
+    const existing = openSession(layeredDocument());
+    existing.setActiveLayer(1);
+    const destination = existing.resolvePaste(LayerType.Stitch);
+    expect(destination.create).toBe(false);
+    expect(existing.commitPaste(cellFragment(), { x: 2, y: 1 }, destination, undefined, entries).result.changed).toBe(true);
+    expect(paletteIds(existing)).toEqual([1, 2, 3, 4]);
+    expect(existing.document.kind[1 * 4 + 2]).toBe(CellKind.Full);
+    existing.undo();
+    expect(paletteIds(existing)).toEqual([1, 2]);
+    expect(existing.document.kind[1 * 4 + 2]).toBe(CellKind.Empty);
+    expect(existing.canUndo).toBe(false);
+    existing.redo();
+    expect(paletteIds(existing)).toEqual([1, 2, 3, 4]);
+    expect(existing.document.kind[1 * 4 + 2]).toBe(CellKind.Full);
+
+    const fresh = openSession(layeredDocument());
+    fresh.setActiveLayer(2);
+    const created = fresh.resolvePaste(LayerType.Stitch);
+    expect(created.create).toBe(true);
+    const commit = fresh.commitPaste(cellFragment(), { x: 2, y: 1 }, created, undefined, entries.slice(0, 1));
+    expect(commit.result.changed).toBe(true);
+    expect(paletteIds(fresh)).toEqual([1, 2, 3]);
+    expect(fresh.layeredDocument.layers).toHaveLength(3);
+    fresh.undo();
+    expect(paletteIds(fresh)).toEqual([1, 2]);
+    expect(fresh.layeredDocument.layers).toHaveLength(2);
+    expect(fresh.canUndo).toBe(false);
+    fresh.redo();
+    expect(paletteIds(fresh)).toEqual([1, 2, 3]);
+    expect(fresh.layeredDocument.layers).toHaveLength(3);
+    expect(fresh.document.kind[1 * 4 + 2]).toBe(CellKind.Full);
+  });
+
   it('ignores an empty paste without adding a layer or a history entry', () => {
     const session = openSession(layeredDocument());
     session.setActiveLayer(2);

@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { clearClipboard } from './clipboard-store';
 import {
   CellKind,
   LayerType,
@@ -230,6 +231,9 @@ function fixture(document = layeredDocument(), activeLayerId: ActiveLayerId = 1,
 function backstitch(x1: number, y1: number, x2: number, y2: number, color = 1): DomainCommand {
   return { type: 'add-backstitch', start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, color };
 }
+
+// The clipboard outlives controllers, so each case starts without one.
+beforeEach(clearClipboard);
 
 describe('tool availability', () => {
   const tools: readonly EditorToolKind[] = ['pan', 'eyedropper', 'select', 'lasso', 'eraser', 'paint', 'shape', 'fill', 'backstitch', 'canvas-brush'];

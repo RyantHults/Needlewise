@@ -13,6 +13,7 @@ import {
   type LayeredDocument,
   type LayerType,
   type PatternDocument,
+  type PaletteEntryInput,
   type PatternFragment,
   type PatternSettings,
   type Point,
@@ -1015,8 +1016,8 @@ export class ProjectWorkspace {
     return this.ensureActiveSession().resolvePaste(fragmentType);
   }
 
-  commitPaste(fragment: PatternFragment, at: Point, destination: PasteDestination, expectedRevision?: number): PasteCommitResult {
-    return this.ensureActiveSession().commitPaste(fragment, at, destination, expectedRevision);
+  commitPaste(fragment: PatternFragment, at: Point, destination: PasteDestination, expectedRevision?: number, palette?: readonly PaletteEntryInput[]): PasteCommitResult {
+    return this.ensureActiveSession().commitPaste(fragment, at, destination, expectedRevision, palette);
   }
 
   async updateActiveMaterialSettings(changes: Parameters<ProjectSession['updateMaterialSettings']>[0]): Promise<void> {

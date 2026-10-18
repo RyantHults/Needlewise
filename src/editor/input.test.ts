@@ -189,6 +189,13 @@ describe('DOM pointer event adapter', () => {
     surface.dispatch('keyup', keyboardEvent(menuTarget));
     expect(calls).toEqual({ down: 0, move: 0, up: 0, cancel: 0, lost: 0, keyDown: 0, keyUp: 0 });
 
+    // Copy and Paste still reach the controller from an excluded control, such as a focused tool button.
+    surface.dispatch('keydown', withTarget({ key: 'v', ctrlKey: true, preventDefault: () => undefined }, menuTarget) as unknown as Event);
+    surface.dispatch('keydown', withTarget({ key: 'C', metaKey: true, preventDefault: () => undefined }, menuTarget) as unknown as Event);
+    surface.dispatch('keydown', withTarget({ key: 'z', ctrlKey: true, preventDefault: () => undefined }, menuTarget) as unknown as Event);
+    expect(calls.keyDown).toBe(2);
+    calls.keyDown = 0;
+
     surface.dispatch('pointerdown', withTarget(pointerEvent(2, 15, 26), {}) as unknown as Event);
     surface.dispatch('keydown', keyboardEvent({}));
     surface.dispatch('keyup', keyboardEvent({}));

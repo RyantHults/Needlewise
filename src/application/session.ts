@@ -2,6 +2,7 @@ import {
   canAddLayer as canAddLayerOfType,
   commandLayerType,
   commandScope,
+  createPaletteCommand,
   DocumentEditor,
   DomainError,
   findLayer,
@@ -29,6 +30,7 @@ import {
   type DomainCommand,
   type LayeredDocument,
   type PatternDocument,
+  type PaletteEntryInput,
   type PatternFragment,
   type Point,
   type ProgressCommand,
@@ -867,24 +869,27 @@ export class ProjectSession {
 
   /**
    * Pastes `fragment` at `at` on the resolved destination as one undo step
-   * (creating the layer first when needed) and selects that layer.
+   * (creating the layer first when needed) and selects that layer. Any `palette`
+   * entries are created in the same step, ahead of the paste.
    */
-  commitPaste(fragment: PatternFragment, at: Point, destination: PasteDestination, expectedRevision?: number): PasteCommitResult {
+  commitPaste(fragment: PatternFragment, at: Point, destination: PasteDestination, expectedRevision?: number, palette: readonly PaletteEntryInput[] = []): PasteCommitResult {
     this.ensureWritable();
     const message = destination.message === undefined ? {} : { message: destination.message };
     // An empty fragment changes nothing; never add a layer or a history entry for it.
     if (commandLayerType({ type: 'paste-fragment', fragment }) === null) return { result: this.unchangedResult(), layerId: null };
+    const creates = palette.map(createPaletteCommand);
     if (destination.create) {
       const layerId = this.editor.document.nextLayerId;
       const result = this.execute({
         type: 'batch',
-        commands: [layerAddCommand(destination.layerType, { id: layerId }), { ...pasteFragmentCommand(fragment, at, expectedRevision), layerId }]
+        commands: [...creates, layerAddCommand(destination.layerType, { id: layerId }), { ...pasteFragmentCommand(fragment, at, expectedRevision), layerId }]
       });
       if (result.changed) this.selectLayerQuietly(layerId);
       return { result, layerId: result.changed ? layerId : null, ...message };
     }
     if (destination.layerId === null) return { result: this.unchangedResult(), layerId: null, ...message };
-    const result = this.execute({ ...pasteFragmentCommand(fragment, at, expectedRevision), layerId: destination.layerId });
+    const paste: DomainCommand = { ...pasteFragmentCommand(fragment, at, expectedRevision), layerId: destination.layerId };
+    const result = this.execute(creates.length === 0 ? paste : { type: 'batch', commands: [...creates, paste] });
     this.selectLayerQuietly(destination.layerId);
     return { result, layerId: destination.layerId, ...message };
   }

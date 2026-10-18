@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cloneDocument, createDocument, type CommandResult, type DomainCommand, type PatternDocument, type ProgressCommand } from '../domain';
+import { cloneDocument, createDocument, createPatternFragment, type CommandResult, type DomainCommand, type PatternDocument, type ProgressCommand } from '../domain';
 import { createWorkspaceEditorGateway, StaleEditorTransactionError, type WorkspaceEditorBoundary } from './gateway';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 
@@ -44,6 +44,30 @@ describe('WorkspaceEditorGateway', () => {
     const result = gateway.execute({ type: 'noop' });
     expect(result.revision).toBe(1);
     expect(gateway.getSnapshot().revision).toBe(1);
+    gateway.dispose();
+  });
+
+  it('forwards the palette entries of a paste to the boundary', () => {
+    const fixture = boundaryFixture();
+    const calls: unknown[][] = [];
+    const boundary: WorkspaceEditorBoundary = {
+      get activeProjectId() { return fixture.boundary.activeProjectId; },
+      get document() { return fixture.boundary.document; },
+      subscribe: (listener) => fixture.boundary.subscribe(listener),
+      execute: (command) => fixture.boundary.execute(command),
+      executeBatch: (commands) => fixture.boundary.executeBatch(commands),
+      undo: () => fixture.boundary.undo(),
+      redo: () => fixture.boundary.redo(),
+      commitPaste(...args) {
+        calls.push(args);
+        return { result: fixture.boundary.execute({ type: 'noop' }), layerId: null };
+      }
+    };
+    const gateway = createWorkspaceEditorGateway(boundary);
+    const fragment = createPatternFragment(boundary.document!, { kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } });
+    const palette = [{ id: 2, name: 'Green', color: '#3a3' }];
+    gateway.commitPaste!(fragment, { x: 0, y: 0 }, { layerId: null, create: false }, undefined, palette);
+    expect(calls[0]?.[4]).toEqual(palette);
     gateway.dispose();
   });
 

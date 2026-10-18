@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { clearClipboard } from './clipboard-store';
 import {
   CellKind,
   LayerType,
@@ -194,6 +195,9 @@ function drag(controller: EditorSurfaceController, cells: ReadonlyArray<readonly
   const last = cells[cells.length - 1];
   controller.handlePointerUp(at(1, last[0], last[1]));
 }
+
+// The clipboard outlives controllers, so each case starts without one.
+beforeEach(clearClipboard);
 
 describe('Focus Color', () => {
   it('highlights the active color, follows palette changes and clears when turned off', () => {

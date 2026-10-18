@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render as renderBare, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EditorSurface } from './EditorSurface';
 import { createEditorSurfaceController } from '../../editor';
@@ -6,6 +6,10 @@ import { createCatalogReference, DEFAULT_CATALOG_DEFINITION, type CatalogDefinit
 import { createLayeredDocument, layerAddCommand, applyLayerStructureCommand, type LayeredDocument } from '../../domain';
 import { SYMBOL_POOL, SYMBOL_IDS } from '../../symbols';
 import stylesText from '../../styles.css?inline';
+import type { ReactElement } from 'react';
+import { MemoryRouter } from 'react-router-dom';
+
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: MemoryRouter });
 
 const compactDmcRecords = [...new Map([
   ...DEFAULT_CATALOG_DEFINITION.search('31', { limit: 12 }),
@@ -944,6 +948,55 @@ describe('EditorSurface', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     expect(screen.queryByRole('group', { name: 'Selection actions' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Copy selection' })).not.toBeInTheDocument();
+  });
+  it('focuses the canvas frame when a pattern opens, so Ctrl+V reaches the controller with nothing clicked', async () => {
+    const { createPointerEventsAdapter } = await vi.importActual<typeof import('../../editor/input')>('../../editor/input');
+    f.adapter.mockImplementationOnce(createPointerEventsAdapter as never);
+    const controller = f.c as unknown as { handleFocus?: () => void; handleKeyDown: ReturnType<typeof vi.fn> };
+    controller.handleFocus = vi.fn();
+    try {
+      render(<EditorSurface workspace={ws} document={doc} />);
+      const frame = document.querySelector('.canvas-frame');
+      expect(document.activeElement).toBe(frame);
+      expect(controller.handleFocus).toHaveBeenCalled();
+      controller.handleKeyDown.mockClear();
+      fireEvent.keyDown(document.activeElement!, { key: 'v', ctrlKey: true });
+      expect(controller.handleKeyDown).toHaveBeenCalledWith(expect.objectContaining({ key: 'v', ctrlKey: true }));
+    } finally {
+      delete controller.handleFocus;
+    }
+  });
+  it('leaves focus in a text field that already holds it when a pattern opens', () => {
+    const field = document.createElement('input');
+    document.body.append(field);
+    field.focus();
+    try {
+      render(<EditorSurface workspace={ws} document={doc} />);
+      expect(document.activeElement).toBe(field);
+    } finally {
+      field.remove();
+    }
+  });
+  it('flashes the Copy or Paste button once for each registered shortcut, and stops', () => {
+    vi.useFakeTimers();
+    try {
+      f.uiState.tool = { tool: 'select', shape: 'rectangle' } as never;
+      f.uiState.canPaste = true;
+      render(<EditorSurface workspace={ws} document={doc} />);
+      const pulse = (name: string) => within(selectionActions()).getByRole('button', { name }).querySelector('.clipboard-pulse');
+      expect(pulse('Copy selection')).toBeNull();
+      act(() => { f.uiListener?.({ ...f.uiState, clipboardPulse: { action: 'copy', seq: 1 } } as never); });
+      expect(pulse('Copy selection')).not.toBeNull();
+      expect(pulse('Copy selection')).toHaveAttribute('aria-hidden', 'true');
+      expect(pulse('Paste selection')).toBeNull();
+      act(() => { f.uiListener?.({ ...f.uiState, clipboardPulse: { action: 'paste', seq: 2 } } as never); });
+      expect(pulse('Copy selection')).toBeNull();
+      expect(pulse('Paste selection')).not.toBeNull();
+      act(() => { vi.advanceTimersByTime(1400); });
+      expect(pulse('Paste selection')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it('disables Copy, Move and Delete without a selection and Paste without a clipboard', () => {
     f.uiState.tool = { tool: 'select', shape: 'rectangle' } as never;
@@ -2109,6 +2162,8 @@ describe('EditorSurface layers', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     expect(screen.queryByRole('textbox', { name: /name/i })).not.toBeInTheDocument();
     const rename = screen.getByRole('button', { name: 'Rename layer' });
+    // A real click focuses the button; the modal returns focus to whatever held it.
+    rename.focus();
     fireEvent.click(rename);
     let dialog = screen.getByRole('dialog', { name: 'Rename layer' });
     let field = within(dialog).getByRole('textbox', { name: 'Name' });

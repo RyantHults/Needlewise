@@ -168,8 +168,10 @@ export function createPointerEventsAdapter(
       && controller.handleWheel({ screenX: point.x, screenY: point.y, deltaY: wheel.deltaY })) event.preventDefault();
   };
   const onKeyDown = (event: Event): void => {
-    if (isExcluded(event, 'keydown')) return;
     const keyboard = event as KeyboardEvent;
+    // A focused control such as a tool button owns its own keys, but never Copy or Paste.
+    const clipboardShortcut = (keyboard.ctrlKey || keyboard.metaKey) && /^[cv]$/i.test(keyboard.key);
+    if (!clipboardShortcut && isExcluded(event, 'keydown')) return;
     controller.handleFocus?.();
     controller.handleKeyDown({
       key: keyboard.key,

@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { EditableTitle } from "./EditableTitle";
 import { ExportButton, SettingsButton } from "./PatternHeaderActions";
 import { ViewSwitch, type PatternView } from "./ViewSwitch";
@@ -26,12 +27,12 @@ interface Props {
 export function PatternHeader({ titleId, title, onRenameTitle, view, onNavigate, undo, redo, onExport, onSettings, info }: Props) {
   return (
     <header className="editor-heading">
-      <a className="editor-brand" href="/patterns" aria-label="Needlewise home">
+      <Link className="editor-brand" to="/patterns" aria-label="Needlewise home">
         <span className="brand-mark" aria-hidden="true">
           ✣
         </span>
         <span>Needlewise</span>
-      </a>
+      </Link>
       <div className="editor-heading-controls">
         <button className="icon-button" type="button" aria-label={undo.label} title={undo.label} disabled={undo.disabled} onClick={undo.onClick}>
           ↶

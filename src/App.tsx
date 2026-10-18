@@ -11,7 +11,7 @@ import { ProjectGallery } from './components/ProjectGallery';
 import { HomePage } from './components/HomePage';
 import { installModalScrollLock } from './components/modal-scroll-lock';
 import { DEFAULT_CATALOG_DEFINITION } from './catalog';
-import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import type { ProjectFolder, ProjectMetadata } from './persistence';
 import { isPostHogConfigured, posthog, posthogLogger } from './posthog';
 
@@ -303,9 +303,9 @@ function WorkspaceApp() {
   // The gallery carries the brand in its own header; other non-project states keep the plain topbar.
   const galleryVisible = !isProjectPage && initialized;
   const brand = (
-    <a className="brand" href="/" aria-label="Needlewise home">
+    <Link className="brand" to="/" aria-label="Needlewise home">
       <span className="brand-mark" aria-hidden="true">✣</span><span>Needlewise</span>
-    </a>
+    </Link>
   );
   return (
     <>
@@ -319,7 +319,7 @@ function WorkspaceApp() {
             <span className="loading-mark" aria-hidden="true">✣</span>
             <h1 id="loading-title">{routeIssue ? 'Project not found' : 'Opening your workspace…'}</h1>
             <p>{routeIssue || 'Checking for projects stored on this device.'}</p>
-            {routeError && <a className="button button-primary" href="/patterns">Return to your patterns</a>}
+            {routeError && <Link className="button button-primary" to="/patterns">Return to your patterns</Link>}
           </section>
         ) : (
           <>

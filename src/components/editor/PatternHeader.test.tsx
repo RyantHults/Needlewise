@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { PatternHeader } from "./PatternHeader";
 
@@ -14,7 +15,14 @@ function setup(overrides: Partial<Parameters<typeof PatternHeader>[0]> = {}) {
     onNavigate: vi.fn(),
     ...overrides,
   };
-  render(<PatternHeader {...props} />);
+  render(
+    <MemoryRouter initialEntries={["/patterns/p1/edit"]}>
+      <Routes>
+        <Route path="/patterns" element={<p>Patterns page</p>} />
+        <Route path="*" element={<PatternHeader {...props} />} />
+      </Routes>
+    </MemoryRouter>
+  );
   return props;
 }
 
@@ -32,6 +40,12 @@ describe("PatternHeader", () => {
     expect(props.onNavigate).toHaveBeenCalledWith("edit");
     expect(screen.getByText("10 x 10")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Needlewise home" })).toBeInTheDocument();
+  });
+
+  it("navigates to the patterns page through the router when the brand is clicked", () => {
+    setup();
+    fireEvent.click(screen.getByRole("link", { name: "Needlewise home" }));
+    expect(screen.getByText("Patterns page")).toBeInTheDocument();
   });
 
   it("renders a plain heading without onRenameTitle", () => {

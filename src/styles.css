@@ -1016,6 +1016,8 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 .palette-row .palette-swatch { position:relative; }
 .palette-pick-pulse { position:absolute; inset:-.3rem; z-index:2; pointer-events:none; border-radius:.85rem; box-shadow:0 0 0 .16rem rgba(255,253,249,.95), 0 0 0 .3rem #bc5a3d; animation:palette-pick-target .9s ease-out forwards; }
 .palette-pick-pulse::before { content:""; position:absolute; inset:0; border-radius:inherit; }
+.canvas-actions .tool-options [aria-label="Selection actions"] .tool-option-button { position:relative; }
+.clipboard-pulse { position:absolute; inset:-.25rem; z-index:2; pointer-events:none; border-radius:.7rem; box-shadow:0 0 0 .16rem rgba(255,253,249,.95), 0 0 0 .3rem #bc5a3d; animation:palette-pick-target .9s ease-out forwards; }
 @keyframes palette-pick-target {
   0% { opacity:0; transform:scale(2.1); }
   35% { opacity:1; transform:scale(1.05); }
@@ -1024,7 +1026,7 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:#8a837
 }
 @keyframes palette-pick-highlight { 0%,60% { opacity:1; } 100% { opacity:0; } }
 @media (prefers-reduced-motion: reduce) {
-  .palette-pick-pulse { animation:palette-pick-highlight .7s linear forwards; }
+  .palette-pick-pulse, .clipboard-pulse { animation:palette-pick-highlight .7s linear forwards; }
   .button { transition: none; }
   .button:hover { transform: none; }
   .loading-mark { animation: none; }

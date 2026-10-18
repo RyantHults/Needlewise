@@ -4,9 +4,9 @@ export function HomePage() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <a className="brand" href="/" aria-label="Needlewise home">
+        <Link className="brand" to="/" aria-label="Needlewise home">
           <span className="brand-mark" aria-hidden="true">✣</span><span>Needlewise</span>
-        </a>
+        </Link>
       </header>
 
       <main id="home" className="home">

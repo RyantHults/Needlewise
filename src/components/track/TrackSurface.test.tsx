@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render as renderBare, screen, within } from '@testing-library/react';
 import { useEffect } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyCommand, computePatternMetrics, createDocument, type PatternDocument } from '../../domain';
@@ -7,6 +7,10 @@ import type { ProjectWorkspace } from '../../application/workspace';
 import { ChartPresentationMode, type EditorUiState } from '../../editor';
 import { TrackSurface } from './TrackSurface';
 import { patternDimensionSummary } from '../editor/pattern-dimensions';
+import type { ReactElement } from 'react';
+import { MemoryRouter } from 'react-router-dom';
+
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: MemoryRouter });
 
 // The export and settings dialogs have their own suites; here only that the page opens them.
 vi.mock('../export/ExportPanel', () => ({

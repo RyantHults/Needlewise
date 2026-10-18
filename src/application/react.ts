@@ -23,7 +23,7 @@ import type {
 } from './types';
 import type { ProgressActivity, ProjectFolder, ProjectFolderAssignment, ProjectMetadata } from '../persistence';
 import type { ProjectSession } from './session';
-import type { CommandResult, DomainCommand, LayerType, PatternFragment, PatternMetrics, Point, ProgressCommand } from '../domain';
+import type { CommandResult, DomainCommand, LayerType, PaletteEntryInput, PatternFragment, PatternMetrics, Point, ProgressCommand } from '../domain';
 import type { SessionProgressStats } from './progress';
 
 export interface UseProjectWorkspaceOptions extends WorkspaceOptions {
@@ -85,7 +85,7 @@ export interface UseProjectWorkspaceResult {
   mergeLayer(sourceId: number, targetId: number): CommandResult;
   setAidaCount(aidaCount: number): CommandResult;
   resolvePaste(fragmentType: LayerType): PasteDestination;
-  commitPaste(fragment: PatternFragment, at: Point, destination: PasteDestination, expectedRevision?: number): PasteCommitResult;
+  commitPaste(fragment: PatternFragment, at: Point, destination: PasteDestination, expectedRevision?: number, palette?: readonly PaletteEntryInput[]): PasteCommitResult;
   // Track's marks: synchronous, autosaved, and undone on their own stack.
   canUndoProgress: boolean;
   canRedoProgress: boolean;
@@ -309,7 +309,7 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
   const mergeLayer = useCallback((sourceId: number, targetId: number) => readyWorkspace().mergeLayer(sourceId, targetId), [readyWorkspace]);
   const setAidaCount = useCallback((aidaCount: number) => readyWorkspace().setAidaCount(aidaCount), [readyWorkspace]);
   const resolvePaste = useCallback((fragmentType: LayerType) => readyWorkspace().resolvePaste(fragmentType), [readyWorkspace]);
-  const commitPaste = useCallback((fragment: PatternFragment, at: Point, destination: PasteDestination, expectedRevision?: number) => readyWorkspace().commitPaste(fragment, at, destination, expectedRevision), [readyWorkspace]);
+  const commitPaste = useCallback((fragment: PatternFragment, at: Point, destination: PasteDestination, expectedRevision?: number, palette?: readonly PaletteEntryInput[]) => readyWorkspace().commitPaste(fragment, at, destination, expectedRevision, palette), [readyWorkspace]);
   const markProgress = useCallback((command: ProgressCommand) => readyWorkspace().markProgress(command), [readyWorkspace]);
   const undoProgress = useCallback(() => readyWorkspace().undoProgress(), [readyWorkspace]);
   const redoProgress = useCallback(() => readyWorkspace().redoProgress(), [readyWorkspace]);

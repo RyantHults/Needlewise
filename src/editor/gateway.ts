@@ -5,6 +5,7 @@ import {
   type DomainCommand,
   type LayeredDocument,
   type LayerType,
+  type PaletteEntryInput,
   type PatternDocument,
   type PatternFragment,
   type ProgressCommand
@@ -129,7 +130,7 @@ export interface WorkspaceEditorBoundary {
   activeLayerSurface?(): PatternDocument | null;
   getEditorLayerSnapshot?(): { readonly compositeInvalidation: CompositeInvalidationReport | null } | null;
   resolvePaste?(type: LayerType): PasteDestination;
-  commitPaste?(fragment: PatternFragment, position: { x: number; y: number }, destination: PasteDestination, expectedRevision?: number): PasteCommitResult;
+  commitPaste?(fragment: PatternFragment, position: { x: number; y: number }, destination: PasteDestination, expectedRevision?: number, palette?: readonly PaletteEntryInput[]): PasteCommitResult;
   subscribe(listener: () => void): () => void;
   execute(command: DomainCommand): CommandResult;
   executeBatch(commands: readonly DomainCommand[]): CommandResult;
@@ -159,7 +160,7 @@ export interface WorkspaceEditorGateway {
   /** Where a paste of this layer type would go; null `layerId` means nowhere. */
   resolvePaste?(type: LayerType): PasteDestination;
   /** Paste as one history entry, creating the destination layer when needed. */
-  commitPaste?(fragment: PatternFragment, position: { x: number; y: number }, destination: PasteDestination, expected?: EditorRevisionToken): PasteCommitResult;
+  commitPaste?(fragment: PatternFragment, position: { x: number; y: number }, destination: PasteDestination, expected?: EditorRevisionToken, palette?: readonly PaletteEntryInput[]): PasteCommitResult;
   /** Record stitch progress outside document history; true when a mark changed. */
   markProgress(command: ProgressCommand): boolean;
   undoProgress(): boolean;
@@ -299,13 +300,13 @@ class WorkspaceEditorGatewayImpl implements WorkspaceEditorGateway {
     return { layerId: null, create: false };
   }
 
-  commitPaste(fragment: PatternFragment, position: { x: number; y: number }, destination: PasteDestination, expected?: EditorRevisionToken): PasteCommitResult {
+  commitPaste(fragment: PatternFragment, position: { x: number; y: number }, destination: PasteDestination, expected?: EditorRevisionToken, palette?: readonly PaletteEntryInput[]): PasteCommitResult {
     this.ensureLive();
     this.refreshFromBoundary();
     expectedToken(expected, this.snapshot);
     const revision = expected?.revision ?? this.snapshot.revision ?? undefined;
     const outcome = this.boundary.commitPaste
-      ? this.boundary.commitPaste(fragment, position, destination, revision)
+      ? this.boundary.commitPaste(fragment, position, destination, revision, palette)
       : { result: this.boundary.execute(pasteFragmentCommand(fragment, position, revision ?? 0)) };
     this.refresh();
     return outcome;

@@ -320,6 +320,48 @@ describe('Canvas 2D chart renderer', () => {
     renderer.dispose();
   });
 
+  it('draws no cell, backstitch, or outline of an off-edge floating paste outside the chart, and colors it through its pending palette', () => {
+    const document = chart(4, 2);
+    const source = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 3, height: 3, palette: [{ id: 5, name: 'Green', color: '#0f0' }] });
+    source.kind.fill(CellKind.Full);
+    for (let index = 0; index < 9; index += 1) source.colors[index * 4] = 5;
+    // Corner to corner, so most of it lies off the chart.
+    source.backstitches = { ids: Uint32Array.of(1), x1: Uint32Array.of(0), y1: Uint32Array.of(0), x2: Uint32Array.of(12), y2: Uint32Array.of(12), colors: Uint16Array.of(5), completed: Uint8Array.of(0) };
+    source.nextBackstitchId = 2;
+    const fragment = createPatternFragment(source, { x: 0, y: 0, width: 3, height: 3 });
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      metrics: getCanvasMetrics(100, 60),
+      // The chart spans screen x 20..60, y 20..40, with room around it to draw into.
+      viewport: { x: -2, y: -2, zoom: 10 },
+      style: { showGrid: false }
+    });
+    renderer.renderNow();
+    overlay.calls.length = 0;
+    overlay.records.length = 0;
+    renderer.setOverlay({
+      floatingPaste: {
+        fragment,
+        destination: { x: 2, y: -1, width: 3, height: 3 },
+        copySelection: { kind: 'rect', rect: { x: 0, y: 0, width: 3, height: 3 } },
+        pendingPalette: source.palette
+      }
+    });
+    renderer.renderNow();
+
+    const inside = (x: number, y: number): boolean => x >= 20 && x <= 60 && y >= 20 && y <= 40;
+    const drawn = overlay.records.filter((record) => record.name === 'fillRect' || record.name === 'moveTo' || record.name === 'lineTo');
+    expect(drawn.length).toBeGreaterThan(0);
+    for (const record of drawn) {
+      const [x, y, width = 0, height = 0] = record.args as number[];
+      expect(inside(x, y) && inside(x + width, y + height), `${record.name}(${String(record.args)})`).toBe(true);
+    }
+    expect(overlay.records.some((record) => record.fillStyle === '#0f0')).toBe(true);
+    renderer.dispose();
+  });
+
   it('renders move completion/backstitch state with source contour below destination preview', () => {
     const document = chart(4, 2);
     const source = chart(1, 1);

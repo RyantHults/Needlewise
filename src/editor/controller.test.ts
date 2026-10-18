@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { clearClipboard } from './clipboard-store';
 import { CellKind, collectValidationErrors, createBackstitchCommand, createDocument, createEditor, QuarterCorner, quarterCommandFor, type BulkCellCommand, type CommandResult, type DomainCommand, type PatternDocument, type ProgressCommand } from '../domain';
 import { getCanvasMetrics } from './coordinates';
 import { EditorSurfaceController, selectedCellSemantics, type EditorSurfaceControllerOptions } from './controller';
@@ -180,6 +181,9 @@ function controllerFixture(options: Partial<EditorSurfaceControllerOptions> = {}
   controller.start();
   return { gateway, uiStore, controller, ...renderer };
 }
+
+// The clipboard outlives controllers, so each case starts without one.
+beforeEach(clearClipboard);
 
 describe('EditorSurfaceController', () => {
   it('defaults new UI stores to pan while preserving explicit initial tools', () => {

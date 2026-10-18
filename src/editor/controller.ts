@@ -4,6 +4,13 @@ import {
   createPatternFragment,
   createPatternFragmentFromCells,
   clonePatternFragment,
+  cropPatternFragment,
+  createPaletteCommand,
+  fragmentPaletteIds,
+  normalizePaletteEntry,
+  planPastePalette,
+  remapFragmentColors,
+  PALETTE_ID_MAX,
   DomainError,
   mixedEraseCommand,
   preflightMixedEraseCommand,
@@ -29,6 +36,9 @@ import {
   type StitchLayer,
   type CommandResult,
   type DomainCommand,
+  type PaletteEntry,
+  type PaletteEntryInput,
+  type PastePalettePlan,
   type PatternDocument,
   type PatternFragment,
   type FragmentSelection,
@@ -116,6 +126,7 @@ import {
   type FillWorkerClient
 } from './fill';
 import { sampleTraceImage } from '../rendering/trace';
+import { readClipboard, subscribeClipboard, writeClipboard, type ClipboardSelectionGeometry } from './clipboard-store';
 import { createCatalogReference, type CatalogDefinition } from '../catalog';
 import {
   appendLassoPoint,
@@ -444,6 +455,10 @@ interface FloatingPasteState {
   readonly backstitches?: FloatingPasteBackstitches;
   /** A Focus Color move of backstitches only: these ids commit as one batch of move-backstitch. */
   readonly focusBackstitchIds?: readonly number[];
+  /** Entries a cross-pattern paste creates in the target palette; `fragment` already uses their ids. */
+  readonly pendingPalette?: readonly PaletteEntryInput[];
+  /** A paste's source layer type, which decides where it lands. */
+  readonly layerType?: LayerType;
   readonly destination: GridRect;
   readonly token: EditorRevisionToken;
   readonly previousSelection: FinalizedSelection | undefined;
@@ -458,12 +473,6 @@ interface FloatingPasteBackstitches {
   readonly y2: Uint32Array;
   readonly colors: Uint16Array;
   readonly completed: Uint8Array;
-}
-
-interface ClipboardSelectionGeometry {
-  readonly kind: 'rect' | 'sparse';
-  readonly rect: CellRect;
-  readonly boundaries?: readonly SelectionBoundarySegment[];
 }
 
 interface FloatingPasteMoveGesture {
@@ -992,6 +1001,43 @@ function clampFloatingDestination(anchor: ModelPoint, fragment: PatternFragment,
   };
 }
 
+/** A floating paste may hang past the chart but keeps at least one cell on it; a move stays inside. */
+function clampFloatingPasteDestination(mode: FloatingPasteState['mode'], anchor: ModelPoint, fragment: PatternFragment, document: PatternDocument): GridRect {
+  if (mode === 'move') return clampFloatingDestination(anchor, fragment, document);
+  return {
+    x: Math.min(document.width - 1, Math.max(1 - fragment.width, Math.floor(anchor.x))),
+    y: Math.min(document.height - 1, Math.max(1 - fragment.height, Math.floor(anchor.y))),
+    width: fragment.width,
+    height: fragment.height
+  };
+}
+
+/** A floating paste cut down to the part on the chart, which is all a commit pastes. */
+function cropFloatingPaste(floating: FloatingPasteState, document: PatternDocument): FloatingPasteState | undefined {
+  const destination = boundedGridRect(floating.destination, document);
+  if (!destination) return undefined;
+  if (destination.width === floating.fragment.width && destination.height === floating.fragment.height) return floating;
+  const fragment = cropPatternFragment(floating.fragment, {
+    x: destination.x - floating.destination.x,
+    y: destination.y - floating.destination.y,
+    width: destination.width,
+    height: destination.height
+  });
+  return { ...floating, fragment, destination };
+}
+
+/** The pending palette entries `fragment` still uses once cropped and focus-filtered. */
+function usedPaletteCreates(creates: readonly PaletteEntryInput[] | undefined, fragment: PatternFragment): PaletteEntryInput[] {
+  if (!creates || creates.length === 0) return [];
+  const used = new Set(fragmentPaletteIds(fragment));
+  return creates.filter((entry) => entry.id !== undefined && used.has(entry.id));
+}
+
+/** `surface` as it reads once `creates` exist, so a paste using them can be preflighted. */
+function withPendingPalette(surface: PatternDocument, creates: readonly PaletteEntryInput[]): PatternDocument {
+  return creates.length === 0 ? surface : { ...surface, palette: [...surface.palette, ...creates.map((entry) => normalizePaletteEntry(entry))] };
+}
+
 function finalizedSelectionBounds(selection: FinalizedSelection | undefined): GridRect | undefined {
   return selection?.kind === 'rect' ? selection.rect : selection?.bounds;
 }
@@ -1437,10 +1483,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private commandInFlight = false;
   private selection: FinalizedSelection | undefined;
   private selectionAnchor: ModelPoint | undefined;
-  private clipboard: PatternFragment | undefined;
-  private clipboardSelection: ClipboardSelectionGeometry | undefined;
-  /** The layer type the clipboard was copied from; it decides where a paste lands. */
-  private clipboardLayerType: LayerType | undefined;
+  private unsubscribeClipboard: (() => void) | undefined;
   private noticeCallback: EditorNoticeCallback | undefined;
   private floatingPaste: FloatingPasteState | undefined;
   private floatingPasteMoveGesture: FloatingPasteMoveGesture | undefined;
@@ -1491,12 +1534,16 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.touchMovementOnly = this.readOnly;
     if (this.traceImage) this.renderer.setTraceImage?.(this.traceImage);
     this.lastGatewaySnapshot = this.gateway.getSnapshot();
+    // The clipboard is shared by every controller, so a copy made in another project can paste here.
+    this.uiStore.setCanPaste(readClipboard() !== undefined);
   }
 
   start(): void {
     if (this.started || this.disposed) return;
     this.started = true;
     this.unsubscribeGateway = this.gateway.subscribe((snapshot) => this.onGatewaySnapshot(snapshot));
+    this.unsubscribeClipboard = subscribeClipboard(() => this.uiStore.setCanPaste(readClipboard() !== undefined));
+    this.uiStore.setCanPaste(readClipboard() !== undefined);
     this.unsubscribeUi = this.uiStore.subscribe((state, previous) => this.onUiState(state, previous));
     this.lastGatewaySnapshot = this.gateway.getSnapshot();
     this.onGatewaySnapshot(this.lastGatewaySnapshot, true);
@@ -1510,8 +1557,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.started = false;
     this.unsubscribeGateway?.();
     this.unsubscribeUi?.();
+    this.unsubscribeClipboard?.();
     this.unsubscribeGateway = undefined;
     this.unsubscribeUi = undefined;
+    this.unsubscribeClipboard = undefined;
     this.discardFloatingPaste();
     this.floatingPasteTouchCandidate = undefined;
     this.cancelLassoPath();
@@ -1732,7 +1781,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   getClipboard(): PatternFragment | undefined {
-    return this.clipboard ? clonePatternFragment(this.clipboard) : undefined;
+    return readClipboard()?.fragment;
   }
 
   private captureMoveSelection(document: PatternDocument, selection: FinalizedSelection): {
@@ -1824,15 +1873,20 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       ? createPatternFragmentFromCells(surface, indices)
       : createPatternFragment(surface, bounds);
     // Under Focus Color the copy holds only focus-color backstitches.
-    this.clipboard = clonePatternFragment(focus === undefined ? fragment : focusPasteFragment(fragment, surface, bounds, focus));
-    this.clipboardSelection = copySelection;
+    const copied = focus === undefined ? fragment : focusPasteFragment(fragment, surface, bounds, focus);
+    const usedIds = new Set(fragmentPaletteIds(copied));
     const activeKind = snapshot.activeLayer?.kind;
-    this.clipboardLayerType = activeKind === 'specialty' ? LayerType.Specialty : activeKind === 'stitch' ? LayerType.Stitch : undefined;
-    this.uiStore.setCanPaste(true);
+    // Every live controller's canPaste follows the store.
+    writeClipboard({
+      fragment: copied,
+      selection: copySelection,
+      layerType: activeKind === 'specialty' ? LayerType.Specialty : activeKind === 'stitch' ? LayerType.Stitch : undefined,
+      palette: surface.palette.filter((entry) => usedIds.has(entry.id))
+    });
     this.setStatus(selection.kind === 'sparse'
       ? `Copied ${String(selection.indices.length)} cells`
       : `Copied ${String(bounds.width)}×${String(bounds.height)} cells`);
-    return clonePatternFragment(this.clipboard);
+    return clonePatternFragment(copied);
   }
 
   moveSelection(): boolean {
@@ -1881,12 +1935,20 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   pasteSelection(): boolean {
     const snapshot = this.gateway.getSnapshot();
     this.reconcileSelectionDimensions(snapshot.document);
-    if (!snapshot.document || !snapshot.projectId || snapshot.revision === null || !this.clipboard) return false;
-    const fragment = clonePatternFragment(this.clipboard);
-    if (fragment.width > snapshot.document.width || fragment.height > snapshot.document.height) {
+    const clipboard = readClipboard();
+    if (!snapshot.document || !snapshot.projectId || snapshot.revision === null || !clipboard) return false;
+    // Colors map onto the target palette by thread; any it lacks are created on commit.
+    let plan: PastePalettePlan;
+    try {
+      plan = planPastePalette(snapshot.document, clipboard.palette);
+    } catch (error) {
+      if (!(error instanceof DomainError) || error.code !== 'palette-full') throw error;
+      this.notifyPaletteFull(snapshot.document, clipboard.palette);
       this.setStatus('Paste unavailable');
       return false;
     }
+    // A fragment larger than the chart still floats whole; only the part on the chart commits.
+    const fragment = remapFragmentColors(clipboard.fragment, plan.idMap);
     // Without a selection or keyboard cursor, the paste lands centred in the visible viewport.
     const bounds = finalizedSelectionBounds(this.selection);
     const center = screenToModel(this.viewportCenter(), this.uiStore.getState().viewport);
@@ -1896,10 +1958,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         : undefined);
     if (!anchor) return false;
     const destination = clampFloatingDestination(anchor, fragment, snapshot.document);
-    const copySelection = this.clipboardSelection ?? {
-      kind: 'rect' as const,
-      rect: { x: 0, y: 0, width: fragment.width, height: fragment.height }
-    };
+    const copySelection = clipboard.selection;
     const previous = this.floatingPaste;
     const previousSelection = previous?.previousSelection ?? this.selection;
     const previousSelectionAnchor = previous?.previousSelectionAnchor ?? this.selectionAnchor;
@@ -1911,6 +1970,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       mode: 'paste',
       fragment,
       copySelection,
+      ...(plan.creates.length > 0 ? { pendingPalette: plan.creates } : {}),
+      ...(clipboard.layerType === undefined ? {} : { layerType: clipboard.layerType }),
       destination,
       token: { projectId: snapshot.projectId, revision: snapshot.revision },
       previousSelection,
@@ -1920,6 +1981,19 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.publishFloatingPasteOverlay();
     this.setStatus('Paste ready');
     return true;
+  }
+
+  /** Name how many colors the paste needs, counted without the brand's limit. */
+  private notifyPaletteFull(document: PatternDocument, source: readonly PaletteEntry[]): void {
+    let needed: number | undefined;
+    try {
+      needed = planPastePalette({ ...document, catalog: { ...document.catalog, colorCount: PALETTE_ID_MAX } }, source).creates.length;
+    } catch {
+      needed = undefined;
+    }
+    this.notify(needed === undefined
+      ? 'This pattern has no room for the pasted colors'
+      : `This pattern has no room for ${String(needed)} more ${needed === 1 ? 'color' : 'colors'}`);
   }
 
   pasteClipboard(): boolean {
@@ -1937,13 +2011,19 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   private commitFloatingPaste(): boolean {
-    const floating = this.floatingPaste;
-    if (!floating) return false;
+    const pending = this.floatingPaste;
+    if (!pending) return false;
     const snapshot = this.gateway.getSnapshot();
-    if (!this.isCurrentTransaction(floating.token, snapshot) || !snapshot.document || !snapshot.projectId || snapshot.revision === null) {
+    if (!this.isCurrentTransaction(pending.token, snapshot) || !snapshot.document || !snapshot.projectId || snapshot.revision === null) {
       this.discardFloatingPaste();
       this.setStatus('Paste cancelled: project changed');
       return false;
+    }
+    const floating = pending.mode === 'paste' ? cropFloatingPaste(pending, snapshot.document) : pending;
+    if (!floating) {
+      this.discardFloatingPaste();
+      this.setStatus('No change');
+      return true;
     }
     if (floating.mode === 'paste' && snapshot.layeredDocument && this.gateway.resolvePaste && this.gateway.commitPaste) return this.commitLayeredPaste(floating, snapshot);
     const moveSurface = floating.mode === 'move' ? this.editableSurface(snapshot, { tool: 'select' }, true) : snapshot.document;
@@ -1970,9 +2050,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.discardFloatingPaste();
       return false;
     }
+    const creates = floating.mode === 'paste' ? usedPaletteCreates(floating.pendingPalette, fragment) : [];
     try {
       if (floating.mode === 'paste') {
-        const preflight = preflightPasteFragmentCommand(snapshot.document, command);
+        const preflight = preflightPasteFragmentCommand(withPendingPalette(snapshot.document, creates), command);
         if (preflight.changedCellCount === 0 && preflight.newBackstitchCount === 0) {
           this.discardFloatingPaste();
           this.setStatus('No change');
@@ -1980,7 +2061,12 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         }
       }
       this.commandInFlight = true;
-      const result = this.gateway.execute(this.stamp(command, snapshot), { projectId: snapshot.projectId, revision: snapshot.revision });
+      // New colors and the paste are one undo step.
+      const stamped = this.stamp(command, snapshot);
+      const result = this.gateway.execute(
+        creates.length === 0 ? stamped : { type: 'batch', commands: [...creates.map(createPaletteCommand), stamped] },
+        { projectId: snapshot.projectId, revision: snapshot.revision }
+      );
       this.commandInFlight = false;
       if (!result.changed) {
         this.discardFloatingPaste();
@@ -2006,7 +2092,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         return false;
       }
       if (error instanceof DomainError) {
-        this.setStatus('Paste unavailable');
+        // A plain document editor runs paste-fragment only standalone, so it cannot add the colors with it.
+        this.setStatus(error.code === 'bulk-batch-unsupported' ? 'Paste unavailable: new colors need a layered pattern' : 'Paste unavailable');
         return false;
       }
       throw error;
@@ -2026,7 +2113,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.setStatus('No change');
       return true;
     }
-    const type = this.clipboardLayerType ?? fragmentLayerType(floating.fragment);
+    const type = floating.layerType ?? fragmentLayerType(floating.fragment);
     const destination = this.gateway.resolvePaste!(type);
     if (destination.layerId === null && !destination.create) {
       this.discardFloatingPaste();
@@ -2050,9 +2137,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         return false;
       }
     }
+    const creates = usedPaletteCreates(floating.pendingPalette, fragment);
     try {
       if (!destination.create && destination.layerId === activeId && snapshot.editSurface) {
-        const preflight = preflightPasteFragmentCommand(snapshot.editSurface, pasteFragmentCommand(fragment, position, snapshot.revision));
+        const preflight = preflightPasteFragmentCommand(withPendingPalette(snapshot.editSurface, creates), pasteFragmentCommand(fragment, position, snapshot.revision));
         if (preflight.changedCellCount === 0 && preflight.newBackstitchCount === 0) {
           this.discardFloatingPaste();
           this.setStatus('No change');
@@ -2060,7 +2148,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         }
       }
       this.commandInFlight = true;
-      const outcome = this.gateway.commitPaste!(fragment, position, destination, token);
+      const outcome = this.gateway.commitPaste!(fragment, position, destination, token, creates);
       this.commandInFlight = false;
       if (!outcome.result.changed) {
         this.discardFloatingPaste();
@@ -2811,7 +2899,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return true;
   }
 
-  private floatingPasteContains(sample: PointerSample, destination = this.floatingPaste?.destination): boolean {
+  private floatingPasteContains(sample: PointerSample): boolean {
+    const floating = this.floatingPaste;
+    const document = this.gateway.getSnapshot().document;
+    // Only the part on the chart is drawn, so only it can be grabbed.
+    const destination = floating && document ? boundedGridRect(floating.destination, document) : undefined;
     if (!destination || !validScreenSample(sample) || !isFiniteViewport(this.uiStore.getState().viewport)) return false;
     const point = screenToModel({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport);
     return point.x >= destination.x && point.y >= destination.y
@@ -2823,7 +2915,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const snapshot = this.gateway.getSnapshot();
     if (!floating || !snapshot.document || !isFiniteViewport(this.uiStore.getState().viewport)) return;
     const viewport = this.uiStore.getState().viewport;
-    const next = clampFloatingDestination({
+    const next = clampFloatingPasteDestination(floating.mode, {
       x: gesture.startDestination.x + Math.round((sample.screenX - gesture.startScreenX) / viewport.zoom),
       y: gesture.startDestination.y + Math.round((sample.screenY - gesture.startScreenY) / viewport.zoom)
     }, floating.fragment, snapshot.document);
@@ -2848,7 +2940,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const dy = outside(point.y, destination.y, destination.height);
     if (dx === 0 && dy === 0) return;
     const horizontal = Math.abs(dx) >= Math.abs(dy);
-    const next = clampFloatingDestination({
+    const next = clampFloatingPasteDestination(floating.mode, {
       x: destination.x + (horizontal ? Math.sign(dx) : 0),
       y: destination.y + (horizontal ? 0 : Math.sign(dy))
     }, floating.fragment, document);
@@ -3529,12 +3621,21 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (modified && lower === 'c') {
       if (!this.editorFocused || isTextEditingTarget(sample.target)) return false;
       sample.preventDefault?.();
-      return this.copySelection() !== undefined;
+      // Copy before leaving another tool, so the switch cannot touch the selection first.
+      if (this.copySelection() === undefined) return false;
+      if (!this.selectToolActive()) this.setTool({ tool: 'select' });
+      this.uiStore.pulseClipboard('copy');
+      return true;
     }
     if (modified && lower === 'v') {
       if (!this.editorFocused || isTextEditingTarget(sample.target)) return false;
       sample.preventDefault?.();
-      return this.pasteSelection();
+      if (!readClipboard()) return false;
+      // Switch first: a tool change discards a floating paste.
+      if (!this.selectToolActive() && !this.setTool({ tool: 'select' })) return true;
+      if (!this.pasteSelection()) return false;
+      this.uiStore.pulseClipboard('paste');
+      return true;
     }
     if (key === 'Escape') {
       sample.preventDefault?.();
@@ -4457,6 +4558,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
             sourceSelection: this.floatingPaste.sourceSelection,
             completion: this.floatingPaste.completion,
             backstitches: this.floatingPaste.backstitches,
+            ...(this.floatingPaste.pendingPalette ? { pendingPalette: this.floatingPaste.pendingPalette.map((entry) => normalizePaletteEntry(entry)) } : {}),
             color: this.activePaletteColor()
           }
         : undefined
@@ -5241,9 +5343,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.undoTimeline = [];
     this.redoTimeline = [];
     this.gatewayRedoStale = false;
-    this.clipboard = undefined;
-    this.clipboardSelection = undefined;
-    this.uiStore.setCanPaste(false);
+    // The clipboard outlives the project, so a copy in one pattern pastes into the next.
     this.touchPointers.clear();
     this.floatingPasteTouchCandidate = undefined;
     this.canvasEdgeDrag = undefined;
@@ -5523,6 +5623,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.publishSelectionOverlay();
     }
     this.spaceHeld = false;
+  }
+
+  private selectToolActive(): boolean {
+    const tool = this.uiStore.getState().tool.tool;
+    return tool === 'select' || tool === 'lasso';
   }
 
   private resetToolTransient(): void {
