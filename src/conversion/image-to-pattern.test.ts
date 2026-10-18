@@ -57,7 +57,7 @@ function raster(width: number, height: number, pixels: readonly number[]): Conve
 }
 
 describe('deterministic image conversion core', () => {
-  it('maps pixels to a bounded catalog palette ranked by usage with ids assigned by rank', () => {
+  it('maps pixels to a bounded catalog palette with ids assigned in pick order', () => {
     const input = raster(2, 2, [
       255, 0, 0, 255, 0, 0, 255, 255,
       255, 0, 0, 255, 0, 0, 0, 0
@@ -238,11 +238,14 @@ describe('deterministic image conversion core', () => {
     expect(() => createConversionRequest(invalid, { targetWidth: 1, targetHeight: 1, catalog })).toThrow(ConversionError);
   });
 
-  it('selects palette colors in descending pixel usage, preferring lower catalog indices on exact ties', () => {
+  it('picks the most-used color first, then the color that most reduces the remaining error', () => {
     const source = raster(8, 1, orderedPixels);
-    // Budget 6 keeps every pixel's own color, so palette entry order and usage
-    // reflect the raw counts: red 4, blue 2, green 1, magenta 1. Black and
-    // White are absent because the image contains neither.
+    // Budget 6 keeps every pixel's own color, so usage reflects the raw
+    // counts: red 4, blue 2, green 1, magenta 1. Red is picked first as the
+    // most used; blue is the only other color above the noise floor. Green
+    // and magenta tie on usage, and green comes first because it is farther
+    // from red and blue than magenta is, so picking it removes more error.
+    // Black and White are absent because the image contains neither.
     const full = convertRasterToPattern(source, { targetWidth: 8, targetHeight: 1, paletteBudget: 6, catalog: orderingCatalog });
     expect(full.document.palette.map((entry) => entry.catalog?.sourceId)).toEqual(['red', 'blue', 'green', 'magenta']);
     expect(full.document.palette.map((entry) => entry.id)).toEqual([1, 2, 3, 4]);
@@ -257,6 +260,27 @@ describe('deterministic image conversion core', () => {
     // Everything remaps onto the single kept color.
     expect(draft.stats.paletteUsage.map((entry) => [entry.catalogId, entry.count])).toEqual([['red', 8]]);
     expect(draft.stats.stitchedPixels).toBe(8);
+  });
+
+  it('spends a tight budget on a distinct small accent rather than a redundant near-shade', () => {
+    const records = [
+      { sourceId: 'blue', code: '797', name: 'Blue', hex: '#0000FF' as const, rgb: [0, 0, 255] as const },
+      { sourceId: 'near-blue', code: '798', name: 'Near Blue', hex: '#1414EB' as const, rgb: [20, 20, 235] as const },
+      { sourceId: 'red', code: '666', name: 'Red', hex: '#FF0000' as const, rgb: [255, 0, 0] as const }
+    ];
+    const shadesCatalog: CatalogSnapshot = { association: { catalogId: 'shades-catalog', brandLabel: 'Shades', colorCount: records.length }, records };
+    // 10x10: five rows of blue, four of near-blue, and one row of red, so red
+    // is the least used yet the only color far from the others.
+    const pixels: number[] = [];
+    for (let row = 0; row < 10; row += 1) {
+      const rgb = row < 5 ? [0, 0, 255] : row < 9 ? [20, 20, 235] : [255, 0, 0];
+      for (let column = 0; column < 10; column += 1) pixels.push(...rgb, 255);
+    }
+    const draft = convertRasterToPattern(raster(10, 10, pixels), { targetWidth: 10, targetHeight: 10, paletteBudget: 2, catalog: shadesCatalog });
+    expect(draft.document.palette.map((entry) => entry.catalog?.sourceId)).toEqual(['blue', 'red']);
+    // Near-blue pixels fold into blue; red pixels still stitch in red.
+    expect(draft.stats.paletteUsage.map((entry) => [entry.catalogId, entry.count])).toEqual([['blue', 90], ['red', 10]]);
+    for (let index = 90; index < 100; index += 1) expect(draft.document.colors[index * 4]).toBe(2);
   });
 
   it('rejects a zero palette budget', () => {
@@ -276,7 +300,7 @@ describe('deterministic image conversion core', () => {
     expect(withWhiteSkip.stats.matchedColorCount).toBe(1);
   });
 
-  it('drops the least-used color when the budget shrinks and adds it back when it grows', () => {
+  it('drops the last-picked color when the budget shrinks and adds it back when it grows', () => {
     const source = raster(8, 1, orderedPixels);
     const atTwo = convertRasterToPattern(source, { targetWidth: 8, targetHeight: 1, paletteBudget: 2, catalog: orderingCatalog });
     const atThree = convertRasterToPattern(source, { targetWidth: 8, targetHeight: 1, paletteBudget: 3, catalog: orderingCatalog });
@@ -291,7 +315,7 @@ describe('deterministic image conversion core', () => {
     expect([...names(atThree)].filter((name) => !names(atFour).has(name))).toEqual([]);
   });
 
-  it('applies the same usage ordering on the async path', async () => {
+  it('applies the same palette selection on the async path', async () => {
     const source = raster(8, 1, orderedPixels);
     const options = { targetWidth: 8, targetHeight: 1, paletteBudget: 4, catalog: orderingCatalog };
     const synchronous = convertRasterToPattern(source, options);

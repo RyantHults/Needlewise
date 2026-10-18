@@ -10,6 +10,7 @@ import type { CatalogRecord, CatalogSnapshot } from '../catalog';
 import { MAX_IMAGE_DECODE_BYTES, MAX_IMAGE_DECODE_DIMENSION, MAX_IMAGE_DECODE_PIXELS } from '../shared/limits';
 import { MAX_WORKING_IMAGE_DIMENSION, MAX_WORKING_IMAGE_PIXELS } from '../shared/image-sizing';
 import { isConfettiDistance, reduceConfetti, reduceConfettiSteps } from './confetti';
+import { selectPaletteIndices } from './palette-selection';
 
 export { MAX_CONFETTI_DISTANCE } from './confetti';
 
@@ -349,21 +350,6 @@ function nearestCatalogIndex(rgb: readonly [number, number, number], catalog: re
   return best;
 }
 
-/**
- * Deterministic palette selection shared by every conversion path. The
- * palette contains ONLY colors actually matched by non-skipped pixels, ranked
- * in descending pixel usage with ascending catalog index as a deterministic
- * tie-break; palette ids are assigned 1..N in rank order (matching the
- * empty-starter convention where nextPaletteId starts at 1). Because the rank
- * is a stable prefix of one sorted list, raising the budget only adds the next
- * most-used color and lowering it only drops the least-used one.
- */
-function rankCatalogIndices(counts: ReadonlyMap<number, number>, budget: number): number[] {
-  return [...counts.keys()]
-    .sort((left, right) => (counts.get(right) ?? 0) - (counts.get(left) ?? 0) || left - right)
-    .slice(0, budget);
-}
-
 /** Catalog index matching the background sourceId, or -1 when there is none. */
 function backgroundCatalogIndex(options: ConversionOptions, catalog: readonly CatalogRecord[]): number {
   if (options.backgroundSourceId === undefined || typeof options.backgroundSourceId !== 'string') return -1;
@@ -498,7 +484,7 @@ interface PrunedPalette {
 
 /**
  * Drop selected colors that ended with no stitches (the budget is spent before
- * assignment and confetti reduction), renumbering survivors 1..k in rank
+ * assignment and confetti reduction), renumbering survivors 1..k in pick
  * order. The palette is rebuilt through createDocument so ids, symbols and
  * nextPaletteId follow the same normalization as a fresh conversion; the
  * cell planes carry over with color slots remapped. Yields every `chunk`
@@ -591,7 +577,13 @@ export function convertRasterToPattern(raster: ConversionRaster, options: Conver
     counts.set(catalogIndex, (counts.get(catalogIndex) ?? 0) + 1);
     matchedColors.add(catalogIndex);
   }
-  const selectedIndices = rankCatalogIndices(counts, budget);
+  // Palette selection shared by every conversion path: the palette holds ONLY
+  // colors matched by non-skipped pixels, picked greedily for coverage so a
+  // distinct small accent beats a redundant near-shade of a color already
+  // picked. Palette ids are 1..N in pick order (matching the empty-starter
+  // convention where nextPaletteId starts at 1), and picks are a stable prefix,
+  // so raising the budget only appends a color and lowering it drops the last.
+  const selectedIndices = selectPaletteIndices(counts, records, budget);
   const selected = [...selectedIndices].sort((left, right) => left - right).map((index) => records[index]);
   const selectedCatalogIndices = [...selectedIndices].sort((left, right) => left - right);
   const selectedOrder = selectedIndices.map((catalogIndex, paletteOffset) => ({ catalogIndex, paletteId: paletteOffset + 1 }));
@@ -719,7 +711,7 @@ export async function convertRasterToPatternAsync(
     }
   }
   conversionCancelled(cancellation, token.requestId);
-  const selectedIndices = rankCatalogIndices(counts, budget);
+  const selectedIndices = selectPaletteIndices(counts, records, budget);
   const selected = [...selectedIndices].sort((left, right) => left - right).map((index) => records[index]);
   const selectedCatalogIndices = [...selectedIndices].sort((left, right) => left - right);
   const selectedOrder = selectedIndices.map((catalogIndex, paletteOffset) => ({ catalogIndex, paletteId: paletteOffset + 1 }));

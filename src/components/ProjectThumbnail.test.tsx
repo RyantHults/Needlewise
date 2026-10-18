@@ -34,12 +34,21 @@ describe('ProjectThumbnail', () => {
     expect(renderThumbnail({ ...base, indices })).toBeInTheDocument();
   });
 
+  it('renders a thumbnail with backstitches', () => {
+    const backstitches = { points: Uint32Array.of(0, 0, 8, 4), colors: Uint8Array.of(1) };
+    expect(renderThumbnail({ ...base, backstitches })).toBeInTheDocument();
+  });
+
   it.each([
     ['version 1 array', { ...base, version: 1, indices: [0, 1] }],
     ['plain array', { ...base, indices: [0, 1] }],
     ['wrong typed array width', { ...base, indices: Uint16Array.of(0, 1) }],
     ['wrong length', { ...base, indices: Uint8Array.of(0) }],
     ['out-of-range index', { ...base, indices: Uint8Array.of(0, 2) }],
+    ['plain-array backstitch points', { ...base, backstitches: { points: [0, 0, 8, 4], colors: Uint8Array.of(1) } }],
+    ['ragged backstitch points', { ...base, backstitches: { points: Uint32Array.of(0, 0, 8), colors: Uint8Array.of(1) } }],
+    ['mismatched backstitch colors', { ...base, backstitches: { points: Uint32Array.of(0, 0, 8, 4), colors: Uint8Array.of(1, 1) } }],
+    ['out-of-range backstitch color', { ...base, backstitches: { points: Uint32Array.of(0, 0, 8, 4), colors: Uint8Array.of(2) } }],
   ])('falls back to the neutral preview for %s', (_name, thumbnail) => {
     expect(renderThumbnail(thumbnail)).toBeNull();
   });

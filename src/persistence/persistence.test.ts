@@ -205,9 +205,17 @@ function webpLosslessBytes(width: number, height: number): Uint8Array {
 }
 
 /** Thumbnail indices compare as plain arrays: fake-indexeddb clones typed arrays into another realm. */
-function plainSummary<T extends { thumbnail?: { indices: ArrayLike<number> } | undefined }>(value: T | undefined): unknown {
+function plainSummary<T extends { thumbnail?: { indices: ArrayLike<number>; backstitches?: { points: ArrayLike<number>; colors: ArrayLike<number> } } | undefined }>(value: T | undefined): unknown {
   if (value?.thumbnail === undefined) return value;
-  return { ...value, thumbnail: { ...value.thumbnail, indices: Array.from(value.thumbnail.indices) } };
+  const { backstitches } = value.thumbnail;
+  return {
+    ...value,
+    thumbnail: {
+      ...value.thumbnail,
+      indices: Array.from(value.thumbnail.indices),
+      ...(backstitches === undefined ? {} : { backstitches: { points: Array.from(backstitches.points), colors: Array.from(backstitches.colors) } })
+    }
+  };
 }
 
 function metadata(document: LayeredDocument, id = 'project-1'): ProjectMetadata {

@@ -615,7 +615,7 @@ export class ProjectWorkspace {
         const { width, height, thumbnail } = project;
         if (width === undefined || height === undefined || !Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1) continue;
         const expected = expectedThumbnailDimensions(width, height);
-        if (thumbnail !== undefined && thumbnail.columns === expected.columns && thumbnail.rows === expected.rows) continue;
+        if (thumbnail !== undefined && thumbnail.columns === expected.columns && thumbnail.rows === expected.rows && thumbnail.backstitches !== undefined) continue;
         try {
           await this.repository.load(project.id);
           refreshed += 1;

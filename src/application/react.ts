@@ -64,6 +64,8 @@ export interface UseProjectWorkspaceResult {
   saveAsCopy(options?: CreateProjectOptions): Promise<ProjectSession>;
   retrySave(): Promise<void>;
   flush(): Promise<void>;
+  /** Flush pending saves and re-read the project listing without marking the hook busy. */
+  refreshProjectList(): Promise<void>;
   execute(command: DomainCommand): Promise<CommandResult>;
   executeCommand(command: DomainCommand): Promise<CommandResult>;
   executeBatch(commands: readonly DomainCommand[]): Promise<CommandResult>;
@@ -287,6 +289,17 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
   const saveAsCopy = useCallback((copyOptions: CreateProjectOptions = {}) => runAction((instance) => instance.saveAsCopy(copyOptions)), [runAction]);
   const retrySave = useCallback(() => runAction((instance) => instance.retrySave()), [runAction]);
   const flush = useCallback(() => runAction((instance) => instance.flush()), [runAction]);
+  // Passive: editor autosaves bypass runAction, so the listing is re-read on demand without toggling busy.
+  const refreshProjectList = useCallback(async (): Promise<void> => {
+    const instance = workspaceRef.current;
+    if (!instance) return;
+    try {
+      await instance.flush().catch(() => undefined);
+      await refreshProjects(instance);
+    } catch {
+      // Best effort: a failed refresh keeps the previous listing.
+    }
+  }, [refreshProjects]);
   const execute = useCallback((command: DomainCommand) => runAction(async (instance) => instance.execute(command)), [runAction]);
   const executeCommand = execute;
   const executeBatch = useCallback((commands: readonly DomainCommand[]) => runAction(async (instance) => instance.executeBatch(commands)), [runAction]);
@@ -347,6 +360,7 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
     saveAsCopy,
     retrySave,
     flush,
+    refreshProjectList,
     execute,
     executeCommand,
     executeBatch,

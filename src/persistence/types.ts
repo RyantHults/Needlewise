@@ -74,6 +74,13 @@ export interface ProjectThumbnailSummary {
    * `Uint8Array` when the palette has at most 256 colors, else a `Uint16Array`.
    */
   indices: Uint8Array | Uint16Array;
+  /**
+   * Visible backstitches in document fixed-point units (4 per cell), as
+   * interleaved `x1, y1, x2, y2` per segment, and one palette index per
+   * segment (same typed-array width rule as `indices`). Absent on records
+   * written before backstitches were summarized; always present when derived.
+   */
+  backstitches?: { points: Uint32Array; colors: Uint8Array | Uint16Array };
 }
 
 export type ProjectThumbnail = ProjectThumbnailSummary;

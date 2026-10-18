@@ -4,7 +4,8 @@ import App from './App';
 import { useProjectWorkspace } from './application/react';
 import { ProjectGallery } from './components/ProjectGallery';
 import { DEFAULT_CATALOG_DEFINITION } from './catalog';
-import { createDocument } from './domain';
+import { CellKind, createDocument, createPatternFragment, LayerType } from './domain';
+import { clearClipboard, readClipboard, writeClipboard } from './editor/clipboard-store';
 
 vi.mock('./application/react', () => ({ useProjectWorkspace: vi.fn() }));
 // Wraps the real gallery so every existing test still renders it unchanged;
@@ -63,6 +64,7 @@ const createProjectFromConversion = vi.fn().mockResolvedValue({ projectId: 'new-
 const exportProject = vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3]));
 const openProject = vi.fn().mockResolvedValue(undefined);
 const flush = vi.fn().mockResolvedValue(undefined);
+const refreshProjectList = vi.fn().mockResolvedValue(undefined);
 const deleteProject = vi.fn().mockResolvedValue(undefined);
 const createFolder = vi.fn().mockResolvedValue({ id: 'folder-new', name: 'New folder', parentId: null, createdAt: 1, updatedAt: 1 });
 const renameFolder = vi.fn().mockResolvedValue({ id: 'folder-one', name: 'Renamed', parentId: null, createdAt: 1, updatedAt: 2 });
@@ -90,6 +92,7 @@ const baseWorkspace = {
   deleteProject,
   exportProject,
   flush,
+  refreshProjectList,
   createFolder,
   renameFolder,
   deleteFolder,
@@ -174,6 +177,35 @@ describe('application shell', () => {
     fireEvent.keyDown(screen.getByRole('dialog', { name: 'Import a pattern' }), { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: 'Import a pattern' })).not.toBeInTheDocument();
     await waitFor(() => expect(importButton).toHaveFocus());
+  });
+
+  it('refreshes the project list when the gallery is shown, but not on a project page', async () => {
+    const { unmount } = render(<App />);
+    await waitFor(() => expect(refreshProjectList).toHaveBeenCalled());
+    unmount();
+    refreshProjectList.mockClear();
+    window.history.replaceState({}, '', '/patterns/one/edit');
+    render(<App />);
+    await act(async () => { await Promise.resolve(); });
+    expect(refreshProjectList).not.toHaveBeenCalled();
+  });
+
+  it('keeps a copied selection when the gallery refreshes after leaving a project', async () => {
+    const surface = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    surface.kind[0] = CellKind.Full;
+    surface.colors[0] = 1;
+    writeClipboard({ fragment: createPatternFragment(surface, { x: 0, y: 0, width: 2, height: 1 }), selection: { kind: 'rect', rect: { x: 0, y: 0, width: 2, height: 1 } }, layerType: LayerType.Stitch, palette: surface.palette });
+    try {
+      window.history.replaceState({}, '', '/patterns/one/edit');
+      const { unmount } = render(<App />);
+      unmount();
+      window.history.replaceState({}, '', '/patterns');
+      render(<App />);
+      await waitFor(() => expect(refreshProjectList).toHaveBeenCalled());
+      expect(readClipboard()?.palette[0]).toMatchObject({ id: 1, name: 'Red' });
+    } finally {
+      clearClipboard();
+    }
   });
 
   it('flushes before explicitly activating an available update', async () => {

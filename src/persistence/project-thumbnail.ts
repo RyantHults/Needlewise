@@ -4,6 +4,8 @@ import type { ProjectMetadata, ProjectThumbnailSummary } from './types';
 export const PROJECT_THUMBNAIL_VERSION = 2 as const;
 export const PROJECT_THUMBNAIL_MAX_AXIS = 512;
 export const PROJECT_THUMBNAIL_MAX_CELLS = PROJECT_THUMBNAIL_MAX_AXIS * PROJECT_THUMBNAIL_MAX_AXIS;
+/** Backstitches kept in a summary; a pattern with more shows its first ones in store order. */
+export const PROJECT_THUMBNAIL_MAX_BACKSTITCHES = 65536;
 /** A stable, deliberately unbranded color for cells without a stitch. */
 export const PROJECT_THUMBNAIL_FABRIC_COLOR = '#f3eee5';
 export const DEFAULT_FABRIC_COLOR = PROJECT_THUMBNAIL_FABRIC_COLOR;
@@ -55,7 +57,7 @@ export function normalizeThumbnailColor(value: unknown): string | undefined {
 }
 
 function cloneThumbnail(thumbnail: ProjectThumbnailSummary): ProjectThumbnailSummary {
-  return {
+  const clone: ProjectThumbnailSummary = {
     version: PROJECT_THUMBNAIL_VERSION,
     revision: thumbnail.revision,
     columns: thumbnail.columns,
@@ -63,6 +65,10 @@ function cloneThumbnail(thumbnail: ProjectThumbnailSummary): ProjectThumbnailSum
     palette: [...thumbnail.palette],
     indices: thumbnail.indices.slice()
   };
+  if (thumbnail.backstitches !== undefined) {
+    clone.backstitches = { points: thumbnail.backstitches.points.slice(), colors: thumbnail.backstitches.colors.slice() };
+  }
+  return clone;
 }
 
 function createThumbnailIndices(paletteLength: number, length: number): Uint8Array | Uint16Array {
@@ -109,7 +115,7 @@ export function sanitizeProjectThumbnail(value: unknown, expectedRevision?: numb
     if (!isNonNegativeSafeInteger(index) || index >= palette.length) return undefined;
     indices[i] = index;
   }
-  return {
+  const result: ProjectThumbnailSummary = {
     version: PROJECT_THUMBNAIL_VERSION,
     revision: value.revision,
     columns: value.columns,
@@ -117,6 +123,33 @@ export function sanitizeProjectThumbnail(value: unknown, expectedRevision?: numb
     palette,
     indices
   };
+  if (value.backstitches !== undefined) {
+    const backstitches = sanitizeThumbnailBackstitches(value.backstitches, palette.length);
+    if (backstitches === undefined) return undefined;
+    result.backstitches = backstitches;
+  }
+  return result;
+}
+
+function sanitizeThumbnailBackstitches(value: unknown, paletteLength: number): ProjectThumbnailSummary['backstitches'] {
+  if (!isRecord(value)) return undefined;
+  const { points, colors } = value;
+  if (!ArrayBuffer.isView(points) || Object.prototype.toString.call(points) !== '[object Uint32Array]') return undefined;
+  const pointSource = points as unknown as Uint32Array;
+  if (pointSource.length % 4 !== 0) return undefined;
+  const count = pointSource.length / 4;
+  if (count > PROJECT_THUMBNAIL_MAX_BACKSTITCHES) return undefined;
+  const expectedTag = paletteLength <= 256 ? '[object Uint8Array]' : '[object Uint16Array]';
+  if (!ArrayBuffer.isView(colors) || Object.prototype.toString.call(colors) !== expectedTag) return undefined;
+  const colorSource = colors as unknown as ArrayLike<number>;
+  if (colorSource.length !== count) return undefined;
+  const safeColors = createThumbnailIndices(paletteLength, count);
+  for (let i = 0; i < count; i += 1) {
+    const index = colorSource[i];
+    if (index >= paletteLength) return undefined;
+    safeColors[i] = index;
+  }
+  return { points: pointSource.slice(), colors: safeColors };
 }
 
 /** Field-wise and element-wise equality of two thumbnail summaries. */
@@ -127,6 +160,10 @@ export function projectThumbnailsEqual(a: ProjectThumbnailSummary | undefined, b
     || a.palette.length !== b.palette.length || a.indices.length !== b.indices.length) return false;
   for (let i = 0; i < a.palette.length; i += 1) if (a.palette[i] !== b.palette[i]) return false;
   for (let i = 0; i < a.indices.length; i += 1) if (a.indices[i] !== b.indices[i]) return false;
+  if (a.backstitches === undefined || b.backstitches === undefined) return a.backstitches === b.backstitches;
+  if (a.backstitches.points.length !== b.backstitches.points.length || a.backstitches.colors.length !== b.backstitches.colors.length) return false;
+  for (let i = 0; i < a.backstitches.points.length; i += 1) if (a.backstitches.points[i] !== b.backstitches.points[i]) return false;
+  for (let i = 0; i < a.backstitches.colors.length; i += 1) if (a.backstitches.colors[i] !== b.backstitches.colors[i]) return false;
   return true;
 }
 
@@ -148,10 +185,11 @@ function isLayeredDocument(document: LayeredDocument | PatternDocument): documen
 }
 
 /**
- * Derive a small color-only overview without encoding or decoding the
- * document. The document is authoritative; progress, backstitches, and source
- * images intentionally do not participate in this summary. A layered document
- * is flattened first, so hidden layers never appear.
+ * Derive a small overview without encoding or decoding the document. The
+ * document is authoritative; progress and source images intentionally do not
+ * participate in this summary. Cells are sampled to a color grid, and visible
+ * backstitches are kept as exact segments. A layered document is flattened
+ * first, so hidden layers never appear.
  */
 export function deriveProjectThumbnail(source: LayeredDocument | PatternDocument): ProjectThumbnailSummary {
   const document = isLayeredDocument(source) ? flattenDocument(source) : source;
@@ -205,13 +243,39 @@ export function deriveProjectThumbnail(source: LayeredDocument | PatternDocument
       cursor += 1;
     }
   }
+
+  const store = document.backstitches;
+  const segmentCount = Math.min(store.ids.length, PROJECT_THUMBNAIL_MAX_BACKSTITCHES);
+  const points = new Uint32Array(segmentCount * 4);
+  const segmentColors = new Uint16Array(segmentCount);
+  let segments = 0;
+  for (let index = 0; index < segmentCount; index += 1) {
+    const color = paletteById.get(store.colors[index]);
+    if (color === undefined) continue;
+    let paletteIndex = paletteIndices.get(color);
+    if (paletteIndex === undefined) {
+      paletteIndex = palette.length;
+      palette.push(color);
+      paletteIndices.set(color, paletteIndex);
+    }
+    points[segments * 4] = store.x1[index];
+    points[segments * 4 + 1] = store.y1[index];
+    points[segments * 4 + 2] = store.x2[index];
+    points[segments * 4 + 3] = store.y2[index];
+    segmentColors[segments] = paletteIndex;
+    segments += 1;
+  }
   return {
     version: PROJECT_THUMBNAIL_VERSION,
     revision: document.revision,
     columns,
     rows,
     palette,
-    indices: palette.length <= 256 ? Uint8Array.from(sampled) : sampled
+    indices: palette.length <= 256 ? Uint8Array.from(sampled) : sampled,
+    backstitches: {
+      points: points.slice(0, segments * 4),
+      colors: palette.length <= 256 ? Uint8Array.from(segmentColors.subarray(0, segments)) : segmentColors.slice(0, segments)
+    }
   };
 }
 

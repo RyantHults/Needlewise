@@ -8,6 +8,7 @@ import {
   expectedThumbnailDimensions,
   completeProjectSummary,
   PROJECT_THUMBNAIL_FABRIC_COLOR,
+  PROJECT_THUMBNAIL_MAX_BACKSTITCHES,
   PROJECT_THUMBNAIL_MAX_AXIS,
   PROJECT_THUMBNAIL_MAX_CELLS,
   PROJECT_THUMBNAIL_OFF_CANVAS_COLOR,
@@ -291,5 +292,91 @@ describe('project thumbnail summaries', () => {
     expect(hidden).toMatchObject({ width: 2, height: 1 });
     expect(hidden.thumbnail.palette).toEqual(['#123456', '#dd3333']);
     expect(Array.from(hidden.thumbnail.indices)).toEqual([1, 0]);
+  });
+
+  describe('backstitches', () => {
+    function backstitchDocument() {
+      let surface = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
+        width: 4,
+        height: 2,
+        palette: [
+          { id: 1, name: 'Red', color: '#d33' },
+          { id: 2, name: 'Blue', color: '#36c' }
+        ]
+      });
+      surface = applyCommand(surface, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+      surface = applyCommand(surface, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 8, y: 4 }, color: 2 }).document;
+      return layeredFromSurface(surface);
+    }
+
+    it('keeps visible backstitches, adds their colors to the palette, and hides hidden layers', () => {
+      const document = backstitchDocument();
+      const thumbnail = deriveProjectThumbnail(document);
+      expect(thumbnail.palette).toEqual([PROJECT_THUMBNAIL_FABRIC_COLOR, '#dd3333', '#3366cc']);
+      expect(Array.from(thumbnail.backstitches?.points ?? [])).toEqual([0, 0, 8, 4]);
+      expect(Array.from(thumbnail.backstitches?.colors ?? [])).toEqual([2]);
+      expect(thumbnail.backstitches?.colors).toBeInstanceOf(Uint8Array);
+
+      for (const layer of document.layers) if (layer.type === LayerType.Specialty) layer.visible = false;
+      const hidden = deriveProjectThumbnail(document);
+      expect(hidden.palette).toEqual([PROJECT_THUMBNAIL_FABRIC_COLOR, '#dd3333']);
+      expect(hidden.backstitches?.points.length).toBe(0);
+      expect(hidden.backstitches?.colors.length).toBe(0);
+    });
+
+    it('adds a backstitch-only color to the palette and skips unknown palette ids', () => {
+      const document = backstitchDocument();
+      document.palette = document.palette.filter((entry) => entry.id !== 2);
+      const thumbnail = deriveProjectThumbnail(document);
+      expect(thumbnail.palette).toEqual([PROJECT_THUMBNAIL_FABRIC_COLOR, '#dd3333']);
+      expect(thumbnail.backstitches?.points.length).toBe(0);
+
+      const only = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+      const result = applyCommand(only, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 }).document;
+      expect(deriveProjectThumbnail(result).palette).toEqual([PROJECT_THUMBNAIL_FABRIC_COLOR, '#dd3333']);
+    });
+
+    it('emits empty arrays when there are no backstitches', () => {
+      const thumbnail = deriveProjectThumbnail(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 1 }));
+      expect(thumbnail.backstitches?.points.length).toBe(0);
+      expect(thumbnail.backstitches?.colors.length).toBe(0);
+    });
+
+    it('sanitizes valid backstitches, accepts records without them, and rejects malformed ones', () => {
+      const base = { version: 2, revision: 3, columns: 2, rows: 1, palette: ['#f3eee5', '#dd3333'], indices: new Uint8Array([1, 0]) };
+      const good = { points: new Uint32Array([0, 0, 4, 4]), colors: new Uint8Array([1]) };
+      const sanitized = sanitizeProjectThumbnail({ ...base, backstitches: good }, 3);
+      expect(sanitized?.backstitches).toEqual(good);
+      expect(sanitized?.backstitches?.points).not.toBe(good.points);
+      expect(sanitizeProjectThumbnail(base, 3)).toBeDefined();
+      expect(sanitizeProjectThumbnail(base, 3)).not.toHaveProperty('backstitches');
+
+      expect(sanitizeProjectThumbnail({ ...base, backstitches: 1 }, 3)).toBeUndefined();
+      expect(sanitizeProjectThumbnail({ ...base, backstitches: { ...good, points: [0, 0, 4, 4] } }, 3)).toBeUndefined();
+      expect(sanitizeProjectThumbnail({ ...base, backstitches: { ...good, points: new Uint32Array([0, 0, 4]) } }, 3)).toBeUndefined();
+      expect(sanitizeProjectThumbnail({ ...base, backstitches: { ...good, colors: new Uint16Array([1]) } }, 3)).toBeUndefined();
+      expect(sanitizeProjectThumbnail({ ...base, backstitches: { ...good, colors: new Uint8Array([1, 1]) } }, 3)).toBeUndefined();
+      expect(sanitizeProjectThumbnail({ ...base, backstitches: { ...good, colors: new Uint8Array([2]) } }, 3)).toBeUndefined();
+      expect(sanitizeProjectThumbnail({
+        ...base,
+        backstitches: { points: new Uint32Array((PROJECT_THUMBNAIL_MAX_BACKSTITCHES + 1) * 4), colors: new Uint8Array(PROJECT_THUMBNAIL_MAX_BACKSTITCHES + 1) }
+      }, 3)).toBeUndefined();
+    });
+
+    it('treats absent and present backstitches as different and clones them independently', () => {
+      const a = deriveProjectThumbnail(backstitchDocument());
+      const b = deriveProjectThumbnail(backstitchDocument());
+      expect(projectThumbnailsEqual(a, b)).toBe(true);
+      const without = { ...b };
+      delete without.backstitches;
+      expect(projectThumbnailsEqual(a, without)).toBe(false);
+      expect(projectThumbnailsEqual(without, a)).toBe(false);
+      expect(projectThumbnailsEqual(a, { ...b, backstitches: { points: new Uint32Array([0, 0, 8, 5]), colors: b.backstitches!.colors } })).toBe(false);
+
+      const metadata = { id: 'c', title: 'C', notes: '', createdAt: 1, updatedAt: 1, revision: a.revision, width: 4, height: 2, thumbnail: a };
+      const cloned = sanitizeProjectMetadata(metadata).thumbnail;
+      a.backstitches!.points[0] = 9;
+      expect(cloned?.backstitches?.points[0]).toBe(0);
+    });
   });
 });

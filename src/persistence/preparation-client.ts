@@ -105,13 +105,15 @@ export function consumePreparedDocumentCapability<T>(
     throw new PersistenceError('invalid-document', 'Prepared document capability identity does not match the save attempt.');
   }
   preparedCapabilities.delete(capability);
+  const { backstitches } = payload.summary.thumbnail;
   return consume(payload.bytes, payload.checksum, {
     width: payload.summary.width,
     height: payload.summary.height,
     thumbnail: {
       ...payload.summary.thumbnail,
       palette: [...payload.summary.thumbnail.palette],
-      indices: payload.summary.thumbnail.indices.slice()
+      indices: payload.summary.thumbnail.indices.slice(),
+      ...(backstitches === undefined ? {} : { backstitches: { points: backstitches.points.slice(), colors: backstitches.colors.slice() } })
     }
   });
 }

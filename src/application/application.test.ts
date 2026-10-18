@@ -23,6 +23,7 @@ import {
   type ProjectAssetInput,
   type ProjectMetadata,
   type ProjectRecord,
+  type ProjectThumbnailSummary,
   type PreparedDocumentCapability,
   type PersistencePreparationInput,
   type PersistencePreparationClient,
@@ -1070,7 +1071,7 @@ describe('headless project workspace', () => {
   it('refreshes only stale gallery thumbnails in the background', async () => {
     const repository = new MemoryRepository();
     const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 } });
-    const thumbnail = (columns: number, rows: number) => ({ version: 2 as const, revision: 1, columns, rows, palette: ['#ffffff'], indices: new Uint8Array(columns * rows) });
+    const thumbnail = (columns: number, rows: number): ProjectThumbnailSummary => ({ version: 2 as const, revision: 1, columns, rows, palette: ['#ffffff'], indices: new Uint8Array(columns * rows), backstitches: { points: new Uint32Array(0), colors: new Uint8Array(0) } });
     try {
       await workspace.createProject({ id: 'thumb-stale', width: 300, height: 200 });
       await workspace.createProject({ id: 'thumb-fresh', width: 4, height: 3 });
@@ -1098,6 +1099,13 @@ describe('headless project workspace', () => {
       expect(projects.find((project) => project.id === 'thumb-stale')?.thumbnail).toMatchObject({ columns: 300, rows: 200 });
       expect(workspace.metadata?.id).toBe('thumb-active');
       expect(await workspace.refreshStaleThumbnails()).toBe(0);
+
+      const legacy: ProjectThumbnailSummary = thumbnail(4, 3);
+      delete legacy.backstitches;
+      fresh.metadata = { ...fresh.metadata, thumbnail: legacy };
+      loadedIds.length = 0;
+      expect(await workspace.refreshStaleThumbnails()).toBe(1);
+      expect(loadedIds).toEqual(['thumb-fresh']);
     } finally {
       await workspace.dispose();
     }

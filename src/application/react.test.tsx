@@ -2,7 +2,8 @@ import 'fake-indexeddb/auto';
 import { StrictMode } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { createLayeredDocument as createDocument, CellKind, flattenDocument } from '../domain';
+import { createDocument as createSurfaceDocument, createLayeredDocument as createDocument, createPatternFragment, CellKind, flattenDocument, LayerType } from '../domain';
+import { clearClipboard, readClipboard, writeClipboard, type ClipboardEntry } from '../editor/clipboard-store';
 import { NeedlewiseDatabase, ProjectRepository, type ProjectMetadata } from '../persistence';
 import { ProjectWorkspace, useProjectWorkspace } from './index';
 import { createInstalledCatalogRegistry, DEFAULT_CATALOG_DEFINITION } from '../catalog';
@@ -16,6 +17,18 @@ function makeRepository(): ProjectRepository {
 
 function projectMetadata(id: string, revision: number, updatedAt: number): ProjectMetadata {
   return { id, title: id, notes: '', createdAt: 1, updatedAt, revision };
+}
+
+function clipboardEntry(): ClipboardEntry {
+  const surface = createSurfaceDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+  surface.kind[0] = CellKind.Full;
+  surface.colors[0] = 1;
+  return {
+    fragment: createPatternFragment(surface, { x: 0, y: 0, width: 2, height: 1 }),
+    selection: { kind: 'rect', rect: { x: 0, y: 0, width: 2, height: 1 } },
+    layerType: LayerType.Stitch,
+    palette: surface.palette
+  };
 }
 
 async function deleteRepository(repository: ProjectRepository): Promise<void> {
@@ -115,6 +128,54 @@ describe('ProjectWorkspace observable adapter', () => {
       expect(rendered.result.current.saveState.status).toBe('saved');
       expect(flattenDocument((await repository.load('created'))!.document).kind[0]).toBe(CellKind.Full);
     } finally {
+      rendered.unmount();
+      await Promise.resolve();
+      await deleteRepository(repository);
+    }
+  });
+
+  it('refreshes the project list passively after saves that bypass the hook actions', async () => {
+    const repository = makeRepository();
+    const rendered = renderHook(() => useProjectWorkspace({ repository, debounceMs: 40, projectIdFactory: () => 'created', clock: { now: () => 100 } }));
+    try {
+      await waitFor(() => expect(rendered.result.current.initialized).toBe(true));
+      await act(async () => {
+        await rendered.result.current.createProject({ width: 2, height: 2, document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] }) });
+      });
+      const before = rendered.result.current.projects.find((project) => project.id === 'created');
+      await act(async () => {
+        rendered.result.current.workspace?.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+      });
+      // The edit saves through the session, not a hook action, so the listing is still the old one.
+      expect(rendered.result.current.projects.find((project) => project.id === 'created')?.revision).toBe(before?.revision);
+      await act(async () => {
+        await rendered.result.current.refreshProjectList();
+      });
+      const after = rendered.result.current.projects.find((project) => project.id === 'created');
+      expect(after?.revision).toBeGreaterThan(before?.revision ?? 0);
+      expect(after?.thumbnail?.palette).toContain('#dd3333');
+      expect(rendered.result.current.busy).toBe(false);
+    } finally {
+      rendered.unmount();
+      await Promise.resolve();
+      await deleteRepository(repository);
+    }
+  });
+
+  it('leaves the editor clipboard untouched when the project list refreshes', async () => {
+    const repository = makeRepository();
+    const rendered = renderHook(() => useProjectWorkspace({ repository, autoOpenMostRecent: false }));
+    try {
+      await waitFor(() => expect(rendered.result.current.initialized).toBe(true));
+      const entry = clipboardEntry();
+      writeClipboard(entry);
+      await act(async () => {
+        await rendered.result.current.refreshProjectList();
+      });
+      expect(readClipboard()?.fragment).toEqual(entry.fragment);
+      expect(readClipboard()).toMatchObject({ layerType: LayerType.Stitch, selection: { kind: 'rect' }, palette: [{ id: 1, name: 'Red' }] });
+    } finally {
+      clearClipboard();
       rendered.unmount();
       await Promise.resolve();
       await deleteRepository(repository);

@@ -39,6 +39,7 @@ function WorkspaceApp() {
     openProject,
     deleteProject,
     flush,
+    refreshProjectList,
     createFolder,
     renameFolder,
     deleteFolder,
@@ -302,6 +303,10 @@ function WorkspaceApp() {
   const routeError = isProjectPage && Boolean(routeIssue);
   // The gallery carries the brand in its own header; other non-project states keep the plain topbar.
   const galleryVisible = !isProjectPage && initialized;
+  // Editor autosaves bypass the hook's actions, so the listing is stale after navigating back.
+  useEffect(() => {
+    if (galleryVisible) void refreshProjectList();
+  }, [galleryVisible, refreshProjectList]);
   const brand = (
     <Link className="brand" to="/" aria-label="Needlewise home">
       <span className="brand-mark" aria-hidden="true">✣</span><span>Needlewise</span>
