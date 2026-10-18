@@ -305,6 +305,10 @@ export interface FloatingPasteOverlay {
   readonly color?: string;
   /** Palette entries a cross-pattern paste creates on commit; the preview resolves its colors through them. */
   readonly pendingPalette?: readonly PaletteEntry[];
+  /** Move only: the source cells after the lift, drawn over the base before the fragment. Empty kind = fabric. */
+  readonly sourceHole?: readonly PendingCellState[];
+  /** Move only: backstitch ids lifted out of the source; the base pass and per-cell backstitch redraws skip them. */
+  readonly liftedBackstitchIds?: ReadonlySet<number>;
 }
 
 export interface FloatingPasteBackstitchOverlay {

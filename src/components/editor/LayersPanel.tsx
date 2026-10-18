@@ -11,6 +11,7 @@ import {
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
+import type { LayerSelection } from "../../application/types";
 import { canAddLayer, MAX_LAYERS_PER_TYPE, type Layer, type LayeredDocument, type LayerType, type PaletteEntry } from "../../domain";
 import { createThumbnailQueue, layerContentChanged, paintLayerThumbnail, paletteSignature, renderLayerThumbnailPixels, type ThumbnailQueue } from "../../rendering/layer-thumbnail";
 import { pointerWithinOrClosestCenter } from "../gallery-dnd";
@@ -25,6 +26,7 @@ import {
 } from "./layers-dnd";
 
 export type ActiveLayerId = number | "canvas" | "reference";
+export interface LayerSelectModifiers { toggle?: boolean; range?: boolean }
 type RowKind = LayerType | "canvas" | "reference";
 
 export const LAYER_TYPE_LABELS: Record<RowKind, string> = {
@@ -62,6 +64,15 @@ function EyeIcon({ open }: { open: boolean }) {
       {open ? <circle cx="12" cy="12" r="2.8" /> : <path d="M4 20 20 4" />}
     </svg>
   );
+}
+
+const SWIPE_HINT = "Swipe right to add to or remove from the selection";
+const SWIPE_DISTANCE_PX = 40;
+const SWIPE_CLICK_GUARD_MS = 350;
+
+/** Moves toward the right edge that count as a swipe: far enough, rightward, and mostly horizontal. */
+function swipeArmed(dx: number, dy: number, threshold: number) {
+  return dx >= threshold && Math.abs(dy) < dx / 2;
 }
 
 /** Long-press threshold for touch and pen reordering. */
@@ -132,10 +143,10 @@ function LayerThumbnail({ queue, source, layer, palette }: { queue: ThumbnailQue
 
 interface Props {
   document: LayeredDocument;
-  activeLayerId: ActiveLayerId;
+  layerSelection: LayerSelection;
   backgroundColor: string;
   reference: { present: boolean; visible: boolean };
-  onSelect: (id: ActiveLayerId) => void;
+  onSelect: (id: ActiveLayerId, modifiers?: LayerSelectModifiers) => void;
   onToggleVisibility: (layerId: number, visible: boolean) => void;
   onToggleReferenceVisibility: (visible: boolean) => void;
   onAddReference: () => void;
@@ -147,38 +158,94 @@ interface RowProps {
   document: LayeredDocument;
   layer: Layer;
   selected: boolean;
+  primary: boolean;
   dragging: string | null;
   thumbnails: ThumbnailQueue | null;
   thumbnailSource: React.RefObject<ThumbnailSource>;
   palette: string;
-  onSelect: (id: ActiveLayerId) => void;
+  onSelect: (id: ActiveLayerId, modifiers?: LayerSelectModifiers) => void;
   onToggleVisibility: (layerId: number, visible: boolean) => void;
   onMove: (move: LayerMove) => void;
 }
 
-function LayerRow({ document, layer, selected, dragging, thumbnails, thumbnailSource, palette, onSelect, onToggleVisibility, onMove }: RowProps) {
+function LayerRow({ document, layer, selected, primary, dragging, thumbnails, thumbnailSource, palette, onSelect, onToggleVisibility, onMove }: RowProps) {
   const id = layerDragId(layer.id);
   const { listeners, setNodeRef: setDragRef, setActivatorNodeRef, transform, isDragging } = useDraggable({ id });
   const dropActive = dragging !== null && dragging !== id && sharesLayerGroup(document.layers, dragging, layer.type);
   const { setNodeRef: setDropRef, isOver } = useDroppable({ id, disabled: !dropActive });
   const typeLabel = LAYER_TYPE_LABELS[layer.type];
+  // Touch and pen swipe right on the row to toggle its membership; mouse uses Ctrl/Cmd+click.
+  const swipe = useRef<{ pointerId: number; x: number; y: number; threshold: number } | null>(null);
+  const swallowClick = useRef(false);
+  const [swipeOffset, setSwipeOffset] = useState<number | null>(null);
+  const [swipeArmedNow, setSwipeArmedNow] = useState(false);
+  const reduceMotion = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const endSwipe = () => {
+    swipe.current = null;
+    setSwipeOffset(null);
+    setSwipeArmedNow(false);
+  };
+  const beginSwipe = (event: React.PointerEvent<HTMLLIElement>) => {
+    if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
+    if (!event.isPrimary || event.button !== 0) return;
+    if ((event.target as Element).closest(".layer-row-eye, .layer-row-handle")) return;
+    const width = event.currentTarget.getBoundingClientRect().width;
+    swipe.current = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, threshold: width > 0 ? Math.min(SWIPE_DISTANCE_PX, width * 0.25) : SWIPE_DISTANCE_PX };
+  };
+  const moveSwipe = (event: React.PointerEvent<HTMLLIElement>) => {
+    const start = swipe.current;
+    if (!start || start.pointerId !== event.pointerId) return;
+    if (dragging !== null || isDragging) { endSwipe(); return; }
+    const dx = event.clientX - start.x, dy = event.clientY - start.y;
+    const horizontal = dx > 0 && Math.abs(dy) < dx / 2;
+    setSwipeOffset(horizontal ? Math.min(dx, start.threshold) : null);
+    setSwipeArmedNow(horizontal && swipeArmed(dx, dy, start.threshold));
+  };
+  const releaseSwipe = (event: React.PointerEvent<HTMLLIElement>) => {
+    const start = swipe.current;
+    if (!start || start.pointerId !== event.pointerId) return;
+    const recognized = dragging === null && !isDragging && swipeArmed(event.clientX - start.x, event.clientY - start.y, start.threshold);
+    endSwipe();
+    if (!recognized) return;
+    // The click that follows a swipe must not also plain-select the row.
+    swallowClick.current = true;
+    window.setTimeout(() => { swallowClick.current = false; }, SWIPE_CLICK_GUARD_MS);
+    onSelect(layer.id, { toggle: true });
+  };
   return (
     <li
       ref={(element) => { setDragRef(element); setDropRef(element); }}
-      className={`layer-row${selected ? " layer-row-selected" : ""}${layer.visible ? "" : " layer-row-hidden"}${isDragging ? " layer-row-dragging" : ""}${isOver && dropActive ? " layer-row-drop" : ""}`}
+      className={`layer-row${selected ? " layer-row-selected" : ""}${primary ? " layer-row-primary" : ""}${swipeArmedNow ? (selected ? " layer-row-swipe-remove" : " layer-row-swipe-add") : ""}${layer.visible ? "" : " layer-row-hidden"}${isDragging ? " layer-row-dragging" : ""}${isOver && dropActive ? " layer-row-drop" : ""}`}
       data-layer-type={layer.type}
       style={transform ? { transform: `translate3d(0, ${String(transform.y)}px, 0)` } : undefined}
       // Touch and pen reorder with a long press anywhere on the row.
       onTouchStart={listeners?.onTouchStart as React.TouchEventHandler<HTMLLIElement> | undefined}
-      onPointerDown={listeners?.onPointerDown as React.PointerEventHandler<HTMLLIElement> | undefined}
+      onPointerDown={(event) => {
+        (listeners?.onPointerDown as React.PointerEventHandler<HTMLLIElement> | undefined)?.(event);
+        beginSwipe(event);
+      }}
+      onPointerMove={moveSwipe}
+      onPointerUp={releaseSwipe}
+      onPointerCancel={endSwipe}
+      onClickCapture={(event) => {
+        if (!swallowClick.current) return;
+        swallowClick.current = false;
+        event.preventDefault();
+        event.stopPropagation();
+      }}
     >
       <button
         type="button"
         className="layer-row-select"
         aria-pressed={selected}
         aria-label={`${layer.name}, ${typeLabel}${layer.visible ? "" : ", hidden"}`}
-        title={layer.name}
-        onClick={() => onSelect(layer.id)}
+        aria-description={SWIPE_HINT}
+        title={`${layer.name}. ${SWIPE_HINT}`}
+        style={swipeOffset && !reduceMotion ? { transform: `translateX(${String(swipeOffset)}px)` } : undefined}
+        onClick={(event) => onSelect(layer.id, {
+          toggle: event.ctrlKey || event.metaKey,
+          range: event.shiftKey && !event.ctrlKey && !event.metaKey,
+        })}
       >
         <LayerTypeSymbol kind={layer.type} />
         <LayerThumbnail queue={thumbnails} source={thumbnailSource} layer={layer} palette={palette} />
@@ -217,7 +284,7 @@ function LayerRow({ document, layer, selected, dragging, thumbnails, thumbnailSo
 
 export function LayersPanel({
   document,
-  activeLayerId,
+  layerSelection,
   backgroundColor,
   reference,
   onSelect,
@@ -229,6 +296,7 @@ export function LayersPanel({
 }: Props) {
   const [dragging, setDragging] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const activeLayerId = layerSelection.primary;
   const addButton = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   // Created in an effect, not a memo: StrictMode replays effects, and a queue
@@ -343,7 +411,8 @@ export function LayersPanel({
               key={layer.id}
               document={document}
               layer={layer}
-              selected={activeLayerId === layer.id}
+              selected={layerSelection.layerIds.includes(layer.id)}
+              primary={activeLayerId === layer.id}
               dragging={dragging}
               thumbnails={thumbnails}
               thumbnailSource={thumbnailSource}

@@ -62,9 +62,11 @@ import {
   type SourceImageSettingsInput
 } from '../persistence';
 import { WorkspaceError } from './errors';
+import { planLayerMerge } from './layer-merge';
 import { ProgressMetricsService, type SessionProgressStats } from './progress';
 import type {
   ActiveLayerId,
+  LayerSelection,
   ActiveLayerInfo,
   CompositeInvalidation,
   EditorLayerSnapshot,
@@ -368,6 +370,8 @@ export class ProjectSession {
   private activeLayerIdState: ActiveLayerId;
   private layerSummaries: readonly LayerSummary[] = [];
   private activeLayerInfo: ActiveLayerInfo | null = null;
+  private selectedLayerIdsState: readonly number[] = [];
+  private layerSelectionState: LayerSelection = { primary: 'canvas', layerIds: [] };
   private compositeInvalidation: CompositeInvalidation | null = null;
   private editorSnapshot: EditorLayerSnapshot | null = null;
 
@@ -406,13 +410,28 @@ export class ProjectSession {
   private refreshLayerState(documentChanged = true): void {
     const document = this.editor.document;
     this.layerSummaries = layerSummariesOf(document, this.layerSummaries);
-    const active = this.activeLayerIdState;
-    if (typeof active === 'number' && findLayer(document, active) === undefined) this.activeLayerIdState = defaultActiveLayerId(document);
+    let selected = this.selectedLayerIdsState.filter((id) => findLayer(document, id) !== undefined);
+    const stackIndex = new Map(this.layerSummaries.map((layer) => [layer.id, layer.index]));
+    let active = this.activeLayerIdState;
+    if (typeof active === 'number' && findLayer(document, active) === undefined) {
+      // The primary is gone: the topmost remaining selected layer takes over, else the default rule.
+      const remaining = [...selected].sort((a, b) => (stackIndex.get(b) ?? 0) - (stackIndex.get(a) ?? 0));
+      active = remaining[0] ?? defaultActiveLayerId(document);
+      this.activeLayerIdState = active;
+    }
+    if (typeof active !== 'number') selected = [];
+    else if (!selected.includes(active)) selected = [active];
+    selected.sort((a, b) => (stackIndex.get(a) ?? 0) - (stackIndex.get(b) ?? 0));
+    const selectionChanged = this.layerSelectionState.primary !== active || selected.length !== this.layerSelectionState.layerIds.length || selected.some((id, i) => id !== this.layerSelectionState.layerIds[i]);
+    if (selectionChanged) {
+      this.selectedLayerIdsState = selected;
+      this.layerSelectionState = { primary: active, layerIds: selected };
+    }
     const next = this.describeActiveLayer();
     const previous = this.activeLayerInfo;
     const activeChanged = previous === null || previous.id !== next.id || previous.kind !== next.kind || previous.visible !== next.visible || previous.name !== next.name;
     if (activeChanged) this.activeLayerInfo = next;
-    if (documentChanged || activeChanged) this.editorSnapshot = null;
+    if (documentChanged || activeChanged || selectionChanged) this.editorSnapshot = null;
   }
 
   private describeActiveLayer(): ActiveLayerInfo {
@@ -567,6 +586,10 @@ export class ProjectSession {
     return this.activeLayerInfo ?? this.describeActiveLayer();
   }
 
+  get layerSelection(): LayerSelection {
+    return this.layerSelectionState;
+  }
+
   get lastCompositeInvalidation(): CompositeInvalidation | null {
     return this.compositeInvalidation;
   }
@@ -575,10 +598,49 @@ export class ProjectSession {
   setActiveLayer(id: ActiveLayerId): void {
     this.ensureActive();
     if (typeof id === 'number' && findLayer(this.editor.document, id) === undefined) throw new DomainError(LayerErrorCode.NotFound, `Layer ${String(id)} does not exist.`);
-    if (id === this.activeLayerIdState) return;
+    if (id === this.activeLayerIdState && this.selectedLayerIdsState.length <= 1) return;
     this.activeLayerIdState = id;
+    this.selectedLayerIdsState = [];
     this.refreshLayerState();
     this.notify();
+  }
+
+  /** Ctrl/Cmd+click: adds the layer to the selection and makes it primary, or removes it. The last selected layer stays. */
+  toggleLayerSelected(id: number): void {
+    this.ensureActive();
+    this.requireLayer(id);
+    const selected = this.selectedLayerIdsState;
+    if (!selected.includes(id)) {
+      this.selectedLayerIdsState = [...selected, id];
+      this.activeLayerIdState = id;
+    } else {
+      if (selected.length <= 1) return;
+      const remaining = selected.filter((other) => other !== id);
+      this.selectedLayerIdsState = remaining;
+      // `selected` is in stack order, so the last remaining id is the topmost.
+      if (id === this.activeLayerIdState) this.activeLayerIdState = remaining[remaining.length - 1] as number;
+    }
+    this.refreshLayerState(false);
+    this.notify();
+  }
+
+  /** Shift+click: selects every layer between the primary and `id` in stack order; `id` becomes primary. */
+  selectLayerRange(id: number): void {
+    this.ensureActive();
+    this.requireLayer(id);
+    const layers = this.editor.document.layers;
+    const primary = this.activeLayerIdState;
+    const from = typeof primary === 'number' ? layers.findIndex((layer) => layer.id === primary) : -1;
+    const to = layers.findIndex((layer) => layer.id === id);
+    const [low, high] = from < 0 ? [to, to] : [Math.min(from, to), Math.max(from, to)];
+    this.selectedLayerIdsState = layers.slice(low, high + 1).map((layer) => layer.id);
+    this.activeLayerIdState = id;
+    this.refreshLayerState(false);
+    this.notify();
+  }
+
+  private requireLayer(id: number): void {
+    if (findLayer(this.editor.document, id) === undefined) throw new DomainError(LayerErrorCode.NotFound, `Layer ${String(id)} does not exist.`);
   }
 
   /** The selected layer's own surface (aliasing its planes), or null for Canvas and Reference. Read-only. */
@@ -593,6 +655,7 @@ export class ProjectSession {
       this.editorSnapshot = {
         editSurface: this.activeLayerSurface(),
         activeLayer: this.activeLayer,
+        selectedLayerIds: this.layerSelectionState.layerIds,
         composite: this.editor.composite,
         compositeInvalidation: this.compositeInvalidation
       };
@@ -896,8 +959,9 @@ export class ProjectSession {
 
   private selectLayerQuietly(id: ActiveLayerId): void {
     if (typeof id === 'number' && findLayer(this.editor.document, id) === undefined) return;
-    if (id === this.activeLayerIdState) return;
+    if (id === this.activeLayerIdState && this.selectedLayerIdsState.length <= 1) return;
     this.activeLayerIdState = id;
+    this.selectedLayerIdsState = [];
     this.refreshLayerState();
     this.notify();
   }
@@ -942,6 +1006,15 @@ export class ProjectSession {
   mergeLayer(sourceId: number, targetId: number): SessionCommandResult {
     const result = this.execute(layerMergeCommand(sourceId, targetId));
     if (result.changed) this.selectLayerQuietly(targetId);
+    return result;
+  }
+
+  /** Merges the selected layers (or merges the one selected layer down) as one undo step and selects the target. */
+  mergeSelectedLayers(): SessionCommandResult {
+    const plan = planLayerMerge(this.editor.document, this.layerSelectionState);
+    if (plan === null || !('targetId' in plan)) return this.unchangedResult();
+    const result = this.executeBatch(plan.sourceIds.map((sourceId) => layerMergeCommand(sourceId, plan.targetId)));
+    if (result.changed) this.selectLayerQuietly(plan.targetId);
     return result;
   }
 

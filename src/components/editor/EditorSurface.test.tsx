@@ -2044,26 +2044,29 @@ describe('EditorSurface layers', () => {
     palette: [{ name: 'Ruby', color: '#BB4444' }],
     settings: { backgroundColor: '#F3EEE5', aidaCount: 14 },
   });
-  const layerSession = (document: LayeredDocument, activeLayerId: number | 'canvas' | 'reference' = 1) => {
+  const layerSession = (document: LayeredDocument, activeLayerId: number | 'canvas' | 'reference' = 1, layerSelection?: { primary: number | 'canvas' | 'reference'; layerIds: number[] }) => {
     const layer = typeof activeLayerId === 'number' ? document.layers.find((entry) => entry.id === activeLayerId) : undefined;
     return {
       layeredDocument: document,
       activeLayerId,
+      layerSelection,
       activeLayer: { id: activeLayerId, kind: layer?.type ?? activeLayerId, visible: layer?.visible ?? true, name: layer?.name ?? String(activeLayerId) },
       setActiveLayer: vi.fn(),
+      toggleLayerSelected: vi.fn(),
+      selectLayerRange: vi.fn(),
       addLayer: vi.fn(),
       deleteLayer: vi.fn(),
       moveLayer: vi.fn(),
       renameLayer: vi.fn(),
       setLayerVisibility: vi.fn(),
       duplicateLayer: vi.fn(),
-      mergeLayer: vi.fn(),
+      mergeSelectedLayers: vi.fn(),
       setAidaCount: vi.fn(),
     };
   };
   const useSession = (session: MockSession) => { (ws as { session?: unknown }).session = session; return session; };
   const layersPanel = () => screen.getByRole('region', { name: 'Layers' });
-  const rowNames = () => [...layersPanel().querySelectorAll('.layers-list > li.layer-row')].map((row) => row.querySelector('button')?.getAttribute('aria-label'));
+  const rowNames = () => [...layersPanel().querySelectorAll('.layers-list > li.layer-row')].map((row) => row.querySelector('button:not(.layer-row-check)')?.getAttribute('aria-label'));
   afterEach(() => {
     delete (ws as { session?: unknown }).session;
     delete (f.uiState as { activeLayer?: unknown }).activeLayer;
@@ -2114,6 +2117,21 @@ describe('EditorSurface layers', () => {
     // Stitches sit below every specialty layer, so Border cannot move up.
     fireEvent.keyDown(within(layersPanel()).getByRole('button', { name: 'Reorder Border' }), { key: 'ArrowUp' });
     expect(session.moveLayer).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes modifier clicks to the layer selection methods and counts the selected layers', () => {
+    const document = layeredDocument();
+    applyLayerStructureCommand(document, layerAddCommand('stitch', { name: 'Border' }));
+    const session = useSession(layerSession(document, 3, { primary: 3, layerIds: [1, 3] }));
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const stitches = within(layersPanel()).getByRole('button', { name: 'Stitches, Stitch layer' });
+    fireEvent.click(stitches, { ctrlKey: true });
+    expect(session.toggleLayerSelected).toHaveBeenCalledWith(1);
+    fireEvent.click(stitches, { shiftKey: true });
+    expect(session.selectLayerRange).toHaveBeenCalledWith(1);
+    fireEvent.click(stitches);
+    expect(session.setActiveLayer).toHaveBeenCalledWith(1);
+    expect(screen.getByText('2 layers selected')).toBeInTheDocument();
   });
 
   it('opens the image picker from the collapsed reference row', () => {
@@ -2195,33 +2213,38 @@ describe('EditorSurface layers', () => {
     expect(session.duplicateLayer).toHaveBeenCalledWith(1);
   });
 
-  it('offers only other visible layers of the same type as merge targets', () => {
+  it('labels the button Merge for one selected layer and merges the selection on click', () => {
     const document = layeredDocument();
     applyLayerStructureCommand(document, layerAddCommand('stitch', { name: 'Border' }));
-    applyLayerStructureCommand(document, layerAddCommand('stitch', { name: 'Hidden sky' }));
-    document.layers = document.layers.map((layer) => layer.name === 'Hidden sky' ? { ...layer, visible: false } : layer);
-    const session = useSession(layerSession(document));
+    const session = useSession(layerSession(document, 3, { primary: 3, layerIds: [3] }));
     render(<EditorSurface workspace={ws} document={doc} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Merge into…' }));
-    const menu = screen.getByRole('menu', { name: 'Merge Stitches into' });
-    expect(within(menu).getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['Border']);
-    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Border' }));
-    expect(session.mergeLayer).toHaveBeenCalledWith(1, 3);
+    const merge = screen.getByRole('button', { name: 'Merge' });
+    expect(merge).toBeEnabled();
+    fireEvent.click(merge);
+    expect(session.mergeSelectedLayers).toHaveBeenCalledTimes(1);
   });
 
-  it('disables Merge into when there is no target or the selected layer is hidden', () => {
+  it('keeps the Merge label when several layers are selected', () => {
     const document = layeredDocument();
-    useSession(layerSession(document));
-    const view = render(<EditorSurface workspace={ws} document={doc} />);
-    expect(screen.getByRole('button', { name: 'Merge into…' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Merge into…' })).toHaveAttribute('title', 'There is no other visible stitch layer to merge into.');
-    view.unmount();
     applyLayerStructureCommand(document, layerAddCommand('stitch', { name: 'Border' }));
-    document.layers = document.layers.map((layer) => layer.id === 1 ? { ...layer, visible: false } : layer);
-    useSession(layerSession(document));
+    useSession(layerSession(document, 3, { primary: 3, layerIds: [1, 3] }));
     render(<EditorSurface workspace={ws} document={doc} />);
-    expect(screen.getByRole('button', { name: 'Merge into…' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Merge into…' })).toHaveAttribute('title', 'Show this layer to merge it.');
+    expect(screen.getByRole('button', { name: 'Merge' })).toBeEnabled();
+  });
+
+  it('disables Merge with the reason for mixed types and for no layer below', () => {
+    const document = layeredDocument();
+    useSession(layerSession(document, 1, { primary: 1, layerIds: [1] }));
+    const view = render(<EditorSurface workspace={ws} document={doc} />);
+    const down = screen.getByRole('button', { name: 'Merge' });
+    expect(down).toBeDisabled();
+    expect(down).toHaveAttribute('title', 'There is no stitch layer below to merge into.');
+    view.unmount();
+    useSession(layerSession(document, 2, { primary: 2, layerIds: [1, 2] }));
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const several = screen.getByRole('button', { name: 'Merge' });
+    expect(several).toBeDisabled();
+    expect(several).toHaveAttribute('title', 'Select only stitch layers or only specialty layers to merge them.');
   });
 
   it('moves background color and stitch count into the Canvas layer controls', () => {

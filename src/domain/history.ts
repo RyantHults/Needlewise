@@ -2601,6 +2601,14 @@ function commandTargetLayerId(command: DomainCommand, fallback?: number): number
   throw new DomainError('invalid-command', 'Layer edits require a layerId.');
 }
 
+/** True for a batch whose children name more than one layer: each child then runs on its own layer. */
+function batchSpansLayers(command: DomainCommand): boolean {
+  if (batchChildren(command) === undefined) return false;
+  const ids = new Set<number>();
+  collectLayerIds(command, ids);
+  return ids.size > 1;
+}
+
 /** True when the command, and every child of a batch, only changes document-wide state. */
 function isPureDocumentCommand(command: DomainCommand): boolean {
   const children = batchChildren(command);
@@ -2808,7 +2816,7 @@ function planCanvasCommand(document: LayeredDocument, command: DomainCommand): L
 
 function planSingleCommand(document: LayeredDocument, command: DomainCommand, limit: number, fallbackLayerId?: number): LayeredPlan {
   const scope = commandScope(command);
-  if (scope === 'layer') return planLayerCommand(document, command, limit, fallbackLayerId);
+  if (scope === 'layer' && !batchSpansLayers(command)) return planLayerCommand(document, command, limit, fallbackLayerId);
   if (scope === 'canvas' && batchChildren(command) === undefined) return planCanvasCommand(document, command);
   if (scope === 'structure' && batchChildren(command) === undefined) return planStructureCommand(document, command);
   if (isPureDocumentCommand(command) && !commandRequiresSnapshot(command)) return planMetadataCommand(document, command, limit);
@@ -2817,8 +2825,8 @@ function planSingleCommand(document: LayeredDocument, command: DomainCommand, li
 }
 
 /**
- * Structure, document and mixed batches: children run in order on a working
- * copy and their entries become one undo step. Inside a batch, a layer
+ * Structure, document, mixed and multi-layer batches: children run in order
+ * on a working copy and their entries become one undo step. Inside a batch, a layer
  * command without a layerId targets the layer the batch most recently added
  * or duplicated. Canvas commands batch only with other canvas commands, so a
  * canvas reframe never has to compose with layer or document entries. Any

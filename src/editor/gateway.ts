@@ -26,8 +26,16 @@ export interface WorkspaceEditorSnapshot {
    */
   readonly editSurface?: PatternDocument | null;
   readonly activeLayer?: EditorActiveLayer | null;
+  /**
+   * The selected stitch and specialty layers, bottom to top, which a move and a
+   * delete act on. `[activeLayer]` when the boundary has no multi-select; empty
+   * on Canvas, Reference, or without layer information.
+   */
+  readonly selectedLayers?: readonly EditorActiveLayer[];
   /** Changes whenever layer order, membership, type or visibility changes. */
   readonly layerStackKey?: string | null;
+  /** Changes whenever the set of selected layers changes. */
+  readonly layerSelectionKey?: string | null;
   /** What the workspace's last change did to the composite, when it reports it. */
   readonly compositeInvalidation?: CompositeInvalidationReport | null;
 }
@@ -127,6 +135,8 @@ export interface WorkspaceEditorBoundary {
   /** Layer support is optional so single-surface boundaries keep working. */
   readonly layeredDocument?: LayeredDocument | null;
   readonly activeLayerId?: ActiveLayerId | null;
+  /** Every selected stitch/specialty layer id; absent when the boundary has no multi-select. */
+  readonly selectedLayerIds?: readonly number[] | null;
   activeLayerSurface?(): PatternDocument | null;
   getEditorLayerSnapshot?(): { readonly compositeInvalidation: CompositeInvalidationReport | null } | null;
   resolvePaste?(type: LayerType): PasteDestination;
@@ -179,6 +189,13 @@ function layerStackKeyOf(layered: LayeredDocument): string {
   return layered.layers.map((layer) => `${String(layer.id)}:${layer.type}:${layer.visible ? 1 : 0}`).join(',');
 }
 
+function selectedLayersOf(layered: LayeredDocument, ids: readonly number[] | null | undefined, active: EditorActiveLayer | null): EditorActiveLayer[] {
+  if (typeof active?.id !== 'number') return [];
+  const selected = new Set(ids ?? []);
+  selected.add(active.id);
+  return layered.layers.filter((layer) => selected.has(layer.id)).map((layer) => ({ id: layer.id, kind: layer.type, visible: layer.visible }));
+}
+
 function snapshotOf(boundary: WorkspaceEditorBoundary): WorkspaceEditorSnapshot {
   const document = boundary.document;
   const layered = document ? boundary.layeredDocument ?? null : null;
@@ -190,10 +207,13 @@ function snapshotOf(boundary: WorkspaceEditorBoundary): WorkspaceEditorSnapshot 
       layeredDocument: null,
       editSurface: document,
       activeLayer: null,
-      layerStackKey: null
+      selectedLayers: [],
+      layerStackKey: null,
+      layerSelectionKey: null
     };
   }
   const activeLayer = activeLayerOf(layered, boundary.activeLayerId);
+  const selectedLayers = selectedLayersOf(layered, boundary.selectedLayerIds, activeLayer);
   return {
     projectId: boundary.activeProjectId,
     revision: document?.revision ?? null,
@@ -201,7 +221,9 @@ function snapshotOf(boundary: WorkspaceEditorBoundary): WorkspaceEditorSnapshot 
     layeredDocument: layered,
     editSurface: typeof activeLayer?.id === 'number' ? boundary.activeLayerSurface?.() ?? null : null,
     activeLayer,
+    selectedLayers,
     layerStackKey: layerStackKeyOf(layered),
+    layerSelectionKey: selectedLayers.map((layer) => String(layer.id)).join(','),
     compositeInvalidation: boundary.getEditorLayerSnapshot?.()?.compositeInvalidation ?? null
   };
 }

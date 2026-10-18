@@ -151,6 +151,7 @@ export interface ActiveWorkspaceState {
   layeredDocument?: LayeredDocument | null;
   layers?: readonly LayerSummary[];
   activeLayer?: ActiveLayerInfo | null;
+  layerSelection?: LayerSelection | null;
   /** Track's in-memory mark history; see `ProjectSession.markProgress`. */
   canUndoProgress?: boolean;
   canRedoProgress?: boolean;
@@ -190,6 +191,14 @@ export interface ActiveLayerInfo {
   readonly name: string;
 }
 
+/** The layers panel selection. Session memory only, like the active layer. */
+export interface LayerSelection {
+  /** The primary layer: tools, controls, copy/paste. Same as the active layer. */
+  readonly primary: ActiveLayerId;
+  /** Every selected stitch/specialty layer id, bottom to top; includes primary when it is numeric. Empty when primary is canvas or reference. */
+  readonly layerIds: readonly number[];
+}
+
 export interface LayerSummary {
   readonly id: number;
   readonly type: LayerType;
@@ -227,6 +236,8 @@ export interface EditorLayerSnapshot {
   /** The selected layer's own surface, or null for Canvas and Reference. Read-only. */
   readonly editSurface: PatternDocument | null;
   readonly activeLayer: ActiveLayerInfo;
+  /** Selected stitch/specialty layer ids, bottom to top. */
+  readonly selectedLayerIds: readonly number[];
   readonly composite: PatternDocument;
   readonly compositeInvalidation: CompositeInvalidation | null;
 }

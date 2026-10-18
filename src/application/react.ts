@@ -9,6 +9,7 @@ import { ProjectWorkspace } from './workspace';
 import { WorkspaceError } from './errors';
 import type {
   ActiveLayerId,
+  LayerSelection,
   ActiveLayerInfo,
   ActiveWorkspaceState,
   LayerSummary,
@@ -74,9 +75,12 @@ export interface UseProjectWorkspaceResult {
   /** Bottom to top; a new array only when a layer's name, type, visibility or order changes. */
   layers: readonly LayerSummary[];
   activeLayer: ActiveLayerInfo | null;
+  layerSelection: LayerSelection | null;
   // Layer operations are synchronous and undoable (except selection). They
   // throw a WorkspaceError or DomainError, e.g. `layer-limit`, on failure.
   setActiveLayer(id: ActiveLayerId): void;
+  toggleLayerSelected(id: number): void;
+  selectLayerRange(id: number): void;
   canAddLayer(type: LayerType): boolean;
   addLayer(type: LayerType, name?: string): CommandResult;
   deleteLayer(layerId: number): CommandResult;
@@ -85,6 +89,7 @@ export interface UseProjectWorkspaceResult {
   setLayerVisibility(layerId: number, visible: boolean): CommandResult;
   duplicateLayer(layerId: number): CommandResult;
   mergeLayer(sourceId: number, targetId: number): CommandResult;
+  mergeSelectedLayers(): CommandResult;
   setAidaCount(aidaCount: number): CommandResult;
   resolvePaste(fragmentType: LayerType): PasteDestination;
   commitPaste(fragment: PatternFragment, at: Point, destination: PasteDestination, expectedRevision?: number, palette?: readonly PaletteEntryInput[]): PasteCommitResult;
@@ -118,7 +123,8 @@ const EMPTY_STATE: ActiveWorkspaceState = {
   error: null,
   layeredDocument: null,
   layers: NO_LAYERS,
-  activeLayer: null
+  activeLayer: null,
+  layerSelection: null
 };
 
 function workspaceOptionsFrom(options: UseProjectWorkspaceOptions): WorkspaceOptions {
@@ -312,6 +318,8 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
     return instance;
   }, []);
   const setActiveLayer = useCallback((id: ActiveLayerId) => readyWorkspace().setActiveLayer(id), [readyWorkspace]);
+  const toggleLayerSelected = useCallback((id: number) => readyWorkspace().toggleLayerSelected(id), [readyWorkspace]);
+  const selectLayerRange = useCallback((id: number) => readyWorkspace().selectLayerRange(id), [readyWorkspace]);
   const canAddLayer = useCallback((type: LayerType) => workspaceRef.current?.canAddLayer(type) ?? false, []);
   const addLayer = useCallback((type: LayerType, name?: string) => readyWorkspace().addLayer(type, name), [readyWorkspace]);
   const deleteLayer = useCallback((layerId: number) => readyWorkspace().deleteLayer(layerId), [readyWorkspace]);
@@ -320,6 +328,7 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
   const setLayerVisibility = useCallback((layerId: number, visible: boolean) => readyWorkspace().setLayerVisibility(layerId, visible), [readyWorkspace]);
   const duplicateLayer = useCallback((layerId: number) => readyWorkspace().duplicateLayer(layerId), [readyWorkspace]);
   const mergeLayer = useCallback((sourceId: number, targetId: number) => readyWorkspace().mergeLayer(sourceId, targetId), [readyWorkspace]);
+  const mergeSelectedLayers = useCallback(() => readyWorkspace().mergeSelectedLayers(), [readyWorkspace]);
   const setAidaCount = useCallback((aidaCount: number) => readyWorkspace().setAidaCount(aidaCount), [readyWorkspace]);
   const resolvePaste = useCallback((fragmentType: LayerType) => readyWorkspace().resolvePaste(fragmentType), [readyWorkspace]);
   const commitPaste = useCallback((fragment: PatternFragment, at: Point, destination: PasteDestination, expectedRevision?: number, palette?: readonly PaletteEntryInput[]) => readyWorkspace().commitPaste(fragment, at, destination, expectedRevision, palette), [readyWorkspace]);
@@ -368,7 +377,10 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
     redo,
     layers: state.layers ?? NO_LAYERS,
     activeLayer: state.activeLayer ?? null,
+    layerSelection: state.layerSelection ?? null,
     setActiveLayer,
+    toggleLayerSelected,
+    selectLayerRange,
     canAddLayer,
     addLayer,
     deleteLayer,
@@ -377,6 +389,7 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
     setLayerVisibility,
     duplicateLayer,
     mergeLayer,
+    mergeSelectedLayers,
     setAidaCount,
     resolvePaste,
     commitPaste,

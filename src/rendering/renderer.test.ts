@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import targetSvg from '../assets/ui-icons/target.svg?raw';
 import { CellKind, createDocument, createPatternFragment } from '../domain';
 import { cellToScreenRect, fitViewport, getCanvasMetrics, visibleCellRect } from '../editor/coordinates';
-import { CHART_EDGE_MARGIN, DEFAULT_RENDERER_STYLE, type CanvasContextAdapter, type CanvasTarget, type PendingCellState, type RendererStyle, type TraceImage } from '../editor/contracts';
+import { CHART_EDGE_MARGIN, DEFAULT_RENDERER_STYLE, type CanvasContextAdapter, type CanvasTarget, type FloatingPasteOverlay, type PendingCellState, type RendererStyle, type TraceImage } from '../editor/contracts';
 import { ThreeQuarterNW, ThreeQuarterPair } from '../editor/cell-kinds';
 import { MAX_ATLAS_PIXELS, createDefaultAtlasTarget } from './context';
 import { isCanvasImageSource } from './atlas';
@@ -2877,6 +2877,123 @@ describe('Canvas 2D chart renderer', () => {
     expect(paths.some((call) => call.fillStyle === '#00f' && Number(call.args[0]) >= 64)).toBe(false);
     expect(fillRects.some((call) => call.args[0] === 80)).toBe(false);
     renderer.dispose();
+  });
+
+  describe('move source hole', () => {
+    function holeSetup(lifted?: ReadonlySet<number>) {
+      const document = chart(3, 1);
+      document.kind[1] = CellKind.Full;
+      document.colors[4] = 35;
+      document.backstitches = {
+        ids: new Uint32Array([1, 2]),
+        x1: new Uint32Array([2, 9]),
+        y1: new Uint32Array([2, 2]),
+        x2: new Uint32Array([6, 11]),
+        y2: new Uint32Array([2, 2]),
+        colors: new Uint16Array([35, 35]),
+        completed: new Uint8Array([0, 0])
+      };
+      const base = recordingContext();
+      const overlay = recordingContext();
+      const fragment = createPatternFragment(chart(1, 1), { x: 0, y: 0, width: 1, height: 1 });
+      const floatingPaste: FloatingPasteOverlay = {
+        mode: 'move',
+        fragment,
+        destination: { x: 2, y: 0, width: 1, height: 1 },
+        copySelection: { kind: 'rect', rect: { x: 1, y: 0, width: 1, height: 1 } },
+        sourceSelection: { kind: 'rect', rect: { x: 1, y: 0, width: 1, height: 1 } },
+        sourceHole: [{ index: 1, cell: { x: 1, y: 0 }, kind: CellKind.Empty, colors: [0, 0, 0, 0], completed: 0 }],
+        liftedBackstitchIds: lifted
+      };
+      const renderer = createCanvasRenderer({
+        document,
+        targets: { base: target(base), overlay: target(overlay) },
+        metrics: getCanvasMetrics(48, 20),
+        viewport: { x: 0, y: 0, zoom: 20 },
+        style: { showGrid: false },
+        overlay: { floatingPaste }
+      });
+      return { renderer, base, overlay, document, floatingPaste };
+    }
+    const backstitchStrokes = (context: ReturnType<typeof recordingContext>) =>
+      context.records.filter((call) => call.name === 'moveTo' && call.strokeStyle === '#00f' && call.args[1] === 10);
+
+    it('fills hole cells with the background and keeps non-lifted backstitches across them', () => {
+      const { renderer, overlay, document } = holeSetup(new Set([2]));
+      renderer.renderNow();
+      const mask = overlay.records.findIndex((call) => call.name === 'fillRect' && call.args.join(',') === '20,0,20,20' && call.fillStyle === document.settings.backgroundColor);
+      expect(mask).toBeGreaterThanOrEqual(0);
+      // Backstitch 2 is lifted; backstitch 1 crosses the hole cell and still draws there.
+      const strokes = backstitchStrokes(overlay);
+      expect(strokes).toHaveLength(1);
+      expect(strokes[0].args[0] as number).toBeGreaterThanOrEqual(20);
+      renderer.dispose();
+    });
+
+    it('culls hole cells outside the viewport', () => {
+      const document = chart(400, 400);
+      const holeOf = (x0: number, y0: number, size: number) => {
+        const states: PendingCellState[] = [];
+        for (let y = y0; y < y0 + size; y += 1) {
+          for (let x = x0; x < x0 + size; x += 1) states.push({ index: y * 400 + x, cell: { x, y }, kind: CellKind.Empty, colors: [0, 0, 0, 0], completed: 0 });
+        }
+        return states;
+      };
+      const floatingPaste = (sourceHole: PendingCellState[]): FloatingPasteOverlay => ({
+        mode: 'move',
+        fragment: createPatternFragment(chart(1, 1), { x: 0, y: 0, width: 1, height: 1 }),
+        destination: { x: 300, y: 300, width: 1, height: 1 },
+        copySelection: { kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } },
+        sourceSelection: { kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } },
+        sourceHole,
+        liftedBackstitchIds: new Set()
+      });
+      const draw = (hole: PendingCellState[], zoom: number) => {
+        const overlay = recordingContext();
+        const renderer = createCanvasRenderer({
+          document,
+          targets: { base: target(recordingContext()), overlay: target(overlay) },
+          metrics: getCanvasMetrics(400, 400),
+          viewport: { x: 0, y: 0, zoom },
+          style: { showGrid: false },
+          overlay: { floatingPaste: floatingPaste(hole) }
+        });
+        renderer.renderNow();
+        renderer.dispose();
+        return { overlay };
+      };
+      const far = draw(holeOf(200, 200, 100), 10);
+      expect(far.overlay.records.filter((call) => call.name === 'fillRect' && call.fillStyle === document.settings.backgroundColor)).toHaveLength(0);
+      const near = draw(holeOf(0, 0, 200), 2);
+      expect(near.overlay.records.filter((call) => call.name === 'fillRect' && call.fillStyle === document.settings.backgroundColor).length).toBeGreaterThan(0);
+    });
+
+    it('draws an after-state from a lower layer in the hole', () => {
+      const { renderer, overlay, floatingPaste } = holeSetup(new Set());
+      renderer.setOverlay({
+        floatingPaste: { ...floatingPaste, sourceHole: [{ index: 1, cell: { x: 1, y: 0 }, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 }] }
+      });
+      renderer.renderNow();
+      const mask = overlay.records.findIndex((call) => call.name === 'fillRect' && call.args.join(',') === '20,0,20,20');
+      const state = overlay.records.findIndex((call) => call.name === 'fillRect' && call.args.join(',') === '20,0,20,20' && call.fillStyle === '#f00');
+      expect(state).toBeGreaterThan(mask);
+      renderer.dispose();
+    });
+
+    it('hides lifted backstitches in the base pass and redraws them once the move ends', () => {
+      const { renderer, base, floatingPaste } = holeSetup(new Set([2]));
+      renderer.renderNow();
+      expect(backstitchStrokes(base)).toHaveLength(1);
+      base.records.length = 0;
+      renderer.setOverlay({});
+      renderer.renderNow();
+      expect(backstitchStrokes(base)).toHaveLength(2);
+      base.records.length = 0;
+      renderer.setOverlay({ floatingPaste });
+      renderer.renderNow();
+      expect(backstitchStrokes(base).some((call) => call.args[0] === 45)).toBe(false);
+      renderer.dispose();
+    });
   });
 
   it('repaints affected grid and crossing backstitches above a pending mask', () => {

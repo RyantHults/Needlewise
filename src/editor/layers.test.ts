@@ -906,6 +906,23 @@ function stitchLayer(document: LayeredDocument, layerId: number) {
 }
 
 describe('layer helpers', () => {
+  it('publishes the selected layers bottom to top, or the active layer alone', () => {
+    const document = layeredDocument();
+    const top = addLayer(document, LayerType.Stitch);
+    const boundary = new LayeredBoundary(document);
+    const gateway = createWorkspaceEditorGateway(boundary);
+    expect(gateway.getSnapshot()).toMatchObject({ selectedLayers: [{ id: 1, kind: 'stitch', visible: true }], layerSelectionKey: '1' });
+    Object.assign(boundary, { selectedLayerIds: [top, 1] });
+    boundary.setVisible(top, false);
+    expect(gateway.getSnapshot()).toMatchObject({
+      selectedLayers: [{ id: 1, kind: 'stitch', visible: true }, { id: top, kind: 'stitch', visible: false }],
+      layerSelectionKey: `1,${String(top)}`
+    });
+    boundary.setActiveLayer('canvas');
+    expect(gateway.getSnapshot()).toMatchObject({ selectedLayers: [], layerSelectionKey: '' });
+    gateway.dispose();
+  });
+
   it('counts edge overlap but not a corner touch as passing through a cell', () => {
     expect(backstitchPassesThroughCell(4, 4, 8, 8, 1, 1)).toBe(true);
     expect(backstitchPassesThroughCell(4, 4, 4, 12, 1, 1)).toBe(true);

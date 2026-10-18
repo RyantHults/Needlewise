@@ -46,6 +46,7 @@ import { WorkspaceError } from './errors';
 import { ProjectSession } from './session';
 import type {
   ActiveLayerId,
+  LayerSelection,
   ActiveLayerInfo,
   ActiveWorkspaceState,
   ActiveMetadataChanges,
@@ -164,7 +165,7 @@ function layeredProjectDocument(options: CreateProjectOptions): LayeredDocument 
 const EMPTY_LAYERS: readonly LayerSummary[] = [];
 
 function emptyState(): ActiveWorkspaceState {
-  return { projectId: null, metadata: null, document: null, health: null, usingRecovery: false, save: { ...EMPTY_SAVE_STATE }, error: null, materialSettings: null, layeredDocument: null, layers: EMPTY_LAYERS, activeLayer: null };
+  return { projectId: null, metadata: null, document: null, health: null, usingRecovery: false, save: { ...EMPTY_SAVE_STATE }, error: null, materialSettings: null, layeredDocument: null, layers: EMPTY_LAYERS, activeLayer: null, layerSelection: null };
 }
 
 export class ProjectWorkspace {
@@ -230,6 +231,14 @@ export class ProjectWorkspace {
 
   get activeLayerId(): ActiveLayerId | null {
     return this.active?.activeLayerId ?? null;
+  }
+
+  get layerSelection(): LayerSelection | null {
+    return this.active?.layerSelection ?? null;
+  }
+
+  get selectedLayerIds(): readonly number[] | null {
+    return this.active?.layerSelection.layerIds ?? null;
   }
 
   get health(): ProjectHealth | null {
@@ -354,6 +363,7 @@ export class ProjectWorkspace {
       layeredDocument: this.layeredDocument,
       layers: this.layers,
       activeLayer: this.activeLayer,
+      layerSelection: this.layerSelection,
       canUndoProgress: this.canUndoProgress,
       canRedoProgress: this.canRedoProgress
     };
@@ -968,6 +978,14 @@ export class ProjectWorkspace {
     this.ensureActiveSession().setActiveLayer(id);
   }
 
+  toggleLayerSelected(id: number): void {
+    this.ensureActiveSession().toggleLayerSelected(id);
+  }
+
+  selectLayerRange(id: number): void {
+    this.ensureActiveSession().selectLayerRange(id);
+  }
+
   activeLayerSurface(): PatternDocument | null {
     return this.active?.activeLayerSurface() ?? null;
   }
@@ -1006,6 +1024,10 @@ export class ProjectWorkspace {
 
   mergeLayer(sourceId: number, targetId: number) {
     return this.ensureActiveSession().mergeLayer(sourceId, targetId);
+  }
+
+  mergeSelectedLayers() {
+    return this.ensureActiveSession().mergeSelectedLayers();
   }
 
   setAidaCount(aidaCount: number) {

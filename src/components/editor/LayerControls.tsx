@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { planLayerMerge } from "../../application/layer-merge";
+import type { LayerSelection } from "../../application/types";
 import { canAddLayer, findLayer, MAX_LAYERS_PER_TYPE, type Layer, type LayeredDocument } from "../../domain";
 import { CANVAS_BASIC_LOCKED_HINT, type CanvasEditMode } from "../../editor/contracts";
 import type { ActiveLayerId } from "./LayersPanel";
@@ -7,11 +9,6 @@ import { ConfirmDialog } from "../ConfirmDialog";
 import { RenameLayerDialog } from "./RenameLayerDialog";
 
 export const AIDA_COUNTS = [11, 14, 16, 18, 22] as const;
-
-/** Layers a selected layer can merge into: other visible layers of the same type. */
-export function mergeTargets(document: LayeredDocument, layer: Layer): Layer[] {
-  return document.layers.filter((entry) => entry.id !== layer.id && entry.type === layer.type && entry.visible).reverse();
-}
 
 export interface BackgroundCatalogMatch {
   name: string;
@@ -183,62 +180,30 @@ function CanvasControls({ backgroundColor, backgroundCatalog, aidaCount, onChoos
 interface LayerProps {
   document: LayeredDocument;
   layer: Layer;
+  layerSelection: LayerSelection;
   onRename: (layerId: number, name: string) => void;
   onDuplicate: (layerId: number) => void;
-  onMerge: (sourceId: number, targetId: number) => void;
+  /** Merges the whole layer selection (see `planLayerMerge`). */
+  onMerge: () => void;
   onDelete: (layerId: number) => void;
 }
 
-function StackLayerControls({ document, layer, onRename, onDuplicate, onMerge, onDelete }: LayerProps) {
+function StackLayerControls({ document, layer, layerSelection, onRename, onDuplicate, onMerge, onDelete }: LayerProps) {
   const [renameOpen, setRenameOpen] = useState(false);
   const renameButton = useRef<HTMLButtonElement>(null);
-  const [mergeOpen, setMergeOpen] = useState(false);
-  const [mergePosition, setMergePosition] = useState({ left: 8, top: 8 });
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const mergeButton = useRef<HTMLButtonElement>(null);
-  const mergeMenu = useRef<HTMLDivElement>(null);
   const deleteButton = useRef<HTMLButtonElement>(null);
   const closeRename = useCallback(() => {
     setRenameOpen(false);
     window.setTimeout(() => renameButton.current?.focus(), 0);
   }, []);
 
-  const targets = mergeTargets(document, layer);
   const typeWord = layer.type === "stitch" ? "stitch" : "specialty";
   const duplicateAllowed = canAddLayer(document, layer.type);
   const duplicateReason = duplicateAllowed ? "Duplicate layer" : `You already have ${String(MAX_LAYERS_PER_TYPE)} ${typeWord} layers.`;
-  const mergeReason = !layer.visible
-    ? "Show this layer to merge it."
-    : targets.length === 0
-      ? `There is no other visible ${typeWord} layer to merge into.`
-      : "Merge into another layer";
-
-
-  useEffect(() => {
-    if (!mergeOpen) return undefined;
-    mergeMenu.current?.querySelector<HTMLButtonElement>("button")?.focus();
-    const outside = (event: PointerEvent) => {
-      if (event.target instanceof Node && !mergeMenu.current?.contains(event.target) && !mergeButton.current?.contains(event.target)) setMergeOpen(false);
-    };
-    const key = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      setMergeOpen(false);
-      mergeButton.current?.focus();
-    };
-    globalThis.document.addEventListener("pointerdown", outside);
-    globalThis.document.addEventListener("keydown", key);
-    return () => {
-      globalThis.document.removeEventListener("pointerdown", outside);
-      globalThis.document.removeEventListener("keydown", key);
-    };
-  }, [mergeOpen]);
-
-  const openMerge = () => {
-    const rect = mergeButton.current?.getBoundingClientRect();
-    if (rect) setMergePosition({ left: Math.max(8, Math.min(rect.left, window.innerWidth - 220)), top: Math.max(8, rect.top - 8) });
-    setMergeOpen(true);
-  };
+  const merge = planLayerMerge(document, layerSelection);
+  const mergeDisabledReason = merge && "disabledReason" in merge ? merge.disabledReason : undefined;
+  const mergeTitle = merge && "title" in merge ? merge.title : (mergeDisabledReason ?? "Merge layers");
 
   return (
     <div className="layer-controls" role="group" aria-label={`${layer.name} layer actions`}>
@@ -249,15 +214,13 @@ function StackLayerControls({ document, layer, onRename, onDuplicate, onMerge, o
         <span aria-hidden="true">⧉</span><small>Duplicate</small>
       </button>
       <button
-        ref={mergeButton}
         type="button"
         className="bottom-control layer-action"
-        aria-label="Merge into…"
-        title={mergeReason}
-        aria-haspopup="menu"
-        aria-expanded={mergeOpen}
-        disabled={!layer.visible || targets.length === 0}
-        onClick={() => (mergeOpen ? setMergeOpen(false) : openMerge())}
+        aria-label="Merge"
+        title={mergeTitle}
+        aria-description={mergeTitle}
+        disabled={!merge || mergeDisabledReason !== undefined}
+        onClick={onMerge}
       >
         <span aria-hidden="true">⤓</span><small>Merge</small>
       </button>
@@ -265,22 +228,6 @@ function StackLayerControls({ document, layer, onRename, onDuplicate, onMerge, o
         <span aria-hidden="true">×</span><small>Delete</small>
       </button>
       {renameOpen && <RenameLayerDialog name={layer.name} onSave={(name) => onRename(layer.id, name)} onClose={closeRename} />}
-      {mergeOpen && createPortal(
-        <div
-          ref={mergeMenu}
-          className="layer-merge-menu"
-          role="menu"
-          aria-label={`Merge ${layer.name} into`}
-          style={{ position: "fixed", left: mergePosition.left, top: mergePosition.top, transform: "translateY(-100%)", zIndex: 1000 }}
-        >
-          {targets.map((target) => (
-            <button key={target.id} type="button" role="menuitem" onClick={() => { setMergeOpen(false); onMerge(layer.id, target.id); }}>
-              {target.name}
-            </button>
-          ))}
-        </div>,
-        globalThis.document.body,
-      )}
       {deleteOpen && (
         <ConfirmDialog
           eyebrow="Layers"
@@ -296,17 +243,19 @@ function StackLayerControls({ document, layer, onRename, onDuplicate, onMerge, o
   );
 }
 
-interface Props extends Omit<LayerProps, "layer">, CanvasProps {
+interface Props extends Omit<LayerProps, "layer" | "layerSelection">, CanvasProps {
   activeLayerId: ActiveLayerId;
+  /** Defaults to the active layer alone. */
+  layerSelection?: LayerSelection;
 }
 
 /** The contextual controls for a stitch, specialty or Canvas selection. The Reference image keeps its own controls. */
-export function LayerControls({ activeLayerId, document, backgroundColor, backgroundCatalog, aidaCount, onChooseBackground, onAidaCountChange, canvasMode, canvasBasicAvailable, canvasCropActive, onCanvasModeChange, onCanvasCropToggle, ...actions }: Props) {
+export function LayerControls({ activeLayerId, document, backgroundColor, backgroundCatalog, aidaCount, onChooseBackground, onAidaCountChange, canvasMode, canvasBasicAvailable, canvasCropActive, onCanvasModeChange, onCanvasCropToggle, layerSelection, ...actions }: Props) {
   if (activeLayerId === "canvas") {
     return <CanvasControls backgroundColor={backgroundColor} backgroundCatalog={backgroundCatalog} aidaCount={aidaCount} onChooseBackground={onChooseBackground} onAidaCountChange={onAidaCountChange} canvasMode={canvasMode} canvasBasicAvailable={canvasBasicAvailable} canvasCropActive={canvasCropActive} onCanvasModeChange={onCanvasModeChange} onCanvasCropToggle={onCanvasCropToggle} />;
   }
   if (activeLayerId === "reference") return null;
   const layer = findLayer(document, activeLayerId);
   if (!layer) return null;
-  return <StackLayerControls key={layer.id} document={document} layer={layer} {...actions} />;
+  return <StackLayerControls key={layer.id} document={document} layer={layer} layerSelection={layerSelection ?? { primary: layer.id, layerIds: [layer.id] }} {...actions} />;
 }

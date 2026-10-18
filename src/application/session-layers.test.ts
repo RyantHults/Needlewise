@@ -252,6 +252,119 @@ describe('project session layers', () => {
     expect(session.layers.map((layer) => layer.id)).toContain(3);
   });
 
+  it('toggles layers in and out of the selection, keeping stack order and a primary', () => {
+    const session = openSession(threeStitchLayers());
+    expect(session.layerSelection).toEqual({ primary: 4, layerIds: [4] });
+    session.toggleLayerSelected(1);
+    expect(session.layerSelection).toEqual({ primary: 1, layerIds: [1, 4] });
+    session.toggleLayerSelected(2);
+    expect(session.layerSelection).toEqual({ primary: 2, layerIds: [1, 4, 2] });
+    session.toggleLayerSelected(2);
+    expect(session.layerSelection).toEqual({ primary: 4, layerIds: [1, 4] });
+    session.toggleLayerSelected(1);
+    expect(session.layerSelection).toEqual({ primary: 4, layerIds: [4] });
+    session.toggleLayerSelected(4);
+    expect(session.layerSelection).toEqual({ primary: 4, layerIds: [4] });
+    expect(() => session.toggleLayerSelected(99)).toThrow();
+  });
+
+  it('selects a range from the primary and collapses on Canvas, Reference and a plain select', () => {
+    const session = openSession(threeStitchLayers());
+    session.setActiveLayer(1);
+    session.selectLayerRange(4);
+    expect(session.layerSelection).toEqual({ primary: 4, layerIds: [1, 3, 4] });
+    session.selectLayerRange(2);
+    expect(session.layerSelection).toEqual({ primary: 2, layerIds: [4, 2] });
+    expect(session.getEditorLayerSnapshot().selectedLayerIds).toEqual([4, 2]);
+    session.setActiveLayer('canvas');
+    expect(session.layerSelection).toEqual({ primary: 'canvas', layerIds: [] });
+    session.selectLayerRange(3);
+    expect(session.layerSelection).toEqual({ primary: 3, layerIds: [3] });
+    session.toggleLayerSelected(1);
+    session.setActiveLayer('reference');
+    expect(session.layerSelection).toEqual({ primary: 'reference', layerIds: [] });
+    session.toggleLayerSelected(1);
+    session.toggleLayerSelected(3);
+    session.setActiveLayer(3);
+    expect(session.layerSelection).toEqual({ primary: 3, layerIds: [3] });
+  });
+
+  it('notifies on selection changes and publishes a new editor snapshot', () => {
+    const session = openSession(threeStitchLayers());
+    let notifications = 0;
+    session.subscribe(() => { notifications += 1; });
+    const before = session.getEditorLayerSnapshot();
+    expect(session.getEditorLayerSnapshot()).toBe(before);
+    session.toggleLayerSelected(1);
+    expect(notifications).toBe(1);
+    const after = session.getEditorLayerSnapshot();
+    expect(after).not.toBe(before);
+    expect(after.selectedLayerIds).toEqual([1, 4]);
+    expect(after.activeLayer.id).toBe(1);
+  });
+
+  it('prunes deleted layers from the selection, promoting the topmost remaining when the primary goes', () => {
+    const session = openSession(threeStitchLayers());
+    session.selectLayerRange(1);
+    expect(session.layerSelection).toEqual({ primary: 1, layerIds: [1, 3, 4] });
+    session.deleteLayer(3);
+    expect(session.layerSelection).toEqual({ primary: 1, layerIds: [1, 4] });
+    session.deleteLayer(1);
+    expect(session.layerSelection).toEqual({ primary: 4, layerIds: [4] });
+    session.deleteLayer(4);
+    expect(session.layerSelection).toEqual({ primary: 2, layerIds: [2] });
+  });
+
+  it('collapses to the new layer on add and duplicate, and does not persist the selection', () => {
+    const session = openSession(layeredDocument());
+    session.toggleLayerSelected(2);
+    session.addLayer(LayerType.Stitch);
+    expect(session.layerSelection).toEqual({ primary: 3, layerIds: [3] });
+    session.toggleLayerSelected(1);
+    session.duplicateLayer(1);
+    expect(session.layerSelection.layerIds).toEqual([session.activeLayerId]);
+    const reopened = openSession(cloneLayeredDocument(session.layeredDocument));
+    expect(reopened.layerSelection.layerIds).toHaveLength(1);
+    expect(reopened.layerSelection.primary).toBe(reopened.activeLayerId);
+  });
+
+  it('merges the selection as one undo step, topmost winning conflicts, and selects the target', () => {
+    const session = openSession(threeStitchLayers());
+    const cell = (x: number, color: number) => session.execute({ type: 'set-full', x, y: 0, color });
+    session.setActiveLayer(1);
+    cell(0, 1);
+    cell(1, 1);
+    session.setActiveLayer(4);
+    cell(1, 2);
+    session.selectLayerRange(1);
+    session.toggleLayerSelected(3);
+    expect(session.layerSelection.layerIds).toEqual([1, 4]);
+    session.toggleLayerSelected(3);
+    expect(session.layerSelection.layerIds).toEqual([1, 3, 4]);
+    const depth = session.layers.length;
+    const result = session.mergeSelectedLayers();
+    expect(result.changed).toBe(true);
+    expect(session.layers.map((layer) => layer.id)).toEqual([1, 2]);
+    expect(session.layerSelection).toEqual({ primary: 1, layerIds: [1] });
+    const merged = session.activeLayerSurface()!;
+    expect([merged.colors[0], merged.colors[4]]).toEqual([1, 2]);
+    session.undo();
+    expect(session.layers).toHaveLength(depth);
+    expect(session.layers.map((layer) => layer.id)).toEqual([1, 3, 4, 2]);
+  });
+
+  it('merges one layer down, and leaves the document alone when the plan is disabled', () => {
+    const session = openSession(threeStitchLayers());
+    session.mergeSelectedLayers();
+    expect(session.layers.map((layer) => layer.id)).toEqual([1, 3, 2]);
+    expect(session.layerSelection).toEqual({ primary: 3, layerIds: [3] });
+    session.setActiveLayer(1);
+    expect(session.mergeSelectedLayers().changed).toBe(false);
+    session.setActiveLayer('canvas');
+    expect(session.mergeSelectedLayers().changed).toBe(false);
+    expect(session.layers.map((layer) => layer.id)).toEqual([1, 3, 2]);
+  });
+
   it('keeps the stitch count in settings as an undoable change that drives metrics', () => {
     const session = openSession(layeredDocument(28, 14));
     expect(session.document.settings.aidaCount).toBe(14);

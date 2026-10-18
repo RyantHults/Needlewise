@@ -133,7 +133,6 @@ describe('layered DocumentEditor: layer-scoped commands', () => {
     expect(errorCode(() => editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 }))).toBe('invalid-command');
     editor.execute(layerSetVisibilityCommand(STITCHES, true));
     expect(errorCode(() => editor.execute(line(0, 0, 1, 0, 1, STITCHES)))).toBe(LayerErrorCode.TypeMismatch);
-    expect(errorCode(() => editor.execute({ type: 'batch', commands: [full(0, 0, 1), line(0, 0, 1, 0, 1)] }))).toBe('invalid-command');
     expect(editor.revision).toBe(revision + 1);
   });
 

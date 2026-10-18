@@ -22,7 +22,7 @@ import { SYMBOL_POOL, SYMBOL_TILE_VIEW } from "../../symbols";
 import type { PoolEntry } from "../../symbols";
 import { RangeInput } from "../RangeInput";
 import { TraceImageControls, traceBoundsToWorkspace } from "./TraceImageControls";
-import { LayersPanel, LAYER_TYPE_LABELS, type ActiveLayerId } from "./LayersPanel";
+import { LayersPanel, LAYER_TYPE_LABELS, type ActiveLayerId, type LayerSelectModifiers } from "./LayersPanel";
 import { LayerControls } from "./LayerControls";
 import { Toast, useToast } from "./Toast";
 import type { PatternView } from "./ViewSwitch";
@@ -174,6 +174,7 @@ export function EditorSurface({
   const layeredDocument = session?.layeredDocument ?? null;
   const activeLayerId: ActiveLayerId = session?.activeLayerId ?? "canvas";
   const activeLayerInfo = session?.activeLayer ?? null;
+  const layerSelection = session?.layerSelection ?? { primary: activeLayerId, layerIds: typeof activeLayerId === "number" ? [activeLayerId] : [] };
   const aidaCount = Number(layeredDocument?.settings.aidaCount ?? (document as typeof document & { settings?: { aidaCount?: number } }).settings?.aidaCount ?? DEFAULT_PATTERN_AIDA_COUNT);
   const [units, setUnits] = useState<DisplayUnits>(
     workspace.metadata?.units ?? "metric",
@@ -418,7 +419,11 @@ export function EditorSurface({
       showToast(error instanceof Error ? error.message : "That layer change could not be made.");
     }
   };
-  const selectLayer = (id: ActiveLayerId) => runLayerAction(() => session?.setActiveLayer(id));
+  const selectLayer = (id: ActiveLayerId, modifiers?: LayerSelectModifiers) => runLayerAction(() => {
+    if (typeof id === "number" && modifiers?.toggle) session?.toggleLayerSelected(id);
+    else if (typeof id === "number" && modifiers?.range) session?.selectLayerRange(id);
+    else session?.setActiveLayer(id);
+  });
   const addLayer = (type: LayerType) => runLayerAction(() => session?.addLayer(type));
   const setReferenceVisible = (visible: boolean) => {
     referenceVisibility.current?.(visible);
@@ -1094,7 +1099,7 @@ export function EditorSurface({
           {layeredDocument && (
             <LayersPanel
               document={layeredDocument}
-              activeLayerId={activeLayerId}
+              layerSelection={layerSelection}
               backgroundColor={documentBackgroundColor}
               reference={{ present: Boolean(workspace.sourceImage), visible: workspace.sourceImage?.traceVisible ?? true }}
               onSelect={selectLayer}
@@ -1110,6 +1115,9 @@ export function EditorSurface({
         <div className="canvas-column">
           <div className="canvas-actions">
             <ActionSection id="reference-actions-label" label={activeLayerHeading} className="reference-actions layer-actions">
+              {layerSelection.layerIds.length > 1 && (
+                <p className="layer-selection-count" role="status">{`${String(layerSelection.layerIds.length)} layers selected`}</p>
+              )}
               {layeredDocument && activeLayerId !== "reference" && (
                 <LayerControls
                   document={layeredDocument}
@@ -1129,7 +1137,8 @@ export function EditorSurface({
                   onCanvasCropToggle={() => controllerRef.current?.setCanvasCropActive(!canvasCropActive)}
                   onRename={(layerId, name) => runLayerAction(() => session?.renameLayer(layerId, name))}
                   onDuplicate={(layerId) => runLayerAction(() => session?.duplicateLayer(layerId))}
-                  onMerge={(sourceId, targetId) => runLayerAction(() => session?.mergeLayer(sourceId, targetId))}
+                  layerSelection={layerSelection}
+                  onMerge={() => runLayerAction(() => session?.mergeSelectedLayers())}
                   onDelete={(layerId) => runLayerAction(() => session?.deleteLayer(layerId))}
                 />
               )}

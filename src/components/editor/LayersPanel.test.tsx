@@ -22,7 +22,7 @@ const makeDocument = (): LayeredDocument => {
 const panel = (document: LayeredDocument) => (
   <LayersPanel
     document={document}
-    activeLayerId={1}
+    layerSelection={{ primary: 1, layerIds: [1] }}
     backgroundColor="#F3EEE5"
     reference={{ present: false, visible: true }}
     onSelect={vi.fn()}
@@ -48,6 +48,8 @@ beforeEach(() => {
   thumbnails.paint.mockClear();
 });
 afterEach(() => {
+  // dnd-kit swallows the click after a drag until a timer fires; flush it before the fake clock goes away.
+  act(() => vi.runOnlyPendingTimers());
   vi.useRealTimers();
 });
 
@@ -146,5 +148,130 @@ describe('LayersPanel long-press reorder', () => {
     fireEvent.pointerDown(border, { pointerType: 'mouse', isPrimary: true, button: 0 });
     act(() => vi.advanceTimersByTime(LAYER_LONG_PRESS_MS * 2));
     expect(border).not.toHaveClass('layer-row-dragging');
+  });
+});
+
+describe('LayersPanel multi-select', () => {
+  const selectionPanel = (onSelect = vi.fn(), layerSelection = { primary: 3 as number | 'canvas', layerIds: [1, 3] }) => (
+    <LayersPanel
+      document={makeDocument()}
+      layerSelection={layerSelection}
+      backgroundColor="#F3EEE5"
+      reference={{ present: false, visible: true }}
+      onSelect={onSelect}
+      onToggleVisibility={vi.fn()}
+      onToggleReferenceVisibility={vi.fn()}
+      onAddReference={vi.fn()}
+      onMove={vi.fn()}
+      onAdd={vi.fn()}
+    />
+  );
+  const rowButton = (view: ReturnType<typeof render>, layerId: number) =>
+    view.container.querySelectorAll<HTMLElement>('.layer-row[data-layer-type="stitch"] .layer-row-select')[layerId === 1 ? 1 : 0]!;
+
+  it('marks every selected row and the primary', () => {
+    const view = render(selectionPanel());
+    expect(view.container.querySelectorAll('.layer-row-selected')).toHaveLength(2);
+    const primary = view.container.querySelectorAll('.layer-row-primary');
+    expect(primary).toHaveLength(1);
+    expect(primary[0]!.classList.contains('layer-row-selected')).toBe(true);
+    expect(view.container.querySelectorAll('.layer-row-select[aria-pressed="true"]')).toHaveLength(2);
+  });
+
+  it('reports ctrl/meta as toggle and shift as range, with plain clicks unmodified', () => {
+    const onSelect = vi.fn();
+    const view = render(selectionPanel(onSelect));
+    const button = rowButton(view, 1);
+    fireEvent.click(button);
+    fireEvent.click(button, { ctrlKey: true });
+    fireEvent.click(button, { metaKey: true });
+    fireEvent.click(button, { shiftKey: true });
+    expect(onSelect.mock.calls).toEqual([
+      [1, { toggle: false, range: false }],
+      [1, { toggle: true, range: false }],
+      [1, { toggle: true, range: false }],
+      [1, { toggle: false, range: true }],
+    ]);
+  });
+
+  it('collapses on Canvas with a plain select', () => {
+    const onSelect = vi.fn();
+    const view = render(selectionPanel(onSelect));
+    fireEvent.click(view.container.querySelector('[data-layer-type="canvas"] .layer-row-select')!, { ctrlKey: true });
+    expect(onSelect).toHaveBeenCalledWith('canvas');
+  });
+
+  describe('swipe', () => {
+    const swipeRow = (view: ReturnType<typeof render>, name: string) => view.container.querySelector<HTMLElement>(`button[aria-label^="${name},"]`)!.closest('li')!;
+    const gesture = (row: HTMLElement, to: { dx: number; dy?: number }, pointerType = 'touch') => {
+      const base = { pointerType, pointerId: 7, isPrimary: true, button: 0 };
+      fireEvent.pointerDown(row, { ...base, clientX: 100, clientY: 100 });
+      fireEvent.pointerMove(row, { ...base, clientX: 100 + to.dx, clientY: 100 + (to.dy ?? 0) });
+      fireEvent.pointerUp(row, { ...base, clientX: 100 + to.dx, clientY: 100 + (to.dy ?? 0) });
+    };
+
+    it('toggles on a touch or pen swipe right past the threshold and swallows the following click', () => {
+      const onSelect = vi.fn();
+      const view = render(selectionPanel(onSelect));
+      const row = swipeRow(view, 'Border');
+      gesture(row, { dx: 60, dy: 10 });
+      expect(onSelect.mock.calls).toEqual([[3, { toggle: true }]]);
+      fireEvent.click(row.querySelector('.layer-row-select')!);
+      expect(onSelect).toHaveBeenCalledTimes(1);
+      // Only that one click is swallowed.
+      fireEvent.click(row.querySelector('.layer-row-select')!);
+      expect(onSelect).toHaveBeenCalledTimes(2);
+      gesture(row, { dx: 60 }, 'pen');
+      expect(onSelect).toHaveBeenCalledTimes(3);
+    });
+
+    it('shows swipe feedback while moving and snaps back on release', () => {
+      const view = render(selectionPanel());
+      const row = swipeRow(view, 'Border');
+      const base = { pointerType: 'touch', pointerId: 7, isPrimary: true, button: 0 };
+      fireEvent.pointerDown(row, { ...base, clientX: 100, clientY: 100 });
+      fireEvent.pointerMove(row, { ...base, clientX: 200, clientY: 100 });
+      expect(row.querySelector<HTMLElement>('.layer-row-select')!.style.transform).toBe('translateX(40px)');
+      expect(row).toHaveClass('layer-row-swipe-remove');
+      fireEvent.pointerUp(row, { ...base, clientX: 200, clientY: 100 });
+      expect(row.querySelector<HTMLElement>('.layer-row-select')!.style.transform).toBe('');
+      expect(row).not.toHaveClass('layer-row-swipe-remove');
+    });
+
+    it.each([
+      ['a short swipe', { dx: 20 }, 'touch'],
+      ['a left swipe', { dx: -80 }, 'touch'],
+      ['a vertical move', { dx: 10, dy: 80 }, 'touch'],
+      ['a diagonal move', { dx: 60, dy: 50 }, 'touch'],
+      ['a mouse drag', { dx: 80 }, 'mouse'],
+    ])('ignores %s', (_name, to, pointerType) => {
+      const onSelect = vi.fn();
+      const view = render(selectionPanel(onSelect));
+      const row = swipeRow(view, 'Border');
+      gesture(row, to, pointerType);
+      expect(onSelect).not.toHaveBeenCalled();
+      fireEvent.click(row.querySelector('.layer-row-select')!);
+      expect(onSelect).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores swipes on Canvas', () => {
+      const onSelect = vi.fn();
+      const view = render(selectionPanel(onSelect));
+      gesture(view.container.querySelector<HTMLElement>('[data-layer-type="canvas"]')!, { dx: 80 });
+      expect(onSelect).not.toHaveBeenCalled();
+    });
+
+    it('does not toggle when a long-press reorder drag takes over', () => {
+      const onSelect = vi.fn();
+      const view = render(selectionPanel(onSelect));
+      const row = swipeRow(view, 'Border');
+      const base = { pointerType: 'pen', pointerId: 7, isPrimary: true, button: 0 };
+      fireEvent.pointerDown(row, { ...base, clientX: 100, clientY: 100 });
+      act(() => vi.advanceTimersByTime(LAYER_LONG_PRESS_MS));
+      expect(row).toHaveClass('layer-row-dragging');
+      fireEvent.pointerMove(row, { ...base, clientX: 100, clientY: 160 });
+      fireEvent.pointerUp(row, { ...base, clientX: 100, clientY: 160 });
+      expect(onSelect).not.toHaveBeenCalled();
+    });
   });
 });

@@ -793,6 +793,19 @@ describe('advanced headless editor tools', () => {
     noop.controller.dispose();
   });
 
+  it('shows a single-surface move source as fabric and lifts its backstitches', () => {
+    const { controller, gateway, uiStore } = fixture();
+    controller.setTool({ tool: 'select' });
+    gateway.execute({ type: 'set-full', x: 3, y: 3, color: 1 });
+    gateway.execute({ type: 'add-backstitch', start: { x: 12, y: 12 }, end: { x: 16, y: 12 }, color: 2 });
+    controller.setSelection({ x: 3, y: 3 }, { x: 4, y: 3 });
+    expect(controller.moveSelection()).toBe(true);
+    const floating = uiStore.getState().overlay.floatingPaste;
+    expect(floating?.sourceHole).toEqual([{ index: 27, cell: { x: 3, y: 3 }, kind: CellKind.Empty, colors: [0, 0, 0, 0], completed: 0 }]);
+    expect([...floating?.liftedBackstitchIds ?? []]).toEqual([1]);
+    controller.dispose();
+  });
+
   it('keeps floating paste out of document history until commit and supports replacement, cancel, and clamped anchors', () => {
     const { controller, gateway, uiStore } = fixture();
     controller.setTool({ tool: 'select' });

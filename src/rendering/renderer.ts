@@ -1528,12 +1528,14 @@ function drawBackstitches(
   metrics: CanvasMetrics,
   style: RendererStyle,
   dirtyModelRect?: Rect,
-  dimAlpha = 1
+  dimAlpha = 1,
+  hidden?: ReadonlySet<number>
 ): number {
   const visible = viewportModelRect(viewport, metrics);
   const store = document.backstitches;
   let drawn = 0;
   for (let index = 0; index < store.ids.length; index += 1) {
+    if (hidden?.has(store.ids[index])) continue;
     const start = fixedToModel({ x: store.x1[index], y: store.y1[index] });
     const end = fixedToModel({ x: store.x2[index], y: store.y2[index] });
     if (!segmentIntersectsRect(start, end, visible)) continue;
@@ -1552,13 +1554,15 @@ function drawThreadBackstitches(
   metrics: CanvasMetrics,
   style: RendererStyle,
   dirtyModelRect?: Rect,
-  dimAlpha = 1
+  dimAlpha = 1,
+  hidden?: ReadonlySet<number>
 ): number {
   const visible = viewportModelRect(viewport, metrics);
   const store = document.backstitches;
   const origin = modelToScreen({ x: 0, y: 0 }, viewport);
   let drawn = 0;
   for (let index = 0; index < store.ids.length; index += 1) {
+    if (hidden?.has(store.ids[index])) continue;
     const start = fixedToModel({ x: store.x1[index], y: store.y1[index] });
     const end = fixedToModel({ x: store.x2[index], y: store.y2[index] });
     if (!segmentIntersectsRect(start, end, visible)) continue;
@@ -1626,16 +1630,50 @@ function drawBackstitchesForCells(
   style: RendererStyle,
   cells: readonly CellRect[],
   lod: RenderLod,
-  bounds: Rect
+  bounds: Rect,
+  hidden?: ReadonlySet<number>
 ): void {
   if (cells.length === 0) return;
   const visible = viewportModelRect(viewport, metrics);
   const store = document.backstitches;
+  // Segments clear of every cell's bounding rect skip all per-cell work.
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const cell of cells) {
+    minX = Math.min(minX, cell.x);
+    minY = Math.min(minY, cell.y);
+    maxX = Math.max(maxX, cell.x + cell.width);
+    maxY = Math.max(maxY, cell.y + cell.height);
+  }
+  const cellsBounds = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+  // With unit cells a segment looks up only the cells under its own bounding box.
+  const unitCells = cells.every((cell) => cell.width === 1 && cell.height === 1)
+    ? new Map(cells.map((cell) => [cell.y * document.width + cell.x, cell]))
+    : undefined;
   for (let index = 0; index < store.ids.length; index += 1) {
+    if (hidden?.has(store.ids[index])) continue;
     const start = fixedToModel({ x: store.x1[index], y: store.y1[index] });
     const end = fixedToModel({ x: store.x2[index], y: store.y2[index] });
     if (!segmentIntersectsRect(start, end, visible)) continue;
-    for (const cell of cells) {
+    if (!segmentIntersectsRect(start, end, cellsBounds)) continue;
+    let candidates: readonly CellRect[] = cells;
+    if (unitCells) {
+      const found: CellRect[] = [];
+      const left = Math.max(0, Math.floor(Math.min(start.x, end.x)));
+      const right = Math.min(document.width - 1, Math.floor(Math.max(start.x, end.x)));
+      const top = Math.max(0, Math.floor(Math.min(start.y, end.y)));
+      const bottom = Math.min(document.height - 1, Math.floor(Math.max(start.y, end.y)));
+      for (let y = top; y <= bottom; y += 1) {
+        for (let x = left; x <= right; x += 1) {
+          const cell = unitCells.get(y * document.width + x);
+          if (cell) found.push(cell);
+        }
+      }
+      candidates = found;
+    }
+    for (const cell of candidates) {
       const cellSegment = clipSegmentToRect(start, end, cell);
       if (!cellSegment) continue;
       const cellBounds = intersectRects(cellToScreenRect(cell, viewport), bounds);
@@ -1659,6 +1697,28 @@ function intersectCellRects(left: CellRect, right: CellRect): CellRect {
   const rightEdge = Math.min(left.x + left.width, right.x + right.width);
   const bottomEdge = Math.min(left.y + left.height, right.y + right.height);
   return { x, y, width: Math.max(0, rightEdge - x), height: Math.max(0, bottomEdge - y) };
+}
+
+/** Whole-cell bounds of the backstitches with these ids, or undefined when none exist. */
+function backstitchCellBounds(document: PatternDocument, ...idSets: (ReadonlySet<number> | undefined)[]): CellRect | undefined {
+  const store = document.backstitches;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let index = 0; index < store.ids.length; index += 1) {
+    if (!idSets.some((ids) => ids?.has(store.ids[index]))) continue;
+    const start = fixedToModel({ x: store.x1[index], y: store.y1[index] });
+    const end = fixedToModel({ x: store.x2[index], y: store.y2[index] });
+    minX = Math.min(minX, start.x, end.x);
+    minY = Math.min(minY, start.y, end.y);
+    maxX = Math.max(maxX, start.x, end.x);
+    maxY = Math.max(maxY, start.y, end.y);
+  }
+  if (minX > maxX) return undefined;
+  const x = Math.floor(minX);
+  const y = Math.floor(minY);
+  return { x, y, width: Math.max(1, Math.ceil(maxX) - x), height: Math.max(1, Math.ceil(maxY) - y) };
 }
 
 function growCellRect(rect: CellRect, cells: number): CellRect {
@@ -2040,6 +2100,18 @@ function drawFloatingPaste(
   const destination = preview.destination;
   const chart = { x: 0, y: 0, width: document.width, height: document.height };
   if (preview.mode === 'move' && preview.sourceSelection) {
+    if (preview.sourceHole && preview.sourceHole.length > 0) {
+      // Only hole cells in view, and inside the dirty bounds when partial, are drawn.
+      const view = intersectCellRects(intersectCellRects(visibleCellRect(viewport, metrics, document), chart), screenRectToCellRect(bounds, viewport));
+      const states = view.width > 0 && view.height > 0
+        ? preview.sourceHole.filter((state) => state.cell.x >= view.x && state.cell.x < view.x + view.width && state.cell.y >= view.y && state.cell.y < view.y + view.height)
+        : [];
+      const holeCells = drawPendingCellStates(context, document, states, viewport, style, lod, bounds, metrics.dpr);
+      const holeStates = new Map<number, PendingCellState>();
+      for (const state of states) holeStates.set(state.index, state);
+      drawGridForCells(context, document, viewport, metrics, style, holeCells, lod, holeStates);
+      drawBackstitchesForCells(context, document, viewport, metrics, style, holeCells, lod, bounds, preview.liftedBackstitchIds);
+    }
     drawFloatingSelectionContour(context, document, preview.sourceSelection, preview.sourceSelection.rect.x, preview.sourceSelection.rect.y, viewport, style, bounds, style.cursorColor, false);
   }
   const visibleDestination = intersectCellRects(destination, intersectCellRects(visibleCellRect(viewport, metrics, document), chart));
@@ -2378,7 +2450,7 @@ function drawOverlay(
   }
   drawGridForCells(context, document, viewport, metrics, style, pendingStateCells, lod, pendingStates);
   drawBrushPreview(context, document, overlay.brushPreview, viewport, style, lod, bounds);
-  drawBackstitchesForCells(context, document, viewport, metrics, style, pendingStateCells, lod, bounds);
+  drawBackstitchesForCells(context, document, viewport, metrics, style, pendingStateCells, lod, bounds, overlay.floatingPaste?.liftedBackstitchIds);
   drawPendingBackstitchRemovals(context, document, overlay.pendingBackstitchRemovals, viewport, style, bounds);
   drawBackstitchPreview(context, document, overlay.backstitchPreview, viewport, style, bounds);
   drawFloatingPaste(context, document, overlay.floatingPaste, viewport, metrics, style, lod, bounds);
@@ -2658,6 +2730,8 @@ export class Canvas2DRenderer implements CanvasRenderer {
     if (this.disposed) return;
     const previous = this.overlay.canvasEditing?.workspace;
     const next = overlay.canvasEditing?.workspace;
+    const previousLifted = this.overlay.floatingPaste?.liftedBackstitchIds;
+    const nextLifted = overlay.floatingPaste?.liftedBackstitchIds;
     this.overlay = overlay;
     const request: Invalidation = invalidation ? setterInvalidation(invalidation, 'overlay') : { layer: 'overlay', full: true };
     this.invalidate(request);
@@ -2666,6 +2740,11 @@ export class Canvas2DRenderer implements CanvasRenderer {
     const sameWorkspace = previous === next || (previous !== undefined && next !== undefined
       && previous.x === next.x && previous.y === next.y && previous.width === next.width && previous.height === next.height);
     if (!sameWorkspace) this.invalidate('base');
+    // Lifting, committing, or cancelling a move changes which backstitches the base draws.
+    if (previousLifted !== nextLifted) {
+      const cellRect = backstitchCellBounds(this.document, previousLifted, nextLifted);
+      if (cellRect) this.invalidate({ layer: 'base', cellRect: growCellRect(cellRect, 1) });
+    }
   }
 
   invalidate(invalidation: Invalidation | InvalidationLayer = 'all'): void {
@@ -2803,7 +2882,7 @@ export class Canvas2DRenderer implements CanvasRenderer {
       drawMidGrid(context, this.document, this.viewport, this.metrics, this.style, visible, lod);
       drawChartBorder(context, this.document, this.viewport, this.metrics, this.style);
       drawStitchNumbers(context, this.document, this.viewport, this.metrics, this.style);
-      const drawnBackstitches = drawBackstitches(context, this.document, this.viewport, this.metrics, this.style, undefined, dimAlpha);
+      const drawnBackstitches = drawBackstitches(context, this.document, this.viewport, this.metrics, this.style, undefined, dimAlpha, this.overlay.floatingPaste?.liftedBackstitchIds);
       if (dimAlpha < 1) restore(context);
       drawTraceImage(context, this.traceImage, this.document, this.viewport, this.metrics);
       return { ...cells, drawnBackstitches };
@@ -2850,9 +2929,10 @@ export class Canvas2DRenderer implements CanvasRenderer {
       width: invalidationRect.width / this.viewport.zoom,
       height: invalidationRect.height / this.viewport.zoom
     } : undefined;
+    const lifted = this.overlay.floatingPaste?.liftedBackstitchIds;
     const drawnBackstitches = sprites
-      ? drawThreadBackstitches(context, this.document, this.viewport, this.metrics, this.style, dirtyModel, dimAlpha)
-      : drawBackstitches(context, this.document, this.viewport, this.metrics, this.style, dirtyModel, dimAlpha);
+      ? drawThreadBackstitches(context, this.document, this.viewport, this.metrics, this.style, dirtyModel, dimAlpha, lifted)
+      : drawBackstitches(context, this.document, this.viewport, this.metrics, this.style, dirtyModel, dimAlpha, lifted);
     if (dimAlpha < 1) restore(context);
     drawTraceImage(context, this.traceImage, this.document, this.viewport, this.metrics);
     if (partial) restore(context);
