@@ -1179,7 +1179,6 @@ a.button { display: inline-flex; align-items: center; gap: .4rem; text-decoratio
 .layer-row:hover { background:#f8f5ef; }
 .layer-row-selected, .layer-row-selected:hover { border-color:#bc5a3d; background:#f1e4da; }
 .layer-row-primary, .layer-row-primary:hover { box-shadow:inset 0 0 0 1px #bc5a3d; background:#ecd5c6; }
-.layer-selection-count { margin:0; color:#8f3f27; font-size:.72rem; font-weight:700; }
 .layer-row-swipe-add { border-color:#bc5a3d; background:#f1e4da; }
 .layer-row-swipe-remove { border-color:#d5cec3; background:#fffdf9; }
 .layer-row-hidden .layer-row-name, .layer-row-hidden .layer-thumbnail { opacity:.45; }

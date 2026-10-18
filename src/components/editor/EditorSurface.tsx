@@ -1115,9 +1115,6 @@ export function EditorSurface({
         <div className="canvas-column">
           <div className="canvas-actions">
             <ActionSection id="reference-actions-label" label={activeLayerHeading} className="reference-actions layer-actions">
-              {layerSelection.layerIds.length > 1 && (
-                <p className="layer-selection-count" role="status">{`${String(layerSelection.layerIds.length)} layers selected`}</p>
-              )}
               {layeredDocument && activeLayerId !== "reference" && (
                 <LayerControls
                   document={layeredDocument}

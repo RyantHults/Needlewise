@@ -2119,7 +2119,7 @@ describe('EditorSurface layers', () => {
     expect(session.moveLayer).toHaveBeenCalledTimes(1);
   });
 
-  it('routes modifier clicks to the layer selection methods and counts the selected layers', () => {
+  it('routes modifier clicks to the layer selection methods', () => {
     const document = layeredDocument();
     applyLayerStructureCommand(document, layerAddCommand('stitch', { name: 'Border' }));
     const session = useSession(layerSession(document, 3, { primary: 3, layerIds: [1, 3] }));
@@ -2131,7 +2131,6 @@ describe('EditorSurface layers', () => {
     expect(session.selectLayerRange).toHaveBeenCalledWith(1);
     fireEvent.click(stitches);
     expect(session.setActiveLayer).toHaveBeenCalledWith(1);
-    expect(screen.getByText('2 layers selected')).toBeInTheDocument();
   });
 
   it('opens the image picker from the collapsed reference row', () => {
