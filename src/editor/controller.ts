@@ -326,8 +326,8 @@ interface EraserGesture {
 }
 
 type FillRecolorSnapshot =
-  | { readonly kind: 'recolor'; readonly fromColor: number; readonly toColor: number }
-  | { readonly kind: 'empty-region'; readonly toColor: number };
+  | { readonly kind: 'recolor'; readonly fromColor: number; readonly toColor: number; readonly bounds?: Uint8Array }
+  | { readonly kind: 'empty-region'; readonly toColor: number; readonly bounds?: Uint8Array };
 
 interface SelectionGesture {
   readonly kind: 'selection';
@@ -4924,6 +4924,14 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.notifyFocusProtected();
       return true;
     }
+    // A fill that starts inside the selection stops at its edge.
+    const selected = this.getSelectionIndices();
+    let bounds: Uint8Array | undefined;
+    if (selected?.includes(startIndex)) {
+      bounds = new Uint8Array(surface.width * surface.height);
+      for (const index of selected) if (isActiveCell(surface, index)) bounds[index] = 1;
+    }
+    const fillMask = bounds ?? surface.canvasMask;
     const token: EditorRevisionToken = { projectId: snapshot.projectId, revision: snapshot.revision };
     let job: FillJob;
     try {
@@ -4936,7 +4944,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         startMask: targetMask,
         kind: surface.kind,
         colors: surface.colors,
-        ...(surface.canvasMask === undefined ? {} : { canvasMask: surface.canvasMask })
+        ...(fillMask === undefined ? {} : { canvasMask: fillMask })
       });
     } catch (error) {
       this.setStatus(error instanceof Error ? error.message : 'Fill could not start');
@@ -4945,8 +4953,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.fillJob = job;
     this.fillToken = token;
     this.fillRecolorSnapshot = isEmptyStart
-      ? { kind: 'empty-region', toColor: selectedPaletteId }
-      : { kind: 'recolor', fromColor: sourceColor, toColor: selectedPaletteId };
+      ? { kind: 'empty-region', toColor: selectedPaletteId, ...(bounds && { bounds }) }
+      : { kind: 'recolor', fromColor: sourceColor, toColor: selectedPaletteId, ...(bounds && { bounds }) };
     this.setFillPending(true);
     this.setStatus('Filling…');
     void job.promise.then((result) => this.finishFill(job, token, result)).catch((error: unknown) => {
@@ -4990,7 +4998,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if (capturedRecolor?.kind === 'empty-region') {
       try {
-        if (!isExactEmptyRegionFillResult(currentSurface, result.startIndex, result.indices, result.masks)) {
+        if (!isExactEmptyRegionFillResult(capturedRecolor.bounds === undefined ? currentSurface : { ...currentSurface, canvasMask: capturedRecolor.bounds }, result.startIndex, result.indices, result.masks)) {
           this.setStatus('Fill discarded: invalid result');
           return;
         }

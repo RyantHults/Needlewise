@@ -1391,6 +1391,88 @@ describe('advanced headless editor tools', () => {
     fillClient.dispose();
   });
 
+  it('bounds an empty-region fill to the selection when the fill starts inside it', async () => {
+    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 3, palette: [
+      { id: 1, name: 'Red', color: '#d33' }
+    ] });
+    const fillClient = createFillWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'selection-bounded-fallback' });
+    const { controller, gateway, uiStore } = fixture(document, fillClient);
+    uiStore.setPaletteId(1);
+    controller.setSelection({ x: 1, y: 0 }, { x: 2, y: 1 });
+    controller.setTool({ tool: 'fill' });
+    const undoDepthBefore = gateway.undoDepth;
+
+    expect(controller.fillAt({ x: 1, y: 0 })).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(gateway.commands.at(-1)).toMatchObject({
+      type: 'bulk-cell',
+      indices: new Uint32Array([1, 2, 5, 6]),
+      edit: { kind: 'full', color: 1 }
+    });
+    expect(Array.from(gateway.getSnapshot().document!.kind)).toEqual([0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0]);
+    expect(gateway.undoDepth).toBe(undoDepthBefore + 1);
+
+    controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
+    expect(Array.from(gateway.getSnapshot().document!.kind)).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    expect(gateway.undoDepth).toBe(undoDepthBefore);
+    controller.dispose();
+    fillClient.dispose();
+  });
+
+  it('fills the whole region when the fill starts outside the selection', async () => {
+    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 3, palette: [
+      { id: 1, name: 'Red', color: '#d33' }
+    ] });
+    const fillClient = createFillWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'selection-outside-fallback' });
+    const { controller, gateway, uiStore } = fixture(document, fillClient);
+    uiStore.setPaletteId(1);
+    controller.setSelection({ x: 1, y: 0 }, { x: 2, y: 1 });
+    controller.setTool({ tool: 'fill' });
+
+    expect(controller.fillAt({ x: 0, y: 2 })).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(gateway.commands.at(-1)).toMatchObject({
+      type: 'bulk-cell',
+      indices: new Uint32Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
+      edit: { kind: 'full', color: 1 }
+    });
+    controller.dispose();
+    fillClient.dispose();
+  });
+
+  it('bounds a Full-region recolor fill to the selection when the fill starts inside it', async () => {
+    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 1, palette: [
+      { id: 1, name: 'Red', color: '#d33' },
+      { id: 2, name: 'Blue', color: '#36c' }
+    ] });
+    for (let index = 0; index < 4; index += 1) {
+      document.kind[index] = CellKind.Full;
+      document.colors[index * 4] = 1;
+    }
+    const fillClient = createFillWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'selection-recolor-fallback' });
+    const { controller, gateway, uiStore } = fixture(document, fillClient);
+    uiStore.setPaletteId(2);
+    controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 0 });
+    controller.setTool({ tool: 'fill' });
+
+    expect(controller.fillAt({ x: 0, y: 0 })).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(gateway.commands.at(-1)).toMatchObject({
+      type: 'bulk-recolor',
+      indices: new Uint32Array([0, 1]),
+      fromColor: 1,
+      toColor: 2
+    });
+    controller.dispose();
+    fillClient.dispose();
+  });
+
   it('rejects a protocol-valid empty-fill result that crosses an occupied boundary', async () => {
     const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 3, height: 1, palette: [
       { id: 1, name: 'Red', color: '#d33' }
