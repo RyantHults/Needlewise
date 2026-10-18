@@ -58,7 +58,7 @@ export interface ConversionSourceImageCandidate {
   readonly width: number;
   readonly height: number;
   readonly crop: { readonly x: 0; readonly y: 0; readonly width: 1; readonly height: 1 };
-  readonly chartBounds: { readonly x: 0; readonly y: 0; readonly width: number; readonly height: number };
+  readonly chartBounds: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
   readonly traceVisible: boolean;
   readonly opacity: 1;
 }
@@ -629,9 +629,11 @@ export function convertRasterToPattern(raster: ConversionRaster, options: Conver
   // skips), so palette and usage stay valid without recomputation. The
   // transparent count is re-scoped to the kept box so every stat describes
   // the final document.
+  let chartOrigin = { x: 0, y: 0 };
   if (options.autoCrop === true) {
     const box = trimDocumentToContent(document);
     if (box !== null) {
+      chartOrigin = { x: -box.left, y: -box.top };
       let keptTransparent = 0;
       for (let y = box.top; y <= box.bottom; y += 1) {
         for (let x = box.left; x <= box.right; x += 1) {
@@ -664,7 +666,7 @@ export function convertRasterToPattern(raster: ConversionRaster, options: Conver
       width: sourceWidth,
       height: sourceHeight,
       crop: { x: 0, y: 0, width: 1, height: 1 },
-      chartBounds: { x: 0, y: 0, width: document.width, height: document.height },
+      chartBounds: { x: chartOrigin.x, y: chartOrigin.y, width: options.targetWidth, height: options.targetHeight },
       traceVisible: false,
       opacity: 1
     }
@@ -781,9 +783,11 @@ export async function convertRasterToPatternAsync(
   // skips), so palette and usage stay valid without recomputation. The
   // transparent count is re-scoped to the kept box so every stat describes
   // the final document.
+  let chartOrigin = { x: 0, y: 0 };
   if (options.autoCrop === true) {
     const box = trimDocumentToContent(document);
     if (box !== null) {
+      chartOrigin = { x: -box.left, y: -box.top };
       let keptTransparent = 0;
       let checked = 0;
       for (let y = box.top; y <= box.bottom; y += 1) {
@@ -823,7 +827,7 @@ export async function convertRasterToPatternAsync(
       width: sourceWidth,
       height: sourceHeight,
       crop: { x: 0, y: 0, width: 1, height: 1 },
-      chartBounds: { x: 0, y: 0, width: document.width, height: document.height },
+      chartBounds: { x: chartOrigin.x, y: chartOrigin.y, width: options.targetWidth, height: options.targetHeight },
       traceVisible: false,
       opacity: 1
     }
@@ -842,7 +846,7 @@ export function validateConversionDraft(draft: ConversionDraft): void {
   if (draft.document.kind.length !== draft.document.width * draft.document.height || draft.document.colors.length !== draft.document.width * draft.document.height * 4) throw new ConversionError('invalid-draft', 'The conversion draft planes are malformed.');
   if (!draft.stats || draft.stats.targetWidth !== draft.document.width || draft.stats.targetHeight !== draft.document.height || draft.stats.totalPixels !== draft.document.width * draft.document.height || !Number.isSafeInteger(draft.stats.transparentPixels) || !Number.isSafeInteger(draft.stats.emptyPixels) || !Number.isSafeInteger(draft.stats.stitchedPixels) || draft.stats.transparentPixels < 0 || draft.stats.transparentPixels > draft.stats.emptyPixels || draft.stats.emptyPixels < 0 || draft.stats.stitchedPixels < 0 || draft.stats.emptyPixels + draft.stats.stitchedPixels !== draft.stats.totalPixels) throw new ConversionError('invalid-draft', 'The conversion draft statistics do not match its document.');
   assertPositiveSourceDimensions(draft.stats.sourceWidth, draft.stats.sourceHeight);
-  if (!draft.sourceImage || (draft.sourceImage.assetId !== undefined && (typeof draft.sourceImage.assetId !== 'string' || draft.sourceImage.assetId.length < 1)) || (draft.sourceImage.mimeType !== undefined && typeof draft.sourceImage.mimeType !== 'string') || draft.sourceImage.width !== draft.stats.sourceWidth || draft.sourceImage.height !== draft.stats.sourceHeight || draft.sourceImage.crop.x !== 0 || draft.sourceImage.crop.y !== 0 || draft.sourceImage.crop.width !== 1 || draft.sourceImage.crop.height !== 1 || draft.sourceImage.chartBounds.x !== 0 || draft.sourceImage.chartBounds.y !== 0 || draft.sourceImage.chartBounds.width !== draft.document.width || draft.sourceImage.chartBounds.height !== draft.document.height || typeof draft.sourceImage.traceVisible !== 'boolean' || draft.sourceImage.opacity !== 1) throw new ConversionError('invalid-draft', 'The conversion draft source image candidate is malformed.');
+  if (!draft.sourceImage || (draft.sourceImage.assetId !== undefined && (typeof draft.sourceImage.assetId !== 'string' || draft.sourceImage.assetId.length < 1)) || (draft.sourceImage.mimeType !== undefined && typeof draft.sourceImage.mimeType !== 'string') || draft.sourceImage.width !== draft.stats.sourceWidth || draft.sourceImage.height !== draft.stats.sourceHeight || draft.sourceImage.crop.x !== 0 || draft.sourceImage.crop.y !== 0 || draft.sourceImage.crop.width !== 1 || draft.sourceImage.crop.height !== 1 || !Number.isSafeInteger(draft.sourceImage.chartBounds.x) || draft.sourceImage.chartBounds.x > 0 || !Number.isSafeInteger(draft.sourceImage.chartBounds.y) || draft.sourceImage.chartBounds.y > 0 || !Number.isSafeInteger(draft.sourceImage.chartBounds.width) || draft.sourceImage.chartBounds.width < 1 || !Number.isSafeInteger(draft.sourceImage.chartBounds.height) || draft.sourceImage.chartBounds.height < 1 || draft.sourceImage.chartBounds.x + draft.sourceImage.chartBounds.width < draft.document.width || draft.sourceImage.chartBounds.y + draft.sourceImage.chartBounds.height < draft.document.height || typeof draft.sourceImage.traceVisible !== 'boolean' || draft.sourceImage.opacity !== 1) throw new ConversionError('invalid-draft', 'The conversion draft source image candidate is malformed.');
   const paletteIds = new Set(draft.document.palette.map((entry) => entry.id));
   let usageTotal = 0;
   for (const entry of draft.stats.paletteUsage) {

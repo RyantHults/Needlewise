@@ -401,6 +401,17 @@ describe('auto-crop to content', () => {
     // kept box, keeping the draft validation invariants intact.
     expect(cropped.stats.transparentPixels).toBe(0);
     expect(cropped.stats.emptyPixels).toBe(0);
+    // The reference image keeps the full pre-crop grid, offset by the trimmed margins.
+    expect(plain.sourceImage.chartBounds).toEqual({ x: 0, y: 0, width: 4, height: 4 });
+    expect(cropped.sourceImage.chartBounds).toEqual({ x: -1, y: -1, width: 4, height: 4 });
+    expect(() => acceptConversionDraft(cropped)).not.toThrow();
+  });
+
+  it('keeps the full-grid reference bounds on the async path', async () => {
+    const input = letterRaster(['TTTT', 'TRRT', 'TRRT', 'TTTT']);
+    const cropped = await convertRasterToPatternAsync(input, { targetWidth: 4, targetHeight: 4, autoCrop: true, catalog });
+    expect(cropped.document.width).toBe(2);
+    expect(cropped.sourceImage.chartBounds).toEqual({ x: -1, y: -1, width: 4, height: 4 });
     expect(() => acceptConversionDraft(cropped)).not.toThrow();
   });
 
