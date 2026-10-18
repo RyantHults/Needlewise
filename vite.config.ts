@@ -74,6 +74,10 @@ function githubPagesBase(): string {
 
 export default defineConfig(({ mode }) => ({
   base: githubPagesBase(),
+  // The workers are module workers (`{ type: 'module' }`). ES format lets them
+  // load the symbol pool, which uses top-level await, as a shared chunk; the
+  // default iife format rejects top-level await.
+  worker: { format: 'es' as const },
   plugins: [
     react(),
     // Serves the vendored font and writes selection.json for /__symbols. The
