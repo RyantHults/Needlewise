@@ -11,7 +11,7 @@ import type {
   SourceImageSettingsInput
 } from './types';
 import { isArchiveSafeAssetId, isValidAssetId, MAX_ASSET_BYTES } from './limits';
-import { isWithinImageDecodeBounds, MAX_IMAGE_DECODE_PIXELS } from '../shared/limits';
+import { isWithinImageDecodeBounds, MAX_IMAGE_DECODE_PIXELS } from '../image/limits';
 import { sha256 } from './hash';
 
 /**

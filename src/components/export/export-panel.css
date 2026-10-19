@@ -8,8 +8,7 @@
 .export-field label, .export-label { color:#687568; font-size:.72rem; font-weight:700; text-transform:uppercase; }
 .export-field input, .export-field select { width:100%; min-height:2.4rem; border:1px solid #c5d0c2; border-radius:.35rem; padding:.4rem .55rem; background:#f8faf6; font:inherit; font-size:.9rem; }
 .export-field input[aria-invalid="true"] { border-color:#a8321f; }
-.export-field input:focus-visible, .export-field select:focus-visible, .export-check input:focus-visible { outline:2px solid #bc5a3d; outline-offset:2px; }
-.export-check { display:flex; align-items:center; gap:.5rem; min-height:2.4rem; font-size:.9rem; }
+.export-field input:focus-visible, .export-field select:focus-visible { outline:2px solid #bc5a3d; outline-offset:2px; }
 .export-actions { display:flex; flex-wrap:wrap; align-items:center; gap:.6rem; grid-column:1 / -1; margin-top:.4rem; }
 .export-segmented { display:inline-flex; gap:.3rem; margin-top:.2rem; }
 .export-segmented button { min-height:2.1rem; padding:0 .8rem; border:1px solid #d5cec3; border-radius:.5rem; background:#fffdf9; color:#3a342f; font:inherit; font-size:.88rem; cursor:pointer; }

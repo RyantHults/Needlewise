@@ -8,7 +8,6 @@ import {
 import {
   ConversionError,
   conversionCancelled,
-  MAX_CONVERSION_DECODE_DIMENSION,
   MAX_CONVERSION_DECODE_PIXELS,
   MAX_CONVERSION_DIMENSION,
   MAX_CONVERSION_SOURCE_BYTES,
@@ -17,7 +16,8 @@ import {
   type ConversionCancellation,
   type ConversionRaster
 } from './image-to-pattern';
-import { fitImageWithinWorkingBounds, MAX_WORKING_IMAGE_DIMENSION, MAX_WORKING_IMAGE_PIXELS } from '../shared/image-sizing';
+import { isWithinImageDecodeBounds } from '../image/limits';
+import { fitImageWithinWorkingBounds, MAX_WORKING_IMAGE_DIMENSION, MAX_WORKING_IMAGE_PIXELS } from '../image/image-sizing';
 
 export interface ConversionRasterContext {
   drawImage(...args: unknown[]): void;
@@ -183,8 +183,8 @@ async function assertEncodedSourceBounds(source: Blob, options: ConversionRaster
   const dimensions = detectEncodedImageDimensions(header);
   // The conversion pipeline pre-scales oversized decodes to the working bounds
   // itself, so the encoded header only guards against decodes past the memory
-  // ceiling (MAX_CONVERSION_DECODE_*).
-  if (!dimensions || !Number.isSafeInteger(dimensions.width) || !Number.isSafeInteger(dimensions.height) || dimensions.width < 1 || dimensions.height < 1 || dimensions.width > MAX_CONVERSION_DECODE_DIMENSION || dimensions.height > MAX_CONVERSION_DECODE_DIMENSION || dimensions.width * dimensions.height > MAX_CONVERSION_DECODE_PIXELS) {
+  // ceiling (isWithinImageDecodeBounds).
+  if (!dimensions || !isWithinImageDecodeBounds(dimensions.width, dimensions.height)) {
     throw new ConversionError('invalid-raster', 'The encoded source image dimensions are outside the supported bounds.');
   }
   return dimensions.mimeType;
@@ -339,7 +339,7 @@ export async function decodeAndResampleImage(
   }
   try {
     conversionCancelled(cancellation);
-    if (!Number.isSafeInteger(decoded.width) || !Number.isSafeInteger(decoded.height) || decoded.width < 1 || decoded.height < 1 || decoded.width > MAX_CONVERSION_DECODE_DIMENSION || decoded.height > MAX_CONVERSION_DECODE_DIMENSION || decoded.width * decoded.height > MAX_CONVERSION_DECODE_PIXELS) {
+    if (!isWithinImageDecodeBounds(decoded.width, decoded.height)) {
       throw new ConversionError('invalid-raster', 'The decoded source image dimensions are outside the supported bounds.');
     }
     conversionCancelled(cancellation);

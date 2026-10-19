@@ -414,7 +414,7 @@ function valueOf(command: DomainCommand, ...names: string[]): unknown {
 }
 
 function requiredNumber(value: unknown, label: string): number {
-  if (typeof value !== 'number' || !Number.isInteger(value)) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
     throw new DomainError('invalid-command', `${label} must be an integer.`);
   }
   return value;
@@ -551,7 +551,7 @@ function touchCommandTargets(document: PatternDocument, command: DomainCommand, 
   if (cellTypes.has(type)) {
     const x = valueOf(command, 'x', 'column');
     const y = valueOf(command, 'y', 'row');
-    if (typeof x === 'number' && typeof y === 'number' && Number.isInteger(x) && Number.isInteger(y) && x >= 0 && y >= 0 && x < document.width && y < document.height) tracker.touchCell(document, cellIndex(document, x, y));
+    if (typeof x === 'number' && typeof y === 'number' && Number.isSafeInteger(x) && Number.isSafeInteger(y) && x >= 0 && y >= 0 && x < document.width && y < document.height) tracker.touchCell(document, cellIndex(document, x, y));
   }
   const backstitchTypes = new Set(['add-backstitch', 'remove-backstitch', 'move-backstitch', 'recolor-backstitch', 'set-backstitch-completion', 'toggle-backstitch-completion', 'update-backstitch']);
   if (backstitchTypes.has(type)) tracker.touchBackstitches(document);
@@ -564,7 +564,7 @@ function parseColor(command: DomainCommand): number {
 }
 
 function parseCorner(value: unknown): QuarterCorner {
-  if (typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 3) {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= 3) {
     return value as QuarterCorner;
   }
   if (typeof value === 'string') {
@@ -597,7 +597,7 @@ function parseDirection(value: unknown): HalfDirection {
 }
 
 function parseKind(value: unknown): CellKind {
-  if (typeof value === 'number' && value >= CellKind.Empty && value <= CellKind.ThreeQuarterPair && Number.isInteger(value)) return value as CellKind;
+  if (typeof value === 'number' && value >= CellKind.Empty && value <= CellKind.ThreeQuarterPair && Number.isSafeInteger(value)) return value as CellKind;
   if (typeof value === 'string') {
     const normalized = value.toLowerCase().replace(/[-_ ]/g, '');
     if (normalized === 'empty') return CellKind.Empty;

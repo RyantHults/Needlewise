@@ -49,10 +49,6 @@ export function resolveLayerMove(layers: readonly LayerLike[], draggedId: string
   return { layerId: dragged, toIndex: to };
 }
 
-export function isValidLayerDrop(layers: readonly LayerLike[], draggedId: string | number, overId: string | number): boolean {
-  return resolveLayerMove(layers, draggedId, overId) !== null;
-}
-
 /** One step up or down the panel (keyboard reordering); null at the edge of the layer's group. */
 export function stepLayerMove(layers: readonly LayerLike[], layerId: number, direction: 'up' | 'down'): LayerMove | null {
   const from = layers.findIndex((layer) => layer.id === layerId);

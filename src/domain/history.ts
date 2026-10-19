@@ -1799,14 +1799,6 @@ export class SurfaceEditor {
     ensureHistoryEntryFits(entry.bytes, this.historyLimit);
     this.redoStack = [];
     this.redoBytes = 0;
-    if (entry.bytes > this.historyLimit) {
-      // A single operation may exceed the normal budget, but is retained as
-      // the sole undoable entry so history memory remains bounded by one
-      // operation rather than growing without limit.
-      this.undoStack = [entry];
-      this.undoBytes = entry.bytes;
-      return;
-    }
     this.undoStack.push(entry);
     this.undoBytes += entry.bytes;
     while (this.undoBytes > this.historyLimit && this.undoStack.length > 0) {

@@ -1,4 +1,5 @@
 import { MAX_PERSISTABLE_CELL_COUNT, isActiveCell, type CanvasEdges, type PatternDocument } from '../domain';
+import { brushDisk } from './brush';
 import type { CanvasCellSet, CellRect, ModelPoint } from './contracts';
 import { rasterizeFilledOval } from './shapes';
 
@@ -25,9 +26,9 @@ export function isActiveCanvasCell(document: Pick<PatternDocument, 'width' | 'he
 }
 
 /**
- * Add the disk stamp centred on `center` to `into`, clipped to the workspace.
- * Brush size is the disk diameter, as for stitch brushes. `accept` filters
- * cells, so the eraser collects only active ones.
+ * Add the stitch brush disk (see `brushDisk`) centred on `center` to `into`,
+ * clipped to the workspace. `accept` filters cells, so the eraser collects
+ * only active ones.
  */
 export function stampCanvasBrush(
   into: Set<number>,
@@ -36,22 +37,10 @@ export function stampCanvasBrush(
   workspace: CellRect,
   accept?: (x: number, y: number) => boolean
 ): void {
-  const cellX = Math.floor(center.x);
-  const cellY = Math.floor(center.y);
-  const radius = size / 2;
-  const radiusSquared = radius * radius;
-  const minX = Math.max(workspace.x, Math.ceil(cellX - radius));
-  const maxX = Math.min(workspace.x + workspace.width - 1, Math.floor(cellX + radius));
-  const minY = Math.max(workspace.y, Math.ceil(cellY - radius));
-  const maxY = Math.min(workspace.y + workspace.height - 1, Math.floor(cellY + radius));
-  for (let y = minY; y <= maxY; y += 1) {
-    for (let x = minX; x <= maxX; x += 1) {
-      const dx = x - cellX;
-      const dy = y - cellY;
-      if (dx * dx + dy * dy > radiusSquared || (accept && !accept(x, y))) continue;
-      into.add((y - workspace.y) * workspace.width + x - workspace.x);
-    }
-  }
+  brushDisk(center, size, workspace, (x, y) => {
+    if (accept && !accept(x, y)) return;
+    into.add((y - workspace.y) * workspace.width + x - workspace.x);
+  });
 }
 
 /** The tight local rect and 0/1 bitmap of a set of workspace indices; undefined when empty. */

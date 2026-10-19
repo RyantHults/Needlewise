@@ -11,7 +11,7 @@ import {
   fitTraceImageBounds,
   sampleTraceImage
 } from './trace';
-import { MAX_WORKING_IMAGE_DIMENSION, MAX_WORKING_IMAGE_PIXELS } from '../shared/image-sizing';
+import { MAX_WORKING_IMAGE_DIMENSION, MAX_WORKING_IMAGE_PIXELS } from '../image/image-sizing';
 
 interface RecordingContext extends CanvasContextAdapter {
   records: Array<{ name: string; args: unknown[]; globalAlpha: number; strokeStyle: string }>;

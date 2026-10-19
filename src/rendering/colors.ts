@@ -1,4 +1,12 @@
-/** Color helpers shared by the symbol painter and the renderer. */
+import type { PatternDocument } from '../domain';
+
+/** Color helpers shared by the atlas, the symbol painter, and the renderer. */
+
+/** A palette id's color; `missing` stands in for a dangling non-zero id (id 0 is "no thread" and callers skip it). */
+export function paletteColor(document: PatternDocument, id: number, missing: string): string {
+  return document.palette.find((entry) => entry.id === id)?.color ?? missing;
+}
+
 function byte(value: string): number | undefined {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? Math.max(0, Math.min(255, Math.round(parsed))) : undefined;

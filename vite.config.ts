@@ -74,10 +74,18 @@ function githubPagesBase(): string {
 
 export default defineConfig(({ mode }) => ({
   base: githubPagesBase(),
-  // The workers are module workers (`{ type: 'module' }`). ES format lets them
-  // load the symbol pool, which uses top-level await, as a shared chunk; the
-  // default iife format rejects top-level await.
-  worker: { format: 'es' as const },
+  build: {
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          // Keeps the symbol pool out of the main chunk (workbox's 2 MiB precache
+          // limit) without top-level await, which would make module workers drop
+          // messages posted before their evaluation finishes.
+          groups: [{ name: 'symbol-pool', test: /src[\\/]symbols[\\/](outlines\.generated\.json|pool-asset\.ts)$/ }]
+        }
+      }
+    }
+  },
   plugins: [
     react(),
     // Serves the vendored font and writes selection.json for /__symbols. The

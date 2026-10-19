@@ -10,8 +10,8 @@ import type {
   Viewport
 } from '../editor/contracts';
 import { cellToScreenRect } from '../editor/coordinates';
-import { isWithinImageDecodeBounds, MAX_IMAGE_DECODE_BYTES } from '../shared/limits';
-import { fitImageWithinWorkingBounds, MAX_WORKING_IMAGE_DIMENSION, MAX_WORKING_IMAGE_PIXELS } from '../shared/image-sizing';
+import { isWithinImageDecodeBounds, MAX_IMAGE_DECODE_BYTES } from '../image/limits';
+import { fitImageWithinWorkingBounds, MAX_WORKING_IMAGE_DIMENSION, MAX_WORKING_IMAGE_PIXELS } from '../image/image-sizing';
 
 export const MAX_TRACE_IMAGE_PIXELS = MAX_WORKING_IMAGE_PIXELS;
 export const MAX_TRACE_IMAGE_BYTES = MAX_IMAGE_DECODE_BYTES;

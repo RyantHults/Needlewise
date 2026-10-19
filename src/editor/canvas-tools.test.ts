@@ -234,12 +234,15 @@ describe('canvas tool geometry', () => {
   it('stamps a disk clipped to the workspace and filtered by the caller', () => {
     const workspace: CellRect = { x: -2, y: -2, width: 4, height: 4 };
     const cells = new Set<number>();
-    stampCanvasBrush(cells, { x: -2, y: -2 }, 2, workspace);
-    // A size-2 disk is a plus; only the cells inside the workspace survive.
-    expect(canvasCellSet(cells, workspace)).toEqual({ rect: { x: -2, y: -2, width: 2, height: 2 }, cells: new Uint8Array([1, 1, 1, 0]) });
+    stampCanvasBrush(cells, { x: -3, y: -3 }, 2, workspace);
+    // A size-2 disk is a 2x2 square with the hit cell top-left; only the cell inside the workspace survives.
+    expect(canvasCellSet(cells, workspace)).toEqual({ rect: { x: -2, y: -2, width: 1, height: 1 }, cells: new Uint8Array([1]) });
+    const whole = new Set<number>();
+    stampCanvasBrush(whole, { x: -2, y: -2 }, 2, workspace);
+    expect(canvasCellSet(whole, workspace)).toEqual({ rect: { x: -2, y: -2, width: 2, height: 2 }, cells: new Uint8Array([1, 1, 1, 1]) });
     const filtered = new Set<number>();
-    stampCanvasBrush(filtered, { x: 0, y: 0 }, 2, workspace, (x, y) => x >= 0 && y >= 0);
-    expect(canvasCellSet(filtered, workspace)).toEqual({ rect: { x: 0, y: 0, width: 2, height: 2 }, cells: new Uint8Array([1, 1, 1, 0]) });
+    stampCanvasBrush(filtered, { x: -1, y: -1 }, 2, workspace, (x, y) => x >= 0 && y >= 0);
+    expect(canvasCellSet(filtered, workspace)).toEqual({ rect: { x: 0, y: 0, width: 1, height: 1 }, cells: new Uint8Array([1]) });
   });
 
   it('builds rect selections clipped to the workspace', () => {

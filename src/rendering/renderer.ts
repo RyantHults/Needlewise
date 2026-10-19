@@ -54,7 +54,7 @@ import {
   patternBackgroundColor
 } from './atlas';
 import { clearTarget, defaultAtlasTargetFactory, drawImage, prepareTarget, restore, save } from './context';
-import { grayscaleColor } from './colors';
+import { grayscaleColor, paletteColor } from './colors';
 import { contrastSymbolInk, isDarkColor, relativeLuminance } from './contrast';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
 import {
@@ -137,11 +137,6 @@ function defaultFrameRequest(callback: (time: number) => void): number {
 function defaultFrameCancel(handle: number): void {
   if (typeof globalThis.cancelAnimationFrame === 'function') globalThis.cancelAnimationFrame(handle);
   else clearTimeout(handle as unknown as ReturnType<typeof setTimeout>);
-}
-
-function paletteColor(document: PatternDocument, id: number, missing: string): string {
-  if (id === 0) return missing;
-  return document.palette.find((entry) => entry.id === id)?.color ?? missing;
 }
 
 function styleColor(document: PatternDocument, id: number, style: RendererStyle): string {

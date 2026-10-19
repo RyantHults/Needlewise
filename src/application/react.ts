@@ -5,7 +5,7 @@ import {
   useState,
   useSyncExternalStore
 } from 'react';
-import { ProjectWorkspace } from './workspace';
+import { ProjectWorkspace, getEmptyWorkspaceState } from './workspace';
 import { WorkspaceError } from './errors';
 import type {
   ActiveLayerId,
@@ -104,28 +104,7 @@ export interface UseProjectWorkspaceResult {
 
 const NO_LAYERS: readonly LayerSummary[] = [];
 
-const EMPTY_STATE: ActiveWorkspaceState = {
-  projectId: null,
-  metadata: null,
-  document: null,
-  health: null,
-  usingRecovery: false,
-  save: {
-    status: 'idle',
-    dirty: false,
-    pendingRevision: null,
-    lastSavedRevision: null,
-    metadataDirty: false,
-    assetsDirty: false,
-    conflict: false,
-    error: null
-  },
-  error: null,
-  layeredDocument: null,
-  layers: NO_LAYERS,
-  activeLayer: null,
-  layerSelection: null
-};
+const EMPTY_STATE = getEmptyWorkspaceState();
 
 function workspaceOptionsFrom(options: UseProjectWorkspaceOptions): WorkspaceOptions {
   return {

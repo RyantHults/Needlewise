@@ -1,8 +1,6 @@
 import type { SymbolOutline } from '../rendering/symbol-painter';
 
-// A dynamic import with top-level await keeps the generated artifact out of the
-// main bundle: it is emitted as its own chunk.
-const { default: outlinesAsset } = await import('./pool-asset');
+import outlinesAsset from './pool-asset';
 
 /**
  * The owned symbol pool.
@@ -15,8 +13,8 @@ const { default: outlinesAsset } = await import('./pool-asset');
  * It records the provenance of every font the pool draws from, derived from the
  * font files at build time. Nothing is chosen at runtime and no glyph is ever
  * resolved from a system font. A selection can be empty, and then so is the
- * pool; the generated artifact is read through `./pool-asset`, loaded as its
- * own chunk by a dynamic import with top-level await.
+ * pool; the generated artifact is read through `./pool-asset`, emitted as its
+ * own chunk by the build's code-splitting group.
  *
  * Several fonts can draw the same codepoint, so a symbol is identified by its
  * font-qualified id and its Unicode name is unique only within one font.

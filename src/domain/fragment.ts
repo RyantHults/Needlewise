@@ -187,10 +187,10 @@ export function createPatternFragment(document: PatternDocument, selection: Frag
     colors.set(document.colors.subarray(sourceColorOffset, sourceColorOffset + rect.width * 4), targetColorOffset);
   }
 
-  const left = rect.x * 4;
-  const top = rect.y * 4;
-  const right = (rect.x + rect.width) * 4;
-  const bottom = (rect.y + rect.height) * 4;
+  const left = rect.x * FIXED_POINT_UNITS_PER_CELL;
+  const top = rect.y * FIXED_POINT_UNITS_PER_CELL;
+  const right = (rect.x + rect.width) * FIXED_POINT_UNITS_PER_CELL;
+  const bottom = (rect.y + rect.height) * FIXED_POINT_UNITS_PER_CELL;
   let containedCount = 0;
   for (let index = 0; index < document.backstitches.ids.length; index += 1) {
     const store = document.backstitches;

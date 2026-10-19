@@ -1,6 +1,7 @@
 import { CellKind, DEFAULT_PATTERN_SETTINGS, defaultPaletteSymbol, type PatternDocument } from '../domain';
 import type { CanvasTarget, RendererStyle } from '../editor/contracts';
 import { MAX_ATLAS_PIXELS, restore, save } from './context';
+import { paletteColor } from './colors';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
 import { isLegacyQuarterKind, isThreeQuarterPairKind, threeQuarterPairComponents } from '../editor/cell-kinds';
 
@@ -31,11 +32,6 @@ interface AtlasCacheEntry extends ColorAtlas {
   readonly patternBackground: string;
   readonly missingColor: string;
   readonly canvasMask: PatternDocument['canvasMask'];
-}
-
-function paletteColor(document: PatternDocument, id: number, missing: string): string {
-  if (id === 0) return 'transparent';
-  return document.palette.find((entry) => entry.id === id)?.color ?? missing;
 }
 
 /** Collect only palette IDs that can contribute pixels to either overview atlas. */

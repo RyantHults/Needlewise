@@ -7,8 +7,8 @@ import {
   type PatternDocument
 } from '../domain';
 import type { CatalogRecord, CatalogSnapshot } from '../catalog';
-import { MAX_IMAGE_DECODE_BYTES, MAX_IMAGE_DECODE_DIMENSION, MAX_IMAGE_DECODE_PIXELS } from '../shared/limits';
-import { MAX_WORKING_IMAGE_DIMENSION, MAX_WORKING_IMAGE_PIXELS } from '../shared/image-sizing';
+import { MAX_IMAGE_DECODE_BYTES, MAX_IMAGE_DECODE_PIXELS } from '../image/limits';
+import { MAX_WORKING_IMAGE_DIMENSION, MAX_WORKING_IMAGE_PIXELS } from '../image/image-sizing';
 import { isConfettiDistance, reduceConfetti, reduceConfettiSteps } from './confetti';
 import { selectPaletteIndices } from './palette-selection';
 
@@ -32,7 +32,6 @@ export const MAX_CONVERSION_SOURCE_PIXELS = MAX_WORKING_IMAGE_PIXELS;
  * with persistence and the editor reference decode via the shared limits so
  * all surfaces agree on the same memory policy.
  */
-export const MAX_CONVERSION_DECODE_DIMENSION = MAX_IMAGE_DECODE_DIMENSION;
 export const MAX_CONVERSION_DECODE_PIXELS = MAX_IMAGE_DECODE_PIXELS;
 export const MAX_CONVERSION_SOURCE_BYTES = MAX_IMAGE_DECODE_BYTES;
 export const MAX_CONVERSION_TARGET_PIXELS = MAX_PERSISTABLE_CELL_COUNT;

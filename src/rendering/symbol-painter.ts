@@ -8,7 +8,7 @@ import {
 } from '../editor/contracts';
 import { contrastSymbolInk } from './contrast';
 import { getSymbolOutline } from '../symbols';
-import { grayscaleColor } from './colors';
+import { grayscaleColor, paletteColor } from './colors';
 import {
   isThreeQuarterKind,
   isThreeQuarterPairKind,
@@ -153,11 +153,6 @@ export function drawStitchGeometry(
     [{ x: left, y: bottom }, { x: left, y: top + rect.height / 2 }, center]
   ];
   polygon(context, corners[slot] ?? corners[0]);
-}
-
-function paletteColor(document: PatternDocument, id: number, missing: string): string {
-  if (id === 0) return missing;
-  return document.palette.find((entry) => entry.id === id)?.color ?? missing;
 }
 
 /** A palette id's own slug, falling back to the same default the domain assigns. */

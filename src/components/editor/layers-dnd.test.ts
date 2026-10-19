@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   displayLayerOrder,
-  isValidLayerDrop,
   layerDragId,
   parseLayerDragId,
   resolveLayerMove,
@@ -42,8 +41,6 @@ describe('layers-dnd', () => {
     expect(resolveLayerMove(layers, layerDragId(3), layerDragId(3))).toBeNull();
     expect(resolveLayerMove(layers, layerDragId(3), 'canvas')).toBeNull();
     expect(resolveLayerMove(layers, layerDragId(99), layerDragId(3))).toBeNull();
-    expect(isValidLayerDrop(layers, layerDragId(1), layerDragId(5))).toBe(false);
-    expect(isValidLayerDrop(layers, layerDragId(1), layerDragId(3))).toBe(true);
   });
 
   it('steps one row at a time and stops at the edge of the group', () => {

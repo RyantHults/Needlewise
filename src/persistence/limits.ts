@@ -1,5 +1,5 @@
 /** Conservative limits keep malformed archives from consuming unbounded memory. */
-import { MAX_IMAGE_DECODE_BYTES } from '../shared/limits';
+import { MAX_IMAGE_DECODE_BYTES } from '../image/limits';
 
 export const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
 export const MAX_DOCUMENT_BYTES = 32 * 1024 * 1024;
