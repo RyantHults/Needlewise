@@ -1,3 +1,5 @@
+import { isRecord } from '../domain';
+
 /** The durable activity window is intentionally small and date-keyed. */
 export const MAX_DAILY_PROGRESS_ENTRIES = 366;
 export const MAX_DAILY_ACTIVITY_ENTRIES = MAX_DAILY_PROGRESS_ENTRIES;
@@ -14,10 +16,6 @@ export interface ProgressActivity {
 }
 
 export const EMPTY_PROGRESS_ACTIVITY: ProgressActivity = { daily: [] };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
 
 function isDateKey(value: unknown): value is string {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;

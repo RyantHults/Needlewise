@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CatalogDefinition, CatalogRecord } from '../catalog';
 import { ColorPickerModal } from './ColorPickerModal';
-import { normalizeHexColor, ThreadColorPicker, type ThreadColorPickerProps } from './ThreadColorPicker';
+import { ThreadColorPicker, type ThreadColorPickerProps } from './ThreadColorPicker';
 
 const record = (sourceId: string, code: string, name: string, hex: `#${string}`): CatalogRecord => ({ sourceId, code, name, hex, rgb: [0, 0, 0] });
 const makeCatalog = (catalogId: string, brandLabel: string, records: CatalogRecord[]): CatalogDefinition => {
@@ -34,14 +34,6 @@ function renderPicker(overrides: Partial<ThreadColorPickerProps> = {}) {
 const selection = () => screen.getByRole('group', { name: 'Selected thread color' });
 
 afterEach(() => vi.useRealTimers());
-
-describe('normalizeHexColor', () => {
-  it('expands and uppercases 3- and 6-digit values and rejects others', () => {
-    expect(normalizeHexColor('#abc')).toBe('#AABBCC');
-    expect(normalizeHexColor(' c72b3b ')).toBe('#C72B3B');
-    expect(normalizeHexColor('#abcd')).toBeUndefined();
-  });
-});
 
 describe('ThreadColorPicker', () => {
   it('selects the default catalog and its first color', () => {

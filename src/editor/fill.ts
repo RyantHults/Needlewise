@@ -1,4 +1,4 @@
-import { CellKind } from '../domain';
+import { CellKind, isRecord } from '../domain';
 import {
   isKnownCellKind,
   isLegacyQuarterKind,
@@ -163,10 +163,6 @@ export interface FillResultIdentity {
 export interface FillCancellation {
   readonly signal?: AbortSignal;
   readonly isCancelled?: () => boolean;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 function isBoundedTag(value: unknown, label: string): value is string {

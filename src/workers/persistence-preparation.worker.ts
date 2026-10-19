@@ -10,14 +10,11 @@ import {
   type PersistencePreparationResponse,
   type PersistencePreparationToken
 } from '../persistence/preparation';
+import { isRecord } from '../domain';
 
 export interface PersistencePreparationWorkerScope {
   addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
   postMessage(message: PersistencePreparationResponse, transfer?: Transferable[]): void;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 function tokenFromMessage(value: unknown): PersistencePreparationToken | undefined {

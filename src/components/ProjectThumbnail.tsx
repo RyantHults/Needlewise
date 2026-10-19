@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { PROJECT_THUMBNAIL_MAX_AXIS, PROJECT_THUMBNAIL_MAX_BACKSTITCHES, type ProjectThumbnailSummary } from '../persistence';
 import type { CanvasContextAdapter } from '../editor/contracts';
+import { parseHexColor, type Rgb } from '../domain/color';
+import { isRecord } from '../domain/guards';
 import { drawThreadBackstitch, THREAD_BACKSTITCH_WIDTH, THREAD_MIN_DETAIL_CELL_PX } from '../rendering/thread-preview';
 
 interface Props {
@@ -36,7 +38,7 @@ function isUsableThumbnail(value: ProjectThumbnailSummary | undefined): value is
   }
   const { backstitches } = value;
   if (backstitches === undefined) return true;
-  if (!backstitches || typeof backstitches !== 'object') return false;
+  if (!isRecord(backstitches)) return false;
   const { points, colors: segmentColors } = backstitches;
   if (!ArrayBuffer.isView(points) || Object.prototype.toString.call(points) !== '[object Uint32Array]' || points.length % 4 !== 0) return false;
   const segments = points.length / 4;
@@ -81,10 +83,7 @@ export function ProjectThumbnail({ revision, width, height, thumbnail }: Props) 
       const sourceContext = source.getContext('2d');
       if (!sourceContext) return;
       const image = sourceContext.createImageData(thumbnail.columns, thumbnail.rows);
-      const colors = thumbnail.palette.map((entry) => {
-        const value = parseInt((colorValue(entry) as string).slice(1), 16);
-        return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
-      });
+      const colors = thumbnail.palette.map((entry) => parseHexColor(colorValue(entry) as string) as Rgb);
       for (let index = 0; index < thumbnail.indices.length; index += 1) {
         const [red, green, blue] = colors[thumbnail.indices[index]];
         const offset = index * 4;

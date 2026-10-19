@@ -10,6 +10,8 @@ import {
   buildLegend,
   estimateTotalPages,
   loadExportSettings,
+  finishedSizeLine,
+  number,
   normalizeExportSettings,
   saveExportSettings,
   type ExportChartStyle,
@@ -19,8 +21,9 @@ import {
   type ExportSettings,
   type ExportSettingsStorage
 } from '../../export';
+import { isAbortError } from '../../workers/abort';
 import { Modal } from '../Modal';
-import { PHYSICAL_ESTIMATE_UNAVAILABLE, finishedSizeLine, formatLength, formatSkeins, number, pdfFilename, stitchSummary } from './material-format';
+import { PHYSICAL_ESTIMATE_UNAVAILABLE, formatLength, formatSkeins, pdfFilename, stitchSummary } from './material-format';
 import './export-panel.css';
 
 export interface ExportPdfOptions {
@@ -240,7 +243,7 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
       setRun({ status: 'done', message: `Exported ${pdfFilename(title)}.` });
       onExported?.();
     } catch (error) {
-      if (abort.signal.aborted || (error instanceof Error && error.name === 'PdfExportCancelled')) setRun({ status: 'cancelled', message: 'Export cancelled.' });
+      if (abort.signal.aborted || isAbortError(error)) setRun({ status: 'cancelled', message: 'Export cancelled.' });
       else setRun({ status: 'error', message: error instanceof Error && error.message ? error.message : 'The PDF could not be exported.' });
     } finally {
       if (controller.current === abort) controller.current = null;

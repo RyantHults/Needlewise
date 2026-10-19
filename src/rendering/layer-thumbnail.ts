@@ -1,4 +1,5 @@
 import { CellKind, FIXED_POINT_UNITS_PER_CELL, type Layer, type LayeredDocument, type PaletteEntry } from '../domain';
+import { parseHexColor, type Rgb } from '../domain/color';
 
 /**
  * Small previews of one layer's own content for the layers panel. The pixel
@@ -26,19 +27,10 @@ export function thumbnailDimensions(width: number, height: number, maxSize = LAY
   };
 }
 
-type Rgb = readonly [number, number, number];
-
-function parseHex(color: string): Rgb | undefined {
-  const digits = color.trim().replace(/^#/, '');
-  if (/^[0-9a-f]{3}$/i.test(digits)) return [0, 1, 2].map((index) => parseInt(digits[index]! + digits[index]!, 16)) as unknown as Rgb;
-  if (/^[0-9a-f]{6}$/i.test(digits)) return [0, 2, 4].map((index) => parseInt(digits.slice(index, index + 2), 16)) as unknown as Rgb;
-  return undefined;
-}
-
 function paletteColors(palette: readonly PaletteEntry[]): Map<number, Rgb> {
   const colors = new Map<number, Rgb>();
   for (const entry of palette) {
-    const rgb = parseHex(entry.color);
+    const rgb = parseHexColor(entry.color);
     if (rgb) colors.set(entry.id, rgb);
   }
   return colors;

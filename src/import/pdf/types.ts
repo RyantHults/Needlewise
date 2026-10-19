@@ -10,6 +10,10 @@ export interface Rect {
   readonly height: number;
 }
 
+export function rectCenter(rect: Rect): { x: number; y: number } {
+  return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+}
+
 /** A symbol candidate: a font glyph with ink, or a filled path that is not an axis-aligned rectangle. */
 export interface PdfMark {
   readonly kind: 'glyph' | 'path';

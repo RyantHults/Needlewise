@@ -103,7 +103,7 @@ describe('ExportPanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Imperial' }));
     await waitFor(() => expect(updateActiveMetadata).toHaveBeenCalledWith({ units: 'imperial' }));
     expect(screen.getByRole('button', { name: 'Imperial' })).toHaveAttribute('aria-pressed', 'true');
-    expect(within(screen.getByRole('region', { name: 'Thread totals' })).getByText(/1 × 1 in/)).toBeInTheDocument();
+    expect(within(screen.getByRole('region', { name: 'Thread totals' })).getByText(/1 in × 1 in/)).toBeInTheDocument();
   });
 
   it('names the stitch sizes Small, Medium and Large', () => {

@@ -33,7 +33,9 @@ import { createPortal } from "react-dom";
 import { Modal } from "../Modal";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { ColorPickerModal } from "../ColorPickerModal";
-import { normalizeHexColor, type ThreadColorPickerProps } from "../ThreadColorPicker";
+import type { ThreadColorPickerProps } from "../ThreadColorPicker";
+import { normalizeHexColor } from "../../domain/color";
+import { rectsEqual } from "../../editor/rect";
 import { PaletteManagerModal } from "./PaletteManagerModal";
 import backstitchIcon from "../../assets/editor-tools/backstitch.svg";
 import eraserIcon from "../../assets/editor-tools/eraser.svg";
@@ -252,13 +254,7 @@ export function EditorSurface({
             height: Math.max(1, Math.round(bounds.height)),
           };
           const trace = controllerRef.current?.getTraceImage?.();
-          if (
-            trace &&
-            (sanitized.x !== bounds.x ||
-              sanitized.y !== bounds.y ||
-              sanitized.width !== bounds.width ||
-              sanitized.height !== bounds.height)
-          )
+          if (trace && !rectsEqual(sanitized, bounds))
             controllerRef.current?.setTraceImage({
               ...trace,
               chartBounds: sanitized,

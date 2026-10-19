@@ -14,7 +14,7 @@ export interface ModalProps {
   closeLabel?: string;
   closeDisabled?: boolean;
   closeOnBackdrop?: boolean;
-  /** Overrides Escape, e.g. to close an inner panel before the modal. */
+  /** Overrides Escape, e.g. to close an inner panel before the modal. Also runs when focus has fallen to the page and this is the topmost modal. */
   onEscape?: () => void;
   /** A selector inside the dialog, or a ref. Defaults to the first focusable control, then the dialog. */
   initialFocus?: string | React.RefObject<HTMLElement | null>;
@@ -25,6 +25,9 @@ export interface ModalProps {
 }
 
 const FOCUSABLE_SELECTOR = 'button,input,select,textarea,a[href],[tabindex]';
+
+// Open modals, innermost last. Escape that lands outside every dialog (focus fell to <body>) goes to the top one.
+const openModals: symbol[] = [];
 
 function focusableWithin(root: HTMLElement) {
   return [...root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)].filter(
@@ -55,6 +58,8 @@ export function Modal({
   const onEscapeRef = useRef(onEscape);
   const initialFocusRef = useRef(initialFocus);
   const returnFocusRef = useRef(returnFocus);
+  // Set once: StrictMode's second effect run would otherwise capture this dialog's own control.
+  const previousFocusRef = useRef<HTMLElement | null>(null);
   onCloseRef.current = onClose;
   onEscapeRef.current = onEscape;
   initialFocusRef.current = initialFocus;
@@ -69,11 +74,13 @@ export function Modal({
   // Inerts the rest of the app, moves focus in, traps Tab, and handles Escape. Nested
   // modals unmount in LIFO order, so each restores the inert value it found.
   useEffect(() => {
-    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    previousFocusRef.current ??= document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const root = document.querySelector<HTMLElement>('[data-application]');
     const wasInert = root?.inert ?? false;
     if (root) root.inert = true;
     const el = elementRef.current;
+    const self = Symbol('modal');
+    openModals.push(self);
 
     const requested = initialFocusRef.current;
     const target = typeof requested === 'string' ? el?.querySelector<HTMLElement>(requested) : requested?.current;
@@ -97,12 +104,24 @@ export function Modal({
     };
     el?.addEventListener('keydown', handleKeyDown);
 
+    // Capture phase, so document-level Escape handlers behind the modal never see this key.
+    const handleDocumentKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || openModals.at(-1) !== self) return;
+      if (event.target instanceof Element && event.target.closest('[aria-modal="true"]')) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      (onEscapeRef.current ?? onCloseRef.current)();
+    };
+    document.addEventListener('keydown', handleDocumentKeyDown, true);
+
     return () => {
       el?.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('keydown', handleDocumentKeyDown, true);
+      openModals.splice(openModals.indexOf(self), 1);
       if (root) root.inert = wasInert;
       const returnTo = returnFocusRef.current;
       if (returnTo === false) return;
-      const restoreTarget = returnTo ? returnTo.current : previousFocus;
+      const restoreTarget = returnTo ? returnTo.current : previousFocusRef.current;
       // StrictMode re-runs this effect; don't pull focus out of a modal that is still open.
       window.setTimeout(() => {
         if (document.activeElement?.closest('[aria-modal="true"]')) return;

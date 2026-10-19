@@ -341,6 +341,16 @@ describe('ImportReviewDialog', () => {
     await waitFor(() => expect(change).toHaveFocus());
   });
 
+  it('asks before leaving when Escape is pressed with focus on the page', async () => {
+    renderDialog();
+    await screen.findByRole('heading', { name: 'Pages' });
+    (document.activeElement as HTMLElement).blur();
+
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+
+    expect(screen.getByRole('dialog', { name: 'Leave import?' })).toBeInTheDocument();
+  });
+
   it('opens the symbol info on click, and Escape closes only the tip', async () => {
     const { onClose } = renderDialog();
     await openKeyStep();

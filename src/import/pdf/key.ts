@@ -8,6 +8,7 @@
 // symbols unless they sit in a Symbol column.
 import type { ImportColor, ImportedKeyEntry } from '../types';
 import type { PdfFillRect, PdfMark, PdfPagePrimitives, PdfTextRun, Rect } from './types';
+import { rectCenter } from './types';
 
 type ColumnKind = 'symbol' | 'code' | 'name' | 'other';
 
@@ -49,8 +50,8 @@ const SINGLE_CODE = /^(?:[A-Z]{0,2}\d{1,4}[A-Z]?|B5200|ecru|blanc|white)$/i;
 const BLEND = /^[A-Z]{0,2}\d{1,4}[A-Z]?(?:[+/][A-Z]{0,2}\d{1,4}[A-Z]?)+$/i;
 const NUMERIC = /^[\d.,:%–—\-+/x×()]+$/i;
 
-const centerX = (r: Rect): number => r.x + r.width / 2;
-const centerY = (r: Rect): number => r.y + r.height / 2;
+const centerX = (r: Rect): number => rectCenter(r).x;
+const centerY = (r: Rect): number => rectCenter(r).y;
 const contains = (r: Rect, x: number, y: number): boolean => x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height;
 const insideAny = (rects: readonly Rect[], r: Rect): boolean => rects.some((e) => contains(e, centerX(r), centerY(r)));
 

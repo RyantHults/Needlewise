@@ -1,12 +1,9 @@
-import type { DisplayUnits, MaterialEstimate, PatternMetrics } from '../../domain';
-import type { LegendLength, LegendSkeins } from '../../export';
+import type { MaterialEstimate } from '../../domain';
+import { number, type LegendLength, type LegendSkeins } from '../../export';
 
 const YARDS_PER_METER = 1.09361;
 
 type Material = MaterialEstimate | Omit<MaterialEstimate, 'paletteId'>;
-
-/** Whole numbers print bare; fractions print with at most two decimals and no trailing zeros. */
-export const number = (value: number) => (Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0+$/, '').replace(/\.$/, ''));
 
 const range = (min: number, max: number, unit: string) => {
   // Collapse ranges that round identically (e.g. zero-to-zero) to one value.
@@ -38,13 +35,6 @@ export function formatSkeins(skeins: LegendSkeins | undefined): string {
 /** A legend length in the display unit it was built for (`m` or `yd`). */
 export function formatLength(length: LegendLength | undefined): string | null {
   return length ? range(length.min, length.max, length.unit) : null;
-}
-
-export function finishedSizeLine(finished: PatternMetrics['finishedSize'], units: DisplayUnits): string | null {
-  if (!finished) return null;
-  return units === 'metric'
-    ? `${number(finished.widthCm)} × ${number(finished.heightCm)} cm`
-    : `${number(finished.widthInches)} × ${number(finished.heightInches)} in`;
 }
 
 export function stitchSummary(counts: { full: number; half: number; quarter: number; threeQuarter?: number; backstitch: number }): string {

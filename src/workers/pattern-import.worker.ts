@@ -9,6 +9,7 @@ import {
   type PatternImportResponse
 } from '../import/import-protocol';
 import { findImporter } from '../import/registry';
+import { isAbortError } from './abort';
 import { ImportError, type ImportProgress, type ImportSession } from '../import/types';
 
 export interface PatternImportWorkerScope {
@@ -30,7 +31,7 @@ export function createPatternImportWorkerState(): PatternImportWorkerState {
 
 function isCancelled(error: unknown, signal: AbortSignal): boolean {
   return signal.aborted
-    || (error instanceof Error && error.name === 'AbortError')
+    || isAbortError(error)
     || (error instanceof ImportError && error.code === 'cancelled');
 }
 

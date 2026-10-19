@@ -1,3 +1,4 @@
+import { isRecord } from '../domain/guards';
 import { ImportError, type ImportAnalysis, type ImportErrorCode, type ImportOverrides, type ImportProgress } from './types';
 
 export const PATTERN_IMPORT_PROTOCOL = 'needlewise.pattern-import.v1';
@@ -35,10 +36,6 @@ const ERROR_CODES: ReadonlySet<string> = new Set<ImportErrorCode>([
 
 /** Leading bytes handed to `findImporter`; the PDF sniffer looks up to 1024 bytes in. */
 export const SNIFF_BYTES = 1024;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
 
 function isEnvelope(value: unknown): value is Record<string, unknown> & { type: string; requestId: string } {
   return isRecord(value)
@@ -114,15 +111,8 @@ export function deserializeImportError(error: SerializedImportError): Error {
   return error.code ? new ImportError(error.code, error.message) : new Error(error.message);
 }
 
-/** Read a file's bytes; jsdom's Blob has no `arrayBuffer`. */
 export async function readBlobBytes(blob: Blob): Promise<Uint8Array> {
-  if (typeof blob.arrayBuffer === 'function') return new Uint8Array(await blob.arrayBuffer());
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => { resolve(new Uint8Array(reader.result as ArrayBuffer)); };
-    reader.onerror = () => { reject(reader.error ?? new Error('The file could not be read.')); };
-    reader.readAsArrayBuffer(blob);
-  });
+  return new Uint8Array(await blob.arrayBuffer());
 }
 
 /**

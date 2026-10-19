@@ -1,4 +1,4 @@
-import { assertValidLayeredDocument, LayerType, type LayeredDocument } from '../domain';
+import { assertValidLayeredDocument, isRecord, LayerType, type LayeredDocument } from '../domain';
 import { MAX_DOCUMENT_BYTES } from './limits';
 import { sha256 } from './hash';
 import { encodeDocument } from './binary';
@@ -42,10 +42,6 @@ export interface PersistencePreparationErrorMessage {
 }
 
 export type PersistencePreparationResponse = PersistencePreparedMessage | PersistencePreparationErrorMessage;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
 
 function validIdentityPart(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= 256;

@@ -46,6 +46,7 @@ import {
   visibleCellRect
 } from '../editor/coordinates';
 import { getRenderLod, resolveLodThresholds } from '../editor/viewport';
+import { intersectRect } from '../editor/rect';
 import {
   ColorAtlasCache,
   SymbolAtlasCache,
@@ -53,8 +54,9 @@ import {
   overviewColorForPaletteId,
   patternBackgroundColor
 } from './atlas';
-import { clearTarget, defaultAtlasTargetFactory, drawImage, prepareTarget, restore, save } from './context';
+import { clearTarget, clipToRect, defaultAtlasTargetFactory, drawImage, prepareTarget, rectPath, restore, save } from './context';
 import { grayscaleColor, paletteColor } from './colors';
+import { parseHexColor, rgbToHex } from '../domain/color';
 import { contrastSymbolInk, isDarkColor, relativeLuminance } from './contrast';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
 import {
@@ -577,21 +579,12 @@ function strokeGridRuns(
   stroke(runStart, to, runColor);
 }
 
-function intersectRects(left: Rect, right: Rect): Rect | undefined {
-  const x = Math.max(left.x, right.x);
-  const y = Math.max(left.y, right.y);
-  const rightEdge = Math.min(left.x + left.width, right.x + right.width);
-  const bottomEdge = Math.min(left.y + left.height, right.y + right.height);
-  if (rightEdge <= x || bottomEdge <= y) return undefined;
-  return { x, y, width: rightEdge - x, height: bottomEdge - y };
-}
-
 function patternCanvasRect(
   document: PatternDocument,
   viewport: Viewport,
   metrics: CanvasMetrics
 ): Rect | undefined {
-  return intersectRects(
+  return intersectRect(
     cellToScreenRect({ x: 0, y: 0, width: document.width, height: document.height }, viewport),
     { x: 0, y: 0, width: metrics.cssWidth, height: metrics.cssHeight }
   );
@@ -723,11 +716,12 @@ function fillCanvasFabric(
   context.fillStyle = color;
   const mask = document.canvasMask;
   if (mask === undefined) {
-    const box = intersectRects(cellToScreenRect({ x: 0, y: 0, width: document.width, height: document.height }, viewport), area);
+    const box = intersectRect(cellToScreenRect({ x: 0, y: 0, width: document.width, height: document.height }, viewport), area);
     if (box) context.fillRect(box.x, box.y, box.width, box.height);
     return;
   }
-  const cells = intersectCellRects(visibleCellRect(viewport, metrics, document), screenRectToCellRect(area, viewport));
+  const cells = intersectRect(visibleCellRect(viewport, metrics, document), screenRectToCellRect(area, viewport));
+  if (!cells) return;
   const zoom = viewport.zoom;
   for (let y = cells.y; y < cells.y + cells.height; y += 1) {
     const top = snapToDevicePixel((y - viewport.y) * zoom, metrics.dpr);
@@ -1159,13 +1153,13 @@ function forEachCellSetRun(set: CanvasCellSet, viewport: Viewport, metrics: Canv
   const view = viewportModelRect(viewport, metrics);
   const viewX = Math.floor(view.x);
   const viewY = Math.floor(view.y);
-  const area = intersectCellRects(set.rect, {
+  const area = intersectRect(set.rect, {
     x: viewX,
     y: viewY,
     width: Math.ceil(view.x + view.width) - viewX,
     height: Math.ceil(view.y + view.height) - viewY
   });
-  if (area.width === 0 || area.height === 0) return;
+  if (!area) return;
   const cells = set.cells;
   if (cells === undefined) {
     emit(cellToScreenRect(area, viewport));
@@ -1208,11 +1202,7 @@ function drawCanvasRemoveCells(context: CanvasContextAdapter, set: CanvasCellSet
   save(context);
   context.beginPath();
   forEachCellSetRun(set, viewport, metrics, (rect) => {
-    context.moveTo(rect.x, rect.y);
-    context.lineTo(rect.x + rect.width, rect.y);
-    context.lineTo(rect.x + rect.width, rect.y + rect.height);
-    context.lineTo(rect.x, rect.y + rect.height);
-    context.closePath?.();
+    rectPath(context, rect);
   });
   context.clip();
   context.strokeStyle = style.canvasRemoveColor;
@@ -1231,8 +1221,8 @@ function drawCanvasRemoveCells(context: CanvasContextAdapter, set: CanvasCellSet
 
 /** `from` minus `cut`, as up to four strips. */
 function subtractCellRect(from: CellRect, cut: CellRect): CellRect[] {
-  const inner = intersectCellRects(from, cut);
-  if (inner.width === 0 || inner.height === 0) return [from];
+  const inner = intersectRect(from, cut);
+  if (!inner) return [from];
   const fromRight = from.x + from.width;
   const fromBottom = from.y + from.height;
   const innerRight = inner.x + inner.width;
@@ -1313,7 +1303,7 @@ function canvasSetRuns(set: CanvasCellSet, cells: Uint8Array): CellRun[] {
 }
 
 function fillSelectionRect(context: CanvasContextAdapter, rect: CellRect, viewport: Viewport, bounds: Rect): void {
-  const screenRect = intersectRects(cellToScreenRect(rect, viewport), bounds);
+  const screenRect = intersectRect(cellToScreenRect(rect, viewport), bounds);
   if (!screenRect) return;
   save(context);
   context.fillStyle = SELECTION_FILL;
@@ -1671,7 +1661,7 @@ function drawBackstitchesForCells(
     for (const cell of candidates) {
       const cellSegment = clipSegmentToRect(start, end, cell);
       if (!cellSegment) continue;
-      const cellBounds = intersectRects(cellToScreenRect(cell, viewport), bounds);
+      const cellBounds = intersectRect(cellToScreenRect(cell, viewport), bounds);
       if (!cellBounds) continue;
       const screenSegment = clipSegmentToRect(
         modelToScreen(cellSegment.start, viewport),
@@ -1684,14 +1674,6 @@ function drawBackstitchesForCells(
       if (clipped) restore(context);
     }
   }
-}
-
-function intersectCellRects(left: CellRect, right: CellRect): CellRect {
-  const x = Math.max(left.x, right.x);
-  const y = Math.max(left.y, right.y);
-  const rightEdge = Math.min(left.x + left.width, right.x + right.width);
-  const bottomEdge = Math.min(left.y + left.height, right.y + right.height);
-  return { x, y, width: Math.max(0, rightEdge - x), height: Math.max(0, bottomEdge - y) };
 }
 
 /** Whole-cell bounds of the backstitches with these ids, or undefined when none exist. */
@@ -1731,19 +1713,6 @@ function screenRectToCellRect(rect: Rect, viewport: Viewport): CellRect {
   const right = Math.ceil(viewport.x + (rect.x + rect.width) / zoom);
   const bottom = Math.ceil(viewport.y + (rect.y + rect.height) / zoom);
   return { x, y, width: Math.max(0, right - x), height: Math.max(0, bottom - y) };
-}
-
-function clipToRect(context: CanvasContextAdapter, rect: Rect): boolean {
-  if (!context.clip || !context.save || !context.restore) return false;
-  context.save();
-  context.beginPath();
-  context.moveTo(rect.x, rect.y);
-  context.lineTo(rect.x + rect.width, rect.y);
-  context.lineTo(rect.x + rect.width, rect.y + rect.height);
-  context.lineTo(rect.x, rect.y + rect.height);
-  context.closePath?.();
-  context.clip();
-  return true;
 }
 
 function drawOverviewFallback(
@@ -1934,7 +1903,7 @@ function drawSparseSelectionBoundaries(
     width: bounds.width / zoom,
     height: bounds.height / zoom
   };
-  const clipModel = intersectRects(chart, visibleModel);
+  const clipModel = intersectRect(chart, visibleModel);
   if (!clipModel) return;
   save(context);
   context.strokeStyle = color ?? style.selectionColor;
@@ -2005,7 +1974,7 @@ function drawPendingCells(
   for (const cell of pendingCells) {
     if (cell.x < 0 || cell.y < 0 || cell.x >= document.width || cell.y >= document.height) continue;
     const rect = cellToScreenRect({ x: Math.floor(cell.x), y: Math.floor(cell.y), width: 1, height: 1 }, viewport);
-    const clipped = intersectRects(rect, bounds);
+    const clipped = intersectRect(rect, bounds);
     if (clipped) context.fillRect(clipped.x, clipped.y, clipped.width, clipped.height);
   }
   restore(context);
@@ -2025,7 +1994,7 @@ function drawPendingCellState(
   const y = Math.floor(state.cell.y);
   if (x < 0 || y < 0 || x >= document.width || y >= document.height || state.index !== y * document.width + x) return undefined;
   const cellRect = cellToScreenRect({ x, y, width: 1, height: 1 }, viewport);
-  const clippedCellRect = intersectRects(cellRect, bounds);
+  const clippedCellRect = intersectRect(cellRect, bounds);
   if (!clippedCellRect) return undefined;
 
   // The overlay sits above the committed layer. Mask the old cell first so an
@@ -2094,11 +2063,12 @@ function drawFloatingPaste(
     : target;
   const destination = preview.destination;
   const chart = { x: 0, y: 0, width: document.width, height: document.height };
+  const visibleChart = intersectRect(visibleCellRect(viewport, metrics, document), chart);
   if (preview.mode === 'move' && preview.sourceSelection) {
     if (preview.sourceHole && preview.sourceHole.length > 0) {
       // Only hole cells in view, and inside the dirty bounds when partial, are drawn.
-      const view = intersectCellRects(intersectCellRects(visibleCellRect(viewport, metrics, document), chart), screenRectToCellRect(bounds, viewport));
-      const states = view.width > 0 && view.height > 0
+      const view = visibleChart && intersectRect(visibleChart, screenRectToCellRect(bounds, viewport));
+      const states = view
         ? preview.sourceHole.filter((state) => state.cell.x >= view.x && state.cell.x < view.x + view.width && state.cell.y >= view.y && state.cell.y < view.y + view.height)
         : [];
       const holeCells = drawPendingCellStates(context, document, states, viewport, style, lod, bounds, metrics.dpr);
@@ -2109,8 +2079,8 @@ function drawFloatingPaste(
     }
     drawFloatingSelectionContour(context, document, preview.sourceSelection, preview.sourceSelection.rect.x, preview.sourceSelection.rect.y, viewport, style, bounds, style.cursorColor, false);
   }
-  const visibleDestination = intersectCellRects(destination, intersectCellRects(visibleCellRect(viewport, metrics, document), chart));
-  if (visibleDestination.width > 0 && visibleDestination.height > 0) {
+  const visibleDestination = visibleChart && intersectRect(destination, visibleChart);
+  if (visibleDestination) {
     const sourceLeft = visibleDestination.x - destination.x;
     const sourceTop = visibleDestination.y - destination.y;
     const sourceRight = sourceLeft + visibleDestination.width;
@@ -2125,7 +2095,7 @@ function drawFloatingPaste(
         if (targetX < 0 || targetY < 0 || targetX >= document.width || targetY >= document.height) continue;
         if (document.canvasMask !== undefined && document.canvasMask[targetY * document.width + targetX] !== 1) continue;
         const targetRect = cellToScreenRect({ x: targetX, y: targetY, width: 1, height: 1 }, viewport);
-        const clipped = intersectRects(targetRect, bounds);
+        const clipped = intersectRect(targetRect, bounds);
         if (!clipped) continue;
         const offset = sourceIndex * 4;
         save(context);
@@ -2151,7 +2121,7 @@ function drawFloatingPaste(
     }
   }
 
-  if (lod !== RenderLod.Overview && visibleDestination.width > 0 && visibleDestination.height > 0) {
+  if (lod !== RenderLod.Overview && visibleDestination) {
     const backstitches = preview.backstitches ?? {
       ids: [],
       x1: preview.fragment.backstitches.x1,
@@ -2245,19 +2215,11 @@ function drawBackstitchPreview(
 
 function compositeHexColor(foreground: string, background: string, alpha: number): string {
   const opacity = Math.max(0, Math.min(1, alpha));
-  const channels = (color: string): [number, number, number] | undefined => {
-    const shorthand = /^#([\da-f])([\da-f])([\da-f])$/i.exec(color);
-    if (shorthand) return [1, 2, 3].map((index) => parseInt(shorthand[index] + shorthand[index], 16)) as [number, number, number];
-    const full = /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(color);
-    if (full) return [parseInt(full[1], 16), parseInt(full[2], 16), parseInt(full[3], 16)];
-    return undefined;
-  };
-  const foregroundChannels = channels(foreground);
-  const backgroundChannels = channels(background);
+  const foregroundChannels = parseHexColor(foreground);
+  const backgroundChannels = parseHexColor(background);
   if (!foregroundChannels || !backgroundChannels || opacity >= 1) return foreground;
-  return `#${foregroundChannels.map((channel, index) =>
-    Math.round(channel * opacity + backgroundChannels[index] * (1 - opacity)).toString(16).padStart(2, '0')
-  ).join('')}`;
+  const [red, green, blue] = foregroundChannels.map((channel, index) => channel * opacity + backgroundChannels[index] * (1 - opacity));
+  return rgbToHex(red, green, blue);
 }
 
 // Pick the brush-preview outline ink for the colors a cell can expose at once
@@ -2390,7 +2352,7 @@ function drawBrushPreview(
 
   for (const key of cells) {
     const [x, y] = key.split(',').map(Number);
-    const rect = intersectRects(cellToScreenRect({ x, y, width: 1, height: 1 }, viewport), bounds);
+    const rect = intersectRect(cellToScreenRect({ x, y, width: 1, height: 1 }, viewport), bounds);
     if (!rect) continue;
     const hoveredColors = visibleCellColors(document, x, y, style);
     const left = modelToScreen({ x, y }, viewport);
@@ -2420,7 +2382,7 @@ function drawOverlay(
   const editing = overlay.canvasEditing ?? undefined;
   const screen = { x: 0, y: 0, width: metrics.cssWidth, height: metrics.cssHeight };
   const area = editing ? screen : bounds;
-  const clippedDirtyRect = dirtyRect && area ? intersectRects(dirtyRect, area) : undefined;
+  const clippedDirtyRect = dirtyRect && area ? intersectRect(dirtyRect, area) : undefined;
   if (dirtyRect && !clippedDirtyRect) return;
   const partial = clippedDirtyRect !== undefined && clipToRect(context, clippedDirtyRect);
   if (partial) context.clearRect(clippedDirtyRect.x, clippedDirtyRect.y, clippedDirtyRect.width, clippedDirtyRect.height);
@@ -2468,19 +2430,13 @@ function drawOverlay(
       if (sparseIndices) fillCellRuns(context, indexRuns(sparseIndices, document.width), viewport, bounds, SELECTION_FILL);
       drawSparseSelectionBoundaries(context, boundaries, document, viewport, style, bounds, overlay.color ?? sparse?.color);
     } else {
-      const boundedSelection = intersectCellRects(selection, { x: 0, y: 0, width: document.width, height: document.height });
-      const rect = boundedSelection.width > 0 && boundedSelection.height > 0
-        ? intersectRects(cellToScreenRect(boundedSelection, viewport), bounds)
-        : undefined;
-      if (rect) fillSelectionRect(context, boundedSelection, viewport, bounds);
+      const boundedSelection = intersectRect(selection, { x: 0, y: 0, width: document.width, height: document.height });
+      const rect = boundedSelection && intersectRect(cellToScreenRect(boundedSelection, viewport), bounds);
+      if (boundedSelection && rect) fillSelectionRect(context, boundedSelection, viewport, bounds);
       if (rect && context.strokeRect) context.strokeRect(rect.x, rect.y, rect.width, rect.height);
       else if (rect) {
         context.beginPath();
-        context.moveTo(rect.x, rect.y);
-        context.lineTo(rect.x + rect.width, rect.y);
-        context.lineTo(rect.x + rect.width, rect.y + rect.height);
-        context.lineTo(rect.x, rect.y + rect.height);
-        context.closePath?.();
+        rectPath(context, rect);
         context.stroke();
       }
     }
@@ -2495,16 +2451,12 @@ function drawOverlay(
     const cursorCell = { x: Math.floor(cursor.x), y: Math.floor(cursor.y) };
     if (cursorCell.x >= 0 && cursorCell.y >= 0 && cursorCell.x < document.width && cursorCell.y < document.height) {
       context.strokeStyle = overlay.color ?? style.cursorColor;
-      const rect = intersectRects(cellToScreenRect({ x: cursorCell.x, y: cursorCell.y, width: 1, height: 1 }, viewport), bounds);
+      const rect = intersectRect(cellToScreenRect({ x: cursorCell.x, y: cursorCell.y, width: 1, height: 1 }, viewport), bounds);
       if (rect) {
         if (context.strokeRect) context.strokeRect(rect.x, rect.y, rect.width, rect.height);
         else {
           context.beginPath();
-          context.moveTo(rect.x, rect.y);
-          context.lineTo(rect.x + rect.width, rect.y);
-          context.lineTo(rect.x + rect.width, rect.y + rect.height);
-          context.lineTo(rect.x, rect.y + rect.height);
-          context.closePath?.();
+          rectPath(context, rect);
           context.stroke();
         }
       }
@@ -2887,14 +2839,15 @@ export class Canvas2DRenderer implements CanvasRenderer {
       ? unionRect(invalidation.cellRect, screenRectToCellRect(invalidationRect, this.viewport))
       : invalidation.cellRect ?? (invalidationRect ? screenRectToCellRect(invalidationRect, this.viewport) : visible));
     const boundedCellRect = invalidationCellRect ?? visible;
+    // A partial redraw that misses the visible cells draws none of them.
     const dirtyCells = partial
-      ? intersectCellRects(visible, boundedCellRect)
+      ? intersectRect(visible, boundedCellRect)
       : visible;
     let drawnCells = 0;
     if (dimAlpha < 1) save(context);
     if (dimAlpha < 1) setAlpha(context, dimAlpha);
     const sprites = this.style.threadView && this.viewport.zoom >= THREAD_MIN_DETAIL_CELL_PX ? this.threadSpritesFor() : undefined;
-    if (sprites && this.document.canvasMask === undefined) {
+    if (dirtyCells && sprites && this.document.canvasMask === undefined) {
       // The weave is aligned to whole cells, so a clipped redraw lines up with the rest.
       const origin = cellToScreenRect({ x: dirtyCells.x, y: dirtyCells.y, width: 1, height: 1 }, this.viewport);
       drawThreadFabric(
@@ -2904,20 +2857,24 @@ export class Canvas2DRenderer implements CanvasRenderer {
         patternBackground
       );
     }
-    for (let y = dirtyCells.y; y < dirtyCells.y + dirtyCells.height; y += 1) {
-      for (let x = dirtyCells.x; x < dirtyCells.x + dirtyCells.width; x += 1) {
-        const drawn = sprites
-          ? drawThreadCell(context, this.document, x, y, this.style, this.viewport, sprites, dimAlpha)
-          : drawCell(context, this.document, x, y, this.style, this.viewport, lod, dimAlpha, this.metrics.dpr);
-        if (drawn) drawnCells += 1;
+    if (dirtyCells) {
+      for (let y = dirtyCells.y; y < dirtyCells.y + dirtyCells.height; y += 1) {
+        for (let x = dirtyCells.x; x < dirtyCells.x + dirtyCells.width; x += 1) {
+          const drawn = sprites
+            ? drawThreadCell(context, this.document, x, y, this.style, this.viewport, sprites, dimAlpha)
+            : drawCell(context, this.document, x, y, this.style, this.viewport, lod, dimAlpha, this.metrics.dpr);
+          if (drawn) drawnCells += 1;
+        }
       }
+      drawGrid(context, this.document, this.viewport, this.metrics, this.style, dirtyCells, lod);
+      drawMidGrid(context, this.document, this.viewport, this.metrics, this.style, dirtyCells, lod);
     }
-    drawGrid(context, this.document, this.viewport, this.metrics, this.style, dirtyCells, lod);
-    drawMidGrid(context, this.document, this.viewport, this.metrics, this.style, dirtyCells, lod);
     drawChartBorder(context, this.document, this.viewport, this.metrics, this.style);
     drawStitchNumbers(context, this.document, this.viewport, this.metrics, this.style);
     // Edges of cells just outside the redraw can reach into its clip, so trace one cell further.
-    if (this.viewport.zoom >= HIGHLIGHT_OUTLINE_MIN_CELL_PX) drawHighlightOutline(context, this.document, this.viewport, this.style, growCellRect(dirtyCells, 1));
+    // A redraw that misses the visible cells still traces around the corner nearest them.
+    const outlineCells = dirtyCells ?? { x: Math.max(visible.x, boundedCellRect.x), y: Math.max(visible.y, boundedCellRect.y), width: 0, height: 0 };
+    if (this.viewport.zoom >= HIGHLIGHT_OUTLINE_MIN_CELL_PX) drawHighlightOutline(context, this.document, this.viewport, this.style, growCellRect(outlineCells, 1));
     const dirtyModel = partial ? {
       x: this.viewport.x + invalidationRect.x / this.viewport.zoom,
       y: this.viewport.y + invalidationRect.y / this.viewport.zoom,
@@ -2931,7 +2888,7 @@ export class Canvas2DRenderer implements CanvasRenderer {
     if (dimAlpha < 1) restore(context);
     drawTraceImage(context, this.traceImage, this.document, this.viewport, this.metrics);
     if (partial) restore(context);
-    return { visitedCells: dirtyCells.width * dirtyCells.height, drawnCells, drawnBackstitches };
+    return { visitedCells: dirtyCells ? dirtyCells.width * dirtyCells.height : 0, drawnCells, drawnBackstitches };
   }
 
   /** Thread sprites at the current pixels per cell; a new size starts a new cache. */

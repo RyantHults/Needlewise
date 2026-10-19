@@ -1,6 +1,6 @@
 import type { PDFDocument, PDFFont, PDFPage, RGB } from 'pdf-lib';
 import type { DisplayUnits, PatternDocument, PatternMetrics } from '../domain';
-import { CellKind, FIXED_POINT_UNITS_PER_CELL } from '../domain';
+import { CellKind, FIXED_POINT_UNITS_PER_CELL, parseHexColor } from '../domain';
 import { DEFAULT_RENDERER_STYLE, type CanvasContextAdapter } from '../editor/contracts';
 import { isLegacyQuarterKind, isThreeQuarterPairKind, threeQuarterPairComponents } from '../editor/cell-kinds';
 import { contrastSymbolInk, relativeLuminance } from '../rendering/contrast';
@@ -8,7 +8,9 @@ import { drawStitchGeometry } from '../rendering/symbol-painter';
 import { getSymbolOutline, SYMBOL_POOL_VERSION } from '../symbols';
 import { toCubicSvgPath } from '../import/pdf/outline';
 import { ChartPresentationMode } from '../editor/contracts';
+import { throwIfAborted, yieldToEventLoop } from './cancellation';
 import type { ExportSettings } from './export-settings';
+import { finishedSizeLine } from './number-format';
 import {
   AXIS_GUTTER_PT,
   FOOTER_RESERVE_PT,
@@ -52,13 +54,6 @@ export interface PdfProgress {
 export interface PdfWriteOptions {
   readonly signal?: AbortSignal;
   readonly onProgress?: (progress: PdfProgress) => void;
-}
-
-export class PdfExportCancelledError extends Error {
-  constructor() {
-    super('PDF export cancelled.');
-    this.name = 'AbortError';
-  }
 }
 
 export const PDF_CREATOR = 'Needlewise';
@@ -158,20 +153,9 @@ export function stitchPolygons(kind: number, slot = 0): readonly Polygon[] {
 
 // --- low-level drawing ---------------------------------------------------
 
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted) throw new PdfExportCancelledError();
-}
-
-function yieldToEventLoop(): Promise<void> {
-  return new Promise((resolve) => { setTimeout(resolve, 0); });
-}
-
 function color(ctx: Context, hex: string, fallback = INK): RGB {
-  const match = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex.trim());
-  let value = match?.[1] ?? fallback.slice(1);
-  if (value.length === 3) value = value.split('').map((c) => c + c).join('');
-  const n = parseInt(value, 16);
-  return ctx.lib.rgb(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255);
+  const [r, g, b] = parseHexColor(hex) ?? parseHexColor(fallback) ?? [0, 0, 0];
+  return ctx.lib.rgb(r / 255, g / 255, b / 255);
 }
 
 /** Replace characters the embedded font cannot draw, so a catalog name never fails the export. */
@@ -417,10 +401,7 @@ function coverFacts(ctx: Context): string[] {
   const facts: string[] = [`${String(input.document.width)} × ${String(input.document.height)} stitches`];
   const finished = input.metrics.finishedSize;
   if (finished) {
-    const size = input.units === 'metric'
-      ? `${fmt(finished.widthCm)} × ${fmt(finished.heightCm)} cm`
-      : `${fmt(finished.widthInches)} × ${fmt(finished.heightInches)} in`;
-    facts.push(`Finished size: ${size}${legend.aidaCount === undefined ? '' : ` on ${String(legend.aidaCount)}-count Aida`}`);
+    facts.push(`Finished size: ${finishedSizeLine(finished, input.units)}${legend.aidaCount === undefined ? '' : ` on ${String(legend.aidaCount)}-count Aida`}`);
   }
   facts.push(`${String(legend.rows.length)} colors · ${fmt(stitchTotal(legend.totals.counts))} stitches · ${fmt(legend.totals.counts.backstitch)} backstitch`);
   facts.push(legend.totals.length

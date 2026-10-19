@@ -1,4 +1,5 @@
 import type { CellRect, GridRect, ModelPoint } from './contracts';
+import { indexBounds, intersectRect } from './rect';
 
 /** One exposed edge of a sparse cell selection. */
 export interface SelectionBoundarySegment {
@@ -371,27 +372,6 @@ export function finishLassoRaster(accumulator: LassoRasterAccumulator): Uint32Ar
   return new Uint32Array(indices);
 }
 
-export function selectionBoundsForIndices(indices: ArrayLike<number>, width: number, height: number): GridRect | undefined {
-  if (width < 1 || height < 1 || indices.length === 0) return undefined;
-  let minX = width;
-  let minY = height;
-  let maxX = -1;
-  let maxY = -1;
-  for (let position = 0; position < indices.length; position += 1) {
-    const index = indices[position];
-    if (!Number.isSafeInteger(index) || index < 0 || index >= width * height) continue;
-    const x = index % width;
-    const y = Math.floor(index / width);
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
-  }
-  return maxX < minX || maxY < minY
-    ? undefined
-    : { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
-}
-
 function adjacentIndex(x: number, y: number, width: number, height: number): number | undefined {
   return x < 0 || y < 0 || x >= width || y >= height ? undefined : y * width + x;
 }
@@ -408,7 +388,7 @@ export function selectionBoundarySegments(indices: ArrayLike<number>, width: num
     .sort((left, right) => left - right)
     .filter((index, position, sortedValues) => position === 0 || index !== sortedValues[position - 1]);
   const selected = new Set(valid);
-  const bounds = selectionBoundsForIndices(valid, width, height);
+  const bounds = indexBounds(valid, width, height);
   if (!bounds) return [];
 
   // Flood unselected cells in the tight bounds. Unvisited unselected cells
@@ -472,17 +452,15 @@ export function sparseSelectionGeometry(indices: ArrayLike<number>, width: numbe
     .sort((left, right) => left - right)
     .filter((index, position, sortedValues) => position === 0 || index !== sortedValues[position - 1]);
   const sorted = new Uint32Array(values);
-  const bounds = selectionBoundsForIndices(sorted, width, height);
+  const bounds = indexBounds(sorted, width, height);
   return bounds ? { indices: sorted, bounds, boundaries: selectionBoundarySegments(sorted, width, height) } : undefined;
 }
 
 export function selectionRectToIndices(rect: GridRect, width: number, height: number): Uint32Array {
   const indices: number[] = [];
-  const left = Math.max(0, rect.x);
-  const top = Math.max(0, rect.y);
-  const right = Math.min(width, rect.x + rect.width);
-  const bottom = Math.min(height, rect.y + rect.height);
-  for (let y = top; y < bottom; y += 1) for (let x = left; x < right; x += 1) indices.push(y * width + x);
+  const bounded = intersectRect(rect, { x: 0, y: 0, width, height });
+  if (!bounded) return new Uint32Array(0);
+  for (let y = bounded.y; y < bounded.y + bounded.height; y += 1) for (let x = bounded.x; x < bounded.x + bounded.width; x += 1) indices.push(y * width + x);
   return new Uint32Array(indices);
 }
 

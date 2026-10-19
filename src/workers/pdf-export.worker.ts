@@ -1,3 +1,4 @@
+import { isRecord } from '../domain';
 import {
   PDF_EXPORT_PROTOCOL,
   type PdfExportRequestMessage,
@@ -5,6 +6,7 @@ import {
 } from '../export/pdf-export-protocol';
 import { loadPdfLabelFont } from '../export/pdf-font';
 import { writePatternPdf, type PdfPatternInput, type PdfWriteOptions } from '../export/pdf-writer';
+import { isAbortError } from './abort';
 
 export interface PdfExportWorkerScope {
   addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
@@ -21,12 +23,8 @@ const defaultDependencies: PdfExportWorkerDependencies = {
   write: writePatternPdf
 };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
 function isCancelled(error: unknown, signal: AbortSignal): boolean {
-  return signal.aborted || (error instanceof Error && error.name === 'AbortError');
+  return signal.aborted || isAbortError(error);
 }
 
 /** Handle one export or cancel message without depending on a concrete WorkerGlobalScope. */

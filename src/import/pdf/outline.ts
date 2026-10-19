@@ -68,7 +68,7 @@ function f16(value: number): number {
   return Math.sign(value) * rounded * quantum;
 }
 
-const apply = (m: Matrix, x: number, y: number): [number, number] => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
+export const apply = (m: Matrix, x: number, y: number): [number, number] => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
 
 class PathBuilder {
   readonly subpaths: Subpath[] = [];

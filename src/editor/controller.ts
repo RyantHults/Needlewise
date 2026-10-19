@@ -148,7 +148,6 @@ import {
   canvasEdges,
   canvasOvalSelection,
   canvasRectSelection,
-  clampToWorkspace,
   isActiveCanvasCell,
   markCanvasCellSet,
   resizedCanvasBox,
@@ -156,6 +155,8 @@ import {
   stampCanvasBrush,
   type CanvasEdge
 } from './canvas-tools';
+import { clampCell, indexBounds, intersectRect } from './rect';
+import { countLabel } from './status-text';
 import {
   isThreeQuarterKind,
   isThreeQuarterPairKind,
@@ -979,12 +980,7 @@ export function normalizeGridRect(start: ModelPoint, end: ModelPoint): GridRect 
 export const gridRectFromPoints = normalizeGridRect;
 
 function boundedGridRect(rect: GridRect, document: PatternDocument): GridRect | undefined {
-  const left = Math.max(0, Math.min(document.width, rect.x));
-  const top = Math.max(0, Math.min(document.height, rect.y));
-  const right = Math.max(left, Math.min(document.width, rect.x + rect.width));
-  const bottom = Math.max(top, Math.min(document.height, rect.y + rect.height));
-  if (right <= left || bottom <= top) return undefined;
-  return { x: left, y: top, width: right - left, height: bottom - top };
+  return intersectRect(rect, { x: 0, y: 0, width: document.width, height: document.height });
 }
 
 function clampFloatingDestination(anchor: ModelPoint, fragment: PatternFragment, document: PatternDocument): GridRect {
@@ -1266,7 +1262,7 @@ function externalInvalidation(snapshot: WorkspaceEditorSnapshot, reason: string)
   const document = snapshot.document;
   if (!report || report.full || !document || report.revision !== snapshot.revision) return { layer: 'all', full: true, reason };
   const cellIndices = report.indices ?? new Uint32Array(0);
-  const cellRect = cellIndices.length > 0 ? cellRectForIndices(cellIndices, document.width, document.height) : undefined;
+  const cellRect = cellIndices.length > 0 ? indexBounds(cellIndices, document.width, document.height) : undefined;
   return cellRect ? { layer: 'all', cellRect, cellIndices, reason } : { layer: 'all', full: true, cellIndices, reason };
 }
 
@@ -1450,30 +1446,9 @@ function compositeEditStates(layered: LayeredDocument, states: readonly PendingC
   return result;
 }
 
-export function cellRectForIndices(indices: Uint32Array, width: number, height: number): CellRect | undefined {
-  if (indices.length === 0 || width < 1 || height < 1) return undefined;
-  let minX = width;
-  let minY = height;
-  let maxX = -1;
-  let maxY = -1;
-  for (const index of indices) {
-    if (index >= width * height) continue;
-    const x = index % width;
-    const y = Math.floor(index / width);
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
-  }
-  return maxX < minX || maxY < minY
-    ? undefined
-    : { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
-}
-
 export function selectedCellSemantics(document: PatternDocument, cell: ModelPoint): SelectedCellSemantics {
   if (!isFiniteModelPoint(cell)) throw new DomainError('invalid-coordinate', 'Selected cell coordinates must be finite.');
-  const x = Math.min(Math.max(0, Math.floor(cell.x)), document.width - 1);
-  const y = Math.min(Math.max(0, Math.floor(cell.y)), document.height - 1);
+  const { x, y } = clampCell(cell, { x: 0, y: 0, width: document.width, height: document.height });
   const index = y * document.width + x;
   const kind = document.kind[index];
   const threeQuarterCorner = threeQuarterCornerForKind(kind);
@@ -2415,7 +2390,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         batchOf(targets.map(({ layerId }) => withLayerId(currentSelection.kind === 'sparse' && indices
           ? deleteCellSetCommand(indices, revision)
           : deleteRegionCommand(bounds, revision), layerId))),
-        `Deleted ${String(currentSelection.kind === 'sparse' ? currentSelection.indices.length : bounds.width * bounds.height)} cell${(currentSelection.kind === 'sparse' ? currentSelection.indices.length : bounds.width * bounds.height) === 1 ? '' : 's'}`
+        `Deleted ${countLabel(currentSelection.kind === 'sparse' ? currentSelection.indices.length : bounds.width * bounds.height, 'cell')}`
       )
       : this.deleteFocusSelection(targets, currentSelection, focus, revision);
     if (result === undefined) return false;
@@ -2516,7 +2491,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const count = canvasCellSetSize(selection);
     const command = { ...canvasCellsCommand(operation, selection.rect, selection.cells), expectedRevision: snapshot.revision };
     const before = this.selectionSnapshot();
-    const result = this.executeCanvasCommand(command, `${operation === 'add' ? 'Added' : 'Deleted'} ${String(count)} canvas cell${count === 1 ? '' : 's'}`, token);
+    const result = this.executeCanvasCommand(command, `${operation === 'add' ? 'Added' : 'Deleted'} ${countLabel(count, 'canvas cell')}`, token);
     if (!result) return false;
     this.discardCanvasSelection();
     this.publishCanvasOverlay();
@@ -2762,7 +2737,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (!document || !point || !snapshot.projectId || snapshot.revision === null) return false;
     const workspace = canvasWorkspace(document);
     const token: EditorRevisionToken = { projectId: snapshot.projectId, revision: snapshot.revision };
-    const cell = clampToWorkspace(point, workspace);
+    const cell = clampCell(point, workspace);
     const previousSelection = this.canvasSelection;
     this.canvasSelection = canvasRectSelection(cell, cell, workspace);
     this.gesture = { kind: 'canvas-select', pointerId: sample.pointerId, token, workspace, anchor: cell, shape: selectShapeOf(this.uiStore.getState().tool), previousSelection, current: cell };
@@ -2810,7 +2785,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       return;
     }
     const command = { ...canvasCellsCommand(gesture.operation, set.rect, set.cells), expectedRevision: gesture.token.revision };
-    this.executeCanvasCommand(command, `${gesture.operation === 'add' ? 'Added' : 'Removed'} ${String(changes)} canvas cell${changes === 1 ? '' : 's'}`, gesture.token);
+    this.executeCanvasCommand(command, `${gesture.operation === 'add' ? 'Added' : 'Removed'} ${countLabel(changes, 'canvas cell')}`, gesture.token);
   }
 
   /** Stretch a stitch-layer marquee from its anchor to the cell under the pointer. */
@@ -2835,7 +2810,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private updateCanvasSelection(gesture: CanvasSelectionGesture, sample: PointerSample): void {
     const point = this.lassoModelPoint(sample);
     if (!point) return;
-    const cell = clampToWorkspace(point, gesture.workspace);
+    const cell = clampCell(point, gesture.workspace);
     if (cell.x === gesture.current.x && cell.y === gesture.current.y) return;
     gesture.current = cell;
     this.canvasSelection = (gesture.shape === 'oval' ? canvasOvalSelection : canvasRectSelection)(gesture.anchor, cell, gesture.workspace);
@@ -4586,7 +4561,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.commandInFlight = true;
       const result = gesture.transaction.commit(effectiveCommand);
       this.commandInFlight = false;
-      this.projectCommandResult(result, changedIndices, `Stitched ${String(changedIndices.length)} cell${changedIndices.length === 1 ? '' : 's'}`);
+      this.projectCommandResult(result, changedIndices, `Stitched ${countLabel(changedIndices.length, 'cell')}`);
     } catch (error) {
       this.commandInFlight = false;
       if (error instanceof StaleEditorTransactionError) this.setStatus('Stroke cancelled: project changed');
@@ -4657,7 +4632,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.commandInFlight = true;
       const result = gesture.transaction.commit(this.stamp(command, snapshot));
       this.commandInFlight = false;
-      this.projectCommandResult(result, indicesForCells([...targets.cells.values()], surface.width), `Erased ${String(targets.cells.size)} cell${targets.cells.size === 1 ? '' : 's'}`);
+      this.projectCommandResult(result, indicesForCells([...targets.cells.values()], surface.width), `Erased ${countLabel(targets.cells.size, 'cell')}`);
     } catch (error) {
       this.commandInFlight = false;
       if (error instanceof StaleEditorTransactionError) this.setStatus('Erase cancelled: project changed');
@@ -4684,7 +4659,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const result = gesture.transaction.commitBatch(commands);
       this.commandInFlight = false;
       if (this.selectedBackstitchId !== undefined && removals.has(this.selectedBackstitchId)) this.resetBackstitchState();
-      this.projectCommandResult(result, undefined, `Erased ${String(ids.length)} backstitch${ids.length === 1 ? '' : 'es'}`);
+      this.projectCommandResult(result, undefined, `Erased ${countLabel(ids.length, 'backstitch', 'backstitches')}`);
     } catch (error) {
       this.commandInFlight = false;
       if (error instanceof StaleEditorTransactionError) this.setStatus('Erase cancelled: project changed');
@@ -5290,7 +5265,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         const result = this.gateway.executeBatch(ids.map((id): DomainCommand => this.stamp({ type: 'remove-backstitch', id }, snapshot)), token);
         this.commandInFlight = false;
         if (this.selectedBackstitchId !== undefined && removals.has(this.selectedBackstitchId)) this.resetBackstitchState();
-        this.projectCommandResult(result, undefined, `Erased ${String(ids.length)} backstitch${ids.length === 1 ? '' : 'es'}`);
+        this.projectCommandResult(result, undefined, `Erased ${countLabel(ids.length, 'backstitch', 'backstitches')}`);
       } catch (error) {
         this.commandInFlight = false;
         if (error instanceof StaleEditorTransactionError) this.setStatus('Action cancelled: project changed');
@@ -6137,10 +6112,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private setKeyboardCursor(cursor: ModelPoint, extendSelection = false): void {
     const snapshot = this.gateway.getSnapshot();
     if (!snapshot.document || !isFiniteModelPoint(cursor)) return;
-    const bounded = {
-      x: Math.min(Math.max(0, Math.floor(cursor.x)), snapshot.document.width - 1),
-      y: Math.min(Math.max(0, Math.floor(cursor.y)), snapshot.document.height - 1)
-    };
+    const bounded = clampCell(cursor, { x: 0, y: 0, width: snapshot.document.width, height: snapshot.document.height });
     const before = this.selectionSnapshot();
     if (extendSelection) {
       this.selectionAnchor ??= this.uiStore.getState().keyboardCursor ?? { x: 0, y: 0 };
@@ -6268,8 +6240,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       return false;
     }
     const status = cells > 0
-      ? `Deleted ${String(cells)} cell${cells === 1 ? '' : 's'}`
-      : `Deleted ${String(backstitches)} backstitch${backstitches === 1 ? '' : 'es'}`;
+      ? `Deleted ${countLabel(cells, 'cell')}`
+      : `Deleted ${countLabel(backstitches, 'backstitch', 'backstitches')}`;
     return this.executeCommandWithToken(batchOf(commands), status);
   }
 

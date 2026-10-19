@@ -1,4 +1,4 @@
-import { DEFAULT_PATTERN_SETTINGS, MAX_PERSISTABLE_CELL_COUNT, flattenDocument, type LayeredDocument, type PatternDocument } from '../domain';
+import { DEFAULT_PATTERN_SETTINGS, flattenDocument, isRecord, MAX_PERSISTABLE_CELL_COUNT, type LayeredDocument, type PatternDocument } from '../domain';
 import type { ProjectMetadata, ProjectThumbnailSummary } from './types';
 
 export const PROJECT_THUMBNAIL_VERSION = 2 as const;
@@ -22,10 +22,6 @@ export interface ProjectDocumentSummary {
 }
 
 export type ProjectSummary = ProjectDocumentSummary;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
 
 function isPositiveSafeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;

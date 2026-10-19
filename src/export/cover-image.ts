@@ -8,6 +8,7 @@ import {
   drawThreadStitch,
   THREAD_MIN_DETAIL_CELL_PX
 } from '../rendering/thread-preview';
+import { throwIfAborted, yieldToEventLoop } from './cancellation';
 import type { PdfPatternDocument } from './pdf-writer';
 
 export const COVER_DEFAULT_MAX_SIDE_PX = 1200;
@@ -43,20 +44,6 @@ export function coverCellPx(width: number, height: number, maxSidePx = COVER_DEF
   const longest = Math.max(1, width, height);
   const fit = Math.floor((Number.isFinite(maxSidePx) && maxSidePx > 0 ? maxSidePx : COVER_DEFAULT_MAX_SIDE_PX) / longest);
   return Math.min(COVER_MAX_CELL_PX, Math.max(1, fit));
-}
-
-function abortError(): Error {
-  const error = new Error('Cover image rendering cancelled.');
-  error.name = 'AbortError';
-  return error;
-}
-
-function throwIfAborted(signal: AbortSignal | undefined): void {
-  if (signal?.aborted) throw abortError();
-}
-
-function yieldToEventLoop(): Promise<void> {
-  return new Promise((resolve) => { setTimeout(resolve, 0); });
 }
 
 /**

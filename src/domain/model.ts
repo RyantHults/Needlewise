@@ -21,15 +21,13 @@ import {
   MAX_PERSISTABLE_CELL_COUNT
 } from './types';
 import { SYMBOL_IDS } from '../symbols';
+import { isRecord } from './guards';
 import { assertValidDocument } from './validation';
+import { parseHexColor } from './color';
 import { canvasFields } from './canvas';
 
 const UINT16_MAX = 0xffff;
 const UINT32_MAX = 0xffffffff;
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
 
 /** True when `id` names a symbol the generated pool can actually draw. */
 export function isKnownSymbolId(id: string): boolean {
@@ -129,12 +127,12 @@ export function normalizePatternSettings(settings: Partial<PatternSettings> | un
 
 function normalizeCatalogReference(value: unknown): PaletteCatalogReference | undefined {
   if (value === undefined) return undefined;
-  if (typeof value !== 'object' || value === null) throw new DomainError('invalid-catalog-reference', 'Catalog references must be objects.');
-  const candidate = value as Record<string, unknown>;
+  if (!isRecord(value)) throw new DomainError('invalid-catalog-reference', 'Catalog references must be objects.');
+  const candidate = value;
   if (typeof candidate.catalogId !== 'string' || !candidate.catalogId.trim() || typeof candidate.sourceId !== 'string' || !candidate.sourceId.trim() || typeof candidate.code !== 'string' || !candidate.code.trim() || typeof candidate.name !== 'string' || !candidate.name.trim() || typeof candidate.hex !== 'string' || !/^#[0-9A-Fa-f]{6}$/.test(candidate.hex) || !Array.isArray(candidate.rgb) || candidate.rgb.length !== 3 || candidate.rgb.some((channel) => !Number.isInteger(channel) || channel < 0 || channel > 255)) throw new DomainError('invalid-catalog-reference', 'Catalog references have invalid identity or color data.');
   const rgb = candidate.rgb as number[];
-  const expected = [Number.parseInt(candidate.hex.slice(1, 3), 16), Number.parseInt(candidate.hex.slice(3, 5), 16), Number.parseInt(candidate.hex.slice(5, 7), 16)];
-  if (rgb.some((channel, index) => channel !== expected[index])) throw new DomainError('invalid-catalog-reference', 'Catalog HEX and RGB values must agree.');
+  const expected = parseHexColor(candidate.hex);
+  if (!expected || rgb.some((channel, index) => channel !== expected[index])) throw new DomainError('invalid-catalog-reference', 'Catalog HEX and RGB values must agree.');
   return { catalogId: candidate.catalogId, sourceId: candidate.sourceId, code: candidate.code, name: candidate.name, hex: candidate.hex.toUpperCase(), rgb: [...rgb] as [number, number, number] };
 }
 
@@ -144,8 +142,8 @@ export function paletteLimit(document: Pick<PatternDocument, 'catalog'>): number
 
 function normalizeMaterial(value: unknown, fallbackName: string, catalog?: PaletteCatalogReference): PaletteMaterial {
   if (value === undefined) return defaultPaletteMaterial(fallbackName, catalog);
-  if (typeof value !== 'object' || value === null) throw new DomainError('invalid-material', 'Palette materials must be objects.');
-  const candidate = value as Record<string, unknown>;
+  if (!isRecord(value)) throw new DomainError('invalid-material', 'Palette materials must be objects.');
+  const candidate = value;
   const kind = candidate.kind;
   const label = candidate.label;
   const unit = candidate.unit;
@@ -158,7 +156,7 @@ function normalizeMaterial(value: unknown, fallbackName: string, catalog?: Palet
 }
 
 export function normalizePaletteEntry(input: PaletteEntryInput | PaletteEntry, idOverride?: number): PaletteEntry {
-  if (!isObject(input)) throw new DomainError('invalid-palette', 'Palette entries must be objects.');
+  if (!isRecord(input)) throw new DomainError('invalid-palette', 'Palette entries must be objects.');
   const entryId = idOverride ?? input.id;
   if (typeof entryId !== 'number' || !Number.isInteger(entryId) || entryId < 1 || entryId > PALETTE_ID_MAX) throw new DomainError('invalid-palette-id', `Palette ID ${String(entryId)} is invalid.`);
   const id: number = entryId;
@@ -233,7 +231,7 @@ export function createDocument(options: CreateDocumentOptions): PatternDocument 
     throw new DomainError('invalid-dimensions', 'Pattern dimensions are too large.');
   }
 
-  if (typeof options.catalog !== 'object' || options.catalog === null) {
+  if (!isRecord(options.catalog)) {
     throw new DomainError('invalid-catalog', 'A catalog association is required.');
   }
   const catalog = {

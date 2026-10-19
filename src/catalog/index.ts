@@ -1,6 +1,8 @@
 import catalogAsset from '../../catalog/dmc-colors.json';
 import provenanceAsset from '../../catalog/provenance.json';
 import type { CatalogAssociation, PaletteCatalogReference } from '../domain/types';
+import { parseHexColor, type Rgb } from '../domain/color';
+import { isRecord } from '../domain/guards';
 
 export interface CatalogRecord {
   readonly sourceId: string;
@@ -105,10 +107,6 @@ const SHA256_CONSTANTS = [
   0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 ];
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function hasExactKeys(value: unknown, keys: readonly string[], path: string, errors: string[]): value is Record<string, unknown> {
   if (!isRecord(value)) {
     errors.push(`${path} must be an object.`);
@@ -123,9 +121,8 @@ function isRgb(value: unknown): value is readonly [number, number, number] {
   return Array.isArray(value) && value.length === 3 && value.every((channel) => Number.isInteger(channel) && channel >= 0 && channel <= 255);
 }
 
-function expectedRgb(hex: string): [number, number, number] | undefined {
-  if (!/^#[0-9A-F]{6}$/.test(hex)) return undefined;
-  return [Number.parseInt(hex.slice(1, 3), 16), Number.parseInt(hex.slice(3, 5), 16), Number.parseInt(hex.slice(5, 7), 16)];
+function expectedRgb(hex: string): Rgb | undefined {
+  return /^#[0-9A-F]{6}$/.test(hex) ? parseHexColor(hex) : undefined;
 }
 
 function validateRecordList(records: unknown, errors: string[], path: string): records is readonly DmcCatalogColor[] {

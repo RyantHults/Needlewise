@@ -22,6 +22,7 @@ import {
   normalizeMaterialSettings,
   pasteFragmentCommand,
   topmostVisibleLayer,
+  isRecord,
   type MetricsOptions,
   updateMaterialSettings,
   type MaterialSettingsUpdate,
@@ -139,10 +140,6 @@ interface TraceHistoryEntry {
 }
 
 type HistoryKind = 'document' | 'trace';
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function cloneTraceAsset(asset: ProjectAsset): TraceHistoryAsset {
   return { id: asset.id, name: asset.name, mimeType: asset.mimeType, data: new Uint8Array(asset.data), checksum: asset.checksum };

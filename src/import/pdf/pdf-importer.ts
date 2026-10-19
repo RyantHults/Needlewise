@@ -4,6 +4,7 @@
 import { getDmcColor } from '../../catalog';
 import {
   ImportError,
+  throwIfImportCancelled,
   type ImportAnalysis,
   type ImportColor,
   type ImportedKeyEntry,
@@ -34,10 +35,6 @@ const SCANNED_IMAGE_COVERAGE = 0.5;
 interface DetectedPage {
   readonly grid: PdfGrid | null;
   readonly role: ImportPageRole;
-}
-
-function throwIfCancelled(signal: AbortSignal | undefined): void {
-  if (signal?.aborted) throw new ImportError('cancelled', 'The import was cancelled.');
 }
 
 function detectPage(page: PdfPagePrimitives): DetectedPage {
@@ -119,14 +116,14 @@ function createSession(pages: PdfPagePrimitives[], thumbnails: (Blob | undefined
   return {
     async analyze(overrides: ImportOverrides = {}, options: ImportRunOptions = {}): Promise<ImportAnalysis> {
       const { signal, onProgress } = options;
-      throwIfCancelled(signal);
+      throwIfImportCancelled(signal);
       if (!detected) {
         const result: DetectedPage[] = [];
         for (const page of pages) {
           result.push(detectPage(page));
           onProgress?.({ stage: 'analyzing', done: result.length, total: pages.length });
           await Promise.resolve();
-          throwIfCancelled(signal);
+          throwIfImportCancelled(signal);
         }
         detected = result;
       }
@@ -153,7 +150,7 @@ function createSession(pages: PdfPagePrimitives[], thumbnails: (Blob | undefined
       const assembled: AssembledCells = chartPages.length > 0
         ? assembleChart(chartPages, overrides.overlap === undefined ? undefined : { overlap: overrides.overlap })
         : { width: 0, height: 0, keys: [], fills: [], symbols: new Map(), overlap: overrides.overlap ?? 0, detectedOverlap: 0, placements: new Map(), warnings: [] };
-      throwIfCancelled(signal);
+      throwIfImportCancelled(signal);
       if (initial && chartPages.length > 0 && assembled.keys.every((cellKey) => cellKey === null) && assembled.fills.some((fill) => fill !== null)) {
         throw new ImportError('no-chart-found', COLOUR_ONLY_MESSAGE);
       }
@@ -266,7 +263,7 @@ export const pdfImporter: PatternImporter = {
   /** pdf.js detaches `bytes.buffer`; pass a copy if the caller still needs the bytes. */
   async open(bytes, options = {}): Promise<ImportSession> {
     const { signal, onProgress, fileName } = options;
-    throwIfCancelled(signal);
+    throwIfImportCancelled(signal);
     let pdf: Awaited<ReturnType<typeof openPdf>>;
     try {
       pdf = await openPdf(bytes);
@@ -282,16 +279,16 @@ export const pdfImporter: PatternImporter = {
       // Thumbnails render while the PDF is loaded; every analysis reuses them.
       const thumbnails: (Blob | undefined)[] = [];
       for (let index = 0; index < pdf.numPages; index += 1) {
-        throwIfCancelled(signal);
+        throwIfImportCancelled(signal);
         pages.push(await extractPagePrimitives(pdf, index, signal));
-        throwIfCancelled(signal);
+        throwIfImportCancelled(signal);
         thumbnails.push(await pdf.getPage(index + 1).then((page) => renderPageThumbnail(page), () => undefined));
         onProgress?.({ stage: 'reading', done: index + 1, total: pdf.numPages });
       }
       const title = (await readPdfTitle(pdf))?.trim() || titleFrom(fileName);
       return createSession(pages, thumbnails, title);
     } catch (error) {
-      throwIfCancelled(signal);
+      throwIfImportCancelled(signal);
       throw error;
     } finally {
       await pdf.loadingTask.destroy();

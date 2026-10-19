@@ -37,19 +37,19 @@ describe('measurement units end-to-end', () => {
       await waitFor(() => expect(within(dialog).getByRole('button', { name })).toHaveAttribute('aria-pressed', 'true'));
     };
 
-    await totals().findByText(/Finished size: 2\.54 × 2\.54 cm/);
+    await totals().findByText(/Finished size: 2\.54 cm × 2\.54 cm/);
     expect(totals().getByText('0.01 skeins')).toBeInTheDocument();
     expect(totals().getByText('0.04–0.05 m')).toBeInTheDocument();
     expect(totals().getByText('0.01 skeins · 0.04–0.05 m')).toBeInTheDocument();
 
     await setUnits('Imperial');
-    await totals().findByText(/Finished size: 1 × 1 in/);
+    await totals().findByText(/Finished size: 1 in × 1 in/);
     expect(totals().getByText('0.01 skeins')).toBeInTheDocument();
     expect(totals().getByText('0.04–0.05 yd')).toBeInTheDocument();
     expect(totals().getByText('0.01 skeins · 0.04–0.05 yd')).toBeInTheDocument();
 
     await setUnits('Metric');
-    await totals().findByText(/Finished size: 2\.54 × 2\.54 cm/);
+    await totals().findByText(/Finished size: 2\.54 cm × 2\.54 cm/);
     expect(totals().getByText('0.01 skeins')).toBeInTheDocument();
     expect(totals().getByText('0.04–0.05 m')).toBeInTheDocument();
     expect(totals().getByText('0.01 skeins · 0.04–0.05 m')).toBeInTheDocument();

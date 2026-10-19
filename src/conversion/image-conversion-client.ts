@@ -25,6 +25,7 @@ import {
   type ConversionRaster
 } from './image-to-pattern';
 import { rasterForConversion, type ConversionRasterOptions } from './raster';
+import { isRecord } from '../domain';
 
 export { ConversionCancelledError } from './image-to-pattern';
 
@@ -172,10 +173,6 @@ const mainThreadConversionQueue = new MainThreadConversionQueue();
 interface ConversionWorkerEventTarget {
   addEventListener(type: string, listener: (event: unknown) => void): void;
   removeEventListener?(type: string, listener: (event: unknown) => void): void;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 function isImageSource(value: ConversionRaster | Blob | File): value is Blob | File {

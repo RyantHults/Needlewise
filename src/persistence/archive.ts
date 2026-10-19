@@ -5,7 +5,7 @@ import {
   UnzipPassThrough,
   zipSync
 } from 'fflate';
-import { assertValidLayeredDocument, DOCUMENT_SCHEMA_VERSION, PALETTE_ID_MAX, normalizeAidaCount, normalizeDisplayUnits, normalizeMaterialAssumptions, type CatalogAssociation } from '../domain';
+import { assertValidLayeredDocument, DOCUMENT_SCHEMA_VERSION, isRecord, normalizeAidaCount, normalizeDisplayUnits, normalizeMaterialAssumptions, PALETTE_ID_MAX, type CatalogAssociation } from '../domain';
 import { PersistenceError } from './errors';
 import {
   ARCHIVE_FORMAT,
@@ -90,10 +90,6 @@ async function bytesOfArchive(value: Uint8Array | ArrayBuffer | Blob): Promise<U
   if (value instanceof Uint8Array && value.byteLength > MAX_ARCHIVE_BYTES) throw new PersistenceError('archive-too-large', 'Archive exceeds the maximum supported size.');
   if (value instanceof ArrayBuffer && value.byteLength > MAX_ARCHIVE_BYTES) throw new PersistenceError('archive-too-large', 'Archive exceeds the maximum supported size.');
   return bytesOf(value as Uint8Array | ArrayBuffer);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 function isSha256(value: unknown): value is string {

@@ -1,4 +1,5 @@
 import { CellKind } from '../domain';
+import { parseHexColor, rgbToHex } from '../domain/color';
 import type { CanvasContextAdapter, CanvasTarget, Rect, ScreenPoint } from '../editor/contracts';
 import {
   isThreeQuarterPairKind,
@@ -70,32 +71,12 @@ function threadStrokes(kind: number, slot: number): readonly Stroke[] {
   return [CORNER_TO_CENTER[slot] ?? CORNER_TO_CENTER[0]];
 }
 
-function parseRgb(color: string): readonly [number, number, number] | undefined {
-  const text = color.trim();
-  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(text);
-  if (hex) {
-    const digits = hex[1].length === 3 ? [...hex[1]].map((digit) => digit + digit).join('') : hex[1];
-    return [
-      Number.parseInt(digits.slice(0, 2), 16),
-      Number.parseInt(digits.slice(2, 4), 16),
-      Number.parseInt(digits.slice(4, 6), 16)
-    ];
-  }
-  const rgb = /^rgba?\(\s*([^,]+),\s*([^,]+),\s*([^,)]+)/i.exec(text);
-  if (!rgb) return undefined;
-  const values = [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])];
-  return values.every(Number.isFinite) ? [values[0], values[1], values[2]] : undefined;
-}
-
 /** Blend `color` toward `target` (0-255 gray) by `amount`; an unparseable color is returned unchanged. */
 function mixToward(color: string, target: number, amount: number): string {
-  const rgb = parseRgb(color);
+  const rgb = parseHexColor(color);
   if (!rgb) return color;
-  const channel = (value: number): string => {
-    const mixed = Math.round(Math.max(0, Math.min(255, value)) * (1 - amount) + target * amount);
-    return mixed.toString(16).padStart(2, '0');
-  };
-  return `#${channel(rgb[0])}${channel(rgb[1])}${channel(rgb[2])}`;
+  const [red, green, blue] = rgb.map((value) => value * (1 - amount) + target * amount);
+  return rgbToHex(red, green, blue);
 }
 
 /** Shaded edge of a thread color. */

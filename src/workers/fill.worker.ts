@@ -16,14 +16,11 @@ import {
   type FillRequestMessage,
   type FillWorkerResponse
 } from '../editor/fill';
+import { isRecord } from '../domain';
 
 export interface FillWorkerScope {
   addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
   postMessage(message: FillWorkerResponse, transfer?: Transferable[]): void;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 function cancelledMessage(request: Pick<FillCancelMessage, 'projectId' | 'baseRevision' | 'requestId'>): FillCancelledMessage {

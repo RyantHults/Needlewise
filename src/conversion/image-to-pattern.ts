@@ -3,6 +3,7 @@ import {
   assertValidDocument,
   createDocument,
   MAX_PERSISTABLE_CELL_COUNT,
+  isRecord,
   type PaletteEntryInput,
   type PatternDocument
 } from '../domain';
@@ -190,10 +191,6 @@ export class ConversionCancelledError extends Error {
 export interface ConversionCancellation {
   readonly signal?: AbortSignal;
   readonly isCancelled?: () => boolean;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

@@ -3,6 +3,7 @@
 import type { ImportColor, ImportWarning } from '../types';
 import { normalizeSvgPath, outlineKey } from './outline';
 import type { ChartPageCells, ChartPageSymbol, PdfFillRect, PdfGrid, PdfMark, PdfPagePrimitives, Rect } from './types';
+import { rectCenter } from './types';
 
 /** A mark larger than this fraction of the pitch is not a cell symbol. */
 const MAX_MARK_PITCH = 0.9;
@@ -30,8 +31,6 @@ function cellIndex(edges: readonly number[], at: number): number {
   }
   return lo;
 }
-
-const centre = (rect: Rect): { x: number; y: number } => ({ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 });
 
 /**
  * One axis's ruler: integers printed just outside the lattice give the chart
@@ -70,7 +69,7 @@ function readRulerOffset(page: PdfPagePrimitives, grid: PdfGrid): { x: number; y
     if (!/^\d+$/.test(text)) continue;
     const value = Number(text);
     const reach = RULER_REACH * Math.max(grid.pitch, run.fontSize);
-    const { x, y } = centre(run.bounds);
+    const { x, y } = rectCenter(run.bounds);
     const besideColumns = x >= left - grid.pitch / 2 && x <= right + grid.pitch / 2;
     const besideRows = y >= top - grid.pitch / 2 && y <= bottom + grid.pitch / 2;
     if (besideColumns && ((y < top && top - y <= reach) || (y > bottom && y - bottom <= reach))) columnLabels.push({ value, at: x });
@@ -96,7 +95,7 @@ export function readChartPage(page: PdfPagePrimitives, grid: PdfGrid): ChartPage
   const crowded = new Set<number>();
   const maxSize = MAX_MARK_PITCH * grid.pitch;
   const cellOf = (rect: Rect): { column: number; row: number; width: number; height: number } | null => {
-    const { x, y } = centre(rect);
+    const { x, y } = rectCenter(rect);
     const column = cellIndex(grid.xs, x);
     const row = cellIndex(grid.ys, y);
     if (column < 0 || row < 0) return null;

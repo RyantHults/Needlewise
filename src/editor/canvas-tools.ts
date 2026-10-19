@@ -1,6 +1,7 @@
 import { MAX_PERSISTABLE_CELL_COUNT, isActiveCell, type CanvasEdges, type PatternDocument } from '../domain';
 import { brushDisk } from './brush';
 import type { CanvasCellSet, CellRect, ModelPoint } from './contracts';
+import { indexBounds, intersectRect } from './rect';
 import { rasterizeFilledOval } from './shapes';
 
 /*
@@ -11,14 +12,6 @@ import { rasterizeFilledOval } from './shapes';
  */
 
 export type CanvasEdge = keyof CanvasEdges;
-
-/** The local cell under a model point, clamped into the workspace. */
-export function clampToWorkspace(point: ModelPoint, workspace: CellRect): ModelPoint {
-  return {
-    x: Math.min(workspace.x + workspace.width - 1, Math.max(workspace.x, Math.floor(point.x))),
-    y: Math.min(workspace.y + workspace.height - 1, Math.max(workspace.y, Math.floor(point.y)))
-  };
-}
 
 /** True when a local cell is an active canvas cell of `document`. */
 export function isActiveCanvasCell(document: Pick<PatternDocument, 'width' | 'height' | 'canvasMask'>, x: number, y: number): boolean {
@@ -45,23 +38,10 @@ export function stampCanvasBrush(
 
 /** The tight local rect and 0/1 bitmap of a set of workspace indices; undefined when empty. */
 export function canvasCellSet(indices: Iterable<number>, workspace: CellRect): CanvasCellSet | undefined {
-  let left = Number.POSITIVE_INFINITY;
-  let top = Number.POSITIVE_INFINITY;
-  let right = Number.NEGATIVE_INFINITY;
-  let bottom = Number.NEGATIVE_INFINITY;
-  const cells: number[] = [];
-  for (const index of indices) {
-    const x = index % workspace.width;
-    const y = Math.floor(index / workspace.width);
-    if (x < left) left = x;
-    if (x > right) right = x;
-    if (y < top) top = y;
-    if (y > bottom) bottom = y;
-    cells.push(index);
-  }
-  if (cells.length === 0) return undefined;
-  const width = right - left + 1;
-  const height = bottom - top + 1;
+  const cells = [...indices];
+  const bounds = indexBounds(cells, workspace.width, workspace.height);
+  if (!bounds) return undefined;
+  const { x: left, y: top, width, height } = bounds;
   const bitmap = new Uint8Array(width * height);
   for (const index of cells) bitmap[(Math.floor(index / workspace.width) - top) * width + index % workspace.width - left] = 1;
   return { rect: { x: workspace.x + left, y: workspace.y + top, width, height }, cells: bitmap };
@@ -69,12 +49,15 @@ export function canvasCellSet(indices: Iterable<number>, workspace: CellRect): C
 
 /** The rect from `anchor` to `current` (inclusive cells), as a whole-rect cell set clipped to the workspace. */
 export function canvasRectSelection(anchor: ModelPoint, current: ModelPoint, workspace: CellRect): CanvasCellSet | undefined {
-  const left = Math.max(workspace.x, Math.min(Math.floor(anchor.x), Math.floor(current.x)));
-  const top = Math.max(workspace.y, Math.min(Math.floor(anchor.y), Math.floor(current.y)));
-  const right = Math.min(workspace.x + workspace.width, Math.max(Math.floor(anchor.x), Math.floor(current.x)) + 1);
-  const bottom = Math.min(workspace.y + workspace.height, Math.max(Math.floor(anchor.y), Math.floor(current.y)) + 1);
-  if (right <= left || bottom <= top) return undefined;
-  return { rect: { x: left, y: top, width: right - left, height: bottom - top } };
+  const left = Math.min(Math.floor(anchor.x), Math.floor(current.x));
+  const top = Math.min(Math.floor(anchor.y), Math.floor(current.y));
+  const rect = intersectRect({
+    x: left,
+    y: top,
+    width: Math.max(Math.floor(anchor.x), Math.floor(current.x)) + 1 - left,
+    height: Math.max(Math.floor(anchor.y), Math.floor(current.y)) + 1 - top
+  }, workspace);
+  return rect ? { rect } : undefined;
 }
 
 /** The filled oval inscribed in the rect from `anchor` to `current` (inclusive cells), as a bitmap cell set clipped to the workspace. */

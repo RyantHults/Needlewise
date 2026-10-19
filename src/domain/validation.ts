@@ -1,6 +1,8 @@
 import { CellKind, DOCUMENT_SCHEMA_VERSION, DomainError, MaterialKind, MaterialUnit, MAX_PERSISTABLE_CELL_COUNT, PALETTE_ID_MAX, type PatternDocument, type ValidationResult } from './types';
 import { UINT32_MAX, isAutoOverflowEntry, isThreeQuarterKind, isThreeQuarterPairKind, paletteLimit } from './model';
 import { backstitchWithinCanvas, isValidCanvasOrigin } from './canvas';
+import { parseHexColor } from './color';
+import { isRecord } from './guards';
 
 function isPositiveInteger(value: number): boolean {
   return Number.isInteger(value) && value > 0;
@@ -58,7 +60,7 @@ export function collectValidationErrors(document: PatternDocument): string[] {
     return errors;
   }
   const catalog = document.catalog;
-  const validCatalog = typeof catalog === 'object' && catalog !== null;
+  const validCatalog = isRecord(catalog);
   if (!validCatalog) {
     errors.push('Document catalog association is required.');
   } else {
@@ -122,7 +124,7 @@ export function collectValidationErrors(document: PatternDocument): string[] {
     if (typeof entry.symbol !== 'string' || entry.symbol.trim() === '') {
       errors.push(`Palette ID ${String(entry.id)} has an empty symbol.`);
     }
-    if (!entry.material || typeof entry.material !== 'object') {
+    if (!isRecord(entry.material)) {
       errors.push(`Palette ID ${String(entry.id)} has invalid material data.`);
     } else {
       if (entry.material.kind !== MaterialKind.Floss && entry.material.kind !== MaterialKind.Custom) errors.push(`Palette ID ${String(entry.id)} has an invalid material kind.`);
@@ -132,9 +134,7 @@ export function collectValidationErrors(document: PatternDocument): string[] {
     }
     if (entry.catalog !== undefined) {
       const catalog = entry.catalog;
-      const expectedRgb = typeof catalog.hex === 'string' && /^#[0-9a-f]{6}$/i.test(catalog.hex)
-        ? [Number.parseInt(catalog.hex.slice(1, 3), 16), Number.parseInt(catalog.hex.slice(3, 5), 16), Number.parseInt(catalog.hex.slice(5, 7), 16)]
-        : undefined;
+      const expectedRgb = typeof catalog.hex === 'string' ? parseHexColor(catalog.hex) : undefined;
       if (typeof catalog.catalogId !== 'string' || !catalog.catalogId.trim() || typeof catalog.sourceId !== 'string' || !catalog.sourceId.trim() || typeof catalog.code !== 'string' || !catalog.code.trim() || typeof catalog.name !== 'string' || !catalog.name.trim() || expectedRgb === undefined || !Array.isArray(catalog.rgb) || catalog.rgb.length !== 3 || catalog.rgb.some((channel) => !Number.isInteger(channel) || channel < 0 || channel > 255) || catalog.rgb.some((channel, index) => channel !== expectedRgb[index])) {
         errors.push(`Palette ID ${String(entry.id)} has invalid catalog data.`);
       }
@@ -156,7 +156,7 @@ export function collectValidationErrors(document: PatternDocument): string[] {
     }
   }
 
-  if (!document.settings || typeof document.settings !== 'object') {
+  if (!isRecord(document.settings)) {
     errors.push('Document settings are invalid.');
   } else {
     if (typeof document.settings.symbolSet !== 'string' || document.settings.symbolSet.trim() === '') errors.push('Document symbolSet must be a non-empty string.');

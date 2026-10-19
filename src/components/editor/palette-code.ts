@@ -1,6 +1,6 @@
 import type { CatalogDefinition } from "../../catalog";
 import type { PaletteEntry } from "../../domain";
-import { normalizeHexColor } from "../ThreadColorPicker";
+import { normalizeHexColor } from "../../domain/color";
 
 /**
  * The thread code a palette entry is shown by: its catalog code, else its hex.

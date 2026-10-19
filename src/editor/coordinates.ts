@@ -9,6 +9,7 @@ import {
   type ScreenPoint,
   type Viewport
 } from './contracts';
+import { clampCell } from './rect';
 
 export const FIXED_POINT_UNITS_PER_CELL = 4;
 export const DEFAULT_MAX_DPR = 2;
@@ -136,14 +137,9 @@ export const cellToScreen = cellToScreenRect;
 
 export function screenToCell(point: ScreenPoint, viewport: Viewport, documentSize?: DocumentSize): ModelPoint {
   const model = screenToCellUnclamped(point, viewport);
-  let x = model.x;
-  let y = model.y;
-  if (documentSize) {
-    const size = sizeOf(documentSize);
-    x = Math.min(Math.max(x, 0), Math.max(0, size.width - 1));
-    y = Math.min(Math.max(y, 0), Math.max(0, size.height - 1));
-  }
-  return { x, y };
+  if (!documentSize) return model;
+  const size = sizeOf(documentSize);
+  return clampCell(model, { x: 0, y: 0, width: size.width, height: size.height });
 }
 
 /** Paint hit testing uses this form so a pointer in the canvas margin never clamps to an edge cell. */

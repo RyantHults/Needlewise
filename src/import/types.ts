@@ -144,6 +144,14 @@ export class ImportError extends Error {
   }
 }
 
+export function importCancelledError(): ImportError {
+  return new ImportError('cancelled', 'The import was cancelled.');
+}
+
+export function throwIfImportCancelled(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw importCancelledError();
+}
+
 /** How one imported symbol becomes a palette entry; decided in review. */
 export interface SymbolMapping {
   readonly symbolKey: string;

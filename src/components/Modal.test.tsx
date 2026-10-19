@@ -217,6 +217,101 @@ describe('Modal', () => {
     });
   });
 
+  it('returns focus to the outer modal when a nested modal closes under StrictMode', () => {
+    const onOuterEscape = vi.fn();
+    function Nested() {
+      const [open, setOpen] = useState(false);
+      return (
+        <Modal title="Outer" onClose={() => {}} onEscape={onOuterEscape}>
+          <button type="button" onClick={() => setOpen(true)}>Open nested</button>
+          {open && <Modal title="Inner" onClose={() => setOpen(false)}><button type="button">Inner button</button></Modal>}
+        </Modal>
+      );
+    }
+    render(<StrictMode><Nested /></StrictMode>);
+    const outerButton = screen.getByRole('button', { name: 'Open nested' });
+    outerButton.focus();
+    fireEvent.click(outerButton);
+    flushFocusReturn();
+
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Inner button' }), { key: 'Escape' });
+    flushFocusReturn();
+
+    expect(screen.queryByRole('dialog', { name: 'Inner' })).toBeNull();
+    expect(document.activeElement).toBe(outerButton);
+    fireEvent.keyDown(document.activeElement as Element, { key: 'Escape' });
+    expect(onOuterEscape).toHaveBeenCalledTimes(1);
+  });
+
+  describe('Escape with focus outside the dialog', () => {
+    it('reaches onEscape when focus has fallen to the page', () => {
+      const onEscape = vi.fn();
+      renderModal({ onEscape });
+      (document.activeElement as HTMLElement).blur();
+
+      fireEvent.keyDown(document.body, { key: 'Escape' });
+
+      expect(onEscape).toHaveBeenCalledTimes(1);
+    });
+
+    it('closes through onClose when no onEscape is given', () => {
+      const { onClose } = renderModal();
+      (document.activeElement as HTMLElement).blur();
+
+      fireEvent.keyDown(document, { key: 'Escape' });
+
+      expect(onClose).toHaveBeenCalledTimes(1);
+    });
+
+    it('calls the handler once for Escape inside the dialog', () => {
+      const onEscape = vi.fn();
+      renderModal({ onEscape });
+
+      fireEvent.keyDown(screen.getByRole('button', { name: 'Inside' }), { key: 'Escape' });
+
+      expect(onEscape).toHaveBeenCalledTimes(1);
+    });
+
+    it('hides the key from document listeners behind the modal', () => {
+      renderModal({ onEscape: () => {} });
+      (document.activeElement as HTMLElement).blur();
+      const behind = vi.fn();
+      document.addEventListener('keydown', behind);
+
+      fireEvent.keyDown(document.body, { key: 'Escape' });
+      document.removeEventListener('keydown', behind);
+
+      expect(behind).not.toHaveBeenCalled();
+    });
+
+    it('goes only to the topmost modal, then to the next once it closes', () => {
+      const outer = vi.fn();
+      const inner = vi.fn();
+      function Stack() {
+        const [open, setOpen] = useState(false);
+        return (
+          <StrictMode>
+            <Modal title="Outer" onClose={() => {}} onEscape={outer}>
+              <button type="button" onClick={() => setOpen(true)}>Open inner</button>
+              {open && <Modal title="Inner" onClose={() => {}} onEscape={() => { inner(); setOpen(false); }}><button type="button">Inner button</button></Modal>}
+            </Modal>
+          </StrictMode>
+        );
+      }
+      render(<Stack />);
+      fireEvent.click(screen.getByRole('button', { name: 'Open inner' }));
+      (document.activeElement as HTMLElement).blur();
+
+      fireEvent.keyDown(document.body, { key: 'Escape' });
+      expect(inner).toHaveBeenCalledTimes(1);
+      expect(outer).not.toHaveBeenCalled();
+
+      fireEvent.keyDown(document.body, { key: 'Escape' });
+      expect(inner).toHaveBeenCalledTimes(1);
+      expect(outer).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('keeps focus in the dialog when StrictMode remounts it', () => {
     render(<StrictMode><Modal title="Hello" onClose={() => {}}><button type="button">Inside</button></Modal></StrictMode>);
 

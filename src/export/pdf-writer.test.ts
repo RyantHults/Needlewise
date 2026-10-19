@@ -7,6 +7,7 @@ import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { getSymbolOutline, SYMBOL_POOL_VERSION } from '../symbols';
 import { DEFAULT_EXPORT_SETTINGS, type ExportSettings } from './export-settings';
 import { PAPER_SIZES_PT } from './export-settings';
+import { ExportCancelledError } from './cancellation';
 import { estimateTotalPages, layoutChartPages, pageGeometry, AXIS_GUTTER_PT, HEADER_RESERVE_PT } from './layout';
 import {
   centerMarkSegments,
@@ -14,7 +15,6 @@ import {
   fitCoverImage,
   landscapeCoverColumns,
   layoutIndexBlock,
-  PdfExportCancelledError,
   sanitizeLabel,
   stitchPolygons,
   symbolPlacement,
@@ -31,7 +31,7 @@ function patternOf(width: number, height: number, fill: (apply: (command: Parame
     catalog: DEFAULT_CATALOG_DEFINITION.association,
     width,
     height,
-    palette: [{ name: 'Red', color: '#d33' }, { name: 'Midnight 日本 Blue', color: '#113' }]
+    palette: [{ name: 'Red', color: '#dd3333' }, { name: 'Midnight 日本 Blue', color: '#111133' }]
   });
   fill((command) => { pattern = applyCommand(pattern, command).document; });
   return pattern;
@@ -252,7 +252,7 @@ describe('writePatternPdf', () => {
     await expect(writePatternPdf(input, {
       signal: controller.signal,
       onProgress: ({ completed }) => { if (completed === 2) controller.abort(); }
-    })).rejects.toBeInstanceOf(PdfExportCancelledError);
+    })).rejects.toBeInstanceOf(ExportCancelledError);
     const aborted = new AbortController();
     aborted.abort();
     await expect(writePatternPdf(input, { signal: aborted.signal })).rejects.toMatchObject({ name: 'AbortError' });

@@ -10,7 +10,6 @@ describe('contrastSymbolInk', () => {
 
   it('flips to white on dark backgrounds', () => {
     expect(contrastSymbolInk('#000000', '#242424')).toBe('#ffffff');
-    expect(contrastSymbolInk('#000', '#242424')).toBe('#ffffff');
     expect(contrastSymbolInk('#223344', '#242424')).toBe('#ffffff');
     expect(contrastSymbolInk('#b40000', '#242424')).toBe('#ffffff');
   });
@@ -49,14 +48,13 @@ describe('relativeLuminance', () => {
   it('computes standard WCAG relative luminance', () => {
     expect(relativeLuminance('#ffffff')).toBeCloseTo(1, 4);
     expect(relativeLuminance('#000000')).toBeCloseTo(0, 4);
-    expect(relativeLuminance('#fff')).toBeCloseTo(1, 4);
-    expect(relativeLuminance('#000')).toBeCloseTo(0, 4);
     expect(relativeLuminance('#242424')).toBeCloseTo(0.01764, 4);
     expect(relativeLuminance('#b40000')).toBeCloseTo(0.097, 3);
   });
 
-  it('rejects anything that is not 3- or 6-digit hex', () => {
+  it('rejects anything that is not 6-digit hex', () => {
     expect(relativeLuminance('red')).toBeUndefined();
+    expect(relativeLuminance('#fff')).toBeUndefined();
     expect(relativeLuminance('#GGG')).toBeUndefined();
     expect(relativeLuminance('')).toBeUndefined();
   });
@@ -65,7 +63,6 @@ describe('relativeLuminance', () => {
 describe('isDarkColor', () => {
   it('is true for dark colors', () => {
     expect(isDarkColor('#000000')).toBe(true);
-    expect(isDarkColor('#000')).toBe(true);
     expect(isDarkColor('#223344')).toBe(true);
   });
 

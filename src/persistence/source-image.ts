@@ -13,6 +13,7 @@ import type {
 import { isArchiveSafeAssetId, isValidAssetId, MAX_ASSET_BYTES } from './limits';
 import { isWithinImageDecodeBounds, MAX_IMAGE_DECODE_PIXELS } from '../image/limits';
 import { sha256 } from './hash';
+import { isRecord } from '../domain';
 
 /**
  * A reference asset may hold the original full-resolution image, which the
@@ -56,10 +57,6 @@ function invalidAsset(message: string): never {
 
 function invalidMetadata(message: string): never {
   throw new PersistenceError('invalid-metadata', message);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function isFinitePositiveInteger(value: unknown): value is number {

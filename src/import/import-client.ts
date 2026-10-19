@@ -6,9 +6,11 @@ import {
   readBlobBytes,
   type PatternImportRequest
 } from './import-protocol';
+import { isAbortError } from '../workers/abort';
 import { findImporter } from './registry';
 import {
   ImportError,
+  importCancelledError,
   type ImportAnalysis,
   type ImportOverrides,
   type ImportProgress,
@@ -52,8 +54,6 @@ interface Pending {
 
 let requestCounter = 0;
 const defaultRequestId = (): string => `pattern-import-${String(Date.now())}-${String(requestCounter++)}`;
-
-const cancelledError = (): ImportError => new ImportError('cancelled', 'The import was cancelled.');
 
 function createDefaultWorker(): PatternImportWorkerLike | null {
   if (typeof Worker === 'undefined') return null;
@@ -116,7 +116,7 @@ export function createPatternImportClient(clientOptions: PatternImportClientOpti
       pending.delete(data.requestId);
       if (data.type === 'result') entry.resolve(data.analysis);
       else if (data.type === 'closed') entry.resolve(undefined);
-      else if (data.type === 'cancelled') entry.reject(cancelledError());
+      else if (data.type === 'cancelled') entry.reject(importCancelledError());
       else entry.reject(deserializeImportError(data.error));
     });
     created.addEventListener('error', (event) => {
@@ -135,7 +135,7 @@ export function createPatternImportClient(clientOptions: PatternImportClientOpti
     options: ImportRunOptions = {}
   ): Promise<ImportAnalysis | undefined> {
     if (disposed) return Promise.reject(new Error('The import client was disposed.'));
-    if (options.signal?.aborted) return Promise.reject(cancelledError());
+    if (options.signal?.aborted) return Promise.reject(importCancelledError());
     const requestId = (clientOptions.requestIdFactory ?? defaultRequestId)();
     const target = ensureWorker();
     const controller = new AbortController();
@@ -144,7 +144,7 @@ export function createPatternImportClient(clientOptions: PatternImportClientOpti
         if (!pending.delete(requestId)) return;
         controller.abort();
         target?.postMessage({ protocol: PATTERN_IMPORT_PROTOCOL, type: 'cancel', requestId } satisfies PatternImportRequest);
-        reject(cancelledError());
+        reject(importCancelledError());
       };
       const cleanup = (): void => { options.signal?.removeEventListener('abort', onAbort); };
       pending.set(requestId, {
@@ -169,7 +169,7 @@ export function createPatternImportClient(clientOptions: PatternImportClientOpti
           const entry = pending.get(requestId);
           if (!entry) return;
           pending.delete(requestId);
-          entry.reject(controller.signal.aborted || (error instanceof Error && error.name === 'AbortError') ? cancelledError() : error);
+          entry.reject(controller.signal.aborted || isAbortError(error) ? importCancelledError() : error);
         }
       );
     });
@@ -210,7 +210,7 @@ export function createPatternImportClient(clientOptions: PatternImportClientOpti
       disposed = true;
       const terminating = worker;
       worker = null;
-      failAll(cancelledError());
+      failAll(importCancelledError());
       terminating?.terminate?.();
       void fallback?.close();
     }

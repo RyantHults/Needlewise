@@ -12,6 +12,7 @@ import {
 } from '../domain';
 import type { ProjectWorkspace } from '../application/workspace';
 import type { EditorActiveLayer, Invalidation } from './contracts';
+import { indexBounds } from './rect';
 
 export interface WorkspaceEditorSnapshot {
   readonly projectId: string | null;
@@ -89,26 +90,8 @@ export function compositeInvalidationFor(result: CommandResult, requestedIndices
   const changed = result.compositeChangedIndices !== undefined
     ? result.compositeChangedIndices
     : result.changedIndices && result.changedIndices.length > 0 ? result.changedIndices : requestedIndices;
-  const cellRect = changed ? cellRectForIndices(changed, result.document.width, result.document.height) : undefined;
+  const cellRect = changed ? indexBounds(changed, result.document.width, result.document.height) : undefined;
   return cellRect ? { layer: 'base', cellRect, reason: 'editor-command', ...(cellIndices ? { cellIndices } : {}) } : full;
-}
-
-function cellRectForIndices(indices: Uint32Array, width: number, height: number): Invalidation['cellRect'] {
-  if (indices.length === 0 || width < 1 || height < 1) return undefined;
-  let minX = width;
-  let minY = height;
-  let maxX = -1;
-  let maxY = -1;
-  for (const index of indices) {
-    if (index >= width * height) continue;
-    const x = index % width;
-    const y = Math.floor(index / width);
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
-  }
-  return maxX < minX || maxY < minY ? undefined : { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
 }
 
 export interface EditorRevisionToken {

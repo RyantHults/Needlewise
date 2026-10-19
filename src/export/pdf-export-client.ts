@@ -1,3 +1,5 @@
+import { isAbortError } from '../workers/abort';
+import { ExportCancelledError } from './cancellation';
 import {
   PDF_EXPORT_PROTOCOL,
   type PdfExportCancelMessage,
@@ -34,13 +36,6 @@ export class PdfExportError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'PdfExportError';
-  }
-}
-
-export class PdfExportCancelled extends Error {
-  constructor() {
-    super('PDF export cancelled.');
-    this.name = 'AbortError';
   }
 }
 
@@ -121,12 +116,12 @@ export function startPdfExport(input: PdfExportWorkerInput, options: PdfExportRu
     controller.abort();
     const message: PdfExportCancelMessage = { protocol: PDF_EXPORT_PROTOCOL, type: 'cancel', requestId };
     worker?.postMessage(message);
-    finish(() => { settle?.reject(new PdfExportCancelled()); });
+    finish(() => { settle?.reject(new ExportCancelledError()); });
   }
 
   if (options.signal?.aborted) {
     finished = true;
-    settle?.reject(new PdfExportCancelled());
+    settle?.reject(new ExportCancelledError());
     return { promise, cancel: () => undefined };
   }
   options.signal?.addEventListener('abort', cancel, { once: true });
@@ -138,8 +133,8 @@ export function startPdfExport(input: PdfExportWorkerInput, options: PdfExportRu
       .then((pdf) => { finish(() => { settle?.resolve(pdf); }); },
         (error: unknown) => {
           finish(() => {
-            settle?.reject(controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')
-              ? new PdfExportCancelled()
+            settle?.reject(controller.signal.aborted || isAbortError(error)
+              ? new ExportCancelledError()
               : error);
           });
         });
@@ -152,7 +147,7 @@ export function startPdfExport(input: PdfExportWorkerInput, options: PdfExportRu
     if (data.type === 'progress') {
       if (!finished) options.onProgress?.({ completed: data.completed, total: data.total });
     } else if (data.type === 'result') finish(() => { settle?.resolve(data.pdf); });
-    else if (data.type === 'cancelled') finish(() => { settle?.reject(new PdfExportCancelled()); });
+    else if (data.type === 'cancelled') finish(() => { settle?.reject(new ExportCancelledError()); });
     else finish(() => { settle?.reject(new PdfExportError(data.message)); });
   });
   worker.addEventListener('error', (event) => {

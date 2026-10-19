@@ -10,8 +10,10 @@ import type {
   Viewport
 } from '../editor/contracts';
 import { cellToScreenRect } from '../editor/coordinates';
+import { intersectRect } from '../editor/rect';
 import { isWithinImageDecodeBounds, MAX_IMAGE_DECODE_BYTES } from '../image/limits';
 import { fitImageWithinWorkingBounds, MAX_WORKING_IMAGE_DIMENSION, MAX_WORKING_IMAGE_PIXELS } from '../image/image-sizing';
+import { clipToRect } from './context';
 
 export const MAX_TRACE_IMAGE_PIXELS = MAX_WORKING_IMAGE_PIXELS;
 export const MAX_TRACE_IMAGE_BYTES = MAX_IMAGE_DECODE_BYTES;
@@ -112,15 +114,6 @@ function validCrop(crop: TraceImageCrop): boolean {
     && crop.y + crop.height <= 1;
 }
 
-function intersectRects(left: Rect, right: Rect): Rect | undefined {
-  const x = Math.max(left.x, right.x);
-  const y = Math.max(left.y, right.y);
-  const rightEdge = Math.min(left.x + left.width, right.x + right.width);
-  const bottomEdge = Math.min(left.y + left.height, right.y + right.height);
-  if (rightEdge <= x || bottomEdge <= y) return undefined;
-  return { x, y, width: rightEdge - x, height: bottomEdge - y };
-}
-
 function chartModelRect(trace: TraceImage, document: DocumentSize): Rect | undefined {
   const source = trace.chartBounds ?? { x: 0, y: 0, width: document.width, height: document.height };
   if (![source.x, source.y, source.width, source.height].every((value) => Number.isFinite(value)) || source.width <= 0 || source.height <= 0) return undefined;
@@ -159,7 +152,7 @@ export function createTraceImageProjection(
   const modelRect = chartModelRect(trace, document);
   if (!modelRect) return undefined;
   const screenRect = cellToScreenRect(modelRect, viewport);
-  const visibleRect = intersectRects(screenRect, { x: 0, y: 0, width: Math.max(0, metrics.cssWidth), height: Math.max(0, metrics.cssHeight) });
+  const visibleRect = intersectRect(screenRect, { x: 0, y: 0, width: Math.max(0, metrics.cssWidth), height: Math.max(0, metrics.cssHeight) });
   const sourceRect = {
     x: crop.x * trace.width,
     y: crop.y * trace.height,
@@ -193,19 +186,6 @@ function sourceRectForDestination(projection: TraceImageProjection, destination:
     width: projection.sourceRect.width * widthRatio,
     height: projection.sourceRect.height * heightRatio
   };
-}
-
-function clipToRect(context: CanvasContextAdapter, rect: Rect): boolean {
-  if (!context.clip || !context.save || !context.restore) return false;
-  context.save();
-  context.beginPath();
-  context.moveTo(rect.x, rect.y);
-  context.lineTo(rect.x + rect.width, rect.y);
-  context.lineTo(rect.x + rect.width, rect.y + rect.height);
-  context.lineTo(rect.x, rect.y + rect.height);
-  context.closePath?.();
-  context.clip();
-  return true;
 }
 
 export function drawTraceImage(

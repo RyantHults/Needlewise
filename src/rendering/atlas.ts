@@ -1,7 +1,7 @@
 import { CellKind, DEFAULT_PATTERN_SETTINGS, defaultPaletteSymbol, type PatternDocument } from '../domain';
 import type { CanvasTarget, RendererStyle } from '../editor/contracts';
 import { MAX_ATLAS_PIXELS, restore, save } from './context';
-import { paletteColor } from './colors';
+import { grayscaleColor, paletteColor } from './colors';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
 import { isLegacyQuarterKind, isThreeQuarterPairKind, threeQuarterPairComponents } from '../editor/cell-kinds';
 
@@ -87,31 +87,6 @@ function symbolPaletteProjection(
   })) ?? '';
 }
 
-function parseRgb(color: string): readonly [number, number, number] | undefined {
-  const hex = color.trim().match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
-  if (hex) {
-    const digits = hex[1].length === 3
-      ? hex[1].split('').map((digit) => `${digit}${digit}`).join('')
-      : hex[1];
-    return [
-      Number.parseInt(digits.slice(0, 2), 16),
-      Number.parseInt(digits.slice(2, 4), 16),
-      Number.parseInt(digits.slice(4, 6), 16)
-    ];
-  }
-  const rgb = color.trim().match(/^rgba?\(\s*([^,]+),\s*([^,]+),\s*([^,)]+)/i);
-  if (!rgb) return undefined;
-  const values = [Number(rgb[1]), Number(rgb[2]), Number(rgb[3])];
-  return values.every((value) => Number.isFinite(value))
-    ? [Math.round(values[0]), Math.round(values[1]), Math.round(values[2])]
-    : undefined;
-}
-
-function rgbHex(red: number, green: number, blue: number): string {
-  const channel = (value: number): string => Math.max(0, Math.min(255, Math.round(value))).toString(16).padStart(2, '0');
-  return `#${channel(red)}${channel(green)}${channel(blue)}`;
-}
-
 const COLOR_ATLAS_MAX_DIMENSION = 32_767;
 
 /** Pair cells need a 2×2 source footprint so their two colors survive rasterization. */
@@ -143,13 +118,7 @@ export function overviewColorForPaletteId(
   style: RendererStyle
 ): string {
   const color = paletteColor(document, id, style.missingPaletteColor);
-  if (style.mode === 'grayscale') {
-    const rgb = parseRgb(color);
-    if (!rgb) return '#808080';
-    const value = Math.round(rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722);
-    return rgbHex(value, value, value);
-  }
-  return color;
+  return style.mode === 'grayscale' ? grayscaleColor(color) : color;
 }
 
 /** Reject cache bookkeeping objects before they reach CanvasRenderingContext2D.drawImage. */

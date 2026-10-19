@@ -15,6 +15,7 @@ import { cloneLayeredDocument } from './binary';
 import { PersistenceError } from './errors';
 import type { ProjectDocumentSummary } from './project-thumbnail';
 import type { PreparedDocumentCapability } from './types';
+import { isRecord } from '../domain';
 
 export interface PersistencePreparationWorkerLike {
   postMessage(message: unknown, transfer?: Transferable[]): void;
@@ -125,10 +126,6 @@ interface PendingPreparation {
   readonly height: number;
   readonly resolve: (result: PreparedDocumentCapability) => void;
   readonly reject: (error: unknown) => void;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 function eventMessage(event: unknown, fallback: string): string {

@@ -10,12 +10,9 @@ import {
   type PatternFragment,
   type PatternFragmentBackstitches
 } from './types';
+import { isRecord } from './guards';
 import { assertValidDocument } from './validation';
 import { isThreeQuarterKind, isThreeQuarterPairKind } from './model';
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
 
 function cellCount(width: number, height: number): number | undefined {
   const count = width * height;
@@ -82,7 +79,7 @@ export function backstitchEndpointsContainedInCellUnion(
 }
 
 function fragmentBackstitches(value: unknown): value is PatternFragmentBackstitches {
-  if (!isObject(value)) return false;
+  if (!isRecord(value)) return false;
   return value.x1 instanceof Uint32Array
     && value.y1 instanceof Uint32Array
     && value.x2 instanceof Uint32Array
@@ -92,7 +89,7 @@ function fragmentBackstitches(value: unknown): value is PatternFragmentBackstitc
 
 export function getPatternFragmentValidationErrors(fragment: PatternFragment): string[] {
   const errors: string[] = [];
-  if (!isObject(fragment) || fragment.version !== PATTERN_FRAGMENT_VERSION) {
+  if (!isRecord(fragment) || fragment.version !== PATTERN_FRAGMENT_VERSION) {
     errors.push('Pattern fragment version must be 1.');
     return errors;
   }
@@ -165,7 +162,7 @@ export function assertValidPatternFragment(fragment: PatternFragment): void {
 export const assertFragmentValid = assertValidPatternFragment;
 
 function validateSelection(document: PatternDocument, selection: CropRect): void {
-  if (!isObject(selection) || !Number.isInteger(selection.x) || !Number.isInteger(selection.y) || !Number.isInteger(selection.width) || !Number.isInteger(selection.height) || selection.x < 0 || selection.y < 0 || selection.width < 1 || selection.height < 1 || selection.x + selection.width > document.width || selection.y + selection.height > document.height) {
+  if (!isRecord(selection) || !Number.isInteger(selection.x) || !Number.isInteger(selection.y) || !Number.isInteger(selection.width) || !Number.isInteger(selection.height) || selection.x < 0 || selection.y < 0 || selection.width < 1 || selection.height < 1 || selection.x + selection.width > document.width || selection.y + selection.height > document.height) {
     throw new DomainError('invalid-selection', 'Fragment selection must be a non-empty rectangle inside the document.');
   }
 }

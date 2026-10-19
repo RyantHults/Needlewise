@@ -2,8 +2,8 @@
 // symbol marks, axis-aligned strokes and fills, text runs and image coverage.
 // Everything is in page points, origin top-left, y down.
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
-import { ImportError, type ImportColor } from '../types';
-import { IDENTITY, drawOpsToPoints, multiply, normalizeDrawOps, outlineDistance, outlineKey, roundToFloat16, type Matrix } from './outline';
+import { throwIfImportCancelled, type ImportColor } from '../types';
+import { IDENTITY, apply, drawOpsToPoints, multiply, normalizeDrawOps, outlineDistance, outlineKey, roundToFloat16, type Matrix } from './outline';
 import { glyphOutline, loadPdfjs, type Pdfjs } from './pdfjs';
 import type { PdfFillRect, PdfMark, PdfPagePrimitives, PdfStroke, PdfTextRun, Rect } from './types';
 
@@ -102,8 +102,6 @@ const place = (outline: Outline, m: Matrix, pageHeight: number): Rect => ({
   height: outline.box.height
 });
 
-const apply = (m: Matrix, x: number, y: number): [number, number] => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
-
 const toColor = (value: unknown): ImportColor | null =>
   typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value) ? value.toLowerCase() as ImportColor : null;
 
@@ -113,10 +111,6 @@ function unicodeOf(glyph: ShowTextGlyph): string | undefined {
   if (!text || !text.trim()) return undefined;
   const code = text.codePointAt(0) ?? 0;
   return code >= 0xe000 && code <= 0xf8ff ? undefined : text;
-}
-
-function throwIfAborted(signal?: AbortSignal): void {
-  if (signal?.aborted) throw new ImportError('cancelled', 'PDF import cancelled.');
 }
 
 async function fontsOf(page: PDFPageProxy, names: ReadonlySet<string>): Promise<Map<string, FontInfo>> {
@@ -217,7 +211,7 @@ const unitSquareArea = (m: Matrix): number => Math.abs(m[0] * m[3] - m[1] * m[2]
  * are shared across every page extracted from the same document.
  */
 export async function extractPagePrimitives(pdf: PDFDocumentProxy, pageIndex: number, signal?: AbortSignal): Promise<PdfPagePrimitives> {
-  throwIfAborted(signal);
+  throwIfImportCancelled(signal);
   const pdfjs = await loadPdfjs();
   paintSets(pdfjs);
   const { OPS } = pdfjs;
@@ -233,7 +227,7 @@ export async function extractPagePrimitives(pdf: PDFDocumentProxy, pageIndex: nu
       page.getOperatorList({ annotationMode: pdfjs.AnnotationMode.DISABLE }),
       page.getTextContent()
     ]);
-    throwIfAborted(signal);
+    throwIfImportCancelled(signal);
 
     const fontNames = new Set<string>();
     list.fnArray.forEach((fn, i) => {
@@ -246,7 +240,7 @@ export async function extractPagePrimitives(pdf: PDFDocumentProxy, pageIndex: nu
       }
     });
     const fonts = await fontsOf(page, fontNames);
-    throwIfAborted(signal);
+    throwIfImportCancelled(signal);
 
     const registry = registryFor(pdf);
     const marks: PdfMark[] = [];

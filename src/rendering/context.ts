@@ -1,4 +1,4 @@
-import type { CanvasContextAdapter, CanvasMetrics, CanvasTarget } from '../editor/contracts';
+import type { CanvasContextAdapter, CanvasMetrics, CanvasTarget, Rect } from '../editor/contracts';
 
 export const MAX_ATLAS_PIXELS = 16_777_216;
 const preparedDprs = new WeakMap<CanvasTarget, number>();
@@ -101,6 +101,28 @@ export function save(context: CanvasContextAdapter): void {
 
 export function restore(context: CanvasContextAdapter): void {
   context.restore?.();
+}
+
+/** Add `rect` to the current path as a closed subpath. */
+export function rectPath(context: CanvasContextAdapter, rect: Rect): void {
+  context.moveTo(rect.x, rect.y);
+  context.lineTo(rect.x + rect.width, rect.y);
+  context.lineTo(rect.x + rect.width, rect.y + rect.height);
+  context.lineTo(rect.x, rect.y + rect.height);
+  context.closePath?.();
+}
+
+/**
+ * Save the context and clip to `rect`. Returns false, leaving the context
+ * unsaved, when the adapter cannot clip; the caller restores only on true.
+ */
+export function clipToRect(context: CanvasContextAdapter, rect: Rect): boolean {
+  if (!context.clip || !context.save || !context.restore) return false;
+  context.save();
+  context.beginPath();
+  rectPath(context, rect);
+  context.clip();
+  return true;
 }
 
 export function drawImage(

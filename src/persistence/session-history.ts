@@ -1,4 +1,4 @@
-import { createEditorFromHistory, DOCUMENT_EDITOR_HISTORY_VERSION, type DocumentEditorHistoryDto, type LayeredDocument } from '../domain';
+import { createEditorFromHistory, DOCUMENT_EDITOR_HISTORY_VERSION, isRecord, type DocumentEditorHistoryDto, type LayeredDocument } from '../domain';
 import { sha256 } from './hash';
 import { isValidAssetId, MAX_ASSET_BYTES } from './limits';
 import { validateSourceImageDescriptor } from './source-image';
@@ -24,10 +24,6 @@ const HEX_SHA256 = /^[0-9a-f]{64}$/;
 const MAX_HISTORY_OBJECTS = MAX_SESSION_HISTORY_ENTRIES * 32;
 
 type UnknownRecord = Record<string, unknown>;
-
-function isRecord(value: unknown): value is UnknownRecord {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function isTypedArray(value: unknown): value is Uint8Array | Uint16Array | Uint32Array {
   if (!ArrayBuffer.isView(value)) return false;

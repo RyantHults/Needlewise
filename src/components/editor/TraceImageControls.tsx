@@ -3,6 +3,7 @@ import type { ProjectWorkspace } from '../../application/workspace';
 import type { PatternDocument } from '../../domain';
 import type { SourceImageMimeType } from '../../persistence';
 import type { EditorSurfaceController } from '../../editor';
+import { rectsEqual } from '../../editor/rect';
 import { decodeTraceImage, disposeTraceImage, fitTraceImageBounds, TraceDecodeError } from '../../rendering/trace';
 import { MAX_TRACE_IMAGE_BYTES } from '../../rendering/trace';
 import { ConfirmDialog } from '../ConfirmDialog';
@@ -129,14 +130,7 @@ export function TraceImageControls({ workspace, document, controller, activeTool
     const trace = controller.getTraceImage?.();
     if (!trace) return;
     const local = traceBoundsToLocal(source.chartBounds, { originX, originY });
-    const sameBounds = trace.chartBounds !== undefined
-      && trace.chartBounds.x === local.x
-      && trace.chartBounds.y === local.y
-      && trace.chartBounds.width === local.width
-      && trace.chartBounds.height === local.height;
-    const sameCrop = (trace.crop ?? undefined) === undefined && source.crop === undefined
-      || trace.crop !== undefined && trace.crop.x === source.crop.x && trace.crop.y === source.crop.y && trace.crop.width === source.crop.width && trace.crop.height === source.crop.height;
-    if (sameBounds && sameCrop) return;
+    if (rectsEqual(trace.chartBounds, local) && rectsEqual(trace.crop, source.crop)) return;
     try {
       controller.setTraceImage({ ...trace, crop: { ...source.crop }, chartBounds: local });
     } catch {

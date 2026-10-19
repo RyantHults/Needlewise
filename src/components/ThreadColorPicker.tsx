@@ -1,14 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CatalogDefinition, CatalogRecord } from "../catalog";
-
-export const normalizeHexColor = (value: string): string | undefined => {
-  const digits = value.trim().replace(/^#/, "");
-  if (!/^(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(digits)) return undefined;
-  const expanded = digits.length === 3
-    ? digits.split("").map((digit) => `${digit}${digit}`).join("")
-    : digits;
-  return `#${expanded.toUpperCase()}`;
-};
+import { normalizeHexColor } from "../domain/color";
 
 export interface ThreadColorPickerProps {
   catalogs: readonly CatalogDefinition[];

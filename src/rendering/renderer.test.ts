@@ -194,8 +194,8 @@ function chart(width = 4, height = 4) {
     width,
     height,
     palette: [
-      { id: 1, name: 'Red', color: '#f00' },
-      { id: 35, name: 'Blue', color: '#00f' }
+      { id: 1, name: 'Red', color: '#ff0000' },
+      { id: 35, name: 'Blue', color: '#0000ff' }
     ]
   });
 }
@@ -322,7 +322,7 @@ describe('Canvas 2D chart renderer', () => {
 
   it('draws no cell, backstitch, or outline of an off-edge floating paste outside the chart, and colors it through its pending palette', () => {
     const document = chart(4, 2);
-    const source = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 3, height: 3, palette: [{ id: 5, name: 'Green', color: '#0f0' }] });
+    const source = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 3, height: 3, palette: [{ id: 5, name: 'Green', color: '#00ff00' }] });
     source.kind.fill(CellKind.Full);
     for (let index = 0; index < 9; index += 1) source.colors[index * 4] = 5;
     // Corner to corner, so most of it lies off the chart.
@@ -358,7 +358,7 @@ describe('Canvas 2D chart renderer', () => {
       const [x, y, width = 0, height = 0] = record.args as number[];
       expect(inside(x, y) && inside(x + width, y + height), `${record.name}(${String(record.args)})`).toBe(true);
     }
-    expect(overlay.records.some((record) => record.fillStyle === '#0f0')).toBe(true);
+    expect(overlay.records.some((record) => record.fillStyle === '#00ff00')).toBe(true);
     renderer.dispose();
   });
 
@@ -512,7 +512,7 @@ describe('Canvas 2D chart renderer', () => {
 
   it('bounds floating preview cell work to the visible source-coordinate intersection', () => {
     const document = chart(4, 4);
-    const source = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 128, height: 128, palette: [{ id: 1, name: 'Red', color: '#f00' }] });
+    const source = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 128, height: 128, palette: [{ id: 1, name: 'Red', color: '#ff0000' }] });
     source.kind[2 * source.width + 2] = CellKind.Full;
     source.colors[(2 * source.width + 2) * 4] = 1;
     const fragment = createPatternFragment(source, { x: 0, y: 0, width: 128, height: 128 });
@@ -661,7 +661,7 @@ describe('Canvas 2D chart renderer', () => {
     expect(base.calls).toContain('fillRect');
     expect(base.calls).toContain('fill');
     expect(symbolInkCalls(base).length).toBeGreaterThan(0);
-    expect(base.records.find((call) => call.name === 'fillRect' && call.args[0] === 0 && call.args[1] === 0 && call.args[2] === 16 && call.args[3] === 16)).toMatchObject({ fillStyle: '#f00' });
+    expect(base.records.find((call) => call.name === 'fillRect' && call.args[0] === 0 && call.args[1] === 0 && call.args[2] === 16 && call.args[3] === 16)).toMatchObject({ fillStyle: '#ff0000' });
     expect(base.records.some((call) => call.name === 'moveTo' && call.args[0] === 16 && call.args[1] === 0)).toBe(true);
   });
 
@@ -683,7 +683,7 @@ describe('Canvas 2D chart renderer', () => {
       });
       renderer.renderNow();
       return base.records
-        .filter((call) => call.name === 'fillRect' && call.fillStyle === '#f00')
+        .filter((call) => call.name === 'fillRect' && call.fillStyle === '#ff0000')
         .map((call) => call.args as number[]);
     }
 
@@ -721,7 +721,7 @@ describe('Canvas 2D chart renderer', () => {
     });
     renderer.renderNow();
     const paths = base.records
-      .filter((call) => call.fillStyle === '#f00' && call.strokeStyle === '' && (call.name === 'moveTo' || call.name === 'lineTo'))
+      .filter((call) => call.fillStyle === '#ff0000' && call.strokeStyle === '' && (call.name === 'moveTo' || call.name === 'lineTo'))
       .map((call) => [call.name, ...(call.args as number[])]);
     const halfLeg = 16 * Math.SQRT1_2;
     expect(paths).toEqual([
@@ -753,13 +753,13 @@ describe('Canvas 2D chart renderer', () => {
     });
     renderer.renderNow();
     const paths = base.records
-      .filter((call) => (call.fillStyle === '#f00' || call.fillStyle === '#00f') && call.strokeStyle !== '#4b4b4b' && call.strokeStyle !== '#ffffff' && call.args[1] !== 4 && (call.name === 'moveTo' || call.name === 'lineTo'))
+      .filter((call) => (call.fillStyle === '#ff0000' || call.fillStyle === '#0000ff') && call.strokeStyle !== '#4b4b4b' && call.strokeStyle !== '#ffffff' && call.args[1] !== 4 && (call.name === 'moveTo' || call.name === 'lineTo'))
       .map((call) => [call.name, ...(call.args as number[]), call.fillStyle]);
     expect(paths).toEqual([
-      ['moveTo', 0, 0, '#f00'], ['lineTo', 16, 0, '#f00'], ['lineTo', 0, 16, '#f00'],
-      ['moveTo', 16, 0, '#00f'], ['lineTo', 16, 16, '#00f'], ['lineTo', 0, 16, '#00f'],
-      ['moveTo', 16, 0, '#00f'], ['lineTo', 32, 0, '#00f'], ['lineTo', 32, 16, '#00f'],
-      ['moveTo', 16, 0, '#f00'], ['lineTo', 32, 16, '#f00'], ['lineTo', 16, 16, '#f00']
+      ['moveTo', 0, 0, '#ff0000'], ['lineTo', 16, 0, '#ff0000'], ['lineTo', 0, 16, '#ff0000'],
+      ['moveTo', 16, 0, '#0000ff'], ['lineTo', 16, 16, '#0000ff'], ['lineTo', 0, 16, '#0000ff'],
+      ['moveTo', 16, 0, '#0000ff'], ['lineTo', 32, 0, '#0000ff'], ['lineTo', 32, 16, '#0000ff'],
+      ['moveTo', 16, 0, '#ff0000'], ['lineTo', 32, 16, '#ff0000'], ['lineTo', 16, 16, '#ff0000']
     ]);
     expect(base.records.filter((call) => call.name === 'stroke' && call.strokeStyle === '#242424')).toHaveLength(2);
     renderer.dispose();
@@ -835,11 +835,11 @@ describe('Canvas 2D chart renderer', () => {
     });
     renderer.renderNow();
     const paths = overlay.records
-      .filter((call) => (call.fillStyle === '#f00' || call.fillStyle === '#00f') && call.strokeStyle !== '#ffffff' && call.args[1] !== 4 && (call.name === 'moveTo' || call.name === 'lineTo'))
+      .filter((call) => (call.fillStyle === '#ff0000' || call.fillStyle === '#0000ff') && call.strokeStyle !== '#ffffff' && call.args[1] !== 4 && (call.name === 'moveTo' || call.name === 'lineTo'))
       .map((call) => [call.name, ...(call.args as number[]), call.fillStyle]);
     expect(paths).toEqual([
-      ['moveTo', 0, 0, '#f00'], ['lineTo', 16, 0, '#f00'], ['lineTo', 0, 16, '#f00'],
-      ['moveTo', 16, 0, '#00f'], ['lineTo', 16, 16, '#00f'], ['lineTo', 0, 16, '#00f']
+      ['moveTo', 0, 0, '#ff0000'], ['lineTo', 16, 0, '#ff0000'], ['lineTo', 0, 16, '#ff0000'],
+      ['moveTo', 16, 0, '#0000ff'], ['lineTo', 16, 16, '#0000ff'], ['lineTo', 0, 16, '#0000ff']
     ]);
     expect(overlay.records.filter((call) => call.name === 'stroke' && call.strokeStyle === '#242424')).toHaveLength(1);
     expect(overlay.records.find((call) => call.name === 'stroke' && call.strokeStyle === '#242424')?.globalAlpha).toBe(1);
@@ -860,11 +860,11 @@ describe('Canvas 2D chart renderer', () => {
     });
     renderer.renderNow();
     const paths = overlay.records
-      .filter((call) => (call.fillStyle === '#f00' || call.fillStyle === '#00f') && call.strokeStyle === '' && (call.name === 'moveTo' || call.name === 'lineTo'))
+      .filter((call) => (call.fillStyle === '#ff0000' || call.fillStyle === '#0000ff') && call.strokeStyle === '' && (call.name === 'moveTo' || call.name === 'lineTo'))
       .map((call) => [call.name, ...(call.args as number[]), call.fillStyle]);
     expect(paths).toEqual([
-      ['moveTo', 0, 0, '#f00'], ['lineTo', 16, 0, '#f00'], ['lineTo', 0, 16, '#f00'],
-      ['moveTo', 16, 0, '#00f'], ['lineTo', 16, 16, '#00f'], ['lineTo', 0, 16, '#00f']
+      ['moveTo', 0, 0, '#ff0000'], ['lineTo', 16, 0, '#ff0000'], ['lineTo', 0, 16, '#ff0000'],
+      ['moveTo', 16, 0, '#0000ff'], ['lineTo', 16, 16, '#0000ff'], ['lineTo', 0, 16, '#0000ff']
     ]);
     expect(overlay.records.filter((call) => call.name === 'stroke' && call.strokeStyle === '#242424')).toHaveLength(1);
     renderer.dispose();
@@ -873,7 +873,7 @@ describe('Canvas 2D chart renderer', () => {
   it('renders a brush preview as an opaque, high-contrast outer footprint outline', () => {
     const document = chart(5, 5);
     document.palette[0] = { ...document.palette[0], color: '#ffffff' };
-    document.palette[1] = { ...document.palette[1], color: '#000' };
+    document.palette[1] = { ...document.palette[1], color: '#000000' };
     for (const [index, paletteId] of [[1, 35], [5, 1], [6, 35], [7, 35], [11, 35]]) {
       document.kind[index] = CellKind.Full;
       document.colors[index * 4] = paletteId;
@@ -899,7 +899,7 @@ describe('Canvas 2D chart renderer', () => {
       }
     });
     renderer.renderNow();
-    expect(base.records.some((call) => call.name === 'fillRect' && call.args.join(',') === '16,0,16,16' && call.fillStyle === '#000')).toBe(true);
+    expect(base.records.some((call) => call.name === 'fillRect' && call.args.join(',') === '16,0,16,16' && call.fillStyle === '#000000')).toBe(true);
     expect(base.records.some((call) => call.name === 'fillRect' && call.args.join(',') === '0,16,16,16' && call.fillStyle === '#ffffff')).toBe(true);
     expect(overlay.records.some((call) => call.name === 'fillRect' && call.globalAlpha < 0.3)).toBe(false);
     expect(overlay.records.filter((call) => call.name === 'fill').length).toBe(0);
@@ -1086,38 +1086,6 @@ describe('Canvas 2D chart renderer', () => {
     renderer.dispose();
   });
 
-  it('treats a 3-digit #000 shorthand palette colour the same as full black for ink selection', () => {
-    const document = chart(3, 3);
-    document.palette[0] = { ...document.palette[0], color: '#000' };
-    document.palette[1] = { ...document.palette[1], color: '#fff' };
-    for (let index = 0; index < 9; index += 1) {
-      document.kind[index] = CellKind.Full;
-      document.colors[index * 4] = 1;
-    }
-    const overlay = recordingContext();
-    const renderer = createCanvasRenderer({
-      document,
-      targets: { base: target(recordingContext()), overlay: target(overlay) },
-      metrics: getCanvasMetrics(48, 48),
-      viewport: { x: 0, y: 0, zoom: 16 },
-      overlay: {
-        brushPreview: {
-          kind: 'paint',
-          states: [{ index: 4, cell: { x: 1, y: 1 }, kind: CellKind.Full, colors: [35, 0, 0, 0], completed: 0 }]
-        }
-      }
-    });
-    renderer.renderNow();
-
-    const strokes = overlay.records.filter((call) => call.name === 'stroke');
-    expect(strokes.length).toBeGreaterThan(0);
-    const keylineWidth = Math.max(...strokes.map((call) => call.lineWidth));
-    const inkStrokes = strokes.filter((call) => call.lineWidth < keylineWidth);
-    expect(inkStrokes.length).toBeGreaterThan(0);
-    expect(inkStrokes.every((call) => call.strokeStyle === '#ffffff')).toBe(true);
-    renderer.dispose();
-  });
-
   it('keys a split-cell outline from its painted slot plus the exposed light background', () => {
     // Regression: unpainted quarters expose the pattern background as an
     // underlying colour too (not just the one painted dark slot), so a light
@@ -1125,7 +1093,7 @@ describe('Canvas 2D chart renderer', () => {
     const document = chart(1, 1);
     document.settings = { ...document.settings, backgroundColor: '#ffffff' };
     document.palette[0] = { ...document.palette[0], color: '#ffffff' };
-    document.palette[1] = { ...document.palette[1], color: '#000' };
+    document.palette[1] = { ...document.palette[1], color: '#000000' };
     document.kind[0] = CellKind.Quarters;
     document.colors.set([35, 0, 0, 0], 0);
     const base = recordingContext();
@@ -1145,7 +1113,7 @@ describe('Canvas 2D chart renderer', () => {
     renderer.renderNow();
 
     expect(base.records.some((call) => call.name === 'fillRect' && call.fillStyle === document.settings.backgroundColor)).toBe(true);
-    expect(base.records.some((call) => call.name === 'fill' && call.fillStyle === '#000')).toBe(true);
+    expect(base.records.some((call) => call.name === 'fill' && call.fillStyle === '#000000')).toBe(true);
     const strokes = overlay.records.filter((call) => call.name === 'stroke');
     expect(strokes.length).toBeGreaterThan(0);
     expect(strokes.every((call) => call.globalAlpha === 1)).toBe(true);
@@ -1314,29 +1282,29 @@ describe('Canvas 2D chart renderer', () => {
 
     it('draws every color opaque when no color is highlighted', () => {
       const { base, renderer } = renderHighlight({});
-      expect(cellAlpha(base, '#f00')).toBe(1);
-      expect(cellAlpha(base, '#00f')).toBe(1);
+      expect(cellAlpha(base, '#ff0000')).toBe(1);
+      expect(cellAlpha(base, '#0000ff')).toBe(1);
       expect(base.records.filter((call) => call.name === 'stroke').every((call) => call.globalAlpha === 1)).toBe(true);
       renderer.dispose();
     });
 
     it('dims cells, backstitches, and completion marks of the other colors only', () => {
       const { base, renderer } = renderHighlight({ highlightColor: 1 });
-      expect(cellAlpha(base, '#f00')).toBe(1);
-      expect(cellAlpha(base, '#00f')).toBeLessThan(1);
+      expect(cellAlpha(base, '#ff0000')).toBe(1);
+      expect(cellAlpha(base, '#0000ff')).toBeLessThan(1);
       const strokesAt = (alpha: number) => base.records.filter((call) => call.name === 'stroke' && call.strokeStyle === '#242424' && call.globalAlpha === alpha);
       // Completion still draws for the highlighted color and dims with the other one.
       expect(strokesAt(1).length).toBeGreaterThan(0);
       expect(base.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#242424' && call.globalAlpha < 1)).toBe(true);
-      expect(base.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#f00' && call.globalAlpha === 1)).toBe(true);
-      expect(base.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#00f' && call.globalAlpha < 1)).toBe(true);
+      expect(base.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#ff0000' && call.globalAlpha === 1)).toBe(true);
+      expect(base.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#0000ff' && call.globalAlpha < 1)).toBe(true);
       renderer.dispose();
     });
 
     it('dims the other colors in the Overview, which skips the color atlas', () => {
       const { base, renderer } = renderHighlight({ highlightColor: 35 }, 4);
-      expect(cellAlpha(base, '#00f')).toBe(1);
-      expect(cellAlpha(base, '#f00')).toBeLessThan(1);
+      expect(cellAlpha(base, '#0000ff')).toBe(1);
+      expect(cellAlpha(base, '#ff0000')).toBeLessThan(1);
       renderer.dispose();
     });
 
@@ -1348,13 +1316,13 @@ describe('Canvas 2D chart renderer', () => {
       };
       // Thread body strokes use the exact palette color; the stitch and the backstitch differ in width.
       const widths = (calls: Array<{ lineWidth: number }>) => new Set(calls.map((call) => call.lineWidth));
-      for (const color of ['#f00', '#00f']) {
+      for (const color of ['#ff0000', '#0000ff']) {
         const undimmed = bodyStrokes(null, color);
         expect(widths(undimmed).size).toBeGreaterThanOrEqual(2);
         expect(undimmed.every((call) => call.globalAlpha === 1)).toBe(true);
       }
-      const highlighted = bodyStrokes(1, '#f00');
-      const others = bodyStrokes(1, '#00f');
+      const highlighted = bodyStrokes(1, '#ff0000');
+      const others = bodyStrokes(1, '#0000ff');
       expect(highlighted.length).toBeGreaterThan(0);
       expect(highlighted.every((call) => call.globalAlpha === 1)).toBe(true);
       expect(others.length).toBeGreaterThan(0);
@@ -1368,8 +1336,8 @@ describe('Canvas 2D chart renderer', () => {
       base.records.length = 0;
       renderer.setStyle({ highlightColor: 35 });
       renderer.renderNow();
-      expect(cellAlpha(base, '#00f')).toBe(1);
-      expect(cellAlpha(base, '#f00')).toBeLessThan(1);
+      expect(cellAlpha(base, '#0000ff')).toBe(1);
+      expect(cellAlpha(base, '#ff0000')).toBeLessThan(1);
       renderer.dispose();
     });
   });
@@ -1458,7 +1426,7 @@ describe('Canvas 2D chart renderer', () => {
     expect(stats.lod).toBe('overview');
     expect(stats.drawnBackstitches).toBe(1);
     expect(base.calls.includes('drawImage')).toBe(atlas);
-    expect(base.records.some((call) => call.name === 'moveTo' && call.strokeStyle === '#00f')).toBe(true);
+    expect(base.records.some((call) => call.name === 'moveTo' && call.strokeStyle === '#0000ff')).toBe(true);
     renderer.dispose();
   });
 
@@ -1529,7 +1497,7 @@ describe('Canvas 2D chart renderer', () => {
       return document;
     };
     const geometryPaths = (context: RecordingContext): unknown[][] => context.records
-      .filter((call) => call.fillStyle === '#f00' && call.strokeStyle === '' && (call.name === 'moveTo' || call.name === 'lineTo'))
+      .filter((call) => call.fillStyle === '#ff0000' && call.strokeStyle === '' && (call.name === 'moveTo' || call.name === 'lineTo'))
       .map((call) => [call.name, ...(call.args as number[])]);
     const halfLeg = Math.SQRT1_2;
     const expected = [
@@ -1574,19 +1542,19 @@ describe('Canvas 2D chart renderer', () => {
       return document;
     };
     const geometryPaths = (context: RecordingContext): unknown[][] => context.records
-      .filter((call) => (call.fillStyle === '#f00' || call.fillStyle === '#00f') && call.strokeStyle === '' && (call.name === 'moveTo' || call.name === 'lineTo'))
+      .filter((call) => (call.fillStyle === '#ff0000' || call.fillStyle === '#0000ff') && call.strokeStyle === '' && (call.name === 'moveTo' || call.name === 'lineTo'))
       .map((call) => [call.name, ...(call.args as number[]), call.fillStyle]);
     const expectedAtlas = [
-      ['moveTo', 0, 0, '#f00'], ['lineTo', 2, 0, '#f00'], ['lineTo', 0, 2, '#f00'],
-      ['moveTo', 2, 0, '#00f'], ['lineTo', 2, 2, '#00f'], ['lineTo', 0, 2, '#00f'],
-      ['moveTo', 2, 0, '#00f'], ['lineTo', 4, 0, '#00f'], ['lineTo', 4, 2, '#00f'],
-      ['moveTo', 2, 0, '#f00'], ['lineTo', 4, 2, '#f00'], ['lineTo', 2, 2, '#f00']
+      ['moveTo', 0, 0, '#ff0000'], ['lineTo', 2, 0, '#ff0000'], ['lineTo', 0, 2, '#ff0000'],
+      ['moveTo', 2, 0, '#0000ff'], ['lineTo', 2, 2, '#0000ff'], ['lineTo', 0, 2, '#0000ff'],
+      ['moveTo', 2, 0, '#0000ff'], ['lineTo', 4, 0, '#0000ff'], ['lineTo', 4, 2, '#0000ff'],
+      ['moveTo', 2, 0, '#ff0000'], ['lineTo', 4, 2, '#ff0000'], ['lineTo', 2, 2, '#ff0000']
     ];
     const expectedFallback = [
-      ['moveTo', 0, 0, '#f00'], ['lineTo', 1, 0, '#f00'], ['lineTo', 0, 1, '#f00'],
-      ['moveTo', 1, 0, '#00f'], ['lineTo', 1, 1, '#00f'], ['lineTo', 0, 1, '#00f'],
-      ['moveTo', 1, 0, '#00f'], ['lineTo', 2, 0, '#00f'], ['lineTo', 2, 1, '#00f'],
-      ['moveTo', 1, 0, '#f00'], ['lineTo', 2, 1, '#f00'], ['lineTo', 1, 1, '#f00']
+      ['moveTo', 0, 0, '#ff0000'], ['lineTo', 1, 0, '#ff0000'], ['lineTo', 0, 1, '#ff0000'],
+      ['moveTo', 1, 0, '#0000ff'], ['lineTo', 1, 1, '#0000ff'], ['lineTo', 0, 1, '#0000ff'],
+      ['moveTo', 1, 0, '#0000ff'], ['lineTo', 2, 0, '#0000ff'], ['lineTo', 2, 1, '#0000ff'],
+      ['moveTo', 1, 0, '#ff0000'], ['lineTo', 2, 1, '#ff0000'], ['lineTo', 1, 1, '#ff0000']
     ];
     const atlasSource = recordingContext();
     const atlasRenderer = createCanvasRenderer({
@@ -1636,10 +1604,10 @@ describe('Canvas 2D chart renderer', () => {
       }
     });
     renderer.renderNow();
-    expect(source.pixels[0][0]).toBe('#f00');
-    expect(source.pixels[1][1]).toBe('#00f');
-    expect(source.pixels[0][3]).toBe('#00f');
-    expect(source.pixels[1][2]).toBe('#f00');
+    expect(source.pixels[0][0]).toBe('#ff0000');
+    expect(source.pixels[1][1]).toBe('#0000ff');
+    expect(source.pixels[0][3]).toBe('#0000ff');
+    expect(source.pixels[1][2]).toBe('#ff0000');
     const drawImageArgs = base.records.find((call) => call.name === 'drawImage')?.args;
     expect(drawImageArgs?.[0]).toBe(imageSource);
     expect(drawImageArgs?.slice(1).map((value) => Math.abs(value as number))).toEqual([0, 0, 4, 2, 0, 0, 4, 2]);
@@ -1769,7 +1737,7 @@ describe('Canvas 2D chart renderer', () => {
     expect(base.records.some((call) => call.name === 'clip')).toBe(true);
     expect(base.records.some((call) => call.name === 'clearRect' && call.args.join(',') === '0,0,40,40')).toBe(false);
     expect(base.records.some((call) => call.name === 'clearRect' && call.args.join(',') === '18,22,12,8')).toBe(true);
-    renderer.setStyle({ gridColor: '#000' });
+    renderer.setStyle({ gridColor: '#000000' });
     renderer.renderNow();
     expect(base.records.some((call) => call.name === 'clearRect' && call.args.join(',') === '0,0,40,40')).toBe(true);
     renderer.dispose();
@@ -2383,7 +2351,7 @@ describe('Canvas 2D chart renderer', () => {
     const right = Math.round(47.4 * 1.5) / 1.5;
     const bottom = Math.round(23.7 * 1.5) / 1.5;
     const path = base.records
-      .filter((call) => call.fillStyle === '#f00' && (call.name === 'moveTo' || call.name === 'lineTo') && call.args[0] === left)
+      .filter((call) => call.fillStyle === '#ff0000' && (call.name === 'moveTo' || call.name === 'lineTo') && call.args[0] === left)
       .map((call) => call.args);
     expect(path).toContainEqual([left, 0]);
     expect(path).toContainEqual([left, bottom]);
@@ -2865,16 +2833,16 @@ describe('Canvas 2D chart renderer', () => {
     const fillRects = overlay.records.filter((call) => call.name === 'fillRect');
     const paths = overlay.records.filter((call) => call.name === 'moveTo' || call.name === 'lineTo');
     const halfLeg = 16 * Math.SQRT1_2;
-    expect(fillRects.some((call) => call.args.join(',') === '0,0,16,16' && call.fillStyle === '#f00')).toBe(true);
-    expect(paths.some((call) => call.name === 'moveTo' && call.args.join(',') === '16,0' && call.fillStyle === '#f00')).toBe(true);
-    expect(paths.some((call) => call.name === 'lineTo' && call.args[0] === 16 - halfLeg + 16 && call.args[1] === 0 && call.fillStyle === '#f00')).toBe(true);
-    expect(paths.some((call) => call.name === 'moveTo' && call.args[0] === 32 + halfLeg && call.args[1] === 0 && call.fillStyle === '#00f')).toBe(true);
-    expect(paths.some((call) => call.name === 'lineTo' && call.args.join(',') === '32,16' && call.fillStyle === '#00f')).toBe(true);
+    expect(fillRects.some((call) => call.args.join(',') === '0,0,16,16' && call.fillStyle === '#ff0000')).toBe(true);
+    expect(paths.some((call) => call.name === 'moveTo' && call.args.join(',') === '16,0' && call.fillStyle === '#ff0000')).toBe(true);
+    expect(paths.some((call) => call.name === 'lineTo' && call.args[0] === 16 - halfLeg + 16 && call.args[1] === 0 && call.fillStyle === '#ff0000')).toBe(true);
+    expect(paths.some((call) => call.name === 'moveTo' && call.args[0] === 32 + halfLeg && call.args[1] === 0 && call.fillStyle === '#0000ff')).toBe(true);
+    expect(paths.some((call) => call.name === 'lineTo' && call.args.join(',') === '32,16' && call.fillStyle === '#0000ff')).toBe(true);
     expect(fillRects.some((call) => call.args.join(',') === '48,0,16,16' && call.fillStyle === document.settings.backgroundColor)).toBe(true);
-    expect(paths.some((call) => call.name === 'moveTo' && call.args[0] === 48 && (call.strokeStyle === '#f00' || call.strokeStyle === '#00f'))).toBe(false);
-    expect(paths.some((call) => call.name === 'moveTo' && call.args.join(',') === '64,0' && call.fillStyle === '#f00')).toBe(true);
-    expect(paths.some((call) => call.name === 'moveTo' && call.args.join(',') === '80,16' && call.fillStyle === '#f00')).toBe(true);
-    expect(paths.some((call) => call.fillStyle === '#00f' && Number(call.args[0]) >= 64)).toBe(false);
+    expect(paths.some((call) => call.name === 'moveTo' && call.args[0] === 48 && (call.strokeStyle === '#ff0000' || call.strokeStyle === '#0000ff'))).toBe(false);
+    expect(paths.some((call) => call.name === 'moveTo' && call.args.join(',') === '64,0' && call.fillStyle === '#ff0000')).toBe(true);
+    expect(paths.some((call) => call.name === 'moveTo' && call.args.join(',') === '80,16' && call.fillStyle === '#ff0000')).toBe(true);
+    expect(paths.some((call) => call.fillStyle === '#0000ff' && Number(call.args[0]) >= 64)).toBe(false);
     expect(fillRects.some((call) => call.args[0] === 80)).toBe(false);
     renderer.dispose();
   });
@@ -2916,7 +2884,7 @@ describe('Canvas 2D chart renderer', () => {
       return { renderer, base, overlay, document, floatingPaste };
     }
     const backstitchStrokes = (context: ReturnType<typeof recordingContext>) =>
-      context.records.filter((call) => call.name === 'moveTo' && call.strokeStyle === '#00f' && call.args[1] === 10);
+      context.records.filter((call) => call.name === 'moveTo' && call.strokeStyle === '#0000ff' && call.args[1] === 10);
 
     it('fills hole cells with the background and keeps non-lifted backstitches across them', () => {
       const { renderer, overlay, document } = holeSetup(new Set([2]));
@@ -2975,7 +2943,7 @@ describe('Canvas 2D chart renderer', () => {
       });
       renderer.renderNow();
       const mask = overlay.records.findIndex((call) => call.name === 'fillRect' && call.args.join(',') === '20,0,20,20');
-      const state = overlay.records.findIndex((call) => call.name === 'fillRect' && call.args.join(',') === '20,0,20,20' && call.fillStyle === '#f00');
+      const state = overlay.records.findIndex((call) => call.name === 'fillRect' && call.args.join(',') === '20,0,20,20' && call.fillStyle === '#ff0000');
       expect(state).toBeGreaterThan(mask);
       renderer.dispose();
     });
@@ -3025,12 +2993,12 @@ describe('Canvas 2D chart renderer', () => {
     renderer.renderNow();
 
     const maskIndex = overlay.records.findIndex((call) => call.name === 'fillRect' && call.args.join(',') === '20,0,20,20' && call.fillStyle === document.settings.backgroundColor);
-    const stateIndex = overlay.records.findIndex((call) => call.name === 'fillRect' && call.args.join(',') === '20,0,20,20' && call.fillStyle === '#f00');
+    const stateIndex = overlay.records.findIndex((call) => call.name === 'fillRect' && call.args.join(',') === '20,0,20,20' && call.fillStyle === '#ff0000');
     const gridIndices = overlay.records
       .map((call, index, records) => call.name === 'moveTo' && call.strokeStyle === '#00aa00' && records[index + 1]?.name === 'lineTo' && records[index + 2]?.name === 'stroke' ? index : -1)
       .filter((index) => index >= 0);
     const backstitchIndices = overlay.records
-      .map((call, index, records) => call.name === 'moveTo' && call.strokeStyle === '#00f' && records[index + 1]?.name === 'lineTo' && records[index + 2]?.name === 'stroke' ? index : -1)
+      .map((call, index, records) => call.name === 'moveTo' && call.strokeStyle === '#0000ff' && records[index + 1]?.name === 'lineTo' && records[index + 2]?.name === 'stroke' ? index : -1)
       .filter((index) => index >= 0);
     expect(maskIndex).toBeGreaterThanOrEqual(0);
     expect(stateIndex).toBeGreaterThan(maskIndex);
@@ -3086,10 +3054,10 @@ describe('Canvas 2D chart renderer', () => {
     renderer.renderNow();
 
     const backstitchMoves = overlay.records
-      .filter((call, index, records) => call.name === 'moveTo' && call.strokeStyle === '#00f' && records[index + 1]?.name === 'lineTo' && records[index + 2]?.name === 'stroke')
+      .filter((call, index, records) => call.name === 'moveTo' && call.strokeStyle === '#0000ff' && records[index + 1]?.name === 'lineTo' && records[index + 2]?.name === 'stroke')
       .map((call) => call.args as number[]);
     const backstitchLines = overlay.records
-      .filter((call, index, records) => call.name === 'lineTo' && call.strokeStyle === '#00f' && records[index - 1]?.name === 'moveTo' && records[index + 1]?.name === 'stroke')
+      .filter((call, index, records) => call.name === 'lineTo' && call.strokeStyle === '#0000ff' && records[index - 1]?.name === 'moveTo' && records[index + 1]?.name === 'stroke')
       .map((call) => call.args as number[]);
     expect(backstitchMoves).toEqual([[16, 8], [48, 8]]);
     expect(backstitchLines).toEqual([[32, 8], [56, 8]]);
@@ -3126,7 +3094,7 @@ describe('Canvas 2D chart renderer', () => {
       }
     });
     expect(renderer.renderNow().lod).toBe('overview');
-    expect(overlay.records.some((call) => call.name === 'moveTo' && call.strokeStyle === '#00f')).toBe(true);
+    expect(overlay.records.some((call) => call.name === 'moveTo' && call.strokeStyle === '#0000ff')).toBe(true);
     expect(overlay.records.some((call) => call.name === 'moveTo' && call.strokeStyle === '#00aa00')).toBe(false);
     renderer.dispose();
   });
@@ -3152,7 +3120,7 @@ describe('Canvas 2D chart renderer', () => {
     const color = modeColor('color');
     const grayscale = modeColor('grayscale');
     const combined = modeColor('combined');
-    expect(color).toBe('#f00');
+    expect(color).toBe('#ff0000');
     expect(grayscale).toMatch(/^#([0-9a-f]{2})\1\1$/i);
     // Overview draws no symbols, so Combined keeps the plain stitch color.
     expect(combined).toBe(color);

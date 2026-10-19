@@ -18,6 +18,7 @@ import {
   validateConversionToken
 } from '../conversion/image-to-pattern';
 import { rasterForConversion } from '../conversion/raster';
+import { isRecord } from '../domain';
 
 export interface ImageConversionWorkerScope {
   addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
@@ -26,10 +27,6 @@ export interface ImageConversionWorkerScope {
 
 interface ActiveConversion {
   cancelled: boolean;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 function isToken(value: unknown): value is ConversionToken {
