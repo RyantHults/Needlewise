@@ -153,8 +153,8 @@ export interface ActiveWorkspaceState {
   activeLayer?: ActiveLayerInfo | null;
   layerSelection?: LayerSelection | null;
   /** Track's in-memory mark history; see `ProjectSession.markProgress`. */
-  canUndoProgress?: boolean;
-  canRedoProgress?: boolean;
+  canUndoMark?: boolean;
+  canRedoMark?: boolean;
 }
 
 export type MaterialSettingsChanges = MaterialSettingsUpdate;

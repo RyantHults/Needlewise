@@ -2,11 +2,12 @@ import {
   CellKind,
   DomainError,
   FIXED_POINT_UNITS_PER_CELL,
+  type BackstitchStore,
   type MaterialUnit,
   type PatternDocument,
   type PatternSettings
 } from './types';
-import { isThreeQuarterPairKind, isThreeQuarterSingleKind } from './model';
+import { componentSlotMask } from './cell-components';
 
 /**
  * Material settings used by the estimator.  The document's v2 settings do
@@ -214,7 +215,7 @@ function requiredPositive(value: unknown, label: string): number {
 }
 
 function requiredPositiveInteger(value: unknown, label: string): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) throw new DomainError('invalid-material-settings', `${label} must be a whole number greater than zero.`);
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) throw new DomainError('invalid-material-settings', `${label} must be a whole number greater than zero.`);
   return value;
 }
 
@@ -371,7 +372,8 @@ export function backstitchLengths(
   return { fixed, cells: fixed / FIXED_POINT_UNITS_PER_CELL };
 }
 
-interface MutableCounts {
+/** Running counts for one palette color, which `metricsFromCounts` turns into metrics. */
+export interface MetricCounts {
   full: number;
   half: number;
   quarter: number;
@@ -381,7 +383,7 @@ interface MutableCounts {
   backstitchLengthFixed: number;
 }
 
-function emptyCounts(): MutableCounts {
+export function emptyMetricCounts(): MetricCounts {
   return {
     full: 0,
     half: 0,
@@ -393,12 +395,29 @@ function emptyCounts(): MutableCounts {
   };
 }
 
-function componentCount(counts: Pick<MutableCounts, 'full' | 'half' | 'quarter' | 'threeQuarter' | 'backstitch'>): number {
-  return counts.full + counts.half + counts.quarter + counts.backstitch + counts.threeQuarter;
+function hasCountBearingUsage(counts: MetricCounts): boolean {
+  return counts.full !== 0
+    || counts.half !== 0
+    || counts.quarter !== 0
+    || counts.threeQuarter !== 0
+    || counts.backstitch !== 0
+    || counts.completedComponents !== 0
+    || counts.backstitchLengthFixed !== 0;
 }
 
-function toTotalMetrics(counts: MutableCounts): TotalMetrics {
-  const totalComponents = componentCount(counts);
+/** Adds `multiplier` times `source` into `target`. */
+export function addMetricCounts(target: MetricCounts, source: MetricCounts, multiplier: 1 | -1): void {
+  target.full += multiplier * source.full;
+  target.half += multiplier * source.half;
+  target.quarter += multiplier * source.quarter;
+  target.threeQuarter += multiplier * source.threeQuarter;
+  target.backstitch += multiplier * source.backstitch;
+  target.completedComponents += multiplier * source.completedComponents;
+  target.backstitchLengthFixed += multiplier * source.backstitchLengthFixed;
+}
+
+function toTotalMetrics(counts: MetricCounts): TotalMetrics {
+  const totalComponents = counts.full + counts.half + counts.quarter + counts.threeQuarter + counts.backstitch;
   return {
     full: counts.full,
     half: counts.half,
@@ -411,16 +430,6 @@ function toTotalMetrics(counts: MutableCounts): TotalMetrics {
     completedComponents: counts.completedComponents,
     remainingComponents: totalComponents - counts.completedComponents
   };
-}
-
-function addCounts(target: MutableCounts, source: MutableCounts): void {
-  target.full += source.full;
-  target.half += source.half;
-  target.quarter += source.quarter;
-  target.threeQuarter += source.threeQuarter;
-  target.backstitch += source.backstitch;
-  target.completedComponents += source.completedComponents;
-  target.backstitchLengthFixed += source.backstitchLengthFixed;
 }
 
 export interface MaterialCountInput {
@@ -523,61 +532,90 @@ export function materialEstimateFromCounts(
   };
 }
 
-const makeEstimate = materialEstimateFromCounts;
+type ComponentCountField = 'full' | 'half' | 'quarter' | 'threeQuarter';
 
-function withoutPaletteId(estimate: MaterialEstimate): Omit<MaterialEstimate, 'paletteId'> {
-  const aggregate = { ...estimate } as Omit<MaterialEstimate, 'paletteId'> & { paletteId?: number };
-  delete aggregate.paletteId;
-  return aggregate;
-}
+/**
+ * The count each cell kind's components add to, indexed by kind; empty and
+ * unknown kinds have none. A table keeps the per-cell scan to one read.
+ */
+const COMPONENT_COUNT_FIELDS: readonly (ComponentCountField | undefined)[] = (() => {
+  const fields = new Array<ComponentCountField | undefined>(256).fill(undefined);
+  fields[CellKind.Full] = 'full';
+  fields[CellKind.HalfBackslash] = 'half';
+  fields[CellKind.HalfSlash] = 'half';
+  fields[CellKind.Quarters] = 'quarter';
+  for (const kind of [CellKind.ThreeQuarterNW, CellKind.ThreeQuarterNE, CellKind.ThreeQuarterSE, CellKind.ThreeQuarterSW, CellKind.ThreeQuarterPair]) fields[kind] = 'threeQuarter';
+  return fields;
+})();
 
-function incrementPaletteCount(counts: MutableCounts, kind: number, completed: number): void {
-  if (kind === CellKind.Full) {
-    counts.full += 1;
-    if ((completed & 1) !== 0) counts.completedComponents += 1;
-  } else if (kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash) {
-    counts.half += 1;
-    if ((completed & 1) !== 0) counts.completedComponents += 1;
-  } else if (isThreeQuarterSingleKind(kind)) {
-    counts.threeQuarter += 1;
-    if ((completed & 1) !== 0) counts.completedComponents += 1;
+/**
+ * Adds or removes stitch components in per-palette counts. Neighbouring cells
+ * usually share a color, so a counter remembers its last palette lookup;
+ * create one per pass over the map. Palette id 0 is never counted.
+ */
+export class MetricCounter {
+  private lastPaletteId = 0;
+  private lastCounts: MetricCounts | undefined;
+
+  constructor(private readonly target: Map<number, MetricCounts>) {}
+
+  private countsFor(paletteId: number): MetricCounts {
+    if (paletteId === this.lastPaletteId && this.lastCounts !== undefined) return this.lastCounts;
+    let counts = this.target.get(paletteId);
+    if (counts === undefined) {
+      counts = emptyMetricCounts();
+      this.target.set(paletteId, counts);
+    }
+    this.lastPaletteId = paletteId;
+    this.lastCounts = counts;
+    return counts;
+  }
+
+  /** Counts cell `index`'s components; an index past either end counts nothing. */
+  cell(planes: Pick<PatternDocument, 'kind' | 'colors' | 'completed'>, index: number, multiplier: 1 | -1): void {
+    if (index < 0 || index >= planes.kind.length) return;
+    const kind = planes.kind[index];
+    const field = COMPONENT_COUNT_FIELDS[kind];
+    if (field === undefined) return;
+    const offset = index * 4;
+    const completion = planes.completed[index];
+    // Single kinds, by far the common case, keep their one component in slot 0.
+    if (field !== 'quarter' && kind !== CellKind.ThreeQuarterPair) {
+      const paletteId = planes.colors[offset];
+      if (paletteId !== 0) this.addComponent(paletteId, field, (completion & 1) !== 0, multiplier);
+      return;
+    }
+    // Completion bits are tied to slots, not to the order components are met.
+    const mask = componentSlotMask(kind, planes.colors, offset);
+    for (let slot = 0; slot < 4; slot += 1) {
+      if ((mask & (1 << slot)) !== 0) this.addComponent(planes.colors[offset + slot], field, (completion & (1 << slot)) !== 0, multiplier);
+    }
+  }
+
+  private addComponent(paletteId: number, field: ComponentCountField, completed: boolean, multiplier: 1 | -1): void {
+    const counts = this.countsFor(paletteId);
+    counts[field] += multiplier;
+    if (completed) counts.completedComponents += multiplier;
+  }
+
+  backstitch(store: BackstitchStore, index: number, multiplier: 1 | -1): void {
+    const paletteId = store.colors[index];
+    if (paletteId === 0) return;
+    const counts = this.countsFor(paletteId);
+    counts.backstitch += multiplier;
+    counts.backstitchLengthFixed += multiplier * fixedPointBackstitchLength(store.x1[index], store.y1[index], store.x2[index], store.y2[index]);
+    if (store.completed[index] !== 0) counts.completedComponents += multiplier;
   }
 }
 
 /**
- * Scan the dense cell arrays and sparse backstitch arrays once.  The returned
- * metrics are newly allocated; this function never adds caches to or mutates
- * the supplied document.
+ * Per-palette counts of every cell component and backstitch, from one scan of
+ * the dense cell arrays and the sparse backstitch arrays. The document is
+ * never mutated or given caches.
  */
-export function computePatternMetrics(
-  document: PatternDocument,
-  options?: MetricsOptions | MaterialSettingsV2
-): PatternMetrics {
-  const settings = normalizeMaterialSettings(document, options);
-  const aidaCount = resolveMetricsAidaCount(document, options);
-  const byId = new Map<number, MutableCounts>();
-  const paletteEntries = new Map(document.palette.map((entry) => [entry.id, entry]));
-
-  // Keep palette order in the result while allowing stable-ID lookup during
-  // the scan.  A malformed document can contain a referenced ID not present
-  // in its palette; retaining that usage is more useful than silently losing
-  // it, and does not alter the document.
-  // Neighbouring cells usually share a color, so remember the last lookup.
-  let lastPaletteId = -1;
-  let lastCounts: MutableCounts | undefined;
-  const ensure = (paletteId: number): MutableCounts => {
-    if (paletteId === lastPaletteId && lastCounts !== undefined) return lastCounts;
-    let counts = byId.get(paletteId);
-    if (counts === undefined) {
-      counts = emptyCounts();
-      byId.set(paletteId, counts);
-    }
-    lastPaletteId = paletteId;
-    lastCounts = counts;
-    return counts;
-  };
-  for (const entry of document.palette) ensure(entry.id);
-
+export function scanCounts(document: PatternDocument): Map<number, MetricCounts> {
+  const counts = new Map<number, MetricCounts>();
+  const counter = new MetricCounter(counts);
   // Valid documents have equal lengths, but bounding the scan by the arrays
   // also keeps this read-only helper safe when handed an unvalidated draft.
   const cellCount = Math.min(
@@ -586,68 +624,36 @@ export function computePatternMetrics(
     document.completed.length,
     Math.floor(document.colors.length / 4)
   );
-  for (let index = 0; index < cellCount; index += 1) {
-    const kind = document.kind[index];
-    const offset = index * 4;
-    const completion = document.completed[index];
+  for (let index = 0; index < cellCount; index += 1) counter.cell(document, index, 1);
+  for (let index = 0; index < document.backstitches.ids.length; index += 1) counter.backstitch(document.backstitches, index, 1);
+  return counts;
+}
 
-    if (kind === CellKind.Full || kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash || isThreeQuarterSingleKind(kind)) {
-      const color = document.colors[offset];
-      if (color !== 0) incrementPaletteCount(ensure(color), kind, completion);
-    } else if (isThreeQuarterPairKind(kind)) {
-      for (let slot = 0; slot < 4; slot += 1) {
-        const color = document.colors[offset + slot];
-        if (color === 0) continue;
-        const counts = ensure(color);
-        counts.threeQuarter += 1;
-        if ((completion & (1 << slot)) !== 0) counts.completedComponents += 1;
-      }
-    } else if (kind === CellKind.Quarters) {
-      // Quarter completion bits are tied to slots, not to the order in which
-      // occupied quarters happen to be encountered.
-      for (let slot = 0; slot < 4; slot += 1) {
-        const color = document.colors[offset + slot];
-        if (color === 0) continue;
-        const counts = ensure(color);
-        counts.quarter += 1;
-        if ((completion & (1 << slot)) !== 0) counts.completedComponents += 1;
-      }
-    }
-  }
-
-  const store = document.backstitches;
-  for (let index = 0; index < store.ids.length; index += 1) {
-    const counts = ensure(store.colors[index]);
-    counts.backstitch += 1;
-    counts.backstitchLengthFixed += fixedPointBackstitchLength(
-      store.x1[index],
-      store.y1[index],
-      store.x2[index],
-      store.y2[index]
-    );
-    if (store.completed[index] !== 0) counts.completedComponents += 1;
-  }
-
-  const totalCounts = emptyCounts();
+/**
+ * Metrics for `document` from its per-palette counts. Every palette entry is
+ * reported, in palette order, followed by any other color that still has
+ * usage: a malformed document can reference an ID missing from its palette,
+ * and keeping that usage is more useful than silently losing it.
+ */
+export function metricsFromCounts(
+  document: PatternDocument,
+  counts: ReadonlyMap<number, MetricCounts>,
+  settings: NormalizedMaterialSettings,
+  aidaCount: number | undefined
+): PatternMetrics {
+  const paletteEntries = new Map(document.palette.map((entry) => [entry.id, entry]));
+  const paletteIds = [...paletteEntries.keys()];
+  for (const [paletteId, entry] of counts) if (!paletteEntries.has(paletteId) && hasCountBearingUsage(entry)) paletteIds.push(paletteId);
+  const totalCounts = emptyMetricCounts();
   const palettes: PaletteMetrics[] = [];
   const materials: MaterialEstimate[] = [];
-  const emitted = new Set<number>();
-  const emit = (paletteId: number): void => {
-    if (emitted.has(paletteId)) return;
-    emitted.add(paletteId);
-    const counts = byId.get(paletteId) ?? emptyCounts();
-    const entry = paletteEntries.get(paletteId);
-    const material = makeEstimate(paletteId, counts, entry?.material.unit, settings, aidaCount);
-    const total = toTotalMetrics(counts);
-    const palette: PaletteMetrics = { paletteId, ...total, material };
-    palettes.push(palette);
+  for (const paletteId of paletteIds) {
+    const paletteCounts = counts.get(paletteId) ?? emptyMetricCounts();
+    const material = materialEstimateFromCounts(paletteId, paletteCounts, paletteEntries.get(paletteId)?.material.unit, settings, aidaCount);
+    palettes.push({ paletteId, ...toTotalMetrics(paletteCounts), material });
     materials.push(material);
-    addCounts(totalCounts, counts);
-  };
-  for (const entry of document.palette) emit(entry.id);
-  // Preserve usage in malformed documents, as described above, without
-  // changing the order of valid palette entries.
-  for (const paletteId of byId.keys()) emit(paletteId);
+    addMetricCounts(totalCounts, paletteCounts, 1);
+  }
 
   const totals = toTotalMetrics(totalCounts);
   const fraction = totals.totalComponents === 0
@@ -661,7 +667,9 @@ export function computePatternMetrics(
     percent: fraction * 100
   };
 
-  const totalMaterial = makeEstimate(0, totalCounts, undefined, settings, aidaCount);
+  // The aggregate estimate belongs to no palette color.
+  const totalMaterial: Omit<MaterialEstimate, 'paletteId'> & { paletteId?: number } = materialEstimateFromCounts(0, totalCounts, undefined, settings, aidaCount);
+  delete totalMaterial.paletteId;
 
   return {
     palettes,
@@ -672,8 +680,16 @@ export function computePatternMetrics(
     materials,
     materialSettings: settings,
     ...(aidaCount === undefined ? {} : { finishedSize: deriveFinishedSize(document.width, document.height, aidaCount) }),
-    ...(totalMaterial.assumptions === undefined ? {} : { totalMaterial: withoutPaletteId(totalMaterial) })
+    ...(totalMaterial.assumptions === undefined ? {} : { totalMaterial })
   };
+}
+
+/** Every derived metric of `document`, from one scan. */
+export function computePatternMetrics(
+  document: PatternDocument,
+  options?: MetricsOptions | MaterialSettingsV2
+): PatternMetrics {
+  return metricsFromCounts(document, scanCounts(document), normalizeMaterialSettings(document, options), resolveMetricsAidaCount(document, options));
 }
 
 /** Compute just the per-palette portion of the derived metrics. */

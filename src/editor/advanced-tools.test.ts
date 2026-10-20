@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { clearClipboard } from './clipboard-store';
 import {
+  applyCommand,
   CellKind,
   createDocument,
-  createEditor,
   type CommandResult,
   type DomainCommand,
   type PatternDocument
 } from '../domain';
+import { markBackstitchComplete, markCellComplete } from '../domain/test-fixtures';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { createFillWorkerClient, createFillResult, type FillWorkerClient, type FillWorkerLike } from './fill';
 import { getCanvasMetrics } from './coordinates';
@@ -22,26 +23,27 @@ import type {
 } from './contracts';
 import type { EditorRevisionToken, EditorTransaction, WorkspaceEditorGateway, WorkspaceEditorSnapshot } from './gateway';
 import type { PointerSample } from './input';
+import { SurfaceHistory } from './test-fixtures';
 
 class FakeGateway implements WorkspaceEditorGateway {
-  private editor: ReturnType<typeof createEditor>;
+  private editor: SurfaceHistory;
   private projectId = 'project-a';
   private readonly listeners = new Set<(snapshot: WorkspaceEditorSnapshot) => void>();
   readonly commands: DomainCommand[] = [];
 
   constructor(document: PatternDocument) {
-    this.editor = createEditor(document);
+    this.editor = new SurfaceHistory(document);
   }
 
   markProgress(): boolean {
     return false;
   }
 
-  undoProgress(): boolean {
+  undoMark(): boolean {
     return false;
   }
 
-  redoProgress(): boolean {
+  redoMark(): boolean {
     return false;
   }
 
@@ -112,12 +114,12 @@ class FakeGateway implements WorkspaceEditorGateway {
 
   switchProject(): void {
     this.projectId = 'project-b';
-    this.editor = createEditor(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
+    this.editor = new SurfaceHistory(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
     this.emit();
   }
 
   replaceDocument(document: PatternDocument): void {
-    this.editor = createEditor(document);
+    this.editor = new SurfaceHistory(document);
     this.emit();
   }
 
@@ -219,17 +221,19 @@ function floatingFixture(at: { x: number; y: number }) {
 }
 
 function documentWithStitches(): PatternDocument {
-  const editor = createEditor(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 8, height: 8, palette: [
+  let document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 8, height: 8, palette: [
     { id: 1, name: 'Red', color: '#d33' },
     { id: 2, name: 'Blue', color: '#36c' }
-  ] }));
-  editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-  editor.execute({ type: 'set-completion', x: 0, y: 0, completed: true });
-  editor.execute({ type: 'set-quarter', x: 1, y: 0, corner: 0, color: 1 });
-  editor.execute({ type: 'set-quarter', x: 1, y: 0, corner: 1, color: 2 });
-  editor.execute({ type: 'set-quarter', x: 2, y: 0, corner: 2, color: 1 });
-  editor.execute({ type: 'set-quarter', x: 2, y: 0, corner: 3, color: 2 });
-  return editor.document;
+  ] });
+  document = applyCommand(document, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+  document = markCellComplete(document, 0, 0);
+  for (const command of [
+    { type: 'set-quarter', x: 1, y: 0, corner: 0, color: 1 },
+    { type: 'set-quarter', x: 1, y: 0, corner: 1, color: 2 },
+    { type: 'set-quarter', x: 2, y: 0, corner: 2, color: 1 },
+    { type: 'set-quarter', x: 2, y: 0, corner: 3, color: 2 }
+  ] as const) document = applyCommand(document, command).document;
+  return document;
 }
 
 function fixture(document = documentWithStitches(), providedFillClient?: FillWorkerClient) {
@@ -325,10 +329,12 @@ describe('advanced headless editor tools', () => {
     controller.handlePointerMove(pointer(1, 44, 12));
     controller.handlePointerUp(pointer(1, 44, 12));
     expect(gateway.commands).toHaveLength(1);
-    expect(gateway.commands[0]).toMatchObject({ type: 'mixed-erase' });
-    expect(gateway.commands[0].wholeCellIndices).toEqual(new Uint32Array([0]));
-    expect(gateway.commands[0].componentCellIndices).toEqual(new Uint32Array([1]));
-    expect(gateway.commands[0].componentCorners).toEqual(new Uint8Array([0]));
+    expect(gateway.commands[0]).toMatchObject({
+      type: 'mixed-erase',
+      wholeCellIndices: new Uint32Array([0]),
+      componentCellIndices: new Uint32Array([1]),
+      componentCorners: new Uint8Array([0])
+    });
     expect(gateway.undoDepth).toBe(1);
     expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
     expect(gateway.getSnapshot().document?.kind[1]).toBe(CellKind.ThreeQuarterSE);
@@ -674,8 +680,6 @@ describe('advanced headless editor tools', () => {
   it('moves a completed rectangular selection through one floating command with undo and redo', () => {
     const { controller, gateway, uiStore } = fixture();
     controller.setTool({ tool: 'select' });
-    gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-    gateway.execute({ type: 'set-completion', x: 0, y: 0, completed: true });
     controller.setSelection({ x: 0, y: 0 });
     expect(controller.moveSelection()).toBe(true);
     expect(uiStore.getState().overlay.floatingPaste).toMatchObject({
@@ -748,12 +752,9 @@ describe('advanced headless editor tools', () => {
   });
 
   it('captures mixed cell/backstitch move state and restores a transparent no-op without changing clipboard/history', () => {
-    const mixed = fixture();
+    const withBackstitch = applyCommand(documentWithStitches(), { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 2 }).document;
+    const mixed = fixture(markBackstitchComplete(withBackstitch, 1));
     mixed.controller.setTool({ tool: 'select' });
-    mixed.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-    mixed.gateway.execute({ type: 'set-completion', x: 0, y: 0, completed: true });
-    mixed.gateway.execute({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 2 });
-    mixed.gateway.execute({ type: 'set-backstitch-completion', id: 1, completed: true });
     mixed.controller.setSelection({ x: 0, y: 0 });
     mixed.controller.copySelection();
     const clipboard = mixed.controller.getClipboard();

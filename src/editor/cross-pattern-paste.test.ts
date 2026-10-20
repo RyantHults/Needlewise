@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it } from 'vitest';
 import { clearClipboard } from './clipboard-store';
-import { CellKind, createDocument, createEditor, type LayeredDocument, type PaletteEntryInput, type PatternDocument } from '../domain';
+import { CellKind, createDocument, type LayeredDocument, type PaletteEntryInput, type PatternDocument } from '../domain';
 import {
   PersistenceError,
   decodeDocument,
@@ -18,6 +18,7 @@ import { EditorSurfaceController } from './controller';
 import { createWorkspaceEditorGateway, type WorkspaceEditorBoundary } from './gateway';
 import { createPointerEventsAdapter, type PointerSample } from './input';
 import { createUiStore } from './ui-store';
+import { SurfaceHistory } from './test-fixtures';
 
 // The chart starts four cells in, so a paste hanging past its top-left edge is still on screen.
 const VIEWPORT: Viewport = { x: -4, y: -4, zoom: 16 };
@@ -95,7 +96,7 @@ function patternB(width = 4, height = 4): PatternDocument {
 }
 
 function paint(document: PatternDocument, cells: ReadonlyArray<readonly [number, number, number]>): PatternDocument {
-  const editor = createEditor(document);
+  const editor = new SurfaceHistory(document);
   for (const [x, y, color] of cells) editor.execute({ type: 'set-full', x, y, color });
   return editor.document;
 }
@@ -145,7 +146,7 @@ async function layeredFixture(source: PatternDocument) {
 
 /** A single-surface editor with no layers, which runs paste-fragment only standalone. */
 function plainFixture(source: PatternDocument) {
-  let editor = createEditor(source);
+  let editor = new SurfaceHistory(source);
   let projectId = 'plain-a';
   const listeners = new Set<() => void>();
   const boundary: WorkspaceEditorBoundary = {
@@ -163,7 +164,7 @@ function plainFixture(source: PatternDocument) {
   controller.start();
   const open = (document: PatternDocument): void => {
     projectId = 'plain-b';
-    editor = createEditor(document);
+    editor = new SurfaceHistory(document);
     listeners.forEach((listener) => listener());
   };
   return { controller, uiStore, notices, open, editor: () => editor };

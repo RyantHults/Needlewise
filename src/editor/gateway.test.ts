@@ -3,6 +3,8 @@ import { cloneDocument, createDocument, createPatternFragment, type CommandResul
 import { createWorkspaceEditorGateway, StaleEditorTransactionError, type WorkspaceEditorBoundary } from './gateway';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 
+const paint: DomainCommand = { type: 'set-full', x: 0, y: 0, color: 1 };
+
 function boundaryFixture() {
   let projectId: string | null = 'project-a';
   let document: PatternDocument | null = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [{ id: 1, name: 'Thread', color: '#123' }] });
@@ -23,8 +25,8 @@ function boundaryFixture() {
       return { document: next, changed: true, revision: next.revision };
     },
     executeBatch(commands) { return this.execute({ type: 'batch', commands }); },
-    undo() { return this.execute({ type: 'undo' }); },
-    redo() { return this.execute({ type: 'redo' }); }
+    undo() { return this.execute({ type: 'batch', commands: [] }); },
+    redo() { return this.execute({ type: 'batch', commands: [] }); }
   };
   return {
     boundary,
@@ -41,7 +43,7 @@ describe('WorkspaceEditorGateway', () => {
     const fixture = boundaryFixture();
     const gateway = createWorkspaceEditorGateway(fixture.boundary);
     expect(gateway.getDocumentSnapshot()).toMatchObject({ projectId: 'project-a', revision: 0 });
-    const result = gateway.execute({ type: 'noop' });
+    const result = gateway.execute(paint);
     expect(result.revision).toBe(1);
     expect(gateway.getSnapshot().revision).toBe(1);
     gateway.dispose();
@@ -60,7 +62,7 @@ describe('WorkspaceEditorGateway', () => {
       redo: () => fixture.boundary.redo(),
       commitPaste(...args) {
         calls.push(args);
-        return { result: fixture.boundary.execute({ type: 'noop' }), layerId: null };
+        return { result: fixture.boundary.execute(paint), layerId: null };
       }
     };
     const gateway = createWorkspaceEditorGateway(boundary);
@@ -75,11 +77,11 @@ describe('WorkspaceEditorGateway', () => {
     const fixture = boundaryFixture();
     const gateway = createWorkspaceEditorGateway(fixture.boundary);
     const transaction = gateway.beginTransaction();
-    gateway.execute({ type: 'other' });
-    expect(() => transaction.commit({ type: 'paint' })).toThrowError(StaleEditorTransactionError);
+    gateway.execute(paint);
+    expect(() => transaction.commit(paint)).toThrowError(StaleEditorTransactionError);
     const second = gateway.beginTransaction();
     fixture.switchProject('project-b');
-    expect(() => second.commit({ type: 'paint' })).toThrowError(StaleEditorTransactionError);
+    expect(() => second.commit(paint)).toThrowError(StaleEditorTransactionError);
     gateway.dispose();
   });
 
@@ -99,15 +101,15 @@ describe('WorkspaceEditorGateway', () => {
         expect(received).toBe(command);
         return progress('mark', true)();
       },
-      undoProgress: progress('undo', true),
-      redoProgress: progress('redo', false)
+      undoMark: progress('undo', true),
+      redoMark: progress('redo', false)
     };
     const gateway = createWorkspaceEditorGateway(boundary);
     let notified = 0;
     gateway.subscribe(() => { notified += 1; });
     expect(gateway.markProgress(command)).toBe(true);
-    expect(gateway.undoProgress()).toBe(true);
-    expect(gateway.redoProgress()).toBe(false);
+    expect(gateway.undoMark()).toBe(true);
+    expect(gateway.redoMark()).toBe(false);
     expect(calls).toEqual(['mark', 'undo', 'redo']);
     expect(notified).toBe(3);
     gateway.dispose();
@@ -116,8 +118,8 @@ describe('WorkspaceEditorGateway', () => {
   it('reports no progress change when the boundary cannot record marks', () => {
     const gateway = createWorkspaceEditorGateway(boundaryFixture().boundary);
     expect(gateway.markProgress({ operation: 'toggle' })).toBe(false);
-    expect(gateway.undoProgress()).toBe(false);
-    expect(gateway.redoProgress()).toBe(false);
+    expect(gateway.undoMark()).toBe(false);
+    expect(gateway.redoMark()).toBe(false);
     gateway.dispose();
   });
 });

@@ -20,6 +20,9 @@ import {
   preflightPasteFragmentCommand,
   moveFragmentCommand,
   backstitchEndpointsContainedInCellUnion,
+  containedBackstitchPositions,
+  FIXED_POINT_UNITS_PER_CELL,
+  rebaseBackstitches,
   preflightBulkCellCommand,
   canvasCellsCommand,
   canvasResizeCommand,
@@ -30,9 +33,15 @@ import {
   LayerType,
   snapBackstitchPoint,
   colorComponentMask,
+  componentSlotMask,
+  allocateBackstitches,
+  copyBackstitch,
+  isLegacyQuarterKind,
+  threeQuarterPairComponents,
   layerSurface,
   findLayer,
   type BulkCellEdit,
+  type BulkRecolorCommand,
   type LayeredDocument,
   type StitchLayer,
   type CommandResult,
@@ -160,10 +169,8 @@ import { countLabel } from './status-text';
 import {
   isThreeQuarterKind,
   isThreeQuarterPairKind,
-  isLegacyQuarterKind,
   ThreeQuarterPair,
   threeQuarterCornersShareAxis,
-  threeQuarterPairComponents,
   threeQuarterCornerForKind,
   threeQuarterKindForCorner
 } from './cell-kinds';
@@ -681,20 +688,8 @@ function boundedSquareOrigin(origin: number, anchor: number, side: number, exten
   return Math.max(min, Math.min(max, origin));
 }
 
-function completionMaskForCell(document: PatternDocument, index: number): number {
-  const kind = document.kind[index];
-  if (kind === CellKind.Empty) return 0;
-  const offset = index * 4;
-  if (isLegacyQuarterKind(kind) || isThreeQuarterPairKind(kind)) {
-    let mask = 0;
-    for (let slot = 0; slot < 4; slot += 1) if (document.colors[offset + slot] !== 0) mask |= 1 << slot;
-    return mask;
-  }
-  return 1;
-}
-
 function deterministicFillMask(document: PatternDocument, index: number): number {
-  const mask = completionMaskForCell(document, index);
+  const mask = colorComponentMask(document, index, null);
   if (mask === 0) return 0;
   const kind = document.kind[index];
   if (!isLegacyQuarterKind(kind) && !isThreeQuarterPairKind(kind) && document.colors[index * MAX_FILL_COLOR_SLOTS] === 0) return 0;
@@ -707,7 +702,7 @@ function fillRecolorCommand(
   fromColor: number,
   toColor: number,
   expectedRevision: number
-): DomainCommand {
+): BulkRecolorCommand {
   return {
     type: 'bulk-recolor',
     indices,
@@ -715,7 +710,7 @@ function fillRecolorCommand(
     fromColor,
     toColor,
     expectedRevision
-  } as unknown as DomainCommand;
+  };
 }
 
 function masksForChangedIndices(indices: Uint32Array, masks: Uint8Array, changedIndices: Uint32Array): Uint8Array {
@@ -1272,8 +1267,8 @@ function sameActiveLayer(left: EditorActiveLayer | null, right: EditorActiveLaye
 
 function withLayerId(command: DomainCommand, layerId: number | undefined): DomainCommand {
   if (layerId === undefined) return command;
-  if (command.type === 'batch' && Array.isArray(command.commands)) {
-    return { ...command, commands: (command.commands as DomainCommand[]).map((child) => withLayerId(child, layerId)) };
+  if (command.type === 'batch') {
+    return { ...command, commands: command.commands.map((child) => withLayerId(child, layerId)) };
   }
   return command.layerId === undefined ? { ...command, layerId } : command;
 }
@@ -1291,11 +1286,7 @@ function fragmentLayerType(fragment: PatternFragment): LayerType {
 /** Ids of the backstitches whose endpoints lie inside the union of `indices`. */
 function containedBackstitchIds(document: PatternDocument, indices: Uint32Array): number[] {
   const store = document.backstitches;
-  const ids: number[] = [];
-  for (let position = 0; position < store.ids.length; position += 1) {
-    if (backstitchEndpointsContainedInCellUnion(store.x1[position], store.y1[position], store.x2[position], store.y2[position], document.width, document.height, indices)) ids.push(store.ids[position]);
-  }
-  return ids;
+  return containedBackstitchPositions(store, (x1, y1, x2, y2) => backstitchEndpointsContainedInCellUnion(x1, y1, x2, y2, document.width, document.height, indices)).map((position) => store.ids[position]);
 }
 
 /**
@@ -1321,15 +1312,9 @@ function fragmentSelectionIndices(selection: FragmentSelection, document: Patter
 function focusFloatingBackstitches(backstitches: FloatingPasteBackstitches, focus: number): FloatingPasteBackstitches {
   const kept: number[] = [];
   for (let position = 0; position < backstitches.ids.length; position += 1) if (backstitches.colors[position] === focus) kept.push(position);
-  return {
-    ids: Uint32Array.from(kept, (position) => backstitches.ids[position]),
-    x1: Uint32Array.from(kept, (position) => backstitches.x1[position]),
-    y1: Uint32Array.from(kept, (position) => backstitches.y1[position]),
-    x2: Uint32Array.from(kept, (position) => backstitches.x2[position]),
-    y2: Uint32Array.from(kept, (position) => backstitches.y2[position]),
-    colors: Uint16Array.from(kept, (position) => backstitches.colors[position]),
-    completed: Uint8Array.from(kept, (position) => backstitches.completed[position])
-  };
+  const result = allocateBackstitches(kept.length);
+  kept.forEach((position, index) => copyBackstitch(backstitches, position, result, index));
+  return result;
 }
 
 /**
@@ -1376,13 +1361,8 @@ function compositeMoveCaptures(captures: readonly MoveCapture[], rect: GridRect)
   const kind = new Uint8Array(rect.width * rect.height);
   const colors = new Uint16Array(kind.length * 4);
   const completion = new Uint8Array(kind.length);
-  const ids: number[] = [];
-  const x1: number[] = [];
-  const y1: number[] = [];
-  const x2: number[] = [];
-  const y2: number[] = [];
-  const lineColors: number[] = [];
-  const completed: number[] = [];
+  const lines = allocateBackstitches(captures.reduce((count, capture) => count + capture.backstitches.ids.length, 0));
+  let cursor = 0;
   for (const capture of captures) {
     const { fragment, backstitches } = capture;
     const left = capture.geometry.rect.x - rect.x;
@@ -1397,21 +1377,14 @@ function compositeMoveCaptures(captures: readonly MoveCapture[], rect: GridRect)
         completion[to] = capture.completion[from];
       }
     }
-    for (let position = 0; position < backstitches.ids.length; position += 1) {
-      ids.push(backstitches.ids[position]);
-      x1.push(backstitches.x1[position] + left * 4);
-      y1.push(backstitches.y1[position] + top * 4);
-      x2.push(backstitches.x2[position] + left * 4);
-      y2.push(backstitches.y2[position] + top * 4);
-      lineColors.push(backstitches.colors[position]);
-      completed.push(backstitches.completed[position]);
-    }
+    const offset = { x: left * 4, y: top * 4 };
+    for (let position = 0; position < backstitches.ids.length; position += 1) copyBackstitch(backstitches, position, lines, cursor++, offset);
   }
-  const lines = { x1: Uint32Array.from(x1), y1: Uint32Array.from(y1), x2: Uint32Array.from(x2), y2: Uint32Array.from(y2), colors: Uint16Array.from(lineColors) };
+  const { x1, y1, x2, y2, colors: lineColors } = lines;
   return {
-    fragment: { version: captures[0].fragment.version, width: rect.width, height: rect.height, kind, colors, backstitches: lines },
+    fragment: { version: captures[0].fragment.version, width: rect.width, height: rect.height, kind, colors, backstitches: { x1, y1, x2, y2, colors: lineColors } },
     completion,
-    backstitches: { ids: Uint32Array.from(ids), ...lines, completed: Uint8Array.from(completed) }
+    backstitches: lines
   };
 }
 
@@ -1472,16 +1445,12 @@ export function selectedCellSemantics(document: PatternDocument, cell: ModelPoin
                   ? 'three-quarter-sw'
                   : 'empty';
   const offset = index * 4;
-  const slots: readonly number[] = isLegacyQuarterKind(kind)
-    ? [0, 1, 2, 3]
-    : isThreeQuarterPairKind(kind)
-      ? threeQuarterPairComponents(document.colors.subarray(offset, offset + 4)).map((component) => component.slot)
-      : kind === CellKind.Empty ? [] : [0];
+  const mask = componentSlotMask(kind, document.colors, offset);
   const paletteIds: number[] = [];
   let completed = 0;
-  for (const slot of slots) {
+  for (let slot = 0; slot < 4; slot += 1) {
+    if ((mask & (1 << slot)) === 0) continue;
     const paletteId = document.colors[offset + slot];
-    if (paletteId === 0) continue;
     paletteIds.push(paletteId);
     if ((document.completed[index] & (1 << slot)) !== 0) completed += 1;
   }
@@ -1869,31 +1838,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const y = Math.floor(index / document.width);
       completion[(y - bounds.y) * fragment.width + x - bounds.x] = document.completed[index];
     }
-    let containedCount = 0;
-    for (let index = 0; index < document.backstitches.ids.length; index += 1) {
-      if (backstitchEndpointsContainedInCellUnion(document.backstitches.x1[index], document.backstitches.y1[index], document.backstitches.x2[index], document.backstitches.y2[index], document.width, document.height, indices)) containedCount += 1;
-    }
+    const store = document.backstitches;
+    const positions = containedBackstitchPositions(store, (x1, y1, x2, y2) => backstitchEndpointsContainedInCellUnion(x1, y1, x2, y2, document.width, document.height, indices));
     const backstitches: FloatingPasteBackstitches = {
-      ids: new Uint32Array(containedCount),
-      x1: new Uint32Array(containedCount),
-      y1: new Uint32Array(containedCount),
-      x2: new Uint32Array(containedCount),
-      y2: new Uint32Array(containedCount),
-      colors: new Uint16Array(containedCount),
-      completed: new Uint8Array(containedCount)
+      ids: Uint32Array.from(positions, (position) => store.ids[position]),
+      ...rebaseBackstitches(store, positions, bounds.x * FIXED_POINT_UNITS_PER_CELL, bounds.y * FIXED_POINT_UNITS_PER_CELL),
+      completed: Uint8Array.from(positions, (position) => store.completed[position])
     };
-    let backstitchPosition = 0;
-    for (let index = 0; index < document.backstitches.ids.length; index += 1) {
-      if (!backstitchEndpointsContainedInCellUnion(document.backstitches.x1[index], document.backstitches.y1[index], document.backstitches.x2[index], document.backstitches.y2[index], document.width, document.height, indices)) continue;
-      backstitches.ids[backstitchPosition] = document.backstitches.ids[index];
-      backstitches.x1[backstitchPosition] = document.backstitches.x1[index] - bounds.x * 4;
-      backstitches.y1[backstitchPosition] = document.backstitches.y1[index] - bounds.y * 4;
-      backstitches.x2[backstitchPosition] = document.backstitches.x2[index] - bounds.x * 4;
-      backstitches.y2[backstitchPosition] = document.backstitches.y2[index] - bounds.y * 4;
-      backstitches.colors[backstitchPosition] = document.backstitches.colors[index];
-      backstitches.completed[backstitchPosition] = document.backstitches.completed[index];
-      backstitchPosition += 1;
-    }
     const geometry = selectionGeometry(selection, bounds);
     const source: FragmentSelection = selection.kind === 'sparse'
       ? { kind: 'sparse', rect: { ...bounds }, indices: indices.slice() }
@@ -2192,7 +2143,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     const creates = floating.mode === 'paste' ? usedPaletteCreates(floating.pendingPalette, fragment) : [];
     try {
-      if (floating.mode === 'paste') {
+      if (command.type === 'paste-fragment') {
         const preflight = preflightPasteFragmentCommand(withPendingPalette(snapshot.document, creates), command);
         if (preflight.changedCellCount === 0 && preflight.newBackstitchCount === 0) {
           this.discardFloatingPaste();
@@ -2966,15 +2917,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const paletteId = component && document.colors[offset + component.slot];
       if (paletteId) return paletteId;
     }
-    const slots: readonly number[] = isLegacyQuarterKind(kind)
-      ? [0, 1, 2, 3]
-      : isThreeQuarterPairKind(kind)
-        ? threeQuarterPairComponents(document.colors.subarray(offset, offset + 4)).map((component) => component.slot)
-        : [0];
-    for (const slot of slots) {
-      const paletteId = document.colors[offset + slot];
-      if (paletteId !== 0) return paletteId;
-    }
+    const mask = componentSlotMask(kind, document.colors, offset);
+    for (let slot = 0; slot < 4; slot += 1) if ((mask & (1 << slot)) !== 0) return document.colors[offset + slot];
     return undefined;
   }
 
@@ -3746,7 +3690,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const modified = Boolean(sample.ctrlKey || sample.metaKey);
     if (this.readOnly && modified && (lower === 'z' || lower === 'y')) {
       sample.preventDefault?.();
-      this.progressHistoryAction(lower === 'z' && !sample.shiftKey ? 'undo' : 'redo');
+      this.markHistoryAction(lower === 'z' && !sample.shiftKey ? 'undo' : 'redo');
       return true;
     }
     if (this.readOnly && (modified || key === 'Delete' || key === 'Backspace' || key === 'Enter')) return false;
@@ -4504,10 +4448,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.clearPendingCells();
   }
 
-  private progressHistoryAction(action: 'undo' | 'redo'): void {
+  private markHistoryAction(action: 'undo' | 'redo'): void {
     if (this.gesture?.kind === 'mark') this.cancelGesture();
-    if (action === 'undo') this.gateway.undoProgress();
-    else this.gateway.redoProgress();
+    if (action === 'undo') this.gateway.undoMark();
+    else this.gateway.redoMark();
   }
 
   private finishPaint(commit: boolean): void {
@@ -5624,7 +5568,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private focusRemovals(removals: Map<number, PendingBackstitchRemoval>, document: PatternDocument): Map<number, PendingBackstitchRemoval> {
     const focus = this.focusColorId();
     if (focus === undefined) return removals;
-    return new Map([...removals].filter(([id]) => backstitchColor(document, id) === focus));
+    const kept = new Set(focusBackstitchIds(document, [...removals.keys()], focus));
+    return new Map([...removals].filter(([id]) => kept.has(id)));
   }
 
   private pendingPaintStates(cells: Map<string, ModelPoint>, edit: BulkCellEdit, revision: number, document: PatternDocument): PendingCellState[] {
@@ -6265,7 +6210,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const command = layer.focusBackstitchIds
         ? focusBackstitchMoveCommand(layer, offset)
         : moveFragmentCommand(layer.moveSelection, { x: origin.x + offset.x, y: origin.y + offset.y }, snapshot.revision);
-      const children = command.type === 'batch' ? command.commands as DomainCommand[] : [command];
+      const children = command.type === 'batch' ? command.commands : [command];
       commands.push(...children.map((child) => withLayerId(child, layer.layerId)));
     }
     return commands.length === 0 ? undefined : batchOf(commands);

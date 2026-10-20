@@ -1,11 +1,9 @@
-import { CellKind, isRecord } from '../domain';
+import { CellKind, isLegacyQuarterKind, isRecord, threeQuarterPairComponents } from '../domain';
 import {
   isKnownCellKind,
-  isLegacyQuarterKind,
   isThreeQuarterKind,
   isThreeQuarterPairKind,
-  threeQuarterCornerForKind,
-  threeQuarterPairComponents
+  threeQuarterCornerForKind
 } from './cell-kinds';
 
 /** The structured-clone protocol shared by the fill client and worker. */

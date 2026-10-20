@@ -1,11 +1,11 @@
 import {
   canAddLayer as canAddLayerOfType,
-  commandLayerType,
   commandScope,
   createPaletteCommand,
   DocumentEditor,
   DomainError,
   findLayer,
+  fragmentLayerRequirement,
   layerAddCommand,
   layerDeleteCommand,
   layerDuplicateCommand,
@@ -37,7 +37,7 @@ import {
   type ProgressCommand,
   type ProgressEntry
 } from '../domain';
-import { cloneLayeredDocument, PersistenceError } from '../persistence';
+import { cloneLayeredDocument, cloneProjectHealth, PersistenceError } from '../persistence';
 import {
   cloneProgressActivity,
   normalizeSourceImageDescriptor,
@@ -62,7 +62,7 @@ import {
   type SourceImageReplacementInput,
   type SourceImageSettingsInput
 } from '../persistence';
-import { WorkspaceError } from './errors';
+import { asError, WorkspaceError } from './errors';
 import { planLayerMerge } from './layer-merge';
 import { ProgressMetricsService, type SessionProgressStats } from './progress';
 import type {
@@ -81,11 +81,6 @@ import type {
   WorkspaceRepository
 } from './types';
 
-function asError(error: unknown, fallback: string): Error {
-  if (error instanceof Error) return error;
-  return new WorkspaceError('save-failed', fallback, error);
-}
-
 function cloneAsset(asset: ProjectAsset): ProjectAsset {
   return { ...asset, data: new Uint8Array(asset.data) };
 }
@@ -95,19 +90,6 @@ function cloneSourceImage(sourceImage: SourceImageDescriptor | undefined): Sourc
     ...sourceImage,
     crop: { ...sourceImage.crop },
     chartBounds: { ...sourceImage.chartBounds }
-  };
-}
-
-function cloneHealth(health: ProjectHealth | null): ProjectHealth | null {
-  if (!health) return null;
-  return {
-    ...health,
-    metadata: health.metadata ? { ...health.metadata } : null,
-    current: { ...health.current },
-    recovery: { ...health.recovery },
-    assets: { ...health.assets },
-    ...(health.sourceImage === undefined ? {} : { sourceImage: { ...health.sourceImage } }),
-    warnings: [...health.warnings]
   };
 }
 
@@ -122,7 +104,7 @@ interface SaveAttempt {
 export const MAX_AUTOSAVE_DIRTY_AGE_MS = 5_000;
 
 /** Track keeps this many mark steps to undo. */
-export const MAX_PROGRESS_HISTORY_STEPS = 200;
+export const MAX_MARK_HISTORY_STEPS = 200;
 
 /** The label reference visibility toggles use; such a change is saved but is not recorded in history. */
 const TRACE_VISIBILITY_LABEL = 'trace-image-visibility';
@@ -137,6 +119,15 @@ interface TraceHistoryEntry {
   afterDescriptor: SourceImageDescriptor | undefined;
   beforeAsset: ProjectAsset | undefined;
   afterAsset: ProjectAsset | undefined;
+}
+
+/** A source-image change committed with its Track entry; see `commitTraceAssetTransaction`. */
+interface TraceAssetTransaction {
+  readonly metadata: ProjectMetadata;
+  readonly assets: ProjectAsset[];
+  readonly traceEntry: TraceHistoryEntry;
+  readonly staleMessage: string;
+  readonly mergeLive: () => void;
 }
 
 type HistoryKind = 'document' | 'trace';
@@ -270,7 +261,7 @@ export function defaultActiveLayerId(document: LayeredDocument): ActiveLayerId {
 
 /** The layer type a clipboard fragment needs, or null for an empty or mixed fragment. */
 export function fragmentLayerType(fragment: PatternFragment): LayerType | null {
-  const required = commandLayerType({ type: 'paste-fragment', fragment });
+  const required = fragmentLayerRequirement(fragment);
   return required === 'mixed' ? null : required;
 }
 
@@ -285,15 +276,15 @@ function layerSummariesOf(document: LayeredDocument, previous: readonly LayerSum
 
 /** Adds the selected layer to layer-scoped commands (and batch children) that do not name one. */
 function stampLayerId(command: DomainCommand, layerId: number): DomainCommand {
-  if (command.type === 'batch' && Array.isArray(command.commands)) {
-    return { ...command, commands: (command.commands as DomainCommand[]).map((child) => stampLayerId(child, layerId)) };
+  if (command.type === 'batch') {
+    return { ...command, commands: command.commands.map((child) => stampLayerId(child, layerId)) };
   }
   if (commandScope(command) !== 'layer' || typeof command.layerId === 'number') return command;
   return { ...command, layerId };
 }
 
 function needsLayer(command: DomainCommand): boolean {
-  if (command.type === 'batch' && Array.isArray(command.commands)) return (command.commands as DomainCommand[]).some(needsLayer);
+  if (command.type === 'batch') return command.commands.some(needsLayer);
   return commandScope(command) === 'layer' && typeof command.layerId !== 'number';
 }
 
@@ -362,8 +353,8 @@ export class ProjectSession {
   private traceRedoStack: TraceHistoryEntry[] = [];
   private historyKindsUndo: Array<'document' | 'trace'> = [];
   private historyKindsRedo: Array<'document' | 'trace'> = [];
-  private progressUndoStack: ProgressEntry[] = [];
-  private progressRedoStack: ProgressEntry[] = [];
+  private markUndoStack: ProgressEntry[] = [];
+  private markRedoStack: ProgressEntry[] = [];
   private activeLayerIdState: ActiveLayerId;
   private layerSummaries: readonly LayerSummary[] = [];
   private activeLayerInfo: ActiveLayerInfo | null = null;
@@ -391,7 +382,7 @@ export class ProjectSession {
       ...(this.materialSettingsPersisted ? { materialSettings: { ...this.materialAssumptionsState } } : {})
     };
     this.projectAssets = (options.assets ?? []).map(cloneAsset);
-    this.projectHealth = cloneHealth(options.health ?? null);
+    this.projectHealth = options.health ? cloneProjectHealth(options.health) : null;
     this.recoverySession = options.usingRecovery === true;
     this.progressService = new ProgressMetricsService(this.editor.composite, this.metricOptions);
     this.dailyProgressActivity = cloneProgressActivity(options.activity);
@@ -700,12 +691,12 @@ export class ProjectSession {
     return this.historyKindsRedo.length > 0;
   }
 
-  get canUndoProgress(): boolean {
-    return this.progressUndoStack.length > 0;
+  get canUndoMark(): boolean {
+    return this.markUndoStack.length > 0;
   }
 
-  get canRedoProgress(): boolean {
-    return this.progressRedoStack.length > 0;
+  get canRedoMark(): boolean {
+    return this.markRedoStack.length > 0;
   }
 
   getAsset(assetId: string): ProjectAsset | undefined {
@@ -714,7 +705,7 @@ export class ProjectSession {
   }
 
   get health(): ProjectHealth | null {
-    return cloneHealth(this.projectHealth);
+    return this.projectHealth === null ? null : cloneProjectHealth(this.projectHealth);
   }
 
   get usingRecovery(): boolean {
@@ -834,6 +825,19 @@ export class ProjectSession {
     return this.document.revision !== this.lastSavedRevision || this.metadataDirty() || this.assetsDirty() || this.historyDirty();
   }
 
+  /** Retains the stored document when only metadata, assets or history changed, guarded by the current head. */
+  private saveModeFor(): Pick<SaveOptions, 'mode' | 'allowSameRevision' | 'expectedHead' | 'expectedRevision'> {
+    const documentRevisionChanged = this.document.revision !== this.lastSavedRevision;
+    const mode = !documentRevisionChanged && this.hasExactCurrentHead() ? 'retain' : 'replace';
+    return {
+      mode,
+      // Keep the legacy flag for repository implementations that have not
+      // adopted the explicit mode yet.
+      allowSameRevision: !documentRevisionChanged,
+      ...(mode === 'retain' && this.projectHead !== null ? { expectedHead: { ...this.projectHead }, expectedRevision: this.document.revision } : {})
+    };
+  }
+
   private hasExactCurrentHead(): boolean {
     return this.projectHead !== null
       && this.projectHead.projectId === this.projectId
@@ -936,7 +940,7 @@ export class ProjectSession {
     this.ensureWritable();
     const message = destination.message === undefined ? {} : { message: destination.message };
     // An empty fragment changes nothing; never add a layer or a history entry for it.
-    if (commandLayerType({ type: 'paste-fragment', fragment }) === null) return { result: this.unchangedResult(), layerId: null };
+    if (fragmentLayerRequirement(fragment) === null) return { result: this.unchangedResult(), layerId: null };
     const creates = palette.map(createPaletteCommand);
     if (destination.create) {
       const layerId = this.editor.document.nextLayerId;
@@ -1172,43 +1176,43 @@ export class ProjectSession {
   /**
    * Marks stitches done or not done on the visible composite. Marks bypass
    * document history: each one is a step on Track's own in-memory stack,
-   * which `clearProgressHistory` empties when Track closes.
+   * which `clearMarkHistory` empties when Track closes.
    */
   markProgress(command: ProgressCommand): SessionCommandResult {
     this.ensureWritable();
     const applied = this.editor.applyProgress(command);
     if (applied === null || !applied.result.changed) return applied?.result ?? this.unchangedResult();
-    this.progressUndoStack.push(applied.entry);
-    if (this.progressUndoStack.length > MAX_PROGRESS_HISTORY_STEPS) this.progressUndoStack.shift();
-    this.progressRedoStack = [];
+    this.markUndoStack.push(applied.entry);
+    if (this.markUndoStack.length > MAX_MARK_HISTORY_STEPS) this.markUndoStack.shift();
+    this.markRedoStack = [];
     this.applyProgressChange(applied.result);
     return applied.result;
   }
 
-  undoProgress(): CommandResult {
+  undoMark(): CommandResult {
     this.ensureWritable();
-    const entry = this.progressUndoStack.pop();
+    const entry = this.markUndoStack.pop();
     if (entry === undefined) return this.unchangedResult();
-    this.progressRedoStack.push(entry);
+    this.markRedoStack.push(entry);
     const result = this.editor.applyProgressEntry(entry, false);
     this.applyProgressChange(result);
     return result;
   }
 
-  redoProgress(): CommandResult {
+  redoMark(): CommandResult {
     this.ensureWritable();
-    const entry = this.progressRedoStack.pop();
+    const entry = this.markRedoStack.pop();
     if (entry === undefined) return this.unchangedResult();
-    this.progressUndoStack.push(entry);
+    this.markUndoStack.push(entry);
     const result = this.editor.applyProgressEntry(entry, true);
     this.applyProgressChange(result);
     return result;
   }
 
-  clearProgressHistory(): void {
-    if (this.progressUndoStack.length === 0 && this.progressRedoStack.length === 0) return;
-    this.progressUndoStack = [];
-    this.progressRedoStack = [];
+  clearMarkHistory(): void {
+    if (this.markUndoStack.length === 0 && this.markRedoStack.length === 0) return;
+    this.markUndoStack = [];
+    this.markRedoStack = [];
     this.notify();
   }
 
@@ -1375,74 +1379,31 @@ export class ProjectSession {
       const nextAsset = await nextAssetPromise;
       await this.enqueuePersistence(async () => {
         this.ensureWritable();
-        const beforeDescriptor = cloneSourceImage(this.projectMetadata.sourceImage);
-        const previousSource = this.projectMetadata.sourceImage;
-        const beforeAsset = previousSource === undefined
-          ? undefined
-          : this.projectAssets.find((asset) => asset.id === previousSource.assetId) === undefined
-            ? undefined
-            : cloneAsset(this.projectAssets.find((asset) => asset.id === previousSource.assetId) as ProjectAsset);
-        const nextDescriptor = normalizeSourceImageDescriptor(requestedSettings, { width: this.document.width, height: this.document.height }, nextAsset);
         const previousSourceAssetId = this.projectMetadata.sourceImage?.assetId;
+        const nextDescriptor = normalizeSourceImageDescriptor(requestedSettings, { width: this.document.width, height: this.document.height }, nextAsset);
         const nextAssets = this.projectAssets
           .filter((asset) => asset.id !== previousSourceAssetId && asset.id !== nextAsset.id)
           .map(cloneAsset);
         nextAssets.push(cloneAsset(nextAsset));
-        const nextMetadata: ProjectMetadata = { ...this.projectMetadata, sourceImage: nextDescriptor };
-        const documentRevisionChanged = this.document.revision !== this.lastSavedRevision;
-        const mode = !documentRevisionChanged && this.hasExactCurrentHead() ? 'retain' : 'replace';
-        const document = this.layeredDocument;
-        const candidateMetadataVersion = this.metadataVersion;
-        const candidateAssetsVersion = this.assetsVersion;
-        const traceEntry: TraceHistoryEntry = {
-          label: 'source-image-replace',
-          beforeDescriptor,
-          afterDescriptor: cloneSourceImage(nextDescriptor),
-          beforeAsset: beforeAsset === undefined ? undefined : cloneAsset(beforeAsset),
-          afterAsset: cloneAsset(nextAsset)
-        };
-        const historyVersionAtCapture = this.historyVersion;
-        const history = this.exportHistoryEnvelope(traceEntry);
-        const result = await this.savePreparedOrLegacy(
-          nextMetadata,
-          document,
-          nextAssets,
-          {
-            mode,
-            allowSameRevision: !documentRevisionChanged,
-            ...(mode === 'retain' && this.projectHead !== null ? { expectedHead: { ...this.projectHead }, expectedRevision: document.revision } : {}),
-            activity: cloneProgressActivity(this.dailyProgressActivity),
-            history
+        await this.commitTraceAssetTransaction({
+          metadata: { ...this.projectMetadata, sourceImage: nextDescriptor },
+          assets: nextAssets,
+          traceEntry: {
+            label: 'source-image-replace',
+            beforeDescriptor: cloneSourceImage(this.projectMetadata.sourceImage),
+            afterDescriptor: cloneSourceImage(nextDescriptor),
+            beforeAsset: this.findAssetClone(previousSourceAssetId),
+            afterAsset: cloneAsset(nextAsset)
+          },
+          staleMessage: `Source image replacement for ${this.projectId} was not committed.`,
+          mergeLive: () => {
+            const replacedAssetIds = new Set([previousSourceAssetId, nextAsset.id]);
+            this.projectAssets = this.projectAssets
+              .filter((asset) => !replacedAssetIds.has(asset.id))
+              .concat(cloneAsset(nextAsset));
+            this.projectMetadata = { ...this.projectMetadata, sourceImage: nextDescriptor };
           }
-        );
-        if (!result.committed || result.stale) throw new PersistenceError('stale-save', `Source image replacement for ${this.projectId} was not committed.`);
-        this.projectHead = result.head === undefined ? null : { ...result.head };
-
-        // Persistence can yield while ordinary commands, metadata edits, or an
-        // asset save are queued behind this operation. Merge only the source
-        // image change into the latest in-memory state so those newer changes
-        // remain dirty and are persisted by the following queued save.
-        const currentSourceAssetId = this.projectMetadata.sourceImage?.assetId;
-        const replacedAssetIds = new Set([previousSourceAssetId, currentSourceAssetId, nextAsset.id]);
-        this.projectAssets = this.projectAssets
-          .filter((asset) => !replacedAssetIds.has(asset.id))
-          .concat(cloneAsset(nextAsset));
-        this.projectMetadata = { ...this.projectMetadata, sourceImage: nextDescriptor };
-        this.metadataVersion += 1;
-        this.assetsVersion += 1;
-        this.savedMetadataVersion = candidateMetadataVersion + 1;
-        this.savedAssetsVersion = candidateAssetsVersion + 1;
-        // Retain the displaced bytes in the history entry so undo of an
-        // import/replace can restore the previous asset even though the live
-        // asset list (and repository) no longer holds it.
-        this.recordTraceEntry(traceEntry);
-        this.refreshLayerState(false);
-        if (this.historyVersion === historyVersionAtCapture + 1) this.savedHistoryVersion = this.historyVersion;
-        this.lastSavedRevision = Math.max(this.lastSavedRevision, result.revision);
-        this.pendingRevision = this.isDirty() ? this.document.revision : null;
-        this.saveError = null;
-        this.status = this.isDirty() ? 'pending' : 'saved';
-        this.notify();
+        });
       });
     });
   }
@@ -1461,69 +1422,78 @@ export class ProjectSession {
     return this.enqueueTraceMutation(async () => {
       await this.enqueuePersistence(async () => {
         this.ensureWritable();
-        const beforeDescriptor = cloneSourceImage(this.projectMetadata.sourceImage);
-        const removedSource = this.projectMetadata.sourceImage;
-        const sourceAssetId = removedSource?.assetId;
+        const sourceAssetId = this.projectMetadata.sourceImage?.assetId;
         if (sourceAssetId === undefined) return;
-        const beforeAsset = this.projectAssets.find((asset) => asset.id === sourceAssetId) === undefined
-          ? undefined
-          : cloneAsset(this.projectAssets.find((asset) => asset.id === sourceAssetId) as ProjectAsset);
         const metadata = { ...this.projectMetadata };
         delete metadata.sourceImage;
-        const nextAssets = this.projectAssets
-          .filter((asset) => asset.id !== sourceAssetId)
-          .map(cloneAsset);
-        const documentRevisionChanged = this.document.revision !== this.lastSavedRevision;
-        const mode = !documentRevisionChanged && this.hasExactCurrentHead() ? 'retain' : 'replace';
-        const document = this.layeredDocument;
-        const candidateMetadataVersion = this.metadataVersion;
-        const candidateAssetsVersion = this.assetsVersion;
-        const traceEntry: TraceHistoryEntry = {
-          label: 'source-image-remove',
-          beforeDescriptor,
-          afterDescriptor: undefined,
-          beforeAsset: beforeAsset === undefined ? undefined : cloneAsset(beforeAsset),
-          afterAsset: undefined
-        };
-        const historyVersionAtCapture = this.historyVersion;
-        const history = this.exportHistoryEnvelope(traceEntry);
-        const result = await this.savePreparedOrLegacy(
+        await this.commitTraceAssetTransaction({
           metadata,
-          document,
-          nextAssets,
-          {
-            mode,
-            allowSameRevision: !documentRevisionChanged,
-            ...(mode === 'retain' && this.projectHead !== null ? { expectedHead: { ...this.projectHead }, expectedRevision: document.revision } : {}),
-            activity: cloneProgressActivity(this.dailyProgressActivity),
-            history
+          assets: this.projectAssets.filter((asset) => asset.id !== sourceAssetId).map(cloneAsset),
+          traceEntry: {
+            label: 'source-image-remove',
+            beforeDescriptor: cloneSourceImage(this.projectMetadata.sourceImage),
+            afterDescriptor: undefined,
+            beforeAsset: this.findAssetClone(sourceAssetId),
+            afterAsset: undefined
+          },
+          staleMessage: `Source image removal for ${this.projectId} was not committed.`,
+          mergeLive: () => {
+            this.projectAssets = this.projectAssets.filter((asset) => asset.id !== sourceAssetId).map(cloneAsset);
+            if (this.projectMetadata.sourceImage?.assetId === sourceAssetId) {
+              const nextMetadata = { ...this.projectMetadata };
+              delete nextMetadata.sourceImage;
+              this.projectMetadata = nextMetadata;
+            }
           }
-        );
-        if (!result.committed || result.stale) throw new PersistenceError('stale-save', `Source image removal for ${this.projectId} was not committed.`);
-        this.projectHead = result.head === undefined ? null : { ...result.head };
-
-        // Keep edits that happened while the transaction was in flight dirty;
-        // only merge the source removal itself into the latest session state.
-        this.projectAssets = this.projectAssets.filter((asset) => asset.id !== sourceAssetId).map(cloneAsset);
-        if (this.projectMetadata.sourceImage?.assetId === sourceAssetId) {
-          const nextMetadata = { ...this.projectMetadata };
-          delete nextMetadata.sourceImage;
-          this.projectMetadata = nextMetadata;
-        }
-        this.metadataVersion += 1;
-        this.assetsVersion += 1;
-        this.savedMetadataVersion = candidateMetadataVersion + 1;
-        this.savedAssetsVersion = candidateAssetsVersion + 1;
-        this.recordTraceEntry(traceEntry);
-        this.refreshLayerState(false);
-        if (this.historyVersion === historyVersionAtCapture + 1) this.savedHistoryVersion = this.historyVersion;
-        this.lastSavedRevision = Math.max(this.lastSavedRevision, result.revision);
-        this.pendingRevision = this.isDirty() ? this.document.revision : null;
-        this.saveError = null;
-        this.status = this.isDirty() ? 'pending' : 'saved';
-        this.notify();
+        });
       });
     });
+  }
+
+  private findAssetClone(id: string | undefined): ProjectAsset | undefined {
+    const asset = id === undefined ? undefined : this.projectAssets.find((candidate) => candidate.id === id);
+    return asset === undefined ? undefined : cloneAsset(asset);
+  }
+
+  /**
+   * Saves a source-image change and its Track entry in one commit, from inside
+   * the persistence queue. Persistence can yield while ordinary commands,
+   * metadata edits or an asset save are queued behind this operation, so
+   * `mergeLive` merges only this change into the latest in-memory state and
+   * those newer changes stay dirty for the following queued save.
+   */
+  private async commitTraceAssetTransaction(transaction: TraceAssetTransaction): Promise<void> {
+    const saveMode = this.saveModeFor();
+    const document = this.layeredDocument;
+    const candidateMetadataVersion = this.metadataVersion;
+    const candidateAssetsVersion = this.assetsVersion;
+    const historyVersionAtCapture = this.historyVersion;
+    const history = this.exportHistoryEnvelope(transaction.traceEntry);
+    // As in `startSave`, the saved metadata is stamped so the gallery order follows image changes.
+    const metadata: ProjectMetadata = { ...transaction.metadata, updatedAt: this.clock.now() };
+    const result = await this.savePreparedOrLegacy(metadata, document, transaction.assets, {
+      ...saveMode,
+      activity: cloneProgressActivity(this.dailyProgressActivity),
+      history
+    });
+    if (!result.committed || result.stale) throw new PersistenceError('stale-save', transaction.staleMessage);
+    this.projectHead = result.head === undefined ? null : { ...result.head };
+    transaction.mergeLive();
+    this.projectMetadata = { ...this.projectMetadata, updatedAt: metadata.updatedAt };
+    this.metadataVersion += 1;
+    this.assetsVersion += 1;
+    this.savedMetadataVersion = candidateMetadataVersion + 1;
+    this.savedAssetsVersion = candidateAssetsVersion + 1;
+    // The entry keeps the displaced bytes, so undo can restore the previous
+    // asset even though the live asset list and the repository no longer hold it.
+    this.recordTraceEntry(transaction.traceEntry);
+    this.refreshLayerState(false);
+    if (this.historyVersion === historyVersionAtCapture + 1) this.savedHistoryVersion = this.historyVersion;
+    this.lastSavedRevision = Math.max(this.lastSavedRevision, result.revision);
+    this.pendingRevision = this.isDirty() ? this.document.revision : null;
+    this.saveError = null;
+    this.status = this.isDirty() ? 'pending' : 'saved';
+    this.notify();
   }
 
   async removeSourceImageAsset(): Promise<void> {
@@ -1606,8 +1576,7 @@ export class ProjectSession {
           this.clearScheduledSaveTimers();
           return;
         }
-        const documentRevisionChanged = this.document.revision !== this.lastSavedRevision;
-        const mode = !documentRevisionChanged && this.hasExactCurrentHead() ? 'retain' : 'replace';
+        const saveMode = this.saveModeFor();
         const snapshot = this.layeredDocument;
         const history = this.exportHistoryEnvelope();
         attempt = {
@@ -1628,11 +1597,7 @@ export class ProjectSession {
         const assetsDirtyAtStart = this.assetsDirty();
         const assets = assetsDirtyAtStart ? this.projectAssets.map((asset) => ({ id: asset.id, name: asset.name, mimeType: asset.mimeType, data: new Uint8Array(asset.data) })) : undefined;
         const saveOptions: SaveOptions = {
-          mode,
-          // Keep the legacy flag for repository implementations that have not
-          // adopted the explicit mode yet.
-          allowSameRevision: !documentRevisionChanged,
-          ...(mode === 'retain' && this.projectHead !== null ? { expectedHead: { ...this.projectHead }, expectedRevision: attempt.revision } : {}),
+          ...saveMode,
           activity: cloneProgressActivity(this.dailyProgressActivity),
           history
         };

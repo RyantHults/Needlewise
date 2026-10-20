@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearClipboard } from './clipboard-store';
-import { CellKind, collectValidationErrors, createBackstitchCommand, createDocument, createEditor, QuarterCorner, quarterCommandFor, type BulkCellCommand, type CommandResult, type DomainCommand, type PatternDocument, type ProgressCommand } from '../domain';
+import { applyCommand, CellKind, collectValidationErrors, createBackstitchCommand, createDocument, QuarterCorner, quarterCommandFor, type BulkCellCommand, type CommandResult, type DomainCommand, type PatternDocument, type ProgressCommand } from '../domain';
+import { markCellComplete } from '../domain/test-fixtures';
+import { SurfaceHistory } from './test-fixtures';
 import { getCanvasMetrics } from './coordinates';
 import { EditorSurfaceController, selectedCellSemantics, type EditorSurfaceControllerOptions } from './controller';
 import { StaleEditorTransactionError, type EditorRevisionToken, type EditorTransaction, type WorkspaceEditorGateway, type WorkspaceEditorSnapshot } from './gateway';
@@ -12,15 +14,15 @@ import { CHART_EDGE_MARGIN, HIDDEN_LAYER_PICK_HINT } from './contracts';
 import type { KeyboardSample, PointerSample } from './input';
 
 class FakeGateway implements WorkspaceEditorGateway {
-  private editor: ReturnType<typeof createEditor>;
+  private editor: SurfaceHistory;
   private project = 'project-a';
   private readonly listeners = new Set<(snapshot: WorkspaceEditorSnapshot) => void>();
   readonly commands: DomainCommand[] = [];
   readonly progress: ProgressCommand[] = [];
-  readonly progressHistory: Array<'undo' | 'redo'> = [];
+  readonly markHistory: Array<'undo' | 'redo'> = [];
 
   constructor(document = createDocument({ width: 8, height: 8, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Thread', color: '#123456' }] })) {
-    this.editor = createEditor(document);
+    this.editor = new SurfaceHistory(document);
   }
 
   activeLayer: WorkspaceEditorSnapshot['activeLayer'];
@@ -96,19 +98,19 @@ class FakeGateway implements WorkspaceEditorGateway {
     return true;
   }
 
-  undoProgress(): boolean {
-    this.progressHistory.push('undo');
+  undoMark(): boolean {
+    this.markHistory.push('undo');
     return true;
   }
 
-  redoProgress(): boolean {
-    this.progressHistory.push('redo');
+  redoMark(): boolean {
+    this.markHistory.push('redo');
     return true;
   }
 
   switchProject(): void {
     this.project = 'project-b';
-    this.editor = createEditor(createDocument({ width: 4, height: 4, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
+    this.editor = new SurfaceHistory(createDocument({ width: 4, height: 4, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
     this.emit();
   }
 
@@ -637,7 +639,7 @@ describe('EditorSurfaceController', () => {
     controller.handlePointerUp(pointer(1, 72, 8));
     expect(gateway.commands).toHaveLength(1);
     expect(gateway.commands[0].type).toBe('bulk-cell');
-    expect(gateway.commands[0].indices).toEqual(new Uint32Array([0, 1, 2, 3, 4]));
+    expect(gateway.commands[0]).toMatchObject({ indices: new Uint32Array([0, 1, 2, 3, 4]) });
     controller.dispose();
 
     const finalSegment = controllerFixture();
@@ -645,7 +647,7 @@ describe('EditorSurfaceController', () => {
     finalSegment.controller.handlePointerMove(pointer(1, 24, 8));
     finalSegment.controller.handlePointerUp(pointer(1, 72, 8));
     expect(finalSegment.gateway.commands).toHaveLength(1);
-    expect(finalSegment.gateway.commands[0].indices).toEqual(new Uint32Array([0, 1, 2, 3, 4]));
+    expect(finalSegment.gateway.commands[0]).toMatchObject({ indices: new Uint32Array([0, 1, 2, 3, 4]) });
     finalSegment.controller.dispose();
   });
 
@@ -657,7 +659,7 @@ describe('EditorSurfaceController', () => {
     outside.controller.handlePointerDown(pointer(2, 56, 8));
     outside.controller.handlePointerMove(pointer(2, 300, 8));
     outside.controller.handlePointerUp(pointer(2, 300, 8));
-    expect(outside.gateway.commands[0].indices).toEqual(new Uint32Array([3]));
+    expect(outside.gateway.commands[0]).toMatchObject({ indices: new Uint32Array([3]) });
     outside.controller.dispose();
 
     const cancelled = controllerFixture();
@@ -685,7 +687,7 @@ describe('EditorSurfaceController', () => {
     horizontal.controller.handlePointerMove(pointer(1, 220, 40));
     horizontal.controller.handlePointerMove(pointer(1, 88, 40));
     horizontal.controller.handlePointerUp(pointer(1, 88, 40));
-    expect(horizontal.gateway.commands[0].indices).toEqual(new Uint32Array([17, 18, 21]));
+    expect(horizontal.gateway.commands[0]).toMatchObject({ indices: new Uint32Array([17, 18, 21]) });
     horizontal.controller.dispose();
 
     const vertical = controllerFixture();
@@ -694,7 +696,7 @@ describe('EditorSurfaceController', () => {
     vertical.controller.handlePointerMove(pointer(1, 8, -80));
     vertical.controller.handlePointerMove(pointer(1, 8, 88));
     vertical.controller.handlePointerUp(pointer(1, 8, 88));
-    expect(vertical.gateway.commands[0].indices).toEqual(new Uint32Array([0, 8, 16, 40]));
+    expect(vertical.gateway.commands[0]).toMatchObject({ indices: new Uint32Array([0, 8, 16, 40]) });
     vertical.controller.dispose();
 
     const reverse = controllerFixture();
@@ -703,7 +705,7 @@ describe('EditorSurfaceController', () => {
     reverse.controller.handlePointerMove(pointer(1, -80, 104));
     reverse.controller.handlePointerMove(pointer(1, 40, 104));
     reverse.controller.handlePointerUp(pointer(1, 40, 104));
-    expect(reverse.gateway.commands[0].indices).toEqual(new Uint32Array([50, 53, 54]));
+    expect(reverse.gateway.commands[0]).toMatchObject({ indices: new Uint32Array([50, 53, 54]) });
     reverse.controller.dispose();
   });
 
@@ -722,7 +724,7 @@ describe('EditorSurfaceController', () => {
     expect(uiStore.getState().overlay.pendingCells).toHaveLength(3);
     controller.handlePointerUp(pointer(1, 13, 24));
     expect(gateway.commands).toHaveLength(1);
-    expect(gateway.commands[0].indices).toEqual(new Uint32Array([0, 1, 9]));
+    expect(gateway.commands[0]).toMatchObject({ indices: new Uint32Array([0, 1, 9]) });
     controller.dispose();
   });
 
@@ -732,7 +734,7 @@ describe('EditorSurfaceController', () => {
     straight.controller.handlePointerMove(pointer(1, 24, 24));
     straight.controller.handlePointerMove(pointer(1, 40, 40));
     straight.controller.handlePointerUp(pointer(1, 40, 40));
-    expect(straight.gateway.commands[0].indices).toEqual(new Uint32Array([0, 9, 18]));
+    expect(straight.gateway.commands[0]).toMatchObject({ indices: new Uint32Array([0, 9, 18]) });
     straight.controller.dispose();
 
     // A hand-drawn diagonal wobbles across the corner: a shallow graze of the
@@ -743,7 +745,7 @@ describe('EditorSurfaceController', () => {
     wobbly.controller.handlePointerMove(pointer(1, 18, 17));
     wobbly.controller.handlePointerMove(pointer(1, 22, 21));
     wobbly.controller.handlePointerUp(pointer(1, 22, 21));
-    expect(wobbly.gateway.commands[0].indices).toEqual(new Uint32Array([0, 9]));
+    expect(wobbly.gateway.commands[0]).toMatchObject({ indices: new Uint32Array([0, 9]) });
     wobbly.controller.dispose();
   });
 
@@ -1576,12 +1578,15 @@ describe('EditorSurfaceController', () => {
   });
 
   it('deletes a selection before falling back to cursor or selected-backstitch deletion', () => {
-    const { gateway, uiStore, controller, calls } = controllerFixture();
-    gateway.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
-    gateway.execute({ type: 'set-completion', x: 1, y: 1, completed: true });
-    gateway.execute({ type: 'set-full', x: 2, y: 2, color: 1 });
-    gateway.execute({ type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 12, y: 8 }, color: 1 });
-    gateway.execute({ type: 'add-backstitch', start: { x: 0, y: 4 }, end: { x: 12, y: 12 }, color: 1 });
+    let document = createDocument({ width: 8, height: 8, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Thread', color: '#123456' }] });
+    document = applyCommand(document, { type: 'set-full', x: 1, y: 1, color: 1 }).document;
+    document = markCellComplete(document, 1, 1);
+    for (const command of [
+      { type: 'set-full', x: 2, y: 2, color: 1 },
+      { type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 12, y: 8 }, color: 1 },
+      { type: 'add-backstitch', start: { x: 0, y: 4 }, end: { x: 12, y: 12 }, color: 1 }
+    ] as const) document = applyCommand(document, command).document;
+    const { gateway, uiStore, controller, calls } = controllerFixture({}, document);
     const historyBeforeDelete = gateway.undoDepth;
     controller.setSelection({ x: 1, y: 1 }, { x: 2, y: 2 });
 
@@ -2039,12 +2044,11 @@ describe('EditorSurfaceController', () => {
     probe.colors.set([1, 0, 1, 0]);
     return collectValidationErrors(probe).length === 0;
   })())('commits paired component erase canonically and restores it through undo/redo', () => {
-    const fixture = controllerFixture();
-    fixture.gateway.execute({ type: 'palette-create', name: 'Blue', color: '#00f' });
-    const document = fixture.gateway.getSnapshot().document!;
+    const document = createDocument({ width: 8, height: 8, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Thread', color: '#123456' }, { id: 2, name: 'Blue', color: '#0000ff' }] });
     document.kind[0] = ThreeQuarterPair;
     document.colors.set([1, 0, 2, 0], 0);
     document.completed[0] = 5;
+    const fixture = controllerFixture({}, document);
     fixture.controller.setTool({ tool: 'eraser' });
     fixture.controller.handlePointerDown(pointer(1, 4, 4));
     fixture.controller.handlePointerUp(pointer(1, 4, 4));
@@ -2062,11 +2066,12 @@ describe('EditorSurfaceController', () => {
   });
 
   describe('eraser on three-quarter stitches', () => {
-    function eraserFixture() {
-      const fixture = controllerFixture();
-      const document = fixture.gateway.getSnapshot().document!;
+    function eraserFixture(setup: (document: PatternDocument) => void) {
+      const document = createDocument({ width: 8, height: 8, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Thread', color: '#123456' }, { id: 2, name: 'Blue', color: '#0000ff' }] });
+      setup(document);
+      const fixture = controllerFixture({}, document);
       fixture.controller.setTool({ tool: 'eraser' });
-      return { ...fixture, document };
+      return fixture;
     }
     function tap(fixture: ReturnType<typeof eraserFixture>, x: number, y: number): void {
       fixture.controller.handlePointerDown(pointer(1, x, y));
@@ -2085,10 +2090,10 @@ describe('EditorSurfaceController', () => {
         { colors: [0, 1, 0, 2], x: 2, y: 7, kind: CellKind.ThreeQuarterNE, colorsAfter: [1, 0, 0, 0] }
       ];
       for (const entry of cases) {
-        const fixture = eraserFixture();
-        fixture.gateway.execute({ type: 'palette-create', name: 'Blue', color: '#00f' });
-        fixture.document.kind[0] = ThreeQuarterPair;
-        fixture.document.colors.set(entry.colors, 0);
+        const fixture = eraserFixture((document) => {
+          document.kind[0] = ThreeQuarterPair;
+          document.colors.set(entry.colors, 0);
+        });
         tap(fixture, entry.x, entry.y);
         const after = fixture.gateway.getSnapshot().document!;
         expect(after.kind[0]).toBe(entry.kind);
@@ -2103,9 +2108,10 @@ describe('EditorSurfaceController', () => {
 
     it('erases a single three-quarter, half or full cell whole wherever it is touched', () => {
       for (const kind of [CellKind.ThreeQuarterNW, CellKind.Full, CellKind.HalfSlash]) {
-        const fixture = eraserFixture();
-        fixture.document.kind[0] = kind;
-        fixture.document.colors[0] = 1;
+        const fixture = eraserFixture((document) => {
+          document.kind[0] = kind;
+          document.colors[0] = 1;
+        });
         // The NE quadrant's bare corner: outside a three-quarter NW triangle, still the whole cell.
         tap(fixture, 14, 10);
         expect(fixture.gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
@@ -2114,18 +2120,16 @@ describe('EditorSurfaceController', () => {
     });
 
     it('erases only the side the drag started on and previews the same state', () => {
-      const build = () => {
-        const fixture = eraserFixture();
-        fixture.document.kind[0] = ThreeQuarterPair;
-        fixture.document.colors.set([1, 0, 1, 0], 0);
-        fixture.document.kind[1] = ThreeQuarterPair;
-        fixture.document.colors.set([1, 0, 1, 0], 4);
-        fixture.document.kind[2] = ThreeQuarterPair;
-        fixture.document.colors.set([0, 1, 0, 1], 8);
-        fixture.document.kind[3] = CellKind.ThreeQuarterNW;
-        fixture.document.colors[12] = 1;
-        return fixture;
-      };
+      const build = (lastKind: CellKind = CellKind.ThreeQuarterNW) => eraserFixture((document) => {
+        document.kind[0] = ThreeQuarterPair;
+        document.colors.set([1, 0, 1, 0], 0);
+        document.kind[1] = ThreeQuarterPair;
+        document.colors.set([1, 0, 1, 0], 4);
+        document.kind[2] = ThreeQuarterPair;
+        document.colors.set([0, 1, 0, 1], 8);
+        document.kind[3] = lastKind;
+        document.colors[12] = 1;
+      });
       {
         const fixture = build();
         // Start in the NW triangle of cell 0 (NE quadrant); later samples sit in SE-ish spots.
@@ -2153,9 +2157,7 @@ describe('EditorSurfaceController', () => {
       }
 
       // A drag that holds a full cell erases it whole while the pair keeps its other side.
-      const mixed = build();
-      mixed.document.kind[3] = CellKind.Full;
-      mixed.document.colors[12] = 1;
+      const mixed = build(CellKind.Full);
       mixed.controller.handlePointerDown(pointer(1, 12, 4));
       mixed.controller.handlePointerMove(pointer(1, 52, 14));
       mixed.controller.handlePointerUp(pointer(1, 52, 14));
@@ -2860,7 +2862,7 @@ describe('EditorSurfaceController read-only mode', () => {
     expect(key({ metaKey: true, shiftKey: true })).toBe(true);
     expect(key({ key: 'y', ctrlKey: true })).toBe(true);
     expect(key({ key: 'v', ctrlKey: true })).toBe(false);
-    expect(gateway.progressHistory).toEqual(['undo', 'redo', 'redo']);
+    expect(gateway.markHistory).toEqual(['undo', 'redo', 'redo']);
     expect(gateway.undoDepth).toBe(0);
     controller.dispose();
   });

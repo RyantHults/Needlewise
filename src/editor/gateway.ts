@@ -131,8 +131,8 @@ export interface WorkspaceEditorBoundary {
   redo(): CommandResult;
   /** The Track page's mark history, kept apart from document history; absent when the boundary cannot record progress. */
   markProgress?(command: ProgressCommand): CommandResult;
-  undoProgress?(): CommandResult;
-  redoProgress?(): CommandResult;
+  undoMark?(): CommandResult;
+  redoMark?(): CommandResult;
 }
 
 export interface EditorTransaction {
@@ -156,8 +156,8 @@ export interface WorkspaceEditorGateway {
   commitPaste?(fragment: PatternFragment, position: { x: number; y: number }, destination: PasteDestination, expected?: EditorRevisionToken, palette?: readonly PaletteEntryInput[]): PasteCommitResult;
   /** Record stitch progress outside document history; true when a mark changed. */
   markProgress(command: ProgressCommand): boolean;
-  undoProgress(): boolean;
-  redoProgress(): boolean;
+  undoMark(): boolean;
+  redoMark(): boolean;
   dispose(): void;
 }
 
@@ -321,12 +321,12 @@ class WorkspaceEditorGatewayImpl implements WorkspaceEditorGateway {
     return this.progress(this.boundary.markProgress && (() => this.boundary.markProgress!(command)));
   }
 
-  undoProgress(): boolean {
-    return this.progress(this.boundary.undoProgress && (() => this.boundary.undoProgress!()));
+  undoMark(): boolean {
+    return this.progress(this.boundary.undoMark && (() => this.boundary.undoMark!()));
   }
 
-  redoProgress(): boolean {
-    return this.progress(this.boundary.redoProgress && (() => this.boundary.redoProgress!()));
+  redoMark(): boolean {
+    return this.progress(this.boundary.redoMark && (() => this.boundary.redoMark!()));
   }
 
   dispose(): void {

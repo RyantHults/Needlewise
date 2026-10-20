@@ -22,13 +22,16 @@ import {
   type LayerSetVisibilityCommand,
   type LayerStructureCommand,
   type PatternDocument,
+  type PatternFragment,
   type PatternSettings,
   type SpecialtyLayer,
   type StitchLayer
 } from './types';
 import { UINT32_MAX, createDocument, emptyBackstitches, normalizePatternSettings } from './model';
 import { collectValidationErrors } from './validation';
-import { canvasFields, isCanvasCommand } from './canvas';
+import { canvasFields } from './canvas';
+import { requireCommandInteger } from './guards';
+import { allocateBackstitches, cloneBackstitches, copyBackstitch, segmentKey } from './backstitch-store';
 
 const DEFAULT_LAYER_NAMES: Record<LayerType, string> = {
   [LayerType.Stitch]: 'Stitches',
@@ -84,8 +87,9 @@ export function layeredFromSurface(surface: PatternDocument, settings?: Partial<
 // ---------------------------------------------------------------------------
 // Queries
 
-export function findLayer(document: LayeredDocument, layerId: number): Layer | undefined {
-  return document.layers.find((layer) => layer.id === layerId);
+/** The layer with `layerId` in a document, or in any record holding a `layers` list of identified entries. */
+export function findLayer<T extends { readonly id: number } = Layer>(source: { readonly layers: readonly T[] }, layerId: number): T | undefined {
+  return source.layers.find((layer) => layer.id === layerId);
 }
 
 export function requireLayer(document: LayeredDocument, layerId: number): Layer {
@@ -216,77 +220,43 @@ export function commitLayerSurface(document: LayeredDocument, layerId: number, s
 // ---------------------------------------------------------------------------
 // Flattening
 
-function segmentKey(store: BackstitchStore, index: number): string {
-  return `${String(store.x1[index])},${String(store.y1[index])},${String(store.x2[index])},${String(store.y2[index])}`;
-}
-
 /**
- * Concatenates visible specialty stores bottom to top. When the same segment
- * appears on several layers only the topmost copy is kept, so the composite
- * stays a valid single surface.
+ * The visible specialty layer that owns each backstitch the composite shows,
+ * keyed by backstitch id. When the same segment appears on several layers
+ * only the topmost copy is shown, so lower copies have no owner.
  */
-function flattenBackstitches(document: LayeredDocument): BackstitchStore {
-  const stores = document.layers.filter((layer): layer is SpecialtyLayer => layer.type === LayerType.Specialty && layer.visible).map((layer) => layer.backstitches);
-  if (stores.length === 0) return emptyBackstitches();
-  if (stores.length === 1) return copyStore(stores[0]);
-  const keep: boolean[][] = stores.map((store) => new Array<boolean>(store.ids.length).fill(true));
+export function visibleBackstitchOwners(document: LayeredDocument): Map<number, number> {
+  const owners = new Map<number, number>();
   const seen = new Set<string>();
-  let total = 0;
-  for (let storeIndex = stores.length - 1; storeIndex >= 0; storeIndex -= 1) {
-    const store = stores[storeIndex];
+  for (let layerIndex = document.layers.length - 1; layerIndex >= 0; layerIndex -= 1) {
+    const layer = document.layers[layerIndex];
+    if (layer.type !== LayerType.Specialty || !layer.visible) continue;
+    const store = layer.backstitches;
     for (let index = store.ids.length - 1; index >= 0; index -= 1) {
       const key = segmentKey(store, index);
-      if (seen.has(key)) keep[storeIndex][index] = false;
-      else {
-        seen.add(key);
-        total += 1;
-      }
+      if (seen.has(key)) continue;
+      seen.add(key);
+      owners.set(store.ids[index], layer.id);
     }
   }
-  const result = allocateStore(total);
+  return owners;
+}
+
+/** Concatenates the lines each visible specialty layer owns, bottom to top, so the composite stays a valid single surface. */
+function flattenBackstitches(document: LayeredDocument): BackstitchStore {
+  const layers = document.layers.filter((layer): layer is SpecialtyLayer => layer.type === LayerType.Specialty && layer.visible);
+  if (layers.length === 0) return emptyBackstitches();
+  if (layers.length === 1) return cloneBackstitches(layers[0].backstitches);
+  const owners = visibleBackstitchOwners(document);
+  const result = allocateBackstitches(owners.size);
   let cursor = 0;
-  stores.forEach((store, storeIndex) => {
+  for (const layer of layers) {
+    const store = layer.backstitches;
     for (let index = 0; index < store.ids.length; index += 1) {
-      if (!keep[storeIndex][index]) continue;
-      copyRecord(store, index, result, cursor);
-      cursor += 1;
+      if (owners.get(store.ids[index]) === layer.id) copyBackstitch(store, index, result, cursor++);
     }
-  });
+  }
   return result;
-}
-
-function allocateStore(length: number): BackstitchStore {
-  return {
-    ids: new Uint32Array(length),
-    x1: new Uint32Array(length),
-    y1: new Uint32Array(length),
-    x2: new Uint32Array(length),
-    y2: new Uint32Array(length),
-    colors: new Uint16Array(length),
-    completed: new Uint8Array(length)
-  };
-}
-
-function copyStore(store: BackstitchStore): BackstitchStore {
-  return {
-    ids: store.ids.slice(),
-    x1: store.x1.slice(),
-    y1: store.y1.slice(),
-    x2: store.x2.slice(),
-    y2: store.y2.slice(),
-    colors: store.colors.slice(),
-    completed: store.completed.slice()
-  };
-}
-
-function copyRecord(from: BackstitchStore, fromIndex: number, to: BackstitchStore, toIndex: number, id = from.ids[fromIndex]): void {
-  to.ids[toIndex] = id;
-  to.x1[toIndex] = from.x1[fromIndex];
-  to.y1[toIndex] = from.y1[fromIndex];
-  to.x2[toIndex] = from.x2[fromIndex];
-  to.y2[toIndex] = from.y2[fromIndex];
-  to.colors[toIndex] = from.colors[fromIndex];
-  to.completed[toIndex] = from.completed[fromIndex];
 }
 
 function visibleStitchLayers(document: LayeredDocument): StitchLayer[] {
@@ -450,16 +420,6 @@ export class FlattenCache {
 
 export type CommandScope = 'layer' | 'document' | 'structure' | 'canvas';
 
-function normalizedCommandType(type: string): string {
-  return type.replace(/([a-z])([A-Z])/g, '$1-$2').replace(/_/g, '-').toLowerCase();
-}
-
-function isDocumentCommandType(type: string): boolean {
-  return type.includes('palette')
-    || type === 'deactivate-color'
-    || type === 'document-settings-update';
-}
-
 /**
  * `structure` for layer-* commands; `canvas` for canvas-resize and
  * canvas-cells; `document` for palette and settings; `layer` for everything
@@ -468,58 +428,138 @@ function isDocumentCommandType(type: string): boolean {
  * structure, then canvas, then document, then layer.
  */
 export function commandScope(command: DomainCommand): CommandScope {
-  const type = normalizedCommandType(command.type);
-  if (type === 'batch') {
-    const children = Array.isArray(command.commands) ? command.commands as DomainCommand[] : [];
-    const scopes = children.map(commandScope);
-    if (scopes.includes('structure')) return 'structure';
-    if (scopes.includes('canvas')) return 'canvas';
-    if (scopes.includes('document')) return 'document';
-    return 'layer';
+  switch (command.type) {
+    case 'batch': {
+      const scopes = command.commands.map(commandScope);
+      if (scopes.includes('structure')) return 'structure';
+      if (scopes.includes('canvas')) return 'canvas';
+      if (scopes.includes('document')) return 'document';
+      return 'layer';
+    }
+    case 'layer-add':
+    case 'layer-delete':
+    case 'layer-move':
+    case 'layer-rename':
+    case 'layer-set-visibility':
+    case 'layer-duplicate':
+    case 'layer-merge':
+      return 'structure';
+    case 'canvas-resize':
+    case 'canvas-cells':
+      return 'canvas';
+    case 'palette-create':
+    case 'palette-update':
+    case 'palette-swap':
+    case 'palette-deactivate':
+    case 'palette-merge':
+    case 'palette-delete':
+    case 'document-settings-update':
+      return 'document';
+    case 'set-full':
+    case 'set-half':
+    case 'set-quarter':
+    case 'set-quarters':
+    case 'set-three-quarter':
+    case 'erase-cell':
+    case 'erase-quarter':
+    case 'recolor-cell':
+    case 'bulk-cell':
+    case 'bulk-recolor':
+    case 'bulk-completion':
+    case 'bulk-backstitch-completion':
+    case 'paste-fragment':
+    case 'move-fragment':
+    case 'mixed-erase':
+    case 'delete-region':
+    case 'delete-cell-set':
+    case 'add-backstitch':
+    case 'remove-backstitch':
+    case 'move-backstitch':
+    case 'recolor-backstitch':
+    case 'update-backstitch':
+      return 'layer';
   }
-  if (type.startsWith('layer-')) return 'structure';
-  if (isCanvasCommand(command)) return 'canvas';
-  if (isDocumentCommandType(type)) return 'document';
-  return 'layer';
 }
 
 export function isLayerStructureCommand(command: DomainCommand): command is LayerStructureCommand {
-  return typeof command.type === 'string' && command.type.startsWith('layer-');
+  return command.type !== 'batch' && commandScope(command) === 'structure';
+}
+
+/**
+ * The layer type pasting `fragment` needs, or null for an empty fragment. A
+ * fragment holding both cells and backstitches needs both, which no layer
+ * satisfies, so it reports 'mixed'.
+ */
+export function fragmentLayerRequirement(fragment: PatternFragment): LayerType | 'mixed' | null {
+  const hasCells = fragment.kind.some((value) => value !== CellKind.Empty);
+  const hasLines = fragment.backstitches.x1.length > 0;
+  if (hasCells && hasLines) return 'mixed';
+  if (hasCells) return LayerType.Stitch;
+  if (hasLines) return LayerType.Specialty;
+  return null;
 }
 
 /**
  * The layer type a layer-scoped command needs, or null when it works on both
- * (delete-region, delete-cell-set, move-fragment, an empty paste). A paste
- * holding both cells and backstitches needs both, which no layer satisfies,
- * so it reports 'mixed'.
+ * (delete-region, delete-cell-set, move-fragment, an empty paste). Commands
+ * that are not layer-scoped report null.
  */
 export function commandLayerType(command: DomainCommand): LayerType | 'mixed' | null {
-  const type = normalizedCommandType(command.type);
-  if (type === 'paste' || type.startsWith('paste-fragment')) {
-    const fragment = command.fragment as { kind?: Uint8Array; backstitches?: { x1?: Uint32Array } } | undefined;
-    const hasCells = fragment?.kind?.some((value) => value !== CellKind.Empty) === true;
-    const hasLines = (fragment?.backstitches?.x1?.length ?? 0) > 0;
-    if (hasCells && hasLines) return 'mixed';
-    if (hasCells) return LayerType.Stitch;
-    if (hasLines) return LayerType.Specialty;
-    return null;
-  }
-  if (type === 'batch') {
-    const children = Array.isArray(command.commands) ? command.commands as DomainCommand[] : [];
-    let required: LayerType | null = null;
-    for (const child of children) {
-      if (commandScope(child) !== 'layer') continue;
-      const childType = commandLayerType(child);
-      if (childType === 'mixed') return 'mixed';
-      if (childType === null) continue;
-      if (required !== null && required !== childType) return 'mixed';
-      required = childType;
+  switch (command.type) {
+    case 'paste-fragment':
+      return fragmentLayerRequirement(command.fragment);
+    case 'batch': {
+      let required: LayerType | null = null;
+      for (const child of command.commands) {
+        const childType = commandLayerType(child);
+        if (childType === 'mixed') return 'mixed';
+        if (childType === null) continue;
+        if (required !== null && required !== childType) return 'mixed';
+        required = childType;
+      }
+      return required;
     }
-    return required;
+    case 'set-full':
+    case 'set-half':
+    case 'set-quarter':
+    case 'set-quarters':
+    case 'set-three-quarter':
+    case 'erase-cell':
+    case 'erase-quarter':
+    case 'recolor-cell':
+    case 'bulk-cell':
+    case 'bulk-recolor':
+    case 'bulk-completion':
+    case 'mixed-erase':
+      return LayerType.Stitch;
+    case 'bulk-backstitch-completion':
+    case 'add-backstitch':
+    case 'remove-backstitch':
+    case 'move-backstitch':
+    case 'recolor-backstitch':
+    case 'update-backstitch':
+      return LayerType.Specialty;
+    case 'move-fragment':
+    case 'delete-region':
+    case 'delete-cell-set':
+    case 'layer-add':
+    case 'layer-delete':
+    case 'layer-move':
+    case 'layer-rename':
+    case 'layer-set-visibility':
+    case 'layer-duplicate':
+    case 'layer-merge':
+    case 'canvas-resize':
+    case 'canvas-cells':
+    case 'palette-create':
+    case 'palette-update':
+    case 'palette-swap':
+    case 'palette-deactivate':
+    case 'palette-merge':
+    case 'palette-delete':
+    case 'document-settings-update':
+      return null;
   }
-  if (type.startsWith('move-fragment') || type === 'move' || type.startsWith('delete-region') || type === 'delete-selection' || type === 'clear-region' || type === 'erase-region' || type.startsWith('delete-cell-set') || type === 'delete-cells') return null;
-  if (type.includes('backstitch') || type.includes('back-stitch') || type.includes('segment')) return LayerType.Specialty;
-  return LayerType.Stitch;
 }
 
 /**
@@ -576,11 +616,6 @@ function invalidCommand(message: string): never {
   throw new DomainError('invalid-command', message);
 }
 
-function commandInteger(value: unknown, label: string): number {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value)) invalidCommand(`${label} must be an integer.`);
-  return value;
-}
-
 /** Trims a layer name and checks it is 1–60 characters. */
 export function normalizeLayerName(name: unknown): string {
   if (typeof name !== 'string') throw new DomainError('invalid-layer-name', 'Layer names must be strings.');
@@ -612,11 +647,10 @@ export function applyLayerStructureCommand(document: LayeredDocument, command: D
   switch (command.type) {
     case 'layer-add': {
       const layerType = command.layerType;
-      if (layerType !== LayerType.Stitch && layerType !== LayerType.Specialty) invalidCommand('layer-add requires a stitch or specialty layerType.');
       if (!canAddLayer(document, layerType)) throw new DomainError(LayerErrorCode.Limit, `A pattern can have at most ${String(MAX_LAYERS_PER_TYPE)} ${layerType} layers.`);
       let id = document.nextLayerId;
       if (command.id !== undefined) {
-        id = commandInteger(command.id, 'layer-add id');
+        id = requireCommandInteger(command.id, 'layer-add id');
         if (id < 1 || findLayer(document, id)) invalidCommand(`Layer id ${String(id)} is invalid or already used.`);
       }
       const name = command.name === undefined ? nextDefaultLayerName(document, layerType) : normalizeLayerName(command.name);
@@ -625,7 +659,7 @@ export function applyLayerStructureCommand(document: LayeredDocument, command: D
         ? { id, type: LayerType.Stitch, name, visible: true, kind: new Uint8Array(cellCount), colors: new Uint16Array(cellCount * 4), completed: new Uint8Array(cellCount) }
         : { id, type: LayerType.Specialty, name, visible: true, backstitches: emptyBackstitches() };
       const range = layerGroupRange(document, layerType);
-      const index = command.index === undefined ? range.end : clamp(commandInteger(command.index, 'layer-add index'), range.start, range.end);
+      const index = command.index === undefined ? range.end : clamp(requireCommandInteger(command.index, 'layer-add index'), range.start, range.end);
       const layers = [...document.layers];
       layers.splice(index, 0, layer);
       document.layers = layers;
@@ -633,17 +667,17 @@ export function applyLayerStructureCommand(document: LayeredDocument, command: D
       return finish(true, id);
     }
     case 'layer-delete': {
-      const layerId = commandInteger(command.layerId, 'layerId');
+      const layerId = requireCommandInteger(command.layerId, 'layerId');
       requireLayer(document, layerId);
       document.layers = document.layers.filter((layer) => layer.id !== layerId);
       return finish(true, layerId);
     }
     case 'layer-move': {
-      const layerId = commandInteger(command.layerId, 'layerId');
+      const layerId = requireCommandInteger(command.layerId, 'layerId');
       const layer = requireLayer(document, layerId);
       const from = layerIndex(document, layerId);
       const range = layerGroupRange(document, layer.type);
-      const to = clamp(commandInteger(command.toIndex, 'toIndex'), range.start, range.end - 1);
+      const to = clamp(requireCommandInteger(command.toIndex, 'toIndex'), range.start, range.end - 1);
       if (to === from) return finish(false, layerId);
       const layers = [...document.layers];
       layers.splice(from, 1);
@@ -652,7 +686,7 @@ export function applyLayerStructureCommand(document: LayeredDocument, command: D
       return finish(true, layerId);
     }
     case 'layer-rename': {
-      const layerId = commandInteger(command.layerId, 'layerId');
+      const layerId = requireCommandInteger(command.layerId, 'layerId');
       const layer = requireLayer(document, layerId);
       const name = normalizeLayerName(command.name);
       if (name === layer.name) return finish(false, layerId);
@@ -660,16 +694,15 @@ export function applyLayerStructureCommand(document: LayeredDocument, command: D
       return finish(true, layerId);
     }
     case 'layer-set-visibility': {
-      const layerId = commandInteger(command.layerId, 'layerId');
+      const layerId = requireCommandInteger(command.layerId, 'layerId');
       const layer = requireLayer(document, layerId);
-      if (typeof command.visible !== 'boolean') invalidCommand('layer-set-visibility requires a boolean visible flag.');
       const visible = command.visible;
       if (visible === layer.visible) return finish(false, layerId);
       document.layers = document.layers.map((entry) => entry.id === layerId ? { ...entry, visible } : entry);
       return finish(true, layerId);
     }
     case 'layer-duplicate': {
-      const layerId = commandInteger(command.layerId, 'layerId');
+      const layerId = requireCommandInteger(command.layerId, 'layerId');
       const source = requireLayer(document, layerId);
       if (!canAddLayer(document, source.type)) throw new DomainError(LayerErrorCode.Limit, `A pattern can have at most ${String(MAX_LAYERS_PER_TYPE)} ${source.type} layers.`);
       const id = document.nextLayerId;
@@ -680,8 +713,8 @@ export function applyLayerStructureCommand(document: LayeredDocument, command: D
       } else {
         const count = source.backstitches.ids.length;
         if (document.nextBackstitchId + count > UINT32_MAX + 1) throw new DomainError('backstitch-id-exhausted', 'No backstitch IDs remain for this duplicate.');
-        const backstitches = allocateStore(count);
-        for (let index = 0; index < count; index += 1) copyRecord(source.backstitches, index, backstitches, index, document.nextBackstitchId + index);
+        const backstitches = cloneBackstitches(source.backstitches);
+        for (let index = 0; index < count; index += 1) backstitches.ids[index] = document.nextBackstitchId + index;
         copy = { id, type: LayerType.Specialty, name, visible: source.visible, backstitches };
         document.nextBackstitchId += count;
       }
@@ -692,8 +725,8 @@ export function applyLayerStructureCommand(document: LayeredDocument, command: D
       return finish(true, id);
     }
     case 'layer-merge': {
-      const sourceId = commandInteger(command.sourceId, 'sourceId');
-      const targetId = commandInteger(command.targetId, 'targetId');
+      const sourceId = requireCommandInteger(command.sourceId, 'sourceId');
+      const targetId = requireCommandInteger(command.targetId, 'targetId');
       const source = requireLayer(document, sourceId);
       const target = requireLayer(document, targetId);
       if (sourceId === targetId) throw new DomainError(LayerErrorCode.MergeInvalid, 'A layer cannot be merged into itself.');
@@ -707,7 +740,7 @@ export function applyLayerStructureCommand(document: LayeredDocument, command: D
       return finish(true, targetId);
     }
     default:
-      invalidCommand(`Unknown layer structure command ${String(command.type)}.`);
+      invalidCommand(`Unknown layer structure command ${command.type}.`);
   }
 }
 
@@ -734,10 +767,10 @@ function mergeLayers(target: Layer, lower: Layer, upper: Layer): Layer {
     for (let index = 0; index < upper.backstitches.ids.length; index += 1) upperKeys.add(segmentKey(upper.backstitches, index));
     const lowerKept: number[] = [];
     for (let index = 0; index < lower.backstitches.ids.length; index += 1) if (!upperKeys.has(segmentKey(lower.backstitches, index))) lowerKept.push(index);
-    const backstitches = allocateStore(lowerKept.length + upper.backstitches.ids.length);
+    const backstitches = allocateBackstitches(lowerKept.length + upper.backstitches.ids.length);
     let cursor = 0;
-    for (const index of lowerKept) copyRecord(lower.backstitches, index, backstitches, cursor++);
-    for (let index = 0; index < upper.backstitches.ids.length; index += 1) copyRecord(upper.backstitches, index, backstitches, cursor++);
+    for (const index of lowerKept) copyBackstitch(lower.backstitches, index, backstitches, cursor++);
+    for (let index = 0; index < upper.backstitches.ids.length; index += 1) copyBackstitch(upper.backstitches, index, backstitches, cursor++);
     return { id: target.id, type: LayerType.Specialty, name: target.name, visible: target.visible, backstitches };
   }
   throw new DomainError(LayerErrorCode.MergeInvalid, 'Only layers of the same type can be merged.');
@@ -749,7 +782,7 @@ function mergeLayers(target: Layer, lower: Layer, upper: Layer): Layer {
 export function collectLayeredValidationErrors(document: LayeredDocument): string[] {
   const errors: string[] = [];
   if (!document || document.version !== LAYERED_DOCUMENT_VERSION) return [`Layered document version must be ${String(LAYERED_DOCUMENT_VERSION)}.`];
-  if (!Number.isInteger(document.width) || !Number.isInteger(document.height) || document.width < 1 || document.height < 1) return ['Document dimensions must be positive integers.'];
+  if (!Number.isSafeInteger(document.width) || !Number.isSafeInteger(document.height) || document.width < 1 || document.height < 1) return ['Document dimensions must be positive integers.'];
   const cellCount = document.width * document.height;
   if (!Number.isSafeInteger(cellCount) || cellCount > MAX_PERSISTABLE_CELL_COUNT) return ['Document dimensions are too large.'];
   if (!Array.isArray(document.layers)) return ['Document layers must be an array.'];

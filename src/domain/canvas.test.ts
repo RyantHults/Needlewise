@@ -143,9 +143,9 @@ describe('canvas queries', () => {
     const cells = new Uint8Array([1, 0]);
     expect(canvasCellsCommand('remove', { x: -1, y: 0, width: 2, height: 1 }, cells)).toEqual({ type: 'canvas-cells', operation: 'remove', rect: { x: -1, y: 0, width: 2, height: 1 }, cells });
     expect('cells' in canvasCellsCommand('add', { x: 0, y: 0, width: 1, height: 1 })).toBe(false);
-    expect(isCanvasCommand({ type: 'canvas-resize' })).toBe(true);
-    expect(isCanvasCommand({ type: 'canvasCells' })).toBe(true);
-    expect(isCanvasCommand({ type: 'palette-merge' })).toBe(false);
+    expect(isCanvasCommand(canvasResizeCommand({ top: 1, right: 0, bottom: 0, left: 0 }))).toBe(true);
+    expect(isCanvasCommand(canvasCellsCommand('add', { x: 0, y: 0, width: 1, height: 1 }))).toBe(true);
+    expect(isCanvasCommand({ type: 'palette-merge', from: 1 })).toBe(false);
   });
 });
 
@@ -289,7 +289,6 @@ describe('canvas-resize', () => {
     expect(errorCode(() => applyCanvasCommand(doc, canvasResizeCommand({ top: 0, right: 0, bottom: 0, left: 496 })))).toBe('canvas-outside-workspace');
     expect(applyCanvasCommand(doc, canvasResizeCommand({ top: 0, right: 0, bottom: 0, left: 495 })).document.width).toBe(505);
     expect(errorCode(() => applyCanvasCommand(doc, { type: 'canvas-resize', edges: { top: 0.5, right: 0, bottom: 0, left: 0 } }))).toBe('invalid-command');
-    expect(errorCode(() => applyCanvasCommand(doc, { type: 'canvas-resize' }))).toBe('invalid-command');
     const masked = applyCanvasCommand(doc, canvasCellsCommand('remove', { x: 0, y: 0, width: 1, height: 1 })).document;
     expect(errorCode(() => applyCanvasCommand(masked, canvasResizeCommand({ top: 1, right: 0, bottom: 0, left: 0 })))).toBe('canvas-not-rectangular');
     const largest = layered(1000, 1000);
@@ -382,12 +381,11 @@ describe('canvas-cells', () => {
   it('rejects an empty canvas, an oversized box and malformed input', () => {
     const doc = layered(3, 2);
     expect(errorCode(() => applyCanvasCommand(doc, canvasCellsCommand('remove', { x: -1, y: -1, width: 5, height: 5 })))).toBe('canvas-empty');
-    expect(errorCode(() => applyCanvasCommand(doc, { type: 'canvas-cells', operation: 'flip', rect: { x: 0, y: 0, width: 1, height: 1 } }))).toBe('invalid-command');
     expect(errorCode(() => applyCanvasCommand(doc, { type: 'canvas-cells', operation: 'add', rect: { x: 0.5, y: 0, width: 1, height: 1 } }))).toBe('invalid-command');
     expect(errorCode(() => applyCanvasCommand(doc, { type: 'canvas-cells', operation: 'add', rect: { x: 0, y: 0, width: 0, height: 1 } }))).toBe('invalid-command');
     expect(errorCode(() => applyCanvasCommand(doc, canvasCellsCommand('add', { x: 0, y: 0, width: 2, height: 1 }, new Uint8Array([1]))))).toBe('invalid-command');
     expect(errorCode(() => applyCanvasCommand(doc, canvasCellsCommand('add', { x: 0, y: 0, width: 1, height: 1 }, new Uint8Array([2]))))).toBe('invalid-command');
-    expect(errorCode(() => applyCanvasCommand(doc, { type: 'palette-merge' }))).toBe('invalid-command');
+    expect(errorCode(() => applyCanvasCommand(doc, { type: 'palette-merge', from: 1 }))).toBe('invalid-command');
     const largest = layered(1000, 1000);
     expect(errorCode(() => applyCanvasCommand(largest, canvasCellsCommand('add', { x: -1, y: 0, width: 1, height: 1 })))).toBe('canvas-too-large');
     expect(errorCode(() => applyCanvasCommand(largest, canvasCellsCommand('add', { x: 999, y: 999, width: 2, height: 1 }, new Uint8Array([1, 1]))))).toBe('canvas-too-large');

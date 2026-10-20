@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CellKind, createDocument, createEditor } from '../domain';
+import { CellKind, createDocument } from '../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import type { CanvasRenderer, RenderStats, RendererStyle, Viewport } from './contracts';
 import { getCanvasMetrics } from './coordinates';
@@ -7,6 +7,7 @@ import { EditorSurfaceController } from './controller';
 import { createWorkspaceEditorGateway, type WorkspaceEditorBoundary } from './gateway';
 import type { PointerSample } from './input';
 import { createUiStore } from './ui-store';
+import { SurfaceHistory } from './test-fixtures';
 
 const ZOOM = 16;
 const WIDTH = 10;
@@ -37,7 +38,7 @@ function rendererFixture(): CanvasRenderer {
 }
 
 function newEditor(size: number) {
-  return createEditor(createDocument({ width: size, height: size, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Red', color: '#d33' }] }));
+  return new SurfaceHistory(createDocument({ width: size, height: size, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Red', color: '#d33' }] }));
 }
 
 /** A single-surface 10x10 workspace that can switch to another project. */

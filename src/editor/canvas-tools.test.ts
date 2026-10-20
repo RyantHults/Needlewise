@@ -226,8 +226,8 @@ function bits(cells: Uint8Array | undefined): number[] {
   return cells ? Array.from(cells) : [];
 }
 
-function canvasCommands(boundary: CanvasBoundary): DomainCommand[] {
-  return boundary.log.filter((command) => isCanvasCommand(command));
+function canvasCommands(boundary: CanvasBoundary) {
+  return boundary.log.filter(isCanvasCommand);
 }
 
 describe('canvas tool geometry', () => {
@@ -488,7 +488,9 @@ describe('canvas editing in the controller', () => {
 
     expect(canvasCommands(boundary)).toHaveLength(1);
     expect(canvasCommands(boundary)[0]).toMatchObject({ type: 'canvas-cells', operation: 'add', rect: { x: -2, y: 3, width: 1, height: 3 } });
-    expect(bits(canvasCommands(boundary)[0].cells as Uint8Array)).toEqual([1, 1, 1]);
+    const [added] = canvasCommands(boundary);
+    if (added.type !== 'canvas-cells') throw new Error('Expected a canvas-cells command.');
+    expect(bits(added.cells as Uint8Array)).toEqual([1, 1, 1]);
     expect(boundary.undoStack).toHaveLength(1);
     expect(boundary.document).toMatchObject({ width: 12, height: 10, originX: -2 });
     expect(uiStore.getState().overlay.canvasEditing?.preview).toBeNull();
@@ -679,7 +681,7 @@ describe('canvas editing in the controller', () => {
     expect(controller.resizeCanvasEdge('left', 1)).toBe(true);
     expect(controller.resizeCanvasEdge('top', -1)).toBe(true);
     expect(controller.resizeCanvasEdge('bottom', 0)).toBe(false);
-    expect(canvasCommands(boundary).map((command) => command.edges)).toEqual([
+    expect(canvasCommands(boundary).map((command) => command.type === 'canvas-resize' ? command.edges : undefined)).toEqual([
       { top: 0, right: 0, bottom: 0, left: 1 },
       { top: -1, right: 0, bottom: 0, left: 0 }
     ]);

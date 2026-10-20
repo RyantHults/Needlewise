@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createDocument, createEditor, createLayeredDocument, flattenDocument } from '../domain';
+import { createDocument, createLayeredDocument, flattenDocument } from '../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import type { CanvasCellSet, CanvasRenderer, LassoPathOverlay, ModelPoint, RenderStats, RendererStyle, Viewport } from './contracts';
 import { getCanvasMetrics } from './coordinates';
@@ -7,6 +7,7 @@ import { EditorSurfaceController } from './controller';
 import { createWorkspaceEditorGateway, type WorkspaceEditorBoundary } from './gateway';
 import type { PointerSample } from './input';
 import { createUiStore } from './ui-store';
+import { SurfaceHistory } from './test-fixtures';
 
 const ZOOM = 16;
 /** Square vertices on cell corners, enclosing cells x, y in 1..4. */
@@ -47,7 +48,7 @@ function start(boundary: WorkspaceEditorBoundary) {
 
 /** A single-surface 10x10 workspace with the lasso selected. */
 function fixture() {
-  const editor = createEditor(createDocument({ width: 10, height: 10, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Red', color: '#d33' }] }));
+  const editor = new SurfaceHistory(createDocument({ width: 10, height: 10, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Red', color: '#d33' }] }));
   const listeners = new Set<() => void>();
   return start({
     activeProjectId: 'project-a',

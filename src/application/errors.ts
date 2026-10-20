@@ -11,3 +11,9 @@ export class WorkspaceError extends Error {
     this.cause = cause;
   }
 }
+
+/** `error` itself when it is an Error, so codes and subclasses survive; otherwise a save failure carrying it as the cause. */
+export function asError(error: unknown, fallback: string): Error {
+  if (error instanceof Error) return error;
+  return new WorkspaceError('save-failed', fallback, error);
+}

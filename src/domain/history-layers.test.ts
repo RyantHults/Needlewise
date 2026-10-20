@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  bulkCompletionCommand,
   CellKind,
   createDocument,
   createEditorFromHistory,
@@ -139,8 +140,7 @@ describe('layered DocumentEditor: layer-scoped commands', () => {
   it('refuses completion commands, which go through applyProgress instead', () => {
     const editor = editorFor();
     editor.execute(full(0, 0, 1));
-    expect(errorCode(() => editor.execute({ type: 'set-completion', x: 0, y: 0, completed: true, layerId: STITCHES }))).toBe('invalid-command');
-    expect(errorCode(() => editor.execute({ ...full(1, 0, 1), completed: true }))).toBe('invalid-command');
+    expect(errorCode(() => editor.execute({ ...bulkCompletionCommand(Uint32Array.of(0), 'set'), layerId: STITCHES }))).toBe('invalid-command');
   });
 
   it('runs a batch of remove-backstitch commands on a specialty layer as one entry', () => {

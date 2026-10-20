@@ -16,22 +16,12 @@ export const THREE_QUARTER_KINDS = [
 
 export const THREE_QUARTER_PAIR_KINDS = [ThreeQuarterPair] as const;
 
-export interface ThreeQuarterComponent {
-  readonly corner: 0 | 1 | 2 | 3;
-  readonly slot: 0 | 1 | 2 | 3;
-  readonly kind: CellKind;
-}
-
 export function isThreeQuarterKind(kind: number): boolean {
   return THREE_QUARTER_KINDS.includes(kind as (typeof THREE_QUARTER_KINDS)[number]);
 }
 
 export function isThreeQuarterPairKind(kind: number): boolean {
   return THREE_QUARTER_PAIR_KINDS.includes(kind as (typeof THREE_QUARTER_PAIR_KINDS)[number]);
-}
-
-export function isLegacyQuarterKind(kind: number): boolean {
-  return kind === CellKind.Quarters;
 }
 
 export function threeQuarterKindForCorner(corner: number): CellKind {
@@ -49,18 +39,6 @@ export function threeQuarterCornerForKind(kind: number): 0 | 1 | 2 | 3 | undefin
   if (kind === ThreeQuarterSE) return 2;
   if (kind === ThreeQuarterSW) return 3;
   return undefined;
-}
-
-export function threeQuarterPairComponents(colors: ArrayLike<number>): readonly [ThreeQuarterComponent, ThreeQuarterComponent] {
-  return colors[0] !== 0 || colors[2] !== 0
-    ? [
-        { corner: 0, slot: 0, kind: ThreeQuarterNW },
-        { corner: 2, slot: 2, kind: ThreeQuarterSE }
-      ]
-    : [
-        { corner: 1, slot: 1, kind: ThreeQuarterNE },
-        { corner: 3, slot: 3, kind: ThreeQuarterSW }
-      ];
 }
 
 export function threeQuarterCornersShareAxis(left: number, right: number): boolean {

@@ -425,9 +425,9 @@ export function EditorSurface({
     referenceVisibility.current?.(visible);
   };
   const setCanvasBackground = (color: string) =>
-    runLayerAction(() => workspace.execute({ type: "document-settings-update", settings: { backgroundColor: color } } as never));
+    runLayerAction(() => workspace.execute({ type: "document-settings-update", settings: { backgroundColor: color } }));
   const setCanvasAidaCount = (count: number) =>
-    runLayerAction(() => (session ? session.setAidaCount(count) : workspace.execute({ type: "document-settings-update", settings: { aidaCount: count } } as never)));
+    runLayerAction(() => (session ? session.setAidaCount(count) : workspace.execute({ type: "document-settings-update", settings: { aidaCount: count } })));
   const openPalettePicker = () => {
     paletteTrigger.current = addTrigger.current;
     setSwapTarget(null);
@@ -501,7 +501,7 @@ export function EditorSurface({
   const confirmDelete = () => {
     const id = deleteTarget;
     if (id === null) return;
-    workspace.execute({ type: 'palette-delete', id } as never);
+    workspace.execute({ type: 'palette-delete', id });
     if (ui?.paletteId === id) controllerRef.current?.selectPalette(null);
     closeDeleteConfirm();
   };

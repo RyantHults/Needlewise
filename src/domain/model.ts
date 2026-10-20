@@ -21,6 +21,7 @@ import {
   MAX_PERSISTABLE_CELL_COUNT
 } from './types';
 import { SYMBOL_IDS } from '../symbols';
+import { allocateBackstitches, cloneBackstitches, readBackstitch } from './backstitch-store';
 import { isRecord } from './guards';
 import { assertValidDocument } from './validation';
 import { parseHexColor } from './color';
@@ -129,7 +130,7 @@ function normalizeCatalogReference(value: unknown): PaletteCatalogReference | un
   if (value === undefined) return undefined;
   if (!isRecord(value)) throw new DomainError('invalid-catalog-reference', 'Catalog references must be objects.');
   const candidate = value;
-  if (typeof candidate.catalogId !== 'string' || !candidate.catalogId.trim() || typeof candidate.sourceId !== 'string' || !candidate.sourceId.trim() || typeof candidate.code !== 'string' || !candidate.code.trim() || typeof candidate.name !== 'string' || !candidate.name.trim() || typeof candidate.hex !== 'string' || !/^#[0-9A-Fa-f]{6}$/.test(candidate.hex) || !Array.isArray(candidate.rgb) || candidate.rgb.length !== 3 || candidate.rgb.some((channel) => !Number.isInteger(channel) || channel < 0 || channel > 255)) throw new DomainError('invalid-catalog-reference', 'Catalog references have invalid identity or color data.');
+  if (typeof candidate.catalogId !== 'string' || !candidate.catalogId.trim() || typeof candidate.sourceId !== 'string' || !candidate.sourceId.trim() || typeof candidate.code !== 'string' || !candidate.code.trim() || typeof candidate.name !== 'string' || !candidate.name.trim() || typeof candidate.hex !== 'string' || !/^#[0-9A-Fa-f]{6}$/.test(candidate.hex) || !Array.isArray(candidate.rgb) || candidate.rgb.length !== 3 || candidate.rgb.some((channel) => !Number.isSafeInteger(channel) || channel < 0 || channel > 255)) throw new DomainError('invalid-catalog-reference', 'Catalog references have invalid identity or color data.');
   const rgb = candidate.rgb as number[];
   const expected = parseHexColor(candidate.hex);
   if (!expected || rgb.some((channel, index) => channel !== expected[index])) throw new DomainError('invalid-catalog-reference', 'Catalog HEX and RGB values must agree.');
@@ -158,7 +159,7 @@ function normalizeMaterial(value: unknown, fallbackName: string, catalog?: Palet
 export function normalizePaletteEntry(input: PaletteEntryInput | PaletteEntry, idOverride?: number): PaletteEntry {
   if (!isRecord(input)) throw new DomainError('invalid-palette', 'Palette entries must be objects.');
   const entryId = idOverride ?? input.id;
-  if (typeof entryId !== 'number' || !Number.isInteger(entryId) || entryId < 1 || entryId > PALETTE_ID_MAX) throw new DomainError('invalid-palette-id', `Palette ID ${String(entryId)} is invalid.`);
+  if (typeof entryId !== 'number' || !Number.isSafeInteger(entryId) || entryId < 1 || entryId > PALETTE_ID_MAX) throw new DomainError('invalid-palette-id', `Palette ID ${String(entryId)} is invalid.`);
   const id: number = entryId;
   if (typeof input.name !== 'string' || input.name.trim() === '') throw new DomainError('invalid-palette', 'Palette names must not be empty.');
   if (typeof input.color !== 'string' || input.color.trim() === '') throw new DomainError('invalid-palette', 'Palette colors must not be empty.');
@@ -171,15 +172,7 @@ export function normalizePaletteEntry(input: PaletteEntryInput | PaletteEntry, i
 }
 
 export function emptyBackstitches(): BackstitchStore {
-  return {
-    ids: new Uint32Array(0),
-    x1: new Uint32Array(0),
-    y1: new Uint32Array(0),
-    x2: new Uint32Array(0),
-    y2: new Uint32Array(0),
-    colors: new Uint16Array(0),
-    completed: new Uint8Array(0)
-  };
+  return allocateBackstitches(0);
 }
 
 function normalizePalette(
@@ -196,7 +189,7 @@ function normalizePalette(
     if (typeof id === 'number' && id > limit) {
       throw new DomainError('invalid-palette-id', `The palette cannot exceed the brand's color count (${String(limit)}).`);
     }
-    if (!Number.isInteger(id) || id < 1 || id > limit || ids.has(id)) {
+    if (!Number.isSafeInteger(id) || id < 1 || id > limit || ids.has(id)) {
       throw new DomainError('invalid-palette-id', `Palette ID ${String(id)} is invalid or duplicated.`);
     }
     const entry = normalizePaletteEntry(input, id);
@@ -219,8 +212,8 @@ function normalizePalette(
 export function createDocument(options: CreateDocumentOptions): PatternDocument;
 export function createDocument(options: CreateDocumentOptions): PatternDocument {
   if (
-    !Number.isInteger(options.width) ||
-    !Number.isInteger(options.height) ||
+    !Number.isSafeInteger(options.width) ||
+    !Number.isSafeInteger(options.height) ||
     options.width < 1 ||
     options.height < 1
   ) {
@@ -275,15 +268,7 @@ export function cloneDocument(document: PatternDocument): PatternDocument {
     kind: document.kind.slice(),
     colors: document.colors.slice(),
     completed: document.completed.slice(),
-    backstitches: {
-      ids: document.backstitches.ids.slice(),
-      x1: document.backstitches.x1.slice(),
-      y1: document.backstitches.y1.slice(),
-      x2: document.backstitches.x2.slice(),
-      y2: document.backstitches.y2.slice(),
-      colors: document.backstitches.colors.slice(),
-      completed: document.backstitches.completed.slice()
-    },
+    backstitches: cloneBackstitches(document.backstitches),
     palette: document.palette.map(clonePaletteEntry),
     settings: clonePatternSettings(document.settings),
     revision: document.revision,
@@ -295,8 +280,8 @@ export function cloneDocument(document: PatternDocument): PatternDocument {
 
 export function cellIndex(document: PatternDocument, x: number, y: number): number {
   if (
-    !Number.isInteger(x) ||
-    !Number.isInteger(y) ||
+    !Number.isSafeInteger(x) ||
+    !Number.isSafeInteger(y) ||
     x < 0 ||
     y < 0 ||
     x >= document.width ||
@@ -316,7 +301,7 @@ export function findPaletteEntry(document: PatternDocument, id: number): Palette
 }
 
 export function requirePaletteEntry(document: PatternDocument, id: number): PaletteEntry {
-  if (!Number.isInteger(id) || id < 1 || id > PALETTE_ID_MAX) {
+  if (!Number.isSafeInteger(id) || id < 1 || id > PALETTE_ID_MAX) {
     throw new DomainError('invalid-palette-id', `Palette ID ${String(id)} is invalid.`);
   }
   const entry = findPaletteEntry(document, id);
@@ -329,26 +314,8 @@ export function requirePaletteEntry(document: PatternDocument, id: number): Pale
   return entry;
 }
 
-export function readBackstitch(
-  document: PatternDocument,
-  index: number
-): BackstitchRecord {
-  const store = document.backstitches;
-  return {
-    id: store.ids[index],
-    x1: store.x1[index],
-    y1: store.y1[index],
-    x2: store.x2[index],
-    y2: store.y2[index],
-    start: { x: store.x1[index], y: store.y1[index] },
-    end: { x: store.x2[index], y: store.y2[index] },
-    color: store.colors[index],
-    completed: store.completed[index] === 1
-  };
-}
-
 export function listBackstitches(document: PatternDocument): BackstitchRecord[] {
-  return Array.from(document.backstitches.ids, (_, index) => readBackstitch(document, index));
+  return Array.from(document.backstitches.ids, (_, index) => readBackstitch(document.backstitches, index));
 }
 
 export function backstitchCount(document: PatternDocument): number {
@@ -360,7 +327,7 @@ export function getBackstitch(
   id: number
 ): BackstitchRecord | undefined {
   const index = document.backstitches.ids.findIndex((candidate) => candidate === id);
-  return index < 0 ? undefined : readBackstitch(document, index);
+  return index < 0 ? undefined : readBackstitch(document.backstitches, index);
 }
 
 export function point(x: number, y: number): Point {
@@ -402,7 +369,7 @@ export function getCell(document: PatternDocument, x: number, y: number) {
 export const getCellState = getCell;
 
 export function getQuarter(document: PatternDocument, x: number, y: number, corner: number) {
-  if (!Number.isInteger(corner) || corner < 0 || corner > 3) {
+  if (!Number.isSafeInteger(corner) || corner < 0 || corner > 3) {
     throw new DomainError('invalid-corner', `Quarter corner ${String(corner)} is invalid.`);
   }
   const index = cellIndex(document, x, y);
@@ -433,7 +400,7 @@ export function isThreeQuarterKind(kind: number): boolean {
 }
 
 export function threeQuarterKindForCorner(corner: QuarterCorner): CellKind {
-  if (!Number.isInteger(corner) || corner < 0 || corner > 3) throw new DomainError('invalid-corner', `Three-quarter corner ${String(corner)} is invalid.`);
+  if (!Number.isSafeInteger(corner) || corner < 0 || corner > 3) throw new DomainError('invalid-corner', `Three-quarter corner ${String(corner)} is invalid.`);
   return [CellKind.ThreeQuarterNW, CellKind.ThreeQuarterNE, CellKind.ThreeQuarterSE, CellKind.ThreeQuarterSW][corner] as CellKind;
 }
 
@@ -446,7 +413,7 @@ export function threeQuarterCornerForKind(kind: number): QuarterCorner | undefin
 }
 
 export function oppositeQuarterCorner(corner: QuarterCorner): QuarterCorner {
-  if (!Number.isInteger(corner) || corner < 0 || corner > 3) throw new DomainError('invalid-corner', `Quarter corner ${String(corner)} is invalid.`);
+  if (!Number.isSafeInteger(corner) || corner < 0 || corner > 3) throw new DomainError('invalid-corner', `Quarter corner ${String(corner)} is invalid.`);
   return ((corner + 2) % 4) as QuarterCorner;
 }
 
@@ -469,12 +436,12 @@ function threeQuarterCornersForCell(document: PatternDocument, index: number): Q
 }
 
 export function threeQuarterCornersForCellAt(document: PatternDocument, index: number): readonly QuarterCorner[] {
-  if (!Number.isInteger(index) || index < 0 || index >= document.kind.length) return [];
+  if (!Number.isSafeInteger(index) || index < 0 || index >= document.kind.length) return [];
   return threeQuarterCornersForCell(document, index);
 }
 
 export function getThreeQuarter(document: PatternDocument, x: number, y: number, corner: number): { color: number; completed: boolean } {
-  if (!Number.isInteger(corner) || corner < 0 || corner > 3) throw new DomainError('invalid-corner', `Three-quarter corner ${String(corner)} is invalid.`);
+  if (!Number.isSafeInteger(corner) || corner < 0 || corner > 3) throw new DomainError('invalid-corner', `Three-quarter corner ${String(corner)} is invalid.`);
   return getThreeQuarterAtIndex(document, cellIndex(document, x, y), corner as QuarterCorner);
 }
 

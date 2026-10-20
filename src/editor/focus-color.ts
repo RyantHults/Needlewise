@@ -1,4 +1,4 @@
-import { CellKind, isThreeQuarterPairKind, type PatternDocument, type PatternFragment } from '../domain';
+import { CellKind, isThreeQuarterPairKind, positionsById, type PatternDocument, type PatternFragment } from '../domain';
 
 /** Empty, or every occupied component of the cell at `index` is `focus`. */
 function occupiedAllFocus(kind: Uint8Array, colors: Uint16Array, index: number, focus: number): boolean {
@@ -45,7 +45,11 @@ export function backstitchColor(surface: PatternDocument, id: number): number | 
 
 /** Keep ids whose backstitch colour is `focus`. */
 export function focusBackstitchIds(surface: PatternDocument, ids: readonly number[] | Uint32Array, focus: number): number[] {
-  return Array.from(ids).filter((id) => backstitchColor(surface, id) === focus);
+  const positions = positionsById(surface.backstitches);
+  return Array.from(ids).filter((id) => {
+    const position = positions.get(id);
+    return position !== undefined && surface.backstitches.colors[position] === focus;
+  });
 }
 
 /** Copy of `fragment` with non-focus cells/backstitches removed, and cells landing on protected destination cells removed. */

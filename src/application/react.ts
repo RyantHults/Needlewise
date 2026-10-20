@@ -6,26 +6,15 @@ import {
   useSyncExternalStore
 } from 'react';
 import { ProjectWorkspace, getEmptyWorkspaceState } from './workspace';
-import { WorkspaceError } from './errors';
+import { asError, WorkspaceError } from './errors';
 import type {
-  ActiveLayerId,
-  LayerSelection,
-  ActiveLayerInfo,
   ActiveWorkspaceState,
-  LayerSummary,
-  PasteCommitResult,
-  PasteDestination,
-  ActiveMetadataChanges,
   CreateProjectOptions,
   CreateConvertedProjectOptions,
-  SaveState,
-  WorkspaceInitializationOptions,
   WorkspaceOptions
 } from './types';
-import type { ProgressActivity, ProjectFolder, ProjectFolderAssignment, ProjectMetadata } from '../persistence';
+import type { ProjectFolder, ProjectFolderAssignment, ProjectMetadata } from '../persistence';
 import type { ProjectSession } from './session';
-import type { CommandResult, DomainCommand, LayerType, PaletteEntryInput, PatternFragment, PatternMetrics, Point, ProgressCommand } from '../domain';
-import type { SessionProgressStats } from './progress';
 
 export interface UseProjectWorkspaceOptions extends WorkspaceOptions {
   workspaceFactory?: (options: WorkspaceOptions) => ProjectWorkspace;
@@ -42,16 +31,9 @@ export interface UseProjectWorkspaceResult {
   folders: ProjectFolder[];
   folderAssignments: ProjectFolderAssignment[];
   error: Error | null;
-  saveState: SaveState;
-  metrics: PatternMetrics | null;
-  sessionStats: SessionProgressStats | null;
-  activity: ProgressActivity | null;
   createProject(options?: CreateProjectOptions): Promise<ProjectSession>;
   createProjectFromConversion(options: CreateConvertedProjectOptions): Promise<ProjectSession>;
-  initialize(options?: WorkspaceInitializationOptions): Promise<ProjectSession | undefined>;
-  updateActiveMetadata(changes: ActiveMetadataChanges): Promise<void>;
   openProject(projectId: string): Promise<ProjectSession>;
-  selectProject(projectId?: string): Promise<ProjectSession | undefined>;
   deleteProject(projectId: string): Promise<void>;
   duplicateProject(projectId: string): Promise<ProjectMetadata>;
   renameProject(projectId: string, title: string): Promise<ProjectMetadata>;
@@ -60,49 +42,10 @@ export interface UseProjectWorkspaceResult {
   deleteFolder(folderId: string): Promise<void>;
   moveProjectToFolder(projectId: string, folderId: string | null): Promise<void>;
   moveFolder(folderId: string, parentId: string | null): Promise<void>;
-  exportProject(): Promise<Uint8Array>;
-  promoteRecovery(revision?: number): Promise<ProjectSession>;
-  saveAsCopy(options?: CreateProjectOptions): Promise<ProjectSession>;
-  retrySave(): Promise<void>;
   flush(): Promise<void>;
   /** Flush pending saves and re-read the project listing without marking the hook busy. */
   refreshProjectList(): Promise<void>;
-  execute(command: DomainCommand): Promise<CommandResult>;
-  executeCommand(command: DomainCommand): Promise<CommandResult>;
-  executeBatch(commands: readonly DomainCommand[]): Promise<CommandResult>;
-  undo(): Promise<CommandResult>;
-  redo(): Promise<CommandResult>;
-  /** Bottom to top; a new array only when a layer's name, type, visibility or order changes. */
-  layers: readonly LayerSummary[];
-  activeLayer: ActiveLayerInfo | null;
-  layerSelection: LayerSelection | null;
-  // Layer operations are synchronous and undoable (except selection). They
-  // throw a WorkspaceError or DomainError, e.g. `layer-limit`, on failure.
-  setActiveLayer(id: ActiveLayerId): void;
-  toggleLayerSelected(id: number): void;
-  selectLayerRange(id: number): void;
-  canAddLayer(type: LayerType): boolean;
-  addLayer(type: LayerType, name?: string): CommandResult;
-  deleteLayer(layerId: number): CommandResult;
-  moveLayer(layerId: number, toIndex: number): CommandResult;
-  renameLayer(layerId: number, name: string): CommandResult;
-  setLayerVisibility(layerId: number, visible: boolean): CommandResult;
-  duplicateLayer(layerId: number): CommandResult;
-  mergeLayer(sourceId: number, targetId: number): CommandResult;
-  mergeSelectedLayers(): CommandResult;
-  setAidaCount(aidaCount: number): CommandResult;
-  resolvePaste(fragmentType: LayerType): PasteDestination;
-  commitPaste(fragment: PatternFragment, at: Point, destination: PasteDestination, expectedRevision?: number, palette?: readonly PaletteEntryInput[]): PasteCommitResult;
-  // Track's marks: synchronous, autosaved, and undone on their own stack.
-  canUndoProgress: boolean;
-  canRedoProgress: boolean;
-  markProgress(command: ProgressCommand): CommandResult;
-  undoProgress(): CommandResult;
-  redoProgress(): CommandResult;
-  clearProgressHistory(): void;
 }
-
-const NO_LAYERS: readonly LayerSummary[] = [];
 
 const EMPTY_STATE = getEmptyWorkspaceState();
 
@@ -114,11 +57,6 @@ function workspaceOptionsFrom(options: UseProjectWorkspaceOptions): WorkspaceOpt
     projectIdFactory: options.projectIdFactory,
     catalogRegistry: options.catalogRegistry
   };
-}
-
-function normalizeActionError(error: unknown): Error {
-  if (error instanceof Error) return error;
-  return new WorkspaceError('save-failed', 'The workspace action failed.', error);
 }
 
 /**
@@ -180,7 +118,7 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
       await refreshProjects(instance);
       return value;
     } catch (error) {
-      const normalized = normalizeActionError(error);
+      const normalized = asError(error, 'The workspace action failed.');
       if (lifecycleRef.current.mounted && workspaceRef.current === instance) setActionError(normalized);
       throw normalized;
     } finally {
@@ -214,7 +152,7 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
             await instance.selectProject(undefined, initialProjects);
           }
         } catch (error) {
-          if (lifecycleRef.current.mounted && initializationTokenRef.current === token && workspaceRef.current === instance) setActionError(normalizeActionError(error));
+          if (lifecycleRef.current.mounted && initializationTokenRef.current === token && workspaceRef.current === instance) setActionError(asError(error, 'The workspace action failed.'));
         } finally {
           if (lifecycleRef.current.mounted && initializationTokenRef.current === token && workspaceRef.current === instance) {
             setInitialized(true);
@@ -257,22 +195,15 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
 
   const createProject = useCallback((createOptions: CreateProjectOptions = {}) => runAction((instance) => instance.createProject(createOptions)), [runAction]);
   const createProjectFromConversion = useCallback((createOptions: CreateConvertedProjectOptions) => runAction((instance) => instance.createProjectFromConversion(createOptions)), [runAction]);
-  const initialize = useCallback((initializeOptions: WorkspaceInitializationOptions = {}) => runAction((instance) => instance.initialize(initializeOptions)), [runAction]);
-  const updateActiveMetadata = useCallback((changes: ActiveMetadataChanges) => runAction((instance) => instance.updateActiveMetadata(changes)), [runAction]);
   const openProject = useCallback((projectId: string) => runAction((instance) => instance.openProject(projectId)), [runAction]);
-  const selectProject = useCallback((projectId?: string) => runAction((instance) => instance.selectProject(projectId)), [runAction]);
   const deleteProject = useCallback((projectId: string) => runAction((instance) => instance.deleteProject(projectId)), [runAction]);
   const createFolder = useCallback((name: string, parentId: string | null = null) => runAction((instance) => instance.createFolder(name, parentId)), [runAction]);
   const renameFolder = useCallback((folderId: string, name: string) => runAction((instance) => instance.renameFolder(folderId, name)), [runAction]);
   const deleteFolder = useCallback((folderId: string) => runAction((instance) => instance.deleteFolder(folderId)), [runAction]);
   const moveProjectToFolder = useCallback((projectId: string, folderId: string | null) => runAction((instance) => instance.moveProjectToFolder(projectId, folderId)), [runAction]);
   const moveFolder = useCallback((folderId: string, parentId: string | null) => runAction((instance) => instance.moveFolder(folderId, parentId)), [runAction]);
-  const exportProject = useCallback(() => runAction((instance) => instance.exportActiveProject()), [runAction]);
-  const promoteRecovery = useCallback((revision?: number) => runAction((instance) => instance.promoteRecovery(revision)), [runAction]);
   const duplicateProject = useCallback((projectId: string) => runAction((instance) => instance.duplicateProject(projectId)), [runAction]);
   const renameProject = useCallback((projectId: string, title: string) => runAction((instance) => instance.renameProject(projectId, title)), [runAction]);
-  const saveAsCopy = useCallback((copyOptions: CreateProjectOptions = {}) => runAction((instance) => instance.saveAsCopy(copyOptions)), [runAction]);
-  const retrySave = useCallback(() => runAction((instance) => instance.retrySave()), [runAction]);
   const flush = useCallback(() => runAction((instance) => instance.flush()), [runAction]);
   // Passive: editor autosaves bypass runAction, so the listing is re-read on demand without toggling busy.
   const refreshProjectList = useCallback(async (): Promise<void> => {
@@ -285,36 +216,6 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
       // Best effort: a failed refresh keeps the previous listing.
     }
   }, [refreshProjects]);
-  const execute = useCallback((command: DomainCommand) => runAction(async (instance) => instance.execute(command)), [runAction]);
-  const executeCommand = execute;
-  const executeBatch = useCallback((commands: readonly DomainCommand[]) => runAction(async (instance) => instance.executeBatch(commands)), [runAction]);
-  const undo = useCallback(() => runAction(async (instance) => instance.undo()), [runAction]);
-  const redo = useCallback(() => runAction(async (instance) => instance.redo()), [runAction]);
-
-  const readyWorkspace = useCallback((): ProjectWorkspace => {
-    const instance = workspaceRef.current;
-    if (!instance) throw new WorkspaceError('disposed', 'The workspace is not ready.');
-    return instance;
-  }, []);
-  const setActiveLayer = useCallback((id: ActiveLayerId) => readyWorkspace().setActiveLayer(id), [readyWorkspace]);
-  const toggleLayerSelected = useCallback((id: number) => readyWorkspace().toggleLayerSelected(id), [readyWorkspace]);
-  const selectLayerRange = useCallback((id: number) => readyWorkspace().selectLayerRange(id), [readyWorkspace]);
-  const canAddLayer = useCallback((type: LayerType) => workspaceRef.current?.canAddLayer(type) ?? false, []);
-  const addLayer = useCallback((type: LayerType, name?: string) => readyWorkspace().addLayer(type, name), [readyWorkspace]);
-  const deleteLayer = useCallback((layerId: number) => readyWorkspace().deleteLayer(layerId), [readyWorkspace]);
-  const moveLayer = useCallback((layerId: number, toIndex: number) => readyWorkspace().moveLayer(layerId, toIndex), [readyWorkspace]);
-  const renameLayer = useCallback((layerId: number, name: string) => readyWorkspace().renameLayer(layerId, name), [readyWorkspace]);
-  const setLayerVisibility = useCallback((layerId: number, visible: boolean) => readyWorkspace().setLayerVisibility(layerId, visible), [readyWorkspace]);
-  const duplicateLayer = useCallback((layerId: number) => readyWorkspace().duplicateLayer(layerId), [readyWorkspace]);
-  const mergeLayer = useCallback((sourceId: number, targetId: number) => readyWorkspace().mergeLayer(sourceId, targetId), [readyWorkspace]);
-  const mergeSelectedLayers = useCallback(() => readyWorkspace().mergeSelectedLayers(), [readyWorkspace]);
-  const setAidaCount = useCallback((aidaCount: number) => readyWorkspace().setAidaCount(aidaCount), [readyWorkspace]);
-  const resolvePaste = useCallback((fragmentType: LayerType) => readyWorkspace().resolvePaste(fragmentType), [readyWorkspace]);
-  const commitPaste = useCallback((fragment: PatternFragment, at: Point, destination: PasteDestination, expectedRevision?: number, palette?: readonly PaletteEntryInput[]) => readyWorkspace().commitPaste(fragment, at, destination, expectedRevision, palette), [readyWorkspace]);
-  const markProgress = useCallback((command: ProgressCommand) => readyWorkspace().markProgress(command), [readyWorkspace]);
-  const undoProgress = useCallback(() => readyWorkspace().undoProgress(), [readyWorkspace]);
-  const redoProgress = useCallback(() => readyWorkspace().redoProgress(), [readyWorkspace]);
-  const clearProgressHistory = useCallback(() => { workspaceRef.current?.clearProgressHistory(); }, []);
 
   return {
     workspace,
@@ -325,16 +226,9 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
     folders,
     folderAssignments,
     error: state.error ?? actionError,
-    saveState: state.save,
-    metrics: state.metrics ?? null,
-    sessionStats: state.sessionStats ?? null,
-    activity: state.activity ?? null,
     createProject,
     createProjectFromConversion,
-    initialize,
-    updateActiveMetadata,
     openProject,
-    selectProject,
     deleteProject,
     duplicateProject,
     renameProject,
@@ -343,41 +237,8 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
     deleteFolder,
     moveProjectToFolder,
     moveFolder,
-    exportProject,
-    promoteRecovery,
-    saveAsCopy,
-    retrySave,
     flush,
-    refreshProjectList,
-    execute,
-    executeCommand,
-    executeBatch,
-    undo,
-    redo,
-    layers: state.layers ?? NO_LAYERS,
-    activeLayer: state.activeLayer ?? null,
-    layerSelection: state.layerSelection ?? null,
-    setActiveLayer,
-    toggleLayerSelected,
-    selectLayerRange,
-    canAddLayer,
-    addLayer,
-    deleteLayer,
-    moveLayer,
-    renameLayer,
-    setLayerVisibility,
-    duplicateLayer,
-    mergeLayer,
-    mergeSelectedLayers,
-    setAidaCount,
-    resolvePaste,
-    commitPaste,
-    canUndoProgress: state.canUndoProgress ?? false,
-    canRedoProgress: state.canRedoProgress ?? false,
-    markProgress,
-    undoProgress,
-    redoProgress,
-    clearProgressHistory
+    refreshProjectList
   };
 }
 

@@ -1,9 +1,9 @@
-import { CellKind, DEFAULT_PATTERN_SETTINGS, defaultPaletteSymbol, type PatternDocument } from '../domain';
+import { CellKind, componentKind, componentSlotMask, DEFAULT_PATTERN_SETTINGS, defaultPaletteSymbol, isLegacyQuarterKind, paletteIdsInCells, type PatternDocument } from '../domain';
 import type { CanvasTarget, RendererStyle } from '../editor/contracts';
 import { MAX_ATLAS_PIXELS, restore, save } from './context';
 import { grayscaleColor, paletteColor } from './colors';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
-import { isLegacyQuarterKind, isThreeQuarterPairKind, threeQuarterPairComponents } from '../editor/cell-kinds';
+import { isThreeQuarterPairKind } from '../editor/cell-kinds';
 
 /** Document-owned Aida color, with the renderer's neutral default for legacy runtime documents. */
 export function patternBackgroundColor(document: PatternDocument): string {
@@ -34,28 +34,7 @@ interface AtlasCacheEntry extends ColorAtlas {
   readonly canvasMask: PatternDocument['canvasMask'];
 }
 
-/** Collect only palette IDs that can contribute pixels to either overview atlas. */
-function paletteIdsUsedByAtlas(document: PatternDocument): readonly number[] {
-  const ids = new Set<number>();
-  const add = (id: number): void => {
-    if (id !== 0) ids.add(id);
-  };
-  for (let index = 0; index < document.kind.length; index += 1) {
-    const kind = document.kind[index];
-    if (kind === CellKind.Empty) continue;
-    const offset = index * 4;
-    if (isLegacyQuarterKind(kind)) {
-      for (let slot = 0; slot < 4; slot += 1) add(document.colors[offset + slot]);
-    } else if (isThreeQuarterPairKind(kind)) {
-      for (const component of threeQuarterPairComponents(document.colors.subarray(offset, offset + 4))) {
-        add(document.colors[offset + component.slot]);
-      }
-    } else {
-      add(document.colors[offset]);
-    }
-  }
-  return Object.freeze([...ids].sort((left, right) => left - right));
-}
+const NO_PALETTE_IDS: readonly number[] = Object.freeze([]);
 
 /** Primitive visual metadata only; palette entry objects are never retained. */
 function colorPaletteProjection(
@@ -164,26 +143,6 @@ class AtlasDirtyCells {
   }
 }
 
-/** Add palette IDs a set of cells uses to an atlas' known IDs; returns the same array when nothing is new. */
-function paletteIdsWithCells(document: PatternDocument, known: readonly number[], cells: ReadonlySet<number>): readonly number[] {
-  const ids = new Set(known);
-  let grew = false;
-  const add = (id: number): void => {
-    if (id === 0 || ids.has(id)) return;
-    ids.add(id);
-    grew = true;
-  };
-  for (const index of cells) {
-    const kind = document.kind[index];
-    if (kind === CellKind.Empty) continue;
-    const offset = index * 4;
-    if (isLegacyQuarterKind(kind)) for (let slot = 0; slot < 4; slot += 1) add(document.colors[offset + slot]);
-    else if (isThreeQuarterPairKind(kind)) for (const component of threeQuarterPairComponents(document.colors.subarray(offset, offset + 4))) add(document.colors[offset + component.slot]);
-    else add(document.colors[offset]);
-  }
-  return grew ? Object.freeze([...ids].sort((left, right) => left - right)) : known;
-}
-
 function paintColorAtlasCell(
   context: CanvasTarget['context'],
   document: PatternDocument,
@@ -212,11 +171,11 @@ function paintColorAtlasCell(
       context.fillRect(left, top, width, height);
     }
   } else if (isThreeQuarterPairKind(kind)) {
-    for (const component of threeQuarterPairComponents(document.colors.subarray(offset, offset + 4))) {
-      const color = document.colors[offset + component.slot];
-      if (color === 0) continue;
-      context.fillStyle = overviewColorForPaletteId(document, color, style);
-      drawStitchGeometry(context, component.kind, cellRect);
+    const mask = componentSlotMask(kind, document.colors, offset);
+    for (let slot = 0; slot < 4; slot += 1) {
+      if ((mask & (1 << slot)) === 0) continue;
+      context.fillStyle = overviewColorForPaletteId(document, document.colors[offset + slot], style);
+      drawStitchGeometry(context, componentKind(kind, slot), cellRect);
     }
   } else {
     const color = document.colors[offset];
@@ -317,7 +276,7 @@ export class ColorAtlasCache {
 
     const paletteIds = reusablePlanesAndStyle && current
       ? current.paletteIds
-      : paletteIdsUsedByAtlas(document);
+      : paletteIdsInCells(document, NO_PALETTE_IDS);
     const paletteProjection = colorPaletteProjection(document.palette, paletteIds);
     const pixelsPerCell = colorAtlasPixelsPerCell(document);
 
@@ -371,7 +330,7 @@ export class ColorAtlasCache {
       || colorPaletteProjection(document.palette, current.paletteIds) !== current.paletteProjection) return undefined;
     // A new pair cell needs the 2×2 footprint a one-pixel atlas cannot hold.
     if (current.pixelsPerCell === 1) for (const index of cells) if (isThreeQuarterPairKind(document.kind[index])) return undefined;
-    const paletteIds = paletteIdsWithCells(document, current.paletteIds, cells);
+    const paletteIds = paletteIdsInCells(document, current.paletteIds, cells);
     const context = current.target.context;
     save(context);
     if (context.imageSmoothingEnabled !== undefined) context.imageSmoothingEnabled = false;
@@ -504,7 +463,7 @@ export class SymbolAtlasCache {
 
     const paletteIds = reusablePlanesAndStyle && current
       ? current.paletteIds
-      : paletteIdsUsedByAtlas(document);
+      : paletteIdsInCells(document, NO_PALETTE_IDS);
     const paletteProjection = symbolPaletteProjection(document.palette, paletteIds, style.mode, style.showSymbols);
     const dimensions = symbolAtlasDimensions(document, ppc);
     if (!dimensions || !targetFactory) {
@@ -598,7 +557,7 @@ export class SymbolAtlasCache {
       || current.ppc !== ppc
       || current.canvasMask !== document.canvasMask
       || symbolPaletteProjection(document.palette, current.paletteIds, style.mode, style.showSymbols) !== current.paletteProjection) return undefined;
-    const paletteIds = paletteIdsWithCells(document, current.paletteIds, cells);
+    const paletteIds = paletteIdsInCells(document, current.paletteIds, cells);
     const context = current.target.context;
     try {
       save(context);
@@ -641,15 +600,10 @@ function paintSymbolAtlasCell(
     drawStitchGeometry(context, geometryKind, rect, slot);
     if (style.showSymbols) drawPaletteSymbol(context, document, id, rect, style, slot);
   };
-  if (isLegacyQuarterKind(kind)) {
+  if (isLegacyQuarterKind(kind) || isThreeQuarterPairKind(kind)) {
+    const mask = componentSlotMask(kind, document.colors, offset);
     for (let slot = 0; slot < 4; slot += 1) {
-      const id = document.colors[offset + slot];
-      if (id !== 0) paint(id, slot);
-    }
-  } else if (isThreeQuarterPairKind(kind)) {
-    for (const component of threeQuarterPairComponents(document.colors.subarray(offset, offset + 4))) {
-      const id = document.colors[offset + component.slot];
-      if (id !== 0) paint(id, component.slot, component.kind);
+      if ((mask & (1 << slot)) !== 0) paint(document.colors[offset + slot], slot, componentKind(kind, slot));
     }
   } else {
     paint(document.colors[offset], undefined);

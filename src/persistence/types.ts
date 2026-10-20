@@ -209,6 +209,19 @@ export interface ProjectHealth {
   warnings: string[];
 }
 
+/** A detached copy, so callers never share health objects with a session. */
+export function cloneProjectHealth(health: ProjectHealth): ProjectHealth {
+  return {
+    ...health,
+    metadata: health.metadata ? { ...health.metadata } : null,
+    current: { ...health.current },
+    recovery: { ...health.recovery },
+    assets: { ...health.assets },
+    ...(health.sourceImage === undefined ? {} : { sourceImage: { ...health.sourceImage } }),
+    warnings: [...health.warnings]
+  };
+}
+
 export interface SaveResult {
   committed: boolean;
   stale: boolean;

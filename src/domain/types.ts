@@ -279,17 +279,13 @@ export type CropRect = {
   height: number;
 };
 
-/**
- * Commands intentionally have a small runtime envelope. Keeping the input
- * shape open lets importers and UI adapters use aliases while the command
- * runner still validates every field before changing a document.
- */
-export interface DomainCommand {
-  type: string;
-  [key: string]: unknown;
+/** Fields every command may carry. */
+interface CommandBase {
+  /** The layer a layer-scoped command edits in the layered editor. */
+  readonly layerId?: number;
+  /** Rejects the command as stale unless the document is at this revision. */
+  readonly expectedRevision?: number;
 }
-
-export type Command = DomainCommand;
 
 export interface PatternFragmentBackstitches {
   readonly x1: Uint32Array;
@@ -339,44 +335,36 @@ export type BulkCellIntent = BulkCellEdit;
 export type BulkProgressOperation = 'set' | 'clear' | 'toggle';
 
 /** One homogeneous edit over an ordered, duplicate-free cell index set. */
-export interface BulkCellCommand extends DomainCommand {
+export interface BulkCellCommand extends CommandBase {
   readonly type: 'bulk-cell';
   readonly indices: Uint32Array;
   readonly edit: BulkCellEdit;
-  readonly expectedRevision?: number;
 }
 
 /** Recolor selected occupied cell components without changing geometry/progress. */
-export interface BulkRecolorCommand extends DomainCommand {
+export interface BulkRecolorCommand extends CommandBase {
   readonly type: 'bulk-recolor';
   readonly indices: Uint32Array;
   /** One nonzero occupied-component mask per cell index. */
   readonly masks: Uint8Array;
   readonly fromColor: number;
   readonly toColor: number;
-  readonly expectedRevision?: number;
 }
 
-export interface BulkCompletionCommand extends DomainCommand {
+export interface BulkCompletionCommand extends CommandBase {
   readonly type: 'bulk-completion';
   readonly indices: Uint32Array;
-  /** `completed` is retained as a compatibility spelling for set/clear. */
-  readonly completed?: boolean;
-  readonly operation?: BulkProgressOperation;
+  readonly operation: BulkProgressOperation;
   readonly corner?: QuarterCorner;
   /** Optional per-index physical completion masks, aligned with `indices`. */
   readonly masks?: Uint8Array;
-  readonly expectedRevision?: number;
 }
 
-export interface BulkBackstitchCompletionCommand extends DomainCommand {
+export interface BulkBackstitchCompletionCommand extends CommandBase {
   readonly type: 'bulk-backstitch-completion';
   /** Stable backstitch IDs, not storage positions. */
   readonly ids: Uint32Array;
-  /** `completed` is retained as a compatibility spelling for set/clear. */
-  readonly completed?: boolean;
-  readonly operation?: BulkProgressOperation;
-  readonly expectedRevision?: number;
+  readonly operation: BulkProgressOperation;
 }
 
 /** Explicit progress targets, separate from ordinary design mutations. */
@@ -388,45 +376,40 @@ export interface ProgressChangeSet {
   readonly unmarked: number;
 }
 
-export interface PasteFragmentCommand extends DomainCommand {
+export interface PasteFragmentCommand extends CommandBase {
   readonly type: 'paste-fragment';
   readonly fragment: PatternFragment;
   readonly destination: Point;
-  readonly expectedRevision?: number;
 }
 
-export interface MoveFragmentCommand extends DomainCommand {
+export interface MoveFragmentCommand extends CommandBase {
   readonly type: 'move-fragment';
   readonly selection: FragmentSelection;
   readonly destination: Point;
-  readonly expectedRevision?: number;
 }
 
 /** A single eraser gesture over whole cells and the quarter slots of three-quarter pairs. */
-export interface MixedEraseCommand extends DomainCommand {
+export interface MixedEraseCommand extends CommandBase {
   readonly type: 'mixed-erase';
   readonly wholeCellIndices: Uint32Array;
   /** Sorted lexicographically by (cell index, corner); pairs are unique. */
   readonly componentCellIndices: Uint32Array;
   readonly componentCorners: Uint8Array;
-  readonly expectedRevision?: number;
 }
 
 /** Clear all cell geometry in a half-open region and remove only contained lines. */
-export interface DeleteRegionCommand extends DomainCommand {
+export interface DeleteRegionCommand extends CommandBase {
   readonly type: 'delete-region';
   readonly x: number;
   readonly y: number;
   readonly width: number;
   readonly height: number;
-  readonly expectedRevision?: number;
 }
 
 /** Clear an ordered, duplicate-free sparse set of cells atomically. */
-export interface DeleteCellSetCommand extends DomainCommand {
+export interface DeleteCellSetCommand extends CommandBase {
   readonly type: 'delete-cell-set';
   readonly indices: Uint32Array;
-  readonly expectedRevision?: number;
 }
 
 /** Per-edge change of a rectangular canvas: positive grows, negative shrinks. */
@@ -438,23 +421,21 @@ export interface CanvasEdges {
 }
 
 /** Grow or shrink a rectangular canvas edge by edge. */
-export interface CanvasResizeCommand extends DomainCommand {
+export interface CanvasResizeCommand extends CommandBase {
   type: 'canvas-resize';
   edges: CanvasEdges;
-  expectedRevision?: number;
 }
 
 /** Add or remove canvas cells; the rect is in local coordinates and may reach past the box. */
-export interface CanvasCellsCommand extends DomainCommand {
+export interface CanvasCellsCommand extends CommandBase {
   type: 'canvas-cells';
   operation: 'add' | 'remove';
   rect: CropRect;
   /** Row-major 0/1 over `rect`; absent means the whole rect. */
   cells?: Uint8Array;
-  expectedRevision?: number;
 }
 
-export interface LayerAddCommand extends DomainCommand {
+export interface LayerAddCommand extends CommandBase {
   readonly type: 'layer-add';
   readonly layerType: LayerType;
   readonly id?: number;
@@ -463,36 +444,36 @@ export interface LayerAddCommand extends DomainCommand {
   readonly index?: number;
 }
 
-export interface LayerDeleteCommand extends DomainCommand {
+export interface LayerDeleteCommand extends CommandBase {
   readonly type: 'layer-delete';
   readonly layerId: number;
 }
 
-export interface LayerMoveCommand extends DomainCommand {
+export interface LayerMoveCommand extends CommandBase {
   readonly type: 'layer-move';
   readonly layerId: number;
   /** Absolute final index in `layers`, clamped to the layer's group. */
   readonly toIndex: number;
 }
 
-export interface LayerRenameCommand extends DomainCommand {
+export interface LayerRenameCommand extends CommandBase {
   readonly type: 'layer-rename';
   readonly layerId: number;
   readonly name: string;
 }
 
-export interface LayerSetVisibilityCommand extends DomainCommand {
+export interface LayerSetVisibilityCommand extends CommandBase {
   readonly type: 'layer-set-visibility';
   readonly layerId: number;
   readonly visible: boolean;
 }
 
-export interface LayerDuplicateCommand extends DomainCommand {
+export interface LayerDuplicateCommand extends CommandBase {
   readonly type: 'layer-duplicate';
   readonly layerId: number;
 }
 
-export interface LayerMergeCommand extends DomainCommand {
+export interface LayerMergeCommand extends CommandBase {
   readonly type: 'layer-merge';
   readonly sourceId: number;
   readonly targetId: number;
@@ -506,6 +487,217 @@ export type LayerStructureCommand =
   | LayerSetVisibilityCommand
   | LayerDuplicateCommand
   | LayerMergeCommand;
+
+interface CellCommandBase extends CommandBase {
+  readonly x: number;
+  readonly y: number;
+}
+
+export interface SetFullCommand extends CellCommandBase {
+  readonly type: 'set-full';
+  readonly color: number;
+}
+
+export interface SetHalfCommand extends CellCommandBase {
+  readonly type: 'set-half';
+  readonly direction: HalfDirection;
+  readonly color: number;
+}
+
+/** A zero color removes the quarter. */
+export interface SetQuarterCommand extends CellCommandBase {
+  readonly type: 'set-quarter';
+  readonly corner: QuarterCorner;
+  readonly color: number;
+}
+
+export interface SetQuartersCommand extends CellCommandBase {
+  readonly type: 'set-quarters';
+  /** Four physical slot colors; zero leaves a slot empty. */
+  readonly colors: readonly number[];
+}
+
+export interface SetThreeQuarterCommand extends CellCommandBase {
+  readonly type: 'set-three-quarter';
+  readonly corner: QuarterCorner;
+  readonly color: number;
+}
+
+export interface EraseCellCommand extends CellCommandBase {
+  readonly type: 'erase-cell';
+}
+
+export interface EraseQuarterCommand extends CellCommandBase {
+  readonly type: 'erase-quarter';
+  readonly corner: QuarterCorner;
+}
+
+/** Recolors the occupied components of a cell, or only the one at `corner`. */
+export interface RecolorCellCommand extends CellCommandBase {
+  readonly type: 'recolor-cell';
+  readonly color: number;
+  readonly corner?: QuarterCorner;
+}
+
+/** Endpoints are fixed-point (cell x 4) and are snapped to valid backstitch points. */
+export interface AddBackstitchCommand extends CommandBase {
+  readonly type: 'add-backstitch';
+  readonly start: Point;
+  readonly end: Point;
+  readonly color: number;
+  /** The first ID to allocate; defaults to the document's next backstitch ID. */
+  readonly id?: number;
+}
+
+export interface RemoveBackstitchCommand extends CommandBase {
+  readonly type: 'remove-backstitch';
+  readonly id: number;
+}
+
+/** Moves to new endpoints, or translates by `dx`/`dy` in fixed-point units. */
+export interface MoveBackstitchCommand extends CommandBase {
+  readonly type: 'move-backstitch';
+  readonly id: number;
+  readonly start?: Point;
+  readonly end?: Point;
+  readonly dx?: number;
+  readonly dy?: number;
+}
+
+export interface RecolorBackstitchCommand extends CommandBase {
+  readonly type: 'recolor-backstitch';
+  readonly id: number;
+  readonly color: number;
+}
+
+/** A recolor and a move in one step; the move's split pieces take the new color. */
+export interface UpdateBackstitchCommand extends CommandBase {
+  readonly type: 'update-backstitch';
+  readonly id: number;
+  readonly color?: number;
+  readonly start?: Point;
+  readonly end?: Point;
+  readonly dx?: number;
+  readonly dy?: number;
+}
+
+/** `id` defaults to the document's next palette ID. */
+export interface PaletteCreateCommand extends CommandBase, PaletteEntryInput {
+  readonly type: 'palette-create';
+}
+
+export interface PaletteUpdateCommand extends CommandBase {
+  readonly type: 'palette-update';
+  readonly id: number;
+  readonly name?: string;
+  readonly color?: string;
+  readonly active?: boolean;
+  readonly symbol?: string;
+  readonly material?: PaletteMaterial;
+  readonly catalog?: PaletteCatalogReference;
+}
+
+/** Exchanges the symbols of palette entries `a` and `b` atomically. */
+export interface PaletteSwapCommand extends CommandBase {
+  readonly type: 'palette-swap';
+  readonly a: number;
+  readonly b: number;
+}
+
+export interface PaletteDeactivateCommand extends CommandBase {
+  readonly type: 'palette-deactivate';
+  readonly id: number;
+}
+
+/** Recolors everything using `from` to `to`, then deactivates `from`. `createTo` creates `to` when it does not exist. */
+export interface PaletteMergeCommand extends CommandBase {
+  readonly type: 'palette-merge';
+  readonly from: number;
+  /** Defaults to the document's next palette ID, which `createTo` then allocates. */
+  readonly to?: number;
+  readonly createTo?: Omit<PaletteEntryInput, 'id' | 'active'>;
+}
+
+/** Removes every stitch using the palette entry, then deactivates it. */
+export interface PaletteDeleteCommand extends CommandBase {
+  readonly type: 'palette-delete';
+  readonly id: number;
+}
+
+export interface DocumentSettingsUpdateCommand extends CommandBase {
+  readonly type: 'document-settings-update';
+  readonly settings: Partial<PatternSettings>;
+}
+
+/** Applies its children atomically as one undo step. */
+export interface BatchCommand extends CommandBase {
+  readonly type: 'batch';
+  readonly commands: readonly DomainCommand[];
+}
+
+/**
+ * Every command the domain runs, discriminated by its kebab-case `type`.
+ * Shapes are checked by the compiler; the runner still validates every field's
+ * value (bounds, integers, palette ids) before it changes a document.
+ */
+export type DomainCommand =
+  | SetFullCommand
+  | SetHalfCommand
+  | SetQuarterCommand
+  | SetQuartersCommand
+  | SetThreeQuarterCommand
+  | EraseCellCommand
+  | EraseQuarterCommand
+  | RecolorCellCommand
+  | BulkCellCommand
+  | BulkRecolorCommand
+  | BulkCompletionCommand
+  | BulkBackstitchCompletionCommand
+  | PasteFragmentCommand
+  | MoveFragmentCommand
+  | MixedEraseCommand
+  | DeleteRegionCommand
+  | DeleteCellSetCommand
+  | AddBackstitchCommand
+  | RemoveBackstitchCommand
+  | MoveBackstitchCommand
+  | RecolorBackstitchCommand
+  | UpdateBackstitchCommand
+  | PaletteCreateCommand
+  | PaletteUpdateCommand
+  | PaletteSwapCommand
+  | PaletteDeactivateCommand
+  | PaletteMergeCommand
+  | PaletteDeleteCommand
+  | DocumentSettingsUpdateCommand
+  | CanvasResizeCommand
+  | CanvasCellsCommand
+  | LayerStructureCommand
+  | BatchCommand;
+
+export type Command = DomainCommand;
+
+export type DomainCommandType = DomainCommand['type'];
+
+/**
+ * Commands that are a complete gesture on their own, with a packed delta. They
+ * run standalone or as the only child of a batch, never beside other commands.
+ */
+export const ATOMIC_COMMAND_TYPES = [
+  'bulk-cell',
+  'bulk-recolor',
+  'bulk-completion',
+  'bulk-backstitch-completion',
+  'paste-fragment',
+  'move-fragment',
+  'mixed-erase',
+  'delete-region',
+  'delete-cell-set'
+] as const satisfies readonly DomainCommandType[];
+
+export type AtomicCommandType = (typeof ATOMIC_COMMAND_TYPES)[number];
+
+export type AtomicCommand = Extract<DomainCommand, { readonly type: AtomicCommandType }>;
 
 export interface CommandResult {
   document: PatternDocument;

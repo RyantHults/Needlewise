@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { bulkRecolorCommand, bulkSetCompletionCommand, bulkSetThreeQuarterCommand, CellKind, cloneDocument, computePatternMetrics, createDocument, createEditor, createLayeredDocument, deleteRegionCommand, HalfDirection, layeredFromSurface, QuarterCorner, type DomainCommand, type LayeredDocument, type PatternDocument } from '../domain';
+import { applyCommand, bulkRecolorCommand, bulkSetThreeQuarterCommand, CellKind, cloneDocument, computePatternMetrics, createDocument, createLayeredDocument, DocumentEditor, deleteRegionCommand, HalfDirection, layeredFromSurface, QuarterCorner, type DomainCommand, type LayeredDocument, type PatternDocument } from '../domain';
 import { setDailyProgress, type PersistencePreparationClient, type ProgressActivity, type ProjectMetadata, type SaveResult } from '../persistence';
+import { editorFromSurface, markBackstitchComplete, markCellComplete, onDefaultLayers } from '../domain/test-fixtures';
 import { attachDeleteMetricsImpactForDelta, registerDeleteMetricsImpact, type DeleteMetricsImpact } from '../domain/internal-metrics-impact';
 import { ProjectSession } from './session';
 import { ProgressMetricsService } from './progress';
@@ -19,16 +20,16 @@ const testPreparationClient: PersistencePreparationClient = {
 
 const longDebounceMs = 2_000_000_000;
 
-function addBackstitch(editor: ReturnType<typeof createEditor>, start: { x: number; y: number }, end: { x: number; y: number }, color: number, completed: boolean): void {
-  const added = editor.execute({ type: 'add-backstitch', start, end, color });
-  if (!completed) return;
+function addBackstitch(document: PatternDocument, start: { x: number; y: number }, end: { x: number; y: number }, color: number, completed: boolean): PatternDocument {
+  const added = applyCommand(document, { type: 'add-backstitch', start, end, color });
+  if (!completed) return added.document;
   const id = added.backstitchId;
   if (id === undefined) throw new Error('Test backstitch ID was not allocated.');
-  editor.execute({ type: 'set-backstitch-completion', id, completed: true });
+  return markBackstitchComplete(added.document, id);
 }
 
-function mixedDeleteFixture(): { editor: ReturnType<typeof createEditor>; rect: { x: number; y: number; width: number; height: number } } {
-  const editor = createEditor(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
+function mixedDeleteFixture(): { editor: DocumentEditor; rect: { x: number; y: number; width: number; height: number } } {
+  let document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
     width: 8,
     height: 6,
     palette: [
@@ -36,35 +37,37 @@ function mixedDeleteFixture(): { editor: ReturnType<typeof createEditor>; rect: 
       { id: 2, name: 'Blue', color: '#36c' },
       { id: 3, name: 'Gold', color: '#da2' }
     ]
-  }));
+  });
+  const apply = (command: DomainCommand) => {
+    document = applyCommand(document, command).document;
+  };
   const rect = { x: 1, y: 1, width: 4, height: 3 };
-  editor.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
-  editor.execute({ type: 'set-completion', x: 1, y: 1, completed: true });
-  editor.execute({ type: 'set-half', x: 2, y: 1, direction: HalfDirection.Slash, color: 2 });
-  editor.execute({ type: 'set-completion', x: 2, y: 1, completed: true });
-  editor.execute({ type: 'set-half', x: 3, y: 1, direction: HalfDirection.Backslash, color: 3 });
-  editor.execute({ type: 'set-quarter', x: 4, y: 1, corner: QuarterCorner.NW, color: 1 });
-  editor.execute({ type: 'set-completion', x: 4, y: 1, corner: QuarterCorner.NW, completed: true });
-  editor.execute({ type: 'set-quarter', x: 4, y: 1, corner: QuarterCorner.NE, color: 2 });
-  editor.execute({ type: 'set-quarter', x: 4, y: 1, corner: QuarterCorner.SE, color: 3 });
-  editor.execute({ type: 'set-completion', x: 4, y: 1, corner: QuarterCorner.SE, completed: true });
-  editor.execute({ type: 'set-quarter', x: 1, y: 2, corner: QuarterCorner.SW, color: 2 });
-  editor.execute({ type: 'set-completion', x: 1, y: 2, corner: QuarterCorner.SW, completed: true });
-  editor.execute({ type: 'set-quarter', x: 1, y: 2, corner: QuarterCorner.NW, color: 3 });
-  editor.execute({ type: 'set-three-quarter', x: 2, y: 2, corner: QuarterCorner.SW, color: 1 });
-  editor.execute({ type: 'set-completion', x: 2, y: 2, completed: true });
-  editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-  editor.execute({ type: 'set-completion', x: 0, y: 0, completed: true });
-  editor.execute({ type: 'set-half', x: 6, y: 4, direction: HalfDirection.Backslash, color: 2 });
+  apply({ type: 'set-full', x: 1, y: 1, color: 1 });
+  document = markCellComplete(document, 1, 1);
+  apply({ type: 'set-half', x: 2, y: 1, direction: HalfDirection.Slash, color: 2 });
+  document = markCellComplete(document, 2, 1);
+  apply({ type: 'set-half', x: 3, y: 1, direction: HalfDirection.Backslash, color: 3 });
+  apply({ type: 'set-quarter', x: 4, y: 1, corner: QuarterCorner.NW, color: 1 });
+  document = markCellComplete(document, 4, 1, QuarterCorner.NW);
+  apply({ type: 'set-quarter', x: 4, y: 1, corner: QuarterCorner.NE, color: 2 });
+  apply({ type: 'set-quarter', x: 4, y: 1, corner: QuarterCorner.SE, color: 3 });
+  document = markCellComplete(document, 4, 1, QuarterCorner.SE);
+  apply({ type: 'set-quarter', x: 1, y: 2, corner: QuarterCorner.SW, color: 2 });
+  document = markCellComplete(document, 1, 2, QuarterCorner.SW);
+  apply({ type: 'set-quarter', x: 1, y: 2, corner: QuarterCorner.NW, color: 3 });
+  apply({ type: 'set-three-quarter', x: 2, y: 2, corner: QuarterCorner.SW, color: 1 });
+  document = markCellComplete(document, 2, 2);
+  apply({ type: 'set-full', x: 0, y: 0, color: 1 });
+  document = markCellComplete(document, 0, 0);
+  apply({ type: 'set-half', x: 6, y: 4, direction: HalfDirection.Backslash, color: 2 });
 
-  addBackstitch(editor, { x: 4, y: 4 }, { x: 12, y: 16 }, 1, true);
-  addBackstitch(editor, { x: 20, y: 4 }, { x: 4, y: 16 }, 2, false);
-  addBackstitch(editor, { x: 8, y: 8 }, { x: 20, y: 12 }, 3, true);
-  addBackstitch(editor, { x: 0, y: 0 }, { x: 4, y: 4 }, 1, false);
-  addBackstitch(editor, { x: 0, y: 20 }, { x: 32, y: 20 }, 2, true);
-  addBackstitch(editor, { x: 0, y: 8 }, { x: 28, y: 12 }, 3, false);
-  editor.clearHistory();
-  return { editor, rect };
+  document = addBackstitch(document, { x: 4, y: 4 }, { x: 12, y: 16 }, 1, true);
+  document = addBackstitch(document, { x: 20, y: 4 }, { x: 4, y: 16 }, 2, false);
+  document = addBackstitch(document, { x: 8, y: 8 }, { x: 20, y: 12 }, 3, true);
+  document = addBackstitch(document, { x: 0, y: 0 }, { x: 4, y: 4 }, 1, false);
+  document = addBackstitch(document, { x: 0, y: 20 }, { x: 32, y: 20 }, 2, true);
+  document = addBackstitch(document, { x: 0, y: 8 }, { x: 28, y: 12 }, 3, false);
+  return { editor: editorFromSurface(document), rect };
 }
 
 function denseDocument(side: number): PatternDocument {
@@ -82,17 +85,17 @@ function expectExactMetrics(service: ProgressMetricsService, document: PatternDo
   expect(activity).toEqual({ marked: 0, unmarked: 0 });
 }
 
-function expectDeleteMetricsRoundTrip(editor: ReturnType<typeof createEditor>, rect: { x: number; y: number; width: number; height: number }): void {
-  const service = new ProgressMetricsService(editor.document);
-  let previous = editor.document;
-  let result = editor.execute(deleteRegionCommand(rect, editor.revision));
-  expectExactMetrics(service, editor.document, service.apply(previous, result));
-  previous = editor.document;
+function expectDeleteMetricsRoundTrip(editor: DocumentEditor, rect: { x: number; y: number; width: number; height: number }): void {
+  const service = new ProgressMetricsService(editor.composite);
+  let previous = editor.composite;
+  let result = editor.execute(onDefaultLayers(deleteRegionCommand(rect, editor.revision)));
+  expectExactMetrics(service, editor.composite, service.apply(previous, result));
+  previous = editor.composite;
   result = editor.undo();
-  expectExactMetrics(service, editor.document, service.apply(previous, result));
-  previous = editor.document;
+  expectExactMetrics(service, editor.composite, service.apply(previous, result));
+  previous = editor.composite;
   result = editor.redo();
-  expectExactMetrics(service, editor.document, service.apply(previous, result));
+  expectExactMetrics(service, editor.composite, service.apply(previous, result));
 }
 
 function countIndexedReads<T extends Uint8Array | Uint16Array | Uint32Array>(plane: T, reads: { value: number }): T {
@@ -154,31 +157,31 @@ describe('application progress integration', () => {
 
   it('supports three-quarter incremental metrics, completion activity, materials, and fallback rebuilds', () => {
     let document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 3, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    document = (createEditor(document).execute({ type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 })).document;
-    document = (createEditor(document).execute({ type: 'set-completion', x: 0, y: 0, completed: true })).document;
-    const editor = createEditor(document);
-    const service = new ProgressMetricsService(editor.document);
+    document = applyCommand(document, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
+    document = markCellComplete(document, 0, 0);
+    const editor = editorFromSurface(document);
+    const service = new ProgressMetricsService(editor.composite);
 
-    let previous = editor.document;
-    let result = editor.execute(bulkSetThreeQuarterCommand(new Uint32Array([0, 1]), QuarterCorner.SE, 1));
+    let previous = editor.composite;
+    let result = editor.execute(onDefaultLayers(bulkSetThreeQuarterCommand(new Uint32Array([0, 1]), QuarterCorner.SE, 1)));
     expect(result.changedIndices).toEqual(new Uint32Array([0, 1]));
     expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 0 });
-    expect(service.metrics).toEqual(computePatternMetrics(editor.document));
+    expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(service.metrics.totals).toMatchObject({ threeQuarter: 3, totalComponents: 3, completedComponents: 1, remainingComponents: 2 });
     expect(service.metrics.palettes[0].material.stitchUnits).toBe(2.25);
 
-    previous = editor.document;
-    result = editor.execute(bulkSetCompletionCommand(new Uint32Array([0, 1])));
+    previous = editor.composite;
+    result = editor.applyProgress({ cells: { indices: new Uint32Array([0, 1]), masks: new Uint8Array([5, 1]) }, operation: 'set' })!.result;
     expect(service.apply(previous, result)).toEqual({ marked: 2, unmarked: 0 });
-    expect(service.metrics).toEqual(computePatternMetrics(editor.document));
+    expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(service.metrics.progress).toMatchObject({ completedComponents: 3, remainingComponents: 0, totalComponents: 3 });
 
-    previous = editor.document;
-    result = editor.execute({ type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.SW, color: 1 });
+    previous = editor.composite;
+    result = editor.execute(onDefaultLayers({ type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.SW, color: 1 }));
     expect(result.changedIndices).toBeUndefined();
     expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 0 });
-    expect(service.metrics).toEqual(computePatternMetrics(editor.document));
-    expect(service.recalculate(editor.document)).toEqual(computePatternMetrics(editor.document));
+    expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
+    expect(service.recalculate(editor.composite)).toEqual(computePatternMetrics(editor.composite));
   });
 
   it('keeps masked completion progress and component totals exact across heterogeneous geometry', () => {
@@ -190,33 +193,33 @@ describe('application progress integration', () => {
         { id: 2, name: 'Blue', color: '#36c' }
       ]
     });
-    const editor = createEditor(document);
-    editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-    editor.execute({ type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 1 });
-    editor.execute({ type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.SE, color: 2 });
-    editor.execute({ type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 });
-    editor.execute({ type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.SE, color: 2 });
+    const editor = editorFromSurface(document);
+    editor.execute(onDefaultLayers({ type: 'set-full', x: 0, y: 0, color: 1 }));
+    editor.execute(onDefaultLayers({ type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 1 }));
+    editor.execute(onDefaultLayers({ type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.SE, color: 2 }));
+    editor.execute(onDefaultLayers({ type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 }));
+    editor.execute(onDefaultLayers({ type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.SE, color: 2 }));
     editor.clearHistory();
-    document = editor.document;
+    document = editor.composite;
     const service = new ProgressMetricsService(document);
 
-    let previous = editor.document;
-    let result = editor.execute({ type: 'bulk-completion', indices: new Uint32Array([0, 1, 2]), masks: new Uint8Array([1, 4, 1]), operation: 'set' });
+    let previous = editor.composite;
+    let result = editor.applyProgress({ cells: { indices: new Uint32Array([0, 1, 2]), masks: new Uint8Array([1, 4, 1]) }, operation: 'set' })!.result;
     expect(service.apply(previous, result)).toEqual({ marked: 3, unmarked: 0 });
-    expect(service.metrics).toEqual(computePatternMetrics(editor.document));
+    expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(service.metrics.totals).toMatchObject({ totalComponents: 5, completedComponents: 3, remainingComponents: 2 });
     expect(service.metrics.byPalette.get(1)).toMatchObject({ full: 1, quarter: 1, threeQuarter: 1, completedComponents: 2 });
     expect(service.metrics.byPalette.get(2)).toMatchObject({ quarter: 1, threeQuarter: 1, completedComponents: 1 });
 
-    previous = editor.document;
-    result = editor.execute({ type: 'bulk-completion', indices: new Uint32Array([2]), masks: new Uint8Array([1]), operation: 'clear' });
+    previous = editor.composite;
+    result = editor.applyProgress({ cells: { indices: new Uint32Array([2]), masks: new Uint8Array([1]) }, operation: 'clear' })!.result;
     expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 1 });
-    expect(service.metrics).toEqual(computePatternMetrics(editor.document));
+    expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(service.metrics.totals).toMatchObject({ totalComponents: 5, completedComponents: 2, remainingComponents: 3 });
   });
 
   it('moves masked component counts and material between palettes without changing progress', () => {
-    const editor = createEditor(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
+    let document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
       width: 5,
       height: 1,
       palette: [
@@ -224,43 +227,43 @@ describe('application progress integration', () => {
         { id: 2, name: 'Blue', color: '#36c' },
         { id: 3, name: 'Gold', color: '#da2' }
       ]
-    }));
-    editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-    editor.execute({ type: 'set-completion', x: 0, y: 0, completed: true });
-    editor.execute({ type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 1 });
-    editor.execute({ type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 });
-    editor.execute({ type: 'set-quarter', x: 3, y: 0, corner: QuarterCorner.NW, color: 1 });
-    editor.execute({ type: 'set-quarter', x: 3, y: 0, corner: QuarterCorner.NE, color: 2 });
-    editor.execute({ type: 'set-three-quarter', x: 4, y: 0, corner: QuarterCorner.NW, color: 1 });
-    editor.execute({ type: 'set-three-quarter', x: 4, y: 0, corner: QuarterCorner.SE, color: 2 });
-    editor.execute({ type: 'set-completion', x: 3, y: 0, corner: QuarterCorner.NW, completed: true });
-    editor.execute({ type: 'set-completion', x: 4, y: 0, corner: QuarterCorner.NW, completed: true });
-    editor.clearHistory();
+    });
+    document = applyCommand(document, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+    document = markCellComplete(document, 0, 0);
+    document = applyCommand(document, { type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 1 }).document;
+    document = applyCommand(document, { type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
+    document = applyCommand(document, { type: 'set-quarter', x: 3, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
+    document = applyCommand(document, { type: 'set-quarter', x: 3, y: 0, corner: QuarterCorner.NE, color: 2 }).document;
+    document = applyCommand(document, { type: 'set-three-quarter', x: 4, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
+    document = applyCommand(document, { type: 'set-three-quarter', x: 4, y: 0, corner: QuarterCorner.SE, color: 2 }).document;
+    document = markCellComplete(document, 3, 0, QuarterCorner.NW);
+    document = markCellComplete(document, 4, 0, QuarterCorner.NW);
+    const editor = editorFromSurface(document);
 
-    const service = new ProgressMetricsService(editor.document);
-    let previous = editor.document;
-    const recolored = editor.execute(bulkRecolorCommand(
+    const service = new ProgressMetricsService(editor.composite);
+    let previous = editor.composite;
+    const recolored = editor.execute(onDefaultLayers(bulkRecolorCommand(
       new Uint32Array([0, 1, 2, 3, 4]),
       new Uint8Array([1, 1, 1, 1, 1]),
       1,
       3,
       editor.revision
-    ));
+    )));
     expect(service.apply(previous, recolored)).toEqual({ marked: 0, unmarked: 0 });
-    expect(service.metrics).toEqual(computePatternMetrics(editor.document));
+    expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(service.metrics.byPalette.get(1)).toMatchObject({ full: 0, half: 0, quarter: 0, completedComponents: 0 });
     expect(service.metrics.byPalette.get(2)).toMatchObject({ quarter: 1, threeQuarter: 1, completedComponents: 0, material: { stitchUnits: 1 } });
     expect(service.metrics.byPalette.get(3)).toMatchObject({ full: 1, half: 1, quarter: 1, threeQuarter: 2, completedComponents: 3, material: { stitchUnits: 3.25 } });
 
-    previous = editor.document;
+    previous = editor.composite;
     const undone = editor.undo();
     expect(service.apply(previous, undone)).toEqual({ marked: 0, unmarked: 0 });
-    expect(service.metrics).toEqual(computePatternMetrics(editor.document));
+    expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(service.metrics.byPalette.get(1)).toMatchObject({ full: 1, half: 1, quarter: 1, threeQuarter: 2, completedComponents: 3, material: { stitchUnits: 3.25 } });
-    previous = editor.document;
+    previous = editor.composite;
     const redone = editor.redo();
     expect(service.apply(previous, redone)).toEqual({ marked: 0, unmarked: 0 });
-    expect(service.metrics).toEqual(computePatternMetrics(editor.document));
+    expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(editor.undoDepth).toBe(1);
   });
 
@@ -273,32 +276,30 @@ describe('application progress integration', () => {
         { id: 2, name: 'Blue', color: '#36c' }
       ]
     });
-    const editor = createEditor(document);
-    editor.execute({ type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 });
-    editor.execute({ type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 });
-    editor.execute({ type: 'set-completion', x: 0, y: 0, corner: QuarterCorner.NW, completed: true });
-    editor.clearHistory();
-    document = editor.document;
+    document = applyCommand(document, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
+    document = applyCommand(document, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 }).document;
+    document = markCellComplete(document, 0, 0, QuarterCorner.NW);
+    const editor = editorFromSurface(document);
     const service = new ProgressMetricsService(document);
 
-    let previous = editor.document;
-    let result = editor.execute(deleteRegionCommand({ x: 0, y: 0, width: 1, height: 1 }, editor.revision));
+    let previous = editor.composite;
+    let result = editor.execute(onDefaultLayers(deleteRegionCommand({ x: 0, y: 0, width: 1, height: 1 }, editor.revision)));
     expect(result.recalculateMetrics).toBe(true);
     expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 0 });
-    expect(service.metrics).toEqual(computePatternMetrics(editor.document));
+    expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(service.metrics.totals).toMatchObject({ completedComponents: 0, remainingComponents: 0 });
 
-    previous = editor.document;
+    previous = editor.composite;
     result = editor.undo();
     expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 0 });
-    expect(service.metrics).toEqual(computePatternMetrics(editor.document));
+    expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(service.metrics.byPalette.get(1)).toMatchObject({ threeQuarter: 1, completedComponents: 1 });
     expect(service.metrics.byPalette.get(2)).toMatchObject({ threeQuarter: 1, completedComponents: 0 });
 
-    previous = editor.document;
+    previous = editor.composite;
     result = editor.redo();
     expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 0 });
-    expect(service.metrics).toEqual(computePatternMetrics(editor.document));
+    expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(service.metrics.totals).toMatchObject({ completedComponents: 0, remainingComponents: 0 });
   });
 
@@ -317,37 +318,37 @@ describe('application progress integration', () => {
 
   it('matches fresh metrics for mixed multi-palette delete, undo, and redo', () => {
     const { editor, rect } = mixedDeleteFixture();
-    const service = new ProgressMetricsService(editor.document);
-    const before = editor.document;
-    const deleted = editor.execute(deleteRegionCommand(rect, editor.revision));
+    const service = new ProgressMetricsService(editor.composite);
+    const before = editor.composite;
+    const deleted = editor.execute(onDefaultLayers(deleteRegionCommand(rect, editor.revision)));
     expect(deleted.changed).toBe(true);
     expect(deleted.recalculateMetrics).toBe(true);
     expect(Object.keys(deleted)).not.toContain('impact');
     deleted.changedIndices?.fill(0);
     deleted.touchedIndices?.fill(0);
     deleted.changedBackstitchIds?.fill(0);
-    expectExactMetrics(service, editor.document, service.apply(before, deleted));
+    expectExactMetrics(service, editor.composite, service.apply(before, deleted));
 
-    const afterDelete = editor.document;
+    const afterDelete = editor.composite;
     const undone = editor.undo();
-    expectExactMetrics(service, editor.document, service.apply(afterDelete, undone));
+    expectExactMetrics(service, editor.composite, service.apply(afterDelete, undone));
 
-    const afterUndo = editor.document;
+    const afterUndo = editor.composite;
     const redone = editor.redo();
-    expectExactMetrics(service, editor.document, service.apply(afterUndo, redone));
+    expectExactMetrics(service, editor.composite, service.apply(afterUndo, redone));
   });
 
   it('uses exact impacts for cell-only, backstitch-only, and mixed deletes', () => {
-    const cellEditor = createEditor(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 3, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] }));
-    cellEditor.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
-    cellEditor.execute({ type: 'set-half', x: 2, y: 1, direction: HalfDirection.Backslash, color: 2 });
+    const cellEditor = editorFromSurface(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 3, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] }));
+    cellEditor.execute(onDefaultLayers({ type: 'set-full', x: 1, y: 1, color: 1 }));
+    cellEditor.execute(onDefaultLayers({ type: 'set-half', x: 2, y: 1, direction: HalfDirection.Backslash, color: 2 }));
     cellEditor.clearHistory();
     expectDeleteMetricsRoundTrip(cellEditor, { x: 1, y: 1, width: 2, height: 1 });
 
-    const backstitchEditor = createEditor(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 3, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] }));
-    addBackstitch(backstitchEditor, { x: 0, y: 0 }, { x: 8, y: 8 }, 1, true);
-    addBackstitch(backstitchEditor, { x: 0, y: 12 }, { x: 16, y: 12 }, 2, false);
-    backstitchEditor.clearHistory();
+    let backstitchDocument = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 3, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] });
+    backstitchDocument = addBackstitch(backstitchDocument, { x: 0, y: 0 }, { x: 8, y: 8 }, 1, true);
+    backstitchDocument = addBackstitch(backstitchDocument, { x: 0, y: 12 }, { x: 16, y: 12 }, 2, false);
+    const backstitchEditor = editorFromSurface(backstitchDocument);
     expectDeleteMetricsRoundTrip(backstitchEditor, { x: 0, y: 0, width: 2, height: 2 });
 
     const mixed = mixedDeleteFixture();
@@ -356,7 +357,7 @@ describe('application progress integration', () => {
 
   it('keeps real session metrics exact across layered delete, undo, and redo', async () => {
     const { editor, rect } = mixedDeleteFixture();
-    const document = layeredFromSurface(cloneDocument(editor.document));
+    const document = layeredFromSurface(cloneDocument(editor.composite));
     const repository = {
       save: async (_id: string, _metadata: ProjectMetadata, next: LayeredDocument): Promise<SaveResult> => ({ committed: true, stale: false, revision: next.revision })
     } as unknown as WorkspaceRepository;
@@ -388,8 +389,8 @@ describe('application progress integration', () => {
 
   it('falls back exactly for copied results, revision mismatches, and malformed impacts', () => {
     const { editor, rect } = mixedDeleteFixture();
-    const before = editor.document;
-    const deleted = editor.execute(deleteRegionCommand(rect, editor.revision));
+    const before = editor.composite;
+    const deleted = editor.execute(onDefaultLayers(deleteRegionCommand(rect, editor.revision)));
 
     const copiedResult = { ...deleted };
     const copiedService = new ProgressMetricsService(before);
@@ -427,35 +428,35 @@ describe('application progress integration', () => {
       { side: 1_000, rect: { x: 250, y: 250, width: 500, height: 500 } },
       { side: 1_000, rect: { x: 0, y: 0, width: 1_000, height: 1_000 } }
     ]) {
-      const editor = createEditor(denseDocument(testCase.side));
-      const service = new ProgressMetricsService(editor.document);
-      let previous = editor.document;
-      let result = editor.execute(deleteRegionCommand(testCase.rect, editor.revision));
-      expectExactMetrics(service, editor.document, service.apply(previous, result));
-      previous = editor.document;
+      const editor = editorFromSurface(denseDocument(testCase.side));
+      const service = new ProgressMetricsService(editor.composite);
+      let previous = editor.composite;
+      let result = editor.execute(onDefaultLayers(deleteRegionCommand(testCase.rect, editor.revision)));
+      expectExactMetrics(service, editor.composite, service.apply(previous, result));
+      previous = editor.composite;
       result = editor.undo();
-      expectExactMetrics(service, editor.document, service.apply(previous, result));
-      previous = editor.document;
+      expectExactMetrics(service, editor.composite, service.apply(previous, result));
+      previous = editor.composite;
       result = editor.redo();
-      expectExactMetrics(service, editor.document, service.apply(previous, result));
+      expectExactMetrics(service, editor.composite, service.apply(previous, result));
     }
   });
 
   it('keeps no-op and stale delete metrics, revision, history, and activity unchanged', () => {
-    const editor = createEditor(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 3, height: 3, palette: [{ id: 1, name: 'Red', color: '#d33' }] }));
-    const service = new ProgressMetricsService(editor.document);
-    const before = editor.document;
+    const editor = editorFromSurface(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 3, height: 3, palette: [{ id: 1, name: 'Red', color: '#d33' }] }));
+    const service = new ProgressMetricsService(editor.composite);
+    const before = editor.composite;
     const beforeMetrics = service.metrics;
-    const noOp = editor.execute(deleteRegionCommand({ x: 0, y: 0, width: 3, height: 3 }, editor.revision));
+    const noOp = editor.execute(onDefaultLayers(deleteRegionCommand({ x: 0, y: 0, width: 3, height: 3 }, editor.revision)));
     expect(noOp.changed).toBe(false);
-    expect(editor.document).toBe(before);
+    expect(editor.composite).toBe(before);
     expect(editor.revision).toBe(0);
     expect(editor.undoDepth).toBe(0);
     expect(service.apply(before, noOp)).toEqual({ marked: 0, unmarked: 0 });
     expect(service.metrics).toEqual(beforeMetrics);
 
-    expect(() => editor.execute(deleteRegionCommand({ x: 0, y: 0, width: 1, height: 1 }, editor.revision + 1))).toThrow(/revision/i);
-    expect(editor.document).toBe(before);
+    expect(() => editor.execute(onDefaultLayers(deleteRegionCommand({ x: 0, y: 0, width: 1, height: 1 }, editor.revision + 1)))).toThrow(/revision/i);
+    expect(editor.composite).toBe(before);
     expect(editor.revision).toBe(0);
     expect(editor.undoDepth).toBe(0);
     expect(editor.redoDepth).toBe(0);
@@ -463,35 +464,35 @@ describe('application progress integration', () => {
   });
 
   it('reuses counts for palette-only execute, undo, and redo without reading planes', () => {
-    const editor = createEditor(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
+    const editor = editorFromSurface(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
       width: 3,
       height: 2,
       palette: [{ id: 1, name: 'Red', color: '#d33' }]
     }));
-    editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-    editor.execute({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 4 }, color: 1 });
+    editor.execute(onDefaultLayers({ type: 'set-full', x: 0, y: 0, color: 1 }));
+    editor.execute(onDefaultLayers({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 4 }, color: 1 }));
     editor.clearHistory();
 
     const reads = { value: 0 };
-    editor.document.kind = countIndexedReads(editor.document.kind, reads);
-    editor.document.colors = countIndexedReads(editor.document.colors, reads);
-    editor.document.completed = countIndexedReads(editor.document.completed, reads);
-    editor.document.backstitches = {
-      ...editor.document.backstitches,
-      ids: countIndexedReads(editor.document.backstitches.ids, reads),
-      x1: countIndexedReads(editor.document.backstitches.x1, reads),
-      y1: countIndexedReads(editor.document.backstitches.y1, reads),
-      x2: countIndexedReads(editor.document.backstitches.x2, reads),
-      y2: countIndexedReads(editor.document.backstitches.y2, reads),
-      colors: countIndexedReads(editor.document.backstitches.colors, reads),
-      completed: countIndexedReads(editor.document.backstitches.completed, reads)
+    editor.composite.kind = countIndexedReads(editor.composite.kind, reads);
+    editor.composite.colors = countIndexedReads(editor.composite.colors, reads);
+    editor.composite.completed = countIndexedReads(editor.composite.completed, reads);
+    editor.composite.backstitches = {
+      ...editor.composite.backstitches,
+      ids: countIndexedReads(editor.composite.backstitches.ids, reads),
+      x1: countIndexedReads(editor.composite.backstitches.x1, reads),
+      y1: countIndexedReads(editor.composite.backstitches.y1, reads),
+      x2: countIndexedReads(editor.composite.backstitches.x2, reads),
+      y2: countIndexedReads(editor.composite.backstitches.y2, reads),
+      colors: countIndexedReads(editor.composite.backstitches.colors, reads),
+      completed: countIndexedReads(editor.composite.backstitches.completed, reads)
     };
-    const service = new ProgressMetricsService(editor.document);
+    const service = new ProgressMetricsService(editor.composite);
     reads.value = 0;
 
     const apply = (command: DomainCommand): void => {
-      const previous = editor.document;
-      const result = editor.execute(command);
+      const previous = editor.composite;
+      const result = editor.execute(onDefaultLayers(command));
       // Palette deactivation validates that the ID is unreferenced in the
       // domain. Reset that command-level probe before checking the metrics
       // application path itself.
@@ -500,7 +501,7 @@ describe('application progress integration', () => {
       expect(reads.value).toBe(0);
     };
     const applyHistory = (operation: () => ReturnType<typeof editor.undo>): void => {
-      const previous = editor.document;
+      const previous = editor.composite;
       const result = operation();
       expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 0 });
       expect(reads.value).toBe(0);
@@ -511,11 +512,11 @@ describe('application progress integration', () => {
     expect(service.metrics.byPalette.get(2)).toMatchObject({ full: 0, half: 0, quarter: 0, backstitch: 0, totalComponents: 0 });
 
     apply({ type: 'palette-update', id: 2, name: 'Updated blue', color: '#369', material: { kind: 'custom', label: 'Metres', unit: 'meters' } });
-    expect(editor.document.palette.find((entry) => entry.id === 2)).toMatchObject({ name: 'Updated blue', color: '#369' });
+    expect(editor.composite.palette.find((entry) => entry.id === 2)).toMatchObject({ name: 'Updated blue', color: '#369' });
     expect(service.metrics.byPalette.get(2)?.material.materialUnit).toBe('meters');
 
     apply({ type: 'palette-deactivate', id: 2 });
-    expect(editor.document.palette.find((entry) => entry.id === 2)?.active).toBe(false);
+    expect(editor.composite.palette.find((entry) => entry.id === 2)?.active).toBe(false);
 
     applyHistory(() => editor.undo());
     applyHistory(() => editor.undo());
@@ -526,27 +527,27 @@ describe('application progress integration', () => {
     expect(service.metrics.byPalette.get(2)).toMatchObject({ totalComponents: 0 });
     applyHistory(() => editor.redo());
     applyHistory(() => editor.redo());
-    expect(editor.document.palette.find((entry) => entry.id === 2)?.active).toBe(false);
+    expect(editor.composite.palette.find((entry) => entry.id === 2)?.active).toBe(false);
   });
 
   it('reconciles cached zero-count palettes across material rebuild, undo, and redo', () => {
-    const editor = createEditor(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
+    const editor = editorFromSurface(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
       width: 2,
       height: 1,
       palette: [{ id: 1, name: 'Red', color: '#d33' }]
     }));
-    editor.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    editor.execute(onDefaultLayers({ type: 'set-full', x: 0, y: 0, color: 1 }));
     editor.clearHistory();
 
     const reads = { value: 0 };
-    editor.document.kind = countIndexedReads(editor.document.kind, reads);
-    editor.document.colors = countIndexedReads(editor.document.colors, reads);
-    editor.document.completed = countIndexedReads(editor.document.completed, reads);
-    const service = new ProgressMetricsService(editor.document);
+    editor.composite.kind = countIndexedReads(editor.composite.kind, reads);
+    editor.composite.colors = countIndexedReads(editor.composite.colors, reads);
+    editor.composite.completed = countIndexedReads(editor.composite.completed, reads);
+    const service = new ProgressMetricsService(editor.composite);
     reads.value = 0;
 
-    const previous = editor.document;
-    const created = editor.execute({ type: 'palette-create', name: 'Unused', color: '#36c' });
+    const previous = editor.composite;
+    const created = editor.execute(onDefaultLayers({ type: 'palette-create', name: 'Unused', color: '#36c' }));
     expect(service.apply(previous, created)).toEqual({ marked: 0, unmarked: 0 });
     expect(reads.value).toBe(0);
     expect(service.metrics.byPalette.get(2)).toMatchObject({ totalComponents: 0 });
@@ -554,13 +555,13 @@ describe('application progress integration', () => {
     service.setMaterialSettings({ strands: 2 });
     reads.value = 0;
 
-    const beforeUndo = editor.document;
+    const beforeUndo = editor.composite;
     const undone = editor.undo();
     expect(service.apply(beforeUndo, undone)).toEqual({ marked: 0, unmarked: 0 });
     expect(reads.value).toBe(0);
     expect(service.metrics.byPalette.has(2)).toBe(false);
 
-    const beforeRedo = editor.document;
+    const beforeRedo = editor.composite;
     const redone = editor.redo();
     expect(service.apply(beforeRedo, redone)).toEqual({ marked: 0, unmarked: 0 });
     expect(reads.value).toBe(0);

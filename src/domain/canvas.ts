@@ -5,7 +5,6 @@ import {
   LayerType,
   MAX_PERSISTABLE_CELL_COUNT,
   type BackstitchRecord,
-  type BackstitchStore,
   type CanvasCellsCommand,
   type CanvasEdges,
   type CanvasResizeCommand,
@@ -15,6 +14,8 @@ import {
   type LayeredDocument,
   type PatternDocument
 } from './types';
+import { requireCommandInteger } from './guards';
+import { allocateBackstitches, copyBackstitch, readBackstitch } from './backstitch-store';
 
 /** The workspace is at least this many cells on each axis. */
 export const WORKSPACE_MIN_EXTENT = 1000;
@@ -54,7 +55,7 @@ export function canvasWorkspace(doc: { width: number; height: number }): CropRec
 
 /** True for an origin coordinate the binary format can store (a 32-bit signed integer). */
 export function isValidCanvasOrigin(value: unknown): boolean {
-  return typeof value === 'number' && Number.isInteger(value) && value >= -0x80000000 && value <= 0x7fffffff;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= -0x80000000 && value <= 0x7fffffff;
 }
 
 /**
@@ -189,14 +190,8 @@ export function canvasCellsCommand(operation: 'add' | 'remove', rect: CropRect, 
   return { type: 'canvas-cells', operation, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, ...(cells === undefined ? {} : { cells }) };
 }
 
-function canvasCommandType(command: DomainCommand): string | undefined {
-  if (!command || typeof command.type !== 'string') return undefined;
-  const type = command.type.replace(/([a-z])([A-Z])/g, '$1-$2').replace(/_/g, '-').toLowerCase();
-  return type === 'canvas-resize' || type === 'canvas-cells' ? type : undefined;
-}
-
-export function isCanvasCommand(command: DomainCommand): boolean {
-  return canvasCommandType(command) !== undefined;
+export function isCanvasCommand(command: DomainCommand): command is CanvasResizeCommand | CanvasCellsCommand {
+  return command.type === 'canvas-resize' || command.type === 'canvas-cells';
 }
 
 export interface CanvasRemoval {
@@ -218,11 +213,6 @@ function invalid(message: string): never {
   throw new DomainError('invalid-command', message);
 }
 
-function integer(value: unknown, label: string): number {
-  if (typeof value !== 'number' || !Number.isSafeInteger(value)) invalid(`${label} must be an integer.`);
-  return value;
-}
-
 function contains(outer: CropRect, inner: CropRect): boolean {
   return inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height;
 }
@@ -238,19 +228,17 @@ function assertBoxSize(width: number, height: number): void {
  * whose content moved or was cleared. Revision and counters are unchanged.
  */
 export function applyCanvasCommand(doc: LayeredDocument, command: DomainCommand): CanvasCommandResult {
-  const type = canvasCommandType(command);
-  if (type === 'canvas-resize') return applyResize(doc, command);
-  if (type === 'canvas-cells') return applyCells(doc, command);
-  return invalid(`${String(command?.type)} is not a canvas command.`);
+  if (command.type === 'canvas-resize') return applyResize(doc, command);
+  if (command.type === 'canvas-cells') return applyCells(doc, command);
+  return invalid(`${command.type} is not a canvas command.`);
 }
 
-function applyResize(doc: LayeredDocument, command: DomainCommand): CanvasCommandResult {
-  const edges = command.edges as Partial<CanvasEdges> | undefined;
-  if (typeof edges !== 'object' || edges === null) invalid('canvas-resize requires edges.');
-  const top = integer(edges.top, 'edges.top');
-  const right = integer(edges.right, 'edges.right');
-  const bottom = integer(edges.bottom, 'edges.bottom');
-  const left = integer(edges.left, 'edges.left');
+function applyResize(doc: LayeredDocument, command: CanvasResizeCommand): CanvasCommandResult {
+  const { edges } = command;
+  const top = requireCommandInteger(edges.top, 'edges.top');
+  const right = requireCommandInteger(edges.right, 'edges.right');
+  const bottom = requireCommandInteger(edges.bottom, 'edges.bottom');
+  const left = requireCommandInteger(edges.left, 'edges.left');
   if (doc.canvasMask !== undefined) throw new DomainError('canvas-not-rectangular', 'Only a rectangular canvas can be resized by its edges.');
   if (top === 0 && right === 0 && bottom === 0 && left === 0) return { document: doc, changed: false, removal: NO_REMOVAL };
   const box: CropRect = { x: -left, y: -top, width: doc.width + left + right, height: doc.height + top + bottom };
@@ -259,16 +247,13 @@ function applyResize(doc: LayeredDocument, command: DomainCommand): CanvasComman
   return reframe(doc, box, undefined);
 }
 
-function applyCells(doc: LayeredDocument, command: DomainCommand): CanvasCommandResult {
-  const operation = command.operation;
-  if (operation !== 'add' && operation !== 'remove') invalid('canvas-cells operation must be add or remove.');
-  const source = command.rect as Partial<CropRect> | undefined;
-  if (typeof source !== 'object' || source === null) invalid('canvas-cells requires a rect.');
-  const rect: CropRect = { x: integer(source.x, 'rect.x'), y: integer(source.y, 'rect.y'), width: integer(source.width, 'rect.width'), height: integer(source.height, 'rect.height') };
+function applyCells(doc: LayeredDocument, command: CanvasCellsCommand): CanvasCommandResult {
+  const { operation, rect: source } = command;
+  const rect: CropRect = { x: requireCommandInteger(source.x, 'rect.x'), y: requireCommandInteger(source.y, 'rect.y'), width: requireCommandInteger(source.width, 'rect.width'), height: requireCommandInteger(source.height, 'rect.height') };
   if (rect.width < 1 || rect.height < 1) invalid('canvas-cells rect must be at least one cell.');
   const cells = command.cells;
   if (cells !== undefined) {
-    if (!(cells instanceof Uint8Array) || cells.length !== rect.width * rect.height) invalid('canvas-cells cells must be a Uint8Array with one value per rect cell.');
+    if (cells.length !== rect.width * rect.height) invalid('canvas-cells cells must hold one value per rect cell.');
     for (let index = 0; index < cells.length; index += 1) if (cells[index] > 1) invalid('canvas-cells cells must hold only 0 or 1.');
   }
   const selected = (x: number, y: number): boolean => cells === undefined || cells[(y - rect.y) * rect.width + x - rect.x] === 1;
@@ -349,12 +334,6 @@ function applyCells(doc: LayeredDocument, command: DomainCommand): CanvasCommand
   return reframe(doc, box, mask);
 }
 
-function toRecord(store: BackstitchStore, index: number): BackstitchRecord {
-  const start = { x: store.x1[index], y: store.y1[index] };
-  const end = { x: store.x2[index], y: store.y2[index] };
-  return { id: store.ids[index], x1: start.x, y1: start.y, x2: end.x, y2: end.y, start, end, color: store.colors[index], completed: store.completed[index] !== 0 };
-}
-
 /**
  * Moves every layer into `box` (old-local coordinates) with `mask` as the new
  * active set, clearing content that is no longer on an active cell and
@@ -422,28 +401,13 @@ function reframe(doc: LayeredDocument, box: CropRect, mask: Uint8Array | undefin
     const records: BackstitchRecord[] = [];
     for (let index = 0; index < store.ids.length; index += 1) {
       if (backstitchWithinCanvas(shape, store.x1[index] - dx, store.y1[index] - dy, store.x2[index] - dx, store.y2[index] - dy)) kept.push(index);
-      else records.push(toRecord(store, index));
+      else records.push(readBackstitch(store, index));
     }
     if (records.length > 0) removedLines.push({ layerId: layer.id, records });
     if (records.length === 0 && dx === 0 && dy === 0) return layer;
-    const next: BackstitchStore = {
-      ids: new Uint32Array(kept.length),
-      x1: new Uint32Array(kept.length),
-      y1: new Uint32Array(kept.length),
-      x2: new Uint32Array(kept.length),
-      y2: new Uint32Array(kept.length),
-      colors: new Uint16Array(kept.length),
-      completed: new Uint8Array(kept.length)
-    };
-    kept.forEach((index, position) => {
-      next.ids[position] = store.ids[index];
-      next.x1[position] = store.x1[index] - dx;
-      next.y1[position] = store.y1[index] - dy;
-      next.x2[position] = store.x2[index] - dx;
-      next.y2[position] = store.y2[index] - dy;
-      next.colors[position] = store.colors[index];
-      next.completed[position] = store.completed[index];
-    });
+    const next = allocateBackstitches(kept.length);
+    const shift = { x: -dx, y: -dy };
+    kept.forEach((index, position) => copyBackstitch(store, index, next, position, shift));
     return { ...layer, backstitches: next };
   });
 

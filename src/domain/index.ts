@@ -1,5 +1,7 @@
 export * from './types';
 export * from './model';
+export * from './cell-components';
+export * from './backstitch-store';
 export * from './guards';
 export * from './validation';
 export * from './color';

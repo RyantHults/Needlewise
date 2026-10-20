@@ -33,7 +33,7 @@ import {
 } from '../persistence';
 import { consumePreparedDocumentCapability } from '../persistence/preparation-client';
 import { createStarterDocument, paletteProgress, ProjectWorkspace } from './index';
-import { MAX_PROGRESS_HISTORY_STEPS, ProjectSession } from './session';
+import { MAX_MARK_HISTORY_STEPS, ProjectSession } from './session';
 import type { WorkspaceRepository } from './types';
 import { acceptConversionDraft, type AcceptedConversionDraft } from '../conversion/image-to-pattern';
 import { decodeTraceImage } from '../rendering/trace';
@@ -957,6 +957,34 @@ describe('headless project workspace', () => {
     }
   });
 
+  it('lets a project listing finish without superseding an in-flight open', async () => {
+    const repository = new MemoryRepository();
+    const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'unused' });
+    try {
+      await workspace.createProject({ id: 'listing-a', title: 'A', width: 1, height: 1 });
+      await workspace.createProject({ id: 'listing-b', title: 'B', width: 1, height: 1 });
+      await workspace.flush();
+
+      let release: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const load = repository.load.bind(repository);
+      repository.load = async (projectId) => {
+        await gate;
+        return load(projectId);
+      };
+      const opening = workspace.openProject('listing-a');
+      const projects = await workspace.listProjects();
+      expect(projects.map((project) => project.id).sort()).toEqual(['listing-a', 'listing-b']);
+      release();
+      const session = await opening;
+      expect(session.projectId).toBe('listing-a');
+      expect(workspace.metadata?.id).toBe('listing-a');
+      expect(workspace.error).toBeNull();
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
   it('duplicates a non-active project without changing the active session', async () => {
     const repository = new MemoryRepository();
     const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'duplicate-copy' });
@@ -1447,24 +1475,24 @@ describe('Track progress marks', () => {
       const marked = session.markProgress(markCell(0));
       expect(marked.changed).toBe(true);
       expect(session.document.completed[0] & 1).toBe(1);
-      expect(session.canUndoProgress).toBe(true);
-      expect(session.canRedoProgress).toBe(false);
+      expect(session.canUndoMark).toBe(true);
+      expect(session.canRedoMark).toBe(false);
       expect(session.historyUndoDepth).toBe(documentDepth);
 
-      expect(session.undoProgress().changed).toBe(true);
+      expect(session.undoMark().changed).toBe(true);
       expect(session.document.completed[0] & 1).toBe(0);
-      expect(session.canUndoProgress).toBe(false);
-      expect(session.canRedoProgress).toBe(true);
+      expect(session.canUndoMark).toBe(false);
+      expect(session.canRedoMark).toBe(true);
 
-      expect(session.redoProgress().changed).toBe(true);
+      expect(session.redoMark().changed).toBe(true);
       expect(session.document.completed[0] & 1).toBe(1);
-      expect(session.canRedoProgress).toBe(false);
+      expect(session.canRedoMark).toBe(false);
 
-      session.undoProgress();
+      session.undoMark();
       session.markProgress(markCell(1));
-      expect(session.canRedoProgress).toBe(false);
-      expect(session.undoProgress().changed).toBe(true);
-      expect(session.undoProgress().changed).toBe(false);
+      expect(session.canRedoMark).toBe(false);
+      expect(session.undoMark().changed).toBe(true);
+      expect(session.undoMark().changed).toBe(false);
     } finally {
       await workspace.dispose();
     }
@@ -1475,18 +1503,18 @@ describe('Track progress marks', () => {
     try {
       session.markProgress(markCell(0));
       session.markProgress(markCell(1));
-      session.undoProgress();
-      expect(workspace.getStateSnapshot()).toMatchObject({ canUndoProgress: true, canRedoProgress: true });
+      session.undoMark();
+      expect(workspace.getStateSnapshot()).toMatchObject({ canUndoMark: true, canRedoMark: true });
       const listener = vi.fn();
       const unsubscribe = workspace.subscribe(listener);
-      workspace.clearProgressHistory();
+      workspace.clearMarkHistory();
       unsubscribe();
       expect(listener).toHaveBeenCalled();
-      expect(session.canUndoProgress).toBe(false);
-      expect(session.canRedoProgress).toBe(false);
-      expect(workspace.getStateSnapshot()).toMatchObject({ canUndoProgress: false, canRedoProgress: false });
+      expect(session.canUndoMark).toBe(false);
+      expect(session.canRedoMark).toBe(false);
+      expect(workspace.getStateSnapshot()).toMatchObject({ canUndoMark: false, canRedoMark: false });
       expect(session.document.completed[0] & 1).toBe(1);
-      expect(session.undoProgress().changed).toBe(false);
+      expect(session.undoMark().changed).toBe(false);
     } finally {
       await workspace.dispose();
     }
@@ -1495,13 +1523,13 @@ describe('Track progress marks', () => {
   it('caps the mark history at its step limit', async () => {
     const { workspace, session } = await paintedWorkspace('capped-marks');
     try {
-      for (let step = 0; step < MAX_PROGRESS_HISTORY_STEPS + 1; step += 1) session.markProgress(markCell(0));
+      for (let step = 0; step < MAX_MARK_HISTORY_STEPS + 1; step += 1) session.markProgress(markCell(0));
       let undone = 0;
-      while (session.canUndoProgress) {
-        session.undoProgress();
+      while (session.canUndoMark) {
+        session.undoMark();
         undone += 1;
       }
-      expect(undone).toBe(MAX_PROGRESS_HISTORY_STEPS);
+      expect(undone).toBe(MAX_MARK_HISTORY_STEPS);
     } finally {
       await workspace.dispose();
     }
@@ -1514,7 +1542,7 @@ describe('Track progress marks', () => {
       expect(session.undo().changed).toBe(true);
       expect(session.document.kind[2]).toBe(0);
       expect(session.document.completed[0] & 1).toBe(1);
-      expect(session.canUndoProgress).toBe(true);
+      expect(session.canUndoMark).toBe(true);
     } finally {
       await workspace.dispose();
     }
@@ -1558,8 +1586,8 @@ describe('Track progress marks', () => {
       expect(paletteProgress(session.metrics, null)).toMatchObject({ completedComponents: 2, totalComponents: 4, percent: 50 });
       expect(paletteProgress(session.metrics, 99)).toMatchObject({ completedComponents: 0, totalComponents: 0, percent: 0 });
 
-      session.undoProgress();
-      session.undoProgress();
+      session.undoMark();
+      session.undoMark();
       expect(paletteProgress(session.metrics, null).completedComponents).toBe(0);
     } finally {
       await workspace.dispose();

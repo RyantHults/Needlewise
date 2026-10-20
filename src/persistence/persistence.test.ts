@@ -2,6 +2,7 @@ import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import { unzipSync, zipSync, strFromU8, strToU8 } from 'fflate';
 import { applyCommand as applySurfaceCommand, CellKind, commitLayerSurface, computePatternMetrics, createDocument as createDomainDocument, createDocumentEditor as createEditor, createEditorFromHistory, layerAddCommand, layerDeleteCommand, layerRenameCommand, type DocumentEditor, flattenDocument, layeredFromSurface, LayerType, layerSurface, QuarterCorner, topmostVisibleLayer, type CatalogAssociation, type CreateDocumentOptions, type DomainCommand, type LayeredDocument, type PatternDocument, type StitchLayer, type SpecialtyLayer } from '../domain';
+import { markCellComplete } from '../domain/test-fixtures';
 import { cloneLayeredDocument, decodeDocumentWithInfo } from './binary';
 import { encodeLegacyDocument } from './legacy-binary.fixture';
 import { DMC_CATALOG_DEFINITION } from '../catalog';
@@ -1228,7 +1229,7 @@ describe('binary document persistence', () => {
   it('upgrades a v2 document into the default Stitches and Specialty layers', () => {
     let surface = createSurface({ width: 3, height: 2, settings: { backgroundColor: '#112233' }, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] });
     surface = applySurfaceCommand(surface, { type: 'set-full', x: 2, y: 1, color: 1 }).document;
-    surface = applySurfaceCommand(surface, { type: 'set-completion', x: 2, y: 1, completed: true }).document;
+    surface = markCellComplete(surface, 2, 1);
     surface = applySurfaceCommand(surface, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 2, y: 2 }, color: 2 }).document;
     const decoded = decodeDocumentWithInfo(encodeLegacyDocument(surface, 2));
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createDocument, createEditor } from '../domain';
+import { createDocument } from '../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import type { CanvasRenderer, ModelPoint, RenderStats, RendererStyle, Viewport } from './contracts';
 import { getCanvasMetrics } from './coordinates';
@@ -8,6 +8,7 @@ import { createWorkspaceEditorGateway, type WorkspaceEditorBoundary } from './ga
 import type { PointerSample } from './input';
 import { rasterizeFilledOval, rasterizeShapeOutline } from './shapes';
 import { createUiStore } from './ui-store';
+import { SurfaceHistory } from './test-fixtures';
 
 const ZOOM = 16;
 
@@ -44,7 +45,7 @@ function rendererFixture(): CanvasRenderer {
 
 /** A single-surface 10x10 workspace with the Select tool's given shape. */
 function fixture(shape?: 'rectangle' | 'oval') {
-  const editor = createEditor(createDocument({ width: 10, height: 10, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Red', color: '#d33' }] }));
+  const editor = new SurfaceHistory(createDocument({ width: 10, height: 10, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Red', color: '#d33' }] }));
   const listeners = new Set<() => void>();
   const boundary: WorkspaceEditorBoundary = {
     activeProjectId: 'project-a',

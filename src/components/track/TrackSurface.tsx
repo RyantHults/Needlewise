@@ -55,8 +55,8 @@ export function TrackSurface({ workspace, document, title, metrics, onNavigate, 
     writeEditorPreferences(preferences);
   }, [preferences]);
 
-  // Track undo never outlives the page, so it never holds marks from before an edit.
-  useEffect(() => () => workspace.clearProgressHistory(), [workspace]);
+  // Track's mark history never outlives the page, so it never holds marks from before an edit.
+  useEffect(() => () => workspace.clearMarkHistory(), [workspace]);
 
   const focused = highlightColor !== null ? document.palette.find((entry) => entry.id === highlightColor) ?? null : null;
   const progress = metrics ? paletteProgress(metrics, focused?.id ?? null) : null;
@@ -82,8 +82,8 @@ export function TrackSurface({ workspace, document, title, metrics, onNavigate, 
         view="track"
         info={<p className="editor-dimensions">{dimensionSummary}</p>}
         onNavigate={onNavigate}
-        undo={{ label: 'Undo mark', disabled: !workspace.canUndoProgress, onClick: () => workspace.undoProgress() }}
-        redo={{ label: 'Redo mark', disabled: !workspace.canRedoProgress, onClick: () => workspace.redoProgress() }}
+        undo={{ label: 'Undo mark', disabled: !workspace.canUndoMark, onClick: () => workspace.undoMark() }}
+        redo={{ label: 'Redo mark', disabled: !workspace.canRedoMark, onClick: () => workspace.redoMark() }}
         onExport={() => setExportOpen(true)}
         onSettings={() => setSettingsOpen(true)}
       />

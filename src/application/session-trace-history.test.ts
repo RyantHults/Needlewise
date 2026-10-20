@@ -311,6 +311,35 @@ describe('trace image unified history', () => {
     }
   });
 
+  it('stamps updatedAt when the source image is replaced and when it is removed', async () => {
+    let now = 100;
+    const workspace = new ProjectWorkspace({ repository: new MemoryRepository(), clock: { now: () => now }, projectIdFactory: () => 'stamped-source', debounceMs: 0 });
+    try {
+      await workspace.createProject({
+        id: 'stamped-source',
+        width: 4,
+        height: 4,
+        document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }),
+        assets: [{ id: 'reference', name: 'reference.png', mimeType: 'image/png', data: pngBytes(2, 2) }],
+        sourceImage: { ...TRACE_DESCRIPTOR }
+      });
+      const session = workspace.session;
+      if (!session) throw new Error('Missing session.');
+      const created = session.metadata.updatedAt;
+
+      now = 200;
+      await session.replaceSourceImage({ asset: { id: 'replacement', name: 'replacement.png', mimeType: 'image/png', data: pngBytes(3, 2) }, settings: { assetId: 'replacement', chartBounds: { x: 0, y: 0, width: 2, height: 2 } } });
+      expect(session.metadata.updatedAt).toBe(200);
+      expect(session.metadata.updatedAt).toBeGreaterThan(created);
+
+      now = 300;
+      await session.removeSourceImage();
+      expect(session.metadata.updatedAt).toBe(300);
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
   it('serializes trace actions queued during an async replacement and restores their exact order', async () => {
     const repository = new MemoryRepository();
     const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'serialized-trace', debounceMs: 0 });

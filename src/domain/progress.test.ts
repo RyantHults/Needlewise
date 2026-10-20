@@ -5,7 +5,6 @@ import {
   CellKind,
   colorComponentMask,
   commitLayerSurface,
-  coveringBackstitchLayerId,
   coveringLayerId,
   createLayeredDocument,
   findLayer,
@@ -14,6 +13,7 @@ import {
   layerSetVisibilityCommand,
   layerSurface,
   LayerType,
+  visibleBackstitchOwners,
   type DomainCommand,
   type LayeredDocument,
   type StitchLayer
@@ -61,14 +61,16 @@ describe('covering layers', () => {
     run(doc, 2, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 }, { type: 'add-backstitch', start: { x: 0, y: 4 }, end: { x: 4, y: 4 }, color: 1 });
     run(doc, layerId!, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 3 });
     expect(Array.from(flattenDocument(doc).backstitches.ids)).toEqual([2, 3]);
-    expect(coveringBackstitchLayerId(doc, 2)).toBe(2);
-    expect(coveringBackstitchLayerId(doc, 3)).toBe(layerId);
+    const owners = visibleBackstitchOwners(doc);
+    expect(owners.get(2)).toBe(2);
+    expect(owners.get(3)).toBe(layerId);
     // The covered lower copy is not in the composite.
-    expect(coveringBackstitchLayerId(doc, 1)).toBeNull();
-    expect(coveringBackstitchLayerId(doc, 99)).toBeNull();
+    expect(owners.has(1)).toBe(false);
+    expect(owners.has(99)).toBe(false);
     applyLayerStructureCommand(doc, layerSetVisibilityCommand(layerId!, false));
-    expect(coveringBackstitchLayerId(doc, 1)).toBe(2);
-    expect(coveringBackstitchLayerId(doc, 3)).toBeNull();
+    const uncovered = visibleBackstitchOwners(doc);
+    expect(uncovered.get(1)).toBe(2);
+    expect(uncovered.has(3)).toBe(false);
   });
 });
 

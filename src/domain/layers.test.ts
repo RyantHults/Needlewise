@@ -33,6 +33,7 @@ import {
   MAX_LAYERS_PER_TYPE,
   nextDefaultLayerName,
   normalizePatternSettings,
+  PATTERN_FRAGMENT_VERSION,
   requireEditableLayer,
   topmostVisibleLayer,
   type CatalogAssociation,
@@ -41,6 +42,7 @@ import {
   type SpecialtyLayer,
   type StitchLayer
 } from './index';
+import { markCellComplete } from './test-fixtures';
 
 const TEST_CATALOG: CatalogAssociation = { catalogId: 'test-catalog', brandLabel: 'Test Catalog', colorCount: 489 };
 
@@ -108,12 +110,12 @@ describe('layered documents', () => {
   });
 
   it('builds from a legacy surface: cells to Stitches, backstitches to Specialty, completion dropped', () => {
-    const surface = createDocument({ width: 3, height: 3, catalog: TEST_CATALOG, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    let surface = createDocument({ width: 3, height: 3, catalog: TEST_CATALOG, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     applyCommandsToDraft(surface, [
       { type: 'set-full', x: 1, y: 1, color: 1 },
-      { type: 'set-completion', x: 1, y: 1, completed: true },
       { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 }
     ]);
+    surface = markCellComplete(surface, 1, 1);
     expect(surface.completed[4]).not.toBe(0);
     const doc = layeredFromSurface(surface, { aidaCount: 11 });
     expect(stitch(doc, 1).kind[4]).toBe(CellKind.Full);
@@ -335,32 +337,44 @@ describe('layer queries', () => {
   });
 
   it('classifies command scope and required layer type', () => {
-    expect(commandScope({ type: 'set-full' })).toBe('layer');
-    expect(commandScope({ type: 'bulk-cell' })).toBe('layer');
-    expect(commandScope({ type: 'paste-fragment' })).toBe('layer');
-    expect(commandScope({ type: 'remove-backstitch' })).toBe('layer');
-    expect(commandScope({ type: 'palette-merge' })).toBe('document');
-    expect(commandScope({ type: 'mergePalette' })).toBe('document');
-    expect(commandScope({ type: 'document-settings-update' })).toBe('document');
-    expect(commandScope({ type: 'layer-merge' })).toBe('structure');
-    expect(commandScope({ type: 'canvas-resize' })).toBe('canvas');
-    expect(commandScope({ type: 'canvasCells' })).toBe('canvas');
-    expect(commandScope({ type: 'batch', commands: [{ type: 'palette-merge' }, { type: 'canvas-cells' }] })).toBe('canvas');
-    expect(commandScope({ type: 'batch', commands: [{ type: 'layer-add' }, { type: 'canvas-cells' }] })).toBe('structure');
-    expect(commandScope({ type: 'batch', commands: [{ type: 'layer-add' }, { type: 'paste-fragment' }] })).toBe('structure');
-    expect(commandScope({ type: 'batch', commands: [{ type: 'set-full' }, { type: 'add-backstitch' }] })).toBe('layer');
+    const setFull: DomainCommand = { type: 'set-full', x: 0, y: 0, color: 1 };
+    const addBackstitch: DomainCommand = { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 };
+    const paletteMerge: DomainCommand = { type: 'palette-merge', from: 1 };
+    const canvasCells: DomainCommand = { type: 'canvas-cells', operation: 'add', rect: { x: 0, y: 0, width: 1, height: 1 } };
+    const layerAdd = layerAddCommand(LayerType.Stitch);
+    const paste = (kind: number, lineCount: number): DomainCommand => {
+      const coordinates = new Uint32Array(lineCount);
+      return {
+        type: 'paste-fragment',
+        fragment: { version: PATTERN_FRAGMENT_VERSION, width: 1, height: 1, kind: new Uint8Array([kind]), colors: new Uint16Array(4), backstitches: { x1: coordinates, y1: coordinates, x2: coordinates, y2: coordinates, colors: new Uint16Array(lineCount) } },
+        destination: { x: 0, y: 0 }
+      };
+    };
 
-    expect(commandLayerType({ type: 'set-full' })).toBe('stitch');
-    expect(commandLayerType({ type: 'mixed-erase' })).toBe('stitch');
-    expect(commandLayerType({ type: 'add-backstitch' })).toBe('specialty');
-    expect(commandLayerType({ type: 'remove-segment' })).toBe('specialty');
-    expect(commandLayerType({ type: 'delete-region' })).toBeNull();
-    expect(commandLayerType({ type: 'move-fragment' })).toBeNull();
-    const lines = { x1: new Uint32Array([0]) };
-    expect(commandLayerType({ type: 'paste-fragment', fragment: { kind: new Uint8Array([1]), backstitches: { x1: new Uint32Array(0) } } })).toBe('stitch');
-    expect(commandLayerType({ type: 'paste-fragment', fragment: { kind: new Uint8Array([0]), backstitches: lines } })).toBe('specialty');
-    expect(commandLayerType({ type: 'paste-fragment', fragment: { kind: new Uint8Array([1]), backstitches: lines } })).toBe('mixed');
-    expect(commandLayerType({ type: 'batch', commands: [{ type: 'set-full' }, { type: 'add-backstitch' }] })).toBe('mixed');
+    expect(commandScope(setFull)).toBe('layer');
+    expect(commandScope({ type: 'bulk-cell', indices: new Uint32Array([0]), edit: { kind: 'full', color: 1 } })).toBe('layer');
+    expect(commandScope(paste(CellKind.Full, 0))).toBe('layer');
+    expect(commandScope({ type: 'remove-backstitch', id: 1 })).toBe('layer');
+    expect(commandScope(paletteMerge)).toBe('document');
+    expect(commandScope({ type: 'document-settings-update', settings: {} })).toBe('document');
+    expect(commandScope(layerMergeCommand(1, 2))).toBe('structure');
+    expect(commandScope({ type: 'canvas-resize', edges: { top: 1, right: 0, bottom: 0, left: 0 } })).toBe('canvas');
+    expect(commandScope(canvasCells)).toBe('canvas');
+    expect(commandScope({ type: 'batch', commands: [paletteMerge, canvasCells] })).toBe('canvas');
+    expect(commandScope({ type: 'batch', commands: [layerAdd, canvasCells] })).toBe('structure');
+    expect(commandScope({ type: 'batch', commands: [layerAdd, paste(CellKind.Full, 0)] })).toBe('structure');
+    expect(commandScope({ type: 'batch', commands: [setFull, addBackstitch] })).toBe('layer');
+
+    expect(commandLayerType(setFull)).toBe('stitch');
+    expect(commandLayerType({ type: 'mixed-erase', wholeCellIndices: new Uint32Array([0]), componentCellIndices: new Uint32Array(0), componentCorners: new Uint8Array(0) })).toBe('stitch');
+    expect(commandLayerType(addBackstitch)).toBe('specialty');
+    expect(commandLayerType({ type: 'remove-backstitch', id: 1 })).toBe('specialty');
+    expect(commandLayerType({ type: 'delete-region', x: 0, y: 0, width: 1, height: 1 })).toBeNull();
+    expect(commandLayerType({ type: 'move-fragment', selection: { x: 0, y: 0, width: 1, height: 1 }, destination: { x: 1, y: 0 } })).toBeNull();
+    expect(commandLayerType(paste(CellKind.Full, 0))).toBe('stitch');
+    expect(commandLayerType(paste(CellKind.Empty, 1))).toBe('specialty');
+    expect(commandLayerType(paste(CellKind.Full, 1))).toBe('mixed');
+    expect(commandLayerType({ type: 'batch', commands: [setFull, addBackstitch] })).toBe('mixed');
   });
 });
 

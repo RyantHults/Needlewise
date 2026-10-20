@@ -1,15 +1,16 @@
 import {
-  CellKind,
-  computePatternMetrics,
-  FIXED_POINT_UNITS_PER_CELL,
-  fixedPointBackstitchLength,
-  materialEstimateFromCounts,
+  addMetricCounts,
+  completedComponentCount,
+  emptyMetricCounts,
+  MetricCounter,
+  metricsFromCounts,
   normalizeMaterialSettings,
+  positionsById,
+  progressActivity,
   resolveMetricsAidaCount,
-  deriveFinishedSize,
-  isThreeQuarterPairKind,
-  isThreeQuarterSingleKind,
+  scanCounts,
   type CommandResult,
+  type MetricCounts,
   type MetricsOptions,
   type NormalizedMaterialSettings,
   type PatternDocument,
@@ -37,70 +38,17 @@ export interface SessionProgressStats {
 
 export type SessionStats = SessionProgressStats;
 
-interface MutableCounts {
-  full: number;
-  half: number;
-  quarter: number;
-  threeQuarter: number;
-  backstitch: number;
-  completedComponents: number;
-  backstitchLengthFixed: number;
-}
-
 function zeroDelta(): ProgressActivityDelta {
   return { marked: 0, unmarked: 0 };
-}
-
-function emptyCounts(): MutableCounts {
-  return { full: 0, half: 0, quarter: 0, threeQuarter: 0, backstitch: 0, completedComponents: 0, backstitchLengthFixed: 0 };
-}
-
-function hasCountBearingUsage(counts: MutableCounts): boolean {
-  return counts.full !== 0
-    || counts.half !== 0
-    || counts.quarter !== 0
-    || counts.threeQuarter !== 0
-    || counts.backstitch !== 0
-    || counts.completedComponents !== 0
-    || counts.backstitchLengthFixed !== 0;
-}
-
-function completionCount(document: PatternDocument, index: number): number {
-  if (index < 0 || index >= document.kind.length) return 0;
-  const kind = document.kind[index];
-  const offset = index * 4;
-  if (kind === CellKind.Full || kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash) return (document.colors[offset] !== 0 && (document.completed[index] & 1) !== 0) ? 1 : 0;
-  if (isThreeQuarterSingleKind(kind)) return (document.colors[offset] !== 0 && (document.completed[index] & 1) !== 0) ? 1 : 0;
-  if (isThreeQuarterPairKind(kind)) {
-    let completed = 0;
-    for (let slot = 0; slot < 4; slot += 1) if (document.colors[offset + slot] !== 0 && (document.completed[index] & (1 << slot)) !== 0) completed += 1;
-    return completed;
-  }
-  if (kind !== CellKind.Quarters) return 0;
-  let completed = 0;
-  for (let slot = 0; slot < 4; slot += 1) {
-    if (document.colors[offset + slot] !== 0 && (document.completed[index] & (1 << slot)) !== 0) completed += 1;
-  }
-  return completed;
-}
-
-function completionDelta(previous: number, next: number): ProgressActivityDelta {
-  return next >= previous
-    ? { marked: next - previous, unmarked: 0 }
-    : { marked: 0, unmarked: previous - next };
 }
 
 function addDelta(left: ProgressActivityDelta, right: ProgressActivityDelta): ProgressActivityDelta {
   return { marked: left.marked + right.marked, unmarked: left.unmarked + right.unmarked };
 }
 
-function findBackstitch(document: PatternDocument, id: number): number {
-  return document.backstitches.ids.findIndex((candidate) => candidate === id);
-}
-
-function backstitchCompletion(document: PatternDocument, id: number): number {
-  const index = findBackstitch(document, id);
-  return index < 0 ? 0 : document.backstitches.completed[index] === 0 ? 0 : 1;
+function backstitchCompletion(document: PatternDocument, positions: ReadonlyMap<number, number>, id: number): number {
+  const index = positions.get(id);
+  return index === undefined ? 0 : document.backstitches.completed[index] === 0 ? 0 : 1;
 }
 
 function transitionForChangedSets(
@@ -110,8 +58,12 @@ function transitionForChangedSets(
   backstitchIds: Iterable<number>
 ): ProgressActivityDelta {
   let delta = zeroDelta();
-  for (const index of new Set<number>(cellIndices)) delta = addDelta(delta, completionDelta(completionCount(previous, index), completionCount(next, index)));
-  for (const id of new Set<number>(backstitchIds)) delta = addDelta(delta, completionDelta(backstitchCompletion(previous, id), backstitchCompletion(next, id)));
+  for (const index of new Set<number>(cellIndices)) delta = addDelta(delta, progressActivity(completedComponentCount(previous, index), completedComponentCount(next, index)));
+  const ids = new Set<number>(backstitchIds);
+  if (ids.size === 0) return delta;
+  const previousPositions = positionsById(previous.backstitches);
+  const nextPositions = positionsById(next.backstitches);
+  for (const id of ids) delta = addDelta(delta, progressActivity(backstitchCompletion(previous, previousPositions, id), backstitchCompletion(next, nextPositions, id)));
   return delta;
 }
 
@@ -119,112 +71,33 @@ function transitionByBoundedScan(previous: PatternDocument, next: PatternDocumen
   let delta = zeroDelta();
   const cellCount = Math.max(previous.kind.length, next.kind.length);
   for (let index = 0; index < cellCount; index += 1) {
-    delta = addDelta(delta, completionDelta(completionCount(previous, index), completionCount(next, index)));
+    delta = addDelta(delta, progressActivity(completedComponentCount(previous, index), completedComponentCount(next, index)));
   }
 
   const ids = new Set<number>([...previous.backstitches.ids, ...next.backstitches.ids]);
-  for (const id of ids) delta = addDelta(delta, completionDelta(backstitchCompletion(previous, id), backstitchCompletion(next, id)));
+  const previousPositions = positionsById(previous.backstitches);
+  const nextPositions = positionsById(next.backstitches);
+  for (const id of ids) delta = addDelta(delta, progressActivity(backstitchCompletion(previous, previousPositions, id), backstitchCompletion(next, nextPositions, id)));
   return delta;
 }
 
 type CellPlanes = Pick<PatternDocument, 'kind' | 'colors' | 'completed'>;
 
-/**
- * Adds or removes cells' stitch components. One counter serves a run of
- * cells and remembers its last palette lookup, since neighbouring cells
- * usually share a color. Create a new counter after the map is pruned.
- */
-class CellCounter {
-  private lastPaletteId = 0;
-  private lastCounts: MutableCounts | undefined;
+function backstitchCounts(document: PatternDocument): Map<number, MetricCounts> {
+  const counts = new Map<number, MetricCounts>();
+  const counter = new MetricCounter(counts);
+  for (let index = 0; index < document.backstitches.ids.length; index += 1) counter.backstitch(document.backstitches, index, 1);
+  return counts;
+}
 
-  constructor(private readonly target: Map<number, MutableCounts>) {}
-
-  private countsFor(paletteId: number): MutableCounts {
-    if (paletteId === this.lastPaletteId && this.lastCounts !== undefined) return this.lastCounts;
-    let counts = this.target.get(paletteId);
-    if (counts === undefined) {
-      counts = emptyCounts();
-      this.target.set(paletteId, counts);
+function addPaletteCounts(target: Map<number, MetricCounts>, source: ReadonlyMap<number, MetricCounts>, multiplier: 1 | -1): void {
+  for (const [paletteId, counts] of source) {
+    let entry = target.get(paletteId);
+    if (entry === undefined) {
+      entry = emptyMetricCounts();
+      target.set(paletteId, entry);
     }
-    this.lastPaletteId = paletteId;
-    this.lastCounts = counts;
-    return counts;
-  }
-
-  private add(paletteId: number, completed: boolean, field: 'full' | 'half' | 'quarter' | 'threeQuarter', multiplier: 1 | -1): void {
-    if (paletteId === 0) return;
-    const counts = this.countsFor(paletteId);
-    counts[field] += multiplier;
-    if (completed) counts.completedComponents += multiplier;
-  }
-
-  cell(document: CellPlanes, index: number, multiplier: 1 | -1): void {
-    if (index < 0 || index >= document.kind.length) return;
-    const kind = document.kind[index];
-    const offset = index * 4;
-    const completion = document.completed[index];
-    if (kind === CellKind.Full || kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash) {
-      this.add(document.colors[offset], (completion & 1) !== 0, kind === CellKind.Full ? 'full' : 'half', multiplier);
-    } else if (isThreeQuarterSingleKind(kind)) {
-      this.add(document.colors[offset], (completion & 1) !== 0, 'threeQuarter', multiplier);
-    } else if (isThreeQuarterPairKind(kind)) {
-      for (let slot = 0; slot < 4; slot += 1) this.add(document.colors[offset + slot], (completion & (1 << slot)) !== 0, 'threeQuarter', multiplier);
-    } else if (kind === CellKind.Quarters) {
-      for (let slot = 0; slot < 4; slot += 1) this.add(document.colors[offset + slot], (completion & (1 << slot)) !== 0, 'quarter', multiplier);
-    }
-  }
-}
-
-function addCellCounts(target: Map<number, MutableCounts>, document: CellPlanes, index: number, multiplier: 1 | -1): void {
-  new CellCounter(target).cell(document, index, multiplier);
-}
-
-function addBackstitchCounts(target: Map<number, MutableCounts>, document: PatternDocument, id: number, multiplier: 1 | -1): void {
-  const index = findBackstitch(document, id);
-  if (index < 0) return;
-  const paletteId = document.backstitches.colors[index];
-  if (paletteId === 0) return;
-  const counts = target.get(paletteId) ?? emptyCounts();
-  counts.backstitch += multiplier;
-  counts.backstitchLengthFixed += multiplier * fixedPointBackstitchLength(
-    document.backstitches.x1[index],
-    document.backstitches.y1[index],
-    document.backstitches.x2[index],
-    document.backstitches.y2[index]
-  );
-  if (document.backstitches.completed[index] !== 0) counts.completedComponents += multiplier;
-  target.set(paletteId, counts);
-}
-
-interface BackstitchContribution {
-  count: number;
-  lengthFixed: number;
-  completed: number;
-}
-
-function backstitchContributions(document: PatternDocument): Map<number, BackstitchContribution> {
-  const result = new Map<number, BackstitchContribution>();
-  const store = document.backstitches;
-  for (let index = 0; index < store.ids.length; index += 1) {
-    const paletteId = store.colors[index];
-    if (paletteId === 0) continue;
-    const entry = result.get(paletteId) ?? { count: 0, lengthFixed: 0, completed: 0 };
-    entry.count += 1;
-    entry.lengthFixed += fixedPointBackstitchLength(store.x1[index], store.y1[index], store.x2[index], store.y2[index]);
-    if (store.completed[index] !== 0) entry.completed += 1;
-    result.set(paletteId, entry);
-  }
-  return result;
-}
-
-function addBackstitchContributions(target: Map<number, MutableCounts>, contributions: Map<number, BackstitchContribution>, multiplier: 1 | -1): void {
-  for (const [paletteId, entry] of contributions) {
-    const counts = target.get(paletteId) ?? emptyCounts();
-    counts.backstitch += multiplier * entry.count;
-    counts.backstitchLengthFixed += multiplier * entry.lengthFixed;
-    counts.completedComponents += multiplier * entry.completed;
-    target.set(paletteId, counts);
+    addMetricCounts(entry, counts, multiplier);
   }
 }
 
@@ -234,18 +107,6 @@ export interface CompositeChange {
   readonly full: boolean;
   /** Changed cells when `full` is false; absent means no cell changed. */
   readonly indices?: Uint32Array;
-}
-
-function countsFromMetrics(metrics: PatternMetrics): Map<number, MutableCounts> {
-  return new Map(metrics.palettes.map((palette) => [palette.paletteId, {
-    full: palette.full,
-    half: palette.half,
-    quarter: palette.quarter,
-    threeQuarter: palette.threeQuarter ?? 0,
-    backstitch: palette.backstitch,
-    completedComponents: palette.completedComponents,
-    backstitchLengthFixed: palette.backstitchLengthFixed
-  }]));
 }
 
 /**
@@ -266,95 +127,6 @@ function sharesCountBearingPlanes(previous: PatternDocument, next: PatternDocume
     && previous.backstitches.y2 === next.backstitches.y2
     && previous.backstitches.colors === next.backstitches.colors
     && previous.backstitches.completed === next.backstitches.completed;
-}
-
-function metricMaterial(
-  paletteId: number,
-  counts: MutableCounts,
-  materialUnit: PatternMetrics['palettes'][number]['material']['materialUnit'],
-  settings: PatternMetrics['materialSettings'],
-  aidaCount?: number
-): PatternMetrics['materials'][number] {
-  return materialEstimateFromCounts(paletteId, counts, materialUnit, settings, aidaCount);
-}
-
-function buildMetrics(
-  document: PatternDocument,
-  countsByPalette: Map<number, MutableCounts>,
-  settings: PatternMetrics['materialSettings'],
-  aidaCount?: number
-): PatternMetrics {
-  const paletteEntries = new Map(document.palette.map((entry) => [entry.id, entry]));
-  for (const [paletteId, counts] of countsByPalette) {
-    if (!paletteEntries.has(paletteId) && !hasCountBearingUsage(counts)) countsByPalette.delete(paletteId);
-  }
-  const paletteIds = [...document.palette.map((entry) => entry.id), ...[...countsByPalette.keys()].filter((id) => !paletteEntries.has(id))];
-  const totals = emptyCounts();
-  const palettes: PatternMetrics['palettes'][number][] = [];
-  const materials: PatternMetrics['materials'][number][] = [];
-  for (const paletteId of paletteIds) {
-    const counts = countsByPalette.get(paletteId) ?? emptyCounts();
-    const totalComponents = counts.full + counts.half + counts.quarter + counts.threeQuarter + counts.backstitch;
-    const material = metricMaterial(paletteId, counts, paletteEntries.get(paletteId)?.material.unit, settings, aidaCount);
-    const palette = {
-      paletteId,
-      full: counts.full,
-      half: counts.half,
-      quarter: counts.quarter,
-      ...(counts.threeQuarter === 0 ? {} : { threeQuarter: counts.threeQuarter }),
-      backstitch: counts.backstitch,
-      backstitchLengthFixed: counts.backstitchLengthFixed,
-      backstitchLength: counts.backstitchLengthFixed / FIXED_POINT_UNITS_PER_CELL,
-      totalComponents,
-      completedComponents: counts.completedComponents,
-      remainingComponents: totalComponents - counts.completedComponents,
-      material
-    } as PatternMetrics['palettes'][number];
-    palettes.push(palette);
-    materials.push(material);
-    totals.full += counts.full;
-    totals.half += counts.half;
-    totals.quarter += counts.quarter;
-    totals.threeQuarter += counts.threeQuarter;
-    totals.backstitch += counts.backstitch;
-    totals.completedComponents += counts.completedComponents;
-    totals.backstitchLengthFixed += counts.backstitchLengthFixed;
-  }
-  const totalComponents = totals.full + totals.half + totals.quarter + totals.threeQuarter + totals.backstitch;
-  const fraction = totalComponents === 0 ? 0 : totals.completedComponents / totalComponents;
-  const totalMetrics = {
-    full: totals.full,
-    half: totals.half,
-    quarter: totals.quarter,
-    ...(totals.threeQuarter === 0 ? {} : { threeQuarter: totals.threeQuarter }),
-    backstitch: totals.backstitch,
-    backstitchLengthFixed: totals.backstitchLengthFixed,
-    backstitchLength: totals.backstitchLengthFixed / FIXED_POINT_UNITS_PER_CELL,
-    totalComponents,
-    completedComponents: totals.completedComponents,
-    remainingComponents: totalComponents - totals.completedComponents
-  };
-  const progress = {
-    completedComponents: totals.completedComponents,
-    remainingComponents: totalMetrics.remainingComponents,
-    totalComponents,
-    fraction,
-    percent: fraction * 100
-  };
-  const totalMaterial = materialEstimateFromCounts(0, totals, undefined, settings, aidaCount);
-  const aggregateMaterial = { ...totalMaterial } as Omit<typeof totalMaterial, 'paletteId'> & { paletteId?: number };
-  delete aggregateMaterial.paletteId;
-  return {
-    palettes,
-    byPalette: new Map(palettes.map((palette) => [palette.paletteId, palette])),
-    totals: totalMetrics,
-    progress,
-    overallProgress: fraction,
-    materials,
-    materialSettings: settings,
-    ...(aidaCount === undefined ? {} : { finishedSize: deriveFinishedSize(document.width, document.height, aidaCount) }),
-    ...(totalMaterial.assumptions === undefined ? {} : { totalMaterial: aggregateMaterial })
-  };
 }
 
 function isNonNegativeInteger(value: number): boolean {
@@ -382,20 +154,16 @@ function isValidImpactEntry(entry: DeleteMetricsImpactEntry): boolean {
     && entry.afterBackstitchLengthFixed <= entry.beforeBackstitchLengthFixed;
 }
 
-function cloneCounts(counts: MutableCounts): MutableCounts {
-  return { ...counts };
-}
-
 function applyDeleteMetricsImpact(
-  sourceCounts: Map<number, MutableCounts>,
+  sourceCounts: Map<number, MetricCounts>,
   impact: DeleteMetricsImpact,
   target: DeleteMetricsImpactTarget
-): Map<number, MutableCounts> | undefined {
+): Map<number, MetricCounts> | undefined {
   if (impact === null || typeof impact !== 'object' || (target !== 'before' && target !== 'after') || !Array.isArray(impact.entries) || impact.entries.length === 0) return undefined;
-  const nextCounts = new Map<number, MutableCounts>();
+  const nextCounts = new Map<number, MetricCounts>();
   for (const [paletteId, counts] of sourceCounts) {
     if (!Number.isSafeInteger(paletteId) || !isNonNegativeInteger(counts.full) || !isNonNegativeInteger(counts.half) || !isNonNegativeInteger(counts.quarter) || !isNonNegativeInteger(counts.threeQuarter) || !isNonNegativeInteger(counts.backstitch) || !isNonNegativeInteger(counts.completedComponents) || counts.completedComponents > counts.full + counts.half + counts.quarter + counts.threeQuarter + counts.backstitch || !Number.isFinite(counts.backstitchLengthFixed) || counts.backstitchLengthFixed < 0) return undefined;
-    nextCounts.set(paletteId, cloneCounts(counts));
+    nextCounts.set(paletteId, { ...counts });
   }
 
   const seen = new Set<number>();
@@ -457,25 +225,25 @@ export class ProgressMetricsService {
   private options: MetricsOptions | undefined;
   private aidaCount: number | undefined;
   private settings: PatternMetrics['materialSettings'];
-  private counts: Map<number, MutableCounts>;
+  private counts: Map<number, MetricCounts>;
   private current: PatternMetrics;
   private revision: number;
   // Copies of the composite's cell planes and backstitch totals as last
   // counted, so a change needs only the composite and its changed cells.
   private shadow: CellPlanes | null = null;
-  private shadowBackstitches = new Map<number, BackstitchContribution>();
+  private shadowBackstitches = new Map<number, MetricCounts>();
   private shadowSettings: PatternSettings | null = null;
 
   constructor(document: PatternDocument, options?: MetricsOptions) {
     this.currentDocument = document;
     this.options = options;
     this.aidaCount = resolveMetricsAidaCount(document, options);
-    this.current = computePatternMetrics(document, options);
     this.settings = normalizeMaterialSettings(document, options);
-    this.counts = countsFromMetrics(this.current);
+    this.counts = scanCounts(document);
+    this.current = metricsFromCounts(document, this.counts, this.settings, this.aidaCount);
     this.revision = document.revision;
     this.shadow = { kind: document.kind.slice(), colors: document.colors.slice(), completed: document.completed.slice() };
-    this.shadowBackstitches = backstitchContributions(document);
+    this.shadowBackstitches = backstitchCounts(document);
     this.shadowSettings = document.settings;
   }
 
@@ -521,7 +289,7 @@ export class ProgressMetricsService {
       this.shadowSettings = composite.settings;
     }
     if (indices && indices.length > 0) {
-      const counter = new CellCounter(this.counts);
+      const counter = new MetricCounter(this.counts);
       // A repeated index is harmless: the shadow already matches on the second pass.
       for (const index of indices) {
         if (index >= composite.kind.length) continue;
@@ -536,11 +304,11 @@ export class ProgressMetricsService {
         counter.cell(composite, index, 1);
       }
     }
-    const backstitches = backstitchContributions(composite);
-    addBackstitchContributions(this.counts, this.shadowBackstitches, -1);
-    addBackstitchContributions(this.counts, backstitches, 1);
+    const backstitches = backstitchCounts(composite);
+    addPaletteCounts(this.counts, this.shadowBackstitches, -1);
+    addPaletteCounts(this.counts, backstitches, 1);
     this.shadowBackstitches = backstitches;
-    this.current = buildMetrics(composite, this.counts, this.settings, this.aidaCount);
+    this.current = metricsFromCounts(composite, this.counts, this.settings, this.aidaCount);
     this.currentDocument = composite;
     this.revision = composite.revision;
     return settingsChanged;
@@ -571,7 +339,7 @@ export class ProgressMetricsService {
     if (deleteImpact !== undefined && result.recalculateMetrics === true && previous.revision === this.revision && next.revision === previous.revision + 1 && progressDelta !== undefined) {
       const nextCounts = applyDeleteMetricsImpact(this.counts, deleteImpact.impact, deleteImpact.target);
       if (nextCounts !== undefined) {
-        this.current = buildMetrics(next, nextCounts, this.settings, this.aidaCount);
+        this.current = metricsFromCounts(next, nextCounts, this.settings, this.aidaCount);
         this.counts = nextCounts;
         this.currentDocument = next;
         this.revision = next.revision;
@@ -581,7 +349,7 @@ export class ProgressMetricsService {
     if (previous.revision === this.revision && next.revision === previous.revision + 1 && sharesCountBearingPlanes(previous, next)) {
       const settings = previous.settings === next.settings ? this.settings : normalizeMaterialSettings(next, this.options);
       this.settings = settings;
-      this.current = buildMetrics(next, this.counts, settings, this.aidaCount);
+      this.current = metricsFromCounts(next, this.counts, settings, this.aidaCount);
       this.currentDocument = next;
       this.revision = next.revision;
       return progressDelta ?? zeroDelta();
@@ -590,34 +358,40 @@ export class ProgressMetricsService {
       delta = progressDelta ?? (hasExplicitProgress
         ? transitionForChangedSets(previous, next, progressCellIndices, progressBackstitchIds)
         : transitionByBoundedScan(previous, next));
-      this.current = computePatternMetrics(next, this.options);
-      this.counts = countsFromMetrics(this.current);
+      this.rescan(next);
     } else if (!hasExplicitProgress && !hasChangeSet) {
       delta = transitionByBoundedScan(previous, next);
-      this.current = computePatternMetrics(next, this.options);
-      this.counts = countsFromMetrics(this.current);
+      this.rescan(next);
     } else {
       delta = progressDelta ?? transitionForChangedSets(previous, next, progressCellIndices, progressBackstitchIds);
       const metricCellIndices = result.changedIndices ?? progressCellIndices;
-      if (metricCellIndices.length > 0) {
-        for (const index of new Set<number>(metricCellIndices)) {
-          addCellCounts(this.counts, previous, index, -1);
-          addCellCounts(this.counts, next, index, 1);
-        }
+      const counter = new MetricCounter(this.counts);
+      for (const index of new Set<number>(metricCellIndices)) {
+        counter.cell(previous, index, -1);
+        counter.cell(next, index, 1);
       }
       const metricBackstitchIds = result.changedBackstitchIds ?? (result.createdBackstitchIds === undefined ? progressBackstitchIds : new Uint32Array(0));
       if (metricBackstitchIds.length > 0) {
+        const previousPositions = positionsById(previous.backstitches);
+        const nextPositions = positionsById(next.backstitches);
         for (const id of new Set<number>(metricBackstitchIds)) {
-          addBackstitchCounts(this.counts, previous, id, -1);
-          addBackstitchCounts(this.counts, next, id, 1);
+          const before = previousPositions.get(id);
+          const after = nextPositions.get(id);
+          if (before !== undefined) counter.backstitch(previous.backstitches, before, -1);
+          if (after !== undefined) counter.backstitch(next.backstitches, after, 1);
         }
       }
       if (!hasChangeSet && progressCellIndices.length === 0 && progressBackstitchIds.length === 0) {
-        this.current = computePatternMetrics(next, this.options);
-        this.counts = countsFromMetrics(this.current);
+        this.rescan(next);
       } else {
-        if (result.createdBackstitchIds !== undefined) for (const id of new Set<number>(result.createdBackstitchIds)) addBackstitchCounts(this.counts, next, id, 1);
-        this.current = buildMetrics(next, this.counts, this.settings, this.aidaCount);
+        if (result.createdBackstitchIds !== undefined) {
+          const positions = positionsById(next.backstitches);
+          for (const id of new Set<number>(result.createdBackstitchIds)) {
+            const position = positions.get(id);
+            if (position !== undefined) counter.backstitch(next.backstitches, position, 1);
+          }
+        }
+        this.current = metricsFromCounts(next, this.counts, this.settings, this.aidaCount);
       }
     }
     this.currentDocument = next;
@@ -637,15 +411,23 @@ export class ProgressMetricsService {
     return this.apply(result);
   }
 
+  /** Recounts `document` from scratch with its own material settings. */
+  private rescan(document: PatternDocument): void {
+    this.aidaCount = resolveMetricsAidaCount(document, this.options);
+    this.settings = normalizeMaterialSettings(document, this.options);
+    this.counts = scanCounts(document);
+    this.current = metricsFromCounts(document, this.counts, this.settings, this.aidaCount);
+  }
+
   recalculate(document: PatternDocument): PatternMetrics {
     this.currentDocument = document;
     this.aidaCount = resolveMetricsAidaCount(document, this.options);
     this.settings = normalizeMaterialSettings(document, this.options);
-    this.current = computePatternMetrics(document, this.options);
-    this.counts = countsFromMetrics(this.current);
+    this.counts = scanCounts(document);
+    this.current = metricsFromCounts(document, this.counts, this.settings, this.aidaCount);
     this.revision = document.revision;
     this.shadow = { kind: document.kind.slice(), colors: document.colors.slice(), completed: document.completed.slice() };
-    this.shadowBackstitches = backstitchContributions(document);
+    this.shadowBackstitches = backstitchCounts(document);
     this.shadowSettings = document.settings;
     return this.current;
   }

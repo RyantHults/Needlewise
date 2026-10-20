@@ -1,6 +1,6 @@
 import { describe, it } from 'vitest';
 import { ProjectSession, ProgressMetricsService, type WorkspaceRepository } from '../src/application';
-import { CellKind, createDocument, createEditor, deleteRegionCommand, type CommandResult, type CropRect, type PatternDocument } from '../src/domain';
+import { CellKind, cloneDocument, createDocument, deleteRegionCommand, DocumentEditor, layeredFromSurface, type CommandResult, type CropRect, type DeleteRegionCommand, type LayeredDocument, type PatternDocument } from '../src/domain';
 import { type PersistencePreparationClient, type ProjectMetadata, type SaveResult } from '../src/persistence';
 
 const WARMUP_COUNT = 3;
@@ -15,11 +15,17 @@ function denseDocument(): PatternDocument {
   const document = createDocument({
     width: DOCUMENT_SIDE,
     height: DOCUMENT_SIDE,
+    catalog: { catalogId: 'dmc', brandLabel: 'DMC', colorCount: 489 },
     palette: [{ id: 1, name: 'Benchmark red', color: '#d33' }]
   });
   document.kind.fill(CellKind.Full);
   for (let index = 0; index < document.kind.length; index += 1) document.colors[index * 4] = 1;
   return document;
+}
+
+/** A delete on the "Stitches" layer that `layeredFromSurface` puts the dense cells on. */
+function stitchDelete(rect: CropRect): DeleteRegionCommand {
+  return { ...deleteRegionCommand(rect), layerId: 1 };
 }
 
 function benchmarkAssert(condition: boolean, message: string): void {
@@ -45,22 +51,22 @@ function verifyCells(document: PatternDocument, rect: CropRect, empty: boolean):
   }
 }
 
-function verifyEditorState(editor: ReturnType<typeof createEditor>, operation: Operation, baseRevision: number, rect: CropRect): void {
+function verifyEditorState(editor: DocumentEditor, operation: Operation, baseRevision: number, rect: CropRect): void {
   const expectedRevision = baseRevision + (operation === 'delete' ? 1 : operation === 'undo' ? 2 : 3);
   benchmarkAssert(editor.revision === expectedRevision, `${operation} revision was ${String(editor.revision)}, expected ${String(expectedRevision)}`);
   benchmarkAssert(operation === 'undo' ? editor.undoDepth === 0 && editor.redoDepth === 1 : editor.undoDepth === 1 && editor.redoDepth === 0, `${operation} history depths were unexpected`);
-  verifyCells(editor.document, rect, operation !== 'undo');
+  verifyCells(editor.composite, rect, operation !== 'undo');
 }
 
-function verifyResult(result: CommandResult, editor: ReturnType<typeof createEditor>, operation: Operation, baseRevision: number, rect: CropRect): void {
+function verifyResult(result: CommandResult, editor: DocumentEditor, operation: Operation, baseRevision: number, rect: CropRect): void {
   benchmarkAssert(result.changed, `${operation} result was not changed`);
   benchmarkAssert(result.revision === editor.revision, `${operation} result revision did not match the editor`);
   verifyEditorState(editor, operation, baseRevision, rect);
 }
 
-function prepareEditor(base: PatternDocument, rect: CropRect, operation: Operation): { editor: ReturnType<typeof createEditor>; command: ReturnType<typeof deleteRegionCommand> } {
-  const editor = createEditor(base);
-  const command = deleteRegionCommand(rect);
+function prepareEditor(base: PatternDocument, rect: CropRect, operation: Operation): { editor: DocumentEditor; command: DeleteRegionCommand } {
+  const editor = DocumentEditor.fromSurface(base);
+  const command = stitchDelete(rect);
   if (operation !== 'delete') {
     const deleted = editor.execute(command);
     verifyResult(deleted, editor, 'delete', base.revision, rect);
@@ -83,17 +89,17 @@ function runEditor(base: PatternDocument, rect: CropRect, operation: Operation):
 
 function runMetrics(base: PatternDocument, rect: CropRect, operation: Operation): number {
   const { editor, command } = prepareEditor(base, rect, operation);
-  let previous = editor.document;
+  let previous = editor.composite;
   let result: CommandResult;
   if (operation === 'delete') {
     result = editor.execute(command);
     verifyResult(result, editor, operation, base.revision, rect);
   } else if (operation === 'undo') {
-    previous = editor.document;
+    previous = editor.composite;
     result = editor.undo();
     verifyResult(result, editor, operation, base.revision, rect);
   } else {
-    previous = editor.document;
+    previous = editor.composite;
     result = editor.redo();
     verifyResult(result, editor, operation, base.revision, rect);
   }
@@ -122,7 +128,7 @@ interface SessionSupport {
 function sessionSupport(): SessionSupport {
   let saveCount = 0;
   const repository = {
-    save: async (_projectId: string, _metadata: ProjectMetadata, document: PatternDocument): Promise<SaveResult> => {
+    save: async (_projectId: string, _metadata: ProjectMetadata, document: LayeredDocument): Promise<SaveResult> => {
       saveCount += 1;
       return { committed: true, stale: false, revision: document.revision };
     }
@@ -149,12 +155,12 @@ async function runSession(base: PatternDocument, rect: CropRect, operation: Oper
     session = new ProjectSession({
       repository: support.repository,
       metadata: metadata(base.revision),
-      document: base,
+      document: layeredFromSurface(cloneDocument(base)),
       preparationClient: support.preparationClient,
       clock: { now: () => 1 },
       debounceMs: DEBOUNCE_MS
     });
-    const command = deleteRegionCommand(rect);
+    const command = stitchDelete(rect);
     if (operation !== 'delete') {
       const deleted = session.execute(command);
       benchmarkAssert(deleted.changed, 'session setup delete did not change the document');

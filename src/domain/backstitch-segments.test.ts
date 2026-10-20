@@ -2,13 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   applyCommand,
   createDocument,
-  createEditor,
   DomainError,
   listBackstitches,
   type CatalogAssociation,
   type DomainCommand,
   type PatternDocument
 } from './index';
+import { editorFromSurface, markBackstitchComplete, SPECIALTY_LAYER_ID } from './test-fixtures';
 
 const TEST_CATALOG: CatalogAssociation = {
   catalogId: 'test-catalog',
@@ -68,7 +68,7 @@ describe('backstitch corner segmentation', () => {
 
   it('replaces an overlapping piece in place with the new color and no progress', () => {
     let pattern = apply(document(), { type: 'add-backstitch', start: { x: 4, y: 0 }, end: { x: 8, y: 0 }, color: 1 }).document;
-    pattern = apply(pattern, { type: 'set-backstitch-completion', id: 1, completed: true }).document;
+    pattern = markBackstitchComplete(pattern, 1);
     const result = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 12, y: 0 }, color: 2 });
     expect(lines(result.document)).toEqual([
       { id: 1, x1: 4, y1: 0, x2: 8, y2: 0, color: 2, completed: false },
@@ -96,7 +96,7 @@ describe('backstitch corner segmentation', () => {
 
   it('re-splits a moved stitch, keeping its id for the first piece', () => {
     let pattern = apply(document(), { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 2 }).document;
-    pattern = apply(pattern, { type: 'set-backstitch-completion', id: 1, completed: true }).document;
+    pattern = markBackstitchComplete(pattern, 1);
     const result = apply(pattern, { type: 'move-backstitch', id: 1, start: { x: 0, y: 4 }, end: { x: 12, y: 4 } });
     expect(lines(result.document)).toEqual([
       { id: 1, x1: 0, y1: 4, x2: 4, y2: 4, color: 2, completed: false },
@@ -135,14 +135,14 @@ describe('backstitch corner segmentation', () => {
   });
 
   it('undoes a split add in one step', () => {
-    const editor = createEditor(document());
-    editor.execute({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 });
-    const before = lines(editor.document);
-    editor.execute({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 12, y: 0 }, color: 2 });
-    expect(listBackstitches(editor.document)).toHaveLength(3);
+    const editor = editorFromSurface(document());
+    editor.execute({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1, layerId: SPECIALTY_LAYER_ID });
+    const before = lines(editor.composite);
+    editor.execute({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 12, y: 0 }, color: 2, layerId: SPECIALTY_LAYER_ID });
+    expect(listBackstitches(editor.composite)).toHaveLength(3);
     editor.undo();
-    expect(lines(editor.document)).toEqual(before);
+    expect(lines(editor.composite)).toEqual(before);
     editor.redo();
-    expect(geometry(editor.document)).toEqual([[0, 0, 4, 0], [4, 0, 8, 0], [8, 0, 12, 0]]);
+    expect(geometry(editor.composite)).toEqual([[0, 0, 4, 0], [4, 0, 8, 0], [8, 0, 12, 0]]);
   });
 });

@@ -84,7 +84,7 @@ class LayeredBoundary implements WorkspaceEditorBoundary {
       layerId = applyLayerStructureCommand(this.layeredDocument, layerAddCommand(type)).layerId!;
     }
     this.activeLayerId = layerId!;
-    const result = this.execute({ ...pasteFragmentCommand(fragment, position), layerId });
+    const result = this.execute({ ...pasteFragmentCommand(fragment, position), ...(layerId === null ? {} : { layerId }) });
     return { result, layerId: layerId!, message: destination.message };
   }
 

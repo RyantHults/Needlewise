@@ -1,4 +1,5 @@
 import {
+  allocateBackstitches,
   assertValidDocument,
   assertValidLayeredDocument,
   DOCUMENT_SCHEMA_VERSION,
@@ -7,6 +8,7 @@ import {
   LayerType,
   MAX_LAYERS_PER_TYPE,
   PALETTE_ID_RESERVED,
+  cloneBackstitches,
   clonePaletteEntry,
   clonePatternSettings,
   layeredFromSurface,
@@ -86,12 +88,12 @@ function stringBytes(value: string, label: string): Uint8Array {
 }
 
 function checkedLength(value: number, label: string, max = MAX_DOCUMENT_BYTES): number {
-  if (!Number.isInteger(value) || value < 0 || value > max) fail(`${label} has an invalid length.`);
+  if (!Number.isSafeInteger(value) || value < 0 || value > max) fail(`${label} has an invalid length.`);
   return value;
 }
 
 function checkedDocumentDimensions(width: number, height: number): number {
-  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1) fail('Document dimensions are invalid.');
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1) fail('Document dimensions are invalid.');
   const cellCount = BigInt(width) * BigInt(height);
   if (cellCount > BigInt(MAX_DOCUMENT_CELLS) || cellCount > BigInt(Number.MAX_SAFE_INTEGER)) fail('Document dimensions are too large.');
   return Number(cellCount);
@@ -382,13 +384,8 @@ function readColorPlane(bytes: Uint8Array, offset: number, cellCount: number): U
 }
 
 function readBackstitches(view: DataView, offset: number, count: number, recordBytes: number): BackstitchStore {
-  const ids = new Uint32Array(count);
-  const x1 = new Uint32Array(count);
-  const y1 = new Uint32Array(count);
-  const x2 = new Uint32Array(count);
-  const y2 = new Uint32Array(count);
-  const colors = new Uint16Array(count);
-  const completed = new Uint8Array(count);
+  const store = allocateBackstitches(count);
+  const { ids, x1, y1, x2, y2, colors, completed } = store;
   for (let index = 0; index < count; index += 1) {
     ids[index] = view.getUint32(offset, true);
     offset += 4;
@@ -407,7 +404,7 @@ function readBackstitches(view: DataView, offset: number, count: number, recordB
       offset += 1;
     }
   }
-  return { ids, x1, y1, x2, y2, colors, completed };
+  return store;
 }
 
 interface DecodedHeader {
@@ -656,10 +653,6 @@ export function applyLegacyAidaCount(decoded: DecodedDocument, legacyAidaCount: 
   if (decoded.document.settings.aidaCount === legacyAidaCount) return false;
   decoded.document.settings = { ...decoded.document.settings, aidaCount: legacyAidaCount };
   return true;
-}
-
-function cloneBackstitches(store: BackstitchStore): BackstitchStore {
-  return { ids: store.ids.slice(), x1: store.x1.slice(), y1: store.y1.slice(), x2: store.x2.slice(), y2: store.y2.slice(), colors: store.colors.slice(), completed: store.completed.slice() };
 }
 
 /** A fully detached copy, so persistence never shares planes with a live editor. */

@@ -10,17 +10,14 @@ import {
   type PatternFragment,
   type PatternFragmentBackstitches
 } from './types';
-import { isRecord } from './guards';
+import { assertStrictlyIncreasing, isRecord } from './guards';
+import { segmentKey, type BackstitchEndpoints } from './backstitch-store';
 import { assertValidDocument } from './validation';
 import { isThreeQuarterKind, isThreeQuarterPairKind } from './model';
 
 function cellCount(width: number, height: number): number | undefined {
   const count = width * height;
   return Number.isSafeInteger(count) && count > 0 && count <= MAX_PERSISTABLE_CELL_COUNT ? count : undefined;
-}
-
-function segmentKey(x1: number, y1: number, x2: number, y2: number): string {
-  return `${String(x1)},${String(y1)},${String(x2)},${String(y2)}`;
 }
 
 function containsCellIndex(indices: Uint32Array, target: number): boolean {
@@ -48,7 +45,7 @@ export function isFixedPointContainedInCellUnion(
   documentHeight: number,
   indices: Uint32Array
 ): boolean {
-  if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x > documentWidth * FIXED_POINT_UNITS_PER_CELL || y > documentHeight * FIXED_POINT_UNITS_PER_CELL) return false;
+  if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y) || x < 0 || y < 0 || x > documentWidth * FIXED_POINT_UNITS_PER_CELL || y > documentHeight * FIXED_POINT_UNITS_PER_CELL) return false;
   const units = FIXED_POINT_UNITS_PER_CELL;
   const cellX = Math.floor(x / units);
   const cellY = Math.floor(y / units);
@@ -93,7 +90,7 @@ export function getPatternFragmentValidationErrors(fragment: PatternFragment): s
     errors.push('Pattern fragment version must be 1.');
     return errors;
   }
-  if (!Number.isInteger(fragment.width) || !Number.isInteger(fragment.height) || fragment.width < 1 || fragment.height < 1) {
+  if (!Number.isSafeInteger(fragment.width) || !Number.isSafeInteger(fragment.height) || fragment.width < 1 || fragment.height < 1) {
     errors.push('Pattern fragment dimensions must be positive integers.');
     return errors;
   }
@@ -139,7 +136,7 @@ export function getPatternFragmentValidationErrors(fragment: PatternFragment): s
     const y1 = fragment.backstitches.y1[index];
     const x2 = fragment.backstitches.x2[index];
     const y2 = fragment.backstitches.y2[index];
-    const key = segmentKey(x1, y1, x2, y2);
+    const key = segmentKey(fragment.backstitches, index);
     if (x1 > maxX || x2 > maxX || y1 > maxY || y2 > maxY) errors.push(`Pattern fragment backstitch ${String(index)} is outside the fragment boundary.`);
     if (x1 === x2 && y1 === y2) errors.push(`Pattern fragment backstitch ${String(index)} has identical endpoints.`);
     if (x1 > x2 || (x1 === x2 && y1 > y2)) errors.push(`Pattern fragment backstitch ${String(index)} endpoints are not canonical.`);
@@ -161,10 +158,56 @@ export function assertValidPatternFragment(fragment: PatternFragment): void {
 
 export const assertFragmentValid = assertValidPatternFragment;
 
+function rectInside(rect: CropRect, width: number, height: number): boolean {
+  return Number.isSafeInteger(rect.x) && Number.isSafeInteger(rect.y) && Number.isSafeInteger(rect.width) && Number.isSafeInteger(rect.height)
+    && rect.x >= 0 && rect.y >= 0 && rect.width >= 1 && rect.height >= 1 && rect.x + rect.width <= width && rect.y + rect.height <= height;
+}
+
 function validateSelection(document: PatternDocument, selection: CropRect): void {
-  if (!isRecord(selection) || !Number.isInteger(selection.x) || !Number.isInteger(selection.y) || !Number.isInteger(selection.width) || !Number.isInteger(selection.height) || selection.x < 0 || selection.y < 0 || selection.width < 1 || selection.height < 1 || selection.x + selection.width > document.width || selection.y + selection.height > document.height) {
+  if (!isRecord(selection) || !rectInside(selection, document.width, document.height)) {
     throw new DomainError('invalid-selection', 'Fragment selection must be a non-empty rectangle inside the document.');
   }
+}
+
+/** The cell planes of `rect` in a row-major source `width` cells wide. */
+function copyCellRows(source: Pick<PatternFragment, 'width' | 'kind' | 'colors'>, rect: CropRect): Pick<PatternFragment, 'kind' | 'colors'> {
+  const kind = new Uint8Array(rect.width * rect.height);
+  const colors = new Uint16Array(kind.length * 4);
+  for (let y = 0; y < rect.height; y += 1) {
+    const from = (rect.y + y) * source.width + rect.x;
+    kind.set(source.kind.subarray(from, from + rect.width), y * rect.width);
+    colors.set(source.colors.subarray(from * 4, (from + rect.width) * 4), y * rect.width * 4);
+  }
+  return { kind, colors };
+}
+
+type SegmentContains = (x1: number, y1: number, x2: number, y2: number) => boolean;
+
+/** Whether both endpoints lie in `rect` (cells), edges included. */
+function segmentInRect(rect: CropRect): SegmentContains {
+  const left = rect.x * FIXED_POINT_UNITS_PER_CELL;
+  const top = rect.y * FIXED_POINT_UNITS_PER_CELL;
+  const right = (rect.x + rect.width) * FIXED_POINT_UNITS_PER_CELL;
+  const bottom = (rect.y + rect.height) * FIXED_POINT_UNITS_PER_CELL;
+  return (x1, y1, x2, y2) => x1 >= left && x1 <= right && x2 >= left && x2 <= right && y1 >= top && y1 <= bottom && y2 >= top && y2 <= bottom;
+}
+
+/** Storage positions of the backstitches `contains` accepts, in storage order. */
+export function containedBackstitchPositions(store: BackstitchEndpoints, contains: SegmentContains): number[] {
+  const positions: number[] = [];
+  for (let index = 0; index < store.x1.length; index += 1) if (contains(store.x1[index], store.y1[index], store.x2[index], store.y2[index])) positions.push(index);
+  return positions;
+}
+
+/** The lines at `positions`, moved so (`left`, `top`) in fixed-point units becomes the origin. */
+export function rebaseBackstitches(store: PatternFragmentBackstitches, positions: readonly number[], left: number, top: number): PatternFragmentBackstitches {
+  return {
+    x1: Uint32Array.from(positions, (index) => store.x1[index] - left),
+    y1: Uint32Array.from(positions, (index) => store.y1[index] - top),
+    x2: Uint32Array.from(positions, (index) => store.x2[index] - left),
+    y2: Uint32Array.from(positions, (index) => store.y2[index] - top),
+    colors: Uint16Array.from(positions, (index) => store.colors[index])
+  };
 }
 
 export function createPatternFragment(document: PatternDocument, selection: FragmentSelection): PatternFragment {
@@ -172,56 +215,15 @@ export function createPatternFragment(document: PatternDocument, selection: Frag
   if ('kind' in selection && selection.kind === 'sparse') return createPatternFragmentFromCells(document, selection.indices);
   const rect = 'kind' in selection ? selection.rect : selection;
   validateSelection(document, rect);
-  const count = rect.width * rect.height;
-  const kind = new Uint8Array(count);
-  const colors = new Uint16Array(count * 4);
-  for (let y = 0; y < rect.height; y += 1) {
-    const sourceCellOffset = (rect.y + y) * document.width + rect.x;
-    const targetCellOffset = y * rect.width;
-    kind.set(document.kind.subarray(sourceCellOffset, sourceCellOffset + rect.width), targetCellOffset);
-    const sourceColorOffset = sourceCellOffset * 4;
-    const targetColorOffset = targetCellOffset * 4;
-    colors.set(document.colors.subarray(sourceColorOffset, sourceColorOffset + rect.width * 4), targetColorOffset);
-  }
-
-  const left = rect.x * FIXED_POINT_UNITS_PER_CELL;
-  const top = rect.y * FIXED_POINT_UNITS_PER_CELL;
-  const right = (rect.x + rect.width) * FIXED_POINT_UNITS_PER_CELL;
-  const bottom = (rect.y + rect.height) * FIXED_POINT_UNITS_PER_CELL;
-  let containedCount = 0;
-  for (let index = 0; index < document.backstitches.ids.length; index += 1) {
-    const store = document.backstitches;
-    if (store.x1[index] >= left && store.x1[index] <= right && store.x2[index] >= left && store.x2[index] <= right && store.y1[index] >= top && store.y1[index] <= bottom && store.y2[index] >= top && store.y2[index] <= bottom) containedCount += 1;
-  }
-  const backstitches: PatternFragmentBackstitches = {
-    x1: new Uint32Array(containedCount),
-    y1: new Uint32Array(containedCount),
-    x2: new Uint32Array(containedCount),
-    y2: new Uint32Array(containedCount),
-    colors: new Uint16Array(containedCount)
-  };
-  let targetIndex = 0;
-  for (let index = 0; index < document.backstitches.ids.length; index += 1) {
-    const store = document.backstitches;
-    if (!(store.x1[index] >= left && store.x1[index] <= right && store.x2[index] >= left && store.x2[index] <= right && store.y1[index] >= top && store.y1[index] <= bottom && store.y2[index] >= top && store.y2[index] <= bottom)) continue;
-    backstitches.x1[targetIndex] = store.x1[index] - left;
-    backstitches.y1[targetIndex] = store.y1[index] - top;
-    backstitches.x2[targetIndex] = store.x2[index] - left;
-    backstitches.y2[targetIndex] = store.y2[index] - top;
-    backstitches.colors[targetIndex] = store.colors[index];
-    targetIndex += 1;
-  }
+  const { kind, colors } = copyCellRows(document, rect);
+  const positions = containedBackstitchPositions(document.backstitches, segmentInRect(rect));
+  const backstitches = rebaseBackstitches(document.backstitches, positions, rect.x * FIXED_POINT_UNITS_PER_CELL, rect.y * FIXED_POINT_UNITS_PER_CELL);
   return { version: PATTERN_FRAGMENT_VERSION, width: rect.width, height: rect.height, kind, colors, backstitches };
 }
 
 function validateCellSetSelection(document: PatternDocument, indices: Uint32Array): void {
   if (!(indices instanceof Uint32Array) || indices.length === 0) throw new DomainError('invalid-cell-set', 'Cell selection indices must be a non-empty Uint32Array.');
-  let previous = -1;
-  for (const index of indices) {
-    if (index <= previous) throw new DomainError('invalid-cell-set', 'Cell selection indices must be strictly increasing and unique.');
-    if (index >= document.kind.length) throw new DomainError('out-of-bounds', `Cell selection index ${String(index)} is out of bounds.`);
-    previous = index;
-  }
+  assertStrictlyIncreasing(indices, 'invalid-cell-set', 'Cell selection indices', document.kind.length);
 }
 
 /** Capture a sparse selection into the existing transparent v1 fragment format. */
@@ -255,40 +257,10 @@ export function createPatternFragmentFromCells(document: PatternDocument, indice
     colors.set(document.colors.subarray(index * 4, index * 4 + 4), targetIndex * 4);
   }
 
-  let containedCount = 0;
-  for (let index = 0; index < document.backstitches.ids.length; index += 1) {
-    const store = document.backstitches;
-    if (backstitchEndpointsContainedInCellUnion(store.x1[index], store.y1[index], store.x2[index], store.y2[index], document.width, document.height, indices)) containedCount += 1;
-  }
-  const backstitches: PatternFragmentBackstitches = {
-    x1: new Uint32Array(containedCount),
-    y1: new Uint32Array(containedCount),
-    x2: new Uint32Array(containedCount),
-    y2: new Uint32Array(containedCount),
-    colors: new Uint16Array(containedCount)
-  };
-  const left = minX * FIXED_POINT_UNITS_PER_CELL;
-  const top = minY * FIXED_POINT_UNITS_PER_CELL;
-  let targetIndex = 0;
-  for (let index = 0; index < document.backstitches.ids.length; index += 1) {
-    const store = document.backstitches;
-    if (!backstitchEndpointsContainedInCellUnion(store.x1[index], store.y1[index], store.x2[index], store.y2[index], document.width, document.height, indices)) continue;
-    backstitches.x1[targetIndex] = store.x1[index] - left;
-    backstitches.y1[targetIndex] = store.y1[index] - top;
-    backstitches.x2[targetIndex] = store.x2[index] - left;
-    backstitches.y2[targetIndex] = store.y2[index] - top;
-    backstitches.colors[targetIndex] = store.colors[index];
-    targetIndex += 1;
-  }
+  const positions = containedBackstitchPositions(document.backstitches, (x1, y1, x2, y2) => backstitchEndpointsContainedInCellUnion(x1, y1, x2, y2, document.width, document.height, indices));
+  const backstitches = rebaseBackstitches(document.backstitches, positions, minX * FIXED_POINT_UNITS_PER_CELL, minY * FIXED_POINT_UNITS_PER_CELL);
   return { version: PATTERN_FRAGMENT_VERSION, width, height, kind, colors, backstitches };
 }
-
-export const copyPatternFragment = createPatternFragment;
-export const createFragment = createPatternFragment;
-export const capturePatternFragment = createPatternFragment;
-export const capturePatternFragmentFromCells = createPatternFragmentFromCells;
-export const createSparsePatternFragment = createPatternFragmentFromCells;
-export const copyPatternFragmentFromCells = createPatternFragmentFromCells;
 
 export function clonePatternFragment(fragment: PatternFragment): PatternFragment {
   assertValidPatternFragment(fragment);
@@ -311,38 +283,18 @@ export function clonePatternFragment(fragment: PatternFragment): PatternFragment
 /** Keeps the cells in `rect` (fragment coordinates) and the backstitches wholly inside it, rebased to the origin. */
 export function cropPatternFragment(fragment: PatternFragment, rect: CropRect): PatternFragment {
   assertValidPatternFragment(fragment);
-  if (!Number.isInteger(rect.x) || !Number.isInteger(rect.y) || !Number.isInteger(rect.width) || !Number.isInteger(rect.height) || rect.x < 0 || rect.y < 0 || rect.width < 1 || rect.height < 1 || rect.x + rect.width > fragment.width || rect.y + rect.height > fragment.height) {
+  if (!rectInside(rect, fragment.width, fragment.height)) {
     throw new DomainError('invalid-selection', 'Fragment crop must be a non-empty rectangle inside the fragment.');
   }
-  const kind = new Uint8Array(rect.width * rect.height);
-  const colors = new Uint16Array(kind.length * 4);
-  for (let y = 0; y < rect.height; y += 1) {
-    const source = (rect.y + y) * fragment.width + rect.x;
-    kind.set(fragment.kind.subarray(source, source + rect.width), y * rect.width);
-    colors.set(fragment.colors.subarray(source * 4, (source + rect.width) * 4), y * rect.width * 4);
-  }
-  const left = rect.x * FIXED_POINT_UNITS_PER_CELL;
-  const top = rect.y * FIXED_POINT_UNITS_PER_CELL;
-  const right = left + rect.width * FIXED_POINT_UNITS_PER_CELL;
-  const bottom = top + rect.height * FIXED_POINT_UNITS_PER_CELL;
-  const store = fragment.backstitches;
-  const kept: number[] = [];
-  for (let index = 0; index < store.x1.length; index += 1) {
-    if (store.x1[index] >= left && store.x1[index] <= right && store.x2[index] >= left && store.x2[index] <= right && store.y1[index] >= top && store.y1[index] <= bottom && store.y2[index] >= top && store.y2[index] <= bottom) kept.push(index);
-  }
-  const backstitches: PatternFragmentBackstitches = {
-    x1: Uint32Array.from(kept, (index) => store.x1[index] - left),
-    y1: Uint32Array.from(kept, (index) => store.y1[index] - top),
-    x2: Uint32Array.from(kept, (index) => store.x2[index] - left),
-    y2: Uint32Array.from(kept, (index) => store.y2[index] - top),
-    colors: Uint16Array.from(kept, (index) => store.colors[index])
-  };
+  const { kind, colors } = copyCellRows(fragment, rect);
+  const positions = containedBackstitchPositions(fragment.backstitches, segmentInRect(rect));
+  const backstitches = rebaseBackstitches(fragment.backstitches, positions, rect.x * FIXED_POINT_UNITS_PER_CELL, rect.y * FIXED_POINT_UNITS_PER_CELL);
   return { version: PATTERN_FRAGMENT_VERSION, width: rect.width, height: rect.height, kind, colors, backstitches };
 }
 
 export function readPatternFragmentCell(fragment: PatternFragment, x: number, y: number): { x: number; y: number; kind: CellKind; colors: Uint16Array } {
   assertValidPatternFragment(fragment);
-  if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0 || x >= fragment.width || y >= fragment.height) throw new DomainError('out-of-bounds', `Fragment cell (${String(x)}, ${String(y)}) is out of bounds.`);
+  if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y) || x < 0 || y < 0 || x >= fragment.width || y >= fragment.height) throw new DomainError('out-of-bounds', `Fragment cell (${String(x)}, ${String(y)}) is out of bounds.`);
   const offset = (y * fragment.width + x) * 4;
   return { x, y, kind: fragment.kind[y * fragment.width + x] as CellKind, colors: fragment.colors.slice(offset, offset + 4) };
 }

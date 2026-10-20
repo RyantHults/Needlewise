@@ -1,8 +1,8 @@
 import type { PDFDocument, PDFFont, PDFPage, RGB } from 'pdf-lib';
 import type { DisplayUnits, PatternDocument, PatternMetrics } from '../domain';
-import { CellKind, FIXED_POINT_UNITS_PER_CELL, parseHexColor } from '../domain';
+import { CellKind, componentKind, componentSlotMask, FIXED_POINT_UNITS_PER_CELL, isLegacyQuarterKind, parseHexColor } from '../domain';
 import { DEFAULT_RENDERER_STYLE, type CanvasContextAdapter } from '../editor/contracts';
-import { isLegacyQuarterKind, isThreeQuarterPairKind, threeQuarterPairComponents } from '../editor/cell-kinds';
+import { isThreeQuarterPairKind } from '../editor/cell-kinds';
 import { contrastSymbolInk, relativeLuminance } from '../rendering/contrast';
 import { drawStitchGeometry } from '../rendering/symbol-painter';
 import { getSymbolOutline, SYMBOL_POOL_VERSION } from '../symbols';
@@ -627,13 +627,9 @@ function drawChartPage(ctx: Context, chartPage: ChartPage): void {
       const offset = index * 4;
       const x = colX(c);
       const y = rowY(r);
-      if (isLegacyQuarterKind(kind)) {
-        for (let slot = 0; slot < 4; slot += 1) paintStitch(document.colors[offset + slot] ?? 0, kind, slot, x, y);
-      } else if (isThreeQuarterPairKind(kind)) {
-        const colors = [0, 1, 2, 3].map((slot) => document.colors[offset + slot] ?? 0);
-        for (const component of threeQuarterPairComponents(colors)) {
-          paintStitch(colors[component.slot] ?? 0, component.kind, component.slot, x, y);
-        }
+      if (isLegacyQuarterKind(kind) || isThreeQuarterPairKind(kind)) {
+        const slots = componentSlotMask(kind, document.colors, offset);
+        for (let slot = 0; slot < 4; slot += 1) if ((slots & (1 << slot)) !== 0) paintStitch(document.colors[offset + slot], componentKind(kind, slot), slot, x, y);
       } else paintStitch(document.colors[offset] ?? 0, kind, undefined, x, y);
     }
   }

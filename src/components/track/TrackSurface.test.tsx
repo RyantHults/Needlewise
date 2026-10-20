@@ -2,6 +2,7 @@ import { act, fireEvent, render as renderBare, screen, within } from '@testing-l
 import { useEffect } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyCommand, computePatternMetrics, createDocument, type PatternDocument } from '../../domain';
+import { markCellComplete } from '../../domain/test-fixtures';
 import { DEFAULT_CATALOG_DEFINITION } from '../../catalog';
 import type { ProjectWorkspace } from '../../application/workspace';
 import { ChartPresentationMode, type EditorUiState } from '../../editor';
@@ -63,19 +64,17 @@ function trackedDocument(): PatternDocument {
   apply({ type: 'set-full', x: 0, y: 1, color: 7 });
   apply({ type: 'set-full', x: 1, y: 1, color: 2 });
   apply({ type: 'set-full', x: 2, y: 1, color: 2 });
-  apply({ type: 'set-completion', x: 0, y: 0, completed: true });
-  apply({ type: 'set-completion', x: 1, y: 1, completed: true });
-  apply({ type: 'set-completion', x: 2, y: 1, completed: true });
+  for (const [x, y] of [[0, 0], [1, 1], [2, 1]]) pattern = markCellComplete(pattern, x, y);
   return pattern;
 }
 
-function setup(progressState: { canUndoProgress?: boolean; canRedoProgress?: boolean } = {}, onRenameTitle?: (title: string) => void) {
+function setup(progressState: { canUndoMark?: boolean; canRedoMark?: boolean } = {}, onRenameTitle?: (title: string) => void) {
   const workspace = {
-    canUndoProgress: progressState.canUndoProgress ?? false,
-    canRedoProgress: progressState.canRedoProgress ?? false,
-    undoProgress: vi.fn(),
-    redoProgress: vi.fn(),
-    clearProgressHistory: vi.fn(),
+    canUndoMark: progressState.canUndoMark ?? false,
+    canRedoMark: progressState.canRedoMark ?? false,
+    undoMark: vi.fn(),
+    redoMark: vi.fn(),
+    clearMarkHistory: vi.fn(),
     availableCatalogs: () => []
   };
   const document = trackedDocument();
@@ -230,12 +229,12 @@ describe('TrackSurface', () => {
   });
 
   it('undoes and redoes marks through the workspace', () => {
-    const { workspace } = setup({ canUndoProgress: true, canRedoProgress: true });
+    const { workspace } = setup({ canUndoMark: true, canRedoMark: true });
 
     fireEvent.click(screen.getByRole('button', { name: 'Undo mark' }));
-    expect(workspace.undoProgress).toHaveBeenCalledOnce();
+    expect(workspace.undoMark).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole('button', { name: 'Redo mark' }));
-    expect(workspace.redoProgress).toHaveBeenCalledOnce();
+    expect(workspace.redoMark).toHaveBeenCalledOnce();
   });
 
   it('disables undo and redo when there is nothing to replay', () => {
@@ -257,8 +256,8 @@ describe('TrackSurface', () => {
   it('clears the Track undo history when the page unmounts', () => {
     const { workspace, view } = setup();
 
-    expect(workspace.clearProgressHistory).not.toHaveBeenCalled();
+    expect(workspace.clearMarkHistory).not.toHaveBeenCalled();
     view.unmount();
-    expect(workspace.clearProgressHistory).toHaveBeenCalledOnce();
+    expect(workspace.clearMarkHistory).toHaveBeenCalledOnce();
   });
 });

@@ -120,12 +120,12 @@ describe('ProjectWorkspace observable adapter', () => {
       await act(async () => {
         rendered.result.current.workspace?.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
       });
-      await waitFor(() => expect(rendered.result.current.saveState.status).toBe('pending'));
-      expect(rendered.result.current.saveState.pendingRevision).toBe(1);
+      await waitFor(() => expect(rendered.result.current.state.save.status).toBe('pending'));
+      expect(rendered.result.current.state.save.pendingRevision).toBe(1);
       await act(async () => {
         await rendered.result.current.flush();
       });
-      expect(rendered.result.current.saveState.status).toBe('saved');
+      expect(rendered.result.current.state.save.status).toBe('saved');
       expect(flattenDocument((await repository.load('created'))!.document).kind[0]).toBe(CellKind.Full);
     } finally {
       rendered.unmount();
@@ -182,37 +182,6 @@ describe('ProjectWorkspace observable adapter', () => {
     }
   });
 
-  it('forwards active metadata updates and leaves durability to the explicit flush', async () => {
-    const repository = makeRepository();
-    const rendered = renderHook(() => useProjectWorkspace({ repository, projectIdFactory: () => 'metadata', clock: { now: () => 100 } }));
-    try {
-      await waitFor(() => expect(rendered.result.current.initialized).toBe(true));
-      await act(async () => {
-        await rendered.result.current.createProject({ title: 'Before', notes: 'old', width: 2, height: 2 });
-      });
-
-      let update: Promise<void> | undefined;
-      act(() => {
-        update = rendered.result.current.updateActiveMetadata({ title: 'After', notes: 'new' });
-      });
-      await act(async () => {
-        await update;
-      });
-      expect(rendered.result.current.state.metadata).toMatchObject({ title: 'After', notes: 'new' });
-      expect(rendered.result.current.saveState.metadataDirty).toBe(true);
-      await act(async () => {
-        await rendered.result.current.flush();
-      });
-      expect(rendered.result.current.saveState.metadataDirty).toBe(false);
-      expect((await repository.load('metadata'))?.metadata).toMatchObject({ title: 'After', notes: 'new' });
-      expect(rendered.result.current.busy).toBe(false);
-    } finally {
-      rendered.unmount();
-      await Promise.resolve();
-      await deleteRepository(repository);
-    }
-  });
-
   it('does not let lifecycle flushes cancel a delayed startup open', async () => {
     const repository = makeRepository();
     const patternDocument = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
@@ -251,16 +220,16 @@ describe('ProjectWorkspace observable adapter', () => {
     }
   });
 
-  it('reports metadata action errors and leaves the adapter idle when no project is active', async () => {
+  it('reports action errors and leaves the adapter idle', async () => {
     const repository = makeRepository();
     const rendered = renderHook(() => useProjectWorkspace({ repository }));
     try {
       await waitFor(() => expect(rendered.result.current.initialized).toBe(true));
       await act(async () => {
-        await expect(rendered.result.current.updateActiveMetadata({ title: 'Unavailable' })).rejects.toMatchObject({ code: 'no-active-project' });
+        await expect(rendered.result.current.openProject('missing')).rejects.toMatchObject({ code: 'project-not-found' });
       });
       expect(rendered.result.current.busy).toBe(false);
-      expect(rendered.result.current.error).toMatchObject({ code: 'no-active-project' });
+      expect(rendered.result.current.error).toMatchObject({ code: 'project-not-found' });
     } finally {
       rendered.unmount();
       await Promise.resolve();
@@ -297,28 +266,4 @@ describe('ProjectWorkspace observable adapter', () => {
     }
   });
 
-  it('exposes durable command, undo, and redo wrappers through the React adapter', async () => {
-    const repository = makeRepository();
-    const rendered = renderHook(() => useProjectWorkspace({ repository, projectIdFactory: () => 'commands' }));
-    try {
-      await waitFor(() => expect(rendered.result.current.initialized).toBe(true));
-      await act(async () => {
-        await rendered.result.current.createProject({ width: 2, height: 2, document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] }) });
-      });
-      let resultRevision = 0;
-      await act(async () => {
-        resultRevision = (await rendered.result.current.execute({ type: 'set-full', x: 0, y: 0, color: 1 })).revision;
-      });
-      expect(resultRevision).toBe(1);
-      await act(async () => {
-        expect((await rendered.result.current.undo()).revision).toBe(2);
-        expect((await rendered.result.current.redo()).revision).toBe(3);
-      });
-      expect(rendered.result.current.state.document?.revision).toBe(3);
-    } finally {
-      rendered.unmount();
-      await Promise.resolve();
-      await deleteRepository(repository);
-    }
-  });
 });

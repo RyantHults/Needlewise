@@ -21,6 +21,7 @@ import {
 } from '../domain';
 import {
   cloneLayeredDocument,
+  cloneProjectHealth,
   PersistenceError,
   ProjectRepository,
   type ProjectFolder,
@@ -42,7 +43,7 @@ import { validateAcceptedConversionDraft, type AcceptedConversionDraft } from '.
 import type { ProgressActivity } from '../persistence';
 import type { PatternMetrics } from '../domain';
 import { createCatalogReference, DEFAULT_CATALOG_DEFINITION, INSTALLED_CATALOG_REGISTRY, type CatalogDefinition, type InstalledCatalogRegistry } from '../catalog';
-import { WorkspaceError } from './errors';
+import { asError, WorkspaceError } from './errors';
 import { ProjectSession } from './session';
 import type {
   ActiveLayerId,
@@ -101,18 +102,6 @@ function createBrowserProjectId(): string {
   }
   fallbackIdCounter += 1;
   return `project-${Date.now().toString(36)}-${fallbackIdCounter.toString(36)}`;
-}
-
-function cloneHealth(health: ProjectHealth): ProjectHealth {
-  return {
-    ...health,
-    metadata: health.metadata ? { ...health.metadata } : null,
-    current: { ...health.current },
-    recovery: { ...health.recovery },
-    assets: { ...health.assets },
-    ...(health.sourceImage === undefined ? {} : { sourceImage: { ...health.sourceImage } }),
-    warnings: [...health.warnings]
-  };
 }
 
 export function createStarterDocument(options: Pick<CreateProjectOptions, 'width' | 'height' | 'settings'> = {}): PatternDocument {
@@ -242,8 +231,7 @@ export class ProjectWorkspace {
   }
 
   get health(): ProjectHealth | null {
-    const health = this.active?.health;
-    return health ? cloneHealth(health) : null;
+    return this.active?.health ?? null;
   }
 
   get usingRecovery(): boolean {
@@ -364,8 +352,8 @@ export class ProjectWorkspace {
       layers: this.layers,
       activeLayer: this.activeLayer,
       layerSelection: this.layerSelection,
-      canUndoProgress: this.canUndoProgress,
-      canRedoProgress: this.canRedoProgress
+      canUndoMark: this.canUndoMark,
+      canRedoMark: this.canRedoMark
     };
     for (const listener of [...this.listeners]) listener();
   }
@@ -400,11 +388,50 @@ export class ProjectWorkspace {
     return this.active;
   }
 
-  private rememberOperationError(error: unknown, code: 'save-failed', message: string): never {
-    const normalized = error instanceof Error ? error : new WorkspaceError(code, message, error);
+  private rememberOperationError(error: unknown, message: string): never {
+    const normalized = asError(error, message);
     this.operationError = normalized;
     this.notify();
     throw normalized;
+  }
+
+  /**
+   * Runs a repository operation under the operation-token protocol. With
+   * `supersede` it starts a new operation, cancelling any in flight; without
+   * it, it reads the current token, so a background listing never cancels an
+   * in-flight open. A stale result throws `stale-operation`; any other failure
+   * becomes the remembered operation error.
+   */
+  private async runRepositoryOperation<T>(message: string, operation: (token: number) => Promise<T>, { supersede }: { supersede: boolean }): Promise<T> {
+    const token = supersede ? this.startOperation() : this.operationToken;
+    try {
+      const result = await operation(token);
+      this.ensureOperation(token);
+      this.operationError = null;
+      this.notify();
+      return result;
+    } catch (error) {
+      if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
+      return this.rememberOperationError(error, message);
+    }
+  }
+
+  /**
+   * Applies a change to the active session and clears the operation error.
+   * With `flushWhenImmediate` it also saves when autosave is not debounced.
+   */
+  private async mutateActiveSession(message: string, mutation: (session: ProjectSession) => void | Promise<void>, { flushWhenImmediate }: { flushWhenImmediate: boolean }): Promise<void> {
+    const session = this.ensureActiveSession();
+    try {
+      // Synchronous mutations stay synchronous, so the state change and notify are not deferred a tick.
+      const pending = mutation(session);
+      if (pending !== undefined) await pending;
+      if (flushWhenImmediate && this.debounceMs === 0) await session.flush();
+      this.operationError = null;
+      this.notify();
+    } catch (error) {
+      return this.rememberOperationError(error, message);
+    }
   }
 
   private makeSession(record: ProjectRecord, usingRecovery = false, health?: ProjectHealth | null): ProjectSession {
@@ -475,7 +502,7 @@ export class ProjectWorkspace {
       return session;
     } catch (error) {
       if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
-      return this.rememberOperationError(error, 'save-failed', 'Unable to create the local project.');
+      return this.rememberOperationError(error, 'Unable to create the local project.');
     }
   }
 
@@ -551,29 +578,13 @@ export class ProjectWorkspace {
   }
 
   async updateActiveMetadata(changes: ActiveMetadataChanges): Promise<void> {
-    const session = this.ensureActiveSession();
-    try {
-      session.updateMetadata(changes);
-      if (this.debounceMs === 0) await session.flush();
-      this.operationError = null;
-      this.notify();
-    } catch (error) {
-      return this.rememberOperationError(error, 'save-failed', 'Unable to update the active project metadata.');
-    }
+    return this.mutateActiveSession('Unable to update the active project metadata.', (session) => session.updateMetadata(changes), { flushWhenImmediate: true });
   }
 
   /** The Canvas stitch count: an undoable document settings change. `null` is ignored. */
   async updateActiveAidaCount(aidaCount: number | null): Promise<void> {
     if (aidaCount === null) return;
-    const session = this.ensureActiveSession();
-    try {
-      session.setAidaCount(aidaCount);
-      if (this.debounceMs === 0) await session.flush();
-      this.operationError = null;
-      this.notify();
-    } catch (error) {
-      return this.rememberOperationError(error, 'save-failed', 'Unable to update the stitch count.');
-    }
+    return this.mutateActiveSession('Unable to update the stitch count.', (session) => { session.setAidaCount(aidaCount); }, { flushWhenImmediate: true });
   }
 
   async updateAidaCount(aidaCount: number | null): Promise<void> {
@@ -581,32 +592,18 @@ export class ProjectWorkspace {
   }
 
   async listProjectHealth(): Promise<ProjectHealth[]> {
-    const token = this.operationToken;
-    try {
+    return this.runRepositoryOperation('Unable to inspect local project health.', async () => {
       const health = this.repository.listProjectHealth ? await this.repository.listProjectHealth() : (await this.repository.listProjects()).map((metadata) => ({ projectId: metadata.id, metadata, current: { status: 'valid' as const, revision: metadata.revision }, recovery: { status: 'missing' as const, revision: null }, assets: { status: 'unchecked' as const, count: 0 }, usableRevision: metadata.revision, recoveryAvailable: false, warnings: [] }));
-      this.ensureOperation(token);
-      this.operationError = null;
-      this.notify();
-      return health.map(cloneHealth);
-    } catch (error) {
-      if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
-      return this.rememberOperationError(error, 'save-failed', 'Unable to inspect local project health.');
-    }
+      return health.map(cloneProjectHealth);
+    }, { supersede: false });
   }
 
   async listProjects(): Promise<ProjectMetadata[]> {
-    const token = this.operationToken;
-    try {
+    return this.runRepositoryOperation('Unable to list local projects.', async () => {
       const projects = await this.repository.listProjects();
-      this.ensureOperation(token);
-      this.operationError = null;
-      this.notify();
       return projects.map((project) => ({ ...project }))
         .sort((left, right) => right.updatedAt - left.updatedAt || right.revision - left.revision || left.id.localeCompare(right.id));
-    } catch (error) {
-      if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
-      return this.rememberOperationError(error, 'save-failed', 'Unable to list local projects.');
-    }
+    }, { supersede: false });
   }
 
   /**
@@ -662,14 +659,14 @@ export class ProjectWorkspace {
       this.ensureOperation(token);
     } catch (error) {
       this.ensureOperation(token);
-      if (!this.repository.inspectProjectHealth || !this.repository.loadRecoveryRevision) return this.rememberOperationError(error, 'save-failed', 'Unable to open the local project.');
+      if (!this.repository.inspectProjectHealth || !this.repository.loadRecoveryRevision) return this.rememberOperationError(error, 'Unable to open the local project.');
       try {
         const health = await this.repository.inspectProjectHealth(projectId);
         this.ensureOperation(token);
-        if (!health || !health.metadata || !health.recoveryAvailable) return this.rememberOperationError(error, 'save-failed', 'Unable to open the local project.');
+        if (!health || !health.metadata || !health.recoveryAvailable) return this.rememberOperationError(error, 'Unable to open the local project.');
         const recovery = await this.repository.loadRecoveryRevision(projectId, health.recovery.revision ?? undefined);
         this.ensureOperation(token);
-        if (!recovery) return this.rememberOperationError(error, 'save-failed', 'Unable to open the local project recovery.');
+        if (!recovery) return this.rememberOperationError(error, 'Unable to open the local project recovery.');
         const session = this.makeSession(recovery, true, health);
         this.ensureOperation(token);
         this.setActive(session);
@@ -678,7 +675,7 @@ export class ProjectWorkspace {
         return session;
       } catch (recoveryError) {
         if (recoveryError instanceof WorkspaceError && recoveryError.code === 'stale-operation') throw recoveryError;
-        return this.rememberOperationError(recoveryError, 'save-failed', 'Unable to open the local project recovery.');
+        return this.rememberOperationError(recoveryError, 'Unable to open the local project recovery.');
       }
     }
     if (!record) {
@@ -696,7 +693,7 @@ export class ProjectWorkspace {
       return session;
     } catch (error) {
       if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
-      return this.rememberOperationError(error, 'save-failed', 'Unable to open the local project.');
+      return this.rememberOperationError(error, 'Unable to open the local project.');
     }
   }
 
@@ -722,9 +719,8 @@ export class ProjectWorkspace {
 
   async deleteProject(projectId: string): Promise<void> {
     this.ensureActiveWorkspace();
-    if (!isProjectId(projectId)) return this.rememberOperationError(new WorkspaceError('save-failed', 'Project ID is invalid.'), 'save-failed', 'Unable to delete the local project.');
-    const token = this.startOperation();
-    try {
+    if (!isProjectId(projectId)) return this.rememberOperationError(new WorkspaceError('save-failed', 'Project ID is invalid.'), 'Unable to delete the local project.');
+    return this.runRepositoryOperation('Unable to delete the local project.', async (token) => {
       if (this.active?.projectId === projectId) {
         // Detach the session before deleting. dispose() commits any pending
         // autosave to the record (so it is part of the same deletion), then
@@ -746,99 +742,51 @@ export class ProjectWorkspace {
       // snapshots, recovery snapshots, and activity in one transaction.
       // Deleting a project that no longer exists is a safe no-op.
       await this.repository.deleteProject(projectId);
-      this.ensureOperation(token);
-      this.operationError = null;
-      this.notify();
-    } catch (error) {
-      if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
-      return this.rememberOperationError(error, 'save-failed', 'Unable to delete the local project.');
-    }
+    }, { supersede: true });
   }
 
   async listFolderIndex(): Promise<ProjectFolderIndex> {
-    const token = this.operationToken;
-    try {
+    return this.runRepositoryOperation('Unable to list local folders.', async () => {
       const index = this.repository.listFolderIndex ? await this.repository.listFolderIndex() : { folders: [], assignments: [] };
-      this.ensureOperation(token);
-      this.operationError = null;
-      this.notify();
       return { folders: index.folders.map((folder) => ({ ...folder })), assignments: index.assignments.map((assignment) => ({ ...assignment })) };
-    } catch (error) {
-      if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
-      return this.rememberOperationError(error, 'save-failed', 'Unable to list local folders.');
-    }
+    }, { supersede: false });
   }
 
   async createFolder(name: string, parentId: string | null = null): Promise<ProjectFolder> {
-    const token = this.startOperation();
-    try {
+    return this.runRepositoryOperation('Unable to create the folder.', async () => {
       if (!this.repository.createFolder) throw new WorkspaceError('save-failed', 'This repository cannot create folders.');
       const folder = await this.repository.createFolder({ name, parentId, id: this.projectIdFactory() });
-      this.ensureOperation(token);
-      this.operationError = null;
-      this.notify();
       return { ...folder };
-    } catch (error) {
-      if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
-      return this.rememberOperationError(error, 'save-failed', 'Unable to create the folder.');
-    }
+    }, { supersede: true });
   }
 
   async renameFolder(folderId: string, name: string): Promise<ProjectFolder> {
-    const token = this.startOperation();
-    try {
+    return this.runRepositoryOperation('Unable to rename the folder.', async () => {
       if (!this.repository.renameFolder) throw new WorkspaceError('save-failed', 'This repository cannot rename folders.');
       const folder = await this.repository.renameFolder(folderId, name);
-      this.ensureOperation(token);
-      this.operationError = null;
-      this.notify();
       return { ...folder };
-    } catch (error) {
-      if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
-      return this.rememberOperationError(error, 'save-failed', 'Unable to rename the folder.');
-    }
+    }, { supersede: true });
   }
 
   async deleteFolder(folderId: string): Promise<void> {
-    const token = this.startOperation();
-    try {
+    return this.runRepositoryOperation('Unable to delete the folder.', async () => {
       if (!this.repository.deleteFolder) throw new WorkspaceError('save-failed', 'This repository cannot delete folders.');
       await this.repository.deleteFolder(folderId);
-      this.ensureOperation(token);
-      this.operationError = null;
-      this.notify();
-    } catch (error) {
-      if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
-      return this.rememberOperationError(error, 'save-failed', 'Unable to delete the folder.');
-    }
+    }, { supersede: true });
   }
 
   async moveProjectToFolder(projectId: string, folderId: string | null): Promise<void> {
-    const token = this.startOperation();
-    try {
+    return this.runRepositoryOperation('Unable to move the project.', async () => {
       if (!this.repository.moveProjectToFolder) throw new WorkspaceError('save-failed', 'This repository cannot move projects between folders.');
       await this.repository.moveProjectToFolder(projectId, folderId);
-      this.ensureOperation(token);
-      this.operationError = null;
-      this.notify();
-    } catch (error) {
-      if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
-      return this.rememberOperationError(error, 'save-failed', 'Unable to move the project.');
-    }
+    }, { supersede: true });
   }
 
   async moveFolder(folderId: string, parentId: string | null): Promise<void> {
-    const token = this.startOperation();
-    try {
+    return this.runRepositoryOperation('Unable to move the folder.', async () => {
       if (!this.repository.moveFolder) throw new WorkspaceError('save-failed', 'This repository cannot move folders.');
       await this.repository.moveFolder(folderId, parentId);
-      this.ensureOperation(token);
-      this.operationError = null;
-      this.notify();
-    } catch (error) {
-      if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
-      return this.rememberOperationError(error, 'save-failed', 'Unable to move the folder.');
-    }
+    }, { supersede: true });
   }
 
   async promoteRecovery(revision?: number): Promise<ProjectSession> {
@@ -877,7 +825,7 @@ export class ProjectWorkspace {
       return archive;
     } catch (error) {
       if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
-      return this.rememberOperationError(error, 'save-failed', 'Unable to export the local project archive.');
+      return this.rememberOperationError(error, 'Unable to export the local project archive.');
     }
   }
 
@@ -907,17 +855,13 @@ export class ProjectWorkspace {
   async renameProject(projectId: string, title: string): Promise<ProjectMetadata> {
     this.ensureActiveWorkspace();
     const trimmed = typeof title === 'string' ? title.trim() : '';
-    if (!isProjectId(projectId) || trimmed === '') return this.rememberOperationError(new WorkspaceError('save-failed', 'Project ID or title is invalid.'), 'save-failed', 'Unable to rename the local project.');
-    const token = this.startOperation();
-    try {
+    if (!isProjectId(projectId) || trimmed === '') return this.rememberOperationError(new WorkspaceError('save-failed', 'Project ID or title is invalid.'), 'Unable to rename the local project.');
+    return this.runRepositoryOperation('Unable to rename the local project.', async (token) => {
       if (this.active?.projectId === projectId) {
         // Route through the session so the open editor and its record agree.
         const session = this.active;
         session.updateMetadata({ title: trimmed });
         await session.flush();
-        this.ensureOperation(token);
-        this.operationError = null;
-        this.notify();
         return session.metadata;
       }
       const record = await this.repository.load(projectId);
@@ -928,20 +872,14 @@ export class ProjectWorkspace {
       const saveResult = await this.repository.save(projectId, metadata, record.document, undefined, { mode: 'retain', expectedHead: record.head, expectedRevision: record.document.revision });
       this.ensureOperation(token);
       if (!saveResult.committed || saveResult.stale) throw new PersistenceError('stale-save', `Project ${projectId} was not committed.`);
-      this.operationError = null;
-      this.notify();
       return metadata;
-    } catch (error) {
-      if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
-      return this.rememberOperationError(error, 'save-failed', 'Unable to rename the local project.');
-    }
+    }, { supersede: true });
   }
 
   async duplicateProject(projectId: string): Promise<ProjectMetadata> {
     this.ensureActiveWorkspace();
-    if (!isProjectId(projectId)) return this.rememberOperationError(new WorkspaceError('save-failed', 'Project ID is invalid.'), 'save-failed', 'Unable to duplicate the local project.');
-    const token = this.startOperation();
-    try {
+    if (!isProjectId(projectId)) return this.rememberOperationError(new WorkspaceError('save-failed', 'Project ID is invalid.'), 'Unable to duplicate the local project.');
+    return this.runRepositoryOperation('Unable to duplicate the local project.', async (token) => {
       // Unlike forkActiveProject, the copy is saved without becoming the active
       // session, so the gallery can duplicate any project in place.
       const active = this.active?.projectId === projectId ? this.active : null;
@@ -961,13 +899,8 @@ export class ProjectWorkspace {
       const saveResult = await this.repository.save(copyId, metadata, document, record.assets, { allowLegacyAssetIds: true });
       this.ensureOperation(token);
       if (!saveResult.committed || saveResult.stale) throw new PersistenceError('stale-save', `Project ${copyId} was not committed.`);
-      this.operationError = null;
-      this.notify();
       return metadata;
-    } catch (error) {
-      if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
-      return this.rememberOperationError(error, 'save-failed', 'Unable to duplicate the local project.');
-    }
+    }, { supersede: true });
   }
 
   execute(command: DomainCommand) {
@@ -1043,15 +976,7 @@ export class ProjectWorkspace {
   }
 
   async updateActiveMaterialSettings(changes: Parameters<ProjectSession['updateMaterialSettings']>[0]): Promise<void> {
-    const session = this.ensureActiveSession();
-    try {
-      session.updateMaterialSettings(changes);
-      if (this.debounceMs === 0) await session.flush();
-      this.operationError = null;
-      this.notify();
-    } catch (error) {
-      return this.rememberOperationError(error, 'save-failed', 'Unable to update the active material settings.');
-    }
+    return this.mutateActiveSession('Unable to update the active material settings.', (session) => session.updateMaterialSettings(changes), { flushWhenImmediate: true });
   }
 
   async updateMaterialSettings(changes: Parameters<ProjectSession['updateMaterialSettings']>[0]): Promise<void> {
@@ -1067,15 +992,7 @@ export class ProjectWorkspace {
   }
 
   async setActiveSourceImage(settings: SourceImageSettingsInput): Promise<void> {
-    const session = this.ensureActiveSession();
-    try {
-      session.setSourceImage(settings);
-      if (this.debounceMs === 0) await session.flush();
-      this.operationError = null;
-      this.notify();
-    } catch (error) {
-      return this.rememberOperationError(error, 'save-failed', 'Unable to update the active source image.');
-    }
+    return this.mutateActiveSession('Unable to update the active source image.', (session) => session.setSourceImage(settings), { flushWhenImmediate: true });
   }
 
   async setSourceImage(settings: SourceImageSettingsInput): Promise<void> {
@@ -1094,26 +1011,11 @@ export class ProjectWorkspace {
    * one call per drag commit, one per arrow nudge, one per slider release.
    */
   async applyTraceImageChange(next: SourceImageDescriptor | undefined, options?: { label?: string }): Promise<void> {
-    const session = this.ensureActiveSession();
-    try {
-      session.applyTraceImageChange(next, options);
-      if (this.debounceMs === 0) await session.flush();
-      this.operationError = null;
-      this.notify();
-    } catch (error) {
-      return this.rememberOperationError(error, 'save-failed', 'Unable to update the active source image.');
-    }
+    return this.mutateActiveSession('Unable to update the active source image.', (session) => session.applyTraceImageChange(next, options), { flushWhenImmediate: true });
   }
 
   async replaceSourceImage(input: SourceImageReplacementInput | ProjectAssetInput, settings?: SourceImageSettingsInput): Promise<void> {
-    const session = this.ensureActiveSession();
-    try {
-      await session.replaceSourceImage(input, settings);
-      this.operationError = null;
-      this.notify();
-    } catch (error) {
-      return this.rememberOperationError(error, 'save-failed', 'Unable to replace the active source image.');
-    }
+    return this.mutateActiveSession('Unable to replace the active source image.', (session) => session.replaceSourceImage(input, settings), { flushWhenImmediate: false });
   }
 
   async replaceSourceImageAsset(input: SourceImageReplacementInput | ProjectAssetInput, settings?: SourceImageSettingsInput): Promise<void> {
@@ -1126,14 +1028,7 @@ export class ProjectWorkspace {
 
   /** Atomically removes the source-image descriptor and its retained asset. */
   async removeSourceImage(): Promise<void> {
-    const session = this.ensureActiveSession();
-    try {
-      await session.removeSourceImage();
-      this.operationError = null;
-      this.notify();
-    } catch (error) {
-      return this.rememberOperationError(error, 'save-failed', 'Unable to clear the active source image.');
-    }
+    return this.mutateActiveSession('Unable to clear the active source image.', (session) => session.removeSourceImage(), { flushWhenImmediate: false });
   }
 
   async removeSourceImageAsset(): Promise<void> {
@@ -1156,24 +1051,24 @@ export class ProjectWorkspace {
     return this.ensureActiveSession().markProgress(command);
   }
 
-  undoProgress() {
-    return this.ensureActiveSession().undoProgress();
+  undoMark() {
+    return this.ensureActiveSession().undoMark();
   }
 
-  redoProgress() {
-    return this.ensureActiveSession().redoProgress();
+  redoMark() {
+    return this.ensureActiveSession().redoMark();
   }
 
-  clearProgressHistory(): void {
-    this.active?.clearProgressHistory();
+  clearMarkHistory(): void {
+    this.active?.clearMarkHistory();
   }
 
-  get canUndoProgress(): boolean {
-    return this.active?.canUndoProgress ?? false;
+  get canUndoMark(): boolean {
+    return this.active?.canUndoMark ?? false;
   }
 
-  get canRedoProgress(): boolean {
-    return this.active?.canRedoProgress ?? false;
+  get canRedoMark(): boolean {
+    return this.active?.canRedoMark ?? false;
   }
 
   async retrySave(): Promise<void> {

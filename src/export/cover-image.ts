@@ -1,6 +1,6 @@
-import { CellKind, FIXED_POINT_UNITS_PER_CELL, type PaletteEntry } from '../domain';
+import { CellKind, componentKind, componentSlotMask, FIXED_POINT_UNITS_PER_CELL, isLegacyQuarterKind, type PaletteEntry } from '../domain';
 import { DEFAULT_RENDERER_STYLE, type CanvasContextAdapter } from '../editor/contracts';
-import { isLegacyQuarterKind, isThreeQuarterPairKind, threeQuarterPairComponents } from '../editor/cell-kinds';
+import { isThreeQuarterPairKind } from '../editor/cell-kinds';
 import {
   drawThreadBackstitch,
   drawThreadFabric,
@@ -83,13 +83,9 @@ export async function paintCover(
       const kind = document.kind[index];
       if (kind === CellKind.Empty || (mask && mask[index] === 0)) continue;
       const offset = index * 4;
-      if (isLegacyQuarterKind(kind)) {
-        for (let slot = 0; slot < 4; slot += 1) paint(kind, document.colors[offset + slot] ?? 0, x, y, slot);
-      } else if (isThreeQuarterPairKind(kind)) {
-        const colors = [0, 1, 2, 3].map((slot) => document.colors[offset + slot] ?? 0);
-        for (const component of threeQuarterPairComponents(colors)) {
-          paint(component.kind, colors[component.slot] ?? 0, x, y, component.slot);
-        }
+      if (isLegacyQuarterKind(kind) || isThreeQuarterPairKind(kind)) {
+        const slots = componentSlotMask(kind, document.colors, offset);
+        for (let slot = 0; slot < 4; slot += 1) if ((slots & (1 << slot)) !== 0) paint(componentKind(kind, slot), document.colors[offset + slot], x, y, slot);
       } else paint(kind, document.colors[offset] ?? 0, x, y);
     }
   }

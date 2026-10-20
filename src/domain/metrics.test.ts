@@ -13,6 +13,7 @@ import {
   normalizeMaterialAssumptions,
   QuarterCorner
 } from './index';
+import { markBackstitchComplete, markCellComplete } from './test-fixtures';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 
 describe('derived pattern metrics', () => {
@@ -30,15 +31,15 @@ describe('derived pattern metrics', () => {
     };
 
     apply({ type: 'set-full', x: 0, y: 0, color: 7 });
-    apply({ type: 'set-completion', x: 0, y: 0, completed: true });
+    pattern = markCellComplete(pattern, 0, 0);
     apply({ type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 7 });
     apply({ type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 2 });
-    apply({ type: 'set-completion', x: 2, y: 0, corner: QuarterCorner.NW, completed: true });
+    pattern = markCellComplete(pattern, 2, 0, QuarterCorner.NW);
     apply({ type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.SE, color: 7 });
     apply({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 2 });
     apply({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 4 }, color: 7 });
     const backstitchId = pattern.backstitches.ids[1];
-    apply({ type: 'set-backstitch-completion', id: backstitchId, completed: true });
+    pattern = markBackstitchComplete(pattern, backstitchId);
 
     const metrics = computePatternMetrics(pattern, { strands: 2, waste: 0.1, skeinLength: 10 });
 
@@ -112,7 +113,7 @@ describe('derived pattern metrics', () => {
       palette: [{ id: 1, name: 'Red', color: '#d33' }]
     });
     pattern = applyCommand(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
-    pattern = applyCommand(pattern, { type: 'set-completion', x: 0, y: 0, completed: true }).document;
+    pattern = markCellComplete(pattern, 0, 0);
     pattern = applyCommand(pattern, { type: 'set-three-quarter', x: 1, y: 0, corner: QuarterCorner.SE, color: 1 }).document;
 
     const metrics = computePatternMetrics(pattern, { strands: 2, waste: 0.1 });
@@ -143,7 +144,7 @@ describe('derived pattern metrics', () => {
     });
     pattern = applyCommand(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
     pattern = applyCommand(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 }).document;
-    pattern = applyCommand(pattern, { type: 'set-completion', x: 0, y: 0, corner: QuarterCorner.NW, completed: true }).document;
+    pattern = markCellComplete(pattern, 0, 0, QuarterCorner.NW);
 
     const metrics = computePatternMetrics(pattern, { strands: 2, waste: 0.1 });
     expect(metrics.totals).toMatchObject({ threeQuarter: 2, totalComponents: 2, completedComponents: 1, remainingComponents: 1 });

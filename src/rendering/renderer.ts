@@ -1,6 +1,9 @@
 import {
   CellKind,
   colorComponentMask,
+  componentKind,
+  componentSlotMask,
+  isLegacyQuarterKind,
   type PatternDocument
 } from '../domain';
 import {
@@ -69,7 +72,7 @@ import {
 } from './thread-preview';
 import targetSvg from '../assets/ui-icons/target.svg?raw';
 import { createTraceImageProjection, drawTraceImage } from './trace';
-import { isLegacyQuarterKind, isThreeQuarterKind, isThreeQuarterPairKind, threeQuarterPairComponents } from '../editor/cell-kinds';
+import { isThreeQuarterKind, isThreeQuarterPairKind } from '../editor/cell-kinds';
 import { selectionBoundarySegments } from '../editor/lasso';
 
 const EMPTY_STATS: RenderStats = {
@@ -358,23 +361,23 @@ function drawCellState(
       if (id !== 0) fill(id, (completed & (1 << slot)) !== 0, slot);
     }
   } else if (isThreeQuarterPairKind(kind)) {
-    const components = threeQuarterPairComponents(colors).filter((component) => (colors[component.slot] ?? 0) !== 0);
-    for (const component of components) {
-      paintShape(colors[component.slot] ?? 0, (completed & (1 << component.slot)) !== 0, component.slot, component.kind);
+    const mask = componentSlotMask(kind, colors, 0);
+    for (let slot = 0; slot < 4; slot += 1) {
+      if ((mask & (1 << slot)) !== 0) paintShape(colors[slot], (completed & (1 << slot)) !== 0, slot, componentKind(kind, slot));
     }
     // The seam keeps two same-colored three-quarters from reading as one full stitch. It sits above
     // the fills and below the symbols and completion marks.
-    if (components.length > 0 && lod !== RenderLod.Overview) {
-      const first = components[0];
-      const firstId = colors[first.slot] ?? 0;
-      const backslashSeam = first.slot === 0;
+    if (mask !== 0 && lod !== RenderLod.Overview) {
+      const firstSlot = 31 - Math.clz32(mask & -mask);
+      const firstId = colors[firstSlot];
+      const backslashSeam = firstSlot === 0;
       save(context);
       context.strokeStyle = contrastSymbolInk(
         symbolMode ? style.symbolBackgroundColor : styleColor(document, firstId, style),
         style.symbolColor
       );
       context.lineWidth = Math.max(1, Math.min(2, viewport.zoom * 0.06));
-      setAlpha(context, ((completed & (1 << first.slot)) !== 0 ? style.completedOpacity : 1) * dimAlpha * highlightAlpha(style, firstId));
+      setAlpha(context, ((completed & (1 << firstSlot)) !== 0 ? style.completedOpacity : 1) * dimAlpha * highlightAlpha(style, firstId));
       linePath(
         context,
         backslashSeam ? { x: rect.x + rect.width, y: rect.y } : { x: rect.x, y: rect.y },
@@ -382,8 +385,8 @@ function drawCellState(
       );
       restore(context);
     }
-    for (const component of components) {
-      paintMarks(colors[component.slot] ?? 0, (completed & (1 << component.slot)) !== 0, component.slot);
+    for (let slot = 0; slot < 4; slot += 1) {
+      if ((mask & (1 << slot)) !== 0) paintMarks(colors[slot], (completed & (1 << slot)) !== 0, slot);
     }
   } else {
     fill(colors[0] ?? 0, (completed & 1) !== 0);
@@ -424,7 +427,8 @@ function drawThreadCell(
   if (isLegacyQuarterKind(kind)) {
     for (let slot = 0; slot < 4; slot += 1) stitch(colors[slot] ?? 0, kind, slot);
   } else if (isThreeQuarterPairKind(kind)) {
-    for (const component of threeQuarterPairComponents(colors)) stitch(colors[component.slot] ?? 0, component.kind, component.slot);
+    const mask = componentSlotMask(kind, colors, 0);
+    for (let slot = 0; slot < 4; slot += 1) if ((mask & (1 << slot)) !== 0) stitch(colors[slot], componentKind(kind, slot), slot);
   } else {
     stitch(colors[0] ?? 0, kind, 0);
   }
@@ -1751,11 +1755,11 @@ function drawOverviewFallback(
           );
         }
       } else if (isThreeQuarterPairKind(document.kind[index])) {
-        for (const component of threeQuarterPairComponents(document.colors.subarray(offset, offset + 4))) {
-          const id = document.colors[offset + component.slot];
-          if (id === 0) continue;
-          fill(id);
-          drawStitchGeometry(context, component.kind, rect);
+        const mask = componentSlotMask(document.kind[index], document.colors, offset);
+        for (let slot = 0; slot < 4; slot += 1) {
+          if ((mask & (1 << slot)) === 0) continue;
+          fill(document.colors[offset + slot]);
+          drawStitchGeometry(context, componentKind(document.kind[index], slot), rect);
         }
       } else {
         fill(document.colors[offset]);
@@ -2267,19 +2271,11 @@ function cellStateColors(
   if (kind === CellKind.Empty) return [patternBackground];
   completed = shownCompletion(style, completed);
 
-  let slots: number[];
-  if (isLegacyQuarterKind(kind)) {
-    slots = [0, 1, 2, 3];
-  } else if (isThreeQuarterPairKind(kind)) {
-    slots = threeQuarterPairComponents(colors).map((component) => component.slot);
-  } else {
-    slots = [0];
-  }
-
+  const mask = componentSlotMask(kind, colors, 0);
   const visible: string[] = [];
-  for (const slot of slots) {
-    const paletteId = colors[slot] ?? 0;
-    if (paletteId === 0) continue;
+  for (let slot = 0; slot < 4; slot += 1) {
+    if ((mask & (1 << slot)) === 0) continue;
+    const paletteId = colors[slot];
     const fill = style.mode === ChartPresentationMode.Symbol
       ? style.symbolBackgroundColor
       : styleColor(document, paletteId, style);

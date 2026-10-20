@@ -3,9 +3,10 @@ import { UINT32_MAX, isAutoOverflowEntry, isThreeQuarterKind, isThreeQuarterPair
 import { backstitchWithinCanvas, isValidCanvasOrigin } from './canvas';
 import { parseHexColor } from './color';
 import { isRecord } from './guards';
+import { segmentKey } from './backstitch-store';
 
 function isPositiveInteger(value: number): boolean {
-  return Number.isInteger(value) && value > 0;
+  return Number.isSafeInteger(value) && value > 0;
 }
 
 /**
@@ -105,7 +106,7 @@ export function collectValidationErrors(document: PatternDocument): string[] {
       errors.push(`Palette ID ${String(entry.id)} is above the brand's color count (${String(limit)}).`);
     }
     if (
-      !Number.isInteger(entry.id) ||
+      !Number.isSafeInteger(entry.id) ||
       entry.id < 1 ||
       entry.id > PALETTE_ID_MAX ||
       paletteIds.has(entry.id)
@@ -135,7 +136,7 @@ export function collectValidationErrors(document: PatternDocument): string[] {
     if (entry.catalog !== undefined) {
       const catalog = entry.catalog;
       const expectedRgb = typeof catalog.hex === 'string' ? parseHexColor(catalog.hex) : undefined;
-      if (typeof catalog.catalogId !== 'string' || !catalog.catalogId.trim() || typeof catalog.sourceId !== 'string' || !catalog.sourceId.trim() || typeof catalog.code !== 'string' || !catalog.code.trim() || typeof catalog.name !== 'string' || !catalog.name.trim() || expectedRgb === undefined || !Array.isArray(catalog.rgb) || catalog.rgb.length !== 3 || catalog.rgb.some((channel) => !Number.isInteger(channel) || channel < 0 || channel > 255) || catalog.rgb.some((channel, index) => channel !== expectedRgb[index])) {
+      if (typeof catalog.catalogId !== 'string' || !catalog.catalogId.trim() || typeof catalog.sourceId !== 'string' || !catalog.sourceId.trim() || typeof catalog.code !== 'string' || !catalog.code.trim() || typeof catalog.name !== 'string' || !catalog.name.trim() || expectedRgb === undefined || !Array.isArray(catalog.rgb) || catalog.rgb.length !== 3 || catalog.rgb.some((channel) => !Number.isSafeInteger(channel) || channel < 0 || channel > 255) || catalog.rgb.some((channel, index) => channel !== expectedRgb[index])) {
         errors.push(`Palette ID ${String(entry.id)} has invalid catalog data.`);
       }
     }
@@ -168,7 +169,7 @@ export function collectValidationErrors(document: PatternDocument): string[] {
   }
 
   if (
-    !Number.isInteger(document.nextPaletteId) ||
+    !Number.isSafeInteger(document.nextPaletteId) ||
     document.nextPaletteId < 1 ||
     document.nextPaletteId > PALETTE_ID_MAX + 1
   ) {
@@ -260,7 +261,7 @@ export function collectValidationErrors(document: PatternDocument): string[] {
     const y1 = store.y1[index];
     const x2 = store.x2[index];
     const y2 = store.y2[index];
-    const key = `${String(x1)},${String(y1)},${String(x2)},${String(y2)}`;
+    const key = segmentKey(store, index);
     if (id === 0 || id > UINT32_MAX || ids.has(id)) errors.push(`Backstitch ID ${String(id)} is invalid or duplicated.`);
     if (x1 > maxX || x2 > maxX || y1 > maxY || y2 > maxY) errors.push(`Backstitch ${String(id)} is outside the document boundary.`);
     else if (mask !== undefined && !backstitchWithinCanvas({ width: document.width, height: document.height, canvasMask: mask }, x1, y1, x2, y2)) errors.push(`Backstitch ${String(id)} is outside the canvas.`);
@@ -273,13 +274,13 @@ export function collectValidationErrors(document: PatternDocument): string[] {
     segments.add(key);
     maxId = Math.max(maxId, id);
   }
-  if (!Number.isInteger(document.nextBackstitchId) || document.nextBackstitchId < 1 || document.nextBackstitchId > UINT32_MAX + 1) {
+  if (!Number.isSafeInteger(document.nextBackstitchId) || document.nextBackstitchId < 1 || document.nextBackstitchId > UINT32_MAX + 1) {
     errors.push('nextBackstitchId is invalid.');
   } else if (document.nextBackstitchId <= maxId) {
     errors.push('nextBackstitchId must be greater than every allocated backstitch ID.');
   }
 
-  if (!Number.isInteger(document.revision) || document.revision < 0) errors.push('revision must be a non-negative integer.');
+  if (!Number.isSafeInteger(document.revision) || document.revision < 0) errors.push('revision must be a non-negative integer.');
   return errors;
 }
 

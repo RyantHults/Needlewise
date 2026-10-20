@@ -8,7 +8,9 @@ import {
   canAddLayer,
   commandLayerType,
   commitLayerSurface,
+  createDocument,
   createLayeredDocument,
+  deleteRegionCommand,
   findLayer,
   flattenDocument,
   layerAddCommand,
@@ -55,6 +57,7 @@ import {
 } from './gateway';
 import type { PointerSample } from './input';
 import { createUiStore } from './ui-store';
+import { editorFromSurface, SPECIALTY_LAYER_ID, STITCH_LAYER_ID } from '../domain/test-fixtures';
 
 /** A small layered workspace: layer-scoped commands run on one layer surface, as the session does. */
 class LayeredBoundary implements WorkspaceEditorBoundary {
@@ -128,7 +131,7 @@ class LayeredBoundary implements WorkspaceEditorBoundary {
       layerId = applyLayerStructureCommand(this.layeredDocument, layerAddCommand(type)).layerId!;
     }
     this.activeLayerId = layerId!;
-    const result = this.run({ ...pasteFragmentCommand(fragment, position), layerId });
+    const result = this.run({ ...pasteFragmentCommand(fragment, position), ...(layerId === null ? {} : { layerId }) });
     this.emit();
     return { result, layerId: layerId!, message: destination.message };
   }
@@ -985,5 +988,46 @@ describe('layer helpers', () => {
     expect(compositeInvalidationFor({ ...base, compositeChangedIndices: new Uint32Array() })).toMatchObject({ full: true });
     expect(compositeUnchanged({ ...base, compositeUnchanged: true })).toBe(true);
     expect(compositeUnchanged(base)).toBe(false);
+  });
+
+  it('redraws in full when a multi-layer delete changes lines outside the changed cells', () => {
+    // Stitches sit in the rect's top-left corner; a backstitch over empty cells sits in its bottom-right.
+    let surface = createDocument({ width: 6, height: 6, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    surface = applyCommand(surface, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+    surface = applyCommand(surface, { type: 'set-full', x: 1, y: 0, color: 1 }).document;
+    surface = applyCommand(surface, { type: 'add-backstitch', start: { x: 16, y: 16 }, end: { x: 20, y: 20 }, color: 1 }).document;
+    const editor = editorFromSurface(surface);
+    const rect = { x: 0, y: 0, width: 6, height: 6 };
+    const deleted = editor.execute({
+      type: 'batch',
+      commands: [
+        { ...deleteRegionCommand(rect, editor.revision), layerId: STITCH_LAYER_ID },
+        { ...deleteRegionCommand(rect, editor.revision), layerId: SPECIALTY_LAYER_ID }
+      ]
+    });
+    expect(deleted.changed).toBe(true);
+    expect(deleted.requiresFullRedraw).toBe(true);
+    expect(editor.composite.backstitches.ids).toHaveLength(0);
+    expect(compositeInvalidationFor(deleted)).toMatchObject({ layer: 'base', full: true });
+    expect(compositeInvalidationFor(deleted)).not.toHaveProperty('cellRect');
+
+    const undone = editor.undo();
+    expect(undone.requiresFullRedraw).toBe(true);
+    expect(editor.composite.backstitches.ids).toHaveLength(1);
+    expect(compositeInvalidationFor(undone)).toMatchObject({ layer: 'base', full: true });
+    expect(compositeInvalidationFor(undone)).not.toHaveProperty('cellRect');
+    expect(compositeInvalidationFor(editor.redo())).toMatchObject({ layer: 'base', full: true });
+
+    // With no line inside the rect, the same two-layer delete stays bounded by the changed cells.
+    const cellsOnly = editorFromSurface(applyCommand(surface, { type: 'remove-backstitch', id: surface.backstitches.ids[0] }).document);
+    const bounded = cellsOnly.execute({
+      type: 'batch',
+      commands: [
+        { ...deleteRegionCommand(rect, cellsOnly.revision), layerId: STITCH_LAYER_ID },
+        { ...deleteRegionCommand(rect, cellsOnly.revision), layerId: SPECIALTY_LAYER_ID }
+      ]
+    });
+    expect(bounded.changed).toBe(true);
+    expect(compositeInvalidationFor(bounded)).toMatchObject({ layer: 'base', cellRect: { x: 0, y: 0, width: 2, height: 1 } });
   });
 });
