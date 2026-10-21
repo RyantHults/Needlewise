@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { canvasCellsCommand, canvasResizeCommand, createDocument, type LayeredDocument } from '../domain';
 import {
-  PersistenceError,
   cloneSessionHistory,
   decodeDocument,
   encodeDocument,
@@ -49,9 +48,6 @@ class BinaryMemoryRepository implements WorkspaceRepository {
     this.records.delete(projectId);
   }
 
-  async exportProject(): Promise<Uint8Array> {
-    throw new PersistenceError('storage-failure', 'Not used in canvas tests.');
-  }
 }
 
 function blank() {

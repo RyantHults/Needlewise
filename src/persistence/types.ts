@@ -1,9 +1,7 @@
-import { DOCUMENT_SCHEMA_VERSION } from '../domain';
-import type { CatalogAssociation, DisplayUnits, DocumentEditorHistoryDto, LayeredDocument, NormalizedMaterialSettings } from '../domain';
+import type { DisplayUnits, DocumentEditorHistoryDto, LayeredDocument, NormalizedMaterialSettings } from '../domain';
 import type { ProgressActivity } from './activity';
 
 export const PERSISTENCE_SCHEMA_VERSION = 1 as const;
-export const ARCHIVE_FORMAT = 'needlewise-project-v2' as const;
 export const SESSION_HISTORY_ENVELOPE_VERSION = 1 as const;
 export const MAX_SESSION_HISTORY_BYTES = 16 * 1024 * 1024;
 export const MAX_SESSION_HISTORY_DECODE_BYTES = 64 * 1024 * 1024;
@@ -94,7 +92,7 @@ export interface ProjectMetadata {
   revision: number;
   /**
    * Legacy fabric count from before layers. It is read but never written: the
-   * repository and archive import copy it into `settings.aidaCount` of a
+   * repository copies it into `settings.aidaCount` of a
    * document decoded from v1/v2 bytes. New code reads the document settings.
    */
   aidaCount?: number;
@@ -331,57 +329,8 @@ export interface SaveOptions {
   activity?: ProgressActivity;
   /** Replaces the local undo/redo history when supplied. */
   history?: SessionHistoryInput;
-  /** Explicitly permits copying already-normalized legacy asset IDs. */
-  allowLegacyAssetIds?: boolean;
   /** Internal exact preparation request identity for a prepared commit. */
   preparedRequestId?: string;
-}
-
-export interface ArchiveAssetManifest {
-  id: string;
-  /** v2 writes safe IDs directly and maps legacy IDs to a binary-safe path. */
-  path: string;
-  name: string;
-  mimeType: string;
-  byteLength: number;
-  sha256: string;
-}
-
-export interface ArchiveManifest {
-  format: typeof ARCHIVE_FORMAT;
-  archiveVersion: typeof PERSISTENCE_SCHEMA_VERSION;
-  projectId: string;
-  metadata: {
-    path: 'metadata.json';
-    byteLength: number;
-    sha256: string;
-  };
-  document: {
-    path: 'document.bin';
-    schemaVersion: typeof DOCUMENT_SCHEMA_VERSION;
-    catalog: CatalogAssociation;
-    byteLength: number;
-    sha256: string;
-  };
-  activity?: {
-    path: 'activity.json';
-    byteLength: number;
-    sha256: string;
-  };
-  assets: ArchiveAssetManifest[];
-}
-
-export interface ArchiveBundle {
-  manifest: ArchiveManifest;
-  metadata: ProjectMetadata;
-  document: LayeredDocument;
-  assets: ProjectAsset[];
-  activity?: ProgressActivity;
-  warnings?: string[];
-}
-
-export interface ArchiveExportOptions {
-  onWarning?: (warning: string) => void;
 }
 
 export interface RepositoryOptions {

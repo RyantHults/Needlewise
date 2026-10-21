@@ -46,9 +46,6 @@ class LayeredMemoryRepository implements WorkspaceRepository {
     this.records.delete(projectId);
   }
 
-  async exportProject(): Promise<Uint8Array> {
-    throw new Error('Not used by these tests.');
-  }
 }
 
 const unusedPreparationClient: PersistencePreparationClient = {

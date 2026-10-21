@@ -1,9 +1,7 @@
 import { assertValidLayeredDocument, normalizeAidaCount, normalizeDisplayUnits, normalizeMaterialAssumptions, type LayeredDocument } from '../domain';
-import { exportArchive } from './archive';
 import { NeedlewiseDatabase } from './database';
 import { PersistenceError } from './errors';
 import {
-  isArchiveSafeAssetId,
   isBoundedMetadataString,
   isValidAssetId,
   MAX_ASSET_BYTES,
@@ -180,8 +178,8 @@ function storedBytes(value: unknown): Uint8Array | undefined {
   return undefined;
 }
 
-async function bytesForAsset(input: ProjectAssetInput, legacyIds: ReadonlySet<string>): Promise<Uint8Array> {
-  if ((!isArchiveSafeAssetId(input.id) && !legacyIds.has(input.id)) || typeof input.name !== 'string' || input.name.length > 512 || typeof input.mimeType !== 'string' || input.mimeType.length > 256) throw new PersistenceError('invalid-asset', 'Asset metadata is malformed.');
+async function bytesForAsset(input: ProjectAssetInput): Promise<Uint8Array> {
+  if (!isValidAssetId(input.id) || typeof input.name !== 'string' || input.name.length > 512 || typeof input.mimeType !== 'string' || input.mimeType.length > 256) throw new PersistenceError('invalid-asset', 'Asset metadata is malformed.');
   let bytes: Uint8Array;
   if (typeof Blob !== 'undefined' && input.data instanceof Blob) {
     if (input.data.size > MAX_ASSET_BYTES) throw new PersistenceError('invalid-asset', `Asset ${input.id} exceeds the size limit.`);
@@ -197,16 +195,13 @@ async function bytesForAsset(input: ProjectAssetInput, legacyIds: ReadonlySet<st
   return bytes;
 }
 
-async function normalizeAssets(inputs: readonly ProjectAssetInput[], legacyIds: ReadonlySet<string> = new Set(), allowLegacyAssetIds = false): Promise<ProjectAsset[]> {
+async function normalizeAssets(inputs: readonly ProjectAssetInput[]): Promise<ProjectAsset[]> {
   const assets: ProjectAsset[] = [];
   const ids = new Set<string>();
-  const permittedLegacyIds = allowLegacyAssetIds
-    ? new Set(inputs.map((candidate) => candidate.id).filter(isValidAssetId))
-    : legacyIds;
   let total = 0;
   for (const input of inputs) {
     if (ids.has(input.id)) throw new PersistenceError('invalid-asset', `Asset ${input.id} is duplicated.`);
-    const data = await bytesForAsset(input, permittedLegacyIds);
+    const data = await bytesForAsset(input);
     total += data.length;
     if (total > MAX_ASSET_TOTAL_BYTES) throw new PersistenceError('invalid-asset', 'Assets exceed the size limit.');
     ids.add(input.id);
@@ -471,20 +466,11 @@ export class ProjectRepository {
   readonly db: NeedlewiseDatabase;
   private readonly now: () => number;
   private readonly queues = new Map<string, Promise<unknown>>();
-  private exportWarningState: string[] = [];
   private verifiedCurrentCache: StoredDocumentSnapshot | undefined;
 
   constructor(db: NeedlewiseDatabase | undefined = undefined, options: RepositoryOptions = {}) {
     this.db = db ?? new NeedlewiseDatabase(options.databaseName);
     this.now = options.now ?? (() => Date.now());
-  }
-
-  get exportWarnings(): readonly string[] {
-    return [...this.exportWarningState];
-  }
-
-  get lastExportWarnings(): readonly string[] {
-    return this.exportWarnings;
   }
 
   private clearVerifiedCurrentCache(projectId?: string): void {
@@ -759,18 +745,7 @@ export class ProjectRepository {
 
   private async commitReplaced(projectId: string, metadataInput: ProjectMetadata, summary: ProjectDocumentSummary, revision: number, bytes: Uint8Array, checksum: string, assetsInput: readonly ProjectAssetInput[] | undefined, options: SaveOptions, history: SessionHistoryEnvelope | null, clonePreparedBytes: boolean): Promise<SaveResult> {
     const metadata = withProjectSummary(metadataInput, summary);
-    let legacyAssetIds = new Set<string>();
-    if (assetsInput !== undefined) {
-      try {
-        const existingAssets = await this.db.assets.where('projectId').equals(projectId).toArray();
-        legacyAssetIds = new Set(existingAssets
-          .map((asset) => asset.id)
-          .filter((assetId): assetId is string => isValidAssetId(assetId) && !isArchiveSafeAssetId(assetId)));
-      } catch (error) {
-        throw new PersistenceError('storage-failure', 'Unable to inspect existing project assets.', error);
-      }
-    }
-    const assets = assetsInput === undefined ? undefined : await normalizeAssets(assetsInput, legacyAssetIds, options.allowLegacyAssetIds === true);
+    const assets = assetsInput === undefined ? undefined : await normalizeAssets(assetsInput);
     let activity: ProgressActivity | undefined;
     if (options.activity !== undefined) {
       try {
@@ -923,18 +898,7 @@ export class ProjectRepository {
     // The head check inside the commit transaction anchors this history to
     // the current snapshot; no snapshot decode or chain replay happens here.
     if (options.history !== undefined) history = await prepareSessionHistoryForSave(options.history) ?? null;
-    let legacyAssetIds = new Set<string>();
-    if (assetsInput !== undefined) {
-      try {
-        const existingAssets = await this.db.assets.where('projectId').equals(projectId).toArray();
-        legacyAssetIds = new Set(existingAssets
-          .map((asset) => asset.id)
-          .filter((assetId): assetId is string => isValidAssetId(assetId) && !isArchiveSafeAssetId(assetId)));
-      } catch (error) {
-        throw new PersistenceError('storage-failure', 'Unable to inspect existing project assets.', error);
-      }
-    }
-    const assets = assetsInput === undefined ? undefined : await normalizeAssets(assetsInput, legacyAssetIds, options.allowLegacyAssetIds === true);
+    const assets = assetsInput === undefined ? undefined : await normalizeAssets(assetsInput);
     let activity: ProgressActivity | undefined;
     if (options.activity !== undefined) {
       try {
@@ -1406,18 +1370,6 @@ export class ProjectRepository {
 
   async promoteRecovery(projectId: string, revision?: number): Promise<ProjectRecord> {
     return this.promoteRecoveryRevision(projectId, revision);
-  }
-
-  async exportProject(projectId: string): Promise<Uint8Array> {
-    const project = await this.load(projectId);
-    if (!project) throw new PersistenceError('storage-failure', `Project ${projectId} does not exist.`);
-    const warnings = project.health?.warnings.filter((warning) => warning.includes('Optional source image')) ?? [];
-    const archive = await exportArchive(
-      { metadata: project.metadata, document: project.document, assets: project.assets, activity: project.activity },
-      { onWarning: (warning) => warnings.push(warning) }
-    );
-    this.exportWarningState = warnings;
-    return archive;
   }
 
   async deleteProject(projectId: string): Promise<void> {

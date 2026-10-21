@@ -5,7 +5,6 @@ import {
   type LayeredDocument
 } from '../domain';
 import {
-  PersistenceError,
   createPersistencePreparationClient,
   cloneLayeredDocument,
   cloneSessionHistory,
@@ -85,9 +84,6 @@ class MemoryRepository implements WorkspaceRepository {
     this.records.delete(projectId);
   }
 
-  async exportProject(): Promise<Uint8Array> {
-    throw new PersistenceError('storage-failure', 'Not used in trace-history tests.');
-  }
 }
 
 function pngBytes(width: number, height: number): Uint8Array {

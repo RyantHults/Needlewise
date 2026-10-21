@@ -10,7 +10,7 @@ import type {
   SourceImageOrientation,
   SourceImageSettingsInput
 } from './types';
-import { isArchiveSafeAssetId, isValidAssetId, MAX_ASSET_BYTES } from './limits';
+import { isValidAssetId, MAX_ASSET_BYTES } from './limits';
 import { isWithinImageDecodeBounds, MAX_IMAGE_DECODE_PIXELS } from '../image/limits';
 import { sha256 } from './hash';
 import { isRecord } from '../domain';
@@ -33,7 +33,7 @@ export interface RasterImageDimensions {
 }
 
 export async function normalizeSourceImageAsset(input: ProjectAssetInput): Promise<ProjectAsset> {
-  if (!isArchiveSafeAssetId(input.id) || typeof input.name !== 'string' || input.name.length > 512 || typeof input.mimeType !== 'string' || input.mimeType.length > 256) invalidAsset('Source image asset metadata is malformed.');
+  if (!isValidAssetId(input.id) || typeof input.name !== 'string' || input.name.length > 512 || typeof input.mimeType !== 'string' || input.mimeType.length > 256) invalidAsset('Source image asset metadata is malformed.');
   let data: Uint8Array;
   if (typeof Blob !== 'undefined' && input.data instanceof Blob) {
     if (input.data.size > MAX_ASSET_BYTES) invalidAsset(`Source image asset ${input.id} exceeds the size limit.`);

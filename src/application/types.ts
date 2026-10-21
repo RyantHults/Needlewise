@@ -64,7 +64,6 @@ export interface WorkspaceRepository {
   load(projectId: string): Promise<ProjectRecord | undefined>;
   listProjects(): Promise<ProjectMetadata[]>;
   deleteProject(projectId: string): Promise<void>;
-  exportProject(projectId: string): Promise<Uint8Array>;
   getAsset?(projectId: string, assetId: string): Promise<ProjectAsset | undefined>;
   listProjectHealth?(): Promise<ProjectHealth[]>;
   inspectProjectHealth?(projectId: string): Promise<ProjectHealth | undefined>;

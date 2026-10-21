@@ -1,8 +1,5 @@
 export type PersistenceErrorCode =
   | 'invalid-document'
-  | 'invalid-archive'
-  | 'archive-too-large'
-  | 'invalid-manifest'
   | 'checksum-mismatch'
   | 'unsupported-version'
   | 'invalid-metadata'

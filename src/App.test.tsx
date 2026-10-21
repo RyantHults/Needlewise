@@ -61,7 +61,6 @@ vi.mock('./components/import/ImportReviewDialog', () => ({
 const mockedWorkspace = vi.mocked(useProjectWorkspace);
 const createProject = vi.fn().mockResolvedValue({ projectId: 'new-project' });
 const createProjectFromConversion = vi.fn().mockResolvedValue({ projectId: 'new-project' });
-const exportProject = vi.fn().mockResolvedValue(new Uint8Array([1, 2, 3]));
 const openProject = vi.fn().mockResolvedValue(undefined);
 const flush = vi.fn().mockResolvedValue(undefined);
 const refreshProjectList = vi.fn().mockResolvedValue(undefined);
@@ -90,7 +89,6 @@ const baseWorkspace = {
   openProject,
   selectProject: vi.fn(),
   deleteProject,
-  exportProject,
   flush,
   refreshProjectList,
   createFolder,

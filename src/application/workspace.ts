@@ -468,7 +468,7 @@ export class ProjectWorkspace {
     return this.createProjectInternal(options, true);
   }
 
-  private async createProjectInternal(options: CreateProjectOptions, flushExisting: boolean, allowLegacyAssetIds = false): Promise<ProjectSession> {
+  private async createProjectInternal(options: CreateProjectOptions, flushExisting: boolean): Promise<ProjectSession> {
     const token = this.startOperation();
     if (flushExisting) await this.flushActiveBeforeSwitch(token);
     this.ensureOperation(token);
@@ -484,7 +484,7 @@ export class ProjectWorkspace {
     const now = this.clock.now();
     const metadata: ProjectMetadata = { id: projectId, title: options.title ?? DEFAULT_TITLE, notes: options.notes ?? '', createdAt: now, updatedAt: now, revision: document.revision, ...(units === undefined ? {} : { units }), ...(materialSettings === undefined ? {} : { materialSettings }), ...(options.sourceImage === undefined ? {} : { sourceImage: options.sourceImage }) };
     try {
-      const saveResult = await this.repository.save(projectId, metadata, document, options.assets, allowLegacyAssetIds ? { allowLegacyAssetIds: true } : undefined);
+      const saveResult = await this.repository.save(projectId, metadata, document, options.assets);
       this.ensureOperation(token);
       if (!saveResult.committed || saveResult.stale) throw new PersistenceError('stale-save', `Project ${projectId} was not committed.`);
       const savedRecord = await this.repository.load(projectId);
@@ -812,27 +812,6 @@ export class ProjectWorkspace {
     return this.promoteRecovery(revision);
   }
 
-  async exportActiveProject(): Promise<Uint8Array> {
-    const session = this.ensureActiveSession();
-    const token = this.operationToken;
-    await session.flush();
-    this.ensureOperation(token);
-    try {
-      const archive = await this.repository.exportProject(session.projectId);
-      this.ensureOperation(token);
-      this.operationError = null;
-      this.notify();
-      return archive;
-    } catch (error) {
-      if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
-      return this.rememberOperationError(error, 'Unable to export the local project archive.');
-    }
-  }
-
-  async exportProjectArchive(): Promise<Uint8Array> {
-    return this.exportActiveProject();
-  }
-
   async forkActiveProject(options: CreateProjectOptions = {}): Promise<ProjectSession> {
     const source = this.ensureActiveSession();
     if (source.saveState.status !== 'conflict' && source.saveState.status !== 'error') await source.flush();
@@ -844,7 +823,7 @@ export class ProjectWorkspace {
     // the source reference would dangle, so only carry it when the asset set
     // is the source set (or a matching descriptor was supplied explicitly).
     const carrySourceImage = copiedSourceImage !== undefined && (options.assets === undefined || options.sourceImage !== undefined);
-    const copy = await this.createProjectInternal({ ...options, id: projectId, title: options.title ?? `${source.metadata.title} copy`, notes: options.notes ?? source.metadata.notes, units: copiedUnits, document: cloneLayeredDocument(source.layeredDocument), assets: options.assets ?? source.assets, ...(copiedMaterialSettings === undefined ? {} : { materialSettings: copiedMaterialSettings }), ...(carrySourceImage && copiedSourceImage !== undefined ? { sourceImage: copiedSourceImage } : {}) }, false, true);
+    const copy = await this.createProjectInternal({ ...options, id: projectId, title: options.title ?? `${source.metadata.title} copy`, notes: options.notes ?? source.metadata.notes, units: copiedUnits, document: cloneLayeredDocument(source.layeredDocument), assets: options.assets ?? source.assets, ...(copiedMaterialSettings === undefined ? {} : { materialSettings: copiedMaterialSettings }), ...(carrySourceImage && copiedSourceImage !== undefined ? { sourceImage: copiedSourceImage } : {}) }, false);
     return copy;
   }
 
@@ -896,7 +875,7 @@ export class ProjectWorkspace {
       const { units, materialSettings, sourceImage } = record.metadata;
       const now = this.clock.now();
       const metadata: ProjectMetadata = { id: copyId, title: `${record.metadata.title} copy`, notes: record.metadata.notes, createdAt: now, updatedAt: now, revision: document.revision, ...(units === undefined ? {} : { units }), ...(materialSettings === undefined ? {} : { materialSettings }), ...(sourceImage === undefined ? {} : { sourceImage }) };
-      const saveResult = await this.repository.save(copyId, metadata, document, record.assets, { allowLegacyAssetIds: true });
+      const saveResult = await this.repository.save(copyId, metadata, document, record.assets);
       this.ensureOperation(token);
       if (!saveResult.committed || saveResult.stale) throw new PersistenceError('stale-save', `Project ${copyId} was not committed.`);
       return metadata;

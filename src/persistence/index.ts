@@ -3,7 +3,6 @@ export * from './errors';
 export * from './limits';
 export * from './hash';
 export * from './binary';
-export * from './archive';
 export * from './database';
 export * from './repository';
 export * from './activity';

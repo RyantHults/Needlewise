@@ -2,7 +2,6 @@ import { beforeEach, afterEach, describe, expect, it } from 'vitest';
 import { clearClipboard } from './clipboard-store';
 import { applyCommand, CellKind, createDocument, type LayeredDocument, type PaletteEntryInput, type PatternDocument } from '../domain';
 import {
-  PersistenceError,
   decodeDocument,
   encodeDocument,
   type ProjectMetadata,
@@ -45,9 +44,6 @@ class MemoryRepository implements WorkspaceRepository {
     this.records.delete(projectId);
   }
 
-  async exportProject(): Promise<Uint8Array> {
-    throw new PersistenceError('storage-failure', 'Not used.');
-  }
 }
 
 function rendererFixture(): CanvasRenderer {

@@ -12,8 +12,6 @@ import {
 import {
   decodeDocument,
   encodeDocument,
-  exportArchive,
-  parseArchive,
   cloneLayeredDocument,
   cloneSessionHistory,
   PersistenceError,
@@ -148,11 +146,6 @@ class MemoryRepository implements WorkspaceRepository {
     this.records.delete(projectId);
   }
 
-  async exportProject(projectId: string): Promise<Uint8Array> {
-    const record = this.records.get(projectId);
-    if (!record) throw new PersistenceError('storage-failure', 'Missing test project.');
-    return exportArchive({ metadata: record.metadata, document: record.document, assets: record.assets });
-  }
 }
 
 class ImmediateRepository {
@@ -1369,22 +1362,6 @@ describe('headless project workspace', () => {
     } finally {
       repository.failSaves = false;
       await workspace.dispose().catch(() => undefined);
-    }
-  });
-
-  it('exports the active project as a valid archive', async () => {
-    const sourceRepository = new MemoryRepository();
-    const source = new ProjectWorkspace({ repository: sourceRepository, clock: { now: () => 100 }, projectIdFactory: () => 'source' });
-    try {
-      await source.createProject({ width: 4, height: 4, document: createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }), assets: [{ id: 'reference', name: 'reference.bin', mimeType: 'application/octet-stream', data: new Uint8Array([4, 5, 6]) }] });
-      source.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-      const archive = await source.exportActiveProject();
-      const parsed = await parseArchive(archive);
-      expect(parsed.metadata.id).toBe('source');
-      expect(source.document?.kind[0]).toBe(CellKind.Full);
-      expect(parsed.assets[0].data).toEqual(new Uint8Array([4, 5, 6]));
-    } finally {
-      await source.dispose();
     }
   });
 

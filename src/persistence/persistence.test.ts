@@ -1,7 +1,6 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
-import { unzipSync, zipSync, strFromU8, strToU8 } from 'fflate';
-import { applyCommand as applySurfaceCommand, CellKind, commitLayerSurface, computePatternMetrics, createDocument as createDomainDocument, createDocumentEditor as createEditor, createEditorFromHistory, layerAddCommand, layerDeleteCommand, layerRenameCommand, type DocumentEditor, flattenDocument, layeredFromSurface, LayerType, layerSurface, QuarterCorner, topmostVisibleLayer, type CatalogAssociation, type CreateDocumentOptions, type DomainCommand, type LayeredDocument, type PatternDocument, type StitchLayer, type SpecialtyLayer } from '../domain';
+import { applyCommand as applySurfaceCommand, CellKind, commitLayerSurface, createDocument as createDomainDocument, createDocumentEditor as createEditor, createEditorFromHistory, layerAddCommand, layerDeleteCommand, layerRenameCommand, type DocumentEditor, layeredFromSurface, LayerType, layerSurface, QuarterCorner, topmostVisibleLayer, type CatalogAssociation, type CreateDocumentOptions, type DomainCommand, type LayeredDocument, type PatternDocument, type StitchLayer, type SpecialtyLayer } from '../domain';
 import { markCellComplete } from '../domain/test-fixtures';
 import { cloneLayeredDocument, decodeDocumentWithInfo } from './binary';
 import { encodeLegacyDocument } from './legacy-binary.fixture';
@@ -15,15 +14,10 @@ import { handlePersistencePreparationWorkerMessage } from '../workers/persistenc
 import {
   decodeDocument,
   encodeDocument,
-  exportArchive,
-  validateArchiveManifest,
-  MAX_ARCHIVE_BYTES,
   MAX_ASSET_BYTES,
   MAX_DOCUMENT_CELLS,
   MAX_DOCUMENT_BYTES,
   MAX_SESSION_HISTORY_BYTES,
-  PERSISTENCE_SCHEMA_VERSION,
-  parseArchive,
   PersistenceError,
   PersistencePreparationWorkerClient,
   prepareSessionHistory,
@@ -265,21 +259,6 @@ async function closeRepository(repo: ProjectRepository): Promise<void> {
 
 function cachedCurrent(repo: ProjectRepository): StoredDocumentSnapshot | undefined {
   return (repo as unknown as { verifiedCurrentCache?: StoredDocumentSnapshot }).verifiedCurrentCache;
-}
-
-function centralDirectoryOffset(archive: Uint8Array): number {
-  const view = new DataView(archive.buffer, archive.byteOffset, archive.byteLength);
-  for (let offset = archive.length - 22; offset >= 0; offset -= 1) {
-    if (view.getUint32(offset, true) === 0x06054b50) return view.getUint32(offset + 16, true);
-  }
-  throw new Error('missing EOCD');
-}
-
-function mutateFirstCentralEntry(archive: Uint8Array, mutate: (view: DataView, offset: number) => void): Uint8Array {
-  const result = archive.slice();
-  const view = new DataView(result.buffer, result.byteOffset, result.byteLength);
-  mutate(view, centralDirectoryOffset(result));
-  return result;
 }
 
 function corruptBytes(bytes: Uint8Array): Uint8Array {
@@ -1019,7 +998,7 @@ describe('durable document history persistence', () => {
 });
 
 describe('session history lifecycle transaction rollback', () => {
-  it('rolls back recovery promotion, archive replacement, and deletion when history cleanup fails', async () => {
+  it('rolls back recovery promotion and deletion when history cleanup fails', async () => {
     const repo = await repository();
     try {
       const revision0 = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
@@ -1131,9 +1110,6 @@ describe('binary document persistence', () => {
       expect(loaded?.metadata.sourceImage).toEqual(sourceImage);
       expect(loaded?.health?.sourceImage).toMatchObject({ assetId: 'reference', status: 'valid' });
       expect(loaded?.assets[0].data).toEqual(data);
-      const parsed = await parseArchive(await repo.exportProject('jpeg-orientation'));
-      expect(parsed.metadata.sourceImage).toEqual(sourceImage);
-      expect(parsed.assets[0].data).toEqual(data);
     } finally {
       await closeRepository(repo);
     }
@@ -1389,7 +1365,7 @@ describe('binary document persistence', () => {
     expect(restored.palette[0].symbol).toBe(fromSecondFont!.id);
   });
 
-  it('preserves mixed-catalog and custom palette entries through binary, archive, repository, and history round trips', async () => {
+  it('preserves mixed-catalog and custom palette entries through binary, repository, and history round trips', async () => {
     const dmcRecord = DMC_CATALOG_DEFINITION.records[0]!;
     const dmcReference = {
       catalogId: DMC_CATALOG_DEFINITION.association.catalogId,
@@ -1424,12 +1400,6 @@ describe('binary document persistence', () => {
     expect(decoded.palette).toEqual(original.palette);
     expect(decoded.palette[1].catalog).toEqual(brandBReference);
     expect(decoded.palette[2].catalog).toBeUndefined();
-
-    const archive = await exportArchive({ metadata: metadata(original, 'mixed-catalog'), document: original, assets: [] });
-    const parsed = await parseArchive(archive);
-    expect(parsed.document.catalog).toEqual(DMC_CATALOG_DEFINITION.association);
-    expect(parsed.document.catalog.catalogId).not.toBe(brandBReference.catalogId);
-    expect(parsed.document.palette).toEqual(original.palette);
 
     const repo = await repository();
     try {
@@ -1470,45 +1440,7 @@ describe('binary document persistence', () => {
     }
   });
 
-  it('round-trips calibrated material assumptions in project metadata', async () => {
-    const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    const projectMetadata: ProjectMetadata = {
-      id: 'material',
-      title: 'Material',
-      notes: '',
-      createdAt: 1,
-      updatedAt: 1,
-      revision: document.revision,
-      materialSettings: { strands: 2, backstitchStrands: 2, waste: 0.15, stitchLengthMeters: 0.12, skeinLengthMeters: 8 }
-    };
-    const archive = await exportArchive({ metadata: projectMetadata, document, assets: [] });
-    const parsed = await parseArchive(archive);
-    expect(parsed.metadata.materialSettings).toEqual(projectMetadata.materialSettings);
-  });
-
-  it('reads material settings with no stored backstitchStrands as 1 and rejects invalid values', async () => {
-    const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    const base: ProjectMetadata = { ...metadata(document, 'old-material'), materialSettings: { strands: 2, waste: 0.1 } as never };
-    const archive = await exportArchive({ metadata: base, document, assets: [] });
-    const rewrite = async (backstitchStrands: number | undefined) => {
-      const files = unzipSync(archive);
-      const stored = JSON.parse(strFromU8(files['metadata.json'])) as { materialSettings: Record<string, unknown> };
-      if (backstitchStrands === undefined) delete stored.materialSettings.backstitchStrands;
-      else stored.materialSettings.backstitchStrands = backstitchStrands;
-      const metadataBytes = strToU8(JSON.stringify(stored));
-      const manifest = JSON.parse(strFromU8(files['manifest.json'])) as { metadata: { byteLength: number; sha256: string } };
-      manifest.metadata = { ...manifest.metadata, byteLength: metadataBytes.length, sha256: await sha256(metadataBytes) };
-      files['metadata.json'] = metadataBytes;
-      files['manifest.json'] = strToU8(JSON.stringify(manifest));
-      return zipSync(files);
-    };
-    // Archives written before the setting existed carry no value and read as 1.
-    const parsed = await parseArchive(await rewrite(undefined));
-    expect(parsed.metadata.materialSettings).toEqual({ strands: 2, backstitchStrands: 1, waste: 0.1 });
-    await expect(parseArchive(await rewrite(0))).rejects.toMatchObject({ code: 'invalid-metadata' });
-  });
-
-  it('keeps canonical waste fractions unchanged through repository and archive persistence', async () => {
+  it('keeps canonical waste fractions unchanged through repository persistence', async () => {
     const repo = await repository();
     try {
       let document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
@@ -1518,11 +1450,6 @@ describe('binary document persistence', () => {
 
       const loaded = await repo.load('canonical-waste');
       expect(loaded?.metadata.materialSettings).toEqual(settings);
-      const loadedEstimate = computePatternMetrics(flattenDocument(document), loaded?.metadata.materialSettings);
-      const archive = await repo.exportProject('canonical-waste');
-      const parsed = await parseArchive(archive);
-      expect(parsed.metadata.materialSettings).toEqual(settings);
-      expect(computePatternMetrics(flattenDocument(document), parsed.metadata.materialSettings)).toEqual(loadedEstimate);
     } finally {
       await closeRepository(repo);
     }
@@ -1531,14 +1458,6 @@ describe('binary document persistence', () => {
   it('stores the stitch count in document settings and never writes metadata aidaCount', async () => {
     const document = createDocument({ width: 2, height: 3, settings: { aidaCount: 16 }, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     const projectMetadata: ProjectMetadata = { ...metadata(document, 'aida-metadata'), aidaCount: 18 };
-    const binary = encodeDocument(document);
-    const archive = await exportArchive({ metadata: projectMetadata, document, assets: [] });
-    const archivedMetadata = JSON.parse(strFromU8(unzipSync(archive)['metadata.json'])) as Record<string, unknown>;
-    expect(archivedMetadata).not.toHaveProperty('aidaCount');
-    const parsed = await parseArchive(archive);
-    expect(parsed.metadata.aidaCount).toBeUndefined();
-    expect(parsed.document.settings.aidaCount).toBe(16);
-    expect(encodeDocument(parsed.document)).toEqual(binary);
 
     const repo = await repository();
     try {
@@ -1591,27 +1510,16 @@ describe('binary document persistence', () => {
     }
   });
 
-  it('round-trips the optional display units without adding them to the binary document', async () => {
+  it('round-trips the optional display units and rejects invalid values', async () => {
     const document = createDocument({ width: 2, height: 3, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    const projectMetadata: ProjectMetadata = { ...metadata(document, 'units-metadata'), units: 'imperial' };
-    const binary = encodeDocument(document);
-    const archive = await exportArchive({ metadata: projectMetadata, document, assets: [] });
-    const parsed = await parseArchive(archive);
-    expect(parsed.metadata.units).toBe('imperial');
-    expect(encodeDocument(parsed.document)).toEqual(binary);
-    // Absent units stay absent through the archive boundary (metric by default).
-    const plain = await parseArchive(await exportArchive({ metadata: metadata(document, 'units-default'), document, assets: [] }));
-    expect(plain.metadata.units).toBeUndefined();
-    // Invalid units are rejected at both persistence boundaries.
-    await expect((async () => {
-      const repo = await repository();
-      try {
-        await repo.save('invalid-units', { ...metadata(document, 'invalid-units'), units: 'furlongs' as never }, document);
-      } finally {
-        await closeRepository(repo);
-      }
-    })()).rejects.toMatchObject({ code: 'invalid-metadata' });
-    await expect(exportArchive({ metadata: { ...metadata(document, 'invalid-units-archive'), units: 'furlongs' as never }, document, assets: [] })).rejects.toMatchObject({ code: 'invalid-metadata' });
+    const repo = await repository();
+    try {
+      await repo.save('units-metadata', { ...metadata(document, 'units-metadata'), units: 'imperial' }, document);
+      expect((await repo.load('units-metadata'))?.metadata.units).toBe('imperial');
+      await expect(repo.save('invalid-units', { ...metadata(document, 'invalid-units'), units: 'furlongs' as never }, document)).rejects.toMatchObject({ code: 'invalid-metadata' });
+    } finally {
+      await closeRepository(repo);
+    }
   });
 
   it('accepts and round-trips unbounded negative and overflowing source image chart bounds', async () => {
@@ -1633,42 +1541,9 @@ describe('binary document persistence', () => {
       const loaded = await repo.load('unbounded-source');
       expect(loaded?.metadata.sourceImage?.chartBounds).toEqual({ x: -3, y: -2, width: 6, height: 5 });
       expect(loaded?.health?.sourceImage).toMatchObject({ assetId: 'reference', status: 'valid' });
-      const parsed = await parseArchive(await repo.exportProject('unbounded-source'));
-      expect(parsed.metadata.sourceImage?.chartBounds).toEqual({ x: -3, y: -2, width: 6, height: 5 });
     } finally {
       await closeRepository(repo);
     }
-  });
-
-  it('round-trips source image metadata without placing it in the binary document', async () => {
-    const document = createDocument({ width: 4, height: 3, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    const sourceImage = {
-      assetId: 'reference',
-      mimeType: 'image/png' as const,
-      width: 2,
-      height: 3,
-      crop: { x: 0.1, y: 0, width: 0.9, height: 1 },
-      chartBounds: { x: 0, y: 0, width: 4, height: 3 },
-      traceVisible: true,
-      opacity: 0.65
-    };
-    const data = pngBytes(2, 3);
-    const archive = await exportArchive({
-      metadata: { ...metadata(document, 'source-image'), sourceImage },
-      document,
-      assets: [{ id: 'reference', name: 'reference.png', mimeType: 'image/png', data, checksum: await sha256(data) }]
-    });
-    const parsed = await parseArchive(archive);
-    expect(parsed.metadata.sourceImage).toEqual(sourceImage);
-    expect(parsed.document).not.toHaveProperty('sourceImage');
-    expect(parsed.assets[0].id).toBe('reference');
-
-    const files = unzipSync(archive);
-    files['assets/reference'][0] ^= 0xff;
-    const degraded = await parseArchive(zipSync(files));
-    expect(degraded.document.width).toBe(4);
-    expect(degraded.assets).toHaveLength(0);
-    expect(degraded.warnings?.join(' ')).toContain('ignored');
   });
 
   it.each([true, false])('stores a loaded reference opacity of zero as hidden at full opacity (visible %s)', (traceVisible) => {
@@ -1679,38 +1554,6 @@ describe('binary document persistence', () => {
     expect(validateSourceImageDescriptor(descriptor)).toMatchObject({ traceVisible: false, opacity: 1 });
     expect(validateSourceImageDescriptor({ ...descriptor, opacity: 0.05 })).toMatchObject({ traceVisible, opacity: 0.05 });
     expect(() => validateSourceImageDescriptor({ ...descriptor, opacity: -0.1 })).toThrow();
-  });
-
-  it('omits corrupt optional source image data and metadata during export without changing the pattern', async () => {
-    const document = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    const sourceImage = {
-      assetId: 'reference', mimeType: 'image/png' as const, width: 2, height: 3,
-      crop: { x: 0, y: 0, width: 1, height: 1 }, chartBounds: { x: 0, y: 0, width: 2, height: 2 }, traceVisible: true, opacity: 1
-    };
-    const data = pngBytes(2, 3);
-    const checksum = await sha256(data);
-    data[0] ^= 0xff;
-    const warnings: string[] = [];
-    const archive = await exportArchive({
-      metadata: { ...metadata(document, 'corrupt-export'), sourceImage },
-      document,
-      assets: [{ id: 'reference', name: 'reference.png', mimeType: 'image/png', data, checksum }]
-    }, { onWarning: (warning) => warnings.push(warning) });
-    expect(warnings.join(' ')).toContain('omitted');
-    expect(document.width).toBe(2);
-    const imported = await parseArchive(archive);
-    expect(imported.document.width).toBe(2);
-    expect(imported.metadata.sourceImage).toBeUndefined();
-    expect(imported.assets).toHaveLength(0);
-
-    const descriptorWarnings: string[] = [];
-    const descriptorArchive = await exportArchive({
-      metadata: { ...metadata(document, 'corrupt-descriptor'), sourceImage: { ...sourceImage, opacity: 2 } as SourceImageDescriptor },
-      document,
-      assets: []
-    }, { onWarning: (warning) => descriptorWarnings.push(warning) });
-    expect(descriptorWarnings.join(' ')).toContain('settings');
-    expect((await parseArchive(descriptorArchive)).metadata.sourceImage).toBeUndefined();
   });
 
 });
@@ -1741,11 +1584,6 @@ describe('local project repository', () => {
       expect(corrupt?.document.width).toBe(2);
       expect(corrupt?.health?.sourceImage).toMatchObject({ assetId: 'reference', status: 'corrupt' });
       expect(await repo.getAsset('corrupt-source', 'reference')).toBeDefined();
-      const exported = await repo.exportProject('corrupt-source');
-      expect(repo.exportWarnings.join(' ')).toContain('omitted');
-      const reimported = await parseArchive(exported);
-      expect(reimported.document.width).toBe(2);
-      expect(reimported.metadata.sourceImage).toBeUndefined();
     } finally {
       await closeRepository(repo);
     }
@@ -2639,7 +2477,7 @@ describe('local project repository', () => {
     }
   });
 
-  it('round-trips an archive and an optional local asset', async () => {
+  it('persists a project with an optional local asset', async () => {
     const repo = await repository();
     try {
       const document = makeDocument();
@@ -2648,118 +2486,13 @@ describe('local project repository', () => {
       await repo.save('project-1', projectMetadata, document, [{ id: 'reference', name: 'reference.bin', mimeType: 'application/octet-stream', data: asset }]);
       expect((await repo.load('project-1'))?.document.catalog).toEqual(document.catalog);
       expect((await repo.load('project-1'))?.metadata).toMatchObject({ width: document.width, height: document.height, thumbnail: deriveProjectSummary(document).thumbnail });
-      const archive = await repo.exportProject('project-1');
-      const archivedMetadata = JSON.parse(strFromU8(unzipSync(archive)['metadata.json'])) as Record<string, unknown>;
-      expect(archivedMetadata).not.toHaveProperty('thumbnail');
-      const parsed = await parseArchive(archive);
-      expect(parsed.manifest.document.catalog).toEqual(document.catalog);
-      expect(parsed.document.catalog).toEqual(document.catalog);
-      expect(parsed.metadata).not.toHaveProperty('thumbnail');
-      expect(parsed.metadata).toMatchObject({ width: document.width, height: document.height });
-    } finally {
-      await closeRepository(repo);
-    }
-  });
-
-  it('loads and rewrites existing local assets with legacy arbitrary IDs', async () => {
-    const repo = await repository();
-    try {
-      const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const ids = ['.', '..', ' ', '%', '/', '\uD800'];
-      const data = pngBytes(1, 1);
-      const sourceImage = {
-        assetId: ids[0], mimeType: 'image/png' as const, width: 1, height: 1,
-        crop: { x: 0, y: 0, width: 1, height: 1 }, chartBounds: { x: 0, y: 0, width: 1, height: 1 }, traceVisible: true, opacity: 1
-      };
-      await repo.save('legacy-local', metadata(document, 'legacy-local'), document);
-      for (const id of ids) await repo.db.assets.put({ projectId: 'legacy-local', id, name: 'reference.png', mimeType: 'image/png', data, checksum: await sha256(data) });
-      await repo.db.projects.put({ ...metadata(document, 'legacy-local'), sourceImage });
-
-      const loaded = await repo.load('legacy-local');
-      expect(loaded?.assets.map((asset) => asset.id).sort()).toEqual([...ids].sort());
-      expect(loaded?.metadata.sourceImage).toEqual(sourceImage);
-      expect(loaded?.health?.sourceImage).toMatchObject({ assetId: ids[0], status: 'valid' });
-
-      await repo.save('legacy-local', { ...loaded!.metadata, title: 'Updated', sourceImage }, loaded!.document, loaded!.assets, { allowSameRevision: true });
-      const rewritten = await repo.load('legacy-local');
-      expect(rewritten?.metadata.title).toBe('Updated');
-      expect(rewritten?.assets.map((asset) => asset.id).sort()).toEqual([...ids].sort());
-      expect(rewritten?.metadata.sourceImage?.assetId).toBe(ids[0]);
-      const parsed = await parseArchive(await repo.exportProject('legacy-local'));
-      expect(parsed.assets.map((asset) => asset.id).sort()).toEqual([...ids].sort());
-    } finally {
-      await closeRepository(repo);
-    }
-  });
-
-  it('rejects archives when checksum or manifest validation fails', async () => {
-    const repo = await repository();
-    try {
-      const original = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      await repo.save('project-1', metadata(original), original);
-      const archive = await repo.exportProject('project-1');
-      const files = unzipSync(archive);
-      const damagedDocument = files['document.bin'].slice();
-      damagedDocument[damagedDocument.length - 1] ^= 0xff;
-      files['document.bin'] = damagedDocument;
-      const damagedArchive = zipSync(files);
-      await expect(parseArchive(damagedArchive)).rejects.toMatchObject({ code: 'checksum-mismatch' });
-      expect((await repo.load('project-1'))?.document.revision).toBe(original.revision);
-
-      const manifest = JSON.parse(strFromU8(files['manifest.json'])) as { document: { sha256: string } };
-      manifest.document.sha256 = '0'.repeat(64);
-      files['manifest.json'] = strToU8(JSON.stringify(manifest));
-      const damagedManifestArchive = zipSync(files);
-      await expect(parseArchive(damagedManifestArchive)).rejects.toBeInstanceOf(PersistenceError);
-      expect((await repo.load('project-1'))?.recovery).toBeNull();
     } finally {
       await closeRepository(repo);
     }
   });
 });
 
-describe('archive validation', () => {
-  it('validates only the clean archive identity, schema, and catalog association', async () => {
-    const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    const archive = await exportArchive({ metadata: metadata(document), document, assets: [] });
-    const parsed = await parseArchive(archive);
-    const validated = validateArchiveManifest(parsed.manifest);
-    expect(validated).toEqual(parsed.manifest);
-    expect(validated).not.toBe(parsed.manifest);
-    expect(validated.document.catalog).toEqual(document.catalog);
-
-    expect(() => validateArchiveManifest({ ...parsed.manifest, format: 'needlewise-project' } as never)).toThrow(/identity or version is invalid/i);
-    expect(() => validateArchiveManifest({ ...parsed.manifest, archiveVersion: 2 } as never)).toThrow(/identity or version is invalid/i);
-    expect(() => validateArchiveManifest({
-      ...parsed.manifest,
-      document: { ...parsed.manifest.document, schemaVersion: 0 }
-    } as never)).toThrow(/version is invalid/i);
-    expect(() => validateArchiveManifest({
-      ...parsed.manifest,
-      document: { ...parsed.manifest.document, catalog: { ...parsed.manifest.document.catalog, colorCount: 0 } }
-    } as never)).toThrow(/catalog association is invalid/i);
-
-    const invalid = encodeDocument(document);
-    new DataView(invalid.buffer).setUint32(40, 0xffffffff, true);
-    expect(() => decodeDocument(invalid)).toThrow();
-  });
-
-  it('rejects a valid manifest catalog that differs from the decoded document', async () => {
-    const document = createDocument({ width: 1, height: 1, palette: [] });
-    const archive = await exportArchive({ metadata: metadata(document, 'catalog-mismatch'), document, assets: [] });
-    const files = unzipSync(archive);
-    const manifest = JSON.parse(strFromU8(files['manifest.json'])) as { document: { catalog: CatalogAssociation } };
-    manifest.document.catalog = {
-      catalogId: 'other-catalog-v1',
-      brandLabel: 'Other catalog',
-      colorCount: document.catalog.colorCount
-    };
-    expect(manifest.document.catalog).not.toEqual(document.catalog);
-    files['manifest.json'] = strToU8(JSON.stringify(manifest));
-
-    await expect(parseArchive(zipSync(files))).rejects.toMatchObject({ code: 'invalid-archive' });
-  });
-
+describe('storage boundaries', () => {
   it('migrates an existing v5 database project into the v6 history schema', async () => {
     databaseCounter += 1;
     const databaseName = `needlewise-v5-migration-${String(databaseCounter)}`;
@@ -2791,54 +2524,7 @@ describe('archive validation', () => {
     }
   });
 
-  it('round-trips every legacy local asset ID through binary-safe archive paths', async () => {
-    const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    const ids = ['.', '..', ' ', '%', '/', '\uD800'];
-    const assets = ids.map((id, index) => ({ id, name: `${String(index)}.bin`, mimeType: 'application/octet-stream', data: new Uint8Array([index + 1]), checksum: '' }));
-    for (const asset of assets) asset.checksum = await sha256(asset.data);
-    const archive = await exportArchive({
-      metadata: metadata(document, 'legacy-archive'),
-      document,
-      assets
-    });
-    const files = unzipSync(archive);
-    const manifest = JSON.parse(strFromU8(files['manifest.json'])) as { archiveVersion: number; assets: Array<{ id: string; path: string }> };
-    expect(manifest.archiveVersion).toBe(PERSISTENCE_SCHEMA_VERSION);
-    expect(manifest.assets.map((asset) => asset.path)).toEqual(ids.map(() => expect.stringMatching(/^assets\/legacy~[A-Za-z0-9_-]+$/)));
-    const parsed = await parseArchive(archive);
-    expect(parsed.assets.map((asset) => asset.id)).toEqual(ids);
-    expect(parsed.assets.map((asset) => [...asset.data])).toEqual(assets.map((asset) => [...asset.data]));
-  });
-
-  it('rejects noncanonical percent-encoded asset paths while rejecting traversal', async () => {
-    const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    const id = 'legacy image/%/reference';
-    const data = new Uint8Array([1, 2, 3]);
-    const archive = await exportArchive({
-      metadata: metadata(document, 'legacy-v2'),
-      document,
-      assets: [{ id, name: 'reference.bin', mimeType: 'application/octet-stream', data, checksum: await sha256(data) }]
-    });
-    const files = unzipSync(archive);
-    const manifest = JSON.parse(strFromU8(files['manifest.json'])) as { assets: Array<{ id: string; path: string }> };
-    const currentPath = manifest.assets[0].path;
-    const noncanonicalPath = `assets/${encodeURIComponent(id)}`;
-    expect(noncanonicalPath).not.toBe(currentPath);
-    manifest.assets[0].path = noncanonicalPath;
-    files['manifest.json'] = strToU8(JSON.stringify(manifest));
-    await expect(parseArchive(zipSync(files))).rejects.toMatchObject({ code: 'invalid-manifest' });
-
-    const traversal = zipSync({ ...unzipSync(archive), 'assets/../escape': new Uint8Array([9]) });
-    await expect(parseArchive(traversal)).rejects.toMatchObject({ code: 'invalid-archive' });
-  });
-
-  it('rejects oversized Blob input before reading it', async () => {
-    const archiveBlob = new Blob([new Uint8Array([1])]);
-    Object.defineProperty(archiveBlob, 'size', { configurable: true, value: MAX_ARCHIVE_BYTES + 1 });
-    const archiveRead = vi.spyOn(archiveBlob, 'arrayBuffer');
-    await expect(parseArchive(archiveBlob)).rejects.toMatchObject({ code: 'archive-too-large' });
-    expect(archiveRead).not.toHaveBeenCalled();
-
+  it('rejects oversized Blob assets before reading them', async () => {
     const repo = await repository();
     try {
       const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
@@ -2851,37 +2537,6 @@ describe('archive validation', () => {
       await closeRepository(repo);
     }
   });
-
-  it('preflights expansion, streaming flags, and unknown files before extraction', async () => {
-    const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    const archive = await exportArchive({ metadata: metadata(document), document, assets: [] });
-    const excessiveExpansion = mutateFirstCentralEntry(archive, (view, offset) => view.setUint32(offset + 24, MAX_DOCUMENT_BYTES + 1, true));
-    await expect(parseArchive(excessiveExpansion)).rejects.toBeInstanceOf(PersistenceError);
-
-    const dataDescriptor = mutateFirstCentralEntry(archive, (view, offset) => view.setUint16(offset + 8, 0x0008, true));
-    await expect(parseArchive(dataDescriptor)).rejects.toMatchObject({ code: 'invalid-archive' });
-
-    const files = unzipSync(archive);
-    const unknownFile = zipSync({ ...files, 'unknown.txt': new Uint8Array([1, 2, 3]) });
-    await expect(parseArchive(unknownFile)).rejects.toMatchObject({ code: 'invalid-archive' });
-  });
-
-  it('caps actual aggregate asset expansion while entries are being streamed', async () => {
-    const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    const base = await exportArchive({ metadata: metadata(document, 'aggregate-expansion'), document, assets: [] });
-    const files = unzipSync(base);
-    const manifest = JSON.parse(strFromU8(files['manifest.json'])) as { assets: unknown[] };
-    const assets = await Promise.all([0, 1, 2, 3, 4, 5].map(async (index) => {
-      const id = `expanded-${String(index)}`;
-      const data = new Uint8Array(12_600_000);
-      return { id, name: `${id}.bin`, mimeType: 'application/octet-stream', data, checksum: await sha256(data) };
-    }));
-    manifest.assets = assets.map(({ id, name, mimeType, data, checksum }) => ({ id, path: `assets/${id}`, name, mimeType, byteLength: data.length, sha256: checksum }));
-    files['manifest.json'] = strToU8(JSON.stringify(manifest));
-    for (const asset of assets) files[`assets/${asset.id}`] = asset.data;
-    const archive = zipSync(files, { level: 9 });
-    await expect(parseArchive(archive)).rejects.toMatchObject({ code: 'archive-too-large' });
-  }, 15_000);
 
   it('accepts single assets at the shared decode byte ceiling and rejects just past it', async () => {
     const repo = await repository();
@@ -2905,23 +2560,14 @@ describe('archive validation', () => {
     }
   });
 
-  it('rejects unsafe IDs on new local asset writes', async () => {
+  it('rejects invalid IDs on new local asset writes', async () => {
     const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     const repo = await repository();
     try {
-      await expect(repo.save('unsafe-asset', metadata(document, 'unsafe-asset'), document, [{ id: 'a/b', name: 'unsafe.bin', mimeType: 'application/octet-stream', data: new Uint8Array([1]) }])).rejects.toMatchObject({ code: 'invalid-asset' });
+      await expect(repo.save('invalid-asset', metadata(document, 'invalid-asset'), document, [{ id: '', name: 'invalid.bin', mimeType: 'application/octet-stream', data: new Uint8Array([1]) }])).rejects.toMatchObject({ code: 'invalid-asset' });
     } finally {
       await closeRepository(repo);
     }
-  });
-
-  it('applies the activity limit before decompression allocation', async () => {
-    const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    const archive = await exportArchive({ metadata: metadata(document, 'activity-limit'), document, assets: [], activity: { daily: [] } });
-    const files = unzipSync(archive);
-    files['activity.json'] = new Uint8Array(64 * 1024 + 1);
-    const oversizedActivity = zipSync(files);
-    await expect(parseArchive(oversizedActivity)).rejects.toMatchObject({ code: 'invalid-archive' });
   });
 
   it('checks binary count and metadata bounds before allocation', () => {

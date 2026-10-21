@@ -2,8 +2,6 @@ import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import { createDocument as createDomainDocument, layeredFromSurface, type CatalogAssociation, type CreateDocumentOptions, type LayeredDocument } from '../domain';
 import {
-  exportArchive,
-  parseArchive,
   ProjectRepository,
   recordDailyProgress,
   NeedlewiseDatabase,
@@ -28,7 +26,7 @@ function metadata(id: string, revision: number): ProjectMetadata {
 }
 
 describe('durable progress activity', () => {
-  it('round-trips bounded daily aggregates through repository saves and archives', async () => {
+  it('round-trips bounded daily aggregates through repository saves', async () => {
     const repo = nextRepository();
     try {
       const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
@@ -42,13 +40,6 @@ describe('durable progress activity', () => {
       const loaded = await repo.load('activity');
       expect(loaded?.document.catalog).toEqual(document.catalog);
       expect(loaded?.activity).toEqual({ daily: [{ date: '2026-08-30', marked: 6, unmarked: 4 }] });
-      const archive = await repo.exportProject('activity');
-      const parsed = await parseArchive(archive);
-      expect(parsed.document.catalog).toEqual(document.catalog);
-      expect(parsed.activity).toEqual(loaded?.activity);
-
-      const directArchive = await exportArchive({ metadata: metadata('direct', 0), document, assets: [] });
-      expect((await parseArchive(directArchive)).activity).toBeUndefined();
     } finally {
       await repo.close();
       await repo.db.delete();
