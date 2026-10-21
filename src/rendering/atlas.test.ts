@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { CellKind, createDocumentEditor, createLayeredDocument, layerSetVisibilityCommand, layerAddCommand, type PatternDocument } from '../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { DEFAULT_RENDERER_STYLE, type CanvasContextAdapter, type CanvasTarget, type RendererStyle } from '../editor/contracts';
-import { ColorAtlasCache, SymbolAtlasCache, overviewColorForPaletteId } from './atlas';
+import { ColorAtlasCache, SymbolAtlasCache, overviewColorForPaletteId, paintOverviewCell } from './atlas';
 
 /** A context that paints fillRect into a pixel grid and counts full-atlas rebuilds. */
 function pixelTarget(width: number, height: number): CanvasTarget & { pixels: string[][]; fills: number } {
@@ -179,5 +179,37 @@ describe('overview atlas caches', () => {
     expect(overviewColorForPaletteId(document, 1, combined)).toBe('#ff0000');
     expect(overviewColorForPaletteId(document, 2, combined)).toBe('#0000ff');
     expect(overviewColorForPaletteId(document, 1, combined)).toBe(overviewColorForPaletteId(document, 1, color));
+  });
+});
+
+describe('paintOverviewCell', () => {
+  it('paints each legacy quarter as the same corner triangle Detail draws', () => {
+    const shapes: { fillStyle: string; points: number[][] }[] = [];
+    let points: number[][] = [];
+    const fillRects: number[][] = [];
+    const context = {
+      fillStyle: '',
+      fillRect: (x: number, y: number, w: number, h: number) => fillRects.push([x, y, w, h]),
+      beginPath: () => {
+        points = [];
+      },
+      moveTo: (x: number, y: number) => points.push([x, y]),
+      lineTo: (x: number, y: number) => points.push([x, y]),
+      fill: () => shapes.push({ fillStyle: context.fillStyle, points })
+    } as unknown as CanvasContextAdapter;
+    const fills = new Map([
+      [1, '#ff0000'],
+      [2, '#0000ff']
+    ]);
+    paintOverviewCell(context, CellKind.Quarters, [0, 0, 0, 0, 1, 0, 2, 0], 4, { x: 10, y: 20, width: 8, height: 8 }, (id) => {
+      context.fillStyle = fills.get(id) ?? '';
+    });
+    expect(fillRects).toEqual([]);
+    expect(shapes).toEqual([
+      // Slot 0: top-left corner, top edge midpoint, center.
+      { fillStyle: '#ff0000', points: [[10, 20], [14, 20], [14, 24]] },
+      // Slot 2: bottom-right corner, bottom edge midpoint, center.
+      { fillStyle: '#0000ff', points: [[18, 28], [14, 28], [14, 24]] }
+    ]);
   });
 });

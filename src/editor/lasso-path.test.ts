@@ -1,82 +1,35 @@
 import { describe, expect, it } from 'vitest';
-import { createDocument, createLayeredDocument, flattenDocument } from '../domain';
+import { createLayeredDocument } from '../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
-import type { CanvasCellSet, CanvasRenderer, LassoPathOverlay, ModelPoint, RenderStats, RendererStyle, Viewport } from './contracts';
+import type { CanvasCellSet, LassoPathOverlay, ModelPoint } from './contracts';
 import { getCanvasMetrics } from './coordinates';
-import { EditorSurfaceController } from './controller';
-import { createWorkspaceEditorGateway, type WorkspaceEditorBoundary } from './gateway';
+import type { EditorSurfaceController } from './controller';
 import type { PointerSample } from './input';
-import { createUiStore } from './ui-store';
-import { SurfaceHistory } from './test-fixtures';
+import type { createUiStore } from './ui-store';
+import { fixture as layeredFixture, LayeredTestBoundary, plainDocument } from './test-support';
 
 const ZOOM = 16;
 /** Square vertices on cell corners, enclosing cells x, y in 1..4. */
 const SQUARE: readonly ModelPoint[] = [{ x: 1, y: 1 }, { x: 5, y: 1 }, { x: 5, y: 5 }, { x: 1, y: 5 }];
 
-function rendererFixture(): CanvasRenderer {
-  let viewport: Viewport = { x: 0, y: 0, zoom: ZOOM };
-  const renderer = {
-    lastStats: { lod: 'detail', visitedCells: 0, drawnCells: 0, drawnBackstitches: 0, baseRendered: false, overlayRendered: false } as RenderStats,
-    getDocument: () => undefined,
-    getViewport: () => viewport,
-    getStyle: () => ({}) as RendererStyle,
-    getTraceImage: () => undefined,
-    setDocument: () => undefined,
-    setViewport: (next: Viewport) => { viewport = next; },
-    setMetrics: () => undefined,
-    setStyle: () => undefined,
-    setTraceImage: () => undefined,
-    setOverlay: () => undefined,
-    invalidate: () => undefined,
-    requestRender: () => undefined,
-    render: () => renderer.lastStats,
-    renderNow: () => renderer.lastStats,
-    getLastInvalidation: () => ({ base: false, overlay: false, reasons: [] }),
-    dispose: () => undefined,
-    destroy: () => undefined
-  } as unknown as CanvasRenderer;
-  return renderer;
-}
-
-function start(boundary: WorkspaceEditorBoundary) {
-  const uiStore = createUiStore({ viewport: { x: 0, y: 0, zoom: ZOOM } });
-  const controller = new EditorSurfaceController({ gateway: createWorkspaceEditorGateway(boundary), uiStore, renderer: rendererFixture(), metrics: getCanvasMetrics(320, 320) });
-  controller.start();
+function start(boundary: LayeredTestBoundary) {
+  const { controller, uiStore } = layeredFixture(boundary, {
+    ui: { viewport: { x: 0, y: 0, zoom: ZOOM } },
+    controller: { metrics: getCanvasMetrics(320, 320) }
+  });
   controller.setTool({ tool: 'lasso' });
   return { controller, uiStore };
 }
 
-/** A single-surface 10x10 workspace with the lasso selected. */
+/** A 10x10 layered workspace on its stitch layer with the lasso selected. */
 function fixture() {
-  const editor = new SurfaceHistory(createDocument({ width: 10, height: 10, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Red', color: '#d33' }] }));
-  const listeners = new Set<() => void>();
-  return start({
-    activeProjectId: 'project-a',
-    get document() { return editor.document; },
-    subscribe: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
-    execute: (command) => editor.execute(command),
-    executeBatch: (commands) => editor.executeBatch(commands),
-    undo: () => editor.undo(),
-    redo: () => editor.redo()
-  });
+  return start(new LayeredTestBoundary(plainDocument(10, 10)));
 }
 
-/** A 10x10 layered workspace with the Canvas layer selected; lasso selection never commits. */
+/** A 10x10 layered workspace with the Canvas layer selected. */
 function canvasFixture() {
   const layered = createLayeredDocument({ width: 10, height: 10, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Red', color: '#d33', active: true }] });
-  const unused = (): never => { throw new Error('unexpected command'); };
-  const result = start({
-    activeProjectId: 'project-a',
-    layeredDocument: layered,
-    document: flattenDocument(layered),
-    activeLayerId: 'canvas',
-    activeLayerSurface: () => null,
-    subscribe: () => () => undefined,
-    execute: unused,
-    executeBatch: unused,
-    undo: unused,
-    redo: unused
-  });
+  const result = start(new LayeredTestBoundary(layered, { activeLayerId: 'canvas' }));
   result.controller.setCanvasCropActive(true);
   result.controller.setCanvasMode('advanced');
   result.controller.setTool({ tool: 'lasso' });

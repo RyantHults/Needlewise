@@ -2370,7 +2370,7 @@ describe('local project repository', () => {
       await expect(repo.listProjectHealth()).resolves.toEqual(expect.arrayContaining([
         expect.objectContaining({ projectId: 'recoverable', current: expect.objectContaining({ status: 'corrupt' }), recovery: expect.objectContaining({ status: 'valid' }), recoveryAvailable: true })
       ]));
-      const recovered = await repo.loadRecovery('recoverable', revision0.revision);
+      const recovered = await repo.loadRecoveryRevision('recoverable', revision0.revision);
       expect(recovered?.document.revision).toBe(revision0.revision);
       expect(recovered?.metadata).toMatchObject({ width: revision0.width, height: revision0.height, thumbnail: deriveProjectSummary(revision0).thumbnail });
     } finally {
@@ -2435,7 +2435,7 @@ describe('local project repository', () => {
       bad.data[0] ^= 0xff;
       await repo.db.assets.put(bad);
 
-      const recovered = await repo.loadRecovery('recovery-asset-warning', revision0.revision);
+      const recovered = await repo.loadRecoveryRevision('recovery-asset-warning', revision0.revision);
       expect(recovered?.document.revision).toBe(revision0.revision);
       expect(recovered?.assets).toHaveLength(0);
       expect(recovered?.health).toMatchObject({ recovery: { status: 'valid' }, assets: { status: 'corrupt', validCount: 0, corruptCount: 1 } });

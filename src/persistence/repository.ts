@@ -1158,10 +1158,6 @@ export class ProjectRepository {
     }
   }
 
-  async getProjectAsset(projectId: string, assetId: string): Promise<ProjectAsset | undefined> {
-    return this.getAsset(projectId, assetId);
-  }
-
   /**
    * Lists metadata without requiring the project to be fully readable. This
    * preserves the old return shape while ensuring a corrupt current snapshot
@@ -1264,10 +1260,6 @@ export class ProjectRepository {
     }
   }
 
-  async inspectProjects(): Promise<ProjectHealth[]> {
-    return this.listProjectHealth();
-  }
-
   /**
    * Explicitly opens the durable recovery revision. This never falls back
    * from load() implicitly, which keeps callers aware that the current head
@@ -1332,10 +1324,6 @@ export class ProjectRepository {
       if (error instanceof PersistenceError) throw error;
       throw new PersistenceError('storage-failure', 'Unable to load the project recovery revision.', error);
     }
-  }
-
-  async loadRecovery(projectId: string, revision?: number): Promise<ProjectRecord | undefined> {
-    return this.loadRecoveryRevision(projectId, revision);
   }
 
   /**
@@ -1576,10 +1564,6 @@ export class ProjectRepository {
     this.db.close();
   }
 }
-
-export const ProjectStore = ProjectRepository;
-export const LocalProjectRepository = ProjectRepository;
-export const SaveCoordinator = ProjectRepository;
 
 export function createRepository(db?: NeedlewiseDatabase, options?: RepositoryOptions): ProjectRepository {
   return new ProjectRepository(db, options);

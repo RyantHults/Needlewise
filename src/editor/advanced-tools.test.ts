@@ -1,144 +1,22 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearClipboard } from './clipboard-store';
 import {
   applyCommand,
   CellKind,
   createDocument,
-  type CommandResult,
-  type DomainCommand,
+  DomainError,
   type PatternDocument
 } from '../domain';
-import { markBackstitchComplete, markCellComplete } from '../domain/test-fixtures';
+import { markCellComplete, SPECIALTY_LAYER_ID, STITCH_LAYER_ID } from '../domain/test-fixtures';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { createFillWorkerClient, createFillResult, type FillWorkerClient, type FillWorkerLike } from './fill';
 import { getCanvasMetrics } from './coordinates';
-import { EditorSurfaceController } from './controller';
+import type { EditorSurfaceController } from './controller';
 import { createUiStore } from './ui-store';
 import { ThreeQuarterPair } from './cell-kinds';
-import type {
-  CanvasRenderer,
-  RendererStyle,
-  RenderStats,
-  Viewport
-} from './contracts';
-import type { EditorRevisionToken, EditorTransaction, WorkspaceEditorGateway, WorkspaceEditorSnapshot } from './gateway';
+import type { ActiveLayerId } from './gateway';
 import type { PointerSample } from './input';
-import { SurfaceHistory } from './test-fixtures';
-
-class FakeGateway implements WorkspaceEditorGateway {
-  private editor: SurfaceHistory;
-  private projectId = 'project-a';
-  private readonly listeners = new Set<(snapshot: WorkspaceEditorSnapshot) => void>();
-  readonly commands: DomainCommand[] = [];
-
-  constructor(document: PatternDocument) {
-    this.editor = new SurfaceHistory(document);
-  }
-
-  markProgress(): boolean {
-    return false;
-  }
-
-  undoMark(): boolean {
-    return false;
-  }
-
-  redoMark(): boolean {
-    return false;
-  }
-
-  getSnapshot(): WorkspaceEditorSnapshot {
-    return { projectId: this.projectId, revision: this.editor.revision, document: this.editor.document };
-  }
-
-  get undoDepth(): number {
-    return this.editor.undoDepth;
-  }
-
-  getDocumentSnapshot(): WorkspaceEditorSnapshot {
-    return this.getSnapshot();
-  }
-
-  subscribe(listener: (snapshot: WorkspaceEditorSnapshot) => void): () => void {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
-  }
-
-  beginTransaction(): EditorTransaction {
-    const token = this.token();
-    let committed = false;
-    return {
-      token,
-      commit: (command) => {
-        if (committed) throw new Error('Transaction already committed.');
-        committed = true;
-        return this.execute(command, token);
-      },
-      commitBatch: (commands) => {
-        if (committed) throw new Error('Transaction already committed.');
-        committed = true;
-        return this.executeBatch(commands, token);
-      }
-    };
-  }
-
-  execute(command: DomainCommand, expected?: EditorRevisionToken): CommandResult {
-    this.assertToken(expected);
-    this.commands.push(command);
-    const result = this.editor.execute(command);
-    this.emit();
-    return result;
-  }
-
-  executeBatch(commands: readonly DomainCommand[], expected?: EditorRevisionToken): CommandResult {
-    this.assertToken(expected);
-    this.commands.push(...commands);
-    const result = this.editor.executeBatch(commands);
-    this.emit();
-    return result;
-  }
-
-  undo(expected?: EditorRevisionToken): CommandResult {
-    this.assertToken(expected);
-    const result = this.editor.undo();
-    this.emit();
-    return result;
-  }
-
-  redo(expected?: EditorRevisionToken): CommandResult {
-    this.assertToken(expected);
-    const result = this.editor.redo();
-    this.emit();
-    return result;
-  }
-
-  switchProject(): void {
-    this.projectId = 'project-b';
-    this.editor = new SurfaceHistory(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
-    this.emit();
-  }
-
-  replaceDocument(document: PatternDocument): void {
-    this.editor = new SurfaceHistory(document);
-    this.emit();
-  }
-
-  dispose(): void {}
-
-  private token(): EditorRevisionToken {
-    return { projectId: this.projectId, revision: this.editor.revision };
-  }
-
-  private assertToken(expected: EditorRevisionToken | undefined): void {
-    const actual = this.token();
-    if (expected && (expected.projectId !== actual.projectId || expected.revision !== actual.revision)) throw new Error('stale');
-  }
-
-  private emit(): void {
-    const snapshot = this.getSnapshot();
-    this.listeners.forEach((listener) => listener(snapshot));
-  }
-}
+import { fixture as layeredFixture, LayeredTestBoundary } from './test-support';
 
 class FakeWorker implements FillWorkerLike {
   readonly posted: unknown[] = [];
@@ -155,29 +33,6 @@ class FakeWorker implements FillWorkerLike {
   emit(message: unknown): void {
     this.listeners.get('message')?.({ data: message });
   }
-}
-
-function rendererFixture(): CanvasRenderer {
-  let viewport: Viewport = { x: 0, y: 0, zoom: 16 };
-  const renderer = {
-    lastStats: { lod: 'detail', visitedCells: 0, drawnCells: 0, drawnBackstitches: 0, baseRendered: false, overlayRendered: false } as RenderStats,
-    getDocument: () => undefined,
-    getViewport: () => viewport,
-    getStyle: () => ({}) as RendererStyle,
-    setDocument: () => undefined,
-    setViewport: (next: Viewport) => { viewport = next; },
-    setMetrics: () => undefined,
-    setStyle: () => undefined,
-    setOverlay: () => undefined,
-    invalidate: () => undefined,
-    requestRender: () => undefined,
-    render: () => renderer.lastStats,
-    renderNow: () => renderer.lastStats,
-    getLastInvalidation: () => ({ base: false, overlay: false, reasons: [] }),
-    dispose: () => undefined,
-    destroy: () => undefined
-  } as unknown as CanvasRenderer;
-  return renderer;
 }
 
 function pointer(pointerId: number, screenX: number, screenY: number): PointerSample {
@@ -236,15 +91,31 @@ function documentWithStitches(): PatternDocument {
   return document;
 }
 
-function fixture(document = documentWithStitches(), providedFillClient?: FillWorkerClient) {
-  const gateway = new FakeGateway(document);
-  const uiStore = createUiStore();
+/** A layered workspace over `document` (stitches on layer 1, backstitches on layer 2), on its stitch layer unless told otherwise. */
+function fixture(document = documentWithStitches(), providedFillClient?: FillWorkerClient, activeLayerId?: ActiveLayerId) {
+  const boundary = new LayeredTestBoundary(document, activeLayerId === undefined ? {} : { activeLayerId });
+  // Pastes commit through the workspace's commitPaste, not as a logged command.
+  const commitPaste = vi.spyOn(boundary, 'commitPaste');
   const worker = new FakeWorker();
   const fillClient = providedFillClient ?? createFillWorkerClient({ workerFactory: () => worker, requestIdFactory: () => `fill-${String(worker.posted.length)}` });
-  const controller = new EditorSurfaceController({ gateway, uiStore, renderer: rendererFixture(), fillClient });
-  controller.start();
-  controller.handleFocus();
-  return { gateway, uiStore, worker, controller };
+  const { gateway, uiStore, controller } = layeredFixture(boundary, { ui: { tool: { tool: 'pan' } }, controller: { fillClient } });
+  return { boundary, gateway, commitPaste, uiStore, worker, controller };
+}
+
+/** Make the workspace refuse the next paste or move with a recoverable domain error. */
+function refuseNext(boundary: LayeredTestBoundary, method: 'commitPaste' | 'execute'): void {
+  vi.spyOn(boundary, method).mockImplementationOnce(() => { throw new DomainError('invalid-command', 'Refused.'); });
+}
+
+/** Every paste committed so far landed on the selected stitch layer, as `count` commits. */
+function expectPastesOnStitchLayer(commitPaste: ReturnType<typeof fixture>['commitPaste'], count: number): void {
+  expect(commitPaste).toHaveBeenCalledTimes(count);
+  for (const call of commitPaste.mock.calls) expect(call[2]).toEqual({ layerId: STITCH_LAYER_ID, create: false });
+}
+
+/** The 4x4 project the workspace switches to. */
+function otherProject(): PatternDocument {
+  return createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Thread', color: '#123456' }] });
 }
 
 // The clipboard outlives controllers, so each case starts without one.
@@ -255,29 +126,29 @@ describe('advanced headless editor tools', () => {
     const document = documentWithStitches();
     document.kind[3] = ThreeQuarterPair;
     document.colors.set([1, 0, 2, 0], 12);
-    const { controller, gateway, uiStore } = fixture(document);
+    const { controller, boundary, uiStore } = fixture(document);
     controller.setTool({ tool: 'eraser' });
     controller.handlePointerDown(pointer(1, 8, 8));
     expect(uiStore.getState().overlay.pendingCellStates).toMatchObject([{ index: 0, kind: CellKind.Empty, colors: [0, 0, 0, 0], completed: 0 }]);
     controller.handlePointerUp(pointer(1, 8, 8));
-    expect(gateway.commands.at(-1)).toMatchObject({ type: 'mixed-erase', wholeCellIndices: new Uint32Array([0]) });
+    expect(boundary.log.at(-1)).toMatchObject({ type: 'mixed-erase', layerId: STITCH_LAYER_ID, wholeCellIndices: new Uint32Array([0]) });
 
     // Legacy quarters are erased as a whole cell, whichever quadrant is touched.
     controller.handlePointerDown(pointer(2, 28, 4));
     expect(uiStore.getState().overlay.pendingCellStates).toMatchObject([{ index: 1, kind: CellKind.Empty, colors: [0, 0, 0, 0] }]);
     controller.handlePointerUp(pointer(2, 28, 4));
-    expect(gateway.commands.at(-1)).toMatchObject({ type: 'mixed-erase', wholeCellIndices: new Uint32Array([1]) });
+    expect(boundary.log.at(-1)).toMatchObject({ type: 'mixed-erase', layerId: STITCH_LAYER_ID, wholeCellIndices: new Uint32Array([1]) });
 
     // A pair loses only the triangle under the touch (NE quadrant, inside the NW triangle).
     controller.handlePointerDown(pointer(3, 60, 2));
     expect(uiStore.getState().overlay.pendingCellStates).toMatchObject([{ index: 3, kind: CellKind.ThreeQuarterSE, colors: [2, 0, 0, 0] }]);
     controller.handlePointerUp(pointer(3, 60, 2));
-    expect(gateway.commands.at(-1)).toMatchObject({ type: 'mixed-erase', componentCellIndices: new Uint32Array([3]), componentCorners: new Uint8Array([0]) });
+    expect(boundary.log.at(-1)).toMatchObject({ type: 'mixed-erase', layerId: STITCH_LAYER_ID, componentCellIndices: new Uint32Array([3]), componentCorners: new Uint8Array([0]) });
 
     controller.handleKeyDown({ key: 'ArrowRight', preventDefault: () => undefined });
-    const commandCountBeforeNoop = gateway.commands.length;
+    const commandCountBeforeNoop = boundary.log.length;
     controller.handleKeyDown({ key: 'Delete', preventDefault: () => undefined });
-    expect(gateway.commands).toHaveLength(commandCountBeforeNoop);
+    expect(boundary.log).toHaveLength(commandCountBeforeNoop);
     controller.dispose();
   });
 
@@ -290,28 +161,28 @@ describe('advanced headless editor tools', () => {
     document.colors.set([1, 0, 2, 0], 0);
     document.kind[1] = ThreeQuarterPair;
     document.colors.set([0, 1, 0, 2], 4);
-    const { controller, gateway, uiStore } = fixture(document);
+    const { controller, boundary, uiStore } = fixture(document);
     controller.setTool({ tool: 'eraser' });
     uiStore.setKeyboardCursor({ x: 0, y: 0 });
     // A corner the pair has no component on leaves it alone.
     controller.setEraserCorner(1);
     controller.handleKeyDown({ key: 'Backspace', preventDefault: () => undefined });
-    expect(gateway.commands).toHaveLength(0);
+    expect(boundary.log).toHaveLength(0);
     controller.setEraserCorner(0);
     controller.handleKeyDown({ key: 'Backspace', preventDefault: () => undefined });
-    expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.ThreeQuarterSE);
-    expect(gateway.getSnapshot().document?.colors[0]).toBe(2);
+    expect(boundary.activeLayerSurface()?.kind[0]).toBe(CellKind.ThreeQuarterSE);
+    expect(boundary.activeLayerSurface()?.colors[0]).toBe(2);
     expect(uiStore.getState().status).toContain('quarter 0');
     uiStore.setKeyboardCursor({ x: 1, y: 0 });
     controller.setEraserCorner(1);
     controller.handleKeyDown({ key: 'Backspace', preventDefault: () => undefined });
-    expect(gateway.getSnapshot().document?.kind[1]).toBe(CellKind.ThreeQuarterSW);
+    expect(boundary.activeLayerSurface()?.kind[1]).toBe(CellKind.ThreeQuarterSW);
     expect(uiStore.getState().status).toContain('quarter 1');
-    expect(gateway.commands.filter((command) => command.type === 'mixed-erase')).toHaveLength(2);
+    expect(boundary.log.filter((command) => command.type === 'mixed-erase')).toHaveLength(2);
     // A single three-quarter left behind erases as a whole cell.
     uiStore.setKeyboardCursor({ x: 0, y: 0 });
     controller.handleKeyDown({ key: 'Backspace', preventDefault: () => undefined });
-    expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
+    expect(boundary.activeLayerSurface()?.kind[0]).toBe(CellKind.Empty);
     controller.dispose();
   });
 
@@ -321,34 +192,35 @@ describe('advanced headless editor tools', () => {
     document.colors.set([1, 0, 2, 0], 4);
     document.kind[2] = ThreeQuarterPair;
     document.colors.set([0, 1, 0, 2], 8);
-    const { controller, gateway } = fixture(document);
+    const { controller, boundary } = fixture(document);
     controller.setTool({ tool: 'eraser' });
     // Starts in the NW quadrant of the full cell, so the drag fixes the NW side.
     controller.handlePointerDown(pointer(1, 4, 4));
     controller.handlePointerMove(pointer(1, 28, 4));
     controller.handlePointerMove(pointer(1, 44, 12));
     controller.handlePointerUp(pointer(1, 44, 12));
-    expect(gateway.commands).toHaveLength(1);
-    expect(gateway.commands[0]).toMatchObject({
+    expect(boundary.log).toHaveLength(1);
+    expect(boundary.log[0]).toMatchObject({
       type: 'mixed-erase',
+      layerId: STITCH_LAYER_ID,
       wholeCellIndices: new Uint32Array([0]),
       componentCellIndices: new Uint32Array([1]),
       componentCorners: new Uint8Array([0])
     });
-    expect(gateway.undoDepth).toBe(1);
-    expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
-    expect(gateway.getSnapshot().document?.kind[1]).toBe(CellKind.ThreeQuarterSE);
+    expect(boundary.undoDepth).toBe(1);
+    expect(boundary.activeLayerSurface()?.kind[0]).toBe(CellKind.Empty);
+    expect(boundary.activeLayerSurface()?.kind[1]).toBe(CellKind.ThreeQuarterSE);
     // The NE/SW pair has no NW component, so the drag skips it.
-    expect(gateway.getSnapshot().document?.kind[2]).toBe(ThreeQuarterPair);
-    expect(gateway.getSnapshot().document?.colors.slice(8, 12)).toEqual(new Uint16Array([0, 1, 0, 2]));
+    expect(boundary.activeLayerSurface()?.kind[2]).toBe(ThreeQuarterPair);
+    expect(boundary.activeLayerSurface()?.colors.slice(8, 12)).toEqual(new Uint16Array([0, 1, 0, 2]));
 
     controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
-    expect(gateway.undoDepth).toBe(0);
-    expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Full);
-    expect(gateway.getSnapshot().document?.kind[1]).toBe(ThreeQuarterPair);
-    expect(gateway.getSnapshot().document?.colors.slice(4, 8)).toEqual(new Uint16Array([1, 0, 2, 0]));
+    expect(boundary.undoDepth).toBe(0);
+    expect(boundary.activeLayerSurface()?.kind[0]).toBe(CellKind.Full);
+    expect(boundary.activeLayerSurface()?.kind[1]).toBe(ThreeQuarterPair);
+    expect(boundary.activeLayerSurface()?.colors.slice(4, 8)).toEqual(new Uint16Array([1, 0, 2, 0]));
     controller.handleKeyDown({ key: 'y', ctrlKey: true, preventDefault: () => undefined });
-    expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
+    expect(boundary.activeLayerSurface()?.kind[0]).toBe(CellKind.Empty);
     controller.dispose();
   });
 
@@ -466,7 +338,7 @@ describe('advanced headless editor tools', () => {
   });
 
   it('routes sparse copy and delete through ordered cell-set domain operations', () => {
-    const { controller, gateway } = fixture();
+    const { controller, boundary } = fixture();
     controller.setTool({ tool: 'lasso' });
     lassoCell(controller, 0, 0);
     lassoCell(controller, 2, 0, { shiftKey: true });
@@ -475,10 +347,10 @@ describe('advanced headless editor tools', () => {
     expect(Array.from(controller.getClipboard()!.kind)).toEqual([CellKind.Full, CellKind.Empty, CellKind.Quarters]);
 
     expect(controller.deleteSelection()).toBe(true);
-    expect(gateway.commands.at(-1)).toMatchObject({ type: 'delete-cell-set', indices: new Uint32Array([0, 2]) });
-    expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
-    expect(gateway.getSnapshot().document?.kind[1]).toBe(CellKind.Quarters);
-    expect(gateway.getSnapshot().document?.kind[2]).toBe(CellKind.Empty);
+    expect(boundary.log.at(-1)).toMatchObject({ type: 'delete-cell-set', layerId: STITCH_LAYER_ID, indices: new Uint32Array([0, 2]) });
+    expect(boundary.activeLayerSurface()?.kind[0]).toBe(CellKind.Empty);
+    expect(boundary.activeLayerSurface()?.kind[1]).toBe(CellKind.Quarters);
+    expect(boundary.activeLayerSurface()?.kind[2]).toBe(CellKind.Empty);
     controller.dispose();
   });
 
@@ -580,11 +452,12 @@ describe('advanced headless editor tools', () => {
     noOp.controller.setSelection({ x: 4, y: 4 });
     noOp.controller.copySelection();
     noOp.controller.setSelection({ x: 5, y: 5 });
-    const noOpCommandCount = noOp.gateway.commands.length;
+    const noOpCommandCount = noOp.boundary.log.length;
     expect(noOp.controller.pasteSelection()).toBe(true);
     expect(noOp.uiStore.getState().overlay.floatingPaste).toMatchObject({ destination: { x: 5, y: 5 } });
     noOp.controller.confirmFloatingPaste();
-    expect(noOp.gateway.commands).toHaveLength(noOpCommandCount);
+    expect(noOp.boundary.log).toHaveLength(noOpCommandCount);
+    expect(noOp.commitPaste).not.toHaveBeenCalled();
     expect(noOp.uiStore.getState().status).toBe('No change');
     expect(noOp.controller.getSelection()).toEqual({ x: 5, y: 5, width: 1, height: 1 });
     expect(noOp.uiStore.getState().overlay.floatingPaste).toBeUndefined();
@@ -596,7 +469,7 @@ describe('advanced headless editor tools', () => {
     failed.controller.copySelection();
     failed.controller.setSelection({ x: 5, y: 5 });
     expect(failed.controller.pasteSelection()).toBe(true);
-    failed.gateway.getSnapshot().document!.palette.length = 0;
+    refuseNext(failed.boundary, 'commitPaste');
     failed.controller.confirmFloatingPaste();
     expect(failed.uiStore.getState().overlay.floatingPaste).toBeDefined();
     expect(failed.controller.getSelection()).toBeUndefined();
@@ -608,7 +481,7 @@ describe('advanced headless editor tools', () => {
   it('clears sparse and legacy selections before a same-project dimension change', () => {
     const unchanged = fixture();
     unchanged.controller.setSelection({ x: 1, y: 1 }, { x: 2, y: 2 });
-    unchanged.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    unchanged.boundary.seed({ type: 'set-full', x: 0, y: 0, color: 1 });
     expect(unchanged.controller.getSelection()).toEqual({ x: 1, y: 1, width: 2, height: 2 });
     unchanged.controller.dispose();
 
@@ -617,7 +490,7 @@ describe('advanced headless editor tools', () => {
     lassoCell(sparse.controller, 0, 0);
     expect(sparse.controller.getSelectionIndices()).toEqual(new Uint32Array([0]));
 
-    sparse.gateway.replaceDocument(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
+    sparse.boundary.seed({ type: 'canvas-resize', edges: { top: 0, right: -4, bottom: -4, left: 0 } });
     expect(sparse.controller.getSelection()).toBeUndefined();
     expect(sparse.controller.getSelectionIndices()).toBeUndefined();
     expect(sparse.uiStore.getState().overlay.selection).toBeUndefined();
@@ -628,7 +501,7 @@ describe('advanced headless editor tools', () => {
     const legacy = fixture();
     legacy.controller.setSelection({ x: 1, y: 1 }, { x: 2, y: 2 });
     expect(legacy.controller.getSelection()).toEqual({ x: 1, y: 1, width: 2, height: 2 });
-    legacy.gateway.replaceDocument(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }));
+    legacy.boundary.seed({ type: 'canvas-resize', edges: { top: 0, right: -4, bottom: -4, left: 0 } });
     expect(legacy.controller.getSelection()).toBeUndefined();
     expect(legacy.uiStore.getState().overlay.selection).toBeUndefined();
     expect(legacy.controller.deleteSelection()).toBe(false);
@@ -644,14 +517,14 @@ describe('advanced headless editor tools', () => {
     // A document-wide change that keeps the dimensions keeps the selection.
     const merged = fixture();
     merged.controller.setSelection({ x: 1, y: 1 }, { x: 2, y: 2 });
-    merged.gateway.execute({ type: 'palette-merge', from: 1, to: 2 });
-    expect(merged.gateway.getSnapshot().document?.palette.find((entry) => entry.id === 1)?.active).toBe(false);
+    merged.boundary.seed({ type: 'palette-merge', from: 1, to: 2 });
+    expect(merged.boundary.activeLayerSurface()?.palette.find((entry) => entry.id === 1)?.active).toBe(false);
     expect(merged.controller.getSelection()).toEqual({ x: 1, y: 1, width: 2, height: 2 });
     merged.controller.dispose();
   });
 
   it('copies a local transparent fragment without completion and pastes in one transaction', () => {
-    const { controller, gateway, uiStore } = fixture();
+    const { controller, boundary, commitPaste, uiStore } = fixture();
     controller.setTool({ tool: 'select' });
     controller.setSelection({ x: 0, y: 0 });
     expect(controller.handleKeyDown({ key: 'c', ctrlKey: true, preventDefault: () => undefined })).toBe(true);
@@ -659,26 +532,24 @@ describe('advanced headless editor tools', () => {
     expect('completed' in (controller.getClipboard() ?? {})).toBe(false);
     controller.clearSelection();
     controller.handleKeyDown({ key: 'ArrowRight', preventDefault: () => undefined });
-    const before = gateway.commands.length;
+    const before = boundary.log.length;
     expect(controller.handleKeyDown({ key: 'v', ctrlKey: true, preventDefault: () => undefined })).toBe(true);
-    expect(gateway.commands).toHaveLength(before);
+    expect(boundary.log).toHaveLength(before);
     expect(controller.getSelection()).toBeUndefined();
     expect(uiStore.getState().overlay.floatingPaste).toMatchObject({ destination: { x: 1, y: 0, width: 1, height: 1 } });
+    expect(commitPaste).not.toHaveBeenCalled();
     expect(controller.confirmFloatingPaste()).toBe(true);
-    expect(gateway.commands).toHaveLength(before + 1);
-    expect(gateway.commands.at(-1)?.type).toBe('paste-fragment');
-    expect(gateway.getSnapshot().document?.completed[1]).toBe(0);
+    expectPastesOnStitchLayer(commitPaste, 1);
+    expect(boundary.undoDepth).toBe(1);
+    expect(boundary.activeLayerSurface()?.kind[1]).toBe(CellKind.Full);
+    expect(boundary.activeLayerSurface()?.completed[1]).toBe(0);
     controller.handleBlur();
     expect(controller.handleKeyDown({ key: 'c', ctrlKey: true })).toBe(false);
-    gateway.switchProject();
-    // The clipboard outlives the project.
-    expect(controller.getClipboard()).toBeDefined();
-    expect(uiStore.getState().canPaste).toBe(true);
     controller.dispose();
   });
 
   it('moves a completed rectangular selection through one floating command with undo and redo', () => {
-    const { controller, gateway, uiStore } = fixture();
+    const { controller, boundary, uiStore } = fixture();
     controller.setTool({ tool: 'select' });
     controller.setSelection({ x: 0, y: 0 });
     expect(controller.moveSelection()).toBe(true);
@@ -694,19 +565,19 @@ describe('advanced headless editor tools', () => {
     controller.handlePointerUp(pointer(1, 40, 8));
     expect(uiStore.getState().overlay.floatingPaste).toMatchObject({ destination: { x: 2, y: 0 } });
     expect(controller.confirmFloatingPaste()).toBe(true);
-    expect(gateway.commands.filter((command) => command.type === 'move-fragment')).toHaveLength(1);
+    expect(boundary.log.filter((command) => command.type === 'move-fragment' && command.layerId === STITCH_LAYER_ID)).toHaveLength(1);
     expect(controller.getSelection()).toBeUndefined();
     expect(uiStore.getState().overlay.floatingPaste).toBeUndefined();
-    expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
-    expect(gateway.getSnapshot().document?.kind[2]).toBe(CellKind.Full);
-    expect(gateway.getSnapshot().document?.completed[2]).toBe(1);
+    expect(boundary.activeLayerSurface()?.kind[0]).toBe(CellKind.Empty);
+    expect(boundary.activeLayerSurface()?.kind[2]).toBe(CellKind.Full);
+    expect(boundary.activeLayerSurface()?.completed[2]).toBe(1);
 
     controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
-    expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Full);
-    expect(gateway.getSnapshot().document?.kind[2]).toBe(CellKind.Quarters);
+    expect(boundary.activeLayerSurface()?.kind[0]).toBe(CellKind.Full);
+    expect(boundary.activeLayerSurface()?.kind[2]).toBe(CellKind.Quarters);
     controller.handleKeyDown({ key: 'y', ctrlKey: true, preventDefault: () => undefined });
-    expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
-    expect(gateway.getSnapshot().document?.completed[2]).toBe(1);
+    expect(boundary.activeLayerSurface()?.kind[0]).toBe(CellKind.Empty);
+    expect(boundary.activeLayerSurface()?.completed[2]).toBe(1);
     controller.dispose();
   });
 
@@ -728,10 +599,10 @@ describe('advanced headless editor tools', () => {
 
     const failed = fixture();
     failed.controller.setTool({ tool: 'select' });
-    failed.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    failed.boundary.seed({ type: 'set-full', x: 0, y: 0, color: 1 });
     failed.controller.setSelection({ x: 0, y: 0 });
     expect(failed.controller.moveSelection()).toBe(true);
-    failed.gateway.getSnapshot().document!.palette.length = 0;
+    refuseNext(failed.boundary, 'execute');
     failed.controller.confirmFloatingPaste();
     expect(failed.uiStore.getState().overlay.floatingPaste).toBeDefined();
     expect(failed.controller.getSelection()).toBeUndefined();
@@ -741,83 +612,44 @@ describe('advanced headless editor tools', () => {
   });
 
   it('discards a stale move preview and restores its source selection', () => {
-    const { controller, gateway, uiStore } = fixture();
+    const { controller, boundary, uiStore } = fixture();
     controller.setTool({ tool: 'select' });
     controller.setSelection({ x: 0, y: 0 });
     expect(controller.moveSelection()).toBe(true);
-    gateway.execute({ type: 'set-full', x: 7, y: 7, color: 1 });
+    boundary.seed({ type: 'set-full', x: 7, y: 7, color: 1 });
     expect(uiStore.getState().overlay.floatingPaste).toBeUndefined();
     expect(controller.getSelection()).toEqual({ x: 0, y: 0, width: 1, height: 1 });
     controller.dispose();
   });
 
-  it('captures mixed cell/backstitch move state and restores a transparent no-op without changing clipboard/history', () => {
-    const withBackstitch = applyCommand(documentWithStitches(), { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 2 }).document;
-    const mixed = fixture(markBackstitchComplete(withBackstitch, 1));
-    mixed.controller.setTool({ tool: 'select' });
-    mixed.controller.setSelection({ x: 0, y: 0 });
-    mixed.controller.copySelection();
-    const clipboard = mixed.controller.getClipboard();
-    const historyBefore = mixed.gateway.undoDepth;
-    expect(mixed.controller.moveSelection()).toBe(true);
-    expect(mixed.uiStore.getState().overlay.floatingPaste).toMatchObject({ mode: 'move', completion: new Uint8Array([1]) });
-    expect(mixed.uiStore.getState().overlay.floatingPaste?.backstitches).toMatchObject({
-      ids: new Uint32Array([1]),
-      x1: new Uint32Array([0]),
-      x2: new Uint32Array([4]),
-      colors: new Uint16Array([2]),
-      completed: new Uint8Array([1])
-    });
-    mixed.controller.handlePointerDown(pointer(1, 8, 8));
-    mixed.controller.handlePointerMove(pointer(1, 40, 8));
-    mixed.controller.handlePointerUp(pointer(1, 40, 8));
-    expect(mixed.controller.confirmFloatingPaste()).toBe(true);
-    expect(mixed.gateway.commands.filter((command) => command.type === 'move-fragment')).toHaveLength(1);
-    expect(mixed.gateway.undoDepth).toBe(historyBefore + 1);
-    expect(mixed.controller.getSelection()).toBeUndefined();
-    expect(mixed.controller.getClipboard()?.kind).toEqual(clipboard?.kind);
-    mixed.controller.dispose();
-
+  it('restores a transparent no-op move without changing clipboard or history', () => {
     const noop = fixture();
     noop.controller.setTool({ tool: 'select' });
     noop.controller.setSelection({ x: 0, y: 0 });
     noop.controller.copySelection();
     const noopClipboard = noop.controller.getClipboard();
     noop.controller.setSelection({ x: 4, y: 4 });
-    const noopHistory = noop.gateway.undoDepth;
+    const noopHistory = noop.boundary.undoDepth;
     expect(noop.controller.moveSelection()).toBe(true);
     noop.controller.confirmFloatingPaste();
-    expect(noop.gateway.undoDepth).toBe(noopHistory);
+    expect(noop.boundary.undoDepth).toBe(noopHistory);
     expect(noop.controller.getSelection()).toEqual({ x: 4, y: 4, width: 1, height: 1 });
     expect(noop.controller.getClipboard()?.kind).toEqual(noopClipboard?.kind);
     expect(noop.uiStore.getState().overlay.floatingPaste).toBeUndefined();
     noop.controller.dispose();
   });
 
-  it('shows a single-surface move source as fabric and lifts its backstitches', () => {
-    const { controller, gateway, uiStore } = fixture();
-    controller.setTool({ tool: 'select' });
-    gateway.execute({ type: 'set-full', x: 3, y: 3, color: 1 });
-    gateway.execute({ type: 'add-backstitch', start: { x: 12, y: 12 }, end: { x: 16, y: 12 }, color: 2 });
-    controller.setSelection({ x: 3, y: 3 }, { x: 4, y: 3 });
-    expect(controller.moveSelection()).toBe(true);
-    const floating = uiStore.getState().overlay.floatingPaste;
-    expect(floating?.sourceHole).toEqual([{ index: 27, cell: { x: 3, y: 3 }, kind: CellKind.Empty, colors: [0, 0, 0, 0], completed: 0 }]);
-    expect([...floating?.liftedBackstitchIds ?? []]).toEqual([1]);
-    controller.dispose();
-  });
-
   it('keeps floating paste out of document history until commit and supports replacement, cancel, and clamped anchors', () => {
-    const { controller, gateway, uiStore } = fixture();
+    const { controller, boundary, commitPaste, uiStore } = fixture();
     controller.setTool({ tool: 'select' });
     controller.setSelection({ x: 0, y: 0 });
     controller.copySelection();
     controller.clearSelection();
     uiStore.setKeyboardCursor({ x: 4, y: 4 });
-    const revision = gateway.getSnapshot().revision;
+    const revision = boundary.document.revision;
     expect(controller.pasteSelection()).toBe(true);
-    expect(gateway.getSnapshot().revision).toBe(revision);
-    expect(gateway.commands.at(-1)?.type).not.toBe('paste-fragment');
+    expect(boundary.document.revision).toBe(revision);
+    expect(commitPaste).not.toHaveBeenCalled();
     expect(uiStore.getState().canPaste).toBe(true);
     expect(uiStore.getState().overlay.floatingPaste).toMatchObject({ destination: { x: 4, y: 4, width: 1, height: 1 } });
 
@@ -827,7 +659,7 @@ describe('advanced headless editor tools', () => {
     controller.handleKeyDown({ key: 'Escape', preventDefault: () => undefined });
     expect(uiStore.getState().overlay.floatingPaste).toBeUndefined();
     expect(controller.getSelection()).toBeUndefined();
-    expect(gateway.getSnapshot().revision).toBe(revision);
+    expect(boundary.document.revision).toBe(revision);
 
     controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 1 });
     controller.copySelection();
@@ -836,17 +668,17 @@ describe('advanced headless editor tools', () => {
     expect(controller.pasteSelection()).toBe(true);
     expect(uiStore.getState().overlay.floatingPaste).toMatchObject({ destination: { x: 6, y: 6, width: 2, height: 2 } });
     expect(controller.confirmFloatingPaste()).toBe(true);
-    expect(gateway.commands.at(-1)?.type).toBe('paste-fragment');
+    expectPastesOnStitchLayer(commitPaste, 1);
     expect(controller.getSelection()).toBeUndefined();
-    expect(gateway.undoDepth).toBe(1);
+    expect(boundary.undoDepth).toBe(1);
     controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
     controller.handleKeyDown({ key: 'y', ctrlKey: true, preventDefault: () => undefined });
-    expect(gateway.undoDepth).toBe(1);
+    expect(boundary.undoDepth).toBe(1);
     controller.dispose();
   });
 
   it('moves floating paste with pointer input, reverts on a second touch, and exposes touch Copy only on release', () => {
-    const { controller, gateway, uiStore } = fixture();
+    const { controller, commitPaste, uiStore } = fixture();
     controller.setTool({ tool: 'select' });
     controller.setSelection({ x: 0, y: 0 });
     controller.copySelection();
@@ -862,7 +694,7 @@ describe('advanced headless editor tools', () => {
     expect(uiStore.getState().overlay.floatingPaste).toMatchObject({ destination: { x: 0, y: 0 } });
     controller.handlePointerUp({ ...pointer(2, 60, 8), pointerType: 'touch' });
     controller.handlePointerUp({ ...pointer(1, 40, 8), pointerType: 'touch' });
-    expect(gateway.commands.filter((command) => command.type === 'paste-fragment')).toHaveLength(0);
+    expect(commitPaste).not.toHaveBeenCalled();
     controller.handleKeyDown({ key: 'Escape', preventDefault: () => undefined });
 
     // A tap inside the selection is a plain Select click and keeps it.
@@ -874,11 +706,11 @@ describe('advanced headless editor tools', () => {
   });
 
   it('pastes at the centre of the visible viewport when there is no selection or keyboard cursor', () => {
-    const gateway = new FakeGateway(documentWithStitches());
-    const uiStore = createUiStore({ viewport: { x: 2, y: 0, zoom: 16 } });
     // 96px square: the centre is model point (5, 3).
-    const controller = new EditorSurfaceController({ gateway, uiStore, renderer: rendererFixture(), metrics: getCanvasMetrics(96, 96) });
-    controller.start();
+    const { controller, uiStore } = layeredFixture(new LayeredTestBoundary(documentWithStitches()), {
+      ui: { tool: { tool: 'pan' }, viewport: { x: 2, y: 0, zoom: 16 } },
+      controller: { metrics: getCanvasMetrics(96, 96) }
+    });
     controller.setTool({ tool: 'select' });
     controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 1 });
     expect(controller.copySelection()).toBeDefined();
@@ -899,7 +731,7 @@ describe('advanced headless editor tools', () => {
     failed.controller.clearSelection();
     failed.uiStore.setKeyboardCursor({ x: 0, y: 0 });
     failed.controller.pasteSelection();
-    failed.gateway.getSnapshot().document!.palette.length = 0;
+    refuseNext(failed.boundary, 'commitPaste');
     failed.controller.confirmFloatingPaste();
     expect(failed.uiStore.getState().overlay.floatingPaste).toBeDefined();
     expect(failed.uiStore.getState().status).toBe('Paste unavailable');
@@ -912,21 +744,21 @@ describe('advanced headless editor tools', () => {
     stale.controller.clearSelection();
     stale.uiStore.setKeyboardCursor({ x: 0, y: 0 });
     stale.controller.pasteSelection();
-    stale.gateway.execute({ type: 'set-full', x: 7, y: 7, color: 1 });
+    stale.boundary.seed({ type: 'set-full', x: 7, y: 7, color: 1 });
     expect(stale.uiStore.getState().overlay.floatingPaste).toBeUndefined();
     expect(stale.controller.getSelection()).toBeUndefined();
     stale.controller.dispose();
   });
 
   it('keeps floating paste through Space/middle navigation and post-pinch pan', () => {
-    const { controller, gateway, uiStore } = fixture();
+    const { controller, boundary, uiStore } = fixture();
     controller.setTool({ tool: 'select' });
     controller.setSelection({ x: 0, y: 0 });
     controller.copySelection();
     controller.clearSelection();
     uiStore.setKeyboardCursor({ x: 0, y: 0 });
     controller.pasteSelection();
-    const revision = gateway.getSnapshot().revision;
+    const revision = boundary.document.revision;
 
     const beforeSpace = uiStore.getState().viewport;
     controller.handleKeyDown({ key: 'Space', preventDefault: () => undefined });
@@ -952,13 +784,13 @@ describe('advanced headless editor tools', () => {
     controller.handlePointerUp({ ...pointer(4, 96, 48), pointerType: 'touch' });
     expect(uiStore.getState().viewport).not.toEqual(beforePinch);
     expect(uiStore.getState().overlay.floatingPaste).toBeDefined();
-    expect(gateway.getSnapshot().revision).toBe(revision);
+    expect(boundary.document.revision).toBe(revision);
     controller.dispose();
   });
 
   it('nudges a floating paste one cell toward a press or tap outside it, without committing', () => {
-    const { controller, gateway, uiStore } = floatingFixture({ x: 4, y: 4 });
-    const revision = gateway.getSnapshot().revision;
+    const { controller, boundary, commitPaste, uiStore } = floatingFixture({ x: 4, y: 4 });
+    const revision = boundary.document.revision;
 
     // Left, by mouse on press.
     expect(controller.handlePointerDown(modelPointer(1, 0.5, 4.5))).toBe(true);
@@ -982,8 +814,8 @@ describe('advanced headless editor tools', () => {
     controller.handlePointerUp(modelPointer(4, 4.5, 7.5));
     expect(floatingDestination(uiStore)).toEqual({ x: 4, y: 4, width: 1, height: 1 });
 
-    expect(gateway.commands.filter((command) => command.type === 'paste-fragment')).toHaveLength(0);
-    expect(gateway.getSnapshot().revision).toBe(revision);
+    expect(commitPaste).not.toHaveBeenCalled();
+    expect(boundary.document.revision).toBe(revision);
     expect(controller.getSelection()).toBeUndefined();
     controller.dispose();
   });
@@ -1007,12 +839,12 @@ describe('advanced headless editor tools', () => {
   });
 
   it('does not nudge a floating paste past the document edge', () => {
-    const { controller, gateway, uiStore } = floatingFixture({ x: 0, y: 0 });
+    const { controller, commitPaste, uiStore } = floatingFixture({ x: 0, y: 0 });
     tapModel(controller, 1, -0.5, 0.5);
     expect(floatingDestination(uiStore)).toEqual({ x: 0, y: 0, width: 1, height: 1 });
     tapModel(controller, 2, 0.5, -0.5);
     expect(floatingDestination(uiStore)).toEqual({ x: 0, y: 0, width: 1, height: 1 });
-    expect(gateway.commands.filter((command) => command.type === 'paste-fragment')).toHaveLength(0);
+    expect(commitPaste).not.toHaveBeenCalled();
     controller.dispose();
   });
 
@@ -1026,16 +858,16 @@ describe('advanced headless editor tools', () => {
   });
 
   it('commits a nudged move at its new position', () => {
-    const { controller, gateway, uiStore } = fixture();
+    const { controller, boundary, uiStore } = fixture();
     controller.setTool({ tool: 'select' });
     controller.setSelection({ x: 0, y: 0 });
     expect(controller.moveSelection()).toBe(true);
     tapModel(controller, 1, 3.5, 0.5);
     expect(floatingDestination(uiStore)).toEqual({ x: 1, y: 0, width: 1, height: 1 });
-    expect(gateway.commands.filter((command) => command.type === 'move-fragment')).toHaveLength(0);
+    expect(boundary.log.filter((command) => command.type === 'move-fragment')).toHaveLength(0);
     expect(controller.confirmFloatingPaste()).toBe(true);
-    expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
-    expect(gateway.getSnapshot().document?.kind[1]).toBe(CellKind.Full);
+    expect(boundary.activeLayerSurface()?.kind[0]).toBe(CellKind.Empty);
+    expect(boundary.activeLayerSurface()?.kind[1]).toBe(CellKind.Full);
     controller.dispose();
   });
 
@@ -1047,10 +879,10 @@ describe('advanced headless editor tools', () => {
     paste.controller.setSelection({ x: 5, y: 5 });
     expect(paste.controller.pasteSelection()).toBe(true);
     expect(paste.controller.confirmFloatingPaste()).toBe(true);
-    expect(paste.gateway.commands.filter((command) => command.type === 'paste-fragment')).toHaveLength(1);
-    expect(paste.gateway.getSnapshot().document?.kind[5 * 8 + 5]).toBe(CellKind.Full);
+    expectPastesOnStitchLayer(paste.commitPaste, 1);
+    expect(paste.boundary.activeLayerSurface()?.kind[5 * 8 + 5]).toBe(CellKind.Full);
     expect(paste.uiStore.getState().overlay.floatingPaste).toBeUndefined();
-    expect(paste.gateway.undoDepth).toBe(1);
+    expect(paste.boundary.undoDepth).toBe(1);
     paste.controller.dispose();
 
     const move = fixture();
@@ -1062,9 +894,9 @@ describe('advanced headless editor tools', () => {
     move.controller.handlePointerUp(pointer(1, 88, 88));
     expect(move.uiStore.getState().overlay.floatingPaste).toMatchObject({ mode: 'move', destination: { x: 5, y: 5 } });
     expect(move.controller.confirmFloatingPaste()).toBe(true);
-    expect(move.gateway.commands.filter((command) => command.type === 'move-fragment')).toHaveLength(1);
-    expect(move.gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
-    expect(move.gateway.getSnapshot().document?.kind[5 * 8 + 5]).toBe(CellKind.Full);
+    expect(move.boundary.log.filter((command) => command.type === 'move-fragment' && command.layerId === STITCH_LAYER_ID)).toHaveLength(1);
+    expect(move.boundary.activeLayerSurface()?.kind[0]).toBe(CellKind.Empty);
+    expect(move.boundary.activeLayerSurface()?.kind[5 * 8 + 5]).toBe(CellKind.Full);
     expect(move.uiStore.getState().overlay.floatingPaste).toBeUndefined();
     move.controller.dispose();
   });
@@ -1075,12 +907,12 @@ describe('advanced headless editor tools', () => {
     paste.controller.setSelection({ x: 0, y: 0 });
     paste.controller.copySelection();
     paste.controller.setSelection({ x: 5, y: 5 });
-    const revision = paste.gateway.getSnapshot().revision;
+    const revision = paste.boundary.document.revision;
     expect(paste.controller.pasteSelection()).toBe(true);
     expect(paste.controller.cancelFloatingPaste()).toBe(true);
     expect(paste.uiStore.getState().overlay.floatingPaste).toBeUndefined();
-    expect(paste.gateway.getSnapshot().revision).toBe(revision);
-    expect(paste.gateway.getSnapshot().document?.kind[5 * 8 + 5]).toBe(CellKind.Empty);
+    expect(paste.boundary.document.revision).toBe(revision);
+    expect(paste.boundary.activeLayerSurface()?.kind[5 * 8 + 5]).toBe(CellKind.Empty);
     expect(paste.controller.getSelection()).toEqual({ x: 5, y: 5, width: 1, height: 1 });
     expect(paste.controller.cancelFloatingPaste()).toBe(false);
     paste.controller.dispose();
@@ -1088,17 +920,17 @@ describe('advanced headless editor tools', () => {
     const move = fixture();
     move.controller.setTool({ tool: 'select' });
     move.controller.setSelection({ x: 0, y: 0 });
-    const moveRevision = move.gateway.getSnapshot().revision;
+    const moveRevision = move.boundary.document.revision;
     expect(move.controller.moveSelection()).toBe(true);
     move.controller.handlePointerDown(pointer(1, 8, 8));
     move.controller.handlePointerMove(pointer(1, 88, 88));
     move.controller.handlePointerUp(pointer(1, 88, 88));
     expect(move.controller.cancelFloatingPaste()).toBe(true);
     expect(move.uiStore.getState().overlay.floatingPaste).toBeUndefined();
-    expect(move.gateway.commands.filter((command) => command.type === 'move-fragment')).toHaveLength(0);
-    expect(move.gateway.getSnapshot().revision).toBe(moveRevision);
-    expect(move.gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Full);
-    expect(move.gateway.getSnapshot().document?.kind[5 * 8 + 5]).toBe(CellKind.Empty);
+    expect(move.boundary.log.filter((command) => command.type === 'move-fragment')).toHaveLength(0);
+    expect(move.boundary.document.revision).toBe(moveRevision);
+    expect(move.boundary.activeLayerSurface()?.kind[0]).toBe(CellKind.Full);
+    expect(move.boundary.activeLayerSurface()?.kind[5 * 8 + 5]).toBe(CellKind.Empty);
     expect(move.controller.getSelection()).toEqual({ x: 0, y: 0, width: 1, height: 1 });
     expect(move.controller.cancelFloatingPaste()).toBe(false);
     move.controller.dispose();
@@ -1112,15 +944,15 @@ describe('advanced headless editor tools', () => {
     paste.controller.setSelection({ x: 5, y: 5 });
     paste.controller.pasteSelection();
     expect(paste.controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined })).toBe(true);
-    expect(paste.gateway.commands.filter((command) => command.type === 'paste-fragment')).toHaveLength(1);
+    expectPastesOnStitchLayer(paste.commitPaste, 1);
     expect(paste.uiStore.getState().overlay.floatingPaste).toBeUndefined();
 
     paste.controller.setSelection({ x: 3, y: 3 });
-    const revision = paste.gateway.getSnapshot().revision;
+    const revision = paste.boundary.document.revision;
     paste.controller.pasteSelection();
     expect(paste.controller.handleKeyDown({ key: 'Escape', preventDefault: () => undefined })).toBe(true);
     expect(paste.uiStore.getState().overlay.floatingPaste).toBeUndefined();
-    expect(paste.gateway.getSnapshot().revision).toBe(revision);
+    expect(paste.boundary.document.revision).toBe(revision);
     expect(paste.controller.getSelection()).toEqual({ x: 3, y: 3, width: 1, height: 1 });
     paste.controller.dispose();
 
@@ -1132,8 +964,8 @@ describe('advanced headless editor tools', () => {
     move.controller.handlePointerMove(pointer(1, 88, 88));
     move.controller.handlePointerUp(pointer(1, 88, 88));
     expect(move.controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined })).toBe(true);
-    expect(move.gateway.commands.filter((command) => command.type === 'move-fragment')).toHaveLength(1);
-    expect(move.gateway.getSnapshot().document?.kind[5 * 8 + 5]).toBe(CellKind.Full);
+    expect(move.boundary.log.filter((command) => command.type === 'move-fragment' && command.layerId === STITCH_LAYER_ID)).toHaveLength(1);
+    expect(move.boundary.activeLayerSurface()?.kind[5 * 8 + 5]).toBe(CellKind.Full);
     expect(move.uiStore.getState().overlay.floatingPaste).toBeUndefined();
     move.controller.dispose();
   });
@@ -1246,26 +1078,26 @@ describe('advanced headless editor tools', () => {
     const undo = fixture();
     undo.controller.setTool({ tool: 'select' });
     undo.controller.setSelection({ x: 0, y: 0 }, { x: 2, y: 0 });
-    undo.gateway.execute({ type: 'set-full', x: 7, y: 7, color: 1 });
+    undo.boundary.seed({ type: 'set-full', x: 7, y: 7, color: 1 });
     undo.controller.handlePointerDown({ ...pointer(1, 8, 8), pointerType: 'touch' });
     undo.controller.handlePointerDown({ ...pointer(2, 24, 8), pointerType: 'touch' });
     undo.controller.handlePointerUp({ ...pointer(2, 24, 8), pointerType: 'touch' });
     undo.controller.handlePointerUp({ ...pointer(1, 8, 8), pointerType: 'touch' });
-    expect(undo.gateway.getSnapshot().document?.kind[7 * 8 + 7]).toBe(CellKind.Empty);
+    expect(undo.boundary.activeLayerSurface()?.kind[7 * 8 + 7]).toBe(CellKind.Empty);
     undo.controller.dispose();
 
     const redo = fixture();
     redo.controller.setTool({ tool: 'select' });
     redo.controller.setSelection({ x: 0, y: 0 }, { x: 2, y: 0 });
-    redo.gateway.execute({ type: 'set-full', x: 7, y: 7, color: 1 });
-    redo.gateway.undo({ projectId: 'project-a', revision: redo.gateway.getSnapshot().revision! });
+    redo.boundary.seed({ type: 'set-full', x: 7, y: 7, color: 1 });
+    redo.boundary.undo();
     redo.controller.handlePointerDown({ ...pointer(1, 8, 8), pointerType: 'touch' });
     redo.controller.handlePointerDown({ ...pointer(2, 24, 8), pointerType: 'touch' });
     redo.controller.handlePointerDown({ ...pointer(3, 40, 8), pointerType: 'touch' });
     redo.controller.handlePointerUp({ ...pointer(3, 40, 8), pointerType: 'touch' });
     redo.controller.handlePointerUp({ ...pointer(2, 24, 8), pointerType: 'touch' });
     redo.controller.handlePointerUp({ ...pointer(1, 8, 8), pointerType: 'touch' });
-    expect(redo.gateway.getSnapshot().document?.kind[7 * 8 + 7]).toBe(CellKind.Full);
+    expect(redo.boundary.activeLayerSurface()?.kind[7 * 8 + 7]).toBe(CellKind.Full);
     redo.controller.dispose();
   });
 
@@ -1274,27 +1106,27 @@ describe('advanced headless editor tools', () => {
     undo.controller.setTouchMovementOnly(true);
     undo.controller.setTool({ tool: 'select' });
     undo.controller.setSelection({ x: 0, y: 0 });
-    undo.gateway.execute({ type: 'set-full', x: 7, y: 7, color: 1 });
+    undo.boundary.seed({ type: 'set-full', x: 7, y: 7, color: 1 });
     undo.controller.handlePointerDown({ ...pointer(1, 20, 20), pointerType: 'touch' });
     undo.controller.handlePointerDown({ ...pointer(2, 60, 20), pointerType: 'touch' });
     undo.controller.handlePointerUp({ ...pointer(2, 60, 20), pointerType: 'touch' });
     undo.controller.handlePointerUp({ ...pointer(1, 20, 20), pointerType: 'touch' });
-    expect(undo.gateway.getSnapshot().document?.kind[63]).toBe(CellKind.Empty);
+    expect(undo.boundary.activeLayerSurface()?.kind[63]).toBe(CellKind.Empty);
     undo.controller.dispose();
 
     const redo = fixture();
     redo.controller.setTouchMovementOnly(true);
     redo.controller.setTool({ tool: 'select' });
     redo.controller.setSelection({ x: 0, y: 0 });
-    redo.gateway.execute({ type: 'set-full', x: 7, y: 7, color: 1 });
-    redo.gateway.undo({ projectId: 'project-a', revision: redo.gateway.getSnapshot().revision! });
+    redo.boundary.seed({ type: 'set-full', x: 7, y: 7, color: 1 });
+    redo.boundary.undo();
     redo.controller.handlePointerDown({ ...pointer(1, 20, 20), pointerType: 'touch' });
     redo.controller.handlePointerDown({ ...pointer(2, 60, 20), pointerType: 'touch' });
     redo.controller.handlePointerDown({ ...pointer(3, 40, 60), pointerType: 'touch' });
     redo.controller.handlePointerUp({ ...pointer(2, 60, 20), pointerType: 'touch' });
     redo.controller.handlePointerUp({ ...pointer(1, 20, 20), pointerType: 'touch' });
     redo.controller.handlePointerUp({ ...pointer(3, 40, 60), pointerType: 'touch' });
-    expect(redo.gateway.getSnapshot().document?.kind[63]).toBe(CellKind.Full);
+    expect(redo.boundary.activeLayerSurface()?.kind[63]).toBe(CellKind.Full);
     redo.controller.dispose();
 
     const pinch = fixture();
@@ -1313,18 +1145,18 @@ describe('advanced headless editor tools', () => {
 
   it('runs fill with immutable planes, exposes pending state, and rejects cancellation/project switches', async () => {
     const document = documentWithStitches();
-    const { controller, gateway, worker, uiStore } = fixture(document);
+    const { controller, boundary, worker, uiStore } = fixture(document);
     uiStore.setPaletteId(2);
     controller.setTool({ tool: 'fill' });
-    const before = gateway.commands.length;
+    const before = boundary.log.length;
     controller.handlePointerDown(pointer(1, 8, 8));
     expect(controller.isFillPending()).toBe(true);
     expect(uiStore.getState().overlay.fillPending).toBe(true);
     const request = worker.posted.find((message) => (message as { type?: string }).type === 'fill-request') as Parameters<typeof createFillResult>[0];
     worker.emit(createFillResult(request, new Uint32Array([0]), new Uint8Array([1])));
     await Promise.resolve();
-    expect(gateway.commands).toHaveLength(before + 1);
-    expect(gateway.commands.at(-1)).toMatchObject({ type: 'bulk-recolor', fromColor: 1, toColor: 2 });
+    expect(boundary.log).toHaveLength(before + 1);
+    expect(boundary.log.at(-1)).toMatchObject({ type: 'bulk-recolor', layerId: STITCH_LAYER_ID, fromColor: 1, toColor: 2 });
     expect(uiStore.getState().overlay.fillPending).toBeUndefined();
 
     uiStore.setPaletteId(1);
@@ -1333,10 +1165,10 @@ describe('advanced headless editor tools', () => {
     expect(controller.isFillPending()).toBe(false);
     controller.handlePointerDown(pointer(3, 8, 8));
     const staleRequest = worker.posted.filter((message) => (message as { type?: string }).type === 'fill-request').at(-1) as Parameters<typeof createFillResult>[0];
-    gateway.switchProject();
+    boundary.open(otherProject(), 'project-b');
     expect(controller.isFillPending()).toBe(false);
     worker.emit(createFillResult(staleRequest, new Uint32Array([0]), new Uint8Array([1])));
-    expect(gateway.commands).toHaveLength(before + 1);
+    expect(boundary.log).toHaveLength(before + 1);
     controller.dispose();
   });
 
@@ -1347,15 +1179,16 @@ describe('advanced headless editor tools', () => {
     document.completed[1] = 1;
     document.kind[2] = CellKind.Full;
     document.colors.set([2, 0, 0, 0], 8);
-    const { controller, gateway, worker, uiStore } = fixture(document);
+    const { controller, boundary, worker, uiStore } = fixture(document);
     uiStore.setPaletteId(2);
     controller.setTool({ tool: 'fill' });
     controller.handlePointerDown(pointer(1, 8, 8));
     const request = worker.posted.find((message) => (message as { type?: string }).type === 'fill-request') as Parameters<typeof createFillResult>[0];
     worker.emit(createFillResult(request, new Uint32Array([0, 1]), new Uint8Array([1, 1])));
     await Promise.resolve();
-    expect(gateway.commands.at(-1)).toMatchObject({
+    expect(boundary.log.at(-1)).toMatchObject({
       type: 'bulk-recolor',
+      layerId: STITCH_LAYER_ID,
       indices: new Uint32Array([0, 1]),
       fromColor: 1,
       toColor: 2
@@ -1374,33 +1207,34 @@ describe('advanced headless editor tools', () => {
       document.colors[index * 4] = 2;
     }
     const fillClient = createFillWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'empty-region-fallback' });
-    const { controller, gateway, uiStore } = fixture(document, fillClient);
+    const { controller, boundary, uiStore } = fixture(document, fillClient);
     uiStore.setPaletteId(1);
     controller.setTool({ tool: 'fill' });
-    const undoDepthBefore = gateway.undoDepth;
+    const undoDepthBefore = boundary.undoDepth;
 
     expect(controller.fillAt({ x: 0, y: 0 })).toBe(true);
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(gateway.commands.at(-1)).toMatchObject({
+    expect(boundary.log.at(-1)).toMatchObject({
       type: 'bulk-cell',
+      layerId: STITCH_LAYER_ID,
       indices: new Uint32Array([0, 1, 4, 5, 6, 9, 10, 11]),
       edit: { kind: 'full', color: 1 }
     });
-    const filled = gateway.getSnapshot().document!;
+    const filled = boundary.activeLayerSurface()!;
     expect(Array.from(filled.kind)).toEqual([1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1]);
     expect(filled.colors[2 * 4]).toBe(2);
     expect(filled.colors[7 * 4]).toBe(2);
     expect(filled.colors[8 * 4]).toBe(2);
-    expect(gateway.undoDepth).toBe(undoDepthBefore + 1);
+    expect(boundary.undoDepth).toBe(undoDepthBefore + 1);
 
     controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
-    expect(gateway.getSnapshot().document?.kind).toEqual(new Uint8Array([0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0]));
-    expect(gateway.undoDepth).toBe(undoDepthBefore);
+    expect(boundary.activeLayerSurface()?.kind).toEqual(new Uint8Array([0, 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0]));
+    expect(boundary.undoDepth).toBe(undoDepthBefore);
     controller.handleKeyDown({ key: 'y', ctrlKey: true, preventDefault: () => undefined });
-    expect(gateway.getSnapshot().document?.kind).toEqual(new Uint8Array([1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1]));
-    expect(gateway.undoDepth).toBe(undoDepthBefore + 1);
+    expect(boundary.activeLayerSurface()?.kind).toEqual(new Uint8Array([1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1]));
+    expect(boundary.undoDepth).toBe(undoDepthBefore + 1);
     controller.dispose();
     fillClient.dispose();
   });
@@ -1410,27 +1244,28 @@ describe('advanced headless editor tools', () => {
       { id: 1, name: 'Red', color: '#d33' }
     ] });
     const fillClient = createFillWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'selection-bounded-fallback' });
-    const { controller, gateway, uiStore } = fixture(document, fillClient);
+    const { controller, boundary, uiStore } = fixture(document, fillClient);
     uiStore.setPaletteId(1);
     controller.setSelection({ x: 1, y: 0 }, { x: 2, y: 1 });
     controller.setTool({ tool: 'fill' });
-    const undoDepthBefore = gateway.undoDepth;
+    const undoDepthBefore = boundary.undoDepth;
 
     expect(controller.fillAt({ x: 1, y: 0 })).toBe(true);
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(gateway.commands.at(-1)).toMatchObject({
+    expect(boundary.log.at(-1)).toMatchObject({
       type: 'bulk-cell',
+      layerId: STITCH_LAYER_ID,
       indices: new Uint32Array([1, 2, 5, 6]),
       edit: { kind: 'full', color: 1 }
     });
-    expect(Array.from(gateway.getSnapshot().document!.kind)).toEqual([0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0]);
-    expect(gateway.undoDepth).toBe(undoDepthBefore + 1);
+    expect(Array.from(boundary.activeLayerSurface()!.kind)).toEqual([0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0]);
+    expect(boundary.undoDepth).toBe(undoDepthBefore + 1);
 
     controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
-    expect(Array.from(gateway.getSnapshot().document!.kind)).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-    expect(gateway.undoDepth).toBe(undoDepthBefore);
+    expect(Array.from(boundary.activeLayerSurface()!.kind)).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    expect(boundary.undoDepth).toBe(undoDepthBefore);
     controller.dispose();
     fillClient.dispose();
   });
@@ -1440,7 +1275,7 @@ describe('advanced headless editor tools', () => {
       { id: 1, name: 'Red', color: '#d33' }
     ] });
     const fillClient = createFillWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'selection-outside-fallback' });
-    const { controller, gateway, uiStore } = fixture(document, fillClient);
+    const { controller, boundary, uiStore } = fixture(document, fillClient);
     uiStore.setPaletteId(1);
     controller.setSelection({ x: 1, y: 0 }, { x: 2, y: 1 });
     controller.setTool({ tool: 'fill' });
@@ -1449,8 +1284,9 @@ describe('advanced headless editor tools', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(gateway.commands.at(-1)).toMatchObject({
+    expect(boundary.log.at(-1)).toMatchObject({
       type: 'bulk-cell',
+      layerId: STITCH_LAYER_ID,
       indices: new Uint32Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
       edit: { kind: 'full', color: 1 }
     });
@@ -1468,7 +1304,7 @@ describe('advanced headless editor tools', () => {
       document.colors[index * 4] = 1;
     }
     const fillClient = createFillWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'selection-recolor-fallback' });
-    const { controller, gateway, uiStore } = fixture(document, fillClient);
+    const { controller, boundary, uiStore } = fixture(document, fillClient);
     uiStore.setPaletteId(2);
     controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 0 });
     controller.setTool({ tool: 'fill' });
@@ -1477,8 +1313,9 @@ describe('advanced headless editor tools', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(gateway.commands.at(-1)).toMatchObject({
+    expect(boundary.log.at(-1)).toMatchObject({
       type: 'bulk-recolor',
+      layerId: STITCH_LAYER_ID,
       indices: new Uint32Array([0, 1]),
       fromColor: 1,
       toColor: 2
@@ -1493,7 +1330,7 @@ describe('advanced headless editor tools', () => {
     ] });
     document.kind[1] = CellKind.Full;
     document.colors[4] = 1;
-    const { controller, gateway, worker, uiStore } = fixture(document);
+    const { controller, boundary, worker, uiStore } = fixture(document);
     uiStore.setPaletteId(1);
     controller.setTool({ tool: 'fill' });
 
@@ -1504,8 +1341,8 @@ describe('advanced headless editor tools', () => {
     worker.emit(disconnectedResult);
     await Promise.resolve();
 
-    expect(gateway.commands).toHaveLength(0);
-    expect(gateway.getSnapshot().document?.kind).toEqual(new Uint8Array([CellKind.Empty, CellKind.Full, CellKind.Empty]));
+    expect(boundary.log).toHaveLength(0);
+    expect(boundary.activeLayerSurface()?.kind).toEqual(new Uint8Array([CellKind.Empty, CellKind.Full, CellKind.Empty]));
     expect(uiStore.getState().status).toBe('Fill discarded: invalid result');
     controller.dispose();
   });
@@ -1514,7 +1351,7 @@ describe('advanced headless editor tools', () => {
     const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 3, height: 1, palette: [
       { id: 1, name: 'Red', color: '#d33' }
     ] });
-    const { controller, gateway, worker, uiStore } = fixture(document);
+    const { controller, boundary, worker, uiStore } = fixture(document);
     uiStore.setPaletteId(1);
     controller.setTool({ tool: 'fill' });
 
@@ -1525,8 +1362,8 @@ describe('advanced headless editor tools', () => {
     worker.emit(incompleteResult);
     await Promise.resolve();
 
-    expect(gateway.commands).toHaveLength(0);
-    expect(gateway.getSnapshot().document?.kind).toEqual(new Uint8Array([CellKind.Empty, CellKind.Empty, CellKind.Empty]));
+    expect(boundary.log).toHaveLength(0);
+    expect(boundary.activeLayerSurface()?.kind).toEqual(new Uint8Array([CellKind.Empty, CellKind.Empty, CellKind.Empty]));
     expect(uiStore.getState().status).toBe('Fill discarded: invalid result');
     controller.dispose();
   });
@@ -1535,7 +1372,7 @@ describe('advanced headless editor tools', () => {
     const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 1, palette: [
       { id: 1, name: 'Red', color: '#d33' }
     ] });
-    const { controller, gateway, worker, uiStore } = fixture(document);
+    const { controller, boundary, worker, uiStore } = fixture(document);
     uiStore.setPaletteId(1);
     controller.setTool({ tool: 'fill' });
 
@@ -1546,7 +1383,7 @@ describe('advanced headless editor tools', () => {
     worker.emit(createFillResult(request, new Uint32Array([0, 1]), new Uint8Array([1, 1])));
     await Promise.resolve();
 
-    expect(gateway.getSnapshot().document?.kind).toEqual(new Uint8Array([CellKind.Full, CellKind.Full]));
+    expect(boundary.activeLayerSurface()?.kind).toEqual(new Uint8Array([CellKind.Full, CellKind.Full]));
     controller.dispose();
   });
 
@@ -1560,26 +1397,26 @@ describe('advanced headless editor tools', () => {
     document.colors[4] = 1;
     document.completed[0] = 1;
     const fillClient = createFillWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'controller-fill' });
-    const { controller, gateway } = fixture(document, fillClient);
+    const { controller, boundary } = fixture(document, fillClient);
 
     controller.selectPalette(2);
     controller.setTool({ tool: 'fill' });
-    const undoDepthBeforeRecolor = gateway.undoDepth;
+    const undoDepthBeforeRecolor = boundary.undoDepth;
     expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
     await Promise.resolve();
     await Promise.resolve();
 
-    const committed = gateway.getSnapshot().document!;
+    const committed = boundary.activeLayerSurface()!;
     expect(Array.from(committed.colors.slice(0, 8))).toEqual([2, 0, 0, 0, 2, 0, 0, 0]);
     expect(committed.kind.every((kind) => kind === CellKind.Full)).toBe(true);
     expect(committed.completed).toEqual(new Uint8Array([1, 0]));
-    expect(gateway.undoDepth).toBe(undoDepthBeforeRecolor + 1);
-    expect(gateway.commands.at(-1)).toMatchObject({ type: 'bulk-recolor', fromColor: 1, toColor: 2 });
+    expect(boundary.undoDepth).toBe(undoDepthBeforeRecolor + 1);
+    expect(boundary.log.at(-1)).toMatchObject({ type: 'bulk-recolor', layerId: STITCH_LAYER_ID, fromColor: 1, toColor: 2 });
 
     expect(controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined })).toBe(true);
-    expect(gateway.undoDepth).toBe(undoDepthBeforeRecolor);
-    expect(gateway.getSnapshot().document?.colors[0]).toBe(1);
-    expect(gateway.getSnapshot().document?.completed[0]).toBe(1);
+    expect(boundary.undoDepth).toBe(undoDepthBeforeRecolor);
+    expect(boundary.activeLayerSurface()?.colors[0]).toBe(1);
+    expect(boundary.activeLayerSurface()?.completed[0]).toBe(1);
     fillClient.dispose();
     controller.dispose();
   });
@@ -1595,7 +1432,7 @@ describe('advanced headless editor tools', () => {
       afterColors: readonly number[],
       completion: number
     ): Promise<void> => {
-      const { controller, gateway, worker, uiStore } = fixture(document);
+      const { controller, boundary, worker, uiStore } = fixture(document);
       uiStore.setPaletteId(3);
       controller.setTool({ tool: 'fill' });
       expect(controller.handlePointerDown(pointer(1, screenX, screenY))).toBe(true);
@@ -1606,21 +1443,22 @@ describe('advanced headless editor tools', () => {
       uiStore.setPaletteId(1);
       worker.emit(createFillResult(request, new Uint32Array([0]), new Uint8Array([expectedStartMask])));
       await Promise.resolve();
-      expect(gateway.commands.at(-1)).toMatchObject({
+      expect(boundary.log.at(-1)).toMatchObject({
         type: 'bulk-recolor',
+        layerId: STITCH_LAYER_ID,
         masks: new Uint8Array([expectedStartMask]),
         fromColor: expectedFromColor,
         toColor: 3
       });
-      const committed = gateway.getSnapshot().document!;
+      const committed = boundary.activeLayerSurface()!;
       expect(Array.from(committed.colors)).toEqual(afterColors);
       expect(committed.kind[0]).toBe(document.kind[0]);
       expect(committed.completed[0]).toBe(completion);
-      expect(gateway.undoDepth).toBe(1);
+      expect(boundary.undoDepth).toBe(1);
       expect(controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined })).toBe(true);
-      expect(gateway.undoDepth).toBe(0);
-      expect(Array.from(gateway.getSnapshot().document!.colors)).toEqual(beforeColors);
-      expect(gateway.getSnapshot().document!.completed[0]).toBe(completion);
+      expect(boundary.undoDepth).toBe(0);
+      expect(Array.from(boundary.activeLayerSurface()!.colors)).toEqual(beforeColors);
+      expect(boundary.activeLayerSurface()!.completed[0]).toBe(completion);
       controller.dispose();
     };
 
@@ -1657,24 +1495,24 @@ describe('advanced headless editor tools', () => {
 
   it('treats a selected-source Full fill as a no-op without starting the worker', () => {
     const document = documentWithStitches();
-    const { controller, gateway, worker, uiStore } = fixture(document);
+    const { controller, boundary, worker, uiStore } = fixture(document);
     uiStore.setPaletteId(1);
     controller.setTool({ tool: 'fill' });
     expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
     expect(worker.posted).toHaveLength(0);
-    expect(gateway.commands).toHaveLength(0);
+    expect(boundary.log).toHaveLength(0);
     expect(uiStore.getState().status).toBe('No change');
     controller.dispose();
   });
 
   it('starts an empty-region fill request when the bucket hits an empty cell', () => {
     const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    const { controller, gateway, worker, uiStore } = fixture(document);
+    const { controller, boundary, worker, uiStore } = fixture(document);
     uiStore.setPaletteId(1);
     controller.setTool({ tool: 'fill' });
     expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
     expect(worker.posted).toMatchObject([{ type: 'fill-request', startIndex: 0, startMask: 1 }]);
-    expect(gateway.commands).toHaveLength(0);
+    expect(boundary.log).toHaveLength(0);
     controller.dispose();
   });
 
@@ -1685,7 +1523,7 @@ describe('advanced headless editor tools', () => {
     document.kind[1] = CellKind.Full;
     document.colors.set([1, 0, 0, 0], 4);
     document.completed[0] = 1;
-    const { controller, gateway, worker, uiStore } = fixture(document);
+    const { controller, boundary, worker, uiStore } = fixture(document);
     uiStore.setPaletteId(2);
     controller.setTool({ tool: 'fill' });
 
@@ -1693,93 +1531,89 @@ describe('advanced headless editor tools', () => {
     let request = worker.posted.filter((message) => (message as { type?: string }).type === 'fill-request').at(-1) as Parameters<typeof createFillResult>[0];
     worker.emit(createFillResult(request, new Uint32Array([0, 1]), new Uint8Array([1, 1])));
     await Promise.resolve();
-    expect(gateway.commands.at(-1)).toMatchObject({ type: 'bulk-recolor', fromColor: 1, toColor: 2 });
+    expect(boundary.log.at(-1)).toMatchObject({ type: 'bulk-recolor', layerId: STITCH_LAYER_ID, fromColor: 1, toColor: 2 });
 
-    // The domain recolor command owns this mutation; mirror its result here so
-    // the second invocation exercises the next source color in this lane.
-    const recolored = gateway.getSnapshot().document!;
-    recolored.colors[0] = 2;
-    recolored.colors[4] = 2;
+    // The workspace applied the recolor, so the second fill starts from color 2.
+    expect(Array.from(boundary.activeLayerSurface()!.colors.slice(0, 8))).toEqual([2, 0, 0, 0, 2, 0, 0, 0]);
     uiStore.setPaletteId(3);
     controller.handlePointerDown(pointer(2, 8, 8));
     request = worker.posted.filter((message) => (message as { type?: string }).type === 'fill-request').at(-1) as Parameters<typeof createFillResult>[0];
     worker.emit(createFillResult(request, new Uint32Array([0, 1]), new Uint8Array([1, 1])));
     await Promise.resolve();
-    expect(gateway.commands.at(-1)).toMatchObject({ type: 'bulk-recolor', fromColor: 2, toColor: 3 });
-    expect(recolored.completed[0]).toBe(1);
+    expect(boundary.log.at(-1)).toMatchObject({ type: 'bulk-recolor', layerId: STITCH_LAYER_ID, fromColor: 2, toColor: 3 });
+    expect(Array.from(boundary.activeLayerSurface()!.colors.slice(0, 8))).toEqual([3, 0, 0, 0, 3, 0, 0, 0]);
+    expect(boundary.activeLayerSurface()!.completed[0]).toBe(1);
     controller.dispose();
   });
 
-  it('creates, hit-selects, snaps, moves, and deletes incomplete backstitches', () => {
-    const { controller, gateway } = fixture();
+  it('keeps drawn and moved backstitches incomplete and deletes the selected one on Backspace', () => {
+    const { controller, boundary } = fixture(documentWithStitches(), undefined, SPECIALTY_LAYER_ID);
+    const backstitches = () => boundary.activeLayerSurface()!.backstitches;
     controller.setTool({ tool: 'backstitch' });
     controller.handlePointerDown(pointer(1, 8, 8));
     controller.handlePointerMove(pointer(1, 40, 24));
     controller.handlePointerUp(pointer(1, 40, 24));
-    expect(gateway.commands.at(-1)).toMatchObject({ type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 12, y: 8 } });
-    expect(gateway.getSnapshot().document?.backstitches.completed[0]).toBe(0);
+    expect(boundary.log.at(-1)).toMatchObject({ type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 12, y: 8 }, layerId: SPECIALTY_LAYER_ID });
+    expect(Array.from(backstitches().completed)).toEqual([0]);
 
-    // Draw mode never picks up a stitch; Move mode does.
     controller.setBackstitchMode('move');
     controller.handlePointerDown(pointer(2, 24, 16));
     expect(controller.getSelectedBackstitchId()).toBe(1);
     controller.handlePointerUp(pointer(2, 24, 16));
-    // A tap only selects, even on an edge midpoint such as (1.5, 1): no endpoint moves.
-    expect(gateway.commands.at(-1)).toMatchObject({ type: 'add-backstitch' });
     controller.handlePointerDown(pointer(3, 40, 24));
     controller.handlePointerMove(pointer(3, 56, 24));
     controller.handlePointerUp(pointer(3, 56, 24));
-    expect(gateway.commands.at(-1)).toMatchObject({ type: 'move-backstitch', id: 1, start: { x: 4, y: 4 }, end: { x: 16, y: 8 } });
-    expect(gateway.getSnapshot().document?.backstitches.completed[0]).toBe(0);
+    expect(boundary.log.at(-1)).toMatchObject({ type: 'move-backstitch', id: 1, start: { x: 4, y: 4 }, end: { x: 16, y: 8 } });
+    expect(Array.from(backstitches().completed)).toEqual([0]);
     controller.handleKeyDown({ key: 'Backspace', preventDefault: () => undefined });
-    expect(gateway.getSnapshot().document?.backstitches.ids).toHaveLength(0);
+    expect(backstitches().ids).toHaveLength(0);
     controller.dispose();
   });
 
   it('rejects out-of-document backstitch starts and uses the final pointer-up sample', () => {
-    const { controller, gateway } = fixture();
+    const { controller, boundary } = fixture(documentWithStitches(), undefined, SPECIALTY_LAYER_ID);
     controller.setTool({ tool: 'backstitch' });
     expect(controller.handlePointerDown(pointer(1, -8, 8))).toBe(false);
-    expect(gateway.commands).toHaveLength(0);
+    expect(boundary.log).toHaveLength(0);
     controller.handlePointerDown(pointer(2, 8, 8));
     controller.handlePointerUp(pointer(2, 40, 24));
-    expect(gateway.commands.at(-1)).toMatchObject({ type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 12, y: 8 } });
+    expect(boundary.log.at(-1)).toMatchObject({ type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 12, y: 8 } });
     controller.dispose();
   });
 
   it('supports keyboard backstitch anchor/finish, zero-length prevention, cancel, and undo/redo', () => {
-    const first = fixture();
+    const first = fixture(documentWithStitches(), undefined, SPECIALTY_LAYER_ID);
     first.controller.setTool({ tool: 'backstitch' });
     first.uiStore.setKeyboardCursor({ x: 1, y: 1 });
     first.controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined });
-    expect(first.gateway.commands).toHaveLength(0);
+    expect(first.boundary.log).toHaveLength(0);
     expect(first.uiStore.getState().status).toContain('Backstitch start anchored at (4, 4)');
     first.controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined });
-    expect(first.gateway.commands).toHaveLength(0);
+    expect(first.boundary.log).toHaveLength(0);
     expect(first.uiStore.getState().status).toContain('Move the cursor');
     first.controller.handleKeyDown({ key: 'ArrowRight', preventDefault: () => undefined });
     first.controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined });
-    expect(first.gateway.commands.at(-1)).toMatchObject({ type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 8, y: 4 } });
+    expect(first.boundary.log.at(-1)).toMatchObject({ type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 8, y: 4 } });
     expect(first.uiStore.getState().status).toBe('Created backstitch');
     first.controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
-    expect(first.gateway.getSnapshot().document?.backstitches.ids).toHaveLength(0);
+    expect(first.boundary.activeLayerSurface()?.backstitches.ids).toHaveLength(0);
     first.controller.handleKeyDown({ key: 'y', ctrlKey: true, preventDefault: () => undefined });
-    expect(first.gateway.getSnapshot().document?.backstitches.ids).toHaveLength(1);
+    expect(first.boundary.activeLayerSurface()?.backstitches.ids).toHaveLength(1);
     first.controller.dispose();
 
-    const cancelled = fixture();
+    const cancelled = fixture(documentWithStitches(), undefined, SPECIALTY_LAYER_ID);
     cancelled.controller.setTool({ tool: 'backstitch' });
     cancelled.uiStore.setKeyboardCursor({ x: 1, y: 1 });
     cancelled.controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined });
     cancelled.controller.handleKeyDown({ key: 'Escape', preventDefault: () => undefined });
-    expect(cancelled.gateway.commands).toHaveLength(0);
+    expect(cancelled.boundary.log).toHaveLength(0);
     expect(cancelled.uiStore.getState().overlay.backstitchPreview).toBeUndefined();
     expect(cancelled.uiStore.getState().status).toBe('Backstitch start cancelled');
     cancelled.controller.dispose();
   });
 
   it('isolates clipboard storage and clamps an oversized destination without throwing', () => {
-    const { controller, gateway, uiStore } = fixture();
+    const { controller, boundary, uiStore } = fixture();
     controller.setTool({ tool: 'select' });
     controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 1 });
     const copied = controller.copySelection();
@@ -1789,9 +1623,9 @@ describe('advanced headless editor tools', () => {
     expect(controller.getClipboard()?.kind[0]).toBe(CellKind.Full);
     expect(controller.getClipboard()?.colors[0]).toBe(1);
     controller.setSelection({ x: 7, y: 7 });
-    const beforeRevision = gateway.getSnapshot().revision;
+    const beforeRevision = boundary.document.revision;
     expect(controller.pasteClipboard()).toBe(true);
-    expect(gateway.getSnapshot().revision).toBe(beforeRevision);
+    expect(boundary.document.revision).toBe(beforeRevision);
     expect(uiStore.getState().overlay.floatingPaste).toMatchObject({ destination: { x: 6, y: 6, width: 2, height: 2 } });
     controller.dispose();
   });

@@ -31,6 +31,21 @@ export function isActiveCell(doc: Pick<PatternDocument, 'width' | 'canvasMask'>,
   return doc.canvasMask === undefined || doc.canvasMask[index] === 1;
 }
 
+/** Emit each maximal run [from, to) of active columns in row `y` of a row-major mask `width` cells wide. */
+export function forEachActiveRun(mask: Uint8Array, width: number, y: number, from: number, to: number, emit: (from: number, to: number) => void): void {
+  const row = y * width;
+  let runStart = -1;
+  for (let x = from; x < to; x += 1) {
+    const active = mask[row + x] === 1;
+    if (active && runStart < 0) runStart = x;
+    else if (!active && runStart >= 0) {
+      emit(runStart, x);
+      runStart = -1;
+    }
+  }
+  if (runStart >= 0) emit(runStart, to);
+}
+
 export function isRectangularCanvas(doc: { canvasMask?: Uint8Array }): boolean {
   return doc.canvasMask === undefined;
 }

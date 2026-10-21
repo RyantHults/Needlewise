@@ -5,7 +5,6 @@ import {
   createPatternFragmentFromCells,
   clonePatternFragment,
   cropPatternFragment,
-  createPaletteCommand,
   fragmentPaletteIds,
   normalizePaletteEntry,
   planPastePalette,
@@ -41,6 +40,7 @@ import {
   layerSurface,
   findLayer,
   type BulkCellEdit,
+  type BulkCellPreflight,
   type BulkRecolorCommand,
   type LayeredDocument,
   type StitchLayer,
@@ -52,6 +52,7 @@ import {
   type PatternDocument,
   type PatternFragment,
   type FragmentSelection,
+  type MixedEraseCommand,
   type ProgressCommand
 } from '../domain';
 import type {
@@ -123,7 +124,9 @@ import {
   type WorkspaceEditorSnapshot,
   compositeInvalidationFor,
   compositeUnchanged,
-  StaleEditorTransactionError
+  hasRevision,
+  StaleEditorTransactionError,
+  tokenOf
 } from './gateway';
 import type { KeyboardSample, PointerSample, WheelSample } from './input';
 import {
@@ -142,13 +145,16 @@ import { createCatalogReference, type CatalogDefinition } from '../catalog';
 import {
   appendLassoPoint,
   appendLassoRasterPoint,
+  combineSelection,
   createLassoRasterAccumulator,
   finishLassoRaster,
   MAX_LASSO_PATH_POINTS,
+  rectSelection,
   selectionRectToIndices,
+  sparseSelection,
   sparseSelectionGeometry,
-  type LassoSelectionOperation,
-  type SelectionBoundarySegment
+  type FinalizedSelection,
+  type LassoSelectionOperation
 } from './lasso';
 import {
   canvasCellSet,
@@ -363,23 +369,12 @@ interface LassoStrokeGesture {
   previewSamples: number;
 }
 
-interface RectangularSelection {
-  readonly kind: 'rect';
-  readonly rect: GridRect;
-  readonly documentWidth: number;
-  readonly documentHeight: number;
-}
+/** A snapshot with an open document, as a current transaction has. */
+type DocumentSnapshot = WorkspaceEditorSnapshot & { readonly document: PatternDocument; readonly layeredDocument: LayeredDocument };
 
-interface SparseSelection {
-  readonly kind: 'sparse';
-  readonly indices: Uint32Array;
-  readonly bounds: GridRect;
-  readonly boundaries: readonly SelectionBoundarySegment[];
-  readonly documentWidth: number;
-  readonly documentHeight: number;
+function hasDocument(snapshot: WorkspaceEditorSnapshot): snapshot is DocumentSnapshot {
+  return snapshot.document !== null && snapshot.layeredDocument !== null;
 }
-
-type FinalizedSelection = RectangularSelection | SparseSelection;
 
 /** The selection state an undo or redo step restores, with the canvas origin its canvas cells are local to. */
 interface SelectionSnapshot {
@@ -479,8 +474,7 @@ interface FloatingPasteState {
 
 /** One layer's part of a floating move. */
 interface FloatingMoveLayer {
-  /** Undefined on a single-surface boundary, where the move commits unstamped. */
-  readonly layerId?: number;
+  readonly layerId: number;
   readonly moveSelection: FragmentSelection;
   readonly backstitches: FloatingPasteBackstitches;
   /** A Focus Color move of backstitches only: these ids commit as one batch of move-backstitch. */
@@ -769,11 +763,12 @@ function isExactEmptyRegionFillResult(
 
 function normalizedPointerPosition(sample: PointerSample, viewport: Viewport): ModelPoint | undefined {
   if (!validScreenSample(sample) || !isFiniteViewport(viewport)) return undefined;
-  const point = screenToModel({ x: sample.screenX, y: sample.screenY }, viewport);
-  return {
-    x: point.x - Math.floor(point.x),
-    y: point.y - Math.floor(point.y)
-  };
+  return localInCell(screenToModel({ x: sample.screenX, y: sample.screenY }, viewport));
+}
+
+/** A model point's position within its cell, each axis in [0, 1). */
+function localInCell(point: ModelPoint): ModelPoint {
+  return { x: point.x - Math.floor(point.x), y: point.y - Math.floor(point.y) };
 }
 
 /** How far past the crossed edge a drag must reach before a full-stitch stroke claims a new cell. */
@@ -1045,19 +1040,19 @@ function finalizedSelectionIndices(selection: FinalizedSelection | undefined, do
 }
 
 function quarterCornerAt(point: ModelPoint): 0 | 1 | 2 | 3 {
-  const column = Math.floor((point.x - Math.floor(point.x)) * 2);
-  const row = Math.floor((point.y - Math.floor(point.y)) * 2);
+  const local = localInCell(point);
+  const column = Math.floor(local.x * 2);
+  const row = Math.floor(local.y * 2);
   if (row === 0) return column === 0 ? 0 : 1;
   return column === 0 ? 3 : 2;
 }
 
 /** Whether a model point lies in the triangle a three-quarter stitch at `corner` covers. */
 function threeQuarterTriangleContains(corner: 0 | 1 | 2 | 3, point: ModelPoint): boolean {
-  const localX = point.x - Math.floor(point.x);
-  const localY = point.y - Math.floor(point.y);
-  if (corner === 0) return localX + localY <= 1;
-  if (corner === 2) return localX + localY >= 1;
-  return corner === 1 ? localY <= localX : localY >= localX;
+  const { x, y } = localInCell(point);
+  if (corner === 0) return x + y <= 1;
+  if (corner === 2) return x + y >= 1;
+  return corner === 1 ? y <= x : y >= x;
 }
 
 /** The corner an eraser touch at `point` hits in `index`: the triangle for a three-quarter cell, else the quadrant. */
@@ -1070,13 +1065,35 @@ function eraserHitCornerAt(document: PatternDocument, index: number, point: Mode
 }
 
 function pairCornerAt(point: ModelPoint, colors: ArrayLike<number>): 0 | 1 | 2 | 3 {
-  const localX = point.x - Math.floor(point.x);
-  const localY = point.y - Math.floor(point.y);
-  const components = threeQuarterPairComponents(colors);
-  const first = components[0].corner;
-  const second = components[1].corner;
-  const firstTriangle = first === 0 ? localX + localY <= 1 : localY <= localX;
-  return firstTriangle ? first : second;
+  const [first, second] = threeQuarterPairComponents(colors);
+  return threeQuarterTriangleContains(first.corner, point) ? first.corner : second.corner;
+}
+
+/** The cells a bulk edit commits: for a three-quarter edit only those whose state it changes, else `indices`. */
+function effectiveBulkIndices(surface: PatternDocument, preflight: BulkCellPreflight, indices: Uint32Array): Uint32Array {
+  if (preflight.edit.kind !== 'three-quarter') return indices;
+  return new Uint32Array(
+    Array.from(preflight.changedIndices)
+      .map((index) => cellState(surface, index, preflight.edit))
+      .filter((state) => cellStateChanged(surface, state))
+      .map((state) => state.index)
+  );
+}
+
+interface ComponentEraseTarget {
+  readonly index: number;
+  readonly corner: number;
+}
+
+/** A mixed erase of whole cells and cell components, in cell order (then corner). */
+function buildMixedErase(wholeIndices: readonly number[], components: readonly ComponentEraseTarget[], revision: number): MixedEraseCommand {
+  const sorted = [...components].sort((left, right) => left.index - right.index || left.corner - right.corner);
+  return mixedEraseCommand(
+    new Uint32Array(wholeIndices).sort(),
+    Uint32Array.from(sorted, (target) => target.index),
+    Uint8Array.from(sorted, (target) => target.corner),
+    revision
+  );
 }
 
 /** The backstitch endpoint for a model point: a grid corner or, when close, a cell-edge midpoint. */
@@ -1246,7 +1263,6 @@ function isLayerRefusal(error: unknown): error is DomainError {
   return error instanceof DomainError && (error.code === 'layer-hidden' || error.code === 'layer-type-mismatch' || error.code === 'layer-not-found');
 }
 
-/** Stamp the active layer on a layer-scoped editor command (and a batch's children). */
 /**
  * The redraw for a change made outside the editor. When the session reports
  * the exact composite cells for this revision, only their bounds are redrawn
@@ -1669,7 +1685,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if (tool.tool === 'mark') return false;
     const state = this.uiStore.getState();
-    const availability = this.toolAvailable(tool, this.gateway.getSnapshot().activeLayer ?? null);
+    const availability = this.toolAvailable(tool, this.gateway.getSnapshot().activeLayer);
     if (!availability.enabled) {
       if (availability.hint) this.notify(availability.hint);
       return false;
@@ -1737,7 +1753,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (!document || !isFiniteModelPoint(start) || !isFiniteModelPoint(end)) return undefined;
     const before = this.selectionSnapshot();
     const rect = boundedGridRect(normalizeGridRect(start, end), document);
-    this.selection = rect ? { kind: 'rect', rect, documentWidth: document.width, documentHeight: document.height } : undefined;
+    this.selection = rect ? rectSelection(rect, document) : undefined;
     this.selectionAnchor = rect ? { x: rect.x, y: rect.y } : undefined;
     this.publishSelectionOverlay();
     this.recordSelectionChange(before);
@@ -1865,17 +1881,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const bounds = finalizedSelectionBounds(selection);
     if (!bounds) return undefined;
     const indices = finalizedSelectionIndices(selection, surface);
-    const copySelection: ClipboardSelectionGeometry = selection.kind === 'sparse'
-      ? {
-        kind: 'sparse',
-        rect: { ...bounds },
-        boundaries: selection.boundaries.map((boundary) => ({
-          start: { x: boundary.start.x - bounds.x, y: boundary.start.y - bounds.y },
-          end: { x: boundary.end.x - bounds.x, y: boundary.end.y - bounds.y },
-          kind: boundary.kind
-        }))
-      }
-      : { kind: 'rect', rect: { ...bounds } };
+    const copySelection = selectionGeometry(selection, bounds);
     const fragment = selection.kind === 'sparse' && indices
       ? createPatternFragmentFromCells(surface, indices)
       : createPatternFragment(surface, bounds);
@@ -1904,7 +1910,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   moveSelection(): boolean {
     const snapshot = this.gateway.getSnapshot();
     this.reconcileSelectionDimensions(snapshot.document);
-    if (!snapshot.document || !snapshot.projectId || snapshot.revision === null || !this.selection) return false;
+    if (!hasDocument(snapshot) || !hasRevision(snapshot) || !this.selection) return false;
     const targets = this.selectionTargets(snapshot);
     if (!targets) return false;
     const focus = this.focusColorId();
@@ -1922,7 +1928,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       }
       if (several && isEmptyFragment(capture.fragment)) continue;
       const layer: FloatingMoveLayer = {
-        ...(layerId === undefined ? {} : { layerId }),
+        layerId,
         moveSelection: capture.source,
         backstitches: capture.backstitches,
         ...(focusBackstitches ? { focusBackstitchIds: Array.from(focusBackstitches.ids) } : {})
@@ -1936,13 +1942,12 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     // Layers cut by Focus Color differ in shape; the move then floats their union.
     const shared = parts.every((part) => part.selection === parts[0].selection);
-    const union = shared ? undefined : sparseSelectionGeometry(
+    const union = shared ? undefined : sparseSelection(
       parts.flatMap((part) => Array.from(fragmentSelectionIndices(part.capture.source, part.surface))),
-      snapshot.document.width,
-      snapshot.document.height
+      snapshot.document
     );
     const geometry = union
-      ? selectionGeometry({ kind: 'sparse', ...union, documentWidth: snapshot.document.width, documentHeight: snapshot.document.height }, union.bounds)
+      ? selectionGeometry(union, union.bounds)
       : parts[0].capture.geometry;
     const captured = parts.length === 1 ? parts[0].capture : compositeMoveCaptures(parts.map((part) => part.capture), geometry.rect);
     const destination = clampFloatingDestination(geometry.rect, captured.fragment, snapshot.document);
@@ -1962,7 +1967,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       backstitches: captured.backstitches,
       ...this.moveSourceHole(snapshot, parts, focus),
       destination,
-      token: { projectId: snapshot.projectId, revision: snapshot.revision },
+      token: tokenOf(snapshot),
       previousSelection,
       previousSelectionAnchor
     };
@@ -1977,15 +1982,14 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
    * to top, when several are selected; otherwise the selected layer alone, or
    * null after its hint when it cannot be edited.
    */
-  private selectionTargets(snapshot: WorkspaceEditorSnapshot): { readonly layerId?: number; readonly surface: PatternDocument }[] | null {
+  private selectionTargets(snapshot: DocumentSnapshot): { readonly layerId: number; readonly surface: PatternDocument }[] | null {
     const layered = snapshot.layeredDocument;
-    const selected = snapshot.selectedLayers ?? [];
+    const selected = snapshot.selectedLayers;
     const visible = selected.filter((layer): layer is EditorActiveLayer & { readonly id: number } => typeof layer.id === 'number' && layer.visible);
-    if (layered && selected.length > 1 && visible.length > 0) return visible.map((layer) => ({ layerId: layer.id, surface: layerSurface(layered, layer.id) }));
+    if (selected.length > 1 && visible.length > 0) return visible.map((layer) => ({ layerId: layer.id, surface: layerSurface(layered, layer.id) }));
     const surface = this.editableSurface(snapshot, { tool: 'select' }, true);
-    if (!surface) return null;
     const id = snapshot.activeLayer?.id;
-    return [{ ...(typeof id === 'number' ? { layerId: id } : {}), surface }];
+    return surface && typeof id === 'number' ? [{ layerId: id, surface }] : null;
   }
 
   /**
@@ -1994,7 +1998,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
    * Under Focus Color only the focus color lifts.
    */
   private moveSourceHole(
-    snapshot: WorkspaceEditorSnapshot,
+    snapshot: DocumentSnapshot,
     parts: readonly { readonly layer: FloatingMoveLayer; readonly surface: PatternDocument }[],
     focus: number | undefined
   ): { sourceHole: PendingCellState[]; liftedBackstitchIds: Set<number> } {
@@ -2013,7 +2017,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         cells.add(index);
         indices.add(index);
       }
-      if (layer.layerId !== undefined) lifted.set(layer.layerId, cells);
+      lifted.set(layer.layerId, cells);
     }
     const width = parts[0].surface.width;
     const states = [...indices].sort((left, right) => left - right).map((index): PendingCellState => ({
@@ -2023,15 +2027,14 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       colors: [0, 0, 0, 0],
       completed: 0
     }));
-    const layered = snapshot.layeredDocument;
-    return { sourceHole: layered ? compositeEditStates(layered, states, lifted) : states, liftedBackstitchIds };
+    return { sourceHole: compositeEditStates(snapshot.layeredDocument, states, lifted), liftedBackstitchIds };
   }
 
   pasteSelection(): boolean {
     const snapshot = this.gateway.getSnapshot();
     this.reconcileSelectionDimensions(snapshot.document);
     const clipboard = readClipboard();
-    if (!snapshot.document || !snapshot.projectId || snapshot.revision === null || !clipboard) return false;
+    if (!snapshot.document || !hasRevision(snapshot) || !clipboard) return false;
     // Colors map onto the target palette by thread; any it lacks are created on commit.
     let plan: PastePalettePlan;
     try {
@@ -2068,7 +2071,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       ...(plan.creates.length > 0 ? { pendingPalette: plan.creates } : {}),
       ...(clipboard.layerType === undefined ? {} : { layerType: clipboard.layerType }),
       destination,
-      token: { projectId: snapshot.projectId, revision: snapshot.revision },
+      token: tokenOf(snapshot),
       previousSelection,
       previousSelectionAnchor
     };
@@ -2109,7 +2112,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const pending = this.floatingPaste;
     if (!pending) return false;
     const snapshot = this.gateway.getSnapshot();
-    if (!this.isCurrentTransaction(pending.token, snapshot) || !snapshot.document || !snapshot.projectId || snapshot.revision === null) {
+    if (!this.isCurrentTransaction(pending.token, snapshot) || !snapshot.document || !hasRevision(snapshot)) {
       this.discardFloatingPaste();
       this.setStatus('Paste cancelled: project changed');
       return false;
@@ -2120,45 +2123,25 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.setStatus('No change');
       return true;
     }
-    if (floating.mode === 'paste' && snapshot.layeredDocument && this.gateway.resolvePaste && this.gateway.commitPaste) return this.commitLayeredPaste(floating, snapshot);
-    const move = floating.mode === 'move' ? this.floatingMoveCommand(floating, snapshot) : undefined;
-    if (move === 'refused') {
+    if (floating.mode === 'paste') return this.commitLayeredPaste(floating, snapshot);
+    const command = this.floatingMoveCommand(floating, snapshot);
+    if (command === 'refused') {
       this.notifyFocusProtected();
       return false;
     }
-    const focus = this.focusColorId();
-    const fragment = focus !== undefined && floating.mode === 'paste'
-      ? focusPasteFragment(floating.fragment, this.editSurfaceOf(snapshot) ?? snapshot.document, floating.destination, focus)
-      : floating.fragment;
-    if (isEmptyFragment(fragment) && !isEmptyFragment(floating.fragment)) {
-      this.notifyFocusProtected();
-      return false;
-    }
-    const command = floating.mode === 'move'
-      ? move
-      : pasteFragmentCommand(fragment, { x: floating.destination.x, y: floating.destination.y }, snapshot.revision);
     if (!command) {
       this.discardFloatingPaste();
       return false;
     }
-    const creates = floating.mode === 'paste' ? usedPaletteCreates(floating.pendingPalette, fragment) : [];
     try {
-      if (command.type === 'paste-fragment') {
-        const preflight = preflightPasteFragmentCommand(withPendingPalette(snapshot.document, creates), command);
-        if (preflight.changedCellCount === 0 && preflight.newBackstitchCount === 0) {
-          this.discardFloatingPaste();
-          this.setStatus('No change');
-          return true;
-        }
+      // A move's parts are already stamped with their layers.
+      const token = tokenOf(snapshot);
+      const result = this.runCommand('Paste', () => this.gateway.execute(command, token));
+      if (!result) {
+        // A stale move is dropped; a refused one stays floating.
+        if (!this.isCurrentTransaction(token, this.gateway.getSnapshot())) this.discardFloatingPaste();
+        return false;
       }
-      this.commandInFlight = true;
-      // New colors and the paste are one undo step. A move's parts are already stamped with their layers.
-      const stamped = floating.mode === 'move' ? command : this.stamp(command, snapshot);
-      const result = this.gateway.execute(
-        creates.length === 0 ? stamped : { type: 'batch', commands: [...creates.map(createPaletteCommand), stamped] },
-        { projectId: snapshot.projectId, revision: snapshot.revision }
-      );
-      this.commandInFlight = false;
       if (!result.changed) {
         this.discardFloatingPaste();
         this.setStatus('No change');
@@ -2170,21 +2153,12 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.selection = undefined;
       this.selectionAnchor = undefined;
       this.publishFloatingPasteOverlay();
-      this.projectCommandResult(result, undefined, floating.mode === 'move'
-        ? `Moved ${String(floating.fragment.width)}×${String(floating.fragment.height)} cells`
-        : `Pasted ${String(floating.fragment.width)}×${String(floating.fragment.height)} cells`, this.floatingSelectionSnapshot(floating));
+      this.projectCommandResult(result, undefined, `Moved ${String(floating.fragment.width)}×${String(floating.fragment.height)} cells`, this.floatingSelectionSnapshot(floating));
       this.publishSelectionOverlay();
       return true;
     } catch (error) {
-      this.commandInFlight = false;
-      if (error instanceof StaleEditorTransactionError) {
-        this.discardFloatingPaste();
-        this.setStatus('Paste cancelled: project changed');
-        return false;
-      }
       if (error instanceof DomainError) {
-        // A plain document editor runs paste-fragment only standalone, so it cannot add the colors with it.
-        this.setStatus(error.code === 'bulk-batch-unsupported' ? 'Paste unavailable: new colors need a layered pattern' : 'Paste unavailable');
+        this.setStatus('Paste unavailable');
         return false;
       }
       throw error;
@@ -2192,12 +2166,12 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   /**
-   * Commit a paste on a layered document. The session picks the destination
+   * Commit a paste. The session picks the destination
    * layer: the selected layer when it has the clipboard's type, otherwise a new
    * or the topmost visible layer of that type. Its message becomes a notice.
    */
-  private commitLayeredPaste(floating: FloatingPasteState, snapshot: WorkspaceEditorSnapshot): boolean {
-    if (!snapshot.projectId || snapshot.revision === null) return false;
+  private commitLayeredPaste(floating: FloatingPasteState, snapshot: DocumentSnapshot): boolean {
+    if (!hasRevision(snapshot)) return false;
     if (isEmptyFragment(floating.fragment)) {
       // Nothing to paste, so never create a layer or a history entry for it.
       this.discardFloatingPaste();
@@ -2205,7 +2179,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       return true;
     }
     const type = floating.layerType ?? fragmentLayerType(floating.fragment);
-    const destination = this.gateway.resolvePaste!(type);
+    const destination = this.gateway.resolvePaste(type);
     if (destination.layerId === null && !destination.create) {
       this.discardFloatingPaste();
       if (destination.message) this.notify(destination.message);
@@ -2213,16 +2187,16 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       return false;
     }
     const position = { x: floating.destination.x, y: floating.destination.y };
-    const token: EditorRevisionToken = { projectId: snapshot.projectId, revision: snapshot.revision };
+    const token = tokenOf(snapshot);
     const activeId = snapshot.activeLayer?.id;
     const focus = this.focusColorId();
     let fragment = floating.fragment;
     if (focus !== undefined) {
       const target = destination.create || destination.layerId === null
         ? undefined
-        : destination.layerId === activeId && snapshot.editSurface ? snapshot.editSurface : layerSurface(snapshot.layeredDocument!, destination.layerId);
+        : destination.layerId === activeId && snapshot.editSurface ? snapshot.editSurface : layerSurface(snapshot.layeredDocument, destination.layerId);
       // A new layer is empty, so only the fragment's own colors matter: place it off the surface.
-      fragment = focusPasteFragment(fragment, target ?? snapshot.document!, target ? position : { x: -fragment.width, y: 0 }, focus);
+      fragment = focusPasteFragment(fragment, target ?? snapshot.document, target ? position : { x: -fragment.width, y: 0 }, focus);
       if (isEmptyFragment(fragment)) {
         this.notifyFocusProtected();
         return false;
@@ -2238,9 +2212,12 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
           return true;
         }
       }
-      this.commandInFlight = true;
-      const outcome = this.gateway.commitPaste!(fragment, position, destination, token, creates);
-      this.commandInFlight = false;
+      const outcome = this.runCommand('Paste', () => this.gateway.commitPaste(fragment, position, destination, token, creates));
+      if (!outcome) {
+        // A stale paste is dropped; a refused one stays floating.
+        if (!this.isCurrentTransaction(token, this.gateway.getSnapshot())) this.discardFloatingPaste();
+        return false;
+      }
       if (!outcome.result.changed) {
         this.discardFloatingPaste();
         this.setStatus('No change');
@@ -2258,12 +2235,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       if (message) this.notify(message);
       return true;
     } catch (error) {
-      this.commandInFlight = false;
-      if (error instanceof StaleEditorTransactionError) {
-        this.discardFloatingPaste();
-        this.setStatus('Paste cancelled: project changed');
-        return false;
-      }
       if (error instanceof DomainError) {
         this.setStatus('Paste unavailable');
         return false;
@@ -2305,7 +2276,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (this.floatingPaste) return false;
     const id = this.selectedBackstitchId;
     const snapshot = this.gateway.getSnapshot();
-    if (id === undefined || !snapshot.projectId || snapshot.revision === null) return false;
+    if (id === undefined || !hasRevision(snapshot)) return false;
     const surface = this.editableSurface(snapshot, { tool: 'backstitch' }, true);
     if (!surface) return false;
     const focus = this.focusColorId();
@@ -2329,7 +2300,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.reconcileSelectionDimensions(snapshot.document);
     const currentSelection = this.selection;
     const bounds = finalizedSelectionBounds(currentSelection);
-    if (!currentSelection || !bounds || !snapshot.document || !snapshot.projectId || snapshot.revision === null) return false;
+    if (!currentSelection || !bounds || !hasDocument(snapshot) || !hasRevision(snapshot)) return false;
     const targets = this.selectionTargets(snapshot);
     if (!targets) return false;
     const indices = finalizedSelectionIndices(currentSelection, targets[0].surface);
@@ -2345,7 +2316,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       )
       : this.deleteFocusSelection(targets, currentSelection, focus, revision);
     if (result === undefined) return false;
-    const after = this.editSurfaceOf(this.gateway.getSnapshot());
+    const after = this.gateway.getSnapshot().editSurface;
     if (result && selectedBackstitchId !== undefined && after && !after.backstitches.ids.some((id) => id === selectedBackstitchId)) this.resetBackstitchState();
     if (result) {
       // The delete step clears the selection, so one undo restores both.
@@ -2437,8 +2408,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   applyCanvasSelection(operation: 'add' | 'remove'): boolean {
     const selection = this.canvasSelection;
     const snapshot = this.gateway.getSnapshot();
-    if (!selection || !snapshot.document || !snapshot.projectId || snapshot.revision === null) return false;
-    const token: EditorRevisionToken = { projectId: snapshot.projectId, revision: snapshot.revision };
+    if (!selection || !snapshot.document || !hasRevision(snapshot)) return false;
+    const token = tokenOf(snapshot);
     const count = canvasCellSetSize(selection);
     const command = { ...canvasCellsCommand(operation, selection.rect, selection.cells), expectedRevision: snapshot.revision };
     const before = this.selectionSnapshot();
@@ -2454,12 +2425,12 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   /** Grow (positive) or shrink (negative) a rectangular canvas at one edge as one canvas-resize. */
   resizeCanvasEdge(edge: CanvasEdge, delta: number): boolean {
     const snapshot = this.gateway.getSnapshot();
-    if (!Number.isSafeInteger(delta) || delta === 0 || !snapshot.document || !snapshot.projectId || snapshot.revision === null) return false;
+    if (!Number.isSafeInteger(delta) || delta === 0 || !snapshot.document || !hasRevision(snapshot)) return false;
     if (!this.isCanvasBasicAvailable()) {
       this.notify(CANVAS_BASIC_LOCKED_HINT);
       return false;
     }
-    const token: EditorRevisionToken = { projectId: snapshot.projectId, revision: snapshot.revision };
+    const token = tokenOf(snapshot);
     const command = { ...canvasResizeCommand(canvasEdges(edge, delta)), expectedRevision: snapshot.revision };
     return this.executeCanvasCommand(command, delta > 0 ? 'Grew canvas' : 'Shrank canvas', token)?.changed ?? false;
   }
@@ -2469,7 +2440,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const snapshot = this.gateway.getSnapshot();
     const document = snapshot.document;
     const viewport = this.uiStore.getState().viewport;
-    if (!document || !snapshot.projectId || snapshot.revision === null || !isFiniteScreenPoint(point) || !isFiniteViewport(viewport)) return false;
+    if (!document || !hasRevision(snapshot) || !isFiniteScreenPoint(point) || !isFiniteViewport(viewport)) return false;
     if (document.canvasMask !== undefined) {
       this.notify(CANVAS_BASIC_LOCKED_HINT);
       return false;
@@ -2477,7 +2448,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (this.gesture) this.cancelGesture();
     this.canvasEdgeDrag = {
       edge,
-      token: { projectId: snapshot.projectId, revision: snapshot.revision },
+      token: tokenOf(snapshot),
       workspace: canvasWorkspace(document),
       width: document.width,
       height: document.height,
@@ -2626,17 +2597,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
    */
   private executeCanvasCommand(command: DomainCommand, status: string, token: EditorRevisionToken): CommandResult | undefined {
     try {
-      this.commandInFlight = true;
-      const result = this.gateway.execute(command, token);
-      this.commandInFlight = false;
-      this.projectCommandResult(result, undefined, status);
+      const result = this.runCommand('Canvas edit', () => this.gateway.execute(command, token));
+      if (result) this.projectCommandResult(result, undefined, status);
       return result;
     } catch (error) {
-      this.commandInFlight = false;
-      if (error instanceof StaleEditorTransactionError) {
-        this.setStatus('Canvas edit cancelled: project changed');
-        return undefined;
-      }
       if (error instanceof DomainError) {
         const message = CANVAS_REJECTION_MESSAGES[error.code] ?? error.message;
         this.notify(message);
@@ -2650,8 +2614,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   /** Pointer-down on the Canvas layer: the canvas brush, the eraser, select and lasso work beyond the canvas. */
   private beginCanvasPointer(sample: PointerSample, snapshot: WorkspaceEditorSnapshot, tool: EditorToolState): boolean {
     const document = snapshot.document;
-    if (!document || !snapshot.projectId || snapshot.revision === null) return false;
-    const availability = this.toolAvailable(tool, snapshot.activeLayer ?? null);
+    if (!document || !hasRevision(snapshot)) return false;
+    const availability = this.toolAvailable(tool, snapshot.activeLayer);
     if (!availability.enabled) {
       if (availability.hint) {
         this.notify(availability.hint);
@@ -2669,7 +2633,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const gesture: CanvasBrushGesture = {
       kind: 'canvas-brush',
       pointerId: sample.pointerId,
-      token: { projectId: snapshot.projectId, revision: snapshot.revision },
+      token: tokenOf(snapshot),
       operation: tool.tool === 'eraser' ? 'remove' : 'add',
       workspace,
       brushSize: this.getBrushSize(),
@@ -2685,9 +2649,9 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private beginCanvasSelection(sample: PointerSample, snapshot: WorkspaceEditorSnapshot): boolean {
     const document = snapshot.document;
     const point = this.lassoModelPoint(sample);
-    if (!document || !point || !snapshot.projectId || snapshot.revision === null) return false;
+    if (!document || !point || !hasRevision(snapshot)) return false;
     const workspace = canvasWorkspace(document);
-    const token: EditorRevisionToken = { projectId: snapshot.projectId, revision: snapshot.revision };
+    const token = tokenOf(snapshot);
     const cell = clampCell(point, workspace);
     const previousSelection = this.canvasSelection;
     this.canvasSelection = canvasRectSelection(cell, cell, workspace);
@@ -2747,12 +2711,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (gesture.shape === 'oval' && (cell.x !== gesture.anchor.x || cell.y !== gesture.anchor.y)) {
       // Keyboard extension is rect-only, so an oval leaves no anchor, as the lasso does.
       const indices = rasterizeFilledOval(gesture.anchor, cell).map(({ x, y }) => y * document.width + x);
-      const sparse = sparseSelectionGeometry(indices, document.width, document.height);
-      this.selection = sparse ? { kind: 'sparse', ...sparse, documentWidth: document.width, documentHeight: document.height } : undefined;
+      this.selection = sparseSelection(indices, document);
       this.selectionAnchor = undefined;
     } else {
       const rect = boundedGridRect(normalizeGridRect(gesture.anchor, cell), document);
-      this.selection = rect ? { kind: 'rect', rect, documentWidth: document.width, documentHeight: document.height } : undefined;
+      this.selection = rect ? rectSelection(rect, document) : undefined;
       if (gesture.shape === 'oval') this.selectionAnchor = gesture.anchor;
     }
     this.publishSelectionOverlay();
@@ -2772,20 +2735,14 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private finishCanvasLasso(gesture: { readonly workspace: CellRect; readonly operation: LassoSelectionOperation; readonly captured: Uint32Array }): void {
     const { workspace, captured } = gesture;
     const before = this.selectionSnapshot();
-    const current = this.canvasSelection;
-    let indices: Iterable<number> = captured;
-    if (gesture.operation !== 'replace' && current) {
-      const flags = new Uint8Array(workspace.width * workspace.height);
-      markCanvasCellSet(flags, current, workspace, 1);
-      const value = gesture.operation === 'union' ? 1 : 0;
-      for (const index of captured) flags[index] = value;
-      const combined: number[] = [];
-      for (let index = 0; index < flags.length; index += 1) if (flags[index] === 1) combined.push(index);
-      indices = combined;
-    } else if (gesture.operation === 'subtract') {
-      indices = [];
+    const cellCount = workspace.width * workspace.height;
+    const current: number[] = [];
+    if (gesture.operation !== 'replace' && this.canvasSelection) {
+      const flags = new Uint8Array(cellCount);
+      markCanvasCellSet(flags, this.canvasSelection, workspace, 1);
+      for (let index = 0; index < flags.length; index += 1) if (flags[index] === 1) current.push(index);
     }
-    this.canvasSelection = canvasCellSet(indices, workspace);
+    this.canvasSelection = canvasCellSet(combineSelection(current, captured, gesture.operation, cellCount), workspace);
     this.publishCanvasOverlay();
     this.recordSelectionChange(before);
   }
@@ -2926,7 +2883,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private activatePickedColor(paletteId: number): void {
     this.selectPalette(paletteId);
     this.uiStore.pulsePick(paletteId);
-    const layer = this.gateway.getSnapshot().activeLayer ?? null;
+    const layer = this.gateway.getSnapshot().activeLayer;
     const remembered = this.lastPaintBrush;
     const brush: StitchBrush = remembered.kind === 'half'
       ? { kind: 'half', ...(remembered.direction === undefined ? {} : { direction: remembered.direction }), paletteId }
@@ -3258,8 +3215,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if ((sample.button ?? 0) !== 0 || (sample.pointerType !== 'mouse' && sample.pointerType !== 'pen' && sample.pointerType !== 'touch')) return false;
     const snapshot = this.gateway.getSnapshot();
-    if (!snapshot.document || !snapshot.projectId || snapshot.revision === null) return false;
-    if (this.readOnly) return selectedTool.tool === 'mark' && this.beginMark(sample, snapshot.document, { projectId: snapshot.projectId, revision: snapshot.revision });
+    if (!snapshot.document || !hasRevision(snapshot)) return false;
+    if (this.readOnly) return selectedTool.tool === 'mark' && this.beginMark(sample, snapshot.document, tokenOf(snapshot));
     if (selectedTool.tool === 'move-image') {
       return this.beginMoveImage(sample, snapshot.document);
     }
@@ -3269,13 +3226,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (this.isCanvasActive(snapshot)) return this.beginCanvasPointer(sample, snapshot, selectedTool);
     // Editor tools change only the selected, visible layer.
     if (this.refuseTool(selectedTool, snapshot)) return false;
-    const surface = this.editSurfaceOf(snapshot) ?? snapshot.document;
+    const surface = snapshot.editSurface ?? snapshot.document;
     if (selectedTool.tool === 'eyedropper' && sample.pointerType === 'touch') {
       this.gesture = {
         kind: 'touch-action',
         pointerId: sample.pointerId,
         tool: 'eyedropper',
-        token: { projectId: snapshot.projectId, revision: snapshot.revision },
+        token: tokenOf(snapshot),
         startScreenX: sample.screenX,
         startScreenY: sample.screenY
       };
@@ -3291,7 +3248,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const previousSelection = this.selection;
       const previousSelectionAnchor = this.selectionAnchor;
       this.selectionAnchor = cell;
-      this.selection = { kind: 'rect', rect: normalizeGridRect(cell, cell), documentWidth: snapshot.document.width, documentHeight: snapshot.document.height };
+      this.selection = rectSelection(normalizeGridRect(cell, cell), snapshot.document);
       this.gesture = {
         kind: 'selection',
         pointerId: sample.pointerId,
@@ -3340,7 +3297,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
           kind: 'touch-action',
           pointerId: sample.pointerId,
           tool: 'fill',
-          token: { projectId: snapshot.projectId, revision: snapshot.revision },
+          token: tokenOf(snapshot),
           startScreenX: sample.screenX,
           startScreenY: sample.screenY
         };
@@ -3429,61 +3386,40 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       return true;
     }
     if (gesture.kind === 'mark') {
-      const snapshot = this.gateway.getSnapshot();
-      if (!this.isCurrentTransaction(gesture.token, snapshot) || !snapshot.document) {
-        this.cancelGesture();
-        this.setStatus('Marking cancelled: project changed');
-        return true;
-      }
-      this.appendMarkSample(gesture, sample, snapshot.document);
+      const snapshot = this.currentSnapshotFor(gesture.token, 'Marking');
+      if (snapshot) this.appendMarkSample(gesture, sample, snapshot.document);
       return true;
     }
     if (gesture.kind === 'shape') {
-      const snapshot = this.gateway.getSnapshot();
-      if (!this.isCurrentTransaction(gesture.transaction.token, snapshot)) {
-        this.cancelGesture();
-        this.setStatus('Stroke cancelled: project changed');
-        return true;
-      }
-      const document = this.editSurfaceOf(snapshot);
+      const snapshot = this.currentSnapshotFor(gesture.transaction.token, 'Stroke');
+      if (!snapshot) return true;
+      const document = snapshot.editSurface;
       if (!document) return false;
       this.appendShapeSample(gesture, sample, document);
       this.publishPendingPaint(gesture.cells, gesture.edit, gesture.transaction.token.revision, document);
       return true;
     }
     if (gesture.kind === 'paint') {
-      const snapshot = this.gateway.getSnapshot();
-      if (!this.isCurrentTransaction(gesture.transaction.token, snapshot)) {
-        this.cancelGesture();
-        this.setStatus('Stroke cancelled: project changed');
-        return true;
-      }
-      const document = this.editSurfaceOf(snapshot);
+      const snapshot = this.currentSnapshotFor(gesture.transaction.token, 'Stroke');
+      if (!snapshot) return true;
+      const document = snapshot.editSurface;
       if (!document) return false;
       this.appendPaintSample(gesture, sample, document);
       this.publishPendingPaint(gesture.cells, gesture.edit, gesture.transaction.token.revision, document);
       return true;
     }
     if (gesture.kind === 'eraser') {
-      const snapshot = this.gateway.getSnapshot();
-      if (!this.isCurrentTransaction(gesture.transaction.token, snapshot)) {
-        this.cancelGesture();
-        this.setStatus('Erase cancelled: project changed');
-        return true;
-      }
-      const document = this.editSurfaceOf(snapshot);
+      const snapshot = this.currentSnapshotFor(gesture.transaction.token, 'Erase');
+      if (!snapshot) return true;
+      const document = snapshot.editSurface;
       if (!document) return false;
       this.appendEraserSample(gesture, sample, document);
       this.publishEraserPreview(gesture, document);
       return true;
     }
     if (gesture.kind === 'canvas-brush' || gesture.kind === 'canvas-select') {
-      const snapshot = this.gateway.getSnapshot();
-      if (!this.isCurrentTransaction(gesture.token, snapshot) || !snapshot.document) {
-        this.cancelGesture();
-        this.setStatus('Stroke cancelled: project changed');
-        return true;
-      }
+      const snapshot = this.currentSnapshotFor(gesture.token, 'Stroke');
+      if (!snapshot) return true;
       if (gesture.kind === 'canvas-select') this.updateCanvasSelection(gesture, sample);
       else {
         const point = this.lassoModelPoint(sample);
@@ -3560,15 +3496,15 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (gesture.kind === 'mark') {
       this.finishMark(gesture, sample);
     } else if (gesture.kind === 'shape') {
-      const document = this.editSurfaceOf(this.gateway.getSnapshot());
+      const document = this.gateway.getSnapshot().editSurface;
       if (document) this.appendShapeSample(gesture, sample, document);
       this.finishShape(true);
     } else if (gesture.kind === 'paint') {
-      const document = this.editSurfaceOf(this.gateway.getSnapshot());
+      const document = this.gateway.getSnapshot().editSurface;
       if (document) this.appendPaintSample(gesture, sample, document);
       this.finishPaint(true);
     } else if (gesture.kind === 'eraser') {
-      const document = this.editSurfaceOf(this.gateway.getSnapshot());
+      const document = this.gateway.getSnapshot().editSurface;
       if (document) this.appendEraserSample(gesture, sample, document);
       this.finishEraser(true);
     } else if (gesture.kind === 'canvas-brush') {
@@ -3617,25 +3553,12 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const floatingPointerCancel = this.handleFloatingPointerCancel(sample);
     if (floatingPointerCancel !== undefined) return floatingPointerCancel;
     if (sample.pointerType === 'touch') {
-      this.rejectTouchHistoryCandidate('cancelled');
-      this.touchPointers.delete(sample.pointerId);
-      if ((this.gesture?.kind === 'move-image' || this.gesture?.kind === 'resize-image') && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
-      else if (this.gesture?.kind === 'pinch') {
-        if (this.gesture.pointerIds.includes(sample.pointerId)) this.rebaseTouchGesture();
-      } else if (this.gesture?.kind === 'pan' && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
-      else if ((!this.touchMovementOnly || this.gesture?.kind === 'mark') && this.gesture?.pointerId === sample.pointerId) this.cancelGesture();
-      if (this.touchPointers.size === 0) this.clearTouchHistoryCandidate();
+      this.releaseTouchPointer(sample, 'cancelled');
       return true;
     }
     const gesture = this.gesture;
     if (!gesture || gesture.kind === 'pinch' || gesture.pointerId !== sample.pointerId) return false;
-    if (gesture.kind === 'shape') this.finishShape(false);
-    else if (gesture.kind === 'paint') this.finishPaint(false);
-    else if (gesture.kind === 'eraser') this.finishEraser(false);
-    else if (gesture.kind === 'selection' || gesture.kind === 'lasso-stroke' || gesture.kind === 'mark' || this.isCanvasGesture(gesture)) this.cancelGesture();
-    else if (gesture.kind === 'backstitch') this.resetBackstitchState();
-    else if (gesture.kind === 'move-image' || gesture.kind === 'resize-image') this.gesture = undefined;
-    else this.gesture = undefined;
+    this.cancelGesture();
     return true;
   }
 
@@ -3654,21 +3577,25 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       // already removed this pointer. That notification is not a cancellation
       // of the still-active multi-touch sequence.
       if (!this.touchPointers.has(sample.pointerId)) return true;
-      this.rejectTouchHistoryCandidate('lost-capture');
-      this.touchPointers.delete(sample.pointerId);
-      if ((this.gesture?.kind === 'move-image' || this.gesture?.kind === 'resize-image') && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
-      else if (this.gesture?.kind === 'pinch') {
-        if (this.gesture.pointerIds.includes(sample.pointerId)) this.rebaseTouchGesture();
-      } else if (this.gesture?.kind === 'pan' && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
-      else if ((!this.touchMovementOnly || this.gesture?.kind === 'mark') && this.gesture?.pointerId === sample.pointerId) this.cancelGesture();
-      if (this.touchPointers.size === 0) this.clearTouchHistoryCandidate();
+      this.releaseTouchPointer(sample, 'lost-capture');
       return true;
     }
     const gesture = this.gesture;
     if (!gesture || gesture.kind === 'pinch' || gesture.pointerId !== sample.pointerId) return false;
-    if (gesture.kind === 'move-image' || gesture.kind === 'resize-image') this.gesture = undefined;
     this.cancelGesture();
     return true;
+  }
+
+  /** Drop a touch pointer the browser took away, ending the gesture it alone was driving. */
+  private releaseTouchPointer(sample: PointerSample, reason: TouchHistoryRejectionReason): void {
+    this.rejectTouchHistoryCandidate(reason);
+    this.touchPointers.delete(sample.pointerId);
+    if ((this.gesture?.kind === 'move-image' || this.gesture?.kind === 'resize-image') && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
+    else if (this.gesture?.kind === 'pinch') {
+      if (this.gesture.pointerIds.includes(sample.pointerId)) this.rebaseTouchGesture();
+    } else if (this.gesture?.kind === 'pan' && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
+    else if ((!this.touchMovementOnly || this.gesture?.kind === 'mark') && this.gesture?.pointerId === sample.pointerId) this.cancelGesture();
+    if (this.touchPointers.size === 0) this.clearTouchHistoryCandidate();
   }
 
   handleWheel(sample: WheelSample): boolean {
@@ -3996,7 +3923,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private pressLasso(sample: PointerSample, snapshot: WorkspaceEditorSnapshot): boolean {
     const document = snapshot.document;
     const point = this.lassoModelPoint(sample);
-    if (!document || !point || !snapshot.projectId || snapshot.revision === null) return false;
+    if (!document || !point || !hasRevision(snapshot)) return false;
     let path = this.lassoPath;
     if (path && this.onLassoStart(path, point)) {
       if (hasThreeDistinctVertices(path.vertices)) this.closeLasso();
@@ -4005,7 +3932,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if (!path) {
       path = {
-        token: { projectId: snapshot.projectId, revision: snapshot.revision },
+        token: tokenOf(snapshot),
         workspace: this.isCanvasActive(snapshot) ? canvasWorkspace(document) : undefined,
         operation: sample.altKey ? 'subtract' : sample.shiftKey ? 'union' : 'replace',
         vertices: [],
@@ -4154,26 +4081,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const { captured } = gesture;
     const before = this.selectionSnapshot();
     const current = finalizedSelectionIndices(this.selection, document) ?? new Uint32Array();
-    let next: Uint32Array;
-    if (gesture.operation === 'replace') {
-      next = captured;
-    } else if (gesture.operation === 'union') {
-      next = new Uint32Array([...current, ...captured].sort((left, right) => left - right).filter((index, position, values) => position === 0 || index !== values[position - 1]));
-    } else {
-      const subtract = new Set(captured);
-      next = new Uint32Array(Array.from(current).filter((index) => !subtract.has(index)));
-    }
-    const sparse = sparseSelectionGeometry(next, document.width, document.height);
-    this.selection = sparse
-      ? {
-          kind: 'sparse',
-          indices: sparse.indices,
-          bounds: sparse.bounds,
-          boundaries: sparse.boundaries,
-          documentWidth: document.width,
-          documentHeight: document.height
-        }
-      : undefined;
+    this.selection = sparseSelection(combineSelection(current, captured, gesture.operation, document.width * document.height), document);
     this.selectionAnchor = undefined;
     this.publishSelectionOverlay();
     this.recordSelectionChange(before);
@@ -4435,12 +4343,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   /** A tap toggles the pressed target; a drag commits everything it crossed as one progress step. */
   private finishMark(gesture: MarkGesture, sample: PointerSample): void {
-    const snapshot = this.gateway.getSnapshot();
-    if (!this.isCurrentTransaction(gesture.token, snapshot) || !snapshot.document) {
-      this.cancelGesture();
-      this.setStatus('Marking cancelled: project changed');
-      return;
-    }
+    const snapshot = this.currentSnapshotFor(gesture.token, 'Marking');
+    if (!snapshot) return;
     this.appendMarkSample(gesture, sample, snapshot.document);
     const command = markCommand(gesture);
     if (command) this.gateway.markProgress(command);
@@ -4471,7 +4375,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.clearPendingCells();
     if (!commit || gesture.cells.size === 0) return;
     const snapshot = this.gateway.getSnapshot();
-    const surface = this.editSurfaceOf(snapshot);
+    const surface = snapshot.editSurface;
     if (!snapshot.document || !surface) return;
     const indices = this.focusEditableIndices(surface, indicesForCells([...gesture.cells.values()], surface.width), gesture.edit);
     if (!indices) return;
@@ -4481,36 +4385,19 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       edit: gesture.edit,
       expectedRevision: gesture.transaction.token.revision
     };
-    try {
-      if (!this.isCurrentTransaction(gesture.transaction.token, snapshot)) {
-        this.setStatus('Stroke cancelled: project changed');
-        return;
-      }
-      const preflight = preflightBulkCellCommand(surface, command);
-      const changedIndices = gesture.kind === 'paint' && gesture.edit.kind === 'three-quarter'
-        ? new Uint32Array(
-            Array.from(preflight.changedIndices)
-              .map((index) => cellState(surface, index, preflight.edit))
-              .filter((state) => cellStateChanged(surface, state))
-              .map((state) => state.index)
-          )
-        : gesture.kind === 'shape'
-          ? preflight.changedIndices
-          : indices;
-      if (preflight.changedIndices.length === 0 || changedIndices.length === 0) {
-        this.setStatus('No change');
-        return;
-      }
-      const effectiveCommand: DomainCommand = this.stamp({ ...command, indices: changedIndices }, snapshot);
-      this.commandInFlight = true;
-      const result = gesture.transaction.commit(effectiveCommand);
-      this.commandInFlight = false;
-      this.projectCommandResult(result, changedIndices, `Stitched ${countLabel(changedIndices.length, 'cell')}`);
-    } catch (error) {
-      this.commandInFlight = false;
-      if (error instanceof StaleEditorTransactionError) this.setStatus('Stroke cancelled: project changed');
-      else throw error;
+    if (!this.isCurrentTransaction(gesture.transaction.token, snapshot)) {
+      this.setStatus('Stroke cancelled: project changed');
+      return;
     }
+    const preflight = preflightBulkCellCommand(surface, command);
+    const changedIndices = gesture.kind === 'shape' ? preflight.changedIndices : effectiveBulkIndices(surface, preflight, indices);
+    if (preflight.changedIndices.length === 0 || changedIndices.length === 0) {
+      this.setStatus('No change');
+      return;
+    }
+    const effectiveCommand: DomainCommand = this.stamp({ ...command, indices: changedIndices }, snapshot);
+    const result = this.runCommand('Stroke', () => gesture.transaction.commit(effectiveCommand));
+    if (result) this.projectCommandResult(result, changedIndices, `Stitched ${countLabel(changedIndices.length, 'cell')}`);
   }
 
   private finishEraser(commit: boolean): void {
@@ -4521,15 +4408,19 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.clearPendingBackstitchRemovals();
     if (!commit || gesture.cells.size === 0) return;
     const snapshot = this.gateway.getSnapshot();
-    const surface = this.editSurfaceOf(snapshot);
+    const surface = snapshot.editSurface;
     if (!snapshot.document || !surface) return;
     if (gesture.backstitches) {
-      this.finishBackstitchErase(gesture, gesture.backstitches, snapshot, surface);
+      if (!this.isCurrentTransaction(gesture.transaction.token, snapshot)) {
+        this.setStatus('Erase cancelled: project changed');
+        return;
+      }
+      this.commitBackstitchRemovals(gesture.backstitches, snapshot, surface, 'Erase', (commands) => gesture.transaction.commitBatch(commands));
       return;
     }
     const targets = this.focusEraserTargets(gesture.cells, gesture.components, surface);
     const wholeIndices: number[] = [];
-    const componentTargets: Array<{ index: number; corner: number }> = [];
+    const componentTargets: ComponentEraseTarget[] = [];
     for (const { cell, corner } of targets.components.values()) {
       componentTargets.push({ index: cell.y * surface.width + cell.x, corner });
     }
@@ -4548,67 +4439,44 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.notifyFocusProtected();
       return;
     }
-    wholeIndices.sort((left, right) => left - right);
-    componentTargets.sort((left, right) => left.index - right.index || left.corner - right.corner);
-    const componentIndices = new Uint32Array(componentTargets.length);
-    const componentCorners = new Uint8Array(componentTargets.length);
-    componentTargets.forEach((target, position) => {
-      componentIndices[position] = target.index;
-      componentCorners[position] = target.corner;
-    });
-    const command = mixedEraseCommand(
-      new Uint32Array(wholeIndices),
-      componentIndices,
-      componentCorners,
-      gesture.transaction.token.revision
-    );
-    try {
-      if (!this.isCurrentTransaction(gesture.transaction.token, snapshot)) {
-        this.setStatus('Erase cancelled: project changed');
-        return;
-      }
-      const preflight = preflightMixedEraseCommand(surface, command);
-      if (preflight.changedCellCount === 0) {
-        if (targets.blocked) this.notifyFocusProtected();
-        else this.setStatus('No change');
-        return;
-      }
-      this.commandInFlight = true;
-      const result = gesture.transaction.commit(this.stamp(command, snapshot));
-      this.commandInFlight = false;
-      this.projectCommandResult(result, indicesForCells([...targets.cells.values()], surface.width), `Erased ${countLabel(targets.cells.size, 'cell')}`);
-    } catch (error) {
-      this.commandInFlight = false;
-      if (error instanceof StaleEditorTransactionError) this.setStatus('Erase cancelled: project changed');
-      else throw error;
+    const command = buildMixedErase(wholeIndices, componentTargets, gesture.transaction.token.revision);
+    if (!this.isCurrentTransaction(gesture.transaction.token, snapshot)) {
+      this.setStatus('Erase cancelled: project changed');
+      return;
     }
+    const preflight = preflightMixedEraseCommand(surface, command);
+    if (preflight.changedCellCount === 0) {
+      if (targets.blocked) this.notifyFocusProtected();
+      else this.setStatus('No change');
+      return;
+    }
+    const result = this.runCommand('Erase', () => gesture.transaction.commit(this.stamp(command, snapshot)));
+    if (result) this.projectCommandResult(result, indicesForCells([...targets.cells.values()], surface.width), `Erased ${countLabel(targets.cells.size, 'cell')}`);
   }
 
-  /** Remove the touched backstitches of the selected specialty layer as one history entry. */
-  private finishBackstitchErase(gesture: EraserGesture, touched: Map<number, PendingBackstitchRemoval>, snapshot: WorkspaceEditorSnapshot, surface: PatternDocument): void {
+  /**
+   * Remove the touched backstitches of the selected specialty layer that Focus
+   * Color leaves editable, as one history entry committed by `commit`.
+   */
+  private commitBackstitchRemovals(
+    touched: Map<number, PendingBackstitchRemoval>,
+    snapshot: WorkspaceEditorSnapshot,
+    surface: PatternDocument,
+    label: string,
+    commit: (commands: readonly DomainCommand[]) => CommandResult
+  ): void {
     const removals = this.focusRemovals(touched, surface);
     if (removals.size === 0) {
       if (touched.size > 0) this.notifyFocusProtected();
       else this.setStatus('No change');
       return;
     }
-    if (!this.isCurrentTransaction(gesture.transaction.token, snapshot)) {
-      this.setStatus('Erase cancelled: project changed');
-      return;
-    }
     const ids = [...removals.keys()].sort((left, right) => left - right);
     const commands = ids.map((id): DomainCommand => this.stamp({ type: 'remove-backstitch', id }, snapshot));
-    try {
-      this.commandInFlight = true;
-      const result = gesture.transaction.commitBatch(commands);
-      this.commandInFlight = false;
-      if (this.selectedBackstitchId !== undefined && removals.has(this.selectedBackstitchId)) this.resetBackstitchState();
-      this.projectCommandResult(result, undefined, `Erased ${countLabel(ids.length, 'backstitch', 'backstitches')}`);
-    } catch (error) {
-      this.commandInFlight = false;
-      if (error instanceof StaleEditorTransactionError) this.setStatus('Erase cancelled: project changed');
-      else throw error;
-    }
+    const result = this.runCommand(label, () => commit(commands));
+    if (!result) return;
+    if (this.selectedBackstitchId !== undefined && removals.has(this.selectedBackstitchId)) this.resetBackstitchState();
+    this.projectCommandResult(result, undefined, `Erased ${countLabel(ids.length, 'backstitch', 'backstitches')}`);
   }
 
   private publishSelectionOverlay(): void {
@@ -4657,7 +4525,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private floatingPasteFragment(floating: FloatingPasteState): PatternFragment {
     const focus = this.focusColorId();
     const snapshot = this.gateway.getSnapshot();
-    const surface = this.editSurfaceOf(snapshot) ?? snapshot.document;
+    const surface = snapshot.editSurface ?? snapshot.document;
     if (focus === undefined || floating.mode !== 'paste' || !surface) return floating.fragment;
     return focusPasteFragment(floating.fragment, surface, floating.destination, focus);
   }
@@ -4766,7 +4634,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   private beginBackstitch(sample: PointerSample, snapshot: WorkspaceEditorSnapshot, surface: PatternDocument): boolean {
-    if (!validScreenSample(sample) || !isFiniteViewport(this.uiStore.getState().viewport) || !snapshot.document || !snapshot.projectId || snapshot.revision === null) return false;
+    if (!validScreenSample(sample) || !isFiniteViewport(this.uiStore.getState().viewport) || !snapshot.document || !hasRevision(snapshot)) return false;
     this.keyboardBackstitchAnchor = undefined;
     this.keyboardBackstitchToken = undefined;
     const point = this.backstitchModelPoint(sample);
@@ -4789,7 +4657,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         kind: 'backstitch',
         pointerId: sample.pointerId,
         mode: 'move',
-        token: { projectId: snapshot.projectId, revision: snapshot.revision },
+        token: tokenOf(snapshot),
         selectedId: hit.id,
         movingEndpoint: startDistance <= endDistance ? 'start' : 'end',
         pressScreen: { x: sample.screenX, y: sample.screenY },
@@ -4809,7 +4677,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       kind: 'backstitch',
       pointerId: sample.pointerId,
       mode: 'create',
-      token: { projectId: snapshot.projectId, revision: snapshot.revision },
+      token: tokenOf(snapshot),
       start: snapped,
       end: snapped
     };
@@ -4838,7 +4706,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.gesture = undefined;
     this.clearBackstitchPreview();
     const snapshot = this.gateway.getSnapshot();
-    if (!snapshot.document || !snapshot.projectId || snapshot.revision === null) {
+    if (!snapshot.document || !hasRevision(snapshot)) {
       this.resetBackstitchState();
       return;
     }
@@ -4877,7 +4745,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   private activateKeyboardBackstitch(): void {
     const snapshot = this.gateway.getSnapshot();
-    if (!snapshot.document || !snapshot.projectId || snapshot.revision === null) return;
+    if (!snapshot.document || !hasRevision(snapshot)) return;
     if (this.refuseTool({ tool: 'backstitch' }, snapshot)) return;
     const cursor = this.uiStore.getState().keyboardCursor ?? { x: 0, y: 0 };
     if (!isFiniteModelPoint(cursor)) return;
@@ -4885,7 +4753,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const point = fixedPointAt(cursor, snapshot.document);
     if (!this.keyboardBackstitchAnchor) {
       this.keyboardBackstitchAnchor = point;
-      this.keyboardBackstitchToken = { projectId: snapshot.projectId, revision: snapshot.revision };
+      this.keyboardBackstitchToken = tokenOf(snapshot);
       this.publishBackstitchPreview(point, point);
       this.setStatus(`Backstitch start anchored at (${String(point.x)}, ${String(point.y)}); move cursor and press Enter`);
       return;
@@ -4922,7 +4790,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
    */
   private backstitchProtected(snapshot: WorkspaceEditorSnapshot, start: FixedPoint, end: FixedPoint, movingId?: number): boolean {
     const focus = this.focusColorId();
-    const surface = this.editSurfaceOf(snapshot);
+    const surface = snapshot.editSurface;
     if (focus === undefined || !surface) return false;
     const color = movingId === undefined ? this.uiStore.getState().paletteId ?? 1 : backstitchColor(surface, movingId);
     const blocked = color !== focus || backstitchCoversProtected(surface, start, end, focus, movingId);
@@ -4933,7 +4801,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   /** The id of a just-created backstitch, read from the selected layer rather than the composite. */
   private createdBackstitchId(result: CommandResult): number | undefined {
     if (result.backstitchId !== undefined) return result.backstitchId;
-    const after = this.editSurfaceOf(this.gateway.getSnapshot()) ?? result.document;
+    const after = this.gateway.getSnapshot().editSurface ?? result.document;
     return after.backstitches.ids.length > 0 ? after.backstitches.ids[after.backstitches.ids.length - 1] : undefined;
   }
 
@@ -4952,22 +4820,29 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   /** Execute a layer-scoped editor command on the selected layer. */
   private executeCommandResult(command: DomainCommand, status: string, expectedToken?: EditorRevisionToken): CommandResult | undefined {
     const snapshot = this.gateway.getSnapshot();
-    if (!snapshot.projectId || snapshot.revision === null) return undefined;
-    const token = expectedToken ?? { projectId: snapshot.projectId, revision: snapshot.revision };
+    if (!hasRevision(snapshot)) return undefined;
+    const token = expectedToken ?? tokenOf(snapshot);
     if (token.projectId !== snapshot.projectId || token.revision !== snapshot.revision) {
       this.setStatus(`${status} cancelled: project changed`);
       return undefined;
     }
+    const result = this.runCommand(status, () => this.gateway.execute(this.stamp(command, snapshot), token));
+    if (result) this.projectCommandResult(result, undefined, status);
+    return result;
+  }
+
+  /**
+   * Run a document command with `commandInFlight` set. A stale token reports
+   * `${label} cancelled: project changed` and a layer refusal is shown as a
+   * notice and the status; both return undefined. Anything else is rethrown.
+   */
+  private runCommand<T>(label: string, run: () => T): T | undefined {
+    this.commandInFlight = true;
     try {
-      this.commandInFlight = true;
-      const result = this.gateway.execute(this.stamp(command, snapshot), token);
-      this.commandInFlight = false;
-      this.projectCommandResult(result, undefined, status);
-      return result;
+      return run();
     } catch (error) {
-      this.commandInFlight = false;
       if (error instanceof StaleEditorTransactionError) {
-        this.setStatus(`${status} cancelled: project changed`);
+        this.setStatus(`${label} cancelled: project changed`);
         return undefined;
       }
       if (isLayerRefusal(error)) {
@@ -4976,12 +4851,14 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         return undefined;
       }
       throw error;
+    } finally {
+      this.commandInFlight = false;
     }
   }
 
   private startFillAt(cell: ModelPoint, startMask?: number): boolean {
     const snapshot = this.gateway.getSnapshot();
-    if (!isFiniteModelPoint(cell) || !snapshot.document || !snapshot.projectId || snapshot.revision === null) return false;
+    if (!isFiniteModelPoint(cell) || !snapshot.document || !hasRevision(snapshot)) return false;
     // Fill finds its region in the selected layer only.
     const surface = this.editableSurface(snapshot, { tool: 'fill' }, true);
     if (!surface) return false;
@@ -5020,7 +4897,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       for (const index of selected) if (isActiveCell(surface, index)) bounds[index] = 1;
     }
     const fillMask = bounds ?? surface.canvasMask;
-    const token: EditorRevisionToken = { projectId: snapshot.projectId, revision: snapshot.revision };
+    const token = tokenOf(snapshot);
     let job: FillJob;
     try {
       job = this.fillClient.submit({
@@ -5066,7 +4943,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.fillRecolorSnapshot = undefined;
     this.setFillPending(false);
     const current = this.gateway.getSnapshot();
-    const currentSurface = this.editSurfaceOf(current);
+    const currentSurface = current.editSurface;
     if (!isFillResultCurrent(result, { projectId: token.projectId, baseRevision: token.revision, requestId: job.request.requestId })
       || current.projectId !== token.projectId
       || current.revision !== token.revision
@@ -5175,7 +5052,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (state.tool.tool !== 'paint') return;
     const snapshot = this.gateway.getSnapshot();
     const cursor = state.keyboardCursor ?? { x: 0, y: 0 };
-    if (!snapshot.document || !snapshot.projectId || snapshot.revision === null || !isFiniteModelPoint(cursor) || !isFiniteViewport(state.viewport)) return;
+    if (!snapshot.document || !hasRevision(snapshot) || !isFiniteModelPoint(cursor) || !isFiniteViewport(state.viewport)) return;
     const surface = this.editableSurface(snapshot, state.tool, true);
     if (!surface) return;
     const cell = cloneCell(cursor);
@@ -5187,7 +5064,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const state = this.uiStore.getState();
     const snapshot = this.gateway.getSnapshot();
     const cursor = state.keyboardCursor ?? { x: 0, y: 0 };
-    if (!snapshot.document || !snapshot.projectId || snapshot.revision === null || !isFiniteModelPoint(cursor) || !isFiniteViewport(state.viewport)) return;
+    if (!snapshot.document || !hasRevision(snapshot) || !isFiniteModelPoint(cursor) || !isFiniteViewport(state.viewport)) return;
     const surface = this.editableSurface(snapshot, { tool: 'eraser' }, true);
     if (!surface) return;
     const cell = cloneCell(cursor);
@@ -5196,25 +5073,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (snapshot.activeLayer?.kind === 'specialty') {
       const touched = new Map<number, PendingBackstitchRemoval>();
       backstitchesThroughCells(surface, cells, touched);
-      const removals = this.focusRemovals(touched, surface);
-      const ids = [...removals.keys()].sort((left, right) => left - right);
-      if (ids.length === 0) {
-        if (touched.size > 0) this.notifyFocusProtected();
-        else this.setStatus('No change');
-        return;
-      }
-      const token: EditorRevisionToken = { projectId: snapshot.projectId, revision: snapshot.revision };
-      try {
-        this.commandInFlight = true;
-        const result = this.gateway.executeBatch(ids.map((id): DomainCommand => this.stamp({ type: 'remove-backstitch', id }, snapshot)), token);
-        this.commandInFlight = false;
-        if (this.selectedBackstitchId !== undefined && removals.has(this.selectedBackstitchId)) this.resetBackstitchState();
-        this.projectCommandResult(result, undefined, `Erased ${countLabel(ids.length, 'backstitch', 'backstitches')}`);
-      } catch (error) {
-        this.commandInFlight = false;
-        if (error instanceof StaleEditorTransactionError) this.setStatus('Action cancelled: project changed');
-        else throw error;
-      }
+      const token = tokenOf(snapshot);
+      this.commitBackstitchRemovals(touched, snapshot, surface, 'Action', (commands) => this.gateway.executeBatch(commands, token));
       return;
     }
     const eraser = state.tool.tool === 'eraser' ? state.tool : undefined;
@@ -5241,60 +5101,33 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       else this.setStatus('No change');
       return;
     }
-    wholeIndices.sort((left, right) => left - right);
-    componentIndices.sort((left, right) => left - right);
-    const command = mixedEraseCommand(
-      new Uint32Array(wholeIndices),
-      new Uint32Array(componentIndices),
-      new Uint8Array(componentIndices.map(() => corner)),
-      snapshot.revision
-    );
-    try {
-      this.commandInFlight = true;
-      const result = this.gateway.execute(this.stamp(command, snapshot), { projectId: snapshot.projectId, revision: snapshot.revision });
-      this.commandInFlight = false;
-      const status = wholeIndices.length === 0 && componentIndices.length === 1
-        ? `Erased quarter ${String(corner)} at (${String(cell.x)}, ${String(cell.y)})`
-        : `Erased cell (${String(cell.x)}, ${String(cell.y)})`;
-      this.projectCommandResult(result, indicesForCells(cells, surface.width), status);
-    } catch (error) {
-      this.commandInFlight = false;
-      if (error instanceof StaleEditorTransactionError) this.setStatus('Action cancelled: project changed');
-      else throw error;
-    }
+    const command = buildMixedErase(wholeIndices, componentIndices.map((index) => ({ index, corner })), snapshot.revision);
+    const token = tokenOf(snapshot);
+    const result = this.runCommand('Action', () => this.gateway.execute(this.stamp(command, snapshot), token));
+    if (!result) return;
+    const status = wholeIndices.length === 0 && componentIndices.length === 1
+      ? `Erased quarter ${String(corner)} at (${String(cell.x)}, ${String(cell.y)})`
+      : `Erased cell (${String(cell.x)}, ${String(cell.y)})`;
+    this.projectCommandResult(result, indicesForCells(cells, surface.width), status);
   }
 
   private executeCellEdit(cells: readonly ModelPoint[], edit: BulkCellEdit, status: string): void {
     const snapshot = this.gateway.getSnapshot();
-    const surface = this.editSurfaceOf(snapshot);
-    if (!snapshot.document || !surface || !snapshot.projectId || snapshot.revision === null) return;
+    const surface = snapshot.editSurface;
+    if (!snapshot.document || !surface || !hasRevision(snapshot)) return;
     const indices = this.focusEditableIndices(surface, indicesForCells(cells, surface.width), edit);
     if (!indices) return;
     const command: DomainCommand = { type: 'bulk-cell', indices, edit, expectedRevision: snapshot.revision };
-    try {
-      const preflight = preflightBulkCellCommand(surface, command);
-      const changedIndices = edit.kind === 'three-quarter'
-        ? new Uint32Array(
-            Array.from(preflight.changedIndices)
-              .map((index) => cellState(surface, index, preflight.edit))
-              .filter((state) => cellStateChanged(surface, state))
-              .map((state) => state.index)
-          )
-        : indices;
-      if (preflight.changedIndices.length === 0 || changedIndices.length === 0) {
-        this.setStatus('No change');
-        return;
-      }
-      const effectiveCommand: DomainCommand = this.stamp({ ...command, indices: changedIndices }, snapshot);
-      this.commandInFlight = true;
-      const result = this.gateway.execute(effectiveCommand, { projectId: snapshot.projectId, revision: snapshot.revision });
-      this.commandInFlight = false;
-      this.projectCommandResult(result, changedIndices, status);
-    } catch (error) {
-      this.commandInFlight = false;
-      if (error instanceof StaleEditorTransactionError) this.setStatus('Action cancelled: project changed');
-      else throw error;
+    const preflight = preflightBulkCellCommand(surface, command);
+    const changedIndices = effectiveBulkIndices(surface, preflight, indices);
+    if (preflight.changedIndices.length === 0 || changedIndices.length === 0) {
+      this.setStatus('No change');
+      return;
     }
+    const effectiveCommand: DomainCommand = this.stamp({ ...command, indices: changedIndices }, snapshot);
+    const token = tokenOf(snapshot);
+    const result = this.runCommand('Action', () => this.gateway.execute(effectiveCommand, token));
+    if (result) this.projectCommandResult(result, changedIndices, status);
   }
 
   /**
@@ -5321,23 +5154,18 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       return;
     }
     const snapshot = this.gateway.getSnapshot();
-    if (!snapshot.projectId || snapshot.revision === null) return;
-    const token: EditorRevisionToken = { projectId: snapshot.projectId, revision: snapshot.revision };
+    if (!hasRevision(snapshot)) return;
+    const token = tokenOf(snapshot);
     try {
-      this.commandInFlight = true;
       this.replayingHistory = true;
-      const result = undo ? this.gateway.undo(token) : this.gateway.redo(token);
-      this.commandInFlight = false;
+      const result = this.runCommand('Action', () => undo ? this.gateway.undo(token) : this.gateway.redo(token));
+      if (!result) return;
       this.projectCommandResult(result, undefined, undo ? 'Undid action' : 'Redid action');
       if (entry) from.pop();
       if (!result.changed) return;
       if (entry) this.restoreSelectionSnapshot(undo ? entry.before : entry.after);
       const current = this.selectionSnapshot();
       this.pushTimeline(to, entry ?? { kind: 'document', before: current, after: current });
-    } catch (error) {
-      this.commandInFlight = false;
-      if (error instanceof StaleEditorTransactionError) this.setStatus('Action cancelled: project changed');
-      else throw error;
     } finally {
       this.replayingHistory = false;
     }
@@ -5356,7 +5184,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       activeLayer: current.activeLayer,
       selectedLayers: current.selectedLayers,
       layerStackKey: current.layerStackKey,
-      layerSelectionKey: current.layerSelectionKey
+      layerSelectionKey: current.layerSelectionKey,
+      compositeInvalidation: current.compositeInvalidation
     };
     // A paste can create and select a layer inside the same history entry.
     this.syncActiveLayer(current);
@@ -5384,11 +5213,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (!this.started || this.commandInFlight) return;
     const previous = this.lastGatewaySnapshot;
     const projectChanged = previous.projectId !== snapshot.projectId;
-    const layerStackChanged = (previous.layerStackKey ?? null) !== (snapshot.layerStackKey ?? null);
+    const layerStackChanged = previous.layerStackKey !== snapshot.layerStackKey;
     const documentChanged = previous.document !== snapshot.document || previous.revision !== snapshot.revision || layerStackChanged;
     // A move acts on every selected layer, so changing the selected set also ends layer-bound state.
-    const layerSwitched = !projectChanged && (!sameActiveLayer(previous.activeLayer ?? null, snapshot.activeLayer ?? null)
-      || (previous.layerSelectionKey ?? null) !== (snapshot.layerSelectionKey ?? null));
+    const layerSwitched = !projectChanged && (!sameActiveLayer(previous.activeLayer, snapshot.activeLayer)
+      || previous.layerSelectionKey !== snapshot.layerSelectionKey);
     let staleGestureStatus: string | undefined;
     this.lastGatewaySnapshot = snapshot;
     if (layerSwitched) this.onActiveLayerSwitch();
@@ -5509,8 +5338,21 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.renderer.setOverlay(state.overlay);
   }
 
-  private isCurrentTransaction(token: EditorRevisionToken, snapshot: WorkspaceEditorSnapshot): boolean {
-    return token.projectId === snapshot.projectId && token.revision === snapshot.revision && snapshot.document !== null;
+  private isCurrentTransaction(token: EditorRevisionToken, snapshot: WorkspaceEditorSnapshot): snapshot is DocumentSnapshot {
+    return token.projectId === snapshot.projectId && token.revision === snapshot.revision && hasDocument(snapshot);
+  }
+
+  /**
+   * The snapshot a gesture started from `token` continues on. When the project
+   * has changed since, the gesture is cancelled with `${label} cancelled:
+   * project changed` and this is undefined.
+   */
+  private currentSnapshotFor(token: EditorRevisionToken, label: string): DocumentSnapshot | undefined {
+    const snapshot = this.gateway.getSnapshot();
+    if (this.isCurrentTransaction(token, snapshot)) return snapshot;
+    this.cancelGesture();
+    this.setStatus(`${label} cancelled: project changed`);
+    return undefined;
   }
 
   /** Preview a paint or shape stroke over the cells Focus Color leaves editable. */
@@ -6062,7 +5904,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (extendSelection) {
       this.selectionAnchor ??= this.uiStore.getState().keyboardCursor ?? { x: 0, y: 0 };
       const rect = boundedGridRect(normalizeGridRect(this.selectionAnchor, bounded), snapshot.document);
-      this.selection = rect ? { kind: 'rect', rect, documentWidth: snapshot.document.width, documentHeight: snapshot.document.height } : undefined;
+      this.selection = rect ? rectSelection(rect, snapshot.document) : undefined;
     } else {
       this.selection = undefined;
       this.selectionAnchor = undefined;
@@ -6154,8 +5996,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private focusSelection(surface: PatternDocument, selection: FinalizedSelection, focus: number, notify = true): FinalizedSelection | undefined {
     const content = focusSelectionContent(surface, selection, focus);
     if (content.cells.length > 0) {
-      const sparse = sparseSelectionGeometry(content.cells, surface.width, surface.height);
-      return sparse ? { kind: 'sparse', ...sparse, documentWidth: surface.width, documentHeight: surface.height } : undefined;
+      return sparseSelection(content.cells, surface);
     }
     if (content.backstitchIds.length > 0) return selection;
     if (notify && content.protectedContent) this.notifyFocusProtected();
@@ -6163,7 +6004,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   /** Delete only the selection's focus-color cells and backstitches on each target; undefined, after the notice, when it holds only other colors. */
-  private deleteFocusSelection(targets: readonly { readonly layerId?: number; readonly surface: PatternDocument }[], selection: FinalizedSelection, focus: number, revision: number): boolean | undefined {
+  private deleteFocusSelection(targets: readonly { readonly layerId: number; readonly surface: PatternDocument }[], selection: FinalizedSelection, focus: number, revision: number): boolean | undefined {
     const commands: DomainCommand[] = [];
     let cells = 0;
     let backstitches = 0;
@@ -6195,15 +6036,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
    * batch when there are several. 'refused' when Focus Color protects something
    * any part would change, which refuses the whole move.
    */
-  private floatingMoveCommand(floating: FloatingPasteState, snapshot: WorkspaceEditorSnapshot): DomainCommand | 'refused' | undefined {
+  private floatingMoveCommand(floating: FloatingPasteState, snapshot: DocumentSnapshot): DomainCommand | 'refused' | undefined {
     const layered = snapshot.layeredDocument;
     const offset = { x: floating.destination.x - floating.copySelection.rect.x, y: floating.destination.y - floating.copySelection.rect.y };
     const focus = this.focusColorId();
     const commands: DomainCommand[] = [];
     for (const layer of floating.layers ?? []) {
-      const surface = layer.layerId === undefined || !layered
-        ? this.editableSurface(snapshot, { tool: 'select' }, true)
-        : findLayer(layered, layer.layerId) ? layerSurface(layered, layer.layerId) : null;
+      const surface = findLayer(layered, layer.layerId) ? layerSurface(layered, layer.layerId) : null;
       if (!surface || snapshot.revision === null) return undefined;
       if (focus !== undefined && this.focusMoveRefused(layer, offset, surface, focus)) return 'refused';
       const origin = fragmentSelectionOrigin(layer.moveSelection);
@@ -6236,19 +6075,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   /**
-   * The selected layer's own content, which editor tools read. Without layer
-   * information it is the whole document; on Canvas or Reference it is null.
-   */
-  private editSurfaceOf(snapshot: WorkspaceEditorSnapshot): PatternDocument | null {
-    return snapshot.editSurface === undefined ? snapshot.document : snapshot.editSurface;
-  }
-
-  /**
    * The edit surface when `tool` may change the selected layer, else null. A
    * refusal sends the tool's hint to the notice callback when `notify` is set.
    */
   private editableSurface(snapshot: WorkspaceEditorSnapshot, tool: EditorToolState, notify = false): PatternDocument | null {
-    const availability = this.toolAvailable(tool, snapshot.activeLayer ?? null);
+    const availability = this.toolAvailable(tool, snapshot.activeLayer);
     if (!availability.enabled) {
       if (notify && availability.hint) {
         this.notify(availability.hint);
@@ -6256,7 +6087,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       }
       return null;
     }
-    return this.editSurfaceOf(snapshot);
+    return snapshot.editSurface;
   }
 
   /** True, after notifying its hint, when `tool` cannot edit the selected layer. */
@@ -6300,7 +6131,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
    */
   private syncActiveLayer(snapshot: WorkspaceEditorSnapshot): void {
     this.syncCanvasMode(snapshot.document);
-    const next = snapshot.activeLayer ?? null;
+    const next = snapshot.activeLayer;
     const previous = this.uiStore.getState().activeLayer;
     this.uiStore.setActiveLayer(next);
     if (!next || (previous && previous.id === next.id)) {

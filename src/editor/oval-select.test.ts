@@ -1,14 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { createDocument } from '../domain';
-import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
-import type { CanvasRenderer, ModelPoint, RenderStats, RendererStyle, Viewport } from './contracts';
+import type { ModelPoint } from './contracts';
 import { getCanvasMetrics } from './coordinates';
-import { EditorSurfaceController } from './controller';
-import { createWorkspaceEditorGateway, type WorkspaceEditorBoundary } from './gateway';
+import type { EditorSurfaceController } from './controller';
 import type { PointerSample } from './input';
 import { rasterizeFilledOval, rasterizeShapeOutline } from './shapes';
-import { createUiStore } from './ui-store';
-import { SurfaceHistory } from './test-fixtures';
+import { fixture as layeredFixture, LayeredTestBoundary, plainDocument } from './test-support';
 
 const ZOOM = 16;
 
@@ -18,47 +14,12 @@ function grid(points: readonly ModelPoint[], width: number, height: number): str
   return rows.map((row) => row.join(''));
 }
 
-function rendererFixture(): CanvasRenderer {
-  let viewport: Viewport = { x: 0, y: 0, zoom: ZOOM };
-  const renderer = {
-    lastStats: { lod: 'detail', visitedCells: 0, drawnCells: 0, drawnBackstitches: 0, baseRendered: false, overlayRendered: false } as RenderStats,
-    getDocument: () => undefined,
-    getViewport: () => viewport,
-    getStyle: () => ({}) as RendererStyle,
-    getTraceImage: () => undefined,
-    setDocument: () => undefined,
-    setViewport: (next: Viewport) => { viewport = next; },
-    setMetrics: () => undefined,
-    setStyle: () => undefined,
-    setTraceImage: () => undefined,
-    setOverlay: () => undefined,
-    invalidate: () => undefined,
-    requestRender: () => undefined,
-    render: () => renderer.lastStats,
-    renderNow: () => renderer.lastStats,
-    getLastInvalidation: () => ({ base: false, overlay: false, reasons: [] }),
-    dispose: () => undefined,
-    destroy: () => undefined
-  } as unknown as CanvasRenderer;
-  return renderer;
-}
-
-/** A single-surface 10x10 workspace with the Select tool's given shape. */
+/** A 10x10 layered workspace on its stitch layer with the Select tool's given shape. */
 function fixture(shape?: 'rectangle' | 'oval') {
-  const editor = new SurfaceHistory(createDocument({ width: 10, height: 10, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Red', color: '#d33' }] }));
-  const listeners = new Set<() => void>();
-  const boundary: WorkspaceEditorBoundary = {
-    activeProjectId: 'project-a',
-    get document() { return editor.document; },
-    subscribe: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
-    execute: (command) => editor.execute(command),
-    executeBatch: (commands) => editor.executeBatch(commands),
-    undo: () => editor.undo(),
-    redo: () => editor.redo()
-  };
-  const uiStore = createUiStore({ viewport: { x: 0, y: 0, zoom: ZOOM } });
-  const controller = new EditorSurfaceController({ gateway: createWorkspaceEditorGateway(boundary), uiStore, renderer: rendererFixture(), metrics: getCanvasMetrics(320, 320) });
-  controller.start();
+  const { controller, uiStore } = layeredFixture(new LayeredTestBoundary(plainDocument(10, 10)), {
+    ui: { viewport: { x: 0, y: 0, zoom: ZOOM } },
+    controller: { metrics: getCanvasMetrics(320, 320) }
+  });
   controller.setTool(shape ? { tool: 'select', shape } : { tool: 'select' });
   return { controller, uiStore };
 }

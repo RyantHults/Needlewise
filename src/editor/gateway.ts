@@ -1,6 +1,5 @@
 import {
   findLayer,
-  pasteFragmentCommand,
   type CommandResult,
   type DomainCommand,
   type LayeredDocument,
@@ -19,26 +18,22 @@ export interface WorkspaceEditorSnapshot {
   readonly revision: number | null;
   /** The flattened, visible-only composite that rendering, eyedropper and hover info read. */
   readonly document: PatternDocument | null;
-  readonly layeredDocument?: LayeredDocument | null;
-  /**
-   * The selected layer's own content, which editor tools read and change. It is
-   * null for Canvas and Reference, and equals `document` when the workspace has
-   * no layer information.
-   */
-  readonly editSurface?: PatternDocument | null;
-  readonly activeLayer?: EditorActiveLayer | null;
+  /** Null only when no project is open, as for every layer field below. */
+  readonly layeredDocument: LayeredDocument | null;
+  /** The selected layer's own content, which editor tools read and change. Null for Canvas and Reference. */
+  readonly editSurface: PatternDocument | null;
+  readonly activeLayer: EditorActiveLayer | null;
   /**
    * The selected stitch and specialty layers, bottom to top, which a move and a
-   * delete act on. `[activeLayer]` when the boundary has no multi-select; empty
-   * on Canvas, Reference, or without layer information.
+   * delete act on. Empty on Canvas or Reference.
    */
-  readonly selectedLayers?: readonly EditorActiveLayer[];
+  readonly selectedLayers: readonly EditorActiveLayer[];
   /** Changes whenever layer order, membership, type or visibility changes. */
-  readonly layerStackKey?: string | null;
+  readonly layerStackKey: string | null;
   /** Changes whenever the set of selected layers changes. */
-  readonly layerSelectionKey?: string | null;
+  readonly layerSelectionKey: string | null;
   /** What the workspace's last change did to the composite, when it reports it. */
-  readonly compositeInvalidation?: CompositeInvalidationReport | null;
+  readonly compositeInvalidation: CompositeInvalidationReport | null;
 }
 
 /** The session's report of the cells its last change altered in the composite. */
@@ -99,6 +94,18 @@ export interface EditorRevisionToken {
   readonly revision: number;
 }
 
+/** A snapshot of an open project, which has a revision token. */
+export type RevisionedSnapshot = WorkspaceEditorSnapshot & EditorRevisionToken;
+
+export function hasRevision(snapshot: WorkspaceEditorSnapshot): snapshot is RevisionedSnapshot {
+  return !!snapshot.projectId && snapshot.revision !== null;
+}
+
+/** The revision token of an open project's snapshot. */
+export function tokenOf(snapshot: EditorRevisionToken): EditorRevisionToken {
+  return { projectId: snapshot.projectId, revision: snapshot.revision };
+}
+
 export class StaleEditorTransactionError extends Error {
   readonly code = 'stale-editor-transaction';
   readonly expected: EditorRevisionToken;
@@ -115,24 +122,23 @@ export class StaleEditorTransactionError extends Error {
 export interface WorkspaceEditorBoundary {
   readonly activeProjectId: string | null;
   readonly document: PatternDocument | null;
-  /** Layer support is optional so single-surface boundaries keep working. */
-  readonly layeredDocument?: LayeredDocument | null;
-  readonly activeLayerId?: ActiveLayerId | null;
-  /** Every selected stitch/specialty layer id; absent when the boundary has no multi-select. */
-  readonly selectedLayerIds?: readonly number[] | null;
-  activeLayerSurface?(): PatternDocument | null;
-  getEditorLayerSnapshot?(): { readonly compositeInvalidation: CompositeInvalidationReport | null } | null;
-  resolvePaste?(type: LayerType): PasteDestination;
-  commitPaste?(fragment: PatternFragment, position: { x: number; y: number }, destination: PasteDestination, expectedRevision?: number, palette?: readonly PaletteEntryInput[]): PasteCommitResult;
+  readonly layeredDocument: LayeredDocument | null;
+  readonly activeLayerId: ActiveLayerId | null;
+  /** Every selected stitch/specialty layer id. */
+  readonly selectedLayerIds: readonly number[] | null;
+  activeLayerSurface(): PatternDocument | null;
+  getEditorLayerSnapshot(): { readonly compositeInvalidation: CompositeInvalidationReport | null } | null;
+  resolvePaste(type: LayerType): PasteDestination;
+  commitPaste(fragment: PatternFragment, position: { x: number; y: number }, destination: PasteDestination, expectedRevision?: number, palette?: readonly PaletteEntryInput[]): PasteCommitResult;
   subscribe(listener: () => void): () => void;
   execute(command: DomainCommand): CommandResult;
   executeBatch(commands: readonly DomainCommand[]): CommandResult;
   undo(): CommandResult;
   redo(): CommandResult;
-  /** The Track page's mark history, kept apart from document history; absent when the boundary cannot record progress. */
-  markProgress?(command: ProgressCommand): CommandResult;
-  undoMark?(): CommandResult;
-  redoMark?(): CommandResult;
+  /** The Track page's mark history, kept apart from document history. */
+  markProgress(command: ProgressCommand): CommandResult;
+  undoMark(): CommandResult;
+  redoMark(): CommandResult;
 }
 
 export interface EditorTransaction {
@@ -151,9 +157,9 @@ export interface WorkspaceEditorGateway {
   undo(expected?: EditorRevisionToken): CommandResult;
   redo(expected?: EditorRevisionToken): CommandResult;
   /** Where a paste of this layer type would go; null `layerId` means nowhere. */
-  resolvePaste?(type: LayerType): PasteDestination;
+  resolvePaste(type: LayerType): PasteDestination;
   /** Paste as one history entry, creating the destination layer when needed. */
-  commitPaste?(fragment: PatternFragment, position: { x: number; y: number }, destination: PasteDestination, expected?: EditorRevisionToken, palette?: readonly PaletteEntryInput[]): PasteCommitResult;
+  commitPaste(fragment: PatternFragment, position: { x: number; y: number }, destination: PasteDestination, expected?: EditorRevisionToken, palette?: readonly PaletteEntryInput[]): PasteCommitResult;
   /** Record stitch progress outside document history; true when a mark changed. */
   markProgress(command: ProgressCommand): boolean;
   undoMark(): boolean;
@@ -161,7 +167,7 @@ export interface WorkspaceEditorGateway {
   dispose(): void;
 }
 
-function activeLayerOf(layered: LayeredDocument, id: ActiveLayerId | null | undefined): EditorActiveLayer | null {
+function activeLayerOf(layered: LayeredDocument, id: ActiveLayerId | null): EditorActiveLayer | null {
   if (id === 'canvas' || id === 'reference') return { id, kind: id, visible: true };
   if (typeof id !== 'number') return null;
   const layer = findLayer(layered, id);
@@ -172,7 +178,7 @@ function layerStackKeyOf(layered: LayeredDocument): string {
   return layered.layers.map((layer) => `${String(layer.id)}:${layer.type}:${layer.visible ? 1 : 0}`).join(',');
 }
 
-function selectedLayersOf(layered: LayeredDocument, ids: readonly number[] | null | undefined, active: EditorActiveLayer | null): EditorActiveLayer[] {
+function selectedLayersOf(layered: LayeredDocument, ids: readonly number[] | null, active: EditorActiveLayer | null): EditorActiveLayer[] {
   if (typeof active?.id !== 'number') return [];
   const selected = new Set(ids ?? []);
   selected.add(active.id);
@@ -181,33 +187,34 @@ function selectedLayersOf(layered: LayeredDocument, ids: readonly number[] | nul
 
 function snapshotOf(boundary: WorkspaceEditorBoundary): WorkspaceEditorSnapshot {
   const document = boundary.document;
-  const layered = document ? boundary.layeredDocument ?? null : null;
-  if (!layered) {
+  const layered = boundary.layeredDocument;
+  if (!document || !layered) {
     return {
       projectId: boundary.activeProjectId,
-      revision: document?.revision ?? null,
-      document,
+      revision: null,
+      document: null,
       layeredDocument: null,
-      editSurface: document,
+      editSurface: null,
       activeLayer: null,
       selectedLayers: [],
       layerStackKey: null,
-      layerSelectionKey: null
+      layerSelectionKey: null,
+      compositeInvalidation: null
     };
   }
   const activeLayer = activeLayerOf(layered, boundary.activeLayerId);
   const selectedLayers = selectedLayersOf(layered, boundary.selectedLayerIds, activeLayer);
   return {
     projectId: boundary.activeProjectId,
-    revision: document?.revision ?? null,
+    revision: document.revision,
     document,
     layeredDocument: layered,
-    editSurface: typeof activeLayer?.id === 'number' ? boundary.activeLayerSurface?.() ?? null : null,
+    editSurface: typeof activeLayer?.id === 'number' ? boundary.activeLayerSurface() : null,
     activeLayer,
     selectedLayers,
     layerStackKey: layerStackKeyOf(layered),
     layerSelectionKey: selectedLayers.map((layer) => String(layer.id)).join(','),
-    compositeInvalidation: boundary.getEditorLayerSnapshot?.()?.compositeInvalidation ?? null
+    compositeInvalidation: boundary.getEditorLayerSnapshot()?.compositeInvalidation ?? null
   };
 }
 
@@ -244,8 +251,8 @@ class WorkspaceEditorGatewayImpl implements WorkspaceEditorGateway {
   beginTransaction(): EditorTransaction {
     this.refreshFromBoundary();
     const snapshot = this.snapshot;
-    if (!snapshot.projectId || snapshot.revision === null) throw new Error('There is no active editor project.');
-    const token: EditorRevisionToken = { projectId: snapshot.projectId, revision: snapshot.revision };
+    if (!hasRevision(snapshot)) throw new Error('There is no active editor project.');
+    const token = tokenOf(snapshot);
     let committed = false;
     return {
       token,
@@ -301,8 +308,7 @@ class WorkspaceEditorGatewayImpl implements WorkspaceEditorGateway {
   }
 
   resolvePaste(type: LayerType): PasteDestination {
-    if (this.boundary.resolvePaste) return this.boundary.resolvePaste(type);
-    return { layerId: null, create: false };
+    return this.boundary.resolvePaste(type);
   }
 
   commitPaste(fragment: PatternFragment, position: { x: number; y: number }, destination: PasteDestination, expected?: EditorRevisionToken, palette?: readonly PaletteEntryInput[]): PasteCommitResult {
@@ -310,23 +316,21 @@ class WorkspaceEditorGatewayImpl implements WorkspaceEditorGateway {
     this.refreshFromBoundary();
     expectedToken(expected, this.snapshot);
     const revision = expected?.revision ?? this.snapshot.revision ?? undefined;
-    const outcome = this.boundary.commitPaste
-      ? this.boundary.commitPaste(fragment, position, destination, revision, palette)
-      : { result: this.boundary.execute(pasteFragmentCommand(fragment, position, revision ?? 0)) };
+    const outcome = this.boundary.commitPaste(fragment, position, destination, revision, palette);
     this.refresh();
     return outcome;
   }
 
   markProgress(command: ProgressCommand): boolean {
-    return this.progress(this.boundary.markProgress && (() => this.boundary.markProgress!(command)));
+    return this.progress(() => this.boundary.markProgress(command));
   }
 
   undoMark(): boolean {
-    return this.progress(this.boundary.undoMark && (() => this.boundary.undoMark!()));
+    return this.progress(() => this.boundary.undoMark());
   }
 
   redoMark(): boolean {
-    return this.progress(this.boundary.redoMark && (() => this.boundary.redoMark!()));
+    return this.progress(() => this.boundary.redoMark());
   }
 
   dispose(): void {
@@ -336,10 +340,10 @@ class WorkspaceEditorGatewayImpl implements WorkspaceEditorGateway {
     this.listeners.clear();
   }
 
-  private progress(apply: (() => CommandResult) | undefined): boolean {
+  private progress(apply: () => CommandResult): boolean {
     this.ensureLive();
     this.refreshFromBoundary();
-    if (!apply || this.snapshot.projectId === null) return false;
+    if (this.snapshot.projectId === null) return false;
     const result = apply();
     this.refresh();
     return result.changed;

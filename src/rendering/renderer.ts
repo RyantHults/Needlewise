@@ -3,6 +3,7 @@ import {
   colorComponentMask,
   componentKind,
   componentSlotMask,
+  forEachActiveRun,
   isLegacyQuarterKind,
   type PatternDocument
 } from '../domain';
@@ -55,6 +56,7 @@ import {
   SymbolAtlasCache,
   isCanvasImageSource,
   overviewColorForPaletteId,
+  paintOverviewCell,
   patternBackgroundColor
 } from './atlas';
 import { clearTarget, clipToRect, defaultAtlasTargetFactory, drawImage, prepareTarget, rectPath, restore, save } from './context';
@@ -158,6 +160,18 @@ function linePath(context: CanvasContextAdapter, from: ScreenPoint, to: ScreenPo
 
 function setAlpha(context: CanvasContextAdapter, alpha: number): void {
   context.globalAlpha = Math.max(0, Math.min(1, alpha));
+}
+
+/** Run `paint` at `alpha`, opening a scope only when that is below the `ambient` alpha already set. */
+function withAlpha<T>(context: CanvasContextAdapter, alpha: number, ambient: number, paint: () => T): T {
+  if (alpha >= ambient) return paint();
+  save(context);
+  try {
+    setAlpha(context, alpha);
+    return paint();
+  } finally {
+    restore(context);
+  }
 }
 
 function completedMark(
@@ -332,23 +346,20 @@ function drawCellState(
   };
   const paintMarks = (id: number, completed: boolean, slot?: number): void => {
     const markAlpha = dimAlpha * highlightAlpha(style, id);
-    if (markAlpha < dimAlpha) {
-      // Symbols draw at the ambient alpha, so a dimmed color needs its own scope.
-      save(context);
-      setAlpha(context, markAlpha);
-    }
-    const combinedSymbol = slot === undefined && viewport.zoom >= COMBINED_SYMBOL_MIN_CELL_PX;
-    if (lod === RenderLod.Detail || symbolMode || combinedSymbol) drawSymbol(context, document, id, rect, style, slot);
-    if (completed && lod === RenderLod.Detail) {
-      const completionRect = slot === undefined ? rect : {
-        x: rect.x + (slot === 1 || slot === 2 ? rect.width / 2 : 0),
-        y: rect.y + (slot === 2 || slot === 3 ? rect.height / 2 : 0),
-        width: rect.width / 2,
-        height: rect.height / 2
-      };
-      completedMark(context, completionRect, style, markAlpha);
-    }
-    if (markAlpha < dimAlpha) restore(context);
+    // Symbols draw at the ambient alpha, so a dimmed color needs its own scope.
+    withAlpha(context, markAlpha, dimAlpha, () => {
+      const combinedSymbol = slot === undefined && viewport.zoom >= COMBINED_SYMBOL_MIN_CELL_PX;
+      if (lod === RenderLod.Detail || symbolMode || combinedSymbol) drawSymbol(context, document, id, rect, style, slot);
+      if (completed && lod === RenderLod.Detail) {
+        const completionRect = slot === undefined ? rect : {
+          x: rect.x + (slot === 1 || slot === 2 ? rect.width / 2 : 0),
+          y: rect.y + (slot === 2 || slot === 3 ? rect.height / 2 : 0),
+          width: rect.width / 2,
+          height: rect.height / 2
+        };
+        completedMark(context, completionRect, style, markAlpha);
+      }
+    });
   };
   const fill = (id: number, completed: boolean, slot?: number, geometryKind = kind): void => {
     paintShape(id, completed, slot, geometryKind);
@@ -416,13 +427,9 @@ function drawThreadCell(
   const stitch = (id: number, stitchKind: number, slot: number): void => {
     if (id === 0) return;
     const color = styleColor(document, id, style);
-    const alpha = dimAlpha * highlightAlpha(style, id);
-    if (alpha < dimAlpha) {
-      save(context);
-      setAlpha(context, alpha);
-    }
-    if (!sprites.draw(context, color, stitchKind, rect, slot)) drawThreadStitch(context, stitchKind, rect, color, slot);
-    if (alpha < dimAlpha) restore(context);
+    withAlpha(context, dimAlpha * highlightAlpha(style, id), dimAlpha, () => {
+      if (!sprites.draw(context, color, stitchKind, rect, slot)) drawThreadStitch(context, stitchKind, rect, color, slot);
+    });
   };
   if (isLegacyQuarterKind(kind)) {
     for (let slot = 0; slot < 4; slot += 1) stitch(colors[slot] ?? 0, kind, slot);
@@ -690,21 +697,6 @@ function forEachCachedRun(edges: EdgeRuns, line: number, from: number, to: numbe
   }
 }
 
-/** Emit each maximal run [from, to) of active columns in one box row. */
-function forEachActiveRun(mask: Uint8Array, width: number, y: number, from: number, to: number, emit: (from: number, to: number) => void): void {
-  const row = y * width;
-  let runStart = -1;
-  for (let x = from; x < to; x += 1) {
-    const active = mask[row + x] === 1;
-    if (active && runStart < 0) runStart = x;
-    else if (!active && runStart >= 0) {
-      emit(runStart, x);
-      runStart = -1;
-    }
-  }
-  if (runStart >= 0) emit(runStart, to);
-}
-
 /**
  * Paint the fabric over the active cells inside `area` (screen space). A full
  * rectangle is one fill; a masked canvas fills runs of active cells per row.
@@ -774,6 +766,13 @@ interface GridTiers {
   minor: boolean;
   /** Zoom is under the 5-cell breakpoint, whether or not that tier shows. */
   belowMidBreakpoint: boolean;
+  majorInterval: number;
+  midInterval: number;
+}
+
+/** A configured grid interval in whole cells, or `fallback` when it is not a number. */
+function gridInterval(value: number, fallback: number): number {
+  return Number.isFinite(value) ? Math.max(1, Math.floor(value)) : fallback;
 }
 
 /** Which grid tiers show at this zoom; every grid caller goes through this. */
@@ -783,11 +782,11 @@ function gridTierVisibility(
   metrics: CanvasMetrics,
   style: RendererStyle
 ): GridTiers {
-  if (!style.showGrid) return { major: false, mid: false, minor: false, belowMidBreakpoint: false };
+  const majorInterval = gridInterval(style.gridInterval, 1);
+  const midInterval = gridInterval(style.midGridInterval, 5);
+  if (!style.showGrid) return { major: false, mid: false, minor: false, belowMidBreakpoint: false, majorInterval, midInterval };
   const zoom = viewport.zoom > 0 && Number.isFinite(viewport.zoom) ? viewport.zoom : 1;
   const fitZoom = fitViewport(document, metrics, CHART_EDGE_MARGIN).zoom;
-  const majorInterval = Number.isFinite(style.gridInterval) ? Math.max(1, Math.floor(style.gridInterval)) : 1;
-  const midInterval = Number.isFinite(style.midGridInterval) ? Math.max(1, Math.floor(style.midGridInterval)) : 5;
   const tier = (fraction: number, interval: number): boolean =>
     zoom >= fitZoom / fraction && interval * zoom >= GRID_MIN_SPACING_PX;
   return {
@@ -795,8 +794,45 @@ function gridTierVisibility(
     // An interval of 1 is identical to the per-stitch grid.
     mid: midInterval > 1 && tier(MID_GRID_FIT_FRACTION, midInterval),
     minor: tier(MINOR_GRID_FIT_FRACTION, 1),
-    belowMidBreakpoint: zoom < fitZoom / MID_GRID_FIT_FRACTION
+    belowMidBreakpoint: zoom < fitZoom / MID_GRID_FIT_FRACTION,
+    majorInterval,
+    midInterval
   };
+}
+
+function gridTierColors(style: RendererStyle): { minor: GridTierColors; mid: GridTierColors; major: GridTierColors } {
+  return {
+    minor: { theme: style.gridColor, betweenLight: style.lightStitchGridColor, betweenDark: style.darkStitchGridColor },
+    mid: { theme: style.midGridColor, betweenLight: style.lightStitchMidGridColor, betweenDark: style.darkStitchMidGridColor },
+    major: { theme: style.majorGridColor, betweenLight: style.lightStitchMajorGridColor, betweenDark: style.darkStitchMajorGridColor }
+  };
+}
+
+interface GridTier {
+  readonly colors: GridTierColors;
+  readonly width: number;
+}
+
+/**
+ * Look up the strongest tier that is both visible and owns grid line `n` of an
+ * axis `extent` cells long, if any. The 5-cell tier skips the document edges,
+ * which the border owns, so a line there falls through to the next tier.
+ */
+function gridTierLookup(tiers: GridTiers, style: RendererStyle, lod: RenderLod): (n: number, extent: number) => GridTier | undefined {
+  const colors = gridTierColors(style);
+  const major = { colors: colors.major, width: tierMajorWidth(lod, tiers) };
+  const mid = { colors: colors.mid, width: midGridWidth(lod) };
+  const minor = { colors: colors.minor, width: minorGridWidth(lod) };
+  return (n, extent) => {
+    if (tiers.major && n % tiers.majorInterval === 0) return major;
+    if (tiers.mid && n % tiers.midInterval === 0 && n !== 0 && n !== extent) return mid;
+    if (tiers.minor) return minor;
+    return undefined;
+  };
+}
+
+function greatestCommonDivisor(a: number, b: number): number {
+  return b === 0 ? a : greatestCommonDivisor(b, a % b);
 }
 
 function drawGrid(
@@ -809,12 +845,17 @@ function drawGrid(
   lod: RenderLod
 ): void {
   const tiers = gridTierVisibility(document, viewport, metrics, style);
-  if ((!tiers.major && !tiers.minor) || visible.width === 0 || visible.height === 0) return;
+  if ((!tiers.major && !tiers.mid && !tiers.minor) || visible.width === 0 || visible.height === 0) return;
   const bounds = patternCanvasRect(document, viewport, metrics);
   if (!bounds) return;
-  const configuredInterval = Number.isFinite(style.gridInterval) ? Math.max(1, Math.floor(style.gridInterval)) : 1;
-  // The per-stitch tier visits every cell line; below it only the 10-cell lines are walked.
-  const interval = tiers.minor ? 1 : configuredInterval;
+  // The per-stitch tier visits every cell line; below it only the lines of the visible coarser tiers are walked.
+  const step = tiers.minor
+    ? 1
+    : tiers.major && tiers.mid
+      ? greatestCommonDivisor(tiers.majorInterval, tiers.midInterval)
+      : tiers.major
+        ? tiers.majorInterval
+        : tiers.midInterval;
   const viewportRect = viewportModelRect(viewport, metrics);
   const left = Math.max(0, visible.x, Math.floor(viewportRect.x));
   const right = Math.min(document.width, visible.x + visible.width, Math.ceil(viewportRect.x + viewportRect.width));
@@ -825,122 +866,48 @@ function drawGrid(
   const mask = document.canvasMask;
   const edges = mask === undefined ? undefined : maskEdges(mask, document.width, document.height, false);
   const contrast = gridEdgeContrast(document, style);
-  const minorColors = { theme: style.gridColor, betweenLight: style.lightStitchGridColor, betweenDark: style.darkStitchGridColor };
-  const majorColors = { theme: style.majorGridColor, betweenLight: style.lightStitchMajorGridColor, betweenDark: style.darkStitchMajorGridColor };
+  const tierAt = gridTierLookup(tiers, style, lod);
+  // Lines [from, to] of one axis, each spanning [spanFrom, spanTo): vertical lines run along rows, horizontal ones along columns.
+  const strokeGridAxis = (
+    vertical: boolean,
+    from: number,
+    to: number,
+    spanFrom: number,
+    spanTo: number,
+    runs: EdgeRuns | undefined
+  ): void => {
+    const extent = vertical ? document.width : document.height;
+    const boundsStart = vertical ? bounds.x : bounds.y;
+    const boundsEnd = boundsStart + (vertical ? bounds.width : bounds.height);
+    const point = (line: number, along: number): ModelPoint => (vertical ? { x: line, y: along } : { x: along, y: line });
+    const last = Math.floor(to / step) * step;
+    for (let line = Math.ceil(from / step) * step; line <= last; line += step) {
+      const tier = tierAt(line, extent);
+      if (!tier) continue;
+      const screen = modelToScreen(point(line, 0), viewport);
+      const position = vertical ? screen.x : screen.y;
+      if (position < boundsStart || position > boundsEnd) continue;
+      const stroke = (start: number, end: number, color: string): void => {
+        const segment = clipSegmentToRect(
+          modelToScreen(point(line, start), viewport),
+          modelToScreen(point(line, end), viewport),
+          bounds
+        );
+        if (segment) gridLine(context, segment.start, segment.end, color, tier.width);
+      };
+      const colorAt =
+        contrast &&
+        ((along: number): string =>
+          gridTierColor(tier.colors, vertical ? contrast(line - 1, along, line, along) : contrast(along, line - 1, along, line)));
+      const strokeLine = (start: number, end: number): void => strokeGridRuns(start, end, colorAt, tier.colors.theme, stroke);
+      if (runs === undefined) strokeLine(spanFrom, spanTo);
+      else forEachCachedRun(runs, line, spanFrom, spanTo, strokeLine);
+    }
+  };
   const clipped = clipToRect(context, bounds);
   try {
-    const firstX = Math.ceil(left / interval) * interval;
-    const lastX = Math.floor(right / interval) * interval;
-    for (let x = firstX; x <= lastX; x += interval) {
-      const screenX = modelToScreen({ x, y: 0 }, viewport).x;
-      if (screenX < bounds.x || screenX > bounds.x + bounds.width) continue;
-      const major = x % configuredInterval === 0;
-      const tier = major ? majorColors : minorColors;
-      const width = major ? tierMajorWidth(lod, tiers) : minorGridWidth(lod);
-      const stroke = (from: number, to: number, color: string): void => {
-        const segment = clipSegmentToRect(
-          modelToScreen({ x, y: from }, viewport),
-          modelToScreen({ x, y: to }, viewport),
-          bounds
-        );
-        if (segment) gridLine(context, segment.start, segment.end, color, width);
-      };
-      const colorAt = contrast && ((y: number): string => gridTierColor(tier, contrast(x - 1, y, x, y)));
-      const line = (from: number, to: number): void => strokeGridRuns(from, to, colorAt, tier.theme, stroke);
-      if (edges === undefined) line(top, bottom);
-      else if (edges) forEachCachedRun(edges.vertical, x, top, bottom, line);
-    }
-    const firstY = Math.ceil(top / interval) * interval;
-    const lastY = Math.floor(bottom / interval) * interval;
-    for (let y = firstY; y <= lastY; y += interval) {
-      const screenY = modelToScreen({ x: 0, y }, viewport).y;
-      if (screenY < bounds.y || screenY > bounds.y + bounds.height) continue;
-      const major = y % configuredInterval === 0;
-      const tier = major ? majorColors : minorColors;
-      const width = major ? tierMajorWidth(lod, tiers) : minorGridWidth(lod);
-      const stroke = (from: number, to: number, color: string): void => {
-        const segment = clipSegmentToRect(
-          modelToScreen({ x: from, y }, viewport),
-          modelToScreen({ x: to, y }, viewport),
-          bounds
-        );
-        if (segment) gridLine(context, segment.start, segment.end, color, width);
-      };
-      const colorAt = contrast && ((x: number): string => gridTierColor(tier, contrast(x, y - 1, x, y)));
-      const line = (from: number, to: number): void => strokeGridRuns(from, to, colorAt, tier.theme, stroke);
-      if (edges === undefined) line(left, right);
-      else if (edges) forEachCachedRun(edges.horizontal, y, left, right, line);
-    }
-  } finally {
-    if (clipped) restore(context);
-  }
-}
-
-/** Draw the 5-cell highlight tier between the per-stitch grid and the 10-cell grid. */
-function drawMidGrid(
-  context: CanvasContextAdapter,
-  document: PatternDocument,
-  viewport: Viewport,
-  metrics: CanvasMetrics,
-  style: RendererStyle,
-  visible: CellRect,
-  lod: RenderLod
-): void {
-  if (!gridTierVisibility(document, viewport, metrics, style).mid || visible.width === 0 || visible.height === 0) return;
-  const bounds = patternCanvasRect(document, viewport, metrics);
-  if (!bounds) return;
-  const interval = Math.max(1, Math.floor(style.midGridInterval));
-  const viewportRect = viewportModelRect(viewport, metrics);
-  const left = Math.max(0, visible.x, Math.floor(viewportRect.x));
-  const right = Math.min(document.width, visible.x + visible.width, Math.ceil(viewportRect.x + viewportRect.width));
-  const top = Math.max(0, visible.y, Math.floor(viewportRect.y));
-  const bottom = Math.min(document.height, visible.y + visible.height, Math.ceil(viewportRect.y + viewportRect.height));
-  if (right < left || bottom < top) return;
-  // A masked canvas draws only the edges that border an active cell.
-  const mask = document.canvasMask;
-  const edges = mask === undefined ? undefined : maskEdges(mask, document.width, document.height, false);
-  const contrast = gridEdgeContrast(document, style);
-  const midColors = { theme: style.midGridColor, betweenLight: style.lightStitchMidGridColor, betweenDark: style.darkStitchMidGridColor };
-  const clipped = clipToRect(context, bounds);
-  try {
-    const firstX = Math.ceil(left / interval) * interval;
-    const lastX = Math.floor(right / interval) * interval;
-    for (let x = firstX; x <= lastX; x += interval) {
-      if (x === 0 || x === document.width) continue; // Skip document edges (the border owns them).
-      const screenX = modelToScreen({ x, y: 0 }, viewport).x;
-      if (screenX < bounds.x || screenX > bounds.x + bounds.width) continue;
-      const stroke = (from: number, to: number, color: string): void => {
-        const segment = clipSegmentToRect(
-          modelToScreen({ x, y: from }, viewport),
-          modelToScreen({ x, y: to }, viewport),
-          bounds
-        );
-        if (segment) gridLine(context, segment.start, segment.end, color, midGridWidth(lod));
-      };
-      const colorAt = contrast && ((y: number): string => gridTierColor(midColors, contrast(x - 1, y, x, y)));
-      const line = (from: number, to: number): void => strokeGridRuns(from, to, colorAt, midColors.theme, stroke);
-      if (edges === undefined) line(top, bottom);
-      else if (edges) forEachCachedRun(edges.vertical, x, top, bottom, line);
-    }
-    const firstY = Math.ceil(top / interval) * interval;
-    const lastY = Math.floor(bottom / interval) * interval;
-    for (let y = firstY; y <= lastY; y += interval) {
-      if (y === 0 || y === document.height) continue; // Skip document edges.
-      const screenY = modelToScreen({ x: 0, y }, viewport).y;
-      if (screenY < bounds.y || screenY > bounds.y + bounds.height) continue;
-      const stroke = (from: number, to: number, color: string): void => {
-        const segment = clipSegmentToRect(
-          modelToScreen({ x: from, y }, viewport),
-          modelToScreen({ x: to, y }, viewport),
-          bounds
-        );
-        if (segment) gridLine(context, segment.start, segment.end, color, midGridWidth(lod));
-      };
-      const colorAt = contrast && ((x: number): string => gridTierColor(midColors, contrast(x, y - 1, x, y)));
-      const line = (from: number, to: number): void => strokeGridRuns(from, to, colorAt, midColors.theme, stroke);
-      if (edges === undefined) line(left, right);
-      else if (edges) forEachCachedRun(edges.horizontal, y, left, right, line);
-    }
+    strokeGridAxis(true, left, right, top, bottom, edges?.vertical);
+    strokeGridAxis(false, top, bottom, left, right, edges?.horizontal);
   } finally {
     if (clipped) restore(context);
   }
@@ -966,11 +933,9 @@ function drawStitchNumbers(
   if (context.fillText === undefined) return;
   const tiers = gridTierVisibility(document, viewport, metrics, style);
   if (!tiers.major && !tiers.mid) return;
-  const gridInterval = Number.isFinite(style.gridInterval) ? Math.max(1, Math.floor(style.gridInterval)) : 1;
-  const midInterval = Number.isFinite(style.midGridInterval) ? Math.max(1, Math.floor(style.midGridInterval)) : 5;
   const zoom = viewport.zoom > 0 && Number.isFinite(viewport.zoom) ? viewport.zoom : 1;
   // The numbers follow the 5-cell tier while it shows.
-  const interval = tiers.mid ? midInterval : gridInterval;
+  const interval = tiers.mid ? tiers.midInterval : tiers.majorInterval;
   const size = Math.min(12, Math.max(8, zoom * 0.9));
   const gap = 4;
   const origin = modelToScreen({ x: 0, y: 0 }, viewport);
@@ -1120,7 +1085,7 @@ function drawGhostGrid(
   const bottom = Math.min(workspace.y + workspace.height, Math.ceil(view.y + view.height));
   if (right < left || bottom < top) return;
   const zoom = viewport.zoom > 0 && Number.isFinite(viewport.zoom) ? viewport.zoom : 1;
-  const interval = Number.isFinite(style.gridInterval) ? Math.max(1, Math.floor(style.gridInterval)) : 1;
+  const interval = gridInterval(style.gridInterval, 1);
   const step = lod === RenderLod.Detail && zoom >= GHOST_MIN_LINE_SPACING ? 1 : interval;
   save(context);
   if (step * zoom >= GHOST_MIN_LINE_SPACING) {
@@ -1291,16 +1256,9 @@ function canvasSetRuns(set: CanvasCellSet, cells: Uint8Array): CellRun[] {
   const { width, height } = set.rect;
   const runs: CellRun[] = [];
   for (let y = 0; y < height; y += 1) {
-    let x = 0;
-    while (x < width) {
-      if (cells[y * width + x] !== 1) {
-        x += 1;
-        continue;
-      }
-      const startX = x;
-      while (x < width && cells[y * width + x] === 1) x += 1;
-      runs.push({ x: startX + set.rect.x, y: y + set.rect.y, width: x - startX });
-    }
+    forEachActiveRun(cells, width, y, 0, width, (from, to) => {
+      runs.push({ x: from + set.rect.x, y: y + set.rect.y, width: to - from });
+    });
   }
   canvasSelectionRuns.set(set, runs);
   return runs;
@@ -1388,18 +1346,7 @@ function drawGridForCells(
   if ((!tiers.major && !tiers.mid && !tiers.minor) || cells.length === 0) return;
   const bounds = patternCanvasRect(document, viewport, metrics);
   if (!bounds) return;
-  const interval = Math.max(1, Math.floor(style.gridInterval));
-  const midInterval = Number.isFinite(style.midGridInterval) ? Math.max(1, Math.floor(style.midGridInterval)) : 5;
-  const minorColors = { theme: style.gridColor, betweenLight: style.lightStitchGridColor, betweenDark: style.darkStitchGridColor };
-  const majorColors = { theme: style.majorGridColor, betweenLight: style.lightStitchMajorGridColor, betweenDark: style.darkStitchMajorGridColor };
-  const midColors = { theme: style.midGridColor, betweenLight: style.lightStitchMidGridColor, betweenDark: style.darkStitchMidGridColor };
-  // Strongest tier that is both visible and owns this line, if any.
-  const tierAt = (n: number): { colors: typeof majorColors; width: number } | undefined => {
-    if (tiers.major && n % interval === 0) return { colors: majorColors, width: tierMajorWidth(lod, tiers) };
-    if (tiers.mid && n % midInterval === 0) return { colors: midColors, width: midGridWidth(lod) };
-    if (tiers.minor) return { colors: minorColors, width: minorGridWidth(lod) };
-    return undefined;
-  };
+  const tierAt = gridTierLookup(tiers, style, lod);
   const vertical = new Map<string, { x: number; y: number }>();
   const horizontal = new Map<string, { x: number; y: number }>();
   for (const cell of cells) {
@@ -1424,7 +1371,7 @@ function drawGridForCells(
   const clipped = clipToRect(context, bounds);
   try {
     for (const { x, y } of vertical.values()) {
-      const tier = tierAt(x);
+      const tier = tierAt(x, document.width);
       if (!tier) continue;
       const segment = clipSegmentToRect(
         modelToScreen({ x, y }, viewport),
@@ -1435,7 +1382,7 @@ function drawGridForCells(
       if (segment) gridLine(context, segment.start, segment.end, color, tier.width);
     }
     for (const { x, y } of horizontal.values()) {
-      const tier = tierAt(y);
+      const tier = tierAt(y, document.height);
       if (!tier) continue;
       const segment = clipSegmentToRect(
         modelToScreen({ x, y }, viewport),
@@ -1556,13 +1503,9 @@ function drawThreadBackstitches(
     const end = fixedToModel({ x: store.x2[index], y: store.y2[index] });
     if (!segmentIntersectsRect(start, end, visible)) continue;
     if (dirtyModelRect && !segmentIntersectsRect(start, end, dirtyModelRect)) continue;
-    const alpha = dimAlpha * highlightAlpha(style, store.colors[index]);
-    if (alpha < dimAlpha) {
-      save(context);
-      setAlpha(context, alpha);
-    }
-    drawThreadBackstitch(context, start, end, viewport.zoom, styleColor(document, store.colors[index], style), origin);
-    if (alpha < dimAlpha) restore(context);
+    withAlpha(context, dimAlpha * highlightAlpha(style, store.colors[index]), dimAlpha, () => {
+      drawThreadBackstitch(context, start, end, viewport.zoom, styleColor(document, store.colors[index], style), origin);
+    });
     drawn += 1;
   }
   return drawn;
@@ -1738,34 +1681,8 @@ function drawOverviewFallback(
     for (let x = visible.x; x < visible.x + visible.width; x += 1) {
       const index = y * document.width + x;
       if (document.kind[index] === CellKind.Empty) continue;
-      const offset = index * 4;
       const rect = snapRectToDevicePixels(cellToScreenRect({ x, y, width: 1, height: 1 }, viewport), metrics.dpr);
-      if (isLegacyQuarterKind(document.kind[index])) {
-        const halfWidth = rect.width / 2;
-        const halfHeight = rect.height / 2;
-        for (let slot = 0; slot < 4; slot += 1) {
-          const id = document.colors[offset + slot];
-          if (id === 0) continue;
-          fill(id);
-          context.fillRect(
-            rect.x + (slot === 1 || slot === 2 ? halfWidth : 0),
-            rect.y + (slot === 2 || slot === 3 ? halfHeight : 0),
-            halfWidth,
-            halfHeight
-          );
-        }
-      } else if (isThreeQuarterPairKind(document.kind[index])) {
-        const mask = componentSlotMask(document.kind[index], document.colors, offset);
-        for (let slot = 0; slot < 4; slot += 1) {
-          if ((mask & (1 << slot)) === 0) continue;
-          fill(document.colors[offset + slot]);
-          drawStitchGeometry(context, componentKind(document.kind[index], slot), rect);
-        }
-      } else {
-        fill(document.colors[offset]);
-        if (document.kind[index] === CellKind.Full) context.fillRect(rect.x, rect.y, rect.width, rect.height);
-        else drawStitchGeometry(context, document.kind[index], rect);
-      }
+      paintOverviewCell(context, document.kind[index], document.colors, index * 4, rect, fill);
       drawnCells += 1;
     }
   }
@@ -2817,18 +2734,17 @@ export class Canvas2DRenderer implements CanvasRenderer {
     // on top; the reference image itself keeps its configured opacity.
     const dimAlpha = this.patternDimmed ? 0.5 : 1;
     if (lod === RenderLod.Overview) {
-      if (dimAlpha < 1) save(context);
-      if (dimAlpha < 1) setAlpha(context, dimAlpha);
-      const cells = this.drawOverviewCells(context, dimAlpha);
-      const visible = visibleCellRect(this.viewport, this.metrics, this.document);
-      drawGrid(context, this.document, this.viewport, this.metrics, this.style, visible, lod);
-      drawMidGrid(context, this.document, this.viewport, this.metrics, this.style, visible, lod);
-      drawChartBorder(context, this.document, this.viewport, this.metrics, this.style);
-      drawStitchNumbers(context, this.document, this.viewport, this.metrics, this.style);
-      const drawnBackstitches = drawBackstitches(context, this.document, this.viewport, this.metrics, this.style, undefined, dimAlpha, this.overlay.floatingPaste?.liftedBackstitchIds);
-      if (dimAlpha < 1) restore(context);
+      const drawn = withAlpha(context, dimAlpha, 1, () => {
+        const cells = this.drawOverviewCells(context, dimAlpha);
+        const visible = visibleCellRect(this.viewport, this.metrics, this.document);
+        drawGrid(context, this.document, this.viewport, this.metrics, this.style, visible, lod);
+        drawChartBorder(context, this.document, this.viewport, this.metrics, this.style);
+        drawStitchNumbers(context, this.document, this.viewport, this.metrics, this.style);
+        const drawnBackstitches = drawBackstitches(context, this.document, this.viewport, this.metrics, this.style, undefined, dimAlpha, this.overlay.floatingPaste?.liftedBackstitchIds);
+        return { ...cells, drawnBackstitches };
+      });
       drawTraceImage(context, this.traceImage, this.document, this.viewport, this.metrics);
-      return { ...cells, drawnBackstitches };
+      return drawn;
     }
     const visible = visibleCellRect(this.viewport, this.metrics, this.document);
     const invalidationCellRect = (invalidation.cellRect && invalidationRect
@@ -2840,48 +2756,46 @@ export class Canvas2DRenderer implements CanvasRenderer {
       ? intersectRect(visible, boundedCellRect)
       : visible;
     let drawnCells = 0;
-    if (dimAlpha < 1) save(context);
-    if (dimAlpha < 1) setAlpha(context, dimAlpha);
-    const sprites = this.style.threadView && this.viewport.zoom >= THREAD_MIN_DETAIL_CELL_PX ? this.threadSpritesFor() : undefined;
-    if (dirtyCells && sprites && this.document.canvasMask === undefined) {
-      // The weave is aligned to whole cells, so a clipped redraw lines up with the rest.
-      const origin = cellToScreenRect({ x: dirtyCells.x, y: dirtyCells.y, width: 1, height: 1 }, this.viewport);
-      drawThreadFabric(
-        context,
-        { x: origin.x, y: origin.y, width: dirtyCells.width * this.viewport.zoom, height: dirtyCells.height * this.viewport.zoom },
-        this.viewport.zoom,
-        patternBackground
-      );
-    }
-    if (dirtyCells) {
-      for (let y = dirtyCells.y; y < dirtyCells.y + dirtyCells.height; y += 1) {
-        for (let x = dirtyCells.x; x < dirtyCells.x + dirtyCells.width; x += 1) {
-          const drawn = sprites
-            ? drawThreadCell(context, this.document, x, y, this.style, this.viewport, sprites, dimAlpha)
-            : drawCell(context, this.document, x, y, this.style, this.viewport, lod, dimAlpha, this.metrics.dpr);
-          if (drawn) drawnCells += 1;
-        }
+    const drawnBackstitches = withAlpha(context, dimAlpha, 1, () => {
+      const sprites = this.style.threadView && this.viewport.zoom >= THREAD_MIN_DETAIL_CELL_PX ? this.threadSpritesFor() : undefined;
+      if (dirtyCells && sprites && this.document.canvasMask === undefined) {
+        // The weave is aligned to whole cells, so a clipped redraw lines up with the rest.
+        const origin = cellToScreenRect({ x: dirtyCells.x, y: dirtyCells.y, width: 1, height: 1 }, this.viewport);
+        drawThreadFabric(
+          context,
+          { x: origin.x, y: origin.y, width: dirtyCells.width * this.viewport.zoom, height: dirtyCells.height * this.viewport.zoom },
+          this.viewport.zoom,
+          patternBackground
+        );
       }
-      drawGrid(context, this.document, this.viewport, this.metrics, this.style, dirtyCells, lod);
-      drawMidGrid(context, this.document, this.viewport, this.metrics, this.style, dirtyCells, lod);
-    }
-    drawChartBorder(context, this.document, this.viewport, this.metrics, this.style);
-    drawStitchNumbers(context, this.document, this.viewport, this.metrics, this.style);
-    // Edges of cells just outside the redraw can reach into its clip, so trace one cell further.
-    // A redraw that misses the visible cells still traces around the corner nearest them.
-    const outlineCells = dirtyCells ?? { x: Math.max(visible.x, boundedCellRect.x), y: Math.max(visible.y, boundedCellRect.y), width: 0, height: 0 };
-    if (this.viewport.zoom >= HIGHLIGHT_OUTLINE_MIN_CELL_PX) drawHighlightOutline(context, this.document, this.viewport, this.style, growCellRect(outlineCells, 1));
-    const dirtyModel = partial ? {
-      x: this.viewport.x + invalidationRect.x / this.viewport.zoom,
-      y: this.viewport.y + invalidationRect.y / this.viewport.zoom,
-      width: invalidationRect.width / this.viewport.zoom,
-      height: invalidationRect.height / this.viewport.zoom
-    } : undefined;
-    const lifted = this.overlay.floatingPaste?.liftedBackstitchIds;
-    const drawnBackstitches = sprites
-      ? drawThreadBackstitches(context, this.document, this.viewport, this.metrics, this.style, dirtyModel, dimAlpha, lifted)
-      : drawBackstitches(context, this.document, this.viewport, this.metrics, this.style, dirtyModel, dimAlpha, lifted);
-    if (dimAlpha < 1) restore(context);
+      if (dirtyCells) {
+        for (let y = dirtyCells.y; y < dirtyCells.y + dirtyCells.height; y += 1) {
+          for (let x = dirtyCells.x; x < dirtyCells.x + dirtyCells.width; x += 1) {
+            const drawn = sprites
+              ? drawThreadCell(context, this.document, x, y, this.style, this.viewport, sprites, dimAlpha)
+              : drawCell(context, this.document, x, y, this.style, this.viewport, lod, dimAlpha, this.metrics.dpr);
+            if (drawn) drawnCells += 1;
+          }
+        }
+        drawGrid(context, this.document, this.viewport, this.metrics, this.style, dirtyCells, lod);
+      }
+      drawChartBorder(context, this.document, this.viewport, this.metrics, this.style);
+      drawStitchNumbers(context, this.document, this.viewport, this.metrics, this.style);
+      // Edges of cells just outside the redraw can reach into its clip, so trace one cell further.
+      // A redraw that misses the visible cells still traces around the corner nearest them.
+      const outlineCells = dirtyCells ?? { x: Math.max(visible.x, boundedCellRect.x), y: Math.max(visible.y, boundedCellRect.y), width: 0, height: 0 };
+      if (this.viewport.zoom >= HIGHLIGHT_OUTLINE_MIN_CELL_PX) drawHighlightOutline(context, this.document, this.viewport, this.style, growCellRect(outlineCells, 1));
+      const dirtyModel = partial ? {
+        x: this.viewport.x + invalidationRect.x / this.viewport.zoom,
+        y: this.viewport.y + invalidationRect.y / this.viewport.zoom,
+        width: invalidationRect.width / this.viewport.zoom,
+        height: invalidationRect.height / this.viewport.zoom
+      } : undefined;
+      const lifted = this.overlay.floatingPaste?.liftedBackstitchIds;
+      return sprites
+        ? drawThreadBackstitches(context, this.document, this.viewport, this.metrics, this.style, dirtyModel, dimAlpha, lifted)
+        : drawBackstitches(context, this.document, this.viewport, this.metrics, this.style, dirtyModel, dimAlpha, lifted);
+    });
     drawTraceImage(context, this.traceImage, this.document, this.viewport, this.metrics);
     if (partial) restore(context);
     return { visitedCells: dirtyCells ? dirtyCells.width * dirtyCells.height : 0, drawnCells, drawnBackstitches };

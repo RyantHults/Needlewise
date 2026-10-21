@@ -579,5 +579,3 @@ export async function convertImageToPattern(
 export function createConversionWorkerClient(options: ConversionWorkerClientOptions = {}): ConversionWorkerClient {
   return new ConversionWorkerClient(options);
 }
-
-export const createImageConversionClient = createConversionWorkerClient;

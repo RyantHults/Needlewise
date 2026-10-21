@@ -221,8 +221,6 @@ export function drawTraceImage(
   return true;
 }
 
-export const drawTrace = drawTraceImage;
-
 function createSamplingSurface(width: number, height: number): TraceSamplingSurface | undefined {
   try {
     if (typeof globalThis.OffscreenCanvas === 'function') {
@@ -284,7 +282,6 @@ export function sampleTraceImage(
 }
 
 export const sampleTraceAt = sampleTraceImage;
-export const sampleTraceRgb = sampleTraceImage;
 
 function supportedMimeType(value: string): boolean {
   return (TRACE_IMAGE_MIME_TYPES as readonly string[]).includes(value.toLowerCase());
@@ -552,9 +549,6 @@ export async function decodeTraceImage(blob: Blob, options: TraceDecodeOptions =
   };
 }
 
-export const decodeTraceAsset = decodeTraceImage;
-export const decodeLocalTraceImage = decodeTraceImage;
-
 export function disposeTraceImage(trace: TraceImage | undefined): void {
   trace?.dispose?.();
 }
@@ -585,5 +579,3 @@ export function fitTraceImageBounds(
   const y = Math.round((patternHeight - height) / 2);
   return { x, y, width, height };
 }
-
-export const fitTraceBounds = fitTraceImageBounds;

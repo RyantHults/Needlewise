@@ -942,5 +942,3 @@ export class FillWorkerClient {
 export function createFillWorkerClient(options: FillWorkerClientOptions = {}): FillWorkerClient {
   return new FillWorkerClient(options);
 }
-
-export const createFillClient = createFillWorkerClient;

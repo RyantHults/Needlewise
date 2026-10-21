@@ -1,69 +1,25 @@
 import { describe, expect, it } from 'vitest';
-import { CellKind, createDocument } from '../domain';
-import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
-import type { CanvasRenderer, RenderStats, RendererStyle, Viewport } from './contracts';
+import { CellKind, layerSurface, LayerType } from '../domain';
+import { STITCH_LAYER_ID } from '../domain/test-fixtures';
 import { getCanvasMetrics } from './coordinates';
-import { EditorSurfaceController } from './controller';
-import { createWorkspaceEditorGateway, type WorkspaceEditorBoundary } from './gateway';
+import type { EditorSurfaceController } from './controller';
 import type { PointerSample } from './input';
-import { createUiStore } from './ui-store';
-import { SurfaceHistory } from './test-fixtures';
+import { fixture as layeredFixture, LayeredTestBoundary, plainDocument } from './test-support';
 
 const ZOOM = 16;
 const WIDTH = 10;
 
-function rendererFixture(): CanvasRenderer {
-  let viewport: Viewport = { x: 0, y: 0, zoom: ZOOM };
-  const renderer = {
-    lastStats: { lod: 'detail', visitedCells: 0, drawnCells: 0, drawnBackstitches: 0, baseRendered: false, overlayRendered: false } as RenderStats,
-    getDocument: () => undefined,
-    getViewport: () => viewport,
-    getStyle: () => ({}) as RendererStyle,
-    getTraceImage: () => undefined,
-    setDocument: () => undefined,
-    setViewport: (next: Viewport) => { viewport = next; },
-    setMetrics: () => undefined,
-    setStyle: () => undefined,
-    setTraceImage: () => undefined,
-    setOverlay: () => undefined,
-    invalidate: () => undefined,
-    requestRender: () => undefined,
-    render: () => renderer.lastStats,
-    renderNow: () => renderer.lastStats,
-    getLastInvalidation: () => ({ base: false, overlay: false, reasons: [] }),
-    dispose: () => undefined,
-    destroy: () => undefined
-  } as unknown as CanvasRenderer;
-  return renderer;
-}
-
-function newEditor(size: number) {
-  return new SurfaceHistory(createDocument({ width: size, height: size, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Red', color: '#d33' }] }));
-}
-
-/** A single-surface 10x10 workspace that can switch to another project. */
+/** A 10x10 layered workspace on its stitch layer that can switch to another project. */
 function fixture() {
-  let editor = newEditor(WIDTH);
-  let projectId = 'project-a';
-  const listeners = new Set<() => void>();
-  const boundary: WorkspaceEditorBoundary = {
-    get activeProjectId() { return projectId; },
-    get document() { return editor.document; },
-    subscribe: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
-    execute: (command) => editor.execute(command),
-    executeBatch: (commands) => editor.executeBatch(commands),
-    undo: () => editor.undo(),
-    redo: () => editor.redo()
-  };
-  const uiStore = createUiStore({ viewport: { x: 0, y: 0, zoom: ZOOM }, tool: { tool: 'select' } });
-  const controller = new EditorSurfaceController({ gateway: createWorkspaceEditorGateway(boundary), uiStore, renderer: rendererFixture(), metrics: getCanvasMetrics(320, 320) });
-  controller.start();
-  const switchProject = (): void => {
-    projectId = 'project-b';
-    editor = newEditor(4);
-    listeners.forEach((listener) => listener());
-  };
-  return { controller, uiStore, switchProject, kind: (x: number, y: number) => editor.document.kind[y * WIDTH + x] };
+  const boundary = new LayeredTestBoundary(plainDocument(WIDTH, WIDTH));
+  const { controller, uiStore } = layeredFixture(boundary, {
+    ui: { viewport: { x: 0, y: 0, zoom: ZOOM }, tool: { tool: 'select' } },
+    controller: { metrics: getCanvasMetrics(320, 320) }
+  });
+  const switchProject = (): void => boundary.open(plainDocument(4, 4), 'project-b');
+  // Edits land on the selected layer, so read the cell from it.
+  const kind = (x: number, y: number) => boundary.activeLayerSurface()!.kind[y * WIDTH + x];
+  return { boundary, controller, uiStore, switchProject, kind };
 }
 
 function at(pointerId: number, x: number, y: number, extra: Partial<PointerSample> = {}): PointerSample {
@@ -249,6 +205,29 @@ describe('selection history', () => {
     redo(controller);
     expect(kind(2, 2)).toBe(CellKind.Empty);
     expect(controller.getSelection()).toBeUndefined();
+    controller.dispose();
+  });
+
+  it('restores every selected layer and the selection with one undo after deleting across layers', () => {
+    const { boundary, controller } = fixture();
+    controller.setTool({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
+    click(controller, 2, 2);
+    const upper = boundary.addLayer(LayerType.Stitch);
+    click(controller, 3, 3);
+    boundary.toggleLayerSelected(STITCH_LAYER_ID);
+    controller.setTool({ tool: 'select' });
+    drag(controller, { x: 1, y: 1 }, { x: 4, y: 4 });
+    const cell = (layerId: number, x: number, y: number) => layerSurface(boundary.layeredDocument, layerId).kind[y * WIDTH + x];
+    const undoDepth = boundary.undoDepth;
+    expect(controller.deleteSelection()).toBe(true);
+    expect(boundary.undoDepth).toBe(undoDepth + 1);
+    expect(cell(STITCH_LAYER_ID, 2, 2)).toBe(CellKind.Empty);
+    expect(cell(upper, 3, 3)).toBe(CellKind.Empty);
+
+    undo(controller);
+    expect(cell(STITCH_LAYER_ID, 2, 2)).toBe(CellKind.Full);
+    expect(cell(upper, 3, 3)).toBe(CellKind.Full);
+    expect(controller.getSelection()).toEqual({ x: 1, y: 1, width: 4, height: 4 });
     controller.dispose();
   });
 

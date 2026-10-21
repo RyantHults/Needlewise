@@ -1,16 +1,31 @@
 import { describe, expect, it } from 'vitest';
 import {
+  combineSelection,
   lassoCellIndices,
   MAX_LASSO_PATH_POINTS,
   normalizeLassoPath,
   appendLassoRasterPoint,
   createLassoRasterAccumulator,
   finishLassoRaster,
+  normalizeIndices,
   selectionBoundarySegments,
   sparseSelectionGeometry
 } from './lasso';
 
 describe('lasso geometry', () => {
+  it('normalizes indices to sorted unique cells in the document', () => {
+    expect(Array.from(normalizeIndices([5, 1, 5, -1, 9, 1.5, 3], 9))).toEqual([1, 3, 5]);
+  });
+
+  it('combines a lasso with the current selection by its operation', () => {
+    const current = new Uint32Array([0, 2, 4]);
+    const captured = new Uint32Array([1, 2]);
+    expect(Array.from(combineSelection(current, captured, 'replace', 6))).toEqual([1, 2]);
+    expect(Array.from(combineSelection(current, captured, 'union', 6))).toEqual([0, 1, 2, 4]);
+    expect(Array.from(combineSelection(current, captured, 'subtract', 6))).toEqual([0, 4]);
+    expect(Array.from(combineSelection([], captured, 'subtract', 6))).toEqual([]);
+  });
+
   it('selects concave cell centres, includes polygon edges, and clips to the document', () => {
     const indices = lassoCellIndices([
       { x: -1, y: -1 },

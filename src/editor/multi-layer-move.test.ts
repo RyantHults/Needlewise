@@ -140,7 +140,13 @@ function fixture(document: LayeredDocument, primary: number, others: readonly nu
     },
     executeBatch: (commands) => session.executeBatch(commands),
     undo: () => session.undo(),
-    redo: () => session.redo()
+    redo: () => session.redo(),
+    resolvePaste: (type) => session.resolvePaste(type),
+    // The gateway hands back the destination the session resolved, layer type included.
+    commitPaste: (fragment, position, destination, expectedRevision, palette) => session.commitPaste(fragment, position, destination as Parameters<ProjectSession['commitPaste']>[2], expectedRevision, palette),
+    markProgress: (command) => session.markProgress(command),
+    undoMark: () => session.undoMark(),
+    redoMark: () => session.redoMark()
   };
   const gateway = createWorkspaceEditorGateway(boundary);
   const uiStore = createUiStore({ tool: { tool: 'select' } });

@@ -2,103 +2,23 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { clearClipboard } from './clipboard-store';
 import {
   CellKind,
-  LayerType,
   applyCommand,
-  applyLayerStructureCommand,
-  canAddLayer,
-  commandLayerType,
   commitLayerSurface,
   createLayeredDocument,
-  findLayer,
-  flattenDocument,
-  layerAddCommand,
   layerSurface,
-  pasteFragmentCommand,
-  requireEditableLayer,
-  topmostVisibleLayer,
-  type CommandResult,
   type DomainCommand,
   type LayeredDocument,
-  type PatternDocument,
-  type PatternFragment
+  type PatternDocument
 } from '../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { EditorSurfaceController } from './controller';
 import { FOCUS_COLOR_PROTECTED_HINT, type CanvasRenderer, type RenderStats, type RendererStyle, type Viewport } from './contracts';
 import { getCanvasMetrics } from './coordinates';
 import { createFillWorkerClient } from './fill';
-import { createWorkspaceEditorGateway, type ActiveLayerId, type PasteDestination, type WorkspaceEditorBoundary } from './gateway';
+import { createWorkspaceEditorGateway, type ActiveLayerId } from './gateway';
 import type { PointerSample } from './input';
 import { createUiStore } from './ui-store';
-
-/** A small layered workspace: layer-scoped commands run on one layer surface, as the session does. */
-class LayeredBoundary implements WorkspaceEditorBoundary {
-  readonly activeProjectId = 'project-a';
-  readonly log: DomainCommand[] = [];
-  activeLayerId: ActiveLayerId = 1;
-  document: PatternDocument;
-  private readonly listeners = new Set<() => void>();
-
-  constructor(readonly layeredDocument: LayeredDocument) {
-    this.document = flattenDocument(layeredDocument);
-  }
-
-  activeLayerSurface(): PatternDocument | null {
-    return typeof this.activeLayerId === 'number' ? layerSurface(this.layeredDocument, this.activeLayerId) : null;
-  }
-
-  subscribe(listener: () => void): () => void {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
-  }
-
-  execute(command: DomainCommand): CommandResult {
-    this.log.push(command);
-    return this.run(command);
-  }
-
-  executeBatch(commands: readonly DomainCommand[]): CommandResult {
-    return this.execute({ type: 'batch', commands: [...commands] });
-  }
-
-  undo(): CommandResult {
-    throw new Error('not used');
-  }
-
-  redo(): CommandResult {
-    throw new Error('not used');
-  }
-
-  resolvePaste(type: LayerType): PasteDestination {
-    const active = typeof this.activeLayerId === 'number' ? findLayer(this.layeredDocument, this.activeLayerId) : undefined;
-    if (active?.type === type && active.visible) return { layerId: active.id, create: false };
-    if (canAddLayer(this.layeredDocument, type)) return { layerId: null, create: true };
-    const top = topmostVisibleLayer(this.layeredDocument, type);
-    return top ? { layerId: top.id, create: false } : { layerId: null, create: false };
-  }
-
-  commitPaste(fragment: PatternFragment, position: { x: number; y: number }, destination: PasteDestination) {
-    let layerId = destination.layerId;
-    if (destination.create) {
-      const type = fragment.kind.some((kind) => kind !== CellKind.Empty) ? LayerType.Stitch : LayerType.Specialty;
-      layerId = applyLayerStructureCommand(this.layeredDocument, layerAddCommand(type)).layerId!;
-    }
-    this.activeLayerId = layerId!;
-    const result = this.execute({ ...pasteFragmentCommand(fragment, position), ...(layerId === null ? {} : { layerId }) });
-    return { result, layerId: layerId!, message: destination.message };
-  }
-
-  private run(command: DomainCommand): CommandResult {
-    const children = command.type === 'batch' ? command.commands as DomainCommand[] : [command];
-    const layerId = (children[0]?.layerId as number | undefined) ?? (this.activeLayerId as number);
-    requireEditableLayer(this.layeredDocument, layerId, commandLayerType(command));
-    const result = applyCommand(layerSurface(this.layeredDocument, layerId), command);
-    if (result.changed) commitLayerSurface(this.layeredDocument, layerId, result.document);
-    this.document = flattenDocument(this.layeredDocument);
-    for (const listener of [...this.listeners]) listener();
-    return { ...result, document: this.document };
-  }
-}
+import { LayeredTestBoundary } from './test-support';
 
 function rendererFixture(): CanvasRenderer {
   let viewport: Viewport = { x: 0, y: 0, zoom: 16 };
@@ -157,8 +77,7 @@ function backstitch(x1: number, y1: number, x2: number, y2: number, color: numbe
 
 /** Layer 1 is a stitch layer and layer 2 a specialty layer; Focus Color starts on with color 1 active. */
 function fixture(document = layeredDocument(), activeLayerId: ActiveLayerId = 1) {
-  const boundary = new LayeredBoundary(document);
-  boundary.activeLayerId = activeLayerId;
+  const boundary = new LayeredTestBoundary(document, { activeLayerId });
   const gateway = createWorkspaceEditorGateway(boundary);
   const uiStore = createUiStore({ tool: { tool: 'paint', brush: { kind: 'full', paletteId: 1 } }, paletteId: 1 });
   const notices: string[] = [];
@@ -215,7 +134,7 @@ describe('Focus Color', () => {
   });
 
   it('is never on in the read-only viewer', () => {
-    const boundary = new LayeredBoundary(layeredDocument());
+    const boundary = new LayeredTestBoundary(layeredDocument());
     const uiStore = createUiStore();
     const controller = new EditorSurfaceController({ gateway: createWorkspaceEditorGateway(boundary), uiStore, renderer: rendererFixture(), readOnly: true });
     controller.start();

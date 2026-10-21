@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it } from 'vitest';
 import { clearClipboard } from './clipboard-store';
-import { CellKind, createDocument, type LayeredDocument, type PaletteEntryInput, type PatternDocument } from '../domain';
+import { applyCommand, CellKind, createDocument, type LayeredDocument, type PaletteEntryInput, type PatternDocument } from '../domain';
 import {
   PersistenceError,
   decodeDocument,
@@ -15,10 +15,9 @@ import type { WorkspaceRepository } from '../application/types';
 import { CANVAS_CROP_OFF_HINT, type CanvasRenderer, type RenderStats, type RendererStyle, type Viewport } from './contracts';
 import { getCanvasMetrics } from './coordinates';
 import { EditorSurfaceController } from './controller';
-import { createWorkspaceEditorGateway, type WorkspaceEditorBoundary } from './gateway';
+import { createWorkspaceEditorGateway } from './gateway';
 import { createPointerEventsAdapter, type PointerSample } from './input';
 import { createUiStore } from './ui-store';
-import { SurfaceHistory } from './test-fixtures';
 
 // The chart starts four cells in, so a paste hanging past its top-left edge is still on screen.
 const VIEWPORT: Viewport = { x: -4, y: -4, zoom: 16 };
@@ -96,9 +95,9 @@ function patternB(width = 4, height = 4): PatternDocument {
 }
 
 function paint(document: PatternDocument, cells: ReadonlyArray<readonly [number, number, number]>): PatternDocument {
-  const editor = new SurfaceHistory(document);
-  for (const [x, y, color] of cells) editor.execute({ type: 'set-full', x, y, color });
-  return editor.document;
+  let painted = document;
+  for (const [x, y, color] of cells) painted = applyCommand(painted, { type: 'set-full', x, y, color }).document;
+  return painted;
 }
 
 type UiStore = ReturnType<typeof createUiStore>;
@@ -142,32 +141,6 @@ async function layeredFixture(source: PatternDocument) {
     return { kind: document.kind[index], color: document.colors[index * 4] };
   };
   return { workspace, controller, uiStore, mount, notices, session, cell, open: (document: PatternDocument, id = 'pattern-b') => workspace.createProject({ id, document }) };
-}
-
-/** A single-surface editor with no layers, which runs paste-fragment only standalone. */
-function plainFixture(source: PatternDocument) {
-  let editor = new SurfaceHistory(source);
-  let projectId = 'plain-a';
-  const listeners = new Set<() => void>();
-  const boundary: WorkspaceEditorBoundary = {
-    get activeProjectId() { return projectId; },
-    get document() { return editor.document; },
-    subscribe: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
-    execute: (command) => editor.execute(command),
-    executeBatch: (commands) => editor.executeBatch(commands),
-    undo: () => editor.undo(),
-    redo: () => editor.redo()
-  };
-  const uiStore = createUiStore({ viewport: VIEWPORT, tool: { tool: 'select' } });
-  const notices: string[] = [];
-  const controller = new EditorSurfaceController({ gateway: createWorkspaceEditorGateway(boundary), uiStore, renderer: rendererFixture(), metrics: getCanvasMetrics(320, 320), onNotice: (message) => notices.push(message) });
-  controller.start();
-  const open = (document: PatternDocument): void => {
-    projectId = 'plain-b';
-    editor = new SurfaceHistory(document);
-    listeners.forEach((listener) => listener());
-  };
-  return { controller, uiStore, notices, open, editor: () => editor };
 }
 
 // The clipboard outlives controllers, so each case starts without one.
@@ -323,11 +296,11 @@ describe('cross-pattern paste', () => {
     controller.dispose();
   });
 
-  it('refuses to open a paste when the target palette has no room for its new colors', () => {
-    const { controller, uiStore, notices, open } = plainFixture(paint(patternA(), [[0, 0, 1], [1, 0, 2]]));
+  it('refuses to open a paste when the target palette has no room for its new colors', async () => {
+    const { controller, uiStore, notices, open } = await layeredFixture(paint(patternA(), [[0, 0, 1], [1, 0, 2]]));
     controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 0 });
     controller.copySelection();
-    open(createDocument({ catalog: { ...DEFAULT_CATALOG_DEFINITION.association, colorCount: 2 }, width: 4, height: 4, palette: [
+    await open(createDocument({ catalog: { ...DEFAULT_CATALOG_DEFINITION.association, colorCount: 2 }, width: 4, height: 4, palette: [
       { id: 1, name: 'Ink', color: '#123456' },
       { id: 2, name: 'Snow', color: '#ffffff' }
     ] }));
@@ -335,21 +308,6 @@ describe('cross-pattern paste', () => {
     expect(uiStore.getState().overlay.floatingPaste).toBeUndefined();
     expect(notices).toEqual(['This pattern has no room for 2 more colors']);
     expect(uiStore.getState().status).toBe('Paste unavailable');
-    controller.dispose();
-  });
-
-  it('refuses a paste that adds colors on an editor that cannot batch it, keeping the paste floating', () => {
-    const { controller, uiStore, open, editor } = plainFixture(paint(patternA(), [[0, 0, 2]]));
-    controller.setSelection({ x: 0, y: 0 });
-    controller.copySelection();
-    open(patternB());
-    uiStore.setKeyboardCursor({ x: 0, y: 0 });
-    expect(controller.pasteSelection()).toBe(true);
-    expect(controller.confirmFloatingPaste()).toBe(false);
-    expect(uiStore.getState().status).toBe('Paste unavailable: new colors need a layered pattern');
-    expect(uiStore.getState().overlay.floatingPaste).toBeDefined();
-    expect(editor().document.palette).toHaveLength(2);
-    expect(editor().undoDepth).toBe(0);
     controller.dispose();
   });
 });

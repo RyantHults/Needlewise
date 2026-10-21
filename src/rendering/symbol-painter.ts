@@ -8,7 +8,7 @@ import {
 } from '../editor/contracts';
 import { contrastSymbolInk } from './contrast';
 import { getSymbolOutline } from '../symbols';
-import { grayscaleColor, paletteColor } from './colors';
+import { grayscaleColor, paletteColor, paletteEntry } from './colors';
 import {
   isThreeQuarterKind,
   isThreeQuarterPairKind,
@@ -157,7 +157,7 @@ export function drawStitchGeometry(
 
 /** A palette id's own slug, falling back to the same default the domain assigns. */
 function paletteSymbol(document: PatternDocument, id: number): string {
-  return document.palette.find((entry) => entry.id === id)?.symbol ?? defaultPaletteSymbol(id);
+  return paletteEntry(document.palette, id)?.symbol ?? defaultPaletteSymbol(id);
 }
 
 const MAX_COMBINED_INK_ENTRIES = 512;

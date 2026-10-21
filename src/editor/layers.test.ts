@@ -65,6 +65,7 @@ class LayeredBoundary implements WorkspaceEditorBoundary {
   readonly log: DomainCommand[] = [];
   readonly batches: DomainCommand[][] = [];
   activeLayerId: ActiveLayerId = 1;
+  selectedLayerIds: readonly number[] | null = null;
   document: PatternDocument;
   report: { revision: number; full: boolean; indices?: Uint32Array } | null = null;
   private readonly listeners = new Set<() => void>();
@@ -113,6 +114,18 @@ class LayeredBoundary implements WorkspaceEditorBoundary {
   }
 
   redo(): CommandResult {
+    throw new Error('not used');
+  }
+
+  markProgress(): CommandResult {
+    throw new Error('not used');
+  }
+
+  undoMark(): CommandResult {
+    throw new Error('not used');
+  }
+
+  redoMark(): CommandResult {
     throw new Error('not used');
   }
 

@@ -1,7 +1,7 @@
-import { CellKind, componentKind, componentSlotMask, DEFAULT_PATTERN_SETTINGS, defaultPaletteSymbol, isLegacyQuarterKind, paletteIdsInCells, type PatternDocument } from '../domain';
-import type { CanvasTarget, RendererStyle } from '../editor/contracts';
+import { CellKind, componentKind, componentSlotMask, DEFAULT_PATTERN_SETTINGS, defaultPaletteSymbol, forEachActiveRun, isLegacyQuarterKind, paletteIdsInCells, type PatternDocument } from '../domain';
+import type { CanvasTarget, Rect, RendererStyle } from '../editor/contracts';
 import { MAX_ATLAS_PIXELS, restore, save } from './context';
-import { grayscaleColor, paletteColor } from './colors';
+import { grayscaleColor, paletteColor, paletteEntry } from './colors';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
 import { isThreeQuarterPairKind } from '../editor/cell-kinds';
 
@@ -21,19 +21,6 @@ export interface ColorAtlas {
   readonly revision: number;
 }
 
-interface AtlasCacheEntry extends ColorAtlas {
-  readonly documentWidth: number;
-  readonly documentHeight: number;
-  readonly kindPlane: PatternDocument['kind'];
-  readonly colorsPlane: PatternDocument['colors'];
-  readonly paletteIds: readonly number[];
-  readonly paletteProjection: string;
-  readonly mode: RendererStyle['mode'];
-  readonly patternBackground: string;
-  readonly missingColor: string;
-  readonly canvasMask: PatternDocument['canvasMask'];
-}
-
 const NO_PALETTE_IDS: readonly number[] = Object.freeze([]);
 
 /** Primitive visual metadata only; palette entry objects are never retained. */
@@ -42,7 +29,7 @@ function colorPaletteProjection(
   ids: readonly number[]
 ): string {
   return JSON.stringify(ids.map((id) => {
-    const entry = palette.find((candidate) => candidate.id === id);
+    const entry = paletteEntry(palette, id);
     return [id, entry?.color ?? null];
   })) ?? '';
 }
@@ -55,7 +42,7 @@ function symbolPaletteProjection(
 ): string {
   const symbolsAreVisual = showSymbols && (mode === 'symbol' || mode === 'combined');
   return JSON.stringify(ids.map((id) => {
-    const entry = palette.find((candidate) => candidate.id === id);
+    const entry = paletteEntry(palette, id);
     // Combined mode uses the palette color to choose symbol ink. Symbol mode
     // uses the configured ink color, so palette color is not a visual input.
     return [
@@ -153,37 +140,38 @@ function paintColorAtlasCell(
   const x = index % document.width;
   const y = Math.floor(index / document.width);
   const cellRect = { x: x * pixelsPerCell, y: y * pixelsPerCell, width: pixelsPerCell, height: pixelsPerCell };
-  const offset = index * 4;
-  const kind = document.kind[index];
+  paintOverviewCell(context, document.kind[index], document.colors, index * 4, cellRect, (id) => {
+    context.fillStyle = overviewColorForPaletteId(document, id, style);
+  });
+}
+
+/**
+ * Paint one cell's stitches as flat shapes, skipping components with no color.
+ * `setFill` readies the context's fill for a palette id before each shape.
+ */
+export function paintOverviewCell(
+  context: CanvasTarget['context'],
+  kind: number,
+  colors: ArrayLike<number>,
+  offset: number,
+  rect: Rect,
+  setFill: (id: number) => void
+): void {
   if (kind === CellKind.Empty) return;
-  if (isLegacyQuarterKind(kind)) {
-    const half = pixelsPerCell / 2;
-    const colors = [
-      [cellRect.x, cellRect.y, half, half, 0],
-      [cellRect.x + half, cellRect.y, half, half, 1],
-      [cellRect.x + half, cellRect.y + half, half, half, 2],
-      [cellRect.x, cellRect.y + half, half, half, 3]
-    ] as const;
-    for (const [left, top, width, height, slot] of colors) {
-      const color = document.colors[offset + slot];
-      if (color === 0) continue;
-      context.fillStyle = overviewColorForPaletteId(document, color, style);
-      context.fillRect(left, top, width, height);
-    }
-  } else if (isThreeQuarterPairKind(kind)) {
-    const mask = componentSlotMask(kind, document.colors, offset);
+  if (isLegacyQuarterKind(kind) || isThreeQuarterPairKind(kind)) {
+    const mask = componentSlotMask(kind, colors, offset);
     for (let slot = 0; slot < 4; slot += 1) {
       if ((mask & (1 << slot)) === 0) continue;
-      context.fillStyle = overviewColorForPaletteId(document, document.colors[offset + slot], style);
-      drawStitchGeometry(context, componentKind(kind, slot), cellRect);
+      setFill(colors[offset + slot]);
+      drawStitchGeometry(context, componentKind(kind, slot), rect, slot);
     }
-  } else {
-    const color = document.colors[offset];
-    if (color === 0) return;
-    context.fillStyle = overviewColorForPaletteId(document, color, style);
-    if (kind === CellKind.Full) context.fillRect(cellRect.x, cellRect.y, cellRect.width, cellRect.height);
-    else drawStitchGeometry(context, kind, cellRect);
+    return;
   }
+  const id = colors[offset];
+  if (id === 0) return;
+  setFill(id);
+  if (kind === CellKind.Full) context.fillRect(rect.x, rect.y, rect.width, rect.height);
+  else drawStitchGeometry(context, kind, rect);
 }
 
 /** Reset one cell of an atlas to the pattern background (a hole stays transparent) before repainting it. */
@@ -209,31 +197,61 @@ function fillAtlasFabric(context: CanvasTarget['context'], document: PatternDocu
     return;
   }
   for (let y = 0; y < document.height; y += 1) {
-    const row = y * document.width;
-    let runStart = -1;
-    for (let x = 0; x <= document.width; x += 1) {
-      const active = x < document.width && mask[row + x] === 1;
-      if (active && runStart < 0) runStart = x;
-      else if (!active && runStart >= 0) {
-        context.fillRect(runStart * pixelsPerCell, y * pixelsPerCell, (x - runStart) * pixelsPerCell, pixelsPerCell);
-        runStart = -1;
-      }
-    }
+    forEachActiveRun(mask, document.width, y, 0, document.width, (from, to) => {
+      context.fillRect(from * pixelsPerCell, y * pixelsPerCell, (to - from) * pixelsPerCell, pixelsPerCell);
+    });
   }
+}
+
+/** One atlas's cached state: what it was painted for, from which planes, and the result. */
+interface AtlasState<Key, Atlas> {
+  /** Everything but the planes and palette that, when it changes, forces a rebuild. */
+  readonly key: Key;
+  readonly kindPlane: PatternDocument['kind'];
+  readonly colorsPlane: PatternDocument['colors'];
+  readonly paletteIds: readonly number[];
+  readonly paletteProjection: string;
+  readonly atlas: Atlas;
+  /** The bitmap later patches paint onto; undefined when it cannot be patched. */
+  readonly target: CanvasTarget | undefined;
+}
+
+/** What differs between the overview atlases; the cache flow around it is shared. */
+interface AtlasStrategy<Key, Atlas extends { readonly revision: number }> {
+  keyFor(document: PatternDocument, style: RendererStyle): Key;
+  /** Primitive palette metadata that reaches the atlas pixels for these ids. */
+  projection(palette: PatternDocument['palette'], ids: readonly number[], style: RendererStyle): string;
+  /** Allocate a target and paint every cell. */
+  allocate(
+    document: PatternDocument,
+    style: RendererStyle,
+    key: Key,
+    targetFactory: ((width: number, height: number) => CanvasTarget | undefined) | undefined
+  ): { atlas: Omit<Atlas, 'revision'>; target: CanvasTarget | undefined };
+  /** Repaint `cells` onto the kept target; false declines the patch, so the atlas is rebuilt. */
+  paintCells(target: CanvasTarget, document: PatternDocument, style: RendererStyle, key: Key, atlas: Atlas, cells: ReadonlySet<number>): boolean;
+}
+
+/** Atlas keys hold primitives and plane references only, so field identity is equality. */
+function keysEqual<Key extends object>(a: Key, b: Key): boolean {
+  for (const field of Object.keys(a) as (keyof Key)[]) if (a[field] !== b[field]) return false;
+  return true;
 }
 
 /**
  * A single cached bitmap-sized target for overview rendering. New planes with
  * known changed cells (`invalidate`) repaint only those cells; unknown changes,
- * palette projections or presentation colors rebuild. It never writes to the
+ * palette projections or a changed key rebuild. It never writes to the
  * document.
  */
-export class ColorAtlasCache {
-  private entry: (AtlasCacheEntry & { readonly target: CanvasTarget | undefined }) | undefined;
+class AtlasCache<Key extends object, Atlas extends { readonly revision: number }> {
+  private state: AtlasState<Key, Atlas> | undefined;
   private readonly dirty = new AtlasDirtyCells();
 
+  constructor(private readonly strategy: AtlasStrategy<Key, Atlas>) {}
+
   clear(): void {
-    this.entry = undefined;
+    this.state = undefined;
     this.dirty.reset();
   }
 
@@ -246,110 +264,114 @@ export class ColorAtlasCache {
     document: PatternDocument,
     style: RendererStyle,
     targetFactory?: (width: number, height: number) => CanvasTarget | undefined
-  ): ColorAtlas {
-    const current = this.entry;
-    const patternBackground = patternBackgroundColor(document);
-    const reusablePlanesAndStyle = Boolean(
-      current &&
-      current.documentWidth === document.width &&
-      current.documentHeight === document.height &&
-      current.kindPlane === document.kind &&
-      current.colorsPlane === document.colors &&
-      current.mode === style.mode &&
-      current.patternBackground === patternBackground &&
-      current.missingColor === style.missingPaletteColor &&
-      current.canvasMask === document.canvasMask
-    );
-    if (reusablePlanesAndStyle && current) {
-      const paletteProjection = colorPaletteProjection(document.palette, current.paletteIds);
-      if (paletteProjection === current.paletteProjection) {
-        // Metadata-only changes replace the document and revision, but do not
-        // change the overview pixels. Refresh the public metadata without
-        // rerasterizing (or scanning the kind plane for atlas resolution).
-        this.dirty.reset();
-        this.entry = { ...current, revision: document.revision };
-        return this.entry;
-      }
+  ): Atlas {
+    const strategy = this.strategy;
+    const key = strategy.keyFor(document, style);
+    const current = this.state && keysEqual(this.state.key, key) ? this.state : undefined;
+    const samePlanes = current?.kindPlane === document.kind && current.colorsPlane === document.colors;
+    if (samePlanes && strategy.projection(document.palette, current.paletteIds, style) === current.paletteProjection) {
+      // Metadata-only changes replace the document and revision, but do not
+      // change the atlas pixels. Refresh the public metadata without
+      // rerasterizing (or scanning the kind plane for atlas resolution).
+      this.dirty.reset();
+      this.state = { ...current, atlas: { ...current.atlas, revision: document.revision } };
+      return this.state.atlas;
     }
-    const patched = this.patch(document, style, patternBackground);
+    const patched = current && this.patch(current, document, style);
     if (patched) return patched;
 
-    const paletteIds = reusablePlanesAndStyle && current
-      ? current.paletteIds
-      : paletteIdsInCells(document, NO_PALETTE_IDS);
-    const paletteProjection = colorPaletteProjection(document.palette, paletteIds);
-    const pixelsPerCell = colorAtlasPixelsPerCell(document);
+    const paletteIds = samePlanes ? current.paletteIds : paletteIdsInCells(document, NO_PALETTE_IDS);
+    const { atlas, target } = strategy.allocate(document, style, key, targetFactory);
+    this.dirty.reset();
+    this.state = {
+      key,
+      kindPlane: document.kind,
+      colorsPlane: document.colors,
+      paletteIds,
+      paletteProjection: strategy.projection(document.palette, paletteIds, style),
+      atlas: { ...atlas, revision: document.revision } as Atlas,
+      target
+    };
+    return this.state.atlas;
+  }
 
-    const atlasWidth = pixelsPerCell > 0 ? document.width * pixelsPerCell : 0;
-    const atlasHeight = pixelsPerCell > 0 ? document.height * pixelsPerCell : 0;
-    const target = pixelsPerCell > 0 ? targetFactory?.(atlasWidth, atlasHeight) : undefined;
+  /** Repaint only the recorded cells onto the existing bitmap when everything else still matches. */
+  private patch(current: AtlasState<Key, Atlas>, document: PatternDocument, style: RendererStyle): Atlas | undefined {
+    const strategy = this.strategy;
+    const cells = this.dirty.pending;
+    if (!current.target || cells === 'all'
+      || strategy.projection(document.palette, current.paletteIds, style) !== current.paletteProjection) return undefined;
+    if (!strategy.paintCells(current.target, document, style, current.key, current.atlas, cells)) return undefined;
+    const paletteIds = paletteIdsInCells(document, current.paletteIds, cells);
+    this.dirty.reset();
+    this.state = {
+      ...current,
+      kindPlane: document.kind,
+      colorsPlane: document.colors,
+      paletteIds,
+      paletteProjection: paletteIds === current.paletteIds ? current.paletteProjection : strategy.projection(document.palette, paletteIds, style),
+      atlas: { ...current.atlas, revision: document.revision }
+    };
+    return this.state.atlas;
+  }
+}
+
+interface ColorAtlasKey {
+  readonly documentWidth: number;
+  readonly documentHeight: number;
+  readonly mode: RendererStyle['mode'];
+  readonly patternBackground: string;
+  readonly missingColor: string;
+  readonly canvasMask: PatternDocument['canvasMask'];
+}
+
+const colorAtlasStrategy: AtlasStrategy<ColorAtlasKey, ColorAtlas> = {
+  keyFor: (document, style) => ({
+    documentWidth: document.width,
+    documentHeight: document.height,
+    mode: style.mode,
+    patternBackground: patternBackgroundColor(document),
+    missingColor: style.missingPaletteColor,
+    canvasMask: document.canvasMask
+  }),
+  projection: (palette, ids) => colorPaletteProjection(palette, ids),
+  allocate(document, style, key, targetFactory) {
+    const pixelsPerCell = colorAtlasPixelsPerCell(document);
+    const width = pixelsPerCell > 0 ? document.width * pixelsPerCell : 0;
+    const height = pixelsPerCell > 0 ? document.height * pixelsPerCell : 0;
+    const target = pixelsPerCell > 0 ? targetFactory?.(width, height) : undefined;
     const source = target && isCanvasImageSource(target.source) ? target.source : undefined;
     if (target) {
       const context = target.context;
       save(context);
       if (context.imageSmoothingEnabled !== undefined) context.imageSmoothingEnabled = false;
-      context.clearRect(0, 0, atlasWidth, atlasHeight);
-      fillAtlasFabric(context, document, pixelsPerCell, patternBackground);
+      context.clearRect(0, 0, width, height);
+      fillAtlasFabric(context, document, pixelsPerCell, key.patternBackground);
       const cellCount = document.width * document.height;
       for (let index = 0; index < cellCount; index += 1) paintColorAtlasCell(context, document, index, pixelsPerCell, style);
       restore(context);
     }
-    this.dirty.reset();
-    this.entry = {
-      target,
-      source,
-      width: atlasWidth,
-      height: atlasHeight,
-      pixelsPerCell,
-      revision: document.revision,
-      documentWidth: document.width,
-      documentHeight: document.height,
-      kindPlane: document.kind,
-      colorsPlane: document.colors,
-      paletteIds,
-      paletteProjection,
-      mode: style.mode,
-      patternBackground,
-      missingColor: style.missingPaletteColor,
-      canvasMask: document.canvasMask
-    };
-    return this.entry;
-  }
-
-  /** Repaint only the recorded cells onto the existing bitmap when everything else still matches. */
-  private patch(document: PatternDocument, style: RendererStyle, patternBackground: string): ColorAtlas | undefined {
-    const current = this.entry;
-    const cells = this.dirty.pending;
-    if (!current?.target || cells === 'all'
-      || current.documentWidth !== document.width
-      || current.documentHeight !== document.height
-      || current.mode !== style.mode
-      || current.patternBackground !== patternBackground
-      || current.missingColor !== style.missingPaletteColor
-      || current.canvasMask !== document.canvasMask
-      || colorPaletteProjection(document.palette, current.paletteIds) !== current.paletteProjection) return undefined;
+    return { atlas: { source, width, height, pixelsPerCell }, target };
+  },
+  paintCells(target, document, style, key, atlas, cells) {
     // A new pair cell needs the 2×2 footprint a one-pixel atlas cannot hold.
-    if (current.pixelsPerCell === 1) for (const index of cells) if (isThreeQuarterPairKind(document.kind[index])) return undefined;
-    const paletteIds = paletteIdsInCells(document, current.paletteIds, cells);
-    const context = current.target.context;
+    if (atlas.pixelsPerCell === 1) for (const index of cells) if (isThreeQuarterPairKind(document.kind[index])) return false;
+    const context = target.context;
     save(context);
     if (context.imageSmoothingEnabled !== undefined) context.imageSmoothingEnabled = false;
     for (const index of cells) {
       // An opaque full stitch covers its whole cell, so only other cells need clearing first.
-      if (document.kind[index] !== CellKind.Full || document.colors[index * 4] === 0) clearAtlasCell(context, document, index, current.pixelsPerCell, patternBackground);
-      paintColorAtlasCell(context, document, index, current.pixelsPerCell, style);
+      if (document.kind[index] !== CellKind.Full || document.colors[index * 4] === 0) clearAtlasCell(context, document, index, atlas.pixelsPerCell, key.patternBackground);
+      paintColorAtlasCell(context, document, index, atlas.pixelsPerCell, style);
     }
     restore(context);
-    this.dirty.reset();
-    this.entry = {
-      ...current,
-      revision: document.revision,
-      kindPlane: document.kind,
-      colorsPlane: document.colors,
-      paletteIds,
-      paletteProjection: paletteIds === current.paletteIds ? current.paletteProjection : colorPaletteProjection(document.palette, paletteIds)
-    };
-    return this.entry;
+    return true;
+  }
+};
+
+export class ColorAtlasCache extends AtlasCache<ColorAtlasKey, ColorAtlas> {
+  constructor() {
+    super(colorAtlasStrategy);
   }
 }
 
@@ -359,23 +381,6 @@ export interface SymbolAtlas {
   readonly width: number;
   readonly height: number;
   readonly revision: number;
-}
-
-interface SymbolAtlasCacheEntry extends SymbolAtlas {
-  readonly documentWidth: number;
-  readonly documentHeight: number;
-  readonly kindPlane: PatternDocument['kind'];
-  readonly colorsPlane: PatternDocument['colors'];
-  readonly paletteIds: readonly number[];
-  readonly paletteProjection: string;
-  readonly mode: RendererStyle['mode'];
-  readonly symbolColor: string;
-  readonly symbolBackgroundColor: string;
-  readonly patternBackground: string;
-  readonly missingColor: string;
-  readonly showSymbols: boolean;
-  readonly ppc: number;
-  readonly canvasMask: PatternDocument['canvasMask'];
 }
 
 const MAX_SAFE_CANVAS_DIMENSION = 32_767;
@@ -408,89 +413,27 @@ function symbolAtlasDimensions(
   return { width, height };
 }
 
-/**
- * Cached high-resolution Symbol-mode overview source. It is intentionally
- * separate from ColorAtlasCache: text must be rasterized at several pixels
- * per cell, never into the one-pixel-per-cell color atlas.
- */
-export class SymbolAtlasCache {
-  private entry: (SymbolAtlasCacheEntry & { readonly target?: CanvasTarget }) | undefined;
-  private readonly dirty = new AtlasDirtyCells();
+interface SymbolAtlasKey extends ColorAtlasKey {
+  readonly symbolColor: string;
+  readonly symbolBackgroundColor: string;
+  readonly showSymbols: boolean;
+  readonly ppc: number;
+}
 
-  clear(): void {
-    this.entry = undefined;
-    this.dirty.reset();
-  }
-
-  /** Record document cells that changed since the last paint; undefined means unknown. */
-  invalidate(cells: ArrayLike<number> | undefined, cellCount: number): void {
-    this.dirty.mark(cells, cellCount);
-  }
-
-  get(
-    document: PatternDocument,
-    style: RendererStyle,
-    targetFactory?: (width: number, height: number) => CanvasTarget | undefined
-  ): SymbolAtlas {
-    const ppc = symbolAtlasPixelsPerCell(document);
-    const patternBackground = patternBackgroundColor(document);
-    const current = this.entry;
-    const reusablePlanesAndStyle = Boolean(
-      current &&
-      current.documentWidth === document.width &&
-      current.documentHeight === document.height &&
-      current.kindPlane === document.kind &&
-      current.colorsPlane === document.colors &&
-      current.mode === style.mode &&
-      current.symbolColor === style.symbolColor &&
-      current.symbolBackgroundColor === style.symbolBackgroundColor &&
-      current.patternBackground === patternBackground &&
-      current.missingColor === style.missingPaletteColor &&
-      current.showSymbols === style.showSymbols &&
-      current.ppc === ppc &&
-      current.canvasMask === document.canvasMask
-    );
-    if (reusablePlanesAndStyle && current) {
-      const paletteProjection = symbolPaletteProjection(document.palette, current.paletteIds, style.mode, style.showSymbols);
-      if (paletteProjection === current.paletteProjection) {
-        this.dirty.reset();
-        this.entry = { ...current, revision: document.revision };
-        return this.entry;
-      }
-    }
-    const patched = this.patch(document, style, patternBackground, ppc);
-    if (patched) return patched;
-
-    const paletteIds = reusablePlanesAndStyle && current
-      ? current.paletteIds
-      : paletteIdsInCells(document, NO_PALETTE_IDS);
-    const paletteProjection = symbolPaletteProjection(document.palette, paletteIds, style.mode, style.showSymbols);
-    const dimensions = symbolAtlasDimensions(document, ppc);
+const symbolAtlasStrategy: AtlasStrategy<SymbolAtlasKey, SymbolAtlas> = {
+  keyFor: (document, style) => ({
+    ...colorAtlasStrategy.keyFor(document, style),
+    symbolColor: style.symbolColor,
+    symbolBackgroundColor: style.symbolBackgroundColor,
+    showSymbols: style.showSymbols,
+    ppc: symbolAtlasPixelsPerCell(document)
+  }),
+  projection: (palette, ids, style) => symbolPaletteProjection(palette, ids, style.mode, style.showSymbols),
+  allocate(document, style, key, targetFactory) {
+    const dimensions = symbolAtlasDimensions(document, key.ppc);
     if (!dimensions || !targetFactory) {
-      const unavailable: SymbolAtlasCacheEntry = {
-        source: undefined,
-        width: dimensions?.width ?? 0,
-        height: dimensions?.height ?? 0,
-        revision: document.revision,
-        documentWidth: document.width,
-        documentHeight: document.height,
-        kindPlane: document.kind,
-        colorsPlane: document.colors,
-        paletteIds,
-        paletteProjection,
-        mode: style.mode,
-        symbolColor: style.symbolColor,
-        symbolBackgroundColor: style.symbolBackgroundColor,
-        patternBackground,
-        missingColor: style.missingPaletteColor,
-        showSymbols: style.showSymbols,
-        ppc,
-        canvasMask: document.canvasMask
-      };
-      this.entry = unavailable;
-      return unavailable;
+      return { atlas: { source: undefined, width: dimensions?.width ?? 0, height: dimensions?.height ?? 0 }, target: undefined };
     }
-
     let target: CanvasTarget | undefined;
     let source: CanvasImageSource | undefined;
     try {
@@ -500,10 +443,10 @@ export class SymbolAtlasCache {
         const context = target.context;
         save(context);
         context.clearRect(0, 0, dimensions.width, dimensions.height);
-        fillAtlasFabric(context, document, ppc, patternBackground);
+        fillAtlasFabric(context, document, key.ppc, key.patternBackground);
         const cellCount = document.width * document.height;
         for (let index = 0; index < cellCount; index += 1) {
-          paintSymbolAtlasCell(context, document, index, ppc, style);
+          paintSymbolAtlasCell(context, document, index, key.ppc, style);
         }
         restore(context);
       }
@@ -515,71 +458,33 @@ export class SymbolAtlasCache {
         try { restore(target.context); } catch { /* already failed softly */ }
       }
     }
-    this.dirty.reset();
-    const result: SymbolAtlasCacheEntry & { readonly target?: CanvasTarget } = {
-      ...(source && target ? { target } : {}),
-      source,
-      width: dimensions.width,
-      height: dimensions.height,
-      revision: document.revision,
-      documentWidth: document.width,
-      documentHeight: document.height,
-      kindPlane: document.kind,
-      colorsPlane: document.colors,
-      paletteIds,
-      paletteProjection,
-      mode: style.mode,
-      symbolColor: style.symbolColor,
-      symbolBackgroundColor: style.symbolBackgroundColor,
-      patternBackground,
-      missingColor: style.missingPaletteColor,
-      showSymbols: style.showSymbols,
-      ppc,
-      canvasMask: document.canvasMask
-    };
-    this.entry = result;
-    return result;
-  }
-
-  /** Repaint only the recorded cells onto the existing bitmap when everything else still matches. */
-  private patch(document: PatternDocument, style: RendererStyle, patternBackground: string, ppc: number): SymbolAtlas | undefined {
-    const current = this.entry;
-    const cells = this.dirty.pending;
-    if (!current?.target || cells === 'all'
-      || current.documentWidth !== document.width
-      || current.documentHeight !== document.height
-      || current.mode !== style.mode
-      || current.symbolColor !== style.symbolColor
-      || current.symbolBackgroundColor !== style.symbolBackgroundColor
-      || current.patternBackground !== patternBackground
-      || current.missingColor !== style.missingPaletteColor
-      || current.showSymbols !== style.showSymbols
-      || current.ppc !== ppc
-      || current.canvasMask !== document.canvasMask
-      || symbolPaletteProjection(document.palette, current.paletteIds, style.mode, style.showSymbols) !== current.paletteProjection) return undefined;
-    const paletteIds = paletteIdsInCells(document, current.paletteIds, cells);
-    const context = current.target.context;
+    return { atlas: { source, width: dimensions.width, height: dimensions.height }, target: source ? target : undefined };
+  },
+  paintCells(target, document, style, key, _atlas, cells) {
+    const context = target.context;
     try {
       save(context);
       for (const index of cells) {
-        clearAtlasCell(context, document, index, ppc, patternBackground);
-        paintSymbolAtlasCell(context, document, index, ppc, style);
+        clearAtlasCell(context, document, index, key.ppc, key.patternBackground);
+        paintSymbolAtlasCell(context, document, index, key.ppc, style);
       }
       restore(context);
     } catch {
       try { restore(context); } catch { /* already failed softly */ }
-      return undefined;
+      return false;
     }
-    this.dirty.reset();
-    this.entry = {
-      ...current,
-      revision: document.revision,
-      kindPlane: document.kind,
-      colorsPlane: document.colors,
-      paletteIds,
-      paletteProjection: paletteIds === current.paletteIds ? current.paletteProjection : symbolPaletteProjection(document.palette, paletteIds, style.mode, style.showSymbols)
-    };
-    return this.entry;
+    return true;
+  }
+};
+
+/**
+ * Cached high-resolution Symbol-mode overview source. It is intentionally
+ * separate from ColorAtlasCache: text must be rasterized at several pixels
+ * per cell, never into the one-pixel-per-cell color atlas.
+ */
+export class SymbolAtlasCache extends AtlasCache<SymbolAtlasKey, SymbolAtlas> {
+  constructor() {
+    super(symbolAtlasStrategy);
   }
 }
 

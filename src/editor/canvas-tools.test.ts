@@ -8,7 +8,6 @@ import {
   canvasWorkspace,
   commandLayerType,
   commitLayerSurface,
-  createDocumentEditor,
   createLayeredDocument,
   flattenDocument,
   isCanvasCommand,
@@ -43,6 +42,7 @@ import { createFillWorkerClient } from './fill';
 import { createWorkspaceEditorGateway, type ActiveLayerId, type WorkspaceEditorBoundary } from './gateway';
 import type { PointerSample } from './input';
 import { createUiStore } from './ui-store';
+import { LayeredTestBoundary } from './test-support';
 
 const ZOOM = 16;
 
@@ -66,8 +66,34 @@ class CanvasBoundary implements WorkspaceEditorBoundary {
     this.document = flattenDocument(layered);
   }
 
+  readonly selectedLayerIds = null;
+
   activeLayerSurface(): PatternDocument | null {
     return typeof this.activeLayerId === 'number' ? layerSurface(this.layeredDocument, this.activeLayerId) : null;
+  }
+
+  getEditorLayerSnapshot(): null {
+    return null;
+  }
+
+  resolvePaste(): never {
+    throw new Error('not used');
+  }
+
+  commitPaste(): never {
+    throw new Error('not used');
+  }
+
+  markProgress(): never {
+    throw new Error('not used');
+  }
+
+  undoMark(): never {
+    throw new Error('not used');
+  }
+
+  redoMark(): never {
+    throw new Error('not used');
   }
 
   setActiveLayer(id: ActiveLayerId): void {
@@ -787,23 +813,7 @@ describe('canvas editing in the controller', () => {
 
 describe('canvas editing through the document editor history', () => {
   it('records a brush stroke as one undo step and undoes it', () => {
-    const editor = createDocumentEditor(layeredDocument());
-    let activeLayerId: ActiveLayerId = 'canvas';
-    const listeners = new Set<() => void>();
-    const emit = () => listeners.forEach((listener) => listener());
-    const boundary: WorkspaceEditorBoundary = {
-      activeProjectId: 'project-a',
-      get document() { return editor.composite; },
-      get layeredDocument() { return editor.document; },
-      get activeLayerId() { return activeLayerId; },
-      activeLayerSurface: () => typeof activeLayerId === 'number' ? layerSurface(editor.document, activeLayerId) : null,
-      subscribe: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
-      execute: (command) => { const result = editor.execute(command); emit(); return result; },
-      executeBatch: (commands) => { const result = editor.executeBatch(commands); emit(); return result; },
-      undo: () => { const result = editor.undo(); emit(); return result; },
-      redo: () => { const result = editor.redo(); emit(); return result; }
-    };
-    activeLayerId = 'canvas';
+    const boundary = new LayeredTestBoundary(layeredDocument(), { activeLayerId: 'canvas' });
     const uiStore = createUiStore({ viewport: { x: 0, y: 0, zoom: ZOOM } });
     const controller = new EditorSurfaceController({ gateway: createWorkspaceEditorGateway(boundary), uiStore, renderer: rendererFixture(), metrics: getCanvasMetrics(320, 320) });
     controller.start();
@@ -814,12 +824,12 @@ describe('canvas editing through the document editor history', () => {
     controller.handlePointerDown(at(uiStore, 1, -1, 0));
     controller.handlePointerMove(at(uiStore, 1, -1, 2));
     controller.handlePointerUp(at(uiStore, 1, -1, 2));
-    expect(editor.undoDepth).toBe(1);
-    expect(editor.composite).toMatchObject({ width: 11, height: 10, originX: -1 });
-    expect(editor.composite.canvasMask).toBeDefined();
+    expect(boundary.undoDepth).toBe(1);
+    expect(boundary.document).toMatchObject({ width: 11, height: 10, originX: -1 });
+    expect(boundary.document.canvasMask).toBeDefined();
     controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
-    expect(editor.composite.width).toBe(10);
-    expect(editor.composite.canvasMask).toBeUndefined();
+    expect(boundary.document.width).toBe(10);
+    expect(boundary.document.canvasMask).toBeUndefined();
     expect(uiStore.getState().viewport).toEqual(start);
     expect(uiStore.getState().canvasBasicAvailable).toBe(true);
     controller.dispose();

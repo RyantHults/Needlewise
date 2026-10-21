@@ -11,6 +11,24 @@ export interface SelectionBoundarySegment {
 
 export type LassoSelectionOperation = 'replace' | 'union' | 'subtract';
 
+export interface RectangularSelection {
+  readonly kind: 'rect';
+  readonly rect: GridRect;
+  readonly documentWidth: number;
+  readonly documentHeight: number;
+}
+
+export interface SparseSelection {
+  readonly kind: 'sparse';
+  readonly indices: Uint32Array;
+  readonly bounds: GridRect;
+  readonly boundaries: readonly SelectionBoundarySegment[];
+  readonly documentWidth: number;
+  readonly documentHeight: number;
+}
+
+export type FinalizedSelection = RectangularSelection | SparseSelection;
+
 /** Maximum number of model-space samples retained for a lasso gesture. */
 export const MAX_LASSO_PATH_POINTS = 2048;
 
@@ -382,11 +400,7 @@ function adjacentIndex(x: number, y: number, width: number, height: number): num
  * exterior edge or an interior (hole) edge without losing concave corners.
  */
 export function selectionBoundarySegments(indices: ArrayLike<number>, width: number, height: number): SelectionBoundarySegment[] {
-  const valid = Array.from({ length: indices.length }, (_, position) => indices[position])
-    .filter((index) => Number.isSafeInteger(index) && index >= 0 && index < width * height)
-    .map((index) => Math.floor(index))
-    .sort((left, right) => left - right)
-    .filter((index, position, sortedValues) => position === 0 || index !== sortedValues[position - 1]);
+  const valid = normalizeIndices(indices, width * height);
   const selected = new Set(valid);
   const bounds = indexBounds(valid, width, height);
   if (!bounds) return [];
@@ -446,12 +460,7 @@ export interface SparseSelectionGeometry {
 }
 
 export function sparseSelectionGeometry(indices: ArrayLike<number>, width: number, height: number): SparseSelectionGeometry | undefined {
-  const values = Array.from({ length: indices.length }, (_, position) => indices[position])
-    .filter((index) => Number.isSafeInteger(index) && index >= 0 && index < width * height)
-    .map((index) => Math.floor(index))
-    .sort((left, right) => left - right)
-    .filter((index, position, sortedValues) => position === 0 || index !== sortedValues[position - 1]);
-  const sorted = new Uint32Array(values);
+  const sorted = normalizeIndices(indices, width * height);
   const bounds = indexBounds(sorted, width, height);
   return bounds ? { indices: sorted, bounds, boundaries: selectionBoundarySegments(sorted, width, height) } : undefined;
 }
@@ -466,4 +475,40 @@ export function selectionRectToIndices(rect: GridRect, width: number, height: nu
 
 export function selectionCellRect(rect: GridRect): CellRect {
   return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+}
+
+/** The integer indices below `cellCount`, sorted ascending without duplicates. */
+export function normalizeIndices(indices: ArrayLike<number>, cellCount: number): Uint32Array {
+  const valid: number[] = [];
+  for (let position = 0; position < indices.length; position += 1) {
+    const index = indices[position];
+    if (Number.isSafeInteger(index) && index >= 0 && index < cellCount) valid.push(index);
+  }
+  const sorted = new Uint32Array(valid).sort();
+  return sorted.filter((index, position) => position === 0 || index !== sorted[position - 1]);
+}
+
+/**
+ * Combine a lasso's captured cells with the current selection's by the lasso
+ * operation, in sorted order. Replace keeps the captured cells as they are.
+ */
+export function combineSelection(current: ArrayLike<number>, captured: Uint32Array, operation: LassoSelectionOperation, cellCount: number): Uint32Array {
+  if (operation === 'replace') return captured;
+  const flags = new Uint8Array(cellCount);
+  for (let position = 0; position < current.length; position += 1) flags[current[position]] = 1;
+  const value = operation === 'union' ? 1 : 0;
+  for (const index of captured) flags[index] = value;
+  const combined: number[] = [];
+  for (let index = 0; index < flags.length; index += 1) if (flags[index] === 1) combined.push(index);
+  return new Uint32Array(combined);
+}
+
+export function rectSelection(rect: GridRect, document: { readonly width: number; readonly height: number }): RectangularSelection {
+  return { kind: 'rect', rect, documentWidth: document.width, documentHeight: document.height };
+}
+
+/** A sparse selection of `indices` in the document, or undefined when none is in it. */
+export function sparseSelection(indices: ArrayLike<number>, document: { readonly width: number; readonly height: number }): SparseSelection | undefined {
+  const sparse = sparseSelectionGeometry(indices, document.width, document.height);
+  return sparse ? { kind: 'sparse', ...sparse, documentWidth: document.width, documentHeight: document.height } : undefined;
 }

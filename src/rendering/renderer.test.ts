@@ -2089,7 +2089,8 @@ describe('Canvas 2D chart renderer', () => {
     renderer.renderNow();
     // Mid-grid lines use the distinct mid color and the middle width tier.
     const midSegments = base.records.filter((call) => call.name === 'lineTo' && call.strokeStyle === '#0000ff');
-    expect(midSegments.length).toBe(4); // x at 5,10,15 and y at 5.
+    // x at 5 and 15 and y at 5; the 10-cell tier owns x=10.
+    expect(midSegments.length).toBe(3);
     expect(new Set(midSegments.map((call) => call.lineWidth))).toEqual(new Set([(0.35 + 1.9) / 2]));
     const baselineSegments = base.records.filter((call) => call.name === 'lineTo' && call.strokeStyle === '#00ff00');
     const majorSegments = base.records.filter((call) => call.name === 'lineTo' && call.strokeStyle === '#ff0000');
@@ -2098,21 +2099,21 @@ describe('Canvas 2D chart renderer', () => {
     expect(majorSegments.length).toBeGreaterThan(0);
     expect(new Set(majorSegments.map((call) => call.lineWidth))).toEqual(new Set([1.9]));
     const midLineTos = midSegments.map((call) => call.args as number[]);
-    // Vertical lines span the clipped chart height at x=100,200,300; horizontal spans the canvas width at y=100.
-    const verticals = midLineTos.filter(([x]) => x === 100 || x === 200 || x === 300);
-    expect(verticals.length).toBe(3);
+    // Vertical lines span the clipped chart height at x=100,300; horizontal spans the canvas width at y=100.
+    const verticals = midLineTos.filter(([x]) => x === 100 || x === 300);
+    expect(verticals.length).toBe(2);
     for (const [, y] of verticals) expect(y).toBe(160);
     const horizontal = midLineTos.find(([x, y]) => x === 320 && y === 100);
     expect(horizontal).toBeDefined();
-    // No mid line at the document edges: the only mid segments are the three
-    // verticals at interior multiples of 5 (x=100,200,300 for cells 5,10,15)
-    // and the single horizontal at y=100 (cell 5). No vertical at x=0.
+    // No mid line at the document edges or on a 10-cell line: the only mid
+    // segments are the verticals at x=100,300 (cells 5 and 15) and the single
+    // horizontal at y=100 (cell 5). No vertical at x=0.
     const midMoves = base.records
       .filter((call) => call.name === 'moveTo' && call.strokeStyle === '#0000ff')
       .map((call) => call.args as number[]);
     const verticalMoves = midMoves.filter(([, y]) => y === 0 || y === 160);
     const verticalMoveXs = verticalMoves.map(([x]) => x).sort((a, b) => a - b);
-    expect(verticalMoveXs).toEqual([100, 200, 300]);
+    expect(verticalMoveXs).toEqual([100, 300]);
     renderer.dispose();
   });
 
