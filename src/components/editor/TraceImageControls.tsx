@@ -7,6 +7,8 @@ import { rectsEqual } from '../../editor/rect';
 import { decodeTraceImage, disposeTraceImage, fitTraceImageBounds, TraceDecodeError } from '../../rendering/trace';
 import { MAX_TRACE_IMAGE_BYTES } from '../../rendering/trace';
 import { ConfirmDialog } from '../ConfirmDialog';
+import { ActionButton } from '../controls/ActionButton';
+import { useLatestRequest } from '../latest-request';
 import { RangeInput } from '../RangeInput';
 
 interface Props {
@@ -64,8 +66,8 @@ export function TraceImageControls({ workspace, document, controller, activeTool
   const [opacity, setOpacity] = useState(workspace.sourceImage?.opacity ?? 1);
   const opacityRestoreRef = useRef<number | undefined>(workspace.sourceImage?.opacity);
   const descriptor = workspace.sourceImage;
-  const mountedRef = useRef(true);
-  const importRequestRef = useRef(0);
+  const importRequest = useLatestRequest();
+  const assetDecode = useLatestRequest();
   const handedOffReplacement = useRef<{ assetId: string; trace: Awaited<ReturnType<typeof decodeTraceImage>> } | null>(null);
   const decodedAssetRef = useRef<string | null>(null);
   const opacityStartRef = useRef<number | null>(null);
@@ -82,8 +84,6 @@ export function TraceImageControls({ workspace, document, controller, activeTool
   const originRef = useRef<CanvasOrigin>({ originX, originY });
   originRef.current = { originX, originY };
 
-  useEffect(() => () => { mountedRef.current = false; importRequestRef.current += 1; }, []);
-
   useEffect(() => {
     if (!filePickerRef) return undefined;
     filePickerRef.current = () => inputRef.current?.click();
@@ -91,10 +91,7 @@ export function TraceImageControls({ workspace, document, controller, activeTool
   }, [filePickerRef]);
 
   useEffect(() => {
-    // React StrictMode intentionally tears effects down and replays them. The
-    // component is live again when this setup runs, so a prior replay cleanup
-    // must not make the decoded handoff look like an unmounted race.
-    mountedRef.current = true;
+    const isCurrent = assetDecode.current();
     let cancelled = false;
     const source = workspace.sourceImage;
     const asset = source ? workspace.getAsset(source.assetId) : undefined;
@@ -105,7 +102,7 @@ export function TraceImageControls({ workspace, document, controller, activeTool
     if (retained) handedOffReplacement.current = null;
     void (retained ? Promise.resolve(retained) : decodeTraceImage(new Blob([new Uint8Array(asset.data) as unknown as ArrayBuffer], { type: asset.mimeType }))).then((trace) => {
       if (cancelled) { disposeTraceImage(trace); return; }
-      const accepted = handoffTrace(controller, trace, { visible: source.traceVisible, opacity: source.opacity, crop: source.crop, chartBounds: traceBoundsToLocal(source.chartBounds, originRef.current) }, mountedRef.current);
+      const accepted = handoffTrace(controller, trace, { visible: source.traceVisible, opacity: source.opacity, crop: source.crop, chartBounds: traceBoundsToLocal(source.chartBounds, originRef.current) }, isCurrent());
       if (!accepted) { disposeTraceImage(trace); setStatus('Reference image could not be attached to the editor.'); return; }
       decodedAssetRef.current = source.assetId;
       setStatus(`${asset.name} ready`);
@@ -117,7 +114,7 @@ export function TraceImageControls({ workspace, document, controller, activeTool
     // resizes change the document size and origin but not the asset; the patch
     // effect re-places the image for them.
     return () => { cancelled = true; if (!handedOffReplacement.current) controller?.clearTraceImage?.(); };
-  }, [workspace, controller, descriptor?.assetId]);
+  }, [workspace, controller, descriptor?.assetId, assetDecode]);
 
   // Patch bounds/crop onto the live bitmap when the descriptor changes without
   // a new asset (drag commits, arrow nudges, resize commits, and their undo),
@@ -262,14 +259,13 @@ export function TraceImageControls({ workspace, document, controller, activeTool
   }, [visibilityRef]);
 
   const importFile = async (file: File) => {
-    const request = importRequestRef.current + 1;
-    importRequestRef.current = request;
+    const isCurrent = importRequest.begin();
     setLoading(true); setStatus('Reading reference image…');
     if (file.size > MAX_TRACE_IMAGE_BYTES) { setLoading(false); setStatus('Reference image data exceeds the local size limit.'); if (inputRef.current) inputRef.current.value = ''; return; }
     let decoded: Awaited<ReturnType<typeof decodeTraceImage>> | undefined;
     try {
       decoded = await decodeTraceImage(file);
-      if (!mountedRef.current || request !== importRequestRef.current) throw new Error('Reference image replacement was superseded.');
+      if (!isCurrent()) throw new Error('Reference image replacement was superseded.');
       const id = `trace-${Date.now().toString(36)}`;
       const chartBounds = fitTraceImageBounds(decoded.sourceWidth ?? decoded.width, decoded.sourceHeight ?? decoded.height, document.width, document.height);
       handedOffReplacement.current = { assetId: id, trace: decoded };
@@ -277,7 +273,7 @@ export function TraceImageControls({ workspace, document, controller, activeTool
       // dimensions are the original decode dimensions (the overlay trace is
       // pre-scaled to the working bound and reports them in width/height).
       await workspace.replaceSourceImage({ asset: { id, name: file.name, mimeType: file.type, data: file }, settings: { assetId: id, mimeType: file.type as SourceImageMimeType, width: decoded.sourceWidth ?? decoded.width, height: decoded.sourceHeight ?? decoded.height, crop: { x: 0, y: 0, width: 1, height: 1 }, chartBounds: traceBoundsToWorkspace(chartBounds, originRef.current), traceVisible: true, opacity: 1 } });
-      const accepted = handoffTrace(controller, decoded, { visible: true, opacity: 1, crop: { x: 0, y: 0, width: 1, height: 1 }, chartBounds }, mountedRef.current && request === importRequestRef.current);
+      const accepted = handoffTrace(controller, decoded, { visible: true, opacity: 1, crop: { x: 0, y: 0, width: 1, height: 1 }, chartBounds }, isCurrent());
       if (!accepted) throw new Error('Reference image could not be attached to the editor.');
       decodedAssetRef.current = id;
       decoded = undefined; setStatus(`${file.name} imported.`);
@@ -287,13 +283,13 @@ export function TraceImageControls({ workspace, document, controller, activeTool
 
   return <div className="trace-controls" role="toolbar" aria-label="Reference image">
     <input ref={inputRef} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importFile(file); }} />
-    {!descriptor && <button type="button" className="trace-icon-button bottom-control" aria-label={loading ? 'Loading reference image' : 'Add reference image'} title={loading ? 'Loading reference image' : 'Add reference image'} disabled={loading} onClick={() => inputRef.current?.click()}><span aria-hidden="true">{loading ? '…' : '+'}</span><small>{loading ? 'Load' : 'Add'}</small></button>}
+    {!descriptor && <ActionButton className="trace-icon-button bottom-control" aria-label={loading ? 'Loading reference image' : 'Add reference image'} title={loading ? 'Loading reference image' : 'Add reference image'} disabled={loading} onClick={() => inputRef.current?.click()} glyph={loading ? '…' : '+'} caption={loading ? 'Load' : 'Add'} />}
     <label className="trace-visibility bottom-control" title="Show image"><input aria-label="Show image" type="checkbox" disabled={!descriptor} checked={visible} onChange={(event) => handleVisibilityChange(event.target.checked)} /><span aria-hidden="true">{visible ? '◉' : '○'}</span><small>Show</small></label>
     <div className="trace-mode-row" role="group" aria-label="Reference image tools">
-      <button type="button" disabled={!descriptor} className="trace-mode-button bottom-control" aria-label="Move image" title="Move image" aria-pressed={activeTool === 'move-image'} onClick={() => controller?.setTool({ tool: 'move-image' } as never)}><span aria-hidden="true">↔</span><small>Move</small></button>
-      <button type="button" disabled={!descriptor} className="trace-mode-button bottom-control" aria-label="Resize image" title="Resize image" aria-pressed={activeTool === 'resize-image'} onClick={() => controller?.setTool({ tool: 'resize-image' } as never)}><span aria-hidden="true">↗</span><small>Resize</small></button>
+      <ActionButton disabled={!descriptor} className="trace-mode-button bottom-control" aria-label="Move image" title="Move image" aria-pressed={activeTool === 'move-image'} onClick={() => controller?.setTool({ tool: 'move-image' } as never)} glyph="↔" caption="Move" />
+      <ActionButton disabled={!descriptor} className="trace-mode-button bottom-control" aria-label="Resize image" title="Resize image" aria-pressed={activeTool === 'resize-image'} onClick={() => controller?.setTool({ tool: 'resize-image' } as never)} glyph="↗" caption="Resize" />
     </div>
-    {descriptor && <button type="button" ref={removeTrigger} className="trace-icon-button trace-remove bottom-control" aria-label="Remove image" title="Remove image" onClick={() => setRemoveConfirmOpen(true)}><span aria-hidden="true">×</span><small>Remove</small></button>}
+    {descriptor && <ActionButton ref={removeTrigger} className="trace-icon-button trace-remove bottom-control" aria-label="Remove image" title="Remove image" onClick={() => setRemoveConfirmOpen(true)} glyph="×" caption="Remove" />}
     {removeConfirmOpen && (
       <ConfirmDialog
         eyebrow="Reference image"
@@ -306,6 +302,6 @@ export function TraceImageControls({ workspace, document, controller, activeTool
       />
     )}
     <label ref={opacityLabelRef} className="trace-opacity"><span className="trace-opacity-label">Transparency</span><RangeInput aria-label={`Reference image opacity ${Math.round(opacity * 100)}%`} disabled={!descriptor} min="0" max="1" step="0.05" value={opacity} onPointerDown={beginOpacityInteraction} onFocus={beginOpacityInteraction} onChange={(event) => handleOpacityChange(Number(event.target.value))} onPointerUp={commitOpacityInteraction} onBlur={commitOpacityInteraction} /></label>
-    <span className="trace-status sr-only" role={status?.includes('could not') || status?.includes('missing') ? 'alert' : 'status'}>{status ?? 'Optional local reference; it is not part of the stitch chart.'}</span>
+    <span className="trace-status visually-hidden" role={status?.includes('could not') || status?.includes('missing') ? 'alert' : 'status'}>{status ?? 'Optional local reference; it is not part of the stitch chart.'}</span>
   </div>;
 }

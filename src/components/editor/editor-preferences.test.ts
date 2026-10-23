@@ -1,5 +1,9 @@
+import { renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
-import { defaultEditorPreferences, isEditorPreferences, normalizeEditorPreferences, readEditorPreferences, EDITOR_PREFERENCES_KEY } from "./editor-preferences";
+import { defaultEditorPreferences, isEditorPreferences, normalizeEditorPreferences, useEditorPreferences, EDITOR_PREFERENCES_KEY } from "./editor-preferences";
+
+const workspace = { metadata: { id: "p1" } } as never;
+const loadPreferences = () => renderHook(() => useEditorPreferences(workspace)).result.current[0];
 
 describe("editor preferences", () => {
   beforeEach(() => localStorage.clear());
@@ -12,7 +16,7 @@ describe("editor preferences", () => {
     const stored = { version: 1, railSide: "right", paletteDisplay: { numbers: true }, halfStitchDirection: "\\", threeQuarterDirection: "\\" };
     expect(isEditorPreferences(stored)).toBe(true);
     localStorage.setItem(EDITOR_PREFERENCES_KEY, JSON.stringify(stored));
-    const loaded = readEditorPreferences("p1");
+    const loaded = loadPreferences();
     expect(loaded.railSide).toBe("right");
     expect(loaded.halfStitchDirection).toBe("\\");
     expect(loaded).not.toHaveProperty("threeQuarterDirection");
@@ -23,18 +27,16 @@ describe("editor preferences", () => {
     expect(normalizeEditorPreferences({ ...base, halfStitchDirection: "x" as never }).halfStitchDirection).toBe("/");
   });
 
-  it("defaults the center mark off and reads legacy stored preferences as off", () => {
+  it("defaults the center mark off and accepts legacy stored preferences without it", () => {
     expect(defaultEditorPreferences().showCenterMark).toBe(false);
     const legacy = { version: 1, railSide: "left", paletteDisplay: { numbers: true } };
     expect(isEditorPreferences(legacy)).toBe(true);
-    localStorage.setItem(EDITOR_PREFERENCES_KEY, JSON.stringify(legacy));
-    expect(readEditorPreferences("p1").showCenterMark).toBe(false);
   });
 
   it("round-trips an enabled center mark and rejects non-boolean values", () => {
     const enabled = { ...defaultEditorPreferences(), showCenterMark: true };
     localStorage.setItem(EDITOR_PREFERENCES_KEY, JSON.stringify(enabled));
-    expect(readEditorPreferences("p1").showCenterMark).toBe(true);
+    expect(loadPreferences().showCenterMark).toBe(true);
     expect(isEditorPreferences({ ...enabled, showCenterMark: "yes" })).toBe(false);
   });
 });

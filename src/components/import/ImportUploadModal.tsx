@@ -1,7 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { readBlobBytes, SNIFF_BYTES } from '../../import/import-protocol';
 import { findImporter, importerAccept } from '../../import/registry';
+import { ErrorNotice } from '../controls/Notice';
 import { FileDropZone } from '../FileDropZone';
+import { useLatestRequest } from '../latest-request';
 import { Modal } from '../Modal';
 
 type Props = {
@@ -17,20 +19,19 @@ const UNSUPPORTED = 'This file is not a pattern Needlewise can import. Choose a 
 export function ImportUploadModal({ returnFocus, onClose, onFile }: Props) {
   const [error, setError] = useState('');
   // Only the latest choice may proceed, and none after unmount.
-  const generation = useRef(0);
-  useEffect(() => () => { generation.current += 1; }, []);
+  const request = useLatestRequest();
 
   async function choose(file: File) {
-    const id = ++generation.current;
+    const isCurrent = request.begin();
     setError('');
     let supported: boolean;
     try {
       supported = findImporter(await readBlobBytes(file.slice(0, SNIFF_BYTES))) !== undefined;
     } catch {
-      if (id === generation.current) setError('The file could not be read.');
+      if (isCurrent()) setError('The file could not be read.');
       return;
     }
-    if (id !== generation.current) return;
+    if (!isCurrent()) return;
     if (supported) onFile(file);
     else setError(UNSUPPORTED);
   }
@@ -39,7 +40,7 @@ export function ImportUploadModal({ returnFocus, onClose, onFile }: Props) {
     <Modal className="import-upload-modal" eyebrow="New project" title="Import a pattern" closeLabel="Close import dialog" describedBy="import-upload-intro" returnFocus={returnFocus} onClose={onClose}>
       <p className="control-note" id="import-upload-intro">Upload a pattern to import it into Needlewise. We currently support importing from PDFs.</p>
       <FileDropZone id="import-upload-file" accept={importerAccept()} inputLabel="Choose a pattern file to import" title="Drop a pattern here" hint="PDF charts with a symbol key, such as DMC patterns" onFile={file => void choose(file)} />
-      {error && <p className="modal-error" role="alert">{error}</p>}
+      {error && <ErrorNotice>{error}</ErrorNotice>}
     </Modal>
   );
 }

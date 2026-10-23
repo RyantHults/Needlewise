@@ -204,6 +204,11 @@ export const LayerType = {
 export type LayerType = (typeof LayerType)[keyof typeof LayerType];
 
 export const MAX_LAYERS_PER_TYPE = 3;
+
+/** Why another layer of this type cannot be added. */
+export function layerLimitMessage(type: LayerType): string {
+  return `You already have ${String(MAX_LAYERS_PER_TYPE)} ${type} layers.`;
+}
 export const MAX_LAYER_NAME_CHARS = 60;
 export const LAYERED_DOCUMENT_VERSION = 2 as const;
 

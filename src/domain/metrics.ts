@@ -35,6 +35,9 @@ export interface MaterialSettingsV2 {
 /** A project-level fabric count. It intentionally lives outside the document binary. */
 export const DEFAULT_AIDA_COUNT = 14;
 
+/** Fabric counts the Aida pickers offer; a project's current count is added when it is not one of these. */
+export const COMMON_AIDA_COUNTS: readonly number[] = [11, 14, 16, 18, 20, 22, 25, 28, 32];
+
 /** One standard skein holds 8.7 yards. Estimates fall back to it when no skein length is calibrated. */
 export const DEFAULT_SKEIN_LENGTH_METERS = 8.7 * 0.9144;
 const THREE_QUARTER_WEIGHT = 0.75;

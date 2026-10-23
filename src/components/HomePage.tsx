@@ -1,13 +1,11 @@
 import { Link } from 'react-router-dom';
+import { BrandLink } from './controls/BrandLink';
+import { StorageFooter } from './controls/StorageFooter';
 
 export function HomePage() {
   return (
     <div className="app-shell">
-      <header className="topbar">
-        <Link className="brand" to="/" aria-label="Needlewise home">
-          <span className="brand-mark" aria-hidden="true">✣</span><span>Needlewise</span>
-        </Link>
-      </header>
+      <header className="topbar"><BrandLink /></header>
 
       <main id="home" className="home">
         <section className="hero home-hero">
@@ -41,7 +39,7 @@ export function HomePage() {
           </li>
         </ul>
       </main>
-      <footer className="footer-note"><span aria-hidden="true">⌁</span> Stored on this device <span className="footer-divider" aria-hidden="true">·</span> Works offline</footer>
+      <StorageFooter />
     </div>
   );
 }

@@ -7,7 +7,6 @@ import { DEFAULT_CATALOG_DEFINITION } from '../../catalog';
 import type { ProjectWorkspace } from '../../application/workspace';
 import { ChartPresentationMode, type EditorUiState } from '../../editor';
 import { TrackSurface } from './TrackSurface';
-import { patternDimensionSummary } from '../editor/pattern-dimensions';
 import type { ReactElement } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 
@@ -212,7 +211,7 @@ describe('TrackSurface', () => {
     setup();
 
     expect(document.querySelector('.editor-heading-info .editor-dimensions')).toHaveTextContent(
-      patternDimensionSummary({ width: 3, height: 2, aidaCount: 14, units: 'metric' })
+      '3 × 2 stitches · 0.54 cm × 0.36 cm'
     );
     expect(document.querySelector('.editor-dimensions')?.textContent).toMatch(/^3 × 2 stitches · /);
   });

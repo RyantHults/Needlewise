@@ -1,4 +1,5 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
+import { useDismissable } from "./dismiss";
 
 interface InfoTipProps {
   /** The button's accessible name, e.g. "Pencil mode information". */
@@ -44,26 +45,7 @@ export function InfoTip({ label, id, children }: InfoTipProps) {
     };
   }, [open]);
 
-  useEffect(() => {
-    if (!open) return;
-    const close = () => { setPeek(false); setPinned(false); };
-    // Capture phase, so the tip closes before an enclosing modal sees Escape and closes too.
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      close();
-    };
-    const onPointerDown = (event: PointerEvent) => {
-      if (!wrapRef.current?.contains(event.target as Node)) close();
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    document.addEventListener("pointerdown", onPointerDown, true);
-    return () => {
-      window.removeEventListener("keydown", onKeyDown, true);
-      document.removeEventListener("pointerdown", onPointerDown, true);
-    };
-  }, [open]);
+  useDismissable({ open, refs: [wrapRef], onDismiss: () => { setPeek(false); setPinned(false); } });
 
   return (
     <span ref={wrapRef} className="settings-info-wrap" onMouseEnter={() => setPeek(true)} onMouseLeave={() => setPeek(false)}>

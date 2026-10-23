@@ -2,13 +2,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { planLayerMerge } from "../../application/layer-merge";
 import type { LayerSelection } from "../../application/types";
-import { canAddLayer, findLayer, MAX_LAYERS_PER_TYPE, type Layer, type LayeredDocument } from "../../domain";
+import { canAddLayer, findLayer, layerLimitMessage, type Layer, type LayeredDocument } from "../../domain";
 import { CANVAS_BASIC_LOCKED_HINT, type CanvasEditMode } from "../../editor/contracts";
 import type { ActiveLayerId } from "./LayersPanel";
+import { anchoredPosition, type AnchoredPosition } from "../anchored-position";
 import { ConfirmDialog } from "../ConfirmDialog";
+import { ActionButton } from "../controls/ActionButton";
+import { AidaCountSelect } from "../controls/AidaCountSelect";
+import { nextRovingIndex } from "../controls/roving";
+import { useDismissable } from "../dismiss";
 import { RenameLayerDialog } from "./RenameLayerDialog";
-
-export const AIDA_COUNTS = [11, 14, 16, 18, 22] as const;
 
 export interface BackgroundCatalogMatch {
   name: string;
@@ -52,46 +55,30 @@ interface CropProps {
  */
 function CropSplitButton({ mode, basicAvailable, active, onModeChange, onToggle }: CropProps) {
   const [open, setOpen] = useState(false);
-  const [position, setPosition] = useState({ left: 8, top: 8 });
+  const [position, setPosition] = useState<AnchoredPosition>({ left: 8, top: 8 });
   const arrow = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const effective: CanvasEditMode = basicAvailable ? mode : "advanced";
   const label = effective === "advanced" ? "Advanced crop" : "Crop";
 
+  const enabledItems = () => [...(menu.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]') ?? [])].filter((item) => !item.disabled);
+  useDismissable({ open, refs: [menu, arrow], onDismiss: () => setOpen(false), returnFocus: arrow });
   useEffect(() => {
-    if (!open) return undefined;
-    const items = () => [...(menu.current?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]') ?? [])].filter((item) => !item.disabled);
-    (menu.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]') ?? items()[0])?.focus();
-    const outside = (event: PointerEvent) => {
-      if (event.target instanceof Node && !menu.current?.contains(event.target) && !arrow.current?.contains(event.target)) setOpen(false);
-    };
-    const key = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        setOpen(false);
-        arrow.current?.focus();
-        return;
-      }
-      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-      event.preventDefault();
-      const enabled = items();
-      const index = enabled.indexOf(globalThis.document.activeElement as HTMLButtonElement);
-      const step = event.key === "ArrowDown" ? 1 : -1;
-      enabled[(index + step + enabled.length) % enabled.length]?.focus();
-    };
-    globalThis.document.addEventListener("pointerdown", outside);
-    globalThis.document.addEventListener("keydown", key, true);
-    return () => {
-      globalThis.document.removeEventListener("pointerdown", outside);
-      globalThis.document.removeEventListener("keydown", key, true);
-    };
+    if (!open) return;
+    (menu.current?.querySelector<HTMLButtonElement>('[aria-checked="true"]') ?? menu.current?.querySelector<HTMLButtonElement>('[role="menuitemradio"]:not(:disabled)'))?.focus();
   }, [open]);
 
   const openMenu = () => {
     const rect = arrow.current?.getBoundingClientRect();
-    if (rect) setPosition({ left: Math.max(8, Math.min(rect.left, window.innerWidth - 240)), top: Math.max(8, rect.top - 8) });
+    if (rect) setPosition(anchoredPosition(rect, "above", { width: 240, height: 0 }));
     setOpen(true);
+  };
+  const rove = (event: React.KeyboardEvent) => {
+    const enabled = enabledItems();
+    const next = nextRovingIndex(event.key, enabled.indexOf(globalThis.document.activeElement as HTMLButtonElement), enabled.length, "vertical");
+    if (next === null) return;
+    event.preventDefault();
+    enabled[next]?.focus();
   };
   const choose = (value: CanvasEditMode) => {
     setOpen(false);
@@ -119,10 +106,11 @@ function CropSplitButton({ mode, basicAvailable, active, onModeChange, onToggle 
       {open && createPortal(
         <div
           ref={menu}
-          className="layer-merge-menu crop-mode-menu"
+          className="popover-menu crop-mode-menu"
           role="menu"
           aria-label="Crop mode"
-          style={{ position: "fixed", left: position.left, top: position.top, transform: "translateY(-100%)", zIndex: 1000 }}
+          style={{ position: "fixed", ...position, zIndex: 1000 }}
+          onKeyDown={rove}
         >
           {CROP_MODES.map(([value, name, description]) => {
             const locked = value === "basic" && !basicAvailable;
@@ -168,10 +156,7 @@ function CanvasControls({ backgroundColor, backgroundCatalog, aidaCount, onChoos
       </button>
       <label className="layer-control-field" htmlFor="canvas-stitch-count">
         <span>Stitch count</span>
-        <select id="canvas-stitch-count" value={String(aidaCount)} onChange={(event) => onAidaCountChange(Number(event.target.value))}>
-          {(AIDA_COUNTS as readonly number[]).includes(aidaCount) ? null : <option value={String(aidaCount)}>{aidaCount}</option>}
-          {AIDA_COUNTS.map((count) => <option key={count} value={String(count)}>{count}</option>)}
-        </select>
+        <AidaCountSelect id="canvas-stitch-count" value={aidaCount} onChange={onAidaCountChange} />
       </label>
     </div>
   );
@@ -198,35 +183,27 @@ function StackLayerControls({ document, layer, layerSelection, onRename, onDupli
     window.setTimeout(() => renameButton.current?.focus(), 0);
   }, []);
 
-  const typeWord = layer.type === "stitch" ? "stitch" : "specialty";
   const duplicateAllowed = canAddLayer(document, layer.type);
-  const duplicateReason = duplicateAllowed ? "Duplicate layer" : `You already have ${String(MAX_LAYERS_PER_TYPE)} ${typeWord} layers.`;
+  const duplicateReason = duplicateAllowed ? "Duplicate layer" : layerLimitMessage(layer.type);
   const merge = planLayerMerge(document, layerSelection);
   const mergeDisabledReason = merge && "disabledReason" in merge ? merge.disabledReason : undefined;
   const mergeTitle = merge && "title" in merge ? merge.title : (mergeDisabledReason ?? "Merge layers");
 
   return (
     <div className="layer-controls" role="group" aria-label={`${layer.name} layer actions`}>
-      <button ref={renameButton} type="button" className="bottom-control layer-action" aria-label="Rename layer" title="Rename layer" aria-haspopup="dialog" onClick={() => setRenameOpen(true)}>
-        <span aria-hidden="true">✎</span><small>Rename</small>
-      </button>
-      <button type="button" className="bottom-control layer-action" aria-label="Duplicate layer" title={duplicateReason} disabled={!duplicateAllowed} onClick={() => onDuplicate(layer.id)}>
-        <span aria-hidden="true">⧉</span><small>Duplicate</small>
-      </button>
-      <button
-        type="button"
+      <ActionButton ref={renameButton} className="bottom-control layer-action" glyph="✎" caption="Rename" aria-label="Rename layer" title="Rename layer" aria-haspopup="dialog" onClick={() => setRenameOpen(true)} />
+      <ActionButton className="bottom-control layer-action" glyph="⧉" caption="Duplicate" aria-label="Duplicate layer" title={duplicateReason} disabled={!duplicateAllowed} onClick={() => onDuplicate(layer.id)} />
+      <ActionButton
         className="bottom-control layer-action"
+        glyph="⤓"
+        caption="Merge"
         aria-label="Merge"
         title={mergeTitle}
         aria-description={mergeTitle}
         disabled={!merge || mergeDisabledReason !== undefined}
         onClick={onMerge}
-      >
-        <span aria-hidden="true">⤓</span><small>Merge</small>
-      </button>
-      <button ref={deleteButton} type="button" className="bottom-control layer-action layer-action-delete" aria-label="Delete layer" title="Delete layer" onClick={() => setDeleteOpen(true)}>
-        <span aria-hidden="true">×</span><small>Delete</small>
-      </button>
+      />
+      <ActionButton ref={deleteButton} className="bottom-control layer-action layer-action-delete" glyph="×" caption="Delete" aria-label="Delete layer" title="Delete layer" onClick={() => setDeleteOpen(true)} />
       {renameOpen && <RenameLayerDialog name={layer.name} onSave={(name) => onRename(layer.id, name)} onClose={closeRename} />}
       {deleteOpen && (
         <ConfirmDialog

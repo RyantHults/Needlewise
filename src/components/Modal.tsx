@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { useDismissable } from './dismiss';
 
 export interface ModalProps {
   /** Backdrop click, the × button, and Escape (unless `onEscape` is given). */
@@ -26,9 +27,6 @@ export interface ModalProps {
 
 const FOCUSABLE_SELECTOR = 'button,input,select,textarea,a[href],[tabindex]';
 
-// Open modals, innermost last. Escape that lands outside every dialog (focus fell to <body>) goes to the top one.
-const openModals: symbol[] = [];
-
 function focusableWithin(root: HTMLElement) {
   return [...root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)].filter(
     (item) => !item.hasAttribute('disabled') && item.tabIndex >= 0 && !item.closest('[hidden]')
@@ -54,14 +52,11 @@ export function Modal({
   const generatedId = useId();
   const headingId = titleId ?? generatedId;
   const elementRef = useRef<HTMLDivElement | null>(null);
-  const onCloseRef = useRef(onClose);
-  const onEscapeRef = useRef(onEscape);
+  const backdropRef = useRef<HTMLDivElement | null>(null);
   const initialFocusRef = useRef(initialFocus);
   const returnFocusRef = useRef(returnFocus);
   // Set once: StrictMode's second effect run would otherwise capture this dialog's own control.
   const previousFocusRef = useRef<HTMLElement | null>(null);
-  onCloseRef.current = onClose;
-  onEscapeRef.current = onEscape;
   initialFocusRef.current = initialFocus;
   returnFocusRef.current = returnFocus;
 
@@ -71,7 +66,11 @@ export function Modal({
     else if (dialogRef) dialogRef.current = node;
   }, [dialogRef]);
 
-  // Inerts the rest of the app, moves focus in, traps Tab, and handles Escape. Nested
+  // The backdrop covers the page, so presses never land outside it, and overlays beneath stay open.
+  // Escape reaches the modal only when nothing opened above it, wherever focus is.
+  useDismissable({ open: true, refs: [backdropRef], onDismiss: onEscape ?? onClose });
+
+  // Inerts the rest of the app, moves focus in, and traps Tab. Nested
   // modals unmount in LIFO order, so each restores the inert value it found.
   useEffect(() => {
     previousFocusRef.current ??= document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -79,20 +78,12 @@ export function Modal({
     const wasInert = root?.inert ?? false;
     if (root) root.inert = true;
     const el = elementRef.current;
-    const self = Symbol('modal');
-    openModals.push(self);
 
     const requested = initialFocusRef.current;
     const target = typeof requested === 'string' ? el?.querySelector<HTMLElement>(requested) : requested?.current;
     (target ?? (el ? focusableWithin(el)[0] : null) ?? el)?.focus();
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopPropagation();
-        (onEscapeRef.current ?? onCloseRef.current)();
-        return;
-      }
       if (event.key !== 'Tab' || !el) return;
       const focusable = focusableWithin(el);
       const first = focusable[0];
@@ -104,20 +95,8 @@ export function Modal({
     };
     el?.addEventListener('keydown', handleKeyDown);
 
-    // Capture phase, so document-level Escape handlers behind the modal never see this key.
-    const handleDocumentKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || openModals.at(-1) !== self) return;
-      if (event.target instanceof Element && event.target.closest('[aria-modal="true"]')) return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      (onEscapeRef.current ?? onCloseRef.current)();
-    };
-    document.addEventListener('keydown', handleDocumentKeyDown, true);
-
     return () => {
       el?.removeEventListener('keydown', handleKeyDown);
-      document.removeEventListener('keydown', handleDocumentKeyDown, true);
-      openModals.splice(openModals.indexOf(self), 1);
       if (root) root.inert = wasInert;
       const returnTo = returnFocusRef.current;
       if (returnTo === false) return;
@@ -131,7 +110,7 @@ export function Modal({
   }, []);
 
   return createPortal(
-    <div className="modal-backdrop" role="presentation" onClick={(event) => { if (closeOnBackdrop && event.target === event.currentTarget) onClose(); }}>
+    <div ref={backdropRef} className="modal-backdrop" role="presentation" onClick={(event) => { if (closeOnBackdrop && event.target === event.currentTarget) onClose(); }}>
       <div
         ref={setDialogElement}
         className={className ? `create-modal ${className}` : 'create-modal'}

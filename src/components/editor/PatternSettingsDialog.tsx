@@ -1,12 +1,17 @@
 import { useEffect, useState } from "react";
 import type { ProjectWorkspace } from "../../application/workspace";
 import type { DisplayUnits } from "../../domain";
+import { nextRovingIndex } from "../controls/roving";
+import { SegmentedControl } from "../controls/SegmentedControl";
 import { InfoTip } from "../InfoTip";
 import { Modal } from "../Modal";
+import { useProjectUnits } from "../project-units";
 import type { EditorPreferences } from "./editor-preferences";
 
 type SettingsTab = "project" | "editor";
 const TABS = [["project", "Project"], ["editor", "Editor"]] as const;
+const UNIT_OPTIONS: readonly { value: DisplayUnits; label: string }[] = [{ value: "metric", label: "Metric" }, { value: "imperial", label: "Imperial" }];
+const PLACEMENT_OPTIONS = [{ value: "left", label: "Left" }, { value: "right", label: "Right" }] as const;
 
 export interface PatternSettingsDialogProps {
   workspace: Pick<ProjectWorkspace, "metadata" | "updateActiveMetadata">;
@@ -26,27 +31,19 @@ export function PatternSettingsDialog({
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("project");
   const [title, setTitle] = useState(workspace.metadata?.title ?? "");
   const [notes, setNotes] = useState(workspace.metadata?.notes ?? "");
-  const [units, setUnits] = useState<DisplayUnits>(workspace.metadata?.units ?? "metric");
+  const [units, applyUnits] = useProjectUnits(workspace);
   const { railSide, paletteDisplay: paletteOptions, pencilModeEnabled, showCenterMark } = preferences;
 
   useEffect(() => {
     setTitle(workspace.metadata?.title ?? "");
     setNotes(workspace.metadata?.notes ?? "");
-    setUnits(workspace.metadata?.units ?? "metric");
   }, [
     workspace,
     workspace.metadata?.id,
     workspace.metadata?.title,
     workspace.metadata?.notes,
-    workspace.metadata?.units,
   ]);
 
-  const applyUnits = (next: DisplayUnits) => {
-    setUnits(next);
-    void Promise.resolve(workspace.updateActiveMetadata({ units: next })).catch(
-      () => undefined,
-    );
-  };
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
     await workspace.updateActiveMetadata({
@@ -67,7 +64,7 @@ export function PatternSettingsDialog({
     >
       <form onSubmit={save}>
         <div className="settings-tabs" role="tablist" aria-label="Settings sections">
-          {TABS.map(([key, label]) => <button
+          {TABS.map(([key, label], index) => <button
             key={key}
             id={`settings-tab-${key}`}
             className="settings-tab"
@@ -78,12 +75,10 @@ export function PatternSettingsDialog({
             tabIndex={settingsTab === key ? 0 : -1}
             onClick={() => setSettingsTab(key)}
             onKeyDown={(event) => {
-              if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+              const target = nextRovingIndex(event.key, index, TABS.length, 'horizontal');
+              if (target === null) return;
               event.preventDefault();
-              const keys = ['project', 'editor'] as const;
-              const current = keys.indexOf(key);
-              const target = event.key === 'Home' ? 0 : event.key === 'End' ? keys.length - 1 : (current + (event.key === 'ArrowRight' ? 1 : -1) + keys.length) % keys.length;
-              const next = keys[target]!;
+              const next = TABS[target][0];
               setSettingsTab(next);
               window.setTimeout(() => globalThis.document.getElementById(`settings-tab-${next}`)?.focus(), 0);
             }}
@@ -108,47 +103,13 @@ export function PatternSettingsDialog({
                 onChange={(e) => setNotes(e.target.value)}
               />
             </label>
-            <div className="trace-mode-row" role="group" aria-label="Measurement units">
-              <button
-                type="button"
-                className="trace-mode-button"
-                aria-pressed={units === "metric"}
-                onClick={() => applyUnits("metric")}
-              >
-                Metric
-              </button>
-              <button
-                type="button"
-                className="trace-mode-button"
-                aria-pressed={units === "imperial"}
-                onClick={() => applyUnits("imperial")}
-              >
-                Imperial
-              </button>
-            </div>
+            <SegmentedControl aria-label="Measurement units" options={UNIT_OPTIONS} value={units} onChange={(next) => void applyUnits(next)} />
           </section>
         </div>
         <div id="settings-panel-editor" className="settings-tabpanel" role="tabpanel" aria-labelledby="settings-tab-editor" hidden={settingsTab !== 'editor'}>
           <section className="settings-section" aria-labelledby="editor-settings-heading">
             <h3 id="editor-settings-heading">Editor</h3>
-            <div className="trace-mode-row" role="group" aria-label="Control placement">
-              <button
-                type="button"
-                className="trace-mode-button"
-                aria-pressed={railSide === "left"}
-                onClick={() => onPreferencesChange((current) => ({ ...current, railSide: "left" }))}
-              >
-                Left
-              </button>
-              <button
-                type="button"
-                className="trace-mode-button"
-                aria-pressed={railSide === "right"}
-                onClick={() => onPreferencesChange((current) => ({ ...current, railSide: "right" }))}
-              >
-                Right
-              </button>
-            </div>
+            <SegmentedControl aria-label="Control placement" options={PLACEMENT_OPTIONS} value={railSide} onChange={(side) => onPreferencesChange((current) => ({ ...current, railSide: side }))} />
             {editorOptions === "all" && (
               <>
                 <label className="check-row palette-display-toggle">

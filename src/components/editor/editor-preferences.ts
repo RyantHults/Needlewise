@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+import type { ProjectWorkspace } from "../../application/workspace";
 import { DEFAULT_HALF_DIRECTION, type HalfStitchBrush } from "../../editor/contracts";
 
 export const EDITOR_PREFERENCES_KEY = "needlewise-editor-preferences:v1";
@@ -67,7 +69,7 @@ export const normalizeEditorPreferences = (value: EditorPreferences): EditorPref
   };
 };
 
-export const readEditorPreferences = (workspaceId: string): EditorPreferences => {
+const readEditorPreferences = (workspaceId: string): EditorPreferences => {
   const defaults = defaultEditorPreferences();
   try {
     const stored = globalThis.localStorage.getItem(EDITOR_PREFERENCES_KEY);
@@ -108,7 +110,7 @@ export const readEditorPreferences = (workspaceId: string): EditorPreferences =>
   }
 };
 
-export const writeEditorPreferences = (preferences: EditorPreferences): void => {
+const writeEditorPreferences = (preferences: EditorPreferences): void => {
   try {
     globalThis.localStorage.setItem(
       EDITOR_PREFERENCES_KEY,
@@ -118,3 +120,12 @@ export const writeEditorPreferences = (preferences: EditorPreferences): void => 
     // Preferences are a convenience; private browsing must not block editing.
   }
 };
+
+/** The editor preferences a pattern page shows, read once when it opens and written back on every change. */
+export function useEditorPreferences(workspace: Pick<ProjectWorkspace, "metadata">): [EditorPreferences, (update: EditorPreferences | ((current: EditorPreferences) => EditorPreferences)) => void] {
+  const [preferences, setPreferences] = useState(() => readEditorPreferences(workspace.metadata?.id ?? "default"));
+  useEffect(() => {
+    writeEditorPreferences(preferences);
+  }, [preferences]);
+  return [preferences, setPreferences];
+}

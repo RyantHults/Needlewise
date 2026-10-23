@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CatalogDefinition, CatalogRecord } from "../catalog";
 import { normalizeHexColor } from "../domain/color";
+import { HexColorField } from "./controls/HexColorField";
+import { nextRovingIndex } from "./controls/roving";
 
 export interface ThreadColorPickerProps {
   catalogs: readonly CatalogDefinition[];
@@ -39,8 +41,7 @@ export function ThreadColorPicker({
   );
   const [query, setQuery] = useState("");
   const [selectedColor, setSelectedColor] = useState<CatalogRecord | null>(() => initialColor ?? firstColor(selectedCatalogId));
-  const [customColorInput, setCustomColorInput] = useState(initialCustomHex);
-  const [canonicalCustomColor, setCanonicalCustomColor] = useState(() => normalizeHexColor(initialCustomHex) ?? "#000000");
+  const [customColor, setCustomColor] = useState<string | undefined>(() => normalizeHexColor(initialCustomHex));
   const pickerCatalog = catalogs.find((item) => item.association.catalogId === selectedCatalogId);
   const catalogResults = useMemo(
     () => pickerCatalog?.search(query) ?? [],
@@ -65,14 +66,6 @@ export function ThreadColorPicker({
     setSelectedCatalogId(catalogId);
     setQuery("");
     setSelectedColor(firstColor(catalogId));
-  };
-  const customColor = normalizeHexColor(customColorInput);
-  const setColorFromHex = (value: string) => {
-    setCustomColorInput(value);
-    const normalized = normalizeHexColor(value);
-    if (normalized) {
-      setCanonicalCustomColor(normalized);
-    }
   };
   const customCatalogColor = customColor ? pickerCatalog?.getByHex(customColor) : undefined;
   const actionLabel = customActionLabel(customColor ?? null, customCatalogColor, pickerCatalog);
@@ -117,10 +110,10 @@ export function ThreadColorPicker({
           tabIndex={selectedCatalogId === item.association.catalogId ? 0 : -1}
           onClick={() => selectCatalog(item.association.catalogId)}
           onKeyDown={(event) => {
-            if (!["ArrowRight", "ArrowLeft", "Home", "End"].includes(event.key)) return;
-            event.preventDefault();
             const index = catalogs.findIndex((catalog) => catalog.association.catalogId === item.association.catalogId);
-            const nextIndex = event.key === "ArrowRight" ? (index + 1) % catalogs.length : event.key === "ArrowLeft" ? (index - 1 + catalogs.length) % catalogs.length : event.key === "Home" ? 0 : event.key === "End" ? catalogs.length - 1 : index;
+            const nextIndex = nextRovingIndex(event.key, index, catalogs.length, "horizontal");
+            if (nextIndex === null) return;
+            event.preventDefault();
             if (nextIndex === index) return;
             const nextCatalog = catalogs[nextIndex];
             selectCatalog(nextCatalog.association.catalogId);
@@ -171,31 +164,17 @@ export function ThreadColorPicker({
     </div> : <p className="catalog-unavailable" role="status">Catalog unavailable</p>}
     <section className="custom-color-section" aria-labelledby="custom-color-title">
       <h3 id="custom-color-title">Custom color</h3>
-      <div className="custom-color-fields">
-        <label htmlFor="custom-color-picker">Choose custom color</label>
-        <input
-          id="custom-color-picker"
-          type="color"
-           value={canonicalCustomColor}
-           onChange={(e) => setColorFromHex(e.target.value)}
-        />
-        <label htmlFor="custom-color-hex">Hex color</label>
-        <input
-          id="custom-color-hex"
-          type="text"
-          value={customColorInput}
-           onChange={(e) => setColorFromHex(e.target.value)}
-          placeholder="#C72B3B"
-          inputMode="text"
-          autoComplete="off"
-          aria-describedby="custom-color-help"
-       />
-      </div>
-      <p id="custom-color-help" className="custom-color-help" aria-live="polite">
-        {customColorInput && !customColor
-          ? "Enter a 3- or 6-digit hex color."
-          : "Use a three- or six-digit hex value."}
-      </p>
+      <HexColorField
+        id="custom-color-hex"
+        className="custom-color-fields-compact"
+        value={customColor ?? ""}
+        onChange={setCustomColor}
+        pickerLabel="Choose custom color"
+        textLabel="Hex color"
+        placeholder="#C72B3B"
+        help="Use a three- or six-digit hex value."
+        invalidHelp="Enter a 3- or 6-digit hex color."
+      />
       <button
         className="small-action custom-color-action"
         type="button"

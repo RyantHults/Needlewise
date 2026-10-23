@@ -1,4 +1,5 @@
 import { ChartPresentationMode } from "../../editor";
+import { ActionButton } from "../controls/ActionButton";
 import { ActionSection } from "./ActionSection";
 
 const modes = [
@@ -20,13 +21,17 @@ export function ViewSettings({ mode, threadView, onChartMode, onThreadView }: Pr
     <ActionSection id="view-actions-label" label="View settings" className="view-actions">
       <div className="chart-view" role="group" aria-label="View settings">
         {modes.map(([v, l]) => (
-          <button type="button" key={v} title={l} aria-label={l} aria-pressed={mode === v && !threadView} onClick={() => onChartMode(v)}>
-            <span aria-hidden="true">{v === ChartPresentationMode.Color ? "◈" : v === ChartPresentationMode.Symbol ? "✣" : v === ChartPresentationMode.Grayscale ? "▧" : "◈✣"}</span><small>{l}</small>
-          </button>
+          <ActionButton
+            key={v}
+            glyph={v === ChartPresentationMode.Color ? "◈" : v === ChartPresentationMode.Symbol ? "✣" : v === ChartPresentationMode.Grayscale ? "▧" : "◈✣"}
+            caption={l}
+            title={l}
+            aria-label={l}
+            aria-pressed={mode === v && !threadView}
+            onClick={() => onChartMode(v)}
+          />
         ))}
-        <button type="button" title="Render" aria-label="Render" aria-pressed={threadView} onClick={onThreadView}>
-          <span aria-hidden="true">⨯</span><small>Render</small>
-        </button>
+        <ActionButton glyph="⨯" caption="Render" title="Render" aria-label="Render" aria-pressed={threadView} onClick={onThreadView} />
       </div>
     </ActionSection>
   );

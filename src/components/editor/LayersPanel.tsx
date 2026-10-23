@@ -12,9 +12,11 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import type { LayerSelection } from "../../application/types";
-import { canAddLayer, MAX_LAYERS_PER_TYPE, type Layer, type LayeredDocument, type LayerType, type PaletteEntry } from "../../domain";
+import { canAddLayer, layerLimitMessage, type Layer, type LayeredDocument, type LayerType, type PaletteEntry } from "../../domain";
 import { createThumbnailQueue, layerContentChanged, paintLayerThumbnail, paletteSignature, renderLayerThumbnailPixels, type ThumbnailQueue } from "../../rendering/layer-thumbnail";
-import { pointerWithinOrClosestCenter } from "../gallery-dnd";
+import { pointerWithinOrClosestCenter } from "../dnd-shared";
+import { useDismissable } from "../dismiss";
+import { prefersReducedMotion } from "../motion";
 import stitchIcon from "../../assets/editor-tools/stitch.svg";
 import {
   displayLayerOrder,
@@ -63,6 +65,40 @@ function EyeIcon({ open }: { open: boolean }) {
       <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" />
       {open ? <circle cx="12" cy="12" r="2.8" /> : <path d="M4 20 20 4" />}
     </svg>
+  );
+}
+
+/** The row's eye button; `name` reads as "Hide <name>" or "Show <name>". */
+function VisibilityToggle({ name, visible, onToggle }: { name: string; visible: boolean; onToggle: (visible: boolean) => void }) {
+  return (
+    <button
+      type="button"
+      className="layer-row-eye"
+      aria-label={visible ? `Hide ${name}` : `Show ${name}`}
+      title={visible ? "Hide layer" : "Show layer"}
+      aria-pressed={!visible}
+      onClick={() => onToggle(!visible)}
+    >
+      <EyeIcon open={visible} />
+    </button>
+  );
+}
+
+interface LayerRowShellProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
+  kind: RowKind;
+  selected: boolean;
+  thumbnail: React.ReactNode;
+  name: string;
+}
+
+/** The row's select button: type glyph, thumbnail and name. */
+function LayerRowShell({ kind, selected, thumbnail, name, ...rest }: LayerRowShellProps) {
+  return (
+    <button {...rest} type="button" className="layer-row-select" aria-pressed={selected}>
+      <LayerTypeSymbol kind={kind} />
+      {thumbnail}
+      <span className="layer-row-name">{name}</span>
+    </button>
   );
 }
 
@@ -179,7 +215,7 @@ function LayerRow({ document, layer, selected, primary, dragging, thumbnails, th
   const swallowClick = useRef(false);
   const [swipeOffset, setSwipeOffset] = useState<number | null>(null);
   const [swipeArmedNow, setSwipeArmedNow] = useState(false);
-  const reduceMotion = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const reduceMotion = prefersReducedMotion();
   const endSwipe = () => {
     swipe.current = null;
     setSwipeOffset(null);
@@ -234,10 +270,11 @@ function LayerRow({ document, layer, selected, primary, dragging, thumbnails, th
         event.stopPropagation();
       }}
     >
-      <button
-        type="button"
-        className="layer-row-select"
-        aria-pressed={selected}
+      <LayerRowShell
+        kind={layer.type}
+        selected={selected}
+        thumbnail={<LayerThumbnail queue={thumbnails} source={thumbnailSource} layer={layer} palette={palette} />}
+        name={layer.name}
         aria-label={`${layer.name}, ${typeLabel}${layer.visible ? "" : ", hidden"}`}
         aria-description={SWIPE_HINT}
         title={`${layer.name}. ${SWIPE_HINT}`}
@@ -246,21 +283,8 @@ function LayerRow({ document, layer, selected, primary, dragging, thumbnails, th
           toggle: event.ctrlKey || event.metaKey,
           range: event.shiftKey && !event.ctrlKey && !event.metaKey,
         })}
-      >
-        <LayerTypeSymbol kind={layer.type} />
-        <LayerThumbnail queue={thumbnails} source={thumbnailSource} layer={layer} palette={palette} />
-        <span className="layer-row-name">{layer.name}</span>
-      </button>
-      <button
-        type="button"
-        className="layer-row-eye"
-        aria-label={layer.visible ? `Hide ${layer.name}` : `Show ${layer.name}`}
-        title={layer.visible ? "Hide layer" : "Show layer"}
-        aria-pressed={!layer.visible}
-        onClick={() => onToggleVisibility(layer.id, !layer.visible)}
-      >
-        <EyeIcon open={layer.visible} />
-      </button>
+      />
+      <VisibilityToggle name={layer.name} visible={layer.visible} onToggle={(visible) => onToggleVisibility(layer.id, visible)} />
       <button
         ref={setActivatorNodeRef}
         type="button"
@@ -325,24 +349,9 @@ export function LayersPanel({
     return () => window.removeEventListener("touchmove", hold);
   }, [dragging]);
 
+  useDismissable({ open: menuOpen, refs: [menu, addButton], onDismiss: () => setMenuOpen(false), returnFocus: addButton });
   useEffect(() => {
-    if (!menuOpen) return undefined;
-    menu.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
-    const outside = (event: PointerEvent) => {
-      if (event.target instanceof Node && !menu.current?.contains(event.target) && !addButton.current?.contains(event.target)) setMenuOpen(false);
-    };
-    const key = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      setMenuOpen(false);
-      addButton.current?.focus();
-    };
-    globalThis.document.addEventListener("pointerdown", outside);
-    globalThis.document.addEventListener("keydown", key);
-    return () => {
-      globalThis.document.removeEventListener("pointerdown", outside);
-      globalThis.document.removeEventListener("keydown", key);
-    };
+    if (menuOpen) menu.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
   }, [menuOpen]);
 
   const handleDragStart = (event: DragStartEvent) => setDragging(String(event.active.id));
@@ -368,7 +377,7 @@ export function LayersPanel({
       >
         <LayerTypeSymbol kind={type} />
         <span>{label}</span>
-        {!allowed && <small id={reasonId}>{`You already have ${String(MAX_LAYERS_PER_TYPE)} ${type} layers.`}</small>}
+        {!allowed && <small id={reasonId}>{layerLimitMessage(type)}</small>}
       </button>
     );
   };
@@ -386,14 +395,16 @@ export function LayersPanel({
         <ul className="layers-list">
           {reference.present ? (
             <li className={`layer-row layer-row-pinned${activeLayerId === "reference" ? " layer-row-selected" : ""}${reference.visible ? "" : " layer-row-hidden"}`} data-layer-type="reference">
-              <button type="button" className="layer-row-select" aria-pressed={activeLayerId === "reference"} aria-label={`Reference image${reference.visible ? "" : ", hidden"}`} title="Reference image" onClick={() => onSelect("reference")}>
-                <LayerTypeSymbol kind="reference" />
-                <span className="layer-thumbnail layer-thumbnail-reference" aria-hidden="true" />
-                <span className="layer-row-name">Reference</span>
-              </button>
-              <button type="button" className="layer-row-eye" aria-label={reference.visible ? "Hide reference image" : "Show reference image"} title={reference.visible ? "Hide layer" : "Show layer"} aria-pressed={!reference.visible} onClick={() => onToggleReferenceVisibility(!reference.visible)}>
-                <EyeIcon open={reference.visible} />
-              </button>
+              <LayerRowShell
+                kind="reference"
+                selected={activeLayerId === "reference"}
+                thumbnail={<span className="layer-thumbnail layer-thumbnail-reference" aria-hidden="true" />}
+                name="Reference"
+                aria-label={`Reference image${reference.visible ? "" : ", hidden"}`}
+                title="Reference image"
+                onClick={() => onSelect("reference")}
+              />
+              <VisibilityToggle name="reference image" visible={reference.visible} onToggle={onToggleReferenceVisibility} />
             </li>
           ) : (
             <li className={`layer-row layer-row-pinned layer-row-collapsed${activeLayerId === "reference" ? " layer-row-selected" : ""}`} data-layer-type="reference">
@@ -423,11 +434,15 @@ export function LayersPanel({
             />,
           ])}
           <li className={`layer-row layer-row-pinned${activeLayerId === "canvas" ? " layer-row-selected" : ""}`} data-layer-type="canvas">
-            <button type="button" className="layer-row-select" aria-pressed={activeLayerId === "canvas"} aria-label="Canvas" title="Canvas" onClick={() => onSelect("canvas")}>
-              <LayerTypeSymbol kind="canvas" />
-              <span className="layer-thumbnail layer-thumbnail-canvas" style={{ backgroundColor }} aria-hidden="true" />
-              <span className="layer-row-name">Canvas</span>
-            </button>
+            <LayerRowShell
+              kind="canvas"
+              selected={activeLayerId === "canvas"}
+              thumbnail={<span className="layer-thumbnail layer-thumbnail-canvas" style={{ backgroundColor }} aria-hidden="true" />}
+              name="Canvas"
+              aria-label="Canvas"
+              title="Canvas"
+              onClick={() => onSelect("canvas")}
+            />
           </li>
         </ul>
       </DndContext>
@@ -444,7 +459,7 @@ export function LayersPanel({
           <span aria-hidden="true">+</span> Add layer
         </button>
         {menuOpen && (
-          <div ref={menu} id="layers-add-menu" className="layers-add-menu" role="menu" aria-label="Add layer">
+          <div ref={menu} id="layers-add-menu" className="popover-menu layers-add-menu" role="menu" aria-label="Add layer">
             {addOption("specialty", "Specialty layer")}
             {addOption("stitch", "Stitch layer")}
           </div>

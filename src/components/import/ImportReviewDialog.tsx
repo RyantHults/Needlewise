@@ -2,11 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { buildImportedDocument, assignSymbolSlugs, maxImportColors, proposeMappings } from '../../import/build-document';
 import { createPatternImportClient, type PatternImportClient } from '../../import/import-client';
 import { ImportError, type ImportAnalysis, type ImportOverrides, type ImportPageRole, type ImportProgress, type SymbolMapping } from '../../import/types';
-import type { PatternDocument } from '../../domain';
+import { COMMON_AIDA_COUNTS, type PatternDocument } from '../../domain';
 import { ConfirmDialog } from '../ConfirmDialog';
+import { ErrorNotice, WarningNotice } from '../controls/Notice';
+import { useLatestRequest } from '../latest-request';
 import { Modal } from '../Modal';
 import { ChartStep } from './ChartStep';
-import { DetailsStep, IMPORT_AIDA_COUNTS } from './DetailsStep';
+import { DetailsStep } from './DetailsStep';
 import { KeyStep, type KeyRow } from './KeyStep';
 import { PagesStep } from './PagesStep';
 import { mappingColor } from './mapping';
@@ -44,8 +46,7 @@ const messageFor = (error: unknown, fallback: string) =>
 
 export function ImportReviewDialog({ file, returnFocus, onClose, onCreate }: Props) {
   const clientRef = useRef<PatternImportClient | null>(null);
-  const generation = useRef(0);
-  const mounted = useRef(true);
+  const request = useLatestRequest();
   const [analysis, setAnalysis] = useState<ImportAnalysis | null>(null);
   const [progress, setProgress] = useState<ImportProgress | null>(null);
   const [loadError, setLoadError] = useState('');
@@ -62,21 +63,21 @@ export function ImportReviewDialog({ file, returnFocus, onClose, onCreate }: Pro
   const stepChanged = useRef(false);
 
   useEffect(() => {
-    mounted.current = true;
+    const isCurrent = request.begin();
     const client = createPatternImportClient();
     clientRef.current = client;
     const abort = new AbortController();
-    void client.open(file, file.name, { signal: abort.signal, onProgress: (next) => { if (mounted.current) setProgress(next); } }).then((first) => {
-      if (!mounted.current) return;
+    void client.open(file, file.name, { signal: abort.signal, onProgress: (next) => { if (isCurrent()) setProgress(next); } }).then((first) => {
+      if (!isCurrent()) return;
       setAnalysis(first);
       setTitle(first.chart.title ?? (file.name.replace(/\.pdf$/i, '') || 'Imported pattern'));
       const fabric = first.chart.fabricCount;
-      if (fabric !== undefined && (IMPORT_AIDA_COUNTS as readonly number[]).includes(fabric)) setAida(String(fabric));
+      if (fabric !== undefined && COMMON_AIDA_COUNTS.includes(fabric)) setAida(String(fabric));
     }).catch((error: unknown) => {
-      if (mounted.current && !(error instanceof ImportError && error.code === 'cancelled')) setLoadError(messageFor(error, 'This file could not be read.'));
+      if (isCurrent() && !(error instanceof ImportError && error.code === 'cancelled')) setLoadError(messageFor(error, 'This file could not be read.'));
     });
-    return () => { mounted.current = false; abort.abort(); client.dispose(); clientRef.current = null; };
-  }, [file]);
+    return () => { request.cancel(); abort.abort(); client.dispose(); clientRef.current = null; };
+  }, [file, request]);
 
   useEffect(() => {
     if (!stepChanged.current) return;
@@ -99,17 +100,17 @@ export function ImportReviewDialog({ file, returnFocus, onClose, onCreate }: Pro
   function rerun(overrides: ImportOverrides, commit: () => void) {
     const client = clientRef.current;
     if (!client) return;
-    const run = ++generation.current;
+    const isCurrent = request.begin();
     setWorking(true);
     setCreateError('');
     void client.reanalyze(overrides).then((next) => {
-      if (!mounted.current || run !== generation.current) return;
+      if (!isCurrent()) return;
       commit();
       setAnalysis(next);
     }).catch((error: unknown) => {
-      if (mounted.current && run === generation.current) setCreateError(messageFor(error, 'The pattern could not be re-read.'));
+      if (isCurrent()) setCreateError(messageFor(error, 'The pattern could not be re-read.'));
     }).finally(() => {
-      if (mounted.current && run === generation.current) setWorking(false);
+      if (isCurrent()) setWorking(false);
     });
   }
   function changeRole(page: number, role: ImportPageRole) {
@@ -129,6 +130,7 @@ export function ImportReviewDialog({ file, returnFocus, onClose, onCreate }: Pro
   }
   async function create() {
     if (!analysis || creating) return;
+    const isCurrent = request.current();
     setCreating(true);
     setCreateError('');
     try {
@@ -136,7 +138,7 @@ export function ImportReviewDialog({ file, returnFocus, onClose, onCreate }: Pro
       const document = buildImportedDocument(analysis.chart, mappings, { aidaCount });
       await onCreate({ document, title: title.trim() || 'Imported pattern', aidaCount, format: analysis.format });
     } catch (error) {
-      if (mounted.current) { setCreateError(messageFor(error, 'The pattern could not be saved locally.')); setCreating(false); }
+      if (isCurrent()) { setCreateError(messageFor(error, 'The pattern could not be saved locally.')); setCreating(false); }
     }
   }
 
@@ -148,7 +150,7 @@ export function ImportReviewDialog({ file, returnFocus, onClose, onCreate }: Pro
     <Modal className="import-review-modal" eyebrow="New project" title="Import a pattern" titleId="import-dialog-title" closeLabel="Close import dialog" closeDisabled={creating} returnFocus={returnFocus} onEscape={requestClose} onClose={requestClose}>
       <p className="control-note import-file-name">{file.name}</p>
       <div aria-live="polite" className="import-status">{status}</div>
-      {loadError && <p className="modal-error" role="alert">{loadError}</p>}
+      {loadError && <ErrorNotice>{loadError}</ErrorNotice>}
       {!analysis && !loadError && <progress className="import-progress" aria-label="Reading the PDF" max={progress?.total || undefined} value={progress ? progress.done : undefined} />}
       {loadError && <button className="button button-secondary" type="button" onClick={onClose}>Close</button>}
       {analysis && (
@@ -165,10 +167,10 @@ export function ImportReviewDialog({ file, returnFocus, onClose, onCreate }: Pro
             {step === 2 && <KeyStep chart={analysis.chart} rows={rows} disabled={busy} onChoose={(mapping) => setEdits((current) => ({ ...current, [mapping.symbolKey]: mapping }))} />}
             {step === 3 && <DetailsStep title={title} aida={aida} onTitle={setTitle} onAida={setAida} />}
           </section>
-          {step === 2 && unresolved > 0 && <p className="modal-error" role="status">{unresolved} {unresolved === 1 ? 'symbol has' : 'symbols have'} no thread yet. Choose one before creating the pattern.</p>}
-          {empty && <p className="modal-error" role="status">No chart pages are selected. Mark at least one page as a chart.</p>}
-          {overLimit && step !== 1 && <p className="modal-error" role="status">This chart uses {analysis.chart.symbols.length} colors, but at most {colorLimit} are supported.</p>}
-          {createError && <p className="modal-error" role="alert">{createError}</p>}
+          {step === 2 && unresolved > 0 && <WarningNotice>{unresolved} {unresolved === 1 ? 'symbol has' : 'symbols have'} no thread yet. Choose one before creating the pattern.</WarningNotice>}
+          {empty && <WarningNotice>No chart pages are selected. Mark at least one page as a chart.</WarningNotice>}
+          {overLimit && step !== 1 && <WarningNotice>This chart uses {analysis.chart.symbols.length} colors, but at most {colorLimit} are supported.</WarningNotice>}
+          {createError && <ErrorNotice>{createError}</ErrorNotice>}
           <div className="import-actions">
             <button className="button button-secondary" type="button" disabled={busy || step === 0} onClick={() => goTo(step - 1)}>Back</button>
             {last

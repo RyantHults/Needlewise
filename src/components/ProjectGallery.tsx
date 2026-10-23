@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -28,15 +28,16 @@ import {
   isValidDropTarget,
   parseDragId,
   pickNextDropTarget,
-  pointerWithinOrClosestCenter,
   projectDragId,
   resolveMoveTarget,
-  snapCenterToPointer,
   type AnnouncementContext,
   type Direction,
   type MoveContext,
   type Rect
 } from './gallery-dnd';
+import { pointerWithinOrClosestCenter, snapCenterToPointer } from './dnd-shared';
+import { useInlineEdit } from './inline-edit';
+import { prefersReducedMotion } from './motion';
 
 const DROP_ANIMATION = { duration: 150, easing: 'ease' };
 
@@ -59,15 +60,6 @@ const galleryCoordinateGetter: KeyboardCoordinateGetter = (event, { currentCoord
   const next = pickNextDropTarget(direction, currentCoordinates, candidates);
   return next ? centerOf(next.rect) : undefined;
 };
-
-function prefersReducedMotion(): boolean {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
-  try {
-    return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  } catch {
-    return false;
-  }
-}
 
 interface ProjectGalleryProps {
   projects: readonly ProjectMetadata[];
@@ -172,40 +164,12 @@ function FolderCard({
 }: FolderCardProps) {
   const metadataDescriptionId = useId();
   const renameInputId = useId();
-  const [renaming, setRenaming] = useState(false);
-  const [renameValue, setRenameValue] = useState(folder.name);
-  const renameInputRef = useRef<HTMLInputElement>(null);
-  const settledRef = useRef(false);
+  const { editing: renaming, start: startRename, triggerRef: renameTriggerRef, inputProps: renameInputProps } = useInlineEdit(folder.name, (name) => onRenameFolder?.(folder.id, name));
 
   const { attributes, listeners, setNodeRef: setDragNodeRef, setActivatorNodeRef, isDragging } = useDraggable({ id: folderDragId(folder.id), disabled: disabled || renaming });
   const { setNodeRef: setDropNodeRef, isOver } = useDroppable({ id: folderDropId(folder.id), disabled: !dropActive });
 
-  useEffect(() => {
-    if (renaming) renameInputRef.current?.focus();
-  }, [renaming]);
-
   const meta = `${patternCount} pattern${patternCount === 1 ? '' : 's'}${folderCount > 0 ? ` · ${folderCount} folder${folderCount === 1 ? '' : 's'}` : ''}`;
-
-  function startRename() {
-    settledRef.current = false;
-    setRenameValue(folder.name);
-    setRenaming(true);
-  }
-
-  function commitRename() {
-    if (settledRef.current) return;
-    settledRef.current = true;
-    const trimmed = renameValue.trim();
-    setRenaming(false);
-    if (trimmed && trimmed !== folder.name) onRenameFolder?.(folder.id, trimmed);
-  }
-
-  function cancelRename() {
-    if (settledRef.current) return;
-    settledRef.current = true;
-    setRenameValue(folder.name);
-    setRenaming(false);
-  }
 
   const className = [
     'project-gallery-card',
@@ -249,16 +213,9 @@ function FolderCard({
         <div className="project-gallery-folder-rename">
           <label className="visually-hidden" htmlFor={renameInputId}>Rename folder {folder.name}</label>
           <input
-            ref={renameInputRef}
             id={renameInputId}
-            value={renameValue}
             maxLength={MAX_FOLDER_NAME_CHARS}
-            onChange={(event) => setRenameValue(event.target.value)}
-            onBlur={commitRename}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') { event.preventDefault(); commitRename(); }
-              else if (event.key === 'Escape') { event.preventDefault(); cancelRename(); }
-            }}
+            {...renameInputProps}
           />
         </div>
       )}
@@ -274,7 +231,7 @@ function FolderCard({
           <span aria-hidden="true">⠿</span>
         </button>
         {onRenameFolder && !renaming && (
-          <CardActionButton disabled={disabled} onClick={startRename}>
+          <CardActionButton ref={renameTriggerRef} disabled={disabled} onClick={startRename}>
             Rename
           </CardActionButton>
         )}
@@ -314,39 +271,8 @@ interface ProjectCardProps {
 function ProjectCard({ project, disabled, confirming, onOpen, onDelete, onDuplicate, onRenameProject }: ProjectCardProps) {
   const metadataDescriptionId = useId();
   const renameInputId = useId();
-  const [renaming, setRenaming] = useState(false);
-  const [renameValue, setRenameValue] = useState(project.title);
-  const renameInputRef = useRef<HTMLInputElement>(null);
-  const settledRef = useRef(false);
+  const { editing: renaming, start: startRename, triggerRef: renameTriggerRef, inputProps: renameInputProps } = useInlineEdit(project.title, (title) => onRenameProject?.(project, title));
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, isDragging } = useDraggable({ id: projectDragId(project.id), disabled: disabled || renaming });
-
-  useEffect(() => {
-    if (renaming) {
-      renameInputRef.current?.focus();
-      renameInputRef.current?.select();
-    }
-  }, [renaming]);
-
-  function startRename() {
-    settledRef.current = false;
-    setRenameValue(project.title);
-    setRenaming(true);
-  }
-
-  function commitRename() {
-    if (settledRef.current) return;
-    settledRef.current = true;
-    const trimmed = renameValue.trim();
-    setRenaming(false);
-    if (trimmed && trimmed !== project.title) onRenameProject?.(project, trimmed);
-  }
-
-  function cancelRename() {
-    if (settledRef.current) return;
-    settledRef.current = true;
-    setRenameValue(project.title);
-    setRenaming(false);
-  }
 
   const size = typeof project.width === 'number' && typeof project.height === 'number'
     && Number.isInteger(project.width) && Number.isInteger(project.height)
@@ -382,20 +308,14 @@ function ProjectCard({ project, disabled, confirming, onOpen, onDelete, onDuplic
             <>
               <label className="visually-hidden" htmlFor={renameInputId}>Rename pattern {project.title}</label>
               <input
-                ref={renameInputRef}
                 id={renameInputId}
                 className="project-gallery-title-input"
-                value={renameValue}
-                onChange={(event) => setRenameValue(event.target.value)}
-                onBlur={commitRename}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') { event.preventDefault(); commitRename(); }
-                  else if (event.key === 'Escape') { event.preventDefault(); cancelRename(); }
-                }}
+                {...renameInputProps}
               />
             </>
           ) : (
             <button
+              ref={renameTriggerRef}
               className="project-gallery-name project-gallery-name-button"
               type="button"
               disabled={disabled}

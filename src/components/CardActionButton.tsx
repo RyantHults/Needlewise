@@ -1,6 +1,6 @@
-import { type ButtonHTMLAttributes } from 'react';
+import { type ComponentProps } from 'react';
 
-interface CardActionButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+interface CardActionButtonProps extends ComponentProps<'button'> {
   armed?: boolean;
 }
 

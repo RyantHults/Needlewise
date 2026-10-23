@@ -11,6 +11,10 @@ import { ProjectGallery } from './components/ProjectGallery';
 import { HomePage } from './components/HomePage';
 import { installModalScrollLock } from './components/modal-scroll-lock';
 import { DEFAULT_CATALOG_DEFINITION } from './catalog';
+import { DEFAULT_PATTERN_SETTINGS } from './domain';
+import { BrandLink } from './components/controls/BrandLink';
+import { StorageFooter } from './components/controls/StorageFooter';
+import { useTimedValue } from './components/timed-value';
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import type { ProjectFolder, ProjectMetadata } from './persistence';
 
@@ -67,18 +71,12 @@ function WorkspaceApp() {
   const [createWidth, setCreateWidth] = useState('100');
   const [createHeight, setCreateHeight] = useState('100');
   const [createAida, setCreateAida] = useState('14');
-  const [createBackgroundColor, setCreateBackgroundColor] = useState('#F3EEE5');
+  const [createBackgroundColor, setCreateBackgroundColor] = useState(DEFAULT_PATTERN_SETTINGS.backgroundColor);
   const [, setCreateError] = useState('');
   const [routeIssue, setRouteIssue] = useState('');
-  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-  const confirmDeleteTimer = useRef<number | null>(null);
-  const clearConfirmDeleteTimer = () => { if (confirmDeleteTimer.current !== null) { window.clearTimeout(confirmDeleteTimer.current); confirmDeleteTimer.current = null; } };
-  const [confirmDeleteFolderId, setConfirmDeleteFolderId] = useState<string | null>(null);
-  const confirmDeleteFolderTimer = useRef<number | null>(null);
-  const clearConfirmDeleteFolderTimer = () => { if (confirmDeleteFolderTimer.current !== null) { window.clearTimeout(confirmDeleteFolderTimer.current); confirmDeleteFolderTimer.current = null; } };
-  const [undoMove, setUndoMove] = useState<UndoableMove | null>(null);
-  const undoMoveTimer = useRef<number | null>(null);
-  const clearUndoMoveTimer = () => { if (undoMoveTimer.current !== null) { window.clearTimeout(undoMoveTimer.current); undoMoveTimer.current = null; } };
+  const [confirmDeleteId, setConfirmDeleteId, clearConfirmDeleteId] = useTimedValue<string>(3000);
+  const [confirmDeleteFolderId, setConfirmDeleteFolderId, clearConfirmDeleteFolderId] = useTimedValue<string>(3000);
+  const [undoMove, showUndoToast, clearUndoMove] = useTimedValue<UndoableMove>(6000);
   const attemptedRoute = useRef<string | null>(null);
   const view = patternView(location.pathname);
   const isProjectPage = view !== null;
@@ -90,7 +88,7 @@ function WorkspaceApp() {
   const createLockedRef = useRef(false);
   useEffect(() => {
     appMounted.current = true;
-    return () => { appMounted.current = false; clearConfirmDeleteTimer(); clearConfirmDeleteFolderTimer(); clearUndoMoveTimer(); };
+    return () => { appMounted.current = false; };
   }, []);
   useEffect(() => installModalScrollLock(), []);
 
@@ -164,16 +162,13 @@ function WorkspaceApp() {
     // Two-step inline confirm: the first click arms the row, the second (or a
     // fresh click after the timeout) actually deletes.
     if (confirmDeleteId !== projectId) {
-      clearConfirmDeleteTimer();
       setConfirmDeleteId(projectId);
-      confirmDeleteTimer.current = window.setTimeout(() => { setConfirmDeleteId(null); confirmDeleteTimer.current = null; }, 3000);
       return;
     }
-    clearConfirmDeleteTimer();
-    setConfirmDeleteId(null);
+    clearConfirmDeleteId();
     setMessage(`Deleting “${title}”…`);
-    void deleteProject(projectId).then(() => { if (appMounted.current) setMessage('Project deleted.'); }).catch(() => {
-      if (appMounted.current) setMessage('The project could not be deleted.');
+    void deleteProject(projectId).then(() => { setMessage('Project deleted.'); }).catch(() => {
+      setMessage('The project could not be deleted.');
     });
   }
 
@@ -183,9 +178,9 @@ function WorkspaceApp() {
     try {
       const copy = await duplicateProject(project.id);
       await moveIntoCurrentFolder(copy.id, targetFolderId, 'Pattern duplicated, but it could not be moved into the folder.');
-      if (appMounted.current) setMessage('Pattern duplicated.');
+      setMessage('Pattern duplicated.');
     } catch {
-      if (appMounted.current) setMessage('The pattern could not be duplicated.');
+      setMessage('The pattern could not be duplicated.');
     }
   }
 
@@ -193,9 +188,9 @@ function WorkspaceApp() {
     setMessage('');
     try {
       await renameProject(project.id, title);
-      if (appMounted.current) setMessage('Pattern renamed.');
+      setMessage('Pattern renamed.');
     } catch {
-      if (appMounted.current) setMessage('The pattern could not be renamed.');
+      setMessage('The pattern could not be renamed.');
     }
   }
 
@@ -219,22 +214,15 @@ function WorkspaceApp() {
     return folders.find((folder) => folder.id === folderId)?.name ?? 'Projects';
   }
 
-  function showUndoToast(move: UndoableMove) {
-    clearUndoMoveTimer();
-    setUndoMove(move);
-    undoMoveTimer.current = window.setTimeout(() => { setUndoMove(null); undoMoveTimer.current = null; }, 6000);
-  }
-
   function handleUndoMove() {
     if (!undoMove) return;
-    clearUndoMoveTimer();
     const move = undoMove;
-    setUndoMove(null);
+    clearUndoMove();
     const reverse = move.kind === 'project' ? moveProjectToFolder(move.id, move.from) : moveFolder(move.id, move.from);
     void reverse.then(() => {
-      if (appMounted.current) setMessage('Move undone.');
+      setMessage('Move undone.');
     }).catch(() => {
-      if (appMounted.current) setMessage('The move could not be undone.');
+      setMessage('The move could not be undone.');
     });
   }
 
@@ -244,7 +232,7 @@ function WorkspaceApp() {
     void moveProjectToFolder(project.id, folderId).then(() => {
       if (appMounted.current) showUndoToast({ kind: 'project', id: project.id, name: project.title, from: previousFolderId, to: folderId });
     }).catch(() => {
-      if (appMounted.current) setMessage('The pattern could not be moved.');
+      setMessage('The pattern could not be moved.');
     });
   }
 
@@ -254,7 +242,7 @@ function WorkspaceApp() {
     void moveFolder(folder.id, parentId).then(() => {
       if (appMounted.current) showUndoToast({ kind: 'folder', id: folder.id, name: folder.name, from: previousParentId, to: parentId });
     }).catch(() => {
-      if (appMounted.current) setMessage('The folder could not be moved.');
+      setMessage('The folder could not be moved.');
     });
   }
 
@@ -263,13 +251,10 @@ function WorkspaceApp() {
     // own state and timer so a project delete and a folder delete don't
     // interfere with each other.
     if (confirmDeleteFolderId !== folder.id) {
-      clearConfirmDeleteFolderTimer();
       setConfirmDeleteFolderId(folder.id);
-      confirmDeleteFolderTimer.current = window.setTimeout(() => { setConfirmDeleteFolderId(null); confirmDeleteFolderTimer.current = null; }, 3000);
       return;
     }
-    clearConfirmDeleteFolderTimer();
-    setConfirmDeleteFolderId(null);
+    clearConfirmDeleteFolderId();
     setMessage('Deleting folder…');
     // If the deleted folder is the one being viewed, or is the parent of the
     // one being viewed, the view can no longer show what it was showing:
@@ -277,11 +262,10 @@ function WorkspaceApp() {
     const viewedFolder = folders.find((candidate) => candidate.id === currentFolderId) ?? null;
     const shouldNavigateUp = currentFolderId === folder.id || viewedFolder?.parentId === folder.id;
     void deleteFolder(folder.id).then(() => {
-      if (!appMounted.current) return;
       setMessage('Folder deleted. Its patterns moved up a level.');
-      if (shouldNavigateUp) handleNavigateFolder(folder.parentId);
+      if (shouldNavigateUp && appMounted.current) handleNavigateFolder(folder.parentId);
     }).catch(() => {
-      if (appMounted.current) setMessage('The folder could not be deleted.');
+      setMessage('The folder could not be deleted.');
     });
   }
 
@@ -294,16 +278,11 @@ function WorkspaceApp() {
   useEffect(() => {
     if (galleryVisible) void refreshProjectList();
   }, [galleryVisible, refreshProjectList]);
-  const brand = (
-    <Link className="brand" to="/" aria-label="Needlewise home">
-      <span className="brand-mark" aria-hidden="true">✣</span><span>Needlewise</span>
-    </Link>
-  );
   return (
     <>
     <div data-application data-testid="application">
     <div className={`app-shell${isProjectPage ? ' app-shell-editor' : ''}`}>
-      {!isProjectPage && !galleryVisible && <header className="topbar">{brand}</header>}
+      {!isProjectPage && !galleryVisible && <header className="topbar"><BrandLink /></header>}
 
       <main id="workspace" data-page={view === 'track' ? 'track' : isProjectPage ? 'editor' : 'patterns'}>
         {!initialized || routePending || routeError ? (
@@ -316,7 +295,7 @@ function WorkspaceApp() {
         ) : (
           <>
             {!isProjectPage && <ProjectGallery
-              brand={brand}
+              brand={<BrandLink />}
               projects={projects}
               disabled={actionDisabled}
               onOpen={(project) => navigate(projectPath(project.id))}
@@ -345,7 +324,7 @@ function WorkspaceApp() {
       </main>
       {!isProjectPage && !routeError && undoMove && <div className="undo-toast" role="status"><span className="undo-toast-text">Moved “{undoMove.name}” to {folderName(undoMove.to)}</span><button className="undo-toast-action" type="button" onClick={handleUndoMove}>Undo</button></div>}
       {pwaState.updateAvailable && !routeError && <div className="update-notice" role="status"><strong>A Needlewise update is ready.</strong><span>Your current document will be saved before the update is applied.</span><button className="button button-primary" type="button" disabled={updating} onClick={() => void handleUpdate()}>{updating ? 'Updating…' : 'Update now'}</button></div>}
-      <footer className="footer-note"><span aria-hidden="true">⌁</span> Stored on this device <span className="footer-divider" aria-hidden="true">·</span> Works offline</footer>
+      <StorageFooter />
     </div>
     </div>
     {importUploadOpen && <ImportUploadModal returnFocus={importReturnRef} onClose={() => setImportUploadOpen(false)} onFile={(chosen) => { setImportUploadOpen(false); setImportFile(chosen); }} />}

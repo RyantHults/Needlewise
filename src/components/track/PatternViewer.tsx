@@ -1,18 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import {
-  createEditorSurfaceController,
-  createPointerEventsAdapter,
-  createUiStore,
-  createWorkspaceEditorGateway,
-  type EditorSurfaceController,
-  type EditorUiState
-} from '../../editor';
-import { getCanvasMetrics, screenToCellUnclamped } from '../../editor/coordinates';
-import { createCanvasTarget } from '../../rendering/context';
-import { createCanvasRenderer } from '../../rendering/renderer';
-import type { CanvasRenderer } from '../../editor/contracts';
+import type { EditorSurfaceController, EditorUiState } from '../../editor';
+import { screenToCellUnclamped } from '../../editor/coordinates';
 import type { PatternDocument } from '../../domain';
 import type { ProjectWorkspace } from '../../application/workspace';
+import { CanvasFrame, useEditorCanvas } from '../editor/editor-canvas';
 import './viewer.css';
 
 interface Props {
@@ -46,48 +37,23 @@ interface HoverInfo {
  * page drives view mode and zoom through the controller handed to `onReady`.
  */
 export function PatternViewer({ workspace, document, showCompletion = false, showCenterMark = false, tool = 'pan', highlightColor = null, onReady, onUiState }: Props) {
-  const frame = useRef<HTMLDivElement>(null);
-  const base = useRef<HTMLCanvasElement>(null);
-  const overlay = useRef<HTMLCanvasElement>(null);
-  const controllerRef = useRef<EditorSurfaceController | null>(null);
-  const rendererRef = useRef<CanvasRenderer | null>(null);
+  const refs = { frame: useRef<HTMLDivElement>(null), base: useRef<HTMLCanvasElement>(null), overlay: useRef<HTMLCanvasElement>(null) };
   const documentRef = useRef(document);
   documentRef.current = document;
   const onReadyRef = useRef(onReady);
   onReadyRef.current = onReady;
   const onUiStateRef = useRef(onUiState);
   onUiStateRef.current = onUiState;
-  const initialShowCompletion = useRef(showCompletion);
-  const [ready, setReady] = useState(false);
-  const [fallback, setFallback] = useState(false);
   const [hover, setHover] = useState<HoverInfo | null>(null);
-
-  useEffect(() => {
-    const el = frame.current;
-    const baseCanvas = base.current;
-    const overlayCanvas = overlay.current;
-    if (!el || !baseCanvas || !overlayCanvas) return;
-    try {
-      const store = createUiStore({ paletteId: null, tool: { tool: 'pan' } });
-      const gateway = createWorkspaceEditorGateway(workspace);
-      const renderer = createCanvasRenderer({
-        document: documentRef.current,
-        targets: { base: createCanvasTarget(baseCanvas), overlay: createCanvasTarget(overlayCanvas) },
-        metrics: getCanvasMetrics(640, 480, { devicePixelRatio: 1 }),
-        // The controller projects mode, thread view and grid from the UI store.
-        style: { showCompletion: initialShowCompletion.current }
-      });
-      const controller = createEditorSurfaceController({ gateway, renderer, uiStore: store, readOnly: true });
-      const unsubscribe = store.subscribe((state) => onUiStateRef.current?.(state));
-      const measure = () =>
-        getCanvasMetrics(
-          Math.max(1, el.getBoundingClientRect().width || 640),
-          Math.max(1, el.getBoundingClientRect().height || 480),
-          { devicePixelRatio: 1 }
-        );
-      const adapter = createPointerEventsAdapter(el, controller, { keyboardSurface: el });
-      const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeObserver(() => controller.setMetrics(measure()));
-      observer?.observe(el);
+  const { controller, renderer, ui, fallback } = useEditorCanvas({
+    workspace,
+    document,
+    refs,
+    initialUi: { paletteId: null, tool: { tool: 'pan' } },
+    // The controller projects mode, thread view and grid from the UI store.
+    rendererStyle: { showCompletion },
+    controllerOptions: { readOnly: true },
+    onStart: ({ controller, store, frame: el }) => {
       const inspect = (event: PointerEvent) => {
         const bounds = el.getBoundingClientRect();
         const cell = screenToCellUnclamped({ x: event.clientX - bounds.left, y: event.clientY - bounds.top }, store.getState().viewport);
@@ -107,70 +73,39 @@ export function PatternViewer({ workspace, document, showCompletion = false, sho
       el.addEventListener('pointermove', inspect);
       el.addEventListener('pointerdown', inspect);
       el.addEventListener('pointerleave', clearHover);
-      controller.start();
-      controller.setMetrics(measure());
-      controller.handleKeyDown({ key: '0' });
-      controllerRef.current = controller;
-      rendererRef.current = renderer;
-      setReady(true);
       onReadyRef.current?.(controller);
-      onUiStateRef.current?.(store.getState());
       return () => {
         onReadyRef.current?.(null);
-        unsubscribe();
         el.removeEventListener('pointermove', inspect);
         el.removeEventListener('pointerdown', inspect);
         el.removeEventListener('pointerleave', clearHover);
-        observer?.disconnect();
-        adapter.dispose();
-        controller.dispose();
-        gateway.dispose();
-        renderer.dispose();
-        controllerRef.current = null;
-        rendererRef.current = null;
-        setReady(false);
       };
-    } catch {
-      setFallback(true);
     }
-  }, [workspace]);
+  });
 
   useEffect(() => {
-    controllerRef.current?.setDocument(document, { layer: 'all', full: true, reason: 'external-document' });
-  }, [document, ready]);
+    if (ui) onUiStateRef.current?.(ui);
+  }, [ui]);
 
   useEffect(() => {
-    if (!ready) return;
-    rendererRef.current?.setStyle({ showCompletion });
-  }, [showCompletion, ready]);
+    renderer?.setStyle({ showCompletion });
+  }, [showCompletion, renderer]);
 
   useEffect(() => {
-    if (!ready) return;
-    rendererRef.current?.setStyle({ showCenterMark });
-  }, [showCenterMark, ready]);
+    renderer?.setStyle({ showCenterMark });
+  }, [showCenterMark, renderer]);
 
   useEffect(() => {
-    if (!ready) return;
-    controllerRef.current?.setTool({ tool });
-  }, [tool, ready]);
+    controller?.setTool({ tool });
+  }, [tool, controller]);
 
   useEffect(() => {
-    if (!ready) return;
-    controllerRef.current?.setHighlightColor(highlightColor);
-  }, [highlightColor, ready]);
+    controller?.setHighlightColor(highlightColor);
+  }, [highlightColor, controller]);
 
   return (
     <div className="viewer-main">
-      <div ref={frame} className="canvas-frame viewer-canvas" role="group" tabIndex={0} aria-label="Pattern preview canvas">
-        {fallback ? (
-          <p className="canvas-fallback">Canvas preview is unavailable. Refresh the page or try a browser with Canvas 2D support.</p>
-        ) : (
-          <>
-            <canvas ref={base} aria-hidden="true" />
-            <canvas ref={overlay} aria-hidden="true" />
-          </>
-        )}
-      </div>
+      <CanvasFrame refs={refs} fallback={fallback} className="viewer-canvas" aria-label="Pattern preview canvas" />
       <p className="viewer-hover" aria-live="off">
         {hover && (
           <>

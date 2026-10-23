@@ -22,7 +22,11 @@ import {
   type ExportSettingsStorage
 } from '../../export';
 import { isAbortError } from '../../workers/abort';
+import { AidaCountSelect } from '../controls/AidaCountSelect';
+import { SegmentedControl } from '../controls/SegmentedControl';
 import { Modal } from '../Modal';
+import { useProjectUnits } from '../project-units';
+import { NumberField, SelectField, Switch } from './export-fields';
 import { PHYSICAL_ESTIMATE_UNAVAILABLE, formatLength, formatSkeins, pdfFilename, stitchSummary } from './material-format';
 import './export-panel.css';
 
@@ -53,8 +57,7 @@ export interface ExportDialogProps extends ExportPanelProps {
   onClose: () => void;
 }
 
-/** Common fabric counts; the project's current count is added when it is not one of these. */
-const AIDA_COUNTS: readonly number[] = [11, 14, 16, 18, 20, 22, 25, 28, 32];
+const UNIT_OPTIONS: readonly { value: DisplayUnits; label: string }[] = [{ value: 'metric', label: 'Metric' }, { value: 'imperial', label: 'Imperial' }];
 
 const MATERIAL_AUTOSAVE_MS = 400;
 
@@ -86,7 +89,7 @@ function validateDraft(draft: MaterialDraft): Partial<Record<keyof MaterialDraft
 /** Material settings, thread totals, export settings, and the PDF export. Content only; wrap in `ExportDialog` for a modal. */
 export function ExportPanel({ document: pattern, title, workspace, exportPdf, storage, onExported }: ExportPanelProps) {
   const [materialSettings, setMaterialSettings] = useState(workspace.materialSettings);
-  const [units, setUnits] = useState<DisplayUnits>(workspace.metadata?.units ?? 'metric');
+  const [units, changeUnits] = useProjectUnits(workspace);
   const [draft, setDraft] = useState<MaterialDraft>(() => draftOf(workspace.materialSettings));
   const [errors, setErrors] = useState<Partial<Record<keyof MaterialDraft, string>>>({});
   const [saveMessage, setSaveMessage] = useState('');
@@ -97,7 +100,6 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
   // Settings belong to the active project; do not carry a previous project's draft over.
   useEffect(() => {
     setMaterialSettings(workspace.materialSettings);
-    setUnits(workspace.metadata?.units ?? 'metric');
     setDraft(draftOf(workspace.materialSettings));
     setErrors({});
     setSaveMessage('');
@@ -167,18 +169,7 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
   useEffect(() => () => flushRef.current(), []);
 
 
-  const changeUnits = async (next: DisplayUnits) => {
-    if (next === units) return;
-    setUnits(next);
-    try {
-      await workspace.updateActiveMetadata({ units: next });
-    } catch {
-      setUnits(units);
-    }
-  };
-
   const aidaCount = pattern.settings.aidaCount;
-  const aidaOptions = AIDA_COUNTS.includes(aidaCount) ? AIDA_COUNTS : [...AIDA_COUNTS, aidaCount].sort((a, b) => a - b);
   const [aidaError, setAidaError] = useState('');
   const changeAidaCount = async (next: number) => {
     if (next === aidaCount) return;
@@ -257,36 +248,19 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
       <section className="export-section" aria-labelledby="export-material-title">
         <h3 id="export-material-title">Material settings</h3>
         <form className="export-form" onSubmit={(event) => event.preventDefault()} noValidate>
-          <div className="export-field">
-            <label htmlFor="export-strands">Strands per stitch</label>
-            <input id="export-strands" type="number" inputMode="numeric" min="1" step="1" value={draft.strands} aria-invalid={errors.strands ? true : undefined} aria-describedby={errors.strands ? 'export-strands-error' : undefined} onChange={(event) => updateDraft('strands', event.target.value)} />
-            {errors.strands && <p className="export-error" id="export-strands-error" role="alert">{errors.strands}</p>}
-          </div>
-          <div className="export-field">
-            <label htmlFor="export-backstitch-strands">Backstitch strands</label>
-            <input id="export-backstitch-strands" type="number" inputMode="numeric" min="1" step="1" value={draft.backstitchStrands} aria-invalid={errors.backstitchStrands ? true : undefined} aria-describedby={errors.backstitchStrands ? 'export-backstitch-error' : undefined} onChange={(event) => updateDraft('backstitchStrands', event.target.value)} />
-            {errors.backstitchStrands && <p className="export-error" id="export-backstitch-error" role="alert">{errors.backstitchStrands}</p>}
-          </div>
-          <div className="export-field">
-            <label htmlFor="export-waste">Waste allowance (%)</label>
-            <input id="export-waste" type="number" inputMode="decimal" min="0" step="1" value={draft.waste} aria-invalid={errors.waste ? true : undefined} aria-describedby={errors.waste ? 'export-waste-error' : undefined} onChange={(event) => updateDraft('waste', event.target.value)} />
-            {errors.waste && <p className="export-error" id="export-waste-error" role="alert">{errors.waste}</p>}
-          </div>
+          <NumberField id="export-strands" label="Strands per stitch" value={draft.strands} inputMode="numeric" min="1" error={errors.strands} onChange={(value) => updateDraft('strands', value)} />
+          <NumberField id="export-backstitch-strands" label="Backstitch strands" value={draft.backstitchStrands} inputMode="numeric" min="1" error={errors.backstitchStrands} onChange={(value) => updateDraft('backstitchStrands', value)} />
+          <NumberField id="export-waste" label="Waste allowance (%)" value={draft.waste} inputMode="decimal" min="0" error={errors.waste} onChange={(value) => updateDraft('waste', value)} />
           {saveMessage && <p className="export-note" role="status">{saveMessage}</p>}
         </form>
         <div className="export-field">
           <label htmlFor="export-aida-count">Aida count</label>
-          <select id="export-aida-count" value={aidaCount} disabled={running} onChange={(event) => void changeAidaCount(Number(event.target.value))}>
-            {aidaOptions.map((count) => <option key={count} value={count}>{count} count</option>)}
-          </select>
+          <AidaCountSelect id="export-aida-count" value={aidaCount} disabled={running} onChange={(count) => void changeAidaCount(count)} />
           {aidaError && <p className="export-error" role="alert">{aidaError}</p>}
         </div>
-        <div className="export-field" role="group" aria-labelledby="export-units-label">
+        <div className="export-field">
           <span id="export-units-label" className="export-label">Display units</span>
-          <div className="export-segmented">
-            <button type="button" aria-pressed={units === 'metric'} onClick={() => void changeUnits('metric')}>Metric</button>
-            <button type="button" aria-pressed={units === 'imperial'} onClick={() => void changeUnits('imperial')}>Imperial</button>
-          </div>
+          <SegmentedControl aria-labelledby="export-units-label" options={UNIT_OPTIONS} value={units} onChange={(next) => void changeUnits(next)} />
         </div>
       </section>
 
@@ -330,77 +304,29 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
       <section className="export-section" aria-labelledby="export-settings-title">
         <h3 id="export-settings-title">PDF settings</h3>
         <div className="export-grid">
-          <div className="export-field">
-            <label htmlFor="export-paper">Paper size</label>
-            <select id="export-paper" value={settings.paper} disabled={running} onChange={(event) => changeSettings({ paper: event.target.value as ExportPaper })}>
-              <option value="letter">Letter</option>
-              <option value="a4">A4</option>
-            </select>
-          </div>
-          <div className="export-field">
-            <label htmlFor="export-orientation">Orientation</label>
-            <select id="export-orientation" value={settings.orientation} disabled={running} onChange={(event) => changeSettings({ orientation: event.target.value as ExportOrientation })}>
-              <option value="portrait">Portrait</option>
-              <option value="landscape">Landscape</option>
-            </select>
-          </div>
-          <div className="export-field">
-            <label htmlFor="export-margins">Margins</label>
-            <select id="export-margins" value={settings.margins} disabled={running} onChange={(event) => changeSettings({ margins: event.target.value as ExportMargins })}>
-              <option value="standard">Standard</option>
-              <option value="narrow">Narrow</option>
-            </select>
-          </div>
-          <div className="export-field">
-            <label htmlFor="export-cell-size">Stitch size</label>
-            <select id="export-cell-size" value={settings.cellSizeMm} disabled={running} onChange={(event) => changeSettings({ cellSizeMm: Number(event.target.value) })}>
-              {EXPORT_CELL_SIZES_MM.map((size, index) => <option key={size} value={size}>{STITCH_SIZE_LABELS[index]}</option>)}
-            </select>
-          </div>
-          <div className="export-field">
-            <label htmlFor="export-chart-style">Chart style</label>
-            <select id="export-chart-style" value={settings.chartStyle} disabled={running} onChange={(event) => changeSettings({ chartStyle: event.target.value as ExportChartStyle })}>
-              {EXPORT_CHART_STYLES.map((style) => <option key={style} value={style}>{CHART_STYLE_LABELS[style]}</option>)}
-            </select>
-          </div>
-          <div className="export-field">
-            <label htmlFor="export-overlap">Page overlap (cells)</label>
-            <select id="export-overlap" value={settings.overlap} disabled={running} onChange={(event) => changeSettings({ overlap: Number(event.target.value) })}>
-              {Array.from({ length: MAX_EXPORT_OVERLAP - MIN_EXPORT_OVERLAP + 1 }, (_, index) => MIN_EXPORT_OVERLAP + index).map((value) => <option key={value} value={value}>{value}</option>)}
-            </select>
-          </div>
-          <div className="export-field">
-            <span id="export-page-numbers-label" className="export-label">Page numbers</span>
-            <button
-              id="export-page-numbers"
-              type="button"
-              role="switch"
-              className="export-toggle"
-              aria-checked={settings.pageNumbers}
-              aria-labelledby="export-page-numbers-label"
-              disabled={running}
-              onClick={() => changeSettings({ pageNumbers: !settings.pageNumbers })}
-            >
-              <span className="export-toggle-track" aria-hidden="true"><span className="export-toggle-thumb" /></span>
-              <span className="export-toggle-text">{settings.pageNumbers ? 'On' : 'Off'}</span>
-            </button>
-          </div>
-          <div className="export-field">
-            <span id="export-center-mark-label" className="export-label">Center mark</span>
-            <button
-              id="export-center-mark"
-              type="button"
-              role="switch"
-              className="export-toggle"
-              aria-checked={settings.centerMark}
-              aria-labelledby="export-center-mark-label"
-              disabled={running}
-              onClick={() => changeSettings({ centerMark: !settings.centerMark })}
-            >
-              <span className="export-toggle-track" aria-hidden="true"><span className="export-toggle-thumb" /></span>
-              <span className="export-toggle-text">{settings.centerMark ? 'On' : 'Off'}</span>
-            </button>
-          </div>
+          <SelectField id="export-paper" label="Paper size" value={settings.paper} disabled={running} onChange={(value) => changeSettings({ paper: value as ExportPaper })}>
+            <option value="letter">Letter</option>
+            <option value="a4">A4</option>
+          </SelectField>
+          <SelectField id="export-orientation" label="Orientation" value={settings.orientation} disabled={running} onChange={(value) => changeSettings({ orientation: value as ExportOrientation })}>
+            <option value="portrait">Portrait</option>
+            <option value="landscape">Landscape</option>
+          </SelectField>
+          <SelectField id="export-margins" label="Margins" value={settings.margins} disabled={running} onChange={(value) => changeSettings({ margins: value as ExportMargins })}>
+            <option value="standard">Standard</option>
+            <option value="narrow">Narrow</option>
+          </SelectField>
+          <SelectField id="export-cell-size" label="Stitch size" value={settings.cellSizeMm} disabled={running} onChange={(value) => changeSettings({ cellSizeMm: Number(value) })}>
+            {EXPORT_CELL_SIZES_MM.map((size, index) => <option key={size} value={size}>{STITCH_SIZE_LABELS[index]}</option>)}
+          </SelectField>
+          <SelectField id="export-chart-style" label="Chart style" value={settings.chartStyle} disabled={running} onChange={(value) => changeSettings({ chartStyle: value as ExportChartStyle })}>
+            {EXPORT_CHART_STYLES.map((style) => <option key={style} value={style}>{CHART_STYLE_LABELS[style]}</option>)}
+          </SelectField>
+          <SelectField id="export-overlap" label="Page overlap (cells)" value={settings.overlap} disabled={running} onChange={(value) => changeSettings({ overlap: Number(value) })}>
+            {Array.from({ length: MAX_EXPORT_OVERLAP - MIN_EXPORT_OVERLAP + 1 }, (_, index) => MIN_EXPORT_OVERLAP + index).map((value) => <option key={value} value={value}>{value}</option>)}
+          </SelectField>
+          <Switch id="export-page-numbers" label="Page numbers" checked={settings.pageNumbers} disabled={running} onChange={(pageNumbers) => changeSettings({ pageNumbers })} />
+          <Switch id="export-center-mark" label="Center mark" checked={settings.centerMark} disabled={running} onChange={(centerMark) => changeSettings({ centerMark })} />
         </div>
         <p className="export-pages" data-testid="export-page-count">Estimated length: {pages} {pages === 1 ? 'page' : 'pages'}</p>
       </section>

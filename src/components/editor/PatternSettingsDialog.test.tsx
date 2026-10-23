@@ -1,10 +1,9 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { PatternSettingsDialog } from "./PatternSettingsDialog";
-import { readEditorPreferences } from "./editor-preferences";
+import { defaultEditorPreferences } from "./editor-preferences";
 
-function setup(editorOptions: "all" | "placement" = "all") {
-  const updateActiveMetadata = vi.fn().mockResolvedValue(undefined);
+function setup(editorOptions: "all" | "placement" = "all", updateActiveMetadata = vi.fn().mockResolvedValue(undefined)) {
   const workspace = {
     metadata: { id: "p1", title: "Rose", notes: "n", units: "metric" },
     updateActiveMetadata,
@@ -14,7 +13,7 @@ function setup(editorOptions: "all" | "placement" = "all") {
   render(
     <PatternSettingsDialog
       workspace={workspace}
-      preferences={readEditorPreferences("p1")}
+      preferences={defaultEditorPreferences()}
       onPreferencesChange={onPreferencesChange}
       editorOptions={editorOptions}
       onClose={onClose}
@@ -49,6 +48,23 @@ describe("PatternSettingsDialog", () => {
     expect(screen.getByRole("button", { name: "Imperial" })).toHaveAttribute("aria-pressed", "true");
   });
 
+  it("rolls units back when the update fails and ignores the current choice", async () => {
+    const { updateActiveMetadata } = setup("all", vi.fn().mockRejectedValue(new Error("no")));
+    fireEvent.click(screen.getByRole("button", { name: "Metric" }));
+    expect(updateActiveMetadata).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Imperial" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Metric" })).toHaveAttribute("aria-pressed", "true"));
+    expect(screen.getByRole("button", { name: "Imperial" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("moves between tabs with End and Home", async () => {
+    setup();
+    fireEvent.keyDown(screen.getByRole("tab", { name: "Project" }), { key: "End" });
+    expect(screen.getByRole("tab", { name: "Editor" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.keyDown(screen.getByRole("tab", { name: "Editor" }), { key: "Home" });
+    expect(screen.getByRole("tab", { name: "Project" })).toHaveAttribute("aria-selected", "true");
+  });
+
   it("shows every editor option in all mode", () => {
     setup("all");
     fireEvent.click(screen.getByRole("tab", { name: "Editor" }));
@@ -78,7 +94,7 @@ describe("PatternSettingsDialog", () => {
     expect(screen.queryByRole("checkbox", { name: "Enable pencil mode" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Left" }));
     const updater = onPreferencesChange.mock.calls[0]![0];
-    expect(updater(readEditorPreferences("p1")).railSide).toBe("left");
+    expect(updater(defaultEditorPreferences()).railSide).toBe("left");
   });
 
   it("offers the center guides only in placement mode", () => {
@@ -94,7 +110,7 @@ describe("PatternSettingsDialog", () => {
     expect(toggle).not.toBeChecked();
     fireEvent.click(toggle);
     const updater = onPreferencesChange.mock.calls[0]![0];
-    expect(updater(readEditorPreferences("p1")).showCenterMark).toBe(true);
+    expect(updater(defaultEditorPreferences()).showCenterMark).toBe(true);
   });
 
   it("moves between tabs with the arrow keys", async () => {

@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import type { PaletteEntry } from "../../domain";
 import { Modal, type ModalProps } from "../Modal";
 import { ThreadColorPicker, type ThreadColorPickerProps } from "../ThreadColorPicker";
+import { ErrorNotice } from "../controls/Notice";
 
 export type PaletteManagerPanel = "swap" | "add" | null;
 
@@ -115,11 +116,7 @@ export function PaletteManagerModal({
           <section id="palette-manager-panel" className="palette-manager-panel" aria-label={panel === "swap" && selected ? `Swap ${selected.name} for a thread color` : "Add a thread color"}>
             {/* Remounted per mode, so switching between swap and add starts a fresh pick. */}
             <ThreadColorPicker key={panel} {...picker} />
-            {notice && (
-              <p className="modal-error" role="alert">
-                {notice}
-              </p>
-            )}
+            {notice && <ErrorNotice>{notice}</ErrorNotice>}
           </section>
         )}
       </div>

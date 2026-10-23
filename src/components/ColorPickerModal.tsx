@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import { Modal, type ModalProps } from "./Modal";
 import { ThreadColorPicker, type ThreadColorPickerProps } from "./ThreadColorPicker";
+import { ErrorNotice } from "./controls/Notice";
 
 export interface ColorPickerModalProps extends ThreadColorPickerProps {
   eyebrow: React.ReactNode;
@@ -38,11 +39,7 @@ export function ColorPickerModal({ eyebrow, title, hint, notice, onClose, return
     >
       {hint && <p className="modal-hint">{hint}</p>}
       <ThreadColorPicker {...picker} />
-      {notice && (
-        <p className="modal-error" role="alert">
-          {notice}
-        </p>
-      )}
+      {notice && <ErrorNotice>{notice}</ErrorNotice>}
     </Modal>
   );
 }

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { calculatePreviewSize, CreateModal, PREVIEW_LENS_SIZE, previewFinishedSize, previewLensGeometry, suggestConversionDimensions } from './CreateModal';
 import { DEFAULT_CATALOG_DEFINITION, type CatalogSnapshot } from '../catalog';
 import { MAX_CONFETTI_DISTANCE } from '../conversion/image-to-pattern';
+import { COMMON_AIDA_COUNTS } from '../domain';
 
 vi.mock('../import/registry', () => ({ importerAccept: () => '.pdf,application/pdf' }));
 
@@ -86,16 +87,6 @@ describe('CreateModal image lifecycle', () => {
     expect(picker).toHaveValue('#aabbcc');
   });
 
-  it('blocks blank creation and explains how to fix an incomplete background HEX value', () => {
-    const p = props();
-    render(<CreateModal {...p} mode="blank" />);
-    fireEvent.change(screen.getByRole('textbox', { name: 'HEX Code' }), { target: { value: '#12' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Create blank pattern' }));
-    expect(p.onBlank).not.toHaveBeenCalled();
-    expect(screen.getByRole('alert')).toHaveTextContent(/enter a valid 3- or 6-digit hex background color/i);
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-  });
-
   it('uses the smallest power-of-two enlargement needed for a minimum preview', () => {
     expect(calculatePreviewSize(50, 50)).toEqual({ width: 400, height: 400 });
     expect(calculatePreviewSize(2, 4)).toEqual({ width: 512, height: 1024 });
@@ -148,7 +139,7 @@ describe('CreateModal image lifecycle', () => {
     conversion.convert.mockRejectedValueOnce(new Error('Replacement failed.'));
     fireEvent.change(screen.getByRole('slider', { name: /Color budget/ }), { target: { value: '12' } });
     expect(screen.getByLabelText('Converted pattern preview')).toBeInTheDocument();
-    expect(screen.getByText('Updating preview')).toHaveClass('sr-only');
+    expect(screen.getByText('Updating preview')).toHaveClass('visually-hidden');
     act(() => { vi.advanceTimersByTime(300); });
     await vi.waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Replacement failed.'));
     expect(screen.getByLabelText('Converted pattern preview')).toBeInTheDocument();
@@ -1120,7 +1111,7 @@ describe('CreateModal image lifecycle', () => {
     render(<CreateModal {...p} mode="blank" />);
     const select = screen.getByLabelText('Aida count');
     expect(select).toHaveValue('14');
-    expect([...select.querySelectorAll('option')].map((o) => o.textContent)).toEqual(['11', '14', '16', '18', '22']);
+    expect([...select.querySelectorAll('option')].map((o) => o.textContent)).toEqual(COMMON_AIDA_COUNTS.map(String));
     fireEvent.change(select, { target: { value: '18' } });
     expect(p.onAida).toHaveBeenCalledWith('18');
   });

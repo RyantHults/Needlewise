@@ -1,24 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import {
   ChartPresentationMode,
-  createEditorSurfaceController,
-  createUiStore,
-  createWorkspaceEditorGateway,
-  createPointerEventsAdapter,
   type EditorSurfaceController,
   type EditorUiState,
   type BackstitchMode,
 } from "../../editor";
-import { getCanvasMetrics } from "../../editor/coordinates";
-import { createCanvasTarget } from "../../rendering/context";
-import { createCanvasRenderer } from "../../rendering/renderer";
 import type { ProjectWorkspace } from "../../application/workspace";
 import {
-  DEFAULT_PATTERN_AIDA_COUNT,
+  DEFAULT_PATTERN_SETTINGS,
   findLayer,
 } from "../../domain";
-import type { DisplayUnits, LayerType } from "../../domain";
-import { SYMBOL_POOL, SYMBOL_TILE_VIEW } from "../../symbols";
+import type { LayerType, PatternDocument } from "../../domain";
+import { SYMBOL_POOL } from "../../symbols";
 import type { PoolEntry } from "../../symbols";
 import { RangeInput } from "../RangeInput";
 import { TraceImageControls, traceBoundsToWorkspace } from "./TraceImageControls";
@@ -26,8 +19,6 @@ import { LayersPanel, LAYER_TYPE_LABELS, type ActiveLayerId, type LayerSelectMod
 import { LayerControls } from "./LayerControls";
 import { Toast, useToast } from "./Toast";
 import type { PatternView } from "./ViewSwitch";
-import { ExportDialog } from "../export/ExportPanel";
-import { createExportPdf } from "../export/export-pdf";
 import { createCatalogReference, type CatalogDefinition, type CatalogRecord } from "../../catalog";
 import { createPortal } from "react-dom";
 import { Modal } from "../Modal";
@@ -53,19 +44,25 @@ import { ViewSettings } from "./ViewSettings";
 import { ActionSection } from "./ActionSection";
 import { PatternHeader } from "./PatternHeader";
 import { paletteCodeFor } from "./palette-code";
-import { patternDimensionSummary } from "./pattern-dimensions";
-import { PatternSettingsDialog } from "./PatternSettingsDialog";
+import { patternDimensionInfo } from "./pattern-dimensions";
+import { usePatternDialogs } from "./pattern-dialogs";
 import { CanvasControls } from "./CanvasControls";
-import { readEditorPreferences, writeEditorPreferences, type EditorPreferences, type HalfStitchDirection } from "./editor-preferences";
-import { useMobileDock } from "./mobile-dock";
-import { contrastSymbolInk } from "../../rendering/contrast";
-import { DEFAULT_RENDERER_STYLE, toolAvailability, type BrushSizeTool, type EditorActiveLayer, type SelectShape, type ShapeKind } from "../../editor/contracts";
+import { useEditorPreferences, type HalfStitchDirection } from "./editor-preferences";
+import { DockPopover, useMobileDock } from "./mobile-dock";
+import { CanvasFrame, useEditorCanvas } from "./editor-canvas";
+import { SegmentedControl } from "../controls/SegmentedControl";
+import { ToolButton } from "../controls/ToolButton";
+import { ErrorNotice } from "../controls/Notice";
+import { SwatchSymbol, SymbolTile, SYMBOL_VIEWBOX, symbolSpriteId } from "../controls/SwatchSymbol";
+import { useDismissable } from "../dismiss";
+import { anchoredPosition } from "../anchored-position";
+import { useTimedValue } from "../timed-value";
+import { prefersReducedMotion } from "../motion";
+import { toolAvailability, type BrushSizeTool, type EditorActiveLayer, type SelectShape, type ShapeKind } from "../../editor/contracts";
 import type { ProjectSession } from "../../application/session";
 interface Props {
   workspace: ProjectWorkspace;
-  document: NonNullable<
-    ReturnType<ProjectWorkspace["getStateSnapshot"]>["document"]
-  >;
+  document: PatternDocument;
   /** Moves to another of the pattern's pages from the header switch. */
   onNavigate?: (view: PatternView) => void;
   /** Renames the pattern from the header title; without it the title is plain text. */
@@ -90,10 +87,8 @@ const SELECT_CHOICES: readonly SelectChoice[] = [
 ];
 const STITCH_CHOICES = [["full", "Full stitch"], ["half", "Half stitch"], ["three-quarter", "3/4 stitch"]] as const;
 type StitchKind = (typeof STITCH_CHOICES)[number][0];
+const BACKSTITCH_MODES = [{ value: "draw", label: "Draw" }, { value: "move", label: "Move" }] as const satisfies readonly { value: BackstitchMode; label: string }[];
 const STITCH_DIRECTIONS = [{ value: "/", label: "Bottom-left to top-right" }, { value: "\\", label: "Top-left to bottom-right" }] as const;
-
-/** DOM id for a symbol's shared sprite path, namespaced so it cannot collide. */
-const symbolSpriteId = (slug: string): string => `symbol-${slug}`;
 
 /** How many pool entries carry each Unicode name. */
 const symbolNameCounts = SYMBOL_POOL.reduce((counts, entry) => {
@@ -118,18 +113,6 @@ const symbolDialogTitle = (colorName: string, symbol: string | undefined): strin
   return held ? `Symbol for ${colorName} — ${symbolLabel(held)}` : `Symbol for ${colorName}`;
 };
 
-/**
- * One preview of a pool symbol, drawn from the single sprite path rather than
- * repeating its `d` string. The palette swatch, the symbol chip, the details
- * menu, and the picker grid go through here, so a mark is the same geometry
- * everywhere and one value is read, not copied.
- */
-const SymbolTile = ({ id, className = "symbol-token" }: { id: string; className?: string }) => (
-  <svg className={className} viewBox={`${-SYMBOL_TILE_VIEW} ${-SYMBOL_TILE_VIEW} ${SYMBOL_TILE_VIEW * 2} ${SYMBOL_TILE_VIEW * 2}`} aria-hidden="true" focusable="false">
-    <use href={`#${symbolSpriteId(id)}`} />
-  </svg>
-);
-
 /** "Full stitch brush size", but "Canvas brush size" / "Canvas eraser size" for the canvas tools, whose labels already name the tool. */
 const brushSizeHeading = (label: string) => (label.startsWith("Canvas ") ? `${label} size` : `${label} brush size`);
 /** Stitch selections offer Copy/Paste/Move/Delete; canvas selections offer Add/Delete cells. */
@@ -151,24 +134,74 @@ export function EditorSurface({
     ? catalog!.association.catalogId
     : availableCatalogs[0]?.association.catalogId ?? "";
   const frame = useRef<HTMLDivElement>(null),
-    base = useRef<HTMLCanvasElement>(null),
-    overlay = useRef<HTMLCanvasElement>(null),
-    workspaceRoot = useRef<HTMLElement>(null),
-    controllerRef = useRef<EditorSurfaceController | null>(null);
-  const [controller, setController] = useState<EditorSurfaceController | null>(
-    null,
-  );
-  const [ui, setUi] = useState<EditorUiState | null>(null);
-  const [fallback, setFallback] = useState(false);
+    workspaceRoot = useRef<HTMLElement>(null);
+  const canvasRefs = { frame, base: useRef<HTMLCanvasElement>(null), overlay: useRef<HTMLCanvasElement>(null), keyboardSurface: workspaceRoot };
   const [lastBackstitchMode, setLastBackstitchMode] = useState<BackstitchMode>("draw");
   const [selectedShape, setSelectedShape] = useState<ShapeKind>("triangle");
   const [selectChoice, setSelectChoice] = useState<SelectChoice>(SELECT_CHOICES[0]!);
   const [lastStitchKind, setLastStitchKind] = useState<StitchKind>("full");
-  const [open, setOpen] = useState(false);
-  const documentBackgroundColor = normalizeHexColor((document as typeof document & { settings?: { backgroundColor?: string } }).settings?.backgroundColor ?? "") ?? "#F3EEE5";
+  const documentBackgroundColor = normalizeHexColor(document.settings?.backgroundColor ?? "") ?? DEFAULT_PATTERN_SETTINGS.backgroundColor;
   const { toast, showToast, dismissToast } = useToast();
   const showToastRef = useRef(showToast);
   showToastRef.current = showToast;
+  const { controller, ui, fallback } = useEditorCanvas({
+    workspace,
+    document,
+    refs: canvasRefs,
+    initialUi: { paletteId: document.palette.find((x) => x.active)?.id ?? null, tool: { tool: "pan" } },
+    adapterOptions: {
+      shouldExcludeTarget: (target: unknown) =>
+        target instanceof Element &&
+        Boolean(target.closest('.canvas-edge-controls, .floating-paste-controls, button[aria-label="Shape"], button[aria-label="Select"], button[aria-label="Stitch"], button[aria-label="Eraser"], button[aria-label^="Backstitch"], .tool-options')),
+    },
+    controllerOptions: {
+      catalogDefinition: catalog,
+      onNotice: (message: string) => showToastRef.current(message),
+      onTraceBoundsChange: (bounds, surface) => {
+        const current = workspace.sourceImage;
+        if (!current) return;
+        const sanitized = {
+          x: Math.round(bounds.x),
+          y: Math.round(bounds.y),
+          width: Math.max(1, Math.round(bounds.width)),
+          height: Math.max(1, Math.round(bounds.height)),
+        };
+        const trace = surface.getTraceImage();
+        if (trace && !rectsEqual(sanitized, bounds))
+          surface.setTraceImage({
+            ...trace,
+            chartBounds: sanitized,
+          });
+        // The descriptor keeps workspace coordinates; the controller works locally.
+        void workspace
+          .applyTraceImageChange(
+            { ...current, chartBounds: traceBoundsToWorkspace(sanitized, workspace.document ?? {}) },
+            { label: "trace-image-bounds" },
+          )
+          .catch(() => undefined);
+      },
+    },
+    onStart: ({ controller: surface, frame: el }) => {
+      // The adapter prevents default on canvas presses, so focus would stay on
+      // the last rail button and Enter/Escape/Backspace would never reach the
+      // controller. Pull focus onto the frame unless it is already inside it.
+      const focusFrame = (event: PointerEvent) => {
+        if (event.target instanceof Element && event.target.closest(".canvas-edge-controls, .floating-paste-controls")) return;
+        if (el.contains(globalThis.document.activeElement)) return;
+        el.focus({ preventScroll: true });
+      };
+      el.addEventListener("pointerdown", focusFrame, true);
+      // Opening a pattern leaves focus on the page body, where shortcuts such as
+      // Ctrl+V never reach the editor; start with the editor focused instead,
+      // unless a text field or dialog already holds focus.
+      const active = globalThis.document.activeElement;
+      if (!(active instanceof Element && active.closest('input, textarea, select, [contenteditable="true"], [role="dialog"], dialog'))) {
+        el.focus({ preventScroll: true });
+        surface.handleFocus();
+      }
+      return () => el.removeEventListener("pointerdown", focusFrame, true);
+    },
+  });
   const traceFilePicker = useRef<(() => void) | null>(null);
   const referenceVisibility = useRef<((visible: boolean) => void) | null>(null);
   // The layer stack lives on the session; the `document` prop is its flattened composite.
@@ -177,13 +210,8 @@ export function EditorSurface({
   const activeLayerId: ActiveLayerId = session?.activeLayerId ?? "canvas";
   const activeLayerInfo = session?.activeLayer ?? null;
   const layerSelection = session?.layerSelection ?? { primary: activeLayerId, layerIds: typeof activeLayerId === "number" ? [activeLayerId] : [] };
-  const aidaCount = Number(layeredDocument?.settings.aidaCount ?? (document as typeof document & { settings?: { aidaCount?: number } }).settings?.aidaCount ?? DEFAULT_PATTERN_AIDA_COUNT);
-  const [units, setUnits] = useState<DisplayUnits>(
-    workspace.metadata?.units ?? "metric",
-  );
-  const [preferences, setPreferences] = useState<EditorPreferences>(() =>
-    readEditorPreferences(workspace.metadata?.id ?? "default"),
-  );
+  const { aidaCount, summary: dimensionSummary } = patternDimensionInfo(workspace, document);
+  const [preferences, setPreferences] = useEditorPreferences(workspace);
   const railSide = preferences.railSide;
   const paletteOptions = preferences.paletteDisplay;
   const showPaletteSymbols = ui?.mode === ChartPresentationMode.Symbol || ui?.mode === ChartPresentationMode.Combined;
@@ -199,7 +227,7 @@ export function EditorSurface({
   const [symbolFilter, setSymbolFilter] = useState("");
   const symbolTrigger = useRef<HTMLButtonElement | null>(null);
   const [paletteMenu, setPaletteMenu] = useState<number | null>(null);
-  const [paletteMenuPosition, setPaletteMenuPosition] = useState({ left: 8, top: 8 });
+  const [paletteMenuPosition, setPaletteMenuPosition] = useState<{ left: number; top: number }>({ left: 8, top: 8 });
   const menuAnchor = useRef<HTMLElement | null>(null);
   const menuElement = useRef<HTMLDivElement>(null);
   const [deleteTarget, setDeleteTarget] = useState<number | null>(null);
@@ -208,157 +236,12 @@ export function EditorSurface({
   const [managerPanel, setManagerPanel] = useState<"swap" | "add" | null>(null);
   const [managerSelectedId, setManagerSelectedId] = useState<number | null>(null);
   const managerTrigger = useRef<HTMLButtonElement | null>(null);
-  const { panel: mobilePanel, setPanel: setMobilePanel, dockRef: mobileDock, popoverRef: mobilePopover, toolsTriggerRef: mobileToolsTrigger, colorsTriggerRef: mobileColorsTrigger } = useMobileDock({ blocked: paletteOpen || managerOpen });
+  const dock = useMobileDock();
   const palettePress = useRef<number | null>(null);
   const paletteLongPressed = useRef(false);
   useEffect(() => {
-    const el = frame.current,
-      b = base.current,
-      o = overlay.current,
-      root = workspaceRoot.current;
-    if (!el || !b || !o || !root) return;
-    try {
-      const metrics = getCanvasMetrics(640, 480, { devicePixelRatio: 1 });
-      const first = document.palette.find((x) => x.active);
-      const store = createUiStore(
-        first
-          ? {
-              paletteId: first.id,
-              tool: { tool: "pan" },
-            }
-          : { paletteId: null, tool: { tool: "pan" } },
-      );
-      const gateway = createWorkspaceEditorGateway(workspace);
-      const renderer = createCanvasRenderer({
-        document,
-        targets: {
-          base: createCanvasTarget(b),
-          overlay: createCanvasTarget(o),
-        },
-        metrics,
-      });
-      const c = createEditorSurfaceController({
-        gateway,
-        renderer,
-        uiStore: store,
-        metrics,
-        catalogDefinition: catalog,
-        onNotice: (message: string) => showToastRef.current(message),
-        onTraceBoundsChange: (bounds) => {
-          const current = workspace.sourceImage;
-          if (!current) return;
-          const sanitized = {
-            x: Math.round(bounds.x),
-            y: Math.round(bounds.y),
-            width: Math.max(1, Math.round(bounds.width)),
-            height: Math.max(1, Math.round(bounds.height)),
-          };
-          const trace = controllerRef.current?.getTraceImage?.();
-          if (trace && !rectsEqual(sanitized, bounds))
-            controllerRef.current?.setTraceImage({
-              ...trace,
-              chartBounds: sanitized,
-            });
-          // The descriptor keeps workspace coordinates; the controller works locally.
-          void workspace
-            .applyTraceImageChange(
-              { ...current, chartBounds: traceBoundsToWorkspace(sanitized, workspace.document ?? {}) },
-              { label: "trace-image-bounds" },
-            )
-            .catch(() => undefined);
-        },
-      });
-      controllerRef.current = c;
-      (c as EditorSurfaceController & {
-        setTouchMovementOnly?: (only: boolean) => void;
-      }).setTouchMovementOnly?.(preferences.pencilModeEnabled);
-      setController(c);
-      setUi(store.getState());
-      const unsub = store.subscribe(setUi);
-      const adapter = createPointerEventsAdapter(
-        el,
-        c,
-        {
-          keyboardSurface: root,
-            shouldExcludeTarget: (target: unknown) =>
-            target instanceof Element &&
-            Boolean(target.closest('.canvas-edge-controls, .floating-paste-controls, button[aria-label="Shape"], button[aria-label="Select"], button[aria-label="Stitch"], button[aria-label="Eraser"], button[aria-label^="Backstitch"], .tool-options')),
-        },
-      );
-      // The adapter prevents default on canvas presses, so focus would stay on
-      // the last rail button and Enter/Escape/Backspace would never reach the
-      // controller. Pull focus onto the frame unless it is already inside it.
-      const focusFrame = (event: PointerEvent) => {
-        if (event.target instanceof Element && event.target.closest(".canvas-edge-controls, .floating-paste-controls")) return;
-        if (el.contains(globalThis.document.activeElement)) return;
-        el.focus({ preventScroll: true });
-      };
-      el.addEventListener("pointerdown", focusFrame, true);
-      const observer =
-        typeof ResizeObserver === "undefined"
-          ? undefined
-          : new ResizeObserver(() =>
-              c.setMetrics(
-                getCanvasMetrics(
-                  Math.max(1, el.getBoundingClientRect().width || 640),
-                  Math.max(1, el.getBoundingClientRect().height || 480),
-                  { devicePixelRatio: 1 },
-                ),
-              ),
-            );
-      observer?.observe(el);
-      c.start();
-      c.setMetrics(
-        getCanvasMetrics(
-          Math.max(1, el.getBoundingClientRect().width || 640),
-          Math.max(1, el.getBoundingClientRect().height || 480),
-          { devicePixelRatio: 1 },
-        ),
-      );
-      c.handleKeyDown?.({ key: "0", preventDefault: () => undefined });
-      // Opening a pattern leaves focus on the page body, where shortcuts such as
-      // Ctrl+V never reach the editor; start with the editor focused instead,
-      // unless a text field or dialog already holds focus.
-      const active = globalThis.document.activeElement;
-      if (!(active instanceof Element && active.closest('input, textarea, select, [contenteditable="true"], [role="dialog"], dialog'))) {
-        el.focus({ preventScroll: true });
-        c.handleFocus?.();
-      }
-      return () => {
-        el.removeEventListener("pointerdown", focusFrame, true);
-        observer?.disconnect();
-        adapter.dispose();
-        c.dispose();
-        gateway.dispose();
-        renderer.dispose();
-        controllerRef.current = null;
-        setController(null);
-        unsub();
-      };
-    } catch {
-      setFallback(true);
-    }
-  }, [workspace]);
-  useEffect(() => {
-    (controllerRef.current as
-      | (EditorSurfaceController & {
-          setTouchMovementOnly?: (only: boolean) => void;
-        })
-      | null)?.setTouchMovementOnly?.(pencilModeEnabled);
-  }, [pencilModeEnabled]);
-  useEffect(() => {
-    controllerRef.current?.setDocument(document, {
-      layer: "all",
-      full: true,
-      reason: "external-document",
-    });
-  }, [document, controller]);
-  useEffect(() => {
-    setUnits(workspace.metadata?.units ?? "metric");
-  }, [workspace, workspace.metadata?.id, workspace.metadata?.units]);
-  useEffect(() => {
-    writeEditorPreferences(preferences);
-  }, [preferences]);
+    controller?.setTouchMovementOnly(pencilModeEnabled);
+  }, [pencilModeEnabled, controller]);
   const palette = document.palette.filter((x) => x.active),
     noThread = !palette.length;
   const activeBackstitchMode = ui?.tool.tool === "backstitch" ? (ui.tool.mode ?? "draw") : undefined;
@@ -366,7 +249,7 @@ export function EditorSurface({
   const choose = (kind: StitchKind) => {
     const id = selectedPalette?.id;
     if (id)
-      controllerRef.current?.setBrush({
+      controller?.setBrush({
         kind,
         paletteId: id,
         ...(kind === "half" ? { direction: preferences.halfStitchDirection } : {}),
@@ -376,7 +259,7 @@ export function EditorSurface({
     setPreferences((current) => ({ ...current, halfStitchDirection: direction }));
     const id = selectedPalette?.id;
     if (id && selectedBrush?.kind === "half")
-      controllerRef.current?.setBrush({ kind: "half", direction, paletteId: id } as never);
+      controller?.setBrush({ kind: "half", direction, paletteId: id } as never);
   };
   // Tools stay visible on every layer; unavailable ones are greyed and explain
   // why on hover (title) and on tap (toast) instead of switching.
@@ -405,8 +288,8 @@ export function EditorSurface({
   const invoke = (tool: string) => {
     if (refuseUnavailable(tool)) return;
     if (noThread && ["paint", "fill", "backstitch"].includes(tool)) return;
-    if ((tool === "select" || tool === "lasso") && String(ui?.tool.tool) === tool) controllerRef.current?.clearSelection();
-    else controllerRef.current?.setTool({ tool } as never);
+    if ((tool === "select" || tool === "lasso") && String(ui?.tool.tool) === tool) controller?.clearSelection();
+    else controller?.setTool({ tool } as never);
   };
   const runLayerAction = (action: () => unknown) => {
     try {
@@ -502,7 +385,7 @@ export function EditorSurface({
     const id = deleteTarget;
     if (id === null) return;
     workspace.execute({ type: 'palette-delete', id });
-    if (ui?.paletteId === id) controllerRef.current?.selectPalette(null);
+    if (ui?.paletteId === id) controller?.selectPalette(null);
     closeDeleteConfirm();
   };
   const backgroundCatalogMatch = availableCatalogs.flatMap((item) => {
@@ -574,7 +457,7 @@ export function EditorSurface({
       const added = createdDocument?.palette.find(
         (entry) => entry.active && entry.catalog?.catalogId === definition.association.catalogId && entry.catalog.sourceId === color.sourceId && !previousIds.has(entry.id),
       );
-      if (added) controllerRef.current?.selectCreatedPalette(added.id);
+      if (added) controller?.selectCreatedPalette(added.id);
       finishAdd(added?.id ?? null);
     } catch (error) {
       setPaletteNotice(
@@ -587,7 +470,7 @@ export function EditorSurface({
   // A swap from the manager closes only its panel and keeps the manager
   // open on the replacement; the standalone picker closes as before.
   const finishSwap = (replacementId: number | null) => {
-    controllerRef.current?.selectPalette(replacementId);
+    controller?.selectPalette(replacementId);
     setSwapTarget(null);
     if (managerPanel === "swap") {
       setManagerPanel(null);
@@ -625,7 +508,7 @@ export function EditorSurface({
   const addCustomColor = async (customColor: string, customCatalogColor: CatalogColor | undefined, catalog: CatalogDefinition | undefined): Promise<void> => {
     const customPaletteMatch = paletteMatchForHex(customColor, customCatalogColor, catalog);
     if (customPaletteMatch) {
-      controllerRef.current?.selectPalette(customPaletteMatch.id);
+      controller?.selectPalette(customPaletteMatch.id);
       finishAdd(customPaletteMatch.id);
       return;
     }
@@ -648,7 +531,7 @@ export function EditorSurface({
           !previousIds.has(entry.id) &&
           normalizeHexColor(entry.color) === customColor,
       );
-      if (added) controllerRef.current?.selectCreatedPalette(added.id);
+      if (added) controller?.selectCreatedPalette(added.id);
       finishAdd(added?.id ?? null);
     } catch (error) {
       setPaletteNotice(
@@ -670,15 +553,11 @@ export function EditorSurface({
   };
   const catalogEntryCode = (entry: (typeof palette)[number]) => paletteCodeFor(entry, palette, availableCatalogs);
   const catalogEntryLabel = (entry: (typeof palette)[number]) => catalogEntryCode(entry).label;
-  const positionPaletteMenu = (anchor: HTMLElement) => {
-    const rect = anchor.getBoundingClientRect();
-    setPaletteMenuPosition({ left: Math.max(8, Math.min(rect.right + 6, window.innerWidth - 188)), top: Math.max(8, Math.min(rect.top, window.innerHeight - 158)) });
-  };
   const openPaletteMenu = (id: number, anchor: HTMLElement) => {
     window.clearTimeout(palettePress.current ?? undefined);
     palettePress.current = null;
     menuAnchor.current = anchor;
-    positionPaletteMenu(anchor);
+    setPaletteMenuPosition(anchoredPosition(anchor.getBoundingClientRect(), "right", { width: 188, height: 158 }));
     setPaletteMenu(id);
   };
   const startPalettePress = (id: number, anchor: HTMLElement) => {
@@ -693,7 +572,7 @@ export function EditorSurface({
     window.clearTimeout(palettePress.current ?? undefined);
     palettePress.current = null;
   };
-  const [pickPulse, setPickPulse] = useState<{ paletteId: number; seq: number } | null>(null);
+  const [pickPulse, setPickPulse, clearPickPulse] = useTimedValue<{ paletteId: number; seq: number }>(1400);
   const pendingPick = useRef<{ paletteId: number; seq: number } | null>(null);
   const paletteIdsKey = palette.map((entry) => entry.id).join(",");
   useEffect(() => {
@@ -701,24 +580,16 @@ export function EditorSurface({
     const pending = pendingPick.current;
     if (!pending || !palette.some((entry) => entry.id === pending.paletteId)) return;
     pendingPick.current = null;
-    const reduce = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const reduce = prefersReducedMotion();
     workspaceRoot.current?.querySelectorAll(`[data-palette-id="${pending.paletteId}"]`).forEach((row) => {
       if (typeof row.scrollIntoView === "function") row.scrollIntoView({ block: "nearest", inline: "nearest", behavior: reduce ? "auto" : "smooth" });
     });
     setPickPulse(pending);
   }, [ui?.pickPulse, paletteIdsKey]);
-  useEffect(() => {
-    if (!pickPulse) return;
-    const timer = window.setTimeout(() => setPickPulse(null), 1400);
-    return () => window.clearTimeout(timer);
-  }, [pickPulse]);
   // A Ctrl+C or Ctrl+V that registered flashes its toolbar button once.
-  const [clipboardPulse, setClipboardPulse] = useState<EditorUiState["clipboardPulse"]>(null);
+  const [clipboardPulse, pulseClipboard] = useTimedValue<NonNullable<EditorUiState["clipboardPulse"]>>(1400);
   useEffect(() => {
-    if (!ui?.clipboardPulse) return;
-    setClipboardPulse(ui.clipboardPulse);
-    const timer = window.setTimeout(() => setClipboardPulse(null), 1400);
-    return () => window.clearTimeout(timer);
+    if (ui?.clipboardPulse) pulseClipboard(ui.clipboardPulse);
   }, [ui?.clipboardPulse]);
   const paletteRow = (x: (typeof palette)[number]) => (
     <div
@@ -743,18 +614,18 @@ export function EditorSurface({
         }}
         onClick={() => {
           if (!paletteLongPressed.current) {
-            controllerRef.current?.selectPalette(x.id);
+            controller?.selectPalette(x.id);
             // This callback is the existing-color selection path. The mobile
-            // panel is the only place mobilePanel can be open, so this is a
+            // panel is the only place dock.panel can be open, so this is a
             // no-op for the desktop rail and does not affect add/manage actions.
-            setMobilePanel(null);
+            dock.setPanel(null);
           }
           paletteLongPressed.current = false;
         }}
       >
         <span className="palette-swatch" style={{ backgroundColor: x.color }} aria-hidden="true">
-          {pickPulse?.paletteId === x.id && <span key={pickPulse.seq} className="palette-pick-pulse" aria-hidden="true" onAnimationEnd={() => setPickPulse(null)} />}
-          {showPaletteSymbols && <span className="palette-swatch-symbol" style={{ color: contrastSymbolInk(x.color, DEFAULT_RENDERER_STYLE.symbolColor) }}><SymbolTile id={x.symbol} /></span>}
+          {pickPulse?.paletteId === x.id && <span key={pickPulse.seq} className="palette-pick-pulse" aria-hidden="true" onAnimationEnd={clearPickPulse} />}
+          {showPaletteSymbols && <SwatchSymbol symbol={x.symbol} color={x.color} />}
           {paletteOptions.numbers && (
             <span className={`palette-number${x.catalog ? "" : " palette-number-hex"}`}>
               {catalogEntryCode(x).brand ? <><span className="palette-brand-label">{catalogEntryCode(x).brand}</span><span className="palette-code-label">{x.catalog?.code}</span></> : catalogEntryLabel(x)}
@@ -781,7 +652,7 @@ export function EditorSurface({
         ×
       </button>
       {paletteMenu === x.id && createPortal(
-        <div ref={menuElement} className="palette-menu" role="menu" aria-label={`Details for ${x.name}`} style={{ position: 'fixed', left: paletteMenuPosition.left, top: paletteMenuPosition.top, zIndex: 1000 }} onPointerDown={(event) => event.stopPropagation()}>
+        <div ref={menuElement} className="palette-menu popover-menu" role="menu" aria-label={`Details for ${x.name}`} style={{ position: 'fixed', left: paletteMenuPosition.left, top: paletteMenuPosition.top, zIndex: 1000 }}>
           <strong>{x.name}</strong>
             <span>{catalogEntryLabel(x)}</span>
           <span>Symbol <SymbolTile id={x.symbol} /><span className="visually-hidden">{x.symbol}</span></span>
@@ -838,27 +709,16 @@ export function EditorSurface({
     }
   };
   const command = (key: string, ctrlKey = false) => {
-    controllerRef.current?.handleKeyDown?.({
+    controller?.handleKeyDown?.({
       key,
       ctrlKey,
       preventDefault: () => undefined,
     });
   };
 
-  useEffect(() => {
-    if (paletteMenu === null) return;
-    const close = (event: PointerEvent) => {
-      if (event.target instanceof Node && menuElement.current?.contains(event.target)) return;
-      if (event.target instanceof Element && event.target.closest(".palette-row")) return;
-      setPaletteMenu(null);
-    };
-    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") { setPaletteMenu(null); menuAnchor.current?.focus(); } };
-    globalThis.document.addEventListener("pointerdown", close);
-    globalThis.document.addEventListener("keydown", escape);
-    return () => { globalThis.document.removeEventListener("pointerdown", close); globalThis.document.removeEventListener("keydown", escape); };
-  }, [paletteMenu]);
+  useDismissable({ open: paletteMenu !== null, refs: [menuElement, menuAnchor], onDismiss: () => setPaletteMenu(null), returnFocus: menuAnchor });
   const runSelectionAction = (action: SelectionAction) => {
-    const surface = controllerRef.current;
+    const surface = controller;
     if (action === "add-cells" || action === "delete-cells") surface?.applyCanvasSelection(action === "add-cells" ? "add" : "remove");
     else if (action === "copy") (surface as (EditorSurfaceController & { copySelection?: () => unknown }) | null)?.copySelection?.();
     else if (action === "paste") surface?.pasteSelection();
@@ -876,14 +736,13 @@ export function EditorSurface({
       )
     : [];
   const projectName = workspace.metadata?.title ?? "Untitled pattern";
-  const [exportOpen, setExportOpen] = useState(false);
+  const { openExport, openSettings, dialogs } = usePatternDialogs({ workspace, document, title: projectName, preferences, onPreferencesChange: setPreferences, editorOptions: "all" });
   const activeStackLayer = layeredDocument && typeof activeLayerId === "number" ? findLayer(layeredDocument, activeLayerId) : undefined;
   const activeLayerHeading = !layeredDocument || activeLayerId === "reference"
     ? "Reference image"
     : activeLayerId === "canvas"
       ? "Canvas"
       : activeStackLayer ? LAYER_TYPE_LABELS[activeStackLayer.type] : "Layer";
-  const dimensionSummary = patternDimensionSummary({ width: document.width, height: document.height, aidaCount, units });
   const selectedBrush =
     ui?.tool.tool === "paint"
       ? ui.tool.brush
@@ -899,7 +758,7 @@ export function EditorSurface({
   const shapeToolDisabled = noThread || ui?.paletteId == null || !palette.some((entry) => entry.id === ui.paletteId);
   const applyShapeTool = (shape: ShapeKind) => {
     if (shapeToolDisabled || refuseUnavailable("shape")) return;
-    controllerRef.current?.setTool({ tool: "shape", shape } as never);
+    controller?.setTool({ tool: "shape", shape } as never);
   };
   const shapeIcon = (kind: ShapeKind) => <svg data-shape-icon={kind} viewBox="0 0 24 24" aria-hidden="true"><path d={kind === "line" ? "M5 19 19 5" : kind === "rectangle" ? "M5 6h14v12H5z" : (kind as string) === "square" ? "M5 5h14v14H5z" : kind === "circle" ? "M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16" : (kind as string) === "oval" ? "M12 4a8 6 0 1 0 0 12 8 6 0 0 0 0-12" : (kind as string) === "right-triangle" ? "M5 5V19H19Z" : "M12 4 20 19H4z"} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>;
   /** The Select/Lasso choice matching the active tool; lasso matches by tool, and an unset select shape is rectangle. */
@@ -910,7 +769,7 @@ export function EditorSurface({
   const applySelectChoice = (choice: SelectChoice) => {
     setSelectChoice(choice);
     if (refuseUnavailable(choice.tool)) return;
-    controllerRef.current?.setTool(("shape" in choice ? { tool: choice.tool, shape: choice.shape } : { tool: choice.tool }) as never);
+    controller?.setTool(("shape" in choice ? { tool: choice.tool, shape: choice.shape } : { tool: choice.tool }) as never);
   };
   /** The active tool's brush size, and the label its size control is announced with. */
   const sizeOption: { tool: BrushSizeTool; label: string } | null =
@@ -940,9 +799,8 @@ export function EditorSurface({
     };
   })() : null;
   const finishFloatingPaste = (confirm: boolean) => {
-    const surface = controllerRef.current as (EditorSurfaceController & { confirmFloatingPaste?: () => boolean; cancelFloatingPaste?: () => boolean }) | null;
-    if (confirm) surface?.confirmFloatingPaste?.();
-    else surface?.cancelFloatingPaste?.();
+    if (confirm) controller?.confirmFloatingPaste();
+    else controller?.cancelFloatingPaste();
     window.setTimeout(() => frame.current?.focus(), 0);
   };
   return (
@@ -958,7 +816,7 @@ export function EditorSurface({
       */}
       <svg
         className="symbol-sprite"
-        viewBox={`${-SYMBOL_TILE_VIEW} ${-SYMBOL_TILE_VIEW} ${SYMBOL_TILE_VIEW * 2} ${SYMBOL_TILE_VIEW * 2}`}
+        viewBox={SYMBOL_VIEWBOX}
         aria-hidden="true"
         focusable="false"
       >
@@ -976,13 +834,13 @@ export function EditorSurface({
         onNavigate={onNavigate}
         undo={{ label: "Undo", onClick: () => command("z", true) }}
         redo={{ label: "Redo", onClick: () => command("y", true) }}
-        onExport={() => setExportOpen(true)}
-        onSettings={() => setOpen(true)}
+        onExport={openExport}
+        onSettings={openSettings}
         info={<p className="editor-dimensions">{dimensionSummary}</p>}
       />
       <div className={`editor-layout rail-${railSide}`}>
-        <aside ref={mobileDock} className="editor-rail-shell" aria-label="Editor controls">
-          <div ref={mobilePanel === "tools" ? mobilePopover : undefined} id="mobile-tools-popover" className={`editor-rail-popover mobile-tools-popover${mobilePanel === "tools" ? " mobile-popover-open" : ""}`} role={mobilePanel === "tools" ? "dialog" : undefined} aria-label="Tools" tabIndex={-1}>
+        <aside ref={dock.dockRef} className="editor-rail-shell" aria-label="Editor controls">
+          <DockPopover dock={dock} panel="tools">
           <nav className="editor-rail" aria-label="Editor sections">
             <button className="rail-button" type="button" aria-label="Pan" title="Pan" aria-pressed={ui?.tool.tool === "pan"} onClick={() => invoke("pan")}>
               <img data-icon="pan" src={panIcon} alt="" aria-hidden="true" />
@@ -1026,7 +884,7 @@ export function EditorSurface({
               disabled={noThread}
               aria-label={activeBackstitchMode ? `Backstitch, ${activeBackstitchMode} mode` : "Backstitch"}
               aria-pressed={backstitchActive}
-              onClick={() => { if (refuseUnavailable("backstitch")) return; controllerRef.current?.setBackstitchMode(lastBackstitchMode); }}
+              onClick={() => { if (refuseUnavailable("backstitch")) return; controller?.setBackstitchMode(lastBackstitchMode); }}
             >
               <img data-icon="backstitch" src={backstitchIcon} alt="" aria-hidden="true" />
             </button>
@@ -1059,8 +917,8 @@ export function EditorSurface({
               <img data-icon="eyedropper" src={eyedropperIcon} alt="" aria-hidden="true" />
             </button>
           </nav>
-          </div>
-          <div ref={mobilePanel === "colors" ? mobilePopover : undefined} id="mobile-colors-popover" className={`editor-rail-popover mobile-colors-popover${mobilePanel === "colors" ? " mobile-popover-open" : ""}`} role={mobilePanel === "colors" ? "dialog" : undefined} aria-label="Colors" tabIndex={-1}>
+          </DockPopover>
+          <DockPopover dock={dock} panel="colors">
           <div className="palette-rail" role="region" aria-label="Thread colors">
             <div className="palette-rail-actions">
               <button
@@ -1085,7 +943,7 @@ export function EditorSurface({
                 aria-pressed={ui?.focusColor ?? false}
                 title="Focus Color"
                 disabled={palette.length === 0}
-                onClick={() => controllerRef.current?.toggleFocusColor()}
+                onClick={() => controller?.toggleFocusColor()}
               ><span className="palette-focus-glyph" aria-hidden="true"><img data-icon="focus" src={focusIcon} alt="" aria-hidden="true" /></span></button>
             </div>
             <div className="palette-rail-items">
@@ -1106,7 +964,7 @@ export function EditorSurface({
               onAdd={addLayer}
             />
           )}
-          </div>
+          </DockPopover>
         </aside>
         <div className="canvas-column">
           <div className="canvas-actions">
@@ -1125,9 +983,9 @@ export function EditorSurface({
                   canvasCropActive={canvasCropActive}
                   onCanvasModeChange={(mode) => {
                     // Choosing a mode from the menu starts editing in it.
-                    if (controllerRef.current?.setCanvasMode(mode)) controllerRef.current.setCanvasCropActive(true);
+                    if (controller?.setCanvasMode(mode)) controller.setCanvasCropActive(true);
                   }}
-                  onCanvasCropToggle={() => controllerRef.current?.setCanvasCropActive(!canvasCropActive)}
+                  onCanvasCropToggle={() => controller?.setCanvasCropActive(!canvasCropActive)}
                   onRename={(layerId, name) => runLayerAction(() => session?.renameLayer(layerId, name))}
                   onDuplicate={(layerId) => runLayerAction(() => session?.duplicateLayer(layerId))}
                   layerSelection={layerSelection}
@@ -1148,9 +1006,9 @@ export function EditorSurface({
                       <div role="group" aria-label="Stitch type">
                         {STITCH_CHOICES.map(([kind, name]) => {
                           const button = (
-                            <button key={kind} className="tool-option-button" type="button" aria-label={name} title={name} aria-pressed={activeStitchKind === kind} onClick={() => choose(kind)}>
+                            <ToolButton key={kind} label={name} pressed={activeStitchKind === kind} onClick={() => choose(kind)}>
                               <span className={`stitch-brush-icon stitch-brush-icon-${kind}`} aria-hidden="true" />
-                            </button>
+                            </ToolButton>
                           );
                           if (kind !== "half") return button;
                           return (
@@ -1170,32 +1028,31 @@ export function EditorSurface({
                     )}
                     <div className="tool-options-size">
                       <label htmlFor="tool-brush-size">Size <output>{ui?.toolBrushSizes[sizeOption.tool] ?? 1}</output></label>
-                      <RangeInput id="tool-brush-size" min="1" max="10" aria-label={brushSizeHeading(sizeOption.label)} value={ui?.toolBrushSizes[sizeOption.tool] ?? 1} onChange={(event) => controllerRef.current?.setToolBrushSize(sizeOption.tool, Number(event.target.value))} />
+                      <RangeInput id="tool-brush-size" min="1" max="10" aria-label={brushSizeHeading(sizeOption.label)} value={ui?.toolBrushSizes[sizeOption.tool] ?? 1} onChange={(event) => controller?.setToolBrushSize(sizeOption.tool, Number(event.target.value))} />
                     </div>
                   </>
                 ) : backstitchActive ? (
-                  <div role="group" aria-label="Backstitch mode">
-                    {(["draw", "move"] as const).map((mode) => (
-                      <button key={mode} className="tool-option-button" type="button" aria-pressed={activeBackstitchMode === mode} onClick={() => { controllerRef.current?.setBackstitchMode(mode); setLastBackstitchMode(mode); }}>
-                        {mode === "draw" ? "Draw" : "Move"}
-                      </button>
-                    ))}
-                  </div>
+                  <SegmentedControl
+                    aria-label="Backstitch mode"
+                    options={BACKSTITCH_MODES}
+                    value={activeBackstitchMode ?? lastBackstitchMode}
+                    onChange={(mode) => { controller?.setBackstitchMode(mode); setLastBackstitchMode(mode); }}
+                  />
                 ) : ui?.tool.tool === "shape" ? (
                   <div role="group" aria-label="Shape">
                     {SHAPE_CHOICES.map((shape) => {
                       const kind = shape as string;
                       const label = kind === "right-triangle" ? "Right triangle" : kind[0]!.toUpperCase() + kind.slice(1);
-                      return <button key={kind} className="tool-option-button" type="button" aria-label={label} title={label} aria-pressed={selectedShape === shape} onClick={() => { setSelectedShape(shape); applyShapeTool(shape); }}>{shapeIcon(shape)}</button>;
+                      return <ToolButton key={kind} label={label} pressed={selectedShape === shape} onClick={() => { setSelectedShape(shape); applyShapeTool(shape); }}>{shapeIcon(shape)}</ToolButton>;
                     })}
                   </div>
                 ) : activeSelectChoice && (
                   <>
                     <div role="group" aria-label="Selection shape">
                       {SELECT_CHOICES.map((choice) => (
-                        <button key={choice.label} className="tool-option-button" type="button" aria-label={choice.label} title={choice.label} aria-pressed={activeSelectChoice === choice} onClick={() => applySelectChoice(choice)}>
+                        <ToolButton key={choice.label} label={choice.label} pressed={activeSelectChoice === choice} onClick={() => applySelectChoice(choice)}>
                           <img data-icon={choice.dataIcon} src={choice.icon} alt="" aria-hidden="true" />
-                        </button>
+                        </ToolButton>
                       ))}
                     </div>
                     <div role="group" aria-label="Selection actions">
@@ -1203,10 +1060,10 @@ export function EditorSurface({
                         ? ([["add-cells", "Add", "Add selected cells to the canvas", !ui?.overlay.canvasEditing?.selection], ["delete-cells", "Delete", "Delete selected cells from the canvas", !ui?.overlay.canvasEditing?.selection]] as const)
                         : ([["copy", "Copy", "Copy selection", !ui?.overlay.selection], ["paste", "Paste", "Paste selection", !ui?.canPaste], ["move", "Move", "Move selection", !ui?.overlay.selection], ["delete", "Delete", "Delete selection", !ui?.overlay.selection]] as const)
                       ).map(([action, text, label, disabled]) => (
-                        <button key={action} className="tool-option-button" type="button" aria-label={label} title={label} disabled={disabled} onClick={() => runSelectionAction(action)}>
+                        <ToolButton key={action} label={label} disabled={disabled} onClick={() => runSelectionAction(action)}>
                           {text}
                           {clipboardPulse?.action === action && <span key={clipboardPulse.seq} className="clipboard-pulse" aria-hidden="true" />}
-                        </button>
+                        </ToolButton>
                       ))}
                     </div>
                   </>
@@ -1216,78 +1073,43 @@ export function EditorSurface({
             <ViewSettings
               mode={ui?.mode}
               threadView={ui?.threadView === true}
-              onChartMode={(mode) => controllerRef.current?.setChartMode(mode)}
-              onThreadView={() => controllerRef.current?.setThreadView(true)}
+              onChartMode={(mode) => controller?.setChartMode(mode)}
+              onThreadView={() => controller?.setThreadView(true)}
             />
             <CanvasControls onCommand={command} />
           </div>
-          <div
-            ref={frame}
-            className="canvas-frame"
-            role="group"
-            tabIndex={0}
-            aria-label="Stitch chart canvas"
-            aria-describedby="canvas-instructions"
-          >
-            {fallback ? (
-              <p className="canvas-fallback">
-                Canvas preview is unavailable. Refresh the page or try a browser
-                with Canvas 2D support.
-              </p>
-            ) : (
-              <>
-                <canvas ref={base} aria-hidden="true" />
-                <canvas ref={overlay} aria-hidden="true" />
-                {showCanvasEdges && ui?.viewport && (
-                  <CanvasEdgeControls
-                    controller={controller}
-                    viewport={ui.viewport}
-                    width={document.width}
-                    height={document.height}
-                    frame={frame}
-                    previewBox={ui.overlay.canvasEditing?.preview?.kind === "resize" ? ui.overlay.canvasEditing.preview.box : null}
-                  />
-                )}
-                {floatingPasteControls && (
-                  <div className="floating-paste-controls" role="group" aria-label="Paste controls" style={{ left: `${floatingPasteControls.left}px`, top: `${floatingPasteControls.top}px` }}>
-                    <button type="button" aria-label={floatingPasteControls.move ? "Apply move" : "Apply paste"} title={floatingPasteControls.move ? "Apply move" : "Apply paste"} onPointerDown={(event) => event.stopPropagation()} onClick={() => finishFloatingPaste(true)}>✓</button>
-                    <button type="button" aria-label={floatingPasteControls.move ? "Cancel move" : "Cancel paste"} title={floatingPasteControls.move ? "Cancel move" : "Cancel paste"} onPointerDown={(event) => event.stopPropagation()} onClick={() => finishFloatingPaste(false)}>✗</button>
-                  </div>
-                )}
-              </>
+          <CanvasFrame refs={canvasRefs} fallback={fallback} aria-label="Stitch chart canvas" aria-describedby="canvas-instructions">
+            {showCanvasEdges && ui?.viewport && (
+              <CanvasEdgeControls
+                controller={controller}
+                viewport={ui.viewport}
+                width={document.width}
+                height={document.height}
+                frame={frame}
+                previewBox={ui.overlay.canvasEditing?.preview?.kind === "resize" ? ui.overlay.canvasEditing.preview.box : null}
+              />
             )}
-          </div>
+            {floatingPasteControls && (
+              <div className="floating-paste-controls" role="group" aria-label="Paste controls" style={{ left: `${floatingPasteControls.left}px`, top: `${floatingPasteControls.top}px` }}>
+                <button type="button" aria-label={floatingPasteControls.move ? "Apply move" : "Apply paste"} title={floatingPasteControls.move ? "Apply move" : "Apply paste"} onPointerDown={(event) => event.stopPropagation()} onClick={() => finishFloatingPaste(true)}>✓</button>
+                <button type="button" aria-label={floatingPasteControls.move ? "Cancel move" : "Cancel paste"} title={floatingPasteControls.move ? "Cancel move" : "Cancel paste"} onPointerDown={(event) => event.stopPropagation()} onClick={() => finishFloatingPaste(false)}>✗</button>
+              </div>
+            )}
+          </CanvasFrame>
           <Toast toast={toast} onDismiss={dismissToast} />
           <div className="mobile-dock-card">
             <div className="mobile-dock-triggers" aria-label="Open editor controls">
-              <button ref={mobileToolsTrigger} className="mobile-dock-trigger" type="button" aria-label="Tools" aria-expanded={mobilePanel === "tools"} aria-controls="mobile-tools-popover" onClick={() => setMobilePanel(mobilePanel === "tools" ? null : "tools")}>
+              <button ref={dock.toolsTriggerRef} className="mobile-dock-trigger" type="button" aria-label="Tools" aria-expanded={dock.panel === "tools"} aria-controls="mobile-tools-popover" onClick={() => dock.setPanel(dock.panel === "tools" ? null : "tools")}>
                 <img src={stitchIcon} alt="" aria-hidden="true" />
               </button>
-              <button ref={mobileColorsTrigger} className="mobile-dock-trigger mobile-colors-trigger" type="button" aria-label={selectedPalette ? `Colors: ${selectedPalette.name}` : "Colors"} title={selectedPalette ? `Colors: ${selectedPalette.name}` : "Colors"} aria-expanded={mobilePanel === "colors"} aria-controls="mobile-colors-popover" onClick={() => setMobilePanel(mobilePanel === "colors" ? null : "colors")}>
+              <button ref={dock.colorsTriggerRef} className="mobile-dock-trigger mobile-colors-trigger" type="button" aria-label={selectedPalette ? `Colors: ${selectedPalette.name}` : "Colors"} title={selectedPalette ? `Colors: ${selectedPalette.name}` : "Colors"} aria-expanded={dock.panel === "colors"} aria-controls="mobile-colors-popover" onClick={() => dock.setPanel(dock.panel === "colors" ? null : "colors")}>
                 <span className="mobile-dock-color-swatch" style={{ backgroundColor: selectedPalette?.color ?? "#fffdf9" }} aria-hidden="true" />
               </button>
             </div>
           </div>
         </div>
       </div>
-      {exportOpen && (
-        <ExportDialog
-          document={document}
-          title={projectName}
-          workspace={workspace}
-          exportPdf={createExportPdf(document, workspace, projectName)}
-          onClose={() => setExportOpen(false)}
-        />
-      )}
-      {open && (
-        <PatternSettingsDialog
-          workspace={workspace}
-          preferences={preferences}
-          onPreferencesChange={setPreferences}
-          editorOptions="all"
-          onClose={() => setOpen(false)}
-        />
-      )}
+      {dialogs}
       {paletteOpen && (
         <ColorPickerModal
           {...pickerProps}
@@ -1308,7 +1130,7 @@ export function EditorSurface({
           selected={managerEntry}
           panel={managerPanel}
           entryLabel={catalogEntryLabel}
-          swatchContent={showPaletteSymbols ? (entry) => <span className="palette-swatch-symbol" style={{ color: contrastSymbolInk(entry.color, DEFAULT_RENDERER_STYLE.symbolColor) }}><SymbolTile id={entry.symbol} /></span> : undefined}
+          swatchContent={showPaletteSymbols ? (entry) => <SwatchSymbol symbol={entry.symbol} color={entry.color} /> : undefined}
           picker={pickerProps}
           notice={paletteNotice}
           onSelect={selectManagerEntry}
@@ -1390,11 +1212,7 @@ export function EditorSurface({
                   No symbols match "{symbolFilter.trim()}".
                 </p>
               )}
-              {symbolNotice && (
-                <p className="modal-error" role="alert">
-                  {symbolNotice}
-                </p>
-              )}
+              {symbolNotice && <ErrorNotice>{symbolNotice}</ErrorNotice>}
             </Modal>
         )}
     </section>

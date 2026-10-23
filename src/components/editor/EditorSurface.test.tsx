@@ -25,7 +25,7 @@ const COMPACT_DMC_DEFINITION: CatalogDefinition = {
 };
 
 const f = vi.hoisted(() => ({
-  c: { start: vi.fn(), setMetrics: vi.fn(), setDocument: vi.fn(), dispose: vi.fn(), setBrush: vi.fn(), setTool: vi.fn(), toggleFocusColor: vi.fn(), clearSelection: vi.fn(), setBackstitchMode: vi.fn(), selectPalette: vi.fn(), selectCreatedPalette: vi.fn(), setChartMode: vi.fn(), setThreadView: vi.fn(), setGridVisible: vi.fn(), setBrushSize: vi.fn(), setToolBrushSize: vi.fn(), setTouchMovementOnly: vi.fn(), copySelection: vi.fn(), pasteSelection: vi.fn(), moveSelection: vi.fn(), deleteSelection: vi.fn(), handleKeyDown: vi.fn(() => false), getTraceImage: vi.fn(() => undefined), setTraceImage: vi.fn(), setTraceImageSettings: vi.fn(), clearTraceImage: vi.fn() },
+  c: { start: vi.fn(), setMetrics: vi.fn(), setDocument: vi.fn(), dispose: vi.fn(), setBrush: vi.fn(), setTool: vi.fn(), toggleFocusColor: vi.fn(), clearSelection: vi.fn(), setBackstitchMode: vi.fn(), selectPalette: vi.fn(), selectCreatedPalette: vi.fn(), setChartMode: vi.fn(), setThreadView: vi.fn(), setGridVisible: vi.fn(), setBrushSize: vi.fn(), setToolBrushSize: vi.fn(), setTouchMovementOnly: vi.fn(), copySelection: vi.fn(), pasteSelection: vi.fn(), moveSelection: vi.fn(), deleteSelection: vi.fn(), handleFocus: vi.fn(), handleKeyDown: vi.fn(() => false), getTraceImage: vi.fn(() => undefined), setTraceImage: vi.fn(), setTraceImageSettings: vi.fn(), clearTraceImage: vi.fn() },
   adapter: vi.fn(() => ({ dispose: vi.fn() })),
   r: { dispose: vi.fn() }, resize: undefined as (() => void) | undefined,
   uiState: { mode: 'color', gridVisible: true, overlay: {}, tool: { tool: 'paint' }, paletteId: 1, pickPulse: null, canPaste: false, toolBrushSizes: { full: 1, half: 1, 'three-quarter': 1, eraser: 1 } }, createdUiState: null as unknown,
@@ -511,6 +511,26 @@ describe('EditorSurface', () => {
     expect(screen.queryByRole('dialog', { name: 'Colors' })).not.toBeInTheDocument();
     expect(colors).toHaveAttribute('aria-expanded', 'false');
   });
+  it('keeps the Colors popover open under its palette menu: one Escape closes only the menu, and a menu item press keeps the dock', () => {
+    render(<EditorSurface workspace={ws} document={paletteDetailsDoc} />);
+    const colors = screen.getByRole('button', { name: /^Colors:/, hidden: true });
+    fireEvent.click(colors);
+    const swatch = within(screen.getByRole('dialog', { name: 'Colors' })).getByRole('button', { name: '321Ruby' });
+
+    fireEvent.contextMenu(swatch);
+    fireEvent.keyDown(screen.getByRole('menu', { name: 'Details for Ruby' }), { key: 'Escape' });
+    expect(screen.queryByRole('menu', { name: 'Details for Ruby' })).not.toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Colors' })).toBeInTheDocument();
+    expect(document.activeElement).toBe(swatch);
+
+    fireEvent.contextMenu(swatch);
+    const changeSymbol = within(screen.getByRole('menu', { name: 'Details for Ruby' })).getByRole('menuitem', { name: 'Change symbol' });
+    fireEvent.pointerDown(changeSymbol);
+    expect(screen.getByRole('dialog', { name: 'Colors' })).toBeInTheDocument();
+    fireEvent.click(changeSymbol);
+    expect(screen.queryByRole('menu', { name: 'Details for Ruby' })).not.toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Colors' })).toBeInTheDocument();
+  });
   it('closes Colors after selecting an existing color but stays open for Add new color', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     const colors = screen.getByRole('button', { name: /^Colors:/, hidden: true });
@@ -722,7 +742,7 @@ describe('EditorSurface', () => {
     const group = within(toolOptions()).getByRole('group', { name: 'Backstitch mode' });
     expect(within(group).getByRole('button', { name: 'Draw' })).toHaveAttribute('aria-pressed', 'true');
     expect(within(group).getByRole('button', { name: 'Move' })).toHaveAttribute('aria-pressed', 'false');
-    expect(within(group).getByRole('button', { name: 'Move' })).toHaveClass('tool-option-button');
+    expect(within(group).getByRole('button', { name: 'Move' })).toHaveClass('segmented-option');
     expect(within(toolOptions()).queryByRole('slider')).not.toBeInTheDocument();
     fireEvent.click(within(group).getByRole('button', { name: 'Move' }));
     expect(f.c.setBackstitchMode).toHaveBeenCalledWith('move');
@@ -952,19 +972,13 @@ describe('EditorSurface', () => {
   it('focuses the canvas frame when a pattern opens, so Ctrl+V reaches the controller with nothing clicked', async () => {
     const { createPointerEventsAdapter } = await vi.importActual<typeof import('../../editor/input')>('../../editor/input');
     f.adapter.mockImplementationOnce(createPointerEventsAdapter as never);
-    const controller = f.c as unknown as { handleFocus?: () => void; handleKeyDown: ReturnType<typeof vi.fn> };
-    controller.handleFocus = vi.fn();
-    try {
-      render(<EditorSurface workspace={ws} document={doc} />);
-      const frame = document.querySelector('.canvas-frame');
-      expect(document.activeElement).toBe(frame);
-      expect(controller.handleFocus).toHaveBeenCalled();
-      controller.handleKeyDown.mockClear();
-      fireEvent.keyDown(document.activeElement!, { key: 'v', ctrlKey: true });
-      expect(controller.handleKeyDown).toHaveBeenCalledWith(expect.objectContaining({ key: 'v', ctrlKey: true }));
-    } finally {
-      delete controller.handleFocus;
-    }
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const frame = document.querySelector('.canvas-frame');
+    expect(document.activeElement).toBe(frame);
+    expect(f.c.handleFocus).toHaveBeenCalled();
+    f.c.handleKeyDown.mockClear();
+    fireEvent.keyDown(document.activeElement!, { key: 'v', ctrlKey: true });
+    expect(f.c.handleKeyDown).toHaveBeenCalledWith(expect.objectContaining({ key: 'v', ctrlKey: true }));
   });
   it('leaves focus in a text field that already holds it when a pattern opens', () => {
     const field = document.createElement('input');
@@ -2283,11 +2297,11 @@ describe('EditorSurface layers', () => {
     expect(stylesText).toMatch(/\.canvas-actions \.crop-split-button button \{[^}]*height:2\.75rem;[^}]*min-height:2\.75rem;/);
     expect(stylesText).toMatch(/\.crop-split-main\[aria-pressed="true"\] \+ \.crop-split-arrow,/);
     // Active crop fills the arrow too, with a translucent light divider between the halves.
-    expect(stylesText).toMatch(/\.crop-split-main\[aria-pressed="true"\] \+ \.crop-split-arrow \{[^}]*border-left-color:rgba\(255,253,249,\.45\);[^}]*background:#bc5a3d;[^}]*color:#fffdf9;/);
-    // Hover on either half and the open menu darken to #88452f and stay filled.
-    expect(stylesText).toMatch(/\.crop-split-main\[aria-pressed="true"\]:hover,\n[^{]*\.crop-split-main\[aria-pressed="true"\] \+ \.crop-split-arrow:hover,\n[^{]*\.crop-split-main\[aria-pressed="true"\] \+ \.crop-split-arrow\[aria-expanded="true"\] \{[^}]*background:#88452f;/);
+    expect(stylesText).toMatch(/\.crop-split-main\[aria-pressed="true"\] \+ \.crop-split-arrow \{[^}]*border-left-color:color-mix\(in srgb, var\(--color-on-accent\) 45%, transparent\);[^}]*background:var\(--color-accent\);[^}]*color:var\(--color-on-accent\);/);
+    // Hover on either half and the open menu darken to accent-ink and stay filled.
+    expect(stylesText).toMatch(/\.crop-split-main\[aria-pressed="true"\]:hover,\n[^{]*\.crop-split-main\[aria-pressed="true"\] \+ \.crop-split-arrow:hover,\n[^{]*\.crop-split-main\[aria-pressed="true"\] \+ \.crop-split-arrow\[aria-expanded="true"\] \{[^}]*background:var\(--color-accent-ink\);/);
     // The pressed rules come after the open-menu rule, so an open menu doesn't revert the arrow to the light fill.
-    expect(stylesText.indexOf('.crop-split-main[aria-pressed="true"] + .crop-split-arrow {')).toBeGreaterThan(stylesText.indexOf('.crop-split-arrow[aria-expanded="true"] { border-color:#bc5a3d; background:#f1e4da;'));
+    expect(stylesText.indexOf('.crop-split-main[aria-pressed="true"] + .crop-split-arrow {')).toBeGreaterThan(stylesText.indexOf('.crop-split-arrow[aria-expanded="true"] { border-color:var(--color-accent); background:var(--color-accent-soft);'));
     expect(stylesText).toMatch(/\.canvas-actions \.layer-controls-canvas \.layer-background-button \{[^}]*height:2\.75rem;/);
     expect(stylesText).toMatch(/\.layer-background-swatch \{[^}]*width:1\.2rem;[^}]*height:1\.2rem;/);
   });

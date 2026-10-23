@@ -6,8 +6,8 @@ export const PROJECT_THUMBNAIL_MAX_AXIS = 512;
 export const PROJECT_THUMBNAIL_MAX_CELLS = PROJECT_THUMBNAIL_MAX_AXIS * PROJECT_THUMBNAIL_MAX_AXIS;
 /** Backstitches kept in a summary; a pattern with more shows its first ones in store order. */
 export const PROJECT_THUMBNAIL_MAX_BACKSTITCHES = 65536;
-/** A stable, deliberately unbranded color for cells without a stitch. */
-export const PROJECT_THUMBNAIL_FABRIC_COLOR = '#f3eee5';
+/** The default fabric, for cells without a stitch; lowercase like every summary color. */
+export const PROJECT_THUMBNAIL_FABRIC_COLOR = DEFAULT_PATTERN_SETTINGS.backgroundColor.toLowerCase();
 export const DEFAULT_FABRIC_COLOR = PROJECT_THUMBNAIL_FABRIC_COLOR;
 /**
  * Samples that land in a hole of a non-rectangular canvas. The summary format

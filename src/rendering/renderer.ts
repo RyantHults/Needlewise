@@ -64,6 +64,7 @@ import { grayscaleColor, paletteColor } from './colors';
 import { parseHexColor, rgbToHex } from '../domain/color';
 import { contrastSymbolInk, isDarkColor, relativeLuminance } from './contrast';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
+import { readRendererColors, subscribeThemeChange, type RendererColors } from './theme-colors';
 import {
   createThreadSpriteCache,
   drawThreadBackstitch,
@@ -86,8 +87,9 @@ const EMPTY_STATS: RenderStats = {
   overlayRendered: false
 };
 
-function mergeStyle(style: Partial<RendererStyle> | undefined): RendererStyle {
-  return { ...DEFAULT_RENDERER_STYLE, ...style };
+/** Caller settings win over the theme's colours, which win over the defaults. */
+function mergeStyle(theme: RendererColors, style: Partial<RendererStyle>): RendererStyle {
+  return { ...DEFAULT_RENDERER_STYLE, ...theme, ...style };
 }
 
 function unionRect(left: Rect | undefined, right: Rect | undefined): Rect | undefined {
@@ -2466,6 +2468,9 @@ export class Canvas2DRenderer implements CanvasRenderer {
   private viewport: Viewport;
   private metrics: CanvasMetrics;
   private style: RendererStyle;
+  private styleSettings: Partial<RendererStyle>;
+  private themeColors: RendererColors;
+  private readonly unsubscribeTheme: () => void;
   private traceImage: TraceImage | undefined;
   private traceDisposer: (() => void) | undefined;
   private traceDisposed = false;
@@ -2495,7 +2500,10 @@ export class Canvas2DRenderer implements CanvasRenderer {
     // Viewport state is projected into the renderer by the controller. Keep
     // it as supplied; rendering must never pan or zoom the chart implicitly.
     this.viewport = options.viewport ?? { x: 0, y: 0, zoom: 16 };
-    this.style = mergeStyle(options.style);
+    this.styleSettings = options.style ?? {};
+    this.themeColors = readRendererColors();
+    this.style = mergeStyle(this.themeColors, this.styleSettings);
+    this.unsubscribeTheme = subscribeThemeChange(() => this.applyTheme());
     this.traceImage = options.traceImage ?? options.trace;
     this.traceDisposer = this.traceImage?.dispose;
     this.overlay = options.overlay ?? {};
@@ -2554,7 +2562,15 @@ export class Canvas2DRenderer implements CanvasRenderer {
 
   setStyle(style: Partial<RendererStyle>): void {
     if (this.disposed) return;
-    this.style = mergeStyle({ ...this.style, ...style });
+    this.styleSettings = { ...this.styleSettings, ...style };
+    this.style = mergeStyle(this.themeColors, this.styleSettings);
+    this.invalidate('all');
+  }
+
+  private applyTheme(): void {
+    if (this.disposed) return;
+    this.themeColors = readRendererColors();
+    this.style = mergeStyle(this.themeColors, this.styleSettings);
     this.invalidate('all');
   }
 
@@ -2676,6 +2692,7 @@ export class Canvas2DRenderer implements CanvasRenderer {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.unsubscribeTheme();
     if (this.frameScheduled && this.frameHandle !== undefined) this.cancelFrame(this.frameHandle);
     this.frameHandle = undefined;
     this.frameScheduled = false;

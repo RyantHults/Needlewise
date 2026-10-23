@@ -1,4 +1,5 @@
 import type { ImportAnalysis, SymbolMapping } from '../../import/types';
+import { WarningNotice } from '../controls/Notice';
 import { ChartPreview } from './ChartPreview';
 
 interface Props {
@@ -16,7 +17,7 @@ export function ChartStep({ colorLimit, analysis, mappings, slugs }: Props) {
       <p className="control-note" role="status">
         {hasChart ? `${chart.width} × ${chart.height} stitches, ${chart.symbols.length} symbols.` : 'No chart pages are selected.'}
       </p>
-      {chart.symbols.length > colorLimit && <p className="modal-error" role="status">This chart uses {chart.symbols.length} colors, but at most {colorLimit} are supported, so it cannot be created.</p>}
+      {chart.symbols.length > colorLimit && <WarningNotice>This chart uses {chart.symbols.length} colors, but at most {colorLimit} are supported, so it cannot be created.</WarningNotice>}
       {hasChart && <ChartPreview chart={chart} mappings={mappings} slugs={slugs} />}
       {chart.warnings.length > 0 && (
         <section aria-labelledby="import-warnings-title">

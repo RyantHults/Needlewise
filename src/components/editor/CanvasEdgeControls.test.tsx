@@ -212,7 +212,7 @@ describe('Crop split button', () => {
     const advanced = within(menu).getByRole('menuitemradio', { name: 'Advanced crop' });
     expect(crop).toHaveAttribute('aria-checked', 'true');
     expect(crop).toHaveFocus();
-    fireEvent.keyDown(document, { key: 'ArrowDown' });
+    fireEvent.keyDown(crop, { key: 'ArrowDown' });
     expect(advanced).toHaveFocus();
     fireEvent.click(advanced);
     expect(onCanvasModeChange).toHaveBeenCalledWith('advanced');

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { contrastSymbolInk } from '../../rendering/contrast';
+import { readThemeColor } from '../../rendering/theme-colors';
 import { toSymbolOutline } from '../../symbols';
 import type { ImportedChart, SymbolMapping } from '../../import/types';
 import { mappingColor } from './mapping';
@@ -8,8 +9,6 @@ const MAX_PREVIEW_PX = 480;
 const MAX_CELL_PX = 16;
 /** Below this the mark is a smudge, so the cell shows its color alone. */
 export const MIN_SYMBOL_CELL_PX = 8;
-const EMPTY_CELL = '#fffdf9';
-const DARK_INK = '#272321';
 
 interface Props {
   chart: ImportedChart;
@@ -32,13 +31,15 @@ export function ChartPreview({ chart, mappings, slugs }: Props) {
     canvas.height = chart.height * cell;
     const context = canvas.getContext('2d');
     if (!context) return;
-    context.fillStyle = EMPTY_CELL;
+    const emptyCell = readThemeColor('--color-surface', '#fffdf9');
+    const darkInk = readThemeColor('--color-ink', '#272321');
+    context.fillStyle = emptyCell;
     context.fillRect(0, 0, canvas.width, canvas.height);
     const byKey = new Map(mappings.map((mapping) => [mapping.symbolKey, mapping]));
     const looks = chart.symbols.map((symbol) => {
-      const color = mappingColor(byKey.get(symbol.key)) ?? EMPTY_CELL;
+      const color = mappingColor(byKey.get(symbol.key)) ?? emptyCell;
       const slug = slugs.get(symbol.key);
-      return { color, ink: contrastSymbolInk(color, DARK_INK), outline: slug ? toSymbolOutline(slug) : undefined };
+      return { color, ink: contrastSymbolInk(color, darkInk), outline: slug ? toSymbolOutline(slug) : undefined };
     });
     for (let y = 0; y < chart.height; y += 1) {
       for (let x = 0; x < chart.width; x += 1) {
