@@ -4,10 +4,7 @@ import {
   applyLayerStructureCommand,
   CellKind,
   colorComponentMask,
-  commitLayerSurface,
   coveringLayerId,
-  createLayeredDocument,
-  findLayer,
   flattenDocument,
   layerAddCommand,
   layerSetVisibilityCommand,
@@ -15,15 +12,15 @@ import {
   LayerType,
   visibleBackstitchOwners,
   type DomainCommand,
-  type LayeredDocument,
-  type StitchLayer
+  type LayeredDocument
 } from './index';
+import { TEST_CATALOG, commitLayerSurface, createLayeredDocument, stitchLayer } from './test-fixtures';
 
 function layered(): LayeredDocument {
   return createLayeredDocument({
     width: 4,
     height: 3,
-    catalog: { catalogId: 'test-catalog', brandLabel: 'Test Catalog', colorCount: 489 },
+    catalog: TEST_CATALOG,
     palette: [
       { id: 1, name: 'Red', color: '#d33' },
       { id: 2, name: 'Blue', color: '#36c' },
@@ -36,12 +33,6 @@ function run(doc: LayeredDocument, layerId: number, ...commands: DomainCommand[]
   const surface = layerSurface(doc, layerId);
   applyCommandsToDraft(surface, commands);
   commitLayerSurface(doc, layerId, surface);
-}
-
-function stitch(doc: LayeredDocument, id: number): StitchLayer {
-  const layer = findLayer(doc, id);
-  if (layer?.type !== LayerType.Stitch) throw new Error(`Layer ${String(id)} is not a stitch layer.`);
-  return layer;
 }
 
 describe('covering layers', () => {
@@ -87,7 +78,7 @@ describe('colorComponentMask', () => {
 
   it('filters quarter and three-quarter-pair components by slot color', () => {
     const doc = layered();
-    const layer = stitch(doc, 1);
+    const layer = stitchLayer(doc, 1);
     layer.kind[0] = CellKind.Quarters;
     layer.colors.set([1, 0, 2, 1], 0);
     layer.kind[1] = CellKind.ThreeQuarterPair;

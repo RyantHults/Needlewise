@@ -1,9 +1,4 @@
-import type { MaterialEstimate } from '../../domain';
 import { number, type LegendLength, type LegendSkeins } from '../../export';
-
-const YARDS_PER_METER = 1.09361;
-
-type Material = MaterialEstimate | Omit<MaterialEstimate, 'paletteId'>;
 
 const range = (min: number, max: number, unit: string) => {
   // Collapse ranges that round identically (e.g. zero-to-zero) to one value.
@@ -13,20 +8,6 @@ const range = (min: number, max: number, unit: string) => {
 };
 
 export const PHYSICAL_ESTIMATE_UNAVAILABLE = 'Physical estimate unavailable';
-
-export function materialLine(material: Material | undefined): string {
-  if (!material || material.estimatedMeters === undefined || material.estimatedSkeins === undefined) return PHYSICAL_ESTIMATE_UNAVAILABLE;
-  const skeins = material.estimateRange?.skeins;
-  return skeins ? range(skeins.min, skeins.max, 'skeins') : `${number(material.estimatedSkeins)} skeins`;
-}
-
-export function materialYardage(material: Material | undefined): string | null {
-  if (!material || material.estimatedMeters === undefined) return null;
-  const meters = material.estimateRange?.meters;
-  return meters
-    ? range(meters.min * YARDS_PER_METER, meters.max * YARDS_PER_METER, 'yd')
-    : `${number(material.estimatedMeters * YARDS_PER_METER)} yd`;
-}
 
 export function formatSkeins(skeins: LegendSkeins | undefined): string {
   return skeins ? range(skeins.min, skeins.max, 'skeins') : PHYSICAL_ESTIMATE_UNAVAILABLE;

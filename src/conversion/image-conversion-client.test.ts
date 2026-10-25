@@ -2,11 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   ConversionCancelledError,
   ConversionWorkerTransportError,
-  createConversionWorkerClient,
-  type ConversionWorkerLike
+  createConversionWorkerClient
 } from './image-conversion-client';
-import { convertConversionRequest, convertRasterToPattern, MAX_CONVERSION_TOKEN_BOOKKEEPING, type ConversionRequestMessage, type ConversionRasterRequestMessage, type ConversionWorkerResponse } from './image-to-pattern';
+import { convertConversionRequestAsync, convertRasterToPatternAsync, MAX_CONVERSION_TOKEN_BOOKKEEPING, type ConversionRequestMessage, type ConversionRasterRequestMessage, type ConversionWorkerResponse } from './image-to-pattern';
 import type { CatalogSnapshot } from '../catalog';
+import { FakeWorker } from '../test/fake-worker';
 
 const passthroughCatalog: CatalogSnapshot = {
   association: { catalogId: 'passthrough-catalog', brandLabel: 'Passthrough', colorCount: 2 },
@@ -56,36 +56,6 @@ function mislabeledWebpBlob(): Blob {
   return new Blob([bytes.buffer as ArrayBuffer], { type: 'image/jpeg' });
 }
 
-class FakeWorker implements ConversionWorkerLike {
-  readonly posted: unknown[] = [];
-  readonly terminated = { count: 0 };
-  private readonly listeners = new Map<string, (event: unknown) => void>();
-
-  postMessage(message: unknown): void {
-    this.posted.push(message);
-  }
-
-  addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void {
-    this.listeners.set(type, listener as unknown as (event: unknown) => void);
-  }
-
-  removeEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void {
-    if (this.listeners.get(type) === listener) this.listeners.delete(type);
-  }
-
-  emit(message: unknown): void {
-    this.listeners.get('message')?.({ data: message });
-  }
-
-  emitTransport(type: 'error' | 'messageerror', event: unknown): void {
-    this.listeners.get(type)?.(event);
-  }
-
-  terminate(): void {
-    this.terminated.count += 1;
-  }
-}
-
 describe('image conversion worker client', () => {
   it('uses the fallback conversion when no worker is available', async () => {
     const client = createConversionWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'fallback' });
@@ -105,7 +75,7 @@ describe('image conversion worker client', () => {
     expect(request.catalog).not.toBe(passthroughCatalog);
     expect(request.catalog.records).not.toBe(passthroughCatalog.records);
     expect(request.catalog).toEqual(passthroughCatalog);
-    worker.emit(convertConversionRequest(job.request));
+    worker.emit(await convertConversionRequestAsync(job.request));
     await expect(job.promise).resolves.toMatchObject({ token: job.request.token, draft: { document: { catalog: passthroughCatalog.association } } });
     client.dispose();
   });
@@ -136,7 +106,7 @@ describe('image conversion worker client', () => {
     const job = client.submit({ ...input(), catalog: passthroughCatalog, backgroundSourceId: 'blue' });
     const posted = worker.posted[0] as ConversionRasterRequestMessage;
     expect(posted.backgroundSourceId).toBe('blue');
-    worker.emit(convertConversionRequest(posted));
+    worker.emit(await convertConversionRequestAsync(posted));
     await expect(job.promise).resolves.toMatchObject({ token: job.request.token });
     const result = await job.promise;
     expect(result.draft.document.palette.map((entry) => entry.catalog?.sourceId)).toEqual(['red']);
@@ -165,7 +135,7 @@ describe('image conversion worker client', () => {
     const job = client.submit({ ...input(), catalog: passthroughCatalog, autoCrop: true, targetWidth: 4, targetHeight: 2, raster: { width: 4, height: 2, pixels: bordered } });
     const posted = worker.posted[0] as ConversionRasterRequestMessage;
     expect(posted.autoCrop).toBe(true);
-    worker.emit(convertConversionRequest(posted));
+    worker.emit(await convertConversionRequestAsync(posted));
     const result = await job.promise;
     // Source dims stay original; the pattern trims to the stitched 2x1 box.
     expect(result.draft.stats.sourceWidth).toBe(4);
@@ -182,11 +152,11 @@ describe('image conversion worker client', () => {
     const job = client.submit({ ...input(), confettiDistance: 2 });
     const posted = worker.posted[0] as ConversionRasterRequestMessage;
     expect(posted.confettiDistance).toBe(2);
-    worker.emit(convertConversionRequest(posted));
+    worker.emit(await convertConversionRequestAsync(posted));
     await job.promise;
     const plain = client.submit(input('plain'));
     expect('confettiDistance' in (worker.posted[1] as ConversionRasterRequestMessage)).toBe(false);
-    worker.emit(convertConversionRequest(plain.request));
+    worker.emit(await convertConversionRequestAsync(plain.request));
     await plain.promise;
     client.dispose();
   });
@@ -198,7 +168,7 @@ describe('image conversion worker client', () => {
     job.cancel();
     await expect(job.promise).rejects.toBeInstanceOf(ConversionCancelledError);
     expect(worker.posted).toHaveLength(2);
-    worker.emit(convertConversionRequest(job.request));
+    worker.emit(await convertConversionRequestAsync(job.request));
     client.dispose();
   });
 
@@ -206,7 +176,7 @@ describe('image conversion worker client', () => {
     const workers: FakeWorker[] = [];
     const client = createConversionWorkerClient({ workerFactory: () => { const worker = new FakeWorker(); workers.push(worker); return worker; } });
     const first = client.submit(input());
-    const firstResult = convertConversionRequest(first.request);
+    const firstResult = await convertConversionRequestAsync(first.request);
     first.cancel();
     await expect(first.promise).rejects.toBeInstanceOf(ConversionCancelledError);
 
@@ -214,7 +184,7 @@ describe('image conversion worker client', () => {
     // Reusing only requestId must not let the cancelled first result touch the
     // newer full-token job.
     workers[0].emit(firstResult);
-    workers[0].emit(convertConversionRequest(second.request));
+    workers[0].emit(await convertConversionRequestAsync(second.request));
     await expect(second.promise).resolves.toMatchObject({ token: second.request.token });
 
     const third = client.submit(input('third'));
@@ -247,7 +217,7 @@ describe('image conversion worker client', () => {
     const second = client.submit({ ...input('shared-request'), projectId: 'project-b', baseRevision: 8 });
     worker.emit({ protocol: first.request.protocol, type: 'conversion-error', code: 'missing-token', message: 'ignored' });
     expect(client.cancel('shared-request')).toBe(false);
-    worker.emit(convertConversionRequest(second.request));
+    worker.emit(await convertConversionRequestAsync(second.request));
     await expect(second.promise).resolves.toMatchObject({ token: second.request.token });
     first.cancel();
     await expect(first.promise).rejects.toBeInstanceOf(ConversionCancelledError);
@@ -342,7 +312,7 @@ describe('image conversion worker client', () => {
       surfaceFactory
     } });
     const result = await client.requestImage(imageBlob(), { ...input(), targetWidth: 1, targetHeight: 1, requestId: 'fallback-parity' });
-    const expected = convertRasterToPattern({ width: 1, height: 1, pixels }, { targetWidth: 1, targetHeight: 1, catalog: passthroughCatalog, token: result.token });
+    const expected = await convertRasterToPatternAsync({ width: 1, height: 1, pixels }, { targetWidth: 1, targetHeight: 1, catalog: passthroughCatalog, token: result.token });
     expect(result.draft.document.kind).toEqual(expected.document.kind);
     expect(result.draft.document.colors).toEqual(expected.document.colors);
     expect(result.draft.document.catalog).toEqual(passthroughCatalog.association);
@@ -395,7 +365,7 @@ describe('image conversion worker client', () => {
     client.dispose();
     await expect(job.promise).rejects.toBeInstanceOf(ConversionCancelledError);
     expect(worker.terminated.count).toBe(1);
-    worker.emit(convertConversionRequest(job.request));
+    worker.emit(await convertConversionRequestAsync(job.request));
     expect(() => client.submit(input('after-dispose'))).toThrow();
   });
 

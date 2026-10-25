@@ -75,8 +75,6 @@ export const SYMBOL_OUTLINES: Readonly<Record<string, PoolEntry>> = asset.symbol
 
 export const SYMBOL_IDS: readonly string[] = Object.keys(asset.symbols);
 
-export const SYMBOL_COUNT = SYMBOL_IDS.length;
-
 /**
  * Every symbol in the pool, ordered as the build emitted them and carrying its
  * own slug. The slug lives on the entry so a consumer listing the pool never has

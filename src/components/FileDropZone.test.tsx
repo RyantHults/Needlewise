@@ -1,10 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { FileDropZone } from './FileDropZone';
-
-function dropData(...files: File[]) {
-  return { files: Object.assign([...files], { item: (index: number) => files[index] ?? null }), types: files.length ? ['Files'] : [], dropEffect: 'none' };
-}
+import { dropData } from './test-support';
 
 const base = { id: 'zone', accept: '.pdf', inputLabel: 'Choose a file', title: 'Drop a file here', hint: 'PDF only' };
 

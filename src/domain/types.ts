@@ -26,8 +26,6 @@ export const CellKind = {
 
 export type CellKind = (typeof CellKind)[keyof typeof CellKind];
 
-export const StitchKind = CellKind;
-
 export const HalfDirection = {
   Backslash: '\\',
   Slash: '/',
@@ -49,9 +47,7 @@ export const QuarterCorner = {
 } as const;
 
 export type QuarterCorner = (typeof QuarterCorner)[keyof typeof QuarterCorner];
-export const Corner = QuarterCorner;
 
-export const CELL_COLOR_SLOTS = 4;
 export const FIXED_POINT_UNITS_PER_CELL = 4;
 /** The largest grid that can be allocated, iterated, and persisted by v1. */
 export const MAX_PERSISTABLE_CELL_COUNT = 1_000_000;
@@ -106,7 +102,7 @@ export interface PatternSettings {
   readonly aidaCount: number;
 }
 
-/** Mirrors metrics' DEFAULT_AIDA_COUNT without importing it into the type layer. */
+/** The fabric count a new pattern starts with. */
 export const DEFAULT_PATTERN_AIDA_COUNT = 14;
 
 export const DEFAULT_PATTERN_SETTINGS: PatternSettings = {
@@ -193,8 +189,6 @@ export interface PatternDocument {
    */
   canvasMask?: Uint8Array;
 }
-
-export type Pattern = PatternDocument;
 
 export const LayerType = {
   Stitch: 'stitch',
@@ -332,9 +326,6 @@ export type BulkCellEdit =
   | { readonly kind: 'quarter'; readonly corner: QuarterCorner; readonly color: number }
   | { readonly kind: 'erase-cell' }
   | { readonly kind: 'erase-quarter'; readonly corner: QuarterCorner };
-
-export type BulkCellOperation = BulkCellEdit;
-export type BulkCellIntent = BulkCellEdit;
 
 /** The three atomic progress operations supported by bulk completion commands. */
 export type BulkProgressOperation = 'set' | 'clear' | 'toggle';
@@ -680,8 +671,6 @@ export type DomainCommand =
   | LayerStructureCommand
   | BatchCommand;
 
-export type Command = DomainCommand;
-
 export type DomainCommandType = DomainCommand['type'];
 
 /**
@@ -734,11 +723,6 @@ export interface CommandResult {
   compositeFull?: boolean;
   /** The visible composite did not change (for example a rename); no redraw or metrics rescan is needed. */
   compositeUnchanged?: boolean;
-}
-
-export interface ValidationResult {
-  valid: boolean;
-  errors: string[];
 }
 
 export class DomainError extends Error {

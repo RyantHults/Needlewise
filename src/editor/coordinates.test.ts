@@ -1,11 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   clampViewport,
-  fixedToScreen,
   fitViewport,
   getCanvasMetrics,
   modelToScreen,
-  screenToFixed,
   screenToModel,
   screenToCellUnclamped,
   visibleCellRect,
@@ -16,12 +14,10 @@ import { getRenderLod } from './viewport';
 describe('canvas coordinate foundation', () => {
   const metrics = { cssWidth: 200, cssHeight: 100 };
 
-  it('round-trips model, screen, and fixed-point coordinates', () => {
+  it('round-trips model and screen coordinates', () => {
     const viewport = { x: 3.25, y: -2, zoom: 8 };
     const model = { x: 7.5, y: 4.125 };
     expect(screenToModel(modelToScreen(model, viewport), viewport)).toEqual(model);
-    expect(fixedToScreen({ x: 12, y: 20 }, viewport)).toEqual({ x: -2, y: 56 });
-    expect(screenToFixed({ x: -2, y: 56 }, viewport)).toEqual({ x: 12, y: 20 });
   });
 
   it('keeps the cursor anchor fixed while zooming', () => {
@@ -33,7 +29,7 @@ describe('canvas coordinate foundation', () => {
   });
 
   it('keeps finite off-chart origins while visible-cell queries reject off-chart space', () => {
-    const viewport = clampViewport({ x: 99, y: -10, zoom: 10 }, { width: 20, height: 20 }, metrics);
+    const viewport = clampViewport({ x: 99, y: -10, zoom: 10 });
     expect(viewport).toEqual({ x: 99, y: -10, zoom: 10 });
     expect(visibleCellRect({ x: 4.5, y: 2.25, zoom: 10 }, metrics, { width: 20, height: 20 })).toEqual({
       x: 4,
@@ -48,7 +44,7 @@ describe('canvas coordinate foundation', () => {
     const offChart = { x: 100, y: -100, zoom: 10 };
     const fitted = fitViewport({ width: 20, height: 10 }, metrics);
     expect(fitted).toEqual({ x: 0, y: 0, zoom: 10 });
-    expect(clampViewport(offChart, { width: 20, height: 10 }, metrics)).toEqual(offChart);
+    expect(clampViewport(offChart)).toEqual(offChart);
   });
 
   it('rejects non-finite screen and model samples before conversion', () => {

@@ -10,7 +10,7 @@ import {
 import type { CatalogRecord, CatalogSnapshot } from '../catalog';
 import { MAX_IMAGE_DECODE_BYTES, MAX_IMAGE_DECODE_PIXELS } from '../image/limits';
 import { MAX_WORKING_IMAGE_DIMENSION, MAX_WORKING_IMAGE_PIXELS } from '../image/image-sizing';
-import { isConfettiDistance, reduceConfetti, reduceConfettiSteps } from './confetti';
+import { isConfettiDistance, reduceConfettiSteps } from './confetti';
 import { selectPaletteIndices } from './palette-selection';
 
 export { MAX_CONFETTI_DISTANCE } from './confetti';
@@ -169,7 +169,6 @@ export interface ConversionCancelMessage {
   readonly token: ConversionToken;
 }
 
-export type ConversionWorkerRequest = ConversionRequestMessage | ConversionCancelMessage;
 export type ConversionWorkerResponse = ConversionResultMessage | ConversionCancelledMessage | ConversionErrorMessage;
 
 export class ConversionError extends Error {
@@ -257,15 +256,6 @@ export function cloneCatalogSnapshot(value: CatalogSnapshot): CatalogSnapshot {
       rgb: [record.rgb[0], record.rgb[1], record.rgb[2]] as [number, number, number]
     }))
   };
-}
-
-export function validateCatalogSnapshot(value: unknown): value is CatalogSnapshot {
-  try {
-    assertCatalogSnapshot(value);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 export function conversionCancelled(cancellation?: ConversionCancellation, requestId?: string): void {
@@ -518,13 +508,6 @@ function* prunePaletteSteps(
   };
 }
 
-function prunePalette(document: PatternDocument, selectedOrder: readonly PaletteSelection[], usage: ReadonlyMap<number, number>, catalog: CatalogSnapshot): PrunedPalette {
-  const steps = prunePaletteSteps(document, selectedOrder, usage, catalog, Number.POSITIVE_INFINITY);
-  let step = steps.next();
-  while (step.done !== true) step = steps.next();
-  return step.value;
-}
-
 function sourceRgb(pixels: Uint8ClampedArray, offset: number): [number, number, number] {
   return [pixels[offset], pixels[offset + 1], pixels[offset + 2]];
 }
@@ -542,129 +525,10 @@ function paletteColorLookup(records: readonly CatalogRecord[], order: readonly {
   return (paletteId) => colors.get(paletteId);
 }
 
-/** Convert an already decoded/resampled raster without mutating or transferring its pixels. */
-export function convertRasterToPattern(raster: ConversionRaster, options: ConversionOptions): ConversionDraft {
-  assertRaster(raster);
-  assertPositiveDimensions(options.targetWidth, options.targetHeight, 'target');
-  const catalog = cloneCatalogSnapshot(options.catalog);
-  const records = catalog.records;
-  const backgroundIndex = backgroundCatalogIndex(options, records);
-  const sampled = resampleRaster(raster, options.targetWidth, options.targetHeight);
-  const sourceWidth = raster.sourceWidth ?? raster.width;
-  const sourceHeight = raster.sourceHeight ?? raster.height;
-  const token = options.token ?? defaultToken();
-  assertToken(token);
-  assertConfettiDistance(options.confettiDistance);
-  const budget = options.paletteBudget ?? Math.min(DEFAULT_CONVERSION_PALETTE_BUDGET, catalog.association.colorCount);
-  if (!Number.isSafeInteger(budget) || budget < 1 || budget > catalog.association.colorCount) throw new ConversionError('invalid-palette-budget', 'The palette budget must fit within the supplied catalog bound.');
-  const counts = new Map<number, number>();
-  const matchedColors = new Set<number>();
-  let transparentPixels = 0;
-  for (let index = 0; index < sampled.width * sampled.height; index += 1) {
-    const offset = index * 4;
-    if (sampled.pixels[offset + 3] === 0) {
-      transparentPixels += 1;
-      continue;
-    }
-    const catalogIndex = nearestCatalogIndex(sourceRgb(sampled.pixels, offset), records);
-    if (catalogIndex === backgroundIndex) {
-      continue;
-    }
-    counts.set(catalogIndex, (counts.get(catalogIndex) ?? 0) + 1);
-    matchedColors.add(catalogIndex);
-  }
-  // Palette selection shared by every conversion path: the palette holds ONLY
-  // colors matched by non-skipped pixels, picked greedily for coverage so a
-  // distinct small accent beats a redundant near-shade of a color already
-  // picked. Palette ids are 1..N in pick order (matching the empty-starter
-  // convention where nextPaletteId starts at 1), and picks are a stable prefix,
-  // so raising the budget only appends a color and lowering it drops the last.
-  const selectedIndices = selectPaletteIndices(counts, records, budget);
-  const selected = [...selectedIndices].sort((left, right) => left - right).map((index) => records[index]);
-  const selectedCatalogIndices = [...selectedIndices].sort((left, right) => left - right);
-  const selectedOrder = selectedIndices.map((catalogIndex, paletteOffset) => ({ catalogIndex, paletteId: paletteOffset + 1 }));
-  const paletteInputs: PaletteEntryInput[] = selectedOrder.map(({ catalogIndex, paletteId }) => paletteEntry(catalog.association, paletteId, records[catalogIndex]));
-  const paletteIdByCatalogIndex = new Map(selectedOrder.map(({ catalogIndex, paletteId }) => [catalogIndex, paletteId]));
-  const assigned = createDocument({ width: options.targetWidth, height: options.targetHeight, catalog: catalog.association, palette: paletteInputs });
-  const assignedUsage = new Map<number, number>();
-  let stitchedPixels = 0;
-  for (let targetIndex = 0; targetIndex < assigned.width * assigned.height; targetIndex += 1) {
-    const sourceIndex = targetIndex;
-    const offset = sourceIndex * 4;
-    if (sampled.pixels[offset + 3] === 0) {
-      continue;
-    }
-    const pixel = sourceRgb(sampled.pixels, offset);
-    // The background color is skipped before selection, so it can never be in
-    // the palette; check each pixel's true catalog match against it so
-    // background pixels stay unstitched instead of remapping to a kept color.
-    if (backgroundIndex >= 0 && nearestCatalogIndex(pixel, records) === backgroundIndex) {
-      continue;
-    }
-    const sourceCatalogIndex = nearestCatalogIndex(pixel, selected);
-    const paletteId = paletteIdByCatalogIndex.get(selectedCatalogIndices[sourceCatalogIndex]);
-    if (paletteId === undefined) continue;
-    assigned.kind[targetIndex] = CellKind.Full;
-    assigned.colors[targetIndex * 4] = paletteId;
-    assignedUsage.set(paletteId, (assignedUsage.get(paletteId) ?? 0) + 1);
-    stitchedPixels += 1;
-  }
-  if (options.confettiDistance !== undefined) {
-    stitchedPixels -= reduceConfetti(assigned, options.confettiDistance, paletteColorLookup(records, selectedOrder), assignedUsage);
-  }
-  const { document, selectedOrder: finalOrder, usage } = prunePalette(assigned, selectedOrder, assignedUsage, catalog);
-  // Trimming only removes Empty cells (zeroed color slots the usage counting
-  // skips), so palette and usage stay valid without recomputation. The
-  // transparent count is re-scoped to the kept box so every stat describes
-  // the final document.
-  let chartOrigin = { x: 0, y: 0 };
-  if (options.autoCrop === true) {
-    const box = trimDocumentToContent(document);
-    if (box !== null) {
-      chartOrigin = { x: -box.left, y: -box.top };
-      let keptTransparent = 0;
-      for (let y = box.top; y <= box.bottom; y += 1) {
-        for (let x = box.left; x <= box.right; x += 1) {
-          if (sampled.pixels[(y * sampled.width + x) * 4 + 3] === 0) keptTransparent += 1;
-        }
-      }
-      transparentPixels = keptTransparent;
-    }
-  }
-  const paletteUsage = finalOrder
-    .map(({ catalogIndex, paletteId }) => ({ paletteId, catalogId: records[catalogIndex].sourceId, count: usage.get(paletteId) ?? 0 }));
-  return {
-    token,
-    document,
-    stats: {
-      sourceWidth,
-      sourceHeight,
-      targetWidth: document.width,
-      targetHeight: document.height,
-      totalPixels: document.width * document.height,
-      transparentPixels,
-      emptyPixels: document.width * document.height - stitchedPixels,
-      stitchedPixels,
-      matchedColorCount: matchedColors.size,
-      paletteUsage
-    },
-    sourceImage: {
-      ...(options.sourceImage?.assetId === undefined ? {} : { assetId: options.sourceImage.assetId }),
-      ...(options.sourceImage?.mimeType === undefined ? {} : { mimeType: options.sourceImage.mimeType }),
-      width: sourceWidth,
-      height: sourceHeight,
-      crop: { x: 0, y: 0, width: 1, height: 1 },
-      chartBounds: { x: chartOrigin.x, y: chartOrigin.y, width: options.targetWidth, height: options.targetHeight },
-      traceVisible: false,
-      opacity: 1
-    }
-  };
-}
-
 /**
- * Async equivalent of convertRasterToPattern. The worker and the main-thread
- * fallback both use this path so cancellation and output semantics stay in
- * lockstep for large rasters.
+ * Convert an already decoded/resampled raster without mutating or transferring
+ * its pixels. The worker and the main-thread fallback both use this path so
+ * cancellation and output semantics stay in lockstep for large rasters.
  */
 export async function convertRasterToPatternAsync(
   raster: ConversionRaster,
@@ -848,9 +712,6 @@ export function acceptConversionDraft(draft: ConversionDraft): AcceptedConversio
   validateConversionDraft(draft);
   return { ...draft, accepted: true };
 }
-
-export const acceptDraft = acceptConversionDraft;
-export const validateDraft = validateConversionDraft;
 
 export function validateAcceptedConversionDraft(draft: AcceptedConversionDraft): void {
   if (!draft || draft.accepted !== true) throw new ConversionError('invalid-draft', 'The conversion draft must be explicitly accepted before project creation.');
@@ -1053,33 +914,6 @@ export function validateConversionRequest(request: ConversionRequestMessage): vo
   boundedDecodeLimit(request.maxBytes, MAX_CONVERSION_SOURCE_BYTES, MAX_CONVERSION_SOURCE_BYTES);
   boundedDecodeLimit(request.maxPixels, MAX_CONVERSION_SOURCE_PIXELS, MAX_CONVERSION_SOURCE_PIXELS);
   if (request.maxBytes !== undefined && request.image.size > request.maxBytes) throw new ConversionError('invalid-raster', 'The conversion image exceeds its configured byte limit.');
-}
-
-export function convertConversionRequest(request: ConversionRequestMessage): ConversionResultMessage {
-  validateConversionRequest(request);
-  if (!isRasterRequest(request)) throw new ConversionError('invalid-raster', 'Image requests must be decoded before synchronous conversion.');
-  const draft = convertRasterToPattern({
-    width: request.width,
-    height: request.height,
-    sourceWidth: request.sourceWidth,
-    sourceHeight: request.sourceHeight,
-    pixels: request.pixels
-  }, {
-    targetWidth: request.targetWidth,
-    targetHeight: request.targetHeight,
-    paletteBudget: request.paletteBudget,
-
-    backgroundSourceId: request.backgroundSourceId,
-    autoCrop: request.autoCrop,
-    confettiDistance: request.confettiDistance,
-    token: request.token,
-    catalog: request.catalog,
-    sourceImage: {
-      ...(request.sourceAssetId === undefined ? {} : { assetId: request.sourceAssetId }),
-      ...(request.sourceMimeType === undefined ? {} : { mimeType: request.sourceMimeType })
-    }
-  });
-  return { protocol: CONVERSION_PROTOCOL, type: CONVERSION_RESULT_TYPE, token: request.token, draft };
 }
 
 export async function convertConversionRequestAsync(

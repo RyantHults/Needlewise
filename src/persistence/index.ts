@@ -5,7 +5,6 @@ export * from './hash';
 export * from './binary';
 export * from './database';
 export * from './repository';
-export * from './activity';
 export * from './source-image';
 export * from './project-thumbnail';
 export * from './session-history';
@@ -14,8 +13,7 @@ export {
   PersistencePreparationTransportError,
   PersistencePreparationStaleError,
   PersistencePreparationWorkerClient,
-  createPersistencePreparationClient,
-  createDocumentPreparationClient
+  createPersistencePreparationClient
 } from './preparation-client';
 export type {
   PersistencePreparationWorkerLike,

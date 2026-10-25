@@ -9,7 +9,6 @@ import {
   MAX_LAYER_NAME_CHARS,
   MAX_PERSISTABLE_CELL_COUNT,
   type BackstitchStore,
-  type CreateDocumentOptions,
   type DomainCommand,
   type Layer,
   type LayerAddCommand,
@@ -20,14 +19,13 @@ import {
   type LayerMoveCommand,
   type LayerRenameCommand,
   type LayerSetVisibilityCommand,
-  type LayerStructureCommand,
   type PatternDocument,
   type PatternFragment,
   type PatternSettings,
   type SpecialtyLayer,
   type StitchLayer
 } from './types';
-import { UINT32_MAX, createDocument, emptyBackstitches, normalizePatternSettings } from './model';
+import { UINT32_MAX, emptyBackstitches, normalizePatternSettings } from './model';
 import { collectValidationErrors } from './validation';
 import { canvasFields } from './canvas';
 import { requireCommandInteger } from './guards';
@@ -40,11 +38,6 @@ const DEFAULT_LAYER_NAMES: Record<LayerType, string> = {
 
 // ---------------------------------------------------------------------------
 // Creation
-
-/** Canvas settings plus "Stitches" (id 1) and "Specialty" (id 2). */
-export function createLayeredDocument(options: CreateDocumentOptions): LayeredDocument {
-  return layeredFromSurface(createDocument(options));
-}
 
 /**
  * Builds a layered document from a single surface: cells go to "Stitches",
@@ -161,12 +154,6 @@ function zeroPlanes(width: number, height: number): ZeroPlanes {
   return zeroPlaneSlot;
 }
 
-/** True for the shared cell planes behind specialty surfaces. */
-export function isSharedEmptyCellPlane(plane: ArrayBufferView): boolean {
-  const slot = zeroPlaneSlot;
-  return slot !== null && (plane === slot.kind || plane === slot.colors || plane === slot.completed);
-}
-
 /**
  * A single-surface view of one layer. Stitch surfaces alias the layer's cell
  * planes and carry an empty backstitch store; specialty surfaces alias the
@@ -192,29 +179,6 @@ export function layerSurface(document: LayeredDocument, layerId: number): Patter
     nextPaletteId: document.nextPaletteId,
     ...canvasFields(document)
   };
-}
-
-/**
- * Writes a surface back to its layer: cell planes (stitch) or the backstitch
- * store (specialty), plus palette, settings and counters. Width, height and
- * the canvas fields are not written.
- */
-export function commitLayerSurface(document: LayeredDocument, layerId: number, surface: PatternDocument): void {
-  const index = layerIndex(document, layerId);
-  if (index < 0) throw new DomainError(LayerErrorCode.NotFound, `Layer ${String(layerId)} does not exist.`);
-  const layer = document.layers[index];
-  if (layer.type === LayerType.Stitch) {
-    layer.kind = surface.kind;
-    layer.colors = surface.colors;
-    layer.completed = surface.completed;
-  } else {
-    layer.backstitches = surface.backstitches;
-  }
-  document.palette = surface.palette;
-  document.settings = surface.settings;
-  document.revision = surface.revision;
-  document.nextBackstitchId = surface.nextBackstitchId;
-  document.nextPaletteId = surface.nextPaletteId;
 }
 
 // ---------------------------------------------------------------------------
@@ -479,10 +443,6 @@ export function commandScope(command: DomainCommand): CommandScope {
     case 'update-backstitch':
       return 'layer';
   }
-}
-
-export function isLayerStructureCommand(command: DomainCommand): command is LayerStructureCommand {
-  return command.type !== 'batch' && commandScope(command) === 'structure';
 }
 
 /**
@@ -846,10 +806,6 @@ export function collectLayeredValidationErrors(document: LayeredDocument): strin
     }
   }
   return errors;
-}
-
-export function validateLayeredDocument(document: LayeredDocument): boolean {
-  return collectLayeredValidationErrors(document).length === 0;
 }
 
 export function assertValidLayeredDocument(document: LayeredDocument): void {

@@ -2,11 +2,12 @@ import { describe, expect, it } from 'vitest';
 import targetSvg from '../assets/ui-icons/target.svg?raw';
 import { CellKind, createDocument, createPatternFragment } from '../domain';
 import { cellToScreenRect, fitViewport, getCanvasMetrics, visibleCellRect } from '../editor/coordinates';
-import { CHART_EDGE_MARGIN, DEFAULT_RENDERER_STYLE, type CanvasContextAdapter, type CanvasTarget, type FloatingPasteOverlay, type PendingCellState, type RendererStyle, type TraceImage } from '../editor/contracts';
+import { CHART_EDGE_MARGIN, DEFAULT_RENDERER_STYLE, type CanvasTarget, type FloatingPasteOverlay, type PendingCellState, type RendererStyle, type TraceImage } from '../editor/contracts';
 import { ThreeQuarterNW, ThreeQuarterPair } from '../editor/cell-kinds';
 import { MAX_ATLAS_PIXELS, createDefaultAtlasTarget } from './context';
 import { isCanvasImageSource } from './atlas';
 import { createCanvasRenderer } from './renderer';
+import { record, recordingContext, type RecordingContext } from './test-support';
 import { sparseSelectionGeometry } from '../editor/lasso';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { getSymbolOutline, SYMBOL_IDS } from '../symbols';
@@ -14,70 +15,6 @@ import { getSymbolOutline, SYMBOL_IDS } from '../symbols';
 // Fixtures must name real pool slugs: an unknown slug is deliberately not
 // drawable, so a stale glyph here would quietly assert nothing.
 const [STAR_ID, DIAMOND_ID, HOLLOW_DIAMOND_ID] = SYMBOL_IDS;
-
-interface RecordingContext extends CanvasContextAdapter {
-  calls: string[];
-  records: Array<{
-    name: string;
-    args: unknown[];
-    fillStyle: string;
-    strokeStyle: string;
-    globalAlpha: number;
-    lineWidth: number;
-    font: string;
-    textAlign: string;
-  }>;
-}
-
-function recordingContext(): RecordingContext {
-  // Canvas save/restore also carries globalAlpha; the dim tests depend on it being restored.
-  const alphaStack: number[] = [];
-  const context: RecordingContext = {
-    calls: [],
-    records: [],
-    fillStyle: '',
-    strokeStyle: '',
-    lineWidth: 1,
-    globalAlpha: 1,
-    font: '',
-    textAlign: '',
-    clearRect: function (this: RecordingContext, ...args: number[]): void { record(this, 'clearRect', args); },
-    fillRect: function (this: RecordingContext, ...args: number[]): void { record(this, 'fillRect', args); },
-    strokeRect: function (this: RecordingContext, ...args: number[]): void { record(this, 'strokeRect', args); },
-    rect: function (this: RecordingContext, ...args: number[]): void { record(this, 'rect', args); },
-    clip: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'clip', args); },
-    beginPath: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'beginPath', args); },
-    closePath: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'closePath', args); },
-    moveTo: function (this: RecordingContext, ...args: number[]): void { record(this, 'moveTo', args); },
-    lineTo: function (this: RecordingContext, ...args: number[]): void { record(this, 'lineTo', args); },
-    fill: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'fill', args); },
-    stroke: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'stroke', args); },
-    drawImage: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'drawImage', args); },
-    save: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'save', args); alphaStack.push(this.globalAlpha); },
-    restore: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'restore', args); this.globalAlpha = alphaStack.pop() ?? this.globalAlpha; },
-    setTransform: function (this: RecordingContext, ...args: number[]): void { record(this, 'setTransform', args); },
-    setLineDash: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'setLineDash', args); },
-    translate: function (this: RecordingContext, ...args: number[]): void { record(this, 'translate', args); },
-    scale: function (this: RecordingContext, ...args: number[]): void { record(this, 'scale', args); },
-    arc: function (this: RecordingContext, ...args: number[]): void { record(this, 'arc', args); },
-    fillText: function (this: RecordingContext, ...args: unknown[]): void { record(this, 'fillText', args); }
-  };
-  return context;
-}
-
-function record(context: RecordingContext, name: string, args: unknown[]): void {
-  context.calls.push(name);
-  context.records.push({
-    name,
-    args,
-    fillStyle: context.fillStyle,
-    strokeStyle: context.strokeStyle,
-    globalAlpha: context.globalAlpha,
-    lineWidth: context.lineWidth,
-    font: context.font,
-    textAlign: context.textAlign ?? ''
-  });
-}
 
 /**
  * Every recorded call that painted a symbol outline, keyed by the Path2D it

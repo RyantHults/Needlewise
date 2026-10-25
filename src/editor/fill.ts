@@ -8,7 +8,6 @@ import {
 
 /** The structured-clone protocol shared by the fill client and worker. */
 export const FILL_PROTOCOL = 'needlewise.fill.v2' as const;
-export const FILL_PROTOCOL_VERSION = 2 as const;
 export const FILL_REQUEST_TYPE = 'fill-request' as const;
 export const FILL_RESULT_TYPE = 'fill-result' as const;
 export const FILL_CANCEL_TYPE = 'fill-cancel' as const;
@@ -99,7 +98,6 @@ export interface FillErrorMessage {
   readonly message: string;
 }
 
-export type FillWorkerMessage = FillRequestMessage | FillCancelMessage;
 export type FillWorkerResponse = FillResultMessage | FillCancelledMessage | FillErrorMessage;
 
 export class FillProtocolError extends Error {
@@ -340,15 +338,6 @@ export function assertValidFillRequest(value: unknown): asserts value is FillReq
   startComponentForRequest(value as unknown as FillRequestMessage);
 }
 
-export function validateFillRequest(value: unknown): value is FillRequestMessage {
-  try {
-    assertValidFillRequest(value);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export function assertValidFillResult(value: unknown): asserts value is FillResultMessage {
   if (!isRecord(value) || value.protocol !== FILL_PROTOCOL || value.type !== FILL_RESULT_TYPE) {
     throw new FillProtocolError('The fill result protocol tag is invalid.');
@@ -426,29 +415,11 @@ export function assertValidFillCancel(value: unknown): asserts value is FillCanc
   assertIdentity(value as unknown as FillResultIdentity);
 }
 
-export function validateFillCancel(value: unknown): value is FillCancelMessage {
-  try {
-    assertValidFillCancel(value);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export function assertValidFillCancelled(value: unknown): asserts value is FillCancelledMessage {
   if (!isRecord(value) || value.protocol !== FILL_PROTOCOL || value.type !== FILL_CANCELLED_TYPE) {
     throw new FillProtocolError('The fill-cancelled response protocol tag is invalid.');
   }
   assertIdentity(value as unknown as FillResultIdentity);
-}
-
-export function validateFillCancelled(value: unknown): value is FillCancelledMessage {
-  try {
-    assertValidFillCancelled(value);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 export function assertValidFillError(value: unknown): asserts value is FillErrorMessage {
@@ -461,15 +432,6 @@ export function assertValidFillError(value: unknown): asserts value is FillError
   assertIdentity(value as unknown as FillResultIdentity);
   if (typeof value.code !== 'string' || value.code.length === 0) throw new FillProtocolError('Fill errors must contain a non-empty code.');
   if (typeof value.message !== 'string' || value.message.length === 0) throw new FillProtocolError('Fill errors must contain a non-empty message.');
-}
-
-export function validateFillError(value: unknown): value is FillErrorMessage {
-  try {
-    assertValidFillError(value);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /** Stable key for the complete protocol-level request identity. */
@@ -513,8 +475,6 @@ export function isFillResultCurrent(result: unknown, expected: FillResultIdentit
     && result.baseRevision === expected.baseRevision
     && result.requestId === expected.requestId;
 }
-
-export const isCurrentFillResult = isFillResultCurrent;
 
 function cancellationRequested(cancellation?: FillCancellation): boolean {
   return cancellation?.signal?.aborted === true || cancellation?.isCancelled?.() === true;

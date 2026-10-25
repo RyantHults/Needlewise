@@ -3,14 +3,10 @@ import {
   CellKind,
   LayerType,
   applyCanvasCommand,
-  applyCommand,
   canvasCellsCommand,
   canvasWorkspace,
   commandLayerType,
-  commitLayerSurface,
-  createLayeredDocument,
   flattenDocument,
-  isCanvasCommand,
   layerSurface,
   requireEditableLayer,
   type CommandResult,
@@ -18,17 +14,12 @@ import {
   type LayeredDocument,
   type PatternDocument
 } from '../domain';
-import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { EditorSurfaceController } from './controller';
 import {
   CANVAS_BASIC_LOCKED_HINT,
   CANVAS_BASIC_TOOL_HINT,
   CANVAS_CROP_OFF_HINT,
-  type CanvasRenderer,
-  type CellRect,
-  type RenderStats,
-  type RendererStyle,
-  type Viewport
+  type CellRect
 } from './contracts';
 import {
   canvasCellSet,
@@ -40,9 +31,9 @@ import {
 import { getCanvasMetrics, screenToModel } from './coordinates';
 import { createFillWorkerClient } from './fill';
 import { createWorkspaceEditorGateway, type ActiveLayerId, type WorkspaceEditorBoundary } from './gateway';
-import type { PointerSample } from './input';
 import { createUiStore } from './ui-store';
-import { LayeredTestBoundary } from './test-support';
+import { LayeredTestBoundary, atViewport, layeredDocument, rendererFixture } from './test-support';
+import { applyCommand, commitLayerSurface } from '../domain/test-fixtures';
 
 const ZOOM = 16;
 
@@ -117,7 +108,7 @@ class CanvasBoundary implements WorkspaceEditorBoundary {
 
   execute(command: DomainCommand): CommandResult {
     this.log.push(command);
-    if (isCanvasCommand(command)) {
+    if (command.type === 'canvas-resize' || command.type === 'canvas-cells') {
       const applied = applyCanvasCommand(this.layeredDocument, command);
       if (!applied.changed) return { document: this.document, changed: false, revision: this.layeredDocument.revision };
       this.commit({ ...applied.document, revision: this.layeredDocument.revision + 1 });
@@ -169,83 +160,31 @@ class CanvasBoundary implements WorkspaceEditorBoundary {
   }
 }
 
-function rendererFixture(): CanvasRenderer {
-  let viewport: Viewport = { x: 0, y: 0, zoom: ZOOM };
-  let rendered: PatternDocument | undefined;
-  const renderer = {
-    lastStats: { lod: 'detail', visitedCells: 0, drawnCells: 0, drawnBackstitches: 0, baseRendered: false, overlayRendered: false } as RenderStats,
-    getDocument: () => rendered,
-    getViewport: () => viewport,
-    getStyle: () => ({}) as RendererStyle,
-    getTraceImage: () => undefined,
-    setDocument: (document: PatternDocument) => { rendered = document; },
-    setViewport: (next: Viewport) => { viewport = next; },
-    setMetrics: () => undefined,
-    setStyle: () => undefined,
-    setTraceImage: () => undefined,
-    setOverlay: () => undefined,
-    invalidate: () => undefined,
-    requestRender: () => undefined,
-    render: () => renderer.lastStats,
-    renderNow: () => renderer.lastStats,
-    getLastInvalidation: () => ({ base: false, overlay: false, reasons: [] }),
-    dispose: () => undefined,
-    destroy: () => undefined
-  } as unknown as CanvasRenderer;
-  return renderer;
-}
-
-function layeredDocument(width = 10, height = 10): LayeredDocument {
-  return createLayeredDocument({
-    width,
-    height,
-    catalog: DEFAULT_CATALOG_DEFINITION.association,
-    palette: [{ id: 1, name: 'Red', color: '#d33', active: true }, { id: 2, name: 'Blue', color: '#36c', active: true }]
-  });
-}
-
 /** A document whose column x = 3 is a hole: not a rectangle any more. */
 function maskedDocument(): LayeredDocument {
-  const document = layeredDocument();
+  const document = layeredDocument(10, 10);
   const applied = applyCanvasCommand(document, canvasCellsCommand('remove', { x: 3, y: 0, width: 1, height: 10 }));
   return applied.document;
 }
 
-function fixture(document = layeredDocument(), activeLayerId: ActiveLayerId = 'canvas') {
+function fixture(document = layeredDocument(10, 10), activeLayerId: ActiveLayerId = 'canvas') {
   const boundary = new CanvasBoundary(document);
   boundary.activeLayerId = activeLayerId;
   const gateway = createWorkspaceEditorGateway(boundary);
   const uiStore = createUiStore({ viewport: { x: 0, y: 0, zoom: ZOOM } });
   const notices: string[] = [];
-  const origins: Array<{ origin: { x: number; y: number }; shift: { x: number; y: number } }> = [];
   const fillClient = createFillWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'canvas-fill' });
   const controller = new EditorSurfaceController({
     gateway,
     uiStore,
-    renderer: rendererFixture(),
+    renderer: rendererFixture().renderer,
     metrics: getCanvasMetrics(320, 320),
     fillClient,
-    onNotice: (message) => notices.push(message),
-    onCanvasOriginChange: (origin, shift) => origins.push({ origin, shift })
+    onNotice: (message) => notices.push(message)
   });
   controller.start();
   controller.handleFocus();
-  return { boundary, gateway, uiStore, controller, notices, origins, fillClient };
-}
-
-/** A mouse sample at the centre of a local cell, under the current viewport. */
-function at(uiStore: ReturnType<typeof createUiStore>, pointerId: number, x: number, y: number, extra: Partial<PointerSample> = {}): PointerSample {
-  const viewport = uiStore.getState().viewport;
-  return {
-    pointerId,
-    pointerType: 'mouse',
-    screenX: (x + 0.5 - viewport.x) * viewport.zoom,
-    screenY: (y + 0.5 - viewport.y) * viewport.zoom,
-    button: 0,
-    buttons: 1,
-    isPrimary: true,
-    ...extra
-  };
+  return { boundary, gateway, uiStore, controller, notices, fillClient };
 }
 
 function bits(cells: Uint8Array | undefined): number[] {
@@ -253,7 +192,7 @@ function bits(cells: Uint8Array | undefined): number[] {
 }
 
 function canvasCommands(boundary: CanvasBoundary) {
-  return boundary.log.filter(isCanvasCommand);
+  return boundary.log.filter((command) => command.type === 'canvas-resize' || command.type === 'canvas-cells');
 }
 
 describe('canvas tool geometry', () => {
@@ -304,7 +243,7 @@ describe('canvas tool geometry', () => {
 describe('canvas editing in the controller', () => {
   it('starts with crop mode off: Pan only, no canvasEditing overlay', () => {
     const { controller, uiStore, notices } = fixture();
-    expect(controller.getCanvasCropActive()).toBe(false);
+    expect(uiStore.getState().canvasCropActive).toBe(false);
     expect(uiStore.getState().overlay.canvasEditing).toBeUndefined();
     controller.setCanvasMode('advanced');
     expect(controller.setTool({ tool: 'canvas-brush' })).toBe(false);
@@ -312,7 +251,7 @@ describe('canvas editing in the controller', () => {
     expect(controller.setTool({ tool: 'eraser' })).toBe(false);
     expect(controller.setTool({ tool: 'pan' })).toBe(true);
     // Panning still works while crop is off.
-    expect(controller.handlePointerDown(at(uiStore, 1, 2, 2))).toBe(true);
+    expect(controller.handlePointerDown(atViewport(uiStore, 1, 2, 2))).toBe(true);
     expect(uiStore.getState().overlay.canvasEditing).toBeUndefined();
     controller.dispose();
   });
@@ -335,14 +274,14 @@ describe('canvas editing in the controller', () => {
     // Turning crop off cancels a stroke, clears the canvas selection and returns to Pan.
     controller.setCanvasMode('advanced');
     controller.setTool({ tool: 'select' });
-    controller.handlePointerDown(at(uiStore, 1, 1, 1));
-    controller.handlePointerUp(at(uiStore, 1, 3, 3));
+    controller.handlePointerDown(atViewport(uiStore, 1, 1, 1));
+    controller.handlePointerUp(atViewport(uiStore, 1, 3, 3));
     expect(controller.getCanvasSelection()).toBeDefined();
     controller.setTool({ tool: 'canvas-brush' });
-    controller.handlePointerDown(at(uiStore, 2, -1, 1));
+    controller.handlePointerDown(atViewport(uiStore, 2, -1, 1));
     expect(uiStore.getState().overlay.canvasEditing?.preview).not.toBeNull();
     expect(controller.setCanvasCropActive(false)).toBe(true);
-    controller.handlePointerUp(at(uiStore, 2, -1, 1));
+    controller.handlePointerUp(atViewport(uiStore, 2, -1, 1));
     expect(boundary.log).toHaveLength(0);
     expect(controller.getCanvasSelection()).toBeUndefined();
     expect(uiStore.getState().tool).toEqual({ tool: 'pan' });
@@ -357,9 +296,9 @@ describe('canvas editing in the controller', () => {
     controller.setCanvasCropActive(true);
     controller.setCanvasMode('advanced');
     controller.setTool({ tool: 'select', shape: 'oval' });
-    controller.handlePointerDown(at(uiStore, 1, -1, 1));
-    controller.handlePointerMove(at(uiStore, 1, 3, 3));
-    controller.handlePointerUp(at(uiStore, 1, 3, 3));
+    controller.handlePointerDown(atViewport(uiStore, 1, -1, 1));
+    controller.handlePointerMove(atViewport(uiStore, 1, 3, 3));
+    controller.handlePointerUp(atViewport(uiStore, 1, 3, 3));
     const oval = controller.getCanvasSelection();
     expect(oval?.rect).toEqual({ x: -1, y: 1, width: 5, height: 3 });
     expect(bits(oval?.cells)).toEqual([0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0]);
@@ -367,10 +306,10 @@ describe('canvas editing in the controller', () => {
     controller.setTool({ tool: 'select' });
     expect(controller.getCanvasSelection()).toBe(oval);
     controller.setTool({ tool: 'select', shape: 'oval' });
-    controller.handlePointerDown(at(uiStore, 2, 5, 5));
-    controller.handlePointerMove(at(uiStore, 2, 8, 8));
+    controller.handlePointerDown(atViewport(uiStore, 2, 5, 5));
+    controller.handlePointerMove(atViewport(uiStore, 2, 8, 8));
     expect(controller.getCanvasSelection()?.rect).toEqual({ x: 5, y: 5, width: 4, height: 4 });
-    controller.handlePointerCancel(at(uiStore, 2, 8, 8));
+    controller.handlePointerCancel(atViewport(uiStore, 2, 8, 8));
     expect(controller.getCanvasSelection()).toBe(oval);
     controller.dispose();
   });
@@ -380,8 +319,8 @@ describe('canvas editing in the controller', () => {
     controller.setCanvasCropActive(true);
     controller.setCanvasMode('advanced');
     controller.setTool({ tool: 'select' });
-    controller.handlePointerDown(at(uiStore, 1, 1, 1));
-    controller.handlePointerUp(at(uiStore, 1, 3, 3));
+    controller.handlePointerDown(atViewport(uiStore, 1, 1, 1));
+    controller.handlePointerUp(atViewport(uiStore, 1, 3, 3));
     expect(uiStore.getState().overlay.canvasEditing?.selection).toBeTruthy();
     controller.clearSelection();
     expect(controller.getCanvasSelection()).toBeUndefined();
@@ -394,24 +333,24 @@ describe('canvas editing in the controller', () => {
     controller.setCanvasCropActive(true);
     controller.setCanvasMode('advanced');
     controller.setTool({ tool: 'select' });
-    controller.handlePointerDown(at(uiStore, 1, 6, 6));
-    controller.handlePointerUp(at(uiStore, 1, 6, 6));
+    controller.handlePointerDown(atViewport(uiStore, 1, 6, 6));
+    controller.handlePointerUp(atViewport(uiStore, 1, 6, 6));
     expect(controller.getCanvasSelection()).toBeUndefined();
     expect(uiStore.getState().overlay.canvasEditing?.selection).toBeFalsy();
 
-    controller.handlePointerDown(at(uiStore, 2, 1, 1));
-    controller.handlePointerMove(at(uiStore, 2, 3, 3));
-    controller.handlePointerUp(at(uiStore, 2, 3, 3));
+    controller.handlePointerDown(atViewport(uiStore, 2, 1, 1));
+    controller.handlePointerMove(atViewport(uiStore, 2, 3, 3));
+    controller.handlePointerUp(atViewport(uiStore, 2, 3, 3));
     const selection = controller.getCanvasSelection();
     expect(selection).toEqual({ rect: { x: 1, y: 1, width: 3, height: 3 } });
-    controller.handlePointerDown(at(uiStore, 3, 6, 6));
-    controller.handlePointerUp(at(uiStore, 3, 6, 6));
+    controller.handlePointerDown(atViewport(uiStore, 3, 6, 6));
+    controller.handlePointerUp(atViewport(uiStore, 3, 6, 6));
     expect(controller.getCanvasSelection()).toBe(selection);
     expect(uiStore.getState().overlay.canvasEditing?.selection).toBe(selection);
 
     controller.setTool({ tool: 'select', shape: 'oval' });
-    controller.handlePointerDown(at(uiStore, 4, -1, -1));
-    controller.handlePointerUp(at(uiStore, 4, -1, -1));
+    controller.handlePointerDown(atViewport(uiStore, 4, -1, -1));
+    controller.handlePointerUp(atViewport(uiStore, 4, -1, -1));
     expect(controller.getCanvasSelection()).toBe(selection);
     controller.dispose();
   });
@@ -422,18 +361,18 @@ describe('canvas editing in the controller', () => {
     controller.setCanvasCropActive(true);
     controller.setCanvasMode('advanced');
     controller.setTool({ tool: 'select' });
-    controller.handlePointerDown(at(uiStore, 1, 1, 1));
-    controller.handlePointerUp(at(uiStore, 1, 2, 2));
+    controller.handlePointerDown(atViewport(uiStore, 1, 1, 1));
+    controller.handlePointerUp(atViewport(uiStore, 1, 2, 2));
     escape();
     expect(controller.getCanvasSelection()).toBeUndefined();
-    expect(controller.getCanvasCropActive()).toBe(true);
+    expect(uiStore.getState().canvasCropActive).toBe(true);
     controller.setCanvasMode('basic');
     controller.beginCanvasEdgeDrag('right', { x: 160, y: 80 });
     escape();
     expect(uiStore.getState().overlay.canvasEditing?.preview).toBeNull();
-    expect(controller.getCanvasCropActive()).toBe(true);
+    expect(uiStore.getState().canvasCropActive).toBe(true);
     escape();
-    expect(controller.getCanvasCropActive()).toBe(false);
+    expect(uiStore.getState().canvasCropActive).toBe(false);
     controller.dispose();
   });
 
@@ -446,7 +385,7 @@ describe('canvas editing in the controller', () => {
     expect(uiStore.getState().canvasCropActive).toBe(false);
     expect(uiStore.getState().tool.tool).not.toBe('canvas-brush');
     boundary.setActiveLayer('canvas');
-    expect(controller.getCanvasCropActive()).toBe(false);
+    expect(uiStore.getState().canvasCropActive).toBe(false);
     expect(uiStore.getState().tool).toEqual({ tool: 'pan' });
     expect(uiStore.getState().overlay.canvasEditing).toBeUndefined();
     expect(uiStore.getState().canvasMode).toBe('advanced');
@@ -461,14 +400,14 @@ describe('canvas editing in the controller', () => {
     controller.setCanvasCropActive(true);
     controller.setCanvasMode('advanced');
     controller.setTool({ tool: 'eraser' });
-    controller.handlePointerDown(at(uiStore, 1, 4, 0));
-    controller.handlePointerMove(at(uiStore, 1, 4, 9));
-    controller.handlePointerUp(at(uiStore, 1, 4, 9));
+    controller.handlePointerDown(atViewport(uiStore, 1, 4, 0));
+    controller.handlePointerMove(atViewport(uiStore, 1, 4, 9));
+    controller.handlePointerUp(atViewport(uiStore, 1, 4, 9));
     expect(boundary.document.canvasMask).toBeDefined();
     expect(uiStore.getState().canvasBasicAvailable).toBe(false);
     expect(controller.setCanvasMode('basic')).toBe(false);
     expect(notices.at(-1)).toBe(CANVAS_BASIC_LOCKED_HINT);
-    expect(controller.getCanvasMode()).toBe('advanced');
+    expect(uiStore.getState().canvasMode).toBe('advanced');
     // Undo restores the rectangle and unlocks Basic.
     controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
     expect(boundary.document.canvasMask).toBeUndefined();
@@ -481,12 +420,11 @@ describe('canvas editing in the controller', () => {
     const { controller, uiStore } = fixture(maskedDocument(), 1);
     expect(uiStore.getState().canvasMode).toBe('advanced');
     expect(uiStore.getState().canvasBasicAvailable).toBe(false);
-    expect(controller.getCanvasMode()).toBe('advanced');
     controller.dispose();
   });
 
   it('publishes canvasEditing exactly while crop is active on the Canvas layer', () => {
-    const { boundary, controller, uiStore } = fixture(layeredDocument(), 1);
+    const { boundary, controller, uiStore } = fixture(layeredDocument(10, 10), 1);
     expect(uiStore.getState().overlay.canvasEditing).toBeUndefined();
     boundary.setActiveLayer('canvas');
     expect(uiStore.getState().overlay.canvasEditing).toBeUndefined();
@@ -500,17 +438,17 @@ describe('canvas editing in the controller', () => {
   });
 
   it('adds cells with one canvas-cells command per brush stroke, previewing the stroke and keeping the design still', () => {
-    const { boundary, controller, uiStore, origins } = fixture();
+    const { boundary, controller, uiStore } = fixture();
     controller.setCanvasMode('advanced');
     controller.setCanvasCropActive(true);
     controller.setTool({ tool: 'canvas-brush' });
     const before = uiStore.getState().viewport;
-    controller.handlePointerDown(at(uiStore, 1, -2, 3));
+    controller.handlePointerDown(atViewport(uiStore, 1, -2, 3));
     expect(uiStore.getState().overlay.canvasEditing?.preview).toEqual({ kind: 'add', rect: { x: -2, y: 3, width: 1, height: 1 }, cells: new Uint8Array([1]) });
-    controller.handlePointerMove(at(uiStore, 1, -2, 5));
+    controller.handlePointerMove(atViewport(uiStore, 1, -2, 5));
     expect(uiStore.getState().overlay.canvasEditing?.preview).toEqual({ kind: 'add', rect: { x: -2, y: 3, width: 1, height: 3 }, cells: new Uint8Array([1, 1, 1]) });
     expect(canvasCommands(boundary)).toHaveLength(0);
-    controller.handlePointerUp(at(uiStore, 1, -2, 5));
+    controller.handlePointerUp(atViewport(uiStore, 1, -2, 5));
 
     expect(canvasCommands(boundary)).toHaveLength(1);
     expect(canvasCommands(boundary)[0]).toMatchObject({ type: 'canvas-cells', operation: 'add', rect: { x: -2, y: 3, width: 1, height: 3 } });
@@ -522,7 +460,6 @@ describe('canvas editing in the controller', () => {
     expect(uiStore.getState().overlay.canvasEditing?.preview).toBeNull();
     // The box grew two columns to the left, so the view moved with it.
     expect(uiStore.getState().viewport).toEqual({ ...before, x: before.x + 2 });
-    expect(origins).toEqual([{ origin: { x: -2, y: 0 }, shift: { x: 2, y: 0 } }]);
     controller.dispose();
   });
 
@@ -531,10 +468,10 @@ describe('canvas editing in the controller', () => {
     controller.setCanvasMode('advanced');
     controller.setCanvasCropActive(true);
     controller.setTool({ tool: 'eraser' });
-    controller.handlePointerDown(at(uiStore, 1, -3, 4));
-    controller.handlePointerMove(at(uiStore, 1, 1, 4));
+    controller.handlePointerDown(atViewport(uiStore, 1, -3, 4));
+    controller.handlePointerMove(atViewport(uiStore, 1, 1, 4));
     expect(uiStore.getState().overlay.canvasEditing?.preview).toMatchObject({ kind: 'remove', rect: { x: 0, y: 4, width: 2, height: 1 } });
-    controller.handlePointerUp(at(uiStore, 1, 1, 4));
+    controller.handlePointerUp(atViewport(uiStore, 1, 1, 4));
     expect(canvasCommands(boundary)).toEqual([expect.objectContaining({ type: 'canvas-cells', operation: 'remove', rect: { x: 0, y: 4, width: 2, height: 1 } })]);
     expect(boundary.document.canvasMask?.[4 * 10]).toBe(0);
     expect(boundary.document.canvasMask?.[4 * 10 + 2]).toBe(1);
@@ -543,13 +480,13 @@ describe('canvas editing in the controller', () => {
   });
 
   it('leaves the stitch-layer eraser erasing stitches', () => {
-    const document = layeredDocument();
+    const document = layeredDocument(10, 10);
     const surface = applyCommand(layerSurface(document, 1), { type: 'set-full', x: 1, y: 1, color: 1 });
     commitLayerSurface(document, 1, surface.document);
     const { boundary, controller, uiStore } = fixture(document, 1);
     controller.setTool({ tool: 'eraser' });
-    controller.handlePointerDown(at(uiStore, 1, 1, 1));
-    controller.handlePointerUp(at(uiStore, 1, 1, 1));
+    controller.handlePointerDown(atViewport(uiStore, 1, 1, 1));
+    controller.handlePointerUp(atViewport(uiStore, 1, 1, 1));
     expect(boundary.log).toEqual([expect.objectContaining({ type: 'mixed-erase', layerId: 1 })]);
     expect(boundary.document.kind[11]).toBe(CellKind.Empty);
     expect(uiStore.getState().overlay.canvasEditing).toBeUndefined();
@@ -563,13 +500,13 @@ describe('canvas editing in the controller', () => {
     controller.setTool({ tool: 'canvas-brush' });
     controller.setToolBrushSize('canvas-brush', 3);
     const frozen = canvasWorkspace(boundary.document);
-    controller.handlePointerDown(at(uiStore, 1, frozen.x, 4));
-    controller.handlePointerMove(at(uiStore, 1, frozen.x - 5, 4));
+    controller.handlePointerDown(atViewport(uiStore, 1, frozen.x, 4));
+    controller.handlePointerMove(atViewport(uiStore, 1, frozen.x - 5, 4));
     const preview = uiStore.getState().overlay.canvasEditing?.preview;
     expect(uiStore.getState().overlay.canvasEditing?.workspace).toEqual(frozen);
     // Nothing left of the workspace edge is collected.
     expect(preview).toMatchObject({ kind: 'add', rect: { x: frozen.x, y: 3, width: 2, height: 3 } });
-    controller.handlePointerUp(at(uiStore, 1, frozen.x - 5, 4));
+    controller.handlePointerUp(atViewport(uiStore, 1, frozen.x - 5, 4));
     expect(canvasCommands(boundary)[0]).toMatchObject({ rect: { x: frozen.x, y: 3, width: 2, height: 3 } });
     // The workspace is recomputed for the new box after the commit.
     expect(uiStore.getState().overlay.canvasEditing?.workspace).toEqual(canvasWorkspace(boundary.document));
@@ -614,9 +551,9 @@ describe('canvas editing in the controller', () => {
     controller.setCanvasMode('advanced');
     controller.setCanvasCropActive(true);
     controller.setTool({ tool: 'select' });
-    controller.handlePointerDown(at(uiStore, 1, 8, -2));
-    controller.handlePointerMove(at(uiStore, 1, 12, 1));
-    controller.handlePointerUp(at(uiStore, 1, 12, 1));
+    controller.handlePointerDown(atViewport(uiStore, 1, 8, -2));
+    controller.handlePointerMove(atViewport(uiStore, 1, 12, 1));
+    controller.handlePointerUp(atViewport(uiStore, 1, 12, 1));
     expect(controller.getCanvasSelection()).toEqual({ rect: { x: 8, y: -2, width: 5, height: 4 } });
     expect(controller.applyCanvasSelection('remove')).toBe(true);
     expect(canvasCommands(boundary)).toEqual([expect.objectContaining({ type: 'canvas-cells', operation: 'remove', rect: { x: 8, y: -2, width: 5, height: 4 } })]);
@@ -630,19 +567,19 @@ describe('canvas editing in the controller', () => {
     controller.setCanvasMode('advanced');
     controller.setCanvasCropActive(true);
     controller.setTool({ tool: 'select' });
-    controller.handlePointerDown(at(uiStore, 1, -2, 0));
-    controller.handlePointerMove(at(uiStore, 1, 0, 1));
-    controller.handlePointerUp(at(uiStore, 1, 0, 1));
+    controller.handlePointerDown(atViewport(uiStore, 1, -2, 0));
+    controller.handlePointerMove(atViewport(uiStore, 1, 0, 1));
+    controller.handlePointerUp(atViewport(uiStore, 1, 0, 1));
     const selection = controller.getCanvasSelection();
     expect(selection).toEqual({ rect: { x: -2, y: 0, width: 3, height: 2 } });
     // A click inside keeps the selection.
-    controller.handlePointerDown(at(uiStore, 2, -1, 1));
-    controller.handlePointerUp(at(uiStore, 2, -1, 1));
+    controller.handlePointerDown(atViewport(uiStore, 2, -1, 1));
+    controller.handlePointerUp(atViewport(uiStore, 2, -1, 1));
     expect(controller.getCanvasSelection()).toBe(selection);
     // A drag from inside replaces it.
-    controller.handlePointerDown(at(uiStore, 3, -1, 1));
-    controller.handlePointerMove(at(uiStore, 3, 2, 3));
-    controller.handlePointerUp(at(uiStore, 3, 2, 3));
+    controller.handlePointerDown(atViewport(uiStore, 3, -1, 1));
+    controller.handlePointerMove(atViewport(uiStore, 3, 2, 3));
+    controller.handlePointerUp(atViewport(uiStore, 3, 2, 3));
     expect(controller.getCanvasSelection()).toEqual({ rect: { x: -1, y: 1, width: 4, height: 3 } });
     controller.handleKeyDown({ key: 'Escape', preventDefault: () => undefined });
     expect(controller.getCanvasSelection()).toBeUndefined();
@@ -654,9 +591,9 @@ describe('canvas editing in the controller', () => {
     controller.setCanvasMode('advanced');
     controller.setCanvasCropActive(true);
     controller.setTool({ tool: 'select' });
-    controller.handlePointerDown(at(uiStore, 1, -1, -1));
-    controller.handlePointerMove(at(uiStore, 1, 10, 10));
-    controller.handlePointerUp(at(uiStore, 1, 10, 10));
+    controller.handlePointerDown(atViewport(uiStore, 1, -1, -1));
+    controller.handlePointerMove(atViewport(uiStore, 1, 10, 10));
+    controller.handlePointerUp(atViewport(uiStore, 1, 10, 10));
     expect(controller.applyCanvasSelection('remove')).toBe(false);
     expect(notices.at(-1)).toBe('The canvas needs at least one cell.');
     expect(uiStore.getState().status).toBe('The canvas needs at least one cell.');
@@ -750,7 +687,7 @@ describe('canvas editing in the controller', () => {
     expect(uiStore.getState().viewport.x).toBe(start.x + 4);
     const shifted = uiStore.getState().viewport;
 
-    const other = applyCanvasCommand(layeredDocument(), { type: 'canvas-resize', edges: { top: 7, right: 0, bottom: 0, left: 7 } }).document;
+    const other = applyCanvasCommand(layeredDocument(10, 10), { type: 'canvas-resize', edges: { top: 7, right: 0, bottom: 0, left: 7 } }).document;
     boundary.switchProject('project-b', other);
     // A project switch fits the new document instead of carrying the old frame over.
     expect(uiStore.getState().viewport.x).not.toBe(shifted.x + 11);
@@ -765,28 +702,28 @@ describe('canvas editing in the controller', () => {
     controller.setTool({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
     // Hover over the hole column (x = 3) with a 3-wide brush.
     controller.setToolBrushSize('full', 3);
-    controller.handlePointerMove(at(uiStore, 9, 3, 5, { buttons: 0 }));
+    controller.handlePointerMove(atViewport(uiStore, 9, 3, 5, { buttons: 0 }));
     const hover = uiStore.getState().overlay.brushPreview?.states ?? [];
     expect(hover.length).toBeGreaterThan(0);
     expect(hover.every((state) => state.index % 10 !== 3)).toBe(true);
 
-    controller.handlePointerDown(at(uiStore, 1, 1, 5));
-    controller.handlePointerMove(at(uiStore, 1, 6, 5));
+    controller.handlePointerDown(atViewport(uiStore, 1, 1, 5));
+    controller.handlePointerMove(atViewport(uiStore, 1, 6, 5));
     const cells = uiStore.getState().overlay.pendingCells ?? [];
     const states = uiStore.getState().overlay.pendingCellStates ?? [];
     expect(cells.some((cell) => cell.x === 2) && cells.some((cell) => cell.x === 4)).toBe(true);
     expect(cells.every((cell) => cell.x !== 3)).toBe(true);
     expect(states.length).toBeGreaterThan(0);
     expect(states.every((state) => state.index % 10 !== 3)).toBe(true);
-    controller.handlePointerUp(at(uiStore, 1, 6, 5));
+    controller.handlePointerUp(atViewport(uiStore, 1, 6, 5));
 
     controller.setTool({ tool: 'shape', shape: 'line' });
-    controller.handlePointerDown(at(uiStore, 2, 0, 8));
-    controller.handlePointerMove(at(uiStore, 2, 9, 8));
+    controller.handlePointerDown(atViewport(uiStore, 2, 0, 8));
+    controller.handlePointerMove(atViewport(uiStore, 2, 9, 8));
     const shape = uiStore.getState().overlay.pendingCells ?? [];
     expect(shape.length).toBeGreaterThan(0);
     expect(shape.every((cell) => cell.x !== 3)).toBe(true);
-    controller.handlePointerUp(at(uiStore, 2, 9, 8));
+    controller.handlePointerUp(atViewport(uiStore, 2, 9, 8));
     controller.dispose();
   });
 
@@ -794,7 +731,7 @@ describe('canvas editing in the controller', () => {
     const { boundary, controller, uiStore, fillClient } = fixture(maskedDocument(), 1);
     controller.selectPalette(2);
     controller.setTool({ tool: 'fill' });
-    expect(controller.handlePointerDown(at(uiStore, 1, 0, 0))).toBe(true);
+    expect(controller.handlePointerDown(atViewport(uiStore, 1, 0, 0))).toBe(true);
     for (let tick = 0; tick < 4; tick += 1) await Promise.resolve();
     const fill = boundary.log.find((command) => command.type === 'bulk-cell');
     expect(fill).toBeDefined();
@@ -804,7 +741,7 @@ describe('canvas editing in the controller', () => {
     const stitches = boundary.layeredDocument.layers[0];
     expect(stitches.type === LayerType.Stitch && stitches.kind[9]).toBe(CellKind.Empty);
     // A press on the hole itself fills nothing.
-    expect(controller.handlePointerDown(at(uiStore, 2, 3, 0))).toBe(true);
+    expect(controller.handlePointerDown(atViewport(uiStore, 2, 3, 0))).toBe(true);
     expect(uiStore.getState().status).toBe('No change');
     fillClient.dispose();
     controller.dispose();
@@ -813,17 +750,17 @@ describe('canvas editing in the controller', () => {
 
 describe('canvas editing through the document editor history', () => {
   it('records a brush stroke as one undo step and undoes it', () => {
-    const boundary = new LayeredTestBoundary(layeredDocument(), { activeLayerId: 'canvas' });
+    const boundary = new LayeredTestBoundary(layeredDocument(10, 10), { activeLayerId: 'canvas' });
     const uiStore = createUiStore({ viewport: { x: 0, y: 0, zoom: ZOOM } });
-    const controller = new EditorSurfaceController({ gateway: createWorkspaceEditorGateway(boundary), uiStore, renderer: rendererFixture(), metrics: getCanvasMetrics(320, 320) });
+    const controller = new EditorSurfaceController({ gateway: createWorkspaceEditorGateway(boundary), uiStore, renderer: rendererFixture().renderer, metrics: getCanvasMetrics(320, 320) });
     controller.start();
     controller.setCanvasMode('advanced');
     controller.setCanvasCropActive(true);
     controller.setTool({ tool: 'canvas-brush' });
     const start = uiStore.getState().viewport;
-    controller.handlePointerDown(at(uiStore, 1, -1, 0));
-    controller.handlePointerMove(at(uiStore, 1, -1, 2));
-    controller.handlePointerUp(at(uiStore, 1, -1, 2));
+    controller.handlePointerDown(atViewport(uiStore, 1, -1, 0));
+    controller.handlePointerMove(atViewport(uiStore, 1, -1, 2));
+    controller.handlePointerUp(atViewport(uiStore, 1, -1, 2));
     expect(boundary.undoDepth).toBe(1);
     expect(boundary.document).toMatchObject({ width: 11, height: 10, originX: -1 });
     expect(boundary.document.canvasMask).toBeDefined();

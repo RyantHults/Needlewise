@@ -1,24 +1,21 @@
 import { describe, expect, it, vi } from 'vitest';
+import provenanceAsset from '../../catalog/provenance.json';
 import {
   DMC_CATALOG_DEFINITION,
   DEFAULT_CATALOG_DEFINITION,
   DMC_CATALOG,
-  DMC_CATALOG_IS_OFFLINE_ONLY,
-  DMC_CATALOG_METADATA,
-  DMC_CATALOG_PROVENANCE,
   DMC_CATALOG_RECORD_COUNT,
+  INSTALLED_CATALOG_REGISTRY,
   createInstalledCatalogRegistry,
   createCatalogReference,
   getDmcColor,
-  getDmcColorByHex,
-  nearestDmcColor,
-  resolveCatalogDefinition,
-  searchDmcColors,
-  validateDmcCatalog,
   validateDmcCatalogBundle,
   type CatalogDefinition,
-  type DmcCatalogColor
+  type DmcCatalogColor,
+  type DmcCatalogProvenance
 } from './index';
+
+const DMC_CATALOG_PROVENANCE = provenanceAsset as unknown as DmcCatalogProvenance;
 
 function syntheticDefinition(catalogId: string, brandLabel: string): CatalogDefinition {
   const association = Object.freeze({ catalogId, brandLabel, colorCount: DMC_CATALOG_DEFINITION.records.length });
@@ -32,14 +29,14 @@ function syntheticDefinition(catalogId: string, brandLabel: string): CatalogDefi
 describe('offline DMC-compatible catalog', () => {
   const catalogAsset = {
     schemaVersion: 1,
-    catalogId: DMC_CATALOG_METADATA.catalogId,
+    catalogId: DMC_CATALOG_DEFINITION.association.catalogId,
     records: DMC_CATALOG
   };
 
   it('resolves the DMC definition and performs generic search, exact hex, and nearest RGB lookup', () => {
-    const definition = resolveCatalogDefinition(DMC_CATALOG_DEFINITION.association);
+    const definition = INSTALLED_CATALOG_REGISTRY.resolve(DMC_CATALOG_DEFINITION.association);
     expect(definition).toMatchObject({ association: DMC_CATALOG_DEFINITION.association, compatibilityLabel: DMC_CATALOG_DEFINITION.compatibilityLabel });
-    expect(resolveCatalogDefinition(DMC_CATALOG_DEFINITION.association)).toBe(definition);
+    expect(INSTALLED_CATALOG_REGISTRY.resolve(DMC_CATALOG_DEFINITION.association)).toBe(definition);
     expect(definition?.getByHex('#FFE2E2')?.code).toBe('3713');
     expect(definition?.search('salmon', { limit: 1 })).toHaveLength(1);
     expect(definition?.nearest({ r: 0, g: 0, b: 0 })?.code).toBe('310');
@@ -60,13 +57,15 @@ describe('offline DMC-compatible catalog', () => {
 
   it('resolves only the registered immutable catalog association', () => {
     expect(DEFAULT_CATALOG_DEFINITION).toBe(DMC_CATALOG_DEFINITION);
-    const registered = resolveCatalogDefinition({ ...DMC_CATALOG_DEFINITION.association });
+    const registered = INSTALLED_CATALOG_REGISTRY.resolve({ ...DMC_CATALOG_DEFINITION.association });
     expect(registered).toBeDefined();
-    expect(resolveCatalogDefinition({ ...DMC_CATALOG_DEFINITION.association })).toBe(registered);
-    expect(registered).toBe(DMC_CATALOG_DEFINITION);
-    expect(resolveCatalogDefinition({ ...DMC_CATALOG_DEFINITION.association, catalogId: 'future-revision' })).toBeUndefined();
-    expect(resolveCatalogDefinition({ ...DMC_CATALOG_DEFINITION.association, brandLabel: 'Other' })).toBeUndefined();
-    expect(resolveCatalogDefinition({ ...DMC_CATALOG_DEFINITION.association, colorCount: 1 })).toBeUndefined();
+    expect(INSTALLED_CATALOG_REGISTRY.resolve({ ...DMC_CATALOG_DEFINITION.association })).toBe(registered);
+    expect(registered).toBe(INSTALLED_CATALOG_REGISTRY.definitions.find((definition) => definition.association.catalogId === DMC_CATALOG_DEFINITION.association.catalogId));
+    expect(registered?.association).toEqual(DMC_CATALOG_DEFINITION.association);
+    expect(registered?.records).toEqual(DMC_CATALOG_DEFINITION.records);
+    expect(INSTALLED_CATALOG_REGISTRY.resolve({ ...DMC_CATALOG_DEFINITION.association, catalogId: 'future-revision' })).toBeUndefined();
+    expect(INSTALLED_CATALOG_REGISTRY.resolve({ ...DMC_CATALOG_DEFINITION.association, brandLabel: 'Other' })).toBeUndefined();
+    expect(INSTALLED_CATALOG_REGISTRY.resolve({ ...DMC_CATALOG_DEFINITION.association, colorCount: 1 })).toBeUndefined();
     expect(Object.isFrozen(DMC_CATALOG_DEFINITION)).toBe(true);
     expect(Object.isFrozen(DMC_CATALOG_DEFINITION.association)).toBe(true);
     expect(Object.isFrozen(DMC_CATALOG_DEFINITION.snapshot)).toBe(true);
@@ -89,8 +88,8 @@ describe('offline DMC-compatible catalog', () => {
     expect(registry.definitions[0]).not.toBe(first);
     expect(registry.resolve({ ...first.association, brandLabel: 'Other' })).toBeUndefined();
     expect(registry.resolve({ ...first.association, colorCount: 1 })).toBeUndefined();
-    expect(registry.getById('catalog-b')).toBe(registry.definitions[1]);
-    expect(registry.getById('missing')).toBeUndefined();
+    expect(registry.resolve(second.association)).toBe(registry.definitions[1]);
+    expect(registry.resolve({ ...first.association, catalogId: 'missing' })).toBeUndefined();
     expect(() => (registry.definitions as CatalogDefinition[]).push(second)).toThrow();
   });
 
@@ -108,7 +107,7 @@ describe('offline DMC-compatible catalog', () => {
       nearest: () => records[0]
     } as CatalogDefinition;
     const registry = createInstalledCatalogRegistry([definition]);
-    const registered = registry.getById('mutable-catalog')!;
+    const registered = registry.definitions[0];
 
     association.catalogId = 'changed-catalog';
     association.brandLabel = 'Changed Catalog';
@@ -120,8 +119,8 @@ describe('offline DMC-compatible catalog', () => {
     records.splice(0, 1);
 
     expect(registry.resolve({ catalogId: 'mutable-catalog', brandLabel: 'Mutable Catalog', colorCount: 1 })).toBe(registered);
-    expect(registry.getById('mutable-catalog')).toBe(registered);
-    expect(registry.getById('changed-catalog')).toBeUndefined();
+    expect(registry.definitions).toHaveLength(1);
+    expect(registry.resolve({ catalogId: 'changed-catalog', brandLabel: 'Changed Catalog', colorCount: 9 })).toBeUndefined();
     expect(registered).not.toBe(definition);
     expect(registered.association).toEqual({ catalogId: 'mutable-catalog', brandLabel: 'Mutable Catalog', colorCount: 1 });
     expect(registered.records).toEqual([{ sourceId: 'mutable-1', code: '01', name: 'Original', hex: '#010203', rgb: [1, 2, 3] }]);
@@ -146,7 +145,7 @@ describe('offline DMC-compatible catalog', () => {
   });
 
   it('contains a validated, unique normalized dataset', () => {
-    const validation = validateDmcCatalog(DMC_CATALOG);
+    const validation = validateDmcCatalogBundle(catalogAsset, DMC_CATALOG_PROVENANCE);
     expect(validation.valid).toBe(true);
     expect(validation.errors).toEqual([]);
     expect(DMC_CATALOG_RECORD_COUNT).toBe(489);
@@ -161,11 +160,11 @@ describe('offline DMC-compatible catalog', () => {
   it('reports malformed and duplicate records instead of accepting them', () => {
     const malformed = DMC_CATALOG.map((record) => ({ ...record })) as DmcCatalogColor[];
     malformed[0] = { ...malformed[0], hex: '#000000', rgb: [255, 226, 226] };
-    const invalid = validateDmcCatalog(malformed);
+    const invalid = validateDmcCatalogBundle({ ...catalogAsset, records: malformed }, DMC_CATALOG_PROVENANCE);
     expect(invalid.valid).toBe(false);
     expect(invalid.errors.some((error) => error.includes('HEX/RGB'))).toBe(true);
 
-    const duplicate = validateDmcCatalog([...DMC_CATALOG, DMC_CATALOG[0]]);
+    const duplicate = validateDmcCatalogBundle({ ...catalogAsset, records: [...DMC_CATALOG, DMC_CATALOG[0]] }, DMC_CATALOG_PROVENANCE);
     expect(duplicate.valid).toBe(false);
     expect(duplicate.errors.some((error) => error.includes('duplicates a code'))).toBe(true);
     expect(duplicate.errors.some((error) => error.includes('duplicates a source ID'))).toBe(true);
@@ -226,20 +225,17 @@ describe('offline DMC-compatible catalog', () => {
       code: '3713',
       hex: '#FFE2E2',
     });
-    expect(getDmcColorByHex('#ffe2e2')).toBe(DMC_CATALOG_DEFINITION.getByHex('#ffe2e2'));
-    expect(getDmcColorByHex('#FFFFFF')).toMatchObject({
+    expect(DMC_CATALOG_DEFINITION.getByHex('#FFFFFF')).toMatchObject({
       code: 'B5200',
       hex: '#FFFFFF',
     });
     for (const record of DMC_CATALOG) {
       expect(DMC_CATALOG_DEFINITION.getByHex(record.hex)).toBe(record);
       expect(DMC_CATALOG_DEFINITION.getByHex(record.hex.toLowerCase())).toBe(record);
-      expect(getDmcColorByHex(record.hex)).toBe(record);
-      expect(getDmcColorByHex(record.hex.toLowerCase())).toBe(record);
     }
-    expect(getDmcColorByHex('#010203')).toBeUndefined();
-    expect(getDmcColorByHex('#GGGGGG')).toBeUndefined();
-    expect(getDmcColorByHex('#FFF')).toBeUndefined();
+    expect(DMC_CATALOG_DEFINITION.getByHex('#010203')).toBeUndefined();
+    expect(DMC_CATALOG_DEFINITION.getByHex('#GGGGGG')).toBeUndefined();
+    expect(DMC_CATALOG_DEFINITION.getByHex('#FFF')).toBeUndefined();
 
     const salmon = DMC_CATALOG_DEFINITION.search('salmon');
     expect(salmon.length).toBeGreaterThan(1);
@@ -247,14 +243,12 @@ describe('offline DMC-compatible catalog', () => {
     expect(DMC_CATALOG_DEFINITION.search('#FFE2E2')).toHaveLength(1);
     expect(DMC_CATALOG_DEFINITION.search('DMC-09')).toHaveLength(1);
     expect(DMC_CATALOG_DEFINITION.search('', { limit: 3 })).toHaveLength(3);
-    expect(searchDmcColors('salmon')).toEqual(salmon);
   });
 
   it('exposes approximation provenance and never calls network APIs', () => {
-    expect(DMC_CATALOG_IS_OFFLINE_ONLY).toBe(true);
-    expect(DMC_CATALOG_METADATA.approximation).toBe(true);
-    expect(DMC_CATALOG_METADATA.official).toBe(false);
-    expect(DMC_CATALOG_METADATA.dmcAffiliation).toBe(false);
+    expect(DMC_CATALOG_PROVENANCE.status.approximation).toBe(true);
+    expect(DMC_CATALOG_PROVENANCE.status.official).toBe(false);
+    expect(DMC_CATALOG_PROVENANCE.status.dmcAffiliation).toBe(false);
     expect(DMC_CATALOG_PROVENANCE.source.upstreamDataUrl).toBe('https://floss.maxxmint.com/dmc_to_rgb.php');
     expect(DMC_CATALOG_PROVENANCE.snapshot.htmlSha256).toBe('80b8cf1994d160836f1cb0cea8c6f49963707ee02a56a42a11ba640c94d9c086');
     expect(DMC_CATALOG_PROVENANCE.snapshot.observedDmcRecordCount).toBe(489);
@@ -264,7 +258,7 @@ describe('offline DMC-compatible catalog', () => {
     globalThis.fetch = fetchSpy;
     try {
       expect(getDmcColor('3713')?.hex).toBe('#FFE2E2');
-      expect(searchDmcColors('salmon').length).toBeGreaterThan(1);
+      expect(DMC_CATALOG_DEFINITION.search('salmon').length).toBeGreaterThan(1);
       expect(fetchSpy).not.toHaveBeenCalled();
     } finally {
       globalThis.fetch = originalFetch;
@@ -275,7 +269,6 @@ describe('offline DMC-compatible catalog', () => {
     const exact = getDmcColor('3713');
     const nearest = DMC_CATALOG_DEFINITION.nearest({ r: 255, g: 226, b: 226 });
     expect(nearest?.code).toBe(exact!.code);
-    expect(nearestDmcColor({ r: 255, g: 226, b: 226 })).toBe(nearest);
 
     const white = DMC_CATALOG_DEFINITION.nearest({ r: 255, g: 255, b: 255 });
     expect(white).toBeDefined();

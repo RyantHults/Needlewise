@@ -86,9 +86,6 @@ export function bresenhamLine(start: CellPoint, end: CellPoint): CellPoint[] {
   return points;
 }
 
-export const supercover = supercoverLine;
-export const interpolateCells = supercoverLine;
-
 export function cellKey(cell: CellPoint): string {
   return `${String(Math.floor(cell.x))}:${String(Math.floor(cell.y))}`;
 }

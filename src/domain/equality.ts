@@ -1,4 +1,4 @@
-import type { CatalogAssociation, PaletteCatalogReference, PaletteEntry, PaletteMaterial, PatternSettings } from './types';
+import type { PaletteCatalogReference, PaletteEntry, PaletteMaterial, PatternSettings } from './types';
 
 /** Element-wise equality; the same array is equal to itself without a scan. */
 export function typedArraysEqual(left: ArrayLike<number>, right: ArrayLike<number>): boolean {
@@ -13,12 +13,6 @@ export function settingsEqual(left: PatternSettings, right: PatternSettings): bo
     && left.materialUnit === right.materialUnit
     && left.backgroundColor === right.backgroundColor
     && left.aidaCount === right.aidaCount;
-}
-
-export function catalogAssociationsEqual(left: CatalogAssociation, right: CatalogAssociation): boolean {
-  return left.catalogId === right.catalogId
-    && left.brandLabel === right.brandLabel
-    && left.colorCount === right.colorCount;
 }
 
 /** Two absent references are equal; one absent reference is not. */

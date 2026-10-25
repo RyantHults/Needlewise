@@ -2,10 +2,11 @@ import 'fake-indexeddb/auto';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import App from './App';
-import { applyCommand, createDocument } from './domain';
+import { createDocument } from './domain';
 import { DEFAULT_CATALOG_DEFINITION } from './catalog';
 import { ProjectWorkspace } from './application/workspace';
 import { NeedlewiseDatabase, ProjectRepository } from './persistence';
+import { applyCommand } from './domain/test-fixtures';
 
 /**
  * Locks the reported flow with the real stack: thread rows AND the

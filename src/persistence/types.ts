@@ -1,7 +1,5 @@
 import type { DisplayUnits, DocumentEditorHistoryDto, LayeredDocument, NormalizedMaterialSettings } from '../domain';
-import type { ProgressActivity } from './activity';
 
-export const PERSISTENCE_SCHEMA_VERSION = 1 as const;
 export const SESSION_HISTORY_ENVELOPE_VERSION = 1 as const;
 export const MAX_SESSION_HISTORY_BYTES = 16 * 1024 * 1024;
 export const MAX_SESSION_HISTORY_DECODE_BYTES = 64 * 1024 * 1024;
@@ -39,8 +37,6 @@ export interface SourceImageDescriptor {
   traceVisible: boolean;
   opacity: number;
 }
-
-export type SourceImageSettings = SourceImageDescriptor;
 
 export interface SourceImageSettingsInput {
   assetId: string;
@@ -80,8 +76,6 @@ export interface ProjectThumbnailSummary {
    */
   backstitches?: { points: Uint32Array; colors: Uint8Array | Uint16Array };
 }
-
-export type ProjectThumbnail = ProjectThumbnailSummary;
 
 export interface ProjectMetadata {
   id: string;
@@ -161,8 +155,6 @@ export interface ProjectRecord {
     document: LayeredDocument;
   } | null;
   assets: ProjectAsset[];
-  /** Bounded, date-keyed progress activity; absent means an older record. */
-  activity?: ProgressActivity;
   /** Health is populated by repository loads when a related recovery record is bad. */
   health?: ProjectHealth;
 }
@@ -268,11 +260,6 @@ export interface SessionHistoryMarker {
   index: number;
 }
 
-export interface SessionHistoryMarkerStacks {
-  undo: readonly SessionHistoryMarker[];
-  redo: readonly SessionHistoryMarker[];
-}
-
 export interface SessionHistoryEnvelope {
   version: typeof SESSION_HISTORY_ENVELOPE_VERSION;
   document: DocumentEditorHistoryDto;
@@ -297,8 +284,6 @@ export interface StoredDocumentHistory {
   history: SessionHistoryEnvelope;
   savedAt: number;
 }
-
-export type StoredSessionHistory = StoredDocumentHistory;
 
 /**
  * The head a retain commit is allowed to update. A checksum is optional so a
@@ -325,8 +310,6 @@ export interface SaveOptions {
   expectedRevision?: number;
   /** Expected current head for a retain commit; a number is shorthand for revision. */
   expectedHead?: number | ExpectedProjectHead;
-  /** Replaces the project's durable activity snapshot when supplied. */
-  activity?: ProgressActivity;
   /** Replaces the local undo/redo history when supplied. */
   history?: SessionHistoryInput;
   /** Internal exact preparation request identity for a prepared commit. */

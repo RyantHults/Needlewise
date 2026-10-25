@@ -39,12 +39,10 @@ import {
 } from '../domain';
 import { cloneLayeredDocument, cloneProjectHealth, PersistenceError } from '../persistence';
 import {
-  cloneProgressActivity,
   normalizeSourceImageDescriptor,
   normalizeSourceImageAsset,
   validateSourceImageDescriptor,
   MAX_SESSION_HISTORY_BYTES,
-  type ProgressActivity,
   type ProjectAsset,
   type ProjectAssetInput,
   type ProjectHealth,
@@ -64,7 +62,7 @@ import {
 } from '../persistence';
 import { asError, WorkspaceError } from './errors';
 import { planLayerMerge } from './layer-merge';
-import { ProgressMetricsService, type SessionProgressStats } from './progress';
+import { ProgressMetricsService } from './progress';
 import type {
   ActiveLayerId,
   LayerSelection,
@@ -75,7 +73,6 @@ import type {
   PasteCommitResult,
   PasteDestination,
   ProjectSessionOptions,
-  MaterialSettingsChanges,
   SaveState,
   SessionCommandResult,
   WorkspaceRepository
@@ -259,12 +256,6 @@ export function defaultActiveLayerId(document: LayeredDocument): ActiveLayerId {
   return (topmostVisibleLayer(document, LayerType.Stitch) ?? topmostVisibleLayer(document))?.id ?? 'canvas';
 }
 
-/** The layer type a clipboard fragment needs, or null for an empty or mixed fragment. */
-export function fragmentLayerType(fragment: PatternFragment): LayerType | null {
-  const required = fragmentLayerRequirement(fragment);
-  return required === 'mixed' ? null : required;
-}
-
 function layerSummariesOf(document: LayeredDocument, previous: readonly LayerSummary[]): readonly LayerSummary[] {
   const next = document.layers.map((layer, index) => ({ id: layer.id, type: layer.type, name: layer.name, visible: layer.visible, index }));
   const same = next.length === previous.length && next.every((summary, index) => {
@@ -321,10 +312,6 @@ export class ProjectSession {
   private materialAssumptionsState: NormalizedMaterialSettings;
   private materialSettingsPersisted: boolean;
   private metricOptions: MetricsOptions;
-  private dailyProgressActivity: ProgressActivity;
-  private readonly sessionStartedAt: number;
-  private sessionMarked = 0;
-  private sessionUnmarked = 0;
   private recoverySession: boolean;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private maxDirtyAgeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -385,8 +372,6 @@ export class ProjectSession {
     this.projectHealth = options.health ? cloneProjectHealth(options.health) : null;
     this.recoverySession = options.usingRecovery === true;
     this.progressService = new ProgressMetricsService(this.editor.composite, this.metricOptions);
-    this.dailyProgressActivity = cloneProgressActivity(options.activity);
-    this.sessionStartedAt = options.sessionStartedAt ?? this.clock.now();
     this.lastSavedRevision = options.document.revision;
     this.projectHead = options.head === undefined ? null : { ...options.head };
     this.activeLayerIdState = defaultActiveLayerId(options.document);
@@ -578,10 +563,6 @@ export class ProjectSession {
     return this.layerSelectionState;
   }
 
-  get lastCompositeInvalidation(): CompositeInvalidation | null {
-    return this.compositeInvalidation;
-  }
-
   /** Selecting a layer is session memory only; it is never saved or undone. */
   setActiveLayer(id: ActiveLayerId): void {
     this.ensureActive();
@@ -663,32 +644,12 @@ export class ProjectSession {
     return cloneSourceImage(this.projectMetadata.sourceImage);
   }
 
-  getSourceImage(): SourceImageDescriptor | undefined {
-    return this.sourceImage;
-  }
-
-  get traceUndoDepth(): number {
-    return this.traceUndoStack.length;
-  }
-
-  get traceRedoDepth(): number {
-    return this.traceRedoStack.length;
-  }
-
   get historyUndoDepth(): number {
     return this.historyKindsUndo.length;
   }
 
   get historyRedoDepth(): number {
     return this.historyKindsRedo.length;
-  }
-
-  get canUndo(): boolean {
-    return this.historyKindsUndo.length > 0;
-  }
-
-  get canRedo(): boolean {
-    return this.historyKindsRedo.length > 0;
   }
 
   get canUndoMark(): boolean {
@@ -716,40 +677,8 @@ export class ProjectSession {
     return this.progressService.metrics;
   }
 
-  get progressMetrics() {
-    return this.progressService.metrics;
-  }
-
-  get materialAssumptions(): NormalizedMaterialSettings {
-    return { ...this.materialAssumptionsState };
-  }
-
   get materialSettings(): NormalizedMaterialSettings {
     return { ...this.materialAssumptionsState };
-  }
-
-  getMaterialSettings(): NormalizedMaterialSettings {
-    return this.materialSettings;
-  }
-
-  getMaterialAssumptions(): NormalizedMaterialSettings {
-    return this.materialAssumptions;
-  }
-
-  get sessionStats(): SessionProgressStats {
-    return { startedAt: this.sessionStartedAt, marked: this.sessionMarked, unmarked: this.sessionUnmarked };
-  }
-
-  get activity(): ProgressActivity {
-    return cloneProgressActivity(this.dailyProgressActivity);
-  }
-
-  get dailyActivity(): ProgressActivity {
-    return cloneProgressActivity(this.dailyProgressActivity);
-  }
-
-  get progressActivity(): ProgressActivity {
-    return cloneProgressActivity(this.dailyProgressActivity);
   }
 
   get saveState(): SaveState {
@@ -767,10 +696,6 @@ export class ProjectSession {
 
   get error(): Error | null {
     return this.saveError;
-  }
-
-  get isDisposed(): boolean {
-    return this.disposed;
   }
 
   subscribe(listener: () => void): () => void {
@@ -1003,13 +928,6 @@ export class ProjectSession {
     return result;
   }
 
-  /** Merges `sourceId` into `targetId` (same type, both visible) and selects the target. */
-  mergeLayer(sourceId: number, targetId: number): SessionCommandResult {
-    const result = this.execute(layerMergeCommand(sourceId, targetId));
-    if (result.changed) this.selectLayerQuietly(targetId);
-    return result;
-  }
-
   /** Merges the selected layers (or merges the one selected layer down) as one undo step and selects the target. */
   mergeSelectedLayers(): SessionCommandResult {
     const plan = planLayerMerge(this.editor.document, this.layerSelectionState);
@@ -1223,10 +1141,6 @@ export class ProjectSession {
       return;
     }
     this.applyDocumentChange(result);
-    if (result.progress !== undefined) {
-      this.sessionMarked += result.progress.marked;
-      this.sessionUnmarked += result.progress.unmarked;
-    }
     this.scheduleSave();
   }
 
@@ -1278,24 +1192,12 @@ export class ProjectSession {
     this.scheduleSave();
   }
 
-  updateMaterialAssumptions(changes: MaterialSettingsChanges): void {
-    this.updateMaterialSettings(changes);
-  }
-
-  setMaterialSettings(changes: MaterialSettingsChanges): void {
-    this.updateMaterialSettings(changes);
-  }
-
   setSourceImage(settings: SourceImageSettingsInput): void {
     this.ensureWritable();
     const asset = this.projectAssets.find((candidate) => candidate.id === settings.assetId);
     if (!asset) throw new PersistenceError('invalid-asset', `Source image asset ${settings.assetId} was not found.`);
     const next = normalizeSourceImageDescriptor(settings, { width: this.document.width, height: this.document.height }, asset);
     this.applyTraceImageChange(next, { label: 'source-image-settings' });
-  }
-
-  updateSourceImageSettings(settings: SourceImageSettingsInput): void {
-    this.setSourceImage(settings);
   }
 
   /**
@@ -1408,14 +1310,6 @@ export class ProjectSession {
     });
   }
 
-  async replaceSourceImageAsset(input: SourceImageReplacementInput | ProjectAssetInput, settings?: SourceImageSettingsInput): Promise<void> {
-    return this.replaceSourceImage(input, settings);
-  }
-
-  async clearSourceImage(): Promise<void> {
-    return this.removeSourceImage();
-  }
-
   /** Commit removal of the source descriptor and retained asset together. */
   async removeSourceImage(): Promise<void> {
     this.ensureWritable();
@@ -1473,7 +1367,6 @@ export class ProjectSession {
     const metadata: ProjectMetadata = { ...transaction.metadata, updatedAt: this.clock.now() };
     const result = await this.savePreparedOrLegacy(metadata, document, transaction.assets, {
       ...saveMode,
-      activity: cloneProgressActivity(this.dailyProgressActivity),
       history
     });
     if (!result.committed || result.stale) throw new PersistenceError('stale-save', transaction.staleMessage);
@@ -1494,23 +1387,6 @@ export class ProjectSession {
     this.saveError = null;
     this.status = this.isDirty() ? 'pending' : 'saved';
     this.notify();
-  }
-
-  async removeSourceImageAsset(): Promise<void> {
-    return this.removeSourceImage();
-  }
-
-  replaceAssets(assets: readonly ProjectAsset[]): void {
-    this.ensureWritable();
-    const next = assets.map(cloneAsset);
-    const same = next.length === this.projectAssets.length && next.every((asset, index) => {
-      const current = this.projectAssets[index];
-      return asset.id === current.id && asset.name === current.name && asset.mimeType === current.mimeType && asset.checksum === current.checksum && asset.data.length === current.data.length && asset.data.every((byte, byteIndex) => byte === current.data[byteIndex]);
-    });
-    if (same) return;
-    this.projectAssets = next;
-    this.assetsVersion += 1;
-    this.scheduleSave();
   }
 
   private clearScheduledSaveTimers(): void {
@@ -1598,7 +1474,6 @@ export class ProjectSession {
         const assets = assetsDirtyAtStart ? this.projectAssets.map((asset) => ({ id: asset.id, name: asset.name, mimeType: asset.mimeType, data: new Uint8Array(asset.data) })) : undefined;
         const saveOptions: SaveOptions = {
           ...saveMode,
-          activity: cloneProgressActivity(this.dailyProgressActivity),
           history
         };
         this.notify();
@@ -1639,22 +1514,6 @@ export class ProjectSession {
     return operation;
   }
 
-  async retrySave(): Promise<void> {
-    this.ensureActive();
-    await this.traceMutationQueue;
-    if (this.recoverySession) return;
-    if (!this.isDirty()) return;
-    this.clearScheduledSaveTimers();
-    this.saveError = null;
-    this.status = 'pending';
-    this.notify();
-    while (this.isDirty()) {
-      this.clearScheduledSaveTimers();
-      await this.startSave();
-      if (this.isDirty() && this.hasSaveFailure()) throw this.saveError ?? new WorkspaceError('save-failed', 'Unable to save the project locally.');
-    }
-  }
-
   async flush(): Promise<void> {
     this.ensureActive();
     await this.traceMutationQueue;
@@ -1682,5 +1541,3 @@ export class ProjectSession {
     }
   }
 }
-
-export const ProjectWorkspaceSession = ProjectSession;

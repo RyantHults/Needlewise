@@ -1,8 +1,8 @@
 import { act, fireEvent, render as renderBare, screen, within } from '@testing-library/react';
 import { useEffect } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyCommand, computePatternMetrics, createDocument, type PatternDocument } from '../../domain';
-import { markCellComplete } from '../../domain/test-fixtures';
+import { computePatternMetrics, createDocument, type PatternDocument } from '../../domain';
+import { markCellComplete, applyCommand } from '../../domain/test-fixtures';
 import { DEFAULT_CATALOG_DEFINITION } from '../../catalog';
 import type { ProjectWorkspace } from '../../application/workspace';
 import { ChartPresentationMode, type EditorUiState } from '../../editor';

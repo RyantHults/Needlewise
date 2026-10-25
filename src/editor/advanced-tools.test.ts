@@ -1,15 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { clearClipboard } from './clipboard-store';
+import { clearClipboard, readClipboard } from './clipboard-store';
 import {
-  applyCommand,
   CellKind,
   createDocument,
   DomainError,
   type PatternDocument
 } from '../domain';
-import { markCellComplete, SPECIALTY_LAYER_ID, STITCH_LAYER_ID } from '../domain/test-fixtures';
+import { markCellComplete, SPECIALTY_LAYER_ID, STITCH_LAYER_ID, applyCommand } from '../domain/test-fixtures';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
-import { createFillWorkerClient, createFillResult, type FillWorkerClient, type FillWorkerLike } from './fill';
+import { createFillWorkerClient, createFillResult, type FillWorkerClient } from './fill';
 import { getCanvasMetrics } from './coordinates';
 import type { EditorSurfaceController } from './controller';
 import { createUiStore } from './ui-store';
@@ -17,23 +16,7 @@ import { ThreeQuarterPair } from './cell-kinds';
 import type { ActiveLayerId } from './gateway';
 import type { PointerSample } from './input';
 import { fixture as layeredFixture, LayeredTestBoundary } from './test-support';
-
-class FakeWorker implements FillWorkerLike {
-  readonly posted: unknown[] = [];
-  private readonly listeners = new Map<string, (event: unknown) => void>();
-
-  postMessage(message: unknown): void {
-    this.posted.push(message);
-  }
-
-  addEventListener(_type: 'message', listener: (event: MessageEvent<unknown>) => void): void {
-    this.listeners.set(_type, listener as unknown as (event: unknown) => void);
-  }
-
-  emit(message: unknown): void {
-    this.listeners.get('message')?.({ data: message });
-  }
-}
+import { FakeWorker } from '../test/fake-worker';
 
 function pointer(pointerId: number, screenX: number, screenY: number): PointerSample {
   return { pointerId, pointerType: 'mouse', screenX, screenY, button: 0, buttons: 1, isPrimary: true };
@@ -165,16 +148,16 @@ describe('advanced headless editor tools', () => {
     controller.setTool({ tool: 'eraser' });
     uiStore.setKeyboardCursor({ x: 0, y: 0 });
     // A corner the pair has no component on leaves it alone.
-    controller.setEraserCorner(1);
+    controller.setTool({ tool: 'eraser', corner: 1 });
     controller.handleKeyDown({ key: 'Backspace', preventDefault: () => undefined });
     expect(boundary.log).toHaveLength(0);
-    controller.setEraserCorner(0);
+    controller.setTool({ tool: 'eraser', corner: 0 });
     controller.handleKeyDown({ key: 'Backspace', preventDefault: () => undefined });
     expect(boundary.activeLayerSurface()?.kind[0]).toBe(CellKind.ThreeQuarterSE);
     expect(boundary.activeLayerSurface()?.colors[0]).toBe(2);
     expect(uiStore.getState().status).toContain('quarter 0');
     uiStore.setKeyboardCursor({ x: 1, y: 0 });
-    controller.setEraserCorner(1);
+    controller.setTool({ tool: 'eraser', corner: 1 });
     controller.handleKeyDown({ key: 'Backspace', preventDefault: () => undefined });
     expect(boundary.activeLayerSurface()?.kind[1]).toBe(CellKind.ThreeQuarterSW);
     expect(uiStore.getState().status).toContain('quarter 1');
@@ -344,7 +327,7 @@ describe('advanced headless editor tools', () => {
     lassoCell(controller, 2, 0, { shiftKey: true });
     expect(controller.getSelectionIndices()).toEqual(new Uint32Array([0, 2]));
     expect(controller.copySelection()).toBeDefined();
-    expect(Array.from(controller.getClipboard()!.kind)).toEqual([CellKind.Full, CellKind.Empty, CellKind.Quarters]);
+    expect(Array.from(readClipboard()!.fragment.kind)).toEqual([CellKind.Full, CellKind.Empty, CellKind.Quarters]);
 
     expect(controller.deleteSelection()).toBe(true);
     expect(boundary.log.at(-1)).toMatchObject({ type: 'delete-cell-set', layerId: STITCH_LAYER_ID, indices: new Uint32Array([0, 2]) });
@@ -528,8 +511,8 @@ describe('advanced headless editor tools', () => {
     controller.setTool({ tool: 'select' });
     controller.setSelection({ x: 0, y: 0 });
     expect(controller.handleKeyDown({ key: 'c', ctrlKey: true, preventDefault: () => undefined })).toBe(true);
-    expect(controller.getClipboard()).toBeDefined();
-    expect('completed' in (controller.getClipboard() ?? {})).toBe(false);
+    expect(readClipboard()?.fragment).toBeDefined();
+    expect('completed' in (readClipboard()?.fragment ?? {})).toBe(false);
     controller.clearSelection();
     controller.handleKeyDown({ key: 'ArrowRight', preventDefault: () => undefined });
     const before = boundary.log.length;
@@ -627,14 +610,14 @@ describe('advanced headless editor tools', () => {
     noop.controller.setTool({ tool: 'select' });
     noop.controller.setSelection({ x: 0, y: 0 });
     noop.controller.copySelection();
-    const noopClipboard = noop.controller.getClipboard();
+    const noopClipboard = readClipboard()?.fragment;
     noop.controller.setSelection({ x: 4, y: 4 });
     const noopHistory = noop.boundary.undoDepth;
     expect(noop.controller.moveSelection()).toBe(true);
     noop.controller.confirmFloatingPaste();
     expect(noop.boundary.undoDepth).toBe(noopHistory);
     expect(noop.controller.getSelection()).toEqual({ x: 4, y: 4, width: 1, height: 1 });
-    expect(noop.controller.getClipboard()?.kind).toEqual(noopClipboard?.kind);
+    expect(readClipboard()?.fragment?.kind).toEqual(noopClipboard?.kind);
     expect(noop.uiStore.getState().overlay.floatingPaste).toBeUndefined();
     noop.controller.dispose();
   });
@@ -1150,7 +1133,7 @@ describe('advanced headless editor tools', () => {
     controller.setTool({ tool: 'fill' });
     const before = boundary.log.length;
     controller.handlePointerDown(pointer(1, 8, 8));
-    expect(controller.isFillPending()).toBe(true);
+    expect(uiStore.getState().overlay.fillPending).toBe(true);
     expect(uiStore.getState().overlay.fillPending).toBe(true);
     const request = worker.posted.find((message) => (message as { type?: string }).type === 'fill-request') as Parameters<typeof createFillResult>[0];
     worker.emit(createFillResult(request, new Uint32Array([0]), new Uint8Array([1])));
@@ -1162,11 +1145,11 @@ describe('advanced headless editor tools', () => {
     uiStore.setPaletteId(1);
     controller.handlePointerDown(pointer(2, 8, 8));
     expect(controller.cancelFill()).toBe(true);
-    expect(controller.isFillPending()).toBe(false);
+    expect(uiStore.getState().overlay.fillPending).toBeUndefined();
     controller.handlePointerDown(pointer(3, 8, 8));
     const staleRequest = worker.posted.filter((message) => (message as { type?: string }).type === 'fill-request').at(-1) as Parameters<typeof createFillResult>[0];
     boundary.open(otherProject(), 'project-b');
-    expect(controller.isFillPending()).toBe(false);
+    expect(uiStore.getState().overlay.fillPending).toBeUndefined();
     worker.emit(createFillResult(staleRequest, new Uint32Array([0]), new Uint8Array([1])));
     expect(boundary.log).toHaveLength(before + 1);
     controller.dispose();
@@ -1212,7 +1195,8 @@ describe('advanced headless editor tools', () => {
     controller.setTool({ tool: 'fill' });
     const undoDepthBefore = boundary.undoDepth;
 
-    expect(controller.fillAt({ x: 0, y: 0 })).toBe(true);
+    uiStore.setKeyboardCursor({ x: 0, y: 0 });
+    expect(controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined })).toBe(true);
     await Promise.resolve();
     await Promise.resolve();
 
@@ -1250,7 +1234,8 @@ describe('advanced headless editor tools', () => {
     controller.setTool({ tool: 'fill' });
     const undoDepthBefore = boundary.undoDepth;
 
-    expect(controller.fillAt({ x: 1, y: 0 })).toBe(true);
+    uiStore.setKeyboardCursor({ x: 1, y: 0 });
+    expect(controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined })).toBe(true);
     await Promise.resolve();
     await Promise.resolve();
 
@@ -1280,7 +1265,8 @@ describe('advanced headless editor tools', () => {
     controller.setSelection({ x: 1, y: 0 }, { x: 2, y: 1 });
     controller.setTool({ tool: 'fill' });
 
-    expect(controller.fillAt({ x: 0, y: 2 })).toBe(true);
+    uiStore.setKeyboardCursor({ x: 0, y: 2 });
+    expect(controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined })).toBe(true);
     await Promise.resolve();
     await Promise.resolve();
 
@@ -1309,7 +1295,8 @@ describe('advanced headless editor tools', () => {
     controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 0 });
     controller.setTool({ tool: 'fill' });
 
-    expect(controller.fillAt({ x: 0, y: 0 })).toBe(true);
+    uiStore.setKeyboardCursor({ x: 0, y: 0 });
+    expect(controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined })).toBe(true);
     await Promise.resolve();
     await Promise.resolve();
 
@@ -1334,7 +1321,8 @@ describe('advanced headless editor tools', () => {
     uiStore.setPaletteId(1);
     controller.setTool({ tool: 'fill' });
 
-    expect(controller.fillAt({ x: 0, y: 0 })).toBe(true);
+    uiStore.setKeyboardCursor({ x: 0, y: 0 });
+    expect(controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined })).toBe(true);
     const request = worker.posted.find((message) => (message as { type?: string }).type === 'fill-request') as Parameters<typeof createFillResult>[0];
     const disconnectedResult = createFillResult(request, new Uint32Array([0, 2]), new Uint8Array([1, 1]));
     expect(disconnectedResult.indices).toEqual(new Uint32Array([0, 2]));
@@ -1355,7 +1343,8 @@ describe('advanced headless editor tools', () => {
     uiStore.setPaletteId(1);
     controller.setTool({ tool: 'fill' });
 
-    expect(controller.fillAt({ x: 0, y: 0 })).toBe(true);
+    uiStore.setKeyboardCursor({ x: 0, y: 0 });
+    expect(controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined })).toBe(true);
     const request = worker.posted.find((message) => (message as { type?: string }).type === 'fill-request') as Parameters<typeof createFillResult>[0];
     const incompleteResult = createFillResult(request, new Uint32Array([0]), new Uint8Array([1]));
     expect(incompleteResult.indices).toEqual(new Uint32Array([0]));
@@ -1620,11 +1609,11 @@ describe('advanced headless editor tools', () => {
     expect(copied).toBeDefined();
     copied!.kind[0] = CellKind.Full;
     copied!.colors[0] = 2;
-    expect(controller.getClipboard()?.kind[0]).toBe(CellKind.Full);
-    expect(controller.getClipboard()?.colors[0]).toBe(1);
+    expect(readClipboard()?.fragment?.kind[0]).toBe(CellKind.Full);
+    expect(readClipboard()?.fragment?.colors[0]).toBe(1);
     controller.setSelection({ x: 7, y: 7 });
     const beforeRevision = boundary.document.revision;
-    expect(controller.pasteClipboard()).toBe(true);
+    expect(controller.pasteSelection()).toBe(true);
     expect(boundary.document.revision).toBe(beforeRevision);
     expect(uiStore.getState().overlay.floatingPaste).toMatchObject({ destination: { x: 6, y: 6, width: 2, height: 2 } });
     controller.dispose();

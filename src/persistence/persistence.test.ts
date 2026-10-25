@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
-import { applyCommand as applySurfaceCommand, CellKind, commitLayerSurface, createDocument as createDomainDocument, createDocumentEditor as createEditor, createEditorFromHistory, layerAddCommand, layerDeleteCommand, layerRenameCommand, type DocumentEditor, layeredFromSurface, LayerType, layerSurface, QuarterCorner, topmostVisibleLayer, type CatalogAssociation, type CreateDocumentOptions, type DomainCommand, type LayeredDocument, type PatternDocument, type StitchLayer, type SpecialtyLayer } from '../domain';
-import { markCellComplete } from '../domain/test-fixtures';
+import { CellKind, createDocument as createDomainDocument, createEditorFromHistory, layerAddCommand, layerDeleteCommand, layerRenameCommand, DocumentEditor, layeredFromSurface, LayerType, layerSurface, QuarterCorner, topmostVisibleLayer, type CatalogAssociation, type CreateDocumentOptions, type DomainCommand, type LayeredDocument, type PatternDocument, type StitchLayer, type SpecialtyLayer } from '../domain';
+import { markCellComplete, applyCommand as applySurfaceCommand, commitLayerSurface, PERSISTENCE_TEST_CATALOG, SPECIALTY_LAYER_ID, STITCH_LAYER_ID, specialtyLayer, stitchLayer } from '../domain/test-fixtures';
 import { cloneLayeredDocument, decodeDocumentWithInfo } from './binary';
 import { encodeLegacyDocument } from './legacy-binary.fixture';
 import { DMC_CATALOG_DEFINITION } from '../catalog';
@@ -12,7 +12,6 @@ import * as hashModule from './hash';
 import { prepareDocumentSnapshot, type PersistencePreparationResponse } from './preparation';
 import { handlePersistencePreparationWorkerMessage } from '../workers/persistence-preparation.worker';
 import {
-  decodeDocument,
   encodeDocument,
   MAX_ASSET_BYTES,
   MAX_DOCUMENT_CELLS,
@@ -41,30 +40,12 @@ import { describe, expect, it, vi } from 'vitest';
 
 let databaseCounter = 0;
 
-const TEST_CATALOG: CatalogAssociation = { catalogId: 'test-catalog-v1', brandLabel: 'Test catalog', colorCount: 32 };
-
-/** Layer ids created by `layeredFromSurface`. */
-const STITCH_LAYER = 1;
-const SPECIALTY_LAYER = 2;
-
 function createSurface(options: Omit<CreateDocumentOptions, 'catalog'> & { catalog?: CatalogAssociation }): PatternDocument {
-  return createDomainDocument({ ...options, catalog: options.catalog ?? TEST_CATALOG });
+  return createDomainDocument({ ...options, catalog: options.catalog ?? PERSISTENCE_TEST_CATALOG });
 }
 
 function createDocument(options: Omit<CreateDocumentOptions, 'catalog'> & { catalog?: CatalogAssociation }): LayeredDocument {
   return layeredFromSurface(createSurface(options));
-}
-
-function stitchLayer(document: LayeredDocument, id = STITCH_LAYER): StitchLayer {
-  const layer = document.layers.find((candidate) => candidate.id === id);
-  if (layer?.type !== LayerType.Stitch) throw new Error(`Layer ${String(id)} is not a stitch layer.`);
-  return layer;
-}
-
-function specialtyLayer(document: LayeredDocument, id = SPECIALTY_LAYER): SpecialtyLayer {
-  const layer = document.layers.find((candidate) => candidate.id === id);
-  if (layer?.type !== LayerType.Specialty) throw new Error(`Layer ${String(id)} is not a specialty layer.`);
-  return layer;
 }
 
 /** Executes through the layered editor and returns a detached copy of its layered document. */
@@ -120,7 +101,7 @@ function legacyV1Snapshot(): Uint8Array {
     bytes.set(value, offset);
     offset += value.length;
   }
-  view.setUint32(offset, TEST_CATALOG.colorCount, true);
+  view.setUint32(offset, PERSISTENCE_TEST_CATALOG.colorCount, true);
   offset += 4;
   for (const value of strings.slice(2)) {
     view.setUint32(offset, value.length, true);
@@ -233,7 +214,7 @@ async function traceHistoryFixture(document: LayeredDocument, assetId = 'referen
   return {
     history: {
       version: 1,
-      document: createEditor(document).exportHistory(),
+      document: new DocumentEditor(document).exportHistory(),
       trace: {
         undo: [{ label: 'import reference', sourceBefore: null, sourceAfter: descriptor, assetBefore: { kind: 'absent' }, assetAfter: { kind: 'captured', asset } }],
         redo: []
@@ -403,8 +384,8 @@ describe('binary schema v4 canvas fields', () => {
     // 15 cells: cells 0, 7 and 9 are holes.
     expect(bytes[maskOffset]).toBe(0b01111110);
     expect(bytes[maskOffset + 1]).toBe(0b01111101);
-    expect(decodeDocument(bytes).canvasMask).toEqual(original.canvasMask);
-    expect(decodeDocument(bytes)).toEqual(original);
+    expect(decodeDocumentWithInfo(bytes).document.canvasMask).toEqual(original.canvasMask);
+    expect(decodeDocumentWithInfo(bytes).document).toEqual(original);
   });
 
   it('still decodes a v3 document, with no origin or mask, as non-legacy', () => {
@@ -477,7 +458,7 @@ describe('binary schema v4 canvas fields', () => {
     bytes[maskOffset] = 0xff;
     bytes[maskOffset + 1] = 0x7f;
     expectInvalid(bytes);
-    const stored = decodeDocument(encodeDocument(original));
+    const stored = decodeDocumentWithInfo(encodeDocument(original)).document;
     stored.canvasMask = new Uint8Array(15).fill(1);
     expect(() => encodeDocument(stored)).toThrow(expect.objectContaining({ code: 'invalid-document' }));
   });
@@ -489,7 +470,7 @@ describe('binary schema v4 canvas fields', () => {
     // Make the stitched last cell (14) a hole.
     bytes[maskOffset + 1] &= ~(1 << 6);
     expectInvalid(bytes);
-    const stored = decodeDocument(encodeDocument(original));
+    const stored = decodeDocumentWithInfo(encodeDocument(original)).document;
     stored.canvasMask = stored.canvasMask?.slice();
     if (stored.canvasMask) stored.canvasMask[14] = 0;
     expect(() => encodeDocument(stored)).toThrow(expect.objectContaining({ code: 'invalid-document' }));
@@ -501,8 +482,8 @@ describe('durable document history persistence', () => {
     const repo = await repository();
     try {
       const base = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const editor = createEditor(base);
-      const document = executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER, x: 0, y: 0, color: 1 });
+      const editor = new DocumentEditor(base);
+      const document = executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 });
       const history = editor.exportHistory();
       expect(await prepareSessionHistory(document, history)).toBeDefined();
       await repo.save('history-round-trip', metadata(document, 'history-round-trip'), document, undefined, { history });
@@ -520,9 +501,9 @@ describe('durable document history persistence', () => {
       expect(loaded?.history?.document.undo).toHaveLength(history.undo.length);
       expect(loaded?.history?.undoOrder).toEqual([{ kind: 'document', index: 0 }]);
 
-      const twoStepEditor = createEditor(base);
-      twoStepEditor.execute({ type: 'set-full', layerId: STITCH_LAYER, x: 0, y: 0, color: 1 });
-      const twoStep = executeLayered(twoStepEditor, { type: 'set-full', layerId: STITCH_LAYER, x: 1, y: 0, color: 1 });
+      const twoStepEditor = new DocumentEditor(base);
+      twoStepEditor.execute({ type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 });
+      const twoStep = executeLayered(twoStepEditor, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 1, y: 0, color: 1 });
       const reversedMarkers = {
         version: 1 as const,
         document: twoStepEditor.exportHistory(),
@@ -545,8 +526,8 @@ describe('durable document history persistence', () => {
 
   it('accepts a saved session history containing a canvas entry', async () => {
     const base = createDocument({ width: 3, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    const editor = createEditor(base);
-    editor.execute({ type: 'set-full', layerId: STITCH_LAYER, x: 2, y: 1, color: 1 });
+    const editor = new DocumentEditor(base);
+    editor.execute({ type: 'set-full', layerId: STITCH_LAYER_ID, x: 2, y: 1, color: 1 });
     const document = executeLayered(editor, { type: 'canvas-cells', operation: 'remove', rect: { x: 0, y: 0, width: 1, height: 1 } });
     const history = editor.exportHistory();
     const canvasEntry = history.undo.find((entry) => entry.kind === 'canvas');
@@ -558,8 +539,8 @@ describe('durable document history persistence', () => {
 
   it('keeps history importable after a canvas round trip leaves a zero origin', async () => {
     const base = createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    const editor = createEditor(base);
-    editor.execute({ type: 'set-full', layerId: STITCH_LAYER, x: 1, y: 1, color: 1 });
+    const editor = new DocumentEditor(base);
+    editor.execute({ type: 'set-full', layerId: STITCH_LAYER_ID, x: 1, y: 1, color: 1 });
     editor.execute({ type: 'canvas-resize', edges: { top: 0, right: 0, bottom: 0, left: 1 } });
     editor.execute({ type: 'canvas-resize', edges: { top: 0, right: 0, bottom: 0, left: -1 } });
     editor.execute({ type: 'canvas-cells', operation: 'remove', rect: { x: 0, y: 0, width: 1, height: 1 } });
@@ -569,7 +550,7 @@ describe('durable document history persistence', () => {
     const history = editor.exportHistory();
 
     const restored = createEditorFromHistory(decoded, history);
-    while (restored.canUndo) restored.undo();
+    while (restored.undoDepth > 0) restored.undo();
 
     expect(await prepareSessionHistory(decoded, history)).toBeDefined();
     expect(restored.document.width).toBe(4);
@@ -582,7 +563,7 @@ describe('durable document history persistence', () => {
 
   it('keeps settings-only history for a maximum-size document within the session persistence budget', async () => {
     const document = createDocument({ width: 1_000_000, height: 1, palette: [] });
-    const editor = createEditor(document);
+    const editor = new DocumentEditor(document);
     const changed = executeLayered(editor, { type: 'document-settings-update', settings: { backgroundColor: '#aabbcc' } });
     const prepared = await prepareSessionHistory(changed, editor.exportHistory());
 
@@ -598,10 +579,10 @@ describe('durable document history persistence', () => {
     try {
       const base = createDocument({ width: 3, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] });
       await repo.save('history-kinds', metadata(base, 'history-kinds'), base);
-      const editor = createEditor(base);
-      executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER, x: 0, y: 0, color: 1 });
+      const editor = new DocumentEditor(base);
+      executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 });
       executeLayered(editor, { type: 'palette-merge', from: 1, to: 2 });
-      editor.batch([layerAddCommand(LayerType.Stitch, { id: 3 }), { type: 'set-full', layerId: 3, x: 1, y: 1, color: 2 }]);
+      editor.executeBatch([layerAddCommand(LayerType.Stitch, { id: 3 }), { type: 'set-full', layerId: 3, x: 1, y: 1, color: 2 }]);
       executeLayered(editor, layerRenameCommand(3, 'Renamed'));
       const document = cloneLayeredDocument(editor.document);
       const history = editor.exportHistory();
@@ -639,7 +620,7 @@ describe('durable document history persistence', () => {
       lower.completed[0] = 1;
       base.layers = [lower, marked, specialtyLayer(base)];
       base.nextLayerId = 4;
-      const editor = createEditor(base);
+      const editor = new DocumentEditor(base);
       executeLayered(editor, layerDeleteCommand(3));
       const document = executeLayered(editor, { type: 'canvas-cells', operation: 'remove', rect: { x: 0, y: 0, width: 1, height: 1 } });
       const history = editor.exportHistory();
@@ -649,7 +630,7 @@ describe('durable document history persistence', () => {
       const loaded = await repo.load('history-completion');
       if (!loaded?.history) throw new Error('Missing persisted history.');
       const restored = createEditorFromHistory(loaded.document, loaded.history.document);
-      while (restored.canUndo) restored.undo();
+      while (restored.undoDepth > 0) restored.undo();
       expect(stitchLayer(restored.document, 3).completed[4]).toBe(1);
       expect(stitchLayer(restored.document).completed[0]).toBe(1);
     } finally {
@@ -664,7 +645,7 @@ describe('durable document history persistence', () => {
     try {
       const base = createDocument({ width: 3, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
       await repo.save('history-save-path', metadata(base, 'history-save-path'), base);
-      const editor = createEditor(base);
+      const editor = new DocumentEditor(base);
       for (let step = 0; step < 20; step += 1) executeLayered(editor, { type: 'document-settings-update', settings: { aidaCount: 15 + step } });
       for (let step = 0; step < 20; step += 1) executeLayered(editor, { type: 'document-settings-update', settings: { aidaCount: 40 + step } });
       const document = cloneLayeredDocument(editor.document);
@@ -674,7 +655,7 @@ describe('durable document history persistence', () => {
       await expect(repo.save('history-save-path', metadata(document, 'history-save-path'), document, undefined, { history })).resolves.toMatchObject({ committed: true });
       const head = await repo.db.projectHeads.get('history-save-path');
       await expect(repo.save('history-save-path', metadata(document, 'history-save-path'), { revision: document.revision } as LayeredDocument, undefined, { mode: 'retain', expectedHead: head, history })).resolves.toMatchObject({ committed: true });
-      const next = executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER, x: 0, y: 0, color: 1 });
+      const next = executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 });
       const prepared = await preparation.prepare({ projectId: 'history-save-path', revision: next.revision, document: next, requestId: 'history-save-path' });
       await expect(repo.savePrepared('history-save-path', metadata(next, 'history-save-path'), prepared, undefined, { preparedRequestId: preparation.getRequestId(prepared), history: editor.exportHistory() })).resolves.toMatchObject({ committed: true });
       expect(rebuildSpy).not.toHaveBeenCalled();
@@ -703,7 +684,7 @@ describe('durable document history persistence', () => {
 
     const repo = await repository();
     try {
-      await repo.save('history-v1', metadata(document, 'history-v1'), document, undefined, { history: createEditor(document).exportHistory() });
+      await repo.save('history-v1', metadata(document, 'history-v1'), document, undefined, { history: new DocumentEditor(document).exportHistory() });
       const stored = await repo.db.documentHistories.get('history-v1');
       if (!stored) throw new Error('Missing stored history.');
       await repo.db.documentHistories.put({ ...stored, history: v1Envelope as never });
@@ -720,7 +701,7 @@ describe('durable document history persistence', () => {
     const repo = await repository();
     try {
       const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const history = createEditor(document).exportHistory();
+      const history = new DocumentEditor(document).exportHistory();
       await repo.save('history-corrupt', metadata(document, 'history-corrupt'), document, undefined, { history });
       const stored = await repo.db.documentHistories.get('history-corrupt');
       if (!stored) throw new Error('missing history record');
@@ -750,8 +731,8 @@ describe('durable document history persistence', () => {
     const repo = await repository();
     try {
       const base = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const editor = createEditor(base);
-      const document = executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER, x: 0, y: 0, color: 1 });
+      const editor = new DocumentEditor(base);
+      const document = executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 });
       const history = editor.exportHistory();
       const historyPut = vi.spyOn(repo.db.documentHistories, 'put').mockRejectedValueOnce(new Error('quota'));
 
@@ -765,12 +746,12 @@ describe('durable document history persistence', () => {
     }
   });
 
-  it('clears history when replacing, promoting recovery, or deleting a project', async () => {
+  it('clears history when replacing or deleting a project', async () => {
     const repo = await repository();
     try {
       const base = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] });
-      const editor = createEditor(base);
-      const document = executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER, x: 0, y: 0, color: 1 });
+      const editor = new DocumentEditor(base);
+      const document = executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 });
       await repo.save('history-lifecycle', metadata(document, 'history-lifecycle'), document, undefined, { history: editor.exportHistory() });
       expect(await repo.db.documentHistories.get('history-lifecycle')).toBeDefined();
 
@@ -778,12 +759,10 @@ describe('durable document history persistence', () => {
       await repo.save('history-lifecycle', metadata(replacement, 'history-lifecycle'), replacement);
       expect(await repo.db.documentHistories.get('history-lifecycle')).toBeUndefined();
 
-      const replacementEditor = createEditor(replacement);
-      const replacementWithHistory = executeLayered(replacementEditor, { type: 'set-full', layerId: STITCH_LAYER, x: 1, y: 0, color: 2 });
+      const replacementEditor = new DocumentEditor(replacement);
+      const replacementWithHistory = executeLayered(replacementEditor, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 1, y: 0, color: 2 });
       await repo.save('history-lifecycle', metadata(replacementWithHistory, 'history-lifecycle'), replacementWithHistory, undefined, { history: replacementEditor.exportHistory() });
       expect(await repo.db.documentHistories.get('history-lifecycle')).toBeDefined();
-      await repo.promoteRecoveryRevision('history-lifecycle');
-      expect(await repo.db.documentHistories.get('history-lifecycle')).toBeUndefined();
       await repo.deleteProject('history-lifecycle');
       expect(await repo.db.documentHistories.get('history-lifecycle')).toBeUndefined();
     } finally {
@@ -849,8 +828,8 @@ describe('durable document history persistence', () => {
       const base = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
       await repo.save('warm-history-fallback', metadata(base, 'warm-history-fallback'), base);
       await repo.load('warm-history-fallback');
-      const editor = createEditor(base);
-      const next = executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER, x: 0, y: 0, color: 1 });
+      const editor = new DocumentEditor(base);
+      const next = executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 });
       const put = vi.spyOn(repo.db.documentHistories, 'put').mockRejectedValueOnce(new Error('history quota'));
       await expect(repo.save('warm-history-fallback', metadata(next, 'warm-history-fallback'), next, undefined, { history: editor.exportHistory() })).resolves.toMatchObject({ committed: true, stale: false, head: { historyGeneration: 2 } });
       put.mockRestore();
@@ -883,7 +862,7 @@ describe('durable document history persistence', () => {
       const movedDescriptor = { ...fixture.descriptor, opacity: 0.4 };
       const descriptorOnly: SessionHistoryEnvelope = {
         version: 1,
-        document: createEditor(document).exportHistory(),
+        document: new DocumentEditor(document).exportHistory(),
         trace: {
           undo: [{ label: 'move reference', sourceBefore: fixture.descriptor, sourceAfter: movedDescriptor, assetBefore: { kind: 'unchanged' }, assetAfter: { kind: 'unchanged' } }],
           redo: []
@@ -910,7 +889,7 @@ describe('durable document history persistence', () => {
       const movedAgain = { ...addedDescriptor, opacity: 0.5 };
       const mixed: SessionHistoryEnvelope = {
         version: 1,
-        document: createEditor(document).exportHistory(),
+        document: new DocumentEditor(document).exportHistory(),
         trace: {
           undo: [
             { label: 'add reference', sourceBefore: null, sourceAfter: addedDescriptor, assetBefore: { kind: 'absent' }, assetAfter: { kind: 'captured', asset: fixture.asset } },
@@ -975,7 +954,7 @@ describe('durable document history persistence', () => {
     const repo = await repository();
     try {
       const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const editor = createEditor(document);
+      const editor = new DocumentEditor(document);
       const history = editor.exportHistory();
       await repo.save('same-head-history', metadata(document, 'same-head-history'), document, undefined, { history });
       const firstHead = await repo.db.projectHeads.get('same-head-history');
@@ -998,24 +977,16 @@ describe('durable document history persistence', () => {
 });
 
 describe('session history lifecycle transaction rollback', () => {
-  it('rolls back recovery promotion and deletion when history cleanup fails', async () => {
+  it('rolls back deletion when history cleanup fails', async () => {
     const repo = await repository();
     try {
       const revision0 = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const editor0 = createEditor(revision0);
-      const revision1 = executeLayered(editor0, { type: 'set-full', layerId: STITCH_LAYER, x: 0, y: 0, color: 1 });
+      const editor0 = new DocumentEditor(revision0);
+      const revision1 = executeLayered(editor0, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 });
       await repo.save('rollback-target', metadata(revision0, 'rollback-target'), revision0, undefined, { history: editor0.exportHistory() });
-      const editor1 = createEditor(revision1);
-      const revision2 = executeLayered(editor1, { type: 'set-full', layerId: STITCH_LAYER, x: 1, y: 0, color: 1 });
+      const editor1 = new DocumentEditor(revision1);
+      const revision2 = executeLayered(editor1, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 1, y: 0, color: 1 });
       await repo.save('rollback-target', metadata(revision2, 'rollback-target'), revision2, undefined, { history: editor1.exportHistory() });
-      const currentBeforePromotion = await repo.db.currentSnapshots.get('rollback-target');
-      const historyBeforePromotion = await repo.db.documentHistories.get('rollback-target');
-      const deleteForPromotion = vi.spyOn(repo.db.documentHistories, 'delete').mockRejectedValueOnce(new Error('promotion history cleanup failed'));
-      await expect(repo.promoteRecovery('rollback-target')).rejects.toBeInstanceOf(PersistenceError);
-      deleteForPromotion.mockRestore();
-      expect(await repo.db.currentSnapshots.get('rollback-target')).toEqual(currentBeforePromotion);
-      expect(await repo.db.documentHistories.get('rollback-target')).toEqual(historyBeforePromotion);
-
       const currentBeforeDelete = await repo.db.currentSnapshots.get('rollback-target');
       const deleteForProject = vi.spyOn(repo.db.documentHistories, 'delete').mockRejectedValueOnce(new Error('project history cleanup failed'));
       await expect(repo.deleteProject('rollback-target')).rejects.toBeDefined();
@@ -1118,7 +1089,7 @@ describe('binary document persistence', () => {
   it('round-trips typed arrays without JSON array encoding', () => {
     const original = makeDocument();
     const bytes = encodeDocument(original);
-    const decoded = decodeDocument(bytes);
+    const decoded = decodeDocumentWithInfo(bytes).document;
 
     expect(stitchLayer(decoded).kind).toBeInstanceOf(Uint8Array);
     expect(stitchLayer(decoded).colors).toBeInstanceOf(Uint16Array);
@@ -1150,10 +1121,10 @@ describe('binary document persistence', () => {
     expect(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint16(8, true)).toBe(5);
     expect(decoded.legacy).toBe(false);
     expect(decoded.document.layers.map(({ id, type, name, visible }) => ({ id, type, name, visible }))).toEqual([
-      { id: STITCH_LAYER, type: 'stitch', name: 'Stitches', visible: true },
+      { id: STITCH_LAYER_ID, type: 'stitch', name: 'Stitches', visible: true },
       { id: 7, type: 'stitch', name: 'Top ✚ stitches', visible: false },
       { id: 4, type: 'specialty', name: 'Outlines', visible: true },
-      { id: SPECIALTY_LAYER, type: 'specialty', name: 'Specialty', visible: true }
+      { id: SPECIALTY_LAYER_ID, type: 'specialty', name: 'Specialty', visible: true }
     ]);
     expect(stitchLayer(decoded.document, 7).kind).toEqual(top.kind);
     expect(stitchLayer(decoded.document, 7).colors).toEqual(top.colors);
@@ -1195,7 +1166,7 @@ describe('binary document persistence', () => {
       height: 1,
       settings: { backgroundColor: '#a1b2c3', aidaCount: 16 }
     });
-    const decoded = decodeDocument(encodeDocument(original));
+    const decoded = decodeDocumentWithInfo(encodeDocument(original)).document;
 
     expect(decoded.settings.backgroundColor).toBe('#A1B2C3');
     expect(decoded.settings.aidaCount).toBe(16);
@@ -1212,8 +1183,8 @@ describe('binary document persistence', () => {
     expect(decoded).toMatchObject({ binaryVersion: 2, legacy: true });
     const document = decoded.document;
     expect(document.layers.map(({ id, type, name, visible }) => ({ id, type, name, visible }))).toEqual([
-      { id: STITCH_LAYER, type: 'stitch', name: 'Stitches', visible: true },
-      { id: SPECIALTY_LAYER, type: 'specialty', name: 'Specialty', visible: true }
+      { id: STITCH_LAYER_ID, type: 'stitch', name: 'Stitches', visible: true },
+      { id: SPECIALTY_LAYER_ID, type: 'specialty', name: 'Specialty', visible: true }
     ]);
     expect(document.nextLayerId).toBe(3);
     expect(stitchLayer(document).kind).toEqual(surface.kind);
@@ -1230,7 +1201,7 @@ describe('binary document persistence', () => {
   });
 
   it('upgrades legacy binary schema v1 documents with the neutral Aida background', () => {
-    const decoded = decodeDocument(legacyV1Snapshot());
+    const decoded = decodeDocumentWithInfo(legacyV1Snapshot()).document;
 
     expect(decoded.settings).toEqual({ symbolSet: 'default', materialUnit: 'skeins', backgroundColor: '#F3EEE5', aidaCount: 14 });
     expect(decoded.width).toBe(1);
@@ -1241,7 +1212,7 @@ describe('binary document persistence', () => {
   it('round-trips directional three-quarter kinds as compact single-slot cells', () => {
     let original = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     original = applyCommand(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SW, color: 1 }).document;
-    const decoded = decodeDocument(encodeDocument(original));
+    const decoded = decodeDocumentWithInfo(encodeDocument(original)).document;
 
     expect(stitchLayer(decoded).kind[0]).toBe(CellKind.ThreeQuarterSW);
     expect(stitchLayer(decoded).colors).toEqual(new Uint16Array([1, 0, 0, 0]));
@@ -1253,7 +1224,7 @@ describe('binary document persistence', () => {
     let original = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] });
     original = applyCommand(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
     original = applyCommand(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 }).document;
-    const decoded = decodeDocument(encodeDocument(original));
+    const decoded = decodeDocumentWithInfo(encodeDocument(original)).document;
 
     expect(stitchLayer(decoded).kind[0]).toBe(CellKind.ThreeQuarterPair);
     expect(stitchLayer(decoded).colors).toEqual(new Uint16Array([1, 0, 2, 0]));
@@ -1265,30 +1236,30 @@ describe('binary document persistence', () => {
     const oldMagic = new Uint8Array([0x53, 0x54, 0x59, 0x44, 0x4f, 0x43, 0x01, 0x00]);
     const oldPayload = original.slice();
     oldPayload.set(oldMagic, 0);
-    expect(() => decodeDocument(oldPayload)).toThrow(/magic is invalid/i);
+    expect(() => decodeDocumentWithInfo(oldPayload)).toThrow(/magic is invalid/i);
 
     const wrongMagic = original.slice();
     wrongMagic[0] ^= 0xff;
-    expect(() => decodeDocument(wrongMagic)).toThrow(/magic is invalid/i);
+    expect(() => decodeDocumentWithInfo(wrongMagic)).toThrow(/magic is invalid/i);
 
     const wrongVersion = original.slice();
     const wrongVersionView = new DataView(wrongVersion.buffer);
     wrongVersionView.setUint16(8, 6, true);
     wrongVersionView.setUint32(32, 0xffffffff, true);
-    expect(() => decodeDocument(wrongVersion)).toThrow(/schema is unsupported/i);
+    expect(() => decodeDocumentWithInfo(wrongVersion)).toThrow(/schema is unsupported/i);
   });
 
   it('rejects forged layer tables and trailing bytes', () => {
     const bytes = encodeDocument(makeDocument());
     const tooManyLayers = bytes.slice();
     new DataView(tooManyLayers.buffer).setUint32(36, 7, true);
-    expect(() => decodeDocument(tooManyLayers)).toThrow(PersistenceError);
+    expect(() => decodeDocumentWithInfo(tooManyLayers)).toThrow(PersistenceError);
 
     const trailing = new Uint8Array(bytes.length + 1);
     trailing.set(bytes);
-    expect(() => decodeDocument(trailing)).toThrow(/trailing payload/i);
+    expect(() => decodeDocumentWithInfo(trailing)).toThrow(/trailing payload/i);
 
-    expect(() => decodeDocument(bytes.slice(0, bytes.length - 1))).toThrow(PersistenceError);
+    expect(() => decodeDocumentWithInfo(bytes.slice(0, bytes.length - 1))).toThrow(PersistenceError);
 
     // A specialty layer below a stitch layer fails domain validation.
     const reordered = makeDocument();
@@ -1298,21 +1269,21 @@ describe('binary document persistence', () => {
 
   it('round-trips the exact catalog association through the clean binary format', () => {
     const original = createDocument({ width: 2, height: 3, palette: [] });
-    expect(decodeDocument(encodeDocument(original)).catalog).toEqual(TEST_CATALOG);
+    expect(decodeDocumentWithInfo(encodeDocument(original)).document.catalog).toEqual(PERSISTENCE_TEST_CATALOG);
   });
 
   it('matches the domain one-million-cell persistence boundary', () => {
     const boundary = createDocument({ width: 1_000, height: 1_000 });
     expect(stitchLayer(boundary).kind.length).toBe(MAX_DOCUMENT_CELLS);
     const bytes = encodeDocument(boundary);
-    const decoded = decodeDocument(bytes);
+    const decoded = decodeDocumentWithInfo(bytes).document;
     expect(decoded.width * decoded.height).toBe(MAX_DOCUMENT_CELLS);
 
     const overBoundary = { ...boundary, width: MAX_DOCUMENT_CELLS + 1, height: 1 };
     expect(() => encodeDocument(overBoundary)).toThrow(PersistenceError);
     const malformed = bytes.slice();
     new DataView(malformed.buffer).setUint32(12, MAX_DOCUMENT_CELLS + 1, true);
-    expect(() => decodeDocument(malformed)).toThrow(PersistenceError);
+    expect(() => decodeDocumentWithInfo(malformed)).toThrow(PersistenceError);
   });
 
   it('encodes three maximum-size stitch layers within the document byte limit', () => {
@@ -1322,7 +1293,7 @@ describe('binary document persistence', () => {
     document.nextLayerId = 5;
     const bytes = encodeDocument(document);
     expect(bytes.length).toBeLessThanOrEqual(MAX_DOCUMENT_BYTES);
-    expect(decodeDocument(bytes).layers).toHaveLength(4);
+    expect(decodeDocumentWithInfo(bytes).document.layers).toHaveLength(4);
   }, 30_000);
 
   it('round-trips v2 palette metadata and document settings', () => {
@@ -1336,10 +1307,10 @@ describe('binary document persistence', () => {
         color: '#000',
         symbol: 'libertinus-math--white-circle',
         material: { kind: 'floss', label: 'Cotton', unit: 'meters', amount: 2.5 },
-        catalog: { catalogId: TEST_CATALOG.catalogId, sourceId: 'test-black', code: '310', name: 'Black', hex: '#000000', rgb: [0, 0, 0] }
+        catalog: { catalogId: PERSISTENCE_TEST_CATALOG.catalogId, sourceId: 'test-black', code: '310', name: 'Black', hex: '#000000', rgb: [0, 0, 0] }
       }]
     });
-    const decoded = decodeDocument(encodeDocument(original));
+    const decoded = decodeDocumentWithInfo(encodeDocument(original)).document;
     expect(decoded.version).toBe(2);
     expect(decoded.settings).toEqual({ symbolSet: 'letters', materialUnit: 'meters', backgroundColor: '#F3EEE5', aidaCount: 14 });
     expect(decoded.palette[0]).toEqual(original.palette[0]);
@@ -1358,10 +1329,10 @@ describe('binary document persistence', () => {
         name: 'Black',
         color: '#000',
         symbol: fromSecondFont!.id,
-        catalog: { catalogId: TEST_CATALOG.catalogId, sourceId: 'test-black', code: '310', name: 'Black', hex: '#000000', rgb: [0, 0, 0] }
+        catalog: { catalogId: PERSISTENCE_TEST_CATALOG.catalogId, sourceId: 'test-black', code: '310', name: 'Black', hex: '#000000', rgb: [0, 0, 0] }
       }]
     });
-    const restored = decodeDocument(encodeDocument(document));
+    const restored = decodeDocumentWithInfo(encodeDocument(document)).document;
     expect(restored.palette[0].symbol).toBe(fromSecondFont!.id);
   });
 
@@ -1394,7 +1365,7 @@ describe('binary document persistence', () => {
       ]
     });
 
-    const decoded = decodeDocument(encodeDocument(original));
+    const decoded = decodeDocumentWithInfo(encodeDocument(original)).document;
     expect(decoded.catalog).toEqual(DMC_CATALOG_DEFINITION.association);
     expect(decoded.catalog.catalogId).not.toBe(brandBReference.catalogId);
     expect(decoded.palette).toEqual(original.palette);
@@ -1403,7 +1374,7 @@ describe('binary document persistence', () => {
 
     const repo = await repository();
     try {
-      const editor = createEditor(original);
+      const editor = new DocumentEditor(original);
       const brandBAddition = {
         catalogId: brandBReference.catalogId,
         sourceId: 'brand-b-green-29',
@@ -1430,7 +1401,7 @@ describe('binary document persistence', () => {
 
       expect(loaded?.history).toBeDefined();
       if (!loaded?.history) throw new Error('Missing persisted document history.');
-      const restoredEditor = createEditor(loaded.document);
+      const restoredEditor = new DocumentEditor(loaded.document);
       restoredEditor.importHistory(loaded.history.document);
       expect(restoredEditor.undo().document.palette).toEqual(original.palette);
       expect(restoredEditor.redo().document.palette).toEqual(savedDocument.palette);
@@ -1602,14 +1573,12 @@ describe('local project repository', () => {
     }
   });
 
-  it('retains both document snapshots while atomically mutating metadata, assets, and activity', async () => {
+  it('retains both document snapshots while atomically mutating metadata and assets', async () => {
     const repo = await repository();
     try {
       const revision0 = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
       const revision1 = applyCommand(revision0, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
-      await repo.save('retain', metadata(revision0, 'retain'), revision0, [{ id: 'old', name: 'old.bin', mimeType: 'application/octet-stream', data: new Uint8Array([1]) }], {
-        activity: { daily: [{ date: '2026-08-30', marked: 1, unmarked: 0 }] }
-      });
+      await repo.save('retain', metadata(revision0, 'retain'), revision0, [{ id: 'old', name: 'old.bin', mimeType: 'application/octet-stream', data: new Uint8Array([1]) }]);
       await repo.save('retain', metadata(revision1, 'retain'), revision1);
 
       const currentBefore = await repo.db.currentSnapshots.get('retain');
@@ -1624,8 +1593,7 @@ describe('local project repository', () => {
         [{ id: 'new', name: 'new.bin', mimeType: 'application/octet-stream', data: new Uint8Array([2, 3]) }],
         {
           mode: 'retain',
-          expectedHead: { revision: revision1.revision, checksum: currentBefore.checksum },
-          activity: { daily: [{ date: '2026-08-31', marked: 4, unmarked: 2 }] }
+          expectedHead: { revision: revision1.revision, checksum: currentBefore.checksum }
         }
       );
 
@@ -1635,7 +1603,6 @@ describe('local project repository', () => {
       const loaded = await repo.load('retain');
       expect(loaded?.metadata.title).toBe('Retained metadata');
       expect(loaded?.assets.map((asset) => asset.id)).toEqual(['new']);
-      expect(loaded?.activity).toEqual({ daily: [{ date: '2026-08-31', marked: 4, unmarked: 2 }] });
     } finally {
       await closeRepository(repo);
     }
@@ -2117,7 +2084,7 @@ describe('local project repository', () => {
     }
   });
 
-  it('keeps one cache entry, refreshes it after promotion, and clears it on delete/close', async () => {
+  it('keeps one cache entry and clears it on delete/close', async () => {
     const repo = await repository();
     try {
       const first = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
@@ -2129,11 +2096,6 @@ describe('local project repository', () => {
 
       const imported = createDocument({ width: 3, height: 1, palette: [{ id: 1, name: 'Green', color: '#3c3' }] });
       await repo.save('lifecycle', metadata(imported, 'lifecycle'), imported);
-      expect(cachedCurrent(repo)).toMatchObject({ projectId: 'lifecycle', revision: imported.revision });
-
-      const advanced = applyCommand(imported, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
-      await repo.save('lifecycle', metadata(advanced, 'lifecycle'), advanced);
-      await repo.promoteRecoveryRevision('lifecycle', imported.revision);
       expect(cachedCurrent(repo)).toMatchObject({ projectId: 'lifecycle', revision: imported.revision });
 
       await repo.deleteProject('lifecycle');
@@ -2205,9 +2167,9 @@ describe('local project repository', () => {
       await repo.db.currentSnapshots.put(current);
 
       await expect(repo.load('recoverable')).rejects.toMatchObject({ code: 'storage-failure' });
-      await expect(repo.listProjectHealth()).resolves.toEqual(expect.arrayContaining([
+      await expect(repo.inspectProjectHealth('recoverable')).resolves.toEqual(
         expect.objectContaining({ projectId: 'recoverable', current: expect.objectContaining({ status: 'corrupt' }), recovery: expect.objectContaining({ status: 'valid' }), recoveryAvailable: true })
-      ]));
+      );
       const recovered = await repo.loadRecoveryRevision('recoverable', revision0.revision);
       expect(recovered?.document.revision).toBe(revision0.revision);
       expect(recovered?.metadata).toMatchObject({ width: revision0.width, height: revision0.height, thumbnail: deriveProjectSummary(revision0).thumbnail });
@@ -2283,58 +2245,6 @@ describe('local project repository', () => {
     }
   });
 
-  it('updates the compact head when promoting recovery to current', async () => {
-    const repo = await repository();
-    try {
-      const revision0 = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const revision1 = applyCommand(revision0, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
-      await repo.save('promotion-head', metadata(revision0, 'promotion-head'), revision0);
-      await repo.save('promotion-head', metadata(revision1, 'promotion-head'), revision1);
-
-      const promoted = await repo.promoteRecovery('promotion-head', revision0.revision);
-      const current = await repo.db.currentSnapshots.get('promotion-head');
-      const head = await repo.db.projectHeads.get('promotion-head');
-      expect(promoted.document.revision).toBe(revision0.revision);
-      expect(promoted.metadata).toMatchObject({ width: revision0.width, height: revision0.height, thumbnail: deriveProjectSummary(revision0).thumbnail });
-      expect(head).toMatchObject({ projectId: 'promotion-head', revision: revision0.revision, checksum: current?.checksum, historyGeneration: 3 });
-    } finally {
-      await closeRepository(repo);
-    }
-  });
-
-  it('rejects recovery promotion when current state changes after preflight', async () => {
-    databaseCounter += 1;
-    const db = new NeedlewiseDatabase(`needlewise-persistence-test-${String(databaseCounter)}`);
-    const repo = new ProjectRepository(db, { now: () => 10 });
-    try {
-      const revision0 = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const revision1 = applyCommand(revision0, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
-      await repo.save('promotion-race', metadata(revision0, 'promotion-race'), revision0);
-      await repo.save('promotion-race', metadata(revision1, 'promotion-race'), revision1);
-
-      type TransactionCall = (mode: 'r' | 'rw', ...args: unknown[]) => Promise<unknown>;
-      const originalTransaction = db.transaction.bind(db) as unknown as TransactionCall;
-      let firstRead = true;
-      db.transaction = ((mode: 'r' | 'rw', ...args: unknown[]) => {
-        const result = originalTransaction(mode, ...args);
-        if (!firstRead) return result;
-        firstRead = false;
-        return result.then(async (value) => {
-          const current = await db.currentSnapshots.get('promotion-race');
-          if (!current) throw new Error('missing current promotion record');
-          current.revision += 1;
-          await db.currentSnapshots.put(current);
-          return value;
-        });
-      }) as unknown as typeof db.transaction;
-
-      await expect(repo.promoteRecovery('promotion-race', revision0.revision)).rejects.toMatchObject({ code: 'stale-save' });
-      expect((await db.currentSnapshots.get('promotion-race'))?.revision).toBe(revision1.revision + 1);
-    } finally {
-      await closeRepository(repo);
-    }
-  });
-
   it('lists known projects without hiding incomplete records and exposes health', async () => {
     const repo = await repository();
     const currentRead = vi.spyOn(repo.db.currentSnapshots, 'get');
@@ -2357,10 +2267,9 @@ describe('local project repository', () => {
       expect(visibleMalformed).toMatchObject({ id: 'malformed-summary' });
       expect(visibleMalformed?.width).toBeUndefined();
       expect(visibleMalformed?.thumbnail).toBeUndefined();
-      const health = await repo.listProjectHealth();
-      expect(health.find((project) => project.projectId === 'valid')).toMatchObject({ current: { status: 'valid' } });
-      expect(health.find((project) => project.projectId === 'corrupt')).toMatchObject({ current: { status: 'corrupt' } });
-      expect(health.find((project) => project.projectId === 'incomplete')).toMatchObject({ current: { status: 'missing' } });
+      expect(await repo.inspectProjectHealth('valid')).toMatchObject({ current: { status: 'valid' } });
+      expect(await repo.inspectProjectHealth('corrupt')).toMatchObject({ current: { status: 'corrupt' } });
+      expect(await repo.inspectProjectHealth('incomplete')).toMatchObject({ current: { status: 'missing' } });
     } finally {
       currentRead.mockRestore();
       await closeRepository(repo);
@@ -2574,10 +2483,10 @@ describe('storage boundaries', () => {
     const document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     const excessiveBackstitches = encodeDocument(document);
     new DataView(excessiveBackstitches.buffer).setUint32(36, 0xffffffff, true);
-    expect(() => decodeDocument(excessiveBackstitches)).toThrow(PersistenceError);
+    expect(() => decodeDocumentWithInfo(excessiveBackstitches)).toThrow(PersistenceError);
 
     const malformedMetadata = encodeDocument(document);
     new DataView(malformedMetadata.buffer).setUint32(43, 0xffffffff, true);
-    expect(() => decodeDocument(malformedMetadata)).toThrow(PersistenceError);
+    expect(() => decodeDocumentWithInfo(malformedMetadata)).toThrow(PersistenceError);
   });
 });

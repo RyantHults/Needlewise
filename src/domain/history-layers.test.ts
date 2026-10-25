@@ -4,11 +4,9 @@ import {
   CellKind,
   createDocument,
   createEditorFromHistory,
-  createLayeredDocument,
   createPatternFragment,
   DocumentEditor,
   DOCUMENT_EDITOR_HISTORY_VERSION,
-  DomainError,
   HalfDirection,
   LayerErrorCode,
   layerAddCommand,
@@ -22,16 +20,13 @@ import {
   packCanvasMask,
   pasteFragmentCommand,
   unpackCanvasMask,
-  type CatalogAssociation,
   type DomainCommand,
   type Layer,
   type LayeredDocument,
-  type ProgressCommand,
-  type SpecialtyLayer,
-  type StitchLayer
+  type ProgressCommand
 } from './index';
+import { createLayeredDocument, stitchLayer, specialtyLayer, errorCode, TEST_CATALOG } from './test-fixtures';
 
-const CATALOG: CatalogAssociation = { catalogId: 'test', brandLabel: 'Test', colorCount: 20 };
 const STITCHES = 1;
 const SPECIALTY = 2;
 
@@ -44,7 +39,7 @@ function palette() {
 }
 
 function editorFor(width = 4, height = 3): DocumentEditor {
-  return new DocumentEditor(createLayeredDocument({ width, height, catalog: CATALOG, palette: palette() }));
+  return new DocumentEditor(createLayeredDocument({ width, height, catalog: TEST_CATALOG, palette: palette() }));
 }
 
 function full(x: number, y: number, color: number, layerId = STITCHES): DomainCommand {
@@ -55,30 +50,8 @@ function line(x1: number, y1: number, x2: number, y2: number, color: number, lay
   return { type: 'add-backstitch', start: { x: x1 * 4, y: y1 * 4 }, end: { x: x2 * 4, y: y2 * 4 }, color, layerId };
 }
 
-function stitch(document: LayeredDocument, id: number): StitchLayer {
-  const layer = document.layers.find((candidate) => candidate.id === id);
-  if (layer?.type !== LayerType.Stitch) throw new Error(`Layer ${String(id)} is not a stitch layer.`);
-  return layer;
-}
-
-function specialty(document: LayeredDocument, id: number): SpecialtyLayer {
-  const layer = document.layers.find((candidate) => candidate.id === id);
-  if (layer?.type !== LayerType.Specialty) throw new Error(`Layer ${String(id)} is not a specialty layer.`);
-  return layer;
-}
-
 function ids(document: LayeredDocument): number[] {
   return document.layers.map((layer) => layer.id);
-}
-
-function errorCode(action: () => unknown): string {
-  try {
-    action();
-  } catch (error) {
-    if (error instanceof DomainError) return error.code;
-    throw error;
-  }
-  throw new Error('Expected a DomainError.');
 }
 
 function compositeCell(editor: DocumentEditor, x: number, y: number): { kind: number; color: number } {
@@ -97,7 +70,7 @@ describe('layered DocumentEditor: layer-scoped commands', () => {
     expect(result.document).toBe(editor.composite);
     expect(Array.from(result.compositeChangedIndices ?? [])).toEqual([5]);
     expect(result.compositeFull).toBeUndefined();
-    expect(stitch(editor.document, STITCHES).kind[5]).toBe(CellKind.Full);
+    expect(stitchLayer(editor.document, STITCHES).kind[5]).toBe(CellKind.Full);
     expect(compositeCell(editor, 1, 1)).toEqual({ kind: CellKind.Full, color: 1 });
     // Earlier composites and documents are immutable snapshots.
     expect(before.kind[5]).toBe(CellKind.Empty);
@@ -117,7 +90,7 @@ describe('layered DocumentEditor: layer-scoped commands', () => {
     const result = editor.execute(line(0, 0, 1, 0, 2));
     expect(result.changed).toBe(true);
     expect(result.compositeChangedIndices?.length).toBe(0);
-    expect(specialty(editor.document, SPECIALTY).backstitches.ids.length).toBe(1);
+    expect(specialtyLayer(editor.document, SPECIALTY).backstitches.ids.length).toBe(1);
     expect(editor.composite.backstitches.ids.length).toBe(1);
     editor.undo();
     expect(editor.composite.backstitches.ids.length).toBe(0);
@@ -148,14 +121,14 @@ describe('layered DocumentEditor: layer-scoped commands', () => {
     editor.execute(line(0, 0, 1, 0, 1));
     editor.execute(line(0, 1, 1, 1, 1));
     editor.execute(line(0, 2, 1, 2, 1));
-    const [first, second] = Array.from(specialty(editor.document, SPECIALTY).backstitches.ids);
+    const [first, second] = Array.from(specialtyLayer(editor.document, SPECIALTY).backstitches.ids);
     const depth = editor.undoDepth;
     const result = editor.execute({ type: 'batch', commands: [{ type: 'remove-backstitch', id: first, layerId: SPECIALTY }, { type: 'remove-backstitch', id: second, layerId: SPECIALTY }] });
     expect(result.changed).toBe(true);
     expect(editor.undoDepth).toBe(depth + 1);
-    expect(specialty(editor.document, SPECIALTY).backstitches.ids.length).toBe(1);
+    expect(specialtyLayer(editor.document, SPECIALTY).backstitches.ids.length).toBe(1);
     editor.undo();
-    expect(specialty(editor.document, SPECIALTY).backstitches.ids.length).toBe(3);
+    expect(specialtyLayer(editor.document, SPECIALTY).backstitches.ids.length).toBe(3);
   });
 
   it('covers lower stitch layers in the composite and exposes the lower cell when the top is hidden', () => {
@@ -228,17 +201,17 @@ describe('layered DocumentEditor: structure commands', () => {
     // No entry is added and redo survives.
     expect(editor.undoDepth).toBe(1);
     expect(editor.redoDepth).toBe(1);
-    expect(stitch(editor.document, STITCHES).visible).toBe(false);
+    expect(stitchLayer(editor.document, STITCHES).visible).toBe(false);
 
     // Undo and redo move the earlier edits; the layer stays hidden.
     editor.redo();
-    expect(stitch(editor.document, STITCHES).kind[1]).toBe(CellKind.Full);
-    expect(stitch(editor.document, STITCHES).visible).toBe(false);
+    expect(stitchLayer(editor.document, STITCHES).kind[1]).toBe(CellKind.Full);
+    expect(stitchLayer(editor.document, STITCHES).visible).toBe(false);
     editor.undo();
     editor.undo();
-    expect(stitch(editor.document, STITCHES).kind[0]).toBe(CellKind.Empty);
-    expect(stitch(editor.document, STITCHES).visible).toBe(false);
-    expect(editor.canUndo).toBe(false);
+    expect(stitchLayer(editor.document, STITCHES).kind[0]).toBe(CellKind.Empty);
+    expect(stitchLayer(editor.document, STITCHES).visible).toBe(false);
+    expect(editor.undoDepth).toBe(0);
   });
 
   it('keeps current visibility through structure undo and restores the recorded one for a re-created layer', () => {
@@ -246,14 +219,14 @@ describe('layered DocumentEditor: structure commands', () => {
     editor.execute(layerRenameCommand(SPECIALTY, 'Lines'));
     editor.execute(layerSetVisibilityCommand(SPECIALTY, false));
     editor.undo();
-    expect(specialty(editor.document, SPECIALTY).name).toBe('Specialty');
-    expect(specialty(editor.document, SPECIALTY).visible).toBe(false);
+    expect(specialtyLayer(editor.document, SPECIALTY).name).toBe('Specialty');
+    expect(specialtyLayer(editor.document, SPECIALTY).visible).toBe(false);
     editor.redo();
-    expect(specialty(editor.document, SPECIALTY).visible).toBe(false);
+    expect(specialtyLayer(editor.document, SPECIALTY).visible).toBe(false);
 
     editor.execute(layerDeleteCommand(SPECIALTY));
     editor.undo();
-    expect(specialty(editor.document, SPECIALTY).visible).toBe(false);
+    expect(specialtyLayer(editor.document, SPECIALTY).visible).toBe(false);
   });
 
   it('imports history recorded before a visibility change', () => {
@@ -265,9 +238,9 @@ describe('layered DocumentEditor: structure commands', () => {
     expect(restored.undoDepth).toBe(2);
     restored.undo();
     restored.undo();
-    expect(stitch(restored.document, STITCHES).name).toBe('Stitches');
-    expect(stitch(restored.document, STITCHES).kind[0]).toBe(CellKind.Empty);
-    expect(stitch(restored.document, STITCHES).visible).toBe(false);
+    expect(stitchLayer(restored.document, STITCHES).name).toBe('Stitches');
+    expect(stitchLayer(restored.document, STITCHES).kind[0]).toBe(CellKind.Empty);
+    expect(stitchLayer(restored.document, STITCHES).visible).toBe(false);
   });
 
   it('still records a visibility change inside a batch', () => {
@@ -275,7 +248,7 @@ describe('layered DocumentEditor: structure commands', () => {
     editor.execute({ type: 'batch', commands: [layerSetVisibilityCommand(STITCHES, false), layerRenameCommand(STITCHES, 'Hidden')] });
     expect(editor.undoDepth).toBe(1);
     editor.undo();
-    expect(stitch(editor.document, STITCHES).name).toBe('Stitches');
+    expect(stitchLayer(editor.document, STITCHES).name).toBe('Stitches');
   });
 
   it('treats unchanged structure commands as no-ops without history', () => {
@@ -302,17 +275,17 @@ describe('layered DocumentEditor: structure commands', () => {
 
     // Merge the upper layer down: the target keeps its name and position, and upper cells win.
     editor.execute(layerMergeCommand(upper, STITCHES));
-    const merged = stitch(editor.document, STITCHES);
+    const merged = stitchLayer(editor.document, STITCHES);
     expect(ids(editor.document)).toEqual([STITCHES, SPECIALTY]);
     expect(merged.name).toBe('Stitches');
     expect([0, 1, 2].map((index) => merged.colors[index * 4])).toEqual([1, 2, 2]);
     editor.undo();
     expect(ids(editor.document)).toEqual([STITCHES, upper, SPECIALTY]);
-    expect(stitch(editor.document, STITCHES).colors[4]).toBe(1);
+    expect(stitchLayer(editor.document, STITCHES).colors[4]).toBe(1);
 
     // Merge the lower layer up: upper still wins conflicts.
     editor.execute(layerMergeCommand(STITCHES, upper));
-    const mergedUp = stitch(editor.document, upper);
+    const mergedUp = stitchLayer(editor.document, upper);
     expect(ids(editor.document)).toEqual([upper, SPECIALTY]);
     expect([0, 1, 2].map((index) => mergedUp.colors[index * 4])).toEqual([1, 2, 2]);
   });
@@ -347,8 +320,8 @@ describe('layered DocumentEditor: structure commands', () => {
     // Source, old target, and the new merged target are all retained.
     expect(mergeEditor.historyBytes - beforeMerge).toBeGreaterThanOrEqual(cellBytes * 3);
 
-    const filled = createLayeredDocument({ width: 100, height: 100, catalog: CATALOG, palette: palette() });
-    const filledStitches = stitch(filled, STITCHES);
+    const filled = createLayeredDocument({ width: 100, height: 100, catalog: TEST_CATALOG, palette: palette() });
+    const filledStitches = stitchLayer(filled, STITCHES);
     filledStitches.kind.fill(CellKind.Full);
     for (let index = 0; index < filledStitches.colors.length; index += 4) filledStitches.colors[index] = 1;
     const tight = new DocumentEditor(filled, { historyLimitBytes: cellBytes });
@@ -357,7 +330,7 @@ describe('layered DocumentEditor: structure commands', () => {
   });
 
   it('adds a layer and pastes into it as one history entry', () => {
-    const source = createDocument({ width: 2, height: 1, catalog: CATALOG, palette: palette() });
+    const source = createDocument({ width: 2, height: 1, catalog: TEST_CATALOG, palette: palette() });
     source.kind[0] = CellKind.Full;
     source.colors[0] = 1;
     source.kind[1] = CellKind.Full;
@@ -370,8 +343,8 @@ describe('layered DocumentEditor: structure commands', () => {
     expect(result.compositeFull).toBeUndefined();
     expect(Array.from(result.compositeChangedIndices ?? [])).toEqual([5, 6]);
     expect(editor.undoDepth).toBe(1);
-    expect(stitch(editor.document, id).colors[(1 * 4 + 1) * 4]).toBe(1);
-    expect(stitch(editor.document, STITCHES).kind.every((kind) => kind === CellKind.Empty)).toBe(true);
+    expect(stitchLayer(editor.document, id).colors[(1 * 4 + 1) * 4]).toBe(1);
+    expect(stitchLayer(editor.document, STITCHES).kind.every((kind) => kind === CellKind.Empty)).toBe(true);
     expect(compositeCell(editor, 2, 1).color).toBe(2);
     editor.undo();
     expect(ids(editor.document)).toEqual([STITCHES, SPECIALTY]);
@@ -382,7 +355,7 @@ describe('layered DocumentEditor: structure commands', () => {
     // A paste without a layerId targets the layer the batch just added.
     const implicit = editorFor();
     implicit.execute({ type: 'batch', commands: [layerAddCommand(LayerType.Stitch), pasteFragmentCommand(fragment, { x: 0, y: 0 })] });
-    expect(stitch(implicit.document, 3).colors[0]).toBe(1);
+    expect(stitchLayer(implicit.document, 3).colors[0]).toBe(1);
   });
 
   it('rolls back a failing compound batch atomically', () => {
@@ -460,7 +433,7 @@ describe('layered DocumentEditor: exact composite invalidation for structure cha
   });
 
   it('reports the pasted cells when an add-and-paste group is undone and redone', () => {
-    const source = createDocument({ width: 1, height: 1, catalog: CATALOG, palette: palette() });
+    const source = createDocument({ width: 1, height: 1, catalog: TEST_CATALOG, palette: palette() });
     source.kind[0] = CellKind.Full;
     source.colors[0] = 2;
     const fragment = createPatternFragment(source, { x: 0, y: 0, width: 1, height: 1 });
@@ -482,13 +455,13 @@ describe('layered DocumentEditor: document-scoped commands', () => {
     editor.execute(layerSetVisibilityCommand(3, false));
     const result = editor.execute({ type: 'palette-merge', from: 1, to: 2 });
     expect(result.compositeFull).toBe(true);
-    expect(stitch(editor.document, STITCHES).colors[0]).toBe(2);
-    expect(stitch(editor.document, 3).colors[4]).toBe(2);
-    expect(specialty(editor.document, SPECIALTY).backstitches.colors[0]).toBe(2);
+    expect(stitchLayer(editor.document, STITCHES).colors[0]).toBe(2);
+    expect(stitchLayer(editor.document, 3).colors[4]).toBe(2);
+    expect(specialtyLayer(editor.document, SPECIALTY).backstitches.colors[0]).toBe(2);
     expect(editor.document.palette.filter((entry) => entry.id === 1).map((entry) => entry.active)).toEqual([false]);
     expect(editor.document.palette.length).toBe(3);
     editor.undo();
-    expect(stitch(editor.document, 3).colors[4]).toBe(1);
+    expect(stitchLayer(editor.document, 3).colors[4]).toBe(1);
     expect(editor.document.palette.find((entry) => entry.id === 1)?.active).toBe(true);
   });
 
@@ -499,7 +472,7 @@ describe('layered DocumentEditor: document-scoped commands', () => {
     editor.execute({ type: 'palette-merge', from: 1, createTo: { name: 'New', color: '#123456' } });
     expect(editor.document.palette.filter((entry) => entry.id === nextPaletteId).length).toBe(1);
     expect(editor.document.nextPaletteId).toBe(nextPaletteId + 1);
-    expect(stitch(editor.document, STITCHES).colors[0]).toBe(nextPaletteId);
+    expect(stitchLayer(editor.document, STITCHES).colors[0]).toBe(nextPaletteId);
   });
 
   it('deletes a palette color from every layer', () => {
@@ -511,10 +484,10 @@ describe('layered DocumentEditor: document-scoped commands', () => {
     editor.execute(line(0, 0, 1, 0, 1));
     editor.execute(layerSetVisibilityCommand(3, false));
     editor.execute({ type: 'palette-delete', id: 1 });
-    expect(stitch(editor.document, STITCHES).kind[0]).toBe(CellKind.Empty);
-    expect(stitch(editor.document, 3).kind[1]).toBe(CellKind.Empty);
-    expect(stitch(editor.document, 3).kind[2]).toBe(CellKind.Full);
-    expect(specialty(editor.document, SPECIALTY).backstitches.ids.length).toBe(0);
+    expect(stitchLayer(editor.document, STITCHES).kind[0]).toBe(CellKind.Empty);
+    expect(stitchLayer(editor.document, 3).kind[1]).toBe(CellKind.Empty);
+    expect(stitchLayer(editor.document, 3).kind[2]).toBe(CellKind.Full);
+    expect(specialtyLayer(editor.document, SPECIALTY).backstitches.ids.length).toBe(0);
   });
 
   it('refuses to deactivate a color used on any layer', () => {
@@ -548,7 +521,7 @@ describe('layered DocumentEditor: document-scoped commands', () => {
     editor.execute(layerDeleteCommand(SPECIALTY));
     editor.execute(layerDeleteCommand(STITCHES));
     expect(editor.execute({ type: 'palette-merge', from: 1, to: 3 }).changed).toBe(true);
-    expect(editor.lastHistoryEntryKind).toBe('layers');
+    expect(editor.exportHistory().undo.at(-1)?.kind).toBe('layers');
     expect(editor.document.palette.find((entry) => entry.id === 1)?.active).toBe(false);
     expect(editor.execute({ type: 'palette-deactivate', id: 2 }).changed).toBe(true);
   });
@@ -580,14 +553,14 @@ describe('layered DocumentEditor: compact entries and fast paths', () => {
     const editor = editorFor();
     editor.execute(full(0, 0, 1));
     editor.execute(line(0, 0, 1, 0, 2));
-    const specialtyBefore = specialty(editor.document, SPECIALTY);
+    const specialtyBefore = specialtyLayer(editor.document, SPECIALTY);
     editor.execute({ type: 'palette-merge', from: 1, to: 3 });
-    expect(specialty(editor.document, SPECIALTY)).toBe(specialtyBefore);
-    expect(stitch(editor.document, STITCHES).colors[0]).toBe(3);
+    expect(specialtyLayer(editor.document, SPECIALTY)).toBe(specialtyBefore);
+    expect(stitchLayer(editor.document, STITCHES).colors[0]).toBe(3);
   });
 
   it('records add-and-paste as a tiny structure entry plus a sparse delta in one undo step', () => {
-    const source = createDocument({ width: 2, height: 1, catalog: CATALOG, palette: palette() });
+    const source = createDocument({ width: 2, height: 1, catalog: TEST_CATALOG, palette: palette() });
     source.kind[0] = CellKind.Full;
     source.colors[0] = 1;
     const fragment = createPatternFragment(source, { x: 0, y: 0, width: 2, height: 1 });
@@ -595,7 +568,7 @@ describe('layered DocumentEditor: compact entries and fast paths', () => {
     const id = editor.document.nextLayerId;
     editor.execute({ type: 'batch', commands: [layerAddCommand(LayerType.Stitch, { id }), { ...pasteFragmentCommand(fragment, { x: 3, y: 3 }), layerId: id }] });
     expect(editor.undoDepth).toBe(1);
-    expect(editor.lastHistoryEntryKind).toBe('group');
+    expect(editor.exportHistory().undo.at(-1)?.kind).toBe('group');
     expect(editor.historyBytes).toBeLessThan(4096);
     const exported = editor.exportHistory();
     const group = exported.undo[0];
@@ -606,7 +579,7 @@ describe('layered DocumentEditor: compact entries and fast paths', () => {
     restored.undo();
     expect(ids(restored.document)).toEqual([STITCHES, SPECIALTY]);
     restored.redo();
-    expect(stitch(restored.document, id).kind[3 * 200 + 3]).toBe(CellKind.Full);
+    expect(stitchLayer(restored.document, id).kind[3 * 200 + 3]).toBe(CellKind.Full);
   });
 
   it('round-trips document-wide layers and group entries through the DTO', () => {
@@ -621,13 +594,13 @@ describe('layered DocumentEditor: compact entries and fast paths', () => {
     expect(exported.redo.map((entry) => entry.kind)).toEqual(['group']);
     const restored = createEditorFromHistory(editor.document, exported);
     const snapshots = [restored.document.layers.map(describeLayer)];
-    while (restored.canUndo) {
+    while (restored.undoDepth > 0) {
       restored.undo();
       snapshots.push(restored.document.layers.map(describeLayer));
     }
     expect([restored.document.width, restored.document.height]).toEqual([6, 4]);
-    expect(stitch(restored.document, STITCHES).kind.every((kind) => kind === 0)).toBe(true);
-    while (restored.canRedo) restored.redo();
+    expect(stitchLayer(restored.document, STITCHES).kind.every((kind) => kind === 0)).toBe(true);
+    while (restored.redoDepth > 0) restored.redo();
     expect(ids(restored.document)).toEqual([STITCHES, 3, SPECIALTY]);
 
     const forged = { ...exported, undo: exported.undo.map((entry) => entry.kind === 'layers' ? { ...entry, after: { ...entry.after, palette: entry.after.palette?.map((color) => color.id === 1 ? { ...color, name: 'Rex' } : color) } } : entry) };
@@ -650,9 +623,9 @@ describe('layered DocumentEditor: structural import validation', () => {
     // The visibility toggles around the merge add no entries.
     expect(exported.undo.map((entry) => entry.kind)).toEqual(['delta', 'layers']);
     const restored = createEditorFromHistory(editor.document, exported);
-    while (restored.canUndo) restored.undo();
+    while (restored.undoDepth > 0) restored.undo();
     expect([restored.document.width, restored.document.height]).toEqual([4, 2]);
-    expect(stitch(restored.document, STITCHES).kind[7]).toBe(CellKind.Empty);
+    expect(stitchLayer(restored.document, STITCHES).kind[7]).toBe(CellKind.Empty);
   });
 
   it('rejects forged structure and out-of-bounds deltas behind a palette merge', () => {
@@ -752,10 +725,10 @@ describe('layered DocumentEditor: history DTO', () => {
     expect(restored.undoDepth).toBe(6);
     expect(restored.redoDepth).toBe(2);
     expect(restored.historyBytes).toBe(editor.historyBytes);
-    while (restored.canUndo) restored.undo();
+    while (restored.undoDepth > 0) restored.undo();
     expect(ids(restored.document)).toEqual([STITCHES, SPECIALTY]);
     expect(restored.document.layers.every((layer) => layer.type !== LayerType.Stitch || layer.kind.every((kind) => kind === 0))).toBe(true);
-    while (restored.canRedo) restored.redo();
+    while (restored.redoDepth > 0) restored.redo();
     expect(ids(restored.document)).toEqual([3, SPECIALTY]);
     expect(restored.document.palette.find((entry) => entry.id === 1)?.active).toBe(false);
   });
@@ -845,7 +818,7 @@ describe('layered DocumentEditor: canvas edits', () => {
     expect(executed.changed).toBe(true);
     expect(executed.compositeFull).toBe(true);
     expect(executed.recalculateMetrics).toBe(true);
-    expect(editor.lastHistoryEntryKind).toBe('canvas');
+    expect(editor.exportHistory().undo.at(-1)?.kind).toBe('canvas');
     expectCompositeFrame(editor);
     const after = fingerprint(editor.document);
     editor.undo();
@@ -887,7 +860,7 @@ describe('layered DocumentEditor: canvas edits', () => {
     roundTrip(editor, cellsCommand('remove', 1, 1, 2, 2, new Uint8Array([0, 1, 1, 1])));
     expect(editor.document.canvasMask).toBeDefined();
     // The two edge lines survive as five one-cell records each.
-    expect(specialty(editor.document, SPECIALTY).backstitches.ids).toHaveLength(10);
+    expect(specialtyLayer(editor.document, SPECIALTY).backstitches.ids).toHaveLength(10);
     roundTrip(editor, cellsCommand('add', -2, -1));
     expect([editor.document.width, editor.document.height, editor.document.originX, editor.document.originY]).toEqual([7, 5, -2, -1]);
     // Local coordinates follow the box: its top row now holds only the added cell.
@@ -896,7 +869,7 @@ describe('layered DocumentEditor: canvas edits', () => {
     expect('originX' in editor.document || 'originY' in editor.document).toBe(false);
     roundTrip(editor, cellsCommand('add', 1, 1, 2, 2));
     expect(editor.document.canvasMask).toBeUndefined();
-    while (editor.canUndo && editor.lastHistoryEntryKind === 'canvas') editor.undo();
+    while (editor.exportHistory().undo.at(-1)?.kind === 'canvas') editor.undo();
     expect(fingerprint(editor.document)).toEqual(rectangle);
     expect('canvasMask' in editor.document).toBe(false);
   });
@@ -913,7 +886,7 @@ describe('layered DocumentEditor: canvas edits', () => {
     editor.undo();
     expect(fingerprint(editor.document)).toEqual(masked);
     const restored = createEditorFromHistory(editor.document, editor.exportHistory());
-    while (restored.canRedo) restored.redo();
+    while (restored.redoDepth > 0) restored.redo();
     expect(ids(restored.document)).toEqual([STITCHES, 4, SPECIALTY]);
     expect(restored.document.canvasMask).toEqual(editor.document.canvasMask);
   });
@@ -985,7 +958,7 @@ describe('layered DocumentEditor: canvas edits', () => {
     expect(editor.document.height).toBe(220);
     expect(editor.historyBytes - bytes).toBeLessThan(64 * 1024);
     for (let step = 0; step < 20; step += 1) editor.undo();
-    expect(stitch(editor.document, 3).kind[20 * 200 + 20]).toBe(CellKind.Full);
+    expect(stitchLayer(editor.document, 3).kind[20 * 200 + 20]).toBe(CellKind.Full);
   });
 
   it('records nothing for a no-op and rejects canvas edits batched with other edits', () => {
@@ -993,13 +966,13 @@ describe('layered DocumentEditor: canvas edits', () => {
     expect(editor.execute(canvasCommand(0, 0, 0, 0)).changed).toBe(false);
     expect(editor.execute(cellsCommand('add', 0, 0)).changed).toBe(false);
     expect(editor.undoDepth).toBe(0);
-    expect(errorCode(() => editor.batch([cellsCommand('remove', 0, 0), full(1, 1, 1)]))).toBe('invalid-command');
-    expect(errorCode(() => editor.batch([layerAddCommand(LayerType.Stitch), canvasCommand(1, 0, 0, 0)]))).toBe('invalid-command');
+    expect(errorCode(() => editor.executeBatch([cellsCommand('remove', 0, 0), full(1, 1, 1)]))).toBe('invalid-command');
+    expect(errorCode(() => editor.executeBatch([layerAddCommand(LayerType.Stitch), canvasCommand(1, 0, 0, 0)]))).toBe('invalid-command');
     expect(editor.undoDepth).toBe(0);
     const before = fingerprint(editor.document);
-    editor.batch([canvasCommand(1, 0, 0, 0), cellsCommand('remove', 0, 0)]);
+    editor.executeBatch([canvasCommand(1, 0, 0, 0), cellsCommand('remove', 0, 0)]);
     expect(editor.undoDepth).toBe(1);
-    expect(editor.lastHistoryEntryKind).toBe('group');
+    expect(editor.exportHistory().undo.at(-1)?.kind).toBe('group');
     editor.undo();
     expect(fingerprint(editor.document)).toEqual(before);
   });
@@ -1026,12 +999,12 @@ describe('layered DocumentEditor: canvas edits', () => {
     expect(exported.redo.map((entry) => entry.kind)).toEqual(['canvas']);
     const restored = createEditorFromHistory(editor.document, exported);
     expect(restored.historyBytes).toBe(editor.historyBytes);
-    while (editor.canUndo) {
+    while (editor.undoDepth > 0) {
       editor.undo();
       restored.undo();
       expect(fingerprint(restored.document)).toEqual(fingerprint(editor.document));
     }
-    while (editor.canRedo) {
+    while (editor.redoDepth > 0) {
       editor.redo();
       restored.redo();
       expect(fingerprint(restored.document)).toEqual(fingerprint(editor.document));
@@ -1085,7 +1058,7 @@ describe('layered DocumentEditor: Track progress', () => {
   }
 
   function completed(document: LayeredDocument, layerId: number, index: number): number {
-    return stitch(document, layerId).completed[index];
+    return stitchLayer(document, layerId).completed[index];
   }
 
   it('marks the covering layer without touching document history, and replays the entry both ways', () => {
@@ -1100,7 +1073,7 @@ describe('layered DocumentEditor: Track progress', () => {
     const marked = markCells(editor, [1, 0, 2]);
     if (marked === null) throw new Error('Expected a change.');
     expect(editor.undoDepth).toBe(undoDepth);
-    expect(editor.canRedo).toBe(false);
+    expect(editor.redoDepth).toBe(0);
     expect(editor.revision).toBe(revision + 1);
     expect(marked.result.revision).toBe(revision + 1);
     expect(marked.result.document).toBe(editor.composite);
@@ -1151,11 +1124,11 @@ describe('layered DocumentEditor: Track progress', () => {
   it('marks backstitches on the layer that shows them', () => {
     const editor = editorFor();
     editor.execute(line(0, 0, 1, 0, 1));
-    const id = specialty(editor.document, SPECIALTY).backstitches.ids[0];
+    const id = specialtyLayer(editor.document, SPECIALTY).backstitches.ids[0];
     const marked = editor.applyProgress({ backstitchIds: Uint32Array.of(id), operation: 'toggle' });
     if (marked === null) throw new Error('Expected a change.');
     expect(Array.from(marked.result.progress?.backstitchIds ?? [])).toEqual([id]);
-    expect(specialty(editor.document, SPECIALTY).backstitches.completed[0]).toBe(1);
+    expect(specialtyLayer(editor.document, SPECIALTY).backstitches.completed[0]).toBe(1);
     expect(editor.composite.backstitches.completed[0]).toBe(1);
     editor.applyProgressEntry(marked.entry, false);
     expect(editor.composite.backstitches.completed[0]).toBe(0);
@@ -1206,14 +1179,14 @@ describe('layered DocumentEditor: Track progress', () => {
 
     editor.execute(layerMergeCommand(3, STITCHES));
     expectMarks();
-    expect(Array.from(stitch(editor.document, STITCHES).completed.subarray(0, 3))).toEqual([1, 1, 1]);
+    expect(Array.from(stitchLayer(editor.document, STITCHES).completed.subarray(0, 3))).toEqual([1, 1, 1]);
     // An unmark made after the merge survives undoing it, because the restored cell is unchanged.
     markCells(editor, [0], 'clear');
     editor.undo();
     expect(Array.from(editor.composite.completed.subarray(0, 3))).toEqual([0, 1, 1]);
     expect([completed(editor.document, 3, 1), completed(editor.document, 3, 2)]).toEqual([1, 1]);
     editor.redo();
-    expect(Array.from(stitch(editor.document, STITCHES).completed.subarray(0, 3))).toEqual([0, 1, 1]);
+    expect(Array.from(stitchLayer(editor.document, STITCHES).completed.subarray(0, 3))).toEqual([0, 1, 1]);
   });
 
   it('keeps marks made after an edit when that edit is undone', () => {
@@ -1222,17 +1195,17 @@ describe('layered DocumentEditor: Track progress', () => {
     editor.execute({ type: 'palette-merge', from: 1, to: 2 });
     markCells(editor, [0]);
     editor.undo();
-    expect(stitch(editor.document, STITCHES).colors[0]).toBe(1);
+    expect(stitchLayer(editor.document, STITCHES).colors[0]).toBe(1);
     expect(completed(editor.document, STITCHES, 0)).toBe(1);
 
     editor.execute(line(0, 0, 1, 0, 1));
-    const first = specialty(editor.document, SPECIALTY).backstitches.ids[0];
+    const first = specialtyLayer(editor.document, SPECIALTY).backstitches.ids[0];
     editor.execute(line(0, 1, 1, 1, 1));
     editor.applyProgress({ backstitchIds: Uint32Array.of(first), operation: 'set' });
     editor.undo();
-    expect(Array.from(specialty(editor.document, SPECIALTY).backstitches.completed)).toEqual([1]);
+    expect(Array.from(specialtyLayer(editor.document, SPECIALTY).backstitches.completed)).toEqual([1]);
     editor.redo();
-    expect(Array.from(specialty(editor.document, SPECIALTY).backstitches.completed)).toEqual([1, 0]);
+    expect(Array.from(specialtyLayer(editor.document, SPECIALTY).backstitches.completed)).toEqual([1, 0]);
   });
 
   it('restores a mark when the edit that cleared it is undone', () => {
@@ -1249,11 +1222,11 @@ describe('layered DocumentEditor: Track progress', () => {
 
     editor.undo();
     editor.execute(line(0, 0, 1, 0, 1));
-    const id = specialty(editor.document, SPECIALTY).backstitches.ids[0];
+    const id = specialtyLayer(editor.document, SPECIALTY).backstitches.ids[0];
     editor.applyProgress({ backstitchIds: Uint32Array.of(id), operation: 'set' });
     editor.execute({ type: 'remove-backstitch', id, layerId: SPECIALTY });
     editor.undo();
-    expect(Array.from(specialty(editor.document, SPECIALTY).backstitches.completed)).toEqual([1]);
+    expect(Array.from(specialtyLayer(editor.document, SPECIALTY).backstitches.completed)).toEqual([1]);
   });
 
   it('keeps marks through undo and redo of canvas resizes', () => {
@@ -1267,7 +1240,7 @@ describe('layered DocumentEditor: Track progress', () => {
     expect([completed(editor.document, STITCHES, 0), completed(editor.document, STITCHES, 5)]).toEqual([1, 1]);
     // Shrinking drops the marked corner cell; undo puts back both the cell and its mark.
     editor.execute({ type: 'canvas-resize', edges: { top: 0, right: -1, bottom: 0, left: 0 } });
-    expect(Array.from(stitch(editor.document, STITCHES).completed)).toEqual([1, 0, 0, 0]);
+    expect(Array.from(stitchLayer(editor.document, STITCHES).completed)).toEqual([1, 0, 0, 0]);
     editor.undo();
     expect([completed(editor.document, STITCHES, 0), completed(editor.document, STITCHES, 5)]).toEqual([1, 1]);
     expect(editor.composite.completed[5]).toBe(1);
@@ -1293,9 +1266,9 @@ describe('layered DocumentEditor: Track progress', () => {
     const restored = createEditorFromHistory(editor.document, exported);
     expect(restored.historyBytes).toBe(editor.historyBytes);
     restored.undo();
-    expect(Array.from(stitch(restored.document, STITCHES).completed)).toEqual([1, 0, 0, 0]);
+    expect(Array.from(stitchLayer(restored.document, STITCHES).completed)).toEqual([1, 0, 0, 0]);
     restored.undo();
-    expect(Array.from(stitch(restored.document, STITCHES).completed)).toEqual([1, 0, 0, 0, 0, 1]);
+    expect(Array.from(stitchLayer(restored.document, STITCHES).completed)).toEqual([1, 0, 0, 0, 0, 1]);
     expect(restored.composite.completed[5]).toBe(1);
 
     // History written before progress was stored has no completion fields and imports as unmarked.
@@ -1320,9 +1293,9 @@ describe('layered DocumentEditor: Track progress', () => {
     };
     const plain = createEditorFromHistory(editor.document, legacy);
     plain.undo();
-    expect(Array.from(stitch(plain.document, STITCHES).completed)).toEqual([0, 0, 0, 0]);
+    expect(Array.from(stitchLayer(plain.document, STITCHES).completed)).toEqual([0, 0, 0, 0]);
     plain.undo();
-    expect(Array.from(stitch(plain.document, STITCHES).completed)).toEqual([0, 0, 0, 0, 0, 0]);
+    expect(Array.from(stitchLayer(plain.document, STITCHES).completed)).toEqual([0, 0, 0, 0, 0, 0]);
   });
 
   it('rejects imported progress that does not fit the stitch', () => {

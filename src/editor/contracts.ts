@@ -9,10 +9,6 @@ export const ChartPresentationMode = {
 } as const;
 
 export type ChartPresentationMode = (typeof ChartPresentationMode)[keyof typeof ChartPresentationMode];
-export type ChartMode = ChartPresentationMode;
-export const ChartViewMode = ChartPresentationMode;
-export type ChartViewMode = ChartPresentationMode;
-export type ChartPresentation = ChartPresentationMode;
 
 export const MIN_BRUSH_SIZE = 1;
 export const MAX_BRUSH_SIZE = 10;
@@ -38,7 +34,6 @@ export const RenderLod = {
 } as const;
 
 export type RenderLod = (typeof RenderLod)[keyof typeof RenderLod];
-export type LOD = RenderLod;
 
 /** Coordinates in model space are measured in cells. */
 export interface ModelPoint {
@@ -86,7 +81,6 @@ export interface Viewport {
   readonly zoom: number;
 }
 
-export type ViewportState = Viewport;
 
 export interface DocumentSize {
   readonly width: number;
@@ -134,7 +128,6 @@ export interface TraceRgb {
   readonly b: number;
 }
 
-export type TraceSampleCallback = (rgb: TraceRgb) => void;
 /** Chart-space rectangle (in cell coordinates) an image occupies on the chart. */
 export type TraceImageBounds = CellRect;
 export type TraceBoundsChangeCallback = (bounds: TraceImageBounds) => void;
@@ -347,8 +340,6 @@ export interface Invalidation {
   readonly reason?: string;
 }
 
-export type RenderInvalidation = Invalidation;
-export type InvalidationRequest = Invalidation;
 
 export interface CoalescedInvalidation {
   readonly base: boolean;
@@ -499,8 +490,6 @@ export interface CanvasContextAdapter {
   setLineDash?(segments: readonly number[]): void;
 }
 
-export type Canvas2DContext = CanvasContextAdapter;
-export type CanvasTargetAdapter = CanvasTarget;
 
 export interface CanvasTarget {
   readonly context: CanvasContextAdapter;
@@ -530,7 +519,6 @@ export interface CanvasRendererOptions {
   readonly viewport?: Viewport;
   readonly style?: Partial<RendererStyle>;
   readonly traceImage?: TraceImage;
-  readonly trace?: TraceImage;
   readonly overlay?: OverlayState;
   readonly lodThresholds?: Partial<LodThresholds>;
   readonly atlasTargetFactory?: AtlasTargetFactory;
@@ -570,8 +558,6 @@ export interface CanvasRenderer {
   dispose(): void;
   destroy(): void;
 }
-
-export type RendererLifecycle = Pick<CanvasRenderer, 'requestRender' | 'render' | 'renderNow' | 'invalidate' | 'dispose' | 'destroy'>;
 
 /** How the Canvas layer is edited: Basic resizes by edges, Advanced adds and removes cells. */
 export type CanvasEditMode = 'basic' | 'advanced';
@@ -673,18 +659,8 @@ export type ShapeKind = 'line' | 'rectangle' | 'square' | 'circle' | 'oval' | 't
 export const StitchBrushKind = {
   Full: 'full',
   Half: 'half',
-  Quarter: 'quarter',
   ThreeQuarter: 'three-quarter'
 } as const;
-
-/** Brush variants exposed to new authoring flows. Quarter geometry is legacy-only. */
-export const AuthoringStitchBrushKind = {
-  Full: 'full',
-  Half: 'half',
-  ThreeQuarter: 'three-quarter'
-} as const;
-
-export type AuthoringStitchBrushKind = (typeof AuthoringStitchBrushKind)[keyof typeof AuthoringStitchBrushKind];
 
 export type StitchBrushKind = (typeof StitchBrushKind)[keyof typeof StitchBrushKind];
 
@@ -708,15 +684,7 @@ export interface ThreeQuarterStitchBrush {
   readonly paletteId: number;
 }
 
-export interface QuarterStitchBrush {
-  readonly kind: 'quarter';
-  readonly corner: 0 | 1 | 2 | 3;
-  readonly paletteId: number;
-}
-
-export type StitchBrush = FullStitchBrush | HalfStitchBrush | ThreeQuarterStitchBrush | QuarterStitchBrush;
-export type AuthoringStitchBrush = FullStitchBrush | HalfStitchBrush | ThreeQuarterStitchBrush;
-export type LegacyStitchBrush = QuarterStitchBrush;
+export type StitchBrush = FullStitchBrush | HalfStitchBrush | ThreeQuarterStitchBrush;
 
 export interface PaintToolState {
   readonly tool: 'paint';
@@ -791,8 +759,6 @@ export interface ResizeImageToolState {
 }
 
 export type EditorToolState = PaintToolState | PanToolState | EraserToolState | SelectToolState | LassoToolState | FillToolState | BackstitchToolState | EyedropperToolState | ShapeToolState | CanvasBrushToolState | MoveImageToolState | ResizeImageToolState | MarkToolState;
-export type ToolState = EditorToolState;
-export type ActiveStitchBrush = StitchBrush;
 
 /** The kind of row selected in the layers panel. */
 export type ActiveLayerKind = 'stitch' | 'specialty' | 'canvas' | 'reference';
@@ -897,7 +863,6 @@ export interface EditorUiStore {
   setOverlay(overlay: OverlayState): void;
   setTool(tool: EditorToolState): void;
   setBrush(brush: StitchBrush): void;
-  setAuthoringBrush(brush: AuthoringStitchBrush): void;
   setPaletteId(paletteId: number | null): void;
   pulsePick(paletteId: number): void;
   pulseClipboard(action: 'copy' | 'paste'): void;

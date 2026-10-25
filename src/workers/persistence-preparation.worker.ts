@@ -12,7 +12,7 @@ import {
 } from '../persistence/preparation';
 import { isRecord } from '../domain';
 
-export interface PersistencePreparationWorkerScope {
+interface PersistencePreparationWorkerScope {
   addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
   postMessage(message: PersistencePreparationResponse, transfer?: Transferable[]): void;
 }
@@ -57,15 +57,12 @@ export function handlePersistencePreparationWorkerMessage(
     });
 }
 
-export function installPersistencePreparationWorker(scope: PersistencePreparationWorkerScope): void {
+function installPersistencePreparationWorker(scope: PersistencePreparationWorkerScope): void {
   const activeRequests = new Set<string>();
   scope.addEventListener('message', (event) => {
     handlePersistencePreparationWorkerMessage(event.data, (message, transfer) => scope.postMessage(message, transfer), activeRequests);
   });
 }
-
-export const handlePreparationWorkerMessage = handlePersistencePreparationWorkerMessage;
-export const installPreparationWorker = installPersistencePreparationWorker;
 
 function isWorkerScope(value: unknown): value is PersistencePreparationWorkerScope {
   return isRecord(value)

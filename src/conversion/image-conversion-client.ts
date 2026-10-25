@@ -358,14 +358,6 @@ export class ConversionWorkerClient {
     return this.submitImage(source, input, options).promise;
   }
 
-  convert(input: ConversionRequestInput, options: { readonly signal?: AbortSignal } = {}): Promise<ConversionResultMessage> {
-    return this.request(input, options);
-  }
-
-  convertImage(source: Blob | File, input: ConversionImageInput, options: { readonly signal?: AbortSignal } = {}): Promise<ConversionResultMessage> {
-    return this.requestImage(source, input, options);
-  }
-
   cancel(request: string | ConversionToken): boolean {
     let key: string | undefined;
     if (typeof request === 'string') {

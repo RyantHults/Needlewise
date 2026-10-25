@@ -367,5 +367,3 @@ class WorkspaceEditorGatewayImpl implements WorkspaceEditorGateway {
 export function createWorkspaceEditorGateway(boundary: WorkspaceEditorBoundary | ProjectWorkspace): WorkspaceEditorGateway {
   return new WorkspaceEditorGatewayImpl(boundary);
 }
-
-export const createEditorGateway = createWorkspaceEditorGateway;

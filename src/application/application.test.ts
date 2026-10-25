@@ -10,14 +10,10 @@ import {
   type PatternDocument
 } from '../domain';
 import {
-  decodeDocument,
+  decodeDocumentWithInfo,
   encodeDocument,
   cloneLayeredDocument,
-  cloneSessionHistory,
-  PersistenceError,
   PersistencePreparationWorkerClient,
-  sha256,
-  type ProjectAsset,
   type ProjectAssetInput,
   type ProjectMetadata,
   type ProjectRecord,
@@ -25,13 +21,11 @@ import {
   type PreparedDocumentCapability,
   type PersistencePreparationInput,
   type PersistencePreparationClient,
-  type SaveOptions,
-  type SaveResult,
-  type SessionHistoryEnvelope
+  type SaveResult
 } from '../persistence';
-import { consumePreparedDocumentCapability } from '../persistence/preparation-client';
 import { createStarterDocument, paletteProgress, ProjectWorkspace } from './index';
 import { MAX_MARK_HISTORY_STEPS, ProjectSession } from './session';
+import { MemoryRepository } from './test-support';
 import type { WorkspaceRepository } from './types';
 import { acceptConversionDraft, type AcceptedConversionDraft } from '../conversion/image-to-pattern';
 import { decodeTraceImage } from '../rendering/trace';
@@ -64,88 +58,6 @@ function syntheticCatalogDefinition(catalogId: string, brandLabel: string): Cata
     getByHex: (hex: string) => hex.trim().toUpperCase() === record.hex ? record : undefined,
     nearest: () => record
   });
-}
-
-function copyRecord(record: ProjectRecord): ProjectRecord {
-  return {
-    metadata: { ...record.metadata },
-    document: cloneLayeredDocument(record.document),
-    ...(record.head === undefined ? {} : { head: { ...record.head } }),
-    recovery: record.recovery === null ? null : { revision: record.recovery.revision, document: cloneLayeredDocument(record.recovery.document) },
-    assets: record.assets.map((asset) => ({ ...asset, data: new Uint8Array(asset.data) })),
-    ...(record.history === undefined ? {} : { history: cloneSessionHistory(record.history) })
-  };
-}
-
-class MemoryRepository implements WorkspaceRepository {
-  readonly records = new Map<string, ProjectRecord>();
-  readonly saveCalls: Array<{ id: string; revision: number }> = [];
-  readonly saveModes: Array<SaveOptions['mode']> = [];
-  readonly saveDocuments: LayeredDocument[] = [];
-  readonly preparedSaveCalls: string[] = [];
-  failSaves = false;
-  beforeSave: (() => Promise<void> | void) | undefined;
-
-  async save(projectId: string, metadata: ProjectMetadata, document: LayeredDocument, assets?: readonly ProjectAssetInput[], options: SaveOptions = {}): Promise<SaveResult> {
-    if (this.failSaves) throw new PersistenceError('storage-failure', 'Test storage failure.');
-    await this.beforeSave?.();
-    this.saveModes.push(options.mode);
-    this.saveDocuments.push(document);
-    const current = this.records.get(projectId);
-    if (options.mode === 'retain') {
-      const expectedHead = options.expectedHead;
-      const expectedRevision = options.expectedRevision ?? (typeof expectedHead === 'number' ? expectedHead : expectedHead?.revision);
-      const expectedChecksum = typeof expectedHead === 'object' && expectedHead !== null ? expectedHead.checksum : undefined;
-      if (!current?.head || expectedRevision !== current.head.revision || (expectedChecksum !== undefined && expectedChecksum !== current.head.checksum)) return { committed: false, stale: true, revision: current?.document.revision ?? document.revision };
-    } else if (current && (current.document.revision > document.revision || (current.document.revision === document.revision && !options.allowSameRevision))) return { committed: false, stale: true, revision: current.document.revision };
-    const retained = options.mode === 'retain';
-    const persistedDocument = retained && current ? current.document : document;
-    const head = retained && current?.head
-      ? { ...current.head }
-      : { projectId, revision: persistedDocument.revision, checksum: await sha256(encodeDocument(persistedDocument)) };
-    const nextAssets: ProjectAsset[] = assets === undefined
-      ? current?.assets ?? []
-      : [];
-    if (assets !== undefined) {
-      for (const asset of assets) {
-        const data = asset.data instanceof Uint8Array ? asset.data.slice() : asset.data instanceof ArrayBuffer ? new Uint8Array(asset.data).slice() : new Uint8Array(await asset.data.arrayBuffer());
-        nextAssets.push({ id: asset.id, name: asset.name, mimeType: asset.mimeType, data, checksum: await sha256(data) });
-      }
-    }
-    this.saveCalls.push({ id: projectId, revision: persistedDocument.revision });
-    this.records.set(projectId, {
-      metadata: { ...metadata },
-      document: cloneLayeredDocument(persistedDocument),
-      ...(head === undefined ? {} : { head }),
-      recovery: retained ? current?.recovery ?? null : current === undefined ? null : { revision: current.document.revision, document: cloneLayeredDocument(current.document) },
-      assets: nextAssets,
-      ...(options.history !== undefined && 'trace' in options.history ? { history: cloneSessionHistory(options.history as SessionHistoryEnvelope) } : {})
-    });
-    return { committed: true, stale: false, revision: persistedDocument.revision, head };
-  }
-
-  async savePrepared(projectId: string, metadata: ProjectMetadata, prepared: PreparedDocumentCapability, assets?: readonly ProjectAssetInput[], options: SaveOptions = {}): Promise<SaveResult> {
-    this.preparedSaveCalls.push(options.preparedRequestId ?? '');
-    return consumePreparedDocumentCapability(
-      prepared,
-      { projectId, revision: metadata.revision, requestId: options.preparedRequestId ?? '' },
-      (bytes) => this.save(projectId, metadata, decodeDocument(bytes), assets, options)
-    );
-  }
-
-  async load(projectId: string): Promise<ProjectRecord | undefined> {
-    const record = this.records.get(projectId);
-    return record === undefined ? undefined : copyRecord(record);
-  }
-
-  async listProjects(): Promise<ProjectMetadata[]> {
-    return [...this.records.values()].sort((left, right) => right.metadata.updatedAt - left.metadata.updatedAt).map((record) => ({ ...record.metadata }));
-  }
-
-  async deleteProject(projectId: string): Promise<void> {
-    this.records.delete(projectId);
-  }
-
 }
 
 class ImmediateRepository {
@@ -493,7 +405,7 @@ describe('headless project workspace', () => {
       expect(availableCatalogs.map((definition) => definition.records)).toEqual([DEFAULT_CATALOG_DEFINITION.records, catalogB.records]);
       expect(availableCatalogs[1]).not.toBe(catalogB);
 
-      const resolvedCatalogB = workspace.catalogById('catalog-b');
+      const resolvedCatalogB = workspace.availableCatalogs().find((definition) => definition.association.catalogId === 'catalog-b');
       expect(resolvedCatalogB).toMatchObject({ association: catalogB.association, records: catalogB.records });
       expect(resolvedCatalogB).not.toBe(catalogB);
       expect(resolvedCatalogB).toBe(availableCatalogs[1]);
@@ -508,8 +420,8 @@ describe('headless project workspace', () => {
       const availableAfterUnavailablePrimary = workspace.availableCatalogs();
       expect(availableAfterUnavailablePrimary.map((definition) => definition.association)).toEqual([DEFAULT_CATALOG_DEFINITION.association, catalogB.association]);
       expect(availableAfterUnavailablePrimary.map((definition) => definition.records)).toEqual([DEFAULT_CATALOG_DEFINITION.records, catalogB.records]);
-      expect(workspace.catalogById('catalog-b')).toMatchObject({ association: catalogB.association, records: catalogB.records });
-      expect(workspace.catalogById('catalog-b')).not.toBe(catalogB);
+      expect(workspace.availableCatalogs().find((definition) => definition.association.catalogId === 'catalog-b')).toMatchObject({ association: catalogB.association, records: catalogB.records });
+      expect(workspace.availableCatalogs().find((definition) => definition.association.catalogId === 'catalog-b')).not.toBe(catalogB);
     } finally {
       await workspace.dispose();
     }
@@ -536,7 +448,7 @@ describe('headless project workspace', () => {
     expect(starter.palette).toHaveLength(1);
     expect(starter.palette[0]).toMatchObject({ id: 1, name: 'Black', color: '#000000' });
     expect(starter.nextPaletteId).toBe(2);
-    const decoded = decodeDocument(encodeDocument(layeredFromSurface(starter)));
+    const decoded = decodeDocumentWithInfo(encodeDocument(layeredFromSurface(starter))).document;
     expect(decoded.palette).toEqual(starter.palette);
     expect(decoded.nextPaletteId).toBe(2);
     expect(decoded.width).toBe(100);
@@ -884,7 +796,7 @@ describe('headless project workspace', () => {
       expect(workspace.document?.revision).toBe(designRevision);
       expect(workspace.metrics?.palettes[0].material.requiredSkeins).toBe(1);
 
-      await workspace.updateMaterialAssumptions({ stitchLengthMeters: null });
+      await workspace.updateActiveMaterialSettings({ stitchLengthMeters: null });
       await workspace.flush();
       expect(workspace.materialSettings?.stitchLengthMeters).toBeUndefined();
       expect(workspace.metrics?.palettes[0].material.estimatedMeters).toBeCloseTo(0.04064);
@@ -912,39 +824,6 @@ describe('headless project workspace', () => {
       expect((await repository.load('backstitch-strands'))?.metadata.materialSettings?.backstitchStrands).toBe(2);
       await expect(workspace.updateActiveMaterialSettings({ backstitchStrands: 0 })).rejects.toMatchObject({ code: 'invalid-material-settings' });
       expect(workspace.materialSettings?.backstitchStrands).toBe(2);
-    } finally {
-      await workspace.dispose();
-    }
-  });
-
-  it('preserves every material calibration field through Save As Copy', async () => {
-    const repository = new MemoryRepository();
-    const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'material-copy' });
-    try {
-      await workspace.createProject({ id: 'material-source', width: 1, height: 1 });
-      const settings = { strands: 3, backstitchStrands: 2, waste: 0.18, stitchLengthMeters: 0.125, skeinLengthMeters: 8.4 };
-      await workspace.updateActiveMaterialSettings(settings);
-      await workspace.flush();
-
-      const copy = await workspace.saveAsCopy({ id: 'material-copy' });
-      expect(copy.materialSettings).toEqual(settings);
-      expect((await repository.load('material-copy'))?.metadata.materialSettings).toEqual(settings);
-    } finally {
-      await workspace.dispose();
-    }
-  });
-
-  it('carries the Canvas stitch count and layers through Save As Copy', async () => {
-    const repository = new MemoryRepository();
-    const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'aida-copy' });
-    try {
-      await workspace.createProject({ id: 'aida-source', width: 1, height: 1, aidaCount: 18 });
-      workspace.addLayer(LayerType.Stitch);
-      const copy = await workspace.saveAsCopy({ id: 'aida-copy' });
-      expect(copy.metadata.aidaCount).toBeUndefined();
-      expect(copy.document.settings.aidaCount).toBe(18);
-      expect(copy.layers.map((layer) => layer.name)).toEqual(['Stitches', 'Stitches 2', 'Specialty']);
-      expect((await repository.load('aida-copy'))?.document.settings.aidaCount).toBe(18);
     } finally {
       await workspace.dispose();
     }
@@ -1153,17 +1032,12 @@ describe('headless project workspace', () => {
       expect(workspace.getAsset('reference')?.data).toEqual(pngBytes(2, 3));
       expect((await repository.load('source-image'))?.metadata.sourceImage).toEqual(descriptor);
 
-      const copy = await workspace.saveAsCopy({ id: 'source-image-copy' });
-      expect(copy.sourceImage).toEqual(descriptor);
-      expect(copy.getAsset('reference')?.data).toEqual(pngBytes(2, 3));
-      await workspace.openProject('source-image');
-
       await expect(workspace.setSourceImage({ ...descriptor, assetId: 'missing' })).rejects.toMatchObject({ code: 'invalid-asset' });
       expect(workspace.sourceImage).toEqual(descriptor);
       await expect(workspace.setSourceImage({ ...descriptor, opacity: 1.1 })).rejects.toMatchObject({ code: 'invalid-metadata' });
       await expect(workspace.setSourceImage({ ...descriptor, crop: { x: 0.5, y: 0, width: 0.6, height: 1 } })).rejects.toMatchObject({ code: 'invalid-metadata' });
       expect(workspace.sourceImage).toEqual(descriptor);
-      await workspace.clearSourceImage();
+      await workspace.removeSourceImage();
       expect(workspace.sourceImage).toBeUndefined();
       expect((await repository.load('source-image'))?.metadata.sourceImage).toBeUndefined();
       expect((await repository.load('source-image'))?.assets).toHaveLength(0);
@@ -1338,7 +1212,7 @@ describe('headless project workspace', () => {
       expect(workspace.saveState.status).toBe('error');
 
       repository.failSaves = false;
-      await workspace.retrySave();
+      await workspace.flush();
       expect(workspace.saveState.metadataDirty).toBe(false);
       expect(workspace.error).toBeNull();
       expect((await repository.load('metadata-retry'))?.metadata.title).toBe('After');

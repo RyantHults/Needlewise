@@ -21,7 +21,6 @@ import {
 } from '../domain';
 import {
   cloneLayeredDocument,
-  cloneProjectHealth,
   PersistenceError,
   ProjectRepository,
   type ProjectFolder,
@@ -40,7 +39,6 @@ import {
   type PersistencePreparationClient
 } from '../persistence';
 import { validateAcceptedConversionDraft, type AcceptedConversionDraft } from '../conversion/image-to-pattern';
-import type { ProgressActivity } from '../persistence';
 import type { PatternMetrics } from '../domain';
 import { createCatalogReference, DEFAULT_CATALOG_DEFINITION, INSTALLED_CATALOG_REGISTRY, type CatalogDefinition, type InstalledCatalogRegistry } from '../catalog';
 import { asError, WorkspaceError } from './errors';
@@ -59,7 +57,6 @@ import type {
   CreateConvertedProjectOptions,
   SaveState,
   WorkspaceClock,
-  WorkspaceInitializationOptions,
   WorkspaceOptions,
   WorkspaceRepository
 } from './types';
@@ -125,8 +122,6 @@ export function createStarterDocument(options: Pick<CreateProjectOptions, 'width
   });
 }
 
-export const createStarterPattern = createStarterDocument;
-
 function isLayeredDocument(document: PatternDocument | LayeredDocument): document is LayeredDocument {
   return Array.isArray((document as Partial<LayeredDocument>).layers);
 }
@@ -185,16 +180,8 @@ export class ProjectWorkspace {
     return this.active;
   }
 
-  get activeSession(): ProjectSession | null {
-    return this.active;
-  }
-
   get activeProjectId(): string | null {
     return this.active?.projectId ?? null;
-  }
-
-  get isDisposed(): boolean {
-    return this.disposed;
   }
 
   get metadata(): ProjectMetadata | null {
@@ -242,24 +229,12 @@ export class ProjectWorkspace {
     return this.active?.metrics ?? null;
   }
 
-  get progressMetrics(): PatternMetrics | null {
-    return this.active?.progressMetrics ?? null;
-  }
-
   get materialSettings() {
     return this.active?.materialSettings ?? null;
   }
 
-  get materialAssumptions() {
-    return this.active?.materialAssumptions ?? null;
-  }
-
   get sourceImage(): SourceImageDescriptor | undefined {
     return this.active?.sourceImage;
-  }
-
-  getSourceImage(): SourceImageDescriptor | undefined {
-    return this.sourceImage;
   }
 
   catalogFor(document: Pick<PatternDocument, 'catalog'> | null | undefined): CatalogDefinition | undefined {
@@ -270,32 +245,8 @@ export class ProjectWorkspace {
     return this.catalogRegistry.definitions;
   }
 
-  catalogById(catalogId: string): CatalogDefinition | undefined {
-    return this.catalogRegistry.getById(catalogId);
-  }
-
   getAsset(assetId: string) {
     return this.active?.getAsset(assetId);
-  }
-
-  getMaterialSettings() {
-    return this.materialSettings;
-  }
-
-  getMaterialAssumptions() {
-    return this.materialAssumptions;
-  }
-
-  get sessionStats() {
-    return this.active?.sessionStats ?? null;
-  }
-
-  get activity(): ProgressActivity | null {
-    return this.active?.activity ?? null;
-  }
-
-  get dailyActivity(): ProgressActivity | null {
-    return this.active?.dailyActivity ?? null;
   }
 
   get saveState(): SaveState {
@@ -304,10 +255,6 @@ export class ProjectWorkspace {
 
   get error(): Error | null {
     return this.active?.error ?? this.operationError;
-  }
-
-  get saveStatus(): SaveState['status'] {
-    return this.saveState.status;
   }
 
   get saveError(): Error | null {
@@ -343,9 +290,6 @@ export class ProjectWorkspace {
       save: this.saveState,
       error: this.error,
       metrics: this.metrics,
-      sessionStats: this.sessionStats,
-      activity: this.activity,
-      dailyActivity: this.dailyActivity,
       materialSettings: this.materialSettings,
       sourceImage: this.sourceImage,
       layeredDocument: this.layeredDocument,
@@ -443,7 +387,6 @@ export class ProjectWorkspace {
       head: record.head,
       preparationClient: this.preparationClient,
       assets: record.assets,
-      activity: record.activity,
       history: usingRecovery ? undefined : record.history,
       health: health ?? record.health ?? null,
       usingRecovery,
@@ -465,12 +408,8 @@ export class ProjectWorkspace {
   }
 
   async createProject(options: CreateProjectOptions = {}): Promise<ProjectSession> {
-    return this.createProjectInternal(options, true);
-  }
-
-  private async createProjectInternal(options: CreateProjectOptions, flushExisting: boolean): Promise<ProjectSession> {
     const token = this.startOperation();
-    if (flushExisting) await this.flushActiveBeforeSwitch(token);
+    await this.flushActiveBeforeSwitch(token);
     this.ensureOperation(token);
     if (options.document === undefined && this.catalogRegistry.resolve(DEFAULT_CATALOG_DEFINITION.association) === undefined) {
       throw new WorkspaceError('save-failed', 'The default catalog is not installed; an explicit document is required to create a project.');
@@ -504,10 +443,6 @@ export class ProjectWorkspace {
       if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
       return this.rememberOperationError(error, 'Unable to create the local project.');
     }
-  }
-
-  async createLocalProject(options: CreateProjectOptions = {}): Promise<ProjectSession> {
-    return this.createProject(options);
   }
 
   /**
@@ -573,10 +508,6 @@ export class ProjectWorkspace {
     });
   }
 
-  async createConvertedProject(options: CreateConvertedProjectOptions): Promise<ProjectSession> {
-    return this.createProjectFromConversion(options);
-  }
-
   async updateActiveMetadata(changes: ActiveMetadataChanges): Promise<void> {
     return this.mutateActiveSession('Unable to update the active project metadata.', (session) => session.updateMetadata(changes), { flushWhenImmediate: true });
   }
@@ -585,17 +516,6 @@ export class ProjectWorkspace {
   async updateActiveAidaCount(aidaCount: number | null): Promise<void> {
     if (aidaCount === null) return;
     return this.mutateActiveSession('Unable to update the stitch count.', (session) => { session.setAidaCount(aidaCount); }, { flushWhenImmediate: true });
-  }
-
-  async updateAidaCount(aidaCount: number | null): Promise<void> {
-    return this.updateActiveAidaCount(aidaCount);
-  }
-
-  async listProjectHealth(): Promise<ProjectHealth[]> {
-    return this.runRepositoryOperation('Unable to inspect local project health.', async () => {
-      const health = this.repository.listProjectHealth ? await this.repository.listProjectHealth() : (await this.repository.listProjects()).map((metadata) => ({ projectId: metadata.id, metadata, current: { status: 'valid' as const, revision: metadata.revision }, recovery: { status: 'missing' as const, revision: null }, assets: { status: 'unchecked' as const, count: 0 }, usableRevision: metadata.revision, recoveryAvailable: false, warnings: [] }));
-      return health.map(cloneProjectHealth);
-    }, { supersede: false });
   }
 
   async listProjects(): Promise<ProjectMetadata[]> {
@@ -639,14 +559,6 @@ export class ProjectWorkspace {
 
   async listProjectMetadata(): Promise<ProjectMetadata[]> {
     return this.listProjects();
-  }
-
-  async initialize(options: WorkspaceInitializationOptions = {}): Promise<ProjectSession | undefined> {
-    this.ensureActiveWorkspace();
-    if (options.projectId !== undefined) return this.openProject(options.projectId);
-    const candidates = await this.listProjectMetadata();
-    if (options.autoOpenMostRecent === false) return undefined;
-    return this.selectProject(undefined, candidates);
   }
 
   async openProject(projectId: string): Promise<ProjectSession> {
@@ -695,10 +607,6 @@ export class ProjectWorkspace {
       if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
       return this.rememberOperationError(error, 'Unable to open the local project.');
     }
-  }
-
-  async loadProject(projectId: string): Promise<ProjectSession> {
-    return this.openProject(projectId);
   }
 
   async selectProject(projectId?: string, metadataCandidates?: readonly ProjectMetadata[]): Promise<ProjectSession | undefined> {
@@ -787,48 +695,6 @@ export class ProjectWorkspace {
       if (!this.repository.moveFolder) throw new WorkspaceError('save-failed', 'This repository cannot move folders.');
       await this.repository.moveFolder(folderId, parentId);
     }, { supersede: true });
-  }
-
-  async promoteRecovery(revision?: number): Promise<ProjectSession> {
-    const session = this.ensureActiveSession();
-    if (!session.usingRecovery) return session;
-    if (!this.repository.promoteRecoveryRevision) throw new WorkspaceError('recovery-promotion-required', 'This repository cannot promote recovery revisions.');
-    const token = this.startOperation();
-    const record = await this.repository.promoteRecoveryRevision(session.projectId, revision);
-    this.ensureOperation(token);
-    const promoted = this.makeSession(record, false, record.health ?? null);
-    this.ensureOperation(token);
-    this.setActive(promoted);
-    this.operationError = null;
-    this.notify();
-    return promoted;
-  }
-
-  async promoteRecoveryRevision(revision?: number): Promise<ProjectSession> {
-    return this.promoteRecovery(revision);
-  }
-
-  async restoreRecovery(revision?: number): Promise<ProjectSession> {
-    return this.promoteRecovery(revision);
-  }
-
-  async forkActiveProject(options: CreateProjectOptions = {}): Promise<ProjectSession> {
-    const source = this.ensureActiveSession();
-    if (source.saveState.status !== 'conflict' && source.saveState.status !== 'error') await source.flush();
-    const projectId = options.id ?? this.projectIdFactory();
-    const copiedMaterialSettings = options.materialSettings ?? source.metadata.materialSettings;
-    const copiedUnits = options.units === undefined ? source.metadata.units : options.units;
-    const copiedSourceImage = options.sourceImage ?? source.sourceImage;
-    // When the caller supplies custom assets without a matching descriptor,
-    // the source reference would dangle, so only carry it when the asset set
-    // is the source set (or a matching descriptor was supplied explicitly).
-    const carrySourceImage = copiedSourceImage !== undefined && (options.assets === undefined || options.sourceImage !== undefined);
-    const copy = await this.createProjectInternal({ ...options, id: projectId, title: options.title ?? `${source.metadata.title} copy`, notes: options.notes ?? source.metadata.notes, units: copiedUnits, document: cloneLayeredDocument(source.layeredDocument), assets: options.assets ?? source.assets, ...(copiedMaterialSettings === undefined ? {} : { materialSettings: copiedMaterialSettings }), ...(carrySourceImage && copiedSourceImage !== undefined ? { sourceImage: copiedSourceImage } : {}) }, false);
-    return copy;
-  }
-
-  async saveAsCopy(options: CreateProjectOptions = {}): Promise<ProjectSession> {
-    return this.forkActiveProject(options);
   }
 
   async renameProject(projectId: string, title: string): Promise<ProjectMetadata> {
@@ -934,10 +800,6 @@ export class ProjectWorkspace {
     return this.ensureActiveSession().duplicateLayer(layerId);
   }
 
-  mergeLayer(sourceId: number, targetId: number) {
-    return this.ensureActiveSession().mergeLayer(sourceId, targetId);
-  }
-
   mergeSelectedLayers() {
     return this.ensureActiveSession().mergeSelectedLayers();
   }
@@ -966,19 +828,11 @@ export class ProjectWorkspace {
     return this.updateActiveMaterialSettings(changes);
   }
 
-  async updateMaterialAssumptions(changes: Parameters<ProjectSession['updateMaterialSettings']>[0]): Promise<void> {
-    return this.updateActiveMaterialSettings(changes);
-  }
-
   async setActiveSourceImage(settings: SourceImageSettingsInput): Promise<void> {
     return this.mutateActiveSession('Unable to update the active source image.', (session) => session.setSourceImage(settings), { flushWhenImmediate: true });
   }
 
   async setSourceImage(settings: SourceImageSettingsInput): Promise<void> {
-    return this.setActiveSourceImage(settings);
-  }
-
-  async updateSourceImageSettings(settings: SourceImageSettingsInput): Promise<void> {
     return this.setActiveSourceImage(settings);
   }
 
@@ -997,21 +851,9 @@ export class ProjectWorkspace {
     return this.mutateActiveSession('Unable to replace the active source image.', (session) => session.replaceSourceImage(input, settings), { flushWhenImmediate: false });
   }
 
-  async replaceSourceImageAsset(input: SourceImageReplacementInput | ProjectAssetInput, settings?: SourceImageSettingsInput): Promise<void> {
-    return this.replaceSourceImage(input, settings);
-  }
-
-  async clearSourceImage(): Promise<void> {
-    return this.removeSourceImage();
-  }
-
   /** Atomically removes the source-image descriptor and its retained asset. */
   async removeSourceImage(): Promise<void> {
     return this.mutateActiveSession('Unable to clear the active source image.', (session) => session.removeSourceImage(), { flushWhenImmediate: false });
-  }
-
-  async removeSourceImageAsset(): Promise<void> {
-    return this.removeSourceImage();
   }
 
   executeBatch(commands: readonly DomainCommand[]) {
@@ -1050,13 +892,6 @@ export class ProjectWorkspace {
     return this.active?.canRedoMark ?? false;
   }
 
-  async retrySave(): Promise<void> {
-    const session = this.ensureActiveSession();
-    await session.retrySave();
-    this.operationError = null;
-    this.notify();
-  }
-
   async flush(): Promise<void> {
     this.ensureActiveWorkspace();
     if (this.active) await this.active.flush();
@@ -1082,16 +917,6 @@ export class ProjectWorkspace {
     if (failure) throw failure;
   }
 }
-
-export const ApplicationService = ProjectWorkspace;
-export const ProjectWorkspaceService = ProjectWorkspace;
-export const WorkspaceService = ProjectWorkspace;
-
-export function createWorkspace(options: WorkspaceOptions = {}): ProjectWorkspace {
-  return new ProjectWorkspace(options);
-}
-
-export const createApplicationService = createWorkspace;
 
 export function getEmptyWorkspaceState(): ActiveWorkspaceState {
   return emptyState();

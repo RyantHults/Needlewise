@@ -2,7 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { PDFArray, PDFDocument, decodePDFRawStream, type PDFRawStream } from 'pdf-lib';
 import { describe, expect, it } from 'vitest';
-import { applyCommand, CellKind, computePatternMetrics, createDocument, HalfDirection, QuarterCorner, type PatternDocument } from '../domain';
+import { CellKind, computePatternMetrics, createDocument, HalfDirection, QuarterCorner, type PatternDocument } from '../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { getSymbolOutline, SYMBOL_POOL_VERSION } from '../symbols';
 import { DEFAULT_EXPORT_SETTINGS, type ExportSettings } from './export-settings';
@@ -21,6 +21,7 @@ import {
   writePatternPdf,
   type PdfPatternInput
 } from './pdf-writer';
+import { applyCommand } from '../domain/test-fixtures';
 
 const fontBytes = new Uint8Array(readFileSync(new URL('../../fonts/LibertinusMath-Regular.ttf', import.meta.url)));
 // 1x1 PNG.

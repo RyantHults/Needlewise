@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import type { ModelPoint } from './contracts';
 import {
+  appendLassoPoint,
   combineSelection,
-  lassoCellIndices,
   MAX_LASSO_PATH_POINTS,
-  normalizeLassoPath,
   appendLassoRasterPoint,
   createLassoRasterAccumulator,
   finishLassoRaster,
@@ -11,6 +11,13 @@ import {
   selectionBoundarySegments,
   sparseSelectionGeometry
 } from './lasso';
+
+function lassoCellIndices(points: readonly ModelPoint[], width: number, height: number, startingPoint?: ModelPoint): Uint32Array {
+  const [first, ...rest] = points;
+  const accumulator = createLassoRasterAccumulator(width, height, first, startingPoint);
+  for (const point of rest) appendLassoRasterPoint(accumulator, point);
+  return finishLassoRaster(accumulator);
+}
 
 describe('lasso geometry', () => {
   it('normalizes indices to sorted unique cells in the document', () => {
@@ -57,7 +64,8 @@ describe('lasso geometry', () => {
       x: index,
       y: index % 2 === 0 ? 0 : 1
     }));
-    const path = normalizeLassoPath(samples);
+    const path: ModelPoint[] = [];
+    for (const sample of samples) appendLassoPoint(path, sample);
     expect(path.length).toBeLessThanOrEqual(MAX_LASSO_PATH_POINTS);
     expect(path[0]).toEqual(samples[0]);
     expect(path.at(-1)).toEqual(samples.at(-1));
@@ -100,7 +108,7 @@ describe('lasso geometry', () => {
     expect(finishLassoRaster(accumulator)).toEqual(new Uint32Array());
   });
 
-  it('keeps an above-cap concave notch exactly equivalent to the uncapped reference', () => {
+  it('keeps an above-cap concave notch exact', () => {
     const corners = [
       { x: 0, y: 0 }, { x: 8, y: 0 }, { x: 8, y: 8 }, { x: 5, y: 8 },
       { x: 5, y: 3 }, { x: 3, y: 3 }, { x: 3, y: 8 }, { x: 0, y: 8 }
@@ -113,10 +121,10 @@ describe('lasso geometry', () => {
       }));
     });
     expect(points.length).toBeGreaterThan(MAX_LASSO_PATH_POINTS);
-    const reference = lassoCellIndices(points, 8, 8, { x: 0.5, y: 0.5 });
-    const accumulator = createLassoRasterAccumulator(8, 8, points[0], { x: 0.5, y: 0.5 });
-    for (const point of points.slice(1)) appendLassoRasterPoint(accumulator, point);
-    expect(finishLassoRaster(accumulator)).toEqual(reference);
+    expect(Array.from(lassoCellIndices(points, 8, 8, { x: 0.5, y: 0.5 }))).toEqual([
+      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
+      29, 30, 31, 32, 33, 34, 37, 38, 39, 40, 41, 42, 45, 46, 47, 48, 49, 50, 53, 54, 55, 56, 57, 58, 61, 62, 63
+    ]);
   });
 
   it('keeps above-cap cell-centre boundary paths exact', () => {
@@ -128,9 +136,6 @@ describe('lasso geometry', () => {
         y: corner.y + (next.y - corner.y) * step / 700
       }));
     });
-    const reference = lassoCellIndices(points, 7, 5, { x: 0.5, y: 0.5 });
-    const accumulator = createLassoRasterAccumulator(7, 5, points[0], { x: 0.5, y: 0.5 });
-    for (const point of points.slice(1)) appendLassoRasterPoint(accumulator, point);
-    expect(finishLassoRaster(accumulator)).toEqual(reference);
+    expect(Array.from(lassoCellIndices(points, 7, 5, { x: 0.5, y: 0.5 }))).toEqual(Array.from({ length: 35 }, (_, index) => index));
   });
 });

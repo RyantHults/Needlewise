@@ -1,12 +1,13 @@
 import 'fake-indexeddb/auto';
 import { StrictMode } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
-import { createDocument as createSurfaceDocument, createLayeredDocument as createDocument, createPatternFragment, CellKind, flattenDocument, LayerType } from '../domain';
+import { describe, expect, it, vi, type MockInstance } from 'vitest';
+import { createDocument as createSurfaceDocument, createPatternFragment, CellKind, flattenDocument, LayerType } from '../domain';
 import { clearClipboard, readClipboard, writeClipboard, type ClipboardEntry } from '../editor/clipboard-store';
 import { NeedlewiseDatabase, ProjectRepository, type ProjectMetadata } from '../persistence';
 import { ProjectWorkspace, useProjectWorkspace } from './index';
 import { createInstalledCatalogRegistry, DEFAULT_CATALOG_DEFINITION } from '../catalog';
+import { createLayeredDocument as createDocument } from '../domain/test-fixtures';
 
 let databaseCounter = 1000;
 
@@ -41,10 +42,10 @@ describe('ProjectWorkspace observable adapter', () => {
   it('forwards the injected catalog registry to the workspace factory unchanged', async () => {
     const repository = makeRepository();
     const catalogRegistry = createInstalledCatalogRegistry([DEFAULT_CATALOG_DEFINITION]);
-    let createdWorkspace: ProjectWorkspace | undefined;
+    let dispose: MockInstance<ProjectWorkspace['dispose']> | undefined;
     const factory = vi.fn((options: ConstructorParameters<typeof ProjectWorkspace>[0]) => {
       const workspace = new ProjectWorkspace(options);
-      createdWorkspace = workspace;
+      dispose = vi.spyOn(workspace, 'dispose');
       return workspace;
     });
     const rendered = renderHook(() => useProjectWorkspace({ repository, catalogRegistry, workspaceFactory: factory, autoOpenMostRecent: false }));
@@ -54,7 +55,7 @@ describe('ProjectWorkspace observable adapter', () => {
       expect(factory.mock.calls[0]?.[0]?.catalogRegistry).toBe(catalogRegistry);
     } finally {
       rendered.unmount();
-      await waitFor(() => expect(createdWorkspace?.isDisposed).toBe(true));
+      await waitFor(() => expect(dispose).toHaveBeenCalledOnce());
       await deleteRepository(repository);
     }
   });
@@ -65,11 +66,10 @@ describe('ProjectWorkspace observable adapter', () => {
     await repository.save('older', projectMetadata('older', 0, 10), document);
     await repository.save('newer', projectMetadata('newer', 0, 20), document);
     const listProjects = vi.spyOn(repository, 'listProjects');
-    const listProjectHealth = vi.spyOn(repository, 'listProjectHealth');
-    let createdWorkspace: ProjectWorkspace | undefined;
+    let dispose: MockInstance<ProjectWorkspace['dispose']> | undefined;
     const factory = vi.fn((options: ConstructorParameters<typeof ProjectWorkspace>[0]) => {
       const workspace = new ProjectWorkspace(options);
-      createdWorkspace = workspace;
+      dispose = vi.spyOn(workspace, 'dispose');
       return workspace;
     });
     const rendered = renderHook(() => useProjectWorkspace({ repository, workspaceFactory: factory }), { wrapper: StrictMode });
@@ -77,12 +77,11 @@ describe('ProjectWorkspace observable adapter', () => {
       await waitFor(() => expect(rendered.result.current.initialized).toBe(true));
       expect(factory).toHaveBeenCalledTimes(1);
       expect(listProjects).toHaveBeenCalledOnce();
-      expect(listProjectHealth).not.toHaveBeenCalled();
       expect(rendered.result.current.projects.map((project) => project.id)).toEqual(['newer', 'older']);
       expect(rendered.result.current.state.projectId).toBe('newer');
     } finally {
       rendered.unmount();
-      await waitFor(() => expect(createdWorkspace?.isDisposed).toBe(true));
+      await waitFor(() => expect(dispose).toHaveBeenCalledOnce());
       await deleteRepository(repository);
     }
   });

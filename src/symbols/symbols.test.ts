@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import committedSelection from './selection.json';
 import committedOutlines from './outlines.generated.json';
 import {
-  SYMBOL_COUNT,
   SYMBOL_FONTS,
   SYMBOL_IDS,
   SYMBOL_OUTLINES,
@@ -27,14 +26,13 @@ import {
  */
 describe('symbol pool loader', () => {
   it('reads a non-empty pool, so the invariants below are not vacuous', () => {
-    expect(SYMBOL_COUNT).toBeGreaterThan(0);
+    expect(SYMBOL_IDS.length).toBeGreaterThan(0);
     expect(Object.keys(SYMBOL_FONTS).length).toBeGreaterThan(0);
   });
 
   it('exposes a versioned pool', () => {
     expect(SYMBOL_POOL_VERSION).toBe(3);
-    expect(SYMBOL_COUNT).toBe(SYMBOL_IDS.length);
-    expect(SYMBOL_POOL).toHaveLength(SYMBOL_COUNT);
+    expect(SYMBOL_POOL).toHaveLength(SYMBOL_IDS.length);
   });
 
   it('exposes the fonts the pool was drawn from', () => {

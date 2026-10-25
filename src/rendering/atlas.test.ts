@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { CellKind, createDocumentEditor, createLayeredDocument, layerSetVisibilityCommand, layerAddCommand, type PatternDocument } from '../domain';
+import { CellKind, DocumentEditor, layerSetVisibilityCommand, layerAddCommand, type PatternDocument } from '../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { DEFAULT_RENDERER_STYLE, type CanvasContextAdapter, type CanvasTarget, type RendererStyle } from '../editor/contracts';
 import { ColorAtlasCache, SymbolAtlasCache, overviewColorForPaletteId, paintOverviewCell } from './atlas';
+import { createLayeredDocument } from '../domain/test-fixtures';
 
 /** A context that paints fillRect into a pixel grid and counts full-atlas rebuilds. */
 function pixelTarget(width: number, height: number): CanvasTarget & { pixels: string[][]; fills: number } {
@@ -50,7 +51,7 @@ const PALETTE = [
 ];
 
 function editorWithTwoStitchLayers(size = 4) {
-  const editor = createDocumentEditor(createLayeredDocument({ width: size, height: size, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: PALETTE }));
+  const editor = new DocumentEditor(createLayeredDocument({ width: size, height: size, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: PALETTE }));
   editor.execute(layerAddCommand('stitch'));
   for (let y = 0; y < size; y += 1) {
     for (let x = 0; x < size; x += 1) editor.execute({ type: 'set-full', x, y, color: 1, layerId: 1 });

@@ -1,8 +1,9 @@
 import { act, fireEvent, render } from '@testing-library/react';
 import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyLayerStructureCommand, CellKind, createLayeredDocument, layerAddCommand, layerSetVisibilityCommand, type LayeredDocument, type StitchLayer } from '../../domain';
+import { applyLayerStructureCommand, CellKind, layerAddCommand, layerSetVisibilityCommand, type LayeredDocument, type StitchLayer } from '../../domain';
 import { LAYER_LONG_PRESS_MS, LayersPanel } from './LayersPanel';
+import { createLayeredDocument } from '../../domain/test-fixtures';
 
 const thumbnails = vi.hoisted(() => ({ render: vi.fn(), paint: vi.fn() }));
 vi.mock('../../rendering/layer-thumbnail', async () => {

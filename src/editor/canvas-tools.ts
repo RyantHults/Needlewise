@@ -70,13 +70,6 @@ export function canvasOvalSelection(anchor: ModelPoint, current: ModelPoint, wor
   return canvasCellSet(indices, workspace);
 }
 
-/** True when the local cell belongs to the set. */
-export function canvasCellSetContains(set: CanvasCellSet, x: number, y: number): boolean {
-  const { rect, cells } = set;
-  if (x < rect.x || y < rect.y || x >= rect.x + rect.width || y >= rect.y + rect.height) return false;
-  return cells === undefined || cells[(y - rect.y) * rect.width + x - rect.x] === 1;
-}
-
 /** The number of cells in the set. */
 export function canvasCellSetSize(set: CanvasCellSet): number {
   if (set.cells === undefined) return set.rect.width * set.rect.height;

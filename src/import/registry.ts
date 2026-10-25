@@ -22,18 +22,7 @@ const pdfDescriptor: PatternImporter = {
   }
 };
 
-const importers: PatternImporter[] = [pdfDescriptor];
-
-/** Adds an importer; one with the same id replaces the earlier one. */
-export function registerImporter(importer: PatternImporter): void {
-  const existing = importers.findIndex((candidate) => candidate.id === importer.id);
-  if (existing === -1) importers.push(importer);
-  else importers[existing] = importer;
-}
-
-export function listImporters(): readonly PatternImporter[] {
-  return importers;
-}
+const importers: readonly PatternImporter[] = [pdfDescriptor];
 
 /** Joined `accept` list for an `<input accept>`. */
 export function importerAccept(): string {

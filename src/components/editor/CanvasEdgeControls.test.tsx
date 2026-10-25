@@ -4,8 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { CanvasEdgeControls } from './CanvasEdgeControls';
 import { LayerControls } from './LayerControls';
 import { CANVAS_BASIC_LOCKED_HINT } from '../../editor/contracts';
-import { createLayeredDocument } from '../../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../../catalog';
+import { createLayeredDocument } from '../../domain/test-fixtures';
 
 function controllerMock() {
   return {

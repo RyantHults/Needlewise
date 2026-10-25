@@ -384,5 +384,3 @@ export class PersistencePreparationWorkerClient implements PersistencePreparatio
 export function createPersistencePreparationClient(options: PersistencePreparationClientOptions = {}): PersistencePreparationClient {
   return new PersistencePreparationWorkerClient(options);
 }
-
-export const createDocumentPreparationClient = createPersistencePreparationClient;

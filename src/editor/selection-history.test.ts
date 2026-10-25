@@ -4,7 +4,7 @@ import { STITCH_LAYER_ID } from '../domain/test-fixtures';
 import { getCanvasMetrics } from './coordinates';
 import type { EditorSurfaceController } from './controller';
 import type { PointerSample } from './input';
-import { fixture as layeredFixture, LayeredTestBoundary, plainDocument } from './test-support';
+import { at, drag, fixture as layeredFixture, LayeredTestBoundary, plainDocument } from './test-support';
 
 const ZOOM = 16;
 const WIDTH = 10;
@@ -22,15 +22,7 @@ function fixture() {
   return { boundary, controller, uiStore, switchProject, kind };
 }
 
-function at(pointerId: number, x: number, y: number, extra: Partial<PointerSample> = {}): PointerSample {
-  return { pointerId, pointerType: 'mouse', screenX: (x + 0.5) * ZOOM, screenY: (y + 0.5) * ZOOM, button: 0, buttons: 1, isPrimary: true, ...extra };
-}
 
-function drag(controller: EditorSurfaceController, from: { x: number; y: number }, to: { x: number; y: number }): void {
-  controller.handlePointerDown(at(1, from.x, from.y));
-  controller.handlePointerMove(at(1, to.x, to.y));
-  controller.handlePointerUp(at(1, to.x, to.y));
-}
 
 function click(controller: EditorSurfaceController, x: number, y: number): void {
   controller.handlePointerDown(at(1, x, y));

@@ -219,6 +219,3 @@ export function createPointerEventsAdapter(
     }
   };
 }
-
-export const createDomPointerEventsAdapter = createPointerEventsAdapter;
-export const createPointerAdapter = createPointerEventsAdapter;

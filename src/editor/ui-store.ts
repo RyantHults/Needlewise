@@ -10,7 +10,6 @@ import {
   type BrushSizeTool,
   type CanvasEditMode,
   type ToolBrushSizes,
-  type AuthoringStitchBrush,
   type ModelPoint,
   type OverlayState,
   type SelectedCellSemantics,
@@ -197,10 +196,6 @@ export function createUiStore(initial: Partial<EditorUiState> = {}): EditorUiSto
       store.setState({ tool: { tool: 'paint', brush }, paletteId: brush.paletteId });
     },
 
-    setAuthoringBrush(brush: AuthoringStitchBrush): void {
-      store.setBrush(brush);
-    },
-
     setPaletteId(paletteId: number | null): void {
       store.setState({ paletteId });
     },
@@ -261,5 +256,3 @@ export function createUiStore(initial: Partial<EditorUiState> = {}): EditorUiSto
   };
   return store;
 }
-
-export const createEditorUiStore = createUiStore;

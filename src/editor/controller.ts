@@ -64,7 +64,6 @@ import type {
   CanvasEditPreview,
   CellRect,
   BackstitchMode,
-  AuthoringStitchBrush,
   EditorToolState,
   EditorUiStore,
   FixedPoint,
@@ -82,7 +81,6 @@ import type {
   TraceImage,
   TraceImageSampler,
   TraceRgb,
-  TraceSampleCallback,
   StitchBrush,
   Viewport,
   EditorActiveLayer,
@@ -101,13 +99,13 @@ import {
   moveOverwritesProtected
 } from './focus-color';
 import {
+  clampViewport,
   fitViewport,
-  hitTestCell,
   isFiniteModelPoint,
   isFiniteScreenPoint,
   isFiniteViewport,
-  normalizeViewport,
   screenToCell,
+  screenToCellUnclamped,
   screenToModel,
   zoomAt,
   zoomBy,
@@ -192,12 +190,9 @@ export interface EditorSurfaceControllerOptions {
   readonly traceImage?: TraceImage;
   readonly traceSampler?: TraceImageSampler;
   readonly catalogDefinition?: CatalogDefinition;
-  readonly onTraceSample?: TraceSampleCallback;
   readonly onTraceBoundsChange?: TraceBoundsChangeCallback;
   /** Brief user-facing messages: paste routing and disabled-tool hints. */
   readonly onNotice?: EditorNoticeCallback;
-  /** Called after the canvas origin moved, once the view has been shifted to keep the design still. */
-  readonly onCanvasOriginChange?: CanvasOriginChangeCallback;
   /**
    * Pan and zoom only: tools, history, selection and paste are refused and
    * every pointer drag pans. Kept for the read-only Track viewer.
@@ -206,9 +201,6 @@ export interface EditorSurfaceControllerOptions {
 }
 
 export type EditorNoticeCallback = (message: string) => void;
-
-/** The new canvas origin (where local 0,0 sits in the workspace frame) and the local shift the view took, old minus new. */
-export type CanvasOriginChangeCallback = (origin: ModelPoint, shift: ModelPoint) => void;
 
 export interface EditorSurfaceControllerLifecycle {
   start(): void;
@@ -230,7 +222,6 @@ export interface EditorSurfaceControllerLifecycle {
   setToolBrushSize(tool: BrushSizeTool, size: number): void;
   setTraceImage(trace: TraceImage | undefined): void;
   clearTraceImage(): void;
-  setTraceSampleCallback(callback: TraceSampleCallback | undefined): void;
   dispose(): void;
 }
 
@@ -653,10 +644,7 @@ function editForBrush(brush: StitchBrush, pointerDownCorner?: QuarterCorner): Bu
     const direction = brush.direction ?? DEFAULT_HALF_DIRECTION;
     return { kind: 'half', direction, color: brush.paletteId };
   }
-  if (brush.kind === 'three-quarter') {
-    return { kind: 'three-quarter', corner: pointerDownCorner ?? QuarterCorner.NW, color: brush.paletteId };
-  }
-  return { kind: 'quarter', corner: brush.corner, color: brush.paletteId };
+  return { kind: 'three-quarter', corner: pointerDownCorner ?? QuarterCorner.NW, color: brush.paletteId };
 }
 
 function indicesForCells(cells: readonly ModelPoint[], width: number): Uint32Array {
@@ -966,8 +954,6 @@ export function normalizeGridRect(start: ModelPoint, end: ModelPoint): GridRect 
   const bottom = Math.max(Math.floor(start.y), Math.floor(end.y)) + 1;
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
-
-export const gridRectFromPoints = normalizeGridRect;
 
 function boundedGridRect(rect: GridRect, document: PatternDocument): GridRect | undefined {
   return intersectRect(rect, { x: 0, y: 0, width: document.width, height: document.height });
@@ -1519,7 +1505,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private traceImage: TraceImage | undefined;
   private readonly traceSampler: TraceImageSampler;
   private readonly catalogDefinition: CatalogDefinition | undefined;
-  private traceSampleCallback: TraceSampleCallback | undefined;
   private traceBoundsChangeCallback: TraceBoundsChangeCallback | undefined;
   /** Tool to restore when leaving move/resize-image mode via Escape or a toggle click. */
   private imageToolPreviousTool: EditorToolState | null = null;
@@ -1563,7 +1548,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private canvasEdgeDrag: CanvasEdgeDrag | undefined;
   /** The canvas origin the view was last framed for, so an origin change can shift the view. */
   private canvasFrame: { readonly projectId: string | null; readonly originX: number; readonly originY: number } | undefined;
-  private canvasOriginChangeCallback: CanvasOriginChangeCallback | undefined;
   /** Selection and document steps in the order the user made them; it lives only as long as the project is open. */
   private undoTimeline: TimelineEntry[] = [];
   private redoTimeline: TimelineEntry[] = [];
@@ -1583,10 +1567,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.traceImage = options.traceImage;
     this.traceSampler = options.traceSampler ?? ((trace, document, viewport, metrics, point) => sampleTraceImage(trace, document, viewport, metrics, point));
     this.catalogDefinition = options.catalogDefinition;
-    this.traceSampleCallback = options.onTraceSample;
     this.traceBoundsChangeCallback = options.onTraceBoundsChange;
     this.noticeCallback = options.onNotice;
-    this.canvasOriginChangeCallback = options.onCanvasOriginChange;
     this.readOnly = options.readOnly === true;
     this.touchMovementOnly = this.readOnly;
     if (this.traceImage) this.renderer.setTraceImage?.(this.traceImage);
@@ -1605,7 +1587,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.lastGatewaySnapshot = this.gateway.getSnapshot();
     this.onGatewaySnapshot(this.lastGatewaySnapshot, true);
     const initialDocument = this.lastGatewaySnapshot.document;
-    if (initialDocument && this.metrics) this.projectViewport(normalizeViewport(this.uiStore.getState().viewport, initialDocument, this.metrics, this.viewportOptions));
+    if (initialDocument && this.metrics) this.projectViewport(clampViewport(this.uiStore.getState().viewport, this.viewportOptions));
     this.projectUiState(this.uiStore.getState());
   }
 
@@ -1717,23 +1699,12 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return true;
   }
 
-  /** Receive brief user-facing messages: paste routing and disabled-tool hints. */
-  setNoticeCallback(callback: EditorNoticeCallback | undefined): void {
-    this.noticeCallback = callback;
-  }
-
   /** Select the Backstitch tool in the given mode; refused like `setTool` off a specialty layer. */
   setBackstitchMode(mode: BackstitchMode): boolean {
     const current = this.uiStore.getState().tool;
     if (current.tool === 'backstitch' && (current.mode ?? 'draw') === mode) return true;
     if (current.tool === 'backstitch' && this.gesture?.kind === 'backstitch') this.cancelGesture();
     return this.setTool({ tool: 'backstitch', mode });
-  }
-
-  setEraserCorner(corner: 0 | 1 | 2 | 3): void {
-    this.eraserCorner = corner;
-    const current = this.uiStore.getState().tool;
-    if (current.tool === 'eraser') this.uiStore.setTool({ ...current, corner });
   }
 
   getSelection(): GridRect | undefined {
@@ -1835,10 +1806,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.selection = undefined;
     this.selectionAnchor = undefined;
     this.publishSelectionOverlay();
-  }
-
-  getClipboard(): PatternFragment | undefined {
-    return readClipboard()?.fragment;
   }
 
   private captureMoveSelection(document: PatternDocument, selection: FinalizedSelection): MoveCapture | undefined {
@@ -2094,10 +2061,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       : `This pattern has no room for ${String(needed)} more ${needed === 1 ? 'color' : 'colors'}`);
   }
 
-  pasteClipboard(): boolean {
-    return this.pasteSelection();
-  }
-
   confirmFloatingPaste(): boolean {
     return this.commitFloatingPaste();
   }
@@ -2255,19 +2218,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return true;
   }
 
-  cancelActiveFill(): boolean {
-    return this.cancelFill();
-  }
-
-  fillAt(cell?: ModelPoint): boolean {
-    const target = cell ?? this.uiStore.getState().keyboardCursor ?? { x: 0, y: 0 };
-    return this.startFillAt(target);
-  }
-
-  isFillPending(): boolean {
-    return this.fillJob !== undefined;
-  }
-
   getSelectedBackstitchId(): number | undefined {
     return this.selectedBackstitchId;
   }
@@ -2327,10 +2277,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   /** The effective Canvas-layer edit mode: 'advanced' whenever the canvas is not a rectangle. */
-  getCanvasMode(): CanvasEditMode {
-    return this.effectiveCanvasMode();
-  }
-
   /** False while the canvas is not a rectangle; Basic mode is then locked. */
   isCanvasBasicAvailable(): boolean {
     return this.gateway.getSnapshot().document?.canvasMask === undefined;
@@ -2359,10 +2305,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   /** True while crop mode (canvas editing) is on. */
-  getCanvasCropActive(): boolean {
-    return this.uiStore.getState().canvasCropActive;
-  }
-
   /**
    * Turn crop mode (canvas editing) on or off. It only turns on with the Canvas
    * layer selected. Turning it off cancels any canvas gesture or edge drag,
@@ -2384,10 +2326,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (state.activeLayer?.kind === 'canvas' && !this.toolAvailable(state.tool, state.activeLayer).enabled) this.setTool({ tool: 'pan' });
     this.publishCanvasOverlay();
     return true;
-  }
-
-  setCanvasOriginChangeCallback(callback: CanvasOriginChangeCallback | undefined): void {
-    this.canvasOriginChangeCallback = callback;
   }
 
   /** The finalized canvas selection in local cells, which may extend beyond the canvas. */
@@ -2587,7 +2525,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.selectionAnchor = undefined;
       this.publishSelectionOverlay();
     }
-    this.canvasOriginChangeCallback?.({ x: originX, y: originY }, { x: dx, y: dy });
   }
 
   /**
@@ -2759,29 +2696,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return normalizeBrushSize(this.uiStore.getBrushSize?.() ?? this.uiStore.getState().brushSize ?? 1);
   }
 
-  setBrushSize(size: number): void {
-    this.uiStore.setBrushSize(normalizeBrushSize(size));
-  }
-
   setToolBrushSize(tool: BrushSizeTool, size: number): void {
     this.uiStore.setToolBrushSize(tool, normalizeBrushSize(size));
-  }
-
-  setAuthoringBrush(brush: AuthoringStitchBrush): void {
-    this.setBrush(brush);
   }
 
   setChartMode(mode: Parameters<EditorUiStore['setMode']>[0]): void {
     this.uiStore.setMode(mode);
     this.uiStore.setThreadView(false);
-  }
-
-  setMode(mode: Parameters<EditorUiStore['setMode']>[0]): void {
-    this.setChartMode(mode);
-  }
-
-  setGridVisible(visible: boolean): void {
-    this.uiStore.setGridVisible(visible);
   }
 
   setThreadView(on: boolean): void {
@@ -2803,7 +2724,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.metrics = metrics;
     this.renderer.setMetrics(metrics);
     const snapshot = this.gateway.getSnapshot();
-    if (snapshot.document) this.projectViewport(normalizeViewport(this.uiStore.getState().viewport, snapshot.document, metrics, this.viewportOptions));
+    if (snapshot.document) this.projectViewport(clampViewport(this.uiStore.getState().viewport, this.viewportOptions));
   }
 
   setTraceImage(trace: TraceImage | undefined): void {
@@ -2824,10 +2745,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   getTraceImage(): TraceImage | undefined {
     return this.traceImage ?? this.renderer.getTraceImage?.();
-  }
-
-  setTraceSampleCallback(callback: TraceSampleCallback | undefined): void {
-    this.traceSampleCallback = callback;
   }
 
   sampleTraceAt(point: ScreenPoint): TraceRgb | undefined {
@@ -2908,20 +2825,14 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       && suppliedDefinition.association.colorCount === document.catalog.colorCount
       ? suppliedDefinition
       : undefined;
-    if (!document || !definition) {
-      this.traceSampleCallback?.(rgb);
-      return false;
-    }
+    if (!document || !definition) return false;
     const matched = definition.nearest({ r: rgb.r, g: rgb.g, b: rgb.b });
     const existing = matched === undefined ? undefined : document.palette.find((entry) => entry.active
       && entry.catalog?.catalogId === definition.association.catalogId
       && entry.catalog.sourceId === matched.sourceId);
     const paletteId = existing?.id;
     if (paletteId === undefined) {
-      if (!matched) {
-        this.traceSampleCallback?.(rgb);
-        return false;
-      }
+      if (!matched) return false;
       try {
         const result = this.gateway.execute({
           type: 'palette-create',
@@ -2938,7 +2849,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     } else {
       this.activatePickedColor(paletteId);
     }
-    this.traceSampleCallback?.(rgb);
     return true;
   }
 
@@ -3109,38 +3019,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return true;
   }
 
-  pointerDown(sample: PointerSample): boolean {
-    return this.handlePointerDown(sample);
-  }
-
-  pointerMove(sample: PointerSample): boolean {
-    return this.handlePointerMove(sample);
-  }
-
-  pointerUp(sample: PointerSample): boolean {
-    return this.handlePointerUp(sample);
-  }
-
-  pointerCancel(sample: PointerSample): boolean {
-    return this.handlePointerCancel(sample);
-  }
-
-  pointerLostCapture(sample: PointerSample): boolean {
-    return this.handlePointerLostCapture(sample);
-  }
-
-  wheel(sample: WheelSample): boolean {
-    return this.handleWheel(sample);
-  }
-
-  keyDown(sample: KeyboardSample): boolean {
-    return this.handleKeyDown(sample);
-  }
-
-  keyUp(sample: KeyboardSample): boolean {
-    return this.handleKeyUp(sample);
-  }
-
   /** Select a palette entry returned by a successful palette-create command. */
   selectCreatedPalette(paletteId: number): void {
     this.setPaletteSelection(paletteId);
@@ -3164,9 +3042,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
           ? { kind: 'full', paletteId }
           : brush.kind === 'half'
             ? { kind: 'half', ...(brush.direction === undefined ? {} : { direction: brush.direction }), paletteId }
-            : brush.kind === 'three-quarter'
-              ? { kind: 'three-quarter', paletteId }
-              : { kind: 'quarter', corner: brush.corner, paletteId };
+            : { kind: 'three-quarter', paletteId };
       this.uiStore.setState({ paletteId, tool: { tool: 'paint', brush: nextBrush } });
     } else {
       this.uiStore.setState({ paletteId });
@@ -3904,7 +3780,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   private paintHitCell(sample: PointerSample, document: PatternDocument): ModelPoint | undefined {
     if (!validScreenSample(sample) || !isFiniteViewport(this.uiStore.getState().viewport)) return undefined;
-    const cell = hitTestCell({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport);
+    const cell = screenToCellUnclamped({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport);
     return cell.x < 0 || cell.y < 0 || cell.x >= document.width || cell.y >= document.height ? undefined : cloneCell(cell);
   }
 
@@ -5246,7 +5122,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       && (this.fillToken.projectId !== snapshot.projectId || this.fillToken.revision !== snapshot.revision)) this.cancelFill(false);
     if (snapshot.document) {
       const before = this.selectionSnapshot();
-      if (this.metrics) this.projectViewport(normalizeViewport(this.uiStore.getState().viewport, snapshot.document, this.metrics, this.viewportOptions));
+      if (this.metrics) this.projectViewport(clampViewport(this.uiStore.getState().viewport, this.viewportOptions));
       this.setDocument(snapshot.document, projectChanged
         ? { layer: 'all', full: true, reason: 'project-switch' }
         : externalInvalidation(snapshot, layerStackChanged ? 'layer-stack' : 'external-document'));
@@ -5936,8 +5812,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   private projectViewport(viewport: Viewport): void {
-    const snapshot = this.gateway.getSnapshot();
-    const next = normalizeViewport(viewport, snapshot.document ?? undefined, this.metrics ?? undefined, this.viewportOptions);
+    const next = clampViewport(viewport, this.viewportOptions);
     const current = this.uiStore.getState().viewport;
     // An unchanged viewport must not trigger a whole-canvas redraw.
     if (current.x === next.x && current.y === next.y && current.zoom === next.zoom) return;

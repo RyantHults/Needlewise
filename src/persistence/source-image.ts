@@ -11,17 +11,10 @@ import type {
   SourceImageSettingsInput
 } from './types';
 import { isValidAssetId, MAX_ASSET_BYTES } from './limits';
-import { isWithinImageDecodeBounds, MAX_IMAGE_DECODE_PIXELS } from '../image/limits';
+import { isWithinImageDecodeBounds } from '../image/limits';
 import { sha256 } from './hash';
 import { isRecord } from '../domain';
 
-/**
- * A reference asset may hold the original full-resolution image, which the
- * conversion pipeline pre-scales to its working bounds; the persistence
- * ceiling matches the shared image decode ceiling so conversion, persistence,
- * and the editor reference decode all agree.
- */
-export const MAX_SOURCE_IMAGE_PIXELS = MAX_IMAGE_DECODE_PIXELS;
 export const SUPPORTED_SOURCE_IMAGE_MIME_TYPES: readonly SourceImageMimeType[] = ['image/png', 'image/jpeg', 'image/webp'];
 
 export interface RasterImageDimensions {

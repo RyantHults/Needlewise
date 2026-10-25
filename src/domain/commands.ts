@@ -1,6 +1,5 @@
 import {
   cellIndex,
-  cloneDocument,
   colorsOffset,
   defaultPaletteSymbol,
   findPaletteEntry,
@@ -38,12 +37,10 @@ import {
   MAX_PERSISTABLE_CELL_COUNT,
   type BackstitchRecord,
   type BackstitchStore,
-  type CommandResult,
   type CropRect,
   type DeleteCellSetCommand,
   type DeleteRegionCommand,
   type DomainCommand,
-  type EraseCellCommand,
   type FragmentSelection,
   type MoveBackstitchCommand,
   type MoveFragmentCommand,
@@ -73,20 +70,12 @@ import {
 } from './types';
 import { SYMBOL_IDS } from '../symbols';
 import { assertStrictlyIncreasing, requireCommandInteger } from './guards';
-import { palettesEqual, settingsEqual, typedArraysEqual } from './equality';
+import { palettesEqual, settingsEqual } from './equality';
 import { allocateBackstitches, backstitchStoreBytes, backstitchStoresEqual, backstitchesFromRecords, cloneBackstitches, copyBackstitch, pointsSegmentKey, positionsById, segmentKey } from './backstitch-store';
 import { completedComponentCount, componentSlotMask } from './cell-components';
 import { emptyProgress, progressActivity } from './progress';
-import { assertValidDocument } from './validation';
 import { assertValidPatternFragment, backstitchEndpointsContainedInCellUnion } from './fragment';
-import { fixedPointBackstitchLength } from './metrics';
 import { backstitchWithinCanvas, isActiveCell } from './canvas';
-import {
-  attachDeleteMetricsImpactForDelta,
-  createDeleteMetricsImpact,
-  registerDeleteMetricsImpact,
-  type DeleteMetricsImpactEntry
-} from './internal-metrics-impact';
 
 export interface MutationInfo {
   changed: boolean;
@@ -143,104 +132,6 @@ export interface SparseMutationDelta {
   afterNextPaletteId?: number;
   beforeSettings?: PatternSettings;
   afterSettings?: PatternSettings;
-}
-
-interface MutableDeleteMetricsImpactEntry {
-  paletteId: number;
-  removedFull: number;
-  removedHalf: number;
-  removedQuarter: number;
-  removedThreeQuarter: number;
-  removedCellCompleted: number;
-  beforeBackstitchCount: number;
-  afterBackstitchCount: number;
-  beforeBackstitchCompleted: number;
-  afterBackstitchCompleted: number;
-  beforeBackstitchLengthFixed: number;
-  afterBackstitchLengthFixed: number;
-}
-
-function emptyDeleteMetricsImpactEntry(paletteId: number): MutableDeleteMetricsImpactEntry {
-  return {
-    paletteId,
-    removedFull: 0,
-    removedHalf: 0,
-    removedQuarter: 0,
-    removedThreeQuarter: 0,
-    removedCellCompleted: 0,
-    beforeBackstitchCount: 0,
-    afterBackstitchCount: 0,
-    beforeBackstitchCompleted: 0,
-    afterBackstitchCompleted: 0,
-    beforeBackstitchLengthFixed: 0,
-    afterBackstitchLengthFixed: 0
-  };
-}
-
-function deleteMetricsEntry(entries: Map<number, MutableDeleteMetricsImpactEntry>, paletteId: number): MutableDeleteMetricsImpactEntry {
-  let entry = entries.get(paletteId);
-  if (entry === undefined) {
-    entry = emptyDeleteMetricsImpactEntry(paletteId);
-    entries.set(paletteId, entry);
-  }
-  return entry;
-}
-
-function addDeletedCellComponentImpact(
-  entries: Map<number, MutableDeleteMetricsImpactEntry>,
-  paletteId: number,
-  field: 'removedFull' | 'removedHalf' | 'removedQuarter' | 'removedThreeQuarter',
-  completed: boolean,
-  amount = 1
-): void {
-  if (paletteId === 0) return;
-  const entry = deleteMetricsEntry(entries, paletteId);
-  entry[field] += amount;
-  if (completed) entry.removedCellCompleted += amount;
-}
-
-function addDeletedCellImpact(
-  entries: Map<number, MutableDeleteMetricsImpactEntry>,
-  document: PatternDocument,
-  index: number
-): void {
-  const kind = document.kind[index];
-  const offset = colorsOffset(index);
-  const completion = document.completed[index];
-  if (kind === CellKind.Full) {
-    addDeletedCellComponentImpact(entries, document.colors[offset], 'removedFull', (completion & 1) !== 0);
-  } else if (kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash) {
-    addDeletedCellComponentImpact(entries, document.colors[offset], 'removedHalf', (completion & 1) !== 0);
-  } else if (kind === CellKind.Quarters || kind === CellKind.ThreeQuarterPair) {
-    const field = kind === CellKind.Quarters ? 'removedQuarter' : 'removedThreeQuarter';
-    for (let slot = 0; slot < 4; slot += 1) {
-      const color = document.colors[offset + slot];
-      if (color !== 0) addDeletedCellComponentImpact(entries, color, field, (completion & (1 << slot)) !== 0);
-    }
-  } else if (kind !== CellKind.Empty) {
-    addDeletedCellComponentImpact(entries, document.colors[offset], 'removedThreeQuarter', (completion & 1) !== 0);
-  }
-}
-
-function addBackstitchImpact(
-  entries: Map<number, MutableDeleteMetricsImpactEntry>,
-  record: BackstitchRecord,
-  side: 'before' | 'after'
-): void {
-  const entry = deleteMetricsEntry(entries, record.color);
-  if (side === 'before') {
-    entry.beforeBackstitchCount += 1;
-    if (record.completed) entry.beforeBackstitchCompleted += 1;
-    entry.beforeBackstitchLengthFixed += fixedPointBackstitchLength(record.x1, record.y1, record.x2, record.y2);
-  } else {
-    entry.afterBackstitchCount += 1;
-    if (record.completed) entry.afterBackstitchCompleted += 1;
-    entry.afterBackstitchLengthFixed += fixedPointBackstitchLength(record.x1, record.y1, record.x2, record.y2);
-  }
-}
-
-function finalizeDeleteMetricsImpact(entries: Map<number, MutableDeleteMetricsImpactEntry>): ReturnType<typeof createDeleteMetricsImpact> {
-  return createDeleteMetricsImpact([...entries.values()] as DeleteMetricsImpactEntry[]);
 }
 
 /**
@@ -1263,8 +1154,6 @@ export function bulkCompletionCommand(
   };
 }
 
-export const createBulkCompletionCommand = bulkCompletionCommand;
-
 export function bulkBackstitchCompletionCommand(
   ids: Uint32Array,
   operation: BulkProgressOperation,
@@ -1279,91 +1168,6 @@ export function bulkBackstitchCompletionCommand(
     ...(expectedRevision === undefined ? {} : { expectedRevision })
   };
 }
-
-export const createBulkBackstitchCompletionCommand = bulkBackstitchCompletionCommand;
-
-export function bulkCellCommand(indices: Uint32Array, edit: BulkCellEdit, expectedRevision?: number): BulkCellCommand {
-  validateExpectedRevision(expectedRevision);
-  const canonicalEdit = parseBulkEdit(edit);
-  const command: BulkCellCommand = {
-    type: 'bulk-cell',
-    indices: indices.slice(),
-    edit: canonicalEdit,
-    ...(expectedRevision === undefined ? {} : { expectedRevision })
-  };
-  return command;
-}
-
-export const createBulkCellCommand = bulkCellCommand;
-export const bulkCellEditCommand = bulkCellCommand;
-export const bulkCommand = bulkCellCommand;
-
-export function bulkRecolorCommand(indices: Uint32Array, masks: Uint8Array, fromColor: number, toColor: number, expectedRevision?: number): BulkRecolorCommand;
-/** Compatibility overload for the former Full-stitch-only caller. */
-export function bulkRecolorCommand(indices: Uint32Array, fromColor: number, toColor: number, expectedRevision?: number): BulkRecolorCommand;
-export function bulkRecolorCommand(
-  indices: Uint32Array,
-  masksOrFromColor: Uint8Array | number,
-  fromColorOrToColor: number,
-  toColorOrRevision?: number,
-  expectedRevision?: number
-): BulkRecolorCommand {
-  if (!(indices instanceof Uint32Array)) throw new DomainError('invalid-bulk-indices', 'Bulk recolor indices must be a Uint32Array.');
-  assertStrictlyIncreasing(indices, 'invalid-bulk-indices', 'Bulk recolor indices');
-  const componentAware = masksOrFromColor instanceof Uint8Array;
-  const masks = componentAware ? masksOrFromColor.slice() : new Uint8Array(indices.length).fill(1);
-  if (componentAware && masks.length !== indices.length) throw new DomainError('invalid-bulk-recolor', 'Bulk recolor masks must align one-to-one with cell indices.');
-  const fromColor = componentAware ? fromColorOrToColor : masksOrFromColor;
-  const toColor = componentAware ? toColorOrRevision as number : fromColorOrToColor;
-  const revision = componentAware ? expectedRevision : toColorOrRevision;
-  if (!Number.isSafeInteger(fromColor) || !Number.isSafeInteger(toColor)) throw new DomainError('invalid-palette-id', 'Bulk recolor palette IDs must be integers.');
-  validateExpectedRevision(revision);
-  return {
-    type: 'bulk-recolor',
-    indices: indices.slice(),
-    masks,
-    fromColor,
-    toColor,
-    ...(revision === undefined ? {} : { expectedRevision: revision })
-  };
-}
-
-export const createBulkRecolorCommand = bulkRecolorCommand;
-export const bulkComponentRecolorCommand = bulkRecolorCommand;
-export const createBulkComponentRecolorCommand = bulkRecolorCommand;
-
-export function bulkSetFullCommand(indices: Uint32Array, color: number, expectedRevision?: number): BulkCellCommand {
-  return bulkCellCommand(indices, { kind: 'full', color }, expectedRevision);
-}
-
-export function bulkSetHalfCommand(indices: Uint32Array, direction: HalfDirection, color: number, expectedRevision?: number): BulkCellCommand {
-  return bulkCellCommand(indices, { kind: 'half', direction, color }, expectedRevision);
-}
-
-export function bulkSetQuarterCommand(indices: Uint32Array, corner: QuarterCorner, color: number, expectedRevision?: number): BulkCellCommand {
-  return bulkCellCommand(indices, { kind: 'quarter', corner, color }, expectedRevision);
-}
-
-export function bulkSetThreeQuarterCommand(indices: Uint32Array, corner: QuarterCorner, color: number, expectedRevision?: number): BulkCellCommand {
-  return bulkCellCommand(indices, { kind: 'three-quarter', corner, color }, expectedRevision);
-}
-
-export const bulkSetThreeQuartersCommand = bulkSetThreeQuarterCommand;
-
-export function bulkEraseCellCommand(indices: Uint32Array, expectedRevision?: number): BulkCellCommand {
-  return bulkCellCommand(indices, { kind: 'erase-cell' }, expectedRevision);
-}
-
-export function bulkEraseQuarterCommand(indices: Uint32Array, corner: QuarterCorner, expectedRevision?: number): BulkCellCommand {
-  return bulkCellCommand(indices, { kind: 'erase-quarter', corner }, expectedRevision);
-}
-
-export const bulkFullCommand = bulkSetFullCommand;
-export const bulkHalfCommand = bulkSetHalfCommand;
-export const bulkQuarterCommand = bulkSetQuarterCommand;
-export const bulkThreeQuarterCommand = bulkSetThreeQuarterCommand;
-export const bulkThreeQuartersCommand = bulkSetThreeQuarterCommand;
-export const bulkEraseCommand = bulkEraseCellCommand;
 
 function validateMixedEraseArrays(
   wholeCellIndices: unknown,
@@ -1550,9 +1354,6 @@ export function mixedEraseCommand(wholeCellIndices: Uint32Array, componentCellIn
   return { type: 'mixed-erase', wholeCellIndices: targets.wholeCellIndices.slice(), componentCellIndices: targets.componentCellIndices.slice(), componentCorners: targets.componentCorners.slice(), ...(expectedRevision === undefined ? {} : { expectedRevision }) };
 }
 
-export const createMixedEraseCommand = mixedEraseCommand;
-export const eraseMixedCommand = mixedEraseCommand;
-
 function parseDeleteRegion(command: DeleteRegionCommand): CropRect {
   return {
     x: requireCommandInteger(command.x, 'delete region x'),
@@ -1651,7 +1452,6 @@ function applyDeleteSelectionCommand(
   const afterKind = new Uint8Array(changedIndices.length);
   const afterColors = new Uint16Array(changedIndices.length * 4);
   const afterCompleted = new Uint8Array(changedIndices.length);
-  const impactEntries = new Map<number, MutableDeleteMetricsImpactEntry>();
 
   for (let position = 0; position < changedIndices.length; position += 1) {
     const index = changedIndices[position];
@@ -1660,7 +1460,6 @@ function applyDeleteSelectionCommand(
     beforeKind[position] = document.kind[index];
     beforeCompleted[position] = document.completed[index];
     for (let slot = 0; slot < 4; slot += 1) beforeColors[packedOffset + slot] = document.colors[documentOffset + slot];
-    addDeletedCellImpact(impactEntries, document, index);
   }
 
   // changedIndices is row-major and contains only cells that are not already
@@ -1687,19 +1486,10 @@ function applyDeleteSelectionCommand(
     const deleted = new Set<number>(preflight.changedBackstitchIds);
     const retained: BackstitchRecord[] = [];
     for (const record of listBackstitches(document)) {
-      addBackstitchImpact(impactEntries, record, 'before');
-      if (!deleted.has(record.id)) {
-        addBackstitchImpact(impactEntries, record, 'after');
-        retained.push(record);
-      }
+      if (!deleted.has(record.id)) retained.push(record);
     }
     document.backstitches = backstitchesFromRecords(retained);
     afterBackstitches = cloneBackstitches(document.backstitches);
-  } else if (impactEntries.size > 0) {
-    for (const record of listBackstitches(document)) {
-      addBackstitchImpact(impactEntries, record, 'before');
-      addBackstitchImpact(impactEntries, record, 'after');
-    }
   }
 
   if (changedIndices.length === 0 && preflight.changedBackstitchIds.length === 0) {
@@ -1709,7 +1499,6 @@ function applyDeleteSelectionCommand(
     cells: { indices: changedIndices, beforeKind, beforeColors, beforeCompleted, afterKind, afterColors, afterCompleted },
     ...(beforeBackstitches === undefined ? {} : { beforeBackstitches, afterBackstitches })
   };
-  registerDeleteMetricsImpact(delta, finalizeDeleteMetricsImpact(impactEntries));
   return {
     changed: true,
     snapshot: false,
@@ -1787,9 +1576,6 @@ export function deleteCellSetCommand(indices: Uint32Array, expectedRevision?: nu
   };
 }
 
-export const createDeleteCellSetCommand = deleteCellSetCommand;
-export const deleteCellsCommand = deleteCellSetCommand;
-
 export function deleteRegionCommand(rect: CropRect, expectedRevision?: number): DeleteRegionCommand;
 export function deleteRegionCommand(x: number, y: number, width: number, height: number, expectedRevision?: number): DeleteRegionCommand;
 export function deleteRegionCommand(
@@ -1816,9 +1602,6 @@ export function deleteRegionCommand(
     ...(revision === undefined ? {} : { expectedRevision: revision })
   };
 }
-
-export const createDeleteRegionCommand = deleteRegionCommand;
-export const deleteSelectionCommand = deleteRegionCommand;
 
 function parsePasteDestination(destination: Point): Point {
   return {
@@ -2443,8 +2226,6 @@ export function moveFragmentCommand(selection: FragmentSelection, destination: P
   };
 }
 
-export const createMoveFragmentCommand = moveFragmentCommand;
-
 export function pasteFragmentCommand(fragment: PatternFragment, destination: Point, expectedRevision?: number): PasteFragmentCommand {
   assertValidPatternFragment(fragment);
   if (!Number.isSafeInteger(destination.x) || !Number.isSafeInteger(destination.y)) throw new DomainError('invalid-command', 'Paste destination must contain integer x and y coordinates.');
@@ -2456,9 +2237,6 @@ export function pasteFragmentCommand(fragment: PatternFragment, destination: Poi
     ...(expectedRevision === undefined ? {} : { expectedRevision })
   };
 }
-
-export const createPasteFragmentCommand = pasteFragmentCommand;
-export const pasteCommand = pasteFragmentCommand;
 
 function writeQuartersAtIndex(document: PatternDocument, index: number, colors: ArrayLike<number>, sourceOffset = 0, validateColors = true): boolean {
   const offset = colorsOffset(index);
@@ -2955,14 +2733,6 @@ function paletteDelete(document: PatternDocument, command: PaletteDeleteCommand)
   return changed(true);
 }
 
-function sameContent(left: PatternDocument, right: PatternDocument): boolean {
-  if (left.width !== right.width || left.height !== right.height || left.palette.length !== right.palette.length || left.backstitches.ids.length !== right.backstitches.ids.length || left.nextBackstitchId !== right.nextBackstitchId || left.nextPaletteId !== right.nextPaletteId) return false;
-  if (!settingsEqual(left.settings, right.settings)) return false;
-  if (!typedArraysEqual(left.kind, right.kind) || !typedArraysEqual(left.completed, right.completed) || !typedArraysEqual(left.colors, right.colors)) return false;
-  if (!palettesEqual(left.palette, right.palette)) return false;
-  return backstitchStoresEqual(left.backstitches, right.backstitches);
-}
-
 export function applyCommandsToDraft(document: PatternDocument, commands: readonly DomainCommand[], tracker?: MutationTracker): MutationInfo {
   assertBulkBatchPolicy(commands);
   if (commands.length === 1) return applyOneToDraft(document, commands[0], tracker);
@@ -3111,170 +2881,6 @@ export function applyOneToDraft(document: PatternDocument, command: DomainComman
   return applyOneToDraftInternal(document, command, tracker);
 }
 
-export function applyCommand(document: PatternDocument, command: DomainCommand): CommandResult {
-  assertValidDocument(document);
-  const draft = cloneDocument(document);
-  const commandList = command.type === 'batch' ? command.commands : [command];
-  const snapshot = commandRequiresSnapshot(command);
-  const tracker = snapshot ? undefined : new MutationTracker();
-  const result = applyCommandsToDraft(draft, commandList, tracker);
-  if (!result.changed || (!snapshot && !tracker?.hasChanges(draft) && result.delta === undefined) || (snapshot && sameContent(document, draft))) {
-    return {
-      document,
-      changed: false,
-      revision: document.revision,
-      ...(result.touchedIndices === undefined ? {} : { touchedIndices: result.touchedIndices.slice() }),
-      ...(result.changedIndices === undefined ? {} : { changedIndices: result.changedIndices.slice() }),
-      ...(result.touchedBackstitchIds === undefined ? {} : { touchedBackstitchIds: result.touchedBackstitchIds.slice() }),
-      ...(result.changedBackstitchIds === undefined ? {} : { changedBackstitchIds: result.changedBackstitchIds.slice() }),
-      ...(result.progress === undefined ? {} : { progress: { cellIndices: result.progress.cellIndices.slice(), backstitchIds: result.progress.backstitchIds.slice(), marked: result.progress.marked, unmarked: result.progress.unmarked } }),
-      ...(result.recalculateMetrics === undefined ? {} : { recalculateMetrics: result.recalculateMetrics }),
-      ...(result.createdBackstitchIds === undefined ? {} : { createdBackstitchIds: result.createdBackstitchIds.slice() }),
-      ...(result.movedBackstitchIds === undefined ? {} : { movedBackstitchIds: result.movedBackstitchIds.slice() })
-    };
-  }
-  draft.revision = document.revision + 1;
-  assertValidDocument(draft);
-  const commandResult: CommandResult = {
-    document: draft,
-    changed: true,
-    revision: draft.revision,
-    backstitchId: result.backstitchId,
-    paletteId: result.paletteId,
-    ...(result.touchedIndices === undefined ? {} : { touchedIndices: result.touchedIndices.slice() }),
-    ...(result.changedIndices === undefined ? {} : { changedIndices: result.changedIndices.slice() }),
-    ...(result.touchedBackstitchIds === undefined ? {} : { touchedBackstitchIds: result.touchedBackstitchIds.slice() }),
-    ...(result.changedBackstitchIds === undefined ? {} : { changedBackstitchIds: result.changedBackstitchIds.slice() }),
-    ...(result.progress === undefined ? {} : { progress: { cellIndices: result.progress.cellIndices.slice(), backstitchIds: result.progress.backstitchIds.slice(), marked: result.progress.marked, unmarked: result.progress.unmarked } }),
-    ...(result.recalculateMetrics === undefined ? {} : { recalculateMetrics: result.recalculateMetrics }),
-    ...(result.createdBackstitchIds === undefined ? {} : { createdBackstitchIds: result.createdBackstitchIds.slice() }),
-    ...(result.movedBackstitchIds === undefined ? {} : { movedBackstitchIds: result.movedBackstitchIds.slice() })
-  };
-  if (result.delta !== undefined) attachDeleteMetricsImpactForDelta(commandResult, result.delta, 'after');
-  return commandResult;
-}
-
-export function executeCommand(document: PatternDocument, command: DomainCommand): CommandResult;
-export function executeCommand(editor: { execute(command: DomainCommand): CommandResult }, command: DomainCommand): CommandResult;
-export function executeCommand(target: PatternDocument | { execute(command: DomainCommand): CommandResult }, command: DomainCommand): CommandResult {
-  return 'execute' in target ? target.execute(command) : applyCommand(target, command);
-}
-
-export const runCommand = executeCommand;
-
-export function applyBatch(document: PatternDocument, commands: readonly DomainCommand[]): CommandResult {
-  return applyCommand(document, { type: 'batch', commands: [...commands] });
-}
-
-export function fullCommand(x: number, y: number, color: number): SetFullCommand {
-  return { type: 'set-full', x, y, color };
-}
-
-export function halfCommand(x: number, y: number, direction: HalfDirection, color: number): SetHalfCommand {
-  return { type: 'set-half', x, y, direction, color };
-}
-
-export function quarterCommandFor(x: number, y: number, corner: QuarterCorner, color: number): SetQuarterCommand {
-  return { type: 'set-quarter', x, y, corner, color };
-}
-
-export function threeQuarterCommandFor(x: number, y: number, corner: QuarterCorner, color: number): SetThreeQuarterCommand {
-  return { type: 'set-three-quarter', x, y, corner, color };
-}
-
-export const setFullCommand = fullCommand;
-export const setHalfCommand = halfCommand;
-export const setQuarterCommand = quarterCommandFor;
-export const setThreeQuarterCommand = threeQuarterCommandFor;
-export const threeQuarterCommand = threeQuarterCommandFor;
-
 export function createPaletteCommand(input: PaletteEntryInput): PaletteCreateCommand {
   return { type: 'palette-create', ...input };
 }
-
-export function createPaletteMergeCommand(from: number, to: number): PaletteMergeCommand {
-  return { type: 'palette-merge', from, to };
-}
-
-export const mergePaletteCommand = createPaletteMergeCommand;
-
-export const addPaletteCommand = createPaletteCommand;
-
-export function createBackstitchCommand(start: Point, end: Point, color: number): AddBackstitchCommand {
-  return { type: 'add-backstitch', start, end, color };
-}
-
-export const addBackstitchCommand = createBackstitchCommand;
-
-export function setFull(document: PatternDocument, x: number, y: number, color: number): CommandResult {
-  return applyCommand(document, fullCommand(x, y, color));
-}
-
-export function setHalf(document: PatternDocument, x: number, y: number, direction: HalfDirection, color: number): CommandResult {
-  return applyCommand(document, halfCommand(x, y, direction, color));
-}
-
-export function setQuarter(document: PatternDocument, x: number, y: number, corner: QuarterCorner, color: number): CommandResult {
-  return applyCommand(document, quarterCommandFor(x, y, corner, color));
-}
-
-export function setThreeQuarter(document: PatternDocument, x: number, y: number, corner: QuarterCorner, color: number): CommandResult {
-  return applyCommand(document, threeQuarterCommandFor(x, y, corner, color));
-}
-
-export function eraseCell(document: PatternDocument, x: number, y: number): CommandResult {
-  return applyCommand(document, { type: 'erase-cell', x, y });
-}
-
-export function deleteRegion(document: PatternDocument, rect: CropRect): CommandResult {
-  return applyCommand(document, deleteRegionCommand(rect));
-}
-
-export function recolor(document: PatternDocument, x: number, y: number, color: number, corner?: QuarterCorner): CommandResult {
-  return applyCommand(document, { type: 'recolor-cell', x, y, color, ...(corner === undefined ? {} : { corner }) });
-}
-
-export function addBackstitch(document: PatternDocument, start: Point, end: Point, color: number): CommandResult {
-  return applyCommand(document, createBackstitchCommand(start, end, color));
-}
-
-export function updateBackstitch(document: PatternDocument, id: number, changes: Partial<{ start: Point; end: Point; color: number }>): CommandResult {
-  return applyCommand(document, { type: 'update-backstitch', id, ...changes });
-}
-
-export function moveBackstitch(document: PatternDocument, id: number, start: Point, end: Point): CommandResult {
-  return applyCommand(document, { type: 'move-backstitch', id, start, end });
-}
-
-export function removeBackstitch(document: PatternDocument, id: number): CommandResult {
-  return applyCommand(document, { type: 'remove-backstitch', id });
-}
-
-export function recolorBackstitch(document: PatternDocument, id: number, color: number): CommandResult {
-  return applyCommand(document, { type: 'recolor-backstitch', id, color });
-}
-
-export function createPalette(document: PatternDocument, input: PaletteEntryInput): CommandResult {
-  return applyCommand(document, createPaletteCommand(input));
-}
-
-export function updatePalette(document: PatternDocument, id: number, changes: Partial<{ name: string; color: string; active: boolean }>): CommandResult {
-  return applyCommand(document, { type: 'palette-update', id, ...changes });
-}
-
-export function deactivatePalette(document: PatternDocument, id: number): CommandResult {
-  return applyCommand(document, { type: 'palette-deactivate', id });
-}
-
-export const createPaletteEntry = createPalette;
-export const updatePaletteEntry = updatePalette;
-export const deactivatePaletteEntry = deactivatePalette;
-export const deleteBackstitch = removeBackstitch;
-
-export const deleteSelectedRegion = deleteRegion;
-
-export const clearCellCommand = (x: number, y: number): EraseCellCommand => ({ type: 'erase-cell', x, y });
-export const eraseCommand = clearCellCommand;
-export const removeBackstitchCommand = (id: number): RemoveBackstitchCommand => ({ type: 'remove-backstitch', id });
-export const moveBackstitchCommand = (id: number, start: Point, end: Point): MoveBackstitchCommand => ({ type: 'move-backstitch', id, start, end });
-export const recolorBackstitchCommand = (id: number, color: number): RecolorBackstitchCommand => ({ type: 'recolor-backstitch', id, color });

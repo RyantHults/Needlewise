@@ -19,9 +19,7 @@ export const MAX_PALETTE_ENTRIES = 0xffff;
  */
 /** Must stay aligned with the domain's exported persistence ceiling. */
 export const MAX_DOCUMENT_CELLS = 1_000_000;
-export const MAX_CELL_COUNT = MAX_DOCUMENT_CELLS;
 export const MAX_METADATA_STRING_BYTES = 64 * 1024;
-export const MAX_METADATA_TEXT_BYTES = MAX_METADATA_STRING_BYTES;
 
 export function utf8ByteLength(value: string): number {
   return new TextEncoder().encode(value).length;

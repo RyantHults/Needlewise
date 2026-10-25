@@ -20,7 +20,7 @@ import {
 import { rasterForConversion } from '../conversion/raster';
 import { isRecord } from '../domain';
 
-export interface ImageConversionWorkerScope {
+interface ImageConversionWorkerScope {
   addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
   postMessage(message: ConversionWorkerResponse): void;
 }
@@ -124,15 +124,12 @@ export function handleImageConversionWorkerMessage(
   }, 0);
 }
 
-export function installImageConversionWorker(scope: ImageConversionWorkerScope): void {
+function installImageConversionWorker(scope: ImageConversionWorkerScope): void {
   const activeRequests = new Map<string, ActiveConversion>();
   scope.addEventListener('message', (event) => {
     handleImageConversionWorkerMessage(event.data, (message) => scope.postMessage(message), activeRequests);
   });
 }
-
-export const handleConversionWorkerMessage = handleImageConversionWorkerMessage;
-export const installConversionWorker = installImageConversionWorker;
 
 function isWorkerScope(value: unknown): value is ImageConversionWorkerScope {
   if (!isRecord(value)) return false;

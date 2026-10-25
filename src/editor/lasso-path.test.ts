@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { createLayeredDocument } from '../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import type { CanvasCellSet, LassoPathOverlay, ModelPoint } from './contracts';
 import { getCanvasMetrics } from './coordinates';
@@ -7,6 +6,7 @@ import type { EditorSurfaceController } from './controller';
 import type { PointerSample } from './input';
 import type { createUiStore } from './ui-store';
 import { fixture as layeredFixture, LayeredTestBoundary, plainDocument } from './test-support';
+import { createLayeredDocument } from '../domain/test-fixtures';
 
 const ZOOM = 16;
 /** Square vertices on cell corners, enclosing cells x, y in 1..4. */

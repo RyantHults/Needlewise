@@ -1,9 +1,10 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CATALOG_DEFINITION } from '../../catalog';
-import { applyCommand, createDocument } from '../../domain';
+import { createDocument } from '../../domain';
 import { DEFAULT_EXPORT_SETTINGS, EXPORT_SETTINGS_STORAGE_KEY, type ExportSettings } from '../../export';
 import { ExportDialog, ExportPanel, type ExportPanelProps, type ExportPanelWorkspace, type ExportPdf } from './ExportPanel';
+import { applyCommand } from '../../domain/test-fixtures';
 
 const palette = [{ id: 1, name: 'Ruby', color: '#AA0000' }];
 const makeDocument = (stitched: boolean, width = 14, height = 14) => {

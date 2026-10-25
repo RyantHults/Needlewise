@@ -8,7 +8,7 @@ import { loadPdfLabelFont } from '../export/pdf-font';
 import { writePatternPdf, type PdfPatternInput, type PdfWriteOptions } from '../export/pdf-writer';
 import { isAbortError } from './abort';
 
-export interface PdfExportWorkerScope {
+interface PdfExportWorkerScope {
   addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
   postMessage(message: PdfExportWorkerResponse, transfer?: Transferable[]): void;
 }
@@ -69,7 +69,7 @@ export function handlePdfExportWorkerMessage(
   })();
 }
 
-export function installPdfExportWorker(scope: PdfExportWorkerScope): void {
+function installPdfExportWorker(scope: PdfExportWorkerScope): void {
   const active = new Map<string, AbortController>();
   scope.addEventListener('message', (event) => {
     handlePdfExportWorkerMessage(event.data, (message, transfer) => { scope.postMessage(message, transfer); }, active);

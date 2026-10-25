@@ -157,14 +157,3 @@ class PwaUpdateAdapterImpl implements PwaUpdateAdapter {
 export function createPwaUpdateAdapter(options: PwaUpdateAdapterOptions = {}): PwaUpdateAdapter {
   return new PwaUpdateAdapterImpl(options);
 }
-
-/** Manual entry point for application startup; it never applies an update. */
-export async function registerPwa(options: PwaUpdateAdapterOptions = {}): Promise<PwaUpdateAdapter> {
-  const adapter = createPwaUpdateAdapter(options);
-  await adapter.register();
-  return adapter;
-}
-
-export function isServiceWorkerAvailable(): boolean {
-  return browserSupportsServiceWorkers();
-}

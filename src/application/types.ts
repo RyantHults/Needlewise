@@ -1,11 +1,9 @@
 import type {
   CommandResult,
   DisplayUnits,
-  DocumentEditor,
   LayeredDocument,
   LayerType,
   MaterialSettingsV2,
-  MaterialSettingsUpdate,
   NormalizedMaterialSettings,
   PatternMetrics,
   PatternDocument,
@@ -28,8 +26,6 @@ import type {
   SaveOptions,
   SaveResult
 } from '../persistence';
-import type { ProgressActivity } from '../persistence';
-import type { SessionProgressStats } from './progress';
 import type { AcceptedConversionDraft } from '../conversion/image-to-pattern';
 import type { InstalledCatalogRegistry } from '../catalog';
 
@@ -65,10 +61,8 @@ export interface WorkspaceRepository {
   listProjects(): Promise<ProjectMetadata[]>;
   deleteProject(projectId: string): Promise<void>;
   getAsset?(projectId: string, assetId: string): Promise<ProjectAsset | undefined>;
-  listProjectHealth?(): Promise<ProjectHealth[]>;
   inspectProjectHealth?(projectId: string): Promise<ProjectHealth | undefined>;
   loadRecoveryRevision?(projectId: string, revision?: number): Promise<ProjectRecord | undefined>;
-  promoteRecoveryRevision?(projectId: string, revision?: number): Promise<ProjectRecord>;
   listFolderIndex?(): Promise<ProjectFolderIndex>;
   createFolder?(input: CreateFolderInput): Promise<ProjectFolder>;
   renameFolder?(folderId: string, name: string): Promise<ProjectFolder>;
@@ -128,11 +122,6 @@ export interface WorkspaceOptions {
   catalogRegistry?: InstalledCatalogRegistry;
 }
 
-export interface WorkspaceInitializationOptions {
-  projectId?: string;
-  autoOpenMostRecent?: boolean;
-}
-
 export interface ActiveWorkspaceState {
   projectId: string | null;
   metadata: ProjectMetadata | null;
@@ -142,9 +131,6 @@ export interface ActiveWorkspaceState {
   save: SaveState;
   error: Error | null;
   metrics?: PatternMetrics | null;
-  sessionStats?: SessionProgressStats | null;
-  activity?: ProgressActivity | null;
-  dailyActivity?: ProgressActivity | null;
   materialSettings?: NormalizedMaterialSettings | null;
   sourceImage?: SourceImageDescriptor;
   layeredDocument?: LayeredDocument | null;
@@ -156,8 +142,6 @@ export interface ActiveWorkspaceState {
   canRedoMark?: boolean;
 }
 
-export type MaterialSettingsChanges = MaterialSettingsUpdate;
-
 export interface ProjectSessionOptions {
   repository: WorkspaceRepository;
   metadata: ProjectMetadata;
@@ -167,17 +151,14 @@ export interface ProjectSessionOptions {
   assets?: readonly ProjectAsset[];
   health?: ProjectHealth | null;
   usingRecovery?: boolean;
-  activity?: ProgressActivity;
   materialSettings?: MaterialSettingsV2;
   history?: SessionHistoryEnvelope;
-  sessionStartedAt?: number;
   historyLimitBytes?: number;
   clock: WorkspaceClock;
   debounceMs: number;
 }
 
 export type SessionCommandResult = CommandResult;
-export type SessionEditor = DocumentEditor;
 
 /** The selected row in the layers panel. Canvas and the reference image are not `layers` entries. */
 export type ActiveLayerId = number | 'canvas' | 'reference';

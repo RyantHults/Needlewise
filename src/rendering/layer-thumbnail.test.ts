@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createLayeredDocument, CellKind, FIXED_POINT_UNITS_PER_CELL, type SpecialtyLayer, type StitchLayer } from '../domain';
+import { CellKind, FIXED_POINT_UNITS_PER_CELL, type SpecialtyLayer, type StitchLayer } from '../domain';
 import { createThumbnailScheduler, layerContentChanged, renderLayerThumbnailPixels, thumbnailDimensions } from './layer-thumbnail';
+import { createLayeredDocument } from '../domain/test-fixtures';
 
 const catalog = { catalogId: 'test', brandLabel: 'Test', colorCount: 500 } as never;
 const makeDocument = (width: number, height: number) => createLayeredDocument({

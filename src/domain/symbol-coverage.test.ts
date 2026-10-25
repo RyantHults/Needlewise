@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { DMC_CATALOG } from '../catalog';
 import committedOutlines from '../symbols/outlines.generated.json';
-import { getSymbolOutline, SYMBOL_COUNT, SYMBOL_IDS, SYMBOL_POOL } from '../symbols';
+import { getSymbolOutline, SYMBOL_IDS, SYMBOL_POOL } from '../symbols';
 import { defaultPaletteSymbol, isKnownSymbolId } from './index';
 
 /**
@@ -22,7 +22,7 @@ import { defaultPaletteSymbol, isKnownSymbolId } from './index';
 describe('symbol pool coverage', () => {
   it('is smaller than the catalog: no symbol is kept just for coverage', () => {
     expect(DMC_CATALOG.length).toBe(489);
-    expect(SYMBOL_COUNT).toBeLessThan(DMC_CATALOG.length);
+    expect(SYMBOL_IDS.length).toBeLessThan(DMC_CATALOG.length);
   });
 
   it('leaves the committed pool smaller than the catalog too', () => {
@@ -71,10 +71,10 @@ describe('cyclic default assignment', () => {
   it('covers the pool in order and cycles past the pool end', () => {
     // One cycle covers the whole pool in pool order; the catalog ceiling then
     // maps through one full cycle plus a partial second one.
-    const oneCycle = DMC_CATALOG.slice(0, SYMBOL_COUNT).map((_, index) => defaultPaletteSymbol(index + 1));
+    const oneCycle = DMC_CATALOG.slice(0, SYMBOL_IDS.length).map((_, index) => defaultPaletteSymbol(index + 1));
     expect(oneCycle).toEqual(SYMBOL_IDS);
-    for (let id = SYMBOL_COUNT + 1; id <= DMC_CATALOG.length; id += 1) {
-      expect(defaultPaletteSymbol(id)).toBe(SYMBOL_IDS[(id - 1) % SYMBOL_COUNT]);
+    for (let id = SYMBOL_IDS.length + 1; id <= DMC_CATALOG.length; id += 1) {
+      expect(defaultPaletteSymbol(id)).toBe(SYMBOL_IDS[(id - 1) % SYMBOL_IDS.length]);
     }
   });
 
@@ -91,7 +91,7 @@ describe('cyclic default assignment', () => {
   it('cycles deterministically past the end of the pool', () => {
     // The relaxed requirement makes this the reaching path for palette ids past
     // the pool end rather than a safety tail.
-    const overflow = SYMBOL_COUNT + 1;
+    const overflow = SYMBOL_IDS.length + 1;
     expect(defaultPaletteSymbol(overflow)).toBe(defaultPaletteSymbol(1));
   });
 });

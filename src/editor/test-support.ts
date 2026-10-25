@@ -6,7 +6,6 @@ import {
   canAddLayer,
   commandScope,
   createDocument,
-  createLayeredDocument,
   createPaletteCommand,
   DocumentEditor,
   DomainError,
@@ -30,7 +29,7 @@ import {
   type ProgressEntry
 } from '../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
-import { editorFromSurface, onDefaultLayers } from '../domain/test-fixtures';
+import { editorFromSurface, onDefaultLayers, createLayeredDocument } from '../domain/test-fixtures';
 import { EditorSurfaceController, type EditorSurfaceControllerOptions } from './controller';
 import type { CanvasRenderer, EditorUiState, Invalidation, OverlayState, RendererStyle, RenderStats, TraceImage, Viewport } from './contracts';
 import { getCanvasMetrics } from './coordinates';
@@ -134,6 +133,11 @@ export class LayeredTestBoundary implements WorkspaceEditorBoundary {
 
   getEditorLayerSnapshot(): { readonly compositeInvalidation: CompositeInvalidationReport | null } {
     return { compositeInvalidation: this.invalidation };
+  }
+
+  /** Arrange a test: replace the composite invalidation report the editor snapshot returns. */
+  setCompositeInvalidation(report: CompositeInvalidationReport | null): void {
+    this.invalidation = report;
   }
 
   subscribe(listener: () => void): () => void {
@@ -319,11 +323,11 @@ export class LayeredTestBoundary implements WorkspaceEditorBoundary {
   }
 }
 
-/** An 8x8 layered document on the two default layers, with two active colors. */
-export function layeredDocument(): LayeredDocument {
+/** A `width`x`height` layered document on the two default layers, with two active colors. */
+export function layeredDocument(width = 8, height = 8): LayeredDocument {
   return createLayeredDocument({
-    width: 8,
-    height: 8,
+    width,
+    height,
     catalog: DEFAULT_CATALOG_DEFINITION.association,
     palette: [{ id: 1, name: 'Red', color: '#d33', active: true }, { id: 2, name: 'Blue', color: '#36c', active: true }]
   });
@@ -410,4 +414,17 @@ export function drag(controller: EditorSurfaceController, from: { x: number; y: 
   controller.handlePointerDown(at(pointerId, from.x, from.y));
   controller.handlePointerMove(at(pointerId, to.x, to.y));
   controller.handlePointerUp(at(pointerId, to.x, to.y));
+}
+
+/** A mouse sample at the center of cell (x, y), reading the zoom and origin from the ui store's viewport. */
+export function atViewport(uiStore: ReturnType<typeof createUiStore>, pointerId: number, x: number, y: number, extra: Partial<PointerSample> = {}): PointerSample {
+  const viewport = uiStore.getState().viewport;
+  return { pointerId, pointerType: 'mouse', screenX: (x + 0.5 - viewport.x) * viewport.zoom, screenY: (y + 0.5 - viewport.y) * viewport.zoom, button: 0, buttons: 1, isPrimary: true, ...extra };
+}
+
+/** `drag`, with cell positions resolved through the ui store's viewport. */
+export function dragViewport(controller: EditorSurfaceController, uiStore: ReturnType<typeof createUiStore>, from: { x: number; y: number }, to: { x: number; y: number }, pointerId = 1): void {
+  controller.handlePointerDown(atViewport(uiStore, pointerId, from.x, from.y));
+  controller.handlePointerMove(atViewport(uiStore, pointerId, to.x, to.y));
+  controller.handlePointerUp(atViewport(uiStore, pointerId, to.x, to.y));
 }

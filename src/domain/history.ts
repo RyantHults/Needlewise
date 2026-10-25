@@ -68,9 +68,6 @@ import { allocateBackstitches, backstitchesFromRecords, backstitchLinesEqual, ba
 import { palettesEqual, settingsEqual, typedArraysEqual } from './equality';
 import { assertStrictlyIncreasing } from './guards';
 import {
-  attachDeleteMetricsImpactForDelta
-} from './internal-metrics-impact';
-import {
   applyLayerStructureCommand,
   assertValidLayeredDocument,
   collectLayeredValidationErrors,
@@ -78,7 +75,6 @@ import {
   commandScope,
   FlattenCache,
   findLayer,
-  layeredFromSurface,
   layerSurface,
   requireEditableLayer,
   visibleBackstitchOwners
@@ -831,9 +827,7 @@ function runDeleteRegionCommand(current: PatternDocument, command: DeleteRegionC
 
   const draft = cloneForDelete(current);
   const mutation = applyDeleteRegionCommand(draft, command, preflight);
-  const run = commitDeltaRun(current, draft, mutation, limit, { code: 'invalid-delete-region', message: 'A changed delete-region command did not produce a history delta.' });
-  attachDeleteMetricsImpactForDelta(run.result, run.entry.delta, 'after');
-  return run;
+  return commitDeltaRun(current, draft, mutation, limit, { code: 'invalid-delete-region', message: 'A changed delete-region command did not produce a history delta.' });
 }
 
 function runDeleteCellSetCommand(current: PatternDocument, command: DeleteCellSetCommand, limit: number): SurfaceRun {
@@ -850,9 +844,7 @@ function runDeleteCellSetCommand(current: PatternDocument, command: DeleteCellSe
 
   const draft = cloneForDelete(current);
   const mutation = applyDeleteCellSetCommand(draft, command, preflight);
-  const run = commitDeltaRun(current, draft, mutation, limit, { code: 'invalid-delete-cell-set', message: 'A changed delete-cell-set command did not produce a history delta.' });
-  attachDeleteMetricsImpactForDelta(run.result, run.entry.delta, 'after');
-  return run;
+  return commitDeltaRun(current, draft, mutation, limit, { code: 'invalid-delete-cell-set', message: 'A changed delete-cell-set command did not produce a history delta.' });
 }
 
 function runSnapshotCommand(current: PatternDocument, command: DomainCommand, limit: number): SurfaceRun {
@@ -2590,11 +2582,6 @@ export class DocumentEditor {
     this.cache.full(this.layered);
   }
 
-  /** Builds an editor over `layeredFromSurface(surface)`: cells on "Stitches" (id 1), backstitches on "Specialty" (id 2). */
-  static fromSurface(surface: PatternDocument, options: HistoryOptions = {}): DocumentEditor {
-    return new DocumentEditor(layeredFromSurface(cloneDocument(surface)), options);
-  }
-
   get document(): LayeredDocument {
     return this.layered;
   }
@@ -2606,14 +2593,6 @@ export class DocumentEditor {
 
   get revision(): number {
     return this.layered.revision;
-  }
-
-  get canUndo(): boolean {
-    return this.undoStack.length > 0;
-  }
-
-  get canRedo(): boolean {
-    return this.redoStack.length > 0;
   }
 
   get undoDepth(): number {
@@ -2630,14 +2609,6 @@ export class DocumentEditor {
 
   get historyBytes(): number {
     return this.undoBytes + this.redoBytes;
-  }
-
-  get historyBytesUsed(): number {
-    return this.historyBytes;
-  }
-
-  get lastHistoryEntryKind(): LayeredHistoryEntry['kind'] | null {
-    return this.undoStack.length === 0 ? null : this.undoStack[this.undoStack.length - 1].kind;
   }
 
   /** Detached DTOs; `maxBytes` drops the oldest undo entries first, then the newest-first redo prefix. */
@@ -2676,10 +2647,6 @@ export class DocumentEditor {
 
   executeBatch(commands: readonly DomainCommand[]): CommandResult {
     return this.execute({ type: 'batch', commands: [...commands] });
-  }
-
-  batch(commands: readonly DomainCommand[]): CommandResult {
-    return this.executeBatch(commands);
   }
 
   /**
@@ -2859,10 +2826,6 @@ export class DocumentEditor {
       if (oldest) this.undoBytes -= oldest.bytes;
     }
   }
-}
-
-export function createDocumentEditor(document: LayeredDocument, options: HistoryOptions = {}): DocumentEditor {
-  return new DocumentEditor(document, options);
 }
 
 export function createEditorFromHistory(document: LayeredDocument, state: unknown, options: HistoryOptions = {}): DocumentEditor {

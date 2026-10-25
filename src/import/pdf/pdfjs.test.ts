@@ -5,11 +5,12 @@ import { PDFDocument, rgb } from 'pdf-lib';
 import type { PDFPageProxy } from 'pdfjs-dist';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CATALOG_DEFINITION } from '../../catalog';
-import { applyCommand, computePatternMetrics, createDocument } from '../../domain';
+import { computePatternMetrics, createDocument } from '../../domain';
 import { DEFAULT_EXPORT_SETTINGS } from '../../export/export-settings';
 import { writePatternPdf } from '../../export/pdf-writer';
 import { getSymbolOutline } from '../../symbols';
 import { DrawOps, glyphOutline, loadPdfjs, openPdf, type Pdfjs } from './pdfjs';
+import { applyCommand } from '../../domain/test-fixtures';
 
 // Vitest's jsdom URL is not a file URL, so fonts resolve from the repo root.
 const fontBytes = (file: string): Uint8Array => new Uint8Array(readFileSync(resolve(process.cwd(), 'fonts', file)));

@@ -72,7 +72,7 @@ const moveProjectToFolder = vi.fn().mockResolvedValue(undefined);
 const moveFolder = vi.fn().mockResolvedValue(undefined);
 const renameProject = vi.fn().mockResolvedValue({ id: 'one', title: 'Renamed', notes: '', createdAt: 1, updatedAt: 2, revision: 4 });
 const duplicateProject = vi.fn().mockResolvedValue({ id: 'copy-id', title: 'Garden sampler copy', notes: '', createdAt: 3, updatedAt: 3, revision: 4 });
-const editorWorkspace = { metadata: { title: 'Garden sampler', notes: '', aidaCount: 14 }, canUndoMark: false, canRedoMark: false, clearMarkHistory: vi.fn(), catalogFor: () => DEFAULT_CATALOG_DEFINITION, availableCatalogs: () => [DEFAULT_CATALOG_DEFINITION], catalogById: (id: string) => id === DEFAULT_CATALOG_DEFINITION.association.catalogId ? DEFAULT_CATALOG_DEFINITION : undefined };
+const editorWorkspace = { metadata: { title: 'Garden sampler', notes: '', aidaCount: 14 }, canUndoMark: false, canRedoMark: false, clearMarkHistory: vi.fn(), catalogFor: () => DEFAULT_CATALOG_DEFINITION, availableCatalogs: () => [DEFAULT_CATALOG_DEFINITION] };
 
 const baseWorkspace = {
   initialized: true,

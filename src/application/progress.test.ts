@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { applyCommand, bulkRecolorCommand, bulkSetThreeQuarterCommand, CellKind, cloneDocument, computePatternMetrics, createDocument, createLayeredDocument, DocumentEditor, deleteRegionCommand, HalfDirection, layeredFromSurface, QuarterCorner, type DomainCommand, type LayeredDocument, type PatternDocument } from '../domain';
-import { setDailyProgress, type PersistencePreparationClient, type ProgressActivity, type ProjectMetadata, type SaveResult } from '../persistence';
-import { editorFromSurface, markBackstitchComplete, markCellComplete, onDefaultLayers } from '../domain/test-fixtures';
-import { attachDeleteMetricsImpactForDelta, registerDeleteMetricsImpact, type DeleteMetricsImpact } from '../domain/internal-metrics-impact';
+import { CellKind, cloneDocument, computePatternMetrics, createDocument, DocumentEditor, deleteRegionCommand, HalfDirection, layeredFromSurface, QuarterCorner, type CommandResult, type DomainCommand, type LayeredDocument, type PatternDocument } from '../domain';
+import type { PersistencePreparationClient, ProjectMetadata, SaveResult } from '../persistence';
+import { editorFromSurface, markBackstitchComplete, markCellComplete, onDefaultLayers, applyCommand, bulkRecolorCommand, bulkSetThreeQuarterCommand, createLayeredDocument } from '../domain/test-fixtures';
 import { ProjectSession } from './session';
 import { ProgressMetricsService } from './progress';
 import type { WorkspaceRepository } from './types';
@@ -80,32 +79,27 @@ function denseDocument(side: number): PatternDocument {
   return document;
 }
 
-function expectExactMetrics(service: ProgressMetricsService, document: PatternDocument, activity: { marked: number; unmarked: number }): void {
+/** Applies `result` to the service the way `ProjectSession` does after a changed command. */
+function applyResult(service: ProgressMetricsService, editor: DocumentEditor, result: CommandResult): void {
+  const indices = result.compositeChangedIndices;
+  service.applyComposite(editor.composite, { full: result.compositeFull === true || indices === undefined, ...(indices === undefined ? {} : { indices }) });
+}
+
+function expectExactMetrics(service: ProgressMetricsService, document: PatternDocument): void {
   expect(service.metrics).toEqual(computePatternMetrics(document));
-  expect(activity).toEqual({ marked: 0, unmarked: 0 });
 }
 
 function expectDeleteMetricsRoundTrip(editor: DocumentEditor, rect: { x: number; y: number; width: number; height: number }): void {
   const service = new ProgressMetricsService(editor.composite);
-  let previous = editor.composite;
   let result = editor.execute(onDefaultLayers(deleteRegionCommand(rect, editor.revision)));
-  expectExactMetrics(service, editor.composite, service.apply(previous, result));
-  previous = editor.composite;
+  applyResult(service, editor, result);
+    expectExactMetrics(service, editor.composite);
   result = editor.undo();
-  expectExactMetrics(service, editor.composite, service.apply(previous, result));
-  previous = editor.composite;
+  applyResult(service, editor, result);
+    expectExactMetrics(service, editor.composite);
   result = editor.redo();
-  expectExactMetrics(service, editor.composite, service.apply(previous, result));
-}
-
-function countIndexedReads<T extends Uint8Array | Uint16Array | Uint32Array>(plane: T, reads: { value: number }): T {
-  return new Proxy(plane, {
-    get(target, property) {
-      if (typeof property === 'string' && /^\d+$/.test(property)) reads.value += 1;
-      const value = Reflect.get(target, property, target);
-      return typeof value === 'function' ? value.bind(target) : value;
-    }
-  });
+  applyResult(service, editor, result);
+    expectExactMetrics(service, editor.composite);
 }
 
 describe('application progress integration', () => {
@@ -155,31 +149,28 @@ describe('application progress integration', () => {
     }
   });
 
-  it('supports three-quarter incremental metrics, completion activity, materials, and fallback rebuilds', () => {
+  it('supports three-quarter incremental metrics, completion, materials, and full rebuilds', () => {
     let document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 3, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     document = applyCommand(document, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
     document = markCellComplete(document, 0, 0);
     const editor = editorFromSurface(document);
     const service = new ProgressMetricsService(editor.composite);
 
-    let previous = editor.composite;
     let result = editor.execute(onDefaultLayers(bulkSetThreeQuarterCommand(new Uint32Array([0, 1]), QuarterCorner.SE, 1)));
     expect(result.changedIndices).toEqual(new Uint32Array([0, 1]));
-    expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 0 });
+    applyResult(service, editor, result);
     expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(service.metrics.totals).toMatchObject({ threeQuarter: 3, totalComponents: 3, completedComponents: 1, remainingComponents: 2 });
     expect(service.metrics.palettes[0].material.stitchUnits).toBe(2.25);
 
-    previous = editor.composite;
     result = editor.applyProgress({ cells: { indices: new Uint32Array([0, 1]), masks: new Uint8Array([5, 1]) }, operation: 'set' })!.result;
-    expect(service.apply(previous, result)).toEqual({ marked: 2, unmarked: 0 });
+    applyResult(service, editor, result);
     expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(service.metrics.progress).toMatchObject({ completedComponents: 3, remainingComponents: 0, totalComponents: 3 });
 
-    previous = editor.composite;
     result = editor.execute(onDefaultLayers({ type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.SW, color: 1 }));
     expect(result.changedIndices).toBeUndefined();
-    expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 0 });
+    applyResult(service, editor, result);
     expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(service.recalculate(editor.composite)).toEqual(computePatternMetrics(editor.composite));
   });
@@ -203,17 +194,15 @@ describe('application progress integration', () => {
     document = editor.composite;
     const service = new ProgressMetricsService(document);
 
-    let previous = editor.composite;
     let result = editor.applyProgress({ cells: { indices: new Uint32Array([0, 1, 2]), masks: new Uint8Array([1, 4, 1]) }, operation: 'set' })!.result;
-    expect(service.apply(previous, result)).toEqual({ marked: 3, unmarked: 0 });
+    applyResult(service, editor, result);
     expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(service.metrics.totals).toMatchObject({ totalComponents: 5, completedComponents: 3, remainingComponents: 2 });
     expect(service.metrics.byPalette.get(1)).toMatchObject({ full: 1, quarter: 1, threeQuarter: 1, completedComponents: 2 });
     expect(service.metrics.byPalette.get(2)).toMatchObject({ quarter: 1, threeQuarter: 1, completedComponents: 1 });
 
-    previous = editor.composite;
     result = editor.applyProgress({ cells: { indices: new Uint32Array([2]), masks: new Uint8Array([1]) }, operation: 'clear' })!.result;
-    expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 1 });
+    applyResult(service, editor, result);
     expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(service.metrics.totals).toMatchObject({ totalComponents: 5, completedComponents: 2, remainingComponents: 3 });
   });
@@ -241,7 +230,6 @@ describe('application progress integration', () => {
     const editor = editorFromSurface(document);
 
     const service = new ProgressMetricsService(editor.composite);
-    let previous = editor.composite;
     const recolored = editor.execute(onDefaultLayers(bulkRecolorCommand(
       new Uint32Array([0, 1, 2, 3, 4]),
       new Uint8Array([1, 1, 1, 1, 1]),
@@ -249,20 +237,18 @@ describe('application progress integration', () => {
       3,
       editor.revision
     )));
-    expect(service.apply(previous, recolored)).toEqual({ marked: 0, unmarked: 0 });
+    applyResult(service, editor, recolored);
     expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(service.metrics.byPalette.get(1)).toMatchObject({ full: 0, half: 0, quarter: 0, completedComponents: 0 });
     expect(service.metrics.byPalette.get(2)).toMatchObject({ quarter: 1, threeQuarter: 1, completedComponents: 0, material: { stitchUnits: 1 } });
     expect(service.metrics.byPalette.get(3)).toMatchObject({ full: 1, half: 1, quarter: 1, threeQuarter: 2, completedComponents: 3, material: { stitchUnits: 3.25 } });
 
-    previous = editor.composite;
     const undone = editor.undo();
-    expect(service.apply(previous, undone)).toEqual({ marked: 0, unmarked: 0 });
+    applyResult(service, editor, undone);
     expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(service.metrics.byPalette.get(1)).toMatchObject({ full: 1, half: 1, quarter: 1, threeQuarter: 2, completedComponents: 3, material: { stitchUnits: 3.25 } });
-    previous = editor.composite;
     const redone = editor.redo();
-    expect(service.apply(previous, redone)).toEqual({ marked: 0, unmarked: 0 });
+    applyResult(service, editor, redone);
     expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(editor.undoDepth).toBe(1);
   });
@@ -282,44 +268,27 @@ describe('application progress integration', () => {
     const editor = editorFromSurface(document);
     const service = new ProgressMetricsService(document);
 
-    let previous = editor.composite;
     let result = editor.execute(onDefaultLayers(deleteRegionCommand({ x: 0, y: 0, width: 1, height: 1 }, editor.revision)));
     expect(result.recalculateMetrics).toBe(true);
-    expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 0 });
+    applyResult(service, editor, result);
     expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(service.metrics.totals).toMatchObject({ completedComponents: 0, remainingComponents: 0 });
 
-    previous = editor.composite;
     result = editor.undo();
-    expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 0 });
+    applyResult(service, editor, result);
     expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(service.metrics.byPalette.get(1)).toMatchObject({ threeQuarter: 1, completedComponents: 1 });
     expect(service.metrics.byPalette.get(2)).toMatchObject({ threeQuarter: 1, completedComponents: 0 });
 
-    previous = editor.composite;
     result = editor.redo();
-    expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 0 });
+    applyResult(service, editor, result);
     expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(service.metrics.totals).toMatchObject({ completedComponents: 0, remainingComponents: 0 });
-  });
-
-  it('keeps the activity window bounded and idempotent across repeated snapshots', () => {
-    let activity: ProgressActivity | undefined;
-    for (let day = 0; day < 400; day += 1) {
-      const date = new Date(Date.UTC(2025, 0, 1 + day));
-      activity = setDailyProgress(activity, date, 1, 0);
-    }
-    expect(activity?.daily).toHaveLength(366);
-    expect(activity?.daily[0].date).toBe('2025-02-04');
-    expect(activity?.daily.at(-1)).toMatchObject({ date: '2026-02-04', marked: 1, unmarked: 0 });
-    const repeated = setDailyProgress(activity, '2026-02-04', 1, 0);
-    expect(repeated).toEqual(activity);
   });
 
   it('matches fresh metrics for mixed multi-palette delete, undo, and redo', () => {
     const { editor, rect } = mixedDeleteFixture();
     const service = new ProgressMetricsService(editor.composite);
-    const before = editor.composite;
     const deleted = editor.execute(onDefaultLayers(deleteRegionCommand(rect, editor.revision)));
     expect(deleted.changed).toBe(true);
     expect(deleted.recalculateMetrics).toBe(true);
@@ -327,18 +296,19 @@ describe('application progress integration', () => {
     deleted.changedIndices?.fill(0);
     deleted.touchedIndices?.fill(0);
     deleted.changedBackstitchIds?.fill(0);
-    expectExactMetrics(service, editor.composite, service.apply(before, deleted));
+    applyResult(service, editor, deleted);
+    expectExactMetrics(service, editor.composite);
 
-    const afterDelete = editor.composite;
     const undone = editor.undo();
-    expectExactMetrics(service, editor.composite, service.apply(afterDelete, undone));
+    applyResult(service, editor, undone);
+    expectExactMetrics(service, editor.composite);
 
-    const afterUndo = editor.composite;
     const redone = editor.redo();
-    expectExactMetrics(service, editor.composite, service.apply(afterUndo, redone));
+    applyResult(service, editor, redone);
+    expectExactMetrics(service, editor.composite);
   });
 
-  it('uses exact impacts for cell-only, backstitch-only, and mixed deletes', () => {
+  it('matches fresh metrics for cell-only, backstitch-only, and mixed deletes', () => {
     const cellEditor = editorFromSurface(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 3, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] }));
     cellEditor.execute(onDefaultLayers({ type: 'set-full', x: 1, y: 1, color: 1 }));
     cellEditor.execute(onDefaultLayers({ type: 'set-half', x: 2, y: 1, direction: HalfDirection.Backslash, color: 2 }));
@@ -381,46 +351,9 @@ describe('application progress integration', () => {
       expect(session.metrics).toEqual(computePatternMetrics(session.document));
       session.redo();
       expect(session.metrics).toEqual(computePatternMetrics(session.document));
-      expect(session.sessionStats).toMatchObject({ marked: 0, unmarked: 0 });
     } finally {
       await session.dispose();
     }
-  });
-
-  it('falls back exactly for copied results, revision mismatches, and malformed impacts', () => {
-    const { editor, rect } = mixedDeleteFixture();
-    const before = editor.composite;
-    const deleted = editor.execute(onDefaultLayers(deleteRegionCommand(rect, editor.revision)));
-
-    const copiedResult = { ...deleted };
-    const copiedService = new ProgressMetricsService(before);
-    expectExactMetrics(copiedService, deleted.document, copiedService.apply(before, copiedResult));
-
-    const mismatchedService = new ProgressMetricsService(before);
-    const mismatchedPrevious = { ...before, revision: before.revision + 10 };
-    expectExactMetrics(mismatchedService, deleted.document, mismatchedService.apply(mismatchedPrevious, deleted));
-
-    const malformedDelta = {};
-    const malformedImpact = {
-      entries: [{
-        paletteId: 1,
-        removedFull: -1,
-        removedHalf: 0,
-        removedQuarter: 0,
-        removedCellCompleted: 0,
-        beforeBackstitchCount: 0,
-        afterBackstitchCount: 0,
-        beforeBackstitchCompleted: 0,
-        afterBackstitchCompleted: 0,
-        beforeBackstitchLengthFixed: 0,
-        afterBackstitchLengthFixed: 0
-      }]
-    } as unknown as DeleteMetricsImpact;
-    registerDeleteMetricsImpact(malformedDelta, malformedImpact);
-    const malformedResult = { ...deleted };
-    attachDeleteMetricsImpactForDelta(malformedResult, malformedDelta, 'after');
-    const malformedService = new ProgressMetricsService(before);
-    expectExactMetrics(malformedService, deleted.document, malformedService.apply(before, malformedResult));
   });
 
   it('matches fresh metrics for dense 250,000 and 1,000,000 cell deletion round trips', { timeout: 120_000 }, () => {
@@ -430,19 +363,19 @@ describe('application progress integration', () => {
     ]) {
       const editor = editorFromSurface(denseDocument(testCase.side));
       const service = new ProgressMetricsService(editor.composite);
-      let previous = editor.composite;
       let result = editor.execute(onDefaultLayers(deleteRegionCommand(testCase.rect, editor.revision)));
-      expectExactMetrics(service, editor.composite, service.apply(previous, result));
-      previous = editor.composite;
+      applyResult(service, editor, result);
+      expectExactMetrics(service, editor.composite);
       result = editor.undo();
-      expectExactMetrics(service, editor.composite, service.apply(previous, result));
-      previous = editor.composite;
+      applyResult(service, editor, result);
+      expectExactMetrics(service, editor.composite);
       result = editor.redo();
-      expectExactMetrics(service, editor.composite, service.apply(previous, result));
+      applyResult(service, editor, result);
+      expectExactMetrics(service, editor.composite);
     }
   });
 
-  it('keeps no-op and stale delete metrics, revision, history, and activity unchanged', () => {
+  it('keeps no-op and stale delete metrics, revision, and history unchanged', () => {
     const editor = editorFromSurface(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 3, height: 3, palette: [{ id: 1, name: 'Red', color: '#d33' }] }));
     const service = new ProgressMetricsService(editor.composite);
     const before = editor.composite;
@@ -452,7 +385,6 @@ describe('application progress integration', () => {
     expect(editor.composite).toBe(before);
     expect(editor.revision).toBe(0);
     expect(editor.undoDepth).toBe(0);
-    expect(service.apply(before, noOp)).toEqual({ marked: 0, unmarked: 0 });
     expect(service.metrics).toEqual(beforeMetrics);
 
     expect(() => editor.execute(onDefaultLayers(deleteRegionCommand({ x: 0, y: 0, width: 1, height: 1 }, editor.revision + 1)))).toThrow(/revision/i);
@@ -463,7 +395,7 @@ describe('application progress integration', () => {
     expect(service.metrics).toEqual(beforeMetrics);
   });
 
-  it('reuses counts for palette-only execute, undo, and redo without reading planes', () => {
+  it('keeps palette-only execute, undo, and redo metrics exact', () => {
     const editor = editorFromSurface(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
       width: 3,
       height: 2,
@@ -473,38 +405,15 @@ describe('application progress integration', () => {
     editor.execute(onDefaultLayers({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 4 }, color: 1 }));
     editor.clearHistory();
 
-    const reads = { value: 0 };
-    editor.composite.kind = countIndexedReads(editor.composite.kind, reads);
-    editor.composite.colors = countIndexedReads(editor.composite.colors, reads);
-    editor.composite.completed = countIndexedReads(editor.composite.completed, reads);
-    editor.composite.backstitches = {
-      ...editor.composite.backstitches,
-      ids: countIndexedReads(editor.composite.backstitches.ids, reads),
-      x1: countIndexedReads(editor.composite.backstitches.x1, reads),
-      y1: countIndexedReads(editor.composite.backstitches.y1, reads),
-      x2: countIndexedReads(editor.composite.backstitches.x2, reads),
-      y2: countIndexedReads(editor.composite.backstitches.y2, reads),
-      colors: countIndexedReads(editor.composite.backstitches.colors, reads),
-      completed: countIndexedReads(editor.composite.backstitches.completed, reads)
-    };
     const service = new ProgressMetricsService(editor.composite);
-    reads.value = 0;
 
     const apply = (command: DomainCommand): void => {
-      const previous = editor.composite;
-      const result = editor.execute(onDefaultLayers(command));
-      // Palette deactivation validates that the ID is unreferenced in the
-      // domain. Reset that command-level probe before checking the metrics
-      // application path itself.
-      reads.value = 0;
-      expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 0 });
-      expect(reads.value).toBe(0);
+      applyResult(service, editor, editor.execute(onDefaultLayers(command)));
+      expectExactMetrics(service, editor.composite);
     };
     const applyHistory = (operation: () => ReturnType<typeof editor.undo>): void => {
-      const previous = editor.composite;
-      const result = operation();
-      expect(service.apply(previous, result)).toEqual({ marked: 0, unmarked: 0 });
-      expect(reads.value).toBe(0);
+      applyResult(service, editor, operation());
+      expectExactMetrics(service, editor.composite);
     };
 
     apply({ type: 'palette-create', name: 'Blue', color: '#36c' });
@@ -539,32 +448,23 @@ describe('application progress integration', () => {
     editor.execute(onDefaultLayers({ type: 'set-full', x: 0, y: 0, color: 1 }));
     editor.clearHistory();
 
-    const reads = { value: 0 };
-    editor.composite.kind = countIndexedReads(editor.composite.kind, reads);
-    editor.composite.colors = countIndexedReads(editor.composite.colors, reads);
-    editor.composite.completed = countIndexedReads(editor.composite.completed, reads);
     const service = new ProgressMetricsService(editor.composite);
-    reads.value = 0;
 
-    const previous = editor.composite;
     const created = editor.execute(onDefaultLayers({ type: 'palette-create', name: 'Unused', color: '#36c' }));
-    expect(service.apply(previous, created)).toEqual({ marked: 0, unmarked: 0 });
-    expect(reads.value).toBe(0);
+    applyResult(service, editor, created);
+    expectExactMetrics(service, editor.composite);
     expect(service.metrics.byPalette.get(2)).toMatchObject({ totalComponents: 0 });
 
     service.setMaterialSettings({ strands: 2 });
-    reads.value = 0;
 
-    const beforeUndo = editor.composite;
     const undone = editor.undo();
-    expect(service.apply(beforeUndo, undone)).toEqual({ marked: 0, unmarked: 0 });
-    expect(reads.value).toBe(0);
+    applyResult(service, editor, undone);
+    expect(service.metrics).toEqual(computePatternMetrics(editor.composite, { strands: 2 }));
     expect(service.metrics.byPalette.has(2)).toBe(false);
 
-    const beforeRedo = editor.composite;
     const redone = editor.redo();
-    expect(service.apply(beforeRedo, redone)).toEqual({ marked: 0, unmarked: 0 });
-    expect(reads.value).toBe(0);
+    applyResult(service, editor, redone);
+    expect(service.metrics).toEqual(computePatternMetrics(editor.composite, { strands: 2 }));
     expect(service.metrics.byPalette.get(2)).toMatchObject({ totalComponents: 0 });
   });
 });

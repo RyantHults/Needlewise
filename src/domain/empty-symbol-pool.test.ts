@@ -13,10 +13,11 @@ import type { CatalogAssociation } from './types';
  */
 vi.mock('../symbols', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../symbols')>();
-  return { ...actual, SYMBOL_IDS: [] as string[], SYMBOL_COUNT: 0, SYMBOL_POOL: [] };
+  return { ...actual, SYMBOL_IDS: [] as string[], SYMBOL_POOL: [] };
 });
 
-const { applyCommand, createDocument, defaultPaletteSymbol, DomainError, isKnownSymbolId } = await import('./index');
+const { createDocument, defaultPaletteSymbol, DomainError, isKnownSymbolId } = await import('./index');
+const { applyCommand } = await import('./test-fixtures');
 
 const CATALOG: CatalogAssociation = { catalogId: 'empty-pool-catalog', brandLabel: 'Empty Pool', colorCount: 8 };
 

@@ -1,4 +1,4 @@
-import { CellKind, DOCUMENT_SCHEMA_VERSION, DomainError, MaterialKind, MaterialUnit, MAX_PERSISTABLE_CELL_COUNT, PALETTE_ID_MAX, type PatternDocument, type ValidationResult } from './types';
+import { CellKind, DOCUMENT_SCHEMA_VERSION, DomainError, MaterialKind, MaterialUnit, MAX_PERSISTABLE_CELL_COUNT, PALETTE_ID_MAX, type PatternDocument } from './types';
 import { UINT32_MAX, isAutoOverflowEntry, isThreeQuarterKind, isThreeQuarterPairKind, paletteLimit } from './model';
 import { backstitchWithinCanvas, isValidCanvasOrigin } from './canvas';
 import { parseHexColor } from './color';
@@ -284,24 +284,9 @@ export function collectValidationErrors(document: PatternDocument): string[] {
   return errors;
 }
 
-export function validateDocument(document: PatternDocument): boolean {
-  return collectValidationErrors(document).length === 0;
-}
-
-export function getValidationResult(document: PatternDocument): ValidationResult {
-  const errors = collectValidationErrors(document);
-  return { valid: errors.length === 0, errors };
-}
-
 export function assertValidDocument(document: PatternDocument): void {
   const errors = collectValidationErrors(document);
   if (errors.length > 0) {
     throw new DomainError('invalid-document', errors.join(' '));
   }
 }
-
-export const validatePatternDocument = validateDocument;
-export const assertDocumentValid = assertValidDocument;
-export const isValidDocument = validateDocument;
-export const validateInvariants = validateDocument;
-export const assertInvariants = assertValidDocument;

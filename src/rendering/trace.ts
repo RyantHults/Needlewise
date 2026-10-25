@@ -171,10 +171,6 @@ export function createTraceImageProjection(
   };
 }
 
-export const createTraceProjection = createTraceImageProjection;
-export const traceImageProjection = createTraceImageProjection;
-export const projectTraceImage = createTraceImageProjection;
-
 function sourceRectForDestination(projection: TraceImageProjection, destination: Rect): Rect {
   const xRatio = projection.screenRect.width === 0 ? 0 : (destination.x - projection.screenRect.x) / projection.screenRect.width;
   const yRatio = projection.screenRect.height === 0 ? 0 : (destination.y - projection.screenRect.y) / projection.screenRect.height;
@@ -280,8 +276,6 @@ export function sampleTraceImage(
     surface.dispose?.();
   }
 }
-
-export const sampleTraceAt = sampleTraceImage;
 
 function supportedMimeType(value: string): boolean {
   return (TRACE_IMAGE_MIME_TYPES as readonly string[]).includes(value.toLowerCase());

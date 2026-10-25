@@ -639,10 +639,6 @@ export function decodeDocumentWithInfo(input: Uint8Array | ArrayBuffer): Decoded
   return { document, binaryVersion: header.binaryVersion, legacy };
 }
 
-export function decodeDocument(input: Uint8Array | ArrayBuffer): LayeredDocument {
-  return decodeDocumentWithInfo(input).document;
-}
-
 /**
  * Before layers, the stitch count lived in project metadata. Copies a legacy
  * `aidaCount` into the settings of a document decoded from v1/v2 bytes, in
@@ -676,8 +672,3 @@ export function cloneLayeredDocument(document: LayeredDocument): LayeredDocument
     ...(document.canvasMask === undefined ? {} : { canvasMask: document.canvasMask.slice() })
   };
 }
-
-export const serializeDocument = encodeDocument;
-export const deserializeDocument = decodeDocument;
-export const encodePatternDocument = encodeDocument;
-export const decodePatternDocument = decodeDocument;

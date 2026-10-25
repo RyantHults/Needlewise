@@ -1,24 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { formatLength, formatSkeins, materialLine, materialYardage, pdfFilename, stitchSummary } from './material-format';
-
-const material = (extra: Record<string, unknown> = {}) => ({ estimatedMeters: 1, estimatedSkeins: 0.12, ...extra }) as never;
+import { formatLength, formatSkeins, pdfFilename, stitchSummary } from './material-format';
 
 describe('material formatting', () => {
-  it('reports skeins, collapsing identical ranges', () => {
-    expect(materialLine(undefined)).toBe('Physical estimate unavailable');
-    expect(materialLine({ estimatedMeters: undefined, estimatedSkeins: undefined } as never)).toBe('Physical estimate unavailable');
-    expect(materialLine(material())).toBe('0.12 skeins');
-    expect(materialLine(material({ estimateRange: { skeins: { min: 0, max: 0 } } }))).toBe('0 skeins');
-    expect(materialLine(material({ estimateRange: { skeins: { min: 1, max: 2 } } }))).toBe('1–2 skeins');
-  });
-
-  it('reports yardage from meters', () => {
-    expect(materialYardage(undefined)).toBeNull();
-    expect(materialYardage(material({ estimatedMeters: undefined }))).toBeNull();
-    expect(materialYardage(material())).toBe('1.09 yd');
-    expect(materialYardage(material({ estimateRange: { meters: { min: 1, max: 2 } } }))).toBe('1.09–2.19 yd');
-  });
-
   it('formats legend lengths and skeins', () => {
     expect(formatLength(undefined)).toBeNull();
     expect(formatLength({ unit: 'm', value: 2, min: 2, max: 2 })).toBe('2 m');

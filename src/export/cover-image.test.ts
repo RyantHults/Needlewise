@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { applyCommand, CellKind, createDocument, HalfDirection, type PatternDocument } from '../domain';
+import { CellKind, createDocument, HalfDirection, type PatternDocument } from '../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import type { CanvasContextAdapter } from '../editor/contracts';
 import { coverCellPx, paintCover, renderCoverPng, type CoverCanvas, type CoverImageInput } from './cover-image';
+import { applyCommand } from '../domain/test-fixtures';
 
 interface Call { readonly op: string; readonly args: readonly unknown[] }
 

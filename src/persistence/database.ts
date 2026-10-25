@@ -75,10 +75,3 @@ export class NeedlewiseDatabase extends Dexie {
     });
   }
 }
-
-export function createDatabase(name = 'needlewise-local'): NeedlewiseDatabase {
-  return new NeedlewiseDatabase(name);
-}
-
-export const ProjectDatabase = NeedlewiseDatabase;
-export const openDatabase = createDatabase;

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { applyLayerStructureCommand, createLayeredDocument, layerAddCommand, layerSetVisibilityCommand, LayerType, type LayeredDocument } from '../domain';
+import { applyLayerStructureCommand, layerAddCommand, layerSetVisibilityCommand, LayerType, type LayeredDocument } from '../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { planLayerMerge } from './layer-merge';
+import { createLayeredDocument } from '../domain/test-fixtures';
 
 /** Bottom to top: Stitches (1), Stitches 2 (3), Stitches 3 (4), Specialty (2). */
 function document(): LayeredDocument {

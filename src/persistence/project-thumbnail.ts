@@ -8,7 +8,6 @@ export const PROJECT_THUMBNAIL_MAX_CELLS = PROJECT_THUMBNAIL_MAX_AXIS * PROJECT_
 export const PROJECT_THUMBNAIL_MAX_BACKSTITCHES = 65536;
 /** The default fabric, for cells without a stitch; lowercase like every summary color. */
 export const PROJECT_THUMBNAIL_FABRIC_COLOR = DEFAULT_PATTERN_SETTINGS.backgroundColor.toLowerCase();
-export const DEFAULT_FABRIC_COLOR = PROJECT_THUMBNAIL_FABRIC_COLOR;
 /**
  * Samples that land in a hole of a non-rectangular canvas. The summary format
  * is opaque hex only, so holes match the editor's default off-canvas color.
@@ -20,8 +19,6 @@ export interface ProjectDocumentSummary {
   height: number;
   thumbnail: ProjectThumbnailSummary;
 }
-
-export type ProjectSummary = ProjectDocumentSummary;
 
 function isPositiveSafeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
@@ -163,10 +160,6 @@ export function projectThumbnailsEqual(a: ProjectThumbnailSummary | undefined, b
   return true;
 }
 
-export function isValidProjectThumbnail(value: unknown, expectedRevision?: number): value is ProjectThumbnailSummary {
-  return sanitizeProjectThumbnail(value, expectedRevision) !== undefined;
-}
-
 /** The thumbnail grid derived for a pattern of this size: 1:1 up to the axis cap, downsampled beyond it. */
 export function expectedThumbnailDimensions(width: number, height: number): { columns: number; rows: number } {
   const scale = Math.min(1, PROJECT_THUMBNAIL_MAX_AXIS / width, PROJECT_THUMBNAIL_MAX_AXIS / height);
@@ -275,13 +268,9 @@ export function deriveProjectThumbnail(source: LayeredDocument | PatternDocument
   };
 }
 
-export const createProjectThumbnail = deriveProjectThumbnail;
-
 export function deriveProjectSummary(document: LayeredDocument | PatternDocument): ProjectDocumentSummary {
   return { width: document.width, height: document.height, thumbnail: deriveProjectThumbnail(document) };
 }
-
-export const summarizeProjectDocument = deriveProjectSummary;
 
 export function withProjectSummary(metadata: ProjectMetadata, summary: ProjectDocumentSummary): ProjectMetadata {
   const safe = sanitizeProjectMetadata(metadata);
@@ -292,8 +281,6 @@ export function withProjectSummary(metadata: ProjectMetadata, summary: ProjectDo
     thumbnail: cloneThumbnail(summary.thumbnail)
   };
 }
-
-export const canonicalizeProjectMetadata = withProjectSummary;
 
 /**
  * Clone metadata at the persistence boundary. Invalid derived fields are
@@ -337,10 +324,4 @@ export function completeProjectSummary(metadata: ProjectMetadata): ProjectDocume
   const thumbnail = sanitizeProjectThumbnail(metadata.thumbnail, metadata.revision);
   if (thumbnail === undefined) return undefined;
   return { width, height, thumbnail };
-}
-
-export const projectSummaryFromMetadata = completeProjectSummary;
-
-export function hasCompleteProjectSummary(metadata: ProjectMetadata): boolean {
-  return completeProjectSummary(metadata) !== undefined;
 }

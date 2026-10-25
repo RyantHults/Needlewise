@@ -10,7 +10,6 @@ import {
 import {
   CHART_EDGE_MARGIN,
   ChartPresentationMode,
-  DEFAULT_LOD_THRESHOLDS,
   DEFAULT_RENDERER_STYLE,
   RenderLod,
   type CanvasCellSet,
@@ -134,9 +133,6 @@ export function coalesceInvalidations(invalidations: readonly Invalidation[]): C
     reasons
   };
 }
-
-export const coalesceInvalidation = coalesceInvalidations;
-export const mergeInvalidations = coalesceInvalidations;
 
 function defaultFrameRequest(callback: (time: number) => void): number {
   if (typeof globalThis.requestAnimationFrame === 'function') return globalThis.requestAnimationFrame(callback);
@@ -2504,10 +2500,10 @@ export class Canvas2DRenderer implements CanvasRenderer {
     this.themeColors = readRendererColors();
     this.style = mergeStyle(this.themeColors, this.styleSettings);
     this.unsubscribeTheme = subscribeThemeChange(() => this.applyTheme());
-    this.traceImage = options.traceImage ?? options.trace;
+    this.traceImage = options.traceImage;
     this.traceDisposer = this.traceImage?.dispose;
     this.overlay = options.overlay ?? {};
-    this.thresholds = resolveLodThresholds({ ...DEFAULT_LOD_THRESHOLDS, ...options.lodThresholds });
+    this.thresholds = resolveLodThresholds(options.lodThresholds);
     this.atlasFactory = options.atlasTargetFactory ?? defaultAtlasTargetFactory;
     this.requestFrame = options.requestAnimationFrame ?? defaultFrameRequest;
     this.cancelFrame = options.cancelAnimationFrame ?? defaultFrameCancel;
@@ -2930,5 +2926,3 @@ function drawResizeHandles(
 export function createCanvasRenderer(options: CanvasRendererOptions): CanvasRenderer {
   return new Canvas2DRenderer(options);
 }
-
-export const createRenderer = createCanvasRenderer;

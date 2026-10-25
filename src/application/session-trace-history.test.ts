@@ -1,90 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
-  createDocument,
-  createLayeredDocument,
-  type LayeredDocument
+  createDocument
 } from '../domain';
 import {
   createPersistencePreparationClient,
-  cloneLayeredDocument,
-  cloneSessionHistory,
-  sha256,
-  type ProjectAsset,
-  type ProjectAssetInput,
-  type ProjectMetadata,
-  type ProjectRecord,
   type PersistencePreparationClient,
-  type SaveOptions,
-  type SaveResult,
   type SessionHistoryEnvelope
 } from '../persistence';
 import { ProjectSession, ProjectWorkspace } from './index';
-import type { WorkspaceRepository } from './types';
+import { MemoryRepository } from './test-support';
 import { createInstalledCatalogRegistry, DEFAULT_CATALOG_DEFINITION } from '../catalog';
-
-function copyRecord(record: ProjectRecord): ProjectRecord {
-  return {
-    metadata: { ...record.metadata },
-    document: cloneLayeredDocument(record.document),
-    ...(record.head === undefined ? {} : { head: { ...record.head } }),
-    recovery: record.recovery === null ? null : { revision: record.recovery.revision, document: cloneLayeredDocument(record.recovery.document) },
-    assets: record.assets.map((asset) => ({ ...asset, data: new Uint8Array(asset.data) })),
-    ...(record.history === undefined ? {} : { history: cloneSessionHistory(record.history) })
-  };
-}
-
-class MemoryRepository implements WorkspaceRepository {
-  readonly records = new Map<string, ProjectRecord>();
-  beforeSave: (() => Promise<void> | void) | undefined;
-
-  async save(projectId: string, metadata: ProjectMetadata, document: LayeredDocument, assets?: readonly ProjectAssetInput[], options: SaveOptions = {}): Promise<SaveResult> {
-    await this.beforeSave?.();
-    const current = this.records.get(projectId);
-    if (options.mode === 'retain') {
-      const expectedHead = options.expectedHead;
-      const expectedRevision = options.expectedRevision ?? (typeof expectedHead === 'number' ? expectedHead : expectedHead?.revision);
-      const expectedChecksum = typeof expectedHead === 'object' && expectedHead !== null ? expectedHead.checksum : undefined;
-      if (!current?.head || expectedRevision !== current.head.revision || (expectedChecksum !== undefined && expectedChecksum !== current.head.checksum)) return { committed: false, stale: true, revision: current?.document.revision ?? document.revision };
-    } else if (current && (current.document.revision > document.revision || (current.document.revision === document.revision && !options.allowSameRevision))) return { committed: false, stale: true, revision: current.document.revision };
-    const retained = options.mode === 'retain';
-    const persistedDocument = retained && current ? current.document : document;
-    const head = retained && current?.head
-      ? { ...current.head }
-      : { projectId, revision: persistedDocument.revision, checksum: await sha256(new TextEncoder().encode(JSON.stringify(persistedDocument))) };
-    const nextAssets: ProjectAsset[] = assets === undefined
-      ? current?.assets ?? []
-      : [];
-    if (assets !== undefined) {
-      for (const asset of assets) {
-        const data = asset.data instanceof Uint8Array ? asset.data.slice() : asset.data instanceof ArrayBuffer ? new Uint8Array(asset.data).slice() : new Uint8Array(await asset.data.arrayBuffer());
-        nextAssets.push({ id: asset.id, name: asset.name, mimeType: asset.mimeType, data, checksum: await sha256(data) });
-      }
-    }
-    this.records.set(projectId, {
-      metadata: { ...metadata },
-      document: cloneLayeredDocument(persistedDocument),
-      head,
-      recovery: retained ? current?.recovery ?? null : current === undefined ? null : { revision: current.document.revision, document: cloneLayeredDocument(current.document) },
-      assets: nextAssets,
-      ...(options.history !== undefined && 'trace' in options.history ? { history: cloneSessionHistory(options.history as SessionHistoryEnvelope) } : {})
-    });
-    return { committed: true, stale: false, revision: persistedDocument.revision, head };
-  }
-
-  async load(projectId: string): Promise<ProjectRecord | undefined> {
-    const record = this.records.get(projectId);
-    return record === undefined ? undefined : copyRecord(record);
-  }
-
-  async listProjects(): Promise<ProjectMetadata[]> {
-    return [...this.records.values()].map((record) => ({ ...record.metadata }));
-  }
-
-  async deleteProject(projectId: string): Promise<void> {
-    this.records.delete(projectId);
-  }
-
-}
+import { createLayeredDocument } from '../domain/test-fixtures';
 
 function pngBytes(width: number, height: number): Uint8Array {
   const bytes = new Uint8Array(24);
@@ -156,7 +82,7 @@ describe('trace image unified history', () => {
     expect(resolvedDmc).toMatchObject({ association: DEFAULT_CATALOG_DEFINITION.association });
     expect(resolvedDmc?.records).toEqual(DEFAULT_CATALOG_DEFINITION.records);
     expect(resolvedDmc).not.toBe(DEFAULT_CATALOG_DEFINITION);
-    expect(workspace.catalogById(brandBReference.catalogId)).toBeUndefined();
+    expect(workspace.availableCatalogs().find((definition) => definition.association.catalogId === brandBReference.catalogId)).toBeUndefined();
     expect(workspace.document?.catalog).toEqual(DEFAULT_CATALOG_DEFINITION.association);
     expect(workspace.document?.palette[1].catalog).toEqual(brandBReference);
     await workspace.dispose();
@@ -174,7 +100,7 @@ describe('trace image unified history', () => {
       expect(reopenedDmc).toMatchObject({ association: DEFAULT_CATALOG_DEFINITION.association });
       expect(reopenedDmc?.records).toEqual(DEFAULT_CATALOG_DEFINITION.records);
       expect(reopenedDmc).not.toBe(DEFAULT_CATALOG_DEFINITION);
-      expect(reopened.catalogById(brandBReference.catalogId)).toBeUndefined();
+      expect(reopened.availableCatalogs().find((definition) => definition.association.catalogId === brandBReference.catalogId)).toBeUndefined();
       expect(session.document.catalog).toEqual(DEFAULT_CATALOG_DEFINITION.association);
       expect(session.document.palette[1].catalog).toEqual(brandBReference);
       expect(session.document.palette[2].catalog).toBeUndefined();
@@ -204,7 +130,7 @@ describe('trace image unified history', () => {
       expect(restored.document.kind[5]).toBe(1);
       restored.undo();
       restored.execute({ type: 'set-full', x: 2, y: 2, color: 1 });
-      expect(restored.canRedo).toBe(false);
+      expect(restored.historyRedoDepth).toBe(0);
     } finally {
       await reopened.dispose();
     }
@@ -303,7 +229,7 @@ describe('trace image unified history', () => {
         await afterRemoval.dispose();
       }
     } finally {
-      if (!reopened.isDisposed) await reopened.dispose();
+      await reopened.dispose();
     }
   });
 
@@ -505,7 +431,7 @@ describe('trace image unified history', () => {
       const restored = await reopened.openProject('rejected-history');
       expect(restored.document.kind[0]).toBe(1);
       expect(restored.historyUndoDepth).toBe(0);
-      expect(restored.canUndo).toBe(false);
+      expect(restored.historyUndoDepth).toBe(0);
     } finally {
       await reopened.dispose();
     }
@@ -529,7 +455,7 @@ describe('trace image unified history', () => {
       expect(session.historyUndoDepth).toBe(editor.undoDepth);
       while (editor.undoDepth > 0) session.undo();
       expect(session.historyUndoDepth).toBe(0);
-      expect(session.canUndo).toBe(false);
+      expect(session.historyUndoDepth).toBe(0);
     } finally {
       await session.dispose();
     }
@@ -594,7 +520,7 @@ describe('trace image unified history', () => {
         { ...TRACE_DESCRIPTOR, chartBounds: { x: 2, y: 1, width: 2, height: 2 } },
         { label: 'trace-image-bounds' }
       );
-      expect(session.traceUndoDepth).toBe(1);
+      expect(session.historyUndoDepth).toBe(1);
 
       session.undo();
       expect(session.sourceImage?.chartBounds).toEqual({ x: 0, y: 0, width: 2, height: 2 });
@@ -618,10 +544,10 @@ describe('trace image unified history', () => {
       // A visibility toggle is saved but is no entry, and it keeps redo.
       const toggled = session.sourceImage;
       if (!toggled) throw new Error('Missing descriptor.');
-      const depthBeforeToggle = session.traceUndoDepth;
+      const depthBeforeToggle = session.historyUndoDepth;
       session.applyTraceImageChange({ ...toggled, traceVisible: false }, { label: 'trace-image-visibility' });
-      expect(session.traceUndoDepth).toBe(depthBeforeToggle);
-      expect(session.canRedo).toBe(true);
+      expect(session.historyUndoDepth).toBe(depthBeforeToggle);
+      expect(session.historyRedoDepth).toBeGreaterThan(0);
       expect(session.sourceImage?.traceVisible).toBe(false);
       expect(session.saveState.status).toBe('pending');
       // Undo and redo move the reference without showing it again.
@@ -637,9 +563,9 @@ describe('trace image unified history', () => {
       // One slider interaction commits once.
       const slid = session.sourceImage;
       if (!slid) throw new Error('Missing descriptor.');
-      const depthBeforeSlider = session.traceUndoDepth;
+      const depthBeforeSlider = session.historyUndoDepth;
       session.applyTraceImageChange({ ...slid, opacity: 0.4 }, { label: 'trace-image-opacity' });
-      expect(session.traceUndoDepth).toBe(depthBeforeSlider + 1);
+      expect(session.historyUndoDepth).toBe(depthBeforeSlider + 1);
       expect(session.sourceImage?.opacity).toBe(0.4);
       session.undo();
       expect(session.sourceImage?.opacity).toBe(1);
@@ -703,18 +629,18 @@ describe('trace image unified history', () => {
 
       // A new stitch action clears the redo stack (standard).
       session.execute({ type: 'set-full', x: 2, y: 2, color: 1 });
-      expect(session.canRedo).toBe(false);
+      expect(session.historyRedoDepth).toBe(0);
       const redone = session.redo();
       expect(redone.changed).toBe(false);
       expect(session.sourceImage?.assetId).toBe('reference');
 
       // A new trace action also clears document redo.
       session.undo();
-      expect(session.canRedo).toBe(true);
+      expect(session.historyRedoDepth).toBeGreaterThan(0);
       const moved = session.sourceImage;
       if (!moved) throw new Error('Missing descriptor.');
       session.applyTraceImageChange({ ...moved, chartBounds: { x: 1, y: 1, width: 2, height: 2 } }, { label: 'trace-image-bounds' });
-      expect(session.canRedo).toBe(false);
+      expect(session.historyRedoDepth).toBe(0);
     } finally {
       await workspace.dispose();
     }

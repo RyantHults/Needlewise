@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  applyCommand,
   CellKind,
-  computeMetricsSinglePass,
   computePatternMetrics,
   createDocument,
   HalfDirection,
@@ -13,7 +11,7 @@ import {
   normalizeMaterialAssumptions,
   QuarterCorner
 } from './index';
-import { markBackstitchComplete, markCellComplete } from './test-fixtures';
+import { markBackstitchComplete, markCellComplete, applyCommand } from './test-fixtures';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 
 describe('derived pattern metrics', () => {
@@ -185,7 +183,7 @@ describe('derived pattern metrics', () => {
     expect(canvas.palettes[0].material.estimatedMeters).toBeGreaterThan(0);
     expect(computePatternMetrics(pattern, { aidaCount: 14 }).palettes[0].material.assumptions).toMatchObject({ aidaCount: 14 });
 
-    const calibrated = computeMetricsSinglePass(pattern, {
+    const calibrated = computePatternMetrics(pattern, {
       strands: 2,
       waste: 0.1,
       stitchLengthMeters: 0.1,

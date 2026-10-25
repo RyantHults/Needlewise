@@ -1,75 +1,20 @@
 import { beforeEach, afterEach, describe, expect, it } from 'vitest';
-import { clearClipboard } from './clipboard-store';
-import { applyCommand, CellKind, createDocument, type LayeredDocument, type PaletteEntryInput, type PatternDocument } from '../domain';
-import {
-  decodeDocument,
-  encodeDocument,
-  type ProjectMetadata,
-  type ProjectRecord,
-  type SaveResult
-} from '../persistence';
+import { clearClipboard, readClipboard } from './clipboard-store';
+import { CellKind, createDocument, type PaletteEntryInput, type PatternDocument } from '../domain';
 import { DEFAULT_CATALOG_DEFINITION, createCatalogReference } from '../catalog';
 import { ProjectWorkspace } from '../application';
-import type { WorkspaceRepository } from '../application/types';
-import { CANVAS_CROP_OFF_HINT, type CanvasRenderer, type RenderStats, type RendererStyle, type Viewport } from './contracts';
+import { MemoryRepository } from '../application/test-support';
+import { CANVAS_CROP_OFF_HINT, type Viewport } from './contracts';
 import { getCanvasMetrics } from './coordinates';
 import { EditorSurfaceController } from './controller';
 import { createWorkspaceEditorGateway } from './gateway';
-import { createPointerEventsAdapter, type PointerSample } from './input';
+import { createPointerEventsAdapter } from './input';
 import { createUiStore } from './ui-store';
+import { applyCommand } from '../domain/test-fixtures';
+import { dragViewport, rendererFixture } from './test-support';
 
 // The chart starts four cells in, so a paste hanging past its top-left edge is still on screen.
 const VIEWPORT: Viewport = { x: -4, y: -4, zoom: 16 };
-
-class MemoryRepository implements WorkspaceRepository {
-  private readonly records = new Map<string, { metadata: ProjectMetadata; bytes: Uint8Array }>();
-
-  async save(projectId: string, metadata: ProjectMetadata, document: LayeredDocument): Promise<SaveResult> {
-    this.records.set(projectId, { metadata: { ...metadata }, bytes: encodeDocument(document) });
-    return { committed: true, stale: false, revision: document.revision, head: { projectId, revision: document.revision, checksum: '0'.repeat(64) } };
-  }
-
-  async load(projectId: string): Promise<ProjectRecord | undefined> {
-    const record = this.records.get(projectId);
-    if (!record) return undefined;
-    const document = decodeDocument(record.bytes);
-    return { metadata: { ...record.metadata }, document, head: { projectId, revision: document.revision, checksum: '0'.repeat(64) }, recovery: null, assets: [] };
-  }
-
-  async listProjects(): Promise<ProjectMetadata[]> {
-    return [...this.records.values()].map((record) => ({ ...record.metadata }));
-  }
-
-  async deleteProject(projectId: string): Promise<void> {
-    this.records.delete(projectId);
-  }
-
-}
-
-function rendererFixture(): CanvasRenderer {
-  let viewport: Viewport = VIEWPORT;
-  const renderer = {
-    lastStats: { lod: 'detail', visitedCells: 0, drawnCells: 0, drawnBackstitches: 0, baseRendered: false, overlayRendered: false } as RenderStats,
-    getDocument: () => undefined,
-    getViewport: () => viewport,
-    getStyle: () => ({}) as RendererStyle,
-    getTraceImage: () => undefined,
-    setDocument: () => undefined,
-    setViewport: (next: Viewport) => { viewport = next; },
-    setMetrics: () => undefined,
-    setStyle: () => undefined,
-    setTraceImage: () => undefined,
-    setOverlay: () => undefined,
-    invalidate: () => undefined,
-    requestRender: () => undefined,
-    render: () => renderer.lastStats,
-    renderNow: () => renderer.lastStats,
-    getLastInvalidation: () => ({ base: false, overlay: false, reasons: [] }),
-    dispose: () => undefined,
-    destroy: () => undefined
-  } as unknown as CanvasRenderer;
-  return renderer;
-}
 
 const RED = DEFAULT_CATALOG_DEFINITION.records.find((record) => record.code === '321')!;
 const red = (name: string): PaletteEntryInput => ({ name, color: RED.hex, catalog: createCatalogReference(DEFAULT_CATALOG_DEFINITION, RED) });
@@ -96,20 +41,6 @@ function paint(document: PatternDocument, cells: ReadonlyArray<readonly [number,
   return painted;
 }
 
-type UiStore = ReturnType<typeof createUiStore>;
-
-/** A mouse sample at the centre of a model cell. Opening a project refits the viewport, so read it live. */
-function at(uiStore: UiStore, x: number, y: number): PointerSample {
-  const { viewport } = uiStore.getState();
-  return { pointerId: 1, pointerType: 'mouse', screenX: (x + 0.5 - viewport.x) * viewport.zoom, screenY: (y + 0.5 - viewport.y) * viewport.zoom, button: 0, buttons: 1, isPrimary: true };
-}
-
-function drag(controller: EditorSurfaceController, uiStore: UiStore, from: { x: number; y: number }, to: { x: number; y: number }): void {
-  controller.handlePointerDown(at(uiStore, from.x, from.y));
-  controller.handlePointerMove(at(uiStore, to.x, to.y));
-  controller.handlePointerUp({ ...at(uiStore, to.x, to.y), buttons: 0 });
-}
-
 const workspaces: ProjectWorkspace[] = [];
 afterEach(async () => {
   await Promise.all(workspaces.splice(0).map((workspace) => workspace.dispose()));
@@ -125,7 +56,7 @@ async function layeredFixture(source: PatternDocument) {
   /** A controller over the workspace's active project, as EditorSurface mounts one per project. */
   const mount = () => {
     const uiStore = createUiStore({ viewport: VIEWPORT, tool: { tool: 'select' } });
-    const controller = new EditorSurfaceController({ gateway: createWorkspaceEditorGateway(workspace), uiStore, renderer: rendererFixture(), metrics: getCanvasMetrics(320, 320), onNotice: (message) => notices.push(message) });
+    const controller = new EditorSurfaceController({ gateway: createWorkspaceEditorGateway(workspace), uiStore, renderer: rendererFixture().renderer, metrics: getCanvasMetrics(320, 320), onNotice: (message) => notices.push(message) });
     controller.start();
     return { controller, uiStore };
   };
@@ -148,7 +79,7 @@ describe('cross-pattern paste', () => {
     controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 0 });
     expect(controller.copySelection()).toBeDefined();
     await open(patternB());
-    expect(controller.getClipboard()).toBeDefined();
+    expect(readClipboard()?.fragment).toBeDefined();
     expect(uiStore.getState().canPaste).toBe(true);
 
     uiStore.setKeyboardCursor({ x: 1, y: 1 });
@@ -233,22 +164,22 @@ describe('cross-pattern paste', () => {
     const original = uiStore.getState().overlay.floatingPaste!;
     expect(original.destination).toEqual({ x: 0, y: 0, width: 4, height: 4 });
 
-    drag(controller, uiStore, { x: 1, y: 1 }, { x: -1, y: 1 });
+    dragViewport(controller, uiStore, { x: 1, y: 1 }, { x: -1, y: 1 });
     expect(uiStore.getState().overlay.floatingPaste?.destination).toEqual({ x: -2, y: 0, width: 4, height: 4 });
     // At least one column stays on the chart.
-    drag(controller, uiStore, { x: 0, y: 1 }, { x: -6, y: 1 });
+    dragViewport(controller, uiStore, { x: 0, y: 1 }, { x: -6, y: 1 });
     expect(uiStore.getState().overlay.floatingPaste?.destination).toMatchObject({ x: -3, y: 0 });
     // The hidden part cannot be grabbed.
-    drag(controller, uiStore, { x: -2, y: 1 }, { x: 1, y: 1 });
+    dragViewport(controller, uiStore, { x: -2, y: 1 }, { x: 1, y: 1 });
     expect(uiStore.getState().overlay.floatingPaste?.destination).toMatchObject({ x: -3, y: 0 });
-    drag(controller, uiStore, { x: 0, y: 1 }, { x: 3, y: 1 });
+    dragViewport(controller, uiStore, { x: 0, y: 1 }, { x: 3, y: 1 });
     const back = uiStore.getState().overlay.floatingPaste!;
     expect(back.destination).toEqual({ x: 0, y: 0, width: 4, height: 4 });
     expect(Array.from(back.fragment.kind)).toEqual(Array.from(original.fragment.kind));
     expect(Array.from(back.fragment.colors)).toEqual(Array.from(original.fragment.colors));
 
     // Up and left one cell: the fragment's (3,3) lands at (2,2) and its first row and column fall off.
-    drag(controller, uiStore, { x: 1, y: 1 }, { x: 0, y: 0 });
+    dragViewport(controller, uiStore, { x: 1, y: 1 }, { x: 0, y: 0 });
     expect(uiStore.getState().overlay.floatingPaste?.destination).toMatchObject({ x: -1, y: -1 });
     const undoDepth = session().historyUndoDepth;
     expect(controller.confirmFloatingPaste()).toBe(true);
@@ -265,9 +196,9 @@ describe('cross-pattern paste', () => {
     const { controller, uiStore } = await layeredFixture(paint(patternA(), [[0, 0, 1], [1, 1, 1]]));
     controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 1 });
     expect(controller.moveSelection()).toBe(true);
-    drag(controller, uiStore, { x: 1, y: 1 }, { x: -2, y: -2 });
+    dragViewport(controller, uiStore, { x: 1, y: 1 }, { x: -2, y: -2 });
     expect(uiStore.getState().overlay.floatingPaste?.destination).toEqual({ x: 0, y: 0, width: 2, height: 2 });
-    drag(controller, uiStore, { x: 1, y: 1 }, { x: 9, y: 9 });
+    dragViewport(controller, uiStore, { x: 1, y: 1 }, { x: 9, y: 9 });
     expect(uiStore.getState().overlay.floatingPaste?.destination).toEqual({ x: 4, y: 4, width: 2, height: 2 });
     controller.dispose();
   });

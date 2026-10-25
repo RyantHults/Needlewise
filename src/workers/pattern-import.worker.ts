@@ -12,7 +12,7 @@ import { findImporter } from '../import/registry';
 import { isAbortError } from './abort';
 import { ImportError, type ImportProgress, type ImportSession } from '../import/types';
 
-export interface PatternImportWorkerScope {
+interface PatternImportWorkerScope {
   addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
   postMessage(message: PatternImportResponse, transfer?: Transferable[]): void;
 }
@@ -104,7 +104,7 @@ export function handlePatternImportWorkerMessage(
     .finally(() => { state.active.delete(requestId); });
 }
 
-export function installPatternImportWorker(scope: PatternImportWorkerScope): void {
+function installPatternImportWorker(scope: PatternImportWorkerScope): void {
   const state = createPatternImportWorkerState();
   scope.addEventListener('message', (event) => {
     handlePatternImportWorkerMessage(event.data, (message, transfer) => { scope.postMessage(message, transfer); }, state);

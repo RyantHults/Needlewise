@@ -46,18 +46,6 @@ export function forEachActiveRun(mask: Uint8Array, width: number, y: number, fro
   if (runStart >= 0) emit(runStart, to);
 }
 
-export function isRectangularCanvas(doc: { canvasMask?: Uint8Array }): boolean {
-  return doc.canvasMask === undefined;
-}
-
-export function activeCellCount(doc: CanvasShape): number {
-  const mask = doc.canvasMask;
-  if (mask === undefined) return doc.width * doc.height;
-  let count = 0;
-  for (let index = 0; index < mask.length; index += 1) count += mask[index];
-  return count;
-}
-
 /**
  * The workspace in local coordinates: centred on the box, each axis
  * `max(WORKSPACE_MIN_EXTENT, dim + 2 * WORKSPACE_MIN_MARGIN)` cells long.
@@ -203,10 +191,6 @@ export function canvasResizeCommand(edges: CanvasEdges): CanvasResizeCommand {
 
 export function canvasCellsCommand(operation: 'add' | 'remove', rect: CropRect, cells?: Uint8Array): CanvasCellsCommand {
   return { type: 'canvas-cells', operation, rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, ...(cells === undefined ? {} : { cells }) };
-}
-
-export function isCanvasCommand(command: DomainCommand): command is CanvasResizeCommand | CanvasCellsCommand {
-  return command.type === 'canvas-resize' || command.type === 'canvas-cells';
 }
 
 export interface CanvasRemoval {

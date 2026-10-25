@@ -121,16 +121,3 @@ export function* reduceConfettiSteps(
   }
   return cleared;
 }
-
-/** Synchronous {@link reduceConfettiSteps}; returns the number of cells cleared to empty. */
-export function reduceConfetti(
-  document: PatternDocument,
-  distance: number,
-  colorOf: (paletteId: number) => Rgb | undefined,
-  usage: Map<number, number>
-): number {
-  const steps = reduceConfettiSteps(document, distance, colorOf, usage, Number.POSITIVE_INFINITY);
-  let step = steps.next();
-  while (step.done !== true) step = steps.next();
-  return step.value;
-}

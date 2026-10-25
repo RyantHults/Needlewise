@@ -147,16 +147,10 @@ export function getPatternFragmentValidationErrors(fragment: PatternFragment): s
   return errors;
 }
 
-export function validatePatternFragment(fragment: PatternFragment): boolean {
-  return getPatternFragmentValidationErrors(fragment).length === 0;
-}
-
 export function assertValidPatternFragment(fragment: PatternFragment): void {
   const errors = getPatternFragmentValidationErrors(fragment);
   if (errors.length > 0) throw new DomainError('invalid-fragment', errors.join(' '));
 }
-
-export const assertFragmentValid = assertValidPatternFragment;
 
 function rectInside(rect: CropRect, width: number, height: number): boolean {
   return Number.isSafeInteger(rect.x) && Number.isSafeInteger(rect.y) && Number.isSafeInteger(rect.width) && Number.isSafeInteger(rect.height)
@@ -291,13 +285,3 @@ export function cropPatternFragment(fragment: PatternFragment, rect: CropRect): 
   const backstitches = rebaseBackstitches(fragment.backstitches, positions, rect.x * FIXED_POINT_UNITS_PER_CELL, rect.y * FIXED_POINT_UNITS_PER_CELL);
   return { version: PATTERN_FRAGMENT_VERSION, width: rect.width, height: rect.height, kind, colors, backstitches };
 }
-
-export function readPatternFragmentCell(fragment: PatternFragment, x: number, y: number): { x: number; y: number; kind: CellKind; colors: Uint16Array } {
-  assertValidPatternFragment(fragment);
-  if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y) || x < 0 || y < 0 || x >= fragment.width || y >= fragment.height) throw new DomainError('out-of-bounds', `Fragment cell (${String(x)}, ${String(y)}) is out of bounds.`);
-  const offset = (y * fragment.width + x) * 4;
-  return { x, y, kind: fragment.kind[y * fragment.width + x] as CellKind, colors: fragment.colors.slice(offset, offset + 4) };
-}
-
-export const getPatternFragmentCell = readPatternFragmentCell;
-export const readFragmentCell = readPatternFragmentCell;

@@ -45,11 +45,6 @@ export function threeQuarterCornersShareAxis(left: number, right: number): boole
   return (left === 0 || left === 2) === (right === 0 || right === 2);
 }
 
-/** The former half-cell triangle used by a directional three-quarter stitch. */
-export function threeQuarterUsesBackslashTriangle(kind: number): boolean {
-  return kind === ThreeQuarterNW || kind === ThreeQuarterSE;
-}
-
 /** Cell kinds accepted by the dense fill protocol. */
 export function isKnownCellKind(kind: number): boolean {
   return kind === CellKind.Empty

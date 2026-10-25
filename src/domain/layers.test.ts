@@ -8,16 +8,12 @@ import {
   collectLayeredValidationErrors,
   commandLayerType,
   commandScope,
-  commitLayerSurface,
   createDocument,
-  createLayeredDocument,
   DEFAULT_PATTERN_AIDA_COUNT,
-  DomainError,
   findLayer,
   FlattenCache,
   flattenDocument,
   HalfDirection,
-  isSharedEmptyCellPlane,
   layerAddCommand,
   layerDeleteCommand,
   layerDuplicateCommand,
@@ -36,15 +32,12 @@ import {
   PATTERN_FRAGMENT_VERSION,
   requireEditableLayer,
   topmostVisibleLayer,
-  type CatalogAssociation,
   type DomainCommand,
   type LayeredDocument,
   type SpecialtyLayer,
   type StitchLayer
 } from './index';
-import { markCellComplete } from './test-fixtures';
-
-const TEST_CATALOG: CatalogAssociation = { catalogId: 'test-catalog', brandLabel: 'Test Catalog', colorCount: 489 };
+import { markCellComplete, commitLayerSurface, createLayeredDocument, stitchLayer, specialtyLayer, errorCode, TEST_CATALOG } from './test-fixtures';
 
 function layered(width = 4, height = 3): LayeredDocument {
   return createLayeredDocument({
@@ -65,27 +58,6 @@ function run(doc: LayeredDocument, layerId: number, ...commands: DomainCommand[]
   commitLayerSurface(doc, layerId, surface);
 }
 
-function stitch(doc: LayeredDocument, id: number): StitchLayer {
-  const layer = findLayer(doc, id);
-  if (layer?.type !== LayerType.Stitch) throw new Error(`Layer ${String(id)} is not a stitch layer.`);
-  return layer;
-}
-
-function specialty(doc: LayeredDocument, id: number): SpecialtyLayer {
-  const layer = findLayer(doc, id);
-  if (layer?.type !== LayerType.Specialty) throw new Error(`Layer ${String(id)} is not a specialty layer.`);
-  return layer;
-}
-
-function errorCode(action: () => unknown): string | undefined {
-  try {
-    action();
-  } catch (error) {
-    return error instanceof DomainError ? error.code : 'not-domain-error';
-  }
-  return undefined;
-}
-
 describe('layered documents', () => {
   it('creates canvas settings plus a Stitches and a Specialty layer', () => {
     const doc = layered();
@@ -96,8 +68,8 @@ describe('layered documents', () => {
     ]);
     expect(doc.nextLayerId).toBe(3);
     expect(doc.settings.aidaCount).toBe(DEFAULT_PATTERN_AIDA_COUNT);
-    expect(stitch(doc, 1).kind).toHaveLength(12);
-    expect(stitch(doc, 1).colors).toHaveLength(48);
+    expect(stitchLayer(doc, 1).kind).toHaveLength(12);
+    expect(stitchLayer(doc, 1).colors).toHaveLength(48);
     assertValidLayeredDocument(doc);
   });
 
@@ -118,9 +90,9 @@ describe('layered documents', () => {
     surface = markCellComplete(surface, 1, 1);
     expect(surface.completed[4]).not.toBe(0);
     const doc = layeredFromSurface(surface, { aidaCount: 11 });
-    expect(stitch(doc, 1).kind[4]).toBe(CellKind.Full);
-    expect(stitch(doc, 1).completed.every((value) => value === 0)).toBe(true);
-    expect(specialty(doc, 2).backstitches.ids).toEqual(new Uint32Array([1]));
+    expect(stitchLayer(doc, 1).kind[4]).toBe(CellKind.Full);
+    expect(stitchLayer(doc, 1).completed.every((value) => value === 0)).toBe(true);
+    expect(specialtyLayer(doc, 2).backstitches.ids).toEqual(new Uint32Array([1]));
     expect(doc.settings.aidaCount).toBe(11);
     expect(doc.nextBackstitchId).toBe(2);
     assertValidLayeredDocument(doc);
@@ -131,14 +103,14 @@ describe('layer surfaces', () => {
   it('aliases a stitch layer so commands write through, and commit writes shared fields back', () => {
     const doc = layered();
     const surface = layerSurface(doc, 1);
-    expect(surface.kind).toBe(stitch(doc, 1).kind);
+    expect(surface.kind).toBe(stitchLayer(doc, 1).kind);
     expect(surface.palette).toBe(doc.palette);
     expect(surface.backstitches.ids).toHaveLength(0);
     applyCommandsToDraft(surface, [
       { type: 'set-full', x: 0, y: 0, color: 1 },
       { type: 'palette-create', name: 'Green', color: '#0a0' }
     ]);
-    expect(stitch(doc, 1).kind[0]).toBe(CellKind.Full);
+    expect(stitchLayer(doc, 1).kind[0]).toBe(CellKind.Full);
     commitLayerSurface(doc, 1, surface);
     expect(doc.palette.map((entry) => entry.name)).toContain('Green');
     expect(doc.nextPaletteId).toBe(surface.nextPaletteId);
@@ -150,13 +122,14 @@ describe('layer surfaces', () => {
     const first = layerSurface(doc, 2);
     const second = layerSurface(doc, 2);
     expect(first.kind).toBe(second.kind);
-    expect(isSharedEmptyCellPlane(first.kind)).toBe(true);
-    expect(isSharedEmptyCellPlane(stitch(doc, 1).kind)).toBe(false);
+    expect(first.colors).toBe(second.colors);
+    expect(first.completed).toBe(second.completed);
+    expect(stitchLayer(doc, 1).kind).not.toBe(first.kind);
     run(doc, 2, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 4 }, color: 2 });
-    expect(specialty(doc, 2).backstitches.ids).toEqual(new Uint32Array([1]));
+    expect(specialtyLayer(doc, 2).backstitches.ids).toEqual(new Uint32Array([1]));
     expect(doc.nextBackstitchId).toBe(2);
     expect(first.kind.every((value) => value === 0)).toBe(true);
-    expect(stitch(doc, 1).kind.every((value) => value === 0)).toBe(true);
+    expect(stitchLayer(doc, 1).kind.every((value) => value === 0)).toBe(true);
   });
 
   it('rejects unknown layers', () => {
@@ -247,12 +220,12 @@ describe('flattening', () => {
     const doc = twoStitchLayers();
     run(doc, 1, { type: 'set-full', x: 0, y: 0, color: 1 }, { type: 'set-full', x: 1, y: 0, color: 1 });
     run(doc, 3, { type: 'set-full', x: 0, y: 0, color: 2 });
-    stitch(doc, 1).completed[0] = 1;
-    stitch(doc, 1).completed[1] = 1;
+    stitchLayer(doc, 1).completed[0] = 1;
+    stitchLayer(doc, 1).completed[1] = 1;
     // The top layer covers cell 0 unmarked; cell 1 shows through from below.
     expect(Array.from(flattenDocument(doc).completed.subarray(0, 2))).toEqual([0, 1]);
-    stitch(doc, 3).completed[0] = 1;
-    stitch(doc, 1).completed[0] = 0;
+    stitchLayer(doc, 3).completed[0] = 1;
+    stitchLayer(doc, 1).completed[0] = 0;
     expect(flattenDocument(doc).completed[0]).toBe(1);
     applyLayerStructureCommand(doc, layerSetVisibilityCommand(3, false));
     expect(flattenDocument(doc).completed[0]).toBe(0);
@@ -261,7 +234,7 @@ describe('flattening', () => {
     // Reordering carries marks with their layers.
     applyLayerStructureCommand(doc, layerMoveCommand(3, 0));
     expect(flattenDocument(doc).completed[0]).toBe(0);
-    expect(stitch(doc, 3).completed[0]).toBe(1);
+    expect(stitchLayer(doc, 3).completed[0]).toBe(1);
   });
 
   it('refreshes completion for changed cells in FlattenCache.update without writing earlier composites', () => {
@@ -269,8 +242,8 @@ describe('flattening', () => {
     run(doc, 1, { type: 'set-full', x: 0, y: 0, color: 1 }, { type: 'set-full', x: 1, y: 0, color: 1 });
     const cache = new FlattenCache();
     const before = cache.full(doc);
-    stitch(doc, 1).completed[0] = 1;
-    stitch(doc, 1).completed[1] = 1;
+    stitchLayer(doc, 1).completed[0] = 1;
+    stitchLayer(doc, 1).completed[1] = 1;
     const updated = cache.update(doc, new Uint32Array([0]));
     expect(updated.completed).not.toBe(before.completed);
     expect(before.completed[0]).toBe(0);
@@ -433,17 +406,17 @@ describe('layer structure commands', () => {
     const doc = layered();
     run(doc, 1, { type: 'set-full', x: 0, y: 0, color: 1 });
     run(doc, 2, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 });
-    stitch(doc, 1).completed[0] = 1;
-    specialty(doc, 2).backstitches.completed[0] = 1;
+    stitchLayer(doc, 1).completed[0] = 1;
+    specialtyLayer(doc, 2).backstitches.completed[0] = 1;
     const stitchCopy = applyLayerStructureCommand(doc, layerDuplicateCommand(1));
     const lineCopy = applyLayerStructureCommand(doc, layerDuplicateCommand(2));
     expect(doc.layers.map((layer) => [layer.id, layer.name])).toEqual([[1, 'Stitches'], [3, 'Stitches copy'], [2, 'Specialty'], [4, 'Specialty copy']]);
-    expect(stitch(doc, stitchCopy.layerId!).kind).not.toBe(stitch(doc, 1).kind);
-    expect(stitch(doc, 3).kind[0]).toBe(CellKind.Full);
-    expect(stitch(doc, 3).completed[0]).toBe(1);
-    expect(specialty(doc, lineCopy.layerId!).backstitches.completed[0]).toBe(1);
-    expect(Array.from(specialty(doc, lineCopy.layerId!).backstitches.ids)).toEqual([2]);
-    expect(stitch(doc, 3).completed).not.toBe(stitch(doc, 1).completed);
+    expect(stitchLayer(doc, stitchCopy.layerId!).kind).not.toBe(stitchLayer(doc, 1).kind);
+    expect(stitchLayer(doc, 3).kind[0]).toBe(CellKind.Full);
+    expect(stitchLayer(doc, 3).completed[0]).toBe(1);
+    expect(specialtyLayer(doc, lineCopy.layerId!).backstitches.completed[0]).toBe(1);
+    expect(Array.from(specialtyLayer(doc, lineCopy.layerId!).backstitches.ids)).toEqual([2]);
+    expect(stitchLayer(doc, 3).completed).not.toBe(stitchLayer(doc, 1).completed);
     expect(doc.nextBackstitchId).toBe(3);
     applyLayerStructureCommand(doc, layerRenameCommand(1, 'y'.repeat(60)));
     applyLayerStructureCommand(doc, layerDeleteCommand(3));
@@ -465,15 +438,15 @@ describe('layer structure commands', () => {
     run(doc, 1, { type: 'set-full', x: 0, y: 0, color: 1 }, { type: 'set-full', x: 1, y: 0, color: 1 });
     run(doc, 3, { type: 'set-full', x: 0, y: 0, color: 2 }, { type: 'set-full', x: 2, y: 0, color: 2 });
     // Marks follow the winning cell: the lower mark on cell 0 is covered, the upper one on cell 2 wins.
-    stitch(doc, 1).completed.set([1, 1]);
-    stitch(doc, 3).completed[2] = 1;
+    stitchLayer(doc, 1).completed.set([1, 1]);
+    stitchLayer(doc, 3).completed[2] = 1;
     const oldTarget = findLayer(doc, 1);
     const prior = [...doc.layers];
     // Merge the higher layer down into the lower one: the higher content still wins.
     const merged = applyLayerStructureCommand(doc, layerMergeCommand(3, 1));
     expect(merged.layerId).toBe(1);
     expect(doc.layers.map((layer) => [layer.id, layer.name])).toEqual([[1, 'Stitches'], [2, 'Specialty']]);
-    const target = stitch(doc, 1);
+    const target = stitchLayer(doc, 1);
     expect([target.colors[0], target.colors[4], target.colors[8]]).toEqual([2, 1, 2]);
     expect(Array.from(target.completed.subarray(0, 3))).toEqual([0, 1, 1]);
     // The original target is untouched, so undo restores it.
@@ -484,7 +457,7 @@ describe('layer structure commands', () => {
     // Merging up keeps the upper target's name and position.
     applyLayerStructureCommand(doc, layerMergeCommand(1, 3));
     expect(doc.layers.map((layer) => [layer.id, layer.name])).toEqual([[3, 'Top'], [2, 'Specialty']]);
-    expect(stitch(doc, 3).colors[4]).toBe(1);
+    expect(stitchLayer(doc, 3).colors[4]).toBe(1);
     assertValidLayeredDocument(doc);
   });
 
@@ -493,10 +466,10 @@ describe('layer structure commands', () => {
     applyLayerStructureCommand(doc, layerAddCommand(LayerType.Specialty));
     run(doc, 2, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 }, { type: 'add-backstitch', start: { x: 0, y: 4 }, end: { x: 4, y: 4 }, color: 1 });
     run(doc, 3, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 3 });
-    specialty(doc, 2).backstitches.completed[1] = 1;
-    specialty(doc, 3).backstitches.completed[0] = 1;
+    specialtyLayer(doc, 2).backstitches.completed[1] = 1;
+    specialtyLayer(doc, 3).backstitches.completed[0] = 1;
     applyLayerStructureCommand(doc, layerMergeCommand(3, 2));
-    const store = specialty(doc, 2).backstitches;
+    const store = specialtyLayer(doc, 2).backstitches;
     expect(Array.from(store.ids)).toEqual([2, 3]);
     expect(Array.from(store.colors)).toEqual([1, 3]);
     expect(Array.from(store.completed)).toEqual([1, 1]);
@@ -526,7 +499,7 @@ describe('layered validation', () => {
 
     const capped = layered();
     for (let id = 3; id <= 4; id += 1) applyLayerStructureCommand(capped, layerAddCommand(LayerType.Specialty, { index: 99 }));
-    capped.layers.push({ id: 9, type: LayerType.Specialty, name: 'Extra', visible: true, backstitches: specialty(capped, 2).backstitches });
+    capped.layers.push({ id: 9, type: LayerType.Specialty, name: 'Extra', visible: true, backstitches: specialtyLayer(capped, 2).backstitches });
     capped.nextLayerId = 10;
     expect(collectLayeredValidationErrors(capped).join(' ')).toContain('at most 3 specialty layers');
 
@@ -536,10 +509,10 @@ describe('layered validation', () => {
     const badName = { ...doc, layers: [{ ...doc.layers[0], name: '' }, doc.layers[1]] };
     expect(collectLayeredValidationErrors(badName).join(' ')).toContain('name must be 1 to 60 characters');
 
-    const badPlane = { ...doc, layers: [{ ...stitch(doc, 1), kind: new Uint8Array(3) }, doc.layers[1]] };
+    const badPlane = { ...doc, layers: [{ ...stitchLayer(doc, 1), kind: new Uint8Array(3) }, doc.layers[1]] };
     expect(collectLayeredValidationErrors(badPlane).join(' ')).toContain('kind must be a Uint8Array');
 
-    const shared = { ...doc, layers: [...doc.layers, { id: 3, type: LayerType.Specialty, name: 'Twin', visible: true, backstitches: { ...specialty(doc, 2).backstitches, y1: new Uint32Array([4]), y2: new Uint32Array([4]) } } as SpecialtyLayer], nextLayerId: 4 };
+    const shared = { ...doc, layers: [...doc.layers, { id: 3, type: LayerType.Specialty, name: 'Twin', visible: true, backstitches: { ...specialtyLayer(doc, 2).backstitches, y1: new Uint32Array([4]), y2: new Uint32Array([4]) } } as SpecialtyLayer], nextLayerId: 4 };
     expect(collectLayeredValidationErrors(shared).join(' ')).toContain('used by more than one layer');
 
     const stale = { ...doc, nextBackstitchId: 1 };

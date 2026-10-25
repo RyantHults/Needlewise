@@ -1,15 +1,12 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PatternImporter } from '../../import/types';
+import { dropData } from '../test-support';
 
 const registry = vi.hoisted(() => ({ findImporter: vi.fn(), importerAccept: () => '.pdf,application/pdf' }));
 vi.mock('../../import/registry', () => registry);
 
 const { ImportUploadModal } = await import('./ImportUploadModal');
-
-function dropData(...files: File[]) {
-  return { files: Object.assign([...files], { item: (index: number) => files[index] ?? null }), types: files.length ? ['Files'] : [], dropEffect: 'none' };
-}
 
 beforeEach(() => {
   registry.findImporter.mockReset();

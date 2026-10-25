@@ -1,4 +1,4 @@
-import type { CellRect, GridRect, ModelPoint } from './contracts';
+import type { GridRect, ModelPoint } from './contracts';
 import { indexBounds, intersectRect } from './rect';
 
 /** One exposed edge of a sparse cell selection. */
@@ -36,43 +36,6 @@ const GEOMETRY_EPSILON = 1e-9;
 
 function samePoint(left: ModelPoint, right: ModelPoint): boolean {
   return left.x === right.x && left.y === right.y;
-}
-
-function signedArea(points: readonly ModelPoint[]): number {
-  let area = 0;
-  for (let index = 0; index < points.length; index += 1) {
-    const current = points[index];
-    const next = points[(index + 1) % points.length];
-    area += current.x * next.y - next.x * current.y;
-  }
-  return area / 2;
-}
-
-function pointOnSegment(point: ModelPoint, start: ModelPoint, end: ModelPoint): boolean {
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-  const cross = (point.x - start.x) * dy - (point.y - start.y) * dx;
-  const tolerance = 1e-9 * Math.max(1, Math.abs(dx), Math.abs(dy), Math.abs(point.x), Math.abs(point.y));
-  if (Math.abs(cross) > tolerance) return false;
-  return point.x >= Math.min(start.x, end.x) - tolerance
-    && point.x <= Math.max(start.x, end.x) + tolerance
-    && point.y >= Math.min(start.y, end.y) - tolerance
-    && point.y <= Math.max(start.y, end.y) + tolerance;
-}
-
-/** Point-in-polygon with the polygon boundary included. */
-export function pointInOrOnPolygon(point: ModelPoint, polygon: readonly ModelPoint[]): boolean {
-  if (polygon.length === 0) return false;
-  let inside = false;
-  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index, index += 1) {
-    const current = polygon[index];
-    const prior = polygon[previous];
-    if (pointOnSegment(point, prior, current)) return true;
-    const crosses = (current.y > point.y) !== (prior.y > point.y)
-      && point.x < (prior.x - current.x) * (point.y - current.y) / (prior.y - current.y) + current.x;
-    if (crosses) inside = !inside;
-  }
-  return inside;
 }
 
 function canCollapseMiddle(previous: ModelPoint, middle: ModelPoint, next: ModelPoint): boolean {
@@ -115,166 +78,11 @@ export function appendLassoPoint(
   return true;
 }
 
-/** Remove repeated/collinear samples and apply the same hard cap as gestures. */
-export function normalizeLassoPath(points: readonly ModelPoint[], maxPoints = MAX_LASSO_PATH_POINTS): ModelPoint[] {
-  const normalized: ModelPoint[] = [];
-  for (const point of points) appendLassoPoint(normalized, point, maxPoints);
-  return normalized;
-}
-
-function finiteLassoPath(points: readonly ModelPoint[]): ModelPoint[] {
-  const normalized: ModelPoint[] = [];
-  for (const point of points) {
-    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
-    if (normalized.length === 0 || !samePoint(normalized[normalized.length - 1], point)) normalized.push({ x: point.x, y: point.y });
-  }
-  return normalized;
-}
-
 function validStartingCell(point: ModelPoint | undefined, width: number, height: number): number | undefined {
   if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return undefined;
   const x = Math.floor(point.x);
   const y = Math.floor(point.y);
   return x >= 0 && y >= 0 && x < width && y < height ? y * width + x : undefined;
-}
-
-/**
- * Capture the cells whose centres are covered by a freehand lasso. The result
- * is always sorted by document index, which makes later domain operations
- * deterministic and cheap to validate.
- */
-export function lassoCellIndices(
-  points: readonly ModelPoint[],
-  width: number,
-  height: number,
-  startingPoint?: ModelPoint
-): Uint32Array {
-  if (width < 1 || height < 1) return new Uint32Array();
-  const polygon = finiteLassoPath(points);
-  const startIndex = validStartingCell(startingPoint ?? polygon[0], width, height);
-  if (polygon.length < 3 || Math.abs(signedArea(polygon)) <= GEOMETRY_EPSILON) {
-    return startIndex === undefined ? new Uint32Array() : new Uint32Array([startIndex]);
-  }
-
-  let minX = Number.POSITIVE_INFINITY;
-  let maxX = Number.NEGATIVE_INFINITY;
-  let minY = Number.POSITIVE_INFINITY;
-  let maxY = Number.NEGATIVE_INFINITY;
-  for (const point of polygon) {
-    minX = Math.min(minX, point.x);
-    maxX = Math.max(maxX, point.x);
-    minY = Math.min(minY, point.y);
-    maxY = Math.max(maxY, point.y);
-  }
-  const firstX = Math.max(0, Math.ceil(minX - 0.5 - 1e-9));
-  const lastX = Math.min(width - 1, Math.floor(maxX - 0.5 + 1e-9));
-  const firstY = Math.max(0, Math.ceil(minY - 0.5 - 1e-9));
-  const lastY = Math.min(height - 1, Math.floor(maxY - 0.5 + 1e-9));
-  if (firstX > lastX || firstY > lastY) return new Uint32Array();
-
-  return rasterizeLassoScanlines(polygon, width, height, firstX, lastX, firstY, lastY);
-}
-
-interface LassoEdge {
-  readonly start: ModelPoint;
-  readonly end: ModelPoint;
-  readonly minY: number;
-  readonly maxY: number;
-  readonly slope: number;
-}
-
-function scanlineRange(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, Math.ceil(value - 0.5 - GEOMETRY_EPSILON)));
-}
-
-/**
- * Edge-bucket scanline rasterization. Each row evaluates active polygon
- * edges, then fills x-centre spans; it never tests every cell against every
- * polygon edge as the old point-in-polygon loop did.
- */
-function rasterizeLassoScanlines(
-  polygon: readonly ModelPoint[],
-  width: number,
-  height: number,
-  firstX: number,
-  lastX: number,
-  firstY: number,
-  lastY: number
-): Uint32Array {
-  const horizontalRows = new Map<number, Array<readonly [number, number]>>();
-  const startBuckets = new Map<number, LassoEdge[]>();
-  for (let index = 0; index < polygon.length; index += 1) {
-    const start = polygon[index];
-    const end = polygon[(index + 1) % polygon.length];
-    if (samePoint(start, end)) continue;
-    if (Math.abs(start.y - end.y) <= GEOMETRY_EPSILON) {
-      const row = Math.round(start.y - 0.5);
-      if (Math.abs(start.y - (row + 0.5)) <= GEOMETRY_EPSILON && row >= firstY && row <= lastY) {
-        const ranges = horizontalRows.get(row) ?? [];
-        ranges.push([Math.min(start.x, end.x), Math.max(start.x, end.x)]);
-        horizontalRows.set(row, ranges);
-      }
-      continue;
-    }
-    const minY = Math.min(start.y, end.y);
-    const maxY = Math.max(start.y, end.y);
-    const edge: LassoEdge = { start, end, minY, maxY, slope: (end.x - start.x) / (end.y - start.y) };
-    const firstRow = scanlineRange(minY, firstY, lastY);
-    const bucket = startBuckets.get(firstRow) ?? [];
-    bucket.push(edge);
-    startBuckets.set(firstRow, bucket);
-  }
-
-  const indices: number[] = [];
-  const active: LassoEdge[] = [];
-  for (let y = firstY; y <= lastY; y += 1) {
-    const starting = startBuckets.get(y);
-    if (starting) active.push(...starting);
-    const scanY = y + 0.5;
-    for (let position = active.length - 1; position >= 0; position -= 1) {
-      if (active[position].maxY < scanY - GEOMETRY_EPSILON) active.splice(position, 1);
-    }
-
-    const intersections: number[] = [];
-    const boundaryXs: number[] = [];
-    for (const edge of active) {
-      if (scanY < edge.minY - GEOMETRY_EPSILON || scanY > edge.maxY + GEOMETRY_EPSILON) continue;
-      const x = edge.start.x + (scanY - edge.start.y) * edge.slope;
-      boundaryXs.push(x);
-      // Half-open crossings avoid counting a shared vertex twice. Boundary
-      // points are added separately so cell-centre-on-edge remains inclusive.
-      if (scanY >= edge.minY - GEOMETRY_EPSILON && scanY < edge.maxY - GEOMETRY_EPSILON) intersections.push(x);
-    }
-    intersections.sort((left, right) => left - right);
-    const rowCells = new Set<number>();
-    for (let position = 0; position + 1 < intersections.length; position += 2) {
-      // Derive endpoints before document clipping. Clamping first can turn a
-      // span wholly outside the document into a false in-document span.
-      const unclampedLeft = Math.ceil(intersections[position] - 0.5 - GEOMETRY_EPSILON);
-      const unclampedRight = Math.floor(intersections[position + 1] - 0.5 + GEOMETRY_EPSILON);
-      if (unclampedLeft > unclampedRight) continue;
-      const left = Math.max(firstX, unclampedLeft);
-      const right = Math.min(lastX, unclampedRight);
-      if (left > right) continue;
-      for (let x = left; x <= right; x += 1) rowCells.add(x);
-    }
-    for (const x of boundaryXs) {
-      const cellX = Math.round(x - 0.5);
-      if (Math.abs(x - (cellX + 0.5)) <= GEOMETRY_EPSILON && cellX >= firstX && cellX <= lastX) rowCells.add(cellX);
-    }
-    for (const [left, right] of horizontalRows.get(y) ?? []) {
-      const unclampedStartX = Math.ceil(left - 0.5 - GEOMETRY_EPSILON);
-      const unclampedEndX = Math.floor(right - 0.5 + GEOMETRY_EPSILON);
-      if (unclampedStartX > unclampedEndX || unclampedEndX < firstX || unclampedStartX > lastX) continue;
-      const startX = Math.max(firstX, unclampedStartX);
-      const endX = Math.min(lastX, unclampedEndX);
-      for (let x = startX; x <= endX; x += 1) rowCells.add(x);
-    }
-    for (const x of [...rowCells].sort((left, right) => left - right)) indices.push(y * width + x);
-  }
-  // `height` is part of the public rasterizer contract and guards future
-  // callers that provide a clipped range independently of the document.
-  return new Uint32Array(indices.filter((index) => index >= 0 && index < width * height));
 }
 
 export interface LassoRasterAccumulator {
@@ -471,10 +279,6 @@ export function selectionRectToIndices(rect: GridRect, width: number, height: nu
   if (!bounded) return new Uint32Array(0);
   for (let y = bounded.y; y < bounded.y + bounded.height; y += 1) for (let x = bounded.x; x < bounded.x + bounded.width; x += 1) indices.push(y * width + x);
   return new Uint32Array(indices);
-}
-
-export function selectionCellRect(rect: GridRect): CellRect {
-  return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
 }
 
 /** The integer indices below `cellCount`, sorted ascending without duplicates. */

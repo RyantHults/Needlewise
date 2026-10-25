@@ -1,20 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
-  applyCommand,
   createDocument,
   DomainError,
   listBackstitches,
-  type CatalogAssociation,
   type DomainCommand,
   type PatternDocument
 } from './index';
-import { editorFromSurface, markBackstitchComplete, SPECIALTY_LAYER_ID } from './test-fixtures';
-
-const TEST_CATALOG: CatalogAssociation = {
-  catalogId: 'test-catalog',
-  brandLabel: 'Test Catalog',
-  colorCount: 489
-};
+import { editorFromSurface, markBackstitchComplete, SPECIALTY_LAYER_ID, applyCommand, TEST_CATALOG } from './test-fixtures';
 
 function document(width = 4, height = 4) {
   return createDocument({

@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { calculatePreviewSize, CreateModal, PREVIEW_LENS_SIZE, previewFinishedSize, previewLensGeometry, suggestConversionDimensions } from './CreateModal';
+import { dropData } from './test-support';
 import { DEFAULT_CATALOG_DEFINITION, type CatalogSnapshot } from '../catalog';
 import { MAX_CONFETTI_DISTANCE } from '../conversion/image-to-pattern';
 import { COMMON_AIDA_COUNTS } from '../domain';
@@ -30,11 +31,6 @@ class MockImage {
   onload: (() => void) | null = null;
   onerror: (() => void) | null = null;
   set src(_value: string) { images.push(this); }
-}
-
-/** Minimal DataTransfer stand-in: jsdom has no DataTransfer constructor. */
-function dropData(...files: File[]) {
-  return { files: Object.assign([...files], { item: (index: number) => files[index] ?? null }), types: files.length ? ['Files'] : [], dropEffect: 'none' };
 }
 
 function props(onClose: () => void = vi.fn(), catalog: CatalogSnapshot = DEFAULT_CATALOG_DEFINITION.snapshot) {

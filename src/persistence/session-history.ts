@@ -371,13 +371,3 @@ export async function traceStateFingerprint(metadata: ProjectMetadata, assets: r
 export function cloneSessionHistory(value: SessionHistoryEnvelope): SessionHistoryEnvelope {
   return cloneValue(value) as SessionHistoryEnvelope;
 }
-
-export function isSessionHistoryEnvelope(value: unknown): value is SessionHistoryEnvelope {
-  try {
-    rawPayloadBytes(value);
-    preflightEnvelope(value);
-    return true;
-  } catch {
-    return false;
-  }
-}

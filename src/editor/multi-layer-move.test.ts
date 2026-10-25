@@ -2,56 +2,24 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   CellKind,
   LayerType,
-  applyCommand,
   applyLayerStructureCommand,
-  commitLayerSurface,
-  createLayeredDocument,
-  findLayer,
   layerAddCommand,
   layerSurface,
   type DomainCommand,
-  type LayeredDocument,
-  type SpecialtyLayer,
-  type StitchLayer
+  type LayeredDocument
 } from '../domain';
-import { type PersistencePreparationClient, type ProjectMetadata, type ProjectRecord, type SaveResult } from '../persistence';
+import { createPersistencePreparationClient, type ProjectMetadata } from '../persistence';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { ProjectSession } from '../application/session';
-import type { WorkspaceRepository } from '../application/types';
+import { MemoryRepository } from '../application/test-support';
 import { clearClipboard } from './clipboard-store';
 import { EditorSurfaceController } from './controller';
-import type { CanvasRenderer, RenderStats, RendererStyle, Viewport } from './contracts';
 import { getCanvasMetrics } from './coordinates';
 import { createFillWorkerClient } from './fill';
 import { createWorkspaceEditorGateway, type WorkspaceEditorBoundary } from './gateway';
-import type { PointerSample } from './input';
 import { createUiStore } from './ui-store';
-
-class MemoryRepository implements WorkspaceRepository {
-  async save(projectId: string, _metadata: ProjectMetadata, document: LayeredDocument): Promise<SaveResult> {
-    const head = { projectId, revision: document.revision, checksum: '0'.repeat(64) };
-    return { committed: true, stale: false, revision: document.revision, head };
-  }
-
-  async load(): Promise<ProjectRecord | undefined> {
-    return undefined;
-  }
-
-  async listProjects(): Promise<ProjectMetadata[]> {
-    return [];
-  }
-
-  async deleteProject(): Promise<void> {
-    return undefined;
-  }
-
-}
-
-const unusedPreparationClient: PersistencePreparationClient = {
-  prepare: () => Promise.reject(new Error('Not used by these tests.')),
-  getRequestId: () => '',
-  dispose: () => undefined
-};
+import { applyCommand, commitLayerSurface, createLayeredDocument, specialtyLayer, stitchLayer } from '../domain/test-fixtures';
+import { drag, rendererFixture } from './test-support';
 
 /** Bottom to top: stitch 1, specialty 2, stitch 3. */
 function layeredDocument(): LayeredDocument {
@@ -79,43 +47,12 @@ function backstitch(x1: number, y1: number, x2: number, y2: number, color = 1): 
   return { type: 'add-backstitch', start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, color };
 }
 
-function rendererFixture(): CanvasRenderer {
-  let viewport: Viewport = { x: 0, y: 0, zoom: 16 };
-  const renderer = {
-    lastStats: { lod: 'detail', visitedCells: 0, drawnCells: 0, drawnBackstitches: 0, baseRendered: false, overlayRendered: false } as RenderStats,
-    getDocument: () => undefined,
-    getViewport: () => viewport,
-    getStyle: () => ({}) as RendererStyle,
-    getTraceImage: () => undefined,
-    setDocument: () => undefined,
-    setViewport: (next: Viewport) => { viewport = next; },
-    setMetrics: () => undefined,
-    setStyle: () => undefined,
-    setTraceImage: () => undefined,
-    clearTraceImage: () => undefined,
-    setOverlay: () => undefined,
-    invalidate: () => undefined,
-    requestRender: () => undefined,
-    render: () => renderer.lastStats,
-    renderNow: () => renderer.lastStats,
-    getLastInvalidation: () => ({ base: false, overlay: false, reasons: [] }),
-    dispose: () => undefined,
-    destroy: () => undefined
-  } as unknown as CanvasRenderer;
-  return renderer;
-}
-
-/** Screen point at the center of a cell for the fixture's zoom of 16. */
-function at(x: number, y: number): PointerSample {
-  return { pointerId: 1, pointerType: 'mouse', screenX: x * 16 + 8, screenY: y * 16 + 8, button: 0, buttons: 1, isPrimary: true };
-}
-
 const sessions: ProjectSession[] = [];
 
 /** A controller over a real session, so batches run through layered history. */
 function fixture(document: LayeredDocument, primary: number, others: readonly number[] = []) {
   const metadata: ProjectMetadata = { id: 'layers', title: 'Layers', notes: '', createdAt: 0, updatedAt: 0, revision: document.revision };
-  const session = new ProjectSession({ repository: new MemoryRepository(), metadata, document, preparationClient: unusedPreparationClient, clock: { now: () => 0 }, debounceMs: 60_000 });
+  const session = new ProjectSession({ repository: new MemoryRepository(), metadata, document, preparationClient: createPersistencePreparationClient({ useWorker: false }), clock: { now: () => 0 }, debounceMs: 60_000 });
   sessions.push(session);
   session.setActiveLayer(primary);
   for (const id of others) session.toggleLayerSelected(id);
@@ -151,7 +88,7 @@ function fixture(document: LayeredDocument, primary: number, others: readonly nu
   const controller = new EditorSurfaceController({
     gateway,
     uiStore,
-    renderer: rendererFixture(),
+    renderer: rendererFixture().renderer,
     metrics: getCanvasMetrics(128, 128),
     fillClient: createFillWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'fill' }),
     onNotice: (message) => notices.push(message)
@@ -159,20 +96,6 @@ function fixture(document: LayeredDocument, primary: number, others: readonly nu
   controller.start();
   controller.handleFocus();
   return { session, controller, uiStore, executed, notices };
-}
-
-function drag(controller: EditorSurfaceController, from: { x: number; y: number }, to: { x: number; y: number }): void {
-  controller.handlePointerDown(at(from.x, from.y));
-  controller.handlePointerMove(at(to.x, to.y));
-  controller.handlePointerUp(at(to.x, to.y));
-}
-
-function stitch(session: ProjectSession, id: number): StitchLayer {
-  return findLayer(session.layeredDocument, id) as StitchLayer;
-}
-
-function specialty(session: ProjectSession, id: number): SpecialtyLayer {
-  return findLayer(session.layeredDocument, id) as SpecialtyLayer;
 }
 
 const undo = { key: 'z', ctrlKey: true, preventDefault: () => undefined };
@@ -195,16 +118,16 @@ describe('multi-layer move', () => {
     expect(controller.confirmFloatingPaste()).toBe(true);
     expect(executed).toHaveLength(1);
     expect(executed[0]).toMatchObject({ type: 'batch', commands: [{ type: 'move-fragment', layerId: 1 }, { type: 'move-fragment', layerId: 3 }] });
-    expect(stitch(session, 1).kind[0]).toBe(CellKind.Empty);
-    expect(stitch(session, 1).kind[16]).toBe(CellKind.Full);
-    expect(stitch(session, 3).kind[1]).toBe(CellKind.Empty);
-    expect(stitch(session, 3).kind[17]).toBe(CellKind.Full);
+    expect(stitchLayer(session.layeredDocument, 1).kind[0]).toBe(CellKind.Empty);
+    expect(stitchLayer(session.layeredDocument, 1).kind[16]).toBe(CellKind.Full);
+    expect(stitchLayer(session.layeredDocument, 3).kind[1]).toBe(CellKind.Empty);
+    expect(stitchLayer(session.layeredDocument, 3).kind[17]).toBe(CellKind.Full);
 
     controller.handleKeyDown(undo);
-    expect(stitch(session, 1).kind[0]).toBe(CellKind.Full);
-    expect(stitch(session, 1).kind[16]).toBe(CellKind.Empty);
-    expect(stitch(session, 3).kind[1]).toBe(CellKind.Full);
-    expect(stitch(session, 3).kind[17]).toBe(CellKind.Empty);
+    expect(stitchLayer(session.layeredDocument, 1).kind[0]).toBe(CellKind.Full);
+    expect(stitchLayer(session.layeredDocument, 1).kind[16]).toBe(CellKind.Empty);
+    expect(stitchLayer(session.layeredDocument, 3).kind[1]).toBe(CellKind.Full);
+    expect(stitchLayer(session.layeredDocument, 3).kind[17]).toBe(CellKind.Empty);
     controller.dispose();
   });
 
@@ -217,12 +140,12 @@ describe('multi-layer move', () => {
     expect(controller.moveSelection()).toBe(true);
     const floating = uiStore.getState().overlay.floatingPaste!;
     expect(floating.fragment.kind[0]).toBe(CellKind.Full);
-    expect(Array.from(floating.backstitches!.ids)).toEqual([...specialty(session, 2).backstitches.ids]);
+    expect(Array.from(floating.backstitches!.ids)).toEqual([...specialtyLayer(session.layeredDocument, 2).backstitches.ids]);
     drag(controller, { x: 0, y: 0 }, { x: 2, y: 0 });
     expect(controller.confirmFloatingPaste()).toBe(true);
-    expect(stitch(session, 1).kind[2]).toBe(CellKind.Full);
-    expect(Array.from(specialty(session, 2).backstitches.x1)).toEqual([8]);
-    expect(Array.from(specialty(session, 2).backstitches.x2)).toEqual([12]);
+    expect(stitchLayer(session.layeredDocument, 1).kind[2]).toBe(CellKind.Full);
+    expect(Array.from(specialtyLayer(session.layeredDocument, 2).backstitches.x1)).toEqual([8]);
+    expect(Array.from(specialtyLayer(session.layeredDocument, 2).backstitches.x2)).toEqual([12]);
     controller.dispose();
   });
 
@@ -236,9 +159,9 @@ describe('multi-layer move', () => {
     expect(controller.moveSelection()).toBe(true);
     drag(controller, { x: 0, y: 0 }, { x: 3, y: 0 });
     expect(controller.confirmFloatingPaste()).toBe(true);
-    expect(stitch(session, 1).kind[3]).toBe(CellKind.Full);
-    expect(stitch(session, 3).kind[0]).toBe(CellKind.Full);
-    expect(stitch(session, 3).kind[3]).toBe(CellKind.Empty);
+    expect(stitchLayer(session.layeredDocument, 1).kind[3]).toBe(CellKind.Full);
+    expect(stitchLayer(session.layeredDocument, 3).kind[0]).toBe(CellKind.Full);
+    expect(stitchLayer(session.layeredDocument, 3).kind[3]).toBe(CellKind.Empty);
     controller.dispose();
   });
 
@@ -254,11 +177,11 @@ describe('multi-layer move', () => {
     expect(controller.moveSelection()).toBe(true);
     drag(controller, { x: 0, y: 0 }, { x: 0, y: 3 });
     expect(controller.confirmFloatingPaste()).toBe(true);
-    expect(stitch(session, 1).kind[0]).toBe(CellKind.Empty);
-    expect(stitch(session, 1).kind[24]).toBe(CellKind.Full);
-    expect(stitch(session, 1).kind[1]).toBe(CellKind.Full);
-    expect(stitch(session, 3).kind[8]).toBe(CellKind.Empty);
-    expect(stitch(session, 3).kind[32]).toBe(CellKind.Full);
+    expect(stitchLayer(session.layeredDocument, 1).kind[0]).toBe(CellKind.Empty);
+    expect(stitchLayer(session.layeredDocument, 1).kind[24]).toBe(CellKind.Full);
+    expect(stitchLayer(session.layeredDocument, 1).kind[1]).toBe(CellKind.Full);
+    expect(stitchLayer(session.layeredDocument, 3).kind[8]).toBe(CellKind.Empty);
+    expect(stitchLayer(session.layeredDocument, 3).kind[32]).toBe(CellKind.Full);
     controller.dispose();
   });
 
@@ -275,8 +198,8 @@ describe('multi-layer move', () => {
     drag(controller, { x: 0, y: 0 }, { x: 0, y: 2 });
     expect(controller.confirmFloatingPaste()).toBe(false);
     expect(notices).toHaveLength(1);
-    expect(stitch(session, 1).kind[0]).toBe(CellKind.Full);
-    expect(stitch(session, 1).kind[16]).toBe(CellKind.Empty);
+    expect(stitchLayer(session.layeredDocument, 1).kind[0]).toBe(CellKind.Full);
+    expect(stitchLayer(session.layeredDocument, 1).kind[16]).toBe(CellKind.Empty);
     controller.dispose();
   });
 
@@ -315,13 +238,13 @@ describe('multi-layer move', () => {
     controller.setSelection({ x: 0, y: 0 });
     expect(controller.deleteSelection()).toBe(true);
     expect(executed).toHaveLength(1);
-    expect(stitch(session, 1).kind[0]).toBe(CellKind.Empty);
-    expect(stitch(session, 3).kind[0]).toBe(CellKind.Empty);
-    expect(specialty(session, 2).backstitches.ids).toHaveLength(0);
+    expect(stitchLayer(session.layeredDocument, 1).kind[0]).toBe(CellKind.Empty);
+    expect(stitchLayer(session.layeredDocument, 3).kind[0]).toBe(CellKind.Empty);
+    expect(specialtyLayer(session.layeredDocument, 2).backstitches.ids).toHaveLength(0);
     controller.handleKeyDown(undo);
-    expect(stitch(session, 1).kind[0]).toBe(CellKind.Full);
-    expect(stitch(session, 3).kind[0]).toBe(CellKind.Full);
-    expect(specialty(session, 2).backstitches.ids).toHaveLength(1);
+    expect(stitchLayer(session.layeredDocument, 1).kind[0]).toBe(CellKind.Full);
+    expect(stitchLayer(session.layeredDocument, 3).kind[0]).toBe(CellKind.Full);
+    expect(specialtyLayer(session.layeredDocument, 2).backstitches.ids).toHaveLength(1);
     controller.dispose();
   });
 });
@@ -380,7 +303,7 @@ describe('move source hole', () => {
     seed(document, 2, backstitch(0, 0, 4, 4));
     seed(document, 2, backstitch(16, 16, 20, 20));
     const { session, controller, uiStore } = fixture(document, 2);
-    const inside = specialty(session, 2).backstitches.ids[0];
+    const inside = specialtyLayer(session.layeredDocument, 2).backstitches.ids[0];
     controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 1 });
     expect(controller.moveSelection()).toBe(true);
     const floating = uiStore.getState().overlay.floatingPaste!;

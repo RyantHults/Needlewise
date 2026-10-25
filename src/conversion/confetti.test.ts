@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CellKind, createDocument, type PatternDocument } from '../domain';
-import { isConfettiDistance, MAX_CONFETTI_DISTANCE, reduceConfetti, reduceConfettiSteps } from './confetti';
+import { isConfettiDistance, MAX_CONFETTI_DISTANCE, reduceConfettiSteps } from './confetti';
 
 type Rgb = readonly [number, number, number];
 
@@ -45,6 +45,13 @@ function usageOf(document: PatternDocument): Map<number, number> {
     if (document.kind[index] !== CellKind.Empty) usage.set(document.colors[index * 4], (usage.get(document.colors[index * 4]) ?? 0) + 1);
   }
   return usage;
+}
+
+function reduceConfetti(document: PatternDocument, distance: number, lookup: (paletteId: number) => Rgb | undefined, usage: Map<number, number>): number {
+  const steps = reduceConfettiSteps(document, distance, lookup, usage, Number.POSITIVE_INFINITY);
+  let step = steps.next();
+  while (step.done !== true) step = steps.next();
+  return step.value;
 }
 
 function reduce(document: PatternDocument, distance: number): { cleared: number; usage: Map<number, number> } {

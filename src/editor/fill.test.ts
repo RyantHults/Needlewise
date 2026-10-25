@@ -10,16 +10,15 @@ import {
   FillProtocolError,
   FillWorkerTransportError,
   type FillRequestInput,
-  type FillWorkerLike,
   assertValidFillRequest,
   createFillCancel,
   createFillRequest,
   createFillResult,
   createFillWorkerClient,
-  runExactFloodFill,
-  validateFillRequest
+  runExactFloodFill
 } from './fill';
 import { ThreeQuarterPair } from './cell-kinds';
+import { FakeWorker } from '../test/fake-worker';
 
 function input(
   width: number,
@@ -43,18 +42,6 @@ function input(
     kind: nextKind,
     colors: nextColors
   };
-}
-
-class FakeWorker implements FillWorkerLike {
-  readonly posted: unknown[] = [];
-  readonly terminated = { count: 0 };
-  private readonly listeners = new Map<string, (event: unknown) => void>();
-
-  postMessage(message: unknown): void { this.posted.push(message); }
-  addEventListener(_type: 'message', listener: (event: MessageEvent<unknown>) => void): void { this.listeners.set(_type, listener as unknown as (event: unknown) => void); }
-  emit(message: unknown): void { this.listeners.get('message')?.({ data: message }); }
-  emitTransport(type: 'error' | 'messageerror', event: unknown): void { this.listeners.get(type)?.(event); }
-  terminate(): void { this.terminated.count += 1; }
 }
 
 function fullGrid(width: number, height: number, color = 1): { kind: Uint8Array; colors: Uint16Array } {
@@ -156,8 +143,8 @@ describe('component-graph fill protocol and traversal', () => {
 
   it('rejects malformed masks and protocol payloads', () => {
     const request = createFillRequest(input(2, 1, 0));
-    expect(validateFillRequest({ ...request, startMask: 3 })).toBe(false);
-    expect(validateFillRequest({ ...request, protocol: 'needlewise.fill.v1' })).toBe(false);
+    expect(() => assertValidFillRequest({ ...request, startMask: 3 })).toThrow(FillProtocolError);
+    expect(() => assertValidFillRequest({ ...request, protocol: 'needlewise.fill.v1' })).toThrow(FillProtocolError);
     expect(() => assertValidFillRequest({
       protocol: FILL_PROTOCOL,
       type: FILL_REQUEST_TYPE,

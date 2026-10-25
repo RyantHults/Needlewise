@@ -32,9 +32,6 @@ export interface MaterialSettingsV2 {
   readonly metersPerSkein?: number;
 }
 
-/** A project-level fabric count. It intentionally lives outside the document binary. */
-export const DEFAULT_AIDA_COUNT = 14;
-
 /** Fabric counts the Aida pickers offer; a project's current count is added when it is not one of these. */
 export const COMMON_AIDA_COUNTS: readonly number[] = [11, 14, 16, 18, 20, 22, 25, 28, 32];
 
@@ -127,13 +124,6 @@ export interface ComponentCounts {
   readonly totalComponents: number;
   readonly completedComponents: number;
   readonly remainingComponents: number;
-}
-
-export interface BackstitchLengths {
-  /** Length in the document's fixed-point coordinate units. */
-  readonly fixed: number;
-  /** Length in cells (fixed-point units divided by four). */
-  readonly cells: number;
 }
 
 export interface MaterialEstimate {
@@ -332,20 +322,11 @@ export function deriveFinishedSize(
   return { widthInches, heightInches, widthCm: widthInches * 2.54, heightCm: heightInches * 2.54 };
 }
 
-export const calculateFinishedSize = deriveFinishedSize;
-export const getFinishedSize = deriveFinishedSize;
-
 export function updateMaterialSettings(current: NormalizedMaterialSettings | undefined, changes: MaterialSettingsUpdate): NormalizedMaterialSettings {
   const next: Record<string, unknown> = { ...normalizeMaterialAssumptions(current), ...changes };
   if (changes.stitchLengthMeters === null) delete next.stitchLengthMeters;
   if (changes.skeinLengthMeters === null) delete next.skeinLengthMeters;
   return normalizeMaterialAssumptions(next as MaterialSettingsV2);
-}
-
-export function isMaterialCalibrated(settings: NormalizedMaterialSettings): boolean {
-  // A thread-length calibration is sufficient to report metres. Skein
-  // conversion is a separate, explicitly supplied calibration.
-  return settings.stitchLengthMeters !== undefined;
 }
 
 /**
@@ -362,17 +343,6 @@ export function fixedPointBackstitchLength(
   const dx = x2 - x1;
   const dy = y2 - y1;
   return Math.hypot(dx, dy);
-}
-
-/** Return both useful units for a backstitch segment. */
-export function backstitchLengths(
-  x1: number,
-  y1: number,
-  x2: number,
-  y2: number
-): BackstitchLengths {
-  const fixed = fixedPointBackstitchLength(x1, y1, x2, y2);
-  return { fixed, cells: fixed / FIXED_POINT_UNITS_PER_CELL };
 }
 
 /** Running counts for one palette color, which `metricsFromCounts` turns into metrics. */
@@ -694,39 +664,3 @@ export function computePatternMetrics(
 ): PatternMetrics {
   return metricsFromCounts(document, scanCounts(document), normalizeMaterialSettings(document, options), resolveMetricsAidaCount(document, options));
 }
-
-/** Compute just the per-palette portion of the derived metrics. */
-export function computePaletteMetrics(
-  document: PatternDocument,
-  options?: MetricsOptions | MaterialSettingsV2
-): readonly PaletteMetrics[] {
-  return computePatternMetrics(document, options).palettes;
-}
-
-/** Compute just overall component completion and progress. */
-export function computeProgressMetrics(document: PatternDocument): ProgressMetrics {
-  return computePatternMetrics(document).progress;
-}
-
-/** Compute the material estimates for all palette entries. */
-export function computeMaterialEstimates(
-  document: PatternDocument,
-  options?: MetricsOptions | MaterialSettingsV2
-): readonly MaterialEstimate[] {
-  return computePatternMetrics(document, options).materials;
-}
-
-/** Explicit name for the all-in-one, single-pass metrics calculation. */
-export const computeMetricsSinglePass = computePatternMetrics;
-export const computeAllPatternMetrics = computePatternMetrics;
-
-// Keep the public vocabulary forgiving for callers that use “derive” or
-// “calculate” for a pure read model.  All aliases retain the same semantics.
-export const derivePatternMetrics = computePatternMetrics;
-export const calculatePatternMetrics = computePatternMetrics;
-export const deriveMetrics = computePatternMetrics;
-export const calculateMetrics = computePatternMetrics;
-export const getPatternMetrics = computePatternMetrics;
-export const getPaletteMetrics = computePaletteMetrics;
-export const estimateMaterial = computeMaterialEstimates;
-export const estimateMaterials = computeMaterialEstimates;

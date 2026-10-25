@@ -18,7 +18,7 @@ import {
 } from '../editor/fill';
 import { isRecord } from '../domain';
 
-export interface FillWorkerScope {
+interface FillWorkerScope {
   addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
   postMessage(message: FillWorkerResponse, transfer?: Transferable[]): void;
 }
@@ -147,7 +147,7 @@ export function handleFillWorkerMessage(
     });
 }
 
-export function installFillWorker(scope: FillWorkerScope): void {
+function installFillWorker(scope: FillWorkerScope): void {
   const cancelledRequests = new Set<string>();
   scope.addEventListener('message', (event) => {
     handleFillWorkerMessage(event.data, (message, transfer) => scope.postMessage(message, transfer), cancelledRequests);

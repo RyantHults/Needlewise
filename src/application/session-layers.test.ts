@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   CellKind,
-  createLayeredDocument,
   createPatternFragment,
   layerAddCommand,
   layerSetVisibilityCommand,
@@ -13,63 +12,22 @@ import {
 } from '../domain';
 import {
   cloneLayeredDocument,
-  type PersistencePreparationClient,
-  type ProjectMetadata,
-  type ProjectRecord,
-  type SaveResult
+  createPersistencePreparationClient,
+  type ProjectMetadata
 } from '../persistence';
-import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { acceptConversionDraft } from '../conversion/image-to-pattern';
 import { createStarterDocument, ProjectWorkspace } from './workspace';
-import { defaultActiveLayerId, fragmentLayerType, ProjectSession } from './session';
-import type { WorkspaceRepository } from './types';
-
-class LayeredMemoryRepository implements WorkspaceRepository {
-  readonly records = new Map<string, ProjectRecord>();
-
-  async save(projectId: string, metadata: ProjectMetadata, document: LayeredDocument): Promise<SaveResult> {
-    const head = { projectId, revision: document.revision, checksum: '0'.repeat(64) };
-    this.records.set(projectId, { metadata: { ...metadata }, document: cloneLayeredDocument(document), head, recovery: null, assets: [] });
-    return { committed: true, stale: false, revision: document.revision, head };
-  }
-
-  async load(projectId: string): Promise<ProjectRecord | undefined> {
-    const record = this.records.get(projectId);
-    return record === undefined ? undefined : { ...record, metadata: { ...record.metadata }, document: cloneLayeredDocument(record.document) };
-  }
-
-  async listProjects(): Promise<ProjectMetadata[]> {
-    return [...this.records.values()].map((record) => ({ ...record.metadata }));
-  }
-
-  async deleteProject(projectId: string): Promise<void> {
-    this.records.delete(projectId);
-  }
-
-}
-
-const unusedPreparationClient: PersistencePreparationClient = {
-  prepare: () => Promise.reject(new Error('Not used by these tests.')),
-  getRequestId: () => '',
-  dispose: () => undefined
-};
-
-function layeredDocument(width = 4, height = 4): LayeredDocument {
-  return createLayeredDocument({
-    width,
-    height,
-    catalog: DEFAULT_CATALOG_DEFINITION.association,
-    palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }]
-  });
-}
+import { defaultActiveLayerId, ProjectSession } from './session';
+import { MemoryRepository } from './test-support';
+import { layeredDocument } from '../editor/test-support';
 
 function openSession(document: LayeredDocument): ProjectSession {
   const metadata: ProjectMetadata = { id: 'layers', title: 'Layers', notes: '', createdAt: 0, updatedAt: 0, revision: document.revision };
   return new ProjectSession({
-    repository: new LayeredMemoryRepository(),
+    repository: new MemoryRepository(),
     metadata,
     document,
-    preparationClient: unusedPreparationClient,
+    preparationClient: createPersistencePreparationClient({ useWorker: false }),
     clock: { now: () => 0 },
     debounceMs: 60_000
   });
@@ -77,14 +35,14 @@ function openSession(document: LayeredDocument): ProjectSession {
 
 /** Stitches (1), Stitches 2 (3) and Stitches 3 (4) below Specialty (2). */
 function threeStitchLayers(): LayeredDocument {
-  const document = layeredDocument();
+  const document = layeredDocument(4, 4);
   applyLayerStructureCommand(document, layerAddCommand(LayerType.Stitch, { id: 3 }));
   applyLayerStructureCommand(document, layerAddCommand(LayerType.Stitch, { id: 4 }));
   return document;
 }
 
 function cellFragment(): PatternFragment {
-  const source = layeredDocument();
+  const source = layeredDocument(4, 4);
   const session = openSession(source);
   session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
   return createPatternFragment(session.activeLayerSurface()!, { kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } });
@@ -127,7 +85,7 @@ describe('project session layers', () => {
   });
 
   it('resolves pastes: create with room, topmost visible at the cap, nothing when all are hidden', () => {
-    const roomy = openSession(layeredDocument());
+    const roomy = openSession(layeredDocument(4, 4));
     roomy.setActiveLayer(1);
     expect(roomy.resolvePaste(LayerType.Stitch)).toEqual({ layerType: LayerType.Stitch, layerId: 1, create: false });
     roomy.setActiveLayer(2);
@@ -152,10 +110,9 @@ describe('project session layers', () => {
   });
 
   it('commits a paste onto a new layer as one undo step and selects that layer', () => {
-    const session = openSession(layeredDocument());
+    const session = openSession(layeredDocument(4, 4));
     session.setActiveLayer(2);
     const fragment = cellFragment();
-    expect(fragmentLayerType(fragment)).toBe(LayerType.Stitch);
     const destination = session.resolvePaste(LayerType.Stitch);
     const commit = session.commitPaste(fragment, { x: 2, y: 1 }, destination);
     expect(commit.result.changed).toBe(true);
@@ -175,7 +132,7 @@ describe('project session layers', () => {
     const entries = [{ id: 3, name: 'Green', color: '#3a3' }, { id: 4, name: 'Gold', color: '#da3' }];
     const paletteIds = (session: ProjectSession) => session.document.palette.map((entry) => entry.id);
 
-    const existing = openSession(layeredDocument());
+    const existing = openSession(layeredDocument(4, 4));
     existing.setActiveLayer(1);
     const destination = existing.resolvePaste(LayerType.Stitch);
     expect(destination.create).toBe(false);
@@ -185,12 +142,12 @@ describe('project session layers', () => {
     existing.undo();
     expect(paletteIds(existing)).toEqual([1, 2]);
     expect(existing.document.kind[1 * 4 + 2]).toBe(CellKind.Empty);
-    expect(existing.canUndo).toBe(false);
+    expect(existing.historyUndoDepth).toBe(0);
     existing.redo();
     expect(paletteIds(existing)).toEqual([1, 2, 3, 4]);
     expect(existing.document.kind[1 * 4 + 2]).toBe(CellKind.Full);
 
-    const fresh = openSession(layeredDocument());
+    const fresh = openSession(layeredDocument(4, 4));
     fresh.setActiveLayer(2);
     const created = fresh.resolvePaste(LayerType.Stitch);
     expect(created.create).toBe(true);
@@ -201,7 +158,7 @@ describe('project session layers', () => {
     fresh.undo();
     expect(paletteIds(fresh)).toEqual([1, 2]);
     expect(fresh.layeredDocument.layers).toHaveLength(2);
-    expect(fresh.canUndo).toBe(false);
+    expect(fresh.historyUndoDepth).toBe(0);
     fresh.redo();
     expect(paletteIds(fresh)).toEqual([1, 2, 3]);
     expect(fresh.layeredDocument.layers).toHaveLength(3);
@@ -209,10 +166,9 @@ describe('project session layers', () => {
   });
 
   it('ignores an empty paste without adding a layer or a history entry', () => {
-    const session = openSession(layeredDocument());
+    const session = openSession(layeredDocument(4, 4));
     session.setActiveLayer(2);
     const empty = createPatternFragment(session.document, { kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } });
-    expect(fragmentLayerType(empty)).toBeNull();
     const destination = session.resolvePaste(LayerType.Stitch);
     expect(destination.create).toBe(true);
     const revision = session.document.revision;
@@ -222,12 +178,12 @@ describe('project session layers', () => {
     expect(commit.message).toBeUndefined();
     expect(session.layeredDocument.layers.map((layer) => layer.id)).toEqual([1, 2]);
     expect(session.document.revision).toBe(revision);
-    expect(session.canUndo).toBe(false);
+    expect(session.historyUndoDepth).toBe(0);
     expect(session.activeLayerId).toBe(2);
   });
 
   it('wraps layer operations, selecting added, duplicated and merge-target layers', () => {
-    const session = openSession(layeredDocument());
+    const session = openSession(layeredDocument(4, 4));
     const layerChanges: unknown[] = [];
     session.subscribe(() => layerChanges.push(session.layers));
     session.addLayer(LayerType.Stitch);
@@ -238,15 +194,18 @@ describe('project session layers', () => {
     const copy = session.activeLayer;
     expect(copy.name).toBe('Stitches copy');
     expect(session.canAddLayer(LayerType.Stitch)).toBe(false);
-    session.mergeLayer(copy.id as number, 3);
-    expect(session.activeLayerId).toBe(3);
-    session.setLayerVisibility(3, false);
+    expect(session.layers.map((layer) => layer.id)).toEqual([1, copy.id, 3, 2]);
+    session.setActiveLayer(3);
+    session.mergeSelectedLayers();
+    expect(session.activeLayerId).toBe(copy.id);
+    expect(session.layers.map((layer) => layer.id)).toEqual([1, copy.id, 2]);
+    session.setLayerVisibility(copy.id as number, false);
     expect(session.activeLayer.visible).toBe(false);
-    session.deleteLayer(3);
+    session.deleteLayer(copy.id as number);
     expect(session.activeLayerId).toBe(1);
     expect(new Set(layerChanges).size).toBeGreaterThan(3);
     session.undo();
-    expect(session.layers.map((layer) => layer.id)).toContain(3);
+    expect(session.layers.map((layer) => layer.id)).toContain(copy.id);
   });
 
   it('toggles layers in and out of the selection, keeping stack order and a primary', () => {
@@ -313,7 +272,7 @@ describe('project session layers', () => {
   });
 
   it('collapses to the new layer on add and duplicate, and does not persist the selection', () => {
-    const session = openSession(layeredDocument());
+    const session = openSession(layeredDocument(4, 4));
     session.toggleLayerSelected(2);
     session.addLayer(LayerType.Stitch);
     expect(session.layerSelection).toEqual({ primary: 3, layerIds: [3] });
@@ -376,7 +335,7 @@ describe('project session layers', () => {
   });
 
   it('counts only visible content in metrics', () => {
-    const session = openSession(layeredDocument());
+    const session = openSession(layeredDocument(4, 4));
     session.setActiveLayer(1);
     session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
     session.execute({ type: 'set-full', x: 1, y: 0, color: 1 });
@@ -388,25 +347,25 @@ describe('project session layers', () => {
   });
 
   it('keeps layer visibility out of undo history without clearing redo', () => {
-    const session = openSession(layeredDocument());
+    const session = openSession(layeredDocument(4, 4));
     session.setActiveLayer(1);
     session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
     session.execute({ type: 'set-full', x: 1, y: 0, color: 1 });
     session.undo();
-    expect(session.canRedo).toBe(true);
+    expect(session.historyRedoDepth).toBeGreaterThan(0);
     const revision = session.layeredDocument.revision;
     session.setLayerVisibility(1, false);
     expect(session.layeredDocument.revision).toBe(revision + 1);
     expect(session.layers.find((layer) => layer.id === 1)?.visible).toBe(false);
     expect(session.metrics.totals.full).toBe(0);
-    expect(session.canRedo).toBe(true);
+    expect(session.historyRedoDepth).toBeGreaterThan(0);
 
     // Undo steps over the toggle to the edit before it; the layer stays hidden.
     session.undo();
     const stitches = session.layeredDocument.layers.find((layer) => layer.id === 1) as StitchLayer;
     expect(stitches.kind[0]).toBe(CellKind.Empty);
     expect(stitches.visible).toBe(false);
-    expect(session.canUndo).toBe(false);
+    expect(session.historyUndoDepth).toBe(0);
     session.redo();
     session.redo();
     expect((session.layeredDocument.layers.find((layer) => layer.id === 1) as StitchLayer).kind[1]).toBe(CellKind.Full);
@@ -416,7 +375,7 @@ describe('project session layers', () => {
 
 describe('workspace layered projects', () => {
   it('creates a blank project with Canvas settings, a stitch layer and a specialty layer', async () => {
-    const workspace = new ProjectWorkspace({ repository: new LayeredMemoryRepository(), preparationClient: unusedPreparationClient, debounceMs: 60_000, projectIdFactory: () => 'blank' });
+    const workspace = new ProjectWorkspace({ repository: new MemoryRepository(), preparationClient: createPersistencePreparationClient({ useWorker: false }), debounceMs: 60_000, projectIdFactory: () => 'blank' });
     try {
       const session = await workspace.createProject({ width: 10, height: 8, aidaCount: 18, settings: { backgroundColor: '#FAF0E6' } });
       expect(session.layeredDocument.layers.map((layer) => [layer.type, layer.name])).toEqual([['stitch', 'Stitches'], ['specialty', 'Specialty']]);
@@ -430,7 +389,7 @@ describe('workspace layered projects', () => {
   });
 
   it('puts conversion output in the stitch layer', async () => {
-    const workspace = new ProjectWorkspace({ repository: new LayeredMemoryRepository(), preparationClient: unusedPreparationClient, debounceMs: 60_000, projectIdFactory: () => 'converted' });
+    const workspace = new ProjectWorkspace({ repository: new MemoryRepository(), preparationClient: createPersistencePreparationClient({ useWorker: false }), debounceMs: 60_000, projectIdFactory: () => 'converted' });
     try {
       const document = createStarterDocument({ width: 3, height: 2 });
       document.kind[4] = CellKind.Full;
@@ -455,13 +414,13 @@ describe('workspace layered projects', () => {
   });
 
   it('saves a layer visibility toggle that is not an undo step', async () => {
-    const repository = new LayeredMemoryRepository();
-    const workspace = new ProjectWorkspace({ repository, preparationClient: unusedPreparationClient, debounceMs: 60_000, projectIdFactory: () => 'visibility' });
+    const repository = new MemoryRepository();
+    const workspace = new ProjectWorkspace({ repository, preparationClient: createPersistencePreparationClient({ useWorker: false }), debounceMs: 60_000, projectIdFactory: () => 'visibility' });
     try {
       const session = await workspace.createProject({ width: 4, height: 4 });
       await workspace.flush();
       workspace.setLayerVisibility(2, false);
-      expect(session.canUndo).toBe(false);
+      expect(session.historyUndoDepth).toBe(0);
       await workspace.flush();
       const saved = await repository.load('visibility');
       expect(saved?.document.layers.find((layer) => layer.id === 2)?.visible).toBe(false);
@@ -471,7 +430,7 @@ describe('workspace layered projects', () => {
   });
 
   it('routes the active stitch count through an undoable settings change', async () => {
-    const workspace = new ProjectWorkspace({ repository: new LayeredMemoryRepository(), preparationClient: unusedPreparationClient, debounceMs: 60_000, projectIdFactory: () => 'aida' });
+    const workspace = new ProjectWorkspace({ repository: new MemoryRepository(), preparationClient: createPersistencePreparationClient({ useWorker: false }), debounceMs: 60_000, projectIdFactory: () => 'aida' });
     try {
       await workspace.createProject({ width: 4, height: 4 });
       await workspace.updateActiveAidaCount(22);

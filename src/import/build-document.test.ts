@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { getDmcColor } from '../catalog';
 import { CellKind } from '../domain/types';
 import { MAX_PERSISTABLE_CELL_COUNT } from '../domain/types';
-import { validateDocument } from '../domain/validation';
+import { assertValidDocument } from '../domain/validation';
 import { SYMBOL_IDS, SYMBOL_POOL } from '../symbols';
 import { assignSymbolSlugs, buildImportedDocument, maxImportColors, nearestPoolOutline, proposeMappings } from './build-document';
 import { normalizeSvgPath } from './pdf/outline';
@@ -141,7 +141,7 @@ describe('buildImportedDocument', () => {
       { symbolKey: 'a', catalogCode: '310' },
       { symbolKey: 'b', color: '#336699' }
     ], options);
-    expect(validateDocument(document)).toBe(true);
+    expect(() => assertValidDocument(document)).not.toThrow();
     expect([document.width, document.height]).toEqual([3, 2]);
     expect(document.settings.aidaCount).toBe(18);
     expect(Array.from(document.kind)).toEqual([1, 0, 1, 1, 0, 0].map((v) => (v ? CellKind.Full : CellKind.Empty)));

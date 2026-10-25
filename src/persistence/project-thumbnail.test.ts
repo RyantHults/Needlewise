@@ -1,4 +1,4 @@
-import { applyCommand, CellKind, createDocument, LayerType, layeredFromSurface, QuarterCorner, type StitchLayer } from '../domain';
+import { CellKind, createDocument, LayerType, layeredFromSurface, QuarterCorner, type StitchLayer } from '../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { describe, expect, it } from 'vitest';
 import {
@@ -15,6 +15,7 @@ import {
   sanitizeProjectMetadata,
   sanitizeProjectThumbnail
 } from './project-thumbnail';
+import { applyCommand } from '../domain/test-fixtures';
 
 describe('project thumbnail summaries', () => {
   it('uses the document background for empty thumbnail cells and preserves it when sanitizing', () => {

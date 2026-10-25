@@ -2,64 +2,21 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { clearClipboard } from './clipboard-store';
 import {
   CellKind,
-  applyCommand,
-  commitLayerSurface,
-  createLayeredDocument,
   layerSurface,
   type DomainCommand,
-  type LayeredDocument,
-  type PatternDocument
+  type LayeredDocument
 } from '../domain';
-import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { EditorSurfaceController } from './controller';
-import { FOCUS_COLOR_PROTECTED_HINT, type CanvasRenderer, type RenderStats, type RendererStyle, type Viewport } from './contracts';
+import { FOCUS_COLOR_PROTECTED_HINT } from './contracts';
 import { getCanvasMetrics } from './coordinates';
 import { createFillWorkerClient } from './fill';
 import { createWorkspaceEditorGateway, type ActiveLayerId } from './gateway';
-import type { PointerSample } from './input';
 import { createUiStore } from './ui-store';
-import { LayeredTestBoundary } from './test-support';
+import { LayeredTestBoundary, at, layeredDocument, rendererFixture } from './test-support';
+import { applyCommand, commitLayerSurface } from '../domain/test-fixtures';
 
-function rendererFixture(): CanvasRenderer {
-  let viewport: Viewport = { x: 0, y: 0, zoom: 16 };
-  let rendered: PatternDocument | undefined;
-  const renderer = {
-    lastStats: { lod: 'detail', visitedCells: 0, drawnCells: 0, drawnBackstitches: 0, baseRendered: false, overlayRendered: false } as RenderStats,
-    getDocument: () => rendered,
-    getViewport: () => viewport,
-    getStyle: () => ({}) as RendererStyle,
-    getTraceImage: () => undefined,
-    setDocument: (document: PatternDocument) => { rendered = document; },
-    setViewport: (next: Viewport) => { viewport = next; },
-    setMetrics: () => undefined,
-    setStyle: () => undefined,
-    setTraceImage: () => undefined,
-    clearTraceImage: () => undefined,
-    setOverlay: () => undefined,
-    invalidate: () => undefined,
-    requestRender: () => undefined,
-    render: () => renderer.lastStats,
-    renderNow: () => renderer.lastStats,
-    getLastInvalidation: () => ({ base: false, overlay: false, reasons: [] }),
-    dispose: () => undefined,
-    destroy: () => undefined
-  } as unknown as CanvasRenderer;
-  return renderer;
-}
 
-/** Screen point at the center of a cell for the fixture's zoom of 16. */
-function at(pointerId: number, x: number, y: number): PointerSample {
-  return { pointerId, pointerType: 'mouse', screenX: x * 16 + 8, screenY: y * 16 + 8, button: 0, buttons: 1, isPrimary: true };
-}
 
-function layeredDocument(): LayeredDocument {
-  return createLayeredDocument({
-    width: 8,
-    height: 8,
-    catalog: DEFAULT_CATALOG_DEFINITION.association,
-    palette: [{ id: 1, name: 'Red', color: '#d33', active: true }, { id: 2, name: 'Blue', color: '#36c', active: true }]
-  });
-}
 
 /** Apply a command straight to one layer, bypassing the editor, to arrange a test. */
 function seed(document: LayeredDocument, layerId: number, command: DomainCommand): void {
@@ -85,7 +42,7 @@ function fixture(document = layeredDocument(), activeLayerId: ActiveLayerId = 1)
   const controller = new EditorSurfaceController({
     gateway,
     uiStore,
-    renderer: rendererFixture(),
+    renderer: rendererFixture().renderer,
     metrics: getCanvasMetrics(128, 128),
     fillClient,
     onNotice: (message) => notices.push(message)
@@ -106,6 +63,7 @@ function fixture(document = layeredDocument(), activeLayerId: ActiveLayerId = 1)
   };
   return { boundary, uiStore, controller, notices, fillClient, colorAt, backstitches };
 }
+
 
 function drag(controller: EditorSurfaceController, cells: ReadonlyArray<readonly [number, number]>): void {
   const [first, ...rest] = cells;
@@ -136,7 +94,7 @@ describe('Focus Color', () => {
   it('is never on in the read-only viewer', () => {
     const boundary = new LayeredTestBoundary(layeredDocument());
     const uiStore = createUiStore();
-    const controller = new EditorSurfaceController({ gateway: createWorkspaceEditorGateway(boundary), uiStore, renderer: rendererFixture(), readOnly: true });
+    const controller = new EditorSurfaceController({ gateway: createWorkspaceEditorGateway(boundary), uiStore, renderer: rendererFixture().renderer, readOnly: true });
     controller.start();
     controller.setHighlightColor(2);
     controller.toggleFocusColor();

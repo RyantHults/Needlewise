@@ -1,19 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { getSymbolOutline, SYMBOL_IDS } from '../symbols';
 import {
-  applyCommand,
   assertValidDocument,
   bulkBackstitchCompletionCommand,
-  bulkCellCommand,
   bulkCompletionCommand,
-  bulkEraseCellCommand,
-  bulkEraseQuarterCommand,
-  bulkSetFullCommand,
-  bulkSetHalfCommand,
-  bulkSetQuarterCommand,
-  bulkSetThreeQuarterCommand,
   preflightBulkCellCommand,
-  bulkRecolorCommand,
   CellKind,
   cloneDocument,
   createDocument,
@@ -24,12 +15,8 @@ import {
   createPatternFragment,
   createPatternFragmentFromCells,
   assertValidPatternFragment,
-  getBackstitch,
-  getCell,
-  getQuarter,
   HalfDirection,
   isKnownSymbolId,
-  isQuarterKind,
   isThreeQuarterKind,
   listBackstitches,
   MaterialKind,
@@ -41,9 +28,6 @@ import {
   preflightBulkCompletionCommand,
   preflightBulkRecolorCommand,
   QuarterCorner,
-  readPatternFragmentCell,
-  validateDocument,
-  validatePatternFragment,
   DEFAULT_HISTORY_LIMIT_BYTES,
   DomainError,
   estimateBulkCellHistoryBytes,
@@ -52,7 +36,6 @@ import {
   estimateMoveFragmentHistoryBytes,
   estimateMixedEraseHistoryBytes,
   estimateDeleteRegionHistoryBytes,
-  mergePaletteCommand,
   moveFragmentCommand,
   type DocumentSettingsUpdateCommand,
   type PatternDocument,
@@ -60,13 +43,7 @@ import {
   type PatternFragment,
   computePatternMetrics
 } from './index';
-import { editorFromSurface, markBackstitchComplete, markCellComplete, onDefaultLayers, SPECIALTY_LAYER_ID, STITCH_LAYER_ID } from './test-fixtures';
-
-const TEST_CATALOG: CatalogAssociation = {
-  catalogId: 'test-catalog',
-  brandLabel: 'Test Catalog',
-  colorCount: 489
-};
+import { editorFromSurface, markBackstitchComplete, markCellComplete, onDefaultLayers, SPECIALTY_LAYER_ID, STITCH_LAYER_ID, applyCommand, bulkCellCommand, bulkEraseCellCommand, bulkEraseQuarterCommand, bulkSetFullCommand, bulkSetHalfCommand, bulkSetQuarterCommand, bulkSetThreeQuarterCommand, bulkRecolorCommand, getBackstitch, getCell, getQuarter, isQuarterKind, readPatternFragmentCell, TEST_CATALOG } from './test-fixtures';
 
 const TEST_REFERENCE = {
   catalogId: TEST_CATALOG.catalogId,
@@ -161,7 +138,7 @@ describe('document catalog association', () => {
     }).document;
     expect(created.catalog).toEqual(TEST_CATALOG);
     expect(created.palette[0].catalog).toEqual(foreignReference);
-    expect(validateDocument(created)).toBe(true);
+    expect(() => assertValidDocument(created)).not.toThrow();
 
     expect(() => applyCommand(pattern, {
       type: 'palette-create',
@@ -188,7 +165,7 @@ describe('document catalog association', () => {
 
     expect(pattern.catalog).toEqual(TEST_CATALOG);
     expect(pattern.palette[0].catalog).toEqual(foreignReference);
-    expect(validateDocument(pattern)).toBe(true);
+    expect(() => assertValidDocument(pattern)).not.toThrow();
   });
 
   it('preserves a foreign catalog palette addition through clone, undo, and redo', () => {
@@ -202,7 +179,7 @@ describe('document catalog association', () => {
     expect(editor.composite.catalog).toEqual(TEST_CATALOG);
     expect(editor.redo().document.palette[0].catalog).toEqual(foreignReference);
     expect(editor.composite.catalog).toEqual(TEST_CATALOG);
-    expect(validateDocument(editor.composite)).toBe(true);
+    expect(() => assertValidDocument(editor.composite)).not.toThrow();
   });
 
   it('accepts foreign references on palette update and merge-created entries', () => {
@@ -211,7 +188,7 @@ describe('document catalog association', () => {
     const updated = applyCommand(pattern, { type: 'palette-update', id: 1, catalog: foreignReference }).document;
     expect(updated.catalog).toEqual(TEST_CATALOG);
     expect(updated.palette[0].catalog).toEqual(foreignReference);
-    expect(validateDocument(updated)).toBe(true);
+    expect(() => assertValidDocument(updated)).not.toThrow();
 
     const merged = applyCommand(pattern, {
       type: 'palette-merge',
@@ -220,7 +197,7 @@ describe('document catalog association', () => {
     }).document;
     expect(merged.catalog).toEqual(TEST_CATALOG);
     expect(merged.palette.find((entry) => entry.catalog?.catalogId === 'catalog-b')?.catalog).toEqual(foreignReference);
-    expect(validateDocument(merged)).toBe(true);
+    expect(() => assertValidDocument(merged)).not.toThrow();
   });
 
   it('uses the document association color count for palette capacity', () => {
@@ -255,7 +232,7 @@ describe('document catalog association', () => {
     });
 
     expect(pattern.palette[0].catalog).toBeUndefined();
-    expect(validateDocument(pattern)).toBe(true);
+    expect(() => assertValidDocument(pattern)).not.toThrow();
   });
 });
 
@@ -331,10 +308,10 @@ describe('typed-array pattern document', () => {
     invalid.kind[0] = CellKind.ThreeQuarterNW;
     invalid.colors[0] = 1;
     invalid.colors[1] = 2;
-    expect(validateDocument(invalid)).toBe(false);
+    expect(() => assertValidDocument(invalid)).toThrow();
     invalid.colors[1] = 0;
     invalid.completed[0] = 2;
-    expect(validateDocument(invalid)).toBe(false);
+    expect(() => assertValidDocument(invalid)).toThrow();
   });
 
   it('keeps a full stitch color on the opposite corner when a three-quarter is painted over it', () => {
@@ -443,7 +420,7 @@ describe('typed-array pattern document', () => {
     let pattern = document(2, 1);
     pattern = apply(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 });
     pattern = apply(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 1 });
-    expect(validateDocument(pattern)).toBe(true);
+    expect(() => assertValidDocument(pattern)).not.toThrow();
     expect(getCell(pattern, 0, 0).threeQuarters).toEqual([
       { color: 1, completed: false },
       { color: 0, completed: false },
@@ -451,7 +428,7 @@ describe('typed-array pattern document', () => {
       { color: 0, completed: false }
     ]);
     const fragment = createPatternFragment(pattern, { x: 0, y: 0, width: 1, height: 1 });
-    expect(validatePatternFragment(fragment)).toBe(true);
+    expect(() => assertValidPatternFragment(fragment)).not.toThrow();
     const pasted = applyCommand(document(2, 1), pasteFragmentCommand(fragment, { x: 1, y: 0 }));
     expect(pasted.document.kind[1]).toBe(CellKind.ThreeQuarterPair);
     expect(pasted.document.colors.slice(4, 8)).toEqual(new Uint16Array([1, 0, 1, 0]));
@@ -459,7 +436,7 @@ describe('typed-array pattern document', () => {
     const invalid = pattern.kind.slice();
     invalid[0] = CellKind.ThreeQuarterPair;
     const invalidPair = { ...pattern, kind: invalid, colors: new Uint16Array([1, 1, 0, 0, 0, 0, 0, 0]) };
-    expect(validateDocument(invalidPair)).toBe(false);
+    expect(() => assertValidDocument(invalidPair)).toThrow();
   });
 
   it('overwrites three-quarter geometry, preserves same-kind completion, and packs bulk undo state', () => {
@@ -498,7 +475,7 @@ describe('typed-array pattern document', () => {
     expect(() => apply(pattern, { type: 'palette-deactivate', id: 1 })).toThrow();
     expect(() => apply(pattern, { type: 'palette-update', id: 1, active: false })).toThrow();
     pattern.palette[0] = { ...pattern.palette[0], active: false };
-    expect(validateDocument(pattern)).toBe(false);
+    expect(() => assertValidDocument(pattern)).toThrow();
   });
 
   it('merges a referenced palette color into another and deactivates the source atomically', () => {
@@ -507,7 +484,7 @@ describe('typed-array pattern document', () => {
     pattern = apply(pattern, { type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 1 });
     pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 4 }, color: 1 });
     const editor = editorFromSurface(pattern);
-    const result = editor.execute(onDefaultLayers(mergePaletteCommand(1, 2)));
+    const result = editor.execute(onDefaultLayers({ type: 'palette-merge', from: 1, to: 2 }));
 
     expect(result.changed).toBe(true);
     expect(result.recalculateMetrics).toBe(true);
@@ -517,7 +494,7 @@ describe('typed-array pattern document', () => {
     expect(next.colors[0]).toBe(2);
     expect(next.colors[1 * 4]).toBe(2);
     expect(getBackstitch(next, 1)?.color).toBe(2);
-    expect(validateDocument(next)).toBe(true);
+    expect(() => assertValidDocument(next)).not.toThrow();
 
     expect(editor.undo().changed).toBe(true);
     const undone = editor.composite;
@@ -530,15 +507,15 @@ describe('typed-array pattern document', () => {
 
   it('removes an unreferenced palette color via merge and rejects invalid merges', () => {
     const pattern = document(2, 2);
-    const merged = applyCommand(pattern, mergePaletteCommand(3, 1)).document;
+    const merged = applyCommand(pattern, { type: 'palette-merge', from: 3, to: 1 }).document;
     expect(merged.palette.find((entry) => entry.id === 3)?.active).toBe(false);
     expect(merged.palette.find((entry) => entry.id === 3)?.id).toBe(3);
 
-    expect(() => applyCommand(pattern, mergePaletteCommand(1, 1))).toThrow();
-    expect(() => applyCommand(pattern, mergePaletteCommand(99, 1))).toThrow();
-    expect(() => applyCommand(pattern, mergePaletteCommand(1, 99))).toThrow();
+    expect(() => applyCommand(pattern, { type: 'palette-merge', from: 1, to: 1 })).toThrow();
+    expect(() => applyCommand(pattern, { type: 'palette-merge', from: 99, to: 1 })).toThrow();
+    expect(() => applyCommand(pattern, { type: 'palette-merge', from: 1, to: 99 })).toThrow();
     const inactiveMerge = applyCommand(pattern, { type: 'palette-create', name: 'Muted', color: '#888', active: false }).document;
-    expect(() => applyCommand(inactiveMerge, mergePaletteCommand(2, 4))).toThrow();
+    expect(() => applyCommand(inactiveMerge, { type: 'palette-merge', from: 2, to: 4 })).toThrow();
   });
 
   it('palette-delete removes references instead of only deactivating the color', () => {
@@ -562,7 +539,7 @@ describe('typed-array pattern document', () => {
     expect(deleted.document.colors.slice(8, 12)).toEqual(new Uint16Array([0, 0, 2, 0]));
     expect(getCell(deleted.document, 3, 0)).toMatchObject({ kind: CellKind.Full, color: 2 });
     expect(listBackstitches(deleted.document).map((line) => line.color)).toEqual([2]);
-    expect(validateDocument(deleted.document)).toBe(true);
+    expect(() => assertValidDocument(deleted.document)).not.toThrow();
 
     expect(editor.undo().changed).toBe(true);
     expect(editor.composite.palette.find((entry) => entry.id === 1)?.active).toBe(true);
@@ -594,7 +571,7 @@ describe('typed-array pattern document', () => {
 
       expect(survivor.kind).toBe(survivorKind);
       expect(survivor.threeQuarters).toEqual(expectedComponents);
-      expect(validateDocument(deleted)).toBe(true);
+      expect(() => assertValidDocument(deleted)).not.toThrow();
     }
   });
 
@@ -609,7 +586,7 @@ describe('typed-array pattern document', () => {
 
     expect(deleted.kind).toEqual(new Uint8Array(4));
     expect(deleted.colors).toEqual(new Uint16Array(16));
-    expect(validateDocument(deleted)).toBe(true);
+    expect(() => assertValidDocument(deleted)).not.toThrow();
   });
 
   it('palette-delete preserves surviving backstitch identities, geometry, completion, and allocator state', () => {
@@ -625,7 +602,7 @@ describe('typed-array pattern document', () => {
 
     expect(listBackstitches(deleted)).toEqual(retainedBackstitches);
     expect(deleted.nextBackstitchId).toBe(nextBackstitchId);
-    expect(validateDocument(deleted)).toBe(true);
+    expect(() => assertValidDocument(deleted)).not.toThrow();
   });
 
   it('palette-delete rejects an unknown palette id like the other palette commands', () => {
@@ -647,7 +624,7 @@ describe('typed-array pattern document', () => {
     expect(added).toBeDefined();
     expect(next.palette.find((entry) => entry.id === 1)?.active).toBe(false);
     expect(next.colors[0]).toBe(added!.id);
-    expect(validateDocument(next)).toBe(true);
+    expect(() => assertValidDocument(next)).not.toThrow();
     expect(editor.undo().changed).toBe(true);
     expect(editor.composite.colors[0]).toBe(1);
   });
@@ -832,7 +809,7 @@ describe('typed-array pattern document', () => {
 
     const invalid = document(1, 1);
     invalid.width = MAX_PERSISTABLE_CELL_COUNT + 1;
-    expect(validateDocument(invalid)).toBe(false);
+    expect(() => assertValidDocument(invalid)).toThrow();
     expect(() => assertValidDocument(invalid)).toThrow(DomainError);
   });
 
@@ -1039,7 +1016,7 @@ describe('typed-array pattern document', () => {
     const result = editor.execute(onDefaultLayers(command));
     expect(result.revision).toBe(1);
     expect(editor.undoDepth).toBe(1);
-    expect(editor.lastHistoryEntryKind).toBe('delta');
+    expect(editor.exportHistory().undo.at(-1)?.kind).toBe('delta');
     expect(result.changedIndices).toEqual(new Uint32Array([0, 1, 4, 5]));
     expect(editor.undo().revision).toBe(2);
     expect(editor.composite.kind.slice(0, 6)).toEqual(new Uint8Array(6));
@@ -1087,7 +1064,7 @@ describe('typed-array pattern document', () => {
     ]));
     expect(editor.composite.completed).toEqual(new Uint8Array([1, 1, 1, 1, 5, 1]));
     expect(editor.undoDepth).toBe(1);
-    expect(editor.lastHistoryEntryKind).toBe('delta');
+    expect(editor.exportHistory().undo.at(-1)?.kind).toBe('delta');
     expect(editor.historyBytes).toBe(estimateBulkRecolorHistoryBytes(indices.length));
 
     editor.undo();
@@ -1103,11 +1080,6 @@ describe('typed-array pattern document', () => {
     editor.redo();
     expect(editor.composite.colors[0]).toBe(3);
     expect(editor.composite.completed[0]).toBe(1);
-  });
-
-  it('keeps the former Full-only recolor call as a mask-one compatibility alias', () => {
-    const command = bulkRecolorCommand(new Uint32Array([0, 4]), 1, 2);
-    expect(command.masks).toEqual(new Uint8Array([1, 1]));
   });
 
   it('rejects malformed, mismatched, and stale component recolors atomically', () => {
@@ -1387,7 +1359,7 @@ describe('typed-array pattern document', () => {
     expect(result.revision).toBe(1);
     expect(result.changedIndices).toHaveLength(width * height);
     expect(editor.undoDepth).toBe(1);
-    expect(editor.lastHistoryEntryKind).toBe('delta');
+    expect(editor.exportHistory().undo.at(-1)?.kind).toBe('delta');
     expect(editor.historyBytes).toBeLessThanOrEqual(DEFAULT_HISTORY_LIMIT_BYTES);
     expect(editor.composite.kind[0]).toBe(CellKind.Full);
     expect(editor.composite.kind.at(-1)).toBe(CellKind.Full);
@@ -1416,7 +1388,7 @@ describe('typed-array pattern document', () => {
     expect(result.revision).toBe(1);
     expect(result.changedIndices).toBeInstanceOf(Uint32Array);
     expect(result.changedIndices).toHaveLength(cellCount);
-    expect(editor.lastHistoryEntryKind).toBe('delta');
+    expect(editor.exportHistory().undo.at(-1)?.kind).toBe('delta');
     expect(editor.undoDepth).toBe(1);
     expect(editor.historyBytes).toBe(estimateBulkCellHistoryBytes(cellCount));
     expect(editor.historyBytes).toBeLessThanOrEqual(DEFAULT_HISTORY_LIMIT_BYTES);
@@ -1484,7 +1456,7 @@ describe('typed-array pattern document', () => {
     const pattern = createDocument({ width: 1000, height: 1000, catalog: TEST_CATALOG, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     const editor = editorFromSurface(pattern);
     editor.execute(onDefaultLayers({ type: 'set-full', x: 777, y: 888, color: 1 }));
-    expect(editor.lastHistoryEntryKind).toBe('delta');
+    expect(editor.exportHistory().undo.at(-1)?.kind).toBe('delta');
     expect(editor.historyBytes).toBeLessThan(1024);
     expect(editor.historyBytes).toBeLessThan(pattern.kind.byteLength);
     editor.undo();
@@ -1537,7 +1509,7 @@ describe('typed-array pattern document', () => {
     expect(fragment.colors).toHaveLength(24);
     expect('completed' in fragment).toBe(false);
     expect('completed' in fragment.backstitches).toBe(false);
-    expect(validatePatternFragment(fragment)).toBe(true);
+    expect(() => assertValidPatternFragment(fragment)).not.toThrow();
     expect(readPatternFragmentCell(fragment, 0, 0)).toMatchObject({ kind: CellKind.Full });
     expect(readPatternFragmentCell(fragment, 1, 0)).toMatchObject({ kind: CellKind.HalfSlash });
     expect(readPatternFragmentCell(fragment, 2, 0)).toMatchObject({ kind: CellKind.Quarters });
@@ -1554,7 +1526,7 @@ describe('typed-array pattern document', () => {
     source = apply(source, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 });
     source = markCellComplete(source, 0, 0);
     const fragment = createPatternFragment(source, { x: 0, y: 0, width: 1, height: 1 });
-    expect(validatePatternFragment(fragment)).toBe(true);
+    expect(() => assertValidPatternFragment(fragment)).not.toThrow();
     expect(readPatternFragmentCell(fragment, 0, 0)).toMatchObject({ kind: CellKind.ThreeQuarterSE, colors: new Uint16Array([2, 0, 0, 0]) });
 
     const destination = applyCommand(document(2, 1), pasteFragmentCommand(fragment, { x: 1, y: 0 }));
@@ -1563,7 +1535,7 @@ describe('typed-array pattern document', () => {
     expect(destination.document.completed[1]).toBe(0);
 
     const invalid = { ...fragment, colors: new Uint16Array([2, 1, 0, 0]) };
-    expect(validatePatternFragment(invalid)).toBe(false);
+    expect(() => assertValidPatternFragment(invalid)).toThrow();
   });
 
   it('pastes fragments transparently with incomplete cells and new backstitch IDs', () => {
@@ -1646,7 +1618,7 @@ describe('typed-array pattern document', () => {
     expect(() => budgetEditor.execute(onDefaultLayers(pasteFragmentCommand(fragment, { x: 0, y: 0 })))).toThrow(/exceeding/);
     expect(budgetEditor.composite).toBe(budgetBefore);
     expect(budgetEditor.undoDepth).toBe(0);
-    expect(validatePatternFragment(invalidGeometry)).toBe(false);
+    expect(() => assertValidPatternFragment(invalidGeometry)).toThrow();
     expect(() => assertValidPatternFragment(invalidGeometry)).toThrow(DomainError);
   });
 
@@ -1932,7 +1904,7 @@ describe('typed-array pattern document', () => {
     expect(result.changedIndices).toHaveLength(1);
     expect(result.revision).toBe(1);
     expect(editor.undoDepth).toBe(1);
-    expect(editor.lastHistoryEntryKind).toBe('delta');
+    expect(editor.exportHistory().undo.at(-1)?.kind).toBe('delta');
     expect(editor.historyBytes).toBe(estimatePasteFragmentHistoryBytes(1, 0, 0));
     expect(editor.historyBytes).toBeLessThanOrEqual(DEFAULT_HISTORY_LIMIT_BYTES);
     editor.undo();
@@ -1963,7 +1935,7 @@ describe('typed-array pattern document', () => {
     expect(result.changedIndices).toEqual(new Uint32Array([0, 1, 2]));
     expect(result.revision).toBe(pattern.revision + 1);
     expect(editor.undoDepth).toBe(1);
-    expect(editor.lastHistoryEntryKind).toBe('delta');
+    expect(editor.exportHistory().undo.at(-1)?.kind).toBe('delta');
     expect(editor.historyBytes).toBe(estimateMixedEraseHistoryBytes(3));
     expect(getCell(editor.composite, 0, 0).kind).toBe(CellKind.Empty);
     expect(getCell(editor.composite, 0, 0).completed).toBe(false);
@@ -2258,9 +2230,9 @@ describe('typed-array pattern document', () => {
 
   it('validates invariants and exposes a boolean validator', () => {
     const pattern = document();
-    expect(validateDocument(pattern)).toBe(true);
+    expect(() => assertValidDocument(pattern)).not.toThrow();
     pattern.kind[0] = CellKind.Full;
-    expect(validateDocument(pattern)).toBe(false);
+    expect(() => assertValidDocument(pattern)).toThrow();
     expect(() => assertValidDocument(pattern)).toThrow();
   });
 
@@ -2289,7 +2261,7 @@ describe('typed-array pattern document', () => {
     expect(fragment.backstitches.y1).toEqual(new Uint32Array([0]));
     expect(fragment.backstitches.x2).toEqual(new Uint32Array([8]));
     expect(fragment.backstitches.y2).toEqual(new Uint32Array([0]));
-    expect(validatePatternFragment(fragment)).toBe(true);
+    expect(() => assertValidPatternFragment(fragment)).not.toThrow();
 
     let destination = document(3, 1);
     destination = apply(destination, { type: 'set-full', x: 1, y: 0, color: 3 });
@@ -2393,7 +2365,7 @@ describe('pattern background settings', () => {
       ...pattern,
       settings: { ...pattern.settings, backgroundColor: '#a1b2c3' }
     } as PatternDocument;
-    expect(validateDocument(nonCanonical)).toBe(false);
+    expect(() => assertValidDocument(nonCanonical)).toThrow();
   });
 
   it('retains background color and settings identity across delta undo and redo', () => {

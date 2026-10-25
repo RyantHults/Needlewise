@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { getCanvasMetrics } from '../editor/coordinates';
-import type { CanvasContextAdapter, TraceImage } from '../editor/contracts';
+import type { TraceImage } from '../editor/contracts';
 import {
   MAX_TRACE_IMAGE_BYTES,
   MAX_TRACE_IMAGE_PIXELS,
@@ -11,39 +11,8 @@ import {
   fitTraceImageBounds,
   sampleTraceImage
 } from './trace';
+import { recordingContext } from './test-support';
 import { MAX_WORKING_IMAGE_DIMENSION, MAX_WORKING_IMAGE_PIXELS } from '../image/image-sizing';
-
-interface RecordingContext extends CanvasContextAdapter {
-  records: Array<{ name: string; args: unknown[]; globalAlpha: number; strokeStyle: string }>;
-  imageSmoothingQuality: string;
-}
-
-function recordingContext(): RecordingContext {
-  const context: RecordingContext = {
-    records: [],
-    fillStyle: '',
-    strokeStyle: '',
-    lineWidth: 1,
-    globalAlpha: 1,
-    font: '',
-    imageSmoothingEnabled: true,
-    imageSmoothingQuality: 'low',
-    clearRect: function (): void {},
-    fillRect: function (): void {},
-    rect: function (): void {},
-    clip: function (this: RecordingContext, ...args: unknown[]): void { this.records.push({ name: 'clip', args, globalAlpha: this.globalAlpha, strokeStyle: this.strokeStyle }); },
-    beginPath: function (): void {},
-    closePath: function (): void {},
-    moveTo: function (): void {},
-    lineTo: function (): void {},
-    fill: function (): void {},
-    stroke: function (): void {},
-    drawImage: function (this: RecordingContext, ...args: unknown[]): void { this.records.push({ name: 'drawImage', args, globalAlpha: this.globalAlpha, strokeStyle: this.strokeStyle }); },
-    save: function (): void {},
-    restore: function (): void {}
-  };
-  return context;
-}
 
 function trace(overrides: Partial<TraceImage> = {}): TraceImage {
   return {

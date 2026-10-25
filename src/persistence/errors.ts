@@ -4,7 +4,6 @@ export type PersistenceErrorCode =
   | 'unsupported-version'
   | 'invalid-metadata'
   | 'invalid-asset'
-  | 'invalid-activity'
   | 'storage-failure'
   | 'stale-save'
   | 'cancelled';
@@ -19,12 +18,4 @@ export class PersistenceError extends Error {
     this.code = code;
     this.cause = cause;
   }
-}
-
-export function persistenceError(
-  code: PersistenceErrorCode,
-  message: string,
-  cause?: unknown
-): PersistenceError {
-  return new PersistenceError(code, message, cause);
 }

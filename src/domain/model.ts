@@ -11,7 +11,6 @@ import {
   type PatternSettings,
   type PatternDocument,
   type CatalogAssociation,
-  type Point,
   type QuarterCorner,
   DEFAULT_PATTERN_SETTINGS,
   MaterialKind,
@@ -27,7 +26,6 @@ import { assertValidDocument } from './validation';
 import { parseHexColor } from './color';
 import { canvasFields } from './canvas';
 
-const UINT16_MAX = 0xffff;
 const UINT32_MAX = 0xffffffff;
 
 /** True when `id` names a symbol the generated pool can actually draw. */
@@ -252,9 +250,6 @@ export function createDocument(options: CreateDocumentOptions): PatternDocument 
   return document;
 }
 
-export const createPatternDocument = createDocument;
-export const createPattern = createDocument;
-
 export function cloneDocument(document: PatternDocument): PatternDocument {
   return {
     version: DOCUMENT_SCHEMA_VERSION,
@@ -318,71 +313,7 @@ export function listBackstitches(document: PatternDocument): BackstitchRecord[] 
   return Array.from(document.backstitches.ids, (_, index) => readBackstitch(document.backstitches, index));
 }
 
-export function backstitchCount(document: PatternDocument): number {
-  return document.backstitches.ids.length;
-}
-
-export function getBackstitch(
-  document: PatternDocument,
-  id: number
-): BackstitchRecord | undefined {
-  const index = document.backstitches.ids.findIndex((candidate) => candidate === id);
-  return index < 0 ? undefined : readBackstitch(document.backstitches, index);
-}
-
-export function point(x: number, y: number): Point {
-  return { x, y };
-}
-
-export { UINT16_MAX, UINT32_MAX };
-
-export function getCell(document: PatternDocument, x: number, y: number) {
-  const index = cellIndex(document, x, y);
-  const offset = colorsOffset(index);
-  const kind = document.kind[index];
-  const completion = document.completed[index];
-  const threeQuarterCorners = isThreeQuarterKind(kind) || isThreeQuarterPairKind(kind) ? threeQuarterCornersForCell(document, index) : [];
-  const primaryThreeQuarterCorner = threeQuarterCorners[0];
-  const color = isThreeQuarterPairKind(kind) && primaryThreeQuarterCorner !== undefined
-    ? document.colors[offset + primaryThreeQuarterCorner]
-    : document.colors[offset];
-  const completed = isThreeQuarterPairKind(kind) && primaryThreeQuarterCorner !== undefined
-    ? (completion & (1 << primaryThreeQuarterCorner)) !== 0
-    : (completion & 1) !== 0;
-  return {
-    x,
-    y,
-    kind,
-    color,
-    completed,
-    completionMask: completion,
-    quarters: [
-      { color: kind === CellKind.Quarters ? document.colors[offset] : 0, completed: kind === CellKind.Quarters && (completion & 1) !== 0 },
-      { color: kind === CellKind.Quarters ? document.colors[offset + 1] : 0, completed: kind === CellKind.Quarters && (completion & 2) !== 0 },
-      { color: kind === CellKind.Quarters ? document.colors[offset + 2] : 0, completed: kind === CellKind.Quarters && (completion & 4) !== 0 },
-      { color: kind === CellKind.Quarters ? document.colors[offset + 3] : 0, completed: kind === CellKind.Quarters && (completion & 8) !== 0 }
-    ] as const,
-    threeQuarters: [0, 1, 2, 3].map((corner) => getThreeQuarterAtIndex(document, index, corner as QuarterCorner)) as readonly { color: number; completed: boolean }[]
-  };
-}
-
-export const getCellState = getCell;
-
-export function getQuarter(document: PatternDocument, x: number, y: number, corner: number) {
-  if (!Number.isSafeInteger(corner) || corner < 0 || corner > 3) {
-    throw new DomainError('invalid-corner', `Quarter corner ${String(corner)} is invalid.`);
-  }
-  const index = cellIndex(document, x, y);
-  const offset = colorsOffset(index) + corner;
-  return {
-    color: document.kind[index] === CellKind.Quarters ? document.colors[offset] : 0,
-    completed: document.kind[index] === CellKind.Quarters && (document.completed[index] & (1 << corner)) !== 0
-  };
-}
-
-export function isQuarterKind(kind: number): boolean {
-  return kind === CellKind.Quarters;
-}
+export { UINT32_MAX };
 
 export function isThreeQuarterSingleKind(kind: number): boolean {
   return kind === CellKind.ThreeQuarterNW
@@ -416,33 +347,3 @@ export function oppositeQuarterCorner(corner: QuarterCorner): QuarterCorner {
   if (!Number.isSafeInteger(corner) || corner < 0 || corner > 3) throw new DomainError('invalid-corner', `Quarter corner ${String(corner)} is invalid.`);
   return ((corner + 2) % 4) as QuarterCorner;
 }
-
-function getThreeQuarterAtIndex(document: PatternDocument, index: number, corner: QuarterCorner): { color: number; completed: boolean } {
-  const kind = document.kind[index];
-  const offset = colorsOffset(index);
-  const singleCorner = threeQuarterCornerForKind(kind);
-  if (singleCorner === corner) return { color: document.colors[offset], completed: (document.completed[index] & 1) !== 0 };
-  if (isThreeQuarterPairKind(kind)) return { color: document.colors[offset + corner], completed: (document.completed[index] & (1 << corner)) !== 0 };
-  return { color: 0, completed: false };
-}
-
-function threeQuarterCornersForCell(document: PatternDocument, index: number): QuarterCorner[] {
-  const kind = document.kind[index];
-  const singleCorner = threeQuarterCornerForKind(kind);
-  if (singleCorner !== undefined) return document.colors[index * 4] === 0 ? [] : [singleCorner];
-  if (!isThreeQuarterPairKind(kind)) return [];
-  const offset = index * 4;
-  return [0, 1, 2, 3].filter((corner) => document.colors[offset + corner] !== 0) as QuarterCorner[];
-}
-
-export function threeQuarterCornersForCellAt(document: PatternDocument, index: number): readonly QuarterCorner[] {
-  if (!Number.isSafeInteger(index) || index < 0 || index >= document.kind.length) return [];
-  return threeQuarterCornersForCell(document, index);
-}
-
-export function getThreeQuarter(document: PatternDocument, x: number, y: number, corner: number): { color: number; completed: boolean } {
-  if (!Number.isSafeInteger(corner) || corner < 0 || corner > 3) throw new DomainError('invalid-corner', `Three-quarter corner ${String(corner)} is invalid.`);
-  return getThreeQuarterAtIndex(document, cellIndex(document, x, y), corner as QuarterCorner);
-}
-
-export const getThreeQuarterComponent = getThreeQuarter;

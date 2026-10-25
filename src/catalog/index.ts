@@ -289,18 +289,7 @@ function freezeColor(record: CatalogAsset['records'][number]): DmcCatalogColor {
 }
 
 export const DMC_CATALOG: readonly DmcCatalogColor[] = Object.freeze(rawCatalog.records.map(freezeColor));
-export const DMC_CATALOG_PROVENANCE: DmcCatalogProvenance = Object.freeze(rawProvenance);
 export const DMC_CATALOG_RECORD_COUNT = DMC_CATALOG.length;
-export const DMC_CATALOG_IS_OFFLINE_ONLY = true;
-export const DMC_CATALOG_METADATA = Object.freeze({
-  catalogId: rawCatalog.catalogId,
-  recordCount: DMC_CATALOG_RECORD_COUNT,
-  official: rawProvenance.status.official,
-  approximation: rawProvenance.status.approximation,
-  dmcAffiliation: rawProvenance.status.dmcAffiliation,
-  offlineOnly: DMC_CATALOG_IS_OFFLINE_ONLY,
-  provenance: DMC_CATALOG_PROVENANCE
-});
 
 function validateCatalogAsset(value: unknown, errors: string[]): value is CatalogAsset {
   if (!hasExactKeys(value, ['schemaVersion', 'catalogId', 'records'], 'catalog', errors)) return false;
@@ -308,12 +297,6 @@ function validateCatalogAsset(value: unknown, errors: string[]): value is Catalo
   if (value.catalogId !== EXPECTED_CATALOG_ID) errors.push('catalog.catalogId is unexpected.');
   validateRecordList(value.records, errors, 'catalog.records');
   return errors.length === 0;
-}
-
-export function validateDmcCatalog(records: readonly DmcCatalogColor[] = DMC_CATALOG): DmcCatalogValidation {
-  const errors: string[] = [];
-  validateRecordList(records, errors, 'catalog.records');
-  return Object.freeze({ valid: errors.length === 0, errors: Object.freeze(errors) });
 }
 
 export function validateDmcCatalogBundle(catalogInput: unknown = rawCatalog, provenanceInput: unknown = rawProvenance): DmcCatalogValidation {
@@ -333,16 +316,14 @@ export function validateDmcCatalogBundle(catalogInput: unknown = rawCatalog, pro
   return Object.freeze({ valid: errors.length === 0, errors: Object.freeze(errors) });
 }
 
-export const validateCatalogBundle = validateDmcCatalogBundle;
-
-export const DMC_CATALOG_VALIDATION = validateDmcCatalogBundle();
+const DMC_CATALOG_VALIDATION = validateDmcCatalogBundle();
 if (!DMC_CATALOG_VALIDATION.valid) throw new Error(`Invalid committed DMC catalog bundle: ${DMC_CATALOG_VALIDATION.errors.join(' ')}`);
 
 const dmcByCode = new Map<string, CatalogRecord>(DMC_CATALOG.map((record) => [record.code.toUpperCase(), record]));
 const dmcByHex = new Map<string, CatalogRecord>(DMC_CATALOG.map((record) => [record.hex.toUpperCase(), record]));
 
-function validateSearchLimit(limit: number | undefined, message = 'Catalog search limit must be a non-negative integer.'): void {
-  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0)) throw new RangeError(message);
+function validateSearchLimit(limit: number | undefined): void {
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 0)) throw new RangeError('Catalog search limit must be a non-negative integer.');
 }
 
 function searchCatalogRecords(records: readonly CatalogRecord[], query: string, limit: number | undefined): readonly CatalogRecord[] {
@@ -399,7 +380,6 @@ export const DEFAULT_CATALOG_DEFINITION = DMC_CATALOG_DEFINITION;
 export interface InstalledCatalogRegistry {
   readonly definitions: readonly CatalogDefinition[];
   resolve(association: CatalogAssociation): CatalogDefinition | undefined;
-  getById(catalogId: string): CatalogDefinition | undefined;
 }
 
 export function createInstalledCatalogRegistry(definitions: readonly CatalogDefinition[]): InstalledCatalogRegistry {
@@ -442,18 +422,12 @@ export function createInstalledCatalogRegistry(definitions: readonly CatalogDefi
       const definition = definitionsById.get(association.catalogId);
       if (definition === undefined || definition.association.brandLabel !== association.brandLabel || definition.association.colorCount !== association.colorCount) return undefined;
       return definition;
-    },
-    getById: (catalogId: string) => definitionsById.get(catalogId)
+    }
   });
 }
 
 /** Production's installed catalogs. Additional definitions are injected into a workspace, never globally registered. */
 export const INSTALLED_CATALOG_REGISTRY = createInstalledCatalogRegistry([DMC_CATALOG_DEFINITION]);
-
-export function resolveCatalogDefinition(association: CatalogAssociation): CatalogDefinition | undefined {
-  const definition = INSTALLED_CATALOG_REGISTRY.resolve(association);
-  return definition?.association.catalogId === dmcAssociation.catalogId ? DMC_CATALOG_DEFINITION : definition;
-}
 
 export function createCatalogReference(
   definition: Pick<CatalogDefinition, 'association'>,
@@ -477,30 +451,4 @@ export function getDmcColor(code: string | number): DmcCatalogColor | undefined 
   const value = String(code).trim().toUpperCase();
   const normalized = value.startsWith('DMC-') ? value.slice(4) : value;
   return normalized ? dmcByCode.get(DMC_CODE_ALIASES.get(normalized) ?? normalized) : undefined;
-}
-
-export function getDmcColorByHex(value: string): DmcCatalogColor | undefined {
-  return DMC_CATALOG_DEFINITION.getByHex(value);
-}
-
-export interface NearestDmcColorInput {
-  readonly r: number;
-  readonly g: number;
-  readonly b: number;
-}
-
-/** Return the catalog color whose RGB is closest (squared Euclidean distance) to the input. */
-export function nearestDmcColor(input: NearestDmcColorInput): DmcCatalogColor | undefined {
-  return DMC_CATALOG_DEFINITION.nearest(input);
-}
-
-export interface DmcSearchOptions {
-  readonly limit?: number;
-}
-
-/** Search the committed code, name, HEX, and stable source ID fields without network access. */
-export function searchDmcColors(query: string, options: DmcSearchOptions | number = {}): readonly DmcCatalogColor[] {
-  const limit = typeof options === 'number' ? options : options.limit;
-  validateSearchLimit(limit, 'DMC search limit must be a non-negative integer.');
-  return DMC_CATALOG_DEFINITION.search(query, { limit });
 }

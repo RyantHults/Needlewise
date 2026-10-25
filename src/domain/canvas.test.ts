@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  activeCellCount,
   applyCanvasCommand,
   applyCommandsToDraft,
   applyLayerStructureCommand,
@@ -12,14 +11,9 @@ import {
   CellKind,
   collectLayeredValidationErrors,
   collectValidationErrors,
-  commitLayerSurface,
   createDocument,
-  createLayeredDocument,
-  DomainError,
   findLayer,
   isActiveCell,
-  isCanvasCommand,
-  isRectangularCanvas,
   packCanvasMask,
   unpackCanvasMask,
   layerAddCommand,
@@ -28,14 +22,10 @@ import {
   LayerType,
   WORKSPACE_MIN_EXTENT,
   WORKSPACE_MIN_MARGIN,
-  type CatalogAssociation,
   type DomainCommand,
-  type LayeredDocument,
-  type SpecialtyLayer,
-  type StitchLayer
+  type LayeredDocument
 } from './index';
-
-const TEST_CATALOG: CatalogAssociation = { catalogId: 'test-catalog', brandLabel: 'Test Catalog', colorCount: 489 };
+import { commitLayerSurface, createLayeredDocument, stitchLayer, specialtyLayer, errorCode, TEST_CATALOG } from './test-fixtures';
 
 function layered(width = 3, height = 2): LayeredDocument {
   return createLayeredDocument({
@@ -63,30 +53,9 @@ function line(x1: number, y1: number, x2: number, y2: number, color = 1): Domain
   return { type: 'add-backstitch', start: { x: x1, y: y1 }, end: { x: x2, y: y2 }, color };
 }
 
-function stitch(doc: LayeredDocument, id = 1): StitchLayer {
-  const layer = findLayer(doc, id);
-  if (layer?.type !== LayerType.Stitch) throw new Error(`Layer ${String(id)} is not a stitch layer.`);
-  return layer;
-}
-
-function specialty(doc: LayeredDocument, id = 2): SpecialtyLayer {
-  const layer = findLayer(doc, id);
-  if (layer?.type !== LayerType.Specialty) throw new Error(`Layer ${String(id)} is not a specialty layer.`);
-  return layer;
-}
-
 function lines(doc: LayeredDocument, id = 2): number[][] {
-  const store = specialty(doc, id).backstitches;
+  const store = specialtyLayer(doc, id).backstitches;
   return Array.from(store.ids, (_, index) => [store.x1[index], store.y1[index], store.x2[index], store.y2[index]]);
-}
-
-function errorCode(action: () => unknown): string | undefined {
-  try {
-    action();
-  } catch (error) {
-    return error instanceof DomainError ? error.code : 'not-domain-error';
-  }
-  return undefined;
 }
 
 function apply(doc: LayeredDocument, command: DomainCommand) {
@@ -121,14 +90,13 @@ describe('canvas queries', () => {
 
   it('reads active cells from the mask, with an absent mask meaning the whole box', () => {
     const rectangle: { width: number; height: number; canvasMask?: Uint8Array } = { width: 2, height: 2 };
-    expect(isRectangularCanvas(rectangle)).toBe(true);
+    expect(rectangle.canvasMask).toBeUndefined();
     expect(isActiveCell(rectangle, 3)).toBe(true);
-    expect(activeCellCount(rectangle)).toBe(4);
     const masked = { width: 2, height: 2, canvasMask: new Uint8Array([1, 0, 1, 1]) };
-    expect(isRectangularCanvas(masked)).toBe(false);
+    expect(masked.canvasMask).toBeDefined();
     expect(isActiveCell(masked, 1)).toBe(false);
     expect(isActiveCell(masked, 2)).toBe(true);
-    expect(activeCellCount(masked)).toBe(3);
+    expect(masked.canvasMask.reduce((count, active) => count + active, 0)).toBe(3);
   });
 
   it('packs masks one bit per cell, least significant bit first, with zero padding', () => {
@@ -138,14 +106,11 @@ describe('canvas queries', () => {
     expect(unpackCanvasMask(bits, mask.length)).toEqual(mask);
   });
 
-  it('builds and recognizes canvas commands', () => {
+  it('builds canvas commands', () => {
     expect(canvasResizeCommand({ top: 1, right: 0, bottom: -1, left: 2 })).toEqual({ type: 'canvas-resize', edges: { top: 1, right: 0, bottom: -1, left: 2 } });
     const cells = new Uint8Array([1, 0]);
     expect(canvasCellsCommand('remove', { x: -1, y: 0, width: 2, height: 1 }, cells)).toEqual({ type: 'canvas-cells', operation: 'remove', rect: { x: -1, y: 0, width: 2, height: 1 }, cells });
     expect('cells' in canvasCellsCommand('add', { x: 0, y: 0, width: 1, height: 1 })).toBe(false);
-    expect(isCanvasCommand(canvasResizeCommand({ top: 1, right: 0, bottom: 0, left: 0 }))).toBe(true);
-    expect(isCanvasCommand(canvasCellsCommand('add', { x: 0, y: 0, width: 1, height: 1 }))).toBe(true);
-    expect(isCanvasCommand({ type: 'palette-merge', from: 1 })).toBe(false);
   });
 });
 
@@ -200,27 +165,27 @@ describe('canvas-resize', () => {
     const left = apply(doc, canvasResizeCommand({ top: 0, right: 0, bottom: 0, left: 2 }));
     expect(left.changed).toBe(true);
     expect([left.document.width, left.document.height, left.document.originX, left.document.originY]).toEqual([5, 2, -2, undefined]);
-    expect(stitch(left.document).kind[2]).toBe(CellKind.Full);
-    expect(stitch(left.document).colors[(1 * 5 + 4) * 4]).toBe(2);
+    expect(stitchLayer(left.document).kind[2]).toBe(CellKind.Full);
+    expect(stitchLayer(left.document).colors[(1 * 5 + 4) * 4]).toBe(2);
     expect(lines(left.document)).toEqual([[8, 0, 12, 0], [16, 0, 16, 4]]);
     expect(left.removal).toEqual({ cells: [], backstitches: [] });
 
     const top = apply(left.document, canvasResizeCommand({ top: 1, right: 0, bottom: 0, left: 0 }));
     expect([top.document.width, top.document.height, top.document.originX, top.document.originY]).toEqual([5, 3, -2, -1]);
-    expect(stitch(top.document).kind[5 + 2]).toBe(CellKind.Full);
+    expect(stitchLayer(top.document).kind[5 + 2]).toBe(CellKind.Full);
     expect(lines(top.document)[0]).toEqual([8, 4, 12, 4]);
 
     const rightBottom = apply(doc, canvasResizeCommand({ top: 0, right: 1, bottom: 2, left: 0 }));
     expect([rightBottom.document.width, rightBottom.document.height]).toEqual([4, 4]);
     expect('originX' in rightBottom.document).toBe(false);
-    expect(stitch(rightBottom.document).kind[0]).toBe(CellKind.Full);
-    expect(stitch(rightBottom.document).kind[1 * 4 + 2]).toBe(CellKind.Full);
+    expect(stitchLayer(rightBottom.document).kind[0]).toBe(CellKind.Full);
+    expect(stitchLayer(rightBottom.document).kind[1 * 4 + 2]).toBe(CellKind.Full);
     expect(lines(rightBottom.document)).toEqual(lines(doc));
   });
 
   it('shrinks an edge, capturing the content it removes and keeping lines on the new border', () => {
     const doc = seeded();
-    stitch(doc).completed[5] = 1;
+    stitchLayer(doc).completed[5] = 1;
     const right = apply(doc, canvasResizeCommand({ top: 0, right: -1, bottom: 0, left: 0 }));
     expect([right.document.width, right.document.height]).toEqual([2, 2]);
     expect(right.removal.cells).toEqual([{ layerId: 1, indices: new Uint32Array([5]), kind: new Uint8Array([CellKind.Full]), colors: new Uint16Array([2, 0, 0, 0]), completed: new Uint8Array([1]) }]);
@@ -230,9 +195,9 @@ describe('canvas-resize', () => {
     const left = apply(doc, canvasResizeCommand({ top: 0, right: 0, bottom: 0, left: -1 }));
     expect([left.document.width, left.document.originX]).toEqual([2, 1]);
     expect(Array.from(left.removal.cells[0].indices)).toEqual([0]);
-    expect(stitch(left.document).kind[3]).toBe(CellKind.Full);
+    expect(stitchLayer(left.document).kind[3]).toBe(CellKind.Full);
     // Kept cells keep their marks as they move.
-    expect(Array.from(stitch(left.document).completed)).toEqual([0, 0, 0, 1]);
+    expect(Array.from(stitchLayer(left.document).completed)).toEqual([0, 0, 0, 1]);
     expect(Array.from(left.removal.cells[0].completed)).toEqual([0]);
     expect(lines(left.document)).toEqual([[4, 0, 4, 4]]);
     expect(left.removal.backstitches).toHaveLength(1);
@@ -240,7 +205,7 @@ describe('canvas-resize', () => {
 
     const topBottom = apply(doc, canvasResizeCommand({ top: -1, right: 0, bottom: 0, left: 0 }));
     expect([topBottom.document.height, topBottom.document.originY]).toEqual([1, 1]);
-    expect(Array.from(stitch(topBottom.document).kind)).toEqual([0, 0, CellKind.Full]);
+    expect(Array.from(stitchLayer(topBottom.document).kind)).toEqual([0, 0, CellKind.Full]);
   });
 
   it('stores an origin that returns to 0 as absent', () => {
@@ -260,7 +225,7 @@ describe('canvas-resize', () => {
     run(doc, 2, line(0, 4, 4, 4));
     const { document, removal } = apply(doc, canvasResizeCommand({ top: -1, right: -2, bottom: 0, left: 2 }));
     expect([document.width, document.height, document.originX, document.originY]).toEqual([1, 3, -2, 1]);
-    expect(Array.from(stitch(document).kind)).toEqual([0, 0, 0]);
+    expect(Array.from(stitchLayer(document).kind)).toEqual([0, 0, 0]);
     expect(lines(document)).toEqual([]);
     expect(Array.from(removal.cells[0].indices)).toEqual([0, 3]);
     expect(removal.backstitches[0].records).toHaveLength(1);
@@ -305,9 +270,9 @@ describe('canvas-cells', () => {
     expect(changed).toBe(true);
     expect([document.width, document.height, document.originX, document.originY]).toEqual([4, 3, -1, -1]);
     expect(Array.from(document.canvasMask!)).toEqual([1, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1]);
-    expect(stitch(document).kind[5]).toBe(CellKind.Full);
+    expect(stitchLayer(document).kind[5]).toBe(CellKind.Full);
     expect(lines(document)).toEqual([[4, 4, 8, 8]]);
-    expect(isRectangularCanvas(document)).toBe(false);
+    expect(document.canvasMask).toBeDefined();
   });
 
   it('adds through a cells pattern and ignores cells that are already active', () => {
@@ -328,8 +293,8 @@ describe('canvas-cells', () => {
     const { document, removal } = apply(doc, canvasCellsCommand('remove', { x: 1, y: 1, width: 1, height: 1 }));
     expect([document.width, document.height]).toEqual([3, 3]);
     expect(Array.from(document.canvasMask!)).toEqual([1, 1, 1, 1, 0, 1, 1, 1, 1]);
-    expect(stitch(document, 3).kind[4]).toBe(CellKind.Empty);
-    expect(stitch(document, 3).colors[16]).toBe(0);
+    expect(stitchLayer(document, 3).kind[4]).toBe(CellKind.Empty);
+    expect(stitchLayer(document, 3).colors[16]).toBe(0);
     expect(removal.cells).toEqual([{ layerId: 3, indices: new Uint32Array([4]), kind: new Uint8Array([CellKind.Full]), colors: new Uint16Array([2, 0, 0, 0]), completed: new Uint8Array([0]) }]);
     // Layers the edit leaves alone keep their objects.
     expect(findLayer(document, 1)).toBe(findLayer(doc, 1));
@@ -346,7 +311,7 @@ describe('canvas-cells', () => {
     expect([document.width, document.height, document.originY]).toEqual([3, 2, 1]);
     expect(document.canvasMask).toBeUndefined();
     expect('canvasMask' in document).toBe(false);
-    expect(stitch(document).kind[1 * 3 + 1]).toBe(CellKind.Full);
+    expect(stitchLayer(document).kind[1 * 3 + 1]).toBe(CellKind.Full);
     expect(lines(document)).toEqual([[0, 0, 4, 0], [4, 0, 8, 0], [8, 0, 12, 0], [4, 2, 8, 2]]);
     expect(removal.backstitches[0].records.map((record) => record.id)).toEqual([1, 2, 3]);
     expect(Array.from(removal.cells[0].indices)).toEqual([1]);
@@ -363,9 +328,9 @@ describe('canvas-cells', () => {
   it('normalizes back to a rectangle when the last hole is filled, which unlocks basic mode', () => {
     const doc = layered(3, 2);
     const holed = apply(doc, canvasCellsCommand('remove', { x: 1, y: 0, width: 1, height: 1 })).document;
-    expect(isRectangularCanvas(holed)).toBe(false);
+    expect(holed.canvasMask).toBeDefined();
     const filled = apply(holed, canvasCellsCommand('add', { x: 0, y: 0, width: 3, height: 1 })).document;
-    expect(isRectangularCanvas(filled)).toBe(true);
+    expect(filled.canvasMask).toBeUndefined();
     expect('canvasMask' in filled).toBe(false);
     expect(applyCanvasCommand(filled, canvasResizeCommand({ top: 1, right: 0, bottom: 0, left: 0 })).changed).toBe(true);
   });
@@ -427,7 +392,7 @@ describe('canvas validation', () => {
     const colors = surface.colors.slice();
     kind[4] = CellKind.Full;
     colors[16] = 1;
-    const painted = { ...doc, layers: doc.layers.map((layer) => layer.id === 1 ? { ...stitch(doc), kind, colors } : layer) };
+    const painted = { ...doc, layers: doc.layers.map((layer) => layer.id === 1 ? { ...stitchLayer(doc), kind, colors } : layer) };
     expect(collectLayeredValidationErrors(painted).join(' ')).toContain('Cell 4 is outside the canvas');
     expect(collectValidationErrors(layerSurface(painted, 1)).join(' ')).toContain('Cell 4 is outside the canvas');
 

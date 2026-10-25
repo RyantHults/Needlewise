@@ -1,10 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { ModelPoint } from './contracts';
 import { getCanvasMetrics } from './coordinates';
-import type { EditorSurfaceController } from './controller';
-import type { PointerSample } from './input';
 import { rasterizeFilledOval, rasterizeShapeOutline } from './shapes';
-import { fixture as layeredFixture, LayeredTestBoundary, plainDocument } from './test-support';
+import { at, drag, fixture as layeredFixture, LayeredTestBoundary, plainDocument } from './test-support';
 
 const ZOOM = 16;
 
@@ -24,15 +22,7 @@ function fixture(shape?: 'rectangle' | 'oval') {
   return { controller, uiStore };
 }
 
-function at(pointerId: number, x: number, y: number): PointerSample {
-  return { pointerId, pointerType: 'mouse', screenX: (x + 0.5) * ZOOM, screenY: (y + 0.5) * ZOOM, button: 0, buttons: 1, isPrimary: true };
-}
 
-function drag(controller: EditorSurfaceController, pointerId: number, from: ModelPoint, to: ModelPoint): void {
-  controller.handlePointerDown(at(pointerId, from.x, from.y));
-  controller.handlePointerMove(at(pointerId, to.x, to.y));
-  controller.handlePointerUp(at(pointerId, to.x, to.y));
-}
 
 function indicesOf(points: readonly ModelPoint[], width: number): number[] {
   return points.map(({ x, y }) => y * width + x).sort((left, right) => left - right);
@@ -65,7 +55,7 @@ describe('filled oval raster', () => {
 describe('oval Select on a stitch layer', () => {
   it('publishes a sparse filled-oval selection and leaves no keyboard anchor', () => {
     const { controller, uiStore } = fixture('oval');
-    drag(controller, 1, { x: 1, y: 1 }, { x: 5, y: 3 });
+    drag(controller, { x: 1, y: 1 }, { x: 5, y: 3 }, 1);
     expect(controller.getSelection()).toEqual({ x: 1, y: 1, width: 5, height: 3 });
     expect(Array.from(controller.getSelectionIndices() ?? [])).toEqual(indicesOf(rasterizeFilledOval({ x: 1, y: 1 }, { x: 5, y: 3 }), 10));
     expect(uiStore.getState().overlay.selection).toMatchObject({ kind: 'sparse' });
@@ -78,7 +68,7 @@ describe('oval Select on a stitch layer', () => {
 
   it('keeps an existing selection on a click, as rect select does', () => {
     const { controller, uiStore } = fixture('oval');
-    drag(controller, 1, { x: 1, y: 1 }, { x: 5, y: 3 });
+    drag(controller, { x: 1, y: 1 }, { x: 5, y: 3 }, 1);
     const indices = Array.from(controller.getSelectionIndices() ?? []);
     controller.handlePointerDown(at(2, 7, 7));
     controller.handlePointerUp(at(2, 7, 7));
@@ -101,11 +91,11 @@ describe('oval Select on a stitch layer', () => {
 
   it('keeps the selection when switching between rectangle and oval select', () => {
     const { controller, uiStore } = fixture();
-    drag(controller, 1, { x: 1, y: 1 }, { x: 3, y: 2 });
+    drag(controller, { x: 1, y: 1 }, { x: 3, y: 2 }, 1);
     expect(controller.setTool({ tool: 'select', shape: 'oval' })).toBe(true);
     expect(uiStore.getState().tool).toEqual({ tool: 'select', shape: 'oval' });
     expect(controller.getSelection()).toEqual({ x: 1, y: 1, width: 3, height: 2 });
-    drag(controller, 2, { x: 0, y: 0 }, { x: 4, y: 2 });
+    drag(controller, { x: 0, y: 0 }, { x: 4, y: 2 }, 2);
     expect(controller.setTool({ tool: 'select' })).toBe(true);
     expect(uiStore.getState().tool).toEqual({ tool: 'select' });
     expect(Array.from(controller.getSelectionIndices() ?? [])).toEqual(indicesOf(rasterizeFilledOval({ x: 0, y: 0 }, { x: 4, y: 2 }), 10));

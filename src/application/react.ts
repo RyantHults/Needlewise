@@ -241,5 +241,3 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
     refreshProjectList
   };
 }
-
-export const useWorkspace = useProjectWorkspace;

@@ -10,7 +10,6 @@ import {
 } from './limits';
 import { applyLegacyAidaCount, cloneLayeredDocument, decodeDocumentWithInfo, encodeDocument, type DecodedDocument } from './binary';
 import { sha256 } from './hash';
-import { MAX_DAILY_PROGRESS_ENTRIES, normalizeProgressActivity, type ProgressActivity } from './activity';
 import { inspectSourceImage, validateSourceImageDescriptor } from './source-image';
 import {
   completeProjectSummary,
@@ -39,8 +38,7 @@ import type {
   StoredDocumentSnapshot,
   StoredDocumentHistory,
   StoredProjectHead,
-  StoredProjectAsset,
-  StoredDailyProgressAggregate
+  StoredProjectAsset
 } from './types';
 import { MAX_FOLDER_NAME_CHARS } from './types';
 import { consumePreparedDocumentCapability } from './preparation-client';
@@ -233,10 +231,6 @@ async function loadSnapshotDocument(snapshot: StoredDocumentSnapshot, metadata: 
   return decoded.document;
 }
 
-function toStoredSnapshot(projectId: string, document: LayeredDocument, bytes: Uint8Array, checksum: string, savedAt: number): StoredDocumentSnapshot {
-  return { projectId, revision: document.revision, bytes: bytes.slice(), checksum, savedAt };
-}
-
 function toStoredPreparedSnapshot(projectId: string, revision: number, bytes: Uint8Array, checksum: string, savedAt: number): StoredDocumentSnapshot {
   // The preparation result is already persistence-owned. IndexedDB performs
   // its own structured clone when this record is committed; do not make a
@@ -302,24 +296,6 @@ function nextHistoryGeneration(head: StoredProjectHead | undefined, stored: Stor
   const current = Math.max(currentHeadGeneration, currentRowGeneration);
   if (!Number.isSafeInteger(current) || current < 0 || current >= Number.MAX_SAFE_INTEGER) throw new Error('session history generation overflowed.');
   return current + 1;
-}
-
-function toStoredActivity(projectId: string, activity: ProgressActivity): StoredDailyProgressAggregate[] {
-  return activity.daily.map((entry) => ({ projectId, date: entry.date, marked: entry.marked, unmarked: entry.unmarked }));
-}
-
-interface LoadedActivity {
-  activity: ProgressActivity;
-  warning?: string;
-}
-
-function activityFromStored(projectId: string, rows: readonly StoredDailyProgressAggregate[]): LoadedActivity {
-  try {
-    if (!Array.isArray(rows) || rows.length > MAX_DAILY_PROGRESS_ENTRIES || rows.some((row) => row.projectId !== projectId)) throw new TypeError('Stored project activity is malformed.');
-    return { activity: normalizeProgressActivity({ daily: rows.map((row) => ({ date: row.date, marked: row.marked, unmarked: row.unmarked })) }) };
-  } catch (error) {
-    return { activity: { daily: [] }, warning: `Stored project activity was ignored: ${errorText(error)}` };
-  }
 }
 
 async function inspectSnapshot(snapshot: StoredDocumentSnapshot | undefined, projectId: string): Promise<ProjectHealth['current']> {
@@ -538,7 +514,6 @@ export class ProjectRepository {
     snapshot: StoredDocumentSnapshot,
     head: StoredProjectHead,
     assets: readonly ProjectAsset[] | undefined,
-    activity: ProgressActivity | undefined,
     history: SessionHistoryEnvelope | null | undefined,
     traceFingerprint?: string,
     onHistoryWrite?: () => void
@@ -550,11 +525,6 @@ export class ProjectRepository {
       await this.db.assets.where('projectId').equals(projectId).delete();
       const storedAssets: StoredProjectAsset[] = assets.map((asset) => ({ ...asset, projectId, data: asset.data.slice() }));
       if (storedAssets.length > 0) await this.db.assets.bulkPut(storedAssets);
-    }
-    if (activity !== undefined) {
-      await this.db.dailyActivity.where('projectId').equals(projectId).delete();
-      const storedActivity = toStoredActivity(projectId, activity);
-      if (storedActivity.length > 0) await this.db.dailyActivity.bulkPut(storedActivity);
     }
     if (history !== undefined) {
       onHistoryWrite?.();
@@ -676,7 +646,6 @@ export class ProjectRepository {
     metadata: ProjectMetadata,
     nextSnapshot: StoredDocumentSnapshot,
     assets: readonly ProjectAsset[] | undefined,
-    activity: ProgressActivity | undefined,
     history: SessionHistoryEnvelope | null,
     traceCanonical: string | undefined,
     traceFingerprint: string | undefined,
@@ -688,8 +657,8 @@ export class ProjectRepository {
       let historyWriteStarted = false;
       let warmPreflightHead: StoredProjectHead | undefined;
       const commitWarm = async (includeHistory: boolean): Promise<WarmCommitDecision> => this.db.transaction('rw', includeHistory
-        ? [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.documentHistories, this.db.assets, this.db.dailyActivity]
-        : [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.assets, this.db.dailyActivity], async (): Promise<WarmCommitDecision> => {
+        ? [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.documentHistories, this.db.assets]
+        : [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.assets], async (): Promise<WarmCommitDecision> => {
         const head = await this.db.projectHeads.get(projectId);
         if (!isStoredHead(projectId, head)) return { kind: 'fallback', invalidateCache: true };
         if (includeHistory) warmPreflightHead = head;
@@ -722,7 +691,7 @@ export class ProjectRepository {
         // The cache is a fully verified exact current record. Dexie clones it
         // as part of the transaction, so no main-thread byte copy is needed.
         await this.db.recoverySnapshots.put(cached);
-        await this.writeReplacementRows(projectId, metadata, nextSnapshot, nextHead, assets, activity, includeHistory ? effectiveHistory : undefined, traceFingerprint, () => { historyWriteStarted = true; });
+        await this.writeReplacementRows(projectId, metadata, nextSnapshot, nextHead, assets, includeHistory ? effectiveHistory : undefined, traceFingerprint, () => { historyWriteStarted = true; });
         return { kind: 'committed', result: { committed: true, stale: false, revision, head: nextHead } };
       });
       let decision: WarmCommitDecision;
@@ -746,14 +715,6 @@ export class ProjectRepository {
   private async commitReplaced(projectId: string, metadataInput: ProjectMetadata, summary: ProjectDocumentSummary, revision: number, bytes: Uint8Array, checksum: string, assetsInput: readonly ProjectAssetInput[] | undefined, options: SaveOptions, history: SessionHistoryEnvelope | null, clonePreparedBytes: boolean): Promise<SaveResult> {
     const metadata = withProjectSummary(metadataInput, summary);
     const assets = assetsInput === undefined ? undefined : await normalizeAssets(assetsInput);
-    let activity: ProgressActivity | undefined;
-    if (options.activity !== undefined) {
-      try {
-        activity = normalizeProgressActivity(options.activity);
-      } catch (error) {
-        throw new PersistenceError('invalid-activity', 'Project activity is malformed.', error);
-      }
-    }
     const savedAt = this.now();
     const nextSnapshot = clonePreparedBytes
       ? toStoredPreparedSnapshot(projectId, revision, bytes.slice(), checksum, savedAt)
@@ -773,7 +734,7 @@ export class ProjectRepository {
         historyForCommit = null;
       }
     }
-    const warmDecision = await this.tryWarmReplacement(projectId, revision, metadata, nextSnapshot, assets, activity, historyForCommit, traceCanonical, traceFingerprint, options);
+    const warmDecision = await this.tryWarmReplacement(projectId, revision, metadata, nextSnapshot, assets, historyForCommit, traceCanonical, traceFingerprint, options);
     if (warmDecision?.kind === 'committed') return warmDecision.result;
     if (warmDecision?.kind === 'stale') {
       if (warmDecision.invalidateCache) this.clearVerifiedCurrentCache(projectId);
@@ -807,8 +768,8 @@ export class ProjectRepository {
       try {
         let historyWriteStarted = false;
         const commitTransaction = async (includeHistory: boolean) => this.db.transaction('rw', includeHistory
-          ? [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.documentHistories, this.db.assets, this.db.dailyActivity]
-          : [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.assets, this.db.dailyActivity], async () => {
+          ? [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.documentHistories, this.db.assets]
+          : [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.assets], async () => {
           const existing = await this.db.currentSnapshots.get(projectId);
           const existingHead = await this.db.projectHeads.get(projectId);
           if (headSignature(projectId, existingHead) !== headSignature(projectId, preflightHead)) {
@@ -831,7 +792,7 @@ export class ProjectRepository {
             if (traceCanonical !== undefined && traceStateCanonical(metadata, fingerprintAssets) !== traceCanonical) return { committed: false, stale: true, revision };
             if (!sessionHistoryMatchesTrace(historyForCommit, metadata, fingerprintAssets)) effectiveHistory = null;
           }
-          await this.writeReplacementRows(projectId, metadata, nextSnapshot, nextHead, assets, activity, includeHistory ? effectiveHistory : undefined, traceFingerprint, () => { historyWriteStarted = true; });
+          await this.writeReplacementRows(projectId, metadata, nextSnapshot, nextHead, assets, includeHistory ? effectiveHistory : undefined, traceFingerprint, () => { historyWriteStarted = true; });
           return { committed: true, stale: false, revision, head: nextHead };
         });
         let result;
@@ -899,14 +860,6 @@ export class ProjectRepository {
     // the current snapshot; no snapshot decode or chain replay happens here.
     if (options.history !== undefined) history = await prepareSessionHistoryForSave(options.history) ?? null;
     const assets = assetsInput === undefined ? undefined : await normalizeAssets(assetsInput);
-    let activity: ProgressActivity | undefined;
-    if (options.activity !== undefined) {
-      try {
-        activity = normalizeProgressActivity(options.activity);
-      } catch (error) {
-        throw new PersistenceError('invalid-activity', 'Project activity is malformed.', error);
-      }
-    }
 
     let historyTraceCanonical: string | undefined;
     let historyTraceFingerprint: string | undefined;
@@ -926,8 +879,8 @@ export class ProjectRepository {
     try {
       let historyWriteStarted = false;
       const commitTransaction = async (includeHistory: boolean) => this.db.transaction('rw', includeHistory
-        ? [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.documentHistories, this.db.assets, this.db.dailyActivity]
-        : [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.assets, this.db.dailyActivity], async () => {
+        ? [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.documentHistories, this.db.assets]
+        : [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.assets], async () => {
         const [storedMetadata, storedHead] = await Promise.all([
           this.db.projects.get(projectId),
           this.db.projectHeads.get(projectId)
@@ -997,11 +950,6 @@ export class ProjectRepository {
           const storedAssets: StoredProjectAsset[] = assets.map((asset) => ({ ...asset, projectId, data: asset.data.slice() }));
           if (storedAssets.length > 0) await this.db.assets.bulkPut(storedAssets);
         }
-        if (activity !== undefined) {
-          await this.db.dailyActivity.where('projectId').equals(projectId).delete();
-          const storedActivity = toStoredActivity(projectId, activity);
-          if (storedActivity.length > 0) await this.db.dailyActivity.bulkPut(storedActivity);
-        }
         if (includeHistory && effectiveHistory !== undefined) {
           historyWriteStarted = true;
           await this.db.documentHistories.delete(projectId);
@@ -1035,13 +983,12 @@ export class ProjectRepository {
     if (typeof projectId !== 'string' || projectId.length < 1 || projectId.length > 256) invalidMetadata('Project ID is invalid.');
     this.clearVerifiedCurrentCache(projectId);
     try {
-      const { metadata, current, recovery, storedAssets, storedActivity, storedHistory, head } = await this.db.transaction('rw', [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.documentHistories, this.db.assets, this.db.dailyActivity], async () => {
-        const [metadata, current, recovery, storedAssets, storedActivity, storedHead, storedHistory] = await Promise.all([
+      const { metadata, current, recovery, storedAssets, storedHistory, head } = await this.db.transaction('rw', [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.documentHistories, this.db.assets], async () => {
+        const [metadata, current, recovery, storedAssets, storedHead, storedHistory] = await Promise.all([
           this.db.projects.get(projectId),
           this.db.currentSnapshots.get(projectId),
           this.db.recoverySnapshots.get(projectId),
           this.db.assets.where('projectId').equals(projectId).toArray(),
-          this.db.dailyActivity.where('projectId').equals(projectId).toArray(),
           this.db.projectHeads.get(projectId),
           this.db.documentHistories.get(projectId)
         ]);
@@ -1056,9 +1003,9 @@ export class ProjectRepository {
         if (head !== undefined && (!isStoredHead(projectId, storedHead) || storedHead.revision !== head.revision || storedHead.checksum !== head.checksum)) {
           await this.db.projectHeads.put(head);
         }
-        return { metadata, current, recovery, storedAssets, storedActivity, storedHistory, head };
+        return { metadata, current, recovery, storedAssets, storedHistory, head };
       });
-      if (!metadata && !current && !recovery && storedAssets.length === 0 && storedActivity.length === 0) return undefined;
+      if (!metadata && !current && !recovery && storedAssets.length === 0) return undefined;
       const currentHealth = await inspectSnapshot(current, projectId);
       const recoveryHealth = await inspectSnapshot(recovery, projectId);
       if (!metadata || !isMetadataRecord(projectId, metadata)) throw new PersistenceError('storage-failure', 'Project metadata is missing or malformed.');
@@ -1071,7 +1018,6 @@ export class ProjectRepository {
         recoveryRecord = { revision: recovery.revision, document: recoveryDocument };
       }
       const loadedAssets = await loadAssets(projectId, storedAssets);
-      const loadedActivity = activityFromStored(projectId, storedActivity);
       const sourceImage = inspectSourceImage(metadata.sourceImage, loadedAssets.assets);
       const safeMetadata = sanitizeSourceImageMetadata(metadata);
       const summary = deriveProjectSummary(document);
@@ -1092,14 +1038,11 @@ export class ProjectRepository {
         }
       }
       if (storedHistory !== undefined && loadedHistory === undefined) await this.bestEffortDeleteHistory(projectId, storedHistory);
-      const extraWarnings = [
-        ...(loadedActivity.warning === undefined ? [] : [loadedActivity.warning]),
-        ...(safeMetadata.warning === undefined ? [] : [safeMetadata.warning])
-      ];
+      const extraWarnings = safeMetadata.warning === undefined ? [] : [safeMetadata.warning];
       const health = makeProjectHealth(projectId, canonicalMetadata, currentHealth, recoveryHealth, loadedAssets.health, extraWarnings, sourceImage);
       this.cacheVerifiedCurrentSnapshot(current);
       await this.bestEffortBackfillSummary(projectId, metadata, head, summary);
-      return { metadata: sanitizeProjectMetadata(canonicalMetadata), document, head, history: loadedHistory, recovery: recoveryRecord, assets: loadedAssets.assets, activity: loadedActivity.activity, health };
+      return { metadata: sanitizeProjectMetadata(canonicalMetadata), document, head, history: loadedHistory, recovery: recoveryRecord, assets: loadedAssets.assets, health };
     } catch (error) {
       this.clearVerifiedCurrentCache(projectId);
       if (error instanceof PersistenceError) throw error;
@@ -1125,7 +1068,7 @@ export class ProjectRepository {
   /**
    * Lists metadata without requiring the project to be fully readable. This
    * preserves the old return shape while ensuring a corrupt current snapshot
-   * remains visible to callers; use listProjectHealth for diagnostics.
+   * remains visible to callers; use inspectProjectHealth for diagnostics.
    */
   async listProjects(): Promise<ProjectMetadata[]> {
     try {
@@ -1147,80 +1090,20 @@ export class ProjectRepository {
   async inspectProjectHealth(projectId: string): Promise<ProjectHealth | undefined> {
     if (typeof projectId !== 'string' || projectId.length < 1 || projectId.length > 256) invalidMetadata('Project ID is invalid.');
     try {
-      const [metadata, current, recovery, storedAssets, storedActivity] = await this.db.transaction('r', this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.assets, this.db.dailyActivity, async () => Promise.all([
+      const [metadata, current, recovery, storedAssets] = await this.db.transaction('r', this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.assets, async () => Promise.all([
         this.db.projects.get(projectId),
         this.db.currentSnapshots.get(projectId),
         this.db.recoverySnapshots.get(projectId),
-        this.db.assets.where('projectId').equals(projectId).toArray(),
-        this.db.dailyActivity.where('projectId').equals(projectId).toArray()
+        this.db.assets.where('projectId').equals(projectId).toArray()
       ]));
-      if (!metadata && !current && !recovery && storedAssets.length === 0 && storedActivity.length === 0) return undefined;
-      const activity = activityFromStored(projectId, storedActivity);
+      if (!metadata && !current && !recovery && storedAssets.length === 0) return undefined;
       const currentHealth = await inspectSnapshot(current, projectId);
       const recoveryHealth = await inspectSnapshot(recovery, projectId);
       if (currentHealth.status === 'corrupt') this.clearVerifiedCurrentCache(projectId);
-      return makeProjectHealth(projectId, metadata, currentHealth, recoveryHealth, inspectStoredAssets(projectId, storedAssets), activity.warning === undefined ? [] : [activity.warning]);
+      return makeProjectHealth(projectId, metadata, currentHealth, recoveryHealth, inspectStoredAssets(projectId, storedAssets));
     } catch (error) {
       if (error instanceof PersistenceError) throw error;
       throw new PersistenceError('storage-failure', 'Unable to inspect the local project.', error);
-    }
-  }
-
-  async listProjectHealth(): Promise<ProjectHealth[]> {
-    try {
-      const [metadataRows, currentRows, recoveryRows, assetRows, activityRows] = await this.db.transaction('r', this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.assets, this.db.dailyActivity, async () => Promise.all([
-        this.db.projects.toArray(),
-        this.db.currentSnapshots.toArray(),
-        this.db.recoverySnapshots.toArray(),
-        this.db.assets.toArray(),
-        this.db.dailyActivity.toArray()
-      ]));
-      const metadataById = new Map(metadataRows.map((metadata) => [metadata.id, metadata]));
-      const currentById = new Map(currentRows.map((snapshot) => [snapshot.projectId, snapshot]));
-      const recoveryById = new Map(recoveryRows.map((snapshot) => [snapshot.projectId, snapshot]));
-      const assetsById = new Map<string, StoredProjectAsset[]>();
-      for (const asset of assetRows) {
-        const existing = assetsById.get(asset.projectId) ?? [];
-        existing.push(asset);
-        assetsById.set(asset.projectId, existing);
-      }
-      const activityById = new Map<string, StoredDailyProgressAggregate[]>();
-      for (const row of activityRows) {
-        const existing = activityById.get(row.projectId) ?? [];
-        existing.push(row);
-        activityById.set(row.projectId, existing);
-      }
-      const projectIds = new Set<string>([
-        ...metadataRows.map((metadata) => metadata.id),
-        ...currentRows.map((snapshot) => snapshot.projectId),
-        ...recoveryRows.map((snapshot) => snapshot.projectId),
-        ...assetRows.map((asset) => asset.projectId),
-        ...activityRows.map((row) => row.projectId)
-      ]);
-      const health: ProjectHealth[] = [];
-      for (const projectId of projectIds) {
-        if (typeof projectId !== 'string' || projectId.length < 1 || projectId.length > 256) continue;
-        const activity = activityFromStored(projectId, activityById.get(projectId) ?? []);
-        const currentHealth = await inspectSnapshot(currentById.get(projectId), projectId);
-        const recoveryHealth = await inspectSnapshot(recoveryById.get(projectId), projectId);
-        if (currentHealth.status === 'corrupt') this.clearVerifiedCurrentCache(projectId);
-        health.push(makeProjectHealth(
-          projectId,
-          metadataById.get(projectId),
-          currentHealth,
-          recoveryHealth,
-          inspectStoredAssets(projectId, assetsById.get(projectId) ?? []),
-          activity.warning === undefined ? [] : [activity.warning]
-        ));
-      }
-      return health.sort((left, right) => {
-        const leftUpdated = left.metadata?.updatedAt ?? 0;
-        const rightUpdated = right.metadata?.updatedAt ?? 0;
-        return rightUpdated - leftUpdated || (right.usableRevision ?? -1) - (left.usableRevision ?? -1) || left.projectId.localeCompare(right.projectId);
-      });
-    } catch (error) {
-      if (error instanceof PersistenceError) throw error;
-      throw new PersistenceError('storage-failure', 'Unable to inspect local project health.', error);
     }
   }
 
@@ -1233,13 +1116,12 @@ export class ProjectRepository {
     if (typeof projectId !== 'string' || projectId.length < 1 || projectId.length > 256) invalidMetadata('Project ID is invalid.');
     if (revision !== undefined && (!Number.isSafeInteger(revision) || revision < 0)) invalidMetadata('Recovery revision is invalid.');
     try {
-      const { metadata, current, recovery, storedAssets, storedActivity, head } = await this.db.transaction('rw', [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.assets, this.db.dailyActivity], async () => {
-        const [metadata, current, recovery, storedAssets, storedActivity, storedHead] = await Promise.all([
+      const { metadata, current, recovery, storedAssets, head } = await this.db.transaction('rw', [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.assets], async () => {
+        const [metadata, current, recovery, storedAssets, storedHead] = await Promise.all([
           this.db.projects.get(projectId),
           this.db.currentSnapshots.get(projectId),
           this.db.recoverySnapshots.get(projectId),
           this.db.assets.where('projectId').equals(projectId).toArray(),
-          this.db.dailyActivity.where('projectId').equals(projectId).toArray(),
           this.db.projectHeads.get(projectId)
         ]);
         const snapshotHead = headFromSnapshot(projectId, current);
@@ -1253,24 +1135,20 @@ export class ProjectRepository {
         if (head !== undefined && (!isStoredHead(projectId, storedHead) || storedHead.revision !== head.revision || storedHead.checksum !== head.checksum)) {
           await this.db.projectHeads.put(head);
         }
-        return { metadata, current, recovery, storedAssets, storedActivity, head };
+        return { metadata, current, recovery, storedAssets, head };
       });
-      if (!metadata && !current && !recovery && storedAssets.length === 0 && storedActivity.length === 0) return undefined;
+      if (!metadata && !current && !recovery && storedAssets.length === 0) return undefined;
       if (!metadata || !isMetadataRecord(projectId, metadata) || !recovery) throw new PersistenceError('storage-failure', 'Project recovery data is incomplete.');
       const recoveryHealth = await inspectSnapshot(recovery, projectId);
       if (recoveryHealth.status !== 'valid') throw new PersistenceError('storage-failure', 'Project recovery snapshot is corrupt.');
       if (revision !== undefined && recovery.revision !== revision) throw new PersistenceError('storage-failure', `Recovery revision ${String(revision)} is not available.`);
       const document = await loadSnapshotDocument(recovery, metadata);
       const loadedAssets = await loadAssets(projectId, storedAssets);
-      const loadedActivity = activityFromStored(projectId, storedActivity);
       const sourceImage = inspectSourceImage(metadata.sourceImage, loadedAssets.assets);
       const safeMetadata = sanitizeSourceImageMetadata(metadata);
       const summary = deriveProjectSummary(document);
       const canonicalMetadata = withProjectSummary({ ...safeMetadata.metadata, revision: document.revision }, summary);
-      const extraWarnings = [
-        ...(loadedActivity.warning === undefined ? [] : [loadedActivity.warning]),
-        ...(safeMetadata.warning === undefined ? [] : [safeMetadata.warning])
-      ];
+      const extraWarnings = safeMetadata.warning === undefined ? [] : [safeMetadata.warning];
       const currentHealth = await inspectSnapshot(current, projectId);
       if (currentHealth.status === 'corrupt') this.clearVerifiedCurrentCache(projectId);
       const health = makeProjectHealth(projectId, canonicalMetadata, currentHealth, recoveryHealth, loadedAssets.health, extraWarnings, sourceImage);
@@ -1280,7 +1158,6 @@ export class ProjectRepository {
         head,
         recovery: null,
         assets: loadedAssets.assets,
-        activity: loadedActivity.activity,
         health
       };
     } catch (error) {
@@ -1295,83 +1172,6 @@ export class ProjectRepository {
    * operation is copy-on-write and never treats a recovery record as current
    * merely because the current record is unreadable.
    */
-  async promoteRecoveryRevision(projectId: string, revision?: number): Promise<ProjectRecord> {
-    if (typeof projectId !== 'string' || projectId.length < 1 || projectId.length > 256) invalidMetadata('Project ID is invalid.');
-    if (revision !== undefined && (!Number.isSafeInteger(revision) || revision < 0)) invalidMetadata('Recovery revision is invalid.');
-    this.clearVerifiedCurrentCache(projectId);
-    try {
-      const [metadata, current, recovery] = await this.db.transaction('r', this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, async () => Promise.all([
-        this.db.projects.get(projectId),
-        this.db.currentSnapshots.get(projectId),
-        this.db.recoverySnapshots.get(projectId)
-      ]));
-      if (!metadata || !isMetadataRecord(projectId, metadata) || !recovery) throw new PersistenceError('storage-failure', 'Project recovery data is incomplete.');
-      if (recovery.projectId !== projectId) throw new PersistenceError('storage-failure', 'Project recovery snapshot does not match its key.');
-      if (revision !== undefined && recovery.revision !== revision) throw new PersistenceError('storage-failure', `Recovery revision ${String(revision)} is not available.`);
-      const recoveryDocument = await verifySnapshot(recovery);
-      const recoveryBytes = storedBytes(recovery.bytes);
-      if (!recoveryBytes) throw new PersistenceError('invalid-document', 'Recovery snapshot bytes are malformed.');
-      const preflightMetadataRevision = metadata.revision;
-      const preflightCurrentChecksum = current?.checksum ?? null;
-      const preflightCurrentRevision = current?.revision ?? null;
-      const preflightRecoveryChecksum = recovery.checksum;
-      const preflightRecoveryRevision = recovery.revision;
-      let validCurrent: StoredDocumentSnapshot | undefined;
-      if (current && current.projectId === projectId && metadata.revision === current.revision) {
-        try {
-          await verifySnapshot(current);
-          validCurrent = current;
-        } catch {
-          // A corrupt current record is deliberately not copied into recovery.
-        }
-      }
-      const promotedChecksum = await sha256(recoveryBytes);
-      const promotedSummary = deriveProjectSummary(recoveryDocument);
-      const savedAt = this.now();
-      await this.db.transaction('rw', [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.documentHistories], async () => {
-        const [latestMetadata, latestCurrent, latestRecovery, latestHead, latestHistory] = await Promise.all([
-          this.db.projects.get(projectId),
-          this.db.currentSnapshots.get(projectId),
-          this.db.recoverySnapshots.get(projectId),
-          this.db.projectHeads.get(projectId),
-          this.db.documentHistories.get(projectId)
-        ]);
-        const latestCurrentChecksum = latestCurrent?.checksum ?? null;
-        const latestCurrentRevision = latestCurrent?.revision ?? null;
-        if (
-          !latestRecovery
-          || latestRecovery.checksum !== preflightRecoveryChecksum
-          || latestRecovery.revision !== preflightRecoveryRevision
-          || !latestMetadata
-          || latestMetadata.id !== projectId
-          || latestMetadata.revision !== preflightMetadataRevision
-          || latestCurrentChecksum !== preflightCurrentChecksum
-          || latestCurrentRevision !== preflightCurrentRevision
-        ) throw new PersistenceError('stale-save', 'Project state changed before recovery could be promoted.');
-        if (validCurrent && latestCurrent?.checksum === validCurrent.checksum && latestCurrent.checksum !== latestRecovery.checksum) {
-          await this.db.recoverySnapshots.put({ ...latestCurrent, bytes: storedBytes(latestCurrent.bytes)?.slice() ?? latestCurrent.bytes });
-        } else {
-          await this.db.recoverySnapshots.delete(projectId);
-        }
-        await this.db.projects.put(withProjectSummary({ ...latestMetadata, revision: recoveryDocument.revision }, promotedSummary));
-        await this.db.currentSnapshots.put(toStoredSnapshot(projectId, recoveryDocument, recoveryBytes, promotedChecksum, savedAt));
-        const generation = nextHistoryGeneration(latestHead, isStoredHistory(projectId, latestHistory) ? latestHistory : undefined);
-        await this.db.projectHeads.put(toStoredHead(projectId, recoveryDocument.revision, promotedChecksum, generation));
-        await this.db.documentHistories.delete(projectId);
-      });
-      const promoted = await this.load(projectId);
-      if (!promoted) throw new PersistenceError('storage-failure', 'Promoted recovery could not be read back.');
-      return promoted;
-    } catch (error) {
-      if (error instanceof PersistenceError) throw error;
-      throw new PersistenceError('storage-failure', 'Unable to promote the project recovery revision.', error);
-    }
-  }
-
-  async promoteRecovery(projectId: string, revision?: number): Promise<ProjectRecord> {
-    return this.promoteRecoveryRevision(projectId, revision);
-  }
-
   async deleteProject(projectId: string): Promise<void> {
     this.clearVerifiedCurrentCache(projectId);
     await this.db.transaction('rw', [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.documentHistories, this.db.assets, this.db.dailyActivity, this.db.projectFolders], async () => {
@@ -1515,8 +1315,4 @@ export class ProjectRepository {
     this.clearVerifiedCurrentCache();
     this.db.close();
   }
-}
-
-export function createRepository(db?: NeedlewiseDatabase, options?: RepositoryOptions): ProjectRepository {
-  return new ProjectRepository(db, options);
 }

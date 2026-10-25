@@ -35,10 +35,6 @@ export function isFiniteScreenPoint(point: ScreenPoint): boolean {
   return Number.isFinite(point.x) && Number.isFinite(point.y);
 }
 
-export function isFiniteFixedPoint(point: FixedPoint): boolean {
-  return Number.isFinite(point.x) && Number.isFinite(point.y);
-}
-
 export function isFiniteViewport(viewport: Viewport): boolean {
   return Number.isFinite(viewport.x) && Number.isFinite(viewport.y) && Number.isFinite(viewport.zoom) && viewport.zoom > 0;
 }
@@ -82,32 +78,6 @@ export function fixedToModel(point: FixedPoint): ModelPoint {
   };
 }
 
-export function modelToFixed(point: ModelPoint): FixedPoint {
-  assertFinitePoint(point, 'Model');
-  return {
-    x: point.x * FIXED_POINT_UNITS_PER_CELL,
-    y: point.y * FIXED_POINT_UNITS_PER_CELL
-  };
-}
-
-export const fixedPointToModel = fixedToModel;
-export const modelToFixedPoint = modelToFixed;
-
-export function fixedToScreen(point: FixedPoint, viewport: Viewport): ScreenPoint {
-  return modelToScreen(fixedToModel(point), viewport);
-}
-
-export function screenToFixed(point: ScreenPoint, viewport: Viewport): FixedPoint {
-  const model = screenToModel(point, viewport);
-  return {
-    x: Math.round(model.x * FIXED_POINT_UNITS_PER_CELL),
-    y: Math.round(model.y * FIXED_POINT_UNITS_PER_CELL)
-  };
-}
-
-export const fixedPointToScreen = fixedToScreen;
-export const screenToFixedPoint = screenToFixed;
-
 export function cellToScreenRect(cell: CellRect | { x: number; y: number; width?: number; height?: number }, viewport: Viewport): Rect {
   const width = cell.width === undefined ? 1 : cell.width;
   const height = cell.height === undefined ? 1 : cell.height;
@@ -123,18 +93,6 @@ export function cellToScreenRect(cell: CellRect | { x: number; y: number; width?
   };
 }
 
-export function cellToModel(cell: ModelPoint): ModelPoint {
-  assertFinitePoint(cell, 'Cell');
-  return { x: cell.x, y: cell.y };
-}
-
-export function modelToCell(point: ModelPoint): ModelPoint {
-  assertFinitePoint(point, 'Model');
-  return { x: Math.floor(point.x), y: Math.floor(point.y) };
-}
-
-export const cellToScreen = cellToScreenRect;
-
 export function screenToCell(point: ScreenPoint, viewport: Viewport, documentSize?: DocumentSize): ModelPoint {
   const model = screenToCellUnclamped(point, viewport);
   if (!documentSize) return model;
@@ -149,8 +107,6 @@ export function screenToCellUnclamped(point: ScreenPoint, viewport: Viewport): M
   const model = screenToModel(point, viewport);
   return { x: Math.floor(model.x), y: Math.floor(model.y) };
 }
-
-export const hitTestCell = screenToCellUnclamped;
 
 export function viewportModelRect(viewport: Viewport, metrics: Pick<CanvasMetrics, 'cssWidth' | 'cssHeight'>): Rect {
   assertFiniteViewport(viewport);
@@ -189,19 +145,13 @@ export function visibleCellRect(
   };
 }
 
-export const getVisibleCellRect = visibleCellRect;
-
 export interface ViewportClampOptions {
   readonly minZoom?: number;
   readonly maxZoom?: number;
 }
 
-export function clampViewport(
-  viewport: Viewport,
-  _documentSize?: DocumentSize,
-  _metrics?: Pick<CanvasMetrics, 'cssWidth' | 'cssHeight'>,
-  options: ViewportClampOptions = {}
-): Viewport {
+/** Normalize viewport values without imposing chart bounds. */
+export function clampViewport(viewport: Viewport, options: ViewportClampOptions = {}): Viewport {
   const zoom = Math.min(
     positive(options.maxZoom ?? Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY),
     Math.max(positive(options.minZoom ?? 0.01, 0.01), positive(viewport.zoom, 1))
@@ -215,9 +165,6 @@ export function clampViewport(
     zoom
   };
 }
-
-/** Normalize viewport values without imposing chart bounds. */
-export const normalizeViewport = clampViewport;
 
 /** Keep the model point under `anchor` fixed while changing zoom. */
 export function zoomAt(
@@ -243,8 +190,6 @@ export function zoomAt(
     zoom
   };
 }
-
-export const zoomAtCursor = zoomAt;
 
 export function zoomBy(
   viewport: Viewport,
@@ -274,7 +219,7 @@ export function fitViewport(
     y: (size.height - height / zoom) / 2 - padding / zoom,
     zoom
   };
-  return clampViewport(fitted, size, metrics, options);
+  return clampViewport(fitted, options);
 }
 
 /**
@@ -349,6 +294,3 @@ export function getCanvasMetrics(
     maxBackingPixels
   };
 }
-
-export const calculateCanvasMetrics = getCanvasMetrics;
-export const canvasMetrics = getCanvasMetrics;

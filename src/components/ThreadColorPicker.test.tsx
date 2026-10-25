@@ -1,14 +1,11 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { CatalogDefinition, CatalogRecord } from '../catalog';
+import type { CatalogRecord } from '../catalog';
+import { makeCatalog } from '../catalog/test-support';
 import { ColorPickerModal } from './ColorPickerModal';
 import { ThreadColorPicker, type ThreadColorPickerProps } from './ThreadColorPicker';
 
 const record = (sourceId: string, code: string, name: string, hex: `#${string}`): CatalogRecord => ({ sourceId, code, name, hex, rgb: [0, 0, 0] });
-const makeCatalog = (catalogId: string, brandLabel: string, records: CatalogRecord[]): CatalogDefinition => {
-  const byHex = new Map(records.map((item) => [item.hex.toUpperCase(), item]));
-  return { association: { catalogId, brandLabel, colorCount: records.length }, records, compatibilityLabel: `${brandLabel}-compatible`, snapshot: { association: { catalogId, brandLabel, colorCount: records.length }, records }, search: (query, options = {}) => records.filter((item) => !query || `${item.name} ${item.code}`.toLowerCase().includes(query.toLowerCase())).slice(0, options.limit), getByHex: (hex) => byHex.get(hex.toUpperCase()), nearest: () => records[0] };
-};
 const red = record('a-red', '321', 'Red', '#CC0000');
 const blue = record('a-blue', '797', 'Blue', '#0000CC');
 const ruby = record('b-ruby', '9', 'Ruby', '#BB0000');
