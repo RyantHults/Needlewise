@@ -19,7 +19,7 @@ interface PatternImportWorkerScope {
 
 type Post = (message: PatternImportResponse, transfer?: Transferable[]) => void;
 
-/** At most one open session, plus the controllers of requests in flight. */
+/** The open session, plus the controllers of requests in flight. */
 export interface PatternImportWorkerState {
   session: ImportSession | null;
   readonly active: Map<string, AbortController>;
@@ -35,12 +35,6 @@ function isCancelled(error: unknown, signal: AbortSignal): boolean {
     || (error instanceof ImportError && error.code === 'cancelled');
 }
 
-async function dropSession(state: PatternImportWorkerState): Promise<void> {
-  const session = state.session;
-  state.session = null;
-  await session?.close();
-}
-
 async function run(request: Exclude<PatternImportRequest, { type: 'cancel' }>, post: Post, state: PatternImportWorkerState, signal: AbortSignal): Promise<void> {
   const { requestId } = request;
   const options = {
@@ -49,14 +43,8 @@ async function run(request: Exclude<PatternImportRequest, { type: 'cancel' }>, p
       if (!signal.aborted) post({ protocol: PATTERN_IMPORT_PROTOCOL, type: 'progress', requestId, progress });
     }
   };
-  if (request.type === 'close') {
-    await dropSession(state);
-    post({ protocol: PATTERN_IMPORT_PROTOCOL, type: 'closed', requestId });
-    return;
-  }
   let session: ImportSession;
   if (request.type === 'open') {
-    await dropSession(state);
     const bytes = await readBlobBytes(request.file);
     const importer = findImporter(bytes.subarray(0, SNIFF_BYTES));
     if (!importer) throw new ImportError('unsupported-format', 'This file type is not supported.');
@@ -65,9 +53,7 @@ async function run(request: Exclude<PatternImportRequest, { type: 'cancel' }>, p
       await session.close();
       throw new ImportError('cancelled', 'The import was cancelled.');
     }
-    const replaced = state.session;
     state.session = session;
-    await replaced?.close();
   } else {
     if (!state.session) throw new ImportError('unsupported-format', 'No file is open.');
     session = state.session;

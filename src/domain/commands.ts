@@ -1,5 +1,4 @@
 import {
-  cellIndex,
   colorsOffset,
   defaultPaletteSymbol,
   findPaletteEntry,
@@ -46,7 +45,6 @@ import {
   type MoveFragmentCommand,
   type MixedEraseCommand,
   type PaletteCreateCommand,
-  type PaletteDeactivateCommand,
   type PaletteDeleteCommand,
   type PaletteEntryInput,
   type PaletteMergeCommand,
@@ -58,22 +56,13 @@ import {
   type PasteFragmentCommand,
   type Point,
   type PatternFragment,
-  type ProgressChangeSet,
-  type RecolorBackstitchCommand,
-  type RecolorCellCommand,
   type RemoveBackstitchCommand,
-  type SetFullCommand,
-  type SetHalfCommand,
-  type SetQuarterCommand,
-  type SetThreeQuarterCommand,
-  type UpdateBackstitchCommand
 } from './types';
 import { SYMBOL_IDS } from '../symbols';
 import { assertStrictlyIncreasing, requireCommandInteger } from './guards';
 import { palettesEqual, settingsEqual } from './equality';
 import { allocateBackstitches, backstitchStoreBytes, backstitchStoresEqual, backstitchesFromRecords, cloneBackstitches, copyBackstitch, pointsSegmentKey, positionsById, segmentKey } from './backstitch-store';
 import { completedComponentCount, componentSlotMask } from './cell-components';
-import { emptyProgress, progressActivity } from './progress';
 import { assertValidPatternFragment, backstitchEndpointsContainedInCellUnion } from './fragment';
 import { backstitchWithinCanvas, isActiveCell } from './canvas';
 
@@ -86,8 +75,6 @@ export interface MutationInfo {
   changedIndices?: Uint32Array;
   touchedBackstitchIds?: Uint32Array;
   changedBackstitchIds?: Uint32Array;
-  progress?: ProgressChangeSet;
-  recalculateMetrics?: boolean;
   /** A packed bulk delta, constructed once and reusable by history callers. */
   delta?: SparseMutationDelta;
   createdBackstitchIds?: Uint32Array;
@@ -254,7 +241,7 @@ export class MutationTracker {
 export type MutationTargets = Pick<MutationInfo, 'touchedIndices' | 'changedIndices' | 'touchedBackstitchIds' | 'changedBackstitchIds' | 'movedBackstitchIds'>;
 
 export function noChange(targets: MutationTargets = {}): MutationInfo {
-  return { changed: false, snapshot: false, ...targets, progress: emptyProgress() };
+  return { changed: false, snapshot: false, ...targets };
 }
 
 /** A cell delta with no cells, for commands whose delta lives in another part. */
@@ -270,8 +257,8 @@ export function emptyCellDelta(): PackedCellDelta {
   };
 }
 
-function changed(snapshot = false, progress = emptyProgress()): MutationInfo {
-  return { changed: true, snapshot, progress, recalculateMetrics: snapshot };
+function changed(snapshot = false): MutationInfo {
+  return { changed: true, snapshot };
 }
 
 function parseBulkProgressOperation(operation: unknown): BulkProgressOperation {
@@ -292,29 +279,14 @@ export function commandRequiresSnapshot(command: DomainCommand): boolean {
 
 function touchCommandTargets(document: PatternDocument, command: DomainCommand, tracker: MutationTracker): void {
   switch (command.type) {
-    case 'set-full':
-    case 'set-half':
-    case 'set-quarter':
-    case 'set-quarters':
-    case 'set-three-quarter':
-    case 'erase-cell':
-    case 'erase-quarter':
-    case 'recolor-cell': {
-      const { x, y } = command;
-      if (Number.isSafeInteger(x) && Number.isSafeInteger(y) && x >= 0 && y >= 0 && x < document.width && y < document.height) tracker.touchCell(document, cellIndex(document, x, y));
-      return;
-    }
     case 'add-backstitch':
     case 'remove-backstitch':
     case 'move-backstitch':
-    case 'recolor-backstitch':
-    case 'update-backstitch':
       tracker.touchBackstitches(document);
       return;
     case 'palette-create':
     case 'palette-update':
     case 'palette-swap':
-    case 'palette-deactivate':
       tracker.touchPalette(document);
       return;
     case 'document-settings-update':
@@ -375,18 +347,6 @@ function writeFullAtIndex(
   return true;
 }
 
-function writeFull(
-  document: PatternDocument,
-  x: number,
-  y: number,
-  color: number,
-  halfDirection?: HalfDirection
-): boolean {
-  const index = cellIndex(document, x, y);
-  requirePaletteEntry(document, color);
-  return writeFullAtIndex(document, index, color, halfDirection);
-}
-
 function writeQuarterAtIndex(
   document: PatternDocument,
   index: number,
@@ -409,18 +369,6 @@ function writeQuarterAtIndex(
   document.colors[offset + corner] = color;
   document.completed[index] = nextCompletion;
   return true;
-}
-
-function writeQuarter(
-  document: PatternDocument,
-  x: number,
-  y: number,
-  corner: QuarterCorner,
-  color: number
-): boolean {
-  const index = cellIndex(document, x, y);
-  requirePaletteEntry(document, color);
-  return writeQuarterAtIndex(document, index, corner, color);
 }
 
 function writeThreeQuarterAtIndex(
@@ -529,18 +477,6 @@ function writeThreeQuarterPairAtIndex(document: PatternDocument, index: number, 
   return true;
 }
 
-function writeThreeQuarter(
-  document: PatternDocument,
-  x: number,
-  y: number,
-  corner: QuarterCorner,
-  color: number
-): boolean {
-  const index = cellIndex(document, x, y);
-  requirePaletteEntry(document, color);
-  return writeThreeQuarterAtIndex(document, index, corner, color);
-}
-
 function removeThreeQuarterAtIndex(document: PatternDocument, index: number, corner: QuarterCorner): boolean {
   const kind = document.kind[index];
   const offset = colorsOffset(index);
@@ -583,10 +519,6 @@ function removeQuarterAtIndex(document: PatternDocument, index: number, corner: 
     document.completed[index] = 0;
   }
   return true;
-}
-
-function removeQuarter(document: PatternDocument, x: number, y: number, corner: QuarterCorner): boolean {
-  return removeQuarterAtIndex(document, cellIndex(document, x, y), corner);
 }
 
 function parseBulkEdit(edit: BulkCellEdit): BulkCellEdit {
@@ -780,70 +712,39 @@ function validateProgressIndices(indices: unknown, label: string): Uint32Array {
   return indices;
 }
 
-function completionMaskForCell(document: PatternDocument, index: number, corner: QuarterCorner | undefined): number {
-  const kind = document.kind[index];
-  const offset = colorsOffset(index);
-  if (kind === CellKind.Empty) throw new DomainError('invalid-completion-target', `Cell ${String(index)} has no occupied geometry.`);
-  if (corner !== undefined) {
-    if (kind === CellKind.Quarters) {
-      if (document.colors[offset + corner] === 0) throw new DomainError('invalid-completion-target', `Cell ${String(index)} has no occupied quarter at corner ${String(corner)}.`);
-      return 1 << corner;
-    }
-    const singleCorner = threeQuarterCornerForKind(kind);
-    if (singleCorner !== undefined) {
-      if (singleCorner !== corner) throw new DomainError('invalid-completion-target', `Cell ${String(index)} has no three-quarter component at corner ${String(corner)}.`);
-      return 1;
-    }
-    if (isThreeQuarterPairKind(kind) && document.colors[offset + corner] !== 0) return 1 << corner;
-    throw new DomainError('invalid-completion-target', `Cell ${String(index)} does not contain quarter geometry at corner ${String(corner)}.`);
-  }
-  const mask = componentSlotMask(kind, document.colors, offset);
+function occupiedCompletionMask(document: PatternDocument, index: number): number {
+  const mask = componentSlotMask(document.kind[index], document.colors, colorsOffset(index));
   if (mask === 0) throw new DomainError('invalid-completion-target', `Cell ${String(index)} has no occupied geometry.`);
   return mask;
 }
 
-function completionMasksForCommand(document: PatternDocument, command: BulkCompletionCommand, indices: Uint32Array): { corner?: QuarterCorner; masks: Uint8Array } {
-  const cornerValue = command.corner;
+function completionMasksForCommand(document: PatternDocument, command: BulkCompletionCommand, indices: Uint32Array): Uint8Array {
   const rawMasks = command.masks;
-  if (rawMasks !== undefined && cornerValue !== undefined) throw new DomainError('invalid-completion-targets', 'Bulk completion masks cannot be combined with a corner target.');
-  if (rawMasks !== undefined) {
-    if (!(rawMasks instanceof Uint8Array)) throw new DomainError('invalid-completion-targets', 'Bulk completion masks must be a Uint8Array.');
-    if (rawMasks.length !== indices.length) throw new DomainError('invalid-completion-targets', 'Bulk completion masks must align one-to-one with cell indices.');
-    const masks = rawMasks.slice();
-    for (let position = 0; position < indices.length; position += 1) {
-      const mask = masks[position];
-      if (mask === 0) continue;
-      const occupied = completionMaskForCell(document, indices[position], undefined);
-      if ((mask & ~occupied) !== 0) throw new DomainError('invalid-completion-target', `Completion mask for cell ${String(indices[position])} is not a subset of its occupied components.`);
-    }
-    return { masks };
+  if (!(rawMasks instanceof Uint8Array)) throw new DomainError('invalid-completion-targets', 'Bulk completion masks must be a Uint8Array.');
+  if (rawMasks.length !== indices.length) throw new DomainError('invalid-completion-targets', 'Bulk completion masks must align one-to-one with cell indices.');
+  const masks = rawMasks.slice();
+  for (let position = 0; position < indices.length; position += 1) {
+    const mask = masks[position];
+    if (mask === 0) continue;
+    const occupied = occupiedCompletionMask(document, indices[position]);
+    if ((mask & ~occupied) !== 0) throw new DomainError('invalid-completion-target', `Completion mask for cell ${String(indices[position])} is not a subset of its occupied components.`);
   }
-  const corner = cornerValue === undefined ? undefined : parseCorner(cornerValue);
-  const masks = new Uint8Array(indices.length);
-  for (let position = 0; position < indices.length; position += 1) masks[position] = completionMaskForCell(document, indices[position], corner);
-  return { ...(corner === undefined ? {} : { corner }), masks };
+  return masks;
 }
 
-/** Reconstruct explicit completion activity from a validated before/after transition. */
-export function deriveExplicitCompletionProgress(
+/** The cells and backstitches whose completion differs between a validated before/after transition. */
+export function deriveExplicitCompletionChanges(
   before: PatternDocument,
   after: PatternDocument,
   candidateCellIndices?: Uint32Array,
   candidateBackstitchIds?: Uint32Array
-): ProgressChangeSet {
+): { cellIndices: Uint32Array; backstitchIds: Uint32Array } {
   const cellIndices: number[] = [];
-  let marked = 0;
-  let unmarked = 0;
   if (candidateCellIndices !== undefined && before.width === after.width && before.height === after.height) {
     const candidates = [...new Set(candidateCellIndices)].sort((left, right) => left - right);
     for (const index of candidates) {
       if (index >= before.kind.length || index >= after.kind.length) continue;
-      const progress = progressActivity(completedComponentCount(before, index), completedComponentCount(after, index));
-      if (progress.marked > 0 || progress.unmarked > 0) {
-        cellIndices.push(index);
-        marked += progress.marked;
-        unmarked += progress.unmarked;
-      }
+      if (completedComponentCount(before, index) !== completedComponentCount(after, index)) cellIndices.push(index);
     }
   }
   const candidates = candidateBackstitchIds === undefined
@@ -855,32 +756,15 @@ export function deriveExplicitCompletionProgress(
   for (const id of candidates) {
     const beforePosition = beforePositions.get(id);
     const afterPosition = afterPositions.get(id);
-    const progress = progressActivity(
-      beforePosition === undefined ? 0 : before.backstitches.completed[beforePosition],
-      afterPosition === undefined ? 0 : after.backstitches.completed[afterPosition]
-    );
-    if (progress.marked > 0 || progress.unmarked > 0) {
-      backstitchIds.push(id);
-      marked += progress.marked;
-      unmarked += progress.unmarked;
-    }
+    const beforeCompleted = beforePosition === undefined ? 0 : before.backstitches.completed[beforePosition];
+    const afterCompleted = afterPosition === undefined ? 0 : after.backstitches.completed[afterPosition];
+    if (beforeCompleted !== afterCompleted) backstitchIds.push(id);
   }
-  return { cellIndices: new Uint32Array(cellIndices), backstitchIds: new Uint32Array(backstitchIds), marked, unmarked };
-}
-
-function progressCountFromMask(mask: number): number {
-  let count = 0;
-  for (let bit = 1; bit <= 8; bit <<= 1) if ((mask & bit) !== 0) count += 1;
-  return count;
-}
-
-function progressCountForCellMask(document: PatternDocument, index: number, mask: number): number {
-  return progressCountFromMask(mask);
+  return { cellIndices: new Uint32Array(cellIndices), backstitchIds: new Uint32Array(backstitchIds) };
 }
 
 export interface BulkCompletionPreflight {
   readonly operation: BulkProgressOperation;
-  readonly corner?: QuarterCorner;
   readonly indices: Uint32Array;
   readonly changedIndices: Uint32Array;
   /** Completion masks aligned one-to-one with `changedIndices`. */
@@ -892,20 +776,20 @@ export function preflightBulkCompletionCommand(document: PatternDocument, comman
   validateBulkRevision(document, command);
   const indices = validateProgressIndices(command.indices, 'Bulk completion indices');
   for (const index of indices) if (index >= document.kind.length) throw new DomainError('out-of-bounds', `Bulk completion cell index ${String(index)} is out of bounds.`);
-  const target = completionMasksForCommand(document, command, indices);
+  const masks = completionMasksForCommand(document, command, indices);
   const operation = parseBulkProgressOperation(command.operation);
   const changed = [] as number[];
   const changedMasks = [] as number[];
   for (let position = 0; position < indices.length; position += 1) {
     const index = indices[position];
-    const mask = target.masks[position];
+    const mask = masks[position];
     const next = applyProgressOperation(document.completed[index], mask, operation);
     if (next !== document.completed[index]) {
       changed.push(index);
       changedMasks.push(mask);
     }
   }
-  return { operation, ...(target.corner === undefined ? {} : { corner: target.corner }), indices, changedIndices: new Uint32Array(changed), masks: new Uint8Array(changedMasks) };
+  return { operation, indices, changedIndices: new Uint32Array(changed), masks: new Uint8Array(changedMasks) };
 }
 
 /** Exact packed cell-completion delta size used by history preflight. */
@@ -993,7 +877,6 @@ export function applyBulkRecolorCommand(document: PatternDocument, command: Bulk
     snapshot: false,
     touchedIndices: preflight.indices,
     changedIndices,
-    progress: emptyProgress(),
     delta: {
       cells: { indices: changedIndices, beforeKind, beforeColors, beforeCompleted, afterKind, afterColors, afterCompleted }
     }
@@ -1051,7 +934,6 @@ export function applyBulkCellCommand(document: PatternDocument, command: BulkCel
     snapshot: false,
     touchedIndices: preflight.indices,
     changedIndices: preflight.changedIndices,
-    progress: emptyProgress(),
     delta
   };
 }
@@ -1062,26 +944,18 @@ export function applyBulkCompletionCommand(document: PatternDocument, command: B
   }
   const beforeCompleted = new Uint8Array(preflight.changedIndices.length);
   const afterCompleted = new Uint8Array(preflight.changedIndices.length);
-  let marked = 0;
-  let unmarked = 0;
   for (let position = 0; position < preflight.changedIndices.length; position += 1) {
     const index = preflight.changedIndices[position];
     const mask = preflight.masks[position];
-    const beforeCount = progressCountForCellMask(document, index, document.completed[index] & mask);
     beforeCompleted[position] = document.completed[index];
     document.completed[index] = applyProgressOperation(document.completed[index], mask, preflight.operation);
     afterCompleted[position] = document.completed[index];
-    const afterCount = progressCountForCellMask(document, index, document.completed[index] & mask);
-    const activity = progressActivity(beforeCount, afterCount);
-    marked += activity.marked;
-    unmarked += activity.unmarked;
   }
   return {
     changed: true,
     snapshot: false,
     touchedIndices: preflight.indices,
     changedIndices: preflight.changedIndices,
-    progress: { cellIndices: preflight.changedIndices, backstitchIds: new Uint32Array(0), marked, unmarked },
     delta: {
       cells: emptyCellDelta(),
       cellCompletions: { indices: preflight.changedIndices, beforeCompleted, afterCompleted }
@@ -1095,8 +969,6 @@ export function applyBulkBackstitchCompletionCommand(document: PatternDocument, 
   }
   const beforeCompleted = new Uint8Array(preflight.changedIds.length);
   const afterCompleted = new Uint8Array(preflight.changedIds.length);
-  let marked = 0;
-  let unmarked = 0;
   const positions = positionsById(document.backstitches);
   for (let position = 0; position < preflight.changedIds.length; position += 1) {
     const id = preflight.changedIds[position];
@@ -1105,15 +977,12 @@ export function applyBulkBackstitchCompletionCommand(document: PatternDocument, 
     beforeCompleted[position] = document.backstitches.completed[backstitchPosition];
     document.backstitches.completed[backstitchPosition] = applyProgressOperation(beforeCompleted[position], 1, preflight.operation);
     afterCompleted[position] = document.backstitches.completed[backstitchPosition];
-    if (beforeCompleted[position] === 0 && afterCompleted[position] !== 0) marked += 1;
-    else if (beforeCompleted[position] !== 0 && afterCompleted[position] === 0) unmarked += 1;
   }
   return {
     changed: true,
     snapshot: false,
     touchedBackstitchIds: preflight.ids,
     changedBackstitchIds: preflight.changedIds,
-    progress: { cellIndices: new Uint32Array(0), backstitchIds: preflight.changedIds, marked, unmarked },
     delta: {
       cells: emptyCellDelta(),
       backstitchCompletions: { ids: preflight.changedIds, beforeCompleted, afterCompleted }
@@ -1133,23 +1002,18 @@ function validateExpectedRevision(expectedRevision: number | undefined): void {
 export function bulkCompletionCommand(
   indices: Uint32Array,
   operation: BulkProgressOperation,
-  corner?: QuarterCorner,
-  expectedRevision?: number,
-  masks?: Uint8Array
+  masks: Uint8Array,
+  expectedRevision?: number
 ): BulkCompletionCommand {
   const canonicalIndices = validateProgressCommandArray(indices, 'Bulk completion indices');
   validateExpectedRevision(expectedRevision);
-  if (masks !== undefined) {
-    if (!(masks instanceof Uint8Array)) throw new DomainError('invalid-completion-targets', 'Bulk completion masks must be a Uint8Array.');
-    if (masks.length !== canonicalIndices.length) throw new DomainError('invalid-completion-targets', 'Bulk completion masks must align one-to-one with cell indices.');
-    if (corner !== undefined) throw new DomainError('invalid-completion-targets', 'Bulk completion masks cannot be combined with a corner target.');
-  }
+  if (!(masks instanceof Uint8Array)) throw new DomainError('invalid-completion-targets', 'Bulk completion masks must be a Uint8Array.');
+  if (masks.length !== canonicalIndices.length) throw new DomainError('invalid-completion-targets', 'Bulk completion masks must align one-to-one with cell indices.');
   return {
     type: 'bulk-completion',
     indices: canonicalIndices,
     operation: parseBulkProgressOperation(operation),
-    ...(corner === undefined ? {} : { corner: parseCorner(corner) }),
-    ...(masks === undefined ? {} : { masks: masks.slice() }),
+    masks: masks.slice(),
     ...(expectedRevision === undefined ? {} : { expectedRevision })
   };
 }
@@ -1346,7 +1210,7 @@ export function applyMixedEraseCommand(document: PatternDocument, command: Mixed
   }
   if (changedPosition === 0) return noChange({ changedIndices });
   const delta: SparseMutationDelta = { cells: { indices: changedIndices, beforeKind, beforeColors, beforeCompleted, afterKind, afterColors, afterCompleted } };
-  return { changed: true, snapshot: false, changedIndices, progress: emptyProgress(), delta };
+  return { changed: true, snapshot: false, changedIndices, delta };
 }
 
 export function mixedEraseCommand(wholeCellIndices: Uint32Array, componentCellIndices: Uint32Array, componentCorners: Uint8Array, expectedRevision?: number): MixedEraseCommand {
@@ -1505,8 +1369,6 @@ function applyDeleteSelectionCommand(
     touchedIndices: preflight.touchedIndices,
     changedIndices,
     changedBackstitchIds: preflight.changedBackstitchIds,
-    progress: emptyProgress(),
-    recalculateMetrics: true,
     delta
   };
 }
@@ -1815,7 +1677,7 @@ export function applyPasteFragmentCommand(document: PatternDocument, command: Pa
     ...(beforeBackstitches === undefined ? {} : { beforeBackstitches, afterBackstitches }),
     ...(preflight.newBackstitchCount === 0 ? {} : { beforeNextBackstitchId: document.nextBackstitchId - preflight.newBackstitchCount, afterNextBackstitchId: document.nextBackstitchId })
   };
-  return { changed: true, snapshot: false, changedIndices, createdBackstitchIds, progress: emptyProgress(), delta };
+  return { changed: true, snapshot: false, changedIndices, createdBackstitchIds, delta };
 }
 
 export interface NormalizedMoveSelection {
@@ -2204,8 +2066,6 @@ export function applyMoveFragmentCommand(document: PatternDocument, command: Mov
     snapshot: false,
     changedIndices,
     movedBackstitchIds: preflight.movedBackstitchIds,
-    progress: emptyProgress(),
-    recalculateMetrics: true,
     delta
   };
 }
@@ -2271,90 +2131,6 @@ function writeQuartersAtIndex(document: PatternDocument, index: number, colors: 
   document.colors[offset + 2] = color2;
   document.colors[offset + 3] = color3;
   return true;
-}
-
-function writeQuarters(document: PatternDocument, x: number, y: number, colors: readonly number[]): boolean {
-  if (colors.length !== 4) throw new DomainError('invalid-command', 'A quarter set requires four color slots.');
-  const index = cellIndex(document, x, y);
-  return writeQuartersAtIndex(document, index, colors);
-}
-
-function applySetFullCommand(document: PatternDocument, command: SetFullCommand): MutationInfo {
-  const x = requireCommandInteger(command.x, 'x');
-  const y = requireCommandInteger(command.y, 'y');
-  return writeFull(document, x, y, requireCommandInteger(command.color, 'color')) ? changed() : noChange();
-}
-
-function applySetHalfCommand(document: PatternDocument, command: SetHalfCommand): MutationInfo {
-  const x = requireCommandInteger(command.x, 'x');
-  const y = requireCommandInteger(command.y, 'y');
-  const direction = parseDirection(command.direction);
-  return writeFull(document, x, y, requireCommandInteger(command.color, 'color'), direction) ? changed() : noChange();
-}
-
-function applySetThreeQuarterCommand(document: PatternDocument, command: SetThreeQuarterCommand): MutationInfo {
-  const x = requireCommandInteger(command.x, 'x');
-  const y = requireCommandInteger(command.y, 'y');
-  const corner = parseCorner(command.corner);
-  return writeThreeQuarter(document, x, y, corner, requireCommandInteger(command.color, 'color')) ? changed() : noChange();
-}
-
-function quarterCommand(document: PatternDocument, command: SetQuarterCommand): MutationInfo {
-  const x = requireCommandInteger(command.x, 'x');
-  const y = requireCommandInteger(command.y, 'y');
-  const corner = parseCorner(command.corner);
-  const color = requireCommandInteger(command.color, 'color');
-  if (color === 0) return removeQuarter(document, x, y, corner) ? changed() : noChange();
-  return writeQuarter(document, x, y, corner, color) ? changed() : noChange();
-}
-
-function recolorCell(document: PatternDocument, command: RecolorCellCommand): MutationInfo {
-  const x = requireCommandInteger(command.x, 'x');
-  const y = requireCommandInteger(command.y, 'y');
-  const color = requireCommandInteger(command.color, 'color');
-  requirePaletteEntry(document, color);
-  const index = cellIndex(document, x, y);
-  const offset = colorsOffset(index);
-  const cornerValue = command.corner;
-  if (document.kind[index] === CellKind.Empty) return noChange();
-  if (isThreeQuarterSingleKind(document.kind[index])) {
-    const singleCorner = threeQuarterCornerForKind(document.kind[index]);
-    if (cornerValue !== undefined && parseCorner(cornerValue) !== singleCorner) return noChange();
-    if (document.colors[offset] === color) return noChange();
-    document.colors[offset] = color;
-    return changed();
-  }
-  if (isThreeQuarterPairKind(document.kind[index])) {
-    if (cornerValue !== undefined) {
-      const corner = parseCorner(cornerValue);
-      if (document.colors[offset + corner] === 0 || document.colors[offset + corner] === color) return noChange();
-      document.colors[offset + corner] = color;
-      return changed();
-    }
-    let didChange = false;
-    for (const corner of [QuarterCorner.NW, QuarterCorner.NE, QuarterCorner.SE, QuarterCorner.SW]) {
-      if (document.colors[offset + corner] !== 0 && document.colors[offset + corner] !== color) {
-        document.colors[offset + corner] = color;
-        didChange = true;
-      }
-    }
-    return didChange ? changed() : noChange();
-  }
-  if (document.kind[index] === CellKind.Quarters && cornerValue !== undefined) {
-    const corner = parseCorner(cornerValue);
-    if (document.colors[offset + corner] === 0 || document.colors[offset + corner] === color) return noChange();
-    document.colors[offset + corner] = color;
-    return changed();
-  }
-  let didChange = false;
-  const slots = document.kind[index] === CellKind.Quarters ? [0, 1, 2, 3] : [0];
-  for (const slot of slots) {
-    if (document.colors[offset + slot] !== 0 && document.colors[offset + slot] !== color) {
-      document.colors[offset + slot] = color;
-      didChange = true;
-    }
-  }
-  return didChange ? changed() : noChange();
 }
 
 function parsePoint(value: Point | undefined, label: string): Point {
@@ -2502,7 +2278,7 @@ function applyRemoveBackstitch(document: PatternDocument, command: RemoveBacksti
   return changed();
 }
 
-function applyMoveBackstitch(document: PatternDocument, command: MoveBackstitchCommand | UpdateBackstitchCommand): MutationInfo {
+function applyMoveBackstitch(document: PatternDocument, command: MoveBackstitchCommand): MutationInfo {
   const id = requireCommandInteger(command.id, 'id');
   const index = document.backstitches.ids.indexOf(id);
   if (index < 0) return noChange();
@@ -2545,34 +2321,6 @@ function applyMoveBackstitch(document: PatternDocument, command: MoveBackstitchC
   return { ...changed(), backstitchId: id, createdBackstitchIds: new Uint32Array(createdIds) };
 }
 
-function applyRecolorBackstitch(document: PatternDocument, command: RecolorBackstitchCommand | UpdateBackstitchCommand): MutationInfo {
-  const id = requireCommandInteger(command.id, 'id');
-  const index = document.backstitches.ids.indexOf(id);
-  if (index < 0) return noChange();
-  const color = requireCommandInteger(command.color, 'color');
-  requirePaletteEntry(document, color);
-  if (document.backstitches.colors[index] === color) return noChange();
-  document.backstitches.colors[index] = color;
-  return changed();
-}
-
-function applyUpdateBackstitch(document: PatternDocument, command: UpdateBackstitchCommand): MutationInfo {
-  const id = requireCommandInteger(command.id, 'id');
-  const index = document.backstitches.ids.indexOf(id);
-  if (index < 0) return noChange();
-  const hasEndpoints = command.start !== undefined || command.dx !== undefined || command.dy !== undefined;
-  let didChange = false;
-  // Recolor first so every piece the move splits off inherits the new color.
-  if (command.color !== undefined) {
-    didChange = applyRecolorBackstitch(document, command).changed;
-  }
-  if (hasEndpoints) {
-    const moveResult = applyMoveBackstitch(document, command);
-    if (moveResult.changed) return moveResult;
-  }
-  return didChange ? changed() : noChange();
-}
-
 function paletteCreate(document: PatternDocument, command: PaletteCreateCommand): MutationInfo {
   const id = command.id === undefined ? document.nextPaletteId : requireCommandInteger(command.id, 'id');
   const { name, color } = command;
@@ -2602,7 +2350,7 @@ function paletteCreate(document: PatternDocument, command: PaletteCreateCommand)
     id,
     name,
     color,
-    active: command.active !== false,
+    active: true,
     symbol,
     ...(command.material === undefined ? {} : { material: command.material }),
     ...(command.catalog === undefined ? {} : { catalog: command.catalog })
@@ -2613,44 +2361,14 @@ function paletteCreate(document: PatternDocument, command: PaletteCreateCommand)
   return { ...changed(), paletteId: id };
 }
 
-function paletteIsReferenced(document: PatternDocument, id: number): boolean {
-  for (const color of document.colors) if (color === id) return true;
-  for (const color of document.backstitches.colors) if (color === id) return true;
-  return false;
-}
-
 function paletteUpdate(document: PatternDocument, command: PaletteUpdateCommand): MutationInfo {
   const id = requireCommandInteger(command.id, 'id');
   const entry = findPaletteEntry(document, id);
   if (!entry) throw new DomainError('unknown-palette', `Palette ID ${String(id)} does not exist.`);
-  const { name: nextName, color: nextColor, active: nextActive, symbol: nextSymbol, material: nextMaterial, catalog: nextCatalog } = command;
-  if (nextName !== undefined && (typeof nextName !== 'string' || nextName.trim() === '')) throw new DomainError('invalid-palette', 'Palette names must not be empty.');
-  if (nextColor !== undefined && (typeof nextColor !== 'string' || nextColor.trim() === '')) throw new DomainError('invalid-palette', 'Palette colors must not be empty.');
-  if (nextActive !== undefined && typeof nextActive !== 'boolean') throw new DomainError('invalid-palette', 'Palette active must be a boolean.');
-  const next = normalizePaletteEntry({
-    ...entry,
-    name: nextName ?? entry.name,
-    color: nextColor ?? entry.color,
-    active: nextActive ?? entry.active,
-    symbol: nextSymbol ?? entry.symbol,
-    material: nextMaterial ?? entry.material,
-    catalog: nextCatalog ?? entry.catalog
-  });
+  const next = normalizePaletteEntry({ ...entry, symbol: command.symbol });
   if (document.palette.some((candidate) => candidate.id !== id && candidate.symbol === next.symbol)) throw new DomainError('invalid-palette-symbol', `Palette symbol ${next.symbol} is duplicated.`);
-  if (nextActive === false && entry.active && paletteIsReferenced(document, id)) throw new DomainError('palette-in-use', `Palette ID ${String(id)} is referenced by the document.`);
-  const changedEntry = !palettesEqual([entry], [next]);
-  if (!changedEntry) return noChange();
+  if (palettesEqual([entry], [next])) return noChange();
   document.palette = document.palette.map((candidate) => candidate.id !== id ? candidate : next);
-  return changed();
-}
-
-function paletteDeactivate(document: PatternDocument, command: PaletteDeactivateCommand): MutationInfo {
-  const id = requireCommandInteger(command.id, 'id');
-  const entry = findPaletteEntry(document, id);
-  if (!entry) throw new DomainError('unknown-palette', `Palette ID ${String(id)} does not exist.`);
-  if (!entry.active) return noChange();
-  if (paletteIsReferenced(document, id)) throw new DomainError('palette-in-use', `Palette ID ${String(id)} is referenced by the document.`);
-  document.palette = document.palette.map((candidate) => candidate.id === id ? { ...candidate, active: false } : candidate);
   return changed();
 }
 
@@ -2686,7 +2404,7 @@ function paletteMerge(document: PatternDocument, command: PaletteMergeCommand): 
   const createdTo = !toEntry;
   if (!toEntry) {
     if (typeof createInput !== 'object' || createInput === null) throw new DomainError('unknown-palette', `Palette ID ${String(to)} does not exist.`);
-    paletteCreate(document, { ...createInput, type: 'palette-create', id: to, active: true });
+    paletteCreate(document, { ...createInput, type: 'palette-create', id: to });
     toEntry = findPaletteEntry(document, to);
   }
   if (from === to) throw new DomainError('palette-merge', 'A palette color cannot merge into itself.');
@@ -2744,11 +2462,6 @@ export function applyCommandsToDraft(document: PatternDocument, commands: readon
   const changedIndices: number[] = [];
   const touchedBackstitchIds: number[] = [];
   const changedBackstitchIds: number[] = [];
-  const progressCellIndices: number[] = [];
-  const progressBackstitchIds: number[] = [];
-  let progressMarked = 0;
-  let progressUnmarked = 0;
-  let recalculateMetrics = commands.length > 1;
   let hasTouchedIndices = false;
   let hasChangedIndices = false;
   let hasTouchedBackstitchIds = false;
@@ -2759,7 +2472,6 @@ export function applyCommandsToDraft(document: PatternDocument, commands: readon
     const result = applyOneToDraft(document, command, tracker);
     didChange = result.changed || didChange;
     snapshot = result.snapshot || snapshot;
-    recalculateMetrics = recalculateMetrics || result.recalculateMetrics === true;
     if (result.backstitchId !== undefined) backstitchId = result.backstitchId;
     if (result.paletteId !== undefined) paletteId = result.paletteId;
     if (result.touchedIndices !== undefined) {
@@ -2778,12 +2490,6 @@ export function applyCommandsToDraft(document: PatternDocument, commands: readon
       hasChangedBackstitchIds = true;
       for (const id of result.changedBackstitchIds) changedBackstitchIds.push(id);
     }
-    if (result.progress !== undefined) {
-      for (const index of result.progress.cellIndices) progressCellIndices.push(index);
-      for (const id of result.progress.backstitchIds) progressBackstitchIds.push(id);
-      progressMarked += result.progress.marked;
-      progressUnmarked += result.progress.unmarked;
-    }
     if (result.delta !== undefined) {
       directDelta = result.delta;
       deltaCount += 1;
@@ -2798,8 +2504,6 @@ export function applyCommandsToDraft(document: PatternDocument, commands: readon
     ...(hasChangedIndices ? { changedIndices: new Uint32Array(changedIndices) } : {}),
     ...(hasTouchedBackstitchIds ? { touchedBackstitchIds: new Uint32Array(touchedBackstitchIds) } : {}),
     ...(hasChangedBackstitchIds ? { changedBackstitchIds: new Uint32Array(changedBackstitchIds) } : {}),
-    progress: { cellIndices: new Uint32Array(progressCellIndices), backstitchIds: new Uint32Array(progressBackstitchIds), marked: progressMarked, unmarked: progressUnmarked },
-    recalculateMetrics,
     ...(commands.length === 1 && deltaCount === 1 ? { delta: directDelta } : {})
   };
 }
@@ -2809,16 +2513,6 @@ function applyOneToDraftInternal(document: PatternDocument, command: DomainComma
   if (tracker !== undefined) touchCommandTargets(document, command, tracker);
   switch (command.type) {
     case 'batch': return applyCommandsToDraft(document, command.commands, tracker);
-    case 'set-full': return applySetFullCommand(document, command);
-    case 'set-half': return applySetHalfCommand(document, command);
-    case 'set-quarter': return quarterCommand(document, command);
-    case 'set-three-quarter': return applySetThreeQuarterCommand(document, command);
-    case 'set-quarters': {
-      const x = requireCommandInteger(command.x, 'x');
-      const y = requireCommandInteger(command.y, 'y');
-      if (!Array.isArray(command.colors) || command.colors.length !== 4) throw new DomainError('invalid-command', 'set-quarters requires four physical color slots.');
-      return writeQuarters(document, x, y, command.colors.map((value) => requireCommandInteger(value, 'set-quarters color'))) ? changed() : noChange();
-    }
     case 'bulk-cell': return applyBulkCellCommand(document, command);
     case 'bulk-recolor': return applyBulkRecolorCommand(document, command);
     case 'bulk-completion': return applyBulkCompletionCommand(document, command);
@@ -2838,26 +2532,12 @@ function applyOneToDraftInternal(document: PatternDocument, command: DomainComma
       document.settings = normalized;
       return changed();
     }
-    case 'erase-cell': {
-      const x = requireCommandInteger(command.x, 'x');
-      const y = requireCommandInteger(command.y, 'y');
-      return clearCell(document, cellIndex(document, x, y)) ? changed() : noChange();
-    }
-    case 'erase-quarter': {
-      const x = requireCommandInteger(command.x, 'x');
-      const y = requireCommandInteger(command.y, 'y');
-      return removeQuarter(document, x, y, parseCorner(command.corner)) ? changed() : noChange();
-    }
-    case 'recolor-cell': return recolorCell(document, command);
     case 'add-backstitch': return applyAddBackstitch(document, command);
     case 'remove-backstitch': return applyRemoveBackstitch(document, command);
     case 'move-backstitch': return applyMoveBackstitch(document, command);
-    case 'recolor-backstitch': return applyRecolorBackstitch(document, command);
-    case 'update-backstitch': return applyUpdateBackstitch(document, command);
     case 'palette-create': return paletteCreate(document, command);
     case 'palette-update': return paletteUpdate(document, command);
     case 'palette-swap': return paletteSwap(document, command);
-    case 'palette-deactivate': return paletteDeactivate(document, command);
     case 'palette-merge': return paletteMerge(document, command);
     case 'palette-delete': return paletteDelete(document, command);
     case 'canvas-resize':
@@ -2881,6 +2561,6 @@ export function applyOneToDraft(document: PatternDocument, command: DomainComman
   return applyOneToDraftInternal(document, command, tracker);
 }
 
-export function createPaletteCommand(input: PaletteEntryInput): PaletteCreateCommand {
+export function createPaletteCommand(input: Omit<PaletteEntryInput, 'active'>): PaletteCreateCommand {
   return { type: 'palette-create', ...input };
 }

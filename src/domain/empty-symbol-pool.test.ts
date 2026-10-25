@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { CatalogAssociation } from './types';
+import { errorCode } from './test-fixtures';
 
 /**
  * What a curated pool can be empty about.
@@ -16,7 +17,7 @@ vi.mock('../symbols', async (importOriginal) => {
   return { ...actual, SYMBOL_IDS: [] as string[], SYMBOL_POOL: [] };
 });
 
-const { createDocument, defaultPaletteSymbol, DomainError, isKnownSymbolId } = await import('./index');
+const { createDocument, defaultPaletteSymbol, DomainError } = await import('./index');
 const { applyCommand } = await import('./test-fixtures');
 
 const CATALOG: CatalogAssociation = { catalogId: 'empty-pool-catalog', brandLabel: 'Empty Pool', colorCount: 8 };
@@ -36,7 +37,7 @@ describe('an empty symbol pool', () => {
   it('still rejects an invalid palette id as an invalid id', () => {
     // An empty pool says nothing about the id, so the id check stays the one
     // that reports itself.
-    expect(() => defaultPaletteSymbol(0)).toThrow(/Palette ID 0 is invalid/);
+    expect(errorCode(() => defaultPaletteSymbol(0))).toBe('invalid-palette-id');
   });
 
   it('refuses to create a color, and names the picker', () => {
@@ -57,10 +58,5 @@ describe('an empty symbol pool', () => {
       catalog: CATALOG,
       palette: [{ id: 1, name: 'Ruby', color: '#b44' }]
     })).toThrow(/\/__symbols/);
-  });
-
-  it('draws nothing, because no slug resolves', () => {
-    expect(isKnownSymbolId('')).toBe(false);
-    expect(isKnownSymbolId('libertinus-math--black-star')).toBe(false);
   });
 });

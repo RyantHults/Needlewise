@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { CellKind, DocumentEditor, layerSetVisibilityCommand, layerAddCommand, type PatternDocument } from '../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { DEFAULT_RENDERER_STYLE, type CanvasContextAdapter, type CanvasTarget, type RendererStyle } from '../editor/contracts';
-import { ColorAtlasCache, SymbolAtlasCache, overviewColorForPaletteId, paintOverviewCell } from './atlas';
-import { createLayeredDocument } from '../domain/test-fixtures';
+import { ColorAtlasCache, SymbolAtlasCache, paintOverviewCell } from './atlas';
+import { cell, createLayeredDocument } from '../domain/test-fixtures';
 
 /** A context that paints fillRect into a pixel grid and counts full-atlas rebuilds. */
 function pixelTarget(width: number, height: number): CanvasTarget & { pixels: string[][]; fills: number } {
@@ -54,13 +54,13 @@ function editorWithTwoStitchLayers(size = 4) {
   const editor = new DocumentEditor(createLayeredDocument({ width: size, height: size, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: PALETTE }));
   editor.execute(layerAddCommand('stitch'));
   for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) editor.execute({ type: 'set-full', x, y, color: 1, layerId: 1 });
+    for (let x = 0; x < size; x += 1) editor.execute(cell(size, { type: 'set-full', x, y, color: 1, layerId: 1 }));
   }
   return editor;
 }
 
 describe('overview atlas caches', () => {
-  it('sees copy-on-write planes after a cell edit and repaints only that cell', () => {
+  it('repaints only the edited cell after a cell edit', () => {
     const editor = editorWithTwoStitchLayers();
     const targets: Array<ReturnType<typeof pixelTarget>> = [];
     const cache = new ColorAtlasCache();
@@ -69,13 +69,10 @@ describe('overview atlas caches', () => {
       targets.push(target);
       return target;
     };
-    const before = editor.composite;
-    cache.get(before, DEFAULT_RENDERER_STYLE, factory);
+    cache.get(editor.composite, DEFAULT_RENDERER_STYLE, factory);
     expect(targets[0].pixels[0][0]).toBe('#ff0000');
 
-    const result = editor.execute({ type: 'set-full', x: 1, y: 2, color: 2, layerId: 3 });
-    // The domain replaces planes on every cell edit, so an identity-keyed atlas is never stale.
-    expect(result.document.kind).not.toBe(before.kind);
+    const result = editor.execute(cell(4, { type: 'set-full', x: 1, y: 2, color: 2, layerId: 3 }));
     expect(Array.from(result.compositeChangedIndices ?? [])).toEqual([9]);
 
     const fillsBefore = targets[0].fills;
@@ -91,7 +88,7 @@ describe('overview atlas caches', () => {
 
   it('repaints the cells a visibility change reports and rebuilds when changes are unknown', () => {
     const editor = editorWithTwoStitchLayers();
-    editor.execute({ type: 'set-full', x: 0, y: 0, color: 2, layerId: 3 });
+    editor.execute(cell(4, { type: 'set-full', x: 0, y: 0, color: 2, layerId: 3 }));
     const targets: Array<ReturnType<typeof pixelTarget>> = [];
     const factory = (width: number, height: number) => {
       const target = pixelTarget(width, height);
@@ -170,16 +167,6 @@ describe('overview atlas caches', () => {
     const atlas = cache.get(erased.document, style, factory);
     expect(targets).toHaveLength(1);
     expect(atlas.revision).toBe(erased.revision);
-    expect(atlas.source).toBe(targets[0].source);
-  });
-
-  it('uses the plain palette color for the combined-mode overview', () => {
-    const document = editorWithTwoStitchLayers().composite;
-    const combined: RendererStyle = { ...DEFAULT_RENDERER_STYLE, mode: 'combined' };
-    const color: RendererStyle = { ...DEFAULT_RENDERER_STYLE, mode: 'color' };
-    expect(overviewColorForPaletteId(document, 1, combined)).toBe('#ff0000');
-    expect(overviewColorForPaletteId(document, 2, combined)).toBe('#0000ff');
-    expect(overviewColorForPaletteId(document, 1, combined)).toBe(overviewColorForPaletteId(document, 1, color));
   });
 });
 

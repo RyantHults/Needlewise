@@ -8,7 +8,7 @@ vi.mock('../import/registry', () => registry);
 import { createPatternImportWorkerState, handlePatternImportWorkerMessage } from './pattern-import.worker';
 
 const analysis = (cells = new Uint16Array(4)): ImportAnalysis => ({
-  format: 'fake', pages: [], overlap: 0, detectedOverlap: 0,
+  format: 'fake', pages: [],
   chart: { width: 2, height: 2, cells, symbols: [], key: [], warnings: [] }
 });
 
@@ -77,27 +77,10 @@ describe('pattern import worker handler', () => {
     expect(responses[0]).toMatchObject({ type: 'error', error: { code: 'unsupported-format' } });
     send(openMessage('a'));
     await wait();
-    send({ ...base, type: 'reanalyze', requestId: 'r1', overrides: { overlap: 2 } });
+    send({ ...base, type: 'reanalyze', requestId: 'r1', overrides: { pageRoles: { 0: 'key' } } });
     await wait();
-    expect(analyze).toHaveBeenLastCalledWith({ overlap: 2 }, expect.any(Object));
+    expect(analyze).toHaveBeenLastCalledWith({ pageRoles: { 0: 'key' } }, expect.any(Object));
     expect(responses.at(-1)).toMatchObject({ type: 'result', requestId: 'r1' });
-  });
-
-  it('keeps at most one session open and closes on request', async () => {
-    const first = fakeImporter();
-    const second = fakeImporter();
-    registry.findImporter.mockReturnValueOnce(first.importer).mockReturnValueOnce(second.importer);
-    const { responses, state, send } = harness();
-    send(openMessage('a'));
-    await wait();
-    send(openMessage('b'));
-    await wait();
-    expect(first.close).toHaveBeenCalledTimes(1);
-    send({ ...base, type: 'close', requestId: 'c' });
-    await wait();
-    expect(second.close).toHaveBeenCalledTimes(1);
-    expect(state.session).toBeNull();
-    expect(responses.at(-1)).toMatchObject({ type: 'closed', requestId: 'c' });
   });
 
   it('sniffs the first 1024 bytes', async () => {
@@ -106,20 +89,6 @@ describe('pattern import worker handler', () => {
     send({ ...openMessage(), file: new Blob([new Uint8Array(2000)]) });
     await wait();
     expect((registry.findImporter.mock.calls[0]?.[0] as Uint8Array).length).toBe(1024);
-  });
-
-  it('closes a session replaced by an overlapping open', async () => {
-    const first = fakeImporter();
-    const second = fakeImporter();
-    registry.findImporter.mockReturnValueOnce(first.importer).mockReturnValueOnce(second.importer);
-    const { state, send } = harness();
-    send(openMessage('a'));
-    send(openMessage('b'));
-    await wait();
-    await wait();
-    const closed = first.close.mock.calls.length + second.close.mock.calls.length;
-    expect(closed).toBe(1);
-    expect(state.session).not.toBeNull();
   });
 
   it('serializes ImportError codes', async () => {

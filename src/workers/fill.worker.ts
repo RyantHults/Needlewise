@@ -58,33 +58,8 @@ function isCancelMessage(value: unknown): value is FillCancelMessage {
   return isRecord(value) && value.protocol === FILL_PROTOCOL && value.type === FILL_CANCEL_TYPE;
 }
 
-/** Track active requests separately so pre-cancels can expire if orphaned. */
-const activeRequestKeys = new WeakMap<Set<string>, Set<string>>();
-
-function activeKeysFor(cancelledRequests: Set<string>): Set<string> {
-  let active = activeRequestKeys.get(cancelledRequests);
-  if (active === undefined) {
-    active = new Set<string>();
-    activeRequestKeys.set(cancelledRequests, active);
-  }
-  return active;
-}
-
-function rememberCancellation(cancelledRequests: Set<string>, request: FillCancelMessage): void {
-  const key = fillRequestIdentityKey(request);
-  const active = activeKeysFor(cancelledRequests);
-  cancelledRequests.add(key);
-  if (active.has(key)) return;
-  // A direct pre-cancel is useful when both messages are already queued in
-  // the same task, but must not live forever and poison a later ID reuse.
-  globalThis.queueMicrotask(() => {
-    if (!active.has(key)) cancelledRequests.delete(key);
-  });
-}
-
-function forgetRequest(cancelledRequests: Set<string>, key: string): void {
-  cancelledRequests.delete(key);
-  activeKeysFor(cancelledRequests).delete(key);
+interface ActiveFill {
+  cancelled: boolean;
 }
 
 /**
@@ -94,7 +69,7 @@ function forgetRequest(cancelledRequests: Set<string>, key: string): void {
 export function handleFillWorkerMessage(
   value: unknown,
   postMessage: (message: FillWorkerResponse, transfer?: Transferable[]) => void,
-  cancelledRequests: Set<string> = new Set()
+  activeRequests: Map<string, ActiveFill> = new Map()
 ): void {
   if (isCancelMessage(value)) {
     const cancel = value;
@@ -104,7 +79,8 @@ export function handleFillWorkerMessage(
       postMessage(errorMessage(error, cancel));
       return;
     }
-    rememberCancellation(cancelledRequests, cancel);
+    const target = activeRequests.get(fillRequestIdentityKey(cancel));
+    if (target) target.cancelled = true;
     return;
   }
 
@@ -118,39 +94,32 @@ export function handleFillWorkerMessage(
   }
 
   const requestKey = fillRequestIdentityKey(request);
-  const active = activeKeysFor(cancelledRequests);
-  active.add(requestKey);
-  if (cancelledRequests.has(requestKey)) {
-    forgetRequest(cancelledRequests, requestKey);
-    postMessage(cancelledMessage(request));
-    return;
-  }
+  const active: ActiveFill = { cancelled: false };
+  activeRequests.set(requestKey, active);
 
-  void runExactFloodFillAsync(request, { isCancelled: () => cancelledRequests.has(requestKey) })
+  void runExactFloodFillAsync(request, { isCancelled: () => active.cancelled })
     .then((traversal) => {
-      if (cancelledRequests.has(requestKey)) {
-        forgetRequest(cancelledRequests, requestKey);
+      if (active.cancelled) {
         postMessage(cancelledMessage(request));
         return;
       }
       const result = createFillResult(request, traversal.indices, traversal.masks);
-      forgetRequest(cancelledRequests, requestKey);
       postMessage(result, [result.indices.buffer, result.masks.buffer]);
     })
     .catch((error: unknown) => {
-      forgetRequest(cancelledRequests, requestKey);
       if (error instanceof FillCancelledError) {
         postMessage(cancelledMessage(request));
         return;
       }
       postMessage(errorMessage(error, request));
-    });
+    })
+    .finally(() => { activeRequests.delete(requestKey); });
 }
 
 function installFillWorker(scope: FillWorkerScope): void {
-  const cancelledRequests = new Set<string>();
+  const activeRequests = new Map<string, ActiveFill>();
   scope.addEventListener('message', (event) => {
-    handleFillWorkerMessage(event.data, (message, transfer) => scope.postMessage(message, transfer), cancelledRequests);
+    handleFillWorkerMessage(event.data, (message, transfer) => scope.postMessage(message, transfer), activeRequests);
   });
 }
 

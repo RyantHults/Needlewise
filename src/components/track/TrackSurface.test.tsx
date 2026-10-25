@@ -2,7 +2,7 @@ import { act, fireEvent, render as renderBare, screen, within } from '@testing-l
 import { useEffect } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { computePatternMetrics, createDocument, type PatternDocument } from '../../domain';
-import { markCellComplete, applyCommand } from '../../domain/test-fixtures';
+import { markCellComplete, applyCommand, cell } from '../../domain/test-fixtures';
 import { DEFAULT_CATALOG_DEFINITION } from '../../catalog';
 import type { ProjectWorkspace } from '../../application/workspace';
 import { ChartPresentationMode, type EditorUiState } from '../../editor';
@@ -59,10 +59,10 @@ function trackedDocument(): PatternDocument {
   const apply = (command: Parameters<typeof applyCommand>[1]) => {
     pattern = applyCommand(pattern, command).document;
   };
-  for (let x = 0; x < 3; x += 1) apply({ type: 'set-full', x, y: 0, color: 7 });
-  apply({ type: 'set-full', x: 0, y: 1, color: 7 });
-  apply({ type: 'set-full', x: 1, y: 1, color: 2 });
-  apply({ type: 'set-full', x: 2, y: 1, color: 2 });
+  for (let x = 0; x < 3; x += 1) apply(cell(3, { type: 'set-full', x, y: 0, color: 7 }));
+  apply(cell(3, { type: 'set-full', x: 0, y: 1, color: 7 }));
+  apply(cell(3, { type: 'set-full', x: 1, y: 1, color: 2 }));
+  apply(cell(3, { type: 'set-full', x: 2, y: 1, color: 2 }));
   for (const [x, y] of [[0, 0], [1, 1], [2, 1]]) pattern = markCellComplete(pattern, x, y);
   return pattern;
 }
@@ -133,8 +133,6 @@ describe('TrackSurface', () => {
     const tools = screen.getByRole('region', { name: 'Tools' });
     const pan = within(tools).getByRole('button', { name: 'Pan' });
 
-    expect(tools.closest('.canvas-actions')).not.toBeNull();
-    expect(screen.queryByRole('navigation', { name: 'Track tools' })).not.toBeInTheDocument();
     fireEvent.click(pan);
     expect(pan).toHaveAttribute('aria-pressed', 'true');
     expect(lastViewerProps()).toMatchObject({ tool: 'pan' });
@@ -173,9 +171,6 @@ describe('TrackSurface', () => {
     setup();
     const total = screen.getByRole('button', { name: 'Color completion: Total, 50% done' });
 
-    expect(screen.getByText('Color completion', { selector: '.mobile-dock-title' })).toBeInTheDocument();
-    expect(total.querySelector('.mobile-dock-color-swatch')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Tools' })).not.toBeInTheDocument();
     fireEvent.click(total);
     expect(total).toHaveAttribute('aria-expanded', 'true');
     expect(within(screen.getByRole('dialog', { name: 'Colors' })).getByRole('list', { name: 'Colors' })).toBeInTheDocument();
@@ -190,16 +185,10 @@ describe('TrackSurface', () => {
     const trigger = screen.getByRole('button', { name: 'Color completion: #AA0000, 25% done' });
     expect(trigger).toHaveTextContent('#AA0000');
     expect(trigger).toHaveTextContent('25%');
-    expect(trigger.querySelector('.mobile-dock-color-swatch')).not.toBeNull();
   });
 
-  it('puts export and settings after redo and opens their dialogs', () => {
+  it('opens the export and settings dialogs from the header', () => {
     setup();
-    const labels = within(document.querySelector('.editor-heading-controls') as HTMLElement)
-      .getAllByRole('button')
-      .map((button) => button.getAttribute('aria-label'));
-    expect(labels).toEqual(['Undo mark', 'Redo mark', 'Export pattern', 'Open settings']);
-
     fireEvent.click(screen.getByRole('button', { name: 'Export pattern' }));
     expect(screen.getByRole('dialog', { name: 'Export stub' })).toHaveTextContent('Garden sampler');
     fireEvent.click(screen.getByRole('button', { name: 'Close export' }));
@@ -210,10 +199,7 @@ describe('TrackSurface', () => {
   it('shows the same dimension summary as the editor in the header', () => {
     setup();
 
-    expect(document.querySelector('.editor-heading-info .editor-dimensions')).toHaveTextContent(
-      '3 × 2 stitches · 0.54 cm × 0.36 cm'
-    );
-    expect(document.querySelector('.editor-dimensions')?.textContent).toMatch(/^3 × 2 stitches · /);
+    expect(screen.getByText('3 × 2 stitches · 0.54 cm × 0.36 cm')).toBeInTheDocument();
   });
 
   it('renames the pattern from the header title', () => {

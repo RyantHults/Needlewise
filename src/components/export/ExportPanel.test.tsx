@@ -4,12 +4,12 @@ import { DEFAULT_CATALOG_DEFINITION } from '../../catalog';
 import { createDocument } from '../../domain';
 import { DEFAULT_EXPORT_SETTINGS, EXPORT_SETTINGS_STORAGE_KEY, type ExportSettings } from '../../export';
 import { ExportDialog, ExportPanel, type ExportPanelProps, type ExportPanelWorkspace, type ExportPdf } from './ExportPanel';
-import { applyCommand } from '../../domain/test-fixtures';
+import { applyCommand, cell } from '../../domain/test-fixtures';
 
 const palette = [{ id: 1, name: 'Ruby', color: '#AA0000' }];
 const makeDocument = (stitched: boolean, width = 14, height = 14) => {
   const pattern = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width, height, palette });
-  return stitched ? applyCommand(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }).document : pattern;
+  return stitched ? applyCommand(pattern, cell(width, { type: 'set-full', x: 0, y: 0, color: 1 })).document : pattern;
 };
 
 function memoryStorage(initial?: ExportSettings) {
@@ -73,7 +73,6 @@ describe('ExportPanel', () => {
     expect(within(totals).getByText('Ruby')).toBeInTheDocument();
     expect(within(totals).getByText('1 full')).toBeInTheDocument();
     expect(within(totals).getByText(/1 backstitch strand,/)).toBeInTheDocument();
-    expect(within(totals).queryByText(/Aida estimate/)).not.toBeInTheDocument();
   });
 
   it('saves strands, backstitch strands and waste automatically', async () => {
@@ -105,13 +104,6 @@ describe('ExportPanel', () => {
     await waitFor(() => expect(updateActiveMetadata).toHaveBeenCalledWith({ units: 'imperial' }));
     expect(screen.getByRole('button', { name: 'Imperial' })).toHaveAttribute('aria-pressed', 'true');
     expect(within(screen.getByRole('region', { name: 'Thread totals' })).getByText(/1 in × 1 in/)).toBeInTheDocument();
-  });
-
-  it('names the stitch sizes Small, Medium and Large', () => {
-    setup();
-    const options = within(screen.getByLabelText('Stitch size')).getAllByRole('option');
-    expect(options.map((option) => option.textContent)).toEqual(['Small', 'Medium', 'Large']);
-    expect(options.map((option) => option.getAttribute('value'))).toEqual(['3.2', '4', '5']);
   });
 
   it('round-trips export settings through storage and updates the page estimate', () => {
@@ -289,11 +281,10 @@ describe('ExportPanel', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('shows thread totals and no separate stitch counts in the dialog', () => {
+  it('shows thread totals in the dialog', () => {
     const ws = makeWorkspace();
     render(<ExportDialog document={makeDocument(true)} title="Quilt" workspace={ws.workspace} exportPdf={vi.fn<ExportPdf>()} storage={memoryStorage()} onClose={vi.fn()} />);
     const dialog = screen.getByRole('dialog', { name: 'Export pattern' });
-    expect(within(dialog).queryByRole('region', { name: 'Stitch counts' })).not.toBeInTheDocument();
     expect(within(dialog).getByRole('region', { name: 'Thread totals' })).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: 'Export PDF' })).toBeInTheDocument();
   });

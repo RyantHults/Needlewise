@@ -855,7 +855,6 @@ export interface EditorUiStore {
   setState(patch: UiStatePatch): void;
   setViewport(viewport: Viewport): void;
   getBrushSize(): number;
-  setBrushSize(size: number): void;
   setToolBrushSize(tool: BrushSizeTool, size: number): void;
   setMode(mode: ChartPresentationMode): void;
   setGridVisible(visible: boolean): void;

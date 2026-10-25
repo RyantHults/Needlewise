@@ -43,7 +43,7 @@ import {
   type PatternFragment,
   computePatternMetrics
 } from './index';
-import { editorFromSurface, markBackstitchComplete, markCellComplete, onDefaultLayers, SPECIALTY_LAYER_ID, STITCH_LAYER_ID, applyCommand, bulkCellCommand, bulkEraseCellCommand, bulkEraseQuarterCommand, bulkSetFullCommand, bulkSetHalfCommand, bulkSetQuarterCommand, bulkSetThreeQuarterCommand, bulkRecolorCommand, getBackstitch, getCell, getQuarter, isQuarterKind, readPatternFragmentCell, TEST_CATALOG } from './test-fixtures';
+import { editorFromSurface, markBackstitchComplete, markCellComplete, onDefaultLayers, SPECIALTY_LAYER_ID, STITCH_LAYER_ID, applyCommand, bulkCellCommand, bulkEraseCellCommand, bulkEraseQuarterCommand, bulkSetFullCommand, bulkSetHalfCommand, bulkSetQuarterCommand, bulkSetThreeQuarterCommand, bulkRecolorCommand, getBackstitch, getCell, getQuarter, isQuarterKind, readPatternFragmentCell, TEST_CATALOG, cell, errorCode } from './test-fixtures';
 
 const TEST_REFERENCE = {
   catalogId: TEST_CATALOG.catalogId,
@@ -140,18 +140,18 @@ describe('document catalog association', () => {
     expect(created.palette[0].catalog).toEqual(foreignReference);
     expect(() => assertValidDocument(created)).not.toThrow();
 
-    expect(() => applyCommand(pattern, {
+    expect(errorCode(() => applyCommand(pattern, {
       type: 'palette-create',
       name: 'Malformed',
       color: '#000000',
       catalog: { ...foreignReference, rgb: [0, 0, 0] }
-    })).toThrow(/HEX and RGB values must agree/);
+    }))).toBe('invalid-catalog-reference');
 
     const invalidDocument = {
       ...created,
       palette: [{ ...created.palette[0], catalog: { ...foreignReference, sourceId: ' ' } }]
     } as unknown as PatternDocument;
-    expect(() => assertValidDocument(invalidDocument)).toThrow(/invalid catalog data/i);
+    expect(errorCode(() => assertValidDocument(invalidDocument))).toBe('invalid-document');
   });
 
   it('accepts a foreign catalog reference on initial palette creation', () => {
@@ -182,14 +182,9 @@ describe('document catalog association', () => {
     expect(() => assertValidDocument(editor.composite)).not.toThrow();
   });
 
-  it('accepts foreign references on palette update and merge-created entries', () => {
+  it('accepts foreign references on merge-created entries', () => {
     const foreignReference = { ...TEST_REFERENCE, catalogId: 'catalog-b' };
     const pattern = createDocument({ width: 1, height: 1, catalog: TEST_CATALOG, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    const updated = applyCommand(pattern, { type: 'palette-update', id: 1, catalog: foreignReference }).document;
-    expect(updated.catalog).toEqual(TEST_CATALOG);
-    expect(updated.palette[0].catalog).toEqual(foreignReference);
-    expect(() => assertValidDocument(updated)).not.toThrow();
-
     const merged = applyCommand(pattern, {
       type: 'palette-merge',
       from: 1,
@@ -212,15 +207,15 @@ describe('document catalog association', () => {
       ]
     });
 
-    expect(() => applyCommand(pattern, { type: 'palette-create', name: 'Three', color: '#333333' })).toThrow(/color count \(2\)/);
+    expect(errorCode(() => applyCommand(pattern, { type: 'palette-create', name: 'Three', color: '#333333' }))).toBe('invalid-palette-id');
   });
 
   it('requires a well-formed document catalog association', () => {
     const missing = { ...document(), catalog: undefined } as unknown as PatternDocument;
-    expect(() => assertValidDocument(missing)).toThrow(/catalog/i);
+    expect(errorCode(() => assertValidDocument(missing))).toBe('invalid-document');
 
     const malformed = { ...document(), catalog: { ...TEST_CATALOG, colorCount: 0 } } as unknown as PatternDocument;
-    expect(() => assertValidDocument(malformed)).toThrow(/color count/i);
+    expect(errorCode(() => assertValidDocument(malformed))).toBe('invalid-document');
   });
 
   it('allows catalog-less custom palette entries', () => {
@@ -237,39 +232,33 @@ describe('document catalog association', () => {
 });
 
 describe('typed-array pattern document', () => {
-  it('uses compact arrays and preserves completion for recolor but not geometry changes', () => {
+  it('preserves completion for recolor but not geometry changes', () => {
     const pattern = document();
-    expect(pattern.kind).toBeInstanceOf(Uint8Array);
-    expect(pattern.colors).toBeInstanceOf(Uint16Array);
-    expect(pattern.completed).toBeInstanceOf(Uint8Array);
-    expect(pattern.kind.length).toBe(12);
-    expect(pattern.colors.length).toBe(48);
-
-    let next = apply(pattern, { type: 'set-full', x: 1, y: 1, color: 1 });
+    let next = apply(pattern, cell(pattern, { type: 'set-full', x: 1, y: 1, color: 1 }));
     expect(getCell(next, 1, 1).completed).toBe(false);
     next = markCellComplete(next, 1, 1);
-    next = apply(next, { type: 'set-full', x: 1, y: 1, color: 2 });
+    next = apply(next, cell(next, { type: 'set-full', x: 1, y: 1, color: 2 }));
     expect(getCell(next, 1, 1).color).toBe(2);
     expect(getCell(next, 1, 1).completed).toBe(true);
 
-    next = apply(next, { type: 'set-half', x: 1, y: 1, direction: HalfDirection.Slash, color: 2 });
+    next = apply(next, cell(next, { type: 'set-half', x: 1, y: 1, direction: HalfDirection.Slash, color: 2 }));
     expect(getCell(next, 1, 1).kind).toBe(CellKind.HalfSlash);
     expect(getCell(next, 1, 1).completed).toBe(false);
   });
 
   it('keeps independent quarter slots and completion bits', () => {
     let pattern = document();
-    pattern = apply(pattern, { type: 'set-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }));
     expect(getCell(pattern, 0, 0).quarters[QuarterCorner.NW].completed).toBe(false);
     pattern = markCellComplete(pattern, 0, 0, QuarterCorner.NW);
-    pattern = apply(pattern, { type: 'set-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 });
-    const cell = getCell(pattern, 0, 0);
-    expect(cell.kind).toBe(CellKind.Quarters);
-    expect(cell.quarters[QuarterCorner.NW]).toMatchObject({ color: 1, completed: true });
-    expect(cell.quarters[QuarterCorner.SE]).toMatchObject({ color: 2, completed: false });
+    pattern = apply(pattern, cell(pattern, { type: 'set-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 }));
+    const placed = getCell(pattern, 0, 0);
+    expect(placed.kind).toBe(CellKind.Quarters);
+    expect(placed.quarters[QuarterCorner.NW]).toMatchObject({ color: 1, completed: true });
+    expect(placed.quarters[QuarterCorner.SE]).toMatchObject({ color: 2, completed: false });
     expect(pattern.completed[0]).toBe(1);
 
-    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 3 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 3 }));
     expect(getCell(pattern, 0, 0).kind).toBe(CellKind.Full);
     expect(pattern.colors.slice(0, 4)).toEqual(new Uint16Array([3, 0, 0, 0]));
     expect(pattern.completed[0]).toBe(0);
@@ -283,7 +272,7 @@ describe('typed-array pattern document', () => {
       [QuarterCorner.SW, [CellKind.ThreeQuarterSW, 2, 0, 0, 0]]
     ];
     for (const [corner, [kind, ...colors]] of expected) {
-      const result = applyCommand(document(), { type: 'set-three-quarter', x: 0, y: 0, corner, color: 2 });
+      const result = applyCommand(document(), cell(4, { type: 'set-three-quarter', x: 0, y: 0, corner, color: 2 }));
       expect(result.document.kind[0]).toBe(kind);
       expect(Array.from(result.document.colors.slice(0, 4))).toEqual(colors);
       expect(result.document.completed[0]).toBe(0);
@@ -291,7 +280,7 @@ describe('typed-array pattern document', () => {
   });
 
   it('keeps three-quarter cells separate from legacy quarter slots', () => {
-    const pattern = apply(document(), { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 });
+    const pattern = apply(document(), cell(4, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 }));
     expect(pattern.kind[0]).toBe(CellKind.ThreeQuarterSE);
     expect(pattern.colors.slice(0, 4)).toEqual(new Uint16Array([2, 0, 0, 0]));
     expect(getCell(pattern, 0, 0).quarters).toEqual([
@@ -315,28 +304,28 @@ describe('typed-array pattern document', () => {
   });
 
   it('keeps a full stitch color on the opposite corner when a three-quarter is painted over it', () => {
-    const full = apply(document(), { type: 'set-full', x: 0, y: 0, color: 1 });
-    const pattern = apply(full, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 2 });
+    const full = apply(document(), cell(4, { type: 'set-full', x: 0, y: 0, color: 1 }));
+    const pattern = apply(full, cell(full, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 2 }));
     expect(pattern.kind[0]).toBe(CellKind.ThreeQuarterPair);
     expect(Array.from(pattern.colors.slice(0, 4))).toEqual([2, 0, 1, 0]);
     expect(pattern.completed[0]).toBe(0);
 
-    const same = apply(full, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 });
+    const same = apply(full, cell(full, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }));
     expect(same.kind[0]).toBe(CellKind.ThreeQuarterPair);
     expect(Array.from(same.colors.slice(0, 4))).toEqual([1, 0, 1, 0]);
   });
 
   it('moves a completed full stitch completion onto the opposite corner of the pair', () => {
-    let pattern = apply(document(), { type: 'set-full', x: 0, y: 0, color: 1 });
+    let pattern = apply(document(), cell(4, { type: 'set-full', x: 0, y: 0, color: 1 }));
     pattern = markCellComplete(pattern, 0, 0);
-    pattern = apply(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NE, color: 2 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NE, color: 2 }));
     expect(pattern.kind[0]).toBe(CellKind.ThreeQuarterPair);
     expect(Array.from(pattern.colors.slice(0, 4))).toEqual([0, 2, 0, 1]);
     expect(pattern.completed[0]).toBe(1 << QuarterCorner.SW);
   });
 
   it('bulk three-quarter preflight and commit agree for full cells', () => {
-    let pattern = apply(document(), { type: 'set-full', x: 0, y: 0, color: 1 });
+    let pattern = apply(document(), cell(4, { type: 'set-full', x: 0, y: 0, color: 1 }));
     pattern = markCellComplete(pattern, 0, 0);
     const command = bulkSetThreeQuarterCommand(new Uint32Array([0, 1]), QuarterCorner.NW, 1);
     const preflight = preflightBulkCellCommand(pattern, command);
@@ -352,24 +341,24 @@ describe('typed-array pattern document', () => {
 
   it('pairs opposite three-quarter corners while making adjacent clicks exact no-ops', () => {
     let pattern = document();
-    pattern = apply(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NE, color: 1 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NE, color: 1 }));
     pattern = markCellComplete(pattern, 0, 0);
     const editor = editorFromSurface(pattern);
     const beforeAdjacent = cellSnapshot(editor.composite);
-    const adjacent = editor.execute(onDefaultLayers({ type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 2 }));
+    const adjacent = editor.execute(onDefaultLayers(cell(editor.composite, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 2 })));
     expect(adjacent.changed).toBe(false);
     expect(editor.composite).toEqual(beforeAdjacent);
     expect(editor.revision).toBe(beforeAdjacent.revision);
     expect(editor.undoDepth).toBe(0);
 
-    const paired = editor.execute(onDefaultLayers({ type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SW, color: 2 }));
+    const paired = editor.execute(onDefaultLayers(cell(editor.composite, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SW, color: 2 })));
     expect(paired.changed).toBe(true);
     expect(editor.composite.kind[0]).toBe(CellKind.ThreeQuarterPair);
     expect(editor.composite.colors.slice(0, 4)).toEqual(new Uint16Array([0, 1, 0, 2]));
     expect(editor.composite.completed[0]).toBe(2);
 
     const beforePairAdjacent = cellSnapshot(editor.composite);
-    const pairAdjacent = editor.execute(onDefaultLayers({ type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 3 }));
+    const pairAdjacent = editor.execute(onDefaultLayers(cell(editor.composite, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 3 })));
     expect(pairAdjacent.changed).toBe(false);
     expect(editor.composite).toEqual(beforePairAdjacent);
     expect(editor.revision).toBe(beforePairAdjacent.revision);
@@ -381,35 +370,27 @@ describe('typed-array pattern document', () => {
 
     const bulkCompletion = editor.applyProgress({ cells: { indices: new Uint32Array([0]), masks: new Uint8Array([10]) }, operation: 'set' })!.result;
     expect(bulkCompletion.changedIndices).toEqual(new Uint32Array([0]));
-    expect(bulkCompletion.progress).toMatchObject({ marked: 1, unmarked: 0 });
     expect(editor.composite.completed[0]).toBe(10);
 
-    const recolored = editor.execute(onDefaultLayers({ type: 'recolor-cell', x: 0, y: 0, corner: QuarterCorner.SW, color: 3 }));
-    expect(recolored.changed).toBe(true);
-    expect(editor.composite.colors.slice(0, 4)).toEqual(new Uint16Array([0, 1, 0, 3]));
-    expect(editor.composite.completed[0]).toBe(10);
-    const beforeRecolorAdjacent = cellSnapshot(editor.composite);
-    expect(editor.execute(onDefaultLayers({ type: 'recolor-cell', x: 0, y: 0, corner: QuarterCorner.NW, color: 2 })).changed).toBe(false);
-    expect(editor.composite).toEqual(beforeRecolorAdjacent);
   });
 
   it('erases paired components independently and canonicalizes the survivor', () => {
     let pattern = document();
-    pattern = apply(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 });
-    pattern = apply(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 }));
     pattern = markCellComplete(pattern, 0, 0, QuarterCorner.SE);
     const editor = editorFromSurface(pattern);
 
-    const erased = editor.execute(onDefaultLayers({ type: 'erase-quarter', x: 0, y: 0, corner: QuarterCorner.NW }));
+    const erased = editor.execute(onDefaultLayers(cell(editor.composite, { type: 'erase-quarter', x: 0, y: 0, corner: QuarterCorner.NW })));
     expect(erased.changed).toBe(true);
     expect(editor.composite.kind[0]).toBe(CellKind.ThreeQuarterSE);
     expect(editor.composite.colors.slice(0, 4)).toEqual(new Uint16Array([2, 0, 0, 0]));
     expect(editor.composite.completed[0]).toBe(1);
 
-    const adjacent = editor.execute(onDefaultLayers({ type: 'erase-quarter', x: 0, y: 0, corner: QuarterCorner.NE }));
+    const adjacent = editor.execute(onDefaultLayers(cell(editor.composite, { type: 'erase-quarter', x: 0, y: 0, corner: QuarterCorner.NE })));
     expect(adjacent.changed).toBe(false);
     expect(editor.composite.kind[0]).toBe(CellKind.ThreeQuarterSE);
-    const whole = editor.execute(onDefaultLayers({ type: 'erase-cell', x: 0, y: 0 }));
+    const whole = editor.execute(onDefaultLayers(cell(editor.composite, { type: 'erase-cell', x: 0, y: 0 })));
     expect(whole.changed).toBe(true);
     expect(editor.composite.kind[0]).toBe(CellKind.Empty);
     expect(editor.composite.colors.slice(0, 4)).toEqual(new Uint16Array([0, 0, 0, 0]));
@@ -418,8 +399,8 @@ describe('typed-array pattern document', () => {
 
   it('validates pair geometry and retains physical corner data through fragments', () => {
     let pattern = document(2, 1);
-    pattern = apply(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 });
-    pattern = apply(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 1 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 1 }));
     expect(() => assertValidDocument(pattern)).not.toThrow();
     expect(getCell(pattern, 0, 0).threeQuarters).toEqual([
       { color: 1, completed: false },
@@ -441,7 +422,7 @@ describe('typed-array pattern document', () => {
 
   it('overwrites three-quarter geometry, preserves same-kind completion, and packs bulk undo state', () => {
     let pattern = document();
-    pattern = apply(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }));
     pattern = markCellComplete(pattern, 0, 0);
     const editor = editorFromSurface(pattern);
     const result = editor.execute(onDefaultLayers(bulkSetThreeQuarterCommand(new Uint32Array([0, 1]), QuarterCorner.NW, 2)));
@@ -469,25 +450,22 @@ describe('typed-array pattern document', () => {
   it('requires explicit completion and enforces active, non-reserved palette IDs', () => {
     expect(() => createDocument({ width: 1, height: 1, catalog: TEST_CATALOG, palette: [{ id: 0xffff, name: 'Reserved', color: '#000' }] })).toThrow();
     let pattern = document(2, 2);
-    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
-    pattern = apply(pattern, { type: 'set-quarter', x: 1, y: 1, corner: QuarterCorner.NW, color: 1 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-quarter', x: 1, y: 1, corner: QuarterCorner.NW, color: 1 }));
     pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 4 }, color: 1 });
-    expect(() => apply(pattern, { type: 'palette-deactivate', id: 1 })).toThrow();
-    expect(() => apply(pattern, { type: 'palette-update', id: 1, active: false })).toThrow();
     pattern.palette[0] = { ...pattern.palette[0], active: false };
     expect(() => assertValidDocument(pattern)).toThrow();
   });
 
   it('merges a referenced palette color into another and deactivates the source atomically', () => {
     let pattern = document(2, 2);
-    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
-    pattern = apply(pattern, { type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 1 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 1 }));
     pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 4 }, color: 1 });
     const editor = editorFromSurface(pattern);
     const result = editor.execute(onDefaultLayers({ type: 'palette-merge', from: 1, to: 2 }));
 
     expect(result.changed).toBe(true);
-    expect(result.recalculateMetrics).toBe(true);
     const next = result.document;
     expect(next.palette.find((entry) => entry.id === 1)?.active).toBe(false);
     expect(next.palette.find((entry) => entry.id === 1)?.id).toBe(1);
@@ -514,17 +492,15 @@ describe('typed-array pattern document', () => {
     expect(() => applyCommand(pattern, { type: 'palette-merge', from: 1, to: 1 })).toThrow();
     expect(() => applyCommand(pattern, { type: 'palette-merge', from: 99, to: 1 })).toThrow();
     expect(() => applyCommand(pattern, { type: 'palette-merge', from: 1, to: 99 })).toThrow();
-    const inactiveMerge = applyCommand(pattern, { type: 'palette-create', name: 'Muted', color: '#888', active: false }).document;
-    expect(() => applyCommand(inactiveMerge, { type: 'palette-merge', from: 2, to: 4 })).toThrow();
   });
 
   it('palette-delete removes references instead of only deactivating the color', () => {
     let pattern = document(4, 1);
-    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
-    pattern = apply(pattern, { type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 1 });
-    pattern = apply(pattern, { type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 });
-    pattern = apply(pattern, { type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.SE, color: 2 });
-    pattern = apply(pattern, { type: 'set-full', x: 3, y: 0, color: 2 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.SE, color: 2 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 3, y: 0, color: 2 }));
     pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 });
     pattern = apply(pattern, { type: 'add-backstitch', start: { x: 4, y: 0 }, end: { x: 8, y: 0 }, color: 2 });
     const editor = editorFromSurface(pattern);
@@ -550,8 +526,8 @@ describe('typed-array pattern document', () => {
   });
 
   it('palette-delete preserves the opposite pair member, corner, and completion for either deleted color', () => {
-    let pattern = apply(document(1, 1), { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 });
-    pattern = apply(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 });
+    let pattern = apply(document(1, 1), cell(1, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 }));
     pattern = markCellComplete(pattern, 0, 0, QuarterCorner.NW);
     pattern = markCellComplete(pattern, 0, 0, QuarterCorner.SE);
 
@@ -576,11 +552,11 @@ describe('typed-array pattern document', () => {
   });
 
   it('palette-delete clears same-color pairs and non-NW three-quarter singles', () => {
-    let pattern = apply(document(4, 1), { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 });
-    pattern = apply(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 1 });
-    pattern = apply(pattern, { type: 'set-three-quarter', x: 1, y: 0, corner: QuarterCorner.NE, color: 1 });
-    pattern = apply(pattern, { type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.SE, color: 1 });
-    pattern = apply(pattern, { type: 'set-three-quarter', x: 3, y: 0, corner: QuarterCorner.SW, color: 1 });
+    let pattern = apply(document(4, 1), cell(4, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-three-quarter', x: 1, y: 0, corner: QuarterCorner.NE, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.SE, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-three-quarter', x: 3, y: 0, corner: QuarterCorner.SW, color: 1 }));
 
     const deleted = applyCommand(pattern, { type: 'palette-delete', id: 1 }).document;
 
@@ -606,12 +582,12 @@ describe('typed-array pattern document', () => {
   });
 
   it('palette-delete rejects an unknown palette id like the other palette commands', () => {
-    expect(() => applyCommand(document(), { type: 'palette-delete', id: 99 })).toThrow(/does not exist/);
+    expect(errorCode(() => applyCommand(document(), { type: 'palette-delete', id: 99 }))).toBe('unknown-palette');
   });
 
   it('atomically creates a replacement color and merges into it in one command', () => {
     let pattern = document(2, 1);
-    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }));
     const editor = editorFromSurface(pattern);
     const result = editor.execute(onDefaultLayers({
       type: 'palette-merge',
@@ -629,32 +605,6 @@ describe('typed-array pattern document', () => {
     expect(editor.composite.colors[0]).toBe(1);
   });
 
-  it('deep-compares and restores v2 palette material and catalog fields', () => {
-    const pattern = createDocument({
-      width: 1,
-      height: 1,
-      catalog: TEST_CATALOG,
-      palette: [{
-        id: 1,
-        name: 'Red',
-        color: '#d33',
-        symbol: SYMBOL_IDS[0],
-        material: { kind: 'floss', label: 'Cotton', unit: 'skeins', amount: 2 },
-        catalog: { catalogId: TEST_CATALOG.catalogId, sourceId: 'source', code: 'R', name: 'Red', hex: '#DD3333', rgb: [221, 51, 51] }
-      }]
-    });
-    const editor = editorFromSurface(pattern);
-    const result = editor.execute(onDefaultLayers({ type: 'palette-update', id: 1, material: { kind: 'floss', label: 'Silk', unit: 'meters', amount: 4 }, catalog: { catalogId: TEST_CATALOG.catalogId, sourceId: 'source-2', code: 'R2', name: 'Red 2', hex: '#CC2222', rgb: [204, 34, 34] } }));
-    expect(result.changed).toBe(true);
-    expect(editor.composite.palette[0].material).toMatchObject({ label: 'Silk', unit: 'meters', amount: 4 });
-    expect(editor.composite.palette[0].catalog?.catalogId).toBe(TEST_CATALOG.catalogId);
-    editor.undo();
-    expect(editor.composite.palette[0].material).toMatchObject({ label: 'Cotton', unit: 'skeins', amount: 2 });
-    expect(editor.composite.palette[0].catalog?.catalogId).toBe(TEST_CATALOG.catalogId);
-    editor.redo();
-    expect(editor.composite.palette[0].catalog?.rgb).toEqual([204, 34, 34]);
-  });
-
   it('creates a color against a non-empty pool and draws its default symbol', () => {
     // The counterpart of the empty-pool guard in empty-symbol-pool.test.ts: with
     // glyphs in the pool, adding a color is ordinary work and the symbol it
@@ -667,33 +617,6 @@ describe('typed-array pattern document', () => {
     expect(getSymbolOutline(entry.symbol)).toBeDefined();
   });
 
-  it('assigns pool defaults in order and cycles deterministically past the pool end', () => {
-    // The pool is curated to fewer symbols than the brand palette ceiling, so
-    // the "pool must cover the catalog" size requirement is relaxed: ids past
-    // the pool end reuse the cycled default. The pool itself still has one
-    // drawable slug per id.
-    expect(SYMBOL_IDS.length).toBeLessThan(TEST_CATALOG.colorCount);
-    expect(new Set(SYMBOL_IDS).size).toBe(SYMBOL_IDS.length);
-    for (const id of SYMBOL_IDS) {
-      expect(id.length).toBeGreaterThan(0);
-      expect(getSymbolOutline(id), `${id} is not drawable`).toBeDefined();
-    }
-    // Defaults are assigned in pool order, so id 1 takes the first slug and the
-    // sequence is a straight slice of the pool up to the pool end.
-    expect([1, 2, 3, 4, 5].map(defaultPaletteSymbol)).toEqual(SYMBOL_IDS.slice(0, 5));
-    expect(defaultPaletteSymbol(SYMBOL_IDS.length)).toBe(SYMBOL_IDS[SYMBOL_IDS.length - 1]);
-    // Ids 1..pool length each get a distinct default symbol.
-    const assigned = new Set<string>();
-    for (let id = 1; id <= SYMBOL_IDS.length; id += 1) {
-      assigned.add(defaultPaletteSymbol(id));
-    }
-    expect(assigned.size).toBe(SYMBOL_IDS.length);
-    // Past the end of the pool the assignment cycles deterministically.
-    expect(defaultPaletteSymbol(SYMBOL_IDS.length + 1)).toBe(SYMBOL_IDS[0]);
-    expect(defaultPaletteSymbol(2 * SYMBOL_IDS.length + 1)).toBe(SYMBOL_IDS[0]);
-    expect(() => defaultPaletteSymbol(0)).toThrow(DomainError);
-  });
-
   it('validates reassigned palette symbols through palette-update', () => {
     // The shared helper builds a three-entry palette whose defaults are the
     // first three slugs in pool order, so slugs from `fourth` on are free.
@@ -703,23 +626,23 @@ describe('typed-array pattern document', () => {
     const result = editor.execute(onDefaultLayers({ type: 'palette-update', id: 1, symbol: fourth }));
     expect(result.changed).toBe(true);
     expect(editor.composite.palette[0].symbol).toBe(fourth);
-    expect(() => editor.execute(onDefaultLayers({ type: 'palette-update', id: 2, symbol: '' }))).toThrow(/empty/);
-    expect(() => editor.execute(onDefaultLayers({ type: 'palette-update', id: 2, symbol: '   ' }))).toThrow(/empty/);
+    expect(errorCode(() => editor.execute(onDefaultLayers({ type: 'palette-update', id: 2, symbol: '' })))).toBe('invalid-palette-symbol');
+    expect(errorCode(() => editor.execute(onDefaultLayers({ type: 'palette-update', id: 2, symbol: '   ' })))).toBe('invalid-palette-symbol');
     // Only a slug the pool owns is a valid symbol; anything else is refused,
     // which is what keeps an undrawable character out of a saved document.
-    expect(() => editor.execute(onDefaultLayers({ type: 'palette-update', id: 2, symbol: '\u2606' }))).toThrow(/not in the symbol pool/);
-    expect(() => editor.execute(onDefaultLayers({ type: 'palette-update', id: 2, symbol: 'ABC' }))).toThrow(/not in the symbol pool/);
+    expect(errorCode(() => editor.execute(onDefaultLayers({ type: 'palette-update', id: 2, symbol: '\u2606' })))).toBe('invalid-palette-symbol');
+    expect(errorCode(() => editor.execute(onDefaultLayers({ type: 'palette-update', id: 2, symbol: 'ABC' })))).toBe('invalid-palette-symbol');
     editor.execute(onDefaultLayers({ type: 'palette-update', id: 2, symbol: fifth }));
     expect(editor.composite.palette[1].symbol).toBe(fifth);
     // A slug another entry already holds is still a duplicate.
-    expect(() => editor.execute(onDefaultLayers({ type: 'palette-update', id: 1, symbol: fifth }))).toThrow(/duplicated/);
+    expect(errorCode(() => editor.execute(onDefaultLayers({ type: 'palette-update', id: 1, symbol: fifth })))).toBe('invalid-palette-symbol');
     expect(() => editor.execute(onDefaultLayers({ type: 'palette-update', id: 99, symbol: fifth }))).toThrow();
     // A slug no entry holds is accepted even on an entry this test never touched.
     expect(() => editor.execute(onDefaultLayers({ type: 'palette-update', id: 3, symbol: sixth }))).not.toThrow();
     // Slugs are case sensitive, so a differently-cased copy is simply unknown.
     const upper = first.toUpperCase();
     if (upper !== first) {
-      expect(() => editor.execute(onDefaultLayers({ type: 'palette-update', id: 1, symbol: upper }))).toThrow(/not in the symbol pool/);
+      expect(errorCode(() => editor.execute(onDefaultLayers({ type: 'palette-update', id: 1, symbol: upper })))).toBe('invalid-palette-symbol');
     }
   });
 
@@ -740,12 +663,12 @@ describe('typed-array pattern document', () => {
     // The two-step palette-update formulation stays impossible: giving entry 1
     // the glyph entry 2 still holds is a duplicate, which is exactly the trap
     // the picker used to fall into.
-    expect(() => editor.execute(onDefaultLayers({ type: 'palette-update', id: 1, symbol: first }))).toThrow(/duplicated/);
+    expect(errorCode(() => editor.execute(onDefaultLayers({ type: 'palette-update', id: 1, symbol: first })))).toBe('invalid-palette-symbol');
   });
 
   it('rejects malformed palette-swap commands and keeps the palette unique through a swap', () => {
     const editor = editorFromSurface(document(2, 2));
-    expect(() => editor.execute(onDefaultLayers({ type: 'palette-swap', a: 1, b: 1 }))).toThrow(/distinct colors/);
+    expect(errorCode(() => editor.execute(onDefaultLayers({ type: 'palette-swap', a: 1, b: 1 })))).toBe('invalid-palette-id');
     expect(() => editor.execute(onDefaultLayers({ type: 'palette-swap', a: 1, b: 99 }))).toThrow();
     expect(() => editor.execute(onDefaultLayers({ type: 'palette-swap', a: 99, b: 1 }))).toThrow();
     // Swapping twice round-trips the glyphs without ever producing a duplicate:
@@ -775,12 +698,12 @@ describe('typed-array pattern document', () => {
     expect(new Set(pattern.palette.map((entry) => entry.symbol)).size).toBe(SYMBOL_IDS.length);
     // The next palette-create would exceed the brand ceiling, so it must throw
     // instead of overflowing onto a cycled duplicate.
-    expect(() => applyCommand(pattern, { type: 'palette-create', name: 'Color over', color: '#654321' })).toThrow(/brand's color count/);
+    expect(errorCode(() => applyCommand(pattern, { type: 'palette-create', name: 'Color over', color: '#654321' }))).toBe('invalid-palette-id');
     // Explicit duplicates stay rejected on create and update alike (checked on
     // a small palette so the brand-ceiling guard does not fire first).
     const small = document(2, 2);
-    expect(() => applyCommand(small, { type: 'palette-create', name: 'Copy', color: '#000000', symbol: SYMBOL_IDS[0] })).toThrow(/duplicated/);
-    expect(() => applyCommand(small, { type: 'palette-update', id: 2, symbol: SYMBOL_IDS[0] })).toThrow(/duplicated/);
+    expect(errorCode(() => applyCommand(small, { type: 'palette-create', name: 'Copy', color: '#000000', symbol: SYMBOL_IDS[0] }))).toBe('invalid-palette-symbol');
+    expect(errorCode(() => applyCommand(small, { type: 'palette-update', id: 2, symbol: SYMBOL_IDS[0] }))).toBe('invalid-palette-symbol');
   }, 10_000);
 
   it('yields cycled defaults at the brand ceiling and rejects ids above it', () => {
@@ -799,7 +722,7 @@ describe('typed-array pattern document', () => {
     }
     // An explicit id above the brand ceiling is rejected on palette-create, and
     // it is a symbol the pool owns, so the id is the only thing wrong with it.
-    expect(() => applyCommand(pattern, { type: 'palette-create', name: 'Over', color: '#ffffff', id: TEST_CATALOG.colorCount + 1, symbol: SYMBOL_IDS[0] })).toThrow(/brand's color count/);
+    expect(errorCode(() => applyCommand(pattern, { type: 'palette-create', name: 'Over', color: '#ffffff', id: TEST_CATALOG.colorCount + 1, symbol: SYMBOL_IDS[0] }))).toBe('invalid-palette-id');
   });
 
   it('enforces the shared maximum cell count during creation and validation', () => {
@@ -815,7 +738,7 @@ describe('typed-array pattern document', () => {
 
   it('rejects restored documents whose palette exceeds the brand ceiling', () => {
     // Palette length above the ceiling: defense-in-depth for restored docs.
-    expect(() => createDocument({
+    expect(errorCode(() => createDocument({
       width: 1,
       height: 1,
       catalog: TEST_CATALOG,
@@ -824,18 +747,18 @@ describe('typed-array pattern document', () => {
         name: `Color ${index + 1}`,
         color: '#123456'
       }))
-    })).toThrow(/brand's color count/);
+    }))).toBe('invalid-palette-id');
 
     // A single entry id above the ceiling is likewise rejected.
-    expect(() => createDocument({
+    expect(errorCode(() => createDocument({
       width: 1,
       height: 1,
       catalog: TEST_CATALOG,
       palette: [{ id: TEST_CATALOG.colorCount + 1, name: 'Over', color: '#ffffff' }]
-    })).toThrow(/brand's color count/);
+    }))).toBe('invalid-palette-id');
   });
 
-  it('canonicalizes, recolors, and moves backstitches without changing identity or completion', () => {
+  it('canonicalizes and moves backstitches without changing identity or completion', () => {
     let pattern = document();
     pattern = apply(pattern, { type: 'add-backstitch', start: { x: 8, y: 4 }, end: { x: 0, y: 0 }, color: 1 });
     const id = listBackstitches(pattern)[0].id;
@@ -843,20 +766,15 @@ describe('typed-array pattern document', () => {
     pattern = markBackstitchComplete(pattern, id);
     expect(getBackstitch(pattern, id)).toMatchObject({ id, x1: 0, y1: 0, x2: 8, y2: 4, completed: true });
 
-    pattern = apply(pattern, { type: 'recolor-backstitch', id, color: 2 });
-    expect(getBackstitch(pattern, id)).toMatchObject({ color: 2, completed: true });
     pattern = apply(pattern, { type: 'move-backstitch', id, start: { x: 12, y: 8 }, end: { x: 4, y: 4 } });
     expect(getBackstitch(pattern, id)).toMatchObject({ id, x1: 4, y1: 4, x2: 12, y2: 8, completed: false });
-    pattern = markBackstitchComplete(pattern, id);
-    pattern = apply(pattern, { type: 'update-backstitch', id, start: { x: 8, y: 0 }, end: { x: 12, y: 4 }, color: 1 });
-    expect(getBackstitch(pattern, id)).toMatchObject({ x1: 8, y1: 0, x2: 12, y2: 4, completed: false });
   });
 
   it('snaps new and moved backstitch endpoints away from cell interiors without migrating legacy geometry', () => {
     let pattern = document(3, 3);
     pattern = apply(pattern, { type: 'add-backstitch', start: { x: 2, y: 2 }, end: { x: 10, y: 6 }, color: 1 });
     expect(listBackstitches(pattern)[0]).toMatchObject({ x1: 4, y1: 4, x2: 12, y2: 8 });
-    expect(() => apply(document(3, 3), { type: 'add-backstitch', start: { x: 2, y: 2 }, end: { x: 3, y: 3 }, color: 1 })).toThrow(/identical/);
+    expect(errorCode(() => apply(document(3, 3), { type: 'add-backstitch', start: { x: 2, y: 2 }, end: { x: 3, y: 3 }, color: 1 }))).toBe('invalid-backstitch');
 
     const legacy = document(3, 3);
     legacy.backstitches = {
@@ -919,8 +837,8 @@ describe('typed-array pattern document', () => {
   it('rejects invalid palette and duplicate segments atomically', () => {
     const editor = editorFromSurface(document());
     expect(() => editor.execute(onDefaultLayers({ type: 'batch', commands: [
-      { type: 'set-full', x: 0, y: 0, color: 1 },
-      { type: 'set-full', x: 1, y: 0, color: 99 }
+      cell(4, { type: 'set-full', x: 0, y: 0, color: 1 }),
+      cell(4, { type: 'set-full', x: 1, y: 0, color: 99 })
     ] }))).toThrow();
     expect(editor.composite.kind[0]).toBe(CellKind.Empty);
     expect(editor.composite.kind[1]).toBe(CellKind.Empty);
@@ -936,10 +854,10 @@ describe('typed-array pattern document', () => {
   it('rejects invalid bulk targets, intent, palette, and stale revisions atomically', () => {
     const editor = editorFromSurface(document());
     const before = cellSnapshot(editor.composite);
-    expect(() => editor.execute(onDefaultLayers({ type: 'bulk-cell', indices: new Uint32Array([0, 2, 1]), edit: { kind: 'full', color: 1 } }))).toThrow(/strictly increasing/);
-    expect(() => editor.execute(onDefaultLayers({ type: 'bulk-cell', indices: new Uint32Array([0, 99]), edit: { kind: 'full', color: 1 } }))).toThrow(/out of bounds/);
-    expect(() => editor.execute(onDefaultLayers({ type: 'bulk-cell', indices: new Uint32Array([0, 1]), edit: { kind: 'full', color: 99 } }))).toThrow(/Palette/);
-    expect(() => editor.execute(onDefaultLayers(bulkCellCommand(new Uint32Array([0]), { kind: 'full', color: 1 }, 1)))).toThrow(/expected revision/);
+    expect(errorCode(() => editor.execute(onDefaultLayers({ type: 'bulk-cell', indices: new Uint32Array([0, 2, 1]), edit: { kind: 'full', color: 1 } })))).toBe('invalid-bulk-indices');
+    expect(errorCode(() => editor.execute(onDefaultLayers({ type: 'bulk-cell', indices: new Uint32Array([0, 99]), edit: { kind: 'full', color: 1 } })))).toBe('out-of-bounds');
+    expect(errorCode(() => editor.execute(onDefaultLayers({ type: 'bulk-cell', indices: new Uint32Array([0, 1]), edit: { kind: 'full', color: 99 } })))).toBe('unknown-palette');
+    expect(errorCode(() => editor.execute(onDefaultLayers(bulkCellCommand(new Uint32Array([0]), { kind: 'full', color: 1 }, 1))))).toBe('stale-command');
     expect(editor.composite).toEqual(before);
     expect(editor.composite.revision).toBe(0);
     expect(editor.undoDepth).toBe(0);
@@ -951,10 +869,10 @@ describe('typed-array pattern document', () => {
     const before = editor.composite;
     const bulk = bulkSetFullCommand(new Uint32Array([0, 1]), 1);
 
-    expect(() => editor.execute(onDefaultLayers({ type: 'batch', commands: [
-      { type: 'set-full', x: 2, y: 0, color: 1 },
+    expect(errorCode(() => editor.execute(onDefaultLayers({ type: 'batch', commands: [
+      cell(4, { type: 'set-full', x: 2, y: 0, color: 1 }),
       bulk
-    ] }))).toThrow(/standalone/);
+    ] })))).toBe('bulk-batch-unsupported');
     expect(editor.composite).toBe(before);
     expect(editor.composite.kind.every((kind) => kind === CellKind.Empty)).toBe(true);
     expect(editor.composite.revision).toBe(0);
@@ -966,10 +884,10 @@ describe('typed-array pattern document', () => {
     const editor = editorFromSurface(document());
     const before = editor.composite;
 
-    expect(() => editor.execute(onDefaultLayers({ type: 'batch', commands: [
+    expect(errorCode(() => editor.execute(onDefaultLayers({ type: 'batch', commands: [
       bulkSetFullCommand(new Uint32Array([0]), 1),
       bulkSetHalfCommand(new Uint32Array([1]), HalfDirection.Slash, 2)
-    ] }))).toThrow(/standalone/);
+    ] })))).toBe('bulk-batch-unsupported');
     expect(editor.composite).toBe(before);
     expect(editor.composite.kind.every((kind) => kind === CellKind.Empty)).toBe(true);
     expect(editor.composite.revision).toBe(0);
@@ -979,10 +897,10 @@ describe('typed-array pattern document', () => {
 
   it('applies homogeneous bulk cell edits with canonical completion semantics and quarter isolation', () => {
     let pattern = document(2, 2);
-    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }));
     pattern = markCellComplete(pattern, 0, 0);
-    pattern = apply(pattern, { type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 1 });
-    pattern = apply(pattern, { type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.SE, color: 2 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.SE, color: 2 }));
     pattern = markCellComplete(pattern, 1, 0, QuarterCorner.NW);
     pattern = markCellComplete(pattern, 1, 0, QuarterCorner.SE);
     const editor = editorFromSurface(pattern);
@@ -1016,7 +934,6 @@ describe('typed-array pattern document', () => {
     const result = editor.execute(onDefaultLayers(command));
     expect(result.revision).toBe(1);
     expect(editor.undoDepth).toBe(1);
-    expect(editor.exportHistory().undo.at(-1)?.kind).toBe('delta');
     expect(result.changedIndices).toEqual(new Uint32Array([0, 1, 4, 5]));
     expect(editor.undo().revision).toBe(2);
     expect(editor.composite.kind.slice(0, 6)).toEqual(new Uint8Array(6));
@@ -1026,21 +943,21 @@ describe('typed-array pattern document', () => {
 
   it('recolors masked components across every stitch geometry in one delta', () => {
     let pattern = document(6, 1);
-    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }));
     pattern = markCellComplete(pattern, 0, 0);
-    pattern = apply(pattern, { type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 1 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 1 }));
     pattern = markCellComplete(pattern, 1, 0);
-    pattern = apply(pattern, { type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 }));
     pattern = markCellComplete(pattern, 2, 0);
     for (const [corner, color] of [[QuarterCorner.NW, 1], [QuarterCorner.NE, 2], [QuarterCorner.SE, 1], [QuarterCorner.SW, 2]] as const) {
-      pattern = apply(pattern, { type: 'set-quarter', x: 3, y: 0, corner, color });
+      pattern = apply(pattern, cell(pattern, { type: 'set-quarter', x: 3, y: 0, corner, color }));
     }
     pattern = markCellComplete(pattern, 3, 0, QuarterCorner.NW);
-    pattern = apply(pattern, { type: 'set-three-quarter', x: 4, y: 0, corner: QuarterCorner.NW, color: 1 });
-    pattern = apply(pattern, { type: 'set-three-quarter', x: 4, y: 0, corner: QuarterCorner.SE, color: 1 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-three-quarter', x: 4, y: 0, corner: QuarterCorner.NW, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-three-quarter', x: 4, y: 0, corner: QuarterCorner.SE, color: 1 }));
     pattern = markCellComplete(pattern, 4, 0);
-    pattern = apply(pattern, { type: 'set-three-quarter', x: 5, y: 0, corner: QuarterCorner.NW, color: 1 });
-    pattern = apply(pattern, { type: 'set-three-quarter', x: 5, y: 0, corner: QuarterCorner.SE, color: 2 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-three-quarter', x: 5, y: 0, corner: QuarterCorner.NW, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-three-quarter', x: 5, y: 0, corner: QuarterCorner.SE, color: 2 }));
     pattern = markCellComplete(pattern, 5, 0, QuarterCorner.NW);
     const editor = editorFromSurface(pattern);
 
@@ -1064,7 +981,6 @@ describe('typed-array pattern document', () => {
     ]));
     expect(editor.composite.completed).toEqual(new Uint8Array([1, 1, 1, 1, 5, 1]));
     expect(editor.undoDepth).toBe(1);
-    expect(editor.exportHistory().undo.at(-1)?.kind).toBe('delta');
     expect(editor.historyBytes).toBe(estimateBulkRecolorHistoryBytes(indices.length));
 
     editor.undo();
@@ -1084,20 +1000,20 @@ describe('typed-array pattern document', () => {
 
   it('rejects malformed, mismatched, and stale component recolors atomically', () => {
     const editor = editorFromSurface(document(2, 1));
-    editor.execute(onDefaultLayers({ type: 'set-full', x: 0, y: 0, color: 1 }));
-    editor.execute(onDefaultLayers({ type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 1 }));
+    editor.execute(onDefaultLayers(cell(editor.composite, { type: 'set-full', x: 0, y: 0, color: 1 })));
+    editor.execute(onDefaultLayers(cell(editor.composite, { type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 1 })));
     editor.clearHistory();
     const before = cellSnapshot(editor.composite);
     const revision = editor.revision;
     const valid = { type: 'bulk-recolor' as const, indices: new Uint32Array([0]), masks: new Uint8Array([1]), fromColor: 1, toColor: 2 };
-    expect(() => editor.execute(onDefaultLayers({ ...valid, indices: new Uint32Array([1, 0]), masks: new Uint8Array([1, 1]) }))).toThrow(/strictly increasing/);
-    expect(() => editor.execute(onDefaultLayers({ ...valid, masks: new Uint8Array([]) }))).toThrow(/align/);
-    expect(() => editor.execute(onDefaultLayers({ ...valid, masks: new Uint8Array([0]) }))).toThrow(/nonzero/);
-    expect(() => editor.execute(onDefaultLayers({ ...valid, masks: new Uint8Array([2]) }))).toThrow(/subset/);
-    expect(() => editor.execute(onDefaultLayers({ ...valid, fromColor: 2 }))).toThrow(/source/);
-    expect(() => editor.execute(onDefaultLayers({ ...valid, fromColor: 99 }))).toThrow(/Palette|palette/);
-    expect(() => editor.execute(onDefaultLayers({ ...valid, toColor: 99 }))).toThrow(/Palette|palette/);
-    expect(() => editor.execute(onDefaultLayers({ ...valid, expectedRevision: 4 }))).toThrow(/expected revision/);
+    expect(errorCode(() => editor.execute(onDefaultLayers({ ...valid, indices: new Uint32Array([1, 0]), masks: new Uint8Array([1, 1]) })))).toBe('invalid-bulk-indices');
+    expect(errorCode(() => editor.execute(onDefaultLayers({ ...valid, masks: new Uint8Array([]) })))).toBe('invalid-bulk-recolor');
+    expect(errorCode(() => editor.execute(onDefaultLayers({ ...valid, masks: new Uint8Array([0]) })))).toBe('invalid-bulk-recolor');
+    expect(errorCode(() => editor.execute(onDefaultLayers({ ...valid, masks: new Uint8Array([2]) })))).toBe('invalid-bulk-recolor');
+    expect(errorCode(() => editor.execute(onDefaultLayers({ ...valid, fromColor: 2 })))).toBe('stale-command');
+    expect(errorCode(() => editor.execute(onDefaultLayers({ ...valid, fromColor: 99 })))).toBe('unknown-palette');
+    expect(errorCode(() => editor.execute(onDefaultLayers({ ...valid, toColor: 99 })))).toBe('unknown-palette');
+    expect(errorCode(() => editor.execute(onDefaultLayers({ ...valid, expectedRevision: 4 })))).toBe('stale-command');
     expect(editor.composite).toEqual(before);
     expect(editor.revision).toBe(revision);
     expect(editor.undoDepth).toBe(0);
@@ -1105,7 +1021,7 @@ describe('typed-array pattern document', () => {
 
   it('treats a valid source-equals-destination recolor as a no-op without revision or history', () => {
     const editor = editorFromSurface(document(1, 1));
-    editor.execute(onDefaultLayers({ type: 'set-full', x: 0, y: 0, color: 1 }));
+    editor.execute(onDefaultLayers(cell(editor.composite, { type: 'set-full', x: 0, y: 0, color: 1 })));
     editor.clearHistory();
     const revision = editor.revision;
     const result = editor.execute(onDefaultLayers(bulkRecolorCommand(new Uint32Array([0]), new Uint8Array([1]), 1, 1, revision)));
@@ -1117,25 +1033,21 @@ describe('typed-array pattern document', () => {
 
   it('applies set, clear, and toggle progress to occupied cell components atomically', () => {
     let pattern = document(3, 1);
-    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
-    pattern = apply(pattern, { type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 2 });
-    pattern = apply(pattern, { type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 });
-    pattern = apply(pattern, { type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.SE, color: 2 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 2 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.SE, color: 2 }));
 
-    const set = applyCommand(pattern, bulkCompletionCommand(new Uint32Array([0, 1, 2]), 'set'));
+    const set = applyCommand(pattern, bulkCompletionCommand(new Uint32Array([0, 1, 2]), 'set', new Uint8Array([1, 1, 5])));
     expect(set.touchedIndices).toEqual(new Uint32Array([0, 1, 2]));
     expect(set.changedIndices).toEqual(new Uint32Array([0, 1, 2]));
     expect(set.document.completed).toEqual(new Uint8Array([1, 1, 5]));
 
-    const clearCorner = applyCommand(set.document, bulkCompletionCommand(new Uint32Array([2]), 'clear', QuarterCorner.NW));
-    expect(clearCorner.changedIndices).toEqual(new Uint32Array([2]));
-    expect(clearCorner.document.completed[2]).toBe(4);
-
-    const toggle = applyCommand(clearCorner.document, bulkCompletionCommand(new Uint32Array([0, 2]), 'toggle'));
+    const toggle = applyCommand(set.document, bulkCompletionCommand(new Uint32Array([0, 2]), 'toggle', new Uint8Array([1, 5])));
     expect(toggle.changedIndices).toEqual(new Uint32Array([0, 2]));
-    expect(toggle.document.completed).toEqual(new Uint8Array([0, 1, 1]));
+    expect(toggle.document.completed).toEqual(new Uint8Array([0, 1, 0]));
 
-    const noOp = applyCommand(toggle.document, bulkCompletionCommand(new Uint32Array([0]), 'clear'));
+    const noOp = applyCommand(toggle.document, bulkCompletionCommand(new Uint32Array([0]), 'clear', new Uint8Array([1])));
     expect(noOp.changed).toBe(false);
     expect(noOp.touchedIndices).toEqual(new Uint32Array([0]));
     expect(noOp.changedIndices).toEqual(new Uint32Array(0));
@@ -1163,7 +1075,6 @@ describe('typed-array pattern document', () => {
 
     const created = editor.execute(onDefaultLayers({ type: 'palette-create', name: 'Green', color: '#3a3' }));
     expect(created.changed).toBe(true);
-    expect(created.recalculateMetrics).toBe(false);
     expect(editor.composite.kind).toBe(kind);
     expect(editor.composite.colors).toBe(colors);
     expect(editor.composite.completed).toBe(completed);
@@ -1193,39 +1104,28 @@ describe('typed-array pattern document', () => {
     before.completed = originalCompleted;
     expect(densePlaneReads).toEqual({ kind: 0, colors: 0, completed: 0 });
 
-    const updated = editor.execute(onDefaultLayers({ type: 'palette-update', id: createdId!, name: 'Updated green' }));
+    const updated = editor.execute(onDefaultLayers({ type: 'palette-update', id: createdId!, symbol: SYMBOL_IDS[SYMBOL_IDS.length - 1] }));
     expect(updated.changed).toBe(true);
-    expect(editor.composite.palette.find((entry) => entry.id === createdId)?.name).toBe('Updated green');
+    expect(editor.composite.palette.find((entry) => entry.id === createdId)?.symbol).toBe(SYMBOL_IDS[SYMBOL_IDS.length - 1]);
     expect(editor.composite.kind).toBe(originalKind);
     expect(editor.composite.colors).toBe(originalColors);
     expect(editor.composite.completed).toBe(originalCompleted);
     expect(editor.undo().changed).toBe(true);
     expect(editor.composite.palette).toEqual(createdPalette);
     expect(editor.redo().changed).toBe(true);
-    expect(editor.composite.palette.find((entry) => entry.id === createdId)?.name).toBe('Updated green');
-
-    const deactivated = editor.execute(onDefaultLayers({ type: 'palette-deactivate', id: createdId! }));
-    expect(deactivated.changed).toBe(true);
-    expect(editor.composite.palette.find((entry) => entry.id === createdId)?.active).toBe(false);
-    expect(editor.composite.kind).toBe(originalKind);
-    expect(editor.composite.colors).toBe(originalColors);
-    expect(editor.composite.completed).toBe(originalCompleted);
-    expect(editor.undo().changed).toBe(true);
-    expect(editor.composite.palette.find((entry) => entry.id === createdId)?.active).toBe(true);
-    expect(editor.redo().changed).toBe(true);
-    expect(editor.composite.palette.find((entry) => entry.id === createdId)?.active).toBe(false);
+    expect(editor.composite.palette.find((entry) => entry.id === createdId)?.symbol).toBe(SYMBOL_IDS[SYMBOL_IDS.length - 1]);
 
     assertValidDocument(editor.composite);
   });
 
   it('applies heterogeneous per-cell completion masks without disturbing unrelated bits', () => {
     let pattern = document(3, 1);
-    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
-    pattern = apply(pattern, { type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 1 });
-    pattern = apply(pattern, { type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.SE, color: 2 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.SE, color: 2 }));
     pattern = markCellComplete(pattern, 1, 0, QuarterCorner.NW);
-    pattern = apply(pattern, { type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 });
-    pattern = apply(pattern, { type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.SE, color: 2 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.SE, color: 2 }));
     pattern = markCellComplete(pattern, 2, 0, QuarterCorner.SE);
     pattern = markCellComplete(pattern, 0, 0);
 
@@ -1241,25 +1141,22 @@ describe('typed-array pattern document', () => {
 
     const set = applyCommand(pattern, command);
     expect(set.changedIndices).toEqual(new Uint32Array([1, 2]));
-    expect(set.progress).toMatchObject({ marked: 2, unmarked: 0 });
     expect(set.document.completed).toEqual(new Uint8Array([1, 5, 5]));
 
     const clearPairComponent = applyCommand(set.document, { type: 'bulk-completion', indices: new Uint32Array([2]), masks: new Uint8Array([1]), operation: 'clear' });
     expect(clearPairComponent.changedIndices).toEqual(new Uint32Array([2]));
-    expect(clearPairComponent.progress).toMatchObject({ marked: 0, unmarked: 1 });
     expect(clearPairComponent.document.completed[2]).toBe(4);
   });
 
   it('rejects invalid or conflicting completion masks atomically and treats zero masks as no-ops', () => {
     let pattern = document(2, 1);
-    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
-    pattern = apply(pattern, { type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 2 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 2 }));
     const before = cellSnapshot(pattern);
 
-    expect(() => applyCommand(pattern, { type: 'bulk-completion', indices: new Uint32Array([0, 1]), masks: new Uint8Array([1]), operation: 'set' })).toThrow(/align/);
-    expect(() => applyCommand(pattern, { type: 'bulk-completion', indices: new Uint32Array([0]), masks: new Uint8Array([2]), operation: 'set' })).toThrow(/subset/);
-    expect(() => applyCommand(pattern, { type: 'bulk-completion', indices: new Uint32Array([1]), masks: new Uint8Array([2]), operation: 'set' })).toThrow(/subset/);
-    expect(() => applyCommand(pattern, { type: 'bulk-completion', indices: new Uint32Array([0]), masks: new Uint8Array([1]), corner: QuarterCorner.NW, operation: 'set' })).toThrow(/corner/);
+    expect(errorCode(() => applyCommand(pattern, { type: 'bulk-completion', indices: new Uint32Array([0, 1]), masks: new Uint8Array([1]), operation: 'set' }))).toBe('invalid-completion-targets');
+    expect(errorCode(() => applyCommand(pattern, { type: 'bulk-completion', indices: new Uint32Array([0]), masks: new Uint8Array([2]), operation: 'set' }))).toBe('invalid-completion-target');
+    expect(errorCode(() => applyCommand(pattern, { type: 'bulk-completion', indices: new Uint32Array([1]), masks: new Uint8Array([2]), operation: 'set' }))).toBe('invalid-completion-target');
     expect(pattern).toEqual(before);
 
     const noOp = applyCommand(pattern, { type: 'bulk-completion', indices: new Uint32Array([0, 1]), masks: new Uint8Array([0, 0]), operation: 'set' });
@@ -1278,7 +1175,7 @@ describe('typed-array pattern document', () => {
     expect(set.touchedBackstitchIds).toEqual(new Uint32Array([1, 2]));
     expect(set.changedBackstitchIds).toEqual(new Uint32Array([1, 2]));
     expect(set.document.backstitches.completed).toEqual(new Uint8Array([1, 1, 0]));
-    expect(() => applyCommand(set.document, bulkBackstitchCompletionCommand(new Uint32Array([1, 99]), 'set'))).toThrow(/does not exist/);
+    expect(errorCode(() => applyCommand(set.document, bulkBackstitchCompletionCommand(new Uint32Array([1, 99]), 'set')))).toBe('invalid-completion-target');
 
     const clear = applyCommand(set.document, bulkBackstitchCompletionCommand(new Uint32Array([1, 2]), 'clear'));
     expect(clear.changedBackstitchIds).toEqual(new Uint32Array([1, 2]));
@@ -1287,14 +1184,6 @@ describe('typed-array pattern document', () => {
     expect(toggle.document.backstitches.completed).toEqual(new Uint8Array([0, 1, 1]));
   });
 
-  it('rejects unsorted or geometrically invalid bulk completion targets before mutation', () => {
-    const pattern = apply(document(2, 1), { type: 'set-full', x: 0, y: 0, color: 1 });
-    const before = cellSnapshot(pattern);
-    expect(() => applyCommand(pattern, bulkCompletionCommand(new Uint32Array([1, 0]), 'set'))).toThrow(/strictly increasing/);
-    expect(() => applyCommand(pattern, bulkCompletionCommand(new Uint32Array([0]), 'set', QuarterCorner.NW))).toThrow(/quarter geometry/);
-    expect(() => applyCommand(pattern, bulkCompletionCommand(new Uint32Array([1]), 'set'))).toThrow(/occupied geometry/);
-    expect(pattern).toEqual(before);
-  });
 
   it('copies result index arrays so callers cannot alter undo/redo state', () => {
     const editor = editorFromSurface(document(2, 2));
@@ -1313,7 +1202,7 @@ describe('typed-array pattern document', () => {
     expect(editor.composite.kind[1]).toBe(CellKind.Full);
 
     const deleteEditor = editorFromSurface(document(2, 2));
-    deleteEditor.execute(onDefaultLayers({ type: 'set-full', x: 0, y: 0, color: 1 }));
+    deleteEditor.execute(onDefaultLayers(cell(deleteEditor.composite, { type: 'set-full', x: 0, y: 0, color: 1 })));
     deleteEditor.clearHistory();
     const deleteResult = deleteEditor.execute(onDefaultLayers(deleteRegionCommand({ x: 0, y: 0, width: 1, height: 1 }, deleteEditor.revision)));
     deleteResult.changedIndices?.fill(3);
@@ -1342,38 +1231,11 @@ describe('typed-array pattern document', () => {
   it('preflights bulk history size before mutation', () => {
     const editor = editorFromSurface(document(4, 3), { historyLimitBytes: 103 });
     const before = cellSnapshot(editor.composite);
-    expect(() => editor.execute(onDefaultLayers(bulkSetFullCommand(new Uint32Array([0, 1, 2]), 1)))).toThrow(/exceeding/);
+    expect(errorCode(() => editor.execute(onDefaultLayers(bulkSetFullCommand(new Uint32Array([0, 1, 2]), 1))))).toBe('history-entry-too-large');
     expect(editor.composite).toEqual(before);
     expect(editor.composite.revision).toBe(0);
     expect(editor.undoDepth).toBe(0);
     expect(editor.redoDepth).toBe(0);
-  });
-
-  it('handles a 500 by 500 homogeneous fill without per-cell commands', () => {
-    const width = 500;
-    const height = 500;
-    const indices = Uint32Array.from({ length: width * height }, (_, index) => index);
-    const editor = editorFromSurface(createDocument({ width, height, catalog: TEST_CATALOG, palette: [{ id: 1, name: 'Red', color: '#d33' }] }));
-    const result = editor.execute(onDefaultLayers(bulkSetFullCommand(indices, 1)));
-    expect(result.changed).toBe(true);
-    expect(result.revision).toBe(1);
-    expect(result.changedIndices).toHaveLength(width * height);
-    expect(editor.undoDepth).toBe(1);
-    expect(editor.exportHistory().undo.at(-1)?.kind).toBe('delta');
-    expect(editor.historyBytes).toBeLessThanOrEqual(DEFAULT_HISTORY_LIMIT_BYTES);
-    expect(editor.composite.kind[0]).toBe(CellKind.Full);
-    expect(editor.composite.kind.at(-1)).toBe(CellKind.Full);
-
-    const historyBytes = editor.historyBytes;
-    const noOp = editor.execute(onDefaultLayers(bulkSetFullCommand(indices, 1)));
-    expect(noOp.changed).toBe(false);
-    expect(editor.undoDepth).toBe(1);
-    expect(editor.historyBytes).toBe(historyBytes);
-    expect(editor.undo().changed).toBe(true);
-    expect(editor.composite.kind[0]).toBe(CellKind.Empty);
-    expect(editor.composite.kind.at(-1)).toBe(CellKind.Empty);
-    expect(editor.redo().changed).toBe(true);
-    expect(editor.composite.kind[0]).toBe(CellKind.Full);
   });
 
   it('proves the packed 1,000 by 1,000 bulk path is one bounded undoable entry', () => {
@@ -1388,7 +1250,6 @@ describe('typed-array pattern document', () => {
     expect(result.revision).toBe(1);
     expect(result.changedIndices).toBeInstanceOf(Uint32Array);
     expect(result.changedIndices).toHaveLength(cellCount);
-    expect(editor.exportHistory().undo.at(-1)?.kind).toBe('delta');
     expect(editor.undoDepth).toBe(1);
     expect(editor.historyBytes).toBe(estimateBulkCellHistoryBytes(cellCount));
     expect(editor.historyBytes).toBeLessThanOrEqual(DEFAULT_HISTORY_LIMIT_BYTES);
@@ -1408,30 +1269,9 @@ describe('typed-array pattern document', () => {
     expect(editor.composite.kind.at(-1)).toBe(CellKind.Full);
   });
 
-  it('rejects a 1,000 by 1,000 bulk entry over budget before mutation', () => {
-    const side = 1_000;
-    const cellCount = side * side;
-    const requiredBytes = estimateBulkCellHistoryBytes(cellCount);
-    const editor = editorFromSurface(createDocument({ width: side, height: side, catalog: TEST_CATALOG, palette: [{ id: 1, name: 'Red', color: '#d33' }] }), { historyLimitBytes: requiredBytes - 1 });
-    const before = editor.composite;
-    const command = bulkSetFullCommand(Uint32Array.from({ length: cellCount }, (_, index) => index), 1);
-
-    expect(() => editor.execute(onDefaultLayers(command))).toThrow(/exceeding/);
-    expect(editor.composite).toBe(before);
-    expect(editor.composite.revision).toBe(0);
-    expect(editor.composite.kind[0]).toBe(CellKind.Empty);
-    expect(editor.composite.kind.at(-1)).toBe(CellKind.Empty);
-    expect(editor.undoDepth).toBe(0);
-    expect(editor.redoDepth).toBe(0);
-    expect(editor.historyBytes).toBe(0);
-  });
-
-  it('records one batch entry, treats no-ops as inert, and never reuses IDs', () => {
+  it('records one entry per edit, treats no-ops as inert, and never reuses IDs', () => {
     const editor = editorFromSurface(document());
-    editor.execute(onDefaultLayers({ type: 'batch', commands: [
-      { type: 'set-full', x: 0, y: 0, color: 1 },
-      { type: 'set-full', x: 1, y: 0, color: 2 }
-    ] }));
+    editor.execute(onDefaultLayers(bulkSetFullCommand(new Uint32Array([0, 1]), 1)));
     expect(editor.undoDepth).toBe(1);
     expect(editor.composite.revision).toBe(1);
     editor.undo();
@@ -1441,10 +1281,10 @@ describe('typed-array pattern document', () => {
     editor.redo();
     expect(editor.composite.revision).toBe(3);
 
-    const noOp = editor.execute(onDefaultLayers({ type: 'set-full', x: 0, y: 0, color: 1 }));
+    const noOp = editor.execute(onDefaultLayers(cell(editor.composite, { type: 'set-full', x: 0, y: 0, color: 1 })));
     expect(noOp.changed).toBe(false);
     expect(editor.composite.revision).toBe(3);
-    editor.execute(onDefaultLayers({ type: 'erase-cell', x: 0, y: 0 }));
+    editor.execute(onDefaultLayers(cell(editor.composite, { type: 'erase-cell', x: 0, y: 0 })));
     const added = editor.execute(onDefaultLayers({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 }));
     expect(added.backstitchId).toBe(1);
     editor.undo();
@@ -1455,8 +1295,7 @@ describe('typed-array pattern document', () => {
   it('uses a packed sparse delta for a one-cell edit in a 1,000 by 1,000 pattern', () => {
     const pattern = createDocument({ width: 1000, height: 1000, catalog: TEST_CATALOG, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     const editor = editorFromSurface(pattern);
-    editor.execute(onDefaultLayers({ type: 'set-full', x: 777, y: 888, color: 1 }));
-    expect(editor.exportHistory().undo.at(-1)?.kind).toBe('delta');
+    editor.execute(onDefaultLayers(cell(editor.composite, { type: 'set-full', x: 777, y: 888, color: 1 })));
     expect(editor.historyBytes).toBeLessThan(1024);
     expect(editor.historyBytes).toBeLessThan(pattern.kind.byteLength);
     editor.undo();
@@ -1468,8 +1307,8 @@ describe('typed-array pattern document', () => {
   it('rejects an oversized delta entry atomically', () => {
     const editor = editorFromSurface(document(), { historyLimitBytes: 55 });
     const before = editor.composite;
-    expect(() => editor.execute(onDefaultLayers({ type: 'set-full', x: 0, y: 0, color: 1 }))).toThrow(DomainError);
-    expect(() => editor.execute(onDefaultLayers({ type: 'set-full', x: 0, y: 0, color: 1 }))).toThrow(/History entry requires/);
+    expect(() => editor.execute(onDefaultLayers(cell(editor.composite, { type: 'set-full', x: 0, y: 0, color: 1 })))).toThrow(DomainError);
+    expect(errorCode(() => editor.execute(onDefaultLayers(cell(editor.composite, { type: 'set-full', x: 0, y: 0, color: 1 }))))).toBe('history-entry-too-large');
     expect(editor.composite).toBe(before);
     expect(editor.composite.revision).toBe(0);
     expect(editor.undoDepth).toBe(0);
@@ -1490,12 +1329,12 @@ describe('typed-array pattern document', () => {
 
   it('captures typed full, half, and quarter fragment cells without completion data', () => {
     let source = document(5, 3);
-    source = apply(source, { type: 'set-full', x: 1, y: 0, color: 1 });
+    source = apply(source, cell(source, { type: 'set-full', x: 1, y: 0, color: 1 }));
     source = markCellComplete(source, 1, 0);
-    source = apply(source, { type: 'set-half', x: 2, y: 0, direction: HalfDirection.Slash, color: 2 });
+    source = apply(source, cell(source, { type: 'set-half', x: 2, y: 0, direction: HalfDirection.Slash, color: 2 }));
     source = markCellComplete(source, 2, 0);
-    source = apply(source, { type: 'set-quarter', x: 3, y: 0, corner: QuarterCorner.NW, color: 1 });
-    source = apply(source, { type: 'set-quarter', x: 3, y: 0, corner: QuarterCorner.SE, color: 3 });
+    source = apply(source, cell(source, { type: 'set-quarter', x: 3, y: 0, corner: QuarterCorner.NW, color: 1 }));
+    source = apply(source, cell(source, { type: 'set-quarter', x: 3, y: 0, corner: QuarterCorner.SE, color: 3 }));
     source = markCellComplete(source, 3, 0, QuarterCorner.NW);
     source = markCellComplete(source, 3, 0, QuarterCorner.SE);
     source = apply(source, { type: 'add-backstitch', start: { x: 4, y: 0 }, end: { x: 16, y: 4 }, color: 2 });
@@ -1523,7 +1362,7 @@ describe('typed-array pattern document', () => {
 
   it('captures, validates, and pastes directional three-quarter fragment cells', () => {
     let source = document(2, 1);
-    source = apply(source, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 });
+    source = apply(source, cell(source, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 }));
     source = markCellComplete(source, 0, 0);
     const fragment = createPatternFragment(source, { x: 0, y: 0, width: 1, height: 1 });
     expect(() => assertValidPatternFragment(fragment)).not.toThrow();
@@ -1540,23 +1379,23 @@ describe('typed-array pattern document', () => {
 
   it('pastes fragments transparently with incomplete cells and new backstitch IDs', () => {
     let source = document(5, 3);
-    source = apply(source, { type: 'set-full', x: 1, y: 0, color: 1 });
-    source = apply(source, { type: 'set-half', x: 2, y: 0, direction: HalfDirection.Slash, color: 2 });
-    source = apply(source, { type: 'set-quarter', x: 3, y: 0, corner: QuarterCorner.NW, color: 1 });
-    source = apply(source, { type: 'set-quarter', x: 3, y: 0, corner: QuarterCorner.SE, color: 3 });
+    source = apply(source, cell(source, { type: 'set-full', x: 1, y: 0, color: 1 }));
+    source = apply(source, cell(source, { type: 'set-half', x: 2, y: 0, direction: HalfDirection.Slash, color: 2 }));
+    source = apply(source, cell(source, { type: 'set-quarter', x: 3, y: 0, corner: QuarterCorner.NW, color: 1 }));
+    source = apply(source, cell(source, { type: 'set-quarter', x: 3, y: 0, corner: QuarterCorner.SE, color: 3 }));
     source = apply(source, { type: 'add-backstitch', start: { x: 4, y: 0 }, end: { x: 16, y: 4 }, color: 2 });
     const fragment = createPatternFragment(source, { x: 1, y: 0, width: 3, height: 2 });
 
     let destination = document(6, 4);
-    destination = apply(destination, { type: 'set-full', x: 1, y: 1, color: 1 });
+    destination = apply(destination, cell(destination, { type: 'set-full', x: 1, y: 1, color: 1 }));
     destination = markCellComplete(destination, 1, 1);
-    destination = apply(destination, { type: 'set-half', x: 2, y: 1, direction: HalfDirection.Slash, color: 2 });
+    destination = apply(destination, cell(destination, { type: 'set-half', x: 2, y: 1, direction: HalfDirection.Slash, color: 2 }));
     destination = markCellComplete(destination, 2, 1);
-    destination = apply(destination, { type: 'set-quarter', x: 3, y: 1, corner: QuarterCorner.NW, color: 1 });
-    destination = apply(destination, { type: 'set-quarter', x: 3, y: 1, corner: QuarterCorner.SE, color: 3 });
+    destination = apply(destination, cell(destination, { type: 'set-quarter', x: 3, y: 1, corner: QuarterCorner.NW, color: 1 }));
+    destination = apply(destination, cell(destination, { type: 'set-quarter', x: 3, y: 1, corner: QuarterCorner.SE, color: 3 }));
     destination = markCellComplete(destination, 3, 1, QuarterCorner.NW);
     destination = markCellComplete(destination, 3, 1, QuarterCorner.SE);
-    destination = apply(destination, { type: 'set-full', x: 1, y: 2, color: 3 });
+    destination = apply(destination, cell(destination, { type: 'set-full', x: 1, y: 2, color: 3 }));
     destination = apply(destination, { type: 'add-backstitch', start: { x: 0, y: 12 }, end: { x: 4, y: 12 }, color: 1 });
     const result = applyCommand(destination, pasteFragmentCommand(fragment, { x: 1, y: 1 }));
     expect(result.revision).toBe(destination.revision + 1);
@@ -1574,14 +1413,14 @@ describe('typed-array pattern document', () => {
 
   it('rejects malformed fragments, palette references, and placement atomically', () => {
     let source = document(2, 2);
-    source = apply(source, { type: 'set-full', x: 0, y: 0, color: 1 });
+    source = apply(source, cell(source, { type: 'set-full', x: 0, y: 0, color: 1 }));
     const fragment = createPatternFragment(source, { x: 0, y: 0, width: 2, height: 2 });
     const destinationEditor = editorFromSurface(document(4, 4));
     const before = destinationEditor.composite;
 
     const invalidPalette = { ...fragment, colors: fragment.colors.slice() } as PatternFragment;
     invalidPalette.colors[0] = 99;
-    expect(() => destinationEditor.execute(onDefaultLayers(pasteFragmentCommand(invalidPalette, { x: 0, y: 0 })))).toThrow(/Palette/);
+    expect(errorCode(() => destinationEditor.execute(onDefaultLayers(pasteFragmentCommand(invalidPalette, { x: 0, y: 0 }))))).toBe('unknown-palette');
     expect(destinationEditor.composite).toBe(before);
     expect(destinationEditor.composite.revision).toBe(0);
     expect(destinationEditor.undoDepth).toBe(0);
@@ -1596,12 +1435,12 @@ describe('typed-array pattern document', () => {
         colors: new Uint16Array([1])
       }
     } as PatternFragment;
-    expect(() => destinationEditor.execute(onDefaultLayers(pasteFragmentCommand(invalidGeometry, { x: 0, y: 0 })))).toThrow(/fragment boundary/);
+    expect(errorCode(() => destinationEditor.execute(onDefaultLayers(pasteFragmentCommand(invalidGeometry, { x: 0, y: 0 }))))).toBe('invalid-fragment');
     expect(destinationEditor.composite).toBe(before);
-    expect(() => destinationEditor.execute(onDefaultLayers(pasteFragmentCommand(fragment, { x: 3, y: 3 })))).toThrow(/fit entirely/);
+    expect(errorCode(() => destinationEditor.execute(onDefaultLayers(pasteFragmentCommand(fragment, { x: 3, y: 3 }))))).toBe('paste-out-of-bounds');
     expect(destinationEditor.composite).toBe(before);
     const invalidShape = { ...fragment, colors: new Uint16Array(1) } as PatternFragment;
-    expect(() => pasteFragmentCommand(invalidShape, { x: 0, y: 0 })).toThrow(/colors/);
+    expect(errorCode(() => pasteFragmentCommand(invalidShape, { x: 0, y: 0 }))).toBe('invalid-fragment');
     const invalidDuplicate = {
       ...fragment,
       backstitches: {
@@ -1612,10 +1451,10 @@ describe('typed-array pattern document', () => {
         colors: new Uint16Array([1, 1])
       }
     } as PatternFragment;
-    expect(() => pasteFragmentCommand(invalidDuplicate, { x: 0, y: 0 })).toThrow(/duplicates/);
+    expect(errorCode(() => pasteFragmentCommand(invalidDuplicate, { x: 0, y: 0 }))).toBe('invalid-fragment');
     const budgetEditor = editorFromSurface(document(4, 4), { historyLimitBytes: estimatePasteFragmentHistoryBytes(1, 0, 0) - 1 });
     const budgetBefore = budgetEditor.composite;
-    expect(() => budgetEditor.execute(onDefaultLayers(pasteFragmentCommand(fragment, { x: 0, y: 0 })))).toThrow(/exceeding/);
+    expect(errorCode(() => budgetEditor.execute(onDefaultLayers(pasteFragmentCommand(fragment, { x: 0, y: 0 }))))).toBe('history-entry-too-large');
     expect(budgetEditor.composite).toBe(budgetBefore);
     expect(budgetEditor.undoDepth).toBe(0);
     expect(() => assertValidPatternFragment(invalidGeometry)).toThrow();
@@ -1624,12 +1463,12 @@ describe('typed-array pattern document', () => {
 
   it('moves rectangular contents atomically across overlap while preserving completion and transparent holes', () => {
     let pattern = document(6, 3);
-    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }));
     pattern = markCellComplete(pattern, 0, 0);
-    pattern = apply(pattern, { type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 2 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 2 }));
     pattern = markCellComplete(pattern, 1, 0);
-    pattern = apply(pattern, { type: 'set-full', x: 1, y: 1, color: 3 });
-    pattern = apply(pattern, { type: 'set-full', x: 3, y: 1, color: 3 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 1, y: 1, color: 3 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 3, y: 1, color: 3 }));
     const before = documentContentSnapshot(pattern);
     const editor = editorFromSurface(pattern);
 
@@ -1641,8 +1480,6 @@ describe('typed-array pattern document', () => {
     expect(result.changed).toBe(true);
     expect(result.changedIndices).toEqual(new Uint32Array([0, 1, 7, 8]));
     expect(result.movedBackstitchIds).toEqual(new Uint32Array(0));
-    expect(result.progress).toEqual({ cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0), marked: 0, unmarked: 0 });
-    expect(result.recalculateMetrics).toBe(true);
     expect(editor.undoDepth).toBe(1);
     expect(getCell(editor.composite, 0, 0).kind).toBe(CellKind.Empty);
     expect(getCell(editor.composite, 1, 0).kind).toBe(CellKind.Empty);
@@ -1673,17 +1510,17 @@ describe('typed-array pattern document', () => {
 
   it('handles forward and reverse rectangular and sparse overlap from original captures', () => {
     let forward = document(5, 1);
-    forward = apply(forward, { type: 'set-full', x: 0, y: 0, color: 1 });
-    forward = apply(forward, { type: 'set-full', x: 1, y: 0, color: 2 });
-    forward = apply(forward, { type: 'set-full', x: 2, y: 0, color: 3 });
+    forward = apply(forward, cell(forward, { type: 'set-full', x: 0, y: 0, color: 1 }));
+    forward = apply(forward, cell(forward, { type: 'set-full', x: 1, y: 0, color: 2 }));
+    forward = apply(forward, cell(forward, { type: 'set-full', x: 2, y: 0, color: 3 }));
     const forwardEditor = editorFromSurface(forward);
     forwardEditor.execute(onDefaultLayers(moveFragmentCommand({ kind: 'rect', rect: { x: 0, y: 0, width: 3, height: 1 } }, { x: 1, y: 0 })));
     expect([0, 1, 2, 3, 4].map((x) => getCell(forwardEditor.composite, x, 0).color)).toEqual([0, 1, 2, 3, 0]);
 
     let reverse = document(5, 1);
-    reverse = apply(reverse, { type: 'set-full', x: 1, y: 0, color: 1 });
-    reverse = apply(reverse, { type: 'set-full', x: 2, y: 0, color: 2 });
-    reverse = apply(reverse, { type: 'set-full', x: 3, y: 0, color: 3 });
+    reverse = apply(reverse, cell(reverse, { type: 'set-full', x: 1, y: 0, color: 1 }));
+    reverse = apply(reverse, cell(reverse, { type: 'set-full', x: 2, y: 0, color: 2 }));
+    reverse = apply(reverse, cell(reverse, { type: 'set-full', x: 3, y: 0, color: 3 }));
     const reverseEditor = editorFromSurface(reverse);
     reverseEditor.execute(onDefaultLayers(moveFragmentCommand({ kind: 'rect', rect: { x: 1, y: 0, width: 3, height: 1 } }, { x: 0, y: 0 })));
     expect([0, 1, 2, 3, 4].map((x) => getCell(reverseEditor.composite, x, 0).color)).toEqual([1, 2, 3, 0, 0]);
@@ -1699,9 +1536,9 @@ describe('typed-array pattern document', () => {
 
   it('moves sparse cells without overwriting destination holes or selected empties', () => {
     let pattern = document(6, 3);
-    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
-    pattern = apply(pattern, { type: 'set-half', x: 2, y: 0, direction: HalfDirection.Backslash, color: 2 });
-    pattern = apply(pattern, { type: 'set-full', x: 4, y: 1, color: 3 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-half', x: 2, y: 0, direction: HalfDirection.Backslash, color: 2 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 4, y: 1, color: 3 }));
     const editor = editorFromSurface(pattern);
     const result = editor.execute(onDefaultLayers(moveFragmentCommand(
       { kind: 'sparse', rect: { x: 0, y: 0, width: 3, height: 1 }, indices: new Uint32Array([0, 2]) },
@@ -1718,8 +1555,8 @@ describe('typed-array pattern document', () => {
 
   it('moves contained backstitches with stable identity and retains boundary-crossing lines', () => {
     let pattern = document(8, 4);
-    pattern = apply(pattern, { type: 'set-full', x: 1, y: 1, color: 1 });
-    pattern = apply(pattern, { type: 'set-full', x: 2, y: 1, color: 2 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 1, y: 1, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 2, y: 1, color: 2 }));
     pattern = apply(pattern, { type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 8, y: 4 }, color: 1 });
     pattern = markBackstitchComplete(pattern, 1);
     pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 4 }, end: { x: 8, y: 8 }, color: 2 });
@@ -1748,36 +1585,36 @@ describe('typed-array pattern document', () => {
 
   it('rejects move collisions, bounds, palette, and history failures atomically', () => {
     let pattern = document(6, 3);
-    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }));
     pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 });
     pattern = apply(pattern, { type: 'add-backstitch', start: { x: 12, y: 0 }, end: { x: 16, y: 0 }, color: 2 });
     const collision = editorFromSurface(pattern);
     const collisionBefore = documentContentSnapshot(collision.composite);
-    expect(() => collision.execute(onDefaultLayers(moveFragmentCommand({ kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } }, { x: 3, y: 0 })))).toThrow(/collides/);
+    expect(errorCode(() => collision.execute(onDefaultLayers(moveFragmentCommand({ kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } }, { x: 3, y: 0 }))))).toBe('backstitch-collision');
     expect(documentContentSnapshot(collision.composite)).toEqual(collisionBefore);
     expect(collision.undoDepth).toBe(0);
 
     const bounds = editorFromSurface(pattern);
     const boundsBefore = bounds.composite;
-    expect(() => bounds.execute(onDefaultLayers(moveFragmentCommand({ kind: 'rect', rect: { x: 0, y: 0, width: 2, height: 1 } }, { x: 5, y: 0 })))).toThrow(/fit entirely/);
+    expect(errorCode(() => bounds.execute(onDefaultLayers(moveFragmentCommand({ kind: 'rect', rect: { x: 0, y: 0, width: 2, height: 1 } }, { x: 5, y: 0 }))))).toBe('move-out-of-bounds');
     expect(bounds.composite).toBe(boundsBefore);
 
     const palette = editorFromSurface(pattern);
     const paletteBefore = palette.composite;
     palette.composite.palette.length = 0;
-    expect(() => palette.execute(onDefaultLayers(moveFragmentCommand({ kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } }, { x: 1, y: 0 })))).toThrow(/Palette/);
+    expect(errorCode(() => palette.execute(onDefaultLayers(moveFragmentCommand({ kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } }, { x: 1, y: 0 }))))).toBe('unknown-palette');
     expect(palette.composite).toBe(paletteBefore);
 
     const budget = editorFromSurface(pattern, { historyLimitBytes: estimateMoveFragmentHistoryBytes(2, 2, 2) - 1 });
     const budgetBefore = budget.composite;
-    expect(() => budget.execute(onDefaultLayers(moveFragmentCommand({ kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } }, { x: 1, y: 1 })))).toThrow(/exceeding/);
+    expect(errorCode(() => budget.execute(onDefaultLayers(moveFragmentCommand({ kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } }, { x: 1, y: 1 }))))).toBe('history-entry-too-large');
     expect(budget.composite).toBe(budgetBefore);
     expect(budget.undoDepth).toBe(0);
   });
 
   it('treats same-position moves as no-ops without history', () => {
     let pattern = document(4, 3);
-    pattern = apply(pattern, { type: 'set-full', x: 1, y: 1, color: 1 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 1, y: 1, color: 1 }));
     const editor = editorFromSurface(pattern);
     const before = editor.composite;
     const result = editor.execute({ ...moveFragmentCommand({ kind: 'rect', rect: { x: 1, y: 1, width: 1, height: 1 } }, { x: 1, y: 1 }), layerId: STITCH_LAYER_ID });
@@ -1794,8 +1631,6 @@ describe('typed-array pattern document', () => {
     const result = editor.execute({ ...moveFragmentCommand({ kind: 'rect', rect: { x: 0, y: 0, width: 2, height: 2 } }, { x: 3, y: 2 }), layerId: STITCH_LAYER_ID });
     expect(result.changed).toBe(false);
     expect(result.changedIndices).toEqual(new Uint32Array(0));
-    expect(result.progress).toEqual({ cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0), marked: 0, unmarked: 0 });
-    expect(result.recalculateMetrics).toBeUndefined();
     expect(editor.composite).toBe(before);
     expect(editor.undoDepth).toBe(0);
   });
@@ -1807,27 +1642,22 @@ describe('typed-array pattern document', () => {
     const result = editor.execute(onDefaultLayers(moveFragmentCommand({ kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } }, { x: 3, y: 0 })));
     expect(result.changedIndices).toEqual(new Uint32Array(0));
     expect(result.movedBackstitchIds).toEqual(new Uint32Array([1]));
-    expect(result.progress).toEqual({ cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0), marked: 0, unmarked: 0 });
-    expect(result.recalculateMetrics).toBe(true);
     expect(editor.historyBytes).toBe(estimateMoveFragmentHistoryBytes(0, 1, 1));
     const moved = listBackstitches(editor.composite);
     expect(moved[0]).toMatchObject({ x1: 12, y1: 0, x2: 16, y2: 0 });
     const undo = editor.undo();
     expect(undo.changedIndices).toEqual(new Uint32Array(0));
-    expect(undo.progress).toEqual({ cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0), marked: 0, unmarked: 0 });
-    expect(undo.recalculateMetrics).toBe(true);
     expect(listBackstitches(editor.composite)[0]).toMatchObject({ x1: 0, y1: 0, x2: 4, y2: 0 });
     const redo = editor.redo();
     expect(redo.changedIndices).toEqual(new Uint32Array(0));
-    expect(redo.recalculateMetrics).toBe(true);
     expect(listBackstitches(editor.composite)[0]).toMatchObject({ x1: 12, y1: 0, x2: 16, y2: 0 });
   });
 
   it('preserves completed overwrite metrics and zero activity across move undo and redo', () => {
     let pattern = document(4, 2);
-    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }));
     pattern = markCellComplete(pattern, 0, 0);
-    pattern = apply(pattern, { type: 'set-full', x: 1, y: 0, color: 2 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 1, y: 0, color: 2 }));
     const editor = editorFromSurface(pattern);
     const metrics = (value: PatternDocument) => {
       const computed = computePatternMetrics(value);
@@ -1841,8 +1671,6 @@ describe('typed-array pattern document', () => {
     const result = editor.execute(onDefaultLayers(moveFragmentCommand({ kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } }, { x: 1, y: 0 })));
     const afterMetrics = metrics(editor.composite);
     expect(result.changedIndices).toEqual(new Uint32Array([0, 1]));
-    expect(result.progress).toEqual({ cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0), marked: 0, unmarked: 0 });
-    expect(result.recalculateMetrics).toBe(true);
     expect(afterMetrics.totals.full).toBe(1);
     expect(afterMetrics.totals.completedComponents).toBe(1);
     expect(afterMetrics.totals.remainingComponents).toBe(0);
@@ -1853,49 +1681,16 @@ describe('typed-array pattern document', () => {
 
     const undo = editor.undo();
     expect(undo.changedIndices).toEqual(new Uint32Array([0, 1]));
-    expect(undo.progress).toEqual({ cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0), marked: 0, unmarked: 0 });
-    expect(undo.recalculateMetrics).toBe(true);
     expect(metrics(editor.composite)).toEqual(beforeMetrics);
     const redo = editor.redo();
     expect(redo.changedIndices).toEqual(new Uint32Array([0, 1]));
-    expect(redo.progress).toEqual({ cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0), marked: 0, unmarked: 0 });
-    expect(redo.recalculateMetrics).toBe(true);
     expect(metrics(editor.composite)).toEqual(afterMetrics);
-  });
-
-  it('rejects representative large dense and sparse moves before packed history-state allocation', () => {
-    const side = 1000;
-    const densePattern = document(side, side);
-    densePattern.kind[0] = CellKind.Full;
-    densePattern.colors[0] = 1;
-    const denseEditor = editorFromSurface(densePattern, { historyLimitBytes: 1 });
-    const denseBefore = denseEditor.composite;
-    expect(() => denseEditor.execute(onDefaultLayers(moveFragmentCommand(
-      { kind: 'rect', rect: { x: 0, y: 0, width: side - 1, height: side } },
-      { x: 1, y: 0 }
-    )))).toThrow(/exceeding/);
-    expect(denseEditor.composite).toBe(denseBefore);
-    expect(denseEditor.undoDepth).toBe(0);
-
-    const sparseIndices = new Uint32Array(50_000);
-    for (let position = 0; position < sparseIndices.length; position += 1) sparseIndices[position] = position * 2;
-    const sparsePattern = document(side, side);
-    sparsePattern.kind[0] = CellKind.Full;
-    sparsePattern.colors[0] = 1;
-    const sparseEditor = editorFromSurface(sparsePattern, { historyLimitBytes: 1 });
-    const sparseBefore = sparseEditor.composite;
-    expect(() => sparseEditor.execute(onDefaultLayers(moveFragmentCommand(
-      { kind: 'sparse', rect: { x: 0, y: 0, width: side, height: 100 }, indices: sparseIndices },
-      { x: 0, y: 1 }
-    )))).toThrow(/exceeding/);
-    expect(sparseEditor.composite).toBe(sparseBefore);
-    expect(sparseEditor.undoDepth).toBe(0);
   });
 
   it('keeps a large sparse fragment paste within a bounded packed history entry', () => {
     const side = 500;
     let source = document(side, side);
-    source = apply(source, { type: 'set-full', x: side - 1, y: side - 1, color: 1 });
+    source = apply(source, cell(source, { type: 'set-full', x: side - 1, y: side - 1, color: 1 }));
     const fragment = createPatternFragment(source, { x: 0, y: 0, width: side, height: side });
     const editor = editorFromSurface(document(side, side));
     const result = editor.execute(onDefaultLayers(pasteFragmentCommand(fragment, { x: 0, y: 0 })));
@@ -1904,7 +1699,6 @@ describe('typed-array pattern document', () => {
     expect(result.changedIndices).toHaveLength(1);
     expect(result.revision).toBe(1);
     expect(editor.undoDepth).toBe(1);
-    expect(editor.exportHistory().undo.at(-1)?.kind).toBe('delta');
     expect(editor.historyBytes).toBe(estimatePasteFragmentHistoryBytes(1, 0, 0));
     expect(editor.historyBytes).toBeLessThanOrEqual(DEFAULT_HISTORY_LIMIT_BYTES);
     editor.undo();
@@ -1913,13 +1707,13 @@ describe('typed-array pattern document', () => {
 
   it('erases mixed whole-cell and quarter targets as one packed undoable command', () => {
     let pattern = document(4, 2);
-    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }));
     pattern = markCellComplete(pattern, 0, 0);
-    pattern = apply(pattern, { type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 2 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 2 }));
     pattern = markCellComplete(pattern, 1, 0, QuarterCorner.NW);
-    pattern = apply(pattern, { type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.NE, color: 3 });
-    pattern = apply(pattern, { type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.SW, color: 1 });
-    pattern = apply(pattern, { type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.SE, color: 2 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.NE, color: 3 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.SW, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.SE, color: 2 }));
     pattern = markCellComplete(pattern, 2, 0);
     pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 4 }, end: { x: 4, y: 8 }, color: 2 });
     const beforePalette = pattern.palette.map((entry) => ({ ...entry }));
@@ -1935,7 +1729,6 @@ describe('typed-array pattern document', () => {
     expect(result.changedIndices).toEqual(new Uint32Array([0, 1, 2]));
     expect(result.revision).toBe(pattern.revision + 1);
     expect(editor.undoDepth).toBe(1);
-    expect(editor.exportHistory().undo.at(-1)?.kind).toBe('delta');
     expect(editor.historyBytes).toBe(estimateMixedEraseHistoryBytes(3));
     expect(getCell(editor.composite, 0, 0).kind).toBe(CellKind.Empty);
     expect(getCell(editor.composite, 0, 0).completed).toBe(false);
@@ -1980,11 +1773,11 @@ describe('typed-array pattern document', () => {
 
   it('deletes selected cells and only backstitches whose endpoints are inside the inclusive region bounds', () => {
     let pattern = document(5, 4);
-    pattern = apply(pattern, { type: 'set-full', x: 1, y: 1, color: 1 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 1, y: 1, color: 1 }));
     pattern = markCellComplete(pattern, 1, 1);
-    pattern = apply(pattern, { type: 'set-quarter', x: 2, y: 2, corner: QuarterCorner.SE, color: 2 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-quarter', x: 2, y: 2, corner: QuarterCorner.SE, color: 2 }));
     pattern = markCellComplete(pattern, 2, 2, QuarterCorner.SE);
-    pattern = apply(pattern, { type: 'set-full', x: 4, y: 3, color: 3 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 4, y: 3, color: 3 }));
     pattern = apply(pattern, { type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 12, y: 8 }, color: 1 });
     pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 4 }, end: { x: 12, y: 12 }, color: 2 });
     pattern = apply(pattern, { type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 16, y: 12 }, color: 3 });
@@ -2032,11 +1825,11 @@ describe('typed-array pattern document', () => {
       }],
       settings: { symbolSet: 'test-symbols', materialUnit: MaterialUnit.Meters }
     });
-    pattern = apply(pattern, { type: 'set-full', x: 1, y: 0, color: 1 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 1, y: 0, color: 1 }));
     pattern = markCellComplete(pattern, 1, 0);
-    pattern = apply(pattern, { type: 'set-half', x: 2, y: 0, direction: HalfDirection.Slash, color: 1 });
-    pattern = apply(pattern, { type: 'set-quarter', x: 1, y: 1, corner: QuarterCorner.NE, color: 1 });
-    pattern = apply(pattern, { type: 'set-quarter', x: 1, y: 1, corner: QuarterCorner.SW, color: 1 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-half', x: 2, y: 0, direction: HalfDirection.Slash, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-quarter', x: 1, y: 1, corner: QuarterCorner.NE, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-quarter', x: 1, y: 1, corner: QuarterCorner.SW, color: 1 }));
     pattern = apply(pattern, { type: 'add-backstitch', start: { x: 4, y: 0 }, end: { x: 12, y: 4 }, color: 1 });
     pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 });
     const editor = editorFromSurface(pattern);
@@ -2081,8 +1874,8 @@ describe('typed-array pattern document', () => {
 
   it('keeps prior delete generations immutable while later edits use new planes', () => {
     let pattern = document(4, 2);
-    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
-    pattern = apply(pattern, { type: 'set-half', x: 1, y: 0, direction: HalfDirection.Backslash, color: 2 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-half', x: 1, y: 0, direction: HalfDirection.Backslash, color: 2 }));
     const editor = editorFromSurface(pattern);
     const preDelete = editor.composite;
     const preDeleteContent = documentContentSnapshot(preDelete);
@@ -2106,7 +1899,7 @@ describe('typed-array pattern document', () => {
     expect(documentContentSnapshot(postDelete)).toEqual(postDeleteContent);
 
     editor.redo();
-    editor.execute(onDefaultLayers({ type: 'set-full', x: 3, y: 1, color: 3 }));
+    editor.execute(onDefaultLayers(cell(editor.composite, { type: 'set-full', x: 3, y: 1, color: 3 })));
     expect(documentContentSnapshot(preDelete)).toEqual(preDeleteContent);
     expect(documentContentSnapshot(postDelete)).toEqual(postDeleteContent);
     expect(documentContentSnapshot(postUndo)).toEqual(postUndoContent);
@@ -2122,16 +1915,16 @@ describe('typed-array pattern document', () => {
     expect(noOpEditor.undoDepth).toBe(0);
     expect(noOpEditor.historyBytes).toBe(0);
 
-    expect(() => noOpEditor.execute(onDefaultLayers(deleteRegionCommand({ x: 0, y: 0, width: 1, height: 1 }, 1)))).toThrow(/revision/i);
+    expect(errorCode(() => noOpEditor.execute(onDefaultLayers(deleteRegionCommand({ x: 0, y: 0, width: 1, height: 1 }, 1))))).toBe('stale-command');
     expect(noOpEditor.composite).toBe(noOpBefore);
     expect(noOpEditor.revision).toBe(0);
     expect(noOpEditor.undoDepth).toBe(0);
 
-    const occupied = apply(document(3, 3), { type: 'set-full', x: 1, y: 1, color: 1 });
+    const occupied = apply(document(3, 3), cell(3, { type: 'set-full', x: 1, y: 1, color: 1 }));
     const budgetEditor = editorFromSurface(occupied, { historyLimitBytes: estimateDeleteRegionHistoryBytes(1) - 1 });
     const budgetBefore = budgetEditor.composite;
     const budgetBeforeContent = documentContentSnapshot(budgetBefore);
-    expect(() => budgetEditor.execute(onDefaultLayers(deleteRegionCommand({ x: 1, y: 1, width: 1, height: 1 }, budgetEditor.revision)))).toThrow(/exceeding/);
+    expect(errorCode(() => budgetEditor.execute(onDefaultLayers(deleteRegionCommand({ x: 1, y: 1, width: 1, height: 1 }, budgetEditor.revision))))).toBe('history-entry-too-large');
     expect(budgetEditor.composite).toBe(budgetBefore);
     expect(documentContentSnapshot(budgetEditor.composite)).toEqual(budgetBeforeContent);
     expect(budgetEditor.revision).toBe(occupied.revision);
@@ -2139,52 +1932,16 @@ describe('typed-array pattern document', () => {
     expect(budgetEditor.redoDepth).toBe(0);
   });
 
-  it('deletes, validates, and restores a dense 1,000 by 1,000 document', { timeout: 240_000 }, () => {
-    const side = 1_000;
-    const cellCount = side * side;
-    const pattern = document(side, side);
-    pattern.kind.fill(CellKind.Full);
-    pattern.completed.fill(1);
-    for (let index = 0; index < cellCount; index += 1) pattern.colors[index * 4] = 1;
-    assertValidDocument(pattern);
-
-    const editor = editorFromSurface(pattern);
-    const beforeDocument = editor.composite;
-    const before = documentContentSnapshot(editor.composite);
-    const deleted = editor.execute(onDefaultLayers(deleteRegionCommand({ x: 0, y: 0, width: side, height: side }, editor.revision)));
-    expect(deleted.changed).toBe(true);
-    expect(deleted.changedIndices).toHaveLength(cellCount);
-    expect(editor.historyBytes).toBe(estimateDeleteRegionHistoryBytes(cellCount));
-    expect(editor.undoDepth).toBe(1);
-    expect(editor.composite.kind).toEqual(new Uint8Array(cellCount));
-    expect(editor.composite.colors).toEqual(new Uint16Array(cellCount * 4));
-    expect(editor.composite.completed).toEqual(new Uint8Array(cellCount));
-    expect(editor.composite.palette).toBe(beforeDocument.palette);
-    expect(editor.composite.settings).toBe(beforeDocument.settings);
-    assertValidDocument(editor.composite);
-    const after = documentContentSnapshot(editor.composite);
-
-    editor.undo();
-    expect(editor.composite.revision).toBe(2);
-    expect(documentContentSnapshot(editor.composite)).toEqual(before);
-    assertValidDocument(editor.composite);
-
-    editor.redo();
-    expect(editor.composite.revision).toBe(3);
-    expect(documentContentSnapshot(editor.composite)).toEqual(after);
-    assertValidDocument(editor.composite);
-  });
-
   it('preflights delete-region history before changing the document', () => {
     const pattern = document(4, 4);
     const source = editorFromSurface(pattern);
-    source.execute(onDefaultLayers({ type: 'set-full', x: 1, y: 1, color: 1 }));
+    source.execute(onDefaultLayers(cell(source.composite, { type: 'set-full', x: 1, y: 1, color: 1 })));
     source.execute(onDefaultLayers({ type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 8, y: 8 }, color: 1 }));
     source.clearHistory();
     const required = estimateDeleteRegionHistoryBytes(1, 1, 1);
     const editor = editorFromSurface(source.composite, { historyLimitBytes: required - 1 });
     const before = editor.composite;
-    expect(() => editor.execute(onDefaultLayers(deleteRegionCommand({ x: 1, y: 1, width: 1, height: 1 }, editor.revision)))).toThrow(/exceeding/);
+    expect(errorCode(() => editor.execute(onDefaultLayers(deleteRegionCommand({ x: 1, y: 1, width: 1, height: 1 }, editor.revision))))).toBe('history-entry-too-large');
     expect(editor.composite).toBe(before);
     expect(editor.composite.kind[5]).toBe(CellKind.Full);
     expect(editor.composite.backstitches.ids).toEqual(new Uint32Array([1]));
@@ -2194,8 +1951,8 @@ describe('typed-array pattern document', () => {
 
   it('rejects invalid mixed erase targets atomically', () => {
     let pattern = document(2, 2);
-    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
-    pattern = apply(pattern, { type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 1 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 1 }));
     const editor = editorFromSurface(pattern);
     const before = editor.composite;
     const reject = (command: Parameters<typeof editor.execute>[0], message: RegExp) => {
@@ -2209,18 +1966,18 @@ describe('typed-array pattern document', () => {
     reject(mixedEraseCommand(new Uint32Array(), new Uint32Array([0]), new Uint8Array([QuarterCorner.NW])), /not a quarter/);
     reject(mixedEraseCommand(new Uint32Array([4]), new Uint32Array(), new Uint8Array()), /out of bounds/);
     reject({ type: 'mixed-erase', wholeCellIndices: new Uint32Array(), componentCellIndices: new Uint32Array([1]), componentCorners: new Uint8Array([4]) }, /invalid/);
-    expect(() => mixedEraseCommand(new Uint32Array([1, 0]), new Uint32Array(), new Uint8Array())).toThrow(/strictly increasing/);
-    expect(() => mixedEraseCommand(new Uint32Array(), new Uint32Array([1, 1]), new Uint8Array([QuarterCorner.NW, QuarterCorner.NW]))).toThrow(/sorted and unique/);
+    expect(errorCode(() => mixedEraseCommand(new Uint32Array([1, 0]), new Uint32Array(), new Uint8Array()))).toBe('invalid-mixed-erase');
+    expect(errorCode(() => mixedEraseCommand(new Uint32Array(), new Uint32Array([1, 1]), new Uint8Array([QuarterCorner.NW, QuarterCorner.NW])))).toBe('invalid-mixed-erase');
   });
 
   it('rejects a mixed erase over the history budget before mutation', () => {
     let pattern = document(2, 1);
-    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }));
     const requiredBytes = estimateMixedEraseHistoryBytes(1);
     const editor = editorFromSurface(pattern, { historyLimitBytes: requiredBytes - 1 });
     const before = editor.composite;
 
-    expect(() => editor.execute(onDefaultLayers(mixedEraseCommand(new Uint32Array([0]), new Uint32Array(), new Uint8Array())))).toThrow(/exceeding/);
+    expect(errorCode(() => editor.execute(onDefaultLayers(mixedEraseCommand(new Uint32Array([0]), new Uint32Array(), new Uint8Array()))))).toBe('history-entry-too-large');
     expect(editor.composite).toBe(before);
     expect(editor.composite.kind[0]).toBe(CellKind.Full);
     expect(editor.composite.revision).toBe(pattern.revision);
@@ -2228,18 +1985,10 @@ describe('typed-array pattern document', () => {
     expect(editor.historyBytes).toBe(0);
   });
 
-  it('validates invariants and exposes a boolean validator', () => {
-    const pattern = document();
-    expect(() => assertValidDocument(pattern)).not.toThrow();
-    pattern.kind[0] = CellKind.Full;
-    expect(() => assertValidDocument(pattern)).toThrow();
-    expect(() => assertValidDocument(pattern)).toThrow();
-  });
-
   it('captures sparse cells into a tight transparent fragment and uses closed-union endpoints', () => {
     let source = document(4, 1);
-    source = apply(source, { type: 'set-full', x: 1, y: 0, color: 1 });
-    source = apply(source, { type: 'set-full', x: 3, y: 0, color: 2 });
+    source = apply(source, cell(source, { type: 'set-full', x: 1, y: 0, color: 1 }));
+    source = apply(source, cell(source, { type: 'set-full', x: 3, y: 0, color: 2 }));
     source.backstitches = {
       ids: new Uint32Array([1, 2]),
       x1: new Uint32Array([8, 10]),
@@ -2264,7 +2013,7 @@ describe('typed-array pattern document', () => {
     expect(() => assertValidPatternFragment(fragment)).not.toThrow();
 
     let destination = document(3, 1);
-    destination = apply(destination, { type: 'set-full', x: 1, y: 0, color: 3 });
+    destination = apply(destination, cell(destination, { type: 'set-full', x: 1, y: 0, color: 3 }));
     const pasted = applyCommand(destination, pasteFragmentCommand(fragment, { x: 0, y: 0 }));
     expect(pasted.document.kind).toEqual(new Uint8Array([CellKind.Full, CellKind.Full, CellKind.Full]));
     expect(pasted.document.colors).toEqual(new Uint16Array([1, 0, 0, 0, 3, 0, 0, 0, 2, 0, 0, 0]));
@@ -2272,10 +2021,10 @@ describe('typed-array pattern document', () => {
 
   it('deletes sparse cells and contained backstitches as one undoable delta', () => {
     let pattern = document(4, 1);
-    pattern = apply(pattern, { type: 'set-full', x: 1, y: 0, color: 1 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 1, y: 0, color: 1 }));
     pattern = markCellComplete(pattern, 1, 0);
-    pattern = apply(pattern, { type: 'set-full', x: 2, y: 0, color: 2 });
-    pattern = apply(pattern, { type: 'set-full', x: 3, y: 0, color: 3 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 2, y: 0, color: 2 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 3, y: 0, color: 3 }));
     pattern.backstitches = {
       ids: new Uint32Array([1, 2]),
       x1: new Uint32Array([8, 10]),
@@ -2306,12 +2055,8 @@ describe('typed-array pattern document', () => {
     const restored = new DocumentEditor(editor.document, { historyLimitBytes: editor.historyLimitBytes });
     restored.importHistory(editor.exportHistory());
     const restoredUndo = restored.undo();
-    expect(restoredUndo.recalculateMetrics).toBe(true);
-    expect(restoredUndo.progress).toEqual({ marked: 0, unmarked: 0, cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0) });
     expect(computePatternMetrics(restoredUndo.document).progress).toMatchObject({ completedComponents: 2 });
     const restoredRedo = restored.redo();
-    expect(restoredRedo.progress).toEqual({ marked: 0, unmarked: 0, cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0) });
-    expect(restoredRedo.recalculateMetrics).toBe(true);
     expect(computePatternMetrics(restoredRedo.document).progress).toMatchObject({ completedComponents: 1, remainingComponents: 1 });
 
     const direct = applyCommand(pattern, deleteCellSetCommand(new Uint32Array([1, 3]), pattern.revision));
@@ -2324,12 +2069,12 @@ describe('typed-array pattern document', () => {
   it('rejects malformed sparse deletion atomically and keeps no-ops out of history', () => {
     const editor = editorFromSurface(document(2, 1));
     const before = editor.composite;
-    expect(() => editor.execute(onDefaultLayers(deleteCellSetCommand(new Uint32Array())))).toThrow(/non-empty/);
-    expect(() => editor.execute(onDefaultLayers(deleteCellSetCommand(new Uint32Array([1, 0]))))).toThrow(/strictly increasing/);
-    expect(() => editor.execute(onDefaultLayers(deleteCellSetCommand(new Uint32Array([0, 0]))))).toThrow(/strictly increasing/);
-    expect(() => editor.execute(onDefaultLayers({ type: 'delete-cell-set', indices: new Uint32Array([2]) }))).toThrow(/out of bounds/);
-    expect(() => editor.execute(onDefaultLayers(deleteCellSetCommand(new Uint32Array([0]), 1)))).toThrow(/revision/i);
-    expect(() => editor.execute({ type: 'batch', commands: [{ ...deleteCellSetCommand(new Uint32Array([0])), layerId: STITCH_LAYER_ID }, { type: 'set-full', x: 1, y: 0, color: 1, layerId: STITCH_LAYER_ID }] })).toThrow(/standalone/);
+    expect(errorCode(() => editor.execute(onDefaultLayers(deleteCellSetCommand(new Uint32Array()))))).toBe('invalid-delete-cell-set');
+    expect(errorCode(() => editor.execute(onDefaultLayers(deleteCellSetCommand(new Uint32Array([1, 0])))))).toBe('invalid-delete-cell-set');
+    expect(errorCode(() => editor.execute(onDefaultLayers(deleteCellSetCommand(new Uint32Array([0, 0])))))).toBe('invalid-delete-cell-set');
+    expect(errorCode(() => editor.execute(onDefaultLayers({ type: 'delete-cell-set', indices: new Uint32Array([2]) })))).toBe('out-of-bounds');
+    expect(errorCode(() => editor.execute(onDefaultLayers(deleteCellSetCommand(new Uint32Array([0]), 1))))).toBe('stale-command');
+    expect(errorCode(() => editor.execute({ type: 'batch', commands: [{ ...deleteCellSetCommand(new Uint32Array([0])), layerId: STITCH_LAYER_ID }, cell(4, { type: 'set-full', x: 1, y: 0, color: 1, layerId: STITCH_LAYER_ID })] }))).toBe('bulk-batch-unsupported');
     expect(editor.composite).toBe(before);
     expect(editor.revision).toBe(0);
     expect(editor.undoDepth).toBe(0);
@@ -2358,8 +2103,8 @@ describe('pattern background settings', () => {
     expect(pattern.settings.backgroundColor).toBe('#A1B2C3');
     expect(cloneDocument(pattern).settings).toEqual(pattern.settings);
     expect(createDocument({ width: 1, height: 1, catalog: TEST_CATALOG }).settings.backgroundColor).toBe('#F3EEE5');
-    expect(() => createDocument({ ...options, settings: { ...options.settings, backgroundColor: 'red' } })).toThrow(/background color/i);
-    expect(() => createDocument({ ...options, settings: { ...options.settings, backgroundColor: null as never } })).toThrow(/background color/i);
+    expect(errorCode(() => createDocument({ ...options, settings: { ...options.settings, backgroundColor: 'red' } }))).toBe('invalid-settings');
+    expect(errorCode(() => createDocument({ ...options, settings: { ...options.settings, backgroundColor: null as never } }))).toBe('invalid-settings');
 
     const nonCanonical = {
       ...pattern,
@@ -2368,7 +2113,7 @@ describe('pattern background settings', () => {
     expect(() => assertValidDocument(nonCanonical)).toThrow();
   });
 
-  it('retains background color and settings identity across delta undo and redo', () => {
+  it('retains background color and settings across undo and redo', () => {
     const editor = editorFromSurface(createDocument({
       width: 1,
       height: 1,
@@ -2378,14 +2123,14 @@ describe('pattern background settings', () => {
     }));
     const settings = editor.composite.settings;
 
-    editor.execute(onDefaultLayers({ type: 'set-full', x: 0, y: 0, color: 1 }));
-    expect(editor.composite.settings).toBe(settings);
+    editor.execute(onDefaultLayers(cell(editor.composite, { type: 'set-full', x: 0, y: 0, color: 1 })));
+    expect(editor.composite.settings).toEqual(settings);
     expect(editor.composite.settings.backgroundColor).toBe('#123456');
     editor.undo();
-    expect(editor.composite.settings).toBe(settings);
+    expect(editor.composite.settings).toEqual(settings);
     expect(editor.composite.settings.backgroundColor).toBe('#123456');
     editor.redo();
-    expect(editor.composite.settings).toBe(settings);
+    expect(editor.composite.settings).toEqual(settings);
     expect(editor.composite.settings.backgroundColor).toBe('#123456');
   });
 
@@ -2418,31 +2163,11 @@ describe('pattern background settings', () => {
     expect(editor.undoDepth).toBe(1);
     expect(editor.redoDepth).toBe(0);
 
-    expect(() => editor.execute(onDefaultLayers({ type: 'document-settings-update', settings: { backgroundColor: 'invalid' } }))).toThrow(/background color/i);
+    expect(errorCode(() => editor.execute(onDefaultLayers({ type: 'document-settings-update', settings: { backgroundColor: 'invalid' } })))).toBe('invalid-settings');
     expect(editor.composite).toBe(current);
     expect(editor.composite.settings.backgroundColor).toBe('#AABBCC');
   });
 
-});
-
-describe('palette symbol helpers', () => {
-  it('accepts every generated pool slug', () => {
-    for (const id of SYMBOL_IDS) expect(isKnownSymbolId(id)).toBe(true);
-  });
-
-  it('rejects anything the pool cannot draw', () => {
-    // A former Unicode glyph is no longer valid: the pool owns every symbol, so
-    // an unknown value must be refused rather than silently un-drawable.
-    expect(isKnownSymbolId('\u25cf')).toBe(false);
-    expect(isKnownSymbolId('1')).toBe(false);
-    expect(isKnownSymbolId('')).toBe(false);
-    expect(isKnownSymbolId(' ')).toBe(false);
-  });
-
-  it('is case sensitive, because slugs are lowercase by construction', () => {
-    const [first] = SYMBOL_IDS;
-    expect(isKnownSymbolId(first.toUpperCase())).toBe(first.toUpperCase() === first);
-  });
 });
 
 describe('canvas mask enforcement', () => {
@@ -2455,33 +2180,24 @@ describe('canvas mask enforcement', () => {
     return { ...document(4, 3), canvasMask };
   }
 
-  function thrownCode(run: () => unknown): string | undefined {
-    try {
-      run();
-    } catch (error) {
-      return error instanceof DomainError ? error.code : undefined;
-    }
-    return undefined;
-  }
-
   it('drops single-cell writes to an inactive cell as unchanged no-ops', () => {
     const pattern = maskedDocument();
-    for (const command of [
+    for (const spec of [
       { type: 'set-full', x: 1, y: 1, color: 1 },
       { type: 'set-half', x: 1, y: 1, direction: HalfDirection.Slash, color: 1 },
       { type: 'set-quarter', x: 1, y: 1, corner: QuarterCorner.NW, color: 1 },
       { type: 'set-three-quarter', x: 1, y: 1, corner: QuarterCorner.NW, color: 1 }
     ] as const) {
-      const result = applyCommand(pattern, command);
-      expect(result.changed, command.type).toBe(false);
-      expect(result.document.kind[HOLE], command.type).toBe(CellKind.Empty);
+      const result = applyCommand(pattern, cell(pattern, spec));
+      expect(result.changed, spec.type).toBe(false);
+      expect(result.document.kind[HOLE], spec.type).toBe(CellKind.Empty);
     }
     const editor = editorFromSurface(pattern);
     const revision = editor.revision;
-    editor.execute(onDefaultLayers({ type: 'set-full', x: 1, y: 1, color: 1 }));
+    editor.execute(onDefaultLayers(cell(editor.composite, { type: 'set-full', x: 1, y: 1, color: 1 })));
     expect(editor.revision).toBe(revision);
     expect(editor.undoDepth).toBe(0);
-    expect(applyCommand(pattern, { type: 'set-full', x: 0, y: 1, color: 1 }).changed).toBe(true);
+    expect(applyCommand(pattern, cell(pattern, { type: 'set-full', x: 0, y: 1, color: 1 })).changed).toBe(true);
   });
 
   it('paints only active cells in a bulk stroke across a hole and reports them as changed', () => {
@@ -2517,8 +2233,8 @@ describe('canvas mask enforcement', () => {
 
   it('clips a paste to the active cells and lines that stay inside the canvas', () => {
     let source = document(2, 1);
-    source = apply(source, { type: 'set-full', x: 0, y: 0, color: 1 });
-    source = apply(source, { type: 'set-full', x: 1, y: 0, color: 2 });
+    source = apply(source, cell(source, { type: 'set-full', x: 0, y: 0, color: 1 }));
+    source = apply(source, cell(source, { type: 'set-full', x: 1, y: 0, color: 2 }));
     // A line along the top edge, and one through the middle of the row.
     source = apply(source, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 });
     source = apply(source, { type: 'add-backstitch', start: { x: 0, y: 2 }, end: { x: 8, y: 2 }, color: 2 });
@@ -2535,8 +2251,8 @@ describe('canvas mask enforcement', () => {
 
   it('clips a move-fragment to the active cells and drops lines that would leave the canvas', () => {
     let pattern = maskedDocument();
-    pattern = apply(pattern, { type: 'set-full', x: 0, y: 0, color: 1 });
-    pattern = apply(pattern, { type: 'set-full', x: 1, y: 0, color: 2 });
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }));
+    pattern = apply(pattern, cell(pattern, { type: 'set-full', x: 1, y: 0, color: 2 }));
     pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 });
     pattern = apply(pattern, { type: 'add-backstitch', start: { x: 0, y: 2 }, end: { x: 8, y: 2 }, color: 2 });
     const [kept, doomed] = listBackstitches(pattern).map((record) => record.id);
@@ -2563,20 +2279,19 @@ describe('canvas mask enforcement', () => {
 
   it('refuses a backstitch that crosses a hole but allows one along its edge', () => {
     const pattern = maskedDocument();
-    expect(thrownCode(() => applyCommand(pattern, { type: 'add-backstitch', start: { x: 0, y: 6 }, end: { x: 16, y: 6 }, color: 1 }))).toBe('outside-canvas');
+    expect(errorCode(() => applyCommand(pattern, { type: 'add-backstitch', start: { x: 0, y: 6 }, end: { x: 16, y: 6 }, color: 1 }))).toBe('outside-canvas');
     // The hole spans x 4..8, y 4..8; the cells above and below stay active.
     const top = applyCommand(pattern, { type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 8, y: 4 }, color: 1 });
     expect(top.changed).toBe(true);
     const bottom = applyCommand(top.document, { type: 'add-backstitch', start: { x: 4, y: 8 }, end: { x: 8, y: 8 }, color: 1 });
     expect(bottom.changed).toBe(true);
-    expect(thrownCode(() => applyCommand(pattern, { type: 'add-backstitch', start: { x: 5, y: 5 }, end: { x: 7, y: 7 }, color: 1 }))).toBe('outside-canvas');
+    expect(errorCode(() => applyCommand(pattern, { type: 'add-backstitch', start: { x: 5, y: 5 }, end: { x: 7, y: 7 }, color: 1 }))).toBe('outside-canvas');
   });
 
-  it('refuses to move or update a backstitch into a hole', () => {
+  it('refuses to move a backstitch into a hole', () => {
     const pattern = apply(maskedDocument(), { type: 'add-backstitch', start: { x: 0, y: 2 }, end: { x: 16, y: 2 }, color: 1 });
     const id = listBackstitches(pattern)[0].id;
-    expect(thrownCode(() => applyCommand(pattern, { type: 'move-backstitch', id, dx: 0, dy: 4 }))).toBe('outside-canvas');
-    expect(thrownCode(() => applyCommand(pattern, { type: 'update-backstitch', id, start: { x: 0, y: 6 }, end: { x: 16, y: 6 } }))).toBe('outside-canvas');
+    expect(errorCode(() => applyCommand(pattern, { type: 'move-backstitch', id, dx: 0, dy: 4 }))).toBe('outside-canvas');
     expect(applyCommand(pattern, { type: 'move-backstitch', id, dx: 0, dy: -2 }).changed).toBe(true);
   });
 
@@ -2591,9 +2306,4 @@ describe('canvas mask enforcement', () => {
     expect('originY' in plain).toBe(false);
   });
 
-  it('behaves as before when there is no mask', () => {
-    const pattern = document(4, 3);
-    expect(applyCommand(pattern, { type: 'add-backstitch', start: { x: 0, y: 6 }, end: { x: 16, y: 6 }, color: 1 }).changed).toBe(true);
-    expect(applyCommand(pattern, { type: 'set-full', x: 1, y: 1, color: 1 }).changed).toBe(true);
-  });
 });

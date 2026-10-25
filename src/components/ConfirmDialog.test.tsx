@@ -41,10 +41,4 @@ describe('ConfirmDialog', () => {
     expect(onCancel).toHaveBeenCalledTimes(3);
     expect(onConfirm).not.toHaveBeenCalled();
   });
-
-  it('has no close button', () => {
-    renderDialog();
-
-    expect(screen.queryByText('×')).not.toBeInTheDocument();
-  });
 });

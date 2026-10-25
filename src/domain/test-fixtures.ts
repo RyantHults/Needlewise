@@ -135,6 +135,24 @@ export function bulkCellCommand(indices: Uint32Array, edit: BulkCellEdit, expect
   return { type: 'bulk-cell', indices: indices.slice(), edit: { ...edit }, ...(expectedRevision === undefined ? {} : { expectedRevision }) };
 }
 
+/** A single-cell edit: the `bulk-cell` over cell (`x`, `y`) of a `width`-wide pattern, carrying any `layerId` and `expectedRevision`. */
+export type CellEditSpec = { readonly x: number; readonly y: number; readonly layerId?: number; readonly expectedRevision?: number } & (
+  | { readonly type: 'set-full'; readonly color: number }
+  | { readonly type: 'set-half'; readonly direction: HalfDirection; readonly color: number }
+  | { readonly type: 'set-quarter'; readonly corner: QuarterCorner; readonly color: number }
+  | { readonly type: 'set-three-quarter'; readonly corner: QuarterCorner; readonly color: number }
+  | { readonly type: 'erase-cell' }
+  | { readonly type: 'erase-quarter'; readonly corner: QuarterCorner }
+);
+
+/** `cell(width, { type: 'set-full', x, y, color })`: a single-cell edit as the `bulk-cell` command the domain keeps. `width` may be a pattern or a number. */
+export function cell(source: number | { readonly width: number }, spec: CellEditSpec): BulkCellCommand {
+  const width = typeof source === 'number' ? source : source.width;
+  const { type, x, y, layerId, expectedRevision, ...fields } = spec;
+  const edit = { kind: type === 'set-full' ? 'full' : type === 'set-half' ? 'half' : type === 'set-quarter' ? 'quarter' : type === 'set-three-quarter' ? 'three-quarter' : type, ...fields } as BulkCellEdit;
+  return { type: 'bulk-cell', indices: Uint32Array.of(y * width + x), edit, ...(layerId === undefined ? {} : { layerId }), ...(expectedRevision === undefined ? {} : { expectedRevision }) };
+}
+
 export function bulkRecolorCommand(indices: Uint32Array, masks: Uint8Array, fromColor: number, toColor: number, expectedRevision?: number): BulkRecolorCommand {
   return { type: 'bulk-recolor', indices: indices.slice(), masks: masks.slice(), fromColor, toColor, ...(expectedRevision === undefined ? {} : { expectedRevision }) };
 }
@@ -187,8 +205,6 @@ export function applyCommand(document: PatternDocument, command: DomainCommand):
       ...(result.changedIndices === undefined ? {} : { changedIndices: result.changedIndices.slice() }),
       ...(result.touchedBackstitchIds === undefined ? {} : { touchedBackstitchIds: result.touchedBackstitchIds.slice() }),
       ...(result.changedBackstitchIds === undefined ? {} : { changedBackstitchIds: result.changedBackstitchIds.slice() }),
-      ...(result.progress === undefined ? {} : { progress: { cellIndices: result.progress.cellIndices.slice(), backstitchIds: result.progress.backstitchIds.slice(), marked: result.progress.marked, unmarked: result.progress.unmarked } }),
-      ...(result.recalculateMetrics === undefined ? {} : { recalculateMetrics: result.recalculateMetrics }),
       ...(result.createdBackstitchIds === undefined ? {} : { createdBackstitchIds: result.createdBackstitchIds.slice() }),
       ...(result.movedBackstitchIds === undefined ? {} : { movedBackstitchIds: result.movedBackstitchIds.slice() })
     };
@@ -205,8 +221,6 @@ export function applyCommand(document: PatternDocument, command: DomainCommand):
     ...(result.changedIndices === undefined ? {} : { changedIndices: result.changedIndices.slice() }),
     ...(result.touchedBackstitchIds === undefined ? {} : { touchedBackstitchIds: result.touchedBackstitchIds.slice() }),
     ...(result.changedBackstitchIds === undefined ? {} : { changedBackstitchIds: result.changedBackstitchIds.slice() }),
-    ...(result.progress === undefined ? {} : { progress: { cellIndices: result.progress.cellIndices.slice(), backstitchIds: result.progress.backstitchIds.slice(), marked: result.progress.marked, unmarked: result.progress.unmarked } }),
-    ...(result.recalculateMetrics === undefined ? {} : { recalculateMetrics: result.recalculateMetrics }),
     ...(result.createdBackstitchIds === undefined ? {} : { createdBackstitchIds: result.createdBackstitchIds.slice() }),
     ...(result.movedBackstitchIds === undefined ? {} : { movedBackstitchIds: result.movedBackstitchIds.slice() })
   };

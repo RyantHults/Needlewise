@@ -15,7 +15,7 @@ import {
   sanitizeProjectMetadata,
   sanitizeProjectThumbnail
 } from './project-thumbnail';
-import { applyCommand } from '../domain/test-fixtures';
+import { applyCommand, cell } from '../domain/test-fixtures';
 
 describe('project thumbnail summaries', () => {
   it('uses the document background for empty thumbnail cells and preserves it when sanitizing', () => {
@@ -55,8 +55,8 @@ describe('project thumbnail summaries', () => {
         { id: 2, name: 'Blue', color: '#36c' }
       ]
     });
-    document = applyCommand(document, { type: 'set-full', x: 1, y: 0, color: 1 }).document;
-    document = applyCommand(document, { type: 'set-full', x: 3, y: 0, color: 2 }).document;
+    document = applyCommand(document, cell(document, { type: 'set-full', x: 1, y: 0, color: 1 })).document;
+    document = applyCommand(document, cell(document, { type: 'set-full', x: 3, y: 0, color: 2 })).document;
     const thumbnail = deriveProjectThumbnail(document);
 
     expect(thumbnail.columns).toBe(512);
@@ -72,8 +72,8 @@ describe('project thumbnail summaries', () => {
         { id: 2, name: 'Blue', color: '#36c' }
       ]
     });
-    malformedPalette = applyCommand(malformedPalette, { type: 'set-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
-    malformedPalette = applyCommand(malformedPalette, { type: 'set-quarter', x: 0, y: 0, corner: QuarterCorner.NE, color: 2 }).document;
+    malformedPalette = applyCommand(malformedPalette, cell(malformedPalette, { type: 'set-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 })).document;
+    malformedPalette = applyCommand(malformedPalette, cell(malformedPalette, { type: 'set-quarter', x: 0, y: 0, corner: QuarterCorner.NE, color: 2 })).document;
     expect(deriveProjectThumbnail(malformedPalette).palette).toEqual([PROJECT_THUMBNAIL_FABRIC_COLOR]);
     expect(Array.from(deriveProjectThumbnail(malformedPalette).indices)).toEqual([0]);
   });
@@ -131,7 +131,7 @@ describe('project thumbnail summaries', () => {
 
     const palette = Array.from({ length: 300 }, (_, i) => ({ id: i + 1, name: `C${i}`, color: `#${(i + 1).toString(16).padStart(6, '0')}` }));
     let document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 300, height: 1, palette });
-    for (let x = 0; x < 300; x += 1) document = applyCommand(document, { type: 'set-full', x, y: 0, color: x + 1 }).document;
+    for (let x = 0; x < 300; x += 1) document = applyCommand(document, cell(document, { type: 'set-full', x, y: 0, color: x + 1 })).document;
     const wide = deriveProjectThumbnail(document);
     expect(wide.palette.length).toBe(301);
     expect(wide.indices).toBeInstanceOf(Uint16Array);
@@ -275,7 +275,7 @@ describe('project thumbnail summaries', () => {
         { id: 2, name: 'Blue', color: '#36c' }
       ]
     });
-    surface = applyCommand(surface, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+    surface = applyCommand(surface, cell(surface, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
     const document = layeredFromSurface(surface);
     const top: StitchLayer = { id: 3, type: LayerType.Stitch, name: 'Top', visible: true, kind: new Uint8Array(2), colors: new Uint16Array(8), completed: new Uint8Array(2) };
     top.kind[0] = CellKind.Full;
@@ -305,7 +305,7 @@ describe('project thumbnail summaries', () => {
           { id: 2, name: 'Blue', color: '#36c' }
         ]
       });
-      surface = applyCommand(surface, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+      surface = applyCommand(surface, cell(surface, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
       surface = applyCommand(surface, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 8, y: 4 }, color: 2 }).document;
       return layeredFromSurface(surface);
     }

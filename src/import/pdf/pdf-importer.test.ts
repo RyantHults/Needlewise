@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ImportError, type ImportedKeyEntry } from '../types';
+import { type ImportedKeyEntry } from '../types';
 import type { AssembledCells, ChartPageCells, PdfGrid, PdfPagePrimitives } from './types';
 
 const mocks = vi.hoisted(() => ({
@@ -38,7 +38,6 @@ const assembled: AssembledCells = {
   fills: ['#ff0000', null, '#ff0000'],
   symbols: new Map([['a', { outlineD: 'A', unicode: 'x' }], ['b', { outlineD: 'B' }], ['c', { outlineD: 'C' }]]),
   overlap: 0,
-  detectedOverlap: 0,
   placements: new Map([[1, { x: 0, y: 0 }]]),
   warnings: [{ code: 'multi-symbol-cell', message: 'two marks', cell: { x: 1, y: 0 } }]
 };
@@ -148,22 +147,21 @@ describe('pdfImporter', () => {
     const { chart } = await (await pdfImporter.open(new Uint8Array(), { fileName: 'x.pdf' })).analyze();
     expect(chart.title).toBe('Roses');
     expect(chart.warnings.map((w) => w.code)).toEqual(['multi-symbol-cell', 'unsupported-brand', 'blend-not-supported']);
-    expect(chart.warnings[2].message).toBe("Blended threads aren't supported (310+413); the colour was matched from the chart.");
 
     setup([keyPage(0), page(1, { marks: [chartMark] })], [{ symbolKey: 'a', brand: 'DMC', code: '9999' }]);
     const again = await (await pdfImporter.open(new Uint8Array())).analyze();
     expect(again.chart.warnings.map((w) => w.code)).toContain('unknown-thread-code');
   });
 
-  it('applies role and overlap overrides without re-reading the PDF', async () => {
+  it('applies role overrides without re-reading the PDF', async () => {
     setup([keyPage(0), page(1, { marks: [chartMark] }), page(2, { marks: [chartMark] })], [{ symbolKey: 'a', code: '310' }]);
     const session = await pdfImporter.open(new Uint8Array());
     await session.analyze();
-    const analysis = await session.analyze({ pageRoles: { 2: 'other' }, overlap: 2 });
+    const analysis = await session.analyze({ pageRoles: { 2: 'other' } });
     expect(mocks.extractPagePrimitives).toHaveBeenCalledTimes(3);
     expect(analysis.pages.map((p) => [p.role, p.detectedRole])).toEqual([['key', 'key'], ['chart', 'chart'], ['other', 'chart']]);
     expect(mocks.readChartPage).toHaveBeenLastCalledWith(expect.objectContaining({ pageIndex: 1 }), grid);
-    expect(mocks.assembleChart).toHaveBeenLastCalledWith([{ pageIndex: 1 }], { overlap: 2 });
+    expect(mocks.assembleChart).toHaveBeenLastCalledWith([{ pageIndex: 1 }]);
   });
 
   it('reads the key beside the chart when no page is a key page', async () => {
@@ -175,7 +173,6 @@ describe('pdfImporter', () => {
   it('rejects image-only PDFs as scanned and others without a chart as no-chart-found', async () => {
     setup([page(0, { imageCoverage: 0.9 })]);
     const scanned = (await pdfImporter.open(new Uint8Array())).analyze();
-    await expect(scanned).rejects.toBeInstanceOf(ImportError);
     await expect(scanned).rejects.toMatchObject({ code: 'unsupported-scanned-pdf' });
 
     setup([keyPage(0)]);

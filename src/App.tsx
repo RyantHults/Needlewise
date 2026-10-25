@@ -50,7 +50,7 @@ function WorkspaceApp() {
     moveFolder,
     duplicateProject,
     renameProject,
-  } = useProjectWorkspace({ autoOpenMostRecent: false });
+  } = useProjectWorkspace();
   // The URL is the source of truth for the folder being viewed (so Back
   // works). We only trust it for internal logic (auto-moving newly created
   // patterns, deciding where a folder delete should navigate) once it names

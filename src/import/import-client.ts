@@ -21,7 +21,6 @@ export interface PatternImportClient {
   /** Finds the importer by sniffing the file, opens it and analyzes with no overrides. */
   open(file: Blob, fileName: string, options?: ImportRunOptions): Promise<ImportAnalysis>;
   reanalyze(overrides: ImportOverrides, options?: ImportRunOptions): Promise<ImportAnalysis>;
-  close(): Promise<void>;
   /** Terminates the worker; pending requests reject as cancelled. */
   dispose(): void;
 }
@@ -43,11 +42,12 @@ export interface PatternImportClientOptions {
 export interface PatternImportFallback {
   open(file: Blob, fileName: string, options: ImportRunOptions): Promise<ImportAnalysis>;
   reanalyze(overrides: ImportOverrides, options: ImportRunOptions): Promise<ImportAnalysis>;
+  /** Releases the open session. */
   close(): Promise<void>;
 }
 
 interface Pending {
-  readonly resolve: (value: ImportAnalysis | undefined) => void;
+  readonly resolve: (value: ImportAnalysis) => void;
   readonly reject: (error: unknown) => void;
   readonly onProgress: ((progress: ImportProgress) => void) | undefined;
 }
@@ -66,28 +66,23 @@ function createDefaultWorker(): PatternImportWorkerLike | null {
 
 function createDefaultFallback(): PatternImportFallback {
   let session: import('./types').ImportSession | null = null;
-  const drop = async (): Promise<void> => {
-    const previous = session;
-    session = null;
-    await previous?.close();
-  };
   return {
     async open(file, fileName, options) {
-      await drop();
       const bytes = await readBlobBytes(file);
       const importer = findImporter(bytes.subarray(0, SNIFF_BYTES));
       if (!importer) throw new ImportError('unsupported-format', 'This file type is not supported.');
-      const opened = await importer.open(bytes, { ...options, fileName });
-      const replaced = session;
-      session = opened;
-      await replaced?.close();
-      return opened.analyze(undefined, options);
+      session = await importer.open(bytes, { ...options, fileName });
+      return session.analyze(undefined, options);
     },
     reanalyze(overrides, options) {
       if (!session) return Promise.reject(new ImportError('unsupported-format', 'No file is open.'));
       return session.analyze(overrides, options);
     },
-    close: drop
+    async close() {
+      const open = session;
+      session = null;
+      await open?.close();
+    }
   };
 }
 
@@ -115,7 +110,6 @@ export function createPatternImportClient(clientOptions: PatternImportClientOpti
       if (data.type === 'progress') { entry.onProgress?.(data.progress); return; }
       pending.delete(data.requestId);
       if (data.type === 'result') entry.resolve(data.analysis);
-      else if (data.type === 'closed') entry.resolve(undefined);
       else if (data.type === 'cancelled') entry.reject(importCancelledError());
       else entry.reject(deserializeImportError(data.error));
     });
@@ -131,15 +125,15 @@ export function createPatternImportClient(clientOptions: PatternImportClientOpti
 
   function request(
     build: (requestId: string) => PatternImportRequest,
-    viaFallback: (fb: PatternImportFallback, signal: AbortSignal) => Promise<ImportAnalysis | undefined>,
+    viaFallback: (fb: PatternImportFallback, signal: AbortSignal) => Promise<ImportAnalysis>,
     options: ImportRunOptions = {}
-  ): Promise<ImportAnalysis | undefined> {
+  ): Promise<ImportAnalysis> {
     if (disposed) return Promise.reject(new Error('The import client was disposed.'));
     if (options.signal?.aborted) return Promise.reject(importCancelledError());
     const requestId = (clientOptions.requestIdFactory ?? defaultRequestId)();
     const target = ensureWorker();
     const controller = new AbortController();
-    return new Promise<ImportAnalysis | undefined>((resolve, reject) => {
+    return new Promise<ImportAnalysis>((resolve, reject) => {
       const onAbort = (): void => {
         if (!pending.delete(requestId)) return;
         controller.abort();
@@ -181,28 +175,18 @@ export function createPatternImportClient(clientOptions: PatternImportClientOpti
   });
 
   return {
-    async open(file, fileName, options) {
-      const result = await request(
+    open(file, fileName, options) {
+      return request(
         (requestId) => ({ protocol: PATTERN_IMPORT_PROTOCOL, type: 'open', requestId, file, fileName }),
         (fb, signal) => fb.open(file, fileName, runOptions(options, signal)),
         options
       );
-      if (!result) throw new Error('The import produced no result.');
-      return result;
     },
-    async reanalyze(overrides, options) {
-      const result = await request(
+    reanalyze(overrides, options) {
+      return request(
         (requestId) => ({ protocol: PATTERN_IMPORT_PROTOCOL, type: 'reanalyze', requestId, overrides }),
         (fb, signal) => fb.reanalyze(overrides, runOptions(options, signal)),
         options
-      );
-      if (!result) throw new Error('The import produced no result.');
-      return result;
-    },
-    async close() {
-      await request(
-        (requestId) => ({ protocol: PATTERN_IMPORT_PROTOCOL, type: 'close', requestId }),
-        async (fb) => { await fb.close(); return undefined; }
       );
     },
     dispose() {

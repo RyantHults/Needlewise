@@ -23,9 +23,6 @@ describe('FileDropZone', () => {
     const onFile = vi.fn();
     render(<FileDropZone {...base} onFile={onFile} />);
     const zone = screen.getByLabelText('Choose a file').closest('label') as HTMLElement;
-    expect(zone).toHaveTextContent('Drop a file here');
-    expect(zone).toHaveTextContent('PDF only');
-    expect(zone).toHaveTextContent('Browse files');
     const over = fireEvent.dragOver(zone, { dataTransfer: dropData() });
     expect(over).toBe(false);
     expect(zone).toHaveClass('file-drop-active');

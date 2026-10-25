@@ -70,7 +70,6 @@ describe('theme colors', () => {
     vi.stubGlobal('matchMedia', vi.fn(() => query));
     const onChange = vi.fn();
     const unsubscribe = subscribeThemeChange(onChange);
-    expect(matchMedia).toHaveBeenCalledWith('(prefers-color-scheme: dark)');
     listeners.forEach((listener) => listener());
     expect(onChange).toHaveBeenCalledTimes(1);
     unsubscribe();

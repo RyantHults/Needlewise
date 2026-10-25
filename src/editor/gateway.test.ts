@@ -2,8 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { createPatternFragment, type DomainCommand, type ProgressCommand } from '../domain';
 import { createWorkspaceEditorGateway, hasRevision, StaleEditorTransactionError, tokenOf } from './gateway';
 import { LayeredTestBoundary, plainDocument } from './test-support';
+import { cell } from '../domain/test-fixtures';
 
-const paint: DomainCommand = { type: 'set-full', x: 0, y: 0, color: 1 };
+const paint: DomainCommand = cell(2, { type: 'set-full', x: 0, y: 0, color: 1 });
 
 describe('WorkspaceEditorGateway', () => {
   it('takes a revision token only from a snapshot of an open project', () => {

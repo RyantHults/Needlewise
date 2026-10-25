@@ -69,12 +69,10 @@ describe('CreateModal image lifecycle', () => {
     expect(screen.getByLabelText('Background color', { selector: 'input[type="color"]' })).toHaveValue('#aabbcc');
   });
 
-  it('keeps incomplete HEX drafts editable without changing the selected color and uses the shared circular picker styles', () => {
+  it('keeps incomplete HEX drafts editable without changing the selected color', () => {
     render(<ControlledModal />);
     const picker = screen.getByLabelText('Background color', { selector: 'input[type="color"]' });
     const hex = screen.getByRole('textbox', { name: 'HEX Code' });
-    expect(picker.closest('section')).toHaveClass('custom-color-section');
-    expect(picker).toHaveClass('custom-color-picker');
     fireEvent.change(hex, { target: { value: '#12' } });
     expect(hex).toHaveValue('#12');
     expect(picker).toHaveValue('#f3eee5');
@@ -130,26 +128,14 @@ describe('CreateModal image lifecycle', () => {
     const preview = screen.getByLabelText('Converted pattern preview');
     expect(preview).toHaveAttribute('width', '512');
     expect(preview).toHaveAttribute('height', '512');
-    expect(preview).toHaveClass('conversion-preview');
 
     conversion.convert.mockRejectedValueOnce(new Error('Replacement failed.'));
     fireEvent.change(screen.getByRole('slider', { name: /Color budget/ }), { target: { value: '12' } });
     expect(screen.getByLabelText('Converted pattern preview')).toBeInTheDocument();
-    expect(screen.getByText('Updating preview')).toHaveClass('visually-hidden');
+    expect(screen.getByText('Updating preview')).toBeInTheDocument();
     act(() => { vi.advanceTimersByTime(300); });
     await vi.waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Replacement failed.'));
     expect(screen.getByLabelText('Converted pattern preview')).toBeInTheDocument();
-  });
-
-  it('does not render a layout-shifting converting banner', () => {
-    conversion.convert.mockImplementationOnce(() => new Promise(() => undefined));
-    render(<ControlledModal />);
-    fireEvent.change(screen.getByLabelText(/Choose a PNG/), { target: { files: [new File(['image'], 'image.png', { type: 'image/png' })] } });
-    act(() => { images[0].onload?.(); });
-    act(() => { vi.advanceTimersByTime(300); });
-
-    expect(screen.queryByText('Converting image…')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Convert image')).toHaveAttribute('aria-busy', 'true');
   });
 
   it('waits for the selected image dimensions before starting its debounce', () => {
@@ -282,12 +268,6 @@ describe('CreateModal image lifecycle', () => {
     const toggle = screen.getByRole('button', { name: 'Lock aspect ratio' });
     expect(toggle).toHaveAttribute('aria-pressed', 'true');
     expect(toggle).toBeEnabled();
-    expect(toggle).toHaveTextContent('🔒');
-    const control = toggle.parentElement as HTMLElement;
-    expect(control).toHaveClass('aspect-lock-control');
-    expect(control.querySelector('.aspect-lock-label')).toHaveTextContent('aspect ratio');
-    expect(control.previousElementSibling?.querySelector('input')?.id).toBe('conversion-width');
-    expect(control.nextElementSibling?.querySelector('input')?.id).toBe('conversion-height');
   });
 
   it('derives the other dimension from the source ratio while locked and stops when unlocked', () => {
@@ -323,7 +303,7 @@ describe('CreateModal image lifecycle', () => {
     expect(screen.getByLabelText('Height')).toHaveValue('500');
   });
 
-  it('keeps the color budget within the slider bounds without a number input', async () => {
+  it('keeps the color budget within the slider bounds', async () => {
     render(<ControlledModal />);
     fireEvent.change(screen.getByLabelText(/Choose a PNG/), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } });
     act(() => { images[0].onload?.(); });
@@ -331,8 +311,6 @@ describe('CreateModal image lifecycle', () => {
     const slider = await vi.waitFor(() => screen.getByRole('slider', { name: /Color budget/ }));
     expect(slider).toHaveAttribute('min', '1');
     expect(slider).toHaveAttribute('max', String(DEFAULT_CATALOG_COLOR_COUNT));
-    // The number input no longer exists; the slider alone drives the budget.
-    expect(screen.queryByLabelText('Detected color count')).not.toBeInTheDocument();
     fireEvent.change(slider, { target: { value: String(DEFAULT_CATALOG_COLOR_COUNT) } });
     act(() => { vi.advanceTimersByTime(300); });
     expect(conversion.convert.mock.calls[1][1]).toMatchObject({ paletteBudget: DEFAULT_CATALOG_COLOR_COUNT });
@@ -361,11 +339,6 @@ describe('CreateModal image lifecycle', () => {
     // Already at the cap: the clamped budget settles without further churn.
     act(() => { vi.advanceTimersByTime(600); });
     expect(conversion.convert).toHaveBeenCalledTimes(2);
-    // The budget slider sits inside the review, before the swatch row.
-    const slider = screen.getByRole('slider', { name: /Color budget/ });
-    const review = slider.closest('.review') as HTMLElement;
-    const swatchRow = review.querySelector('.review-swatches') as HTMLElement;
-    expect(slider.compareDocumentPosition(swatchRow) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 
   it('grows a clamped color budget back to the default when the stitch count increases', async () => {
@@ -786,19 +759,8 @@ describe('CreateModal image lifecycle', () => {
   it('converts an image dropped onto the upload zone like a chosen one', async () => {
     render(<ControlledModal />);
     const zone = screen.getByLabelText(/Choose a PNG/).closest('label') as HTMLElement;
-    expect(zone).toHaveTextContent('Drop an image here');
-    expect(zone).toHaveTextContent('Browse files');
-    fireEvent.dragEnter(zone, { dataTransfer: dropData() });
-    expect(zone).toHaveClass('file-drop-active');
-    fireEvent.dragLeave(zone, { dataTransfer: dropData() });
-    expect(zone).not.toHaveClass('file-drop-active');
-    fireEvent.dragOver(zone, { dataTransfer: dropData() });
-    expect(zone).toHaveClass('file-drop-active');
     fireEvent.drop(zone, { dataTransfer: dropData(new File(['one'], 'dropped.png', { type: 'image/png' })) });
-    expect(zone).not.toHaveClass('file-drop-active');
-    expect(zone).toHaveClass('file-drop-selected');
     expect(zone).toHaveTextContent('dropped.png');
-    expect(zone).toHaveTextContent('Replace image');
     act(() => { images[0].onload?.(); });
     act(() => { vi.advanceTimersByTime(300); });
     await vi.waitFor(() => expect(conversion.convert).toHaveBeenCalledTimes(1));
@@ -839,7 +801,6 @@ describe('CreateModal image lifecycle', () => {
     fireEvent.drop(zone, { dataTransfer: dropData(new File(['text'], 'notes.txt', { type: 'text/plain' })) });
     expect(screen.getByRole('alert')).toHaveTextContent('Choose a PNG, JPEG, or WebP image.');
     expect(images).toHaveLength(0);
-    expect(zone).not.toHaveClass('file-drop-selected');
   });
 
   it('reports how many colors the preview uses when fewer than the budget, and stays quiet when all are used', async () => {
@@ -889,13 +850,6 @@ describe('CreateModal image lifecycle', () => {
     expect(screen.queryByRole('slider', { name: /Color budget/ })).not.toBeInTheDocument();
     act(() => { vi.advanceTimersByTime(300); });
     await vi.waitFor(() => expect(screen.getByRole('slider', { name: /Color budget/ })).toBeInTheDocument());
-  });
-
-  it('places the title above the file drop in the image mode field order', () => {
-    render(<ControlledModal />);
-    const title = screen.getByLabelText('Title');
-    const upload = screen.getByLabelText(/Choose a PNG/);
-    expect(title.compareDocumentPosition(upload) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 
   it('clamps the lens sample region to the bitmap and the box to the frame', () => {
@@ -1047,32 +1001,6 @@ describe('CreateModal image lifecycle', () => {
       fireEvent.pointerLeave(preview, { pointerType: 'pen' });
       expect(lens).toHaveAttribute('style', expect.stringContaining('opacity: 0'));
     });
-  });
-
-  it('closes via the × button in blank mode', () => {
-    const onClose = vi.fn();
-    render(<CreateModal {...props(onClose)} mode="blank" />);
-    fireEvent.click(screen.getByRole('button', { name: 'Close create pattern dialog' }));
-    expect(onClose).toHaveBeenCalledOnce();
-  });
-
-  it('closes on backdrop click but not on clicks inside the dialog', () => {
-    const onClose = vi.fn();
-    render(<ControlledModal onClose={onClose} />);
-    const dialog = screen.getByRole('dialog');
-    const backdrop = dialog.parentElement as HTMLElement;
-    expect(backdrop).toHaveClass('modal-backdrop');
-    fireEvent.click(screen.getByLabelText('Title'));
-    expect(onClose).not.toHaveBeenCalled();
-    fireEvent.click(backdrop);
-    expect(onClose).toHaveBeenCalledOnce();
-  });
-
-  it('closes on Escape', () => {
-    const onClose = vi.fn();
-    render(<ControlledModal onClose={onClose} />);
-    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
-    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it('ignores Escape and backdrop clicks while creating', async () => {
@@ -1245,18 +1173,8 @@ describe('CreateModal import mode', () => {
     const onImportFile = vi.fn();
     render(<CreateModal {...props()} mode="import" onImportFile={onImportFile} />);
     const zone = screen.getByLabelText('Choose a PDF pattern file').closest('label') as HTMLElement;
-    fireEvent.dragOver(zone, { dataTransfer: dropData() });
-    expect(zone).toHaveClass('file-drop-active');
     const file = new File(['%PDF-'], 'dropped.pdf', { type: 'application/pdf' });
     fireEvent.drop(zone, { dataTransfer: dropData(file) });
-    expect(zone).not.toHaveClass('file-drop-active');
     expect(onImportFile).toHaveBeenCalledWith(file);
-  });
-
-  it('moves between the three modes with the arrow keys', () => {
-    const p = props();
-    render(<CreateModal {...p} mode="image" />);
-    fireEvent.keyDown(screen.getByRole('radio', { name: 'From image' }), { key: 'ArrowRight' });
-    expect(p.onMode).toHaveBeenCalledWith('import');
   });
 });

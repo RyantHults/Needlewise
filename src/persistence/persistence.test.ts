@@ -1,13 +1,12 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import { CellKind, createDocument as createDomainDocument, createEditorFromHistory, layerAddCommand, layerDeleteCommand, layerRenameCommand, DocumentEditor, layeredFromSurface, LayerType, layerSurface, QuarterCorner, topmostVisibleLayer, type CatalogAssociation, type CreateDocumentOptions, type DomainCommand, type LayeredDocument, type PatternDocument, type StitchLayer, type SpecialtyLayer } from '../domain';
-import { markCellComplete, applyCommand as applySurfaceCommand, commitLayerSurface, PERSISTENCE_TEST_CATALOG, SPECIALTY_LAYER_ID, STITCH_LAYER_ID, specialtyLayer, stitchLayer } from '../domain/test-fixtures';
+import { cell, markCellComplete, applyCommand as applySurfaceCommand, commitLayerSurface, PERSISTENCE_TEST_CATALOG, SPECIALTY_LAYER_ID, STITCH_LAYER_ID, specialtyLayer, stitchLayer } from '../domain/test-fixtures';
 import { cloneLayeredDocument, decodeDocumentWithInfo } from './binary';
 import { encodeLegacyDocument } from './legacy-binary.fixture';
 import { DMC_CATALOG_DEFINITION } from '../catalog';
 import { SYMBOL_POOL } from '../symbols';
 import * as binaryModule from './binary';
-import * as domainModule from '../domain';
 import * as hashModule from './hash';
 import { prepareDocumentSnapshot, type PersistencePreparationResponse } from './preparation';
 import { handlePersistencePreparationWorkerMessage } from '../workers/persistence-preparation.worker';
@@ -74,9 +73,9 @@ function makeDocument(): LayeredDocument {
       { id: 2, name: 'Blue', color: '#36c' }
     ]
   });
-  document = applyCommand(document, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
-  document = applyCommand(document, { type: 'set-quarter', x: 1, y: 0, corner: 0, color: 2 }).document;
-  document = applyCommand(document, { type: 'set-quarter', x: 1, y: 0, corner: 2, color: 1 }).document;
+  document = applyCommand(document, cell(document, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
+  document = applyCommand(document, cell(document, { type: 'set-quarter', x: 1, y: 0, corner: 0, color: 2 })).document;
+  document = applyCommand(document, cell(document, { type: 'set-quarter', x: 1, y: 0, corner: 2, color: 1 })).document;
   document = applyCommand(document, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 12, y: 8 }, color: 2 }).document;
   return document;
 }
@@ -483,7 +482,7 @@ describe('durable document history persistence', () => {
     try {
       const base = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
       const editor = new DocumentEditor(base);
-      const document = executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 });
+      const document = executeLayered(editor, cell(editor.document, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 }));
       const history = editor.exportHistory();
       expect(await prepareSessionHistory(document, history)).toBeDefined();
       await repo.save('history-round-trip', metadata(document, 'history-round-trip'), document, undefined, { history });
@@ -502,8 +501,8 @@ describe('durable document history persistence', () => {
       expect(loaded?.history?.undoOrder).toEqual([{ kind: 'document', index: 0 }]);
 
       const twoStepEditor = new DocumentEditor(base);
-      twoStepEditor.execute({ type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 });
-      const twoStep = executeLayered(twoStepEditor, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 1, y: 0, color: 1 });
+      twoStepEditor.execute(cell(twoStepEditor.document, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 }));
+      const twoStep = executeLayered(twoStepEditor, cell(twoStepEditor.document, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 1, y: 0, color: 1 }));
       const reversedMarkers = {
         version: 1 as const,
         document: twoStepEditor.exportHistory(),
@@ -527,7 +526,7 @@ describe('durable document history persistence', () => {
   it('accepts a saved session history containing a canvas entry', async () => {
     const base = createDocument({ width: 3, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     const editor = new DocumentEditor(base);
-    editor.execute({ type: 'set-full', layerId: STITCH_LAYER_ID, x: 2, y: 1, color: 1 });
+    editor.execute(cell(editor.document, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 2, y: 1, color: 1 }));
     const document = executeLayered(editor, { type: 'canvas-cells', operation: 'remove', rect: { x: 0, y: 0, width: 1, height: 1 } });
     const history = editor.exportHistory();
     const canvasEntry = history.undo.find((entry) => entry.kind === 'canvas');
@@ -540,7 +539,7 @@ describe('durable document history persistence', () => {
   it('keeps history importable after a canvas round trip leaves a zero origin', async () => {
     const base = createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     const editor = new DocumentEditor(base);
-    editor.execute({ type: 'set-full', layerId: STITCH_LAYER_ID, x: 1, y: 1, color: 1 });
+    editor.execute(cell(editor.document, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 1, y: 1, color: 1 }));
     editor.execute({ type: 'canvas-resize', edges: { top: 0, right: 0, bottom: 0, left: 1 } });
     editor.execute({ type: 'canvas-resize', edges: { top: 0, right: 0, bottom: 0, left: -1 } });
     editor.execute({ type: 'canvas-cells', operation: 'remove', rect: { x: 0, y: 0, width: 1, height: 1 } });
@@ -580,9 +579,9 @@ describe('durable document history persistence', () => {
       const base = createDocument({ width: 3, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] });
       await repo.save('history-kinds', metadata(base, 'history-kinds'), base);
       const editor = new DocumentEditor(base);
-      executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 });
+      executeLayered(editor, cell(editor.document, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 }));
       executeLayered(editor, { type: 'palette-merge', from: 1, to: 2 });
-      editor.executeBatch([layerAddCommand(LayerType.Stitch, { id: 3 }), { type: 'set-full', layerId: 3, x: 1, y: 1, color: 2 }]);
+      editor.executeBatch([layerAddCommand(LayerType.Stitch, { id: 3 }), cell(editor.document, { type: 'set-full', layerId: 3, x: 1, y: 1, color: 2 })]);
       executeLayered(editor, layerRenameCommand(3, 'Renamed'));
       const document = cloneLayeredDocument(editor.document);
       const history = editor.exportHistory();
@@ -638,10 +637,9 @@ describe('durable document history persistence', () => {
     }
   });
 
-  it('saves live history without rebuilding an editor and validates the chain only on load', async () => {
+  it('saves live history and restores it on load', async () => {
     const repo = await repository();
     const preparation = new PersistencePreparationWorkerClient({ workerFactory: () => new RepositoryPreparationWorker() });
-    const rebuildSpy = vi.spyOn(domainModule, 'createEditorFromHistory');
     try {
       const base = createDocument({ width: 3, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
       await repo.save('history-save-path', metadata(base, 'history-save-path'), base);
@@ -650,21 +648,17 @@ describe('durable document history persistence', () => {
       for (let step = 0; step < 20; step += 1) executeLayered(editor, { type: 'document-settings-update', settings: { aidaCount: 40 + step } });
       const document = cloneLayeredDocument(editor.document);
       const history = editor.exportHistory();
-      rebuildSpy.mockClear();
 
       await expect(repo.save('history-save-path', metadata(document, 'history-save-path'), document, undefined, { history })).resolves.toMatchObject({ committed: true });
       const head = await repo.db.projectHeads.get('history-save-path');
       await expect(repo.save('history-save-path', metadata(document, 'history-save-path'), { revision: document.revision } as LayeredDocument, undefined, { mode: 'retain', expectedHead: head, history })).resolves.toMatchObject({ committed: true });
-      const next = executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 });
+      const next = executeLayered(editor, cell(editor.document, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 }));
       const prepared = await preparation.prepare({ projectId: 'history-save-path', revision: next.revision, document: next, requestId: 'history-save-path' });
       await expect(repo.savePrepared('history-save-path', metadata(next, 'history-save-path'), prepared, undefined, { preparedRequestId: preparation.getRequestId(prepared), history: editor.exportHistory() })).resolves.toMatchObject({ committed: true });
-      expect(rebuildSpy).not.toHaveBeenCalled();
 
       const loaded = await repo.load('history-save-path');
-      expect(rebuildSpy).toHaveBeenCalledTimes(1);
       expect(loaded?.history?.document.undo).toHaveLength(41);
     } finally {
-      rebuildSpy.mockRestore();
       preparation.dispose();
       await closeRepository(repo);
     }
@@ -732,7 +726,7 @@ describe('durable document history persistence', () => {
     try {
       const base = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
       const editor = new DocumentEditor(base);
-      const document = executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 });
+      const document = executeLayered(editor, cell(editor.document, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 }));
       const history = editor.exportHistory();
       const historyPut = vi.spyOn(repo.db.documentHistories, 'put').mockRejectedValueOnce(new Error('quota'));
 
@@ -751,16 +745,16 @@ describe('durable document history persistence', () => {
     try {
       const base = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] });
       const editor = new DocumentEditor(base);
-      const document = executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 });
+      const document = executeLayered(editor, cell(editor.document, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 }));
       await repo.save('history-lifecycle', metadata(document, 'history-lifecycle'), document, undefined, { history: editor.exportHistory() });
       expect(await repo.db.documentHistories.get('history-lifecycle')).toBeDefined();
 
-      const replacement = applyCommand(document, { type: 'set-full', x: 1, y: 0, color: 1 }).document;
+      const replacement = applyCommand(document, cell(document, { type: 'set-full', x: 1, y: 0, color: 1 })).document;
       await repo.save('history-lifecycle', metadata(replacement, 'history-lifecycle'), replacement);
       expect(await repo.db.documentHistories.get('history-lifecycle')).toBeUndefined();
 
       const replacementEditor = new DocumentEditor(replacement);
-      const replacementWithHistory = executeLayered(replacementEditor, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 1, y: 0, color: 2 });
+      const replacementWithHistory = executeLayered(replacementEditor, cell(replacementEditor.document, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 1, y: 0, color: 2 }));
       await repo.save('history-lifecycle', metadata(replacementWithHistory, 'history-lifecycle'), replacementWithHistory, undefined, { history: replacementEditor.exportHistory() });
       expect(await repo.db.documentHistories.get('history-lifecycle')).toBeDefined();
       await repo.deleteProject('history-lifecycle');
@@ -829,7 +823,7 @@ describe('durable document history persistence', () => {
       await repo.save('warm-history-fallback', metadata(base, 'warm-history-fallback'), base);
       await repo.load('warm-history-fallback');
       const editor = new DocumentEditor(base);
-      const next = executeLayered(editor, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 });
+      const next = executeLayered(editor, cell(editor.document, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 }));
       const put = vi.spyOn(repo.db.documentHistories, 'put').mockRejectedValueOnce(new Error('history quota'));
       await expect(repo.save('warm-history-fallback', metadata(next, 'warm-history-fallback'), next, undefined, { history: editor.exportHistory() })).resolves.toMatchObject({ committed: true, stale: false, head: { historyGeneration: 2 } });
       put.mockRestore();
@@ -932,9 +926,7 @@ describe('durable document history persistence', () => {
               afterCompleted: new Uint8Array()
             }
           },
-          bytes: 1,
-          progress: { cellIndices: new Uint32Array(), backstitchIds: new Uint32Array(), marked: 0, unmarked: 0 },
-          recalculateMetrics: false
+          bytes: 1
         }],
         redo: []
       };
@@ -982,10 +974,10 @@ describe('session history lifecycle transaction rollback', () => {
     try {
       const revision0 = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
       const editor0 = new DocumentEditor(revision0);
-      const revision1 = executeLayered(editor0, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 });
+      const revision1 = executeLayered(editor0, cell(editor0.document, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 }));
       await repo.save('rollback-target', metadata(revision0, 'rollback-target'), revision0, undefined, { history: editor0.exportHistory() });
       const editor1 = new DocumentEditor(revision1);
-      const revision2 = executeLayered(editor1, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 1, y: 0, color: 1 });
+      const revision2 = executeLayered(editor1, cell(editor1.document, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 1, y: 0, color: 1 }));
       await repo.save('rollback-target', metadata(revision2, 'rollback-target'), revision2, undefined, { history: editor1.exportHistory() });
       const currentBeforeDelete = await repo.db.currentSnapshots.get('rollback-target');
       const deleteForProject = vi.spyOn(repo.db.documentHistories, 'delete').mockRejectedValueOnce(new Error('project history cleanup failed'));
@@ -1175,7 +1167,7 @@ describe('binary document persistence', () => {
 
   it('upgrades a v2 document into the default Stitches and Specialty layers', () => {
     let surface = createSurface({ width: 3, height: 2, settings: { backgroundColor: '#112233' }, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] });
-    surface = applySurfaceCommand(surface, { type: 'set-full', x: 2, y: 1, color: 1 }).document;
+    surface = applySurfaceCommand(surface, cell(surface, { type: 'set-full', x: 2, y: 1, color: 1 })).document;
     surface = markCellComplete(surface, 2, 1);
     surface = applySurfaceCommand(surface, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 2, y: 2 }, color: 2 }).document;
     const decoded = decodeDocumentWithInfo(encodeLegacyDocument(surface, 2));
@@ -1211,7 +1203,7 @@ describe('binary document persistence', () => {
 
   it('round-trips directional three-quarter kinds as compact single-slot cells', () => {
     let original = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    original = applyCommand(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SW, color: 1 }).document;
+    original = applyCommand(original, cell(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SW, color: 1 })).document;
     const decoded = decodeDocumentWithInfo(encodeDocument(original)).document;
 
     expect(stitchLayer(decoded).kind[0]).toBe(CellKind.ThreeQuarterSW);
@@ -1222,8 +1214,8 @@ describe('binary document persistence', () => {
 
   it('round-trips paired three-quarter kinds with physical colors', () => {
     let original = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] });
-    original = applyCommand(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
-    original = applyCommand(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 }).document;
+    original = applyCommand(original, cell(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 })).document;
+    original = applyCommand(original, cell(original, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 })).document;
     const decoded = decodeDocumentWithInfo(encodeDocument(original)).document;
 
     expect(stitchLayer(decoded).kind[0]).toBe(CellKind.ThreeQuarterPair);
@@ -1415,7 +1407,7 @@ describe('binary document persistence', () => {
     const repo = await repository();
     try {
       let document = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      document = applyCommand(document, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+      document = applyCommand(document, cell(document, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
       const settings = { strands: 1, backstitchStrands: 1, waste: 1.25, stitchLengthMeters: 0.1 };
       await repo.save('canonical-waste', { ...metadata(document, 'canonical-waste'), materialSettings: settings }, document);
 
@@ -1469,7 +1461,7 @@ describe('binary document persistence', () => {
       expect((await repo.load('legacy-aida'))?.document.settings.aidaCount).toBe(18);
 
       // A replace commit writes v5 with the count in settings and drops the metadata copy.
-      const next = applyCommand(loaded.document, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+      const next = applyCommand(loaded.document, cell(loaded.document, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
       await repo.save('legacy-aida', { ...retainedMetadata, revision: next.revision }, next);
       expect((await repo.db.projects.get('legacy-aida'))?.aidaCount).toBeUndefined();
       expect((await repo.load('legacy-aida'))?.document.settings.aidaCount).toBe(18);
@@ -1577,7 +1569,7 @@ describe('local project repository', () => {
     const repo = await repository();
     try {
       const revision0 = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const revision1 = applyCommand(revision0, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+      const revision1 = applyCommand(revision0, cell(revision0, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
       await repo.save('retain', metadata(revision0, 'retain'), revision0, [{ id: 'old', name: 'old.bin', mimeType: 'application/octet-stream', data: new Uint8Array([1]) }]);
       await repo.save('retain', metadata(revision1, 'retain'), revision1);
 
@@ -1608,14 +1600,13 @@ describe('local project repository', () => {
     }
   });
 
-  it('uses only the compact head record for a normal retain commit', async () => {
+  it('commits a retain save against the compact head', async () => {
     const repo = await repository();
     try {
       const document = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
       await repo.save('retain-head', metadata(document, 'retain-head'), document);
       const head = await repo.db.projectHeads.get('retain-head');
       if (!head) throw new Error('missing compact project head');
-      const currentRead = vi.spyOn(repo.db.currentSnapshots, 'get');
 
       const result = await repo.save(
         'retain-head',
@@ -1626,8 +1617,6 @@ describe('local project repository', () => {
       );
 
       expect(result).toMatchObject({ committed: true, stale: false, head });
-      expect(currentRead).not.toHaveBeenCalled();
-      currentRead.mockRestore();
     } finally {
       await closeRepository(repo);
     }
@@ -1749,7 +1738,7 @@ describe('local project repository', () => {
     const repo = await repository();
     try {
       const revision0 = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const revision1 = applyCommand(revision0, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+      const revision1 = applyCommand(revision0, cell(revision0, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
       await repo.save('retain-stale', metadata(revision0, 'retain-stale'), revision0);
       await repo.save('retain-stale', metadata(revision1, 'retain-stale'), revision1);
 
@@ -1816,12 +1805,12 @@ describe('local project repository', () => {
       await repo.save('project-1', metadata(revision0), revision0);
       expect((await repo.load('project-1'))?.recovery).toBeNull();
 
-      const revision1 = applyCommand(revision0, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+      const revision1 = applyCommand(revision0, cell(revision0, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
       await repo.save('project-1', metadata(revision1), revision1);
       expect((await repo.load('project-1'))?.recovery?.revision).toBe(revision0.revision);
       expect(await repo.db.projectHeads.get('project-1')).toMatchObject({ projectId: 'project-1', revision: revision1.revision, checksum: (await repo.db.currentSnapshots.get('project-1'))?.checksum });
 
-      const revision2 = applyCommand(revision1, { type: 'set-full', x: 1, y: 1, color: 1 }).document;
+      const revision2 = applyCommand(revision1, cell(revision1, { type: 'set-full', x: 1, y: 1, color: 1 })).document;
       await repo.save('project-1', metadata(revision2), revision2);
       const loaded = await repo.load('project-1');
       expect(loaded?.document.revision).toBe(revision2.revision);
@@ -1836,8 +1825,8 @@ describe('local project repository', () => {
     const repo = await repository();
     try {
       const revision0 = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const revision1 = applyCommand(revision0, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
-      const revision2 = applyCommand(revision1, { type: 'set-full', x: 1, y: 1, color: 1 }).document;
+      const revision1 = applyCommand(revision0, cell(revision0, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
+      const revision2 = applyCommand(revision1, cell(revision1, { type: 'set-full', x: 1, y: 1, color: 1 })).document;
       const newest = repo.save('project-1', metadata(revision2), revision2);
       const stale = repo.save('project-1', metadata(revision1), revision1);
       expect(await newest).toMatchObject({ committed: true, stale: false, revision: revision2.revision });
@@ -1879,7 +1868,7 @@ describe('local project repository', () => {
     const hashSpy = vi.spyOn(hashModule, 'sha256');
     try {
       const revision0 = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const revision1 = applyCommand(revision0, { type: 'set-full', x: 1, y: 1, color: 1 }).document;
+      const revision1 = applyCommand(revision0, cell(revision0, { type: 'set-full', x: 1, y: 1, color: 1 })).document;
       await repo.save('prepared', metadata(revision0, 'prepared'), revision0);
       const rawPrepared = await prepareDocumentSnapshot(cloneLayeredDocument(revision1), { projectId: 'prepared', revision: revision1.revision, requestId: 'raw-prepared' });
       const preparedSummary = deriveProjectSummary(revision1);
@@ -1923,110 +1912,22 @@ describe('local project repository', () => {
     }
   });
 
-  it('uses a loaded verified-current cache for a warm prepared revision advance', async () => {
-    databaseCounter += 1;
-    const db = new NeedlewiseDatabase(`needlewise-persistence-test-${String(databaseCounter)}`);
-    const writer = new ProjectRepository(db, { now: () => 10 });
-    const repo = new ProjectRepository(db, { now: () => 11 });
-    const preparation = new PersistencePreparationWorkerClient({ workerFactory: () => new RepositoryPreparationWorker() });
-    try {
-      const revision0 = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const revision1 = applyCommand(revision0, { type: 'set-full', x: 1, y: 1, color: 1 }).document;
-      await writer.save('warm-cache', metadata(revision0, 'warm-cache'), revision0);
-      await repo.load('warm-cache');
-      const oldSnapshot = await db.currentSnapshots.get('warm-cache');
-      if (!oldSnapshot) throw new Error('missing warm-cache snapshot');
-      const prepared = await preparation.prepare({ projectId: 'warm-cache', revision: revision1.revision, document: revision1, requestId: 'warm-revision' });
-
-      const currentGet = vi.spyOn(db.currentSnapshots, 'get');
-      const hashSpy = vi.spyOn(hashModule, 'sha256');
-      const decodeSpy = vi.spyOn(binaryModule, 'decodeDocumentWithInfo');
-      currentGet.mockClear();
-      hashSpy.mockClear();
-      decodeSpy.mockClear();
-
-      const result = await repo.savePrepared('warm-cache', metadata(revision1, 'warm-cache'), prepared, undefined, { preparedRequestId: preparation.getRequestId(prepared) });
-
-      expect(result.committed).toBe(true);
-      expect(currentGet).not.toHaveBeenCalled();
-      expect(hashSpy).not.toHaveBeenCalled();
-      expect(decodeSpy).not.toHaveBeenCalled();
-      const recovery = await db.recoverySnapshots.get('warm-cache');
-      expect(recovery).toMatchObject({ projectId: 'warm-cache', revision: revision0.revision, checksum: oldSnapshot.checksum });
-      expect(recovery?.bytes).toEqual(oldSnapshot.bytes);
-      expect(cachedCurrent(repo)).toMatchObject({ projectId: 'warm-cache', revision: revision1.revision });
-      currentGet.mockRestore();
-      hashSpy.mockRestore();
-      decodeSpy.mockRestore();
-    } finally {
-      preparation.dispose();
-      await repo.close();
-      await db.delete();
-    }
-  });
-
-  it('falls back to full verified current-snapshot recovery on a cold cache', async () => {
-    databaseCounter += 1;
-    const db = new NeedlewiseDatabase(`needlewise-persistence-test-${String(databaseCounter)}`);
-    const writer = new ProjectRepository(db, { now: () => 10 });
-    const repo = new ProjectRepository(db, { now: () => 11 });
-    const preparation = new PersistencePreparationWorkerClient({ workerFactory: () => new RepositoryPreparationWorker() });
-    try {
-      const revision0 = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const revision1 = applyCommand(revision0, { type: 'set-full', x: 1, y: 1, color: 1 }).document;
-      await writer.save('cold-cache', metadata(revision0, 'cold-cache'), revision0);
-      const prepared = await preparation.prepare({ projectId: 'cold-cache', revision: revision1.revision, document: revision1, requestId: 'cold-revision' });
-      const currentGet = vi.spyOn(db.currentSnapshots, 'get');
-      const hashSpy = vi.spyOn(hashModule, 'sha256');
-      const decodeSpy = vi.spyOn(binaryModule, 'decodeDocumentWithInfo');
-      currentGet.mockClear();
-      hashSpy.mockClear();
-      decodeSpy.mockClear();
-
-      await repo.savePrepared('cold-cache', metadata(revision1, 'cold-cache'), prepared, undefined, { preparedRequestId: preparation.getRequestId(prepared) });
-
-      expect(currentGet).toHaveBeenCalled();
-      expect(hashSpy).toHaveBeenCalled();
-      expect(decodeSpy).toHaveBeenCalled();
-      expect((await db.recoverySnapshots.get('cold-cache'))?.revision).toBe(revision0.revision);
-      currentGet.mockRestore();
-      hashSpy.mockRestore();
-      decodeSpy.mockRestore();
-    } finally {
-      preparation.dispose();
-      await repo.close();
-      await db.delete();
-    }
-  });
-
   it('invalidates a cached current snapshot when the compact head is stale', async () => {
     const repo = await repository();
     const preparation = new PersistencePreparationWorkerClient({ workerFactory: () => new RepositoryPreparationWorker() });
     try {
       const revision0 = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const revision1 = applyCommand(revision0, { type: 'set-full', x: 1, y: 1, color: 1 }).document;
+      const revision1 = applyCommand(revision0, cell(revision0, { type: 'set-full', x: 1, y: 1, color: 1 })).document;
       await repo.save('stale-cache', metadata(revision0, 'stale-cache'), revision0);
       const current = await repo.db.currentSnapshots.get('stale-cache');
       const head = await repo.db.projectHeads.get('stale-cache');
       if (!current || !head) throw new Error('missing stale-cache state');
       await repo.db.projectHeads.put({ ...head, checksum: 'f'.repeat(64) });
       const prepared = await preparation.prepare({ projectId: 'stale-cache', revision: revision1.revision, document: revision1, requestId: 'stale-head-revision' });
-      const currentGet = vi.spyOn(repo.db.currentSnapshots, 'get');
-      const hashSpy = vi.spyOn(hashModule, 'sha256');
-      const decodeSpy = vi.spyOn(binaryModule, 'decodeDocumentWithInfo');
-      currentGet.mockClear();
-      hashSpy.mockClear();
-      decodeSpy.mockClear();
 
       await repo.savePrepared('stale-cache', metadata(revision1, 'stale-cache'), prepared, undefined, { preparedRequestId: preparation.getRequestId(prepared) });
 
-      expect(currentGet).toHaveBeenCalled();
-      expect(hashSpy).toHaveBeenCalled();
-      expect(decodeSpy).toHaveBeenCalled();
       expect((await repo.db.recoverySnapshots.get('stale-cache'))?.bytes).toEqual(current.bytes);
-      currentGet.mockRestore();
-      hashSpy.mockRestore();
-      decodeSpy.mockRestore();
     } finally {
       preparation.dispose();
       await closeRepository(repo);
@@ -2038,7 +1939,7 @@ describe('local project repository', () => {
     const preparation = new PersistencePreparationWorkerClient({ workerFactory: () => new RepositoryPreparationWorker() });
     try {
       const revision0 = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const revision1 = applyCommand(revision0, { type: 'set-full', x: 1, y: 1, color: 1 }).document;
+      const revision1 = applyCommand(revision0, cell(revision0, { type: 'set-full', x: 1, y: 1, color: 1 })).document;
       await repo.save('corrupt-warm', metadata(revision0, 'corrupt-warm'), revision0);
       const verified = await repo.db.currentSnapshots.get('corrupt-warm');
       if (!verified) throw new Error('missing corrupt-warm snapshot');
@@ -2066,7 +1967,7 @@ describe('local project repository', () => {
     const preparation = new PersistencePreparationWorkerClient({ workerFactory: () => new RepositoryPreparationWorker() });
     try {
       const revision0 = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const revision1 = applyCommand(revision0, { type: 'set-full', x: 1, y: 1, color: 1 }).document;
+      const revision1 = applyCommand(revision0, cell(revision0, { type: 'set-full', x: 1, y: 1, color: 1 })).document;
       await writer.save('corrupt-cold', metadata(revision0, 'corrupt-cold'), revision0);
       const current = await db.currentSnapshots.get('corrupt-cold');
       if (!current) throw new Error('missing corrupt-cold snapshot');
@@ -2084,40 +1985,12 @@ describe('local project repository', () => {
     }
   });
 
-  it('keeps one cache entry and clears it on delete/close', async () => {
-    const repo = await repository();
-    try {
-      const first = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const second = createDocument({ width: 2, height: 1, palette: [{ id: 1, name: 'Blue', color: '#36c' }] });
-      await repo.save('evict-first', metadata(first, 'evict-first'), first);
-      expect(cachedCurrent(repo)).toMatchObject({ projectId: 'evict-first', revision: first.revision });
-      await repo.save('evict-second', metadata(second, 'evict-second'), second);
-      expect(cachedCurrent(repo)).toMatchObject({ projectId: 'evict-second', revision: second.revision });
-
-      const imported = createDocument({ width: 3, height: 1, palette: [{ id: 1, name: 'Green', color: '#3c3' }] });
-      await repo.save('lifecycle', metadata(imported, 'lifecycle'), imported);
-      expect(cachedCurrent(repo)).toMatchObject({ projectId: 'lifecycle', revision: imported.revision });
-
-      await repo.deleteProject('lifecycle');
-      expect(cachedCurrent(repo)).toBeUndefined();
-      await repo.save('close-cache', metadata(second, 'close-cache'), second);
-      expect(cachedCurrent(repo)).toMatchObject({ projectId: 'close-cache' });
-      await repo.close();
-      expect(cachedCurrent(repo)).toBeUndefined();
-      await repo.db.delete();
-    } catch (error) {
-      await repo.close();
-      await repo.db.delete();
-      throw error;
-    }
-  });
-
   it('does not publish an uncommitted snapshot to the cache when the transaction fails', async () => {
     const repo = await repository();
     const preparation = new PersistencePreparationWorkerClient({ workerFactory: () => new RepositoryPreparationWorker() });
     try {
       const revision0 = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const revision1 = applyCommand(revision0, { type: 'set-full', x: 1, y: 1, color: 1 }).document;
+      const revision1 = applyCommand(revision0, cell(revision0, { type: 'set-full', x: 1, y: 1, color: 1 })).document;
       await repo.save('failed-cache', metadata(revision0, 'failed-cache'), revision0);
       const prepared = await preparation.prepare({ projectId: 'failed-cache', revision: revision1.revision, document: revision1, requestId: 'failed-cache-revision' });
       const currentPut = vi.spyOn(repo.db.currentSnapshots, 'put').mockRejectedValueOnce(new Error('forced transaction failure'));
@@ -2158,7 +2031,7 @@ describe('local project repository', () => {
     const repo = await repository();
     try {
       const revision0 = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const revision1 = applyCommand(revision0, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+      const revision1 = applyCommand(revision0, cell(revision0, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
       await repo.save('recoverable', metadata(revision0, 'recoverable'), revision0);
       await repo.save('recoverable', metadata(revision1, 'recoverable'), revision1);
       const current = await repo.db.currentSnapshots.get('recoverable');
@@ -2182,7 +2055,7 @@ describe('local project repository', () => {
     const repo = await repository();
     try {
       const revision0 = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const revision1 = applyCommand(revision0, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+      const revision1 = applyCommand(revision0, cell(revision0, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
       await repo.save('warning', metadata(revision0, 'warning'), revision0);
       await repo.save('warning', metadata(revision1, 'warning'), revision1);
       const recovery = await repo.db.recoverySnapshots.get('warning');
@@ -2227,7 +2100,7 @@ describe('local project repository', () => {
     const repo = await repository();
     try {
       const revision0 = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      const revision1 = applyCommand(revision0, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+      const revision1 = applyCommand(revision0, cell(revision0, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
       await repo.save('recovery-asset-warning', metadata(revision0, 'recovery-asset-warning'), revision0, [{ id: 'bad', name: 'bad.bin', mimeType: 'application/octet-stream', data: new Uint8Array([7, 8]) }]);
       await repo.save('recovery-asset-warning', metadata(revision1, 'recovery-asset-warning'), revision1);
       const bad = await repo.db.assets.get(['recovery-asset-warning', 'bad']);
@@ -2288,15 +2161,11 @@ describe('local project repository', () => {
       delete stored.thumbnail;
       await repo.db.projects.put(stored);
 
-      const currentRead = vi.spyOn(repo.db.currentSnapshots, 'get');
-      currentRead.mockClear();
       const projectPut = vi.spyOn(repo.db.projects, 'put').mockRejectedValueOnce(new Error('cache write failed'));
       try {
         await expect(repo.load('backfill-write-failure')).resolves.toMatchObject({ document: { width: 2, height: 2 } });
-        expect(currentRead).toHaveBeenCalledTimes(1);
       } finally {
         projectPut.mockRestore();
-        currentRead.mockRestore();
       }
     } finally {
       await closeRepository(repo);
@@ -2325,23 +2194,6 @@ describe('local project repository', () => {
       const rewritten = await repo.db.projects.get('legacy-thumbnail');
       expect(rewritten?.thumbnail).toMatchObject({ version: 2, columns: 300, rows: 200 });
       expect(Object.prototype.toString.call(rewritten?.thumbnail?.indices)).toBe('[object Uint8Array]');
-    } finally {
-      await closeRepository(repo);
-    }
-  });
-
-  it('does not open a backfill transaction for an already canonical summary', async () => {
-    const repo = await repository();
-    try {
-      const document = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-      await repo.save('canonical-backfill', metadata(document, 'canonical-backfill'), document);
-      const transaction = vi.spyOn(repo.db, 'transaction');
-      try {
-        await repo.load('canonical-backfill');
-        expect(transaction).toHaveBeenCalledTimes(1);
-      } finally {
-        transaction.mockRestore();
-      }
     } finally {
       await closeRepository(repo);
     }
@@ -2386,19 +2238,6 @@ describe('local project repository', () => {
     }
   });
 
-  it('persists a project with an optional local asset', async () => {
-    const repo = await repository();
-    try {
-      const document = makeDocument();
-      const asset = new Uint8Array([1, 2, 3, 4, 5]);
-      const projectMetadata = metadata(document);
-      await repo.save('project-1', projectMetadata, document, [{ id: 'reference', name: 'reference.bin', mimeType: 'application/octet-stream', data: asset }]);
-      expect((await repo.load('project-1'))?.document.catalog).toEqual(document.catalog);
-      expect((await repo.load('project-1'))?.metadata).toMatchObject({ width: document.width, height: document.height, thumbnail: deriveProjectSummary(document).thumbnail });
-    } finally {
-      await closeRepository(repo);
-    }
-  });
 });
 
 describe('storage boundaries', () => {

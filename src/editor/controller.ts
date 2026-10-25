@@ -186,7 +186,6 @@ export interface EditorSurfaceControllerOptions {
   readonly metrics?: CanvasMetrics;
   readonly minZoom?: number;
   readonly maxZoom?: number;
-  readonly fillClient?: FillWorkerClient;
   readonly traceImage?: TraceImage;
   readonly traceSampler?: TraceImageSampler;
   readonly catalogDefinition?: CatalogDefinition;
@@ -1501,7 +1500,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private metrics: CanvasMetrics | undefined;
   private readonly viewportOptions: ViewportClampOptions;
   private readonly fillClient: FillWorkerClient;
-  private readonly ownsFillClient: boolean;
   private traceImage: TraceImage | undefined;
   private readonly traceSampler: TraceImageSampler;
   private readonly catalogDefinition: CatalogDefinition | undefined;
@@ -1562,8 +1560,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.uiStore = options.uiStore;
     this.metrics = options.metrics;
     this.viewportOptions = { minZoom: options.minZoom, maxZoom: options.maxZoom };
-    this.fillClient = options.fillClient ?? createFillWorkerClient();
-    this.ownsFillClient = options.fillClient === undefined;
+    this.fillClient = createFillWorkerClient();
     this.traceImage = options.traceImage;
     this.traceSampler = options.traceSampler ?? ((trace, document, viewport, metrics, point) => sampleTraceImage(trace, document, viewport, metrics, point));
     this.catalogDefinition = options.catalogDefinition;
@@ -1641,7 +1638,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (this.disposed) return;
     this.exitImageTool();
     this.stop();
-    if (this.ownsFillClient) this.fillClient.dispose();
+    this.fillClient.dispose();
     this.disposed = true;
   }
 
@@ -1688,13 +1685,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.exitImageTool();
     }
     if (tool.tool === 'eraser' && tool.corner !== undefined) this.eraserCorner = tool.corner;
-    if (tool.tool === 'paint' && tool.brush === undefined) {
-      // Normalize brush-less paint states while keeping Fill palette-driven.
-      const carried = state.tool.tool === 'paint' ? state.tool.brush : undefined;
-      const brush: StitchBrush = carried ?? { kind: 'full', paletteId: state.paletteId ?? this.firstActivePaletteId() ?? 1 };
-      this.uiStore.setTool({ tool: 'paint', brush });
-      return true;
-    }
     this.uiStore.setTool(tool);
     return true;
   }
@@ -2838,7 +2828,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
           type: 'palette-create',
           name: matched.name,
           color: matched.hex,
-          active: true,
           catalog: createCatalogReference(definition, matched)
         });
         if (result.paletteId === undefined) return false;
@@ -3036,13 +3025,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const state = this.uiStore.getState();
     if (state.tool.tool === 'paint') {
       const brush = state.tool.brush;
-      const nextBrush: StitchBrush = brush === undefined
+      const nextBrush: StitchBrush = brush.kind === 'full'
         ? { kind: 'full', paletteId }
-        : brush.kind === 'full'
-          ? { kind: 'full', paletteId }
-          : brush.kind === 'half'
-            ? { kind: 'half', ...(brush.direction === undefined ? {} : { direction: brush.direction }), paletteId }
-            : { kind: 'three-quarter', paletteId };
+        : brush.kind === 'half'
+          ? { kind: 'half', ...(brush.direction === undefined ? {} : { direction: brush.direction }), paletteId }
+          : { kind: 'three-quarter', paletteId };
       this.uiStore.setState({ paletteId, tool: { tool: 'paint', brush: nextBrush } });
     } else {
       this.uiStore.setState({ paletteId });
@@ -5492,10 +5479,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       states = this.pendingEraserStates(targets.cells, targets.components, document);
     }
     this.uiStore.setOverlay({ ...state.overlay, brushPreview: { states: this.activeStatesOnly(states), kind } });
-  }
-
-  private firstActivePaletteId(): number | undefined {
-    return this.gateway.getSnapshot().document?.palette.find((entry) => entry.active)?.id;
   }
 
   /**

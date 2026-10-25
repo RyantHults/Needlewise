@@ -1,4 +1,4 @@
-import { CellKind, LayerType, type LayeredDocument, type PatternDocument, type ProgressChangeSet } from './types';
+import { CellKind, LayerType, type LayeredDocument, type PatternDocument } from './types';
 import type { PackedBackstitchCompletionDelta, PackedCellCompletionDelta } from './commands';
 import { componentSlotMask } from './cell-components';
 
@@ -22,22 +22,6 @@ export interface ProgressEntryPart {
 /** One Track undo step: the per-layer completion deltas a mark wrote. */
 export interface ProgressEntry {
   readonly parts: readonly ProgressEntryPart[];
-}
-
-export function emptyProgress(): ProgressChangeSet {
-  return { cellIndices: new Uint32Array(0), backstitchIds: new Uint32Array(0), marked: 0, unmarked: 0 };
-}
-
-/** A detached copy; a missing change set is empty. */
-export function cloneProgress(progress: ProgressChangeSet | undefined): ProgressChangeSet {
-  return progress === undefined
-    ? emptyProgress()
-    : { cellIndices: progress.cellIndices.slice(), backstitchIds: progress.backstitchIds.slice(), marked: progress.marked, unmarked: progress.unmarked };
-}
-
-/** The components marked and unmarked when a completed-component count moves from `before` to `after`. */
-export function progressActivity(before: number, after: number): Pick<ProgressChangeSet, 'marked' | 'unmarked'> {
-  return { marked: Math.max(0, after - before), unmarked: Math.max(0, before - after) };
 }
 
 /** The topmost visible stitch layer with a non-empty cell at `index`, which supplies that composite cell. */

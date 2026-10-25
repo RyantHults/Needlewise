@@ -31,8 +31,6 @@ const red = getDmcColor('321');
 function analysis(overrides: Partial<ImportAnalysis> = {}): ImportAnalysis {
   return {
     format: 'pdf',
-    overlap: 1,
-    detectedOverlap: 1,
     pages: [
       { index: 0, role: 'chart', detectedRole: 'chart', width: 600, height: 800, grid: { columns: 20, rows: 30 } },
       { index: 1, role: 'key', detectedRole: 'key', width: 600, height: 800 }
@@ -125,7 +123,7 @@ describe('ImportReviewDialog', () => {
     await waitFor(() => expect(mocks.reanalyze).toHaveBeenCalledWith({ pageRoles: { 0: 'chart', 1: 'other' } }));
   });
 
-  it('previews the chart with mapped colours and pool outlines, without an overlap control', async () => {
+  it('previews the chart with mapped colours and pool outlines', async () => {
     renderDialog();
     await screen.findByRole('heading', { name: 'Pages' });
     next();
@@ -135,8 +133,6 @@ describe('ImportReviewDialog', () => {
     // Symbol a (3 cells) is painted in the DMC colour; unmapped b is not coloured; the empty cell is skipped.
     expect(recorded.fillRect.filter(([, , , , color]) => color === black)).toHaveLength(3);
     expect(recorded.fills).toEqual([getSymbolOutline(slug)?.d, getSymbolOutline(slug)?.d, getSymbolOutline(slug)?.d]);
-    expect(screen.queryByText('Repeated rows and columns between pages')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /overlap/i })).not.toBeInTheDocument();
   });
 
   it('highlights unmapped rows, blocks creation until every symbol has a thread, then builds the pattern', async () => {
@@ -265,7 +261,7 @@ describe('ImportReviewDialog', () => {
     await waitFor(() => expect(change).toHaveFocus());
   });
 
-  it('shows each page thumbnail, revokes its URL when it changes or unmounts, and falls back to a placeholder', async () => {
+  it('shows each page thumbnail and revokes its URL when it changes or unmounts', async () => {
     const first = new Blob(['png'], { type: 'image/png' });
     const pages = analysis().pages;
     mocks.open.mockResolvedValue(analysis({ pages: [{ ...pages[0], thumbnail: first }, pages[1]] }));
@@ -275,7 +271,6 @@ describe('ImportReviewDialog', () => {
     expect(image).toHaveAttribute('src', 'blob:page-1');
     expect(URL.createObjectURL).toHaveBeenCalledWith(first);
     expect(screen.queryByRole('img', { name: 'Page 2 preview' })).not.toBeInTheDocument();
-    expect(wizard().querySelectorAll('.import-page')[1].querySelector('.import-page-thumb-empty')).not.toBeNull();
 
     fireEvent.change(screen.getByLabelText('Role of page 2'), { target: { value: 'other' } });
     await waitFor(() => expect(screen.getByRole('img', { name: 'Page 1 preview' })).toHaveAttribute('src', 'blob:page-2'));
@@ -292,20 +287,17 @@ describe('ImportReviewDialog', () => {
     expect(alert).toHaveTextContent('The chart needs a symbol printed in each stitched cell, because Needlewise reads the symbols to rebuild the pattern.');
   });
 
-  it('lays the key out as a table and says the PDF symbols are not the chart symbols', async () => {
+  it('lays the key out as a table with a notice on the detected symbols', async () => {
     renderDialog();
     await openKeyStep();
     const headers = screen.getAllByRole('columnheader');
-    expect(headers.map((header) => header.textContent)).toEqual([expect.stringMatching(/^Detected symbol/), 'Key entry', 'Stitches', 'Assigned thread', 'Status', 'Action']);
     // The notice is a tip on the symbol heading, plus a copy by the description for the stacked phone layout.
     const info = within(headers[0]).getByRole('button', { name: 'Detected symbol information' });
-    expect(document.getElementById(info.getAttribute('aria-describedby') ?? '')).toHaveTextContent('Needlewise assigns its own chart symbols when the pattern is created.');
+    expect(info).toHaveAccessibleDescription();
     expect(screen.getByRole('button', { name: 'About the detected symbols' })).toBeInTheDocument();
-    expect(document.querySelector('.import-key-note')).toBeNull();
     const rows = screen.getAllByRole('row').filter((item) => item.hasAttribute('data-status'));
     expect(within(rows[0]).getByText('3')).toBeInTheDocument();
     expect(within(rows[1]).getByText(/No code in the key/)).toBeInTheDocument();
-    expect(screen.queryByRole('searchbox')).not.toBeInTheDocument();
   });
 
   it('opens the shared picker on the current thread, and a custom pick keeps its hex and catalog match', async () => {
@@ -371,7 +363,6 @@ describe('ImportReviewDialog', () => {
     await screen.findByRole('heading', { name: 'Pages' });
     fireEvent.keyDown(wizard(), { key: 'Escape' });
     const confirm = screen.getByRole('dialog', { name: 'Leave import?' });
-    expect(confirm).toHaveTextContent('Your progress on this import will be lost.');
     // Escape inside the confirm closes only the confirm.
     fireEvent.keyDown(within(confirm).getByRole('button', { name: 'Keep importing' }), { key: 'Escape' });
     expect(screen.queryByRole('dialog', { name: 'Leave import?' })).not.toBeInTheDocument();

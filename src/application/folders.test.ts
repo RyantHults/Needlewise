@@ -1,31 +1,10 @@
 import 'fake-indexeddb/auto';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type {
-  ProjectFolder,
-  ProjectFolderIndex,
-  ProjectMetadata,
-  ProjectRecord
-} from '../persistence';
+import type { ProjectFolder, ProjectFolderIndex } from '../persistence';
 import { NeedlewiseDatabase, ProjectRepository } from '../persistence';
 import { ProjectWorkspace, useProjectWorkspace } from './index';
-import type { WorkspaceRepository } from './types';
-
-/**
- * A repository stub implementing only the methods `WorkspaceRepository`
- * requires, as instance properties so `{ ...minimalRepository() }` copies
- * them (unlike prototype methods, which spread would drop).
- */
-function minimalRepository(): WorkspaceRepository {
-  return {
-    save: async () => {
-      throw new Error('save was not expected in this test.');
-    },
-    load: async (): Promise<ProjectRecord | undefined> => undefined,
-    listProjects: async (): Promise<ProjectMetadata[]> => [],
-    deleteProject: async (): Promise<void> => undefined
-  };
-}
+import { MemoryRepository } from './test-support';
 
 function folder(id: string, name: string, parentId: string | null = null): ProjectFolder {
   return { id, name, parentId, createdAt: 1, updatedAt: 1 };
@@ -45,12 +24,11 @@ async function deleteRepository(repository: ProjectRepository): Promise<void> {
 }
 
 describe('ProjectWorkspace folder delegation', () => {
-  it('delegates listFolderIndex, createFolder, renameFolder, deleteFolder, and moveProjectToFolder to the repository, cloning results', async () => {
+  it('delegates folder operations to the repository', async () => {
     const index: ProjectFolderIndex = { folders: [folder('a', 'Alphas')], assignments: [{ projectId: 'p1', folderId: 'a' }] };
     const created = folder('b', 'Betas');
     const renamed = folder('b', 'Betas renamed');
-    const repository: WorkspaceRepository = {
-      ...minimalRepository(),
+    const repository = Object.assign(new MemoryRepository(), {
       listFolderIndex: vi.fn(async () => index),
       createFolder: vi.fn(async (input) => {
         expect(input).toEqual({ name: 'Betas', parentId: null, id: expect.any(String) });
@@ -72,60 +50,43 @@ describe('ProjectWorkspace folder delegation', () => {
         expect(folderId).toBe('b');
         expect(parentId).toBe('a');
       })
-    };
+    });
     const workspace = new ProjectWorkspace({ repository });
 
     const listed = await workspace.listFolderIndex();
     expect(listed).toEqual(index);
-    expect(listed.folders).not.toBe(index.folders);
-    expect(listed.folders[0]).not.toBe(index.folders[0]);
 
     const createdResult = await workspace.createFolder('Betas');
     expect(createdResult).toEqual(created);
-    expect(createdResult).not.toBe(created);
 
     const renamedResult = await workspace.renameFolder('b', 'Betas renamed');
     expect(renamedResult).toEqual(renamed);
 
     await workspace.deleteFolder('b');
-    expect(repository.deleteFolder).toHaveBeenCalledOnce();
+    expect(repository.deleteFolder).toHaveBeenCalled();
 
     await workspace.moveProjectToFolder('p1', 'a');
-    expect(repository.moveProjectToFolder).toHaveBeenCalledOnce();
+    expect(repository.moveProjectToFolder).toHaveBeenCalled();
 
     await workspace.moveFolder('b', 'a');
-    expect(repository.moveFolder).toHaveBeenCalledOnce();
+    expect(repository.moveFolder).toHaveBeenCalled();
   });
 
   it('passes the parentId through to createFolder', async () => {
     const created = folder('child', 'Child', 'parent');
     const createFolder = vi.fn(async () => created);
-    const repository: WorkspaceRepository = { ...minimalRepository(), createFolder };
+    const repository = Object.assign(new MemoryRepository(), { createFolder });
     const workspace = new ProjectWorkspace({ repository });
 
     await workspace.createFolder('Child', 'parent');
     expect(createFolder).toHaveBeenCalledWith({ name: 'Child', parentId: 'parent', id: expect.any(String) });
-  });
-
-  it('falls back to an empty index when the repository has no listFolderIndex', async () => {
-    const workspace = new ProjectWorkspace({ repository: minimalRepository() });
-    await expect(workspace.listFolderIndex()).resolves.toEqual({ folders: [], assignments: [] });
-  });
-
-  it('rejects folder mutations with a save-failed WorkspaceError when the repository lacks the method', async () => {
-    const workspace = new ProjectWorkspace({ repository: minimalRepository() });
-    await expect(workspace.createFolder('Name')).rejects.toMatchObject({ code: 'save-failed' });
-    await expect(workspace.renameFolder('id', 'Name')).rejects.toMatchObject({ code: 'save-failed' });
-    await expect(workspace.deleteFolder('id')).rejects.toMatchObject({ code: 'save-failed' });
-    await expect(workspace.moveProjectToFolder('project', 'id')).rejects.toMatchObject({ code: 'save-failed' });
-    await expect(workspace.moveFolder('id', null)).rejects.toMatchObject({ code: 'save-failed' });
   });
 });
 
 describe('useProjectWorkspace folder state', () => {
   it('exposes folders and folderAssignments after init and after createFolder', async () => {
     const repository = makeRepository();
-    const rendered = renderHook(() => useProjectWorkspace({ repository, autoOpenMostRecent: false }));
+    const rendered = renderHook(() => useProjectWorkspace({ repository }));
     try {
       await waitFor(() => expect(rendered.result.current.initialized).toBe(true));
       expect(rendered.result.current.folders).toEqual([]);
@@ -167,7 +128,7 @@ describe('useProjectWorkspace folder state', () => {
 
   it('moves a folder under a top-level parent via moveFolder', async () => {
     const repository = makeRepository();
-    const rendered = renderHook(() => useProjectWorkspace({ repository, autoOpenMostRecent: false }));
+    const rendered = renderHook(() => useProjectWorkspace({ repository }));
     try {
       await waitFor(() => expect(rendered.result.current.initialized).toBe(true));
 

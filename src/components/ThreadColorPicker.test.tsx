@@ -40,8 +40,7 @@ describe('ThreadColorPicker', () => {
     expect(within(selection()).getByText('Red')).toBeInTheDocument();
     expect(within(selection()).getByText('Brand A · #321')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Red, color 321' })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByRole('tabpanel')).toHaveAttribute('id', 'editor-catalog-panel');
-    expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', 'editor-catalog-tab-catalog-a');
+    expect(screen.getByRole('tabpanel')).toHaveAccessibleName('Brand A');
   });
 
   it('switching tabs resets the query and selects the new catalog\'s first color', () => {
@@ -153,9 +152,7 @@ describe('ColorPickerModal', () => {
       onClose={onClose}
     />);
     const dialog = screen.getByRole('dialog', { name: 'Swap Color' });
-    expect(dialog).toHaveClass('catalog-dialog');
-    expect(within(dialog).getByText('Color Catalog')).toHaveClass('section-label');
-    expect(within(dialog).getByText('Stitches using Red will be changed.')).toHaveClass('modal-hint');
+    expect(within(dialog).getByText('Stitches using Red will be changed.')).toBeInTheDocument();
     expect(within(dialog).getByRole('alert')).toHaveTextContent('Could not swap.');
     expect(within(dialog).getByLabelText('Search Brand A catalog')).toHaveFocus();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close catalog dialog' }));

@@ -85,15 +85,11 @@ export interface ImportAnalysis {
   /** The importer `id` that produced this analysis. */
   readonly format: string;
   readonly pages: readonly ImportPageSummary[];
-  /** Rows/columns repeated between adjacent chart pages (0-3). */
-  readonly overlap: number;
-  readonly detectedOverlap: number;
   readonly chart: ImportedChart;
 }
 
 export interface ImportOverrides {
   readonly pageRoles?: Readonly<Record<number, ImportPageRole>>;
-  readonly overlap?: number;
 }
 
 export interface ImportProgress {

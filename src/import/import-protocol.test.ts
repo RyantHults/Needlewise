@@ -13,7 +13,7 @@ const envelope = { protocol: PATTERN_IMPORT_PROTOCOL, requestId: 'r1' };
 
 function analysis(cells: Uint16Array): ImportAnalysis {
   return {
-    format: 'fake', pages: [], overlap: 0, detectedOverlap: 0,
+    format: 'fake', pages: [],
     chart: { width: 2, height: 2, cells, symbols: [], key: [], warnings: [] }
   };
 }
@@ -21,19 +21,17 @@ function analysis(cells: Uint16Array): ImportAnalysis {
 describe('pattern import protocol', () => {
   it('accepts well-formed requests', () => {
     expect(isPatternImportRequest({ ...envelope, type: 'open', file: new Blob(['x']), fileName: 'a.pdf' })).toBe(true);
-    expect(isPatternImportRequest({ ...envelope, type: 'reanalyze', overrides: { overlap: 1, pageRoles: { 0: 'chart' } } })).toBe(true);
-    expect(isPatternImportRequest({ ...envelope, type: 'close' })).toBe(true);
+    expect(isPatternImportRequest({ ...envelope, type: 'reanalyze', overrides: { pageRoles: { 0: 'chart' } } })).toBe(true);
     expect(isPatternImportRequest({ ...envelope, type: 'cancel' })).toBe(true);
   });
 
   it('rejects malformed requests', () => {
     expect(isPatternImportRequest(null)).toBe(false);
-    expect(isPatternImportRequest({ ...envelope, protocol: 'other', type: 'close' })).toBe(false);
+    expect(isPatternImportRequest({ ...envelope, protocol: 'other', type: 'cancel' })).toBe(false);
     expect(isPatternImportRequest({ ...envelope, type: 'nope' })).toBe(false);
     expect(isPatternImportRequest({ ...envelope, type: 'open', file: 'x', fileName: 'a' })).toBe(false);
     expect(isPatternImportRequest({ ...envelope, type: 'reanalyze', overrides: { pageRoles: { 0: 'bad' } } })).toBe(false);
-    expect(isPatternImportRequest({ ...envelope, type: 'reanalyze', overrides: { overlap: 1.5 } })).toBe(false);
-    expect(isPatternImportRequest({ protocol: PATTERN_IMPORT_PROTOCOL, type: 'close' })).toBe(false);
+    expect(isPatternImportRequest({ protocol: PATTERN_IMPORT_PROTOCOL, type: 'cancel' })).toBe(false);
   });
 
   it('validates responses', () => {
@@ -41,7 +39,6 @@ describe('pattern import protocol', () => {
     expect(isPatternImportResponse({ ...envelope, type: 'progress', progress: { stage: 'x', done: 1, total: 2 } })).toBe(false);
     expect(isPatternImportResponse({ ...envelope, type: 'result', analysis: analysis(new Uint16Array(4)) })).toBe(true);
     expect(isPatternImportResponse({ ...envelope, type: 'result', analysis: { format: 'x' } })).toBe(false);
-    expect(isPatternImportResponse({ ...envelope, type: 'closed' })).toBe(true);
     expect(isPatternImportResponse({ ...envelope, type: 'cancelled' })).toBe(true);
     expect(isPatternImportResponse({ ...envelope, type: 'error', error: { code: 'invalid-pdf', message: 'm' } })).toBe(true);
     expect(isPatternImportResponse({ ...envelope, type: 'error', error: { code: 'bogus', message: 'm' } })).toBe(false);

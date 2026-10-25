@@ -15,7 +15,6 @@ function request() {
   return createFillRequest({
     projectId: 'project-a',
     baseRevision: 0,
-    requestId: 'worker-fill',
     width: 2,
     height: 1,
     startIndex: 0,
@@ -35,36 +34,6 @@ describe('fill worker entrypoint', () => {
     expect(messages[0]).toMatchObject({ type: FILL_RESULT_TYPE, indices: new Uint32Array([0, 1]), masks: new Uint8Array([1, 1]) });
   });
 
-  it('acknowledges a cancellation queued before request processing', () => {
-    const messages: FillWorkerResponse[] = [];
-    const next = request();
-    const cancelled = new Set<string>();
-    handleFillWorkerMessage(createFillCancel(next), (message) => messages.push(message), cancelled);
-    handleFillWorkerMessage(next, (message) => messages.push(message), cancelled);
-    expect(messages).toMatchObject([{ type: FILL_CANCELLED_TYPE, requestId: 'worker-fill' }]);
-  });
-
-  it('expires an orphan pre-cancellation before a later full-identity reuse', async () => {
-    const messages: FillWorkerResponse[] = [];
-    const next = request();
-    const cancelled = new Set<string>();
-    handleFillWorkerMessage(createFillCancel(next), (message) => messages.push(message), cancelled);
-    await Promise.resolve();
-    handleFillWorkerMessage(next, (message) => messages.push(message), cancelled);
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    expect(messages).toMatchObject([{ type: FILL_RESULT_TYPE, requestId: 'worker-fill' }]);
-  });
-
-  it('ignores a cancellation with the same request ID but a different project or revision', async () => {
-    const messages: FillWorkerResponse[] = [];
-    const next = request();
-    const cancelled = new Set<string>();
-    handleFillWorkerMessage(createFillCancel({ ...next, projectId: 'project-b', baseRevision: 9 }), (message) => messages.push(message), cancelled);
-    handleFillWorkerMessage(next, (message) => messages.push(message), cancelled);
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    expect(messages).toMatchObject([{ type: FILL_RESULT_TYPE, requestId: 'worker-fill' }]);
-  });
-
   it('cancels genuinely in-flight traversal after its first 8192-node batch', async () => {
     const width = 100;
     const height = 100;
@@ -74,7 +43,6 @@ describe('fill worker entrypoint', () => {
     const request = createFillRequest({
       projectId: 'project-a',
       baseRevision: 3,
-      requestId: 'in-flight-cancel',
       width,
       height,
       startIndex: 0,
@@ -83,11 +51,11 @@ describe('fill worker entrypoint', () => {
       colors
     });
     const messages: FillWorkerResponse[] = [];
-    const cancelled = new Set<string>();
-    handleFillWorkerMessage(request, (message) => messages.push(message), cancelled);
+    const active = new Map<string, { cancelled: boolean }>();
+    handleFillWorkerMessage(request, (message) => messages.push(message), active);
     expect(messages).toHaveLength(0);
-    handleFillWorkerMessage(createFillCancel(request), (message) => messages.push(message), cancelled);
+    handleFillWorkerMessage(createFillCancel(request), (message) => messages.push(message), active);
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    expect(messages).toMatchObject([{ type: FILL_CANCELLED_TYPE, projectId: 'project-a', baseRevision: 3, requestId: 'in-flight-cancel' }]);
+    expect(messages).toMatchObject([{ type: FILL_CANCELLED_TYPE, projectId: 'project-a', baseRevision: 3, requestId: request.requestId }]);
   });
 });

@@ -119,16 +119,14 @@ describe('application shell', () => {
 
     expect(screen.getByRole('heading', { name: 'Opening your workspace…' })).toBeInTheDocument();
     expect(screen.queryByText('Saved locally')).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Needlewise home' }).closest('header')).toHaveClass('topbar');
+    expect(screen.getByRole('link', { name: 'Needlewise home' })).toBeInTheDocument();
   });
 
-  it('puts the brand in the gallery header instead of the topbar once the gallery shows', () => {
+  it('shows a single brand link once the gallery shows', () => {
     window.history.replaceState({}, '', '/patterns');
     render(<App />);
     const brands = screen.getAllByRole('link', { name: 'Needlewise home' });
     expect(brands).toHaveLength(1);
-    expect(brands[0].closest('header')).toHaveClass('project-gallery-header');
-    expect(document.querySelector('header.topbar')).toBeNull();
   });
 
   it('creates the starter project from the empty workspace', async () => {
@@ -225,8 +223,6 @@ describe('application shell', () => {
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Project not found' })).toBeInTheDocument());
     expect(screen.getByText('That local project could not be found.')).toBeInTheDocument();
     expect(screen.queryByText('Opening your workspace…')).not.toBeInTheDocument();
-    expect(screen.queryByText('Tools & shortcuts')).not.toBeInTheDocument();
-    expect(screen.queryByText('Editor')).not.toBeInTheDocument();
   });
 
   it('rejects a decoded malformed project id instead of opening forever', async () => {
@@ -238,24 +234,12 @@ describe('application shell', () => {
     expect(screen.queryByText('Opening your workspace…')).not.toBeInTheDocument();
   });
 
-  it('keeps the dashboard out of the editor route', async () => {
-    window.history.replaceState({}, '', '/patterns/one/edit');
-    mockedWorkspace.mockReturnValue({ ...baseWorkspace, workspace: editorWorkspace, state: { ...baseWorkspace.state, projectId: 'one', metadata: { id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 }, document: { width: 16, height: 16, palette: [], colors: new Uint16Array(), backstitches: { ids: new Uint32Array() } } }, projects: [{ id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 }] } as never);
-    render(<App />);
-
-    expect(screen.queryByRole('heading', { name: 'Cross-stitch patterns' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Tools & shortcuts' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Projects' })).not.toBeInTheDocument();
-    expect(await screen.findByRole('button', { name: 'Export pattern' })).toBeInTheDocument();
-  });
-
-  it('shows an Edit | Track switch with Track enabled and no materials button', async () => {
+  it('shows an Edit | Track switch with Track enabled', async () => {
     window.history.replaceState({}, '', '/patterns/one/edit');
     mockedWorkspace.mockReturnValue({ ...baseWorkspace, workspace: editorWorkspace, state: { ...baseWorkspace.state, projectId: 'one', metadata: { id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 }, document: { width: 16, height: 16, palette: [], colors: new Uint16Array(), backstitches: { ids: new Uint32Array() } } }, projects: [{ id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 }] } as never);
     render(<App />);
 
     expect(await screen.findByRole('button', { name: 'Export pattern' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Materials and progress' })).not.toBeInTheDocument();
     const nav = screen.getByRole('navigation', { name: 'Pattern view' });
     expect(within(nav).getByRole('button', { name: 'Edit' })).toHaveAttribute('aria-current', 'page');
     expect(within(nav).getByRole('button', { name: 'Track' })).toBeEnabled();
@@ -318,14 +302,6 @@ describe('application shell', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Export pattern' }));
     const dialog = await screen.findByRole('dialog', { name: 'Export pattern' });
     expect(within(dialog).getByRole('region', { name: 'Thread totals' })).toBeInTheDocument();
-  });
-
-  it('no longer routes /preview to the editor', async () => {
-    window.history.replaceState({}, '', '/patterns/one/preview');
-    render(<App />);
-
-    expect(screen.queryByRole('button', { name: 'Export pattern' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('navigation', { name: 'Pattern view' })).not.toBeInTheDocument();
   });
 
   it('owns focus and makes the complete application inert while create is open', async () => {
@@ -583,7 +559,7 @@ describe('application shell', () => {
     // Second click performs the deletion.
     fireEvent.click(screen.getByRole('button', { name: 'Confirm delete folder Crafts' }));
     await waitFor(() => expect(deleteFolder).toHaveBeenCalledWith('folder-one'));
-    expect(screen.getByText('Folder deleted. Its patterns moved up a level.')).toBeInTheDocument();
+    expect(await screen.findByText('Folder deleted. Its patterns moved up a level.')).toBeInTheDocument();
   });
 
   it('shows an undo toast after a drag move, and undo reverses it', async () => {

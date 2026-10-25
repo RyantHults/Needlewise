@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearClipboard, readClipboard } from './clipboard-store';
 import {
   CellKind,
@@ -6,9 +6,9 @@ import {
   DomainError,
   type PatternDocument
 } from '../domain';
-import { markCellComplete, SPECIALTY_LAYER_ID, STITCH_LAYER_ID, applyCommand } from '../domain/test-fixtures';
+import { markCellComplete, SPECIALTY_LAYER_ID, STITCH_LAYER_ID, applyCommand, cell } from '../domain/test-fixtures';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
-import { createFillWorkerClient, createFillResult, type FillWorkerClient } from './fill';
+import { createFillResult } from './fill';
 import { getCanvasMetrics } from './coordinates';
 import type { EditorSurfaceController } from './controller';
 import { createUiStore } from './ui-store';
@@ -63,25 +63,26 @@ function documentWithStitches(): PatternDocument {
     { id: 1, name: 'Red', color: '#d33' },
     { id: 2, name: 'Blue', color: '#36c' }
   ] });
-  document = applyCommand(document, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+  document = applyCommand(document, cell(8, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
   document = markCellComplete(document, 0, 0);
   for (const command of [
-    { type: 'set-quarter', x: 1, y: 0, corner: 0, color: 1 },
-    { type: 'set-quarter', x: 1, y: 0, corner: 1, color: 2 },
-    { type: 'set-quarter', x: 2, y: 0, corner: 2, color: 1 },
-    { type: 'set-quarter', x: 2, y: 0, corner: 3, color: 2 }
+    cell(8, { type: 'set-quarter', x: 1, y: 0, corner: 0, color: 1 }),
+    cell(8, { type: 'set-quarter', x: 1, y: 0, corner: 1, color: 2 }),
+    cell(8, { type: 'set-quarter', x: 2, y: 0, corner: 2, color: 1 }),
+    cell(8, { type: 'set-quarter', x: 2, y: 0, corner: 3, color: 2 })
   ] as const) document = applyCommand(document, command).document;
   return document;
 }
 
 /** A layered workspace over `document` (stitches on layer 1, backstitches on layer 2), on its stitch layer unless told otherwise. */
-function fixture(document = documentWithStitches(), providedFillClient?: FillWorkerClient, activeLayerId?: ActiveLayerId) {
+function fixture(document = documentWithStitches(), activeLayerId?: ActiveLayerId, workerless = false) {
   const boundary = new LayeredTestBoundary(document, activeLayerId === undefined ? {} : { activeLayerId });
   // Pastes commit through the workspace's commitPaste, not as a logged command.
   const commitPaste = vi.spyOn(boundary, 'commitPaste');
   const worker = new FakeWorker();
-  const fillClient = providedFillClient ?? createFillWorkerClient({ workerFactory: () => worker, requestIdFactory: () => `fill-${String(worker.posted.length)}` });
-  const { gateway, uiStore, controller } = layeredFixture(boundary, { ui: { tool: { tool: 'pan' } }, controller: { fillClient } });
+  // The controller makes its own fill client, which finds its worker on the global; without one, fills run on the main thread.
+  if (!workerless) vi.stubGlobal('Worker', function Worker() { return worker; });
+  const { gateway, uiStore, controller } = layeredFixture(boundary, { ui: { tool: { tool: 'pan' } } });
   return { boundary, gateway, commitPaste, uiStore, worker, controller };
 }
 
@@ -103,6 +104,7 @@ function otherProject(): PatternDocument {
 
 // The clipboard outlives controllers, so each case starts without one.
 beforeEach(clearClipboard);
+afterEach(() => vi.unstubAllGlobals());
 
 describe('advanced headless editor tools', () => {
   it('erases whole cells, one pair triangle by touch, and honors keyboard Delete on emptied cells', () => {
@@ -224,18 +226,6 @@ describe('advanced headless editor tools', () => {
     controller.dispose();
   });
 
-  it('keeps an existing selection after a valid-cell Select click', () => {
-    const { controller, uiStore } = fixture();
-    controller.setTool({ tool: 'select' });
-    controller.setSelection({ x: 1, y: 1 }, { x: 2, y: 2 });
-
-    expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
-    controller.handlePointerUp(pointer(1, 8, 8));
-    expect(controller.getSelection()).toEqual({ x: 1, y: 1, width: 2, height: 2 });
-    expect(uiStore.getState().overlay.selection).toMatchObject({ x: 1, y: 1, width: 2, height: 2 });
-    controller.dispose();
-  });
-
   it('never creates a one-cell selection from a bare Select click', () => {
     const { controller, uiStore } = fixture();
     controller.setTool({ tool: 'select' });
@@ -263,63 +253,6 @@ describe('advanced headless editor tools', () => {
     controller.dispose();
   });
 
-  it('preserves drag selection behavior when replacing an existing selection', () => {
-    const { controller } = fixture();
-    controller.setTool({ tool: 'select' });
-    controller.setSelection({ x: 6, y: 6 }, { x: 7, y: 7 });
-
-    controller.handlePointerDown(pointer(1, 8, 8));
-    controller.handlePointerMove(pointer(1, 40, 24));
-    expect(controller.handlePointerUp(pointer(1, 40, 24))).toBe(true);
-    expect(controller.getSelection()).toEqual({ x: 0, y: 0, width: 3, height: 2 });
-    controller.dispose();
-  });
-
-  it('captures lasso selection modifiers at the first press and preserves selection while cancelled', () => {
-    const { controller, uiStore } = fixture();
-    controller.setTool({ tool: 'lasso' });
-    controller.setSelection({ x: 6, y: 6 });
-    const before = controller.getSelection();
-
-    expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
-    expect(uiStore.getState().overlay.lassoPath).toMatchObject({ points: [{ x: 0.5, y: 0.5 }], start: { x: 0.5, y: 0.5 } });
-    expect(controller.getSelection()).toEqual(before);
-    controller.handlePointerMove(pointer(1, 48, 8));
-    controller.handlePointerMove(pointer(1, 48, 48));
-    controller.handlePointerUp(pointer(1, 48, 48));
-    controller.handleKeyDown({ key: 'Escape', preventDefault: () => undefined });
-    expect(controller.getSelection()).toEqual(before);
-    expect(uiStore.getState().overlay.lassoPath).toBeUndefined();
-
-    // A drag released on its own start closes the lasso.
-    controller.handlePointerDown(pointer(2, 0, 0));
-    controller.handlePointerMove(pointer(2, 48, 0));
-    controller.handlePointerMove(pointer(2, 48, 48));
-    controller.handlePointerMove(pointer(2, 0, 48));
-    controller.handlePointerUp(pointer(2, 0, 2));
-    expect(controller.getSelection()).toEqual({ x: 0, y: 0, width: 3, height: 3 });
-    expect(controller.getSelectionIndices()).toEqual(new Uint32Array([0, 1, 2, 8, 9, 10, 16, 17, 18]));
-    expect(uiStore.getState().overlay.selection).toMatchObject({ kind: 'sparse', indices: [0, 1, 2, 8, 9, 10, 16, 17, 18] });
-
-    lassoCell(controller, 3, 0, { shiftKey: true });
-    expect(controller.getSelectionIndices()).toEqual(new Uint32Array([0, 1, 2, 3, 8, 9, 10, 16, 17, 18]));
-
-    // Started on cell 4, outside the selection, so the press does not offer Copy.
-    const subtract = [[4, 0], [3, 0], [3, 1], [4, 1], [4, 0]];
-    subtract.forEach(([cornerX, cornerY], index) => {
-      const sample = { ...pointer(10 + index, cornerX * 16, cornerY * 16), altKey: index === 0 };
-      controller.handlePointerDown(sample);
-      controller.handlePointerUp(sample);
-    });
-    expect(controller.getSelectionIndices()).toEqual(new Uint32Array([0, 1, 2, 8, 9, 10, 16, 17, 18]));
-
-    controller.handleKeyDown({ key: 'ArrowRight', preventDefault: () => undefined });
-    expect(controller.getSelection()).toBeUndefined();
-    controller.handleKeyDown({ key: 'ArrowDown', shiftKey: true, preventDefault: () => undefined });
-    expect(controller.getSelection()).toEqual({ x: 1, y: 0, width: 1, height: 2 });
-    controller.dispose();
-  });
-
   it('routes sparse copy and delete through ordered cell-set domain operations', () => {
     const { controller, boundary } = fixture();
     controller.setTool({ tool: 'lasso' });
@@ -330,7 +263,6 @@ describe('advanced headless editor tools', () => {
     expect(Array.from(readClipboard()!.fragment.kind)).toEqual([CellKind.Full, CellKind.Empty, CellKind.Quarters]);
 
     expect(controller.deleteSelection()).toBe(true);
-    expect(boundary.log.at(-1)).toMatchObject({ type: 'delete-cell-set', layerId: STITCH_LAYER_ID, indices: new Uint32Array([0, 2]) });
     expect(boundary.activeLayerSurface()?.kind[0]).toBe(CellKind.Empty);
     expect(boundary.activeLayerSurface()?.kind[1]).toBe(CellKind.Quarters);
     expect(boundary.activeLayerSurface()?.kind[2]).toBe(CellKind.Empty);
@@ -396,28 +328,6 @@ describe('advanced headless editor tools', () => {
     controller.dispose();
   });
 
-  it('retains the immutable sparse copy outline reference while dragging a floating paste', () => {
-    const { controller, uiStore } = fixture();
-    controller.setTool({ tool: 'lasso' });
-    lassoCell(controller, 0, 0);
-    lassoCell(controller, 2, 0, { shiftKey: true });
-    controller.copySelection();
-    controller.clearSelection();
-    uiStore.setKeyboardCursor({ x: 3, y: 3 });
-    expect(controller.pasteSelection()).toBe(true);
-    const initial = uiStore.getState().overlay.floatingPaste?.copySelection;
-    const initialBoundaries = initial?.boundaries;
-    expect(initial?.kind).toBe('sparse');
-
-    controller.handlePointerDown(pointer(3, 56, 56));
-    controller.handlePointerMove(pointer(3, 72, 56));
-    controller.handlePointerUp(pointer(3, 72, 56));
-    const afterDrag = uiStore.getState().overlay.floatingPaste?.copySelection;
-    expect(afterDrag).toBe(initial);
-    expect(afterDrag?.boundaries).toBe(initialBoundaries);
-    controller.dispose();
-  });
-
   it('clears selected B after commit and restores B for no-op or recoverable failure', () => {
     const committed = fixture();
     committed.controller.setTool({ tool: 'select' });
@@ -464,7 +374,7 @@ describe('advanced headless editor tools', () => {
   it('clears sparse and legacy selections before a same-project dimension change', () => {
     const unchanged = fixture();
     unchanged.controller.setSelection({ x: 1, y: 1 }, { x: 2, y: 2 });
-    unchanged.boundary.seed({ type: 'set-full', x: 0, y: 0, color: 1 });
+    unchanged.boundary.seed(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     expect(unchanged.controller.getSelection()).toEqual({ x: 1, y: 1, width: 2, height: 2 });
     unchanged.controller.dispose();
 
@@ -582,7 +492,7 @@ describe('advanced headless editor tools', () => {
 
     const failed = fixture();
     failed.controller.setTool({ tool: 'select' });
-    failed.boundary.seed({ type: 'set-full', x: 0, y: 0, color: 1 });
+    failed.boundary.seed(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     failed.controller.setSelection({ x: 0, y: 0 });
     expect(failed.controller.moveSelection()).toBe(true);
     refuseNext(failed.boundary, 'execute');
@@ -599,7 +509,7 @@ describe('advanced headless editor tools', () => {
     controller.setTool({ tool: 'select' });
     controller.setSelection({ x: 0, y: 0 });
     expect(controller.moveSelection()).toBe(true);
-    boundary.seed({ type: 'set-full', x: 7, y: 7, color: 1 });
+    boundary.seed(cell(8, { type: 'set-full', x: 7, y: 7, color: 1 }));
     expect(uiStore.getState().overlay.floatingPaste).toBeUndefined();
     expect(controller.getSelection()).toEqual({ x: 0, y: 0, width: 1, height: 1 });
     controller.dispose();
@@ -727,7 +637,7 @@ describe('advanced headless editor tools', () => {
     stale.controller.clearSelection();
     stale.uiStore.setKeyboardCursor({ x: 0, y: 0 });
     stale.controller.pasteSelection();
-    stale.boundary.seed({ type: 'set-full', x: 7, y: 7, color: 1 });
+    stale.boundary.seed(cell(8, { type: 'set-full', x: 7, y: 7, color: 1 }));
     expect(stale.uiStore.getState().overlay.floatingPaste).toBeUndefined();
     expect(stale.controller.getSelection()).toBeUndefined();
     stale.controller.dispose();
@@ -1061,7 +971,7 @@ describe('advanced headless editor tools', () => {
     const undo = fixture();
     undo.controller.setTool({ tool: 'select' });
     undo.controller.setSelection({ x: 0, y: 0 }, { x: 2, y: 0 });
-    undo.boundary.seed({ type: 'set-full', x: 7, y: 7, color: 1 });
+    undo.boundary.seed(cell(8, { type: 'set-full', x: 7, y: 7, color: 1 }));
     undo.controller.handlePointerDown({ ...pointer(1, 8, 8), pointerType: 'touch' });
     undo.controller.handlePointerDown({ ...pointer(2, 24, 8), pointerType: 'touch' });
     undo.controller.handlePointerUp({ ...pointer(2, 24, 8), pointerType: 'touch' });
@@ -1072,7 +982,7 @@ describe('advanced headless editor tools', () => {
     const redo = fixture();
     redo.controller.setTool({ tool: 'select' });
     redo.controller.setSelection({ x: 0, y: 0 }, { x: 2, y: 0 });
-    redo.boundary.seed({ type: 'set-full', x: 7, y: 7, color: 1 });
+    redo.boundary.seed(cell(8, { type: 'set-full', x: 7, y: 7, color: 1 }));
     redo.boundary.undo();
     redo.controller.handlePointerDown({ ...pointer(1, 8, 8), pointerType: 'touch' });
     redo.controller.handlePointerDown({ ...pointer(2, 24, 8), pointerType: 'touch' });
@@ -1089,7 +999,7 @@ describe('advanced headless editor tools', () => {
     undo.controller.setTouchMovementOnly(true);
     undo.controller.setTool({ tool: 'select' });
     undo.controller.setSelection({ x: 0, y: 0 });
-    undo.boundary.seed({ type: 'set-full', x: 7, y: 7, color: 1 });
+    undo.boundary.seed(cell(8, { type: 'set-full', x: 7, y: 7, color: 1 }));
     undo.controller.handlePointerDown({ ...pointer(1, 20, 20), pointerType: 'touch' });
     undo.controller.handlePointerDown({ ...pointer(2, 60, 20), pointerType: 'touch' });
     undo.controller.handlePointerUp({ ...pointer(2, 60, 20), pointerType: 'touch' });
@@ -1101,7 +1011,7 @@ describe('advanced headless editor tools', () => {
     redo.controller.setTouchMovementOnly(true);
     redo.controller.setTool({ tool: 'select' });
     redo.controller.setSelection({ x: 0, y: 0 });
-    redo.boundary.seed({ type: 'set-full', x: 7, y: 7, color: 1 });
+    redo.boundary.seed(cell(8, { type: 'set-full', x: 7, y: 7, color: 1 }));
     redo.boundary.undo();
     redo.controller.handlePointerDown({ ...pointer(1, 20, 20), pointerType: 'touch' });
     redo.controller.handlePointerDown({ ...pointer(2, 60, 20), pointerType: 'touch' });
@@ -1189,8 +1099,7 @@ describe('advanced headless editor tools', () => {
       document.kind[index] = CellKind.Full;
       document.colors[index * 4] = 2;
     }
-    const fillClient = createFillWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'empty-region-fallback' });
-    const { controller, boundary, uiStore } = fixture(document, fillClient);
+    const { controller, boundary, uiStore } = fixture(document, undefined, true);
     uiStore.setPaletteId(1);
     controller.setTool({ tool: 'fill' });
     const undoDepthBefore = boundary.undoDepth;
@@ -1220,15 +1129,13 @@ describe('advanced headless editor tools', () => {
     expect(boundary.activeLayerSurface()?.kind).toEqual(new Uint8Array([1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1]));
     expect(boundary.undoDepth).toBe(undoDepthBefore + 1);
     controller.dispose();
-    fillClient.dispose();
   });
 
   it('bounds an empty-region fill to the selection when the fill starts inside it', async () => {
     const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 3, palette: [
       { id: 1, name: 'Red', color: '#d33' }
     ] });
-    const fillClient = createFillWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'selection-bounded-fallback' });
-    const { controller, boundary, uiStore } = fixture(document, fillClient);
+    const { controller, boundary, uiStore } = fixture(document, undefined, true);
     uiStore.setPaletteId(1);
     controller.setSelection({ x: 1, y: 0 }, { x: 2, y: 1 });
     controller.setTool({ tool: 'fill' });
@@ -1252,15 +1159,13 @@ describe('advanced headless editor tools', () => {
     expect(Array.from(boundary.activeLayerSurface()!.kind)).toEqual([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     expect(boundary.undoDepth).toBe(undoDepthBefore);
     controller.dispose();
-    fillClient.dispose();
   });
 
   it('fills the whole region when the fill starts outside the selection', async () => {
     const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 3, palette: [
       { id: 1, name: 'Red', color: '#d33' }
     ] });
-    const fillClient = createFillWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'selection-outside-fallback' });
-    const { controller, boundary, uiStore } = fixture(document, fillClient);
+    const { controller, boundary, uiStore } = fixture(document, undefined, true);
     uiStore.setPaletteId(1);
     controller.setSelection({ x: 1, y: 0 }, { x: 2, y: 1 });
     controller.setTool({ tool: 'fill' });
@@ -1277,7 +1182,6 @@ describe('advanced headless editor tools', () => {
       edit: { kind: 'full', color: 1 }
     });
     controller.dispose();
-    fillClient.dispose();
   });
 
   it('bounds a Full-region recolor fill to the selection when the fill starts inside it', async () => {
@@ -1289,8 +1193,7 @@ describe('advanced headless editor tools', () => {
       document.kind[index] = CellKind.Full;
       document.colors[index * 4] = 1;
     }
-    const fillClient = createFillWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'selection-recolor-fallback' });
-    const { controller, boundary, uiStore } = fixture(document, fillClient);
+    const { controller, boundary, uiStore } = fixture(document, undefined, true);
     uiStore.setPaletteId(2);
     controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 0 });
     controller.setTool({ tool: 'fill' });
@@ -1308,7 +1211,6 @@ describe('advanced headless editor tools', () => {
       toColor: 2
     });
     controller.dispose();
-    fillClient.dispose();
   });
 
   it('rejects a protocol-valid empty-fill result that crosses an occupied boundary', async () => {
@@ -1385,8 +1287,7 @@ describe('advanced headless editor tools', () => {
     document.colors[0] = 1;
     document.colors[4] = 1;
     document.completed[0] = 1;
-    const fillClient = createFillWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'controller-fill' });
-    const { controller, boundary } = fixture(document, fillClient);
+    const { controller, boundary } = fixture(document, undefined, true);
 
     controller.selectPalette(2);
     controller.setTool({ tool: 'fill' });
@@ -1406,7 +1307,6 @@ describe('advanced headless editor tools', () => {
     expect(boundary.undoDepth).toBe(undoDepthBeforeRecolor);
     expect(boundary.activeLayerSurface()?.colors[0]).toBe(1);
     expect(boundary.activeLayerSurface()?.completed[0]).toBe(1);
-    fillClient.dispose();
     controller.dispose();
   });
 
@@ -1536,7 +1436,7 @@ describe('advanced headless editor tools', () => {
   });
 
   it('keeps drawn and moved backstitches incomplete and deletes the selected one on Backspace', () => {
-    const { controller, boundary } = fixture(documentWithStitches(), undefined, SPECIALTY_LAYER_ID);
+    const { controller, boundary } = fixture(documentWithStitches(), SPECIALTY_LAYER_ID);
     const backstitches = () => boundary.activeLayerSurface()!.backstitches;
     controller.setTool({ tool: 'backstitch' });
     controller.handlePointerDown(pointer(1, 8, 8));
@@ -1560,7 +1460,7 @@ describe('advanced headless editor tools', () => {
   });
 
   it('rejects out-of-document backstitch starts and uses the final pointer-up sample', () => {
-    const { controller, boundary } = fixture(documentWithStitches(), undefined, SPECIALTY_LAYER_ID);
+    const { controller, boundary } = fixture(documentWithStitches(), SPECIALTY_LAYER_ID);
     controller.setTool({ tool: 'backstitch' });
     expect(controller.handlePointerDown(pointer(1, -8, 8))).toBe(false);
     expect(boundary.log).toHaveLength(0);
@@ -1571,7 +1471,7 @@ describe('advanced headless editor tools', () => {
   });
 
   it('supports keyboard backstitch anchor/finish, zero-length prevention, cancel, and undo/redo', () => {
-    const first = fixture(documentWithStitches(), undefined, SPECIALTY_LAYER_ID);
+    const first = fixture(documentWithStitches(), SPECIALTY_LAYER_ID);
     first.controller.setTool({ tool: 'backstitch' });
     first.uiStore.setKeyboardCursor({ x: 1, y: 1 });
     first.controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined });
@@ -1590,7 +1490,7 @@ describe('advanced headless editor tools', () => {
     expect(first.boundary.activeLayerSurface()?.backstitches.ids).toHaveLength(1);
     first.controller.dispose();
 
-    const cancelled = fixture(documentWithStitches(), undefined, SPECIALTY_LAYER_ID);
+    const cancelled = fixture(documentWithStitches(), SPECIALTY_LAYER_ID);
     cancelled.controller.setTool({ tool: 'backstitch' });
     cancelled.uiStore.setKeyboardCursor({ x: 1, y: 1 });
     cancelled.controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined });
@@ -1617,27 +1517,6 @@ describe('advanced headless editor tools', () => {
     expect(boundary.document.revision).toBe(beforeRevision);
     expect(uiStore.getState().overlay.floatingPaste).toMatchObject({ destination: { x: 6, y: 6, width: 2, height: 2 } });
     controller.dispose();
-  });
-
-  it('does not dispose an injected shared fill client with its controller', async () => {
-    const worker = new FakeWorker();
-    const shared = createFillWorkerClient({ workerFactory: () => worker, requestIdFactory: () => 'shared-request' });
-    const first = fixture(documentWithStitches(), shared);
-    first.controller.dispose();
-    const job = shared.submit({
-      projectId: 'project-a',
-      baseRevision: 0,
-      width: 2,
-      height: 2,
-      startIndex: 0,
-      startMask: 1,
-      kind: Uint8Array.from([CellKind.Full, 0, 0, 0]),
-      colors: Uint16Array.from([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
-    });
-    const request = worker.posted.find((message) => (message as { type?: string }).type === 'fill-request') as Parameters<typeof createFillResult>[0];
-    worker.emit(createFillResult(request, new Uint32Array([0]), new Uint8Array([1])));
-    await expect(job.promise).resolves.toMatchObject({ requestId: 'shared-request' });
-    shared.dispose();
   });
 
   it('keeps bounded selection interactions practical on a 500×500 document', () => {

@@ -124,28 +124,6 @@ describe('image conversion worker handler', () => {
     }
   });
 
-  it('isolates active work by the complete token rather than request ID alone', async () => {
-    const first = createConversionRequest({ width: 1, height: 1, pixels: new Uint8ClampedArray([1, 2, 3, 255]) }, {
-      targetWidth: 1,
-      targetHeight: 1,
-      catalog,
-      token: { projectId: 'first-project', baseRevision: 1, requestId: 'reused' }
-    });
-    const second = createConversionRequest({ width: 1, height: 1, pixels: new Uint8ClampedArray([4, 5, 6, 255]) }, {
-      targetWidth: 1,
-      targetHeight: 1,
-      catalog,
-      token: { projectId: 'second-project', baseRevision: 2, requestId: 'reused' }
-    });
-    const responses: ConversionWorkerResponse[] = [];
-    const active = new Map<string, { cancelled: boolean }>();
-    handleImageConversionWorkerMessage(first, (response) => responses.push(response), active);
-    handleImageConversionWorkerMessage(second, (response) => responses.push(response), active);
-    await waitForTimer();
-    expect(responses.map((response) => response.token?.projectId)).toEqual(['first-project', 'second-project']);
-    expect(active.size).toBe(0);
-  });
-
   it('forwards autoCrop and confettiDistance from an image request', async () => {
     const originalCreateImageBitmap = (globalThis as unknown as { createImageBitmap?: unknown }).createImageBitmap;
     const originalOffscreenCanvas = (globalThis as unknown as { OffscreenCanvas?: unknown }).OffscreenCanvas;

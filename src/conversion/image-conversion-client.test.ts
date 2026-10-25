@@ -4,7 +4,7 @@ import {
   ConversionWorkerTransportError,
   createConversionWorkerClient
 } from './image-conversion-client';
-import { convertConversionRequestAsync, convertRasterToPatternAsync, MAX_CONVERSION_TOKEN_BOOKKEEPING, type ConversionRequestMessage, type ConversionRasterRequestMessage, type ConversionWorkerResponse } from './image-to-pattern';
+import { CONVERSION_CANCEL_TYPE, convertConversionRequestAsync, convertRasterToPatternAsync, type ConversionRequestMessage, type ConversionRasterRequestMessage, type ConversionWorkerResponse } from './image-to-pattern';
 import type { CatalogSnapshot } from '../catalog';
 import { FakeWorker } from '../test/fake-worker';
 
@@ -68,49 +68,45 @@ describe('image conversion worker client', () => {
   it('sends copied transient raster data to a worker and accepts matching results', async () => {
     const worker = new FakeWorker();
     const client = createConversionWorkerClient({ workerFactory: () => worker });
-    const job = client.submit(input());
+    const source = input();
+    const job = client.submit(source);
     expect(worker.posted).toHaveLength(1);
     const request = worker.posted[0] as ConversionRasterRequestMessage;
-    expect(request.pixels).not.toBe((job.request as ConversionRequestMessage & { readonly pixels: Uint8ClampedArray }).pixels);
+    expect(request.pixels).not.toBe(source.raster.pixels);
     expect(request.catalog).not.toBe(passthroughCatalog);
-    expect(request.catalog.records).not.toBe(passthroughCatalog.records);
     expect(request.catalog).toEqual(passthroughCatalog);
-    worker.emit(await convertConversionRequestAsync(job.request));
-    await expect(job.promise).resolves.toMatchObject({ token: job.request.token, draft: { document: { catalog: passthroughCatalog.association } } });
+    worker.emit(await convertConversionRequestAsync(request));
+    await expect(job.promise).resolves.toMatchObject({ token: request.token, draft: { document: { catalog: passthroughCatalog.association } } });
     client.dispose();
   });
 
-  it('keeps deferred fallback conversion detached from the exposed request', async () => {
-    const client = createConversionWorkerClient({ useWorker: false });
-    const job = client.submit(input('detached-catalog'));
-    const exposed = job.request as unknown as { catalog: { records: Array<{ sourceId: string }> } };
-    exposed.catalog.records[0].sourceId = 'mutated-exposed-record';
-    const result = await job.promise;
-    expect(result.draft.document.palette.map((entry) => entry.catalog?.sourceId)).toEqual(['red', 'blue']);
-    client.dispose();
-  });
+  it('forwards conversion options to the worker request and honours them in the result', async () => {
+    async function viaWorker(overrides: Partial<ReturnType<typeof input>> & { autoCrop?: boolean; confettiDistance?: number; backgroundSourceId?: string }) {
+      const worker = new FakeWorker();
+      const client = createConversionWorkerClient({ workerFactory: () => worker });
+      const job = client.submit({ ...input(), ...overrides });
+      const posted = worker.posted[0] as ConversionRasterRequestMessage;
+      worker.emit(await convertConversionRequestAsync(posted));
+      const result = await job.promise;
+      client.dispose();
+      return { posted, result };
+    }
 
-  it('cancels with the internal token when the exposed token is mutated', async () => {
-    const client = createConversionWorkerClient({ useWorker: false });
-    const job = client.submit(input('detached-token'));
-    const exposed = job.request as unknown as { token: { requestId: string } };
-    exposed.token.requestId = 'mutated-exposed-token';
-    job.cancel();
-    await expect(job.promise).rejects.toBeInstanceOf(ConversionCancelledError);
-    client.dispose();
-  });
+    const background = await viaWorker({ backgroundSourceId: 'blue' });
+    expect(background.posted.backgroundSourceId).toBe('blue');
+    expect(background.result.draft.document.palette.map((entry) => entry.catalog?.sourceId)).toEqual(['red']);
 
-  it('forwards backgroundSourceId to the worker request and drops the color from the result palette', async () => {
-    const worker = new FakeWorker();
-    const client = createConversionWorkerClient({ workerFactory: () => worker });
-    const job = client.submit({ ...input(), catalog: passthroughCatalog, backgroundSourceId: 'blue' });
-    const posted = worker.posted[0] as ConversionRasterRequestMessage;
-    expect(posted.backgroundSourceId).toBe('blue');
-    worker.emit(await convertConversionRequestAsync(posted));
-    await expect(job.promise).resolves.toMatchObject({ token: job.request.token });
-    const result = await job.promise;
-    expect(result.draft.document.palette.map((entry) => entry.catalog?.sourceId)).toEqual(['red']);
-    client.dispose();
+    const bordered = new Uint8ClampedArray([
+      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+      0, 0, 0, 0, 255, 0, 0, 255, 255, 0, 0, 255, 0, 0, 0, 0
+    ]);
+    const cropped = await viaWorker({ autoCrop: true, targetWidth: 4, targetHeight: 2, raster: { width: 4, height: 2, pixels: bordered } });
+    expect(cropped.posted.autoCrop).toBe(true);
+    // Source dims stay original; the pattern trims to the stitched 2x1 box.
+    expect([cropped.result.draft.stats.sourceWidth, cropped.result.draft.stats.sourceHeight]).toEqual([4, 2]);
+    expect([cropped.result.draft.document.width, cropped.result.draft.document.height]).toEqual([2, 1]);
+
+    expect((await viaWorker({ confettiDistance: 2 })).posted.confettiDistance).toBe(2);
   });
 
   it('applies backgroundSourceId on the fallback path without a worker', async () => {
@@ -125,72 +121,37 @@ describe('image conversion worker client', () => {
     client.dispose();
   });
 
-  it('forwards autoCrop to the worker request and trims empty pattern borders', async () => {
-    const worker = new FakeWorker();
-    const client = createConversionWorkerClient({ workerFactory: () => worker });
-    const bordered = new Uint8ClampedArray([
-      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-      0, 0, 0, 0, 255, 0, 0, 255, 255, 0, 0, 255, 0, 0, 0, 0
-    ]);
-    const job = client.submit({ ...input(), catalog: passthroughCatalog, autoCrop: true, targetWidth: 4, targetHeight: 2, raster: { width: 4, height: 2, pixels: bordered } });
-    const posted = worker.posted[0] as ConversionRasterRequestMessage;
-    expect(posted.autoCrop).toBe(true);
-    worker.emit(await convertConversionRequestAsync(posted));
-    const result = await job.promise;
-    // Source dims stay original; the pattern trims to the stitched 2x1 box.
-    expect(result.draft.stats.sourceWidth).toBe(4);
-    expect(result.draft.stats.sourceHeight).toBe(2);
-    expect(result.draft.document.width).toBe(2);
-    expect(result.draft.document.height).toBe(1);
-    expect(result.draft.document.palette.map((entry) => entry.catalog?.sourceId)).toEqual(['red']);
-    client.dispose();
-  });
-
-  it('forwards confettiDistance to the worker request', async () => {
-    const worker = new FakeWorker();
-    const client = createConversionWorkerClient({ workerFactory: () => worker });
-    const job = client.submit({ ...input(), confettiDistance: 2 });
-    const posted = worker.posted[0] as ConversionRasterRequestMessage;
-    expect(posted.confettiDistance).toBe(2);
-    worker.emit(await convertConversionRequestAsync(posted));
-    await job.promise;
-    const plain = client.submit(input('plain'));
-    expect('confettiDistance' in (worker.posted[1] as ConversionRasterRequestMessage)).toBe(false);
-    worker.emit(await convertConversionRequestAsync(plain.request));
-    await plain.promise;
-    client.dispose();
-  });
-
-  it('rejects cancellation and ignores a later worker response', async () => {
+  it('rejects cancellation, tells the worker, and ignores a later worker response', async () => {
     const worker = new FakeWorker();
     const client = createConversionWorkerClient({ workerFactory: () => worker });
     const job = client.submit(input());
+    const request = worker.posted[0] as ConversionRasterRequestMessage;
     job.cancel();
     await expect(job.promise).rejects.toBeInstanceOf(ConversionCancelledError);
-    expect(worker.posted).toHaveLength(2);
-    worker.emit(await convertConversionRequestAsync(job.request));
+    expect(worker.posted.at(-1)).toMatchObject({ type: CONVERSION_CANCEL_TYPE, token: request.token });
+    worker.emit(await convertConversionRequestAsync(request));
     client.dispose();
   });
 
-  it('rejects stale responses and recycles the worker after transport failure', async () => {
+  it('ignores results for another token and recycles the worker after transport failure', async () => {
     const workers: FakeWorker[] = [];
     const client = createConversionWorkerClient({ workerFactory: () => { const worker = new FakeWorker(); workers.push(worker); return worker; } });
     const first = client.submit(input());
-    const firstResult = await convertConversionRequestAsync(first.request);
-    first.cancel();
-    await expect(first.promise).rejects.toBeInstanceOf(ConversionCancelledError);
+    const request = workers[0].posted[0] as ConversionRasterRequestMessage;
+    const foreign = await convertConversionRequestAsync({ ...request, token: { ...request.token, projectId: 'project-b', baseRevision: 8 } });
+    workers[0].emit(foreign);
+    workers[0].emit(await convertConversionRequestAsync(request));
+    await expect(first.promise).resolves.toMatchObject({ token: request.token });
 
-    const second = client.submit({ ...input(), projectId: 'project-b', baseRevision: 8 });
-    // Reusing only requestId must not let the cancelled first result touch the
-    // newer full-token job.
-    workers[0].emit(firstResult);
-    workers[0].emit(await convertConversionRequestAsync(second.request));
-    await expect(second.promise).resolves.toMatchObject({ token: second.request.token });
+    const second = client.submit(input('second'));
+    workers[0].emitTransport('error', { message: 'worker crashed' });
+    await expect(second.promise).rejects.toBeInstanceOf(ConversionWorkerTransportError);
+    expect(workers[0].terminated.count).toBe(1);
 
     const third = client.submit(input('third'));
-    workers[0].emitTransport('error', { message: 'worker crashed' });
-    await expect(third.promise).rejects.toBeInstanceOf(ConversionWorkerTransportError);
-    expect(workers[0].terminated.count).toBe(1);
+    expect(workers).toHaveLength(2);
+    third.cancel();
+    await expect(third.promise).rejects.toBeInstanceOf(ConversionCancelledError);
     client.dispose();
   });
 
@@ -198,10 +159,11 @@ describe('image conversion worker client', () => {
     const worker = new FakeWorker();
     const client = createConversionWorkerClient({ workerFactory: () => worker });
     const job = client.submit(input());
+    const request = worker.posted[0] as ConversionRasterRequestMessage;
     const response = {
-      protocol: job.request.protocol,
+      protocol: request.protocol,
       type: 'conversion-error' as const,
-      token: job.request.token,
+      token: request.token,
       code: 'too-large',
       message: 'too large'
     } satisfies ConversionWorkerResponse;
@@ -210,17 +172,14 @@ describe('image conversion worker client', () => {
     client.dispose();
   });
 
-  it('ignores responses without a full token and refuses ambiguous request-ID cancellation', async () => {
+  it('ignores responses without a full token', async () => {
     const worker = new FakeWorker();
     const client = createConversionWorkerClient({ workerFactory: () => worker });
-    const first = client.submit(input('shared-request'));
-    const second = client.submit({ ...input('shared-request'), projectId: 'project-b', baseRevision: 8 });
-    worker.emit({ protocol: first.request.protocol, type: 'conversion-error', code: 'missing-token', message: 'ignored' });
-    expect(client.cancel('shared-request')).toBe(false);
-    worker.emit(await convertConversionRequestAsync(second.request));
-    await expect(second.promise).resolves.toMatchObject({ token: second.request.token });
-    first.cancel();
-    await expect(first.promise).rejects.toBeInstanceOf(ConversionCancelledError);
+    const job = client.submit(input('shared-request'));
+    const request = worker.posted[0] as ConversionRasterRequestMessage;
+    worker.emit({ protocol: request.protocol, type: 'conversion-error', code: 'missing-token', message: 'ignored' });
+    worker.emit(await convertConversionRequestAsync(request));
+    await expect(job.promise).resolves.toMatchObject({ token: request.token });
     client.dispose();
   });
 
@@ -250,8 +209,9 @@ describe('image conversion worker client', () => {
       }
     });
     const job = client.submitImage(imageBlob(), { ...input(), targetWidth: 1, targetHeight: 1, requestId: 'worker-decode-fallback' });
-    worker.emit({ protocol: job.request.protocol, type: 'conversion-error', token: job.request.token, code: 'unavailable', message: 'no OffscreenCanvas' });
-    await expect(job.promise).resolves.toMatchObject({ token: job.request.token });
+    const request = worker.posted[0] as ConversionRequestMessage;
+    worker.emit({ protocol: request.protocol, type: 'conversion-error', token: request.token, code: 'unavailable', message: 'no OffscreenCanvas' });
+    await expect(job.promise).resolves.toMatchObject({ token: request.token });
     expect(decodeCalls).toBe(1);
     client.dispose();
   });
@@ -336,7 +296,7 @@ describe('image conversion worker client', () => {
   it('serializes fallback rasterization and conversion to one active main-thread job', async () => {
     let active = 0;
     let maximumActive = 0;
-    const client = createConversionWorkerClient({ useWorker: false, rasterOptions: {
+    const create = () => createConversionWorkerClient({ useWorker: false, rasterOptions: {
       createImageBitmap: async () => ({ width: 1, height: 1 }),
       surfaceFactory: () => {
         // The factory itself is the expensive target allocation boundary.
@@ -350,12 +310,11 @@ describe('image conversion worker client', () => {
       }
     } });
     const jobs = Array.from({ length: 4 }, (_, index) => {
-      const job = client.submitImage(imageBlob(), { ...input(`serialized-${index}`) });
+      const job = create().submitImage(imageBlob(), { ...input(`serialized-${index}`) });
       return job.promise;
     });
     await Promise.all(jobs);
     expect(maximumActive).toBe(1);
-    client.dispose();
   });
 
   it('tears down pending work and ignores late messages after disposal', async () => {
@@ -365,7 +324,7 @@ describe('image conversion worker client', () => {
     client.dispose();
     await expect(job.promise).rejects.toBeInstanceOf(ConversionCancelledError);
     expect(worker.terminated.count).toBe(1);
-    worker.emit(await convertConversionRequestAsync(job.request));
+    worker.emit(await convertConversionRequestAsync(worker.posted[0] as ConversionRequestMessage));
     expect(() => client.submit(input('after-dispose'))).toThrow();
   });
 
@@ -387,47 +346,27 @@ describe('image conversion worker client', () => {
     controller.abort();
     await expect(job.promise).rejects.toBeInstanceOf(ConversionCancelledError);
     await new Promise((resolve) => setTimeout(resolve, 5));
-    expect(client.cancel(job.request.token)).toBe(false);
     client.dispose();
   });
 
   it('removes cancelled queued fallback jobs so the bounded queue can accept replacement work', async () => {
     let resolveBitmap!: (bitmap: { width: number; height: number; close: () => void }) => void;
     const bitmapGate = new Promise<{ width: number; height: number; close: () => void }>((resolve) => { resolveBitmap = resolve; });
-    const client = createConversionWorkerClient({ useWorker: false, rasterOptions: {
+    const create = () => createConversionWorkerClient({ useWorker: false, rasterOptions: {
       createImageBitmap: async () => bitmapGate,
       surfaceFactory: () => ({ context: { drawImage: () => undefined, getImageData: () => ({ data: new Uint8ClampedArray([1, 2, 3, 255]) }) } })
     } });
     const source = imageBlob();
-    const first = client.submitImage(source, { ...input(), targetWidth: 1, targetHeight: 1, requestId: 'queue-active' });
+    const first = create().submitImage(source, { ...input(), targetWidth: 1, targetHeight: 1, requestId: 'queue-active' });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const queued = Array.from({ length: 32 }, (_, index) => client.submitImage(source, { ...input(), targetWidth: 1, targetHeight: 1, requestId: `queue-${index}` }));
-    const busy = client.submitImage(source, { ...input(), targetWidth: 1, targetHeight: 1, requestId: 'queue-busy' });
+    const queued = Array.from({ length: 32 }, (_, index) => create().submitImage(source, { ...input(), targetWidth: 1, targetHeight: 1, requestId: `queue-${index}` }));
+    const busy = create().submitImage(source, { ...input(), targetWidth: 1, targetHeight: 1, requestId: 'queue-busy' });
     for (const job of queued) job.cancel();
-    const replacement = client.submitImage(source, { ...input(), targetWidth: 1, targetHeight: 1, requestId: 'queue-replacement' });
+    const replacement = create().submitImage(source, { ...input(), targetWidth: 1, targetHeight: 1, requestId: 'queue-replacement' });
     await Promise.all(queued.map((job) => expect(job.promise).rejects.toBeInstanceOf(ConversionCancelledError)));
     await expect(busy.promise).rejects.toMatchObject({ code: 'main-thread-busy' });
     resolveBitmap({ width: 1, height: 1, close: () => undefined });
     await expect(first.promise).resolves.toBeTruthy();
     await expect(replacement.promise).resolves.toBeTruthy();
-    client.dispose();
-  });
-
-  it('bounds token retirement bookkeeping while preserving full-token uniqueness', async () => {
-    const client = createConversionWorkerClient({ useWorker: false });
-    let lastRequestId = '';
-    for (let revision = 0; revision < MAX_CONVERSION_TOKEN_BOOKKEEPING + 100; revision += 1) {
-      const result = await client.request({
-        ...input('retired-request'),
-        baseRevision: revision,
-        targetWidth: 1,
-        targetHeight: 1,
-        raster: { width: 1, height: 1, pixels: new Uint8ClampedArray([1, 2, 3, 255]) }
-      });
-      lastRequestId = result.token.requestId;
-    }
-    expect(client.tokenBookkeepingSize).toBe(MAX_CONVERSION_TOKEN_BOOKKEEPING);
-    expect(lastRequestId).not.toBe('retired-request');
-    client.dispose();
   });
 });

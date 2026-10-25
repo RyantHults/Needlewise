@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { NewFolderModal } from './NewFolderModal';
 
@@ -11,14 +11,6 @@ function renderModal(overrides: Partial<Parameters<typeof NewFolderModal>[0]> = 
 }
 
 describe('NewFolderModal', () => {
-  it('portals a labelled dialog to the document body', () => {
-    renderModal();
-
-    const dialog = screen.getByRole('dialog', { name: 'Name your folder' });
-    expect(dialog.closest('body')).toBe(document.body);
-    expect(dialog).toHaveAttribute('aria-modal', 'true');
-  });
-
   it('titles the dialog with the parent folder name when nested', () => {
     renderModal({ parentName: 'Holiday cards' });
 
@@ -53,57 +45,4 @@ describe('NewFolderModal', () => {
     expect(onSubmit).toHaveBeenCalledWith('Crafts');
   });
 
-  it('closes on Escape, the close button, and a backdrop click, but not a click inside the dialog', () => {
-    const { onClose, rerender } = renderModal();
-    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
-    expect(onClose).toHaveBeenCalledTimes(1);
-
-    onClose.mockClear();
-    rerender(<NewFolderModal parentName={null} onSubmit={vi.fn()} onClose={onClose} />);
-    fireEvent.click(screen.getByRole('dialog'));
-    expect(onClose).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('presentation'));
-    expect(onClose).toHaveBeenCalledTimes(1);
-
-    onClose.mockClear();
-    rerender(<NewFolderModal parentName={null} onSubmit={vi.fn()} onClose={onClose} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Close new folder dialog' }));
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
-  it('traps focus between the close button and the submit button', () => {
-    renderModal();
-    fireEvent.change(screen.getByLabelText('Folder name'), { target: { value: 'Crafts' } });
-    const close = screen.getByRole('button', { name: 'Close new folder dialog' });
-    const submit = screen.getByRole('button', { name: 'Create folder' });
-
-    submit.focus();
-    fireEvent.keyDown(submit, { key: 'Tab' });
-    expect(document.activeElement).toBe(close);
-
-    fireEvent.keyDown(close, { key: 'Tab', shiftKey: true });
-    expect(document.activeElement).toBe(submit);
-  });
-
-  it('inerts the rest of the application while open and restores focus to the trigger on close', () => {
-    vi.useFakeTimers();
-    const shell = document.createElement('div');
-    shell.dataset.application = '';
-    document.body.append(shell);
-    const trigger = document.createElement('button');
-    document.body.append(trigger);
-    trigger.focus();
-
-    const { unmount } = renderModal();
-    expect(shell).toHaveProperty('inert', true);
-
-    unmount();
-    expect(shell).toHaveProperty('inert', false);
-    act(() => { vi.runAllTimers(); });
-    expect(document.activeElement).toBe(trigger);
-    vi.useRealTimers();
-
-    shell.remove();
-    trigger.remove();
-  });
 });

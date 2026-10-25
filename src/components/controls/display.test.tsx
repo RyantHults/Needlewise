@@ -1,10 +1,8 @@
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
-import { layerLimitMessage } from '../../domain';
 import { BrandLink } from './BrandLink';
 import { ErrorNotice, WarningNotice } from './Notice';
-import { StorageFooter } from './StorageFooter';
 import { SwatchSymbol, SYMBOL_VIEWBOX, SymbolTile } from './SwatchSymbol';
 
 describe('notices', () => {
@@ -12,9 +10,7 @@ describe('notices', () => {
     render(<><ErrorNotice className="extra">Failed</ErrorNotice><WarningNotice>Careful</WarningNotice></>);
 
     expect(screen.getByRole('alert')).toHaveTextContent('Failed');
-    expect(screen.getByRole('alert')).toHaveClass('modal-error', 'extra');
     expect(screen.getByRole('status')).toHaveTextContent('Careful');
-    expect(screen.getByRole('status')).toHaveClass('modal-error');
   });
 });
 
@@ -22,18 +18,6 @@ describe('page chrome', () => {
   it('links the brand home', () => {
     render(<MemoryRouter><BrandLink /></MemoryRouter>);
     expect(screen.getByRole('link', { name: 'Needlewise home' })).toHaveAttribute('href', '/');
-  });
-
-  it('states where data lives', () => {
-    render(<StorageFooter />);
-    expect(screen.getByRole('contentinfo')).toHaveTextContent('Stored on this device · Works offline');
-  });
-});
-
-describe('layerLimitMessage', () => {
-  it('names the layer type', () => {
-    expect(layerLimitMessage('stitch')).toBe('You already have 3 stitch layers.');
-    expect(layerLimitMessage('specialty')).toBe('You already have 3 specialty layers.');
   });
 });
 

@@ -25,7 +25,7 @@ import {
   type DomainCommand,
   type LayeredDocument
 } from './index';
-import { commitLayerSurface, createLayeredDocument, stitchLayer, specialtyLayer, errorCode, TEST_CATALOG } from './test-fixtures';
+import { cell, commitLayerSurface, createLayeredDocument, stitchLayer, specialtyLayer, errorCode, TEST_CATALOG } from './test-fixtures';
 
 function layered(width = 3, height = 2): LayeredDocument {
   return createLayeredDocument({
@@ -41,12 +41,12 @@ function layered(width = 3, height = 2): LayeredDocument {
 
 function run(doc: LayeredDocument, layerId: number, ...commands: DomainCommand[]): void {
   const surface = layerSurface(doc, layerId);
-  applyCommandsToDraft(surface, commands);
+  for (const command of commands) applyCommandsToDraft(surface, [command]);
   commitLayerSurface(doc, layerId, surface);
 }
 
-function full(x: number, y: number, color = 1): DomainCommand {
-  return { type: 'set-full', x, y, color };
+function full(doc: LayeredDocument, x: number, y: number, color = 1): DomainCommand {
+  return cell(doc, { type: 'set-full', x, y, color });
 }
 
 function line(x1: number, y1: number, x2: number, y2: number, color = 1): DomainCommand {
@@ -90,10 +90,8 @@ describe('canvas queries', () => {
 
   it('reads active cells from the mask, with an absent mask meaning the whole box', () => {
     const rectangle: { width: number; height: number; canvasMask?: Uint8Array } = { width: 2, height: 2 };
-    expect(rectangle.canvasMask).toBeUndefined();
     expect(isActiveCell(rectangle, 3)).toBe(true);
     const masked = { width: 2, height: 2, canvasMask: new Uint8Array([1, 0, 1, 1]) };
-    expect(masked.canvasMask).toBeDefined();
     expect(isActiveCell(masked, 1)).toBe(false);
     expect(isActiveCell(masked, 2)).toBe(true);
     expect(masked.canvasMask.reduce((count, active) => count + active, 0)).toBe(3);
@@ -104,13 +102,6 @@ describe('canvas queries', () => {
     const bits = packCanvasMask(mask);
     expect(Array.from(bits)).toEqual([0b1000_0001, 0b10]);
     expect(unpackCanvasMask(bits, mask.length)).toEqual(mask);
-  });
-
-  it('builds canvas commands', () => {
-    expect(canvasResizeCommand({ top: 1, right: 0, bottom: -1, left: 2 })).toEqual({ type: 'canvas-resize', edges: { top: 1, right: 0, bottom: -1, left: 2 } });
-    const cells = new Uint8Array([1, 0]);
-    expect(canvasCellsCommand('remove', { x: -1, y: 0, width: 2, height: 1 }, cells)).toEqual({ type: 'canvas-cells', operation: 'remove', rect: { x: -1, y: 0, width: 2, height: 1 }, cells });
-    expect('cells' in canvasCellsCommand('add', { x: 0, y: 0, width: 1, height: 1 })).toBe(false);
   });
 });
 
@@ -155,7 +146,7 @@ describe('backstitchWithinCanvas', () => {
 describe('canvas-resize', () => {
   function seeded(): LayeredDocument {
     const doc = layered(3, 2);
-    run(doc, 1, full(0, 0, 1), full(2, 1, 2));
+    run(doc, 1, full(doc, 0, 0, 1), full(doc, 2, 1, 2));
     run(doc, 2, line(0, 0, 4, 0), line(8, 0, 8, 4));
     return doc;
   }
@@ -221,7 +212,7 @@ describe('canvas-resize', () => {
 
   it('moves every layer when the new box does not overlap the old one', () => {
     const doc = layered(1, 4);
-    run(doc, 1, full(0, 0), full(0, 3, 2));
+    run(doc, 1, full(doc, 0, 0), full(doc, 0, 3, 2));
     run(doc, 2, line(0, 4, 4, 4));
     const { document, removal } = apply(doc, canvasResizeCommand({ top: -1, right: -2, bottom: 0, left: 2 }));
     expect([document.width, document.height, document.originX, document.originY]).toEqual([1, 3, -2, 1]);
@@ -264,7 +255,7 @@ describe('canvas-resize', () => {
 describe('canvas-cells', () => {
   it('adds cells outside the box, growing it to the left and top', () => {
     const doc = layered(3, 2);
-    run(doc, 1, full(0, 0));
+    run(doc, 1, full(doc, 0, 0));
     run(doc, 2, line(0, 0, 4, 4));
     const { document, changed } = apply(doc, canvasCellsCommand('add', { x: -1, y: -1, width: 1, height: 1 }));
     expect(changed).toBe(true);
@@ -286,8 +277,8 @@ describe('canvas-cells', () => {
   it('removes an interior cell, clearing and capturing content on hidden layers too', () => {
     const doc = layered(3, 3);
     applyLayerStructureCommand(doc, layerAddCommand(LayerType.Stitch));
-    run(doc, 1, full(0, 0));
-    run(doc, 3, full(1, 1, 2));
+    run(doc, 1, full(doc, 0, 0));
+    run(doc, 3, full(doc, 1, 1, 2));
     applyLayerStructureCommand(doc, layerSetVisibilityCommand(3, false));
     const before = snapshot(doc);
     const { document, removal } = apply(doc, canvasCellsCommand('remove', { x: 1, y: 1, width: 1, height: 1 }));
@@ -305,7 +296,7 @@ describe('canvas-cells', () => {
 
   it('shrinks the box when an edge row is fully removed, and drops lines that leave the canvas', () => {
     const doc = layered(3, 3);
-    run(doc, 1, full(1, 0), full(1, 2));
+    run(doc, 1, full(doc, 1, 0), full(doc, 1, 2));
     run(doc, 2, line(0, 0, 12, 0), line(0, 4, 12, 4), line(4, 6, 8, 6));
     const { document, removal } = apply(doc, canvasCellsCommand('remove', { x: -5, y: 0, width: 20, height: 1 }));
     expect([document.width, document.height, document.originY]).toEqual([3, 2, 1]);

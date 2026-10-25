@@ -9,11 +9,10 @@ import {
 import { EditorSurfaceController } from './controller';
 import { FOCUS_COLOR_PROTECTED_HINT } from './contracts';
 import { getCanvasMetrics } from './coordinates';
-import { createFillWorkerClient } from './fill';
 import { createWorkspaceEditorGateway, type ActiveLayerId } from './gateway';
 import { createUiStore } from './ui-store';
 import { LayeredTestBoundary, at, layeredDocument, rendererFixture } from './test-support';
-import { applyCommand, commitLayerSurface } from '../domain/test-fixtures';
+import { applyCommand, commitLayerSurface, cell } from '../domain/test-fixtures';
 
 
 
@@ -25,7 +24,7 @@ function seed(document: LayeredDocument, layerId: number, command: DomainCommand
 }
 
 function full(x: number, y: number, color: number): DomainCommand {
-  return { type: 'set-full', x, y, color };
+  return cell(8, { type: 'set-full', x, y, color });
 }
 
 function backstitch(x1: number, y1: number, x2: number, y2: number, color: number): DomainCommand {
@@ -38,13 +37,11 @@ function fixture(document = layeredDocument(), activeLayerId: ActiveLayerId = 1)
   const gateway = createWorkspaceEditorGateway(boundary);
   const uiStore = createUiStore({ tool: { tool: 'paint', brush: { kind: 'full', paletteId: 1 } }, paletteId: 1 });
   const notices: string[] = [];
-  const fillClient = createFillWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'focus-fill' });
   const controller = new EditorSurfaceController({
     gateway,
     uiStore,
     renderer: rendererFixture().renderer,
     metrics: getCanvasMetrics(128, 128),
-    fillClient,
     onNotice: (message) => notices.push(message)
   });
   controller.start();
@@ -61,7 +58,7 @@ function fixture(document = layeredDocument(), activeLayerId: ActiveLayerId = 1)
     const store = layerSurface(boundary.layeredDocument, 2).backstitches;
     return Object.fromEntries(Array.from(store.ids, (_, position) => [`${String(store.x1[position])},${String(store.y1[position])}-${String(store.x2[position])},${String(store.y2[position])}`, store.colors[position]]));
   };
-  return { boundary, uiStore, controller, notices, fillClient, colorAt, backstitches };
+  return { boundary, uiStore, controller, notices, colorAt, backstitches };
 }
 
 
@@ -134,7 +131,7 @@ describe('Focus Color', () => {
   it('blocks a fill that would recolor another color but fills empty regions', async () => {
     const document = layeredDocument();
     for (let y = 0; y < 8; y += 1) seed(document, 1, full(2, y, 2));
-    const { boundary, controller, colorAt, notices, fillClient } = fixture(document);
+    const { boundary, controller, colorAt, notices } = fixture(document);
     controller.setTool({ tool: 'fill' });
     expect(controller.handlePointerDown(at(1, 2, 0))).toBe(true);
     for (let tick = 0; tick < 4; tick += 1) await Promise.resolve();
@@ -145,7 +142,6 @@ describe('Focus Color', () => {
     expect(controller.handlePointerDown(at(2, 0, 0))).toBe(true);
     for (let tick = 0; tick < 4; tick += 1) await Promise.resolve();
     expect([colorAt(0, 7), colorAt(1, 3), colorAt(2, 3), colorAt(3, 3)]).toEqual([1, 1, 2, 0]);
-    fillClient.dispose();
     controller.dispose();
   });
 

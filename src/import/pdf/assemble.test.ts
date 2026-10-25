@@ -69,26 +69,14 @@ describe('assembleChart', () => {
     expect(result.keys).toEqual(source);
     expect(result.fills.filter((fill) => fill !== null)).toHaveLength(source.filter((key) => key === 'a').length);
     expect(result.overlap).toBe(0);
-    expect(result.detectedOverlap).toBe(0);
     expect([...result.placements]).toEqual([[3, { x: 0, y: 0 }], [4, { x: 15, y: 0 }], [5, { x: 0, y: 12 }], [6, { x: 15, y: 12 }]]);
     expect([...result.symbols.keys()].sort()).toEqual(SYMBOLS);
-    expect(result.warnings).toEqual([]);
-  });
-
-  it('assembles a 2x2 page layout with a given overlap of 2', () => {
-    const pages = paginate(source, width, height, 15, 12, 2);
-    const result = assembleChart(pages, { overlap: 2 });
-    expect([result.width, result.height]).toEqual([width, height]);
-    expect(result.keys).toEqual(source);
-    expect(result.overlap).toBe(2);
-    expect(result.placements.get(6)).toEqual({ x: 13, y: 10 });
     expect(result.warnings).toEqual([]);
   });
 
   it.each([1, 2, 3])('detects an overlap of %i', (overlap) => {
     const pages = paginate(source, width, height, 15, 12, overlap);
     const result = assembleChart(pages);
-    expect(result.detectedOverlap).toBe(overlap);
     expect(result.overlap).toBe(overlap);
     expect(result.keys).toEqual(source);
     expect(result.warnings).toEqual([]);
@@ -100,7 +88,7 @@ describe('assembleChart', () => {
     const pages = paginate(equal, 28, 24, 15, 13, 2);
     expect(new Set(pages.map((page) => `${String(page.columns)}x${String(page.rows)}`)).size).toBe(1);
     const result = assembleChart(pages);
-    expect(result.detectedOverlap).toBe(2);
+    expect(result.overlap).toBe(2);
     expect([result.width, result.height]).toEqual([28, 24]);
     expect(result.keys).toEqual(equal);
   });
@@ -108,7 +96,6 @@ describe('assembleChart', () => {
   it('reports no overlap when solid edges match at every overlap', () => {
     const solid = new Array<string | null>(24 * 10).fill('a');
     const result = assembleChart(paginate(solid, 24, 10, 12, 10, 0));
-    expect(result.detectedOverlap).toBe(0);
     expect(result.overlap).toBe(0);
     expect(result.keys).toHaveLength(240);
     expect(result.warnings).toEqual([]);
@@ -118,7 +105,7 @@ describe('assembleChart', () => {
     // One varied row in a tall solid chart: every k scores within 0.02 of 1, and only k=2 matches the varied cells.
     const mostlySolid = Array.from({ length: 22 * 60 }, (_, i) => (Math.floor(i / 22) === 30 ? SYMBOLS[i % 22 % 5] : 'a'));
     const result = assembleChart(paginate(mostlySolid, 22, 60, 12, 60, 2));
-    expect(result.detectedOverlap).toBe(2);
+    expect(result.overlap).toBe(2);
     expect([result.width, result.height]).toEqual([22, 60]);
     expect(result.keys).toEqual(mostlySolid);
   });
@@ -130,7 +117,7 @@ describe('assembleChart', () => {
       sparse[row * 22 + 10] = SYMBOLS[row % 5];
       sparse[row * 22 + 11] = SYMBOLS[(row + 1) % 5];
     }
-    expect(assembleChart(paginate(sparse, 22, 10, 12, 10, 2)).detectedOverlap).toBe(0);
+    expect(assembleChart(paginate(sparse, 22, 10, 12, 10, 2)).overlap).toBe(0);
   });
 
   it('warns about cells that disagree inside an overlap and keeps the first page', () => {
@@ -140,7 +127,7 @@ describe('assembleChart', () => {
     const keys = [...right.keys];
     keys[5 * right.columns] = keys[5 * right.columns] === 'e' ? 'd' : 'e';
     pages[1] = { ...right, keys };
-    const result = assembleChart(pages, { overlap: 2 });
+    const result = assembleChart(pages);
     expect(result.keys).toEqual(source);
     expect(result.warnings).toEqual([expect.objectContaining({ code: 'overlap-mismatch', page: 4, cell: { x: 13, y: 5 } })]);
   });
@@ -149,7 +136,7 @@ describe('assembleChart', () => {
     const pages = paginate(source, width, height, 15, 12, 1, true);
     const result = assembleChart([pages[3], pages[0], pages[2], pages[1]]);
     expect(result.keys).toEqual(source);
-    expect(result.detectedOverlap).toBe(1);
+    expect(result.overlap).toBe(1);
     expect(result.placements.get(6)).toEqual({ x: 14, y: 11 });
   });
 

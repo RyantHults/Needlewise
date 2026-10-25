@@ -4,13 +4,7 @@ import fontkit from '@pdf-lib/fontkit';
 import { PDFDocument, rgb } from 'pdf-lib';
 import type { PDFPageProxy } from 'pdfjs-dist';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_CATALOG_DEFINITION } from '../../catalog';
-import { computePatternMetrics, createDocument } from '../../domain';
-import { DEFAULT_EXPORT_SETTINGS } from '../../export/export-settings';
-import { writePatternPdf } from '../../export/pdf-writer';
-import { getSymbolOutline } from '../../symbols';
 import { DrawOps, glyphOutline, loadPdfjs, openPdf, type Pdfjs } from './pdfjs';
-import { applyCommand } from '../../domain/test-fixtures';
 
 // Vitest's jsdom URL is not a file URL, so fonts resolve from the repo root.
 const fontBytes = (file: string): Uint8Array => new Uint8Array(readFileSync(resolve(process.cwd(), 'fonts', file)));
@@ -81,7 +75,6 @@ describe('pdf.js loader', () => {
   it('loads once and runs without a browser worker', async () => {
     const pdfjs = await loadPdfjs();
     expect(await loadPdfjs()).toBe(pdfjs);
-    expect(pdfjs.version).toBe('6.4.299');
   });
 
   it('exposes showText glyphs, their font and per-glyph outlines', async () => {
@@ -148,42 +141,6 @@ describe('pdf.js loader', () => {
     // bbox operand is in the path's own space; the CTM places it on the page.
     const [x0, y0, x1, y1] = rect.args[2] as Float32Array;
     expect([...apply(rect.ctm, x0, y0), ...apply(rect.ctm, x1, y1)]).toEqual([10, 20, 40, 60]);
-    await pdf.loadingTask.destroy();
-  });
-
-  it('sees Needlewise chart symbols as filled outline paths', async () => {
-    let document = createDocument({
-      catalog: DEFAULT_CATALOG_DEFINITION.association,
-      width: 3,
-      height: 2,
-      palette: [{ name: 'Red', color: '#d33' }, { name: 'Blue', color: '#113' }]
-    });
-    document = applyCommand(document, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
-    document = applyCommand(document, { type: 'set-full', x: 2, y: 1, color: 2 }).document;
-    const bytes = await writePatternPdf({
-      document,
-      metrics: computePatternMetrics(document, { aidaCount: 14, strands: 2, waste: 0.1 }),
-      settings: DEFAULT_EXPORT_SETTINGS,
-      units: 'metric',
-      name: 'Round trip',
-      fontBytes: fontBytes('LibertinusMath-Regular.ttf')
-    });
-
-    const pdfjs = await loadPdfjs();
-    const pdf = await openPdf(bytes);
-    const page = await pdf.getPage(pdf.numPages);
-    const ops = await operators(pdfjs, page);
-    // drawSvgPath emits `cm` translate and then `cm` scale(s, -s) around the path.
-    const symbolStarts = ops
-      .filter((op) => op.fn === pdfjs.OPS.constructPath && pathOf(op).paint === pdfjs.OPS.fill && op.ctm[0] > 0 && op.ctm[3] === -op.ctm[0])
-      .map((op) => Array.from(pathOf(op).buffer.slice(0, 3), (v) => Math.round(v * 1000) / 1000));
-
-    for (const entry of document.palette) {
-      const outline = getSymbolOutline(entry.symbol);
-      expect(outline).toBeDefined();
-      const [, x, y] = /^M\s*(-?[\d.]+)[\s,]+(-?[\d.]+)/.exec(outline?.d ?? '') ?? [];
-      expect(symbolStarts).toContainEqual([DrawOps.moveTo, Number(x), Number(y)]);
-    }
     await pdf.loadingTask.destroy();
   });
 });

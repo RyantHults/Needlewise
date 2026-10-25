@@ -44,7 +44,6 @@ describe('Needlewise PDF round trip', () => {
 
       expect(analysis.pages.filter((page) => page.role === 'chart').length).toBeGreaterThan(1);
       expect(analysis.pages.some((page) => page.role === 'key')).toBe(true);
-      expect(analysis.overlap).toBe(overlap);
       const { chart } = analysis;
       expect(chart.title).toBe('Round trip');
       expect([chart.width, chart.height]).toEqual([width, height]);
@@ -111,7 +110,6 @@ describe('third-party-style PDFs', () => {
     const options = chart(56, 50, { pageColumns: 30, pageRows: 27, overlap: 2 });
     const analysis = await importPdf(await buildSyntheticChartPdf(options));
     expect(analysis.pages.map((page) => page.role)).toEqual(['chart', 'chart', 'chart', 'chart', 'key']);
-    expect(analysis.detectedOverlap).toBe(2);
     expect([analysis.chart.width, analysis.chart.height]).toEqual([56, 50]);
     expect(cellCodes(analysis)).toEqual(expectedCodes(options));
   });

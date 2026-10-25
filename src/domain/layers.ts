@@ -414,19 +414,10 @@ export function commandScope(command: DomainCommand): CommandScope {
     case 'palette-create':
     case 'palette-update':
     case 'palette-swap':
-    case 'palette-deactivate':
     case 'palette-merge':
     case 'palette-delete':
     case 'document-settings-update':
       return 'document';
-    case 'set-full':
-    case 'set-half':
-    case 'set-quarter':
-    case 'set-quarters':
-    case 'set-three-quarter':
-    case 'erase-cell':
-    case 'erase-quarter':
-    case 'recolor-cell':
     case 'bulk-cell':
     case 'bulk-recolor':
     case 'bulk-completion':
@@ -439,8 +430,6 @@ export function commandScope(command: DomainCommand): CommandScope {
     case 'add-backstitch':
     case 'remove-backstitch':
     case 'move-backstitch':
-    case 'recolor-backstitch':
-    case 'update-backstitch':
       return 'layer';
   }
 }
@@ -479,14 +468,6 @@ export function commandLayerType(command: DomainCommand): LayerType | 'mixed' | 
       }
       return required;
     }
-    case 'set-full':
-    case 'set-half':
-    case 'set-quarter':
-    case 'set-quarters':
-    case 'set-three-quarter':
-    case 'erase-cell':
-    case 'erase-quarter':
-    case 'recolor-cell':
     case 'bulk-cell':
     case 'bulk-recolor':
     case 'bulk-completion':
@@ -496,8 +477,6 @@ export function commandLayerType(command: DomainCommand): LayerType | 'mixed' | 
     case 'add-backstitch':
     case 'remove-backstitch':
     case 'move-backstitch':
-    case 'recolor-backstitch':
-    case 'update-backstitch':
       return LayerType.Specialty;
     case 'move-fragment':
     case 'delete-region':
@@ -514,7 +493,6 @@ export function commandLayerType(command: DomainCommand): LayerType | 'mixed' | 
     case 'palette-create':
     case 'palette-update':
     case 'palette-swap':
-    case 'palette-deactivate':
     case 'palette-merge':
     case 'palette-delete':
     case 'document-settings-update':

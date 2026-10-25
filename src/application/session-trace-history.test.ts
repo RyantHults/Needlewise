@@ -3,14 +3,12 @@ import {
   createDocument
 } from '../domain';
 import {
-  createPersistencePreparationClient,
-  type PersistencePreparationClient,
-  type SessionHistoryEnvelope
+  createPersistencePreparationClient
 } from '../persistence';
 import { ProjectSession, ProjectWorkspace } from './index';
 import { MemoryRepository } from './test-support';
-import { createInstalledCatalogRegistry, DEFAULT_CATALOG_DEFINITION } from '../catalog';
-import { createLayeredDocument } from '../domain/test-fixtures';
+import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
+import { cell, createLayeredDocument } from '../domain/test-fixtures';
 
 function pngBytes(width: number, height: number): Uint8Array {
   const bytes = new Uint8Array(24);
@@ -68,20 +66,17 @@ describe('trace image unified history', () => {
         { id: 3, name: 'Custom Violet', color: '#AABBCC' }
       ]
     });
-    const installedDmcOnly = createInstalledCatalogRegistry([DEFAULT_CATALOG_DEFINITION]);
     const workspace = new ProjectWorkspace({
       repository,
       clock: { now: () => 100 },
       projectIdFactory: () => 'unavailable-brand-b',
-      debounceMs: 0,
-      catalogRegistry: installedDmcOnly
+      debounceMs: 0
     });
     await workspace.createProject({ id: 'unavailable-brand-b', width: 2, height: 2, document });
     await workspace.flush();
     const resolvedDmc = workspace.catalogFor(document);
     expect(resolvedDmc).toMatchObject({ association: DEFAULT_CATALOG_DEFINITION.association });
     expect(resolvedDmc?.records).toEqual(DEFAULT_CATALOG_DEFINITION.records);
-    expect(resolvedDmc).not.toBe(DEFAULT_CATALOG_DEFINITION);
     expect(workspace.availableCatalogs().find((definition) => definition.association.catalogId === brandBReference.catalogId)).toBeUndefined();
     expect(workspace.document?.catalog).toEqual(DEFAULT_CATALOG_DEFINITION.association);
     expect(workspace.document?.palette[1].catalog).toEqual(brandBReference);
@@ -91,15 +86,13 @@ describe('trace image unified history', () => {
       repository,
       clock: { now: () => 100 },
       projectIdFactory: () => 'unavailable-brand-b',
-      debounceMs: 0,
-      catalogRegistry: installedDmcOnly
+      debounceMs: 0
     });
     try {
       const session = await reopened.openProject('unavailable-brand-b');
       const reopenedDmc = reopened.catalogFor(session.document);
       expect(reopenedDmc).toMatchObject({ association: DEFAULT_CATALOG_DEFINITION.association });
       expect(reopenedDmc?.records).toEqual(DEFAULT_CATALOG_DEFINITION.records);
-      expect(reopenedDmc).not.toBe(DEFAULT_CATALOG_DEFINITION);
       expect(reopened.availableCatalogs().find((definition) => definition.association.catalogId === brandBReference.catalogId)).toBeUndefined();
       expect(session.document.catalog).toEqual(DEFAULT_CATALOG_DEFINITION.association);
       expect(session.document.palette[1].catalog).toEqual(brandBReference);
@@ -115,8 +108,8 @@ describe('trace image unified history', () => {
     await workspace.createProject({ id: 'refresh-paint', width: 4, height: 4, document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }) });
     const session = workspace.session;
     if (!session) throw new Error('Missing session.');
-    session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-    session.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
+    session.execute(cell(session.document, { type: 'set-full', x: 0, y: 0, color: 1 }));
+    session.execute(cell(session.document, { type: 'set-full', x: 1, y: 1, color: 1 }));
     session.undo();
     await workspace.flush();
     await workspace.dispose();
@@ -129,7 +122,7 @@ describe('trace image unified history', () => {
       restored.redo();
       expect(restored.document.kind[5]).toBe(1);
       restored.undo();
-      restored.execute({ type: 'set-full', x: 2, y: 2, color: 1 });
+      restored.execute(cell(restored.document, { type: 'set-full', x: 2, y: 2, color: 1 }));
       expect(restored.historyRedoDepth).toBe(0);
     } finally {
       await reopened.dispose();
@@ -161,9 +154,9 @@ describe('trace image unified history', () => {
     });
     const session = workspace.session;
     if (!session) throw new Error('Missing session.');
-    session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    session.execute(cell(session.document, { type: 'set-full', x: 0, y: 0, color: 1 }));
     session.applyTraceImageChange({ ...TRACE_DESCRIPTOR, opacity: 0.5 }, { label: 'opacity' });
-    session.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
+    session.execute(cell(session.document, { type: 'set-full', x: 1, y: 1, color: 1 }));
     await workspace.flush();
     await workspace.dispose();
 
@@ -372,45 +365,27 @@ describe('trace image unified history', () => {
     }
   });
 
-  it('bounds trace export before cloning repeated captured asset bytes', async () => {
-    const repository = new MemoryRepository();
-    const session = new ProjectSession({
-      repository,
-      metadata: { id: 'bounded-trace-export', title: 'Bounded', notes: '', createdAt: 100, updatedAt: 100, revision: 0 },
-      document: createLayeredDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [] }),
-      preparationClient: {
-        prepare: async () => { throw new Error('not used'); },
-        getRequestId: () => 'bounded',
-        dispose: () => undefined
-      } as PersistencePreparationClient,
-      clock: { now: () => 100 },
-      debounceMs: 0
-    });
-    const data = new Uint8Array(1024 * 1024);
-    const asset = { id: 'reference', name: 'large.png', mimeType: 'image/png', data, checksum: '0'.repeat(64) };
-    const entries = Array.from({ length: 9 }, (_, index) => ({
-      label: `large-replacement-${String(index)}`,
-      beforeDescriptor: { ...TRACE_DESCRIPTOR, opacity: index / 10 },
-      afterDescriptor: { ...TRACE_DESCRIPTOR, opacity: (index + 1) / 10 },
-      beforeAsset: asset,
-      afterAsset: asset
-    }));
-    const internal = session as unknown as {
-      traceUndoStack: typeof entries;
-      historyKindsUndo: Array<'document' | 'trace'>;
-      exportHistoryEnvelope: () => SessionHistoryEnvelope;
-    };
-    internal.traceUndoStack = entries;
-    internal.historyKindsUndo = entries.map(() => 'trace');
-    const exported = internal.exportHistoryEnvelope();
-    const retainedLabels = exported.trace.undo.map((entry) => entry.label);
-    expect(retainedLabels.length).toBeGreaterThan(0);
-    expect(retainedLabels).toEqual(entries.slice(entries.length - retainedLabels.length).map((entry) => entry.label));
-    expect(exported.undoOrder).toEqual(retainedLabels.map((_, index) => ({ kind: 'trace', index })));
-    const captured = exported.trace.undo[0]?.assetBefore;
-    if (!captured || captured.kind !== 'captured') throw new Error('Missing retained captured asset.');
-    if (captured.asset.data.byteLength !== data.byteLength) throw new Error(`Unexpected retained byte length ${String(captured.asset.data.byteLength)}.`);
-    if (captured.asset.data === data) throw new Error('Retained captured asset was not detached.');
+  it('bounds the saved trace history when repeated replacements carry large assets', async () => {
+    const workspace = await openTracedWorkspace('bounded-trace-export');
+    try {
+      const session = workspace.session;
+      if (!session) throw new Error('Missing session.');
+      for (let index = 0; index < 9; index += 1) {
+        const data = new Uint8Array(1024 * 1024);
+        data.set(pngBytes(2, 2));
+        await session.replaceSourceImage({
+          asset: { id: `large-${String(index)}`, name: 'large.png', mimeType: 'image/png', data },
+          settings: { assetId: `large-${String(index)}`, chartBounds: { x: 0, y: 0, width: 2, height: 2 }, opacity: 0.5 }
+        });
+      }
+      await workspace.flush();
+      const saved = await (workspace.repository.load('bounded-trace-export'));
+      const retained = saved?.history?.trace.undo.length ?? 0;
+      expect(retained).toBeGreaterThan(0);
+      expect(retained).toBeLessThan(9);
+    } finally {
+      await workspace.dispose();
+    }
   });
 
   it('discards rejected restored history without losing the canonical project', async () => {
@@ -419,7 +394,7 @@ describe('trace image unified history', () => {
     await workspace.createProject({ id: 'rejected-history', width: 4, height: 4, document: createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }) });
     const session = workspace.session;
     if (!session) throw new Error('Missing session.');
-    session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    session.execute(cell(session.document, { type: 'set-full', x: 0, y: 0, color: 1 }));
     await workspace.flush();
     const stored = repository.records.get('rejected-history');
     if (!stored?.history) throw new Error('Missing stored history.');
@@ -449,7 +424,7 @@ describe('trace image unified history', () => {
       historyLimitBytes: 256
     });
     try {
-      for (let index = 0; index < 16; index += 1) session.execute({ type: 'set-full', x: index % 4, y: Math.floor(index / 4), color: 1 });
+      for (let index = 0; index < 16; index += 1) session.execute(cell(session.document, { type: 'set-full', x: index % 4, y: Math.floor(index / 4), color: 1 }));
       const editor = (session as unknown as { editor: { undoDepth: number } }).editor;
       expect(editor.undoDepth).toBeLessThan(16);
       expect(session.historyUndoDepth).toBe(editor.undoDepth);
@@ -468,12 +443,12 @@ describe('trace image unified history', () => {
       if (!session) throw new Error('Missing session.');
       expect(session.historyUndoDepth).toBe(0);
 
-      session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+      session.execute(cell(session.document, { type: 'set-full', x: 0, y: 0, color: 1 }));
       session.applyTraceImageChange(
         { ...TRACE_DESCRIPTOR, chartBounds: { x: 1, y: 0, width: 2, height: 2 } },
         { label: 'trace-image-bounds' }
       );
-      session.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
+      session.execute(cell(session.document, { type: 'set-full', x: 1, y: 1, color: 1 }));
       expect(session.historyUndoDepth).toBe(3);
       expect(session.document.kind[0]).toBe(1);
       expect(session.document.kind[5]).toBe(1);
@@ -628,7 +603,7 @@ describe('trace image unified history', () => {
       expect(session.sourceImage?.assetId).toBe('reference');
 
       // A new stitch action clears the redo stack (standard).
-      session.execute({ type: 'set-full', x: 2, y: 2, color: 1 });
+      session.execute(cell(session.document, { type: 'set-full', x: 2, y: 2, color: 1 }));
       expect(session.historyRedoDepth).toBe(0);
       const redone = session.redo();
       expect(redone.changed).toBe(false);

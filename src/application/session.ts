@@ -37,7 +37,7 @@ import {
   type ProgressCommand,
   type ProgressEntry
 } from '../domain';
-import { cloneLayeredDocument, cloneProjectHealth, PersistenceError } from '../persistence';
+import { cloneProjectHealth, PersistenceError } from '../persistence';
 import {
   normalizeSourceImageDescriptor,
   normalizeSourceImageAsset,
@@ -771,23 +771,20 @@ export class ProjectSession {
       && /^[0-9a-f]{64}$/.test(this.projectHead.checksum);
   }
 
-  private async savePreparedOrLegacy(
+  private async savePreparedOrRetain(
     metadata: ProjectMetadata,
     document: LayeredDocument,
     assets: readonly ProjectAssetInput[] | undefined,
     options: SaveOptions
   ): Promise<SaveResult> {
     const mode = options.mode ?? options.commit ?? options.commitMode ?? 'replace';
-    if (mode === 'replace' && this.repository.savePrepared) {
-      const prepared = await this.preparationClient.prepare({
-        projectId: this.projectId,
-        revision: document.revision,
-        document
-      });
-      return this.repository.savePrepared(this.projectId, metadata, prepared, assets, { ...options, preparedRequestId: this.preparationClient.getRequestId(prepared) });
-    }
-    const legacyDocument = mode === 'replace' ? cloneLayeredDocument(document) : document;
-    return this.repository.save(this.projectId, metadata, legacyDocument, assets, options);
+    if (mode !== 'replace') return this.repository.save(this.projectId, metadata, document, assets, options);
+    const prepared = await this.preparationClient.prepare({
+      projectId: this.projectId,
+      revision: document.revision,
+      document
+    });
+    return this.repository.savePrepared(this.projectId, metadata, prepared, assets, { ...options, preparedRequestId: this.preparationClient.getRequestId(prepared) });
   }
 
   private ensureActive(): void {
@@ -1145,11 +1142,9 @@ export class ProjectSession {
   }
 
   /**
-   * Title, notes and display units are project metadata. A non-null
-   * `aidaCount` is the Canvas stitch count and becomes an undoable document
-   * settings change; `null` is ignored because the count is always set.
+   * Title, notes and display units are project metadata.
    */
-  updateMetadata(changes: { title?: string; notes?: string; aidaCount?: number | null; units?: ProjectMetadata['units'] | null }): void {
+  updateMetadata(changes: { title?: string; notes?: string; units?: ProjectMetadata['units'] | null }): void {
     this.ensureWritable();
     const title = changes.title ?? this.projectMetadata.title;
     const notes = changes.notes ?? this.projectMetadata.notes;
@@ -1165,7 +1160,6 @@ export class ProjectSession {
         }
       }
     }
-    if (changes.aidaCount !== null && changes.aidaCount !== undefined) this.setAidaCount(changes.aidaCount);
     if (title === this.projectMetadata.title && notes === this.projectMetadata.notes && units === this.projectMetadata.units) return;
     const nextMetadata: ProjectMetadata = { ...this.projectMetadata, title, notes };
     if (units === undefined) delete nextMetadata.units;
@@ -1365,7 +1359,7 @@ export class ProjectSession {
     const history = this.exportHistoryEnvelope(transaction.traceEntry);
     // As in `startSave`, the saved metadata is stamped so the gallery order follows image changes.
     const metadata: ProjectMetadata = { ...transaction.metadata, updatedAt: this.clock.now() };
-    const result = await this.savePreparedOrLegacy(metadata, document, transaction.assets, {
+    const result = await this.savePreparedOrRetain(metadata, document, transaction.assets, {
       ...saveMode,
       history
     });
@@ -1479,7 +1473,7 @@ export class ProjectSession {
         this.notify();
         this.status = 'saving';
         this.notify();
-        const saveResult = await this.savePreparedOrLegacy(metadata, snapshot, assets, saveOptions);
+        const saveResult = await this.savePreparedOrRetain(metadata, snapshot, assets, saveOptions);
         if (!saveResult.committed || saveResult.stale) throw new WorkspaceError('save-conflict', `Revision ${String(attempt.revision)} conflicts with a newer local revision.`);
         this.projectHead = saveResult.head === undefined ? null : { ...saveResult.head };
         this.lastSavedRevision = Math.max(this.lastSavedRevision, saveResult.revision);

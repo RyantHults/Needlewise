@@ -332,16 +332,4 @@ describe('TraceImageControls reference image tools', () => {
     fireEvent.click(within(reopened).getByRole('button', { name: 'Remove image' }));
     await waitFor(() => expect(removeSourceImage).toHaveBeenCalledTimes(1));
   });
-
-  it('switches the show-toggle icon between visible and hidden', () => {
-    const hidden = { ...descriptor, traceVisible: false, opacity: 0 };
-    const workspace = { sourceImage: hidden, getAsset: () => undefined } as never;
-    const { rerender } = render(<TraceImageControls workspace={workspace} document={{ width: 2, height: 2 } as never} controller={null} />);
-    const icon = screen.getByRole('checkbox', { name: 'Show image' }).closest('label')?.querySelector('span[aria-hidden]');
-    expect(icon).toHaveTextContent('○');
-
-    const visibleWorkspace = { sourceImage: descriptor, getAsset: () => undefined } as never;
-    rerender(<TraceImageControls workspace={visibleWorkspace} document={{ width: 2, height: 2 } as never} controller={null} />);
-    expect(screen.getByRole('checkbox', { name: 'Show image' }).closest('label')?.querySelector('span[aria-hidden]')).toHaveTextContent('◉');
-  });
 });

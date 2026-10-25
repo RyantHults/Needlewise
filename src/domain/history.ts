@@ -30,7 +30,7 @@ import {
   preflightMixedEraseCommand,
   preflightDeleteRegionCommand,
   preflightDeleteCellSetCommand,
-  deriveExplicitCompletionProgress,
+  deriveExplicitCompletionChanges,
   emptyCellDelta,
   noChange,
   bulkCompletionCommand,
@@ -59,7 +59,6 @@ import type {
   PaletteEntry,
   PatternSettings,
   PatternDocument,
-  ProgressChangeSet,
   StitchLayer
 } from './types';
 import { CellKind, DOCUMENT_SCHEMA_VERSION, DomainError, LAYERED_DOCUMENT_VERSION, LayerType, MAX_LAYER_NAME_CHARS, MAX_LAYERS_PER_TYPE, MaterialUnit, MAX_PERSISTABLE_CELL_COUNT } from './types';
@@ -79,7 +78,7 @@ import {
   requireEditableLayer,
   visibleBackstitchOwners
 } from './layers';
-import { cloneProgress, coveringLayerId, emptyProgress, type ProgressCommand, type ProgressEntry, type ProgressEntryPart } from './progress';
+import { coveringLayerId, type ProgressCommand, type ProgressEntry, type ProgressEntryPart } from './progress';
 import { applyCanvasCommand, backstitchWithinCanvas, canvasCellsCommand, canvasFields, canvasResizeCommand, isValidCanvasOrigin, packCanvasMask, unpackCanvasMask, type CanvasRemoval } from './canvas';
 
 export const DEFAULT_HISTORY_LIMIT_BYTES = 64 * 1024 * 1024;
@@ -140,16 +139,12 @@ interface SnapshotEntry {
   before: PatternDocument;
   after: PatternDocument;
   bytes: number;
-  progress: ProgressChangeSet;
-  recalculateMetrics: boolean;
 }
 
 interface DeltaEntry {
   kind: 'delta';
   delta: SparseMutationDelta;
   bytes: number;
-  progress: ProgressChangeSet;
-  recalculateMetrics: boolean;
 }
 
 type HistoryEntry = SnapshotEntry | DeltaEntry;
@@ -172,7 +167,7 @@ function cloneBackstitchCompletionPlane(document: PatternDocument): void {
 
 function isPaletteMetadataOnlyCommand(command: DomainCommand): boolean {
   if (command.type === 'batch') return command.commands.length > 0 && command.commands.every(isPaletteMetadataOnlyCommand);
-  return command.type === 'palette-create' || command.type === 'palette-update' || command.type === 'palette-swap' || command.type === 'palette-deactivate';
+  return command.type === 'palette-create' || command.type === 'palette-update' || command.type === 'palette-swap';
 }
 
 function applyPackedCellSide(document: PatternDocument, cells: SparseMutationDelta['cells'], useAfter: boolean): void {
@@ -269,8 +264,6 @@ function result(document: PatternDocument, changed: boolean, backstitchId?: numb
     ...(details?.changedIndices === undefined ? {} : { changedIndices: details.changedIndices.slice() }),
     ...(details?.touchedBackstitchIds === undefined ? {} : { touchedBackstitchIds: details.touchedBackstitchIds.slice() }),
     ...(details?.changedBackstitchIds === undefined ? {} : { changedBackstitchIds: details.changedBackstitchIds.slice() }),
-    ...(details?.progress === undefined ? {} : { progress: cloneProgress(details.progress) }),
-    ...(details?.recalculateMetrics === undefined ? {} : { recalculateMetrics: details.recalculateMetrics }),
     ...(details?.createdBackstitchIds === undefined ? {} : { createdBackstitchIds: details.createdBackstitchIds.slice() }),
     ...(details?.movedBackstitchIds === undefined ? {} : { movedBackstitchIds: details.movedBackstitchIds.slice() })
   };
@@ -613,10 +606,6 @@ function trimHistoryForExport<T extends { bytes: number }>(undo: readonly T[], r
   return { undo: retainedUndo, redo: retainedRedo };
 }
 
-function reverseProgress(progress: ProgressChangeSet): ProgressChangeSet {
-  return { cellIndices: progress.cellIndices.slice(), backstitchIds: progress.backstitchIds.slice(), marked: progress.unmarked, unmarked: progress.marked };
-}
-
 function ensureHistoryEntryFits(bytes: number, limit: number): void {
   if (bytes > limit) {
     throw new DomainError('history-entry-too-large', `History entry requires ${String(bytes)} bytes, exceeding the configured ${String(limit)} byte limit.`);
@@ -640,7 +629,7 @@ interface DeltaRun extends SurfaceRun {
 function commitDeltaRun(current: PatternDocument, draft: PatternDocument, mutation: MutationInfo, limit: number, missingDelta: { readonly code: string; readonly message: string }): DeltaRun {
   draft.revision = current.revision + 1;
   if (mutation.delta === undefined) throw new DomainError(missingDelta.code, missingDelta.message);
-  const entry: DeltaEntry = { kind: 'delta', delta: mutation.delta, bytes: typedDeltaBytes(mutation.delta), progress: cloneProgress(mutation.progress), recalculateMetrics: mutation.recalculateMetrics === true };
+  const entry: DeltaEntry = { kind: 'delta', delta: mutation.delta, bytes: typedDeltaBytes(mutation.delta) };
   ensureHistoryEntryFits(entry.bytes, limit);
   return { result: result(draft, true, undefined, undefined, mutation), next: draft, entry };
 }
@@ -687,7 +676,7 @@ function runSurfaceCommand(current: PatternDocument, command: DomainCommand, lim
   draft.revision = current.revision + 1;
   assertValidDocument(draft);
   const delta = tracker.toDelta(draft);
-  const entry: DeltaEntry = { kind: 'delta', delta, bytes: typedDeltaBytes(delta), progress: cloneProgress(mutation.progress), recalculateMetrics: mutation.recalculateMetrics === true };
+  const entry: DeltaEntry = { kind: 'delta', delta, bytes: typedDeltaBytes(delta) };
   ensureHistoryEntryFits(entry.bytes, limit);
   const commandResult = result(draft, true, mutation.backstitchId, mutation.paletteId, mutation);
   if (delta.beforeSettings !== undefined) commandResult.requiresFullRedraw = true;
@@ -710,7 +699,7 @@ function runPaletteMetadataCommand(current: PatternDocument, command: DomainComm
   // reference rule. Since all content-bearing planes remain shared, a full
   // document validation here would only reread the unchanged dense planes.
   const delta = tracker.toDelta(draft);
-  const entry: DeltaEntry = { kind: 'delta', delta, bytes: typedDeltaBytes(delta), progress: cloneProgress(mutation.progress), recalculateMetrics: mutation.recalculateMetrics === true };
+  const entry: DeltaEntry = { kind: 'delta', delta, bytes: typedDeltaBytes(delta) };
   ensureHistoryEntryFits(entry.bytes, limit);
   return { result: result(draft, true, mutation.backstitchId, mutation.paletteId, mutation), next: draft, entry };
 }
@@ -797,8 +786,7 @@ function runMoveFragmentCommand(current: PatternDocument, command: MoveFragmentC
   const draft = cloneDocument(current);
   const mutation = applyMoveFragmentCommand(draft, command, preflight);
   assertValidDocument(draft);
-  // A move always changes where stitches sit, so metrics are recalculated.
-  return commitDeltaRun(current, draft, { ...mutation, recalculateMetrics: true }, limit, { code: 'invalid-move-fragment', message: 'A changed move did not produce a history delta.' });
+  return commitDeltaRun(current, draft, mutation, limit, { code: 'invalid-move-fragment', message: 'A changed move did not produce a history delta.' });
 }
 
 function runMixedEraseCommand(current: PatternDocument, command: MixedEraseCommand, limit: number): SurfaceRun {
@@ -855,7 +843,7 @@ function runSnapshotCommand(current: PatternDocument, command: DomainCommand, li
   const settingsChanged = !settingsEqual(before.settings, draft.settings);
   draft.revision = current.revision + 1;
   assertValidDocument(draft);
-  const entry: SnapshotEntry = { kind: 'snapshot', before, after: cloneDocument(draft), bytes: snapshotBytes(draft) + snapshotBytes(before), progress: cloneProgress(mutation.progress), recalculateMetrics: mutation.recalculateMetrics === true };
+  const entry: SnapshotEntry = { kind: 'snapshot', before, after: cloneDocument(draft), bytes: snapshotBytes(draft) + snapshotBytes(before) };
   ensureHistoryEntryFits(entry.bytes, limit);
   const commandResult = result(draft, true, mutation.backstitchId, mutation.paletteId, mutation);
   if (settingsChanged) commandResult.requiresFullRedraw = true;
@@ -1019,8 +1007,6 @@ interface LayerDeltaEntry {
   layerId: number | null;
   delta: SparseMutationDelta;
   bytes: number;
-  progress: ProgressChangeSet;
-  recalculateMetrics: boolean;
 }
 
 interface LayersEntry {
@@ -1597,7 +1583,7 @@ interface LayeredPlan {
 }
 
 function wholeDocumentResult(document: PatternDocument, fullRedraw: boolean): CommandResult {
-  const commandResult = result(document, true, undefined, undefined, { changed: true, snapshot: fullRedraw, progress: emptyProgress(), recalculateMetrics: fullRedraw });
+  const commandResult = result(document, true, undefined, undefined, { changed: true, snapshot: fullRedraw });
   if (fullRedraw) commandResult.requiresFullRedraw = true;
   return commandResult;
 }
@@ -1613,7 +1599,7 @@ function planLayerCommand(document: LayeredDocument, command: DomainCommand, lim
   return {
     result: run.result,
     document: commitSurfaceToLayer(document, layerId, run.next, document.revision + 1),
-    entry: { kind: 'delta', layerId, delta, bytes: run.entry.bytes, progress: run.entry.progress, recalculateMetrics: run.entry.recalculateMetrics },
+    entry: { kind: 'delta', layerId, delta, bytes: run.entry.bytes },
     rebuild: layer.type === LayerType.Stitch ? delta.cells.indices : new Uint32Array(0)
   };
 }
@@ -1634,7 +1620,7 @@ function planMetadataCommand(document: LayeredDocument, command: DomainCommand, 
   return {
     result: run.result,
     document: commitSurfaceToLayer(document, null, run.next, document.revision + 1),
-    entry: { kind: 'delta', layerId: null, delta: run.entry.delta, bytes: run.entry.bytes, progress: run.entry.progress, recalculateMetrics: run.entry.recalculateMetrics },
+    entry: { kind: 'delta', layerId: null, delta: run.entry.delta, bytes: run.entry.bytes },
     rebuild: 'metadata'
   };
 }
@@ -1759,9 +1745,7 @@ function applyLayeredEntry(document: LayeredDocument, entry: LayeredHistoryEntry
       const commandResult = result(next, true, undefined, undefined, {
         changed: true,
         snapshot: false,
-        changedIndices: entry.delta.cells.indices.slice(),
-        progress: useAfter ? cloneProgress(entry.progress) : reverseProgress(entry.progress),
-        recalculateMetrics: entry.recalculateMetrics
+        changedIndices: entry.delta.cells.indices.slice()
       });
       if (deltaRequiresFullRedraw(entry.delta)) commandResult.requiresFullRedraw = true;
       const rebuild: CompositeRebuild = layer === undefined ? 'metadata' : layer.type === LayerType.Stitch ? entry.delta.cells.indices : new Uint32Array(0);
@@ -2011,7 +1995,7 @@ function sideFromDto(side: HistoryLayeredSideDto): LayeredSide {
 function leafEntryFromDto(entry: Exclude<DocumentEditorHistoryEntryDto, HistoryGroupEntryDto>): LeafHistoryEntry {
   let leaf: LeafHistoryEntry;
   switch (entry.kind) {
-    case 'delta': leaf = { kind: 'delta', layerId: entry.layerId, delta: historyDeltaToInternal(entry.delta), bytes: 0, progress: emptyProgress(), recalculateMetrics: true }; break;
+    case 'delta': leaf = { kind: 'delta', layerId: entry.layerId, delta: historyDeltaToInternal(entry.delta), bytes: 0 }; break;
     case 'layers': leaf = { kind: 'layers', before: sideFromDto(entry.before), after: sideFromDto(entry.after), bytes: 0 }; break;
     case 'canvas': leaf = canvasEntryFromDto(entry); break;
   }
@@ -2549,7 +2533,7 @@ function progressTargets(document: LayeredDocument, command: ProgressCommand): P
 function progressTargetCommand(target: ProgressTarget, operation: ProgressCommand['operation']): DomainCommand {
   if (target.lines.size > 0) return bulkBackstitchCompletionCommand(Uint32Array.from(target.lines).sort(), operation);
   const indices = Uint32Array.from(target.cells.keys()).sort();
-  return bulkCompletionCommand(indices, operation, undefined, undefined, Uint8Array.from(indices, (index) => target.cells.get(index) ?? 0));
+  return bulkCompletionCommand(indices, operation, Uint8Array.from(indices, (index) => target.cells.get(index) ?? 0));
 }
 
 /**
@@ -2663,8 +2647,6 @@ export class DocumentEditor {
     const parts: ProgressEntryPart[] = [];
     const cellIndices: number[] = [];
     const backstitchIds: number[] = [];
-    let marked = 0;
-    let unmarked = 0;
     for (const target of progressTargets(document, command)) {
       // Progress never enters document history, so the history byte limit does not apply.
       const run = runSurfaceCommand(layerSurface(document, target.layerId), progressTargetCommand(target, command.operation), Number.MAX_SAFE_INTEGER);
@@ -2672,14 +2654,12 @@ export class DocumentEditor {
       const { cellCompletions, backstitchCompletions } = run.entry.delta;
       document = commitSurfaceToLayer(document, target.layerId, run.next, revision);
       parts.push({ layerId: target.layerId, ...(cellCompletions === undefined ? {} : { cells: cellCompletions }), ...(backstitchCompletions === undefined ? {} : { backstitches: backstitchCompletions }) });
-      cellIndices.push(...run.entry.progress.cellIndices);
-      backstitchIds.push(...run.entry.progress.backstitchIds);
-      marked += run.entry.progress.marked;
-      unmarked += run.entry.progress.unmarked;
+      if (cellCompletions !== undefined) cellIndices.push(...cellCompletions.indices);
+      if (backstitchCompletions !== undefined) backstitchIds.push(...backstitchCompletions.ids);
     }
     if (parts.length === 0) return null;
     this.layered = document;
-    return { result: this.publishProgress({ marked, unmarked, cellIndices: Uint32Array.from(cellIndices).sort(), backstitchIds: Uint32Array.from(backstitchIds).sort() }), entry: { parts } };
+    return { result: this.publishProgress({ cellIndices: Uint32Array.from(cellIndices).sort(), backstitchIds: Uint32Array.from(backstitchIds).sort() }), entry: { parts } };
   }
 
   /**
@@ -2691,8 +2671,6 @@ export class DocumentEditor {
     let document = this.layered;
     const cellIndices: number[] = [];
     const backstitchIds: number[] = [];
-    let marked = 0;
-    let unmarked = 0;
     for (const part of entry.parts) {
       const layer = findLayer(document, part.layerId);
       if (layer === undefined || (layer.type === LayerType.Stitch ? part.cells === undefined : part.backstitches === undefined)) continue;
@@ -2703,16 +2681,14 @@ export class DocumentEditor {
         ...(part.backstitches === undefined ? {} : { backstitchCompletions: part.backstitches })
       };
       const next = applyDelta(surface, delta, forward);
-      const changed = deriveExplicitCompletionProgress(surface, next, part.cells?.indices, part.backstitches?.ids);
+      const changed = deriveExplicitCompletionChanges(surface, next, part.cells?.indices, part.backstitches?.ids);
       document = commitSurfaceToLayer(document, layer.id, next, revision);
       cellIndices.push(...changed.cellIndices);
       backstitchIds.push(...changed.backstitchIds);
-      marked += changed.marked;
-      unmarked += changed.unmarked;
     }
     if (document === this.layered) return result(this.composite, false);
     this.layered = document;
-    return this.publishProgress({ marked, unmarked, cellIndices: Uint32Array.from(cellIndices).sort(), backstitchIds: Uint32Array.from(backstitchIds).sort() });
+    return this.publishProgress({ cellIndices: Uint32Array.from(cellIndices).sort(), backstitchIds: Uint32Array.from(backstitchIds).sort() });
   }
 
   /** An entry whose apply throws stays on its stack. */
@@ -2787,7 +2763,7 @@ export class DocumentEditor {
     const previous = this.cache.document;
     const composite = this.cache.full(this.layered);
     if (previous === null || previous.width !== composite.width || previous.height !== composite.height) {
-      return { ...base, document: composite, revision: this.layered.revision, requiresFullRedraw: true, recalculateMetrics: true, compositeFull: true };
+      return { ...base, document: composite, revision: this.layered.revision, requiresFullRedraw: true, compositeFull: true };
     }
     const changedIndices = diffCompositeCells(previous, composite);
     const linesChanged = !backstitchStoresEqual(previous.backstitches, composite.backstitches);
@@ -2797,20 +2773,18 @@ export class DocumentEditor {
       revision: this.layered.revision,
       changedIndices,
       compositeChangedIndices: changedIndices.slice(),
-      recalculateMetrics: linesChanged,
       ...(linesChanged ? { requiresFullRedraw: true } : {}),
       ...(changedIndices.length === 0 && !linesChanged ? { compositeUnchanged: true } : {})
     };
   }
 
   /** Publishes a progress-only change: the composite refreshes the marked cells, and backstitches are recomputed as usual. */
-  private publishProgress(progress: ProgressChangeSet): CommandResult {
+  private publishProgress(progress: { cellIndices: Uint32Array; backstitchIds: Uint32Array }): CommandResult {
     const base = result(metadataSurface(this.layered), true, undefined, undefined, {
       changed: true,
       snapshot: false,
       changedIndices: progress.cellIndices,
-      changedBackstitchIds: progress.backstitchIds,
-      progress
+      changedBackstitchIds: progress.backstitchIds
     });
     return this.publish(base, progress.cellIndices);
   }

@@ -10,7 +10,7 @@ import { EditorSurfaceController } from './controller';
 import { createWorkspaceEditorGateway } from './gateway';
 import { createPointerEventsAdapter } from './input';
 import { createUiStore } from './ui-store';
-import { applyCommand } from '../domain/test-fixtures';
+import { applyCommand, cell } from '../domain/test-fixtures';
 import { dragViewport, rendererFixture } from './test-support';
 
 // The chart starts four cells in, so a paste hanging past its top-left edge is still on screen.
@@ -37,7 +37,7 @@ function patternB(width = 4, height = 4): PatternDocument {
 
 function paint(document: PatternDocument, cells: ReadonlyArray<readonly [number, number, number]>): PatternDocument {
   let painted = document;
-  for (const [x, y, color] of cells) painted = applyCommand(painted, { type: 'set-full', x, y, color }).document;
+  for (const [x, y, color] of cells) painted = applyCommand(painted, cell(painted, { type: 'set-full', x, y, color })).document;
   return painted;
 }
 
@@ -299,9 +299,12 @@ describe('clipboard shortcuts from another tool', () => {
   it('pulses Copy or Paste only for a shortcut that registered', async () => {
     const { controller, uiStore } = await layeredFixture(paint(patternA(), [[0, 0, 1]]));
     controller.handleFocus();
+    controller.setTool({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
     expect(key(controller, 'v')).toBe(false);
     expect(key(controller, 'c')).toBe(false);
     expect(uiStore.getState().clipboardPulse).toBeNull();
+    expect(uiStore.getState().tool.tool).toBe('paint');
+    expect(uiStore.getState().overlay.floatingPaste).toBeUndefined();
     controller.setSelection({ x: 0, y: 0 });
     expect(key(controller, 'c')).toBe(true);
     expect(uiStore.getState().clipboardPulse).toEqual({ action: 'copy', seq: 1 });
@@ -339,14 +342,4 @@ describe('clipboard shortcuts from another tool', () => {
     }
   });
 
-  it('leaves the tool alone when there is nothing to copy or paste', async () => {
-    const { controller, uiStore } = await layeredFixture(paint(patternA(), [[0, 0, 1]]));
-    controller.handleFocus();
-    controller.setTool({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
-    expect(key(controller, 'v')).toBe(false);
-    expect(key(controller, 'c')).toBe(false);
-    expect(uiStore.getState().tool.tool).toBe('paint');
-    expect(uiStore.getState().overlay.floatingPaste).toBeUndefined();
-    controller.dispose();
-  });
 });

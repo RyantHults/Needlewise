@@ -13,7 +13,7 @@ import {
   type SpecialtyLayer,
   type StitchLayer
 } from './index';
-import { createLayeredDocument, stitchLayer, specialtyLayer, errorCode, TEST_CATALOG } from './test-fixtures';
+import { bulkSetFullCommand, cell, createLayeredDocument, stitchLayer, specialtyLayer, errorCode, TEST_CATALOG } from './test-fixtures';
 
 const BOTTOM = 1;
 const SPECIALTY = 2;
@@ -23,7 +23,7 @@ const SOURCE = { x: 0, y: 0, width: 2, height: 2 };
 const DESTINATION = { x: 3, y: 1 };
 
 function full(x: number, y: number, color: number, layerId: number): DomainCommand {
-  return { type: 'set-full', x, y, color, layerId };
+  return cell(WIDTH, { type: 'set-full', x, y, color, layerId });
 }
 
 function onLayer(command: DomainCommand, layerId: number): DomainCommand {
@@ -132,15 +132,15 @@ describe('layered DocumentEditor: batches across layers', () => {
     expect(line(specialtyLayer(editor.document, SPECIALTY))).toEqual([0, 0, 4, 0]);
   });
 
-  it('keeps a single-layer batch on one layer entry', () => {
+  it('keeps a single-layer edit on one layer entry', () => {
     const editor = threeLayerEditor();
     const depth = editor.undoDepth;
-    editor.execute({ type: 'batch', commands: [full(5, 3, 1, BOTTOM), full(4, 3, 1, BOTTOM)] });
+    editor.execute({ ...bulkSetFullCommand(Uint32Array.of(3 * WIDTH + 4, 3 * WIDTH + 5), 1), layerId: BOTTOM });
     expect(editor.undoDepth).toBe(depth + 1);
     const entry = editor.exportHistory().undo.at(-1);
     expect(entry?.kind === 'delta' ? entry.layerId : undefined).toBe(BOTTOM);
     // The batch-level layerId still applies to children that name none.
-    editor.execute({ type: 'batch', layerId: TOP, commands: [{ type: 'set-full', x: 5, y: 0, color: 2 }] });
+    editor.execute({ type: 'batch', layerId: TOP, commands: [cell(WIDTH, { type: 'set-full', x: 5, y: 0, color: 2 })] });
     expect(stitchLayer(editor.document, TOP).kind[5]).toBe(CellKind.Full);
   });
 

@@ -344,5 +344,5 @@ export interface ProjectFolderIndex {
 export interface CreateFolderInput {
   name: string;
   parentId?: string | null;
-  id?: string;
+  id: string;
 }

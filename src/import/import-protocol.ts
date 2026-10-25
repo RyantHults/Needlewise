@@ -12,7 +12,6 @@ type Envelope<T extends string, Extra = object> = {
 export type PatternImportRequest =
   | Envelope<'open', { readonly file: Blob; readonly fileName: string }>
   | Envelope<'reanalyze', { readonly overrides: ImportOverrides }>
-  | Envelope<'close'>
   | Envelope<'cancel'>;
 
 /** An `ImportError` or other failure as it crosses the worker boundary. */
@@ -25,7 +24,6 @@ export interface SerializedImportError {
 export type PatternImportResponse =
   | Envelope<'progress', { readonly progress: ImportProgress }>
   | Envelope<'result', { readonly analysis: ImportAnalysis }>
-  | Envelope<'closed'>
   | Envelope<'cancelled'>
   | Envelope<'error', { readonly error: SerializedImportError }>;
 
@@ -46,7 +44,6 @@ function isEnvelope(value: unknown): value is Record<string, unknown> & { type: 
 
 function isOverrides(value: unknown): value is ImportOverrides {
   if (!isRecord(value)) return false;
-  if (value.overlap !== undefined && (typeof value.overlap !== 'number' || !Number.isInteger(value.overlap))) return false;
   const roles = value.pageRoles;
   if (roles === undefined) return true;
   return isRecord(roles) && Object.values(roles).every((role) => role === 'chart' || role === 'key' || role === 'other');
@@ -57,7 +54,6 @@ export function isPatternImportRequest(value: unknown): value is PatternImportRe
   switch (value.type) {
     case 'open': return value.file instanceof Blob && typeof value.fileName === 'string';
     case 'reanalyze': return isOverrides(value.overrides);
-    case 'close':
     case 'cancel': return true;
     default: return false;
   }
@@ -95,7 +91,6 @@ export function isPatternImportResponse(value: unknown): value is PatternImportR
   switch (value.type) {
     case 'progress': return isProgress(value.progress);
     case 'result': return isAnalysis(value.analysis);
-    case 'closed':
     case 'cancelled': return true;
     case 'error': return isSerializedImportError(value.error);
     default: return false;

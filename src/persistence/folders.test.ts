@@ -39,23 +39,12 @@ describe('project folders', () => {
     }
   });
 
-  it('generates an id with crypto.randomUUID when none is supplied', async () => {
-    const repo = await repository();
-    try {
-      const folder = await repo.createFolder({ name: 'Generated' });
-      expect(typeof folder.id).toBe('string');
-      expect(folder.id.length).toBeGreaterThan(0);
-    } finally {
-      await closeRepository(repo);
-    }
-  });
-
   it('rejects an empty or overlong folder name', async () => {
     const repo = await repository();
     try {
-      await expect(repo.createFolder({ name: '   ' })).rejects.toMatchObject({ code: 'invalid-metadata' });
-      await expect(repo.createFolder({ name: 'x'.repeat(MAX_FOLDER_NAME_CHARS + 1) })).rejects.toMatchObject({ code: 'invalid-metadata' });
-      await expect(repo.createFolder({ name: 'x'.repeat(MAX_FOLDER_NAME_CHARS) })).resolves.toMatchObject({ name: 'x'.repeat(MAX_FOLDER_NAME_CHARS) });
+      await expect(repo.createFolder({ id: 'folder-x1', name: '   ' })).rejects.toMatchObject({ code: 'invalid-metadata' });
+      await expect(repo.createFolder({ id: 'folder-x2', name: 'x'.repeat(MAX_FOLDER_NAME_CHARS + 1) })).rejects.toMatchObject({ code: 'invalid-metadata' });
+      await expect(repo.createFolder({ id: 'folder-x3', name: 'x'.repeat(MAX_FOLDER_NAME_CHARS) })).resolves.toMatchObject({ name: 'x'.repeat(MAX_FOLDER_NAME_CHARS) });
     } finally {
       await closeRepository(repo);
     }
@@ -64,7 +53,7 @@ describe('project folders', () => {
   it('trims folder names', async () => {
     const repo = await repository();
     try {
-      const folder = await repo.createFolder({ name: '  Spaced  ' });
+      const folder = await repo.createFolder({ id: 'folder-x4', name: '  Spaced  ' });
       expect(folder.name).toBe('Spaced');
     } finally {
       await closeRepository(repo);
@@ -77,7 +66,7 @@ describe('project folders', () => {
       const parent = await repo.createFolder({ name: 'Parent', id: 'parent' });
       const child = await repo.createFolder({ name: 'Child', id: 'child', parentId: parent.id });
       expect(child.parentId).toBe('parent');
-      await expect(repo.createFolder({ name: 'Grandchild', parentId: child.id })).rejects.toMatchObject({ code: 'invalid-metadata' });
+      await expect(repo.createFolder({ id: 'folder-x5', name: 'Grandchild', parentId: child.id })).rejects.toMatchObject({ code: 'invalid-metadata' });
     } finally {
       await closeRepository(repo);
     }
@@ -86,7 +75,7 @@ describe('project folders', () => {
   it('rejects a missing parent folder', async () => {
     const repo = await repository();
     try {
-      await expect(repo.createFolder({ name: 'Orphan', parentId: 'does-not-exist' })).rejects.toMatchObject({ code: 'invalid-metadata' });
+      await expect(repo.createFolder({ id: 'folder-x6', name: 'Orphan', parentId: 'does-not-exist' })).rejects.toMatchObject({ code: 'invalid-metadata' });
     } finally {
       await closeRepository(repo);
     }
@@ -231,7 +220,7 @@ describe('project folders', () => {
   it('wraps unexpected Dexie errors as storage-failure while passing through PersistenceError', async () => {
     const repo = await repository();
     try {
-      await expect(repo.createFolder({ name: '' })).rejects.toBeInstanceOf(PersistenceError);
+      await expect(repo.createFolder({ id: 'folder-x7', name: '' })).rejects.toBeInstanceOf(PersistenceError);
       await repo.close();
       await expect(repo.listFolderIndex()).rejects.toMatchObject({ code: 'storage-failure' });
     } finally {

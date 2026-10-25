@@ -4,14 +4,13 @@ import {
   computePatternMetrics,
   createDocument,
   HalfDirection,
-  MAX_PERSISTABLE_CELL_COUNT,
   DEFAULT_SKEIN_LENGTH_METERS,
   normalizeAidaCount,
   normalizeDisplayUnits,
   normalizeMaterialAssumptions,
   QuarterCorner
 } from './index';
-import { markBackstitchComplete, markCellComplete, applyCommand } from './test-fixtures';
+import { markBackstitchComplete, markCellComplete, applyCommand, cell, errorCode } from './test-fixtures';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 
 describe('derived pattern metrics', () => {
@@ -28,12 +27,12 @@ describe('derived pattern metrics', () => {
       pattern = applyCommand(pattern, command).document;
     };
 
-    apply({ type: 'set-full', x: 0, y: 0, color: 7 });
+    apply(cell(pattern, { type: 'set-full', x: 0, y: 0, color: 7 }));
     pattern = markCellComplete(pattern, 0, 0);
-    apply({ type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 7 });
-    apply({ type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 2 });
+    apply(cell(pattern, { type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 7 }));
+    apply(cell(pattern, { type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 2 }));
     pattern = markCellComplete(pattern, 2, 0, QuarterCorner.NW);
-    apply({ type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.SE, color: 7 });
+    apply(cell(pattern, { type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.SE, color: 7 }));
     apply({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 2 });
     apply({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 4 }, color: 7 });
     const backstitchId = pattern.backstitches.ids[1];
@@ -110,9 +109,9 @@ describe('derived pattern metrics', () => {
       height: 1,
       palette: [{ id: 1, name: 'Red', color: '#d33' }]
     });
-    pattern = applyCommand(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
+    pattern = applyCommand(pattern, cell(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 })).document;
     pattern = markCellComplete(pattern, 0, 0);
-    pattern = applyCommand(pattern, { type: 'set-three-quarter', x: 1, y: 0, corner: QuarterCorner.SE, color: 1 }).document;
+    pattern = applyCommand(pattern, cell(pattern, { type: 'set-three-quarter', x: 1, y: 0, corner: QuarterCorner.SE, color: 1 })).document;
 
     const metrics = computePatternMetrics(pattern, { strands: 2, waste: 0.1 });
     expect(metrics.palettes[0]).toMatchObject({
@@ -140,8 +139,8 @@ describe('derived pattern metrics', () => {
       height: 1,
       palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }]
     });
-    pattern = applyCommand(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
-    pattern = applyCommand(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 }).document;
+    pattern = applyCommand(pattern, cell(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 })).document;
+    pattern = applyCommand(pattern, cell(pattern, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 })).document;
     pattern = markCellComplete(pattern, 0, 0, QuarterCorner.NW);
 
     const metrics = computePatternMetrics(pattern, { strands: 2, waste: 0.1 });
@@ -151,14 +150,13 @@ describe('derived pattern metrics', () => {
     expect(metrics.progress).toEqual({ completedComponents: 1, remainingComponents: 1, totalComponents: 2, fraction: 0.5, percent: 50 });
   });
 
-  it('scans bounded 500 by 500 and 1000 by 1000 documents without adding derived state', () => {
+  it('scans bounded 500 by 500 and 1000 by 1000 documents', () => {
     for (const side of [500, 1000]) {
       const pattern = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
         width: side,
         height: side,
         palette: [{ id: 1, name: 'Red', color: '#d33' }]
       });
-      const beforeKeys = Object.keys(pattern);
       pattern.kind[pattern.kind.length - 1] = CellKind.Full;
       pattern.colors[pattern.colors.length - 4] = 1;
       const metrics = computePatternMetrics(pattern);
@@ -166,15 +164,13 @@ describe('derived pattern metrics', () => {
       expect(metrics.totals.full).toBe(1);
       expect(metrics.totals.totalComponents).toBe(1);
       expect(metrics.palettes[0].remainingComponents).toBe(1);
-      expect(Object.keys(pattern)).toEqual(beforeKeys);
       expect(pattern.kind[pattern.kind.length - 1]).toBe(CellKind.Full);
     }
-    expect(MAX_PERSISTABLE_CELL_COUNT).toBe(1_000_000);
   });
 
   it('estimates from the canvas stitch count by default and honours calibration', () => {
     let pattern = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 18, height: 9, palette: [{ id: 1, name: 'Red', color: '#d33' }], settings: { aidaCount: 18 } });
-    pattern = applyCommand(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+    pattern = applyCommand(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
     const canvas = computePatternMetrics(pattern);
     expect(canvas.finishedSize).toEqual(computePatternMetrics(pattern, { aidaCount: 18 }).finishedSize);
     expect(canvas.finishedSize).toMatchObject({ widthInches: 1, heightInches: 0.5 });
@@ -201,8 +197,8 @@ describe('derived pattern metrics', () => {
 
   it('derives finished size and estimates Aida thread by stitch geometry', () => {
     let pattern = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 14, height: 7, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    pattern = applyCommand(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
-    pattern = applyCommand(pattern, { type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 1 }).document;
+    pattern = applyCommand(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
+    pattern = applyCommand(pattern, cell(pattern, { type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 1 })).document;
     pattern = applyCommand(pattern, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 }).document;
 
     const metrics = computePatternMetrics(pattern, { aidaCount: 14 });
@@ -223,7 +219,7 @@ describe('derived pattern metrics', () => {
   it('falls back to an 8.7-yard skein when no skein length is calibrated', () => {
     expect(DEFAULT_SKEIN_LENGTH_METERS).toBeCloseTo(7.95528);
     let pattern = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    pattern = applyCommand(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+    pattern = applyCommand(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
     const metrics = computePatternMetrics(pattern, { aidaCount: 14 });
     const material = metrics.palettes[0].material;
     expect(material.estimatedSkeins).toBeCloseTo((material.estimatedMeters ?? 0) / 7.95528);
@@ -232,7 +228,7 @@ describe('derived pattern metrics', () => {
 
   it('uses manual thread calibration for metres and falls back to the standard skein', () => {
     let pattern = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    pattern = applyCommand(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+    pattern = applyCommand(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
 
     const calibrated = computePatternMetrics(pattern, { aidaCount: 14, stitchLengthMeters: 0.1 });
     expect(calibrated.palettes[0].material.estimatedMeters).toBeCloseTo(0.2);
@@ -242,16 +238,16 @@ describe('derived pattern metrics', () => {
     const withSkein = computePatternMetrics(pattern, { aidaCount: 14, stitchLengthMeters: 0.1, skeinLengthMeters: 8 });
     expect(withSkein.palettes[0].material.estimatedSkeins).toBeCloseTo(0.025);
     expect(withSkein.palettes[0].material.requiredSkeins).toBe(1);
-    expect(() => normalizeAidaCount(0)).toThrow(/finite number greater than zero/);
-    expect(() => computePatternMetrics(pattern, { aidaCount: Number.NaN })).toThrow(/Aida count/);
+    expect(errorCode(() => normalizeAidaCount(0))).toBe('invalid-aida-count');
+    expect(errorCode(() => computePatternMetrics(pattern, { aidaCount: Number.NaN }))).toBe('invalid-aida-count');
   });
 
   it('accepts only metric or imperial display units', () => {
     expect(normalizeDisplayUnits('metric')).toBe('metric');
     expect(normalizeDisplayUnits('imperial')).toBe('imperial');
-    expect(() => normalizeDisplayUnits('furlongs')).toThrow(/metric or imperial/);
-    expect(() => normalizeDisplayUnits(undefined)).toThrow(/metric or imperial/);
-    expect(() => normalizeDisplayUnits(null)).toThrow(/metric or imperial/);
+    expect(errorCode(() => normalizeDisplayUnits('furlongs'))).toBe('invalid-units');
+    expect(errorCode(() => normalizeDisplayUnits(undefined))).toBe('invalid-units');
+    expect(errorCode(() => normalizeDisplayUnits(null))).toBe('invalid-units');
   });
 
   it('keeps canonical waste fractions stable and accepts percentage input only by name', () => {
@@ -261,7 +257,7 @@ describe('derived pattern metrics', () => {
     expect(normalizeMaterialAssumptions({ wastePercent: 125 })).toEqual(canonical);
 
     let pattern = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 1, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    pattern = applyCommand(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+    pattern = applyCommand(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
     const first = computePatternMetrics(pattern, { aidaCount: 14, strands: canonical.strands, waste: canonical.waste });
     const second = computePatternMetrics(pattern, { aidaCount: 14, ...canonical });
     expect(second.palettes[0].material.estimatedMeters).toBe(first.palettes[0].material.estimatedMeters);

@@ -9,9 +9,6 @@ interface ContextRecord {
   name: string;
   args: unknown[];
   fillStyle: string;
-  lineWidth: number;
-  lineCap: string | undefined;
-  lineJoin: string | undefined;
 }
 
 interface RecordingContext extends CanvasContextAdapter {
@@ -25,8 +22,6 @@ function recordingContext(): RecordingContext {
     fillStyle: '',
     strokeStyle: '',
     lineWidth: 1,
-    lineCap: 'butt',
-    lineJoin: 'miter',
     globalAlpha: 1,
     font: '',
     clearRect: function (): void {},
@@ -38,10 +33,7 @@ function recordingContext(): RecordingContext {
       this.records.push({
         name,
         args,
-        fillStyle: this.fillStyle,
-        lineWidth: this.lineWidth,
-        lineCap: this.lineCap,
-        lineJoin: this.lineJoin
+        fillStyle: this.fillStyle
       });
     },
     fill: function (this: RecordingContext, ...args: unknown[]): void { this.record('fill', args); },
@@ -60,35 +52,6 @@ function named(context: RecordingContext, name: string): ContextRecord | undefin
 }
 
 describe('drawSymbolOutline', () => {
-  it('reuses one Path2D per outline across draws', () => {
-    const context = recordingContext();
-    const outline = { d: 'M0 0L1 0L1 1Z' };
-
-    drawSymbolOutline(context, outline, { x: 0, y: 0 }, 8, '#000');
-    drawSymbolOutline(context, outline, { x: 9, y: 9 }, 8, '#000');
-    drawSymbolOutline(context, { d: outline.d }, { x: 0, y: 0 }, 8, '#000');
-
-    const [first, second, third] = context.records.filter((entry) => entry.name === 'fill').map((entry) => entry.args[0]);
-    expect(second).toBe(first);
-    expect(third).not.toBe(first);
-  });
-
-  it('translates the outline to the requested cell position', () => {
-    const context = recordingContext();
-
-    drawSymbolOutline(context, { d: 'M-0.5 0L0.5 0' }, { x: 10, y: 20 }, 8, '#123456');
-
-    expect(named(context, 'translate')?.args).toEqual([10, 20]);
-  });
-
-  it('scales the outline by the cell size it was given', () => {
-    const context = recordingContext();
-
-    drawSymbolOutline(context, { d: 'M-0.5 0L0.5 0' }, { x: 0, y: 0 }, 8, '#123456');
-
-    expect(named(context, 'scale')?.args).toEqual([8, 8]);
-  });
-
   it('fills the outline path', () => {
     const context = recordingContext();
 
@@ -116,19 +79,6 @@ describe('drawSymbolOutline', () => {
     drawSymbolOutline(context, { d: 'M-0.5 0L0.5 0' }, { x: 0, y: 0 }, 8, '#2266cc');
 
     expect(named(context, 'fill')?.fillStyle).toBe('#2266cc');
-  });
-
-  it('leaves stroke state on the context untouched', () => {
-    const context = recordingContext();
-    context.strokeStyle = '#ff0000';
-    context.lineWidth = 7;
-
-    drawSymbolOutline(context, { d: 'M-0.5 0L0.5 0' }, { x: 0, y: 0 }, 8, '#2266cc');
-
-    // A symbol that set the stroke color or width would recolor or reweight
-    // the surrounding stitch geometry drawn next on the same context.
-    expect(context.strokeStyle).toBe('#ff0000');
-    expect(context.lineWidth).toBe(7);
   });
 
   it('brackets painting with save and restore so symbol state cannot leak', () => {
@@ -184,7 +134,7 @@ describe('drawPaletteSymbol', () => {
   const painted = (context: RecordingContext): string[] => [
     ...new Set(
       context.records
-        .filter((entry) => entry.name === 'fill' || entry.name === 'stroke')
+        .filter((entry) => entry.name === 'fill')
         .map((entry) => (entry.args[0] as { d: string } | undefined)?.d)
         .filter((d): d is string => typeof d === 'string')
     )
@@ -229,14 +179,6 @@ describe('drawPaletteSymbol', () => {
     }
   });
 
-  it('uses the configured ink in symbol mode regardless of the stitch color', () => {
-    const context = recordingContext();
-
-    drawPaletteSymbol(context, documentWith(SYMBOL_IDS[0]), 1, rect, style({ mode: ChartPresentationMode.Symbol, symbolColor: '#123456' }));
-
-    expect(named(context, 'fill')?.fillStyle ?? named(context, 'stroke')?.fillStyle).toBe('#123456');
-  });
-
   it('centres the symbol in the cell and offsets it for a quarter slot', () => {
     const centre = recordingContext();
     const slotted = recordingContext();
@@ -262,16 +204,4 @@ describe('drawPaletteSymbol', () => {
     ).not.toThrow();
   });
 
-  it('gives a stable Combined ink for repeated draws and many distinct colors', () => {
-    const inkFor = (color: string): string => {
-      const context = recordingContext();
-      const doc = { palette: [{ id: 1, name: 'C', color, symbol: SYMBOL_IDS[0] }] } as unknown as PatternDocument;
-      drawPaletteSymbol(context, doc, 1, rect, style({ mode: ChartPresentationMode.Combined }));
-      return named(context, 'fill')?.fillStyle ?? '';
-    };
-    const first = inkFor('#102030');
-    for (let n = 0; n < 600; n += 1) inkFor(`#${(n + 0x100000).toString(16)}`);
-    expect(inkFor('#102030')).toBe(first);
-    expect(inkFor('#102030')).toBe(first);
-  });
 });

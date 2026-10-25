@@ -40,7 +40,7 @@ import {
 } from '../persistence';
 import { validateAcceptedConversionDraft, type AcceptedConversionDraft } from '../conversion/image-to-pattern';
 import type { PatternMetrics } from '../domain';
-import { createCatalogReference, DEFAULT_CATALOG_DEFINITION, INSTALLED_CATALOG_REGISTRY, type CatalogDefinition, type InstalledCatalogRegistry } from '../catalog';
+import { createCatalogReference, DEFAULT_CATALOG_DEFINITION, INSTALLED_CATALOG_REGISTRY, type CatalogDefinition } from '../catalog';
 import { asError, WorkspaceError } from './errors';
 import { ProjectSession } from './session';
 import type {
@@ -158,7 +158,6 @@ export class ProjectWorkspace {
   private readonly clock: WorkspaceClock;
   private readonly debounceMs: number;
   private readonly projectIdFactory: () => string;
-  private readonly catalogRegistry: InstalledCatalogRegistry;
   private active: ProjectSession | null = null;
   private operationError: Error | null = null;
   private disposed = false;
@@ -173,7 +172,6 @@ export class ProjectWorkspace {
     this.clock = asClock(options.clock);
     this.debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
     this.projectIdFactory = options.projectIdFactory ?? createBrowserProjectId;
-    this.catalogRegistry = options.catalogRegistry ?? INSTALLED_CATALOG_REGISTRY;
   }
 
   get session(): ProjectSession | null {
@@ -238,11 +236,11 @@ export class ProjectWorkspace {
   }
 
   catalogFor(document: Pick<PatternDocument, 'catalog'> | null | undefined): CatalogDefinition | undefined {
-    return document === null || document === undefined ? undefined : this.catalogRegistry.resolve(document.catalog);
+    return document === null || document === undefined ? undefined : INSTALLED_CATALOG_REGISTRY.resolve(document.catalog);
   }
 
   availableCatalogs(): readonly CatalogDefinition[] {
-    return this.catalogRegistry.definitions;
+    return INSTALLED_CATALOG_REGISTRY.definitions;
   }
 
   getAsset(assetId: string) {
@@ -411,9 +409,6 @@ export class ProjectWorkspace {
     const token = this.startOperation();
     await this.flushActiveBeforeSwitch(token);
     this.ensureOperation(token);
-    if (options.document === undefined && this.catalogRegistry.resolve(DEFAULT_CATALOG_DEFINITION.association) === undefined) {
-      throw new WorkspaceError('save-failed', 'The default catalog is not installed; an explicit document is required to create a project.');
-    }
     const projectId = options.id ?? this.projectIdFactory();
     if (!isProjectId(projectId)) throw new WorkspaceError('save-failed', 'Generated project ID is invalid.');
     const document = layeredProjectDocument(options);
@@ -557,10 +552,6 @@ export class ProjectWorkspace {
     return refreshed;
   }
 
-  async listProjectMetadata(): Promise<ProjectMetadata[]> {
-    return this.listProjects();
-  }
-
   async openProject(projectId: string): Promise<ProjectSession> {
     const token = this.startOperation();
     await this.flushActiveBeforeSwitch(token);
@@ -609,22 +600,6 @@ export class ProjectWorkspace {
     }
   }
 
-  async selectProject(projectId?: string, metadataCandidates?: readonly ProjectMetadata[]): Promise<ProjectSession | undefined> {
-    this.ensureActiveWorkspace();
-    if (projectId !== undefined) return this.openProject(projectId);
-    const candidates = metadataCandidates === undefined ? await this.listProjectMetadata() : metadataCandidates;
-    for (const candidate of candidates) {
-      try {
-        return await this.openProject(candidate.id);
-      } catch (error) {
-        if (error instanceof WorkspaceError && (error.code === 'stale-operation' || error.code === 'disposed')) throw error;
-        // Continue to the next durable candidate if a full load (for example,
-        // asset verification) rejects this one.
-      }
-    }
-    return undefined;
-  }
-
   async deleteProject(projectId: string): Promise<void> {
     this.ensureActiveWorkspace();
     if (!isProjectId(projectId)) return this.rememberOperationError(new WorkspaceError('save-failed', 'Project ID is invalid.'), 'Unable to delete the local project.');
@@ -655,14 +630,13 @@ export class ProjectWorkspace {
 
   async listFolderIndex(): Promise<ProjectFolderIndex> {
     return this.runRepositoryOperation('Unable to list local folders.', async () => {
-      const index = this.repository.listFolderIndex ? await this.repository.listFolderIndex() : { folders: [], assignments: [] };
+      const index = await this.repository.listFolderIndex();
       return { folders: index.folders.map((folder) => ({ ...folder })), assignments: index.assignments.map((assignment) => ({ ...assignment })) };
     }, { supersede: false });
   }
 
   async createFolder(name: string, parentId: string | null = null): Promise<ProjectFolder> {
     return this.runRepositoryOperation('Unable to create the folder.', async () => {
-      if (!this.repository.createFolder) throw new WorkspaceError('save-failed', 'This repository cannot create folders.');
       const folder = await this.repository.createFolder({ name, parentId, id: this.projectIdFactory() });
       return { ...folder };
     }, { supersede: true });
@@ -670,7 +644,6 @@ export class ProjectWorkspace {
 
   async renameFolder(folderId: string, name: string): Promise<ProjectFolder> {
     return this.runRepositoryOperation('Unable to rename the folder.', async () => {
-      if (!this.repository.renameFolder) throw new WorkspaceError('save-failed', 'This repository cannot rename folders.');
       const folder = await this.repository.renameFolder(folderId, name);
       return { ...folder };
     }, { supersede: true });
@@ -678,21 +651,18 @@ export class ProjectWorkspace {
 
   async deleteFolder(folderId: string): Promise<void> {
     return this.runRepositoryOperation('Unable to delete the folder.', async () => {
-      if (!this.repository.deleteFolder) throw new WorkspaceError('save-failed', 'This repository cannot delete folders.');
       await this.repository.deleteFolder(folderId);
     }, { supersede: true });
   }
 
   async moveProjectToFolder(projectId: string, folderId: string | null): Promise<void> {
     return this.runRepositoryOperation('Unable to move the project.', async () => {
-      if (!this.repository.moveProjectToFolder) throw new WorkspaceError('save-failed', 'This repository cannot move projects between folders.');
       await this.repository.moveProjectToFolder(projectId, folderId);
     }, { supersede: true });
   }
 
   async moveFolder(folderId: string, parentId: string | null): Promise<void> {
     return this.runRepositoryOperation('Unable to move the folder.', async () => {
-      if (!this.repository.moveFolder) throw new WorkspaceError('save-failed', 'This repository cannot move folders.');
       await this.repository.moveFolder(folderId, parentId);
     }, { supersede: true });
   }

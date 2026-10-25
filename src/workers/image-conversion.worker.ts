@@ -98,10 +98,6 @@ export function handleImageConversionWorkerMessage(
     ? { ...incoming, pixels: new Uint8ClampedArray(incoming.pixels), catalog: cloneCatalogSnapshot(incoming.catalog) }
     : { ...incoming, catalog: cloneCatalogSnapshot(incoming.catalog) };
   const key = requestKey(request.token);
-  if (activeRequests.has(key)) {
-    postMessage(createConversionError(new ConversionError('invalid-token', 'The conversion token is already active.'), request.token));
-    return;
-  }
   const active: ActiveConversion = { cancelled: false };
   activeRequests.set(key, active);
 

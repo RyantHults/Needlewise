@@ -52,14 +52,4 @@ describe("PatternHeader", () => {
     setup();
     expect(screen.getByRole("heading", { level: 2, name: "Sampler" })).toHaveAttribute("id", "pattern-title");
   });
-
-  it("renames through the editable title", () => {
-    const onRenameTitle = vi.fn();
-    setup({ onRenameTitle });
-    fireEvent.click(screen.getByRole("button", { name: "Rename Sampler" }));
-    const input = screen.getByLabelText("Rename pattern Sampler");
-    fireEvent.change(input, { target: { value: "Quilt" } });
-    fireEvent.keyDown(input, { key: "Enter" });
-    expect(onRenameTitle).toHaveBeenCalledWith("Quilt");
-  });
 });

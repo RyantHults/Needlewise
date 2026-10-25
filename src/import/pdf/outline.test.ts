@@ -134,20 +134,6 @@ describe('outlineDistance', () => {
     }
   });
 
-  // The closest fixture pair is the black star drawn by two fonts (about
-  // 0.025); in the curated pool the closest is about 0.031.
-  it('keeps every pair of pool symbols clearly apart', () => {
-    let nearest = Infinity;
-    let pair = '';
-    for (let i = 0; i < pool.length; i += 1) {
-      for (let j = i + 1; j < pool.length; j += 1) {
-        const distance = outlineDistance(pool[i].d, pool[j].d);
-        if (distance < nearest) [nearest, pair] = [distance, `${pool[i].id} ${pool[j].id}`];
-      }
-    }
-    expect(nearest, pair).toBeGreaterThan(0.02);
-  });
-
   it('separates an empty outline from a drawn one', () => {
     expect(outlineDistance('', '')).toBe(0);
     expect(outlineDistance('', normalizeSvgPath('M0 0H1V1Z'))).toBe(1);

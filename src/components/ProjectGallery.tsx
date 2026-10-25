@@ -64,12 +64,12 @@ const galleryCoordinateGetter: KeyboardCoordinateGetter = (event, { currentCoord
 interface ProjectGalleryProps {
   projects: readonly ProjectMetadata[];
   /** The header's left cell, e.g. the app brand link. */
-  brand?: React.ReactNode;
+  brand: React.ReactNode;
   disabled?: boolean;
   onOpen: (project: ProjectMetadata) => void;
   onDelete: (project: ProjectMetadata) => void;
-  onDuplicate?: (project: ProjectMetadata) => void;
-  onRenameProject?: (project: ProjectMetadata, title: string) => Promise<unknown> | void;
+  onDuplicate: (project: ProjectMetadata) => void;
+  onRenameProject: (project: ProjectMetadata, title: string) => Promise<unknown> | void;
   deleteConfirmId?: string | null;
   onCreate: (button: HTMLButtonElement) => void;
   onImport?: () => void;
@@ -264,14 +264,14 @@ interface ProjectCardProps {
   confirming: boolean;
   onOpen: (project: ProjectMetadata) => void;
   onDelete: (project: ProjectMetadata) => void;
-  onDuplicate?: (project: ProjectMetadata) => void;
-  onRenameProject?: (project: ProjectMetadata, title: string) => Promise<unknown> | void;
+  onDuplicate: (project: ProjectMetadata) => void;
+  onRenameProject: (project: ProjectMetadata, title: string) => Promise<unknown> | void;
 }
 
 function ProjectCard({ project, disabled, confirming, onOpen, onDelete, onDuplicate, onRenameProject }: ProjectCardProps) {
   const metadataDescriptionId = useId();
   const renameInputId = useId();
-  const { editing: renaming, start: startRename, triggerRef: renameTriggerRef, inputProps: renameInputProps } = useInlineEdit(project.title, (title) => onRenameProject?.(project, title));
+  const { editing: renaming, start: startRename, triggerRef: renameTriggerRef, inputProps: renameInputProps } = useInlineEdit(project.title, (title) => onRenameProject(project, title));
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, isDragging } = useDraggable({ id: projectDragId(project.id), disabled: disabled || renaming });
 
   const size = typeof project.width === 'number' && typeof project.height === 'number'
@@ -295,38 +295,35 @@ function ProjectCard({ project, disabled, confirming, onOpen, onDelete, onDuplic
         aria-describedby={metadataDescriptionId}
       >
         <ProjectThumbnail revision={project.revision} width={project.width} height={project.height} thumbnail={project.thumbnail} />
-        <span className={`project-gallery-copy${onRenameProject ? ' project-gallery-copy-tight' : ''}`}>
+        <span className="project-gallery-copy project-gallery-copy-tight">
           <span id={metadataDescriptionId} className="project-gallery-meta">
             {size} | Edited {editedDate(project.updatedAt)}
           </span>
-          {!onRenameProject && <span className="project-gallery-name">{project.title}</span>}
         </span>
       </button>
-      {onRenameProject && (
-        <div className="project-gallery-title-row">
-          {renaming ? (
-            <>
-              <label className="visually-hidden" htmlFor={renameInputId}>Rename pattern {project.title}</label>
-              <input
-                id={renameInputId}
-                className="project-gallery-title-input"
-                {...renameInputProps}
-              />
-            </>
-          ) : (
-            <button
-              ref={renameTriggerRef}
-              className="project-gallery-name project-gallery-name-button"
-              type="button"
-              disabled={disabled}
-              aria-label={`Rename ${project.title}`}
-              onClick={startRename}
-            >
-              {project.title}
-            </button>
-          )}
-        </div>
-      )}
+      <div className="project-gallery-title-row">
+        {renaming ? (
+          <>
+            <label className="visually-hidden" htmlFor={renameInputId}>Rename pattern {project.title}</label>
+            <input
+              id={renameInputId}
+              className="project-gallery-title-input"
+              {...renameInputProps}
+            />
+          </>
+        ) : (
+          <button
+            ref={renameTriggerRef}
+            className="project-gallery-name project-gallery-name-button"
+            type="button"
+            disabled={disabled}
+            aria-label={`Rename ${project.title}`}
+            onClick={startRename}
+          >
+            {project.title}
+          </button>
+        )}
+      </div>
       <div className="project-gallery-card-actions">
         <button
           ref={setActivatorNodeRef}
@@ -338,15 +335,13 @@ function ProjectCard({ project, disabled, confirming, onOpen, onDelete, onDuplic
         >
           <span aria-hidden="true">⠿</span>
         </button>
-        {onDuplicate && (
-          <CardActionButton
-            disabled={disabled}
-            aria-label={`Duplicate ${project.title}`}
-            onClick={() => onDuplicate(project)}
-          >
-            Duplicate
-          </CardActionButton>
-        )}
+        <CardActionButton
+          disabled={disabled}
+          aria-label={`Duplicate ${project.title}`}
+          onClick={() => onDuplicate(project)}
+        >
+          Duplicate
+        </CardActionButton>
         <CardActionButton
           armed={confirming}
           disabled={disabled}
@@ -537,7 +532,7 @@ export function ProjectGallery({
     >
       <section className="project-gallery" aria-labelledby="projects-title">
         <header className="project-gallery-header">
-          {brand && <div className="project-gallery-brand">{brand}</div>}
+          <div className="project-gallery-brand">{brand}</div>
           <div className="project-gallery-heading">
             {currentFolder && (
               <nav className="project-gallery-breadcrumb" aria-label="Folder breadcrumb">

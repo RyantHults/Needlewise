@@ -170,12 +170,8 @@ describe('LayersPanel multi-select', () => {
   const rowButton = (view: ReturnType<typeof render>, layerId: number) =>
     view.container.querySelectorAll<HTMLElement>('.layer-row[data-layer-type="stitch"] .layer-row-select')[layerId === 1 ? 1 : 0]!;
 
-  it('marks every selected row and the primary', () => {
+  it('marks every selected row pressed', () => {
     const view = render(selectionPanel());
-    expect(view.container.querySelectorAll('.layer-row-selected')).toHaveLength(2);
-    const primary = view.container.querySelectorAll('.layer-row-primary');
-    expect(primary).toHaveLength(1);
-    expect(primary[0]!.classList.contains('layer-row-selected')).toBe(true);
     expect(view.container.querySelectorAll('.layer-row-select[aria-pressed="true"]')).toHaveLength(2);
   });
 

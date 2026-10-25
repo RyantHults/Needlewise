@@ -18,8 +18,6 @@ import type { ProjectSession } from './session';
 
 export interface UseProjectWorkspaceOptions extends WorkspaceOptions {
   workspaceFactory?: (options: WorkspaceOptions) => ProjectWorkspace;
-  initialProjectId?: string;
-  autoOpenMostRecent?: boolean;
 }
 
 export interface UseProjectWorkspaceResult {
@@ -54,8 +52,7 @@ function workspaceOptionsFrom(options: UseProjectWorkspaceOptions): WorkspaceOpt
     repository: options.repository,
     clock: options.clock,
     debounceMs: options.debounceMs,
-    projectIdFactory: options.projectIdFactory,
-    catalogRegistry: options.catalogRegistry
+    projectIdFactory: options.projectIdFactory
   };
 }
 
@@ -145,12 +142,6 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
             if (refreshed > 0 && lifecycleRef.current.mounted && workspaceRef.current === instance) return refreshProjects(instance);
             return undefined;
           }).catch(() => undefined);
-          if (!lifecycleRef.current.mounted || initializationTokenRef.current !== token || workspaceRef.current !== instance) return;
-          if (options.initialProjectId !== undefined) {
-            await instance.openProject(options.initialProjectId);
-          } else if (options.autoOpenMostRecent !== false) {
-            await instance.selectProject(undefined, initialProjects);
-          }
         } catch (error) {
           if (lifecycleRef.current.mounted && initializationTokenRef.current === token && workspaceRef.current === instance) setActionError(asError(error, 'The workspace action failed.'));
         } finally {

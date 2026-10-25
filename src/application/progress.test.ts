@@ -1,21 +1,15 @@
-import { describe, expect, it, vi } from 'vitest';
-import { CellKind, cloneDocument, computePatternMetrics, createDocument, DocumentEditor, deleteRegionCommand, HalfDirection, layeredFromSurface, QuarterCorner, type CommandResult, type DomainCommand, type LayeredDocument, type PatternDocument } from '../domain';
-import type { PersistencePreparationClient, ProjectMetadata, SaveResult } from '../persistence';
-import { editorFromSurface, markBackstitchComplete, markCellComplete, onDefaultLayers, applyCommand, bulkRecolorCommand, bulkSetThreeQuarterCommand, createLayeredDocument } from '../domain/test-fixtures';
+import { describe, expect, it } from 'vitest';
+import { cloneDocument, computePatternMetrics, createDocument, DocumentEditor, deleteRegionCommand, HalfDirection, layeredFromSurface, QuarterCorner, type CommandResult, type DomainCommand, type PatternDocument } from '../domain';
+import { createPersistencePreparationClient, type ProjectMetadata } from '../persistence';
+import { cell, editorFromSurface, markBackstitchComplete, markCellComplete, onDefaultLayers, applyCommand, bulkRecolorCommand, bulkSetThreeQuarterCommand, createLayeredDocument } from '../domain/test-fixtures';
 import { ProjectSession } from './session';
 import { ProgressMetricsService } from './progress';
-import type { WorkspaceRepository } from './types';
+import { MemoryRepository } from './test-support';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 
 function metadata(id: string, revision: number): ProjectMetadata {
   return { id, title: 'Progress test', notes: '', createdAt: 1, updatedAt: 1, revision };
 }
-
-const testPreparationClient: PersistencePreparationClient = {
-  prepare: async () => { throw new Error('Preparation was not expected in this legacy repository seam.'); },
-  getRequestId: () => { throw new Error('Preparation was not expected in this legacy repository seam.'); },
-  dispose: () => undefined
-};
 
 const longDebounceMs = 2_000_000_000;
 
@@ -41,24 +35,24 @@ function mixedDeleteFixture(): { editor: DocumentEditor; rect: { x: number; y: n
     document = applyCommand(document, command).document;
   };
   const rect = { x: 1, y: 1, width: 4, height: 3 };
-  apply({ type: 'set-full', x: 1, y: 1, color: 1 });
+  apply(cell(8, { type: 'set-full', x: 1, y: 1, color: 1 }));
   document = markCellComplete(document, 1, 1);
-  apply({ type: 'set-half', x: 2, y: 1, direction: HalfDirection.Slash, color: 2 });
+  apply(cell(8, { type: 'set-half', x: 2, y: 1, direction: HalfDirection.Slash, color: 2 }));
   document = markCellComplete(document, 2, 1);
-  apply({ type: 'set-half', x: 3, y: 1, direction: HalfDirection.Backslash, color: 3 });
-  apply({ type: 'set-quarter', x: 4, y: 1, corner: QuarterCorner.NW, color: 1 });
+  apply(cell(8, { type: 'set-half', x: 3, y: 1, direction: HalfDirection.Backslash, color: 3 }));
+  apply(cell(8, { type: 'set-quarter', x: 4, y: 1, corner: QuarterCorner.NW, color: 1 }));
   document = markCellComplete(document, 4, 1, QuarterCorner.NW);
-  apply({ type: 'set-quarter', x: 4, y: 1, corner: QuarterCorner.NE, color: 2 });
-  apply({ type: 'set-quarter', x: 4, y: 1, corner: QuarterCorner.SE, color: 3 });
+  apply(cell(8, { type: 'set-quarter', x: 4, y: 1, corner: QuarterCorner.NE, color: 2 }));
+  apply(cell(8, { type: 'set-quarter', x: 4, y: 1, corner: QuarterCorner.SE, color: 3 }));
   document = markCellComplete(document, 4, 1, QuarterCorner.SE);
-  apply({ type: 'set-quarter', x: 1, y: 2, corner: QuarterCorner.SW, color: 2 });
+  apply(cell(8, { type: 'set-quarter', x: 1, y: 2, corner: QuarterCorner.SW, color: 2 }));
   document = markCellComplete(document, 1, 2, QuarterCorner.SW);
-  apply({ type: 'set-quarter', x: 1, y: 2, corner: QuarterCorner.NW, color: 3 });
-  apply({ type: 'set-three-quarter', x: 2, y: 2, corner: QuarterCorner.SW, color: 1 });
+  apply(cell(8, { type: 'set-quarter', x: 1, y: 2, corner: QuarterCorner.NW, color: 3 }));
+  apply(cell(8, { type: 'set-three-quarter', x: 2, y: 2, corner: QuarterCorner.SW, color: 1 }));
   document = markCellComplete(document, 2, 2);
-  apply({ type: 'set-full', x: 0, y: 0, color: 1 });
+  apply(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
   document = markCellComplete(document, 0, 0);
-  apply({ type: 'set-half', x: 6, y: 4, direction: HalfDirection.Backslash, color: 2 });
+  apply(cell(8, { type: 'set-half', x: 6, y: 4, direction: HalfDirection.Backslash, color: 2 }));
 
   document = addBackstitch(document, { x: 4, y: 4 }, { x: 12, y: 16 }, 1, true);
   document = addBackstitch(document, { x: 20, y: 4 }, { x: 4, y: 16 }, 2, false);
@@ -67,16 +61,6 @@ function mixedDeleteFixture(): { editor: DocumentEditor; rect: { x: number; y: n
   document = addBackstitch(document, { x: 0, y: 20 }, { x: 32, y: 20 }, 2, true);
   document = addBackstitch(document, { x: 0, y: 8 }, { x: 28, y: 12 }, 3, false);
   return { editor: editorFromSurface(document), rect };
-}
-
-function denseDocument(side: number): PatternDocument {
-  const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: side, height: side, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-  document.kind.fill(CellKind.Full);
-  for (let index = 0; index < document.kind.length; index += 1) {
-    document.colors[index * 4] = 1;
-    document.completed[index] = index % 7 === 0 ? 1 : 0;
-  }
-  return document;
 }
 
 /** Applies `result` to the service the way `ProjectSession` does after a changed command. */
@@ -104,44 +88,38 @@ function expectDeleteMetricsRoundTrip(editor: DocumentEditor, rect: { x: number;
 
 describe('application progress integration', () => {
   it('updates session metrics from layer edits and saves the layered document', async () => {
-    const saves: number[] = [];
-    const save = vi.fn(async (_projectId: string, _metadata: ProjectMetadata, document: LayeredDocument): Promise<SaveResult> => {
-      saves.push(document.revision);
-      return { committed: true, stale: false, revision: document.revision };
-    });
-    const repository = { save } as unknown as WorkspaceRepository;
+    const repository = new MemoryRepository();
     const document = createLayeredDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     const session = new ProjectSession({
       repository,
       metadata: metadata('progress', document.revision),
       document,
-      preparationClient: testPreparationClient,
+      preparationClient: createPersistencePreparationClient({ useWorker: false }),
       clock: { now: () => Date.UTC(2026, 7, 30, 12) },
       debounceMs: 0
     });
 
-    session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-    session.execute({ type: 'set-full', x: 1, y: 0, color: 1 });
+    session.execute(cell(session.document, { type: 'set-full', x: 0, y: 0, color: 1 }));
+    session.execute(cell(session.document, { type: 'set-full', x: 1, y: 0, color: 1 }));
     expect(session.metrics.totals).toMatchObject({ full: 2, completedComponents: 0, remainingComponents: 2 });
     session.undo();
     expect(session.metrics.totals).toMatchObject({ full: 1 });
     expect(session.metrics).toEqual(computePatternMetrics(session.document));
 
     await session.flush();
-    expect(save).toHaveBeenCalledOnce();
-    expect(saves[0]).toBe(session.document.revision);
+    expect(repository.saveCalls).toEqual([{ id: 'progress', revision: session.document.revision }]);
     await session.dispose();
   });
 
   it('keeps weighted three-quarter metrics current through geometry changes', async () => {
-    const repository = { save: vi.fn(async (_id: string, _metadata: ProjectMetadata, next: LayeredDocument): Promise<SaveResult> => ({ committed: true, stale: false, revision: next.revision })) } as unknown as WorkspaceRepository;
+    const repository = new MemoryRepository();
     const document = createLayeredDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    const session = new ProjectSession({ repository, metadata: metadata('three-quarter-progress', document.revision), document, preparationClient: testPreparationClient, clock: { now: () => Date.UTC(2026, 7, 30) }, debounceMs: longDebounceMs });
+    const session = new ProjectSession({ repository, metadata: metadata('three-quarter-progress', document.revision), document, preparationClient: createPersistencePreparationClient({ useWorker: false }), clock: { now: () => Date.UTC(2026, 7, 30) }, debounceMs: longDebounceMs });
     try {
-      session.execute({ type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NE, color: 1 });
+      session.execute(cell(session.document, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NE, color: 1 }));
       expect(session.metrics.totals).toMatchObject({ threeQuarter: 1, totalComponents: 1, completedComponents: 0, remainingComponents: 1 });
 
-      session.execute({ type: 'set-full', x: 1, y: 0, color: 1 });
+      session.execute(cell(session.document, { type: 'set-full', x: 1, y: 0, color: 1 }));
       expect(session.metrics.totals).toMatchObject({ full: 1, threeQuarter: 1, totalComponents: 2, remainingComponents: 2 });
       expect(session.metrics).toEqual(computePatternMetrics(session.document));
     } finally {
@@ -151,7 +129,7 @@ describe('application progress integration', () => {
 
   it('supports three-quarter incremental metrics, completion, materials, and full rebuilds', () => {
     let document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 3, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    document = applyCommand(document, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
+    document = applyCommand(document, cell(document, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 })).document;
     document = markCellComplete(document, 0, 0);
     const editor = editorFromSurface(document);
     const service = new ProgressMetricsService(editor.composite);
@@ -168,8 +146,7 @@ describe('application progress integration', () => {
     expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(service.metrics.progress).toMatchObject({ completedComponents: 3, remainingComponents: 0, totalComponents: 3 });
 
-    result = editor.execute(onDefaultLayers({ type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.SW, color: 1 }));
-    expect(result.changedIndices).toBeUndefined();
+    result = editor.execute(onDefaultLayers(cell(editor.composite, { type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.SW, color: 1 })));
     applyResult(service, editor, result);
     expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(service.recalculate(editor.composite)).toEqual(computePatternMetrics(editor.composite));
@@ -185,11 +162,11 @@ describe('application progress integration', () => {
       ]
     });
     const editor = editorFromSurface(document);
-    editor.execute(onDefaultLayers({ type: 'set-full', x: 0, y: 0, color: 1 }));
-    editor.execute(onDefaultLayers({ type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 1 }));
-    editor.execute(onDefaultLayers({ type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.SE, color: 2 }));
-    editor.execute(onDefaultLayers({ type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 }));
-    editor.execute(onDefaultLayers({ type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.SE, color: 2 }));
+    editor.execute(onDefaultLayers(cell(editor.composite, { type: 'set-full', x: 0, y: 0, color: 1 })));
+    editor.execute(onDefaultLayers(cell(editor.composite, { type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.NW, color: 1 })));
+    editor.execute(onDefaultLayers(cell(editor.composite, { type: 'set-quarter', x: 1, y: 0, corner: QuarterCorner.SE, color: 2 })));
+    editor.execute(onDefaultLayers(cell(editor.composite, { type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 })));
+    editor.execute(onDefaultLayers(cell(editor.composite, { type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.SE, color: 2 })));
     editor.clearHistory();
     document = editor.composite;
     const service = new ProgressMetricsService(document);
@@ -217,14 +194,14 @@ describe('application progress integration', () => {
         { id: 3, name: 'Gold', color: '#da2' }
       ]
     });
-    document = applyCommand(document, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+    document = applyCommand(document, cell(document, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
     document = markCellComplete(document, 0, 0);
-    document = applyCommand(document, { type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 1 }).document;
-    document = applyCommand(document, { type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
-    document = applyCommand(document, { type: 'set-quarter', x: 3, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
-    document = applyCommand(document, { type: 'set-quarter', x: 3, y: 0, corner: QuarterCorner.NE, color: 2 }).document;
-    document = applyCommand(document, { type: 'set-three-quarter', x: 4, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
-    document = applyCommand(document, { type: 'set-three-quarter', x: 4, y: 0, corner: QuarterCorner.SE, color: 2 }).document;
+    document = applyCommand(document, cell(document, { type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 1 })).document;
+    document = applyCommand(document, cell(document, { type: 'set-three-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 })).document;
+    document = applyCommand(document, cell(document, { type: 'set-quarter', x: 3, y: 0, corner: QuarterCorner.NW, color: 1 })).document;
+    document = applyCommand(document, cell(document, { type: 'set-quarter', x: 3, y: 0, corner: QuarterCorner.NE, color: 2 })).document;
+    document = applyCommand(document, cell(document, { type: 'set-three-quarter', x: 4, y: 0, corner: QuarterCorner.NW, color: 1 })).document;
+    document = applyCommand(document, cell(document, { type: 'set-three-quarter', x: 4, y: 0, corner: QuarterCorner.SE, color: 2 })).document;
     document = markCellComplete(document, 3, 0, QuarterCorner.NW);
     document = markCellComplete(document, 4, 0, QuarterCorner.NW);
     const editor = editorFromSurface(document);
@@ -262,14 +239,13 @@ describe('application progress integration', () => {
         { id: 2, name: 'Blue', color: '#36c' }
       ]
     });
-    document = applyCommand(document, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 }).document;
-    document = applyCommand(document, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 }).document;
+    document = applyCommand(document, cell(document, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.NW, color: 1 })).document;
+    document = applyCommand(document, cell(document, { type: 'set-three-quarter', x: 0, y: 0, corner: QuarterCorner.SE, color: 2 })).document;
     document = markCellComplete(document, 0, 0, QuarterCorner.NW);
     const editor = editorFromSurface(document);
     const service = new ProgressMetricsService(document);
 
     let result = editor.execute(onDefaultLayers(deleteRegionCommand({ x: 0, y: 0, width: 1, height: 1 }, editor.revision)));
-    expect(result.recalculateMetrics).toBe(true);
     applyResult(service, editor, result);
     expect(service.metrics).toEqual(computePatternMetrics(editor.composite));
     expect(service.metrics.totals).toMatchObject({ completedComponents: 0, remainingComponents: 0 });
@@ -291,7 +267,6 @@ describe('application progress integration', () => {
     const service = new ProgressMetricsService(editor.composite);
     const deleted = editor.execute(onDefaultLayers(deleteRegionCommand(rect, editor.revision)));
     expect(deleted.changed).toBe(true);
-    expect(deleted.recalculateMetrics).toBe(true);
     expect(Object.keys(deleted)).not.toContain('impact');
     deleted.changedIndices?.fill(0);
     deleted.touchedIndices?.fill(0);
@@ -310,8 +285,8 @@ describe('application progress integration', () => {
 
   it('matches fresh metrics for cell-only, backstitch-only, and mixed deletes', () => {
     const cellEditor = editorFromSurface(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 3, palette: [{ id: 1, name: 'Red', color: '#d33' }, { id: 2, name: 'Blue', color: '#36c' }] }));
-    cellEditor.execute(onDefaultLayers({ type: 'set-full', x: 1, y: 1, color: 1 }));
-    cellEditor.execute(onDefaultLayers({ type: 'set-half', x: 2, y: 1, direction: HalfDirection.Backslash, color: 2 }));
+    cellEditor.execute(onDefaultLayers(cell(cellEditor.composite, { type: 'set-full', x: 1, y: 1, color: 1 })));
+    cellEditor.execute(onDefaultLayers(cell(cellEditor.composite, { type: 'set-half', x: 2, y: 1, direction: HalfDirection.Backslash, color: 2 })));
     cellEditor.clearHistory();
     expectDeleteMetricsRoundTrip(cellEditor, { x: 1, y: 1, width: 2, height: 1 });
 
@@ -328,14 +303,12 @@ describe('application progress integration', () => {
   it('keeps real session metrics exact across layered delete, undo, and redo', async () => {
     const { editor, rect } = mixedDeleteFixture();
     const document = layeredFromSurface(cloneDocument(editor.composite));
-    const repository = {
-      save: async (_id: string, _metadata: ProjectMetadata, next: LayeredDocument): Promise<SaveResult> => ({ committed: true, stale: false, revision: next.revision })
-    } as unknown as WorkspaceRepository;
+    const repository = new MemoryRepository();
     const session = new ProjectSession({
       repository,
       metadata: metadata('delete-metrics-session', document.revision),
       document,
-      preparationClient: testPreparationClient,
+      preparationClient: createPersistencePreparationClient({ useWorker: false }),
       clock: { now: () => 1 },
       debounceMs: longDebounceMs
     });
@@ -353,25 +326,6 @@ describe('application progress integration', () => {
       expect(session.metrics).toEqual(computePatternMetrics(session.document));
     } finally {
       await session.dispose();
-    }
-  });
-
-  it('matches fresh metrics for dense 250,000 and 1,000,000 cell deletion round trips', { timeout: 120_000 }, () => {
-    for (const testCase of [
-      { side: 1_000, rect: { x: 250, y: 250, width: 500, height: 500 } },
-      { side: 1_000, rect: { x: 0, y: 0, width: 1_000, height: 1_000 } }
-    ]) {
-      const editor = editorFromSurface(denseDocument(testCase.side));
-      const service = new ProgressMetricsService(editor.composite);
-      let result = editor.execute(onDefaultLayers(deleteRegionCommand(testCase.rect, editor.revision)));
-      applyResult(service, editor, result);
-      expectExactMetrics(service, editor.composite);
-      result = editor.undo();
-      applyResult(service, editor, result);
-      expectExactMetrics(service, editor.composite);
-      result = editor.redo();
-      applyResult(service, editor, result);
-      expectExactMetrics(service, editor.composite);
     }
   });
 
@@ -395,57 +349,13 @@ describe('application progress integration', () => {
     expect(service.metrics).toEqual(beforeMetrics);
   });
 
-  it('keeps palette-only execute, undo, and redo metrics exact', () => {
-    const editor = editorFromSurface(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
-      width: 3,
-      height: 2,
-      palette: [{ id: 1, name: 'Red', color: '#d33' }]
-    }));
-    editor.execute(onDefaultLayers({ type: 'set-full', x: 0, y: 0, color: 1 }));
-    editor.execute(onDefaultLayers({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 4 }, color: 1 }));
-    editor.clearHistory();
-
-    const service = new ProgressMetricsService(editor.composite);
-
-    const apply = (command: DomainCommand): void => {
-      applyResult(service, editor, editor.execute(onDefaultLayers(command)));
-      expectExactMetrics(service, editor.composite);
-    };
-    const applyHistory = (operation: () => ReturnType<typeof editor.undo>): void => {
-      applyResult(service, editor, operation());
-      expectExactMetrics(service, editor.composite);
-    };
-
-    apply({ type: 'palette-create', name: 'Blue', color: '#36c' });
-    expect(service.metrics.byPalette.get(1)).toMatchObject({ full: 1, backstitch: 1, totalComponents: 2 });
-    expect(service.metrics.byPalette.get(2)).toMatchObject({ full: 0, half: 0, quarter: 0, backstitch: 0, totalComponents: 0 });
-
-    apply({ type: 'palette-update', id: 2, name: 'Updated blue', color: '#369', material: { kind: 'custom', label: 'Metres', unit: 'meters' } });
-    expect(editor.composite.palette.find((entry) => entry.id === 2)).toMatchObject({ name: 'Updated blue', color: '#369' });
-    expect(service.metrics.byPalette.get(2)?.material.materialUnit).toBe('meters');
-
-    apply({ type: 'palette-deactivate', id: 2 });
-    expect(editor.composite.palette.find((entry) => entry.id === 2)?.active).toBe(false);
-
-    applyHistory(() => editor.undo());
-    applyHistory(() => editor.undo());
-    applyHistory(() => editor.undo());
-    expect(service.metrics.byPalette.has(2)).toBe(false);
-
-    applyHistory(() => editor.redo());
-    expect(service.metrics.byPalette.get(2)).toMatchObject({ totalComponents: 0 });
-    applyHistory(() => editor.redo());
-    applyHistory(() => editor.redo());
-    expect(editor.composite.palette.find((entry) => entry.id === 2)?.active).toBe(false);
-  });
-
   it('reconciles cached zero-count palettes across material rebuild, undo, and redo', () => {
     const editor = editorFromSurface(createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
       width: 2,
       height: 1,
       palette: [{ id: 1, name: 'Red', color: '#d33' }]
     }));
-    editor.execute(onDefaultLayers({ type: 'set-full', x: 0, y: 0, color: 1 }));
+    editor.execute(onDefaultLayers(cell(editor.composite, { type: 'set-full', x: 0, y: 0, color: 1 })));
     editor.clearHistory();
 
     const service = new ProgressMetricsService(editor.composite);

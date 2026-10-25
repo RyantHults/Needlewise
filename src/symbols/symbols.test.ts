@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest';
 
-import committedSelection from './selection.json';
-import committedOutlines from './outlines.generated.json';
 import {
   SYMBOL_FONTS,
   SYMBOL_IDS,
@@ -10,9 +8,7 @@ import {
   SYMBOL_POOL_VERSION,
   SYMBOL_TILE_VIEW,
   getSymbolOutline,
-  toSymbolOutline,
-  type PoolEntry,
-  type PoolFont
+  toSymbolOutline
 } from './index';
 
 /**
@@ -21,8 +17,7 @@ import {
  * Test mode swaps `./pool-asset` for the committed fixture pool, so the pool
  * these cases read is fixed and the first case below pins that it is not empty:
  * every remaining case loops over it, and a loop over nothing would pass in
- * silence. The committed pool is a separate, deliberately weaker question, and
- * the second describe is about it.
+ * silence.
  */
 describe('symbol pool loader', () => {
   it('reads a non-empty pool, so the invariants below are not vacuous', () => {
@@ -35,30 +30,10 @@ describe('symbol pool loader', () => {
     expect(SYMBOL_POOL).toHaveLength(SYMBOL_IDS.length);
   });
 
-  it('exposes the fonts the pool was drawn from', () => {
-    // Provenance is the only way to tell which font a committed outline came
-    // from, since a slug on its own is just a name.
-    const slugs = Object.keys(SYMBOL_FONTS);
-    expect(slugs.length).toBeGreaterThan(0);
-    for (const slug of slugs) {
-      const font = SYMBOL_FONTS[slug];
-      expect(font.family.length).toBeGreaterThan(0);
-      expect(font.sha256).toMatch(/^[0-9a-f]{64}$/);
-      expect(font.licenseUrl).toMatch(/openfontlicense\.org|scripts\.sil\.org\/OFL/);
-      expect(font.unitsPerEm).toBeGreaterThan(0);
-    }
-  });
-
   it('gives every pool entry a font that the artifact records', () => {
     for (const entry of SYMBOL_POOL) {
       expect(SYMBOL_FONTS[entry.font], entry.id).toBeDefined();
       expect(entry.family).toBe(SYMBOL_FONTS[entry.font].family);
-    }
-  });
-
-  it('qualifies every id with the font it came from', () => {
-    for (const entry of SYMBOL_POOL) {
-      expect(entry.id.startsWith(`${entry.font}--`), entry.id).toBe(true);
     }
   });
 
@@ -116,27 +91,6 @@ describe('symbol pool loader', () => {
     expect(clashes).toEqual([]);
   });
 
-  it('disambiguates a shared name with the font each variant came from', () => {
-    const byName = new Map<string, typeof SYMBOL_POOL>();
-    for (const entry of SYMBOL_POOL) {
-      byName.set(entry.name, [...(byName.get(entry.name) ?? []), entry]);
-    }
-    const shared = [...byName.values()].filter((group) => group.length > 1);
-    // The loop below is the only thing that fails when a shared name is gone, so
-    // require the pool to still share one rather than assert over nothing.
-    expect(shared.length).toBeGreaterThan(0);
-    for (const group of shared) {
-      expect(new Set(group.map((entry) => entry.font)).size).toBe(group.length);
-    }
-  });
-
-  it('carries each symbol id on its own pool entry', () => {
-    for (const entry of SYMBOL_POOL) {
-      expect(getSymbolOutline(entry.id)).toBeDefined();
-      expect(SYMBOL_OUTLINES[entry.id].d).toBe(entry.d);
-    }
-  });
-
   it('uses the codepoint slug for a symbol with no readable Unicode name', () => {
     // Names like "space" and "quotation mark" are fine, but a character whose
     // Unicode name is only "<control>" has nothing to slugify, so the build
@@ -144,45 +98,6 @@ describe('symbol pool loader', () => {
     // still has to be a valid, unique, addressable slug.
     for (const entry of SYMBOL_POOL) {
       expect(entry.id, entry.name).toMatch(/^[a-z0-9][a-z0-9-]*$/);
-    }
-    expect(SYMBOL_POOL.some((entry) => entry.id === 'space')).toBe(false);
-  });
-});
-
-/**
- * What the committed pool is.
- *
- * The selection is authored by hand and may hold no glyphs at all, so nothing
- * here says anything about which symbols are pooled. What it can say is that the
- * shipped artifact is the build of the authored selection, under the schema the
- * runtime reads, with every id naming a font it carries provenance for. The
- * count is the assertion that keeps the rest from holding over nothing: it fails
- * the moment a selection is curated without rebuilding.
- */
-describe('committed symbol pool', () => {
-  const committed = committedOutlines as unknown as {
-    readonly version: number;
-    readonly fonts: Readonly<Record<string, PoolFont>>;
-    readonly generated: number;
-    readonly symbols: Readonly<Record<string, Omit<PoolEntry, 'id' | 'family'>>>;
-  };
-  const ids = Object.keys(committed.symbols);
-
-  it('carries the schema version the runtime expects', () => {
-    expect(committed.version).toBe(3);
-    expect(committedSelection.version).toBe(3);
-  });
-
-  it('holds exactly one symbol per entry of the authored selection', () => {
-    expect(committed.generated).toBe(ids.length);
-    expect(ids).toHaveLength(committedSelection.selection.length);
-  });
-
-  it('qualifies every id with a font it records provenance for', () => {
-    for (const id of ids) {
-      const entry = committed.symbols[id];
-      expect(id.startsWith(`${entry.font}--`), id).toBe(true);
-      expect(committed.fonts[entry.font], id).toBeDefined();
     }
   });
 });

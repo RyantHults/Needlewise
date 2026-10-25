@@ -25,7 +25,6 @@ export const MAX_FILL_TAG_LENGTH = 256;
 export interface FillRequestInput {
   readonly projectId: string;
   readonly baseRevision: number;
-  readonly requestId?: string;
   readonly width: number;
   readonly height: number;
   readonly startIndex: number;
@@ -376,8 +375,7 @@ export function validateFillResult(value: unknown): value is FillResultMessage {
   }
 }
 
-export function createFillRequest(input: FillRequestInput): FillRequestMessage {
-  const requestId = input.requestId ?? createFillRequestId();
+export function createFillRequest(input: FillRequestInput, requestId = createFillRequestId()): FillRequestMessage {
   const request: FillRequestMessage = {
     protocol: FILL_PROTOCOL,
     type: FILL_REQUEST_TYPE,
@@ -718,7 +716,7 @@ export class FillWorkerClient {
 
   submit(input: FillRequestInput, options: { readonly signal?: AbortSignal } = {}): FillJob {
     if (this.disposed) throw new Error('The fill worker client has been disposed.');
-    const request = createFillRequest({ ...input, requestId: input.requestId ?? this.requestIdFactory() });
+    const request = createFillRequest(input, this.requestIdFactory());
     const requestKey = fillRequestIdentityKey(request);
     if (this.pending.has(requestKey)) throw new FillProtocolError(`Fill request ID ${request.requestId} is already pending.`);
     let resolvePromise!: (result: FillResultMessage) => void;

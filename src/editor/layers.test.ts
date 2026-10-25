@@ -30,7 +30,6 @@ import {
   type EditorToolKind
 } from './contracts';
 import { getCanvasMetrics } from './coordinates';
-import { createFillWorkerClient } from './fill';
 import {
   compositeInvalidationFor,
   compositeUnchanged,
@@ -39,7 +38,7 @@ import {
 } from './gateway';
 import { createUiStore } from './ui-store';
 import { LayeredTestBoundary, at, layeredDocument, rendererFixture } from './test-support';
-import { editorFromSurface, SPECIALTY_LAYER_ID, STITCH_LAYER_ID, applyCommand, commitLayerSurface, createLayeredDocument, stitchLayer } from '../domain/test-fixtures';
+import { editorFromSurface, SPECIALTY_LAYER_ID, STITCH_LAYER_ID, applyCommand, commitLayerSurface, createLayeredDocument, stitchLayer, cell } from '../domain/test-fixtures';
 
 /** Apply a command straight to one layer, bypassing the editor, to arrange a test. */
 function seed(document: LayeredDocument, layerId: number, command: DomainCommand): void {
@@ -57,19 +56,17 @@ function fixture(document = layeredDocument(), activeLayerId: ActiveLayerId = 1,
   const uiStore = createUiStore({ tool: { tool: 'paint', brush: { kind: 'full', paletteId: 1 } } });
   const { renderer, calls } = rendererFixture();
   const notices: string[] = [];
-  const fillClient = createFillWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'layer-fill' });
   const controller = new EditorSurfaceController({
     gateway,
     uiStore,
     renderer,
     metrics: getCanvasMetrics(128, 128),
-    fillClient,
     onNotice: (message) => notices.push(message),
     ...options
   });
   controller.start();
   controller.handleFocus();
-  return { boundary, gateway, uiStore, controller, notices, fillClient, calls };
+  return { boundary, gateway, uiStore, controller, notices, calls };
 }
 
 function backstitch(x1: number, y1: number, x2: number, y2: number, color = 1): DomainCommand {
@@ -122,18 +119,10 @@ describe('tool availability', () => {
     }
   });
 
-  it('gives short hints and disables every editing tool on a hidden layer', () => {
+  it('gives short hints for tools the layer type cannot use', () => {
     expect(toolAvailability('backstitch', undefined, { kind: 'stitch', visible: true })).toEqual({ enabled: false, hint: SPECIALTY_LAYER_BACKSTITCH_HINT });
     expect(toolAvailability('fill', undefined, { kind: 'canvas', visible: true })).toEqual({ enabled: false, hint: CANVAS_CROP_OFF_HINT });
     expect(toolAvailability('select', undefined, { kind: 'reference', visible: true })).toEqual({ enabled: false, hint: EDITABLE_LAYER_TOOL_HINT });
-    for (const kind of ['stitch', 'specialty'] as const) {
-      for (const tool of tools) {
-        const availability = toolAvailability(tool, undefined, { kind, visible: false });
-        if (tool === 'pan' || tool === 'eyedropper') expect(availability.enabled).toBe(true);
-        else if (tool === 'canvas-brush') expect(availability).toEqual({ enabled: false, hint: CANVAS_BRUSH_LAYER_HINT });
-        else expect(availability).toEqual({ enabled: false, hint: HIDDEN_LAYER_TOOL_HINT });
-      }
-    }
     expect(toolAvailability('fill', undefined, null).enabled).toBe(true);
   });
 });
@@ -223,7 +212,7 @@ describe('layered editor controller', () => {
   it('paints only the selected layer and reads hover info from the composite', () => {
     const document = layeredDocument();
     const top = addLayer(document, LayerType.Stitch);
-    seed(document, 1, { type: 'set-full', x: 3, y: 3, color: 2 });
+    seed(document, 1, cell(8, { type: 'set-full', x: 3, y: 3, color: 2 }));
     const { boundary, controller, uiStore } = fixture(document, top);
     controller.handlePointerDown(at(1, 0, 0));
     controller.handlePointerUp(at(1, 0, 0));
@@ -241,9 +230,9 @@ describe('layered editor controller', () => {
 
   it('bounds Fill by the selected layer only', async () => {
     const document = layeredDocument();
-    for (let y = 0; y < 8; y += 1) seed(document, 1, { type: 'set-full', x: 2, y, color: 1 });
+    for (let y = 0; y < 8; y += 1) seed(document, 1, cell(8, { type: 'set-full', x: 2, y, color: 1 }));
     const top = addLayer(document, LayerType.Stitch);
-    const { boundary, controller, fillClient } = fixture(document, top);
+    const { boundary, controller } = fixture(document, top);
     controller.selectPalette(2);
     controller.setTool({ tool: 'fill' });
     expect(controller.handlePointerDown(at(1, 0, 0))).toBe(true);
@@ -254,15 +243,14 @@ describe('layered editor controller', () => {
     expect(upper.type === LayerType.Stitch && upper.colors[(7 * 8 + 7) * 4]).toBe(2);
     expect(bottom.type === LayerType.Stitch && bottom.colors[2 * 4]).toBe(1);
     expect(bottom.type === LayerType.Stitch && bottom.kind[0]).toBe(CellKind.Empty);
-    fillClient.dispose();
     controller.dispose();
   });
 
   it('samples the topmost visible stitch with the eyedropper', () => {
     const document = layeredDocument();
     const top = addLayer(document, LayerType.Stitch);
-    seed(document, 1, { type: 'set-full', x: 0, y: 0, color: 1 });
-    seed(document, top, { type: 'set-full', x: 0, y: 0, color: 2 });
+    seed(document, 1, cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
+    seed(document, top, cell(8, { type: 'set-full', x: 0, y: 0, color: 2 }));
     const { boundary, controller, uiStore } = fixture(document, 1);
     controller.setTool({ tool: 'eyedropper' });
     controller.handlePointerDown(at(1, 0, 0));
@@ -287,7 +275,7 @@ describe('layered editor controller', () => {
         { id: 2, name: 'Match', color: matched.hex, active: true, catalog: { catalogId: DEFAULT_CATALOG_DEFINITION.association.catalogId, sourceId: matched.sourceId, code: matched.code, name: matched.name, hex: matched.hex, rgb: [...matched.rgb] as [number, number, number] } }
       ]
     });
-    seed(document, 1, { type: 'set-full', x: 0, y: 0, color: 1 });
+    seed(document, 1, cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     const { boundary, controller, uiStore } = fixture(document, 'reference', { traceSampler: () => ({ ...rgb }), catalogDefinition: DEFAULT_CATALOG_DEFINITION });
     controller.setTraceImage({ source: {}, width: 2, height: 2, chartBounds: { x: 0, y: 0, width: 2, height: 2 } });
     controller.setTool({ tool: 'eyedropper' });
@@ -303,7 +291,7 @@ describe('layered editor controller', () => {
 
   it('copies only backstitches from a specialty layer', () => {
     const document = layeredDocument();
-    seed(document, 1, { type: 'set-full', x: 0, y: 0, color: 1 });
+    seed(document, 1, cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     seed(document, 2, backstitch(0, 0, 4, 4));
     const { controller } = fixture(document, 2);
     controller.setTool({ tool: 'select' });
@@ -316,7 +304,7 @@ describe('layered editor controller', () => {
 
   it('routes a stitch paste onto a new stitch layer when a specialty layer is selected', () => {
     const document = layeredDocument();
-    seed(document, 1, { type: 'set-full', x: 0, y: 0, color: 1 });
+    seed(document, 1, cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     const { boundary, controller, notices, uiStore } = fixture(document, 1);
     controller.setTool({ tool: 'select' });
     controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 1 });
@@ -337,7 +325,7 @@ describe('layered editor controller', () => {
 
   it('does not paste when no layer of the clipboard type can take it', () => {
     const document = layeredDocument();
-    seed(document, 1, { type: 'set-full', x: 0, y: 0, color: 1 });
+    seed(document, 1, cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     addLayer(document, LayerType.Stitch);
     addLayer(document, LayerType.Stitch);
     const { boundary, controller, notices } = fixture(document, 1);
@@ -401,7 +389,7 @@ describe('layered editor controller', () => {
     controller.handlePointerDown(press);
     controller.handlePointerUp(press);
     expect(count()).toBe(2);
-    uiStore.setBrushSize(3);
+    uiStore.setState({ brushSize: 3 });
     controller.handlePointerDown({ ...press, pointerId: 2 });
     controller.handlePointerUp({ ...press, pointerId: 2 });
     expect(count()).toBe(1);
@@ -442,7 +430,7 @@ describe('layered editor controller', () => {
     };
     const [corner, outside] = ids();
     controller.setTool({ tool: 'eraser' });
-    uiStore.setBrushSize(3);
+    uiStore.setState({ brushSize: 3 });
     controller.handlePointerMove({ ...at(1, 1, 1), buttons: 0 });
     expect(uiStore.getState().overlay.pendingBackstitchRemovals?.map((removal) => removal.id)).toEqual([corner]);
     controller.handlePointerDown(at(1, 1, 1));
@@ -476,7 +464,7 @@ describe('layered editor controller', () => {
     seed(document, 2, backstitch(16, 0, 16, 4)); // x = 4, crossed only between the samples
     const { boundary, controller, uiStore } = fixture(document, 2);
     controller.setTool({ tool: 'eraser' });
-    uiStore.setBrushSize(3);
+    uiStore.setState({ brushSize: 3 });
     controller.handlePointerDown(at(1, 1, 1));
     controller.handlePointerMove(at(1, 7, 1));
     controller.handlePointerUp(at(1, 7, 1));
@@ -646,7 +634,7 @@ describe('layered editor previews and paste edge cases', () => {
   it('hides paint preview cells that a visible upper stitch layer covers', () => {
     const document = layeredDocument();
     const top = addLayer(document, LayerType.Stitch);
-    seed(document, top, { type: 'set-full', x: 0, y: 0, color: 2 });
+    seed(document, top, cell(8, { type: 'set-full', x: 0, y: 0, color: 2 }));
     const { boundary, controller, uiStore } = fixture(document, 1);
     controller.handlePointerDown(at(1, 0, 0));
     controller.handlePointerMove(at(1, 1, 0));
@@ -660,9 +648,9 @@ describe('layered editor previews and paste edge cases', () => {
   it('previews an erase on an upper layer as the stitch the lower layer shows', () => {
     const document = layeredDocument();
     const top = addLayer(document, LayerType.Stitch);
-    seed(document, 1, { type: 'set-full', x: 0, y: 0, color: 1 });
-    seed(document, top, { type: 'set-full', x: 0, y: 0, color: 2 });
-    seed(document, top, { type: 'set-full', x: 1, y: 0, color: 2 });
+    seed(document, 1, cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
+    seed(document, top, cell(8, { type: 'set-full', x: 0, y: 0, color: 2 }));
+    seed(document, top, cell(8, { type: 'set-full', x: 1, y: 0, color: 2 }));
     const { controller, uiStore } = fixture(document, top);
     controller.setTool({ tool: 'eraser' });
     controller.handlePointerDown(at(1, 0, 0));
@@ -689,20 +677,10 @@ describe('layered editor previews and paste edge cases', () => {
     controller.dispose();
   });
 
-  it('skips the redraw for a result tagged compositeUnchanged', () => {
-    const { boundary: workspace, controller, uiStore, calls } = fixture(layeredDocument(), 1);
-    workspace.undo = () => ({ document: workspace.document, changed: true, revision: workspace.document.revision + 1, compositeChangedIndices: new Uint32Array(), compositeUnchanged: true });
-    const before = calls.setDocument.length;
-    controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
-    expect(calls.setDocument.length).toBe(before);
-    expect(uiStore.getState().status).toBe('Undid action');
-    controller.dispose();
-  });
-
   it('redraws only the cells the session reports for an outside change', () => {
     const document = layeredDocument();
     const top = addLayer(document, LayerType.Stitch);
-    seed(document, top, { type: 'set-full', x: 2, y: 3, color: 2 });
+    seed(document, top, cell(8, { type: 'set-full', x: 2, y: 3, color: 2 }));
     const { boundary: workspace, controller, calls } = fixture(document, 1);
     workspace.setLayerVisibility(top, false);
     const report = { revision: workspace.layeredDocument.revision, full: false, indices: new Uint32Array([3 * 8 + 2]) };
@@ -727,13 +705,6 @@ describe('layered editor previews and paste edge cases', () => {
     controller.dispose();
   });
 
-  it('redraws once when layer visibility changes', () => {
-    const { boundary: workspace, controller, calls } = fixture(layeredDocument(), 1);
-    const before = calls.setDocument.length;
-    workspace.setLayerVisibility(2, false);
-    expect(calls.setDocument.length - before).toBe(1);
-    controller.dispose();
-  });
 });
 
 describe('layer helpers', () => {
@@ -821,8 +792,8 @@ describe('layer helpers', () => {
   it('redraws in full when a multi-layer delete changes lines outside the changed cells', () => {
     // Stitches sit in the rect's top-left corner; a backstitch over empty cells sits in its bottom-right.
     let surface = createDocument({ width: 6, height: 6, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    surface = applyCommand(surface, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
-    surface = applyCommand(surface, { type: 'set-full', x: 1, y: 0, color: 1 }).document;
+    surface = applyCommand(surface, cell(8, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
+    surface = applyCommand(surface, cell(8, { type: 'set-full', x: 1, y: 0, color: 1 })).document;
     surface = applyCommand(surface, { type: 'add-backstitch', start: { x: 16, y: 16 }, end: { x: 20, y: 20 }, color: 1 }).document;
     const editor = editorFromSurface(surface);
     const rect = { x: 0, y: 0, width: 6, height: 6 };

@@ -382,52 +382,17 @@ export interface InstalledCatalogRegistry {
   resolve(association: CatalogAssociation): CatalogDefinition | undefined;
 }
 
-export function createInstalledCatalogRegistry(definitions: readonly CatalogDefinition[]): InstalledCatalogRegistry {
-  const installedDefinitions = Object.freeze(definitions.map((definition) => {
-    const association: CatalogAssociation = Object.freeze({
-      catalogId: definition.association.catalogId,
-      brandLabel: definition.association.brandLabel,
-      colorCount: definition.association.colorCount
-    });
-    const records: readonly CatalogRecord[] = Object.freeze(definition.records.map((record) => Object.freeze({
-      sourceId: record.sourceId,
-      code: record.code,
-      name: record.name,
-      hex: record.hex,
-      rgb: Object.freeze([record.rgb[0], record.rgb[1], record.rgb[2]]) as readonly [number, number, number]
-    })));
-    const snapshot: CatalogSnapshot = Object.freeze({ association, records });
-    const recordsByHex = new Map<string, CatalogRecord>(records.map((record) => [record.hex.toUpperCase(), record]));
+const installedDefinitions: readonly CatalogDefinition[] = Object.freeze([DMC_CATALOG_DEFINITION]);
 
-    return Object.freeze({
-      association,
-      records,
-      compatibilityLabel: definition.compatibilityLabel,
-      snapshot,
-      search: (query: string, options: { readonly limit?: number } = {}) => searchCatalogRecords(records, query, options.limit),
-      getByHex: (hex: string) => getCatalogRecordByHex(recordsByHex, hex),
-      nearest: (rgb: { readonly r: number; readonly g: number; readonly b: number }) => nearestCatalogRecord(records, rgb)
-    });
-  }));
-  const definitionsById = new Map<string, CatalogDefinition>();
-  for (const definition of installedDefinitions) {
-    const catalogId = definition.association.catalogId;
-    if (definitionsById.has(catalogId)) throw new Error(`Installed catalog registry contains duplicate catalog ID "${catalogId}".`);
-    definitionsById.set(catalogId, definition);
-  }
-
-  return Object.freeze({
-    definitions: installedDefinitions,
-    resolve: (association: CatalogAssociation) => {
-      const definition = definitionsById.get(association.catalogId);
-      if (definition === undefined || definition.association.brandLabel !== association.brandLabel || definition.association.colorCount !== association.colorCount) return undefined;
-      return definition;
-    }
-  });
-}
-
-/** Production's installed catalogs. Additional definitions are injected into a workspace, never globally registered. */
-export const INSTALLED_CATALOG_REGISTRY = createInstalledCatalogRegistry([DMC_CATALOG_DEFINITION]);
+/** Production's installed catalogs. */
+export const INSTALLED_CATALOG_REGISTRY: InstalledCatalogRegistry = Object.freeze({
+  definitions: installedDefinitions,
+  resolve: (association: CatalogAssociation) => installedDefinitions.find((definition) => (
+    definition.association.catalogId === association.catalogId
+    && definition.association.brandLabel === association.brandLabel
+    && definition.association.colorCount === association.colorCount
+  ))
+});
 
 export function createCatalogReference(
   definition: Pick<CatalogDefinition, 'association'>,

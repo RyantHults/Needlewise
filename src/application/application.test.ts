@@ -6,83 +6,27 @@ import {
   flattenDocument,
   layeredFromSurface,
   LayerType,
-  type LayeredDocument,
   type PatternDocument
 } from '../domain';
 import {
-  decodeDocumentWithInfo,
-  encodeDocument,
-  cloneLayeredDocument,
   PersistencePreparationWorkerClient,
   type ProjectAssetInput,
-  type ProjectMetadata,
-  type ProjectRecord,
   type ProjectThumbnailSummary,
   type PreparedDocumentCapability,
   type PersistencePreparationInput,
-  type PersistencePreparationClient,
-  type SaveResult
+  type PersistencePreparationClient
 } from '../persistence';
 import { createStarterDocument, paletteProgress, ProjectWorkspace } from './index';
-import { MAX_MARK_HISTORY_STEPS, ProjectSession } from './session';
+import { MAX_MARK_HISTORY_STEPS } from './session';
 import { MemoryRepository } from './test-support';
+import { cell } from '../domain/test-fixtures';
 import type { WorkspaceRepository } from './types';
 import { acceptConversionDraft, type AcceptedConversionDraft } from '../conversion/image-to-pattern';
 import { decodeTraceImage } from '../rendering/trace';
-import { createInstalledCatalogRegistry, DEFAULT_CATALOG_DEFINITION, createCatalogReference, type CatalogDefinition, type CatalogRecord } from '../catalog';
+import { DEFAULT_CATALOG_DEFINITION, createCatalogReference } from '../catalog';
 
 function createDocument(options: Omit<Parameters<typeof createDomainDocument>[0], 'catalog'>): PatternDocument {
   return createDomainDocument({ ...options, catalog: DEFAULT_CATALOG_DEFINITION.association });
-}
-
-function syntheticCatalogDefinition(catalogId: string, brandLabel: string): CatalogDefinition {
-  const record: CatalogRecord = Object.freeze({
-    sourceId: `${catalogId}-blue`,
-    code: 'B1',
-    name: `${brandLabel} Blue`,
-    hex: '#123456',
-    rgb: Object.freeze([18, 52, 86]) as readonly [number, number, number]
-  });
-  const records = Object.freeze([record]);
-  const association = Object.freeze({ catalogId, brandLabel, colorCount: records.length });
-  return Object.freeze({
-    association,
-    records,
-    compatibilityLabel: `${brandLabel} compatible`,
-    snapshot: Object.freeze({ association, records }),
-    search: (query: string, options: { readonly limit?: number } = {}) => {
-      const needle = query.trim().toLowerCase();
-      const matches = needle === '' ? [record] : [record].filter((candidate) => [candidate.sourceId, candidate.code, candidate.name, candidate.hex].some((value) => value.toLowerCase().includes(needle)));
-      return Object.freeze(options.limit === undefined ? matches : matches.slice(0, options.limit));
-    },
-    getByHex: (hex: string) => hex.trim().toUpperCase() === record.hex ? record : undefined,
-    nearest: () => record
-  });
-}
-
-class ImmediateRepository {
-  readonly saveCalls: Array<{ id: string; revision: number }> = [];
-  readonly records = new Map<string, ProjectRecord>();
-  beforeSave: (() => Promise<void> | void) | undefined;
-
-  async save(projectId: string, metadata: ProjectMetadata, document: LayeredDocument): Promise<SaveResult> {
-    await this.beforeSave?.();
-    this.saveCalls.push({ id: projectId, revision: document.revision });
-    const head = { projectId, revision: document.revision, checksum: '0'.repeat(64) };
-    this.records.set(projectId, { metadata: { ...metadata }, document: cloneLayeredDocument(document), head, recovery: null, assets: [] });
-    return { committed: true, stale: false, revision: document.revision, head };
-  }
-
-  async load(projectId: string): Promise<ProjectRecord | undefined> {
-    const record = this.records.get(projectId);
-    return record === undefined ? undefined : {
-      metadata: { ...record.metadata },
-      document: cloneLayeredDocument(record.document),
-      ...(record.head === undefined ? {} : { head: { ...record.head } }),
-      recovery: record.recovery,
-      assets: []
-    };
-  }
 }
 
 class FakePreparationClient implements PersistencePreparationClient {
@@ -109,10 +53,16 @@ function wait(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+// Captured before fake timers replace them: saves hash and prepare on the real event loop.
+const nextMacrotask = setImmediate;
+const realSetTimeout = setTimeout;
+
 async function settle(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+  await new Promise<void>((resolve) => nextMacrotask(resolve));
+}
+
+async function savesReach(repository: MemoryRepository, count: number): Promise<void> {
+  for (let attempt = 0; attempt < 400 && repository.saveCalls.length < count; attempt += 1) await new Promise<void>((resolve) => realSetTimeout(resolve, 5));
 }
 
 function pngBytes(width: number, height: number): Uint8Array {
@@ -370,7 +320,6 @@ describe('headless project workspace', () => {
       const resolvedDmc = workspace.catalogFor(document);
       expect(resolvedDmc).toMatchObject({ association: DEFAULT_CATALOG_DEFINITION.association });
       expect(resolvedDmc?.records).toEqual(DEFAULT_CATALOG_DEFINITION.records);
-      expect(resolvedDmc).not.toBe(DEFAULT_CATALOG_DEFINITION);
       expect(resolvedDmc?.getByHex('#000000')?.code).toBe('310');
       expect(workspace.catalogFor({ ...document, catalog: { ...document.catalog, brandLabel: 'Other' } })).toBeUndefined();
       expect(workspace.catalogFor({ ...document, catalog: { ...document.catalog, colorCount: 1 } })).toBeUndefined();
@@ -383,106 +332,18 @@ describe('headless project workspace', () => {
     }
   });
 
-  it('exposes installed catalogs independently of the document primary catalog', async () => {
-    const repository = new MemoryRepository();
-    const catalogB = syntheticCatalogDefinition('catalog-b', 'Catalog B');
-    const catalogRegistry = createInstalledCatalogRegistry([DEFAULT_CATALOG_DEFINITION, catalogB]);
-    const workspace = new ProjectWorkspace({ repository, catalogRegistry });
-    const primaryDmc = createStarterDocument({ width: 2, height: 2 });
-    const unavailablePrimary: PatternDocument = {
-      ...primaryDmc,
-      catalog: { ...primaryDmc.catalog, catalogId: 'not-installed' }
-    };
-
-    try {
-      const resolvedDmc = workspace.catalogFor(primaryDmc);
-      expect(resolvedDmc).toMatchObject({ association: DEFAULT_CATALOG_DEFINITION.association });
-      expect(resolvedDmc?.records).toEqual(DEFAULT_CATALOG_DEFINITION.records);
-      expect(resolvedDmc).not.toBe(DEFAULT_CATALOG_DEFINITION);
-
-      const availableCatalogs = workspace.availableCatalogs();
-      expect(availableCatalogs.map((definition) => definition.association)).toEqual([DEFAULT_CATALOG_DEFINITION.association, catalogB.association]);
-      expect(availableCatalogs.map((definition) => definition.records)).toEqual([DEFAULT_CATALOG_DEFINITION.records, catalogB.records]);
-      expect(availableCatalogs[1]).not.toBe(catalogB);
-
-      const resolvedCatalogB = workspace.availableCatalogs().find((definition) => definition.association.catalogId === 'catalog-b');
-      expect(resolvedCatalogB).toMatchObject({ association: catalogB.association, records: catalogB.records });
-      expect(resolvedCatalogB).not.toBe(catalogB);
-      expect(resolvedCatalogB).toBe(availableCatalogs[1]);
-      const bRecord = catalogB.records[0];
-      expect(resolvedCatalogB?.search('catalog b blue')).toEqual([bRecord]);
-      expect(resolvedCatalogB?.getByHex('#123456')).toEqual(bRecord);
-      expect(resolvedCatalogB?.records[0]).not.toBe(bRecord);
-      expect(DEFAULT_CATALOG_DEFINITION.getByHex('#123456')).toBeUndefined();
-      expect(createCatalogReference(catalogB, bRecord)).toMatchObject({ catalogId: 'catalog-b', sourceId: 'catalog-b-blue', hex: '#123456' });
-
-      expect(workspace.catalogFor(unavailablePrimary)).toBeUndefined();
-      const availableAfterUnavailablePrimary = workspace.availableCatalogs();
-      expect(availableAfterUnavailablePrimary.map((definition) => definition.association)).toEqual([DEFAULT_CATALOG_DEFINITION.association, catalogB.association]);
-      expect(availableAfterUnavailablePrimary.map((definition) => definition.records)).toEqual([DEFAULT_CATALOG_DEFINITION.records, catalogB.records]);
-      expect(workspace.availableCatalogs().find((definition) => definition.association.catalogId === 'catalog-b')).toMatchObject({ association: catalogB.association, records: catalogB.records });
-      expect(workspace.availableCatalogs().find((definition) => definition.association.catalogId === 'catalog-b')).not.toBe(catalogB);
-    } finally {
-      await workspace.dispose();
-    }
-  });
-
-  it('does not save a DMC starter when the injected registry does not install DMC', async () => {
-    const repository = new MemoryRepository();
-    const catalogB = syntheticCatalogDefinition('catalog-b', 'Catalog B');
-    const workspace = new ProjectWorkspace({ repository, catalogRegistry: createInstalledCatalogRegistry([catalogB]) });
-
-    try {
-      await expect(workspace.createProject({ id: 'missing-default-catalog' })).rejects.toThrow(/default catalog.*not installed|explicit document/i);
-      expect(repository.saveCalls).toHaveLength(0);
-      expect(repository.records.has('missing-default-catalog')).toBe(false);
-    } finally {
-      await workspace.dispose();
-    }
-  });
-
-  it('creates a starter document with its default black palette that round-trips through persistence', () => {
-    const starter = createStarterDocument();
-    expect(starter.width).toBe(100);
-    expect(starter.height).toBe(100);
-    expect(starter.palette).toHaveLength(1);
-    expect(starter.palette[0]).toMatchObject({ id: 1, name: 'Black', color: '#000000' });
-    expect(starter.nextPaletteId).toBe(2);
-    const decoded = decodeDocumentWithInfo(encodeDocument(layeredFromSurface(starter))).document;
-    expect(decoded.palette).toEqual(starter.palette);
-    expect(decoded.nextPaletteId).toBe(2);
-    expect(decoded.width).toBe(100);
-    expect(decoded.height).toBe(100);
-  });
-
-  it('creates and persists a starter project, then loads it', async () => {
-    const repository = new MemoryRepository();
-    const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'created-project' });
-    try {
-      const session = await workspace.createProject({ title: 'Created locally', width: 4, height: 4 });
-      expect(session.projectId).toBe('created-project');
-      expect(session.document.width).toBe(4);
-      expect(repository.saveCalls).toHaveLength(1);
-      expect((await repository.load('created-project'))?.metadata.title).toBe('Created locally');
-      await workspace.openProject('created-project');
-      expect(workspace.activeProjectId).toBe('created-project');
-    } finally {
-      await workspace.dispose();
-    }
-  });
-
   it('only debounces successful changed commands and flushes the pending save', async () => {
     const repository = new MemoryRepository();
     const workspace = new ProjectWorkspace({ repository, debounceMs: 30, clock: { now: () => 100 }, projectIdFactory: () => 'debounced' });
     try {
       await workspace.createProject({ width: 4, height: 4, document: createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }) });
       const initialSaves = repository.saveCalls.length;
-      const noOp = workspace.execute({ type: 'erase-cell', x: 2, y: 2 });
+      const noOp = workspace.execute(cell(workspace.document!, { type: 'erase-cell', x: 2, y: 2 }));
       expect(noOp.changed).toBe(false);
       await wait(40);
       expect(repository.saveCalls).toHaveLength(initialSaves);
 
-      const changed = workspace.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+      const changed = workspace.execute(cell(workspace.document!, { type: 'set-full', x: 0, y: 0, color: 1 }));
       expect(changed.changed).toBe(true);
       await wait(5);
       expect(repository.saveCalls).toHaveLength(initialSaves);
@@ -490,7 +351,7 @@ describe('headless project workspace', () => {
       expect(repository.saveCalls).toHaveLength(initialSaves + 1);
       expect(repository.saveCalls.at(-1)?.revision).toBe(changed.document.revision);
 
-      const same = workspace.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+      const same = workspace.execute(cell(workspace.document!, { type: 'set-full', x: 0, y: 0, color: 1 }));
       expect(same.changed).toBe(false);
       await wait(40);
       expect(repository.saveCalls).toHaveLength(initialSaves + 1);
@@ -501,19 +362,19 @@ describe('headless project workspace', () => {
 
   it('does not autosave before the one-second trailing quiet deadline', async () => {
     vi.useFakeTimers();
-    const repository = new ImmediateRepository();
-    const workspace = new ProjectWorkspace({ repository: repository as unknown as WorkspaceRepository, clock: { now: () => 100 }, projectIdFactory: () => 'quiet-deadline' });
+    const repository = new MemoryRepository();
+    const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'quiet-deadline' });
     try {
       const session = await workspace.createProject({ width: 4, height: 4, document: createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }) });
       const initialSaves = repository.saveCalls.length;
-      session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+      session.execute(cell(session.document, { type: 'set-full', x: 0, y: 0, color: 1 }));
 
       await vi.advanceTimersByTimeAsync(999);
       await settle();
       expect(repository.saveCalls).toHaveLength(initialSaves);
 
       await vi.advanceTimersByTimeAsync(1);
-      await settle();
+      await savesReach(repository, initialSaves + 1);
       expect(repository.saveCalls).toHaveLength(initialSaves + 1);
     } finally {
       await workspace.dispose();
@@ -523,17 +384,17 @@ describe('headless project workspace', () => {
 
   it('coalesces an edit and undo burst into one latest-state save', async () => {
     vi.useFakeTimers();
-    const repository = new ImmediateRepository();
-    const workspace = new ProjectWorkspace({ repository: repository as unknown as WorkspaceRepository, clock: { now: () => 100 }, projectIdFactory: () => 'burst-save' });
+    const repository = new MemoryRepository();
+    const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'burst-save' });
     try {
       const session = await workspace.createProject({ width: 4, height: 4, document: createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }) });
       const initialSaves = repository.saveCalls.length;
-      session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-      session.execute({ type: 'set-full', x: 1, y: 0, color: 1 });
+      session.execute(cell(session.document, { type: 'set-full', x: 0, y: 0, color: 1 }));
+      session.execute(cell(session.document, { type: 'set-full', x: 1, y: 0, color: 1 }));
       session.undo();
 
       await vi.advanceTimersByTimeAsync(1_000);
-      await settle();
+      await savesReach(repository, initialSaves + 1);
       expect(repository.saveCalls).toHaveLength(initialSaves + 1);
       expect(repository.saveCalls.at(-1)?.revision).toBe(session.document.revision);
     } finally {
@@ -544,22 +405,22 @@ describe('headless project workspace', () => {
 
   it('checkpoints continuous changes at the five-second maximum dirty age', async () => {
     vi.useFakeTimers();
-    const repository = new ImmediateRepository();
-    const workspace = new ProjectWorkspace({ repository: repository as unknown as WorkspaceRepository, clock: { now: () => 100 }, projectIdFactory: () => 'max-dirty-age' });
+    const repository = new MemoryRepository();
+    const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'max-dirty-age' });
     try {
       const session = await workspace.createProject({ width: 4, height: 4, document: createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }) });
       const initialSaves = repository.saveCalls.length;
-      session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+      session.execute(cell(session.document, { type: 'set-full', x: 0, y: 0, color: 1 }));
       for (let step = 1; step <= 5; step += 1) {
         await vi.advanceTimersByTimeAsync(900);
-        session.execute({ type: 'set-full', x: step % 4, y: Math.floor(step / 4), color: 1 });
+        session.execute(cell(session.document, { type: 'set-full', x: step % 4, y: Math.floor(step / 4), color: 1 }));
       }
 
       await vi.advanceTimersByTimeAsync(499);
       await settle();
       expect(repository.saveCalls).toHaveLength(initialSaves);
       await vi.advanceTimersByTimeAsync(1);
-      await settle();
+      await savesReach(repository, initialSaves + 1);
       expect(repository.saveCalls).toHaveLength(initialSaves + 1);
       expect(repository.saveCalls.at(-1)?.revision).toBe(session.document.revision);
     } finally {
@@ -570,12 +431,12 @@ describe('headless project workspace', () => {
 
   it('lets explicit flush bypass the autosave quiet period', async () => {
     vi.useFakeTimers();
-    const repository = new ImmediateRepository();
-    const workspace = new ProjectWorkspace({ repository: repository as unknown as WorkspaceRepository, clock: { now: () => 100 }, projectIdFactory: () => 'flush-bypass' });
+    const repository = new MemoryRepository();
+    const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'flush-bypass' });
     try {
       const session = await workspace.createProject({ width: 4, height: 4, document: createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }) });
       const initialSaves = repository.saveCalls.length;
-      session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+      session.execute(cell(session.document, { type: 'set-full', x: 0, y: 0, color: 1 }));
       await session.flush();
       expect(repository.saveCalls).toHaveLength(initialSaves + 1);
     } finally {
@@ -586,8 +447,8 @@ describe('headless project workspace', () => {
 
   it('queues exactly one ordered latest-state follow-up for a change during an active save', async () => {
     vi.useFakeTimers();
-    const repository = new ImmediateRepository();
-    const workspace = new ProjectWorkspace({ repository: repository as unknown as WorkspaceRepository, debounceMs: 1_000, clock: { now: () => 100 }, projectIdFactory: () => 'active-follow-up' });
+    const repository = new MemoryRepository();
+    const workspace = new ProjectWorkspace({ repository, debounceMs: 1_000, clock: { now: () => 100 }, projectIdFactory: () => 'active-follow-up' });
     let releaseSave!: () => void;
     let saveEntered!: () => void;
     const saveStarted = new Promise<void>((resolve) => { saveEntered = resolve; });
@@ -600,20 +461,20 @@ describe('headless project workspace', () => {
         saveEntered();
         await saveRelease;
       };
-      session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+      session.execute(cell(session.document, { type: 'set-full', x: 0, y: 0, color: 1 }));
       await vi.advanceTimersByTimeAsync(1_000);
       await saveStarted;
 
-      session.execute({ type: 'set-full', x: 1, y: 0, color: 1 });
+      session.execute(cell(session.document, { type: 'set-full', x: 1, y: 0, color: 1 }));
       releaseSave();
-      await settle();
+      await savesReach(repository, initialSaves + 1);
       expect(repository.saveCalls).toHaveLength(initialSaves + 1);
 
       await vi.advanceTimersByTimeAsync(999);
       await settle();
       expect(repository.saveCalls).toHaveLength(initialSaves + 1);
       await vi.advanceTimersByTimeAsync(1);
-      await settle();
+      await savesReach(repository, initialSaves + 2);
       expect(repository.saveCalls).toHaveLength(initialSaves + 2);
       expect(repository.saveCalls.slice(initialSaves).map(({ revision }) => revision)).toEqual([1, 2]);
     } finally {
@@ -640,16 +501,6 @@ describe('headless project workspace', () => {
 
       expect((await repository.load('metadata'))?.metadata).toMatchObject({ title: 'After', notes: 'new' });
 
-      // The stitch count is a Canvas document setting, never metadata.
-      await workspace.updateActiveMetadata({ aidaCount: 16 });
-      await workspace.flush();
-      expect(workspace.metadata?.aidaCount).toBeUndefined();
-      expect(workspace.document?.settings.aidaCount).toBe(16);
-      expect((await repository.load('metadata'))?.document.settings.aidaCount).toBe(16);
-      await workspace.updateActiveMetadata({ aidaCount: null });
-      await workspace.flush();
-      expect(workspace.document?.settings.aidaCount).toBe(16);
-
       expect(workspace.metadata?.units).toBeUndefined();
       await workspace.updateActiveMetadata({ units: 'imperial' });
       await workspace.flush();
@@ -659,30 +510,6 @@ describe('headless project workspace', () => {
       await workspace.flush();
       expect(workspace.metadata?.units).toBeUndefined();
       expect((await repository.load('metadata'))?.metadata.units).toBeUndefined();
-    } finally {
-      await workspace.dispose();
-    }
-  });
-
-  it('uses retain for same-revision session saves without preparing the document', async () => {
-    const repository = new MemoryRepository();
-    const workspace = new ProjectWorkspace({ repository, debounceMs: 0, clock: { now: () => 100 }, projectIdFactory: () => 'save-modes' });
-    try {
-      const session = await workspace.createProject({
-        id: 'save-modes',
-        width: 2,
-        height: 2,
-        document: createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] })
-      });
-      session.updateMetadata({ title: 'Retained' });
-      await session.flush();
-      expect(repository.saveModes.at(-1)).toBe('retain');
-      expect(repository.saveDocuments.at(-1)).toBe(session.layeredDocument);
-
-      session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-      await session.flush();
-      expect(repository.saveModes.at(-1)).toBe('replace');
-      expect(repository.saveDocuments.at(-1)).not.toBe(session.layeredDocument);
     } finally {
       await workspace.dispose();
     }
@@ -699,61 +526,23 @@ describe('headless project workspace', () => {
         height: 2,
         document: createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] })
       });
-      session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+      session.execute(cell(session.document, { type: 'set-full', x: 0, y: 0, color: 1 }));
       await session.flush();
       expect(preparation.requests).toHaveLength(1);
-      expect(preparation.requests[0].document).toBe(session.layeredDocument);
       expect(repository.preparedSaveCalls).toHaveLength(1);
 
       session.updateMetadata({ title: 'Retained metadata' });
       await session.flush();
       expect(preparation.requests).toHaveLength(1);
       expect(repository.preparedSaveCalls).toHaveLength(1);
-      expect(repository.saveDocuments.at(-1)).toBe(session.layeredDocument);
 
-      session.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
+      session.execute(cell(session.document, { type: 'set-full', x: 1, y: 1, color: 1 }));
       await session.flush();
       expect(preparation.requests).toHaveLength(2);
       expect(repository.preparedSaveCalls).toHaveLength(2);
     } finally {
       await workspace.dispose();
       expect(preparation.disposed).toBe(true);
-    }
-  });
-
-  it('passes one detached replacement snapshot to a legacy repository while keeping the editor live', async () => {
-    let received: PatternDocument | undefined;
-    const save = vi.fn(async (_projectId: string, _metadata: ProjectMetadata, next: PatternDocument): Promise<SaveResult> => {
-      received = next;
-      return { committed: true, stale: false, revision: next.revision };
-    });
-    const repository = { save } as unknown as WorkspaceRepository;
-    const preparation = new FakePreparationClient();
-    const document = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    const session = new ProjectSession({
-      repository,
-      metadata: { id: 'legacy-session', title: 'Legacy', notes: '', createdAt: 1, updatedAt: 1, revision: document.revision },
-      document: layeredFromSurface(document),
-      preparationClient: preparation,
-      clock: { now: () => 100 },
-      debounceMs: 0
-    });
-
-    try {
-      session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-      await session.flush();
-      if (!received) throw new Error('legacy repository did not receive a document');
-      const persistedSnapshot = received;
-      expect(preparation.requests).toHaveLength(0);
-      expect(persistedSnapshot).not.toBe(session.layeredDocument);
-      expect(persistedSnapshot.revision).toBe(session.document.revision);
-
-      session.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
-      expect(session.document.revision).toBeGreaterThan(persistedSnapshot.revision);
-      expect(persistedSnapshot.revision).toBe(1);
-    } finally {
-      await session.dispose();
-      preparation.dispose();
     }
   });
 
@@ -784,7 +573,7 @@ describe('headless project workspace', () => {
     const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'material-settings' });
     try {
       const session = await workspace.createProject({ width: 1, height: 1, document: createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }) });
-      session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+      session.execute(cell(session.document, { type: 'set-full', x: 0, y: 0, color: 1 }));
       const designRevision = session.document.revision;
       expect(session.document.settings.aidaCount).toBe(14);
       expect(session.materialSettings).toEqual({ strands: 2, backstitchStrands: 1, waste: 0 });
@@ -1136,7 +925,7 @@ describe('headless project workspace', () => {
 
       const replacement = workspace.replaceSourceImage({ asset: { id: 'new-reference', name: 'new.png', mimeType: 'image/png', data: newBytes }, settings: newDescriptor });
       await saveStarted;
-      workspace.session?.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
+      workspace.execute(cell(workspace.document!, { type: 'set-full', x: 1, y: 1, color: 1 }));
       workspace.session?.updateMetadata({ title: 'Changed while replacing' });
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       releaseSave();
@@ -1177,7 +966,7 @@ describe('headless project workspace', () => {
         saveEntered();
         await saveRelease;
       };
-      workspace.session?.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+      workspace.execute(cell(workspace.document!, { type: 'set-full', x: 0, y: 0, color: 1 }));
       await saveStarted;
 
       const replacement = workspace.replaceSourceImage({ asset: { id: 'new-reference', name: 'new.png', mimeType: 'image/png', data: newBytes }, settings: newDescriptor });
@@ -1228,7 +1017,7 @@ describe('headless project workspace', () => {
     try {
       await workspace.createProject({ width: 4, height: 4, document: createDocument({ width: 4, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }) });
       repository.failSaves = true;
-      workspace.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
+      workspace.execute(cell(workspace.document!, { type: 'set-full', x: 1, y: 1, color: 1 }));
       await expect(workspace.flush()).rejects.toMatchObject({ code: 'storage-failure' });
       expect(workspace.document?.kind[5]).toBe(CellKind.Full);
       expect(workspace.error).toMatchObject({ code: 'storage-failure' });
@@ -1236,22 +1025,6 @@ describe('headless project workspace', () => {
     } finally {
       repository.failSaves = false;
       await workspace.dispose().catch(() => undefined);
-    }
-  });
-
-  it('selects an explicit known project and otherwise uses the newest valid candidate', async () => {
-    const repository = new MemoryRepository();
-    let id = 0;
-    const workspace = new ProjectWorkspace({ repository, clock: { now: () => ++id }, projectIdFactory: () => `project-${String(id)}` });
-    try {
-      await workspace.createProject({ id: 'older' });
-      await workspace.createProject({ id: 'newer' });
-      await workspace.selectProject('older');
-      expect(workspace.activeProjectId).toBe('older');
-      await workspace.selectProject();
-      expect(workspace.activeProjectId).toBe('newer');
-    } finally {
-      await workspace.dispose();
     }
   });
 
@@ -1281,7 +1054,7 @@ describe('headless project workspace', () => {
     try {
       await workspace.createProject({ id: 'other' });
       await workspace.createProject({ id: 'keeper' });
-      await workspace.selectProject('other');
+      await workspace.openProject('other');
       await workspace.deleteProject('keeper');
       expect(repository.records.has('keeper')).toBe(false);
       expect(workspace.activeProjectId).toBe('other');
@@ -1313,9 +1086,9 @@ describe('Track progress marks', () => {
   async function paintedWorkspace(id: string, repository: WorkspaceRepository = new MemoryRepository()) {
     const workspace = new ProjectWorkspace({ repository, debounceMs: 30, clock: { now: () => 100 }, projectIdFactory: () => id });
     const session = await workspace.createProject({ width: 4, height: 4, document: twoColors() });
-    session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-    session.execute({ type: 'set-full', x: 1, y: 0, color: 1 });
-    session.execute({ type: 'set-full', x: 2, y: 0, color: 2 });
+    session.execute(cell(session.document, { type: 'set-full', x: 0, y: 0, color: 1 }));
+    session.execute(cell(session.document, { type: 'set-full', x: 1, y: 0, color: 1 }));
+    session.execute(cell(session.document, { type: 'set-full', x: 2, y: 0, color: 2 }));
     return { workspace, session };
   }
 

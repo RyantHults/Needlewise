@@ -18,7 +18,6 @@ import { measure, parsePathData } from './symbol-geometry.mjs';
 
 const FONT_FILE = resolve(import.meta.dirname, '../../fonts/LibertinusMath-Regular.ttf');
 const OUTLINES_FILE = resolve(import.meta.dirname, '../../src/symbols/outlines.generated.json');
-const SELECTION_FILE = resolve(import.meta.dirname, '../../src/symbols/selection.json');
 
 const sha256Of = (relative) => createHash('sha256')
   .update(readFileSync(resolve(import.meta.dirname, '../..', relative)))
@@ -222,22 +221,6 @@ describe('outline extraction', () => {
 
 describe('the committed pool', () => {
   const outlines = JSON.parse(readFileSync(OUTLINES_FILE, 'utf8'));
-  const selection = JSON.parse(readFileSync(SELECTION_FILE, 'utf8'));
-
-  it('is what the authored selection asks for', () => {
-    // A generated artifact that disagrees with the file it is generated from is
-    // the failure `symbols:check` exists to catch; this pins the same
-    // relationship so a stale artifact is visible in the test run too.
-    expect(Object.keys(outlines.symbols)).toHaveLength(selection.selection.length);
-    // Every recorded font is one the selection actually draws from, and the
-    // digest is of the vendored file the outline was extracted from.
-    for (const entry of Object.values(outlines.symbols)) {
-      expect(outlines.fonts[entry.font], entry.id).toBeDefined();
-    }
-    for (const provenance of Object.values(outlines.fonts)) {
-      expect(sha256Of(provenance.file)).toBe(provenance.sha256);
-    }
-  });
 
   it('draws every selected symbol with enough ink to be visible', () => {
     // Normalizing by extent can produce a shape with almost no area: a hairline

@@ -105,7 +105,6 @@ export interface AssembledCells {
   readonly fills: readonly (ImportColor | null)[];
   readonly symbols: ReadonlyMap<string, ChartPageSymbol>;
   readonly overlap: number;
-  readonly detectedOverlap: number;
   /** Top-left placement of each chart page, keyed by page index. */
   readonly placements: ReadonlyMap<number, { readonly x: number; readonly y: number }>;
   readonly warnings: readonly ImportWarning[];

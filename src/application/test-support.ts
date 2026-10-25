@@ -6,9 +6,12 @@ import {
   encodeDocument,
   PersistenceError,
   sha256,
+  type CreateFolderInput,
   type PreparedDocumentCapability,
   type ProjectAsset,
   type ProjectAssetInput,
+  type ProjectFolder,
+  type ProjectFolderIndex,
   type ProjectMetadata,
   type ProjectRecord,
   type SaveOptions,
@@ -37,6 +40,8 @@ export class MemoryRepository implements WorkspaceRepository {
   readonly saveModes: Array<SaveOptions['mode']> = [];
   readonly saveDocuments: LayeredDocument[] = [];
   readonly preparedSaveCalls: string[] = [];
+  readonly folders = new Map<string, ProjectFolder>();
+  readonly folderAssignments = new Map<string, string>();
   failSaves = false;
   beforeSave: (() => Promise<void> | void) | undefined;
 
@@ -98,5 +103,39 @@ export class MemoryRepository implements WorkspaceRepository {
 
   async deleteProject(projectId: string): Promise<void> {
     this.records.delete(projectId);
+  }
+
+  async listFolderIndex(): Promise<ProjectFolderIndex> {
+    return {
+      folders: [...this.folders.values()].map((folder) => ({ ...folder })),
+      assignments: [...this.folderAssignments].map(([projectId, folderId]) => ({ projectId, folderId }))
+    };
+  }
+
+  async createFolder(input: CreateFolderInput): Promise<ProjectFolder> {
+    const now = Date.now();
+    const folder: ProjectFolder = { id: input.id, name: input.name, parentId: input.parentId ?? null, createdAt: now, updatedAt: now };
+    this.folders.set(folder.id, folder);
+    return { ...folder };
+  }
+
+  async renameFolder(folderId: string, name: string): Promise<ProjectFolder> {
+    const folder = { ...this.folders.get(folderId)!, name, updatedAt: Date.now() };
+    this.folders.set(folderId, folder);
+    return { ...folder };
+  }
+
+  async deleteFolder(folderId: string): Promise<void> {
+    this.folders.delete(folderId);
+    for (const [projectId, assigned] of this.folderAssignments) if (assigned === folderId) this.folderAssignments.delete(projectId);
+  }
+
+  async moveProjectToFolder(projectId: string, folderId: string | null): Promise<void> {
+    if (folderId === null) this.folderAssignments.delete(projectId);
+    else this.folderAssignments.set(projectId, folderId);
+  }
+
+  async moveFolder(folderId: string, parentId: string | null): Promise<void> {
+    this.folders.set(folderId, { ...this.folders.get(folderId)!, parentId, updatedAt: Date.now() });
   }
 }

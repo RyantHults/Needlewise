@@ -42,7 +42,7 @@ import { extractPagePrimitives, readPdfTitle } from './extract';
 import { normalizeSvgPath, outlineDistance } from './outline';
 import { openPdf } from './pdfjs';
 import type { PdfMark, PdfPagePrimitives } from './types';
-import { applyCommand } from '../../domain/test-fixtures';
+import { applyCommand, cell } from '../../domain/test-fixtures';
 
 // Vitest's jsdom URL is not a file URL, so fonts resolve from the repo root.
 const fontBytes = (file: string): Uint8Array => new Uint8Array(readFileSync(resolve(process.cwd(), 'fonts', file)));
@@ -252,7 +252,7 @@ describe('extractPagePrimitives: Needlewise round trip', () => {
     });
     for (let y = 0; y < 12; y += 1) {
       for (let x = 0; x < 12; x += 1) {
-        document = applyCommand(document, { type: 'set-full', x, y, color: 1 + ((x + y) % 3) }).document;
+        document = applyCommand(document, cell(12, { type: 'set-full', x, y, color: 1 + ((x + y) % 3) })).document;
       }
     }
     const bytes = await writePatternPdf({

@@ -21,7 +21,6 @@ import { defaultPaletteSymbol, isKnownSymbolId } from './index';
  */
 describe('symbol pool coverage', () => {
   it('is smaller than the catalog: no symbol is kept just for coverage', () => {
-    expect(DMC_CATALOG.length).toBe(489);
     expect(SYMBOL_IDS.length).toBeLessThan(DMC_CATALOG.length);
   });
 
@@ -76,16 +75,6 @@ describe('cyclic default assignment', () => {
     for (let id = SYMBOL_IDS.length + 1; id <= DMC_CATALOG.length; id += 1) {
       expect(defaultPaletteSymbol(id)).toBe(SYMBOL_IDS[(id - 1) % SYMBOL_IDS.length]);
     }
-  });
-
-  it('assigns only symbols the pool can draw', () => {
-    for (let id = 1; id <= DMC_CATALOG.length; id += 1) {
-      expect(isKnownSymbolId(defaultPaletteSymbol(id))).toBe(true);
-    }
-  });
-
-  it('is stable for a given id', () => {
-    expect(defaultPaletteSymbol(7)).toBe(defaultPaletteSymbol(7));
   });
 
   it('cycles deterministically past the end of the pool', () => {

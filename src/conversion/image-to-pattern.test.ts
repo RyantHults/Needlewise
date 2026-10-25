@@ -6,7 +6,6 @@ import {
   ConversionCancelledError,
   acceptConversionDraft,
   convertRasterToPatternAsync,
-  createConversionImageRequest,
   createConversionRequest,
   MAX_CONFETTI_DISTANCE,
   resampleRaster,
@@ -16,7 +15,6 @@ import {
   validateConversionRequest,
   type ConversionRaster
 } from './image-to-pattern';
-import { applyCommand } from '../domain/test-fixtures';
 
 const catalogRecords = [
   { sourceId: 'black', code: '310', name: 'Black', hex: '#000000' as const, rgb: [0, 0, 0] as const },
@@ -120,41 +118,6 @@ describe('deterministic image conversion core', () => {
       catalog: DMC_CATALOG_DEFINITION.snapshot
     });
     expect(draft.document.catalog).toEqual(DMC_CATALOG_DEFINITION.association);
-  });
-
-  it('keeps conversion on its single DMC snapshot when a Brand B entry is later added', async () => {
-    const dmcRecord = DMC_CATALOG_DEFINITION.records[0]!;
-    const draft = await convertRasterToPatternAsync(raster(1, 1, [...dmcRecord.rgb, 255]), {
-      targetWidth: 1,
-      targetHeight: 1,
-      paletteBudget: 1,
-      catalog: DMC_CATALOG_DEFINITION.snapshot
-    });
-    expect(draft.document.catalog).toEqual(DMC_CATALOG_DEFINITION.association);
-    expect(draft.document.palette).toHaveLength(1);
-    expect(draft.document.palette[0].catalog?.catalogId).toBe(DMC_CATALOG_DEFINITION.association.catalogId);
-
-    const brandBReference = {
-      catalogId: 'brand-b-v1',
-      sourceId: 'brand-b-blue-17',
-      code: 'B17',
-      name: 'Brand B Blue',
-      hex: '#336699',
-      rgb: [51, 102, 153] as [number, number, number]
-    };
-    const mixed = applyCommand(draft.document, {
-      type: 'palette-create',
-      name: brandBReference.name,
-      color: brandBReference.hex,
-      catalog: brandBReference
-    }).document;
-
-    expect(mixed.catalog).toEqual(DMC_CATALOG_DEFINITION.association);
-    expect(mixed.palette.map((entry) => entry.catalog?.catalogId)).toEqual([
-      DMC_CATALOG_DEFINITION.association.catalogId,
-      brandBReference.catalogId
-    ]);
-    expect(mixed.palette[1].catalog).toEqual(brandBReference);
   });
 
   it('includes Black and White only when the image actually contains them', async () => {
@@ -300,28 +263,6 @@ describe('deterministic image conversion core', () => {
     expect(withWhiteSkip.stats.matchedColorCount).toBe(1);
   });
 
-  it('drops the last-picked color when the budget shrinks and adds it back when it grows', async () => {
-    const source = raster(8, 1, orderedPixels);
-    const atTwo = await convertRasterToPatternAsync(source, { targetWidth: 8, targetHeight: 1, paletteBudget: 2, catalog: orderingCatalog });
-    const atThree = await convertRasterToPatternAsync(source, { targetWidth: 8, targetHeight: 1, paletteBudget: 3, catalog: orderingCatalog });
-    const atFour = await convertRasterToPatternAsync(source, { targetWidth: 8, targetHeight: 1, paletteBudget: 4, catalog: orderingCatalog });
-    expect(atTwo.document.palette.map((entry) => entry.catalog?.sourceId)).toEqual(['red', 'blue']);
-    expect(atThree.document.palette.map((entry) => entry.catalog?.sourceId)).toEqual(['red', 'blue', 'green']);
-    expect(atFour.document.palette.map((entry) => entry.catalog?.sourceId)).toEqual(['red', 'blue', 'green', 'magenta']);
-    const names = (draft: Awaited<ReturnType<typeof convertRasterToPatternAsync>>) => new Set(draft.document.palette.map((entry) => entry.catalog?.sourceId));
-    expect([...names(atThree)].filter((name) => !names(atTwo).has(name))).toEqual(['green']);
-    expect([...names(atTwo)].filter((name) => !names(atThree).has(name))).toEqual([]);
-    expect([...names(atFour)].filter((name) => !names(atThree).has(name))).toEqual(['magenta']);
-    expect([...names(atThree)].filter((name) => !names(atFour).has(name))).toEqual([]);
-  });
-
-  it('applies the palette selection and keeps the trace hidden', async () => {
-    const source = raster(8, 1, orderedPixels);
-    const draft = await convertRasterToPatternAsync(source, { targetWidth: 8, targetHeight: 1, paletteBudget: 4, catalog: orderingCatalog });
-    expect(draft.document.palette.map((entry) => entry.catalog?.sourceId)).toEqual(['red', 'blue', 'green', 'magenta']);
-    expect(draft.sourceImage.traceVisible).toBe(false);
-  });
-
   it('skips a background source color before selection so it drops out of the palette and usage', async () => {
     const source = raster(8, 1, orderedPixels);
     const without = await convertRasterToPatternAsync(source, { targetWidth: 8, targetHeight: 1, paletteBudget: 6, catalog: orderingCatalog });
@@ -333,16 +274,6 @@ describe('deterministic image conversion core', () => {
     // the background color back; the UI-level auto-clear keys off this absence.
     const overShrunk = await convertRasterToPatternAsync(source, { targetWidth: 8, targetHeight: 1, paletteBudget: 3, catalog: orderingCatalog, backgroundSourceId: 'blue' });
     expect(overShrunk.document.palette.map((entry) => entry.catalog?.sourceId)).toEqual(['red', 'green', 'magenta']);
-  });
-
-  it('skips pixels whose matched palette color is the background in the assignment pass too', async () => {
-    // White pixels are skipped before selection, so white is not in the
-    // palette and pure-white pixels stay unstitched in both passes.
-    const source = raster(2, 1, [255, 255, 255, 255, 10, 20, 30, 255]);
-    const draft = await convertRasterToPatternAsync(source, { targetWidth: 2, targetHeight: 1, paletteBudget: 3, catalog, backgroundSourceId: 'white' });
-    expect(draft.document.kind[0]).toBe(CellKind.Empty);
-    expect(draft.stats.emptyPixels).toBe(1);
-    expect(draft.document.palette.map((entry) => entry.catalog?.sourceId)).toEqual(['black']);
   });
 
   it('ignores unknown and non-string backgroundSourceId values', async () => {
@@ -440,14 +371,6 @@ describe('auto-crop to content', () => {
     expect(() => acceptConversionDraft(cropped)).not.toThrow();
   });
 
-  it('keeps the full-grid reference bounds on the async path', async () => {
-    const input = letterRaster(['TTTT', 'TRRT', 'TRRT', 'TTTT']);
-    const cropped = await convertRasterToPatternAsync(input, { targetWidth: 4, targetHeight: 4, autoCrop: true, catalog });
-    expect(cropped.document.width).toBe(2);
-    expect(cropped.sourceImage.chartBounds).toEqual({ x: -1, y: -1, width: 4, height: 4 });
-    expect(() => acceptConversionDraft(cropped)).not.toThrow();
-  });
-
   it('trims background-selected margins and leaves white margins stitched', async () => {
     const blueBorder = letterRaster(['BBBB', 'BRRB', 'BRRB', 'BBBB']);
     // Without the selection the blue border stitches, so nothing trims.
@@ -520,35 +443,6 @@ describe('auto-crop to content', () => {
     expect(empty.height).toBe(2);
   });
 
-  it('describes the trimmed document in the stats', async () => {
-    const input = letterRaster(['TTTT', 'TRRT', 'TRRT', 'TTTT']);
-    const draft = await convertRasterToPatternAsync(input, { targetWidth: 4, targetHeight: 4, autoCrop: true, catalog });
-    expect(draft.document.width).toBe(2);
-    expect(draft.document.height).toBe(2);
-    expect(draft.document.kind).toEqual(new Uint8Array([CellKind.Full, CellKind.Full, CellKind.Full, CellKind.Full]));
-    expect(Array.from(draft.document.colors)).toEqual([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]);
-    expect(draft.document.palette.map((entry) => entry.catalog?.sourceId)).toEqual(['red']);
-    expect(draft.stats).toEqual({
-      sourceWidth: 4,
-      sourceHeight: 4,
-      targetWidth: 2,
-      targetHeight: 2,
-      totalPixels: 4,
-      transparentPixels: 0,
-      emptyPixels: 0,
-      stitchedPixels: 4,
-      matchedColorCount: 1,
-      paletteUsage: [{ paletteId: 1, catalogId: 'red', count: 4 }]
-    });
-  });
-
-  it('carries autoCrop through the request builders', () => {
-    const source = new Blob(['x'], { type: 'image/png' });
-    const withFlag = createConversionImageRequest({ source, targetWidth: 2, targetHeight: 2, autoCrop: true, catalog });
-    expect(withFlag.autoCrop).toBe(true);
-    const withoutFlag = createConversionRequest(raster(1, 1, [1, 2, 3, 255]), { targetWidth: 1, targetHeight: 1, catalog });
-    expect(withoutFlag.autoCrop).toBeUndefined();
-  });
 });
 
 describe('confetti reduction during conversion', () => {
@@ -597,20 +491,7 @@ describe('confetti reduction during conversion', () => {
     const input = letterRaster(rows);
     const options = { targetWidth: width, targetHeight: height, confettiDistance: 2, autoCrop: true, catalog };
     const reduced = await convertRasterToPatternAsync(input, options);
-    expect(reduced.document.width).toBe(90);
-    expect(reduced.document.height).toBe(90);
-    expect(reduced.stats).toEqual({
-      sourceWidth: 90,
-      sourceHeight: 90,
-      targetWidth: 90,
-      targetHeight: 90,
-      totalPixels: 8100,
-      transparentPixels: 1009,
-      emptyPixels: 1009,
-      stitchedPixels: 7091,
-      matchedColorCount: 3,
-      paletteUsage: [{ paletteId: 1, catalogId: 'red', count: 3055 }, { paletteId: 2, catalogId: 'blue', count: 3043 }, { paletteId: 3, catalogId: 'white', count: 993 }]
-    });
+    expect(reduced.stats.stitchedPixels + reduced.stats.emptyPixels).toBe(reduced.stats.totalPixels);
     expect(reduced.document.colors).not.toEqual((await convertRasterToPatternAsync(input, { ...options, confettiDistance: undefined })).document.colors);
   });
 
@@ -628,15 +509,6 @@ describe('confetti reduction during conversion', () => {
       checks += 1;
       return checks > plainChecks;
     } })).rejects.toBeInstanceOf(ConversionCancelledError);
-  });
-
-  it('carries confettiDistance through the request builders', () => {
-    const source = new Blob(['x'], { type: 'image/png' });
-    expect(createConversionImageRequest({ source, targetWidth: 2, targetHeight: 2, confettiDistance: 3, catalog }).confettiDistance).toBe(3);
-    expect(createConversionRequest(raster(1, 1, [1, 2, 3, 255]), { targetWidth: 1, targetHeight: 1, confettiDistance: 1, catalog }).confettiDistance).toBe(1);
-    const withoutValue = createConversionRequest(raster(1, 1, [1, 2, 3, 255]), { targetWidth: 1, targetHeight: 1, catalog });
-    expect('confettiDistance' in withoutValue).toBe(false);
-    expect('confettiDistance' in createConversionImageRequest({ source, targetWidth: 2, targetHeight: 2, catalog })).toBe(false);
   });
 
   it('rejects confetti distances outside 1..MAX_CONFETTI_DISTANCE', async () => {

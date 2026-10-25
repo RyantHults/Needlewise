@@ -5,9 +5,7 @@ import {
   ConversionError,
   ConversionCancelledError,
   ConversionCancellation,
-  MAX_CONVERSION_TOKEN_BOOKKEEPING,
   conversionCancelled,
-  conversionTokenKey,
   cloneCatalogSnapshot,
   createConversionCancel,
   createConversionImageRequest,
@@ -73,7 +71,6 @@ export interface ConversionRequestInput extends Omit<ConversionOptions, 'token' 
 export type ConversionImageInput = Omit<ConversionRequestInput, 'raster'>;
 
 export interface ConversionJob {
-  readonly request: ConversionRequestMessage;
   readonly promise: Promise<ConversionResultMessage>;
   cancel(): void;
 }
@@ -232,10 +229,6 @@ function copyRequest(request: ConversionRequestMessage): ConversionRequestMessag
     : { ...request, token, catalog: cloneCatalogSnapshot(request.catalog) };
 }
 
-function requestKey(token: ConversionToken): string {
-  return conversionTokenKey(token);
-}
-
 function responseToken(value: unknown): ConversionToken | undefined {
   if (!isRecord(value) || !isRecord(value.token)) return undefined;
   const token = value.token;
@@ -261,10 +254,7 @@ export class ConversionWorkerClient {
   private readonly useWorker: boolean;
   private readonly rasterOptions: ConversionRasterOptions;
   private worker: ConversionWorkerLike | null = null;
-  private readonly pending = new Map<string, PendingConversion>();
-  private readonly issuedTokens = new Set<string>();
-  private tokenNamespaceExhausted = false;
-  private tokenSerial = 0n;
+  private pending: PendingConversion | null = null;
   private disposed = false;
   private readonly onMessage = (event: MessageEvent<unknown>): void => this.handleMessage(event.data);
   private readonly onWorkerError = (event: unknown): void => this.handleWorkerFailure(new ConversionWorkerTransportError(eventMessage(event, 'The conversion worker failed.')));
@@ -277,34 +267,9 @@ export class ConversionWorkerClient {
     this.rasterOptions = options.rasterOptions ?? {};
   }
 
-  get tokenBookkeepingSize(): number {
-    return this.issuedTokens.size;
-  }
-
-  private reserveToken(request: ConversionRequestMessage): ConversionRequestMessage {
-    const originalKey = requestKey(request.token);
-    if (!this.tokenNamespaceExhausted) {
-      if (this.issuedTokens.has(originalKey)) throw new ConversionError('invalid-token', `Conversion token ${request.token.requestId} has already been used.`);
-      this.issuedTokens.add(originalKey);
-      if (this.issuedTokens.size >= MAX_CONVERSION_TOKEN_BOOKKEEPING) this.tokenNamespaceExhausted = true;
-      return request;
-    }
-    let token: ConversionToken;
-    do {
-      this.tokenSerial += 1n;
-      const suffix = `~${this.tokenSerial.toString(36)}`;
-      const baseLength = Math.max(1, 256 - suffix.length);
-      token = { ...request.token, requestId: `${request.token.requestId.slice(0, baseLength)}${suffix}` };
-    } while (this.issuedTokens.has(requestKey(token)));
-    // Once the bounded namespace is exhausted, the monotonic suffix is the
-    // uniqueness proof; no additional historical keys are retained.
-    return { ...request, token };
-  }
-
   private createPending(request: ConversionRequestMessage, signal?: AbortSignal): { request: ConversionRequestMessage; pending: PendingConversion; promise: Promise<ConversionResultMessage> } {
-    const uniqueRequest = this.reserveToken(copyRequest(request));
-    const internalRequest = copyRequest(uniqueRequest);
-    const key = requestKey(internalRequest.token);
+    if (this.pending) throw new Error('The conversion worker client is already running a conversion.');
+    const internalRequest = copyRequest(request);
     let resolvePromise!: (result: ConversionResultMessage) => void;
     let rejectPromise!: (error: unknown) => void;
     const promise = new Promise<ConversionResultMessage>((resolve, reject) => {
@@ -312,12 +277,12 @@ export class ConversionWorkerClient {
       rejectPromise = reject;
     });
     const pending: PendingConversion = { request: internalRequest, resolve: resolvePromise, reject: rejectPromise, signal, signalCleanup: () => undefined };
-    this.pending.set(key, pending);
+    this.pending = pending;
     if (signal) {
-      const abort = (): void => { this.cancel(internalRequest.token); };
+      const abort = (): void => { this.cancel(pending); };
       signal.addEventListener('abort', abort, { once: true });
       pending.signalCleanup = () => signal.removeEventListener('abort', abort);
-      if (signal.aborted) this.cancel(internalRequest.token);
+      if (signal.aborted) this.cancel(pending);
     }
     return { request: internalRequest, pending, promise };
   }
@@ -325,10 +290,9 @@ export class ConversionWorkerClient {
   submit(input: ConversionRequestInput, options: { readonly signal?: AbortSignal } = {}): ConversionJob {
     if (this.disposed) throw new Error('The conversion worker client has been disposed.');
     const requested = requestFromInput(input, this.requestIdFactory);
-    const { request: internalRequest, promise } = this.createPending(requested, options.signal);
-    const cancellationToken = Object.freeze({ ...internalRequest.token });
-    this.dispatch(copyRequest(internalRequest), options.signal);
-    return { request: copyRequest(internalRequest), promise, cancel: () => this.cancel(cancellationToken) };
+    const { request: internalRequest, pending, promise } = this.createPending(requested, options.signal);
+    this.dispatch(pending, copyRequest(internalRequest));
+    return { promise, cancel: () => this.cancel(pending) };
   }
 
   submitImage(source: Blob | File, input: ConversionImageInput, options: { readonly signal?: AbortSignal } = {}): ConversionJob {
@@ -344,10 +308,9 @@ export class ConversionWorkerClient {
         requestId: input.requestId ?? this.requestIdFactory()
       }
     });
-    const { request: internalRequest, promise } = this.createPending(requested, options.signal);
-    const cancellationToken = Object.freeze({ ...internalRequest.token });
-    this.dispatch(copyRequest(internalRequest), options.signal);
-    return { request: copyRequest(internalRequest), promise, cancel: () => this.cancel(cancellationToken) };
+    const { request: internalRequest, pending, promise } = this.createPending(requested, options.signal);
+    this.dispatch(pending, copyRequest(internalRequest));
+    return { promise, cancel: () => this.cancel(pending) };
   }
 
   request(input: ConversionRequestInput, options: { readonly signal?: AbortSignal } = {}): Promise<ConversionResultMessage> {
@@ -358,38 +321,23 @@ export class ConversionWorkerClient {
     return this.submitImage(source, input, options).promise;
   }
 
-  cancel(request: string | ConversionToken): boolean {
-    let key: string | undefined;
-    if (typeof request === 'string') {
-      const matches = [...this.pending.entries()].filter(([, pending]) => pending.request.token.requestId === request);
-      if (matches.length !== 1) return false;
-      key = matches[0][0];
-    } else {
-      try {
-        key = requestKey(request);
-      } catch {
-        return false;
-      }
-    }
-    if (!key) return false;
-    const pending = this.pending.get(key);
-    if (!pending) return false;
+  private cancel(pending: PendingConversion): void {
+    if (this.pending !== pending) return;
+    this.pending = null;
     pending.fallbackCancel?.();
     pending.fallbackCancel = undefined;
     pending.signalCleanup();
-    this.pending.delete(key);
     pending.reject(new ConversionCancelledError(pending.request.token.requestId));
     try {
       this.worker?.postMessage(createConversionCancel(pending.request.token));
     } catch {
       // Cancellation already rejected the local job; transport failure is immaterial.
     }
-    return true;
   }
 
-  private dispatch(request: ConversionRequestMessage, signal?: AbortSignal, forceFallback = false): void {
-    const key = requestKey(request.token);
-    if (!this.pending.has(key) || this.disposed) return;
+  private dispatch(pending: PendingConversion, request: ConversionRequestMessage, forceFallback = false): void {
+    if (this.pending !== pending || this.disposed) return;
+    const { signal } = pending;
     const worker = forceFallback ? null : this.ensureWorker();
     if (worker) {
       try {
@@ -402,7 +350,7 @@ export class ConversionWorkerClient {
       return;
     }
     const queueJob = mainThreadConversionQueue.enqueue(async () => {
-      const cancellation: ConversionCancellation = { signal, isCancelled: () => !this.pending.has(key) || this.disposed };
+      const cancellation: ConversionCancellation = { signal, isCancelled: () => this.pending !== pending || this.disposed };
       conversionCancelled(cancellation, request.token.requestId);
       const workRequest = copyRequest(request);
       let result: ConversionResultMessage;
@@ -431,15 +379,14 @@ export class ConversionWorkerClient {
       conversionCancelled(cancellation, request.token.requestId);
       return result;
     });
-    const pending = this.pending.get(key);
-    if (pending) pending.fallbackCancel = queueJob.cancel;
-    void queueJob.promise.then((result) => this.resolvePending(key, result), (error: unknown) => this.rejectPending(key, error));
+    pending.fallbackCancel = queueJob.cancel;
+    void queueJob.promise.then((result) => this.resolvePending(pending, result), (error: unknown) => this.rejectPending(pending, error));
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    for (const pending of [...this.pending.values()]) this.cancel(pending.request.token);
+    if (this.pending) this.cancel(this.pending);
     this.removeWorkerListeners(this.worker);
     try {
       this.worker?.terminate?.();
@@ -485,68 +432,57 @@ export class ConversionWorkerClient {
     } catch {
       // A failed worker may already be terminated.
     }
-    const pending = [...this.pending.values()];
-    this.pending.clear();
-    for (const job of pending) {
-      job.fallbackCancel?.();
-      job.fallbackCancel = undefined;
-      job.signalCleanup();
-      job.reject(error);
-    }
+    const job = this.pending;
+    if (!job) return;
+    this.pending = null;
+    job.fallbackCancel?.();
+    job.fallbackCancel = undefined;
+    job.signalCleanup();
+    job.reject(error);
   }
 
   private handleMessage(message: unknown): void {
     if (this.disposed) return;
     const token = responseToken(message);
     if (!token) return;
-    const key = requestKey(token);
-    const pending = this.pending.get(key);
-    if (!pending) {
-      const sameRequestId = [...this.pending.values()].filter((candidate) => candidate.request.token.requestId === token.requestId);
-      if (sameRequestId.length === 1 && !this.issuedTokens.has(key)) {
-        const candidate = sameRequestId[0];
-        this.rejectPending(requestKey(candidate.request.token), new ConversionStaleResultError(candidate.request.token, token));
-      }
-      return;
-    }
+    const pending = this.pending;
+    if (!pending || !conversionTokensEqual(token, pending.request.token)) return;
     try {
       if (!isRecord(message) || message.protocol !== pending.request.protocol) {
         return;
       }
       if (message.type === CONVERSION_RESULT_TYPE) {
         assertCurrentResult(message, pending.request);
-        this.resolvePending(key, message);
+        this.resolvePending(pending, message);
       } else if (isRecord(message) && message.type === CONVERSION_CANCELLED_TYPE) {
-        this.rejectPending(key, new ConversionCancelledError(token.requestId));
+        this.rejectPending(pending, new ConversionCancelledError(token.requestId));
       } else if (isRecord(message) && message.type === CONVERSION_ERROR_TYPE) {
         const code = typeof message.code === 'string' ? message.code : 'worker-error';
         const text = typeof message.message === 'string' ? message.message : 'The conversion worker failed.';
         if (code === 'unavailable' && pending.request.inputType === 'image') {
-          this.dispatch(pending.request, pending.signal, true);
+          this.dispatch(pending, pending.request, true);
           return;
         }
-        this.rejectPending(key, new ConversionWorkerError(code, text));
+        this.rejectPending(pending, new ConversionWorkerError(code, text));
       } else {
-        this.rejectPending(key, new ConversionError('invalid-draft', 'The conversion worker returned an unknown response.'));
+        this.rejectPending(pending, new ConversionError('invalid-draft', 'The conversion worker returned an unknown response.'));
       }
     } catch (error) {
-      this.rejectPending(key, error);
+      this.rejectPending(pending, error);
     }
   }
 
-  private resolvePending(key: string, result: ConversionResultMessage): void {
-    const pending = this.pending.get(key);
-    if (!pending) return;
-    this.pending.delete(key);
+  private resolvePending(pending: PendingConversion, result: ConversionResultMessage): void {
+    if (this.pending !== pending) return;
+    this.pending = null;
     pending.fallbackCancel = undefined;
     pending.signalCleanup();
     pending.resolve(result);
   }
 
-  private rejectPending(key: string, error: unknown): void {
-    const pending = this.pending.get(key);
-    if (!pending) return;
-    this.pending.delete(key);
+  private rejectPending(pending: PendingConversion, error: unknown): void {
+    if (this.pending !== pending) return;
+    this.pending = null;
     pending.fallbackCancel = undefined;
     pending.signalCleanup();
     pending.reject(error);

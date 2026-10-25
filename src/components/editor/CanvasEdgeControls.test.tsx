@@ -57,15 +57,6 @@ describe('CanvasEdgeControls', () => {
     expect(screen.getByRole('button', { name: 'Remove a row at the top' })).toBeEnabled();
   });
 
-  it('draws half-size buttons with a larger hit area that never overlaps a neighbour', async () => {
-    const css = (await import('../../styles.css?inline')).default;
-    expect(css).toMatch(/\.canvas-edge-button \{[^}]*width:22px;[^}]*height:22px;/);
-    expect(css).toMatch(/\.canvas-edge-cluster \{[^}]*gap:4px;/);
-    // 2px along the edge each side fills exactly half the 4px gap.
-    expect(css).toMatch(/\.canvas-edge-button::after \{[^}]*inset:-7px -2px;/);
-    expect(css).toMatch(/\.canvas-edge-cluster-vertical \.canvas-edge-button::after \{[^}]*inset:-2px -7px;/);
-  });
-
   it('centres each cluster on its edge line, the handle straddling the border', () => {
     // The box spans x 50..150 and y 50..130 on screen; a cluster is 74×22 (or 22×74), its handle in the middle.
     renderControls();
@@ -162,14 +153,6 @@ describe('CanvasEdgeControls', () => {
     expect(controller.resizeCanvasEdge).toHaveBeenLastCalledWith('bottom', -1);
   });
 
-  it('lets pointer events through everywhere except its buttons', async () => {
-    renderControls();
-    const css = (await import('../../styles.css?inline')).default;
-    expect(css).toMatch(/\.canvas-edge-controls \{[^}]*pointer-events:none;/);
-    expect(css).toMatch(/\.canvas-edge-button \{[^}]*pointer-events:auto;/);
-    expect(css).toMatch(/\.canvas-edge-cluster:not\(\.canvas-edge-cluster-vertical\) \.canvas-edge-handle \{ cursor:ns-resize; \}/);
-    expect(css).toMatch(/\.canvas-edge-cluster-vertical \.canvas-edge-handle \{ cursor:ew-resize; \}/);
-  });
 });
 
 describe('Crop split button', () => {

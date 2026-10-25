@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearClipboard } from './clipboard-store';
 import { CellKind, collectValidationErrors, createDocument, DomainError, QuarterCorner, type BulkCellCommand, type PatternDocument, type ProgressCommand } from '../domain';
-import { markCellComplete, STITCH_LAYER_ID, applyCommand } from '../domain/test-fixtures';
+import { markCellComplete, STITCH_LAYER_ID, applyCommand, cell } from '../domain/test-fixtures';
 import { fixture, LayeredTestBoundary } from './test-support';
 import { getCanvasMetrics } from './coordinates';
 import { EditorSurfaceController, selectedCellSemantics, type EditorSurfaceControllerOptions } from './controller';
@@ -61,7 +61,7 @@ describe('EditorSurfaceController', () => {
     expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
     expect(traceSampler).toHaveBeenCalledTimes(1);
     const create = boundary.log.find((command) => command.type === 'palette-create');
-    expect(create).toMatchObject({ type: 'palette-create', name: matched!.name, color: matched!.hex, active: true });
+    expect(create).toMatchObject({ type: 'palette-create', name: matched!.name, color: matched!.hex });
     expect(create).toMatchObject({ catalog: { catalogId: DEFAULT_CATALOG_DEFINITION.association.catalogId, sourceId: matched!.sourceId } });
     const added = gateway.getSnapshot().document?.palette.find((entry) => entry.catalog?.code === matched!.code);
     expect(added).toBeDefined();
@@ -297,7 +297,7 @@ describe('EditorSurfaceController', () => {
 
   it('eyedroppers a chart cell palette color and activates the paint brush', () => {
     const { boundary, gateway, uiStore, controller } = controllerFixture();
-    gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    gateway.execute(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     controller.setTool({ tool: 'eyedropper' });
     const before = boundary.log.length;
     expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
@@ -309,7 +309,7 @@ describe('EditorSurfaceController', () => {
 
   it('picks with the last stitch brush: full by default, then half direction and three-quarter', () => {
     const { gateway, uiStore, controller } = controllerFixture();
-    gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    gateway.execute(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     controller.setTool({ tool: 'eyedropper' });
     controller.handlePointerDown(pointer(1, 8, 8));
     expect(uiStore.getState().tool).toEqual({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
@@ -334,7 +334,7 @@ describe('EditorSurfaceController', () => {
   it('tells the user to select a visible layer instead of picking on a hidden layer', () => {
     const notices: string[] = [];
     const { boundary, uiStore, controller } = controllerFixture({ onNotice: (message) => notices.push(message) });
-    boundary.seed({ type: 'set-full', x: 0, y: 0, color: 1 });
+    boundary.seed(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     boundary.setLayerVisibility(1, false);
     controller.setTool({ tool: 'eyedropper' });
     const before = uiStore.getState();
@@ -353,7 +353,7 @@ describe('EditorSurfaceController', () => {
   it('does not show the hidden-layer notice when the active layer is visible', () => {
     const notices: string[] = [];
     const { boundary, uiStore, controller } = controllerFixture({ onNotice: (message) => notices.push(message) });
-    boundary.seed({ type: 'set-full', x: 0, y: 0, color: 1 });
+    boundary.seed(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     controller.setTool({ tool: 'eyedropper' });
     controller.handlePointerDown(pointer(1, 8, 8));
     expect(notices).toEqual([]);
@@ -363,7 +363,7 @@ describe('EditorSurfaceController', () => {
 
   it('pulses the picked chip on every pick, including re-picking the selected color', () => {
     const { gateway, uiStore, controller } = controllerFixture();
-    gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    gateway.execute(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     controller.setTool({ tool: 'eyedropper' });
     expect(uiStore.getState().pickPulse).toBeNull();
     controller.handlePointerDown(pointer(1, 8, 8));
@@ -404,7 +404,7 @@ describe('EditorSurfaceController', () => {
       traceImage: { source: {}, width: 4, height: 4 },
       traceSampler
     }, document);
-    gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    gateway.execute(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     controller.setTool({ tool: 'eyedropper' });
 
     expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
@@ -431,45 +431,6 @@ describe('EditorSurfaceController', () => {
     expect(added).toBeDefined();
     expect(uiStore.getState().paletteId).toBe(added!.id);
     expect(uiStore.getState().tool).toEqual({ tool: 'paint', brush: { kind: 'full', paletteId: added!.id } });
-    controller.dispose();
-  });
-
-  it('keeps an earlier unused eyedropper color active when another unused color is selected', () => {
-    const rgb1 = { r: 18, g: 52, b: 86 };
-    const { boundary, gateway, uiStore, controller } = controllerFixture({
-      traceImage: { source: {}, width: 4, height: 4 },
-      traceSampler: () => ({ ...rgb1 }),
-      catalogDefinition: DEFAULT_CATALOG_DEFINITION
-    });
-    controller.setTool({ tool: 'eyedropper' });
-    expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
-    const firstAddedId = uiStore.getState().paletteId;
-    expect(firstAddedId).not.toBeNull();
-
-    gateway.execute({ type: 'palette-create', name: 'Purple', color: '#66AA22', catalog: { catalogId: DEFAULT_CATALOG_DEFINITION.association.catalogId, sourceId: 's', code: 'P9', name: 'Purple', hex: '#66AA22', rgb: [102, 170, 34] } });
-    const created = gateway.getSnapshot().document?.palette.find((entry) => entry.catalog?.code === 'P9');
-    expect(created).toBeDefined();
-
-    controller.selectPalette(created!.id);
-    expect(gateway.getSnapshot().document?.palette.find((entry) => entry.id === firstAddedId)?.active).toBe(true);
-    expect(boundary.log.some((command) => command.type === 'palette-deactivate')).toBe(false);
-    expect(uiStore.getState().paletteId).toBe(created!.id);
-    controller.dispose();
-  });
-
-  it('highlights an already-referenced palette color without deactivating an unused entry', () => {
-    const rgb = { r: 18, g: 52, b: 86 };
-    const { boundary, gateway, uiStore, controller } = controllerFixture({ traceImage: { source: {}, width: 4, height: 4 }, traceSampler: () => ({ ...rgb }) });
-    gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-    controller.setTool({ tool: 'eyedropper' });
-    expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
-    const unusedId = uiStore.getState().paletteId;
-    const commands = boundary.log.slice();
-
-    controller.selectPalette(1);
-    expect(uiStore.getState().paletteId).toBe(1);
-    expect(boundary.log.slice()).toEqual(commands);
-    expect(gateway.getSnapshot().document?.palette.find((entry) => entry.id === unusedId)?.active).toBe(true);
     controller.dispose();
   });
 
@@ -690,7 +651,7 @@ describe('EditorSurfaceController', () => {
     });
     const fixture = controllerFixture({}, document);
     fixture.uiStore.setPaletteId(2);
-    fixture.uiStore.setBrushSize(2);
+    fixture.uiStore.setState({ brushSize: 2 });
     fixture.controller.setTool({ tool: 'shape', shape: 'line' });
     fixture.controller.handlePointerDown(pointer(1, 40, 40));
     fixture.controller.handlePointerMove(pointer(1, 72, 40));
@@ -840,7 +801,7 @@ describe('EditorSurfaceController', () => {
     stale.controller.dispose();
 
     const noop = controllerFixture();
-    noop.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    noop.gateway.execute(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     noop.controller.setTool({ tool: 'shape', shape: 'line' });
     const commandCount = noop.boundary.log.length;
     const undoDepth = noop.boundary.undoDepth;
@@ -866,7 +827,7 @@ describe('EditorSurfaceController', () => {
     noPalette.controller.dispose();
   });
 
-  it('uses bounded invalidation when undoing and redoing paint with an unused active palette color', () => {
+  it('uses bounded invalidation when undoing and redoing paint', () => {
     const document = createDocument({
       width: 8,
       height: 8,
@@ -986,7 +947,7 @@ describe('EditorSurfaceController', () => {
 
   it('defers touch Fill and Eyedropper actions until a multi-touch sequence is ruled out', () => {
     const fill = controllerFixture();
-    fill.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    fill.gateway.execute(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     fill.controller.setTool({ tool: 'fill' });
     fill.controller.handlePointerDown(pointer(1, 8, 8, 'touch'));
     expect(fill.uiStore.getState().overlay.fillPending).toBeUndefined();
@@ -1002,7 +963,7 @@ describe('EditorSurfaceController', () => {
       traceImage: { source: {}, width: 4, height: 4 },
       traceSampler: () => ({ r: 201, g: 102, b: 3 })
     });
-    eyedropper.gateway.execute({ type: 'set-full', x: 2, y: 2, color: 1 });
+    eyedropper.gateway.execute(cell(8, { type: 'set-full', x: 2, y: 2, color: 1 }));
     eyedropper.controller.setTool({ tool: 'eyedropper' });
     eyedropper.controller.handlePointerDown(pointer(1, 8, 8, 'touch'));
     expect(eyedropper.uiStore.getState().tool).toEqual({ tool: 'eyedropper' });
@@ -1048,7 +1009,7 @@ describe('EditorSurfaceController', () => {
 
   it('recognizes stationary two-finger undo and three-finger redo taps after all fingers lift', () => {
     const undo = controllerFixture();
-    undo.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    undo.gateway.execute(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     expect(undo.boundary.undoDepth).toBe(1);
     undo.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
     undo.controller.handlePointerDown(pointer(2, 60, 20, 'touch'));
@@ -1060,7 +1021,7 @@ describe('EditorSurfaceController', () => {
     undo.controller.dispose();
 
     const redo = controllerFixture();
-    redo.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    redo.gateway.execute(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     redo.gateway.undo({ projectId: 'project-a', revision: 1 });
     redo.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
     redo.controller.handlePointerDown(pointer(2, 60, 20, 'touch'));
@@ -1074,38 +1035,9 @@ describe('EditorSurfaceController', () => {
     redo.controller.dispose();
   });
 
-  it('diagnoses accepted and rejected touch history candidates without logging moves', () => {
-    const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
-    const accepted = controllerFixture();
-    accepted.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-    accepted.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
-    accepted.controller.handlePointerDown(pointer(2, 60, 20, 'touch'));
-    accepted.controller.handlePointerUp(pointer(2, 60, 20, 'touch'));
-    accepted.controller.handlePointerUp(pointer(1, 20, 20, 'touch'));
-    accepted.controller.dispose();
-
-    const rejected = controllerFixture();
-    rejected.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-    rejected.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
-    rejected.controller.handlePointerDown(pointer(2, 60, 20, 'touch'));
-    rejected.controller.handlePointerMove(pointer(2, 100, 20, 'touch'));
-    rejected.controller.handlePointerUp(pointer(2, 100, 20, 'touch'));
-    rejected.controller.handlePointerUp(pointer(1, 20, 20, 'touch'));
-    rejected.controller.dispose();
-
-    const touchCalls = debug.mock.calls.filter(([prefix]) => prefix === '[Needlewise touch]');
-    expect(touchCalls.some(([, eventName]) => eventName === 'history-candidate-begin')).toBe(true);
-    expect(touchCalls.some(([, eventName, details]) => eventName === 'history-candidate-complete' && (details as { valid: boolean }).valid)).toBe(true);
-    expect(touchCalls.some(([, eventName, details]) => eventName === 'history-dispatch' && (details as { action: string }).action === 'undo')).toBe(true);
-    expect(touchCalls.some(([, eventName, details]) => eventName === 'history-candidate-rejected' && (details as { reason: string }).reason === 'movement')).toBe(true);
-    expect(touchCalls.some(([, eventName]) => eventName === 'pointermove')).toBe(false);
-    debug.mockRestore();
-  });
-
   it('ignores post-pointerup lost capture while preserving a two-finger undo candidate', () => {
-    const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
     const fixture = controllerFixture();
-    fixture.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    fixture.gateway.execute(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     fixture.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
     fixture.controller.handlePointerDown(pointer(2, 60, 20, 'touch'));
     fixture.controller.handlePointerUp(pointer(1, 20, 20, 'touch'));
@@ -1113,15 +1045,12 @@ describe('EditorSurfaceController', () => {
     fixture.controller.handlePointerUp(pointer(2, 60, 20, 'touch'));
     expect(fixture.boundary.undoDepth).toBe(0);
     expect(fixture.gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Empty);
-    expect(debug.mock.calls.some(([, eventName, details]) => eventName === 'history-candidate-rejected'
-      && (details as { reason: string }).reason === 'lost-capture')).toBe(false);
     fixture.controller.dispose();
-    debug.mockRestore();
   });
 
   it('does not roll a history candidate onto newly contacted pointer IDs', () => {
     const twoThenThree = controllerFixture();
-    twoThenThree.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    twoThenThree.gateway.execute(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     twoThenThree.gateway.undo({ projectId: 'project-a', revision: 1 });
     expect(twoThenThree.boundary.undoDepth).toBe(0);
     twoThenThree.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
@@ -1137,7 +1066,7 @@ describe('EditorSurfaceController', () => {
     twoThenThree.controller.dispose();
 
     const threeThenFour = controllerFixture();
-    threeThenFour.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    threeThenFour.gateway.execute(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     threeThenFour.gateway.undo({ projectId: 'project-a', revision: 1 });
     threeThenFour.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
     threeThenFour.controller.handlePointerDown(pointer(2, 60, 20, 'touch'));
@@ -1154,7 +1083,7 @@ describe('EditorSurfaceController', () => {
 
   it('rejects non-tap touch sequences and suppresses only stationary jitter', () => {
     const single = controllerFixture();
-    single.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    single.gateway.execute(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     single.controller.setTouchMovementOnly(true);
     single.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
     single.controller.handlePointerUp(pointer(1, 20, 20, 'touch'));
@@ -1162,14 +1091,14 @@ describe('EditorSurfaceController', () => {
     single.controller.dispose();
 
     const four = controllerFixture();
-    four.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    four.gateway.execute(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     for (const [id, x, y] of [[1, 20, 20], [2, 60, 20], [3, 40, 60], [4, 80, 60]] as const) four.controller.handlePointerDown(pointer(id, x, y, 'touch'));
     for (const id of [4, 2, 1, 3]) four.controller.handlePointerUp(pointer(id, 20, 20, 'touch'));
     expect(four.boundary.undoDepth).toBe(1);
     four.controller.dispose();
 
     const jitter = controllerFixture();
-    jitter.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    jitter.gateway.execute(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     const before = jitter.uiStore.getState().viewport;
     jitter.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
     jitter.controller.handlePointerDown(pointer(2, 60, 20, 'touch'));
@@ -1182,7 +1111,7 @@ describe('EditorSurfaceController', () => {
     jitter.controller.dispose();
 
     const moved = controllerFixture();
-    moved.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    moved.gateway.execute(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     const beforePinch = moved.uiStore.getState().viewport;
     moved.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
     moved.controller.handlePointerDown(pointer(2, 60, 20, 'touch'));
@@ -1194,7 +1123,7 @@ describe('EditorSurfaceController', () => {
     moved.controller.dispose();
 
     const duration = controllerFixture();
-    duration.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    duration.gateway.execute(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     duration.controller.handlePointerDown(pointer(1, 20, 20, 'touch', 0, { timeStamp: 0 }));
     duration.controller.handlePointerDown(pointer(2, 60, 20, 'touch', 0, { timeStamp: 0 }));
     duration.controller.handlePointerUp(pointer(2, 60, 20, 'touch', 0, { timeStamp: 351 }));
@@ -1206,7 +1135,7 @@ describe('EditorSurfaceController', () => {
   it('clears multi-touch history candidates on cancellation, capture loss, blur, resets, and stale documents', () => {
     const exercise = (teardown: (fixture: ReturnType<typeof controllerFixture>) => void): void => {
       const fixture = controllerFixture();
-      fixture.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+      fixture.gateway.execute(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
       fixture.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
       fixture.controller.handlePointerDown(pointer(2, 60, 20, 'touch'));
       teardown(fixture);
@@ -1221,10 +1150,10 @@ describe('EditorSurfaceController', () => {
     exercise((fixture) => fixture.controller.setMetrics(getCanvasMetrics(96, 96)));
 
     const stale = controllerFixture();
-    stale.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+    stale.gateway.execute(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     stale.controller.handlePointerDown(pointer(1, 20, 20, 'touch'));
     stale.controller.handlePointerDown(pointer(2, 60, 20, 'touch'));
-    stale.gateway.execute({ type: 'set-full', x: 1, y: 0, color: 1 });
+    stale.gateway.execute(cell(8, { type: 'set-full', x: 1, y: 0, color: 1 }));
     stale.controller.handlePointerUp(pointer(1, 20, 20, 'touch'));
     stale.controller.handlePointerUp(pointer(2, 60, 20, 'touch'));
     expect(stale.boundary.undoDepth).toBe(2);
@@ -1235,7 +1164,7 @@ describe('EditorSurfaceController', () => {
     const trace = { source: {}, width: 4, height: 4, chartBounds: { x: 0, y: 0, width: 8, height: 8 } };
     for (const tool of ['move-image', 'resize-image'] as const) {
       const fixture = controllerFixture({ traceImage: trace });
-      fixture.gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+      fixture.gateway.execute(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
       fixture.controller.setTool({ tool });
       fixture.controller.handlePointerDown(pointer(1, 8, 8, 'touch'));
       fixture.controller.handlePointerDown(pointer(2, 8, 8, 'touch'));
@@ -1292,7 +1221,7 @@ describe('EditorSurfaceController', () => {
     controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined });
     expect(uiStore.getState().selectedCell).toMatchObject({ row: 1, column: 2, geometry: 'full', paletteId: 1, paletteName: 'Thread', completion: { completed: 0, total: 1 } });
     expect(uiStore.getState().status).toBe('Stitched cell (1, 0)');
-    gateway.execute({ type: 'set-full', x: 1, y: 0, color: 1 });
+    gateway.execute(cell(8, { type: 'set-full', x: 1, y: 0, color: 1 }));
     expect(uiStore.getState().selectedCell?.geometry).toBe('full');
     controller.handleKeyDown({ key: '0', preventDefault: () => undefined });
     expect(uiStore.getState().viewport.zoom).toBeGreaterThan(0);
@@ -1319,7 +1248,7 @@ describe('EditorSurfaceController', () => {
     const brush = { kind: 'half', direction: '/', paletteId: 1 } as const;
     uiStore.setViewport(viewport);
     controller.setBrush(brush);
-    uiStore.setBrushSize(4);
+    uiStore.setState({ brushSize: 4 });
     uiStore.setKeyboardCursor({ x: 2, y: 3 });
     const next = createDocument({ width: 12, height: 6, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Thread', color: '#123456' }] });
     next.revision = gateway.getSnapshot().revision! + 1;
@@ -1433,10 +1362,10 @@ describe('EditorSurfaceController', () => {
 
   it('deletes a selection on the selected layer as one undo step, clearing its completion', () => {
     let document = threadDocument();
-    document = applyCommand(document, { type: 'set-full', x: 1, y: 1, color: 1 }).document;
+    document = applyCommand(document, cell(8, { type: 'set-full', x: 1, y: 1, color: 1 })).document;
     document = markCellComplete(document, 1, 1);
     for (const command of [
-      { type: 'set-full', x: 2, y: 2, color: 1 },
+      cell(8, { type: 'set-full', x: 2, y: 2, color: 1 }),
       { type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 12, y: 8 }, color: 1 }
     ] as const) document = applyCommand(document, command).document;
     const { boundary, gateway, uiStore, controller } = controllerFixture({}, document);
@@ -1483,7 +1412,7 @@ describe('EditorSurfaceController', () => {
   it('clips centered circular paint brush stamps at chart edges and previews exact after-states', () => {
     const { boundary, gateway, uiStore, controller } = controllerFixture();
     expect(uiStore.getState().brushSize).toBe(1);
-    uiStore.setBrushSize(3);
+    uiStore.setState({ brushSize: 3 });
     expect(uiStore.getState().brushSize).toBe(3);
     controller.handlePointerDown(pointer(1, 8, 8));
     expect(uiStore.getState().overlay.pendingCells).toEqual([
@@ -1525,7 +1454,7 @@ describe('EditorSurfaceController', () => {
     expect(controller.getBrushSize()).toBe(2);
     controller.setTool({ tool: 'paint', brush: { kind: 'half', paletteId: 1 } });
     expect(controller.getBrushSize()).toBe(3);
-    uiStore.setBrushSize(7);
+    uiStore.setState({ brushSize: 7 });
     expect(controller.getBrushSize()).toBe(7);
     controller.setTool({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
     expect(controller.getBrushSize()).toBe(2);
@@ -1547,26 +1476,10 @@ describe('EditorSurfaceController', () => {
     controller.dispose();
   });
 
-  it('keeps Shape on the legacy brush size while preserving supported sizes across the transition', () => {
+  it('keeps each paint brush kind\'s size across tool switches', () => {
     const { uiStore, controller } = controllerFixture();
-    uiStore.setBrushSize(2);
-    controller.setTool({ tool: 'shape', shape: 'line' });
-    expect(controller.getBrushSize()).toBe(2);
-
-    uiStore.setBrushSize(3);
-    expect(controller.getBrushSize()).toBe(3);
-    expect(uiStore.getState().toolBrushSizes).toMatchObject({
-      full: 2,
-      half: 1,
-      'three-quarter': 1,
-      eraser: 1
-    });
-    controller.handlePointerDown(pointer(1, 56, 56));
-    expect(uiStore.getState().overlay.pendingCells).toHaveLength(9);
-    controller.handlePointerCancel(pointer(1, 56, 56));
-
+    controller.setToolBrushSize('full', 2);
     controller.setToolBrushSize('half', 5);
-    expect(controller.getBrushSize()).toBe(3);
     controller.setTool({ tool: 'paint', brush: { kind: 'half', paletteId: 1 } });
     expect(controller.getBrushSize()).toBe(5);
     controller.setTool({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
@@ -1625,7 +1538,7 @@ describe('EditorSurfaceController', () => {
   it('uses the disk diameter for exact size-one, size-two, size-three, and large stamps', () => {
     const paintIndices = (size: number, x: number, y: number): number[] => {
       const fixture = controllerFixture();
-      fixture.uiStore.setBrushSize(size);
+      fixture.uiStore.setState({ brushSize: size });
       fixture.controller.handlePointerDown(pointer(1, x * 16 + 8, y * 16 + 8));
       fixture.controller.handlePointerUp(pointer(1, x * 16 + 8, y * 16 + 8));
       const command = fixture.boundary.log.at(-1);
@@ -1651,7 +1564,7 @@ describe('EditorSurfaceController', () => {
 
   it('stamps a size-two brush as a 2x2 square with the hit cell at the top-left', () => {
     const fixture = controllerFixture();
-    fixture.uiStore.setBrushSize(2);
+    fixture.uiStore.setState({ brushSize: 2 });
     fixture.controller.handlePointerDown(pointer(1, 3 * 16 + 8, 3 * 16 + 8));
     fixture.controller.handlePointerUp(pointer(1, 3 * 16 + 8, 3 * 16 + 8));
     expect(fixture.boundary.log.at(-1)).toMatchObject({ type: 'bulk-cell', indices: new Uint32Array([27, 28, 35, 36]) });
@@ -1674,11 +1587,11 @@ describe('EditorSurfaceController', () => {
     const previewIndices = (): number[] | undefined =>
       uiStore.getState().overlay.brushPreview?.states.map((state) => state.index);
 
-    uiStore.setBrushSize(1);
+    uiStore.setState({ brushSize: 1 });
     controller.handlePointerMove({ ...pointer(1, 24, 24), buttons: 0 });
     expect(previewIndices()).toEqual([9]);
 
-    uiStore.setBrushSize(3);
+    uiStore.setState({ brushSize: 3 });
     controller.handlePointerMove({ ...pointer(1, 25, 25), buttons: 0 });
     expect(previewIndices()).toEqual([0, 1, 2, 8, 9, 10, 16, 17, 18]);
 
@@ -1690,7 +1603,7 @@ describe('EditorSurfaceController', () => {
 
   it('shows and clears a hover brush preview without committing a gesture', () => {
     const { boundary, uiStore, controller } = controllerFixture();
-    uiStore.setBrushSize(2);
+    uiStore.setState({ brushSize: 2 });
     controller.handlePointerMove({ ...pointer(1, 24, 24), buttons: 0 });
     expect(uiStore.getState().overlay.brushPreview).toMatchObject({ kind: 'paint' });
     expect(uiStore.getState().overlay.brushPreview?.states).toHaveLength(4);
@@ -1703,7 +1616,7 @@ describe('EditorSurfaceController', () => {
 
   it('deduplicates overlapping multi-cell brush drag stamps and paints half geometry', () => {
     const { boundary, uiStore, controller } = controllerFixture();
-    uiStore.setBrushSize(2);
+    uiStore.setState({ brushSize: 2 });
     controller.handlePointerDown(pointer(1, 24, 24));
     controller.handlePointerMove(pointer(1, 40, 24));
     controller.handlePointerUp(pointer(1, 40, 24));
@@ -1714,7 +1627,7 @@ describe('EditorSurfaceController', () => {
     expect(boundary.undoDepth).toBe(1);
 
     controller.setBrush({ kind: 'half', paletteId: 1 });
-    uiStore.setBrushSize(2);
+    uiStore.setState({ brushSize: 2 });
     controller.handlePointerDown(pointer(2, 24, 24));
     expect(uiStore.getState().overlay.pendingCellStates?.map((state) => state.kind)).toEqual([
       CellKind.HalfSlash, CellKind.HalfSlash, CellKind.HalfSlash, CellKind.HalfSlash
@@ -1749,7 +1662,7 @@ describe('EditorSurfaceController', () => {
 
     const dragged = controllerFixture();
     dragged.controller.setBrush({ kind: 'three-quarter', paletteId: 1 });
-    dragged.uiStore.setBrushSize(2);
+    dragged.uiStore.setState({ brushSize: 2 });
     dragged.controller.handlePointerDown(pointer(9, 20, 20));
     dragged.controller.handlePointerMove(pointer(9, 36, 20));
     dragged.controller.handlePointerUp(pointer(9, 36, 20));
@@ -2013,11 +1926,11 @@ describe('EditorSurfaceController', () => {
 
   it('erases a clipped multi-cell brush as one command and suppresses no-op stamps', () => {
     const { boundary, gateway, uiStore, controller } = controllerFixture();
-    gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-    gateway.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
+    gateway.execute(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
+    gateway.execute(cell(8, { type: 'set-full', x: 1, y: 1, color: 1 }));
     boundary.log.length = 0;
     controller.setTool({ tool: 'eraser' });
-    uiStore.setBrushSize(2);
+    uiStore.setState({ brushSize: 2 });
     controller.handlePointerDown(pointer(1, 24, 24));
     expect(uiStore.getState().overlay.pendingCellStates).toMatchObject([
       { index: 9, kind: CellKind.Empty, colors: [0, 0, 0, 0], completed: 0 }
@@ -2032,9 +1945,9 @@ describe('EditorSurfaceController', () => {
     expect(gateway.getSnapshot().document?.kind[0]).toBe(CellKind.Full);
 
     boundary.log.length = 0;
-    gateway.execute({ type: 'set-full', x: 3, y: 3, color: 1 });
+    gateway.execute(cell(8, { type: 'set-full', x: 3, y: 3, color: 1 }));
     boundary.log.length = 0;
-    uiStore.setBrushSize(1);
+    uiStore.setState({ brushSize: 1 });
     controller.setTool({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
     const revisionBeforeNoop = gateway.getSnapshot().revision;
     controller.handlePointerDown(pointer(2, 56, 56));
@@ -2046,32 +1959,14 @@ describe('EditorSurfaceController', () => {
 
   it('exposes and validates the bounded brush-size setting', () => {
     const { uiStore, controller } = controllerFixture();
-    uiStore.setBrushSize(10);
+    uiStore.setState({ brushSize: 10 });
     expect(controller.getBrushSize()).toBe(10);
-    expect(() => uiStore.setBrushSize(0)).toThrow(/integer/);
-    expect(() => uiStore.setBrushSize(11)).toThrow(/integer/);
-    expect(() => uiStore.setBrushSize(1.5)).toThrow(/integer/);
+    expect(() => uiStore.setState({ brushSize: 0 })).toThrow(/integer/);
+    expect(() => uiStore.setState({ brushSize: 11 })).toThrow(/integer/);
+    expect(() => uiStore.setState({ brushSize: 1.5 })).toThrow(/integer/);
     expect(() => uiStore.setState({ brushSize: Number.NaN })).toThrow(/integer/);
-    expect(() => uiStore.setBrushSize(-1)).toThrow(/integer/);
+    expect(() => uiStore.setState({ brushSize: -1 })).toThrow(/integer/);
     expect(() => controller.setToolBrushSize('full', 0)).toThrow(/integer/);
-    controller.dispose();
-  });
-
-  it('normalizes a brush-less paint tool using the first active palette color', () => {
-    const uiStore = createUiStore({ tool: { tool: 'pan' }, paletteId: null });
-    const { controller } = controllerFixture({ uiStore });
-    controller.setTool({ tool: 'paint' } as never);
-    expect(uiStore.getState().tool).toEqual({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
-    controller.dispose();
-  });
-
-  it('entering paint after a no-brush start and selecting a color does not crash', () => {
-    const uiStore = createUiStore({ tool: { tool: 'pan' }, paletteId: null });
-    const { controller } = controllerFixture({ uiStore }, rubySkyDocument());
-    controller.setTool({ tool: 'paint' } as never);
-    controller.selectPalette(2);
-    expect(uiStore.getState().paletteId).toBe(2);
-    expect(uiStore.getState().tool).toEqual({ tool: 'paint', brush: { kind: 'full', paletteId: 2 } });
     controller.dispose();
   });
 
@@ -2089,54 +1984,6 @@ describe('EditorSurfaceController', () => {
     controller.selectPalette(2);
     expect(uiStore.getState().paletteId).toBe(2);
     expect(uiStore.getState().tool).toEqual({ tool: 'paint', brush: { kind: 'half', direction: '/', paletteId: 2 } });
-    controller.dispose();
-  });
-
-  it('selecting a color tolerates a brush-less paint state', () => {
-    const { uiStore, controller } = controllerFixture();
-    uiStore.setState({ tool: { tool: 'paint' } as never });
-    controller.selectPalette(2);
-    expect(uiStore.getState().paletteId).toBe(2);
-    expect(uiStore.getState().tool).toEqual({ tool: 'paint', brush: { kind: 'full', paletteId: 2 } });
-    controller.dispose();
-  });
-
-  it('selects a created palette entry without scanning dense visual planes', () => {
-    const { gateway, uiStore, controller } = controllerFixture();
-    const document = gateway.getSnapshot().document!;
-    let visualReads = 0;
-    document.colors = new Proxy(document.colors, {
-      get(target, property) {
-        if (typeof property === 'string' && /^(0|[1-9]\d*)$/.test(property)) visualReads += 1;
-        return Reflect.get(target, property);
-      }
-    });
-    document.backstitches.colors = new Proxy(document.backstitches.colors, {
-      get(target, property) {
-        if (typeof property === 'string' && /^(0|[1-9]\d*)$/.test(property)) visualReads += 1;
-        return Reflect.get(target, property);
-      }
-    });
-    document.palette.push({ ...document.palette[0], id: 2, name: 'Created' });
-
-    controller.selectCreatedPalette(2);
-
-    expect(visualReads).toBe(0);
-    expect(uiStore.getState().paletteId).toBe(2);
-    expect(uiStore.getState().tool).toMatchObject({ tool: 'paint', brush: { paletteId: 2 } });
-    controller.dispose();
-  });
-
-  it('keeps an earlier unused palette entry active when selecting a newly created entry', () => {
-    const { boundary, gateway, uiStore, controller } = controllerFixture();
-    const document = gateway.getSnapshot().document!;
-    document.palette.push({ ...document.palette[0], id: 2, name: 'Created' });
-
-    controller.selectCreatedPalette(2);
-
-    expect(boundary.log.some((command) => command.type === 'palette-deactivate')).toBe(false);
-    expect(gateway.getSnapshot().document?.palette.find((entry) => entry.id === 1)?.active).toBe(true);
-    expect(uiStore.getState().paletteId).toBe(2);
     controller.dispose();
   });
 
@@ -2221,21 +2068,6 @@ describe('EditorSurfaceController', () => {
     controller.setTool({ tool: 'move-image' });
     controller.handleKeyDown({ key: 'Escape', preventDefault: () => undefined });
     expect(uiStore.getState().tool).toEqual({ tool: 'paint', brush: { kind: 'half', direction: '/', paletteId: 1 } });
-    controller.dispose();
-  });
-
-  it('exits move-image with Escape even when the keydown is dispatched on the window, not the canvas', () => {
-    const trace = { source: {}, width: 2, height: 2, chartBounds: { x: 0, y: 0, width: 2, height: 2 } };
-    const { uiStore, calls, controller } = controllerFixture({ traceImage: trace });
-    const before = uiStore.getState().tool;
-    controller.setTool({ tool: 'move-image' });
-    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true });
-    const prevented = vi.fn();
-    Object.defineProperty(event, 'preventDefault', { value: prevented });
-    globalThis.dispatchEvent(event);
-    expect(prevented).toHaveBeenCalled();
-    expect(uiStore.getState().tool).toEqual(before);
-    expect(calls.setPatternDimmed).toEqual([true, false]);
     controller.dispose();
   });
 
@@ -2536,7 +2368,7 @@ describe('EditorSurfaceController', () => {
 
   it('applies keyboard paint with clipped brush stamps and one undoable revision', () => {
     const { boundary, gateway, uiStore, controller } = controllerFixture();
-    uiStore.setBrushSize(3);
+    uiStore.setState({ brushSize: 3 });
     uiStore.setKeyboardCursor({ x: 0, y: 0 });
     expect(controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined })).toBe(true);
     expect(boundary.log.at(-1)).toMatchObject({ type: 'bulk-cell', indices: new Uint32Array([0, 1, 8, 9]) });
@@ -2554,7 +2386,7 @@ describe('EditorSurfaceController', () => {
   it('applies keyboard half-stitch brush stamps across multiple cells', () => {
     const { boundary, gateway, uiStore, controller } = controllerFixture();
     controller.setBrush({ kind: 'half', direction: '/', paletteId: 1 });
-    uiStore.setBrushSize(2);
+    uiStore.setState({ brushSize: 2 });
     uiStore.setKeyboardCursor({ x: 2, y: 2 });
     controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined });
     expect(boundary.log.at(-1)).toMatchObject({
@@ -2569,11 +2401,11 @@ describe('EditorSurfaceController', () => {
 
   it('applies keyboard erase stamps, supports undo/redo, suppresses no-ops, and rejects off-chart cursors', () => {
     const { boundary, gateway, uiStore, controller } = controllerFixture();
-    gateway.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-    gateway.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
+    gateway.execute(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
+    gateway.execute(cell(8, { type: 'set-full', x: 1, y: 1, color: 1 }));
     boundary.log.length = 0;
     controller.setTool({ tool: 'eraser' });
-    uiStore.setBrushSize(2);
+    uiStore.setState({ brushSize: 2 });
     uiStore.setKeyboardCursor({ x: 1, y: 1 });
     const historyBeforeErase = boundary.undoDepth;
     controller.handleKeyDown({ key: 'Backspace', preventDefault: () => undefined });
@@ -2587,7 +2419,7 @@ describe('EditorSurfaceController', () => {
     controller.handleKeyDown({ key: 'y', ctrlKey: true, preventDefault: () => undefined });
 
     boundary.log.length = 0;
-    uiStore.setBrushSize(1);
+    uiStore.setState({ brushSize: 1 });
     controller.setTool({ tool: 'eraser' });
     uiStore.setKeyboardCursor({ x: 0, y: 1 });
     controller.handleKeyDown({ key: 'Backspace', preventDefault: () => undefined });
@@ -2755,8 +2587,8 @@ describe('EditorSurfaceController mark tool', () => {
 
   it('toggles the one component under a tap', () => {
     const { gateway, controller, marks } = markFixture();
-    gateway.execute({ type: 'set-quarter', x: 1, y: 1, corner: QuarterCorner.NW, color: 1 });
-    gateway.execute({ type: 'set-quarter', x: 1, y: 1, corner: QuarterCorner.NE, color: 2 });
+    gateway.execute(cell(8, { type: 'set-quarter', x: 1, y: 1, corner: QuarterCorner.NW, color: 1 }));
+    gateway.execute(cell(8, { type: 'set-quarter', x: 1, y: 1, corner: QuarterCorner.NE, color: 2 }));
     const tap = at(1.75, 1.25);
     drag(controller, [tap], 'touch');
     expect(marks()).toHaveLength(1);
@@ -2778,7 +2610,7 @@ describe('EditorSurfaceController mark tool', () => {
 
   it('sets every stitch a drag crosses in one call and previews the marks', () => {
     const { boundary, gateway, uiStore, controller, marks } = markFixture();
-    for (let x = 1; x <= 4; x += 1) gateway.execute({ type: 'set-full', x, y: 2, color: 1 });
+    for (let x = 1; x <= 4; x += 1) gateway.execute(cell(8, { type: 'set-full', x, y: 2, color: 1 }));
     boundary.seed({ type: 'add-backstitch', start: { x: 12, y: 8 }, end: { x: 12, y: 12 }, color: 1 });
     controller.handlePointerDown(pointer(1, at(1.5, 2.5).x, at(1.5, 2.5).y));
     controller.handlePointerMove(pointer(1, at(2.5, 2.5).x, at(2.5, 2.5).y));
@@ -2799,8 +2631,8 @@ describe('EditorSurfaceController mark tool', () => {
 
   it('clears a drag when the first stitch it reaches is already done', () => {
     const { boundary, gateway, controller, markProgress, marks } = markFixture();
-    gateway.execute({ type: 'set-full', x: 1, y: 2, color: 1 });
-    gateway.execute({ type: 'set-full', x: 2, y: 2, color: 1 });
+    gateway.execute(cell(8, { type: 'set-full', x: 1, y: 2, color: 1 }));
+    gateway.execute(cell(8, { type: 'set-full', x: 2, y: 2, color: 1 }));
     boundary.markProgress({ cells: { indices: Uint32Array.of(17), masks: Uint8Array.of(1) }, operation: 'set' });
     markProgress.mockClear();
     drag(controller, [at(1.5, 2.5), at(2.5, 2.5)]);
@@ -2812,11 +2644,11 @@ describe('EditorSurfaceController mark tool', () => {
 
   it('marks only the highlighted color', () => {
     const { gateway, controller, marks } = markFixture();
-    gateway.execute({ type: 'set-full', x: 1, y: 2, color: 1 });
-    gateway.execute({ type: 'set-full', x: 2, y: 2, color: 2 });
-    gateway.execute({ type: 'set-full', x: 3, y: 2, color: 1 });
-    gateway.execute({ type: 'set-quarter', x: 4, y: 2, corner: QuarterCorner.NW, color: 1 });
-    gateway.execute({ type: 'set-quarter', x: 4, y: 2, corner: QuarterCorner.SE, color: 2 });
+    gateway.execute(cell(8, { type: 'set-full', x: 1, y: 2, color: 1 }));
+    gateway.execute(cell(8, { type: 'set-full', x: 2, y: 2, color: 2 }));
+    gateway.execute(cell(8, { type: 'set-full', x: 3, y: 2, color: 1 }));
+    gateway.execute(cell(8, { type: 'set-quarter', x: 4, y: 2, corner: QuarterCorner.NW, color: 1 }));
+    gateway.execute(cell(8, { type: 'set-quarter', x: 4, y: 2, corner: QuarterCorner.SE, color: 2 }));
     controller.setHighlightColor(2);
     drag(controller, [at(1.5, 2.5), at(4.5, 2.5)]);
     expect(marks()).toHaveLength(1);
@@ -2831,7 +2663,7 @@ describe('EditorSurfaceController mark tool', () => {
 
   it('pinches instead of marking when a second finger lands', () => {
     const { gateway, uiStore, controller, marks } = markFixture();
-    for (let x = 1; x <= 4; x += 1) gateway.execute({ type: 'set-full', x, y: 2, color: 1 });
+    for (let x = 1; x <= 4; x += 1) gateway.execute(cell(8, { type: 'set-full', x, y: 2, color: 1 }));
     const before = uiStore.getState().viewport;
     controller.handlePointerDown(pointer(1, at(1.5, 2.5).x, at(1.5, 2.5).y, 'touch'));
     controller.handlePointerMove(pointer(1, at(3.5, 2.5).x, at(3.5, 2.5).y, 'touch'));
@@ -2847,7 +2679,7 @@ describe('EditorSurfaceController mark tool', () => {
 
   it('still pans with the middle button', () => {
     const { gateway, uiStore, controller, marks } = markFixture();
-    gateway.execute({ type: 'set-full', x: 1, y: 2, color: 1 });
+    gateway.execute(cell(8, { type: 'set-full', x: 1, y: 2, color: 1 }));
     const before = uiStore.getState().viewport;
     controller.handlePointerDown(pointer(1, at(1.5, 2.5).x, at(1.5, 2.5).y, 'mouse', 1));
     controller.handlePointerMove(pointer(1, at(3.5, 2.5).x, at(3.5, 2.5).y, 'mouse', 1));

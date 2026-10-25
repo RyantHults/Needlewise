@@ -109,8 +109,6 @@ export function buildLegend(palette: readonly PaletteEntry[], metrics: PatternMe
   }
   const totals = metrics.totals;
   const assumptions = metrics.totalMaterial?.assumptions ?? metrics.materials.find((material) => material.assumptions)?.assumptions;
-  // `backstitchStrands` may be absent from older metrics; it reads as 1.
-  const settings = metrics.materialSettings as { readonly backstitchStrands?: number };
   return {
     rows,
     totals: {
@@ -126,7 +124,7 @@ export function buildLegend(palette: readonly PaletteEntry[], metrics: PatternMe
     },
     units,
     strands: metrics.materialSettings.strands,
-    backstitchStrands: assumptions?.backstitchStrands ?? settings.backstitchStrands ?? 1,
+    backstitchStrands: assumptions?.backstitchStrands ?? metrics.materialSettings.backstitchStrands,
     waste: metrics.materialSettings.waste,
     aidaCount: assumptions?.aidaCount,
     note: assumptions?.note

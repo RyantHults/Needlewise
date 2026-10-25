@@ -14,7 +14,7 @@ import {
   type DomainCommand,
   type LayeredDocument
 } from './index';
-import { TEST_CATALOG, commitLayerSurface, createLayeredDocument, stitchLayer } from './test-fixtures';
+import { TEST_CATALOG, commitLayerSurface, createLayeredDocument, stitchLayer, cell } from './test-fixtures';
 
 function layered(): LayeredDocument {
   return createLayeredDocument({
@@ -31,7 +31,7 @@ function layered(): LayeredDocument {
 
 function run(doc: LayeredDocument, layerId: number, ...commands: DomainCommand[]): void {
   const surface = layerSurface(doc, layerId);
-  applyCommandsToDraft(surface, commands);
+  for (const command of commands) applyCommandsToDraft(surface, [command]);
   commitLayerSurface(doc, layerId, surface);
 }
 
@@ -39,8 +39,8 @@ describe('covering layers', () => {
   it('names the topmost visible non-empty stitch layer for a cell', () => {
     const doc = layered();
     applyLayerStructureCommand(doc, layerAddCommand(LayerType.Stitch));
-    run(doc, 1, { type: 'set-full', x: 0, y: 0, color: 1 }, { type: 'set-full', x: 1, y: 0, color: 1 });
-    run(doc, 3, { type: 'set-full', x: 0, y: 0, color: 2 });
+    run(doc, 1, cell(doc, { type: 'set-full', x: 0, y: 0, color: 1 }), cell(doc, { type: 'set-full', x: 1, y: 0, color: 1 }));
+    run(doc, 3, cell(doc, { type: 'set-full', x: 0, y: 0, color: 2 }));
     expect([coveringLayerId(doc, 0), coveringLayerId(doc, 1), coveringLayerId(doc, 2)]).toEqual([3, 1, null]);
     applyLayerStructureCommand(doc, layerSetVisibilityCommand(3, false));
     expect(coveringLayerId(doc, 0)).toBe(1);
@@ -68,7 +68,7 @@ describe('covering layers', () => {
 describe('colorComponentMask', () => {
   it('keeps whole-cell stitches only when their color matches', () => {
     const doc = layered();
-    run(doc, 1, { type: 'set-full', x: 0, y: 0, color: 1 });
+    run(doc, 1, cell(doc, { type: 'set-full', x: 0, y: 0, color: 1 }));
     const composite = flattenDocument(doc);
     expect(colorComponentMask(composite, 0, null)).toBe(1);
     expect(colorComponentMask(composite, 0, 1)).toBe(1);

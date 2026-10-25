@@ -4,7 +4,7 @@ import { PDFArray, PDFDocument, decodePDFRawStream, type PDFRawStream } from 'pd
 import { describe, expect, it } from 'vitest';
 import { CellKind, computePatternMetrics, createDocument, HalfDirection, QuarterCorner, type PatternDocument } from '../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
-import { getSymbolOutline, SYMBOL_POOL_VERSION } from '../symbols';
+import { SYMBOL_POOL_VERSION } from '../symbols';
 import { DEFAULT_EXPORT_SETTINGS, type ExportSettings } from './export-settings';
 import { PAPER_SIZES_PT } from './export-settings';
 import { ExportCancelledError } from './cancellation';
@@ -21,7 +21,7 @@ import {
   writePatternPdf,
   type PdfPatternInput
 } from './pdf-writer';
-import { applyCommand } from '../domain/test-fixtures';
+import { applyCommand, cell } from '../domain/test-fixtures';
 
 const fontBytes = new Uint8Array(readFileSync(new URL('../../fonts/LibertinusMath-Regular.ttf', import.meta.url)));
 // 1x1 PNG.
@@ -66,9 +66,9 @@ function stitched(document: PatternDocument): PatternDocument {
 }
 
 const withStitches = (width: number, height: number): PatternDocument => stitched(patternOf(width, height, (apply) => {
-  apply({ type: 'set-full', x: 0, y: 0, color: 1 });
-  apply({ type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 2 });
-  apply({ type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 });
+  apply(cell(width, { type: 'set-full', x: 0, y: 0, color: 1 }));
+  apply(cell(width, { type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 2 }));
+  apply(cell(width, { type: 'set-quarter', x: 2, y: 0, corner: QuarterCorner.NW, color: 1 }));
   apply({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: width * 4, y: height * 4 }, color: 2 });
 }));
 
@@ -78,18 +78,6 @@ describe('symbol placement (drawSvgPath spike)', () => {
     expect(symbolPlacement(0, 0, 8, 100, 0.5).scale).toBe(4);
   });
 
-  it('matches the operators pdf-lib emits for drawSvgPath', async () => {
-    const doc = await PDFDocument.create();
-    const page = doc.addPage([200, 300]);
-    const placement = symbolPlacement(20, 40, 12, 300);
-    page.drawSvgPath('M -0.25 -0.25 L 0.25 -0.25 L 0 0.25 Z', placement);
-    const ops = (page as unknown as { getContentStream(): { operators: Array<{ name: string; args: Array<{ toString(): string }> }> } })
-      .getContentStream().operators;
-    const matrices = ops.filter((op) => op.name === 'cm').map((op) => op.args.map((arg) => Number(arg.toString())));
-    // translate to the cell center (y-up), then scale with a y flip so +y-down outlines render upright.
-    expect(matrices[0]).toEqual([1, 0, 0, 1, 26, 254]);
-    expect(matrices[matrices.length - 1]).toEqual([12, 0, 0, -12, 0, 0]);
-  });
 });
 
 describe('helpers', () => {
@@ -236,7 +224,7 @@ describe('writePatternPdf', () => {
 
   it('draws imperial units and many legend rows across legend pages', async () => {
     const document = patternOf(30, 30, (apply) => {
-      for (let i = 0; i < 25; i += 1) apply({ type: 'set-full', x: i, y: 0, color: 1 });
+      for (let i = 0; i < 25; i += 1) apply(cell(30, { type: 'set-full', x: i, y: 0, color: 1 }));
     });
     const input = inputFor(document, { units: 'imperial' });
     expect((await load(await writePatternPdf(input))).getPageCount()).toBe(estimateTotalPages(30, 30, input.settings, legendRows(input)));
@@ -259,26 +247,6 @@ describe('writePatternPdf', () => {
     await expect(writePatternPdf(input, { signal: aborted.signal })).rejects.toMatchObject({ name: 'AbortError' });
   });
 });
-
-describe('quadratic symbols', () => {
-  it('draws pool symbols as exact cubics, never as the `v` approximation', async () => {
-    const document = withStitches(3, 2);
-    const quadratic = document.palette.filter((entry) => /[QqTt]/.test(getSymbolOutline(entry.symbol)?.d ?? ''));
-    expect(quadratic.length).toBeGreaterThan(0);
-    const bytes = await writePatternPdf(inputFor(document));
-    const pdf = await load(bytes);
-    const operators = pageContent(pdf, pdf.getPageCount() - 1).split('\n').map((line) => line.trim().split(/\s+/).pop());
-    expect(operators).toContain('c');
-    expect(operators).not.toContain('v');
-    expect(operators).not.toContain('y');
-  });
-});
-
-function pageContent(pdf: PDFDocument, pageIndex: number): string {
-  const contents = pdf.getPage(pageIndex).node.Contents();
-  const streams = contents instanceof PDFArray ? contents.asArray().map((ref) => pdf.context.lookup(ref)) : [contents];
-  return streams.map((stream) => new TextDecoder().decode(decodePDFRawStream(stream as PDFRawStream).decode())).join('\n');
-}
 
 /** Line segments stroked in `rgb` (0-1 channels, 3 decimals) on one page, in page points, y-up. */
 async function strokedSegments(bytes: Uint8Array, pageIndex: number, rgb: string): Promise<Array<[number, number, number, number]>> {

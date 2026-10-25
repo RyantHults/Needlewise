@@ -15,10 +15,9 @@ import { MemoryRepository } from '../application/test-support';
 import { clearClipboard } from './clipboard-store';
 import { EditorSurfaceController } from './controller';
 import { getCanvasMetrics } from './coordinates';
-import { createFillWorkerClient } from './fill';
 import { createWorkspaceEditorGateway, type WorkspaceEditorBoundary } from './gateway';
 import { createUiStore } from './ui-store';
-import { applyCommand, commitLayerSurface, createLayeredDocument, specialtyLayer, stitchLayer } from '../domain/test-fixtures';
+import { applyCommand, commitLayerSurface, createLayeredDocument, specialtyLayer, stitchLayer, cell } from '../domain/test-fixtures';
 import { drag, rendererFixture } from './test-support';
 
 /** Bottom to top: stitch 1, specialty 2, stitch 3. */
@@ -40,7 +39,7 @@ function seed(document: LayeredDocument, layerId: number, command: DomainCommand
 }
 
 function full(x: number, y: number, color = 1): DomainCommand {
-  return { type: 'set-full', x, y, color };
+  return cell(8, { type: 'set-full', x, y, color });
 }
 
 function backstitch(x1: number, y1: number, x2: number, y2: number, color = 1): DomainCommand {
@@ -90,7 +89,6 @@ function fixture(document: LayeredDocument, primary: number, others: readonly nu
     uiStore,
     renderer: rendererFixture().renderer,
     metrics: getCanvasMetrics(128, 128),
-    fillClient: createFillWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'fill' }),
     onNotice: (message) => notices.push(message)
   });
   controller.start();

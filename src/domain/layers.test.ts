@@ -37,7 +37,7 @@ import {
   type SpecialtyLayer,
   type StitchLayer
 } from './index';
-import { markCellComplete, commitLayerSurface, createLayeredDocument, stitchLayer, specialtyLayer, errorCode, TEST_CATALOG } from './test-fixtures';
+import { markCellComplete, commitLayerSurface, createLayeredDocument, stitchLayer, specialtyLayer, errorCode, TEST_CATALOG, cell } from './test-fixtures';
 
 function layered(width = 4, height = 3): LayeredDocument {
   return createLayeredDocument({
@@ -54,7 +54,7 @@ function layered(width = 4, height = 3): LayeredDocument {
 
 function run(doc: LayeredDocument, layerId: number, ...commands: DomainCommand[]): void {
   const surface = layerSurface(doc, layerId);
-  applyCommandsToDraft(surface, commands);
+  for (const command of commands) applyCommandsToDraft(surface, [command]);
   commitLayerSurface(doc, layerId, surface);
 }
 
@@ -83,10 +83,8 @@ describe('layered documents', () => {
 
   it('builds from a legacy surface: cells to Stitches, backstitches to Specialty, completion dropped', () => {
     let surface = createDocument({ width: 3, height: 3, catalog: TEST_CATALOG, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    applyCommandsToDraft(surface, [
-      { type: 'set-full', x: 1, y: 1, color: 1 },
-      { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 }
-    ]);
+    applyCommandsToDraft(surface, [cell(surface, { type: 'set-full', x: 1, y: 1, color: 1 })]);
+    applyCommandsToDraft(surface, [{ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 }]);
     surface = markCellComplete(surface, 1, 1);
     expect(surface.completed[4]).not.toBe(0);
     const doc = layeredFromSurface(surface, { aidaCount: 11 });
@@ -106,10 +104,8 @@ describe('layer surfaces', () => {
     expect(surface.kind).toBe(stitchLayer(doc, 1).kind);
     expect(surface.palette).toBe(doc.palette);
     expect(surface.backstitches.ids).toHaveLength(0);
-    applyCommandsToDraft(surface, [
-      { type: 'set-full', x: 0, y: 0, color: 1 },
-      { type: 'palette-create', name: 'Green', color: '#0a0' }
-    ]);
+    applyCommandsToDraft(surface, [cell(surface, { type: 'set-full', x: 0, y: 0, color: 1 })]);
+    applyCommandsToDraft(surface, [{ type: 'palette-create', name: 'Green', color: '#0a0' }]);
     expect(stitchLayer(doc, 1).kind[0]).toBe(CellKind.Full);
     commitLayerSurface(doc, 1, surface);
     expect(doc.palette.map((entry) => entry.name)).toContain('Green');
@@ -147,8 +143,8 @@ describe('flattening', () => {
   it('lets the topmost non-empty cell cover whole cells, with a half covering a full', () => {
     const doc = twoStitchLayers();
     expect(doc.layers.map((layer) => layer.id)).toEqual([1, 3, 2]);
-    run(doc, 1, { type: 'set-full', x: 0, y: 0, color: 1 }, { type: 'set-full', x: 1, y: 0, color: 1 });
-    run(doc, 3, { type: 'set-half', x: 0, y: 0, direction: HalfDirection.Slash, color: 2 });
+    run(doc, 1, cell(doc, { type: 'set-full', x: 0, y: 0, color: 1 }), cell(doc, { type: 'set-full', x: 1, y: 0, color: 1 }));
+    run(doc, 3, cell(doc, { type: 'set-half', x: 0, y: 0, direction: HalfDirection.Slash, color: 2 }));
     const composite = flattenDocument(doc);
     expect(composite.kind[0]).toBe(CellKind.HalfSlash);
     expect(Array.from(composite.colors.subarray(0, 4))).toEqual([2, 0, 0, 0]);
@@ -161,8 +157,8 @@ describe('flattening', () => {
 
   it('ignores hidden layers', () => {
     const doc = twoStitchLayers();
-    run(doc, 1, { type: 'set-full', x: 0, y: 0, color: 1 });
-    run(doc, 3, { type: 'set-full', x: 0, y: 0, color: 2 });
+    run(doc, 1, cell(doc, { type: 'set-full', x: 0, y: 0, color: 1 }));
+    run(doc, 3, cell(doc, { type: 'set-full', x: 0, y: 0, color: 2 }));
     run(doc, 2, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 });
     applyLayerStructureCommand(doc, layerSetVisibilityCommand(3, false));
     applyLayerStructureCommand(doc, layerSetVisibilityCommand(2, false));
@@ -185,9 +181,9 @@ describe('flattening', () => {
     const doc = twoStitchLayers();
     const cache = new FlattenCache();
     cache.full(doc);
-    run(doc, 1, { type: 'set-full', x: 2, y: 1, color: 1 }, { type: 'set-full', x: 3, y: 2, color: 3 });
+    run(doc, 1, cell(doc, { type: 'set-full', x: 2, y: 1, color: 1 }), cell(doc, { type: 'set-full', x: 3, y: 2, color: 3 }));
     cache.update(doc, new Uint32Array([6, 11]));
-    run(doc, 3, { type: 'set-half', x: 2, y: 1, direction: HalfDirection.Backslash, color: 2 });
+    run(doc, 3, cell(doc, { type: 'set-half', x: 2, y: 1, direction: HalfDirection.Backslash, color: 2 }));
     const beforeHalf = cache.document!;
     const updated = cache.update(doc, new Uint32Array([6]));
     // Earlier composites are immutable snapshots.
@@ -218,8 +214,8 @@ describe('flattening', () => {
 
   it('shows the covering layer\'s marks, and a hidden top layer reveals the lower layer\'s own marks', () => {
     const doc = twoStitchLayers();
-    run(doc, 1, { type: 'set-full', x: 0, y: 0, color: 1 }, { type: 'set-full', x: 1, y: 0, color: 1 });
-    run(doc, 3, { type: 'set-full', x: 0, y: 0, color: 2 });
+    run(doc, 1, cell(doc, { type: 'set-full', x: 0, y: 0, color: 1 }), cell(doc, { type: 'set-full', x: 1, y: 0, color: 1 }));
+    run(doc, 3, cell(doc, { type: 'set-full', x: 0, y: 0, color: 2 }));
     stitchLayer(doc, 1).completed[0] = 1;
     stitchLayer(doc, 1).completed[1] = 1;
     // The top layer covers cell 0 unmarked; cell 1 shows through from below.
@@ -239,7 +235,7 @@ describe('flattening', () => {
 
   it('refreshes completion for changed cells in FlattenCache.update without writing earlier composites', () => {
     const doc = twoStitchLayers();
-    run(doc, 1, { type: 'set-full', x: 0, y: 0, color: 1 }, { type: 'set-full', x: 1, y: 0, color: 1 });
+    run(doc, 1, cell(doc, { type: 'set-full', x: 0, y: 0, color: 1 }), cell(doc, { type: 'set-full', x: 1, y: 0, color: 1 }));
     const cache = new FlattenCache();
     const before = cache.full(doc);
     stitchLayer(doc, 1).completed[0] = 1;
@@ -252,7 +248,7 @@ describe('flattening', () => {
     expect(cache.update(doc, new Uint32Array([1])).completed[1]).toBe(1);
     expect(cache.document!.completed).toEqual(flattenDocument(doc).completed);
     // An emptied cell drops its mark from the composite.
-    run(doc, 1, { type: 'erase-cell', x: 0, y: 0 });
+    run(doc, 1, cell(doc, { type: 'erase-cell', x: 0, y: 0 }));
     expect(cache.update(doc, new Uint32Array([0])).completed[0]).toBe(0);
     expect(cache.touch(doc).completed).toBe(cache.document!.completed);
   });
@@ -261,7 +257,7 @@ describe('flattening', () => {
     const doc = layered(2, 2);
     expect('canvasMask' in flattenDocument(doc)).toBe(false);
     expect('originX' in layerSurface(doc, 1)).toBe(false);
-    run(doc, 1, { type: 'set-full', x: 0, y: 0, color: 1 });
+    run(doc, 1, cell(doc, { type: 'set-full', x: 0, y: 0, color: 1 }));
     const cache = new FlattenCache();
     const before = cache.full(doc);
     const mask = new Uint8Array([1, 1, 1, 0]);
@@ -310,7 +306,7 @@ describe('layer queries', () => {
   });
 
   it('classifies command scope and required layer type', () => {
-    const setFull: DomainCommand = { type: 'set-full', x: 0, y: 0, color: 1 };
+    const setFull: DomainCommand = cell(4, { type: 'set-full', x: 0, y: 0, color: 1 });
     const addBackstitch: DomainCommand = { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 };
     const paletteMerge: DomainCommand = { type: 'palette-merge', from: 1 };
     const canvasCells: DomainCommand = { type: 'canvas-cells', operation: 'add', rect: { x: 0, y: 0, width: 1, height: 1 } };
@@ -404,7 +400,7 @@ describe('layer structure commands', () => {
 
   it('duplicates directly above the source with fresh backstitch ids and a copy name', () => {
     const doc = layered();
-    run(doc, 1, { type: 'set-full', x: 0, y: 0, color: 1 });
+    run(doc, 1, cell(doc, { type: 'set-full', x: 0, y: 0, color: 1 }));
     run(doc, 2, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 });
     stitchLayer(doc, 1).completed[0] = 1;
     specialtyLayer(doc, 2).backstitches.completed[0] = 1;
@@ -435,8 +431,8 @@ describe('layer structure commands', () => {
   it('merges stitch layers with conflicts going to the higher layer, keeping the target name and position', () => {
     const doc = layered();
     applyLayerStructureCommand(doc, layerAddCommand(LayerType.Stitch, { name: 'Top' }));
-    run(doc, 1, { type: 'set-full', x: 0, y: 0, color: 1 }, { type: 'set-full', x: 1, y: 0, color: 1 });
-    run(doc, 3, { type: 'set-full', x: 0, y: 0, color: 2 }, { type: 'set-full', x: 2, y: 0, color: 2 });
+    run(doc, 1, cell(doc, { type: 'set-full', x: 0, y: 0, color: 1 }), cell(doc, { type: 'set-full', x: 1, y: 0, color: 1 }));
+    run(doc, 3, cell(doc, { type: 'set-full', x: 0, y: 0, color: 2 }), cell(doc, { type: 'set-full', x: 2, y: 0, color: 2 }));
     // Marks follow the winning cell: the lower mark on cell 0 is covered, the upper one on cell 2 wins.
     stitchLayer(doc, 1).completed.set([1, 1]);
     stitchLayer(doc, 3).completed[2] = 1;

@@ -6,7 +6,7 @@ import { createDocument } from './domain';
 import { DEFAULT_CATALOG_DEFINITION } from './catalog';
 import { ProjectWorkspace } from './application/workspace';
 import { NeedlewiseDatabase, ProjectRepository } from './persistence';
-import { applyCommand } from './domain/test-fixtures';
+import { applyCommand, cell } from './domain/test-fixtures';
 
 /**
  * Locks the reported flow with the real stack: thread rows AND the
@@ -21,7 +21,7 @@ describe('measurement units end-to-end', () => {
     const seedRepo = new ProjectRepository(seedDb, { now: () => 10 });
     const seedWorkspace = new ProjectWorkspace({ repository: seedRepo, clock: { now: () => 100 }, projectIdFactory: () => 'units-flow' });
     let pattern = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 14, height: 14, palette: [{ id: 1, name: 'Ruby', color: '#AA0000' }] });
-    pattern = applyCommand(pattern, { type: 'set-full', x: 0, y: 0, color: 1 }).document;
+    pattern = applyCommand(pattern, cell(pattern, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
     await seedWorkspace.createProject({ title: 'Units quilt', document: pattern, materialSettings: { strands: 2, waste: 0.2, skeinLengthMeters: 8 } });
     await seedWorkspace.dispose();
     await seedRepo.close();

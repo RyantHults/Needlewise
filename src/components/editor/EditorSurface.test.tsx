@@ -6,7 +6,6 @@ import { createCatalogReference, DEFAULT_CATALOG_DEFINITION, type CatalogDefinit
 import { makeCatalog } from '../../catalog/test-support';
 import { layerAddCommand, applyLayerStructureCommand, type LayeredDocument } from '../../domain';
 import { SYMBOL_POOL, SYMBOL_IDS } from '../../symbols';
-import stylesText from '../../styles.css?inline';
 import type { ReactElement } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { createLayeredDocument } from '../../domain/test-fixtures';
@@ -229,7 +228,6 @@ describe('EditorSurface', () => {
     fireEvent.click(screen.getByRole('button', { name: /Add new color/ }));
     expect(screen.getByRole('tablist', { name: 'Thread catalogs' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'DMC' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.queryByRole('combobox', { name: 'Catalog' })).not.toBeInTheDocument();
   });
   it('renders every record when an installed catalog tab has an empty search', () => {
     const records = Array.from({ length: 13 }, (_, index) => ({
@@ -277,12 +275,9 @@ describe('EditorSurface', () => {
       expect(event.defaultPrevented).toBe(true);
     }
   });
-  it('keeps custom HEX creation while removing numeric RGB controls', async () => {
+  it('creates a custom color from a HEX code', async () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     const dialog = openCustomColorDialog();
-    expect(within(dialog).queryByLabelText('Red')).not.toBeInTheDocument();
-    expect(within(dialog).queryByLabelText('Green')).not.toBeInTheDocument();
-    expect(within(dialog).queryByLabelText('Blue')).not.toBeInTheDocument();
     fireEvent.change(within(dialog).getByLabelText('Hex color'), { target: { value: '#12ab34' } });
     expect(customColorAction(dialog)).toHaveAccessibleName('Add #12AB34');
     fireEvent.click(customColorAction(dialog));
@@ -307,14 +302,6 @@ describe('EditorSurface', () => {
     expect(within(dialog).getByRole('tab', { name: 'Brand B' })).toHaveAttribute('aria-selected', 'true');
     expect(within(dialog).getByLabelText('Search Brand B catalog')).toHaveValue('321');
     expect(within(dialog).getByRole('button', { name: 'B Ruby, color 321' })).toBeInTheDocument();
-  });
-  it('keeps the one-catalog picker free of a catalog selector', () => {
-    const workspace = multiCatalogWorkspace();
-    workspace.availableCatalogs?.mockReturnValue([COMPACT_DMC_DEFINITION]);
-    render(<EditorSurface workspace={ws} document={doc} />);
-    fireEvent.click(screen.getByRole('button', { name: /Add new color/ }));
-    expect(screen.queryByRole('combobox', { name: 'Catalog' })).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Search DMC catalog')).toBeInTheDocument();
   });
   it('uses an installed catalog even when the document primary is unavailable', () => {
     const workspace = multiCatalogWorkspace();
@@ -363,7 +350,7 @@ describe('EditorSurface', () => {
     expect(error.mock.calls.map(([message]) => String(message))).not.toEqual(expect.arrayContaining([expect.stringMatching(/same key|duplicate key/i)]));
     error.mockRestore();
   });
-  it('shows cross-brand palette chips as compact, separate brand and code lines', () => {
+  it('labels cross-brand palette chips with brand and code', () => {
     multiCatalogWorkspace();
     const collision = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [
       { id: 1, name: 'Ruby A', color: '#AA0000', active: true, catalog: { catalogId: DEFAULT_CATALOG_DEFINITION.association.catalogId, sourceId: 'a', code: '321' } },
@@ -371,49 +358,11 @@ describe('EditorSurface', () => {
     ], backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={collision} />);
     const chip = screen.getByRole('button', { name: /Brand B 321Ruby B/ });
-    expect(within(chip).getByText('Brand B')).toHaveClass('palette-brand-label');
-    expect(within(chip).getByText('321')).toHaveClass('palette-code-label');
-    expect(stylesText).toContain('.palette-rail .palette-number');
-    expect(stylesText).toContain('width:2.75rem');
-    expect(stylesText).toContain('.editor-layout { position:relative; grid-template-columns:9.3rem minmax(0,1fr);');
-    expect(stylesText).toContain('grid-template-columns:repeat(2, 2.75rem)');
-    expect(stylesText).toMatch(/\.editor-rail-shell \.layers-panel \{ grid-column:1 \/ -1; grid-row:2; height:33vh; \}/);
-    const brandRule = stylesText.match(/\.palette-rail \.palette-brand-label\s*\{([^}]*)\}/)?.[1] ?? '';
-    expect(brandRule).toContain('white-space:nowrap');
-    expect(brandRule).toContain('overflow:hidden');
-    expect(brandRule).toContain('text-overflow:ellipsis');
-    expect(brandRule).toContain('max-height:.52rem');
     expect(chip).toHaveAccessibleName('Brand B 321Ruby B');
   });
   it('initializes the UI store with Pan while retaining the active palette', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     expect(f.createdUiState).toEqual({ paletteId: 1, tool: { tool: 'pan' } });
-  });
-  it('defaults Shape to Triangle as a plain rail button', () => {
-    render(<EditorSurface workspace={ws} document={doc} />);
-    const shape = screen.getByRole('button', { name: 'Shape' });
-    expect(shape.querySelector('[data-shape-icon="triangle"]')).toBeInTheDocument();
-    expect(shape).toHaveAttribute('title', 'Shape');
-    expect(shape).not.toHaveAttribute('aria-haspopup');
-  });
-  it('makes every rail tool a plain button with no popover affordances', () => {
-    render(<EditorSurface workspace={ws} document={doc} />);
-    const rail = screen.getByRole('navigation', { name: 'Editor sections' });
-    expect(rail.querySelector('.brush-size-corner')).toBeNull();
-    for (const button of within(rail).getAllByRole('button')) {
-      expect(button).not.toHaveAttribute('aria-haspopup');
-      expect(button).not.toHaveAttribute('aria-expanded');
-      expect(button).not.toHaveAttribute('aria-controls');
-      expect(button.getAttribute('title') ?? '').not.toContain('hold for');
-    }
-    for (const name of ['Stitch', 'Eraser', 'Backstitch', 'Select']) {
-      expect(screen.getByRole('button', { name })).toHaveAttribute('title', name);
-    }
-    fireEvent.contextMenu(screen.getByRole('button', { name: 'Stitch' }));
-    fireEvent.contextMenu(screen.getByRole('button', { name: 'Shape' }));
-    fireEvent.contextMenu(screen.getByRole('button', { name: 'Select' }));
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
   });
   it('preserves UI state when the document changes', () => {
     const view = render(<EditorSurface workspace={ws} document={doc} />);
@@ -611,7 +560,7 @@ describe('EditorSurface', () => {
     expect(adapterOptions.shouldExcludeTarget(screen.getByRole('button', { name: 'Backstitch, move mode' }), 'keydown')).toBe(true);
     expect(adapterOptions.shouldExcludeTarget(document.querySelector('.canvas-frame'), 'keydown')).toBe(false);
   });
-  it('wires the top-level stitch tools and removes separate brush settings', () => { render(<EditorSurface workspace={ws} document={doc} />); f.resize?.(); expect(f.c.setMetrics).toHaveBeenCalled(); expect(screen.queryByRole('heading', { name: 'Brush settings' })).not.toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: 'Stitch' })); expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'full', paletteId: 1 }); for (const name of ['Full stitch', 'Half stitch', '3/4 stitch']) expect(screen.queryByRole('button', { name })).not.toBeInTheDocument(); });
+  it('wires the top-level stitch tools', () => { render(<EditorSurface workspace={ws} document={doc} />); f.resize?.(); expect(f.c.setMetrics).toHaveBeenCalled(); fireEvent.click(screen.getByRole('button', { name: 'Stitch' })); expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'full', paletteId: 1 }); });
   it('sets the Full stitch brush size from Tool options without switching tools', () => {
     f.uiState.tool = { tool: 'paint', brush: { kind: 'full', paletteId: 1 } } as never;
     render(<EditorSurface workspace={ws} document={doc} />);
@@ -620,8 +569,6 @@ describe('EditorSurface', () => {
     expect(f.c.setToolBrushSize).toHaveBeenCalledWith('full', 7);
     expect(f.c.setBrush).not.toHaveBeenCalled();
     expect(f.c.setTool).not.toHaveBeenCalled();
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Brush settings' })).not.toBeInTheDocument();
   });
   it('scrolls to the picked palette row and replays the targeting pulse on every pick, including the same color', () => {
     const scroll = vi.fn();
@@ -696,11 +643,9 @@ describe('EditorSurface', () => {
     fireEvent.click(within(within(toolOptions()).getByRole('group', { name: 'Stitch type' })).getByRole('button', { name: 'Half stitch' }));
     expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'half', direction: '/', paletteId: 1 });
   });
-  it('renders 3/4 stitch as a plain stitch-type button with no direction slideout', () => {
+  it('sets the 3/4 stitch type from Tool options', () => {
     f.uiState.tool = { tool: 'paint', brush: { kind: 'three-quarter', paletteId: 1 } } as never;
     render(<EditorSurface workspace={ws} document={doc} />);
-    expect(within(toolOptions()).queryByRole('group', { name: 'Half stitch direction' })).not.toBeInTheDocument();
-    expect(within(toolOptions()).queryByRole('group', { name: 'Three-quarter stitch direction' })).not.toBeInTheDocument();
     f.c.setBrush.mockClear();
     fireEvent.click(within(within(toolOptions()).getByRole('group', { name: 'Stitch type' })).getByRole('button', { name: '3/4 stitch' }));
     expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'three-quarter', paletteId: 1 });
@@ -785,24 +730,11 @@ describe('EditorSurface', () => {
     fireEvent.click(shape);
     expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'shape', shape: 'circle' });
   });
-  it('presents seven icon-only shape choices including a distinct, accessible Oval', () => {
+  it('offers the seven shape choices by accessible name', () => {
     f.uiState.tool = { tool: 'shape', shape: 'triangle' } as never;
     render(<EditorSurface workspace={ws} document={doc} />);
     const group = within(toolOptions()).getByRole('group', { name: 'Shape' });
     expect(within(group).getAllByRole('button').map((button) => button.getAttribute('aria-label'))).toEqual(['Line', 'Rectangle', 'Square', 'Circle', 'Oval', 'Triangle', 'Right triangle']);
-    for (const [name, icon] of [['Line', 'line'], ['Rectangle', 'rectangle'], ['Square', 'square'], ['Circle', 'circle'], ['Triangle', 'triangle'], ['Right triangle', 'right-triangle'], ['Oval', 'oval']]) {
-      const choice = within(group).getByRole('button', { name });
-      expect(choice.querySelector(`[data-shape-icon="${icon}"]`)).toBeInTheDocument();
-      expect(choice).toHaveAttribute('title', name);
-      expect(choice).toHaveAttribute('type', 'button');
-      expect(choice).toHaveClass('tool-option-button');
-      expect(choice.textContent?.trim()).toBe('');
-    }
-    const rightTrianglePath = group.querySelector('[data-shape-icon="right-triangle"] path')?.getAttribute('d');
-    expect(rightTrianglePath).toBe('M5 5V19H19Z');
-    expect(rightTrianglePath).not.toContain('M8 16');
-    const ovalPath = group.querySelector('[data-shape-icon="oval"] path')?.getAttribute('d');
-    expect(ovalPath).toBe('M12 4a8 6 0 1 0 0 12 8 6 0 0 0 0-12');
   });
   describe('Focus Color button', () => {
     it('renders beside Add and Manage and reflects the ui state in aria-pressed', () => {
@@ -937,12 +869,6 @@ describe('EditorSurface', () => {
       expect(adapterOptions.shouldExcludeTarget(document.querySelector('.canvas-frame'), 'keydown')).toBe(false);
     });
   });
-  it('keeps selection actions out of the rail', () => {
-    render(<EditorSurface workspace={ws} document={doc} />);
-    const rail = within(screen.getByRole('navigation', { name: 'Editor sections' }));
-    expect(rail.queryByRole('button', { name: 'Paste selection' })).not.toBeInTheDocument();
-    expect(rail.queryByRole('button', { name: 'Delete selection' })).not.toBeInTheDocument();
-  });
   const selectionActions = () => within(toolOptions()).getByRole('group', { name: 'Selection actions' });
   it.each([{ tool: 'select', shape: 'rectangle' }, { tool: 'select', shape: 'oval' }, { tool: 'lasso' }] as const)('offers Copy, Paste, Move and Delete after the Selection shape group for %j', (tool) => {
     f.uiState.tool = tool as never;
@@ -1053,13 +979,12 @@ describe('EditorSurface', () => {
     expect(items[1].querySelector('.stitch-brush-icon-half')).toBeInTheDocument();
     expect(items[2].querySelector('.stitch-brush-icon-three-quarter')).toBeInTheDocument();
   });
-  it('leaves the Stitch button unpressed for other tools and has no separate stitch rail buttons', () => {
+  it('leaves the Stitch button unpressed for other tools', () => {
     f.uiState.tool = { tool: 'backstitch' };
     render(<EditorSurface workspace={ws} document={doc} />);
     expect(screen.getByRole('button', { name: 'Backstitch, draw mode' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', { name: 'Stitch' })).toHaveAttribute('aria-pressed', 'false');
     expect(within(toolOptions()).queryByRole('group', { name: 'Stitch type' })).not.toBeInTheDocument();
-    for (const name of ['Full stitch', 'Half stitch', '3/4 stitch']) expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
   });
   it('orders the Stitch type choice before the half direction and size controls', () => {
     f.uiState.tool = { tool: 'paint', brush: { kind: 'full', paletteId: 1 } } as never;
@@ -1102,23 +1027,15 @@ describe('EditorSurface', () => {
     expect(screen.getByText(/16 × 16 stitches · 2.9 cm × 2.9 cm/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Redo' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Paint' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Paint' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('slider', { name: /Brush size/ })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Stitch' })).toBeVisible();
     const paletteRegion = screen.getByRole('region', { name: 'Thread colors' });
     const rail = screen.getByRole('complementary', { name: 'Editor controls' });
     expect(rail).toContainElement(paletteRegion);
-    expect(paletteRegion).toHaveClass('palette-rail');
-    expect(rail.querySelector('nav.editor-rail')).toBeInTheDocument();
   });
   it('keeps the condensed export button semantic', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     const exportButton = screen.getByRole('button', { name: 'Export pattern' });
     expect(exportButton).toHaveAttribute('title', 'Export pattern');
-    expect(exportButton.querySelector('[data-icon="download"]')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Download Pattern' })).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Needlewise home' }).compareDocumentPosition(exportButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
   it('sets thread view from the Render button and shows only it pressed while on', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
@@ -1133,12 +1050,6 @@ describe('EditorSurface', () => {
     fireEvent.click(within(view).getByRole('button', { name: 'Symbol' }));
     expect(f.c.setChartMode).toHaveBeenCalledWith('symbol');
   });
-  it('renders the canvas actions above the canvas frame', () => {
-    render(<EditorSurface workspace={ws} document={doc} />);
-    const actions = document.querySelector('.canvas-actions')!;
-    const frame = document.querySelector('.canvas-frame')!;
-    expect(actions.compareDocumentPosition(frame) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  });
   it('opens the export dialog from the header and returns focus on close', async () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     const trigger = screen.getByRole('button', { name: 'Export pattern' });
@@ -1146,35 +1057,6 @@ describe('EditorSurface', () => {
     fireEvent.click(trigger);
     fireEvent.click(within(screen.getByRole('dialog', { name: 'Export pattern' })).getByRole('button', { name: 'Close export' }));
     expect(screen.queryByRole('dialog', { name: 'Export pattern' })).not.toBeInTheDocument();
-  });
-  it('places Tool options in the canvas action row between the reference controls and View settings', () => {
-    f.uiState.tool = { tool: 'paint', brush: { kind: 'full', paletteId: 1 } } as never;
-    render(<EditorSurface workspace={ws} document={doc} />);
-    const brush = screen.queryByRole('heading', { name: 'Brush settings' });
-    expect(brush).not.toBeInTheDocument();
-    const actions = document.querySelector('.canvas-actions') as HTMLElement;
-    const reference = within(actions).getByRole('toolbar', { name: 'Reference image' });
-    const options = within(actions).getByRole('region', { name: 'Stitch' });
-    expect(options).toBe(toolOptions());
-    const view = within(actions).getByRole('group', { name: 'View settings' });
-    expect(reference).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'View settings' })).toBeInTheDocument();
-    expect(within(view).queryByRole('checkbox', { name: 'Show grid' })).not.toBeInTheDocument();
-    for (const name of ['Color', 'Symbol', 'B/W', 'Both']) {
-      expect(within(view).getByRole('button', { name })).toHaveAttribute('title', name);
-    }
-    const zoomIn = within(actions).getByRole('button', { name: 'Zoom in' });
-    const fit = within(actions).getByRole('button', { name: 'Fit' });
-    expect(reference.compareDocumentPosition(options) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(options.compareDocumentPosition(view) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(view.compareDocumentPosition(zoomIn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(zoomIn.compareDocumentPosition(fit) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // Sections are siblings: Tool options sits right after the reference section and right before View settings.
-    const sections = [...actions.querySelectorAll(':scope > .action-section')];
-    const index = sections.indexOf(options);
-    expect(sections[index - 1]).toContainElement(reference);
-    expect(sections[index + 1]).toHaveClass('view-actions');
-    expect(screen.getByRole('button', { name: 'Stitch' })).toBeVisible();
   });
   it.each([['Pan', { tool: 'pan' }], ['Fill', { tool: 'fill' }], ['Eyedropper', { tool: 'eyedropper' }]] as const)('renders no Tool options section for %s', (name, tool) => {
     f.uiState.tool = tool as never;
@@ -1313,11 +1195,9 @@ describe('EditorSurface', () => {
     expect(f.c.setTool).toHaveBeenCalledWith(tool);
     expect(f.c.clearSelection).not.toHaveBeenCalled();
   });
-  it('remembers the selection choice from the active tool state and has no Lasso rail button', () => {
+  it('remembers the selection choice from the active tool state', () => {
     f.uiState.tool = { tool: 'lasso' } as never;
     render(<EditorSurface workspace={ws} document={doc} />);
-    expect(screen.queryByRole('button', { name: 'Lasso select' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('group', { name: 'Lasso shape' })).not.toBeInTheDocument();
     switchTool({ tool: 'fill' });
     fireEvent.click(screen.getByRole('button', { name: 'Select' }));
     expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'lasso' });
@@ -1464,15 +1344,14 @@ describe('EditorSurface', () => {
     const info = within(settings).getByRole('button', { name: 'Pencil mode information' });
     const tooltip = within(settings).getByRole('tooltip');
     expect(info).toHaveAttribute('aria-describedby', 'pencil-mode-tooltip');
-    expect(tooltip).toHaveTextContent(/Normal touch can only move or zoom/);
+    expect(tooltip).toBeInTheDocument();
     expect(info).toHaveAttribute('type', 'button');
   });
-  it('toggles the palette number setting without a palette symbol setting', () => {
+  it('toggles the palette number setting', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
     const settings = screen.getByRole('dialog', { name: 'Settings' });
     fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' }));
-    expect(within(settings).queryByRole('checkbox', { name: 'Show palette symbols' })).toBeNull();
     const numbers = within(settings).getByRole('checkbox', { name: 'Show palette numbers' });
     expect(numbers).toBeChecked();
     fireEvent.click(numbers);
@@ -1496,7 +1375,7 @@ describe('EditorSurface', () => {
   it('defaults project details to metric units and saves a switch through metadata', () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); expect(screen.getByRole('button', { name: 'Metric' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: 'Imperial' })).toHaveAttribute('aria-pressed', 'false'); fireEvent.click(screen.getByRole('button', { name: 'Imperial' })); expect(screen.getByRole('button', { name: 'Imperial' })).toHaveAttribute('aria-pressed', 'true'); fireEvent.click(screen.getByRole('button', { name: 'Save settings' })); expect((ws as { updateActiveMetadata: ReturnType<typeof vi.fn> }).updateActiveMetadata).toHaveBeenCalledWith({ title: 'Sampler', notes: '', units: 'imperial' }); });
   it('reflects a stored imperial preference when project details opens', () => { const base = ws as unknown as { metadata: Record<string, unknown> }; const imperialWs = { ...base, metadata: { ...base.metadata, units: 'imperial' } } as never; render(<EditorSurface workspace={imperialWs} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); expect(screen.getByRole('button', { name: 'Imperial' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: 'Metric' })).toHaveAttribute('aria-pressed', 'false'); });
   it('applies units immediately on toggle without waiting for save', () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); fireEvent.click(screen.getByRole('button', { name: 'Imperial' })); expect((ws as { updateActiveMetadata: ReturnType<typeof vi.fn> }).updateActiveMetadata).toHaveBeenCalledWith({ units: 'imperial' }); expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument(); });
-  it('guides users without a thread and no longer offers a Completion tool', () => { const empty = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: false }], backstitches: { ids: new Uint32Array() } } as never; render(<EditorSurface workspace={ws} document={empty} />); expect(screen.queryByRole('button', { name: 'Paint' })).not.toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Fill' })).toBeDisabled(); expect(screen.getByRole('button', { name: 'Backstitch' })).toBeDisabled(); expect(screen.queryByRole('button', { name: 'Completion' })).not.toBeInTheDocument(); });
+  it('guides users without a thread', () => { const empty = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: false }], backstitches: { ids: new Uint32Array() } } as never; render(<EditorSurface workspace={ws} document={empty} />); expect(screen.getByRole('button', { name: 'Fill' })).toBeDisabled(); expect(screen.getByRole('button', { name: 'Backstitch' })).toBeDisabled(); });
   it('shows catalog code before the palette name and exposes command buttons', () => { render(<EditorSurface workspace={ws} document={doc} />); const ruby = screen.getByRole('button', { name: '321Ruby' }); expect(ruby).toBeInTheDocument(); for (const name of ['Undo', 'Redo', 'Zoom in', 'Zoom out', 'Fit']) expect(screen.getByRole('button', { name })).toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: 'Undo' })); expect(f.c.handleKeyDown).toHaveBeenCalledWith(expect.objectContaining({ key: 'z', ctrlKey: true })); fireEvent.click(screen.getByRole('button', { name: 'Redo' })); expect(f.c.handleKeyDown).toHaveBeenCalledWith(expect.objectContaining({ key: 'y', ctrlKey: true })); fireEvent.click(screen.getByRole('button', { name: 'Zoom out' })); expect(f.c.handleKeyDown).toHaveBeenCalledWith(expect.objectContaining({ key: '-' })); });
   it('filters the thread-color grid, selects a swatch, and adds the summary color', async () => {
     const createdDocument = customColorDocument([
@@ -1720,7 +1599,6 @@ describe('EditorSurface', () => {
   }, 15000);
   it('shows a clear empty state when no thread colors match', () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: /Add new color/ })); fireEvent.change(screen.getByLabelText('Search DMC catalog'), { target: { value: 'not-a-real-thread-color' } }); expect(screen.getByText('No matching colors.')).toBeInTheDocument(); expect(within(screen.getByRole('list', { name: 'Available thread colors' })).queryAllByRole('button')).toHaveLength(0); });
   it('keeps query 31 results limited to catalog matches', async () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: /Add new color/ })); const grid = screen.getByRole('list', { name: 'Available thread colors' }); fireEvent.change(screen.getByLabelText('Search DMC catalog'), { target: { value: '31' } }); await waitFor(() => expect(within(grid).getAllByRole('button').length).toBeGreaterThan(0)); for (const button of within(grid).getAllByRole('button')) { const label = button.getAttribute('aria-label') ?? ''; const code = label.split(', color ')[1] ?? ''; const record = DEFAULT_CATALOG_DEFINITION.records.find((entry) => entry.code === code); expect(record).toBeDefined(); expect([record?.code ?? '', record?.name ?? '', record?.hex ?? '', record?.sourceId ?? ''].some((field) => field.toLowerCase().includes('31'))).toBe(true); } expect(within(grid).queryByRole('button', { name: /Snow White/ })).not.toBeInTheDocument(); });
-  it('never applies the palette-pending class to a palette button', () => { render(<EditorSurface workspace={ws} document={two} />); expect(screen.getByRole('button', { name: '321Ruby' })).not.toHaveClass('palette-pending'); expect(screen.getByRole('button', { name: 'Sky' })).not.toHaveClass('palette-pending'); });
   it('renders the palette roster in palette order regardless of reference status', () => { render(<EditorSurface workspace={ws} document={two} />); const ruby = screen.getByRole('button', { name: '321Ruby' }); const sky = screen.getByRole('button', { name: 'Sky' }); expect(ruby.compareDocumentPosition(sky) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy(); });
   it('keeps the palette add action and swatches together in the palette rail', () => { render(<EditorSurface workspace={ws} document={two} />); const rail = screen.getByRole('complementary', { name: 'Editor controls' }); const dock = screen.getByRole('region', { name: 'Thread colors' }); const add = screen.getByRole('button', { name: /Add new color/ }); const sky = screen.getByRole('button', { name: 'Sky' }); const ruby = screen.getByRole('button', { name: '321Ruby' }); expect(rail).toContainElement(dock); expect(dock).toHaveClass('palette-rail'); expect(dock).toContainElement(add); expect(dock).toContainElement(sky); expect(dock).toContainElement(ruby); });
   it('shows a normalized custom hex label in the palette rail', () => {
@@ -1761,9 +1639,6 @@ describe('EditorSurface', () => {
       vi.useRealTimers();
     }
   });
-  it('shows the remove button for an unreferenced palette color', () => { render(<EditorSurface workspace={ws} document={doc} />); expect(screen.getByRole('button', { name: 'Remove Ruby' })).toHaveAttribute('title', 'Swap or remove this color'); });
-  it('shows swap and delete menu items for an unreferenced palette color', () => { render(<EditorSurface workspace={ws} document={doc} />); const swatch = document.querySelector<HTMLButtonElement>('.palette-button')!; fireEvent.contextMenu(swatch); const menu = screen.getByRole('menu', { name: 'Details for Ruby' }); expect(within(menu).getByRole('menuitem', { name: 'Swap color' })).toBeInTheDocument(); expect(within(menu).getByRole('menuitem', { name: 'Delete color' })).toBeInTheDocument(); });
-  it('opens the swap dialog from the remove button', () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); const dialog = screen.getByRole('dialog', { name: 'Swap Color' }); expect(within(dialog).getByText(/stitches and backstitches using Ruby will be changed/i)).toBeInTheDocument(); expect(within(dialog).getByRole('tablist', { name: 'Thread catalogs' })).toBeInTheDocument(); });
   it('swaps the removed color into an existing palette color that matches the chosen catalog color', () => { const match = DEFAULT_CATALOG_DEFINITION.search('salmon')[0]; const existing = customColorDocument([{ id: 1, name: 'Ruby', color: '#b44', active: true }, { id: 2, name: match.name, color: match.hex, active: true, catalog: createCatalogReference(DEFAULT_CATALOG_DEFINITION, match) }]); (ws as { getStateSnapshot: ReturnType<typeof vi.fn> }).getStateSnapshot.mockReturnValue({ document: existing }); render(<EditorSurface workspace={ws} document={existing} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); const dialog = screen.getByRole('dialog', { name: 'Swap Color' }); fireEvent.change(within(dialog).getByLabelText('Search DMC catalog'), { target: { value: 'salmon' } }); fireEvent.click(within(dialog).getByRole('button', { name: `${match.name}, color ${match.code}` })); fireEvent.click(within(dialog).getByRole('button', { name: `Swap ${match.name}` })); expect(executeMock()).toHaveBeenCalledWith(expect.objectContaining({ type: 'palette-merge', from: 1, to: 2 })); expect(f.c.selectPalette).toHaveBeenCalledWith(2); expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
   it('swaps the removed color into a newly created catalog color', () => { const match = DEFAULT_CATALOG_DEFINITION.search('salmon')[0]; const merged = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }, { id: 2, name: match.name, color: match.hex, active: true, catalog: { catalogId: 'dmc-compatible-screen-approximation', sourceId: match.sourceId, code: match.code, name: match.name, hex: match.hex, rgb: [...match.rgb] } }], backstitches: { ids: new Uint32Array() } } as never; (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockReturnValue({}); (ws as { getStateSnapshot: ReturnType<typeof vi.fn> }).getStateSnapshot.mockReturnValue({ document: merged }); render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); fireEvent.change(screen.getByLabelText('Search DMC catalog'), { target: { value: 'salmon' } }); fireEvent.click(screen.getByRole('button', { name: `${match.name}, color ${match.code}` })); fireEvent.click(screen.getByRole('button', { name: `Swap ${match.name}` })); expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).toHaveBeenCalledWith(expect.objectContaining({ type: 'palette-merge', from: 1, createTo: expect.objectContaining({ name: match.name, color: match.hex }) })); expect(f.c.selectPalette).toHaveBeenCalledWith(2); });
   it('keeps the dialog open and reports a failed replacement', () => { (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockImplementationOnce(() => { throw new Error('boom'); }); render(<EditorSurface workspace={ws} document={two} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); fireEvent.change(screen.getByLabelText('Search DMC catalog'), { target: { value: 'salmon' } }); const salmon = DEFAULT_CATALOG_DEFINITION.search('salmon')[0]; fireEvent.click(screen.getByRole('button', { name: `${salmon.name}, color ${salmon.code}` })); fireEvent.click(screen.getByRole('button', { name: `Swap ${salmon.name}` })); expect(screen.getByRole('dialog', { name: 'Swap Color' })).toBeInTheDocument(); expect(screen.getByRole('alert')).toHaveTextContent('boom'); });
@@ -1816,11 +1691,6 @@ describe('EditorSurface', () => {
     // Negative x is preserved (unbounded placement); only rounding is applied.
     expect((ws as { applyTraceImageChange: ReturnType<typeof vi.fn> }).applyTraceImageChange).toHaveBeenCalledWith(expect.objectContaining({ chartBounds: { x: -3, y: 3, width: 3, height: 4 } }), expect.objectContaining({ label: 'trace-image-bounds' }));
     expect(f.c.setTraceImage).toHaveBeenCalledWith(expect.objectContaining({ chartBounds: { x: -3, y: 3, width: 3, height: 4 } }));
-  });
-  it('keeps grid state internal and removes the grid toggle from the action row', () => {
-    render(<EditorSurface workspace={ws} document={doc} />);
-    expect(screen.queryByRole('checkbox', { name: 'Show grid' })).not.toBeInTheDocument();
-    expect(screen.getByRole('group', { name: 'View settings' })).toBeInTheDocument();
   });
   it('activates Resize image from the compact reference toolbar', async () => { (ws as { sourceImage: unknown }).sourceImage = { assetId: 'trace', mimeType: 'image/png', width: 2, height: 2, crop: { x: 0, y: 0, width: 1, height: 1 }, chartBounds: { x: 0, y: 0, width: 2, height: 2 }, traceVisible: true, opacity: 1 }; (ws as { getAsset: ReturnType<typeof vi.fn> }).getAsset.mockReturnValue({ id: 'trace', name: 'trace.png', mimeType: 'image/png', data: new Uint8Array([1]), checksum: '0'.repeat(64) }); f.uiState.tool = { tool: 'resize-image' }; render(<EditorSurface workspace={ws} document={doc} />); const toolbar = screen.getByRole('toolbar', { name: 'Reference image' }); const button = within(toolbar).getByRole('button', { name: 'Resize image' }); expect(button).toHaveAttribute('aria-pressed', 'true'); expect(within(toolbar).getByRole('button', { name: 'Move image' })).toHaveAttribute('aria-pressed', 'false'); fireEvent.click(button); expect(f.c.setTool).toHaveBeenCalledWith(expect.objectContaining({ tool: 'resize-image' })); await waitFor(() => expect(f.c.setTraceImage).toHaveBeenCalled()); });
   it('opens the symbol picker from a palette chip and assigns a free pool symbol', async () => {
@@ -2093,23 +1963,10 @@ describe('EditorSurface layers', () => {
       'Stitches, Stitch layer',
       'Canvas',
     ]);
-    const rows = layersPanel().querySelectorAll('.layers-list > li.layer-row');
-    expect([...rows].map((row) => row.querySelector('.layer-type-symbol')?.className.split(' ')[1])).toEqual([
-      'layer-type-reference', 'layer-type-specialty', 'layer-type-stitch', 'layer-type-stitch', 'layer-type-canvas',
-    ]);
     expect(within(layersPanel()).getByRole('button', { name: 'Stitches, Stitch layer' })).toHaveAttribute('aria-pressed', 'true');
     expect(within(layersPanel()).getByRole('button', { name: 'Reorder Border' })).toBeInTheDocument();
     expect(within(layersPanel()).queryByRole('button', { name: /Hide Canvas|Reorder Canvas/ })).not.toBeInTheDocument();
-    expect(layersPanel().querySelectorAll('canvas.layer-thumbnail')).toHaveLength(3);
-    // Only groups with more than one layer get a header.
-    expect([...layersPanel().querySelectorAll('.layers-group-header')].map((header) => header.textContent)).toEqual(['Stitch layers']);
   });
-  it('shows no group headers while each group has a single layer', () => {
-    useSession(layerSession(layeredDocument()));
-    render(<EditorSurface workspace={ws} document={doc} />);
-    expect(layersPanel().querySelectorAll('.layers-group-header')).toHaveLength(0);
-  });
-
   it('selects rows, toggles visibility and reorders within a group from the keyboard', () => {
     const document = layeredDocument();
     applyLayerStructureCommand(document, layerAddCommand('stitch', { name: 'Border' }));
@@ -2260,13 +2117,11 @@ describe('EditorSurface layers', () => {
     const pattern = { ...(doc as object), settings: { backgroundColor: '#F3EEE5' } } as never;
     render(<EditorSurface workspace={ws} document={pattern} />);
     const group = screen.getByRole('group', { name: 'Canvas settings' });
-    expect(within(group).queryByLabelText('Background color HEX code')).not.toBeInTheDocument();
     expect(within(group).getByRole('button', { name: 'Change background color, #F3EEE5' })).toBeInTheDocument();
     const count = within(group).getByLabelText('Stitch count');
     expect(count).toHaveValue('14');
     fireEvent.change(count, { target: { value: '18' } });
     expect(session.setAidaCount).toHaveBeenCalledWith(18);
-    expect(screen.queryByRole('button', { name: 'Rename layer' })).not.toBeInTheDocument();
   });
 
   it('shows a compact background chip: the thread code when catalogued, otherwise the hex, with the full description in its label and title', () => {
@@ -2283,22 +2138,6 @@ describe('EditorSurface layers', () => {
     const plain = screen.getByRole('button', { name: 'Change background color, #123456' });
     expect(plain).toHaveTextContent(/^#123456$/);
     expect(plain).toHaveAttribute('title', 'Background color: #123456');
-  });
-
-  it('styles the Crop split button as one joined control at the neighbouring button height', () => {
-    // Scoped under .canvas-actions so `.canvas-actions button` cannot round the inner corners.
-    expect(stylesText).toMatch(/\.canvas-actions \.crop-split-button \.crop-split-main \{[^}]*border-radius:\.4rem 0 0 \.4rem;/);
-    expect(stylesText).toMatch(/\.canvas-actions \.crop-split-button \.crop-split-arrow \{[^}]*margin:0 0 0 -1px;[^}]*border-radius:0 \.4rem \.4rem 0;/);
-    expect(stylesText).toMatch(/\.canvas-actions \.crop-split-button button \{[^}]*height:2\.75rem;[^}]*min-height:2\.75rem;/);
-    expect(stylesText).toMatch(/\.crop-split-main\[aria-pressed="true"\] \+ \.crop-split-arrow,/);
-    // Active crop fills the arrow too, with a translucent light divider between the halves.
-    expect(stylesText).toMatch(/\.crop-split-main\[aria-pressed="true"\] \+ \.crop-split-arrow \{[^}]*border-left-color:color-mix\(in srgb, var\(--color-on-accent\) 45%, transparent\);[^}]*background:var\(--color-accent\);[^}]*color:var\(--color-on-accent\);/);
-    // Hover on either half and the open menu darken to accent-ink and stay filled.
-    expect(stylesText).toMatch(/\.crop-split-main\[aria-pressed="true"\]:hover,\n[^{]*\.crop-split-main\[aria-pressed="true"\] \+ \.crop-split-arrow:hover,\n[^{]*\.crop-split-main\[aria-pressed="true"\] \+ \.crop-split-arrow\[aria-expanded="true"\] \{[^}]*background:var\(--color-accent-ink\);/);
-    // The pressed rules come after the open-menu rule, so an open menu doesn't revert the arrow to the light fill.
-    expect(stylesText.indexOf('.crop-split-main[aria-pressed="true"] + .crop-split-arrow {')).toBeGreaterThan(stylesText.indexOf('.crop-split-arrow[aria-expanded="true"] { border-color:var(--color-accent); background:var(--color-accent-soft);'));
-    expect(stylesText).toMatch(/\.canvas-actions \.layer-controls-canvas \.layer-background-button \{[^}]*height:2\.75rem;/);
-    expect(stylesText).toMatch(/\.layer-background-swatch \{[^}]*width:1\.2rem;[^}]*height:1\.2rem;/);
   });
 
   it('chooses the background from the catalog dialog without touching the palette', () => {

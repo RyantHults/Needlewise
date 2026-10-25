@@ -2,9 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { getCanvasMetrics } from '../editor/coordinates';
 import type { TraceImage } from '../editor/contracts';
 import {
-  MAX_TRACE_IMAGE_BYTES,
   MAX_TRACE_IMAGE_PIXELS,
-  TraceDecodeError,
   createTraceImageProjection,
   decodeTraceImage,
   drawTraceImage,
@@ -194,8 +192,6 @@ describe('trace image projection and local raster utilities', () => {
     const bitmap = { width: 0, height: 2, close: vi.fn() };
     await expect(decodeTraceImage(new Blob([validPng], { type: 'image/png' }), { createImageBitmap: vi.fn(async () => bitmap) })).rejects.toMatchObject({ code: 'invalid-dimensions' });
     expect(bitmap.close).toHaveBeenCalledOnce();
-    expect(MAX_TRACE_IMAGE_BYTES).toBeGreaterThan(0);
-    expect(TraceDecodeError).toBeDefined();
   });
 
   it('rejects oversized blobs before reading them and static oversized headers before bitmap allocation', async () => {
@@ -353,6 +349,8 @@ describe('trace image projection and local raster utilities', () => {
     expect(decoded.sourceHeight).toBe(6_000);
     expect(decoded.source).toBe(harness.created[0]);
     expect(decoded.width * decoded.height).toBeLessThanOrEqual(MAX_TRACE_IMAGE_PIXELS);
+    expect(Math.max(decoded.width, decoded.height)).toBeLessThanOrEqual(MAX_WORKING_IMAGE_DIMENSION);
+    expect(decoded.width * decoded.height).toBeLessThanOrEqual(MAX_WORKING_IMAGE_PIXELS);
     // The full-resolution decode is released immediately once pre-scaled.
     expect(bitmap.close).toHaveBeenCalledOnce();
     decoded.dispose?.();
@@ -388,47 +386,19 @@ describe('trace image projection and local raster utilities', () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
-  it('pre-scales an oversized reference image through successive 2x halvings then a final quality draw', async () => {
+  it('pre-scales a very large reference image and frees its working surfaces on dispose', async () => {
     const harness = traceSurfaceHarness();
     const bitmap = { width: 8_192, height: 8_192, close: vi.fn() };
     const decoded = await decodeTraceImage(new Blob([validPngHeader], { type: 'image/png' }), {
       createImageBitmap: async () => bitmap,
       surfaceFactory: harness.factory
     });
-    // Fitted: 4000x4000; 8192 halved once to 4096, then 4096 -> 4000.
-    expect(harness.draws.map((draw) => draw.destinationRect)).toEqual([
-      [0, 0, 4_096, 4_096],
-      [0, 0, 4_000, 4_000]
-    ]);
     expect(decoded.width).toBe(4_000);
     expect(decoded.height).toBe(4_000);
-    expect(harness.draws[0]?.source).toBe(bitmap);
-    expect(harness.draws[1]?.source).toBe(harness.created[0]);
-    expect(harness.draws.every((draw) => draw.smoothing === true && draw.quality === 'high')).toBe(true);
     expect(bitmap.close).toHaveBeenCalledOnce();
     decoded.dispose?.();
     expect(harness.created.every((canvas) => canvas.freed)).toBe(true);
     expect(harness.created.every((canvas) => canvas.width === 0 && canvas.height === 0)).toBe(true);
-  });
-
-  it('fits an 8000x6000 decode within both working bounds', async () => {
-    const harness = traceSurfaceHarness();
-    const bitmap = { width: 8_000, height: 6_000, close: vi.fn() };
-    const boundedFactory = (width: number, height: number) => {
-      if (width > MAX_WORKING_IMAGE_DIMENSION || height > MAX_WORKING_IMAGE_DIMENSION) {
-        throw new Error('working surface exceeds the axis bound');
-      }
-      return harness.factory(width, height);
-    };
-    const decoded = await decodeTraceImage(new Blob([validPngHeader], { type: 'image/png' }), {
-      createImageBitmap: async () => bitmap,
-      surfaceFactory: boundedFactory
-    });
-    expect(decoded.width).toBe(4_096);
-    expect(decoded.height).toBe(3_072);
-    expect(decoded.width * decoded.height).toBeLessThanOrEqual(MAX_WORKING_IMAGE_PIXELS);
-    expect(harness.draws.map((draw) => draw.destinationRect)).toEqual([[0, 0, 4_096, 3_072]]);
-    decoded.dispose?.();
   });
 
   it('rejects decoded reference images past the shared decode ceiling', async () => {

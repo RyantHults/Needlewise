@@ -176,27 +176,21 @@ function rulerPlacements(pages: readonly ChartPageCells[]): Placement[] | null {
 
 /**
  * Assemble chart pages into one grid. Pages are placed by their ruler offsets,
- * shifted to start at 0,0, when every page has one, the offsets tile a
- * rectangle, and no conflicting overlap is forced; otherwise
- * in reading order, rows of pages left to right, with row breaks inferred from
- * the page sizes. Overlapping cells are taken from the first page that holds
+ * shifted to start at 0,0, when every page has one and the offsets tile a
+ * rectangle; otherwise in reading order, rows of pages left to right, with
+ * row breaks inferred from the page sizes. Overlapping cells are taken from the first page that holds
  * them.
  */
-export function assembleChart(pages: readonly ChartPageCells[], options: { overlap?: number } = {}): AssembledCells {
+export function assembleChart(pages: readonly ChartPageCells[]): AssembledCells {
   const ordered = [...pages].sort((a, b) => a.pageIndex - b.pageIndex);
   const warnings: ImportWarning[] = [];
-  const forced = options.overlap === undefined ? undefined : Math.min(MAX_OVERLAP, Math.max(0, Math.floor(options.overlap)));
 
   let placements: Placement[];
   let overlap: number;
-  let detectedOverlap: number;
   const byRuler = ordered.length > 0 && ordered.every((page) => page.rulerOffset !== undefined) ? rulerPlacements(ordered) : null;
-  const rulers = byRuler !== null;
-  const fromRulers = rulers ? rulerOverlap(ordered) : 0;
-  if (byRuler && (forced === undefined || forced === fromRulers)) {
+  if (byRuler) {
     placements = byRuler;
-    overlap = fromRulers;
-    detectedOverlap = fromRulers;
+    overlap = rulerOverlap(ordered);
   } else {
     const layouts = consistentLayouts(ordered);
     if (layouts.length === 0) {
@@ -208,9 +202,7 @@ export function assembleChart(pages: readonly ChartPageCells[], options: { overl
     const scored = layouts.map((layout) => ({ layout, ...detectOverlap(ordered, layout) }));
     scored.sort((a, b) => b.score - a.score || squareness(a.layout) - squareness(b.layout));
     const chosen = scored[0];
-    detectedOverlap = rulers ? fromRulers : chosen.overlap;
-    overlap = forced ?? detectedOverlap;
-    if (!fits(chosen.layout, overlap)) overlap = detectedOverlap;
+    overlap = chosen.overlap;
     placements = place(chosen.layout, overlap, ordered.length);
   }
 
@@ -256,5 +248,5 @@ export function assembleChart(pages: readonly ChartPageCells[], options: { overl
     }
   });
 
-  return { width, height, keys, fills, symbols, overlap, detectedOverlap, placements: placementMap, warnings };
+  return { width, height, keys, fills, symbols, overlap, placements: placementMap, warnings };
 }

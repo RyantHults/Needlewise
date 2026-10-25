@@ -4,6 +4,7 @@ import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { createWorkspaceEditorGateway } from '../editor/gateway';
 import { ProjectWorkspace } from './index';
 import { MemoryRepository } from './test-support';
+import { cell } from '../domain/test-fixtures';
 
 function blank() {
   return createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 6, height: 4, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] });
@@ -14,7 +15,7 @@ describe('canvas edits through the project session', () => {
     const workspace = new ProjectWorkspace({ repository: new MemoryRepository(), clock: { now: () => 100 }, projectIdFactory: () => 'canvas-route', debounceMs: 0 });
     try {
       const session = await workspace.createProject({ id: 'canvas-route', width: 6, height: 4, document: blank() });
-      session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+      session.execute(cell(session.document, { type: 'set-full', x: 0, y: 0, color: 1 }));
       workspace.setActiveLayer('canvas');
       const gateway = createWorkspaceEditorGateway(workspace);
       expect(gateway.getSnapshot().activeLayer).toMatchObject({ kind: 'canvas' });

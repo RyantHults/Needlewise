@@ -19,6 +19,7 @@ import { acceptConversionDraft } from '../conversion/image-to-pattern';
 import { createStarterDocument, ProjectWorkspace } from './workspace';
 import { defaultActiveLayerId, ProjectSession } from './session';
 import { MemoryRepository } from './test-support';
+import { cell } from '../domain/test-fixtures';
 import { layeredDocument } from '../editor/test-support';
 
 function openSession(document: LayeredDocument): ProjectSession {
@@ -44,7 +45,7 @@ function threeStitchLayers(): LayeredDocument {
 function cellFragment(): PatternFragment {
   const source = layeredDocument(4, 4);
   const session = openSession(source);
-  session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+  session.execute(cell(session.document, { type: 'set-full', x: 0, y: 0, color: 1 }));
   return createPatternFragment(session.activeLayerSurface()!, { kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } });
 }
 
@@ -66,8 +67,8 @@ describe('project session layers', () => {
   it('stamps the selected layer on layer-scoped commands and batch children', () => {
     const session = openSession(threeStitchLayers());
     session.setActiveLayer(3);
-    session.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
-    session.executeBatch([{ type: 'set-full', x: 2, y: 2, color: 2 }]);
+    session.execute(cell(session.document, { type: 'set-full', x: 1, y: 1, color: 1 }));
+    session.executeBatch([cell(session.document, { type: 'set-full', x: 2, y: 2, color: 2 })]);
     // Edits replace layer objects, so read the current stack each time.
     const stitches = (id: number) => session.layeredDocument.layers.find((layer) => layer.id === id) as StitchLayer;
     expect(stitches(3).kind[1 * 4 + 1]).toBe(CellKind.Full);
@@ -76,12 +77,12 @@ describe('project session layers', () => {
     expect(session.document.kind[1 * 4 + 1]).toBe(CellKind.Full);
 
     // An explicit layerId wins over the selection.
-    session.execute({ type: 'set-full', x: 0, y: 0, color: 1, layerId: 1 });
+    session.execute(cell(session.document, { type: 'set-full', x: 0, y: 0, color: 1, layerId: 1 }));
     expect(stitches(1).kind[0]).toBe(CellKind.Full);
     expect(stitches(3).kind[0]).toBe(CellKind.Empty);
 
     session.setActiveLayer('canvas');
-    expect(() => session.execute({ type: 'set-full', x: 3, y: 3, color: 1 })).toThrow(/Select a stitch or specialty layer/);
+    expect(() => session.execute(cell(session.document, { type: 'set-full', x: 3, y: 3, color: 1 }))).toThrow(/Select a stitch or specialty layer/);
   });
 
   it('resolves pastes: create with room, topmost visible at the cap, nothing when all are hidden', () => {
@@ -286,12 +287,12 @@ describe('project session layers', () => {
 
   it('merges the selection as one undo step, topmost winning conflicts, and selects the target', () => {
     const session = openSession(threeStitchLayers());
-    const cell = (x: number, color: number) => session.execute({ type: 'set-full', x, y: 0, color });
+    const place = (x: number, color: number) => session.execute(cell(session.document, { type: 'set-full', x, y: 0, color }));
     session.setActiveLayer(1);
-    cell(0, 1);
-    cell(1, 1);
+    place(0, 1);
+    place(1, 1);
     session.setActiveLayer(4);
-    cell(1, 2);
+    place(1, 2);
     session.selectLayerRange(1);
     session.toggleLayerSelected(3);
     expect(session.layerSelection.layerIds).toEqual([1, 4]);
@@ -337,8 +338,8 @@ describe('project session layers', () => {
   it('counts only visible content in metrics', () => {
     const session = openSession(layeredDocument(4, 4));
     session.setActiveLayer(1);
-    session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-    session.execute({ type: 'set-full', x: 1, y: 0, color: 1 });
+    session.execute(cell(session.document, { type: 'set-full', x: 0, y: 0, color: 1 }));
+    session.execute(cell(session.document, { type: 'set-full', x: 1, y: 0, color: 1 }));
     expect(session.metrics.totals.full).toBe(2);
     session.setLayerVisibility(1, false);
     expect(session.metrics.totals.full).toBe(0);
@@ -349,8 +350,8 @@ describe('project session layers', () => {
   it('keeps layer visibility out of undo history without clearing redo', () => {
     const session = openSession(layeredDocument(4, 4));
     session.setActiveLayer(1);
-    session.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
-    session.execute({ type: 'set-full', x: 1, y: 0, color: 1 });
+    session.execute(cell(session.document, { type: 'set-full', x: 0, y: 0, color: 1 }));
+    session.execute(cell(session.document, { type: 'set-full', x: 1, y: 0, color: 1 }));
     session.undo();
     expect(session.historyRedoDepth).toBeGreaterThan(0);
     const revision = session.layeredDocument.revision;

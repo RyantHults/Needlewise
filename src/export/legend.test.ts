@@ -65,13 +65,11 @@ describe('buildLegend', () => {
     expect(metric.totals.counts).toEqual({ full: 5, half: 1, threeQuarter: 2, quarter: 0, backstitch: 3 });
   });
 
-  it('reads backstitchStrands defensively', () => {
+  it('reads backstitchStrands from the estimate assumptions, then the material settings', () => {
     const palette = [entry(1)];
     const metrics = metricsFor([1], { 1: 4 });
     expect(buildLegend(palette, metrics, 'metric')).toMatchObject({ strands: 2, backstitchStrands: 1, note: 'Estimate note', aidaCount: 14 });
     const noAssumptions = { ...metrics, totalMaterial: undefined, materials: [], materialSettings: { strands: 2, waste: 0, backstitchStrands: 3 } } as unknown as PatternMetrics;
     expect(buildLegend(palette, noAssumptions, 'metric').backstitchStrands).toBe(3);
-    const bare = { ...noAssumptions, materialSettings: { strands: 1, waste: 0 } } as unknown as PatternMetrics;
-    expect(buildLegend(palette, bare, 'metric')).toMatchObject({ backstitchStrands: 1, note: undefined });
   });
 });

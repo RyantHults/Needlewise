@@ -1,6 +1,6 @@
 // The PDF `PatternImporter`: pdf.js reads every page into primitives once in
 // `open`, then `analyze` classifies pages, reads the chart and key, and builds
-// an `ImportedChart`, as often as the user changes page roles or overlap.
+// an `ImportedChart`, as often as the user changes page roles.
 import { getDmcColor } from '../../catalog';
 import {
   ImportError,
@@ -148,8 +148,8 @@ function createSession(pages: PdfPagePrimitives[], thumbnails: (Blob | undefined
 
       const chartPages = charted.map(({ page, grid }) => readChartPage(page, grid));
       const assembled: AssembledCells = chartPages.length > 0
-        ? assembleChart(chartPages, overrides.overlap === undefined ? undefined : { overlap: overrides.overlap })
-        : { width: 0, height: 0, keys: [], fills: [], symbols: new Map(), overlap: overrides.overlap ?? 0, detectedOverlap: 0, placements: new Map(), warnings: [] };
+        ? assembleChart(chartPages)
+        : { width: 0, height: 0, keys: [], fills: [], symbols: new Map(), overlap: 0, placements: new Map(), warnings: [] };
       throwIfImportCancelled(signal);
       if (initial && chartPages.length > 0 && assembled.keys.every((cellKey) => cellKey === null) && assembled.fills.some((fill) => fill !== null)) {
         throw new ImportError('no-chart-found', COLOUR_ONLY_MESSAGE);
@@ -228,8 +228,6 @@ function createSession(pages: PdfPagePrimitives[], thumbnails: (Blob | undefined
       return {
         format: pdfImporter.id,
         pages: summaries,
-        overlap: assembled.overlap,
-        detectedOverlap: assembled.detectedOverlap,
         chart: {
           width: assembled.width,
           height: assembled.height,

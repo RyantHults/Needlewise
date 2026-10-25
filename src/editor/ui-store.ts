@@ -160,10 +160,6 @@ export function createUiStore(initial: Partial<EditorUiState> = {}): EditorUiSto
       return state.brushSize;
     },
 
-    setBrushSize(size: number): void {
-      store.setState({ brushSize: normalizeBrushSize(size) });
-    },
-
     setToolBrushSize(tool: BrushSizeTool, size: number): void {
       const normalized = normalizeBrushSize(size);
       if (state.toolBrushSizes[tool] === normalized) return;

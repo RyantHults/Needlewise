@@ -113,22 +113,7 @@ describe('schema version lockstep', () => {
     const selectionPath = join(dir, 'selection.json');
     writeFileSync(selectionPath, JSON.stringify({ version: ARTIFACT_VERSION + 1, selection: [] }));
     expect(() => main([], { selectionPath, outputDir: dir, ...SILENT }))
-      .toThrow(new RegExp(`selection.json is version ${ARTIFACT_VERSION + 1}`));
-  });
-
-  it('names the version the build emits when they disagree', () => {
-    const dir = tempDir();
-    const selectionPath = join(dir, 'selection.json');
-    writeFileSync(selectionPath, JSON.stringify({ version: ARTIFACT_VERSION + 1, selection: [] }));
-    expect(() => main([], { selectionPath, outputDir: dir, ...SILENT }))
-      .toThrow(new RegExp(`emits version ${ARTIFACT_VERSION}`));
-  });
-
-  it('writes nothing when the versions disagree', () => {
-    const dir = tempDir();
-    const selectionPath = join(dir, 'selection.json');
-    writeFileSync(selectionPath, JSON.stringify({ version: ARTIFACT_VERSION + 1, selection: [] }));
-    expect(() => main([], { selectionPath, outputDir: dir, ...SILENT })).toThrow();
+      .toThrow(new RegExp(`selection.json is version ${ARTIFACT_VERSION + 1}.*emits version ${ARTIFACT_VERSION}`, 's'));
     expect(existsSync(join(dir, 'outlines.generated.json'))).toBe(false);
   });
 });

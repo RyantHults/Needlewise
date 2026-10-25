@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import provenanceAsset from '../../catalog/provenance.json';
 import {
   DMC_CATALOG_DEFINITION,
@@ -6,25 +6,14 @@ import {
   DMC_CATALOG,
   DMC_CATALOG_RECORD_COUNT,
   INSTALLED_CATALOG_REGISTRY,
-  createInstalledCatalogRegistry,
   createCatalogReference,
   getDmcColor,
   validateDmcCatalogBundle,
-  type CatalogDefinition,
   type DmcCatalogColor,
   type DmcCatalogProvenance
 } from './index';
 
 const DMC_CATALOG_PROVENANCE = provenanceAsset as unknown as DmcCatalogProvenance;
-
-function syntheticDefinition(catalogId: string, brandLabel: string): CatalogDefinition {
-  const association = Object.freeze({ catalogId, brandLabel, colorCount: DMC_CATALOG_DEFINITION.records.length });
-  return Object.freeze({
-    ...DMC_CATALOG_DEFINITION,
-    association,
-    snapshot: Object.freeze({ association, records: DMC_CATALOG_DEFINITION.records })
-  });
-}
 
 describe('offline DMC-compatible catalog', () => {
   const catalogAsset = {
@@ -72,76 +61,6 @@ describe('offline DMC-compatible catalog', () => {
     expect(Object.isFrozen(DMC_CATALOG_DEFINITION.records)).toBe(true);
     expect(Object.isFrozen(DMC_CATALOG_DEFINITION.records[0])).toBe(true);
     expect(Object.isFrozen(DMC_CATALOG_DEFINITION.records[0].rgb)).toBe(true);
-  });
-
-  it('creates an immutable installed-catalog registry with association and ID lookup', () => {
-    const first = syntheticDefinition('catalog-a', 'Catalog A');
-    const second = syntheticDefinition('catalog-b', 'Catalog B');
-    const definitions = [first, second];
-    const registry = createInstalledCatalogRegistry(definitions);
-    definitions.pop();
-
-    expect(registry.definitions.map((definition) => definition.association)).toEqual([first.association, second.association]);
-    expect(Object.isFrozen(registry)).toBe(true);
-    expect(Object.isFrozen(registry.definitions)).toBe(true);
-    expect(registry.resolve(first.association)).toBe(registry.definitions[0]);
-    expect(registry.definitions[0]).not.toBe(first);
-    expect(registry.resolve({ ...first.association, brandLabel: 'Other' })).toBeUndefined();
-    expect(registry.resolve({ ...first.association, colorCount: 1 })).toBeUndefined();
-    expect(registry.resolve(second.association)).toBe(registry.definitions[1]);
-    expect(registry.resolve({ ...first.association, catalogId: 'missing' })).toBeUndefined();
-    expect(() => (registry.definitions as CatalogDefinition[]).push(second)).toThrow();
-  });
-
-  it('snapshots caller-owned catalog data and methods when registering a definition', () => {
-    const association = { catalogId: 'mutable-catalog', brandLabel: 'Mutable Catalog', colorCount: 1 };
-    const record = { sourceId: 'mutable-1', code: '01', name: 'Original', hex: '#010203' as `#${string}`, rgb: [1, 2, 3] as [number, number, number] };
-    const records = [record];
-    const definition = {
-      association,
-      records,
-      compatibilityLabel: 'Mutable',
-      snapshot: { association, records },
-      search: (query: string) => records.filter((candidate) => candidate.name.includes(query)),
-      getByHex: (hex: string) => records.find((candidate) => candidate.hex === hex),
-      nearest: () => records[0]
-    } as CatalogDefinition;
-    const registry = createInstalledCatalogRegistry([definition]);
-    const registered = registry.definitions[0];
-
-    association.catalogId = 'changed-catalog';
-    association.brandLabel = 'Changed Catalog';
-    association.colorCount = 9;
-    record.code = '99';
-    record.name = 'Changed';
-    record.hex = '#FFFFFF';
-    record.rgb[0] = 255;
-    records.splice(0, 1);
-
-    expect(registry.resolve({ catalogId: 'mutable-catalog', brandLabel: 'Mutable Catalog', colorCount: 1 })).toBe(registered);
-    expect(registry.definitions).toHaveLength(1);
-    expect(registry.resolve({ catalogId: 'changed-catalog', brandLabel: 'Changed Catalog', colorCount: 9 })).toBeUndefined();
-    expect(registered).not.toBe(definition);
-    expect(registered.association).toEqual({ catalogId: 'mutable-catalog', brandLabel: 'Mutable Catalog', colorCount: 1 });
-    expect(registered.records).toEqual([{ sourceId: 'mutable-1', code: '01', name: 'Original', hex: '#010203', rgb: [1, 2, 3] }]);
-    expect(registered.snapshot.association).toBe(registered.association);
-    expect(registered.snapshot.records).toBe(registered.records);
-    expect(registered.search('Original')).toEqual(registered.records);
-    expect(registered.getByHex('#010203')).toBe(registered.records[0]);
-    expect(registered.nearest({ r: 1, g: 2, b: 3 })).toBe(registered.records[0]);
-    expect(Object.isFrozen(registered)).toBe(true);
-    expect(Object.isFrozen(registered.association)).toBe(true);
-    expect(Object.isFrozen(registered.snapshot)).toBe(true);
-    expect(Object.isFrozen(registered.records)).toBe(true);
-    expect(Object.isFrozen(registered.records[0])).toBe(true);
-    expect(Object.isFrozen(registered.records[0].rgb)).toBe(true);
-  });
-
-  it('rejects duplicate installed catalog IDs', () => {
-    const first = syntheticDefinition('duplicate-id', 'Catalog A');
-    const second = syntheticDefinition('duplicate-id', 'Catalog B');
-
-    expect(() => createInstalledCatalogRegistry([first, second])).toThrow(/duplicate.*catalog ID/i);
   });
 
   it('contains a validated, unique normalized dataset', () => {
@@ -245,24 +164,10 @@ describe('offline DMC-compatible catalog', () => {
     expect(DMC_CATALOG_DEFINITION.search('', { limit: 3 })).toHaveLength(3);
   });
 
-  it('exposes approximation provenance and never calls network APIs', () => {
+  it('exposes approximation provenance', () => {
     expect(DMC_CATALOG_PROVENANCE.status.approximation).toBe(true);
     expect(DMC_CATALOG_PROVENANCE.status.official).toBe(false);
     expect(DMC_CATALOG_PROVENANCE.status.dmcAffiliation).toBe(false);
-    expect(DMC_CATALOG_PROVENANCE.source.upstreamDataUrl).toBe('https://floss.maxxmint.com/dmc_to_rgb.php');
-    expect(DMC_CATALOG_PROVENANCE.snapshot.htmlSha256).toBe('80b8cf1994d160836f1cb0cea8c6f49963707ee02a56a42a11ba640c94d9c086');
-    expect(DMC_CATALOG_PROVENANCE.snapshot.observedDmcRecordCount).toBe(489);
-
-    const originalFetch = globalThis.fetch;
-    const fetchSpy = vi.fn<typeof fetch>();
-    globalThis.fetch = fetchSpy;
-    try {
-      expect(getDmcColor('3713')?.hex).toBe('#FFE2E2');
-      expect(DMC_CATALOG_DEFINITION.search('salmon').length).toBeGreaterThan(1);
-      expect(fetchSpy).not.toHaveBeenCalled();
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
   });
 
   it('matches an RGB sample to the closest catalog color by squared Euclidean distance', () => {

@@ -1212,8 +1212,8 @@ export class ProjectRepository {
     const name = validateFolderName(input.name);
     const parentId = input.parentId ?? null;
     if (parentId !== null && (typeof parentId !== 'string' || parentId.length < 1 || parentId.length > 256 || !isBoundedMetadataString(parentId))) invalidMetadata('Folder parent ID is malformed.');
-    if (input.id !== undefined && (typeof input.id !== 'string' || input.id.length < 1 || input.id.length > 256 || !isBoundedMetadataString(input.id))) invalidMetadata('Folder ID is malformed.');
-    const id = input.id ?? crypto.randomUUID();
+    if (typeof input.id !== 'string' || input.id.length < 1 || input.id.length > 256 || !isBoundedMetadataString(input.id)) invalidMetadata('Folder ID is malformed.');
+    const { id } = input;
     try {
       return await this.db.transaction('rw', [this.db.folders], async () => {
         if (parentId !== null) {

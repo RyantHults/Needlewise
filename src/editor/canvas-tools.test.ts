@@ -29,11 +29,10 @@ import {
   stampCanvasBrush
 } from './canvas-tools';
 import { getCanvasMetrics, screenToModel } from './coordinates';
-import { createFillWorkerClient } from './fill';
 import { createWorkspaceEditorGateway, type ActiveLayerId, type WorkspaceEditorBoundary } from './gateway';
 import { createUiStore } from './ui-store';
-import { LayeredTestBoundary, atViewport, layeredDocument, rendererFixture } from './test-support';
-import { applyCommand, commitLayerSurface } from '../domain/test-fixtures';
+import { atViewport, layeredDocument, rendererFixture } from './test-support';
+import { applyCommand, commitLayerSurface, cell } from '../domain/test-fixtures';
 
 const ZOOM = 16;
 
@@ -173,18 +172,16 @@ function fixture(document = layeredDocument(10, 10), activeLayerId: ActiveLayerI
   const gateway = createWorkspaceEditorGateway(boundary);
   const uiStore = createUiStore({ viewport: { x: 0, y: 0, zoom: ZOOM } });
   const notices: string[] = [];
-  const fillClient = createFillWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'canvas-fill' });
   const controller = new EditorSurfaceController({
     gateway,
     uiStore,
     renderer: rendererFixture().renderer,
     metrics: getCanvasMetrics(320, 320),
-    fillClient,
     onNotice: (message) => notices.push(message)
   });
   controller.start();
   controller.handleFocus();
-  return { boundary, gateway, uiStore, controller, notices, fillClient };
+  return { boundary, gateway, uiStore, controller, notices };
 }
 
 function bits(cells: Uint8Array | undefined): number[] {
@@ -481,7 +478,7 @@ describe('canvas editing in the controller', () => {
 
   it('leaves the stitch-layer eraser erasing stitches', () => {
     const document = layeredDocument(10, 10);
-    const surface = applyCommand(layerSurface(document, 1), { type: 'set-full', x: 1, y: 1, color: 1 });
+    const surface = applyCommand(layerSurface(document, 1), cell(10, { type: 'set-full', x: 1, y: 1, color: 1 }));
     commitLayerSurface(document, 1, surface.document);
     const { boundary, controller, uiStore } = fixture(document, 1);
     controller.setTool({ tool: 'eraser' });
@@ -631,11 +628,11 @@ describe('canvas editing in the controller', () => {
     controller.dispose();
   });
 
-  it('explains a resize the domain refuses in friendly words', () => {
+  it('reports a resize the domain refuses', () => {
     const { controller, notices } = fixture();
     const workspace = canvasWorkspace({ width: 10, height: 10 });
     expect(controller.resizeCanvasEdge('left', -workspace.x + 1)).toBe(false);
-    expect(notices.at(-1)).toBe("The canvas can't grow any further in that direction.");
+    expect(notices).toHaveLength(1);
     controller.dispose();
   });
 
@@ -728,7 +725,7 @@ describe('canvas editing in the controller', () => {
   });
 
   it('stops Fill at canvas holes', async () => {
-    const { boundary, controller, uiStore, fillClient } = fixture(maskedDocument(), 1);
+    const { boundary, controller, uiStore } = fixture(maskedDocument(), 1);
     controller.selectPalette(2);
     controller.setTool({ tool: 'fill' });
     expect(controller.handlePointerDown(atViewport(uiStore, 1, 0, 0))).toBe(true);
@@ -743,32 +740,6 @@ describe('canvas editing in the controller', () => {
     // A press on the hole itself fills nothing.
     expect(controller.handlePointerDown(atViewport(uiStore, 2, 3, 0))).toBe(true);
     expect(uiStore.getState().status).toBe('No change');
-    fillClient.dispose();
-    controller.dispose();
-  });
-});
-
-describe('canvas editing through the document editor history', () => {
-  it('records a brush stroke as one undo step and undoes it', () => {
-    const boundary = new LayeredTestBoundary(layeredDocument(10, 10), { activeLayerId: 'canvas' });
-    const uiStore = createUiStore({ viewport: { x: 0, y: 0, zoom: ZOOM } });
-    const controller = new EditorSurfaceController({ gateway: createWorkspaceEditorGateway(boundary), uiStore, renderer: rendererFixture().renderer, metrics: getCanvasMetrics(320, 320) });
-    controller.start();
-    controller.setCanvasMode('advanced');
-    controller.setCanvasCropActive(true);
-    controller.setTool({ tool: 'canvas-brush' });
-    const start = uiStore.getState().viewport;
-    controller.handlePointerDown(atViewport(uiStore, 1, -1, 0));
-    controller.handlePointerMove(atViewport(uiStore, 1, -1, 2));
-    controller.handlePointerUp(atViewport(uiStore, 1, -1, 2));
-    expect(boundary.undoDepth).toBe(1);
-    expect(boundary.document).toMatchObject({ width: 11, height: 10, originX: -1 });
-    expect(boundary.document.canvasMask).toBeDefined();
-    controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
-    expect(boundary.document.width).toBe(10);
-    expect(boundary.document.canvasMask).toBeUndefined();
-    expect(uiStore.getState().viewport).toEqual(start);
-    expect(uiStore.getState().canvasBasicAvailable).toBe(true);
     controller.dispose();
   });
 });

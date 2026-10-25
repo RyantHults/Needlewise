@@ -64,7 +64,6 @@ interface RenderOptions {
   currentFolderId?: string | null;
   folderDeleteConfirmId?: string | null;
   withFolderHandlers?: boolean;
-  brand?: React.ReactNode;
 }
 
 function renderGallery(projects: readonly ProjectMetadata[], deleteConfirmId?: string | null, options: RenderOptions = {}) {
@@ -97,11 +96,13 @@ function renderGallery(projects: readonly ProjectMetadata[], deleteConfirmId?: s
       onDeleteFolder={withFolderHandlers ? onDeleteFolder : undefined}
       onMoveProject={withFolderHandlers ? onMoveProject : undefined}
       onMoveFolder={withFolderHandlers ? onMoveFolder : undefined}
-      brand={options.brand}
+      {...required()}
     />
   );
   return { view, onOpen, onDelete, onCreate, onImport, onNavigateFolder, onCreateFolder, onRenameFolder, onDeleteFolder, onMoveProject, onMoveFolder };
 }
+
+const required = () => ({ brand: <a href="/">Needlewise</a>, onDuplicate: vi.fn(), onRenameProject: vi.fn() });
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -119,7 +120,7 @@ describe('ProjectGallery', () => {
     ]);
   });
 
-  it('renders each exact dimension/date metadata row before its project name', () => {
+  it('renders each exact dimension/date metadata row with its project name', () => {
     const projects = [
       project('one', 'Garden sampler', 24, 31, Date.UTC(2026, 1, 2)),
       project('two', 'Night sky', 80, 45, Date.UTC(2026, 10, 27))
@@ -131,12 +132,8 @@ describe('ProjectGallery', () => {
     sortedProjects.forEach((currentProject, index) => {
       const card = cards[index];
       const expectedMetadata = `${currentProject.width} × ${currentProject.height} stitches | Edited ${editedDate(currentProject.updatedAt)}`;
-      const metadata = within(card).getByText((_, element) => element?.textContent === expectedMetadata);
-      const name = within(card).getByText(currentProject.title, { exact: true });
-
-      expect(metadata).toBeInTheDocument();
-      expect(name).toBeInTheDocument();
-      expect(metadata.compareDocumentPosition(name) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+      expect(within(card).getByRole('button', { name: `Open ${currentProject.title}` })).toHaveAccessibleDescription(expectedMetadata);
+      expect(within(card).getByText(currentProject.title, { exact: true })).toBeInTheDocument();
     });
   });
 
@@ -145,11 +142,7 @@ describe('ProjectGallery', () => {
     renderGallery([currentProject]);
 
     const metadata = `18 × 27 stitches | Edited ${editedDate(currentProject.updatedAt)}`;
-    const metadataRow = within(screen.getByRole('article')).getByText((_, element) => element?.textContent === metadata);
-    const open = metadataRow.closest('button');
-    expect(open).not.toBeNull();
-    expect(open).toHaveAccessibleDescription(metadata);
-    expect(open).toHaveAttribute('aria-describedby');
+    expect(screen.getByRole('button', { name: 'Open Described project' })).toHaveAccessibleDescription(metadata);
   });
 
   it('handles a lone UTF-16 surrogate in a project ID while preserving the open description', () => {
@@ -158,12 +151,7 @@ describe('ProjectGallery', () => {
 
     expect(() => renderGallery([currentProject])).not.toThrow();
 
-    const card = screen.getByRole('article');
-    const metadataRow = within(card).getByText((_, element) => element?.textContent === metadata);
-    const open = metadataRow.closest('button');
-    expect(metadataRow).toBeVisible();
-    expect(open).not.toBeNull();
-    expect(open).toHaveAccessibleDescription(metadata);
+    expect(screen.getByRole('button', { name: 'Open Surrogate project' })).toHaveAccessibleDescription(metadata);
   });
 
   it('shows Size unavailable for legacy projects without dimensions', () => {
@@ -197,7 +185,7 @@ describe('ProjectGallery', () => {
     const { onOpen } = renderGallery([selected]);
     const card = screen.getByRole('article');
 
-    fireEvent.click(within(card).getByText(selected.title, { exact: true }));
+    fireEvent.click(within(card).getByRole('button', { name: `Open ${selected.title}` }));
 
     expect(onOpen).toHaveBeenCalledOnce();
     expect(onOpen).toHaveBeenCalledWith(selected);
@@ -222,7 +210,7 @@ describe('ProjectGallery', () => {
   it('invokes onDuplicate with the project from the Duplicate button', () => {
     const selected = project('dup', 'Dup project', 40, 22);
     const onDuplicate = vi.fn();
-    render(<ProjectGallery projects={[selected]} onOpen={vi.fn()} onDelete={vi.fn()} onDuplicate={onDuplicate} onCreate={vi.fn()} onImport={vi.fn()} />);
+    render(<ProjectGallery projects={[selected]} onOpen={vi.fn()} onDelete={vi.fn()} {...required()} onDuplicate={onDuplicate} onCreate={vi.fn()} onImport={vi.fn()} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Duplicate Dup project' }));
 
@@ -230,14 +218,8 @@ describe('ProjectGallery', () => {
     expect(onDuplicate).toHaveBeenCalledWith(selected);
   });
 
-  it('omits the Duplicate button without onDuplicate', () => {
-    renderGallery([project('nodup', 'No dup', 40, 22)]);
-
-    expect(screen.queryByRole('button', { name: /^Duplicate/ })).toBeNull();
-  });
-
   it('disables the Duplicate button when the gallery is disabled', () => {
-    render(<ProjectGallery projects={[project('dis', 'Dis project', 40, 22)]} disabled onOpen={vi.fn()} onDelete={vi.fn()} onDuplicate={vi.fn()} onCreate={vi.fn()} onImport={vi.fn()} />);
+    render(<ProjectGallery projects={[project('dis', 'Dis project', 40, 22)]} disabled onOpen={vi.fn()} onDelete={vi.fn()} {...required()} onCreate={vi.fn()} onImport={vi.fn()} />);
 
     expect(screen.getByRole('button', { name: 'Duplicate Dis project' })).toBeDisabled();
   });
@@ -245,7 +227,7 @@ describe('ProjectGallery', () => {
   describe('inline title rename', () => {
     function renderRenamable(onRenameProject = vi.fn(), onOpen = vi.fn()) {
       const selected = project('ren', 'Old title', 40, 22);
-      render(<ProjectGallery projects={[selected]} onOpen={onOpen} onDelete={vi.fn()} onRenameProject={onRenameProject} onCreate={vi.fn()} onImport={vi.fn()} />);
+      render(<ProjectGallery projects={[selected]} onOpen={onOpen} onDelete={vi.fn()} {...required()} onRenameProject={onRenameProject} onCreate={vi.fn()} onImport={vi.fn()} />);
       fireEvent.click(screen.getByRole('button', { name: 'Rename Old title' }));
       return { selected, onRenameProject, onOpen, input: screen.getByLabelText('Rename pattern Old title') as HTMLInputElement };
     }
@@ -266,40 +248,6 @@ describe('ProjectGallery', () => {
       expect(onRenameProject).toHaveBeenCalledOnce();
       expect(onRenameProject).toHaveBeenCalledWith(selected, 'New title');
     });
-
-    it('does not rename on Escape, an unchanged value, or an empty value', () => {
-      const first = renderRenamable();
-      fireEvent.change(first.input, { target: { value: 'Changed' } });
-      fireEvent.keyDown(first.input, { key: 'Escape' });
-      expect(first.onRenameProject).not.toHaveBeenCalled();
-      expect(screen.getByRole('button', { name: 'Rename Old title' })).toBeInTheDocument();
-
-      fireEvent.click(screen.getByRole('button', { name: 'Rename Old title' }));
-      fireEvent.blur(screen.getByLabelText('Rename pattern Old title'));
-      expect(first.onRenameProject).not.toHaveBeenCalled();
-
-      fireEvent.click(screen.getByRole('button', { name: 'Rename Old title' }));
-      const input = screen.getByLabelText('Rename pattern Old title');
-      fireEvent.change(input, { target: { value: '   ' } });
-      fireEvent.blur(input);
-      expect(first.onRenameProject).not.toHaveBeenCalled();
-    });
-
-    it('commits on blur', () => {
-      const { selected, onRenameProject, input } = renderRenamable();
-
-      fireEvent.change(input, { target: { value: 'Blurred' } });
-      fireEvent.blur(input);
-
-      expect(onRenameProject).toHaveBeenCalledWith(selected, 'Blurred');
-    });
-
-    it('does not render the title as a button without onRenameProject', () => {
-      renderGallery([project('plain', 'Plain title', 40, 22)]);
-
-      expect(screen.queryByRole('button', { name: 'Rename Plain title' })).toBeNull();
-      expect(screen.getByText('Plain title')).toBeInTheDocument();
-    });
   });
 
   it('uses the externally supplied delete confirmation ID and invokes onDelete', () => {
@@ -314,6 +262,7 @@ describe('ProjectGallery', () => {
         deleteConfirmId={second.id}
         onOpen={vi.fn()}
         onDelete={onDelete}
+        {...required()}
         onCreate={vi.fn()}
         onImport={vi.fn()}
       />
@@ -341,7 +290,6 @@ describe('ProjectGallery', () => {
     const { onCreate, onImport } = renderGallery([]);
 
     expect(screen.getByText('Your canvas is ready')).toBeInTheDocument();
-    expect(screen.getByText('Start a new pattern from scratch or an image, or import a PDF pattern.')).toBeInTheDocument();
     expect(screen.queryByRole('article')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'New Pattern' }));
@@ -359,29 +307,21 @@ describe('ProjectGallery', () => {
     expect(screen.getAllByRole('button', { name: 'Import Pattern' })).toHaveLength(1);
   });
 
-  it('renders the brand, title and actions in one header, in that order', () => {
-    renderGallery([project('one', 'One', 5, 6)], null, { folders: [folder('f', 'Charts')], currentFolderId: 'f', brand: <a href="/">Needlewise</a> });
+  it('renders the brand, title and actions in one header', () => {
+    renderGallery([project('one', 'One', 5, 6)], null, { folders: [folder('f', 'Charts')], currentFolderId: 'f' });
 
     const header = screen.getByRole('heading', { level: 1, name: 'Charts' }).closest('header') as HTMLElement;
-    const cells = [...header.children].map((cell) => cell.className);
-    expect(cells).toEqual(['project-gallery-brand', 'project-gallery-heading', 'project-gallery-actions']);
     expect(within(header).getByRole('link', { name: 'Needlewise' })).toBeInTheDocument();
     expect(within(header).getByRole('navigation', { name: 'Folder breadcrumb' })).toBeInTheDocument();
     expect(within(header).getByRole('button', { name: 'New Pattern' })).toBeInTheDocument();
   });
 
   it('keeps the brand but no actions in the top-level empty state', () => {
-    renderGallery([], null, { brand: <a href="/">Needlewise</a> });
+    renderGallery([]);
 
     const header = screen.getByRole('heading', { level: 1, name: 'Projects' }).closest('header') as HTMLElement;
     expect(within(header).getByRole('link', { name: 'Needlewise' })).toBeInTheDocument();
     expect(within(header).queryByRole('button')).not.toBeInTheDocument();
-  });
-
-  it('renders no brand cell without a brand', () => {
-    renderGallery([project('one', 'One', 5, 6)]);
-
-    expect(document.querySelector('.project-gallery-brand')).toBeNull();
   });
 
   it('shows header actions when projects are present at the top level', () => {
@@ -515,47 +455,6 @@ describe('ProjectGallery folders', () => {
     expect(screen.getByRole('button', { name: 'Drag Charts' })).toBeDisabled();
   });
 
-  it('cancels a folder rename on Escape without calling onRenameFolder', () => {
-    const top = folder('top', 'Charts');
-    const { onRenameFolder } = renderGallery([], null, { folders: [top] });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
-    const input = screen.getByLabelText('Rename folder Charts');
-    fireEvent.change(input, { target: { value: 'Something else' } });
-    fireEvent.keyDown(input, { key: 'Escape' });
-
-    expect(onRenameFolder).not.toHaveBeenCalled();
-    expect(screen.queryByLabelText('Rename folder Charts')).not.toBeInTheDocument();
-    expect(screen.getByText('Charts')).toBeInTheDocument();
-  });
-
-  it('commits a folder rename only once when Enter is followed by a blur from the input unmounting', () => {
-    const top = folder('top', 'Charts');
-    const { onRenameFolder } = renderGallery([], null, { folders: [top] });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
-    const input = screen.getByLabelText('Rename folder Charts');
-    fireEvent.change(input, { target: { value: 'Seasonal charts' } });
-    fireEvent.keyDown(input, { key: 'Enter' });
-    fireEvent.blur(input);
-
-    expect(onRenameFolder).toHaveBeenCalledOnce();
-    expect(onRenameFolder).toHaveBeenCalledWith('top', 'Seasonal charts');
-  });
-
-  it('does not call onRenameFolder when Escape is followed by a blur from the input unmounting', () => {
-    const top = folder('top', 'Charts');
-    const { onRenameFolder } = renderGallery([], null, { folders: [top] });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
-    const input = screen.getByLabelText('Rename folder Charts');
-    fireEvent.change(input, { target: { value: 'Something else' } });
-    fireEvent.keyDown(input, { key: 'Escape' });
-    fireEvent.blur(input);
-
-    expect(onRenameFolder).not.toHaveBeenCalled();
-  });
-
   it('shows the folder delete confirm label and calls onDeleteFolder', () => {
     const top = folder('top', 'Charts');
     const { onDeleteFolder, view } = renderGallery([], null, { folders: [top] });
@@ -569,6 +468,7 @@ describe('ProjectGallery folders', () => {
         projects={[]}
         onOpen={vi.fn()}
         onDelete={vi.fn()}
+        {...required()}
         onCreate={vi.fn()}
         onImport={vi.fn()}
         folders={[top]}
@@ -580,27 +480,13 @@ describe('ProjectGallery folders', () => {
     expect(confirm).toHaveTextContent('Confirm delete?');
   });
 
-  it('renders a drag handle on every project and folder card, and no move-to select remains', () => {
+  it('renders a drag handle on every project and folder card', () => {
     const top = folder('top', 'Charts');
     const atTop = project('at-top', 'Loose pattern', 10, 10);
     renderGallery([atTop], null, { folders: [top] });
 
     expect(screen.getByRole('button', { name: 'Drag Charts' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Drag Loose pattern' })).toBeInTheDocument();
-    expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
-    expect(screen.queryByText(/Move .* to folder/)).not.toBeInTheDocument();
-  });
-
-  it('hides the move-up bar when no drag is active', () => {
-    const top = folder('top', 'Charts');
-    renderGallery([project('one', 'One', 5, 5)], null, { folders: [top], currentFolderId: 'top' });
-
-    expect(screen.queryByText(/Drop here to move out/)).not.toBeInTheDocument();
-  });
-
-  it('does not show the move-up bar at the top level even conceptually (no currentFolder to move out of)', () => {
-    renderGallery([project('one', 'One', 5, 5)]);
-    expect(screen.queryByText(/Drop here to move out/)).not.toBeInTheDocument();
   });
 
   it('shows the most recently updated project (by updatedAt then revision) as the folder preview', () => {

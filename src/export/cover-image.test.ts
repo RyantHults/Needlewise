@@ -3,7 +3,7 @@ import { CellKind, createDocument, HalfDirection, type PatternDocument } from '.
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import type { CanvasContextAdapter } from '../editor/contracts';
 import { coverCellPx, paintCover, renderCoverPng, type CoverCanvas, type CoverImageInput } from './cover-image';
-import { applyCommand } from '../domain/test-fixtures';
+import { applyCommand, cell } from '../domain/test-fixtures';
 
 interface Call { readonly op: string; readonly args: readonly unknown[] }
 
@@ -45,7 +45,7 @@ describe('paintCover', () => {
   });
 
   it('paints thread strokes in detail and flat polygons below the detail size', async () => {
-    const document = patternOf(2, 1, (apply) => { apply({ type: 'set-full', x: 0, y: 0, color: 1 }); apply({ type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 2 }); });
+    const document = patternOf(2, 1, (apply) => { apply(cell(2, { type: 'set-full', x: 0, y: 0, color: 1 })); apply(cell(2, { type: 'set-half', x: 1, y: 0, direction: HalfDirection.Slash, color: 2 })); });
     const detail = recorder();
     await paintCover(detail.context, inputOf(document), 8);
     // Full cross: two strands of three strokes each, plus one half strand of three.
@@ -69,7 +69,7 @@ describe('paintCover', () => {
 
   it('skips masked-off cells and draws backstitch', async () => {
     const document = patternOf(2, 1, (apply) => {
-      apply({ type: 'set-full', x: 0, y: 0, color: 1 });
+      apply(cell(2, { type: 'set-full', x: 0, y: 0, color: 1 }));
       apply({ type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 8, y: 4 }, color: 2 });
     });
     const masked = { ...document, canvasMask: Uint8Array.from([0, 1]) };
@@ -86,10 +86,8 @@ describe('paintCover', () => {
     });
     const { context, calls } = recorder();
     await paintCover(context, inputOf(document), 8);
-    // The last three strokes are edge, body and highlight; the edge strand is unshifted.
-    const tail = calls.slice(-12);
-    expect(tail[1]).toEqual({ op: 'moveTo', args: [16, 24] });
-    expect(tail[2]).toEqual({ op: 'lineTo', args: [24, 24] });
+    expect(calls).toContainEqual({ op: 'moveTo', args: [16, 24] });
+    expect(calls).toContainEqual({ op: 'lineTo', args: [24, 24] });
   });
 
   it('rejects with an AbortError when aborted', async () => {

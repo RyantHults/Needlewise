@@ -297,40 +297,6 @@ describe('DOM pointer event adapter', () => {
     adapter.dispose();
   });
 
-  it('diagnoses touch transport lifecycle events without logging pointer moves', () => {
-    const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
-    const surface = new FakeSurface();
-    const controller = {
-      handlePointerDown: () => true,
-      handlePointerMove: () => true,
-      handlePointerUp: () => true,
-      handlePointerCancel: () => true,
-      handlePointerLostCapture: () => true,
-      handleWheel: () => true,
-      handleKeyDown: () => true,
-      handleKeyUp: () => true,
-      handleBlur: () => undefined
-    };
-    const adapter = createPointerEventsAdapter(surface, controller);
-    const touchEvent = (id: number, type: string, timeStamp: number): PointerEvent => ({
-      ...pointerEvent(id, 15, 26),
-      pointerType: 'touch',
-      timeStamp
-    } as unknown as PointerEvent);
-    surface.dispatch('pointerdown', touchEvent(1, 'pointerdown', 10));
-    surface.dispatch('pointerup', touchEvent(1, 'pointerup', 20));
-    surface.dispatch('pointercancel', touchEvent(1, 'pointercancel', 30));
-    surface.dispatch('lostpointercapture', touchEvent(1, 'lostpointercapture', 40));
-    adapter.dispose();
-    expect(debug.mock.calls.filter(([prefix]) => prefix === '[Needlewise touch]')).toHaveLength(4);
-    expect(debug.mock.calls.map(([, eventName]) => eventName)).toEqual(['pointerdown', 'pointerup', 'pointercancel', 'lostpointercapture']);
-    expect(debug.mock.calls.every(([, , details]) => (details as { x: number; y: number; timeStamp: number; handled: boolean }).x === 5
-      && (details as { y: number }).y === 6
-      && (details as { timeStamp: number }).timeStamp >= 10
-      && (details as { handled: boolean }).handled)).toBe(true);
-    debug.mockRestore();
-  });
-
   it('does not forward non-finite pointer or wheel samples', () => {
     const surface = new FakeSurface();
     let downs = 0;

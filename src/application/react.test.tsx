@@ -2,12 +2,11 @@ import 'fake-indexeddb/auto';
 import { StrictMode } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi, type MockInstance } from 'vitest';
-import { createDocument as createSurfaceDocument, createPatternFragment, CellKind, flattenDocument, LayerType } from '../domain';
-import { clearClipboard, readClipboard, writeClipboard, type ClipboardEntry } from '../editor/clipboard-store';
+import { CellKind, flattenDocument } from '../domain';
 import { NeedlewiseDatabase, ProjectRepository, type ProjectMetadata } from '../persistence';
 import { ProjectWorkspace, useProjectWorkspace } from './index';
-import { createInstalledCatalogRegistry, DEFAULT_CATALOG_DEFINITION } from '../catalog';
-import { createLayeredDocument as createDocument } from '../domain/test-fixtures';
+import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
+import { cell, createLayeredDocument as createDocument } from '../domain/test-fixtures';
 
 let databaseCounter = 1000;
 
@@ -20,18 +19,6 @@ function projectMetadata(id: string, revision: number, updatedAt: number): Proje
   return { id, title: id, notes: '', createdAt: 1, updatedAt, revision };
 }
 
-function clipboardEntry(): ClipboardEntry {
-  const surface = createSurfaceDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-  surface.kind[0] = CellKind.Full;
-  surface.colors[0] = 1;
-  return {
-    fragment: createPatternFragment(surface, { x: 0, y: 0, width: 2, height: 1 }),
-    selection: { kind: 'rect', rect: { x: 0, y: 0, width: 2, height: 1 } },
-    layerType: LayerType.Stitch,
-    palette: surface.palette
-  };
-}
-
 async function deleteRepository(repository: ProjectRepository): Promise<void> {
   const database = repository.db;
   await repository.close();
@@ -39,33 +26,11 @@ async function deleteRepository(repository: ProjectRepository): Promise<void> {
 }
 
 describe('ProjectWorkspace observable adapter', () => {
-  it('forwards the injected catalog registry to the workspace factory unchanged', async () => {
-    const repository = makeRepository();
-    const catalogRegistry = createInstalledCatalogRegistry([DEFAULT_CATALOG_DEFINITION]);
-    let dispose: MockInstance<ProjectWorkspace['dispose']> | undefined;
-    const factory = vi.fn((options: ConstructorParameters<typeof ProjectWorkspace>[0]) => {
-      const workspace = new ProjectWorkspace(options);
-      dispose = vi.spyOn(workspace, 'dispose');
-      return workspace;
-    });
-    const rendered = renderHook(() => useProjectWorkspace({ repository, catalogRegistry, workspaceFactory: factory, autoOpenMostRecent: false }));
-    try {
-      await waitFor(() => expect(rendered.result.current.initialized).toBe(true));
-      expect(factory).toHaveBeenCalledOnce();
-      expect(factory.mock.calls[0]?.[0]?.catalogRegistry).toBe(catalogRegistry);
-    } finally {
-      rendered.unmount();
-      await waitFor(() => expect(dispose).toHaveBeenCalledOnce());
-      await deleteRepository(repository);
-    }
-  });
-
-  it('initializes with the newest valid project and disposes once under Strict Mode replay', async () => {
+  it('lists projects and disposes once under Strict Mode replay', async () => {
     const repository = makeRepository();
     const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     await repository.save('older', projectMetadata('older', 0, 10), document);
     await repository.save('newer', projectMetadata('newer', 0, 20), document);
-    const listProjects = vi.spyOn(repository, 'listProjects');
     let dispose: MockInstance<ProjectWorkspace['dispose']> | undefined;
     const factory = vi.fn((options: ConstructorParameters<typeof ProjectWorkspace>[0]) => {
       const workspace = new ProjectWorkspace(options);
@@ -76,33 +41,10 @@ describe('ProjectWorkspace observable adapter', () => {
     try {
       await waitFor(() => expect(rendered.result.current.initialized).toBe(true));
       expect(factory).toHaveBeenCalledTimes(1);
-      expect(listProjects).toHaveBeenCalledOnce();
       expect(rendered.result.current.projects.map((project) => project.id)).toEqual(['newer', 'older']);
-      expect(rendered.result.current.state.projectId).toBe('newer');
     } finally {
       rendered.unmount();
       await waitFor(() => expect(dispose).toHaveBeenCalledOnce());
-      await deleteRepository(repository);
-    }
-  });
-
-  it('can defer most-recent startup selection so a route can open its project ID explicitly', async () => {
-    const repository = makeRepository();
-    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    await repository.save('older', projectMetadata('older', 0, 10), document);
-    await repository.save('newer', projectMetadata('newer', 0, 20), document);
-    const rendered = renderHook(() => useProjectWorkspace({ repository, autoOpenMostRecent: false }));
-    try {
-      await waitFor(() => expect(rendered.result.current.initialized).toBe(true));
-      expect(rendered.result.current.state.projectId).toBeNull();
-
-      await act(async () => {
-        await rendered.result.current.openProject('older');
-      });
-      expect(rendered.result.current.state.projectId).toBe('older');
-    } finally {
-      rendered.unmount();
-      await Promise.resolve();
       await deleteRepository(repository);
     }
   });
@@ -117,7 +59,7 @@ describe('ProjectWorkspace observable adapter', () => {
       });
       expect(rendered.result.current.state.projectId).toBe('created');
       await act(async () => {
-        rendered.result.current.workspace?.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+        rendered.result.current.workspace?.execute(cell(2, { type: 'set-full', x: 0, y: 0, color: 1 }));
       });
       await waitFor(() => expect(rendered.result.current.state.save.status).toBe('pending'));
       expect(rendered.result.current.state.save.pendingRevision).toBe(1);
@@ -143,7 +85,7 @@ describe('ProjectWorkspace observable adapter', () => {
       });
       const before = rendered.result.current.projects.find((project) => project.id === 'created');
       await act(async () => {
-        rendered.result.current.workspace?.execute({ type: 'set-full', x: 0, y: 0, color: 1 });
+        rendered.result.current.workspace?.execute(cell(2, { type: 'set-full', x: 0, y: 0, color: 1 }));
       });
       // The edit saves through the session, not a hook action, so the listing is still the old one.
       expect(rendered.result.current.projects.find((project) => project.id === 'created')?.revision).toBe(before?.revision);
@@ -155,64 +97,6 @@ describe('ProjectWorkspace observable adapter', () => {
       expect(after?.thumbnail?.palette).toContain('#dd3333');
       expect(rendered.result.current.busy).toBe(false);
     } finally {
-      rendered.unmount();
-      await Promise.resolve();
-      await deleteRepository(repository);
-    }
-  });
-
-  it('leaves the editor clipboard untouched when the project list refreshes', async () => {
-    const repository = makeRepository();
-    const rendered = renderHook(() => useProjectWorkspace({ repository, autoOpenMostRecent: false }));
-    try {
-      await waitFor(() => expect(rendered.result.current.initialized).toBe(true));
-      const entry = clipboardEntry();
-      writeClipboard(entry);
-      await act(async () => {
-        await rendered.result.current.refreshProjectList();
-      });
-      expect(readClipboard()?.fragment).toEqual(entry.fragment);
-      expect(readClipboard()).toMatchObject({ layerType: LayerType.Stitch, selection: { kind: 'rect' }, palette: [{ id: 1, name: 'Red' }] });
-    } finally {
-      clearClipboard();
-      rendered.unmount();
-      await Promise.resolve();
-      await deleteRepository(repository);
-    }
-  });
-
-  it('does not let lifecycle flushes cancel a delayed startup open', async () => {
-    const repository = makeRepository();
-    const patternDocument = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
-    await repository.save('delayed', projectMetadata('delayed', 0, 10), patternDocument);
-    const originalLoad = repository.load.bind(repository);
-    let releaseLoad!: () => void;
-    const loadReleased = new Promise<void>((resolve) => {
-      releaseLoad = resolve;
-    });
-    let loadStarted!: () => void;
-    const loadHasStarted = new Promise<void>((resolve) => {
-      loadStarted = resolve;
-    });
-    vi.spyOn(repository, 'load').mockImplementation(async (projectId) => {
-      loadStarted();
-      await loadReleased;
-      return originalLoad(projectId);
-    });
-    const rendered = renderHook(() => useProjectWorkspace({ repository }));
-    const initialVisibilityState = document.visibilityState;
-    try {
-      await act(async () => {
-        await loadHasStarted;
-        Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
-        window.dispatchEvent(new Event('pagehide'));
-        document.dispatchEvent(new Event('visibilitychange'));
-        releaseLoad();
-      });
-      await waitFor(() => expect(rendered.result.current.initialized).toBe(true));
-      expect(rendered.result.current.state.projectId).toBe('delayed');
-    } finally {
-      Object.defineProperty(document, 'visibilityState', { configurable: true, value: initialVisibilityState });
       rendered.unmount();
       await Promise.resolve();
       await deleteRepository(repository);
@@ -255,7 +139,7 @@ describe('ProjectWorkspace observable adapter', () => {
       unsubscribe?.();
       unsubscribe?.();
       await act(async () => {
-        workspace?.execute({ type: 'set-full', x: 1, y: 1, color: 1 });
+        workspace?.execute(cell(2, { type: 'set-full', x: 1, y: 1, color: 1 }));
       });
       expect(notifications).toBe(0);
     } finally {

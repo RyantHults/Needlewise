@@ -34,7 +34,6 @@ function input(
   return {
     projectId: 'project-a',
     baseRevision: 7,
-    requestId: `request-${width}-${height}-${startIndex}`,
     width,
     height,
     startIndex,
@@ -233,26 +232,26 @@ describe('component-graph fill protocol and traversal', () => {
 
   it('keys cancellation and stale responses by the complete request identity', async () => {
     const worker = new FakeWorker();
-    const client = createFillWorkerClient({ workerFactory: () => worker });
+    const client = createFillWorkerClient({ workerFactory: () => worker, requestIdFactory: () => 'same-id' });
     const job = client.submit(input(2, 2, 0));
     job.cancel();
     await expect(job.promise).rejects.toBeInstanceOf(FillCancelledError);
     worker.emit(createFillResult(job.request, new Uint32Array([0]), new Uint8Array([1])));
 
-    const stale = client.submit({ ...input(2, 2, 0), requestId: 'stale' });
+    const stale = client.submit(input(2, 2, 0));
     worker.emit({ ...createFillResult(stale.request, new Uint32Array([0]), new Uint8Array([1])), baseRevision: 8 });
     worker.emit({ ...createFillCancel(stale.request), baseRevision: 8 });
     worker.emit({ protocol: FILL_PROTOCOL, type: FILL_ERROR_TYPE, projectId: 'project-a', baseRevision: 8, requestId: stale.request.requestId, code: 'stale', message: 'stale' });
     worker.emit(createFillResult(stale.request, new Uint32Array([0]), new Uint8Array([1])));
-    await expect(stale.promise).resolves.toMatchObject({ requestId: 'stale' });
+    await expect(stale.promise).resolves.toMatchObject({ requestId: stale.request.requestId });
 
-    const first = client.submit({ ...input(2, 2, 0), requestId: 'reused', baseRevision: 7 });
+    const first = client.submit({ ...input(2, 2, 0), baseRevision: 7 });
     first.cancel();
     await expect(first.promise).rejects.toBeInstanceOf(FillCancelledError);
-    const second = client.submit({ ...input(2, 2, 0), requestId: 'reused', baseRevision: 8 });
+    const second = client.submit({ ...input(2, 2, 0), baseRevision: 8 });
     worker.emit(createFillResult(first.request, new Uint32Array([0]), new Uint8Array([1])));
     worker.emit(createFillResult(second.request, new Uint32Array([0]), new Uint8Array([1])));
-    await expect(second.promise).resolves.toMatchObject({ baseRevision: 8, requestId: 'reused' });
+    await expect(second.promise).resolves.toMatchObject({ baseRevision: 8, requestId: second.request.requestId });
     client.dispose();
   });
 
@@ -270,13 +269,13 @@ describe('component-graph fill protocol and traversal', () => {
   it('rejects a malformed response with matching identity but ignores malformed identity responses', async () => {
     const worker = new FakeWorker();
     const client = createFillWorkerClient({ workerFactory: () => worker });
-    const ignored = client.submit({ ...input(2, 2, 0), requestId: 'identity-check' });
+    const ignored = client.submit(input(2, 2, 0));
     worker.emit({ protocol: FILL_PROTOCOL, type: FILL_RESULT_TYPE, projectId: 'project-b', baseRevision: 7, requestId: ignored.request.requestId, width: 2, height: 2, startIndex: 0, startMask: 1, indices: new Uint32Array([0]), masks: new Uint8Array([1]) });
     worker.emit({ protocol: FILL_PROTOCOL, type: FILL_CANCELLED_TYPE, projectId: 'project-b', baseRevision: 7, requestId: ignored.request.requestId });
     worker.emit(createFillResult(ignored.request, new Uint32Array([0]), new Uint8Array([1])));
-    await expect(ignored.promise).resolves.toMatchObject({ requestId: 'identity-check' });
+    await expect(ignored.promise).resolves.toMatchObject({ requestId: ignored.request.requestId });
 
-    const malformed = client.submit({ ...input(2, 2, 0), requestId: 'malformed-response' });
+    const malformed = client.submit(input(2, 2, 0));
     worker.emit({ ...malformed.request, type: FILL_RESULT_TYPE, indices: new Uint32Array([0]), masks: undefined });
     await expect(malformed.promise).rejects.toBeInstanceOf(FillProtocolError);
     client.dispose();
@@ -288,7 +287,7 @@ describe('component-graph fill protocol and traversal', () => {
     const first = client.submit(input(2, 2, 0));
     workers[0].emit({ ...first.request, type: FILL_RESULT_TYPE, indices: new Uint16Array([0]), masks: new Uint8Array([1]) });
     await expect(first.promise).rejects.toBeInstanceOf(FillProtocolError);
-    const second = client.submit({ ...input(2, 2, 0), requestId: 'transport' });
+    const second = client.submit(input(2, 2, 0));
     workers[0].emitTransport('error', { message: 'worker crashed' });
     await expect(second.promise).rejects.toBeInstanceOf(FillWorkerTransportError);
     expect(workers[0].terminated.count).toBe(1);

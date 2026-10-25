@@ -4,7 +4,7 @@ import { PATTERN_IMPORT_PROTOCOL } from './import-protocol';
 import { ImportError, type ImportAnalysis } from './types';
 
 const analysis: ImportAnalysis = {
-  format: 'fake', pages: [], overlap: 0, detectedOverlap: 0,
+  format: 'fake', pages: [],
   chart: { width: 1, height: 1, cells: new Uint16Array(1), symbols: [], key: [], warnings: [] }
 };
 
@@ -44,7 +44,7 @@ describe('pattern import client', () => {
   it('correlates concurrent requests by id and ignores strangers', async () => {
     const { worker, client } = setup();
     const first = client.open(file, 'a.pdf');
-    const second = client.reanalyze({ overlap: 1 });
+    const second = client.reanalyze({ pageRoles: { 0: 'key' } });
     worker.reply({ type: 'result', requestId: 'other', analysis });
     worker.reply({ type: 'result', requestId: 'id1', analysis: { ...analysis, format: 'second' } });
     worker.reply({ type: 'result', requestId: 'id0', analysis });
@@ -78,13 +78,6 @@ describe('pattern import client', () => {
     expect(worker.posted).toHaveLength(0);
   });
 
-  it('close resolves on closed', async () => {
-    const { worker, client } = setup();
-    const promise = client.close();
-    worker.reply({ type: 'closed', requestId: 'id0' });
-    await expect(promise).resolves.toBeUndefined();
-  });
-
   it('rejects pending requests when the worker errors', async () => {
     const { worker, client } = setup();
     const promise = client.open(file, 'a.pdf');
@@ -107,18 +100,15 @@ describe('pattern import client', () => {
       return createPatternImportClient({ workerFactory: () => null, fallback: () => fallback });
     }
 
-    it('runs open, reanalyze and close without a worker', async () => {
+    it('runs open and reanalyze without a worker', async () => {
       const fallback: PatternImportFallback = {
         open: vi.fn(() => Promise.resolve(analysis)),
-        reanalyze: vi.fn(() => Promise.resolve({ ...analysis, overlap: 2 })),
+        reanalyze: vi.fn(() => Promise.resolve({ ...analysis, format: 'again' })),
         close: vi.fn(() => Promise.resolve())
       };
       const client = fallbackClient(fallback);
       await expect(client.open(file, 'a.pdf')).resolves.toBe(analysis);
-      await expect(client.reanalyze({ overlap: 2 })).resolves.toMatchObject({ overlap: 2 });
-      await client.close();
-      expect(fallback.open).toHaveBeenCalledWith(file, 'a.pdf', expect.any(Object));
-      expect(fallback.close).toHaveBeenCalled();
+      await expect(client.reanalyze({ pageRoles: { 0: 'key' } })).resolves.toMatchObject({ format: 'again' });
     });
 
     it('maps aborts and propagates errors', async () => {
@@ -135,21 +125,17 @@ describe('pattern import client', () => {
       await expect(client.reanalyze({})).rejects.toMatchObject({ code: 'too-large' });
     });
 
-    it('sniffs 1024 bytes and closes a replaced session', async () => {
+    it('sniffs 1024 bytes', async () => {
       vi.resetModules();
-      const closes: number[] = [];
-      let n = 0;
-      const findImporter = vi.fn(() => {
-        const id = n++;
-        return { open: () => Promise.resolve({ analyze: () => Promise.resolve(analysis), close: () => { closes.push(id); return Promise.resolve(); } }) };
-      });
+      const findImporter = vi.fn(() => ({
+        open: () => Promise.resolve({ analyze: () => Promise.resolve(analysis), close: () => Promise.resolve() })
+      }));
       vi.doMock('./registry', () => ({ findImporter }));
       const { createPatternImportClient: create } = await import('./import-client');
       const client = create({ workerFactory: () => null });
       const big = new Blob([new Uint8Array(2000)]);
-      await Promise.all([client.open(big, 'a.pdf'), client.open(big, 'b.pdf')]);
+      await client.open(big, 'a.pdf');
       expect((findImporter.mock.calls[0] as unknown as [Uint8Array])[0].length).toBe(1024);
-      expect(closes).toHaveLength(1);
       vi.doUnmock('./registry');
     });
 

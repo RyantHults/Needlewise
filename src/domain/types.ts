@@ -351,9 +351,8 @@ export interface BulkCompletionCommand extends CommandBase {
   readonly type: 'bulk-completion';
   readonly indices: Uint32Array;
   readonly operation: BulkProgressOperation;
-  readonly corner?: QuarterCorner;
-  /** Optional per-index physical completion masks, aligned with `indices`. */
-  readonly masks?: Uint8Array;
+  /** Per-index physical completion masks, aligned with `indices`. */
+  readonly masks: Uint8Array;
 }
 
 export interface BulkBackstitchCompletionCommand extends CommandBase {
@@ -361,15 +360,6 @@ export interface BulkBackstitchCompletionCommand extends CommandBase {
   /** Stable backstitch IDs, not storage positions. */
   readonly ids: Uint32Array;
   readonly operation: BulkProgressOperation;
-}
-
-/** Explicit progress targets, separate from ordinary design mutations. */
-export interface ProgressChangeSet {
-  readonly cellIndices: Uint32Array;
-  readonly backstitchIds: Uint32Array;
-  /** Exact activity counts, when the command has progress semantics. */
-  readonly marked: number;
-  readonly unmarked: number;
 }
 
 export interface PasteFragmentCommand extends CommandBase {
@@ -484,57 +474,6 @@ export type LayerStructureCommand =
   | LayerDuplicateCommand
   | LayerMergeCommand;
 
-interface CellCommandBase extends CommandBase {
-  readonly x: number;
-  readonly y: number;
-}
-
-export interface SetFullCommand extends CellCommandBase {
-  readonly type: 'set-full';
-  readonly color: number;
-}
-
-export interface SetHalfCommand extends CellCommandBase {
-  readonly type: 'set-half';
-  readonly direction: HalfDirection;
-  readonly color: number;
-}
-
-/** A zero color removes the quarter. */
-export interface SetQuarterCommand extends CellCommandBase {
-  readonly type: 'set-quarter';
-  readonly corner: QuarterCorner;
-  readonly color: number;
-}
-
-export interface SetQuartersCommand extends CellCommandBase {
-  readonly type: 'set-quarters';
-  /** Four physical slot colors; zero leaves a slot empty. */
-  readonly colors: readonly number[];
-}
-
-export interface SetThreeQuarterCommand extends CellCommandBase {
-  readonly type: 'set-three-quarter';
-  readonly corner: QuarterCorner;
-  readonly color: number;
-}
-
-export interface EraseCellCommand extends CellCommandBase {
-  readonly type: 'erase-cell';
-}
-
-export interface EraseQuarterCommand extends CellCommandBase {
-  readonly type: 'erase-quarter';
-  readonly corner: QuarterCorner;
-}
-
-/** Recolors the occupied components of a cell, or only the one at `corner`. */
-export interface RecolorCellCommand extends CellCommandBase {
-  readonly type: 'recolor-cell';
-  readonly color: number;
-  readonly corner?: QuarterCorner;
-}
-
 /** Endpoints are fixed-point (cell x 4) and are snapped to valid backstitch points. */
 export interface AddBackstitchCommand extends CommandBase {
   readonly type: 'add-backstitch';
@@ -560,37 +499,15 @@ export interface MoveBackstitchCommand extends CommandBase {
   readonly dy?: number;
 }
 
-export interface RecolorBackstitchCommand extends CommandBase {
-  readonly type: 'recolor-backstitch';
-  readonly id: number;
-  readonly color: number;
-}
-
-/** A recolor and a move in one step; the move's split pieces take the new color. */
-export interface UpdateBackstitchCommand extends CommandBase {
-  readonly type: 'update-backstitch';
-  readonly id: number;
-  readonly color?: number;
-  readonly start?: Point;
-  readonly end?: Point;
-  readonly dx?: number;
-  readonly dy?: number;
-}
-
-/** `id` defaults to the document's next palette ID. */
-export interface PaletteCreateCommand extends CommandBase, PaletteEntryInput {
+/** `id` defaults to the document's next palette ID; the entry is created active. */
+export interface PaletteCreateCommand extends CommandBase, Omit<PaletteEntryInput, 'active'> {
   readonly type: 'palette-create';
 }
 
 export interface PaletteUpdateCommand extends CommandBase {
   readonly type: 'palette-update';
   readonly id: number;
-  readonly name?: string;
-  readonly color?: string;
-  readonly active?: boolean;
-  readonly symbol?: string;
-  readonly material?: PaletteMaterial;
-  readonly catalog?: PaletteCatalogReference;
+  readonly symbol: string;
 }
 
 /** Exchanges the symbols of palette entries `a` and `b` atomically. */
@@ -598,11 +515,6 @@ export interface PaletteSwapCommand extends CommandBase {
   readonly type: 'palette-swap';
   readonly a: number;
   readonly b: number;
-}
-
-export interface PaletteDeactivateCommand extends CommandBase {
-  readonly type: 'palette-deactivate';
-  readonly id: number;
 }
 
 /** Recolors everything using `from` to `to`, then deactivates `from`. `createTo` creates `to` when it does not exist. */
@@ -637,14 +549,6 @@ export interface BatchCommand extends CommandBase {
  * value (bounds, integers, palette ids) before it changes a document.
  */
 export type DomainCommand =
-  | SetFullCommand
-  | SetHalfCommand
-  | SetQuarterCommand
-  | SetQuartersCommand
-  | SetThreeQuarterCommand
-  | EraseCellCommand
-  | EraseQuarterCommand
-  | RecolorCellCommand
   | BulkCellCommand
   | BulkRecolorCommand
   | BulkCompletionCommand
@@ -657,12 +561,9 @@ export type DomainCommand =
   | AddBackstitchCommand
   | RemoveBackstitchCommand
   | MoveBackstitchCommand
-  | RecolorBackstitchCommand
-  | UpdateBackstitchCommand
   | PaletteCreateCommand
   | PaletteUpdateCommand
   | PaletteSwapCommand
-  | PaletteDeactivateCommand
   | PaletteMergeCommand
   | PaletteDeleteCommand
   | DocumentSettingsUpdateCommand
@@ -711,10 +612,6 @@ export interface CommandResult {
   createdBackstitchIds?: Uint32Array;
   /** Stable backstitch IDs whose geometry moved with a fragment. */
   movedBackstitchIds?: Uint32Array;
-  /** Completion targets changed by this operation; absent means legacy/unknown. */
-  progress?: ProgressChangeSet;
-  /** Signals that metrics should be rescanned because identities moved or were removed. */
-  recalculateMetrics?: boolean;
   /** Signals that the base renderer must be invalidated in full for a history delta. */
   requiresFullRedraw?: boolean;
   /** Composite cells to redraw; absent with compositeFull means unknown. */

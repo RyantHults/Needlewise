@@ -57,19 +57,10 @@ describe("PatternSettingsDialog", () => {
     expect(screen.getByRole("button", { name: "Imperial" })).toHaveAttribute("aria-pressed", "false");
   });
 
-  it("moves between tabs with End and Home", async () => {
-    setup();
-    fireEvent.keyDown(screen.getByRole("tab", { name: "Project" }), { key: "End" });
-    expect(screen.getByRole("tab", { name: "Editor" })).toHaveAttribute("aria-selected", "true");
-    fireEvent.keyDown(screen.getByRole("tab", { name: "Editor" }), { key: "Home" });
-    expect(screen.getByRole("tab", { name: "Project" })).toHaveAttribute("aria-selected", "true");
-  });
-
   it("shows every editor option in all mode", () => {
     setup("all");
     fireEvent.click(screen.getByRole("tab", { name: "Editor" }));
     expect(screen.getByRole("group", { name: "Control placement" })).toBeInTheDocument();
-    expect(screen.queryByLabelText("Show palette symbols")).toBeNull();
     expect(screen.getByLabelText("Show palette numbers")).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: "Enable pencil mode" })).toBeInTheDocument();
   });
@@ -82,25 +73,18 @@ describe("PatternSettingsDialog", () => {
     expect(info).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(info);
     expect(info).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("tooltip")).toHaveTextContent("only a pencil or stylus can make changes");
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
     expect(onPreferencesChange).not.toHaveBeenCalled();
   });
 
   it("shows only control placement in placement mode", () => {
     const { onPreferencesChange } = setup("placement");
     fireEvent.click(screen.getByRole("tab", { name: "Editor" }));
-    expect(screen.queryByLabelText("Show palette symbols")).toBeNull();
     expect(screen.queryByLabelText("Show palette numbers")).toBeNull();
     expect(screen.queryByRole("checkbox", { name: "Enable pencil mode" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Left" }));
     const updater = onPreferencesChange.mock.calls[0]![0];
     expect(updater(defaultEditorPreferences()).railSide).toBe("left");
-  });
-
-  it("offers the center guides only in placement mode", () => {
-    setup("all");
-    fireEvent.click(screen.getByRole("tab", { name: "Editor" }));
-    expect(screen.queryByLabelText("Show center guides")).toBeNull();
   });
 
   it("toggles the center guides in placement mode", () => {

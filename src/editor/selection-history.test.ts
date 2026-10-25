@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CellKind, layerSurface, LayerType } from '../domain';
-import { STITCH_LAYER_ID } from '../domain/test-fixtures';
+import { CellKind } from '../domain';
 import { getCanvasMetrics } from './coordinates';
 import type { EditorSurfaceController } from './controller';
 import type { PointerSample } from './input';
@@ -197,29 +196,6 @@ describe('selection history', () => {
     redo(controller);
     expect(kind(2, 2)).toBe(CellKind.Empty);
     expect(controller.getSelection()).toBeUndefined();
-    controller.dispose();
-  });
-
-  it('restores every selected layer and the selection with one undo after deleting across layers', () => {
-    const { boundary, controller } = fixture();
-    controller.setTool({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
-    click(controller, 2, 2);
-    const upper = boundary.addLayer(LayerType.Stitch);
-    click(controller, 3, 3);
-    boundary.toggleLayerSelected(STITCH_LAYER_ID);
-    controller.setTool({ tool: 'select' });
-    drag(controller, { x: 1, y: 1 }, { x: 4, y: 4 });
-    const cell = (layerId: number, x: number, y: number) => layerSurface(boundary.layeredDocument, layerId).kind[y * WIDTH + x];
-    const undoDepth = boundary.undoDepth;
-    expect(controller.deleteSelection()).toBe(true);
-    expect(boundary.undoDepth).toBe(undoDepth + 1);
-    expect(cell(STITCH_LAYER_ID, 2, 2)).toBe(CellKind.Empty);
-    expect(cell(upper, 3, 3)).toBe(CellKind.Empty);
-
-    undo(controller);
-    expect(cell(STITCH_LAYER_ID, 2, 2)).toBe(CellKind.Full);
-    expect(cell(upper, 3, 3)).toBe(CellKind.Full);
-    expect(controller.getSelection()).toEqual({ x: 1, y: 1, width: 4, height: 4 });
     controller.dispose();
   });
 

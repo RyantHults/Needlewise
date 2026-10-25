@@ -27,7 +27,6 @@ import type {
   SaveResult
 } from '../persistence';
 import type { AcceptedConversionDraft } from '../conversion/image-to-pattern';
-import type { InstalledCatalogRegistry } from '../catalog';
 
 export type SaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error' | 'conflict' | 'disposed';
 
@@ -50,7 +49,7 @@ export interface WorkspaceRepository {
     assets?: readonly ProjectAssetInput[],
     options?: SaveOptions
   ): Promise<SaveResult>;
-  savePrepared?(
+  savePrepared(
     projectId: string,
     metadata: ProjectMetadata,
     prepared: PreparedDocumentCapability,
@@ -63,12 +62,12 @@ export interface WorkspaceRepository {
   getAsset?(projectId: string, assetId: string): Promise<ProjectAsset | undefined>;
   inspectProjectHealth?(projectId: string): Promise<ProjectHealth | undefined>;
   loadRecoveryRevision?(projectId: string, revision?: number): Promise<ProjectRecord | undefined>;
-  listFolderIndex?(): Promise<ProjectFolderIndex>;
-  createFolder?(input: CreateFolderInput): Promise<ProjectFolder>;
-  renameFolder?(folderId: string, name: string): Promise<ProjectFolder>;
-  deleteFolder?(folderId: string): Promise<void>;
-  moveProjectToFolder?(projectId: string, folderId: string | null): Promise<void>;
-  moveFolder?(folderId: string, parentId: string | null): Promise<void>;
+  listFolderIndex(): Promise<ProjectFolderIndex>;
+  createFolder(input: CreateFolderInput): Promise<ProjectFolder>;
+  renameFolder(folderId: string, name: string): Promise<ProjectFolder>;
+  deleteFolder(folderId: string): Promise<void>;
+  moveProjectToFolder(projectId: string, folderId: string | null): Promise<void>;
+  moveFolder(folderId: string, parentId: string | null): Promise<void>;
   close?(): Promise<void> | void;
 }
 
@@ -107,8 +106,6 @@ export interface CreateConvertedProjectOptions extends StarterProjectOptions {
 export interface ActiveMetadataChanges {
   title?: string;
   notes?: string;
-  /** The Canvas stitch count; an undoable document settings change. `null` is ignored. */
-  aidaCount?: number | null;
   /** `null` clears the optional display units (metric is the default). */
   units?: DisplayUnits | null;
 }
@@ -119,7 +116,6 @@ export interface WorkspaceOptions {
   clock?: WorkspaceClock | (() => number);
   debounceMs?: number;
   projectIdFactory?: () => string;
-  catalogRegistry?: InstalledCatalogRegistry;
 }
 
 export interface ActiveWorkspaceState {
