@@ -1,13 +1,6 @@
-import { CellKind } from '../domain';
+import { CellKind, isThreeQuarterPairKind } from '../domain';
 import { parseHexColor, rgbToHex } from '../domain/color';
 import type { CanvasContextAdapter, CanvasTarget, Rect, ScreenPoint } from '../editor/contracts';
-import {
-  isThreeQuarterPairKind,
-  ThreeQuarterNE,
-  ThreeQuarterNW,
-  ThreeQuarterSE,
-  ThreeQuarterSW
-} from '../editor/cell-kinds';
 import { isCanvasImageSource } from './atlas';
 import { drawStitchGeometry } from './symbol-painter';
 
@@ -62,10 +55,10 @@ function threadStrokes(kind: number, slot: number): readonly Stroke[] {
   if (kind === CellKind.Full) return [BACKSLASH, SLASH];
   if (kind === CellKind.HalfBackslash) return [BACKSLASH];
   if (kind === CellKind.HalfSlash) return [SLASH];
-  if (kind === ThreeQuarterNW) return [CORNER_TO_CENTER[0], SLASH];
-  if (kind === ThreeQuarterNE) return [BACKSLASH, CORNER_TO_CENTER[1]];
-  if (kind === ThreeQuarterSE) return [CORNER_TO_CENTER[2], SLASH];
-  if (kind === ThreeQuarterSW) return [BACKSLASH, CORNER_TO_CENTER[3]];
+  if (kind === CellKind.ThreeQuarterNW) return [CORNER_TO_CENTER[0], SLASH];
+  if (kind === CellKind.ThreeQuarterNE) return [BACKSLASH, CORNER_TO_CENTER[1]];
+  if (kind === CellKind.ThreeQuarterSE) return [CORNER_TO_CENTER[2], SLASH];
+  if (kind === CellKind.ThreeQuarterSW) return [BACKSLASH, CORNER_TO_CENTER[3]];
   // Callers split a pair into its components, as the symbol painter's callers do.
   if (isThreeQuarterPairKind(kind) || kind === CellKind.Empty) return [];
   return [CORNER_TO_CENTER[slot] ?? CORNER_TO_CENTER[0]];

@@ -17,11 +17,7 @@ import {
   type FillWorkerResponse
 } from '../editor/fill';
 import { isRecord } from '../domain';
-
-interface FillWorkerScope {
-  addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
-  postMessage(message: FillWorkerResponse, transfer?: Transferable[]): void;
-}
+import { bootWorker, type WorkerScope } from './runtime';
 
 function cancelledMessage(request: Pick<FillCancelMessage, 'projectId' | 'baseRevision' | 'requestId'>): FillCancelledMessage {
   return {
@@ -116,19 +112,11 @@ export function handleFillWorkerMessage(
     .finally(() => { activeRequests.delete(requestKey); });
 }
 
-function installFillWorker(scope: FillWorkerScope): void {
+function installFillWorker(scope: WorkerScope<FillWorkerResponse>): void {
   const activeRequests = new Map<string, ActiveFill>();
   scope.addEventListener('message', (event) => {
     handleFillWorkerMessage(event.data, (message, transfer) => scope.postMessage(message, transfer), activeRequests);
   });
 }
 
-function isWorkerScope(value: unknown): value is FillWorkerScope {
-  if (!isRecord(value)) return false;
-  return typeof value.postMessage === 'function'
-    && typeof value.addEventListener === 'function'
-    && !('document' in value);
-}
-
-const globalScope: unknown = typeof globalThis === 'undefined' ? undefined : globalThis;
-if (isWorkerScope(globalScope)) installFillWorker(globalScope);
+bootWorker(installFillWorker);

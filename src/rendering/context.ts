@@ -67,8 +67,6 @@ export function createDefaultAtlasTarget(width: number, height: number): CanvasT
   return undefined;
 }
 
-export const defaultAtlasTargetFactory = createDefaultAtlasTarget;
-
 export function resizeTarget(target: CanvasTarget, metrics: CanvasMetrics): boolean {
   if (target.width === metrics.pixelWidth && target.height === metrics.pixelHeight) return false;
   if (target.resize) target.resize(metrics.pixelWidth, metrics.pixelHeight);

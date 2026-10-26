@@ -1,4 +1,4 @@
-import { CellKind, defaultPaletteSymbol, type PatternDocument } from '../domain';
+import { CellKind, defaultPaletteSymbol, isThreeQuarterKind, isThreeQuarterPairKind, type PatternDocument } from '../domain';
 import {
   ChartPresentationMode,
   type CanvasContextAdapter,
@@ -9,14 +9,6 @@ import {
 import { contrastSymbolInk } from './contrast';
 import { getSymbolOutline } from '../symbols';
 import { grayscaleColor, paletteColor, paletteEntry } from './colors';
-import {
-  isThreeQuarterKind,
-  isThreeQuarterPairKind,
-  ThreeQuarterNE,
-  ThreeQuarterNW,
-  ThreeQuarterSE,
-  ThreeQuarterSW
-} from '../editor/cell-kinds';
 
 /**
  * A symbol outline in cell-relative units, already centered on its origin.
@@ -117,25 +109,25 @@ export function drawStitchGeometry(
     return;
   }
   if (isThreeQuarterKind(kind)) {
-    if (kind === ThreeQuarterNW) {
+    if (kind === CellKind.ThreeQuarterNW) {
       polygon(context, [
         { x: left, y: top },
         { x: right, y: top },
         { x: left, y: bottom }
       ]);
-    } else if (kind === ThreeQuarterNE) {
+    } else if (kind === CellKind.ThreeQuarterNE) {
       polygon(context, [
         { x: left, y: top },
         { x: right, y: top },
         { x: right, y: bottom }
       ]);
-    } else if (kind === ThreeQuarterSE) {
+    } else if (kind === CellKind.ThreeQuarterSE) {
       polygon(context, [
         { x: right, y: top },
         { x: right, y: bottom },
         { x: left, y: bottom }
       ]);
-    } else if (kind === ThreeQuarterSW) {
+    } else if (kind === CellKind.ThreeQuarterSW) {
       polygon(context, [
         { x: left, y: top },
         { x: right, y: bottom },

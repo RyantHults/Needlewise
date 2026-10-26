@@ -1,12 +1,12 @@
 import { DEFAULT_CATALOG_DEFINITION, createCatalogReference, getDmcColor, type CatalogDefinition, type CatalogRecord } from '../catalog';
 import { CellKind, MAX_PERSISTABLE_CELL_COUNT, PALETTE_ID_MAX, type PaletteEntryInput, type PatternDocument } from '../domain/types';
+import { parseHexColor } from '../domain/color';
 import { createDocument, defaultPaletteSymbol } from '../domain/model';
 import { assertValidDocument } from '../domain/validation';
 import { SYMBOL_IDS, SYMBOL_POOL } from '../symbols';
 import { normalizeSvgPath, outlineDistance } from './pdf/outline';
 import {
   ImportError,
-  type ImportColor,
   type ImportedChart,
   type SymbolMapping,
   type SymbolMappingProposal
@@ -60,14 +60,6 @@ export function nearestPoolOutline(
   return best;
 }
 
-function rgbOf(color: ImportColor): { r: number; g: number; b: number } {
-  return {
-    r: Number.parseInt(color.slice(1, 3), 16),
-    g: Number.parseInt(color.slice(3, 5), 16),
-    b: Number.parseInt(color.slice(5, 7), 16)
-  };
-}
-
 function isDmcBrand(brand: string | undefined): boolean {
   return brand === undefined || brand.trim().toUpperCase() === 'DMC';
 }
@@ -91,7 +83,8 @@ export function proposeMappings(chart: ImportedChart, catalog: CatalogDefinition
       reason = `Thread code ${entry.code} is not in the catalog.`;
     }
     const color = symbol.fillColor ?? entry?.color;
-    const nearest = color === undefined ? undefined : catalog.nearest(rgbOf(color));
+    const rgb = color === undefined ? undefined : parseHexColor(color);
+    const nearest = rgb === undefined ? undefined : catalog.nearest({ r: rgb[0], g: rgb[1], b: rgb[2] });
     if (color === undefined || nearest === undefined) return { symbolKey: symbol.key, status: 'unmapped', reason };
     return { symbolKey: symbol.key, catalogCode: nearest.code, color, status: 'guessed', reason: `${reason} Matched by color.` };
   });

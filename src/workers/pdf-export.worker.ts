@@ -6,12 +6,7 @@ import {
 } from '../export/pdf-export-protocol';
 import { loadPdfLabelFont } from '../export/pdf-font';
 import { writePatternPdf, type PdfPatternInput, type PdfWriteOptions } from '../export/pdf-writer';
-import { isAbortError } from './abort';
-
-interface PdfExportWorkerScope {
-  addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
-  postMessage(message: PdfExportWorkerResponse, transfer?: Transferable[]): void;
-}
+import { bootWorker, runAbortable, type WorkerScope } from './runtime';
 
 export interface PdfExportWorkerDependencies {
   readonly loadFont: () => Promise<Uint8Array>;
@@ -22,10 +17,6 @@ const defaultDependencies: PdfExportWorkerDependencies = {
   loadFont: () => loadPdfLabelFont(),
   write: writePatternPdf
 };
-
-function isCancelled(error: unknown, signal: AbortSignal): boolean {
-  return signal.aborted || isAbortError(error);
-}
 
 /** Handle one export or cancel message without depending on a concrete WorkerGlobalScope. */
 export function handlePdfExportWorkerMessage(
@@ -46,42 +37,30 @@ export function handlePdfExportWorkerMessage(
     return;
   }
   const request = value as unknown as PdfExportRequestMessage;
-  const controller = new AbortController();
-  active.set(requestId, controller);
-  void (async () => {
-    try {
-      const fontBytes = await dependencies.loadFont();
-      if (controller.signal.aborted) throw new DOMException('cancelled', 'AbortError');
-      const pdf = await dependencies.write({ ...request.input, fontBytes }, {
-        signal: controller.signal,
-        onProgress: ({ completed, total }) => {
-          post({ protocol: PDF_EXPORT_PROTOCOL, type: 'progress', requestId, completed, total });
-        }
-      });
-      if (controller.signal.aborted) post({ protocol: PDF_EXPORT_PROTOCOL, type: 'cancelled', requestId });
-      else post({ protocol: PDF_EXPORT_PROTOCOL, type: 'result', requestId, pdf }, [pdf.buffer as ArrayBuffer]);
-    } catch (error) {
-      if (isCancelled(error, controller.signal)) post({ protocol: PDF_EXPORT_PROTOCOL, type: 'cancelled', requestId });
-      else post({ protocol: PDF_EXPORT_PROTOCOL, type: 'error', requestId, message: error instanceof Error ? error.message : 'The PDF could not be created.' });
-    } finally {
-      active.delete(requestId);
+  runAbortable(active, requestId, async (signal) => {
+    const fontBytes = await dependencies.loadFont();
+    if (signal.aborted) throw new DOMException('cancelled', 'AbortError');
+    const pdf = await dependencies.write({ ...request.input, fontBytes }, {
+      signal,
+      onProgress: ({ completed, total }) => {
+        post({ protocol: PDF_EXPORT_PROTOCOL, type: 'progress', requestId, completed, total });
+      }
+    });
+    if (signal.aborted) post({ protocol: PDF_EXPORT_PROTOCOL, type: 'cancelled', requestId });
+    else post({ protocol: PDF_EXPORT_PROTOCOL, type: 'result', requestId, pdf }, [pdf.buffer as ArrayBuffer]);
+  }, {
+    cancelled: () => { post({ protocol: PDF_EXPORT_PROTOCOL, type: 'cancelled', requestId }); },
+    failed: (error) => {
+      post({ protocol: PDF_EXPORT_PROTOCOL, type: 'error', requestId, message: error instanceof Error ? error.message : 'The PDF could not be created.' });
     }
-  })();
+  });
 }
 
-function installPdfExportWorker(scope: PdfExportWorkerScope): void {
+function installPdfExportWorker(scope: WorkerScope<PdfExportWorkerResponse>): void {
   const active = new Map<string, AbortController>();
   scope.addEventListener('message', (event) => {
     handlePdfExportWorkerMessage(event.data, (message, transfer) => { scope.postMessage(message, transfer); }, active);
   });
 }
 
-function isWorkerScope(value: unknown): value is PdfExportWorkerScope {
-  return isRecord(value)
-    && typeof value.postMessage === 'function'
-    && typeof value.addEventListener === 'function'
-    && !('document' in value);
-}
-
-const globalScope: unknown = typeof globalThis === 'undefined' ? undefined : globalThis;
-if (isWorkerScope(globalScope)) installPdfExportWorker(globalScope);
+bootWorker(installPdfExportWorker);

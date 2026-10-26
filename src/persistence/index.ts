@@ -8,16 +8,15 @@ export * from './repository';
 export * from './source-image';
 export * from './project-thumbnail';
 export * from './session-history';
+export { isProjectId } from './metadata';
+export { isSha256Hex } from './asset-input';
 export {
   PersistencePreparationClientError,
   PersistencePreparationTransportError,
-  PersistencePreparationStaleError,
   PersistencePreparationWorkerClient,
   createPersistencePreparationClient
 } from './preparation-client';
 export type {
-  PersistencePreparationWorkerLike,
-  PersistencePreparationWorkerFactory,
   PersistencePreparationInput,
   PersistencePreparationClientOptions,
   PersistencePreparationClient

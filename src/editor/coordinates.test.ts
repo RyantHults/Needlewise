@@ -49,9 +49,9 @@ describe('canvas coordinate foundation', () => {
 
   it('rejects non-finite screen and model samples before conversion', () => {
     const viewport = { x: 4, y: 3, zoom: 10 };
-    expect(() => screenToCellUnclamped({ x: Number.NaN, y: 2 }, viewport)).toThrow(/finite/);
-    expect(() => screenToCellUnclamped({ x: Number.POSITIVE_INFINITY, y: 2 }, viewport)).toThrow(/finite/);
-    expect(() => modelToScreen({ x: Number.NaN, y: 2 }, viewport)).toThrow(/finite/);
+    expect(() => screenToCellUnclamped({ x: Number.NaN, y: 2 }, viewport)).toThrow(RangeError);
+    expect(() => screenToCellUnclamped({ x: Number.POSITIVE_INFINITY, y: 2 }, viewport)).toThrow(RangeError);
+    expect(() => modelToScreen({ x: Number.NaN, y: 2 }, viewport)).toThrow(RangeError);
   });
 
   it('caps device pixel ratio and backing-store pixels', () => {

@@ -36,6 +36,7 @@ import {
   normalizeSourceImageDescriptor,
   createPersistencePreparationClient,
   expectedThumbnailDimensions,
+  isProjectId,
   type PersistencePreparationClient
 } from '../persistence';
 import { validateAcceptedConversionDraft, type AcceptedConversionDraft } from '../conversion/image-to-pattern';
@@ -81,10 +82,6 @@ const EMPTY_SAVE_STATE: SaveState = {
 function asClock(clock: WorkspaceOptions['clock']): WorkspaceClock {
   if (typeof clock === 'function') return { now: clock };
   return clock ?? { now: () => Date.now() };
-}
-
-function isProjectId(value: string): boolean {
-  return value.length > 0 && value.length <= 256;
 }
 
 function createBrowserProjectId(): string {

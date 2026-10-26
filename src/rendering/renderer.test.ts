@@ -3,7 +3,6 @@ import targetSvg from '../assets/ui-icons/target.svg?raw';
 import { CellKind, createDocument, createPatternFragment } from '../domain';
 import { cellToScreenRect, fitViewport, getCanvasMetrics, visibleCellRect } from '../editor/coordinates';
 import { CHART_EDGE_MARGIN, DEFAULT_RENDERER_STYLE, type CanvasTarget, type FloatingPasteOverlay, type PendingCellState, type RendererStyle, type TraceImage } from '../editor/contracts';
-import { ThreeQuarterNW, ThreeQuarterPair } from '../editor/cell-kinds';
 import { MAX_ATLAS_PIXELS, createDefaultAtlasTarget } from './context';
 import { isCanvasImageSource } from './atlas';
 import { createCanvasRenderer } from './renderer';
@@ -657,10 +656,10 @@ describe('Canvas 2D chart renderer', () => {
 
   it('renders paired three-quarter axes with distinct detail colors and asymmetric completion', () => {
     const document = chart(2, 1);
-    document.kind[0] = ThreeQuarterPair;
+    document.kind[0] = CellKind.ThreeQuarterPair;
     document.colors.set([1, 0, 35, 0], 0);
     document.completed[0] = 1;
-    document.kind[1] = ThreeQuarterPair;
+    document.kind[1] = CellKind.ThreeQuarterPair;
     document.colors.set([0, 35, 0, 1], 4);
     document.completed[1] = 2;
     const base = recordingContext();
@@ -709,7 +708,7 @@ describe('Canvas 2D chart renderer', () => {
 
     it('strokes the anti-diagonal for a same-colour NW+SE pair', () => {
       const strokes = seamStrokes((document) => {
-        document.kind[0] = ThreeQuarterPair;
+        document.kind[0] = CellKind.ThreeQuarterPair;
         document.colors.set([1, 0, 1, 0], 0);
       });
       expect(strokes).toContainEqual({ strokeStyle: '#ffffff', lineWidth: 1, path: [[16, 0], [0, 16]] });
@@ -717,7 +716,7 @@ describe('Canvas 2D chart renderer', () => {
 
     it('strokes the main diagonal for an NE+SW pair', () => {
       const strokes = seamStrokes((document) => {
-        document.kind[0] = ThreeQuarterPair;
+        document.kind[0] = CellKind.ThreeQuarterPair;
         document.colors.set([0, 1, 0, 1], 0);
       });
       expect(strokes).toContainEqual({ strokeStyle: '#ffffff', lineWidth: 1, path: [[0, 0], [16, 16]] });
@@ -726,11 +725,11 @@ describe('Canvas 2D chart renderer', () => {
     it('draws no seam at overview zoom, or for single three-quarter and full cells', () => {
       const diagonal = (strokes: ReturnType<typeof seamStrokes>) => strokes.filter((stroke) => stroke.path[0]?.[0] !== stroke.path[1]?.[0] && stroke.path[0]?.[1] !== stroke.path[1]?.[1]);
       expect(diagonal(seamStrokes((document) => {
-        document.kind[0] = ThreeQuarterPair;
+        document.kind[0] = CellKind.ThreeQuarterPair;
         document.colors.set([1, 0, 1, 0], 0);
       }, 2))).toEqual([]);
       expect(diagonal(seamStrokes((document) => {
-        document.kind[0] = ThreeQuarterNW;
+        document.kind[0] = CellKind.ThreeQuarterNW;
         document.colors.set([1, 0, 0, 0], 0);
       }))).toEqual([]);
       expect(diagonal(seamStrokes((document) => {
@@ -750,7 +749,7 @@ describe('Canvas 2D chart renderer', () => {
       viewport: { x: 0, y: 0, zoom: 16 },
       style: { showGrid: false },
       overlay: {
-        pendingCellStates: [{ index: 0, cell: { x: 0, y: 0 }, kind: ThreeQuarterPair, colors: [1, 0, 35, 0], completed: 1 }]
+        pendingCellStates: [{ index: 0, cell: { x: 0, y: 0 }, kind: CellKind.ThreeQuarterPair, colors: [1, 0, 35, 0], completed: 1 }]
       }
     });
     renderer.renderNow();
@@ -775,7 +774,7 @@ describe('Canvas 2D chart renderer', () => {
       metrics: getCanvasMetrics(16, 16),
       viewport: { x: 0, y: 0, zoom: 16 },
       overlay: {
-        pendingCellStates: [{ index: 0, cell: { x: 0, y: 0 }, kind: ThreeQuarterPair, colors: [1, 0, 35, 0], completed: 4 }]
+        pendingCellStates: [{ index: 0, cell: { x: 0, y: 0 }, kind: CellKind.ThreeQuarterPair, colors: [1, 0, 35, 0], completed: 4 }]
       }
     });
     renderer.renderNow();
@@ -1094,7 +1093,7 @@ describe('Canvas 2D chart renderer', () => {
 
   it('keys a directional three-quarter outline from its exposed corner background', () => {
     // Same regression as the half-stitch case above, for a single-direction
-    // three-quarter stitch (ThreeQuarterNW/NE/SE/SW), which paints one
+    // three-quarter stitch (CellKind.ThreeQuarterNW/NE/SE/SW), which paints one
     // triangle and leaves the opposite corner as exposed background.
     const document = chart(2, 1);
     document.settings = { ...document.settings, backgroundColor: '#ffffff' };
@@ -1452,9 +1451,9 @@ describe('Canvas 2D chart renderer', () => {
   it('renders both paired axes in color overview atlases and no-atlas fallback', () => {
     const createDocument = () => {
       const document = chart(2, 1);
-      document.kind[0] = ThreeQuarterPair;
+      document.kind[0] = CellKind.ThreeQuarterPair;
       document.colors.set([1, 0, 35, 0], 0);
-      document.kind[1] = ThreeQuarterPair;
+      document.kind[1] = CellKind.ThreeQuarterPair;
       document.colors.set([0, 35, 0, 1], 4);
       return document;
     };
@@ -1502,9 +1501,9 @@ describe('Canvas 2D chart renderer', () => {
 
   it('preserves both paired colors in 2x source pixels at overview zoom', () => {
     const document = chart(2, 1);
-    document.kind[0] = ThreeQuarterPair;
+    document.kind[0] = CellKind.ThreeQuarterPair;
     document.colors.set([1, 0, 35, 0], 0);
-    document.kind[1] = ThreeQuarterPair;
+    document.kind[1] = CellKind.ThreeQuarterPair;
     document.colors.set([0, 35, 0, 1], 4);
     const source = pixelContext(4, 2);
     const base = recordingContext();
@@ -1894,7 +1893,7 @@ describe('Canvas 2D chart renderer', () => {
     const draw = (zoom: number, slotted: boolean) => {
       const document = chart(2, 2);
       document.palette[0] = { ...document.palette[0], symbol: STAR_ID };
-      document.kind[0] = slotted ? ThreeQuarterPair : CellKind.Full;
+      document.kind[0] = slotted ? CellKind.ThreeQuarterPair : CellKind.Full;
       if (slotted) document.colors.set([1, 0, 1, 0], 0);
       else document.colors[0] = 1;
       const base = recordingContext();

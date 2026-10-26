@@ -4,12 +4,9 @@ import {
   ConversionCancelledError,
   ConversionError,
   cloneCatalogSnapshot,
-  conversionCancelled,
   conversionTokenKey,
-  convertConversionRequestAsync,
   createConversionCancelled,
   createConversionError,
-  createConversionRequest,
   validateConversionRequest,
   type ConversionCancelMessage,
   type ConversionRequestMessage,
@@ -17,13 +14,9 @@ import {
   type ConversionWorkerResponse,
   validateConversionToken
 } from '../conversion/image-to-pattern';
-import { rasterForConversion } from '../conversion/raster';
-import { isRecord } from '../domain';
-
-interface ImageConversionWorkerScope {
-  addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
-  postMessage(message: ConversionWorkerResponse): void;
-}
+import { runConversionRequest } from '../conversion/run-request';
+import { bootWorker, type WorkerScope } from './runtime';
+import { isRecord } from '../domain/guards';
 
 interface ActiveConversion {
   cancelled: boolean;
@@ -39,36 +32,6 @@ function requestKey(token: ConversionToken): string {
 
 function isCancelMessage(value: unknown): value is ConversionCancelMessage {
   return isRecord(value) && value.protocol === CONVERSION_PROTOCOL && value.type === CONVERSION_CANCEL_TYPE;
-}
-
-async function convertWorkerRequest(request: ConversionRequestMessage, active: ActiveConversion): Promise<ConversionWorkerResponse> {
-  const cancellation = { isCancelled: () => active.cancelled };
-  conversionCancelled(cancellation, request.token.requestId);
-  if (request.inputType === 'raster') {
-    const result = await convertConversionRequestAsync(request, cancellation);
-    conversionCancelled(cancellation, request.token.requestId);
-    return result;
-  }
-  const raster = await rasterForConversion(request.image, request.targetWidth, request.targetHeight, { maxBytes: request.maxBytes, maxPixels: request.maxPixels }, cancellation);
-  conversionCancelled(cancellation, request.token.requestId);
-  const rasterRequest = createConversionRequest(raster, {
-    targetWidth: request.targetWidth,
-    targetHeight: request.targetHeight,
-    paletteBudget: request.paletteBudget,
-    backgroundSourceId: request.backgroundSourceId,
-    autoCrop: request.autoCrop,
-    confettiDistance: request.confettiDistance,
-    catalog: request.catalog,
-    token: request.token,
-    sourceImage: {
-      ...(request.sourceAssetId === undefined ? {} : { assetId: request.sourceAssetId }),
-      ...(request.sourceMimeType === undefined ? {} : { mimeType: request.sourceMimeType })
-    }
-  });
-  conversionCancelled(cancellation, request.token.requestId);
-  const result = await convertConversionRequestAsync(rasterRequest, cancellation);
-  conversionCancelled(cancellation, request.token.requestId);
-  return result;
 }
 
 /** Handle one conversion message without depending on a concrete WorkerGlobalScope. */
@@ -105,7 +68,7 @@ export function handleImageConversionWorkerMessage(
   // run before decode/rasterization starts. The worker remains single-threaded,
   // and every active entry is deleted in the terminal finally block.
   setTimeout(() => {
-    void convertWorkerRequest(request, active)
+    void runConversionRequest(request, { isCancelled: () => active.cancelled })
       .then((result) => {
         if (active.cancelled) postMessage(createConversionCancelled(request.token));
         else postMessage(result);
@@ -120,19 +83,11 @@ export function handleImageConversionWorkerMessage(
   }, 0);
 }
 
-function installImageConversionWorker(scope: ImageConversionWorkerScope): void {
+function installImageConversionWorker(scope: WorkerScope<ConversionWorkerResponse>): void {
   const activeRequests = new Map<string, ActiveConversion>();
   scope.addEventListener('message', (event) => {
     handleImageConversionWorkerMessage(event.data, (message) => scope.postMessage(message), activeRequests);
   });
 }
 
-function isWorkerScope(value: unknown): value is ImageConversionWorkerScope {
-  if (!isRecord(value)) return false;
-  return typeof value.postMessage === 'function'
-    && typeof value.addEventListener === 'function'
-    && !('document' in value);
-}
-
-const globalScope: unknown = typeof globalThis === 'undefined' ? undefined : globalThis;
-if (isWorkerScope(globalScope)) installImageConversionWorker(globalScope);
+bootWorker(installImageConversionWorker);

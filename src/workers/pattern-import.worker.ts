@@ -9,13 +9,8 @@ import {
   type PatternImportResponse
 } from '../import/import-protocol';
 import { findImporter } from '../import/registry';
-import { isAbortError } from './abort';
+import { bootWorker, runAbortable, type WorkerScope } from './runtime';
 import { ImportError, type ImportProgress, type ImportSession } from '../import/types';
-
-interface PatternImportWorkerScope {
-  addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
-  postMessage(message: PatternImportResponse, transfer?: Transferable[]): void;
-}
 
 type Post = (message: PatternImportResponse, transfer?: Transferable[]) => void;
 
@@ -27,12 +22,6 @@ export interface PatternImportWorkerState {
 
 export function createPatternImportWorkerState(): PatternImportWorkerState {
   return { session: null, active: new Map() };
-}
-
-function isCancelled(error: unknown, signal: AbortSignal): boolean {
-  return signal.aborted
-    || isAbortError(error)
-    || (error instanceof ImportError && error.code === 'cancelled');
 }
 
 async function run(request: Exclude<PatternImportRequest, { type: 'cancel' }>, post: Post, state: PatternImportWorkerState, signal: AbortSignal): Promise<void> {
@@ -80,29 +69,20 @@ export function handlePatternImportWorkerMessage(
     post({ protocol: PATTERN_IMPORT_PROTOCOL, type: 'error', requestId, error: { message: 'The import request is already running.' } });
     return;
   }
-  const controller = new AbortController();
-  state.active.set(requestId, controller);
-  void run(value, post, state, controller.signal)
-    .catch((error: unknown) => {
-      if (isCancelled(error, controller.signal)) post({ protocol: PATTERN_IMPORT_PROTOCOL, type: 'cancelled', requestId });
+  runAbortable(state.active, requestId, (signal) => run(value, post, state, signal), {
+    cancelled: () => { post({ protocol: PATTERN_IMPORT_PROTOCOL, type: 'cancelled', requestId }); },
+    failed: (error) => {
+      if (error instanceof ImportError && error.code === 'cancelled') post({ protocol: PATTERN_IMPORT_PROTOCOL, type: 'cancelled', requestId });
       else post({ protocol: PATTERN_IMPORT_PROTOCOL, type: 'error', requestId, error: serializeImportError(error) });
-    })
-    .finally(() => { state.active.delete(requestId); });
+    }
+  });
 }
 
-function installPatternImportWorker(scope: PatternImportWorkerScope): void {
+function installPatternImportWorker(scope: WorkerScope<PatternImportResponse>): void {
   const state = createPatternImportWorkerState();
   scope.addEventListener('message', (event) => {
     handlePatternImportWorkerMessage(event.data, (message, transfer) => { scope.postMessage(message, transfer); }, state);
   });
 }
 
-function isWorkerScope(value: unknown): value is PatternImportWorkerScope {
-  return typeof value === 'object' && value !== null
-    && typeof (value as { postMessage?: unknown }).postMessage === 'function'
-    && typeof (value as { addEventListener?: unknown }).addEventListener === 'function'
-    && !('document' in value);
-}
-
-const globalScope: unknown = typeof globalThis === 'undefined' ? undefined : globalThis;
-if (isWorkerScope(globalScope)) installPatternImportWorker(globalScope);
+bootWorker(installPatternImportWorker);

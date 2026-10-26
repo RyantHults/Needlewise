@@ -315,19 +315,15 @@ export function listBackstitches(document: PatternDocument): BackstitchRecord[] 
 
 export { UINT32_MAX };
 
-export function isThreeQuarterSingleKind(kind: number): boolean {
-  return kind === CellKind.ThreeQuarterNW
-    || kind === CellKind.ThreeQuarterNE
-    || kind === CellKind.ThreeQuarterSE
-    || kind === CellKind.ThreeQuarterSW;
-}
-
 export function isThreeQuarterPairKind(kind: number): boolean {
   return kind === CellKind.ThreeQuarterPair;
 }
 
 export function isThreeQuarterKind(kind: number): boolean {
-  return isThreeQuarterSingleKind(kind);
+  return kind === CellKind.ThreeQuarterNW
+    || kind === CellKind.ThreeQuarterNE
+    || kind === CellKind.ThreeQuarterSE
+    || kind === CellKind.ThreeQuarterSW;
 }
 
 export function threeQuarterKindForCorner(corner: QuarterCorner): CellKind {

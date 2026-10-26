@@ -2,22 +2,20 @@ import { describe, expect, it } from 'vitest';
 import { CellKind } from '../domain';
 import {
   FILL_CANCELLED_TYPE,
-  FILL_ERROR_TYPE,
   FILL_PROTOCOL,
   FILL_REQUEST_TYPE,
   FILL_RESULT_TYPE,
   FillCancelledError,
   FillProtocolError,
+  FillStaleResultError,
   FillWorkerTransportError,
   type FillRequestInput,
   assertValidFillRequest,
-  createFillCancel,
   createFillRequest,
   createFillResult,
   createFillWorkerClient,
   runExactFloodFill
 } from './fill';
-import { ThreeQuarterPair } from './cell-kinds';
 import { FakeWorker } from '../test/fake-worker';
 
 function input(
@@ -74,7 +72,7 @@ describe('component-graph fill protocol and traversal', () => {
   });
 
   it('does not connect sibling components in one cell or different logical corners', () => {
-    const kind = new Uint8Array([ThreeQuarterPair, ThreeQuarterPair]);
+    const kind = new Uint8Array([CellKind.ThreeQuarterPair, CellKind.ThreeQuarterPair]);
     const colors = new Uint16Array(8);
     colors.set([5, 0, 5, 0], 0);
     colors.set([0, 5, 0, 5], 4);
@@ -88,7 +86,7 @@ describe('component-graph fill protocol and traversal', () => {
 
   it('connects directional three-quarter components by logical corner horizontally and vertically on both pair axes', () => {
     const run = (width: number, height: number, colors: [number, number, number, number], startMask: number, expected: number[]): void => {
-      const kind = new Uint8Array(width * height).fill(ThreeQuarterPair);
+      const kind = new Uint8Array(width * height).fill(CellKind.ThreeQuarterPair);
       const plane = new Uint16Array(width * height * 4);
       for (let index = 0; index < width * height; index += 1) plane.set(colors, index * 4);
       const result = runExactFloodFill(createFillRequest(input(width, height, 0, kind, plane, startMask)));
@@ -101,7 +99,7 @@ describe('component-graph fill protocol and traversal', () => {
     run(3, 1, [0, 1, 0, 2], 2, [0, 1, 2]);
     run(1, 3, [0, 1, 0, 2], 2, [0, 1, 2]);
 
-    const differentAxisKind = new Uint8Array([ThreeQuarterPair, ThreeQuarterPair]);
+    const differentAxisKind = new Uint8Array([CellKind.ThreeQuarterPair, CellKind.ThreeQuarterPair]);
     const differentAxisColors = new Uint16Array([1, 0, 2, 0, 0, 1, 0, 2]);
     const differentAxis = runExactFloodFill(createFillRequest(input(2, 1, 0, differentAxisKind, differentAxisColors, 1)));
     expect(differentAxis.indices).toEqual(new Uint32Array([0]));
@@ -222,36 +220,11 @@ describe('component-graph fill protocol and traversal', () => {
   });
 
   it('uses the fallback client and transfers component masks through worker results', async () => {
-    const client = createFillWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'fallback-request' });
+    const client = createFillWorkerClient({ workerFactory: () => null });
     const result = await client.request(input(2, 2, 0));
     expect(result.type).toBe(FILL_RESULT_TYPE);
     expect(result.indices).toEqual(new Uint32Array([0, 1, 2, 3]));
     expect(result.masks).toEqual(new Uint8Array([1, 1, 1, 1]));
-    client.dispose();
-  });
-
-  it('keys cancellation and stale responses by the complete request identity', async () => {
-    const worker = new FakeWorker();
-    const client = createFillWorkerClient({ workerFactory: () => worker, requestIdFactory: () => 'same-id' });
-    const job = client.submit(input(2, 2, 0));
-    job.cancel();
-    await expect(job.promise).rejects.toBeInstanceOf(FillCancelledError);
-    worker.emit(createFillResult(job.request, new Uint32Array([0]), new Uint8Array([1])));
-
-    const stale = client.submit(input(2, 2, 0));
-    worker.emit({ ...createFillResult(stale.request, new Uint32Array([0]), new Uint8Array([1])), baseRevision: 8 });
-    worker.emit({ ...createFillCancel(stale.request), baseRevision: 8 });
-    worker.emit({ protocol: FILL_PROTOCOL, type: FILL_ERROR_TYPE, projectId: 'project-a', baseRevision: 8, requestId: stale.request.requestId, code: 'stale', message: 'stale' });
-    worker.emit(createFillResult(stale.request, new Uint32Array([0]), new Uint8Array([1])));
-    await expect(stale.promise).resolves.toMatchObject({ requestId: stale.request.requestId });
-
-    const first = client.submit({ ...input(2, 2, 0), baseRevision: 7 });
-    first.cancel();
-    await expect(first.promise).rejects.toBeInstanceOf(FillCancelledError);
-    const second = client.submit({ ...input(2, 2, 0), baseRevision: 8 });
-    worker.emit(createFillResult(first.request, new Uint32Array([0]), new Uint8Array([1])));
-    worker.emit(createFillResult(second.request, new Uint32Array([0]), new Uint8Array([1])));
-    await expect(second.promise).resolves.toMatchObject({ baseRevision: 8, requestId: second.request.requestId });
     client.dispose();
   });
 
@@ -266,14 +239,12 @@ describe('component-graph fill protocol and traversal', () => {
     client.dispose();
   });
 
-  it('rejects a malformed response with matching identity but ignores malformed identity responses', async () => {
+  it('rejects malformed responses and responses for another project revision', async () => {
     const worker = new FakeWorker();
     const client = createFillWorkerClient({ workerFactory: () => worker });
-    const ignored = client.submit(input(2, 2, 0));
-    worker.emit({ protocol: FILL_PROTOCOL, type: FILL_RESULT_TYPE, projectId: 'project-b', baseRevision: 7, requestId: ignored.request.requestId, width: 2, height: 2, startIndex: 0, startMask: 1, indices: new Uint32Array([0]), masks: new Uint8Array([1]) });
-    worker.emit({ protocol: FILL_PROTOCOL, type: FILL_CANCELLED_TYPE, projectId: 'project-b', baseRevision: 7, requestId: ignored.request.requestId });
-    worker.emit(createFillResult(ignored.request, new Uint32Array([0]), new Uint8Array([1])));
-    await expect(ignored.promise).resolves.toMatchObject({ requestId: ignored.request.requestId });
+    const stale = client.submit(input(2, 2, 0));
+    worker.emit({ protocol: FILL_PROTOCOL, type: FILL_CANCELLED_TYPE, projectId: 'project-b', baseRevision: 7, requestId: stale.request.requestId });
+    await expect(stale.promise).rejects.toBeInstanceOf(FillStaleResultError);
 
     const malformed = client.submit(input(2, 2, 0));
     worker.emit({ ...malformed.request, type: FILL_RESULT_TYPE, indices: new Uint32Array([0]), masks: undefined });
@@ -291,6 +262,9 @@ describe('component-graph fill protocol and traversal', () => {
     workers[0].emitTransport('error', { message: 'worker crashed' });
     await expect(second.promise).rejects.toBeInstanceOf(FillWorkerTransportError);
     expect(workers[0].terminated.count).toBe(1);
+    const third = client.submit(input(2, 2, 0));
+    workers[1].emitTransport('messageerror', {});
+    await expect(third.promise).rejects.toBeInstanceOf(FillWorkerTransportError);
     client.dispose();
   });
 });

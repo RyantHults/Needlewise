@@ -1,4 +1,5 @@
 import { isAbortError } from '../workers/abort';
+import { createDeferred, createRequestId, eventMessage, linkAbort, tryCreateWorker, type WorkerLike } from '../workers/client';
 import { ExportCancelledError } from './cancellation';
 import {
   PDF_EXPORT_PROTOCOL,
@@ -9,15 +10,8 @@ import {
 } from './pdf-export-protocol';
 import type { PdfProgress } from './pdf-writer';
 
-export interface PdfExportWorkerLike {
-  postMessage(message: unknown, transfer?: Transferable[]): void;
-  addEventListener(type: 'message' | 'error', listener: (event: unknown) => void): void;
-  terminate?(): void;
-}
-
 export interface PdfExportClientOptions {
-  readonly workerFactory?: () => PdfExportWorkerLike | null;
-  readonly requestIdFactory?: () => string;
+  readonly workerFactory?: () => WorkerLike | null;
   /** Runs the export on the calling thread when no worker can be created. */
   readonly fallback?: (input: PdfExportWorkerInput, options: { signal: AbortSignal; onProgress: (progress: PdfProgress) => void }) => Promise<Uint8Array>;
 }
@@ -39,16 +33,8 @@ export class PdfExportError extends Error {
   }
 }
 
-let requestCounter = 0;
-const defaultRequestId = (): string => `pdf-export-${String(Date.now())}-${String(requestCounter++)}`;
-
-function createDefaultWorker(): PdfExportWorkerLike | null {
-  if (typeof Worker === 'undefined') return null;
-  try {
-    return new Worker(new URL('../workers/pdf-export.worker.ts', import.meta.url), { type: 'module' });
-  } catch {
-    return null;
-  }
+function createDefaultWorker(): WorkerLike {
+  return new Worker(new URL('../workers/pdf-export.worker.ts', import.meta.url), { type: 'module' });
 }
 
 async function defaultFallback(
@@ -96,17 +82,18 @@ export function prepareWorkerInput(input: PdfExportWorkerInput): { input: PdfExp
 
 /** Start an export. Cancel with the returned `cancel` or the options' `signal`. */
 export function startPdfExport(input: PdfExportWorkerInput, options: PdfExportRunOptions & PdfExportClientOptions = {}): PdfExportJob {
-  const requestId = (options.requestIdFactory ?? defaultRequestId)();
+  const requestId = createRequestId('pdf-export');
   const controller = new AbortController();
-  let settle: { resolve: (pdf: Uint8Array) => void; reject: (error: unknown) => void } | undefined;
-  const promise = new Promise<Uint8Array>((resolve, reject) => { settle = { resolve, reject }; });
-  let worker: PdfExportWorkerLike | null = null;
+  const settle = createDeferred<Uint8Array>();
+  const promise = settle.promise;
+  let worker: WorkerLike | null = null;
   let finished = false;
+  let unlinkAbort = (): void => undefined;
 
   const finish = (outcome: () => void): void => {
     if (finished) return;
     finished = true;
-    options.signal?.removeEventListener('abort', cancel);
+    unlinkAbort();
     outcome();
     worker?.terminate?.();
   };
@@ -116,24 +103,24 @@ export function startPdfExport(input: PdfExportWorkerInput, options: PdfExportRu
     controller.abort();
     const message: PdfExportCancelMessage = { protocol: PDF_EXPORT_PROTOCOL, type: 'cancel', requestId };
     worker?.postMessage(message);
-    finish(() => { settle?.reject(new ExportCancelledError()); });
+    finish(() => { settle.reject(new ExportCancelledError()); });
   }
 
   if (options.signal?.aborted) {
     finished = true;
-    settle?.reject(new ExportCancelledError());
+    settle.reject(new ExportCancelledError());
     return { promise, cancel: () => undefined };
   }
-  options.signal?.addEventListener('abort', cancel, { once: true });
+  unlinkAbort = linkAbort(options.signal, cancel);
 
-  worker = (options.workerFactory ?? createDefaultWorker)();
+  worker = tryCreateWorker(options.workerFactory ?? createDefaultWorker);
   if (!worker) {
     const run = options.fallback ?? defaultFallback;
     run(input, { signal: controller.signal, onProgress: (progress) => { if (!finished) options.onProgress?.(progress); } })
-      .then((pdf) => { finish(() => { settle?.resolve(pdf); }); },
+      .then((pdf) => { finish(() => { settle.resolve(pdf); }); },
         (error: unknown) => {
           finish(() => {
-            settle?.reject(controller.signal.aborted || isAbortError(error)
+            settle.reject(controller.signal.aborted || isAbortError(error)
               ? new ExportCancelledError()
               : error);
           });
@@ -146,12 +133,15 @@ export function startPdfExport(input: PdfExportWorkerInput, options: PdfExportRu
     if (!data || data.protocol !== PDF_EXPORT_PROTOCOL || data.requestId !== requestId) return;
     if (data.type === 'progress') {
       if (!finished) options.onProgress?.({ completed: data.completed, total: data.total });
-    } else if (data.type === 'result') finish(() => { settle?.resolve(data.pdf); });
-    else if (data.type === 'cancelled') finish(() => { settle?.reject(new ExportCancelledError()); });
-    else finish(() => { settle?.reject(new PdfExportError(data.message)); });
+    } else if (data.type === 'result') finish(() => { settle.resolve(data.pdf); });
+    else if (data.type === 'cancelled') finish(() => { settle.reject(new ExportCancelledError()); });
+    else finish(() => { settle.reject(new PdfExportError(data.message)); });
   });
   worker.addEventListener('error', (event) => {
-    finish(() => { settle?.reject(new PdfExportError((event as { message?: string }).message || 'The PDF export worker failed.')); });
+    finish(() => { settle.reject(new PdfExportError(eventMessage(event, 'The PDF export worker failed.'))); });
+  });
+  worker.addEventListener('messageerror', (event) => {
+    finish(() => { settle.reject(new PdfExportError(eventMessage(event, 'The PDF export worker could not read a message.'))); });
   });
 
   const prepared = prepareWorkerInput(input);
@@ -159,7 +149,7 @@ export function startPdfExport(input: PdfExportWorkerInput, options: PdfExportRu
   try {
     worker.postMessage(message, prepared.transfer);
   } catch (error) {
-    finish(() => { settle?.reject(new PdfExportError(error instanceof Error ? error.message : 'The export could not be sent to the worker.')); });
+    finish(() => { settle.reject(new PdfExportError(eventMessage(error, 'The export could not be sent to the worker.'))); });
   }
   return { promise, cancel };
 }

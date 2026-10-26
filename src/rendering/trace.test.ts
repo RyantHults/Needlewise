@@ -287,20 +287,29 @@ describe('trace image projection and local raster utilities', () => {
       86, 80, 56, 32, 0, 36, 5, 0,
       0, 0, 0, 157, 1, 42, 33, 4
     ]);
-    await expect(decodeTraceImage(new Blob([vp8], { type: 'image/webp' }), { createImageBitmap })).rejects.toMatchObject({ code: 'invalid-dimensions' });
+    await expect(decodeTraceImage(new Blob([vp8], { type: 'image/webp' }), { createImageBitmap })).rejects.toMatchObject({ code: 'unsupported-format' });
     // VP8L needs five payload bytes; this probe ends after four.
     const vp8l = new Uint8Array([
       82, 73, 70, 70, 0, 0, 0, 0, 87, 69, 66, 80,
       86, 80, 56, 76, 0, 36, 5, 0,
       47, 9, 192, 4
     ]);
-    await expect(decodeTraceImage(new Blob([vp8l], { type: 'image/webp' }), { createImageBitmap })).rejects.toMatchObject({ code: 'invalid-dimensions' });
+    await expect(decodeTraceImage(new Blob([vp8l], { type: 'image/webp' }), { createImageBitmap })).rejects.toMatchObject({ code: 'unsupported-format' });
     // A chunk that must be skipped still has to fit inside the probe.
     const skipped = new Uint8Array(1_000);
     skipped.set([82, 73, 70, 70, 0, 0, 0, 0, 87, 69, 66, 80, 73, 67, 67, 80], 0);
     new DataView(skipped.buffer).setUint32(16, 200_000, true);
-    await expect(decodeTraceImage(new Blob([skipped], { type: 'image/webp' }), { createImageBitmap })).rejects.toMatchObject({ code: 'invalid-dimensions' });
+    await expect(decodeTraceImage(new Blob([skipped], { type: 'image/webp' }), { createImageBitmap })).rejects.toMatchObject({ code: 'unsupported-format' });
     expect(createImageBitmap).not.toHaveBeenCalled();
+  });
+
+  it('detects the format from the bytes rather than the declared type', async () => {
+    const vp8x = new Uint8Array([82, 73, 70, 70, 22, 0, 0, 0, 87, 69, 66, 80, 86, 80, 56, 88, 10, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 1, 0, 0]);
+    const bitmap = { width: 3, height: 2, close: vi.fn() };
+    const decoded = await decodeTraceImage(new Blob([vp8x], { type: 'image/png' }), { createImageBitmap: vi.fn(async () => bitmap) });
+    expect(decoded.width).toBe(3);
+    expect(decoded.height).toBe(2);
+    decoded.dispose?.();
   });
 
   it('passes reference images within the working bound through unchanged', async () => {

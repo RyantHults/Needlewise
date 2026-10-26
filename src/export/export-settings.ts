@@ -1,3 +1,4 @@
+import { isRecord } from '../domain/guards';
 import { ChartPresentationMode } from '../editor/contracts';
 
 export type ExportPaper = 'letter' | 'a4';
@@ -61,7 +62,7 @@ function oneOf<T>(value: unknown, options: readonly T[], fallback: T): T {
 
 /** Coerce unknown input to a complete, valid settings object; unknown or invalid fields take their defaults. */
 export function normalizeExportSettings(value: unknown): ExportSettings {
-  const source = typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const source = isRecord(value) ? value : {};
   const defaults = DEFAULT_EXPORT_SETTINGS;
   const overlap = typeof source.overlap === 'number' && Number.isFinite(source.overlap)
     ? Math.min(MAX_EXPORT_OVERLAP, Math.max(MIN_EXPORT_OVERLAP, Math.round(source.overlap)))

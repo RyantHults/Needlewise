@@ -10,7 +10,6 @@ import {
   type PersistencePreparationResponse
 } from './preparation';
 import {
-  PersistencePreparationStaleError,
   PersistencePreparationTransportError,
   PersistencePreparationWorkerClient
 } from './preparation-client';
@@ -67,7 +66,7 @@ describe('persistence preparation worker client', () => {
   it('lazily creates a worker, transfers the clone buffers, and accepts exact output', async () => {
     const worker = new FakeWorker();
     let factoryCalls = 0;
-    const client = new PersistencePreparationWorkerClient({ workerFactory: () => { factoryCalls += 1; return worker; }, requestIdFactory: () => 'client-request' });
+    const client = new PersistencePreparationWorkerClient({ workerFactory: () => { factoryCalls += 1; return worker; } });
     const live = document(1, 1);
     expect(factoryCalls).toBe(0);
     const promise = client.prepare({ projectId: 'client-project', revision: live.revision, document: live });
@@ -84,7 +83,7 @@ describe('persistence preparation worker client', () => {
     const capability = await promise;
     expect(Object.isFrozen(capability)).toBe(true);
     expect(Object.keys(capability)).toHaveLength(0);
-    expect(client.getRequestId(capability)).toBe('client-request');
+    expect(client.getRequestId(capability)).toBe((worker.posted[0].message as { token: { requestId: string } }).token.requestId);
     expect(stitchLayer(live).kind.byteLength).toBeGreaterThan(0);
     client.dispose();
     expect(worker.terminated.count).toBe(1);
@@ -106,7 +105,7 @@ describe('persistence preparation worker client', () => {
   it('derives the project summary in the worker, not on the main thread, and checks it against the request', async () => {
     const summarySpy = vi.spyOn(thumbnailModule, 'deriveProjectSummary');
     const worker = new FakeWorker();
-    const client = new PersistencePreparationWorkerClient({ workerFactory: () => worker, requestIdFactory: () => 'summary-request' });
+    const client = new PersistencePreparationWorkerClient({ workerFactory: () => worker });
     try {
       const live = document(1, 1);
       const accepted = client.prepare({ projectId: 'summary', revision: live.revision, document: live });
@@ -138,9 +137,9 @@ describe('persistence preparation worker client', () => {
     }
   });
 
-  it('rejects malformed and stale responses for the exact pending identity', async () => {
+  it('rejects malformed responses and results for a different project revision', async () => {
     const worker = new FakeWorker();
-    const client = new PersistencePreparationWorkerClient({ workerFactory: () => worker, requestIdFactory: () => 'strict-request' });
+    const client = new PersistencePreparationWorkerClient({ workerFactory: () => worker });
     const doc = document(1, 1);
     const malformed = client.prepare({ projectId: 'malformed-client', revision: doc.revision, document: cloneLayeredDocument(doc) });
     const malformedRequest = worker.posted[0].message as { token: { projectId: string; revision: number; requestId: string } };
@@ -157,23 +156,23 @@ describe('persistence preparation worker client', () => {
     const staleRequest = worker.posted[1].message as { token: { projectId: string; revision: number; requestId: string } };
     const prepared = await prepareDocumentSnapshot(doc, { ...staleRequest.token, revision: staleRequest.token.revision });
     worker.emit(createPreparedMessage({ ...staleRequest.token, revision: staleRequest.token.revision + 1 }, prepared.bytes, prepared.checksum, prepared.summary));
-    await expect(stale).rejects.toBeInstanceOf(PersistencePreparationStaleError);
+    await expect(stale).rejects.toMatchObject({ code: 'invalid-response' });
     client.dispose();
   });
 
   it('recycles after error/messageerror and resolves work on the recreated worker', async () => {
     const workers: FakeWorker[] = [];
     const client = new PersistencePreparationWorkerClient({ workerFactory: () => { const worker = new FakeWorker(); workers.push(worker); return worker; } });
-    const first = client.prepare({ projectId: 'first', revision: 1, document: cloneLayeredDocument(document(1, 1)), requestId: 'first-request' });
+    const first = client.prepare({ projectId: 'first', revision: 1, document: cloneLayeredDocument(document(1, 1)) });
     workers[0].emitTransport('error', { message: 'crashed' });
     await expect(first).rejects.toBeInstanceOf(PersistencePreparationTransportError);
     expect(workers[0].terminated.count).toBe(1);
 
-    const second = client.prepare({ projectId: 'second', revision: document(1, 1).revision, document: cloneLayeredDocument(document(1, 1)), requestId: 'second-request' });
+    const second = client.prepare({ projectId: 'second', revision: document(1, 1).revision, document: cloneLayeredDocument(document(1, 1)) });
     expect(workers).toHaveLength(2);
     workers[1].emit(await preparedResponse(workers[1]));
     const capability = await second;
-    expect(client.getRequestId(capability)).toBe('second-request');
+    expect(client.getRequestId(capability)).toBe((workers[1].posted[0].message as { token: { requestId: string } }).token.requestId);
     client.dispose();
     expect(workers[1].terminated.count).toBe(1);
   });

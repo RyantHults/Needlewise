@@ -5,12 +5,10 @@ import {
   ConversionError,
   ConversionCancelledError,
   ConversionCancellation,
-  conversionCancelled,
   cloneCatalogSnapshot,
   createConversionCancel,
   createConversionImageRequest,
   createConversionRequest,
-  convertConversionRequestAsync,
   validateConversionDraft,
   validateConversionToken,
   conversionTokensEqual,
@@ -22,8 +20,9 @@ import {
   type ConversionToken,
   type ConversionRaster
 } from './image-to-pattern';
-import { rasterForConversion, type ConversionRasterOptions } from './raster';
+import { runConversionRequest } from './run-request';
 import { isRecord } from '../domain';
+import { WorkerConnection, createDeferred, createRequestId, linkAbort, type WorkerLike } from '../workers/client';
 
 export { ConversionCancelledError } from './image-to-pattern';
 
@@ -50,22 +49,12 @@ export class ConversionWorkerTransportError extends ConversionWorkerError {
   }
 }
 
-export interface ConversionWorkerLike {
-  postMessage(message: unknown, transfer?: Transferable[]): void;
-  addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
-  removeEventListener?(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
-  terminate?(): void;
-}
-
-export type ConversionWorkerFactory = () => ConversionWorkerLike | null;
-
 export interface ConversionRequestInput extends Omit<ConversionOptions, 'token' | 'targetWidth' | 'targetHeight'> {
   readonly raster: ConversionRaster;
   readonly targetWidth: number;
   readonly targetHeight: number;
   readonly projectId: string;
   readonly baseRevision: number;
-  readonly requestId?: string;
 }
 
 export type ConversionImageInput = Omit<ConversionRequestInput, 'raster'>;
@@ -76,11 +65,8 @@ export interface ConversionJob {
 }
 
 export interface ConversionWorkerClientOptions {
-  readonly workerFactory?: ConversionWorkerFactory;
-  readonly requestIdFactory?: () => string;
+  readonly workerFactory?: () => WorkerLike | null;
   readonly useWorker?: boolean;
-  /** Decode/rasterize options used by convertImageToPattern. */
-  readonly rasterOptions?: ConversionRasterOptions;
 }
 
 interface PendingConversion {
@@ -167,44 +153,15 @@ class MainThreadConversionQueue {
 
 const mainThreadConversionQueue = new MainThreadConversionQueue();
 
-interface ConversionWorkerEventTarget {
-  addEventListener(type: string, listener: (event: unknown) => void): void;
-  removeEventListener?(type: string, listener: (event: unknown) => void): void;
-}
-
 function isImageSource(value: ConversionRaster | Blob | File): value is Blob | File {
   return typeof Blob !== 'undefined' && value instanceof Blob;
 }
 
-function workerEventTarget(worker: ConversionWorkerLike): ConversionWorkerEventTarget {
-  return worker as unknown as ConversionWorkerEventTarget;
+function createDefaultWorker(): WorkerLike {
+  return new Worker(new URL('../workers/image-conversion.worker.ts', import.meta.url), { type: 'module' });
 }
 
-function eventMessage(event: unknown, fallback: string): string {
-  if (event instanceof Error && event.message) return event.message;
-  if (isRecord(event) && typeof event.message === 'string' && event.message) return event.message;
-  return fallback;
-}
-
-function createDefaultWorker(): ConversionWorkerLike | null {
-  if (typeof Worker === 'undefined') return null;
-  try {
-    return new Worker(new URL('../workers/image-conversion.worker.ts', import.meta.url), { type: 'module' });
-  } catch {
-    return null;
-  }
-}
-
-function createRequestId(): string {
-  const cryptoObject = globalThis.crypto;
-  if (cryptoObject?.randomUUID) return cryptoObject.randomUUID();
-  conversionRequestSequence += 1;
-  return `conversion-${Date.now().toString(36)}-${String(conversionRequestSequence)}`;
-}
-
-let conversionRequestSequence = 0;
-
-function requestFromInput(input: ConversionRequestInput, requestIdFactory: () => string): ConversionRasterRequestMessage {
+function requestFromInput(input: ConversionRequestInput): ConversionRasterRequestMessage {
   return createConversionRequest(input.raster, {
     targetWidth: input.targetWidth,
     targetHeight: input.targetHeight,
@@ -217,7 +174,7 @@ function requestFromInput(input: ConversionRequestInput, requestIdFactory: () =>
     token: {
       projectId: input.projectId,
       baseRevision: input.baseRevision,
-      requestId: input.requestId ?? requestIdFactory()
+      requestId: createRequestId('conversion')
     }
   });
 }
@@ -249,47 +206,35 @@ function assertCurrentResult(message: unknown, request: ConversionRequestMessage
 }
 
 export class ConversionWorkerClient {
-  private readonly workerFactory: ConversionWorkerFactory;
-  private readonly requestIdFactory: () => string;
-  private readonly useWorker: boolean;
-  private readonly rasterOptions: ConversionRasterOptions;
-  private worker: ConversionWorkerLike | null = null;
+  private readonly connection: WorkerConnection<WorkerLike>;
   private pending: PendingConversion | null = null;
   private disposed = false;
-  private readonly onMessage = (event: MessageEvent<unknown>): void => this.handleMessage(event.data);
-  private readonly onWorkerError = (event: unknown): void => this.handleWorkerFailure(new ConversionWorkerTransportError(eventMessage(event, 'The conversion worker failed.')));
-  private readonly onWorkerMessageError = (event: unknown): void => this.handleWorkerFailure(new ConversionWorkerTransportError(eventMessage(event, 'The conversion worker could not read a message.')));
 
   constructor(options: ConversionWorkerClientOptions = {}) {
-    this.workerFactory = options.workerFactory ?? createDefaultWorker;
-    this.requestIdFactory = options.requestIdFactory ?? createRequestId;
-    this.useWorker = options.useWorker ?? true;
-    this.rasterOptions = options.rasterOptions ?? {};
+    const workerFactory = options.workerFactory ?? createDefaultWorker;
+    this.connection = new WorkerConnection({
+      label: 'conversion worker',
+      create: options.useWorker === false ? () => null : workerFactory,
+      onMessage: (data) => { this.handleMessage(data); },
+      transportError: (message) => new ConversionWorkerTransportError(message),
+      onFailure: (error) => { this.failPending(error); }
+    });
   }
 
   private createPending(request: ConversionRequestMessage, signal?: AbortSignal): { request: ConversionRequestMessage; pending: PendingConversion; promise: Promise<ConversionResultMessage> } {
     if (this.pending) throw new Error('The conversion worker client is already running a conversion.');
     const internalRequest = copyRequest(request);
-    let resolvePromise!: (result: ConversionResultMessage) => void;
-    let rejectPromise!: (error: unknown) => void;
-    const promise = new Promise<ConversionResultMessage>((resolve, reject) => {
-      resolvePromise = resolve;
-      rejectPromise = reject;
-    });
-    const pending: PendingConversion = { request: internalRequest, resolve: resolvePromise, reject: rejectPromise, signal, signalCleanup: () => undefined };
+    const { promise, resolve, reject } = createDeferred<ConversionResultMessage>();
+    const pending: PendingConversion = { request: internalRequest, resolve, reject, signal, signalCleanup: () => undefined };
     this.pending = pending;
-    if (signal) {
-      const abort = (): void => { this.cancel(pending); };
-      signal.addEventListener('abort', abort, { once: true });
-      pending.signalCleanup = () => signal.removeEventListener('abort', abort);
-      if (signal.aborted) this.cancel(pending);
-    }
+    pending.signalCleanup = linkAbort(signal, () => { this.cancel(pending); });
+    if (signal?.aborted) this.cancel(pending);
     return { request: internalRequest, pending, promise };
   }
 
   submit(input: ConversionRequestInput, options: { readonly signal?: AbortSignal } = {}): ConversionJob {
     if (this.disposed) throw new Error('The conversion worker client has been disposed.');
-    const requested = requestFromInput(input, this.requestIdFactory);
+    const requested = requestFromInput(input);
     const { request: internalRequest, pending, promise } = this.createPending(requested, options.signal);
     this.dispatch(pending, copyRequest(internalRequest));
     return { promise, cancel: () => this.cancel(pending) };
@@ -300,12 +245,10 @@ export class ConversionWorkerClient {
     const requested = createConversionImageRequest({
       ...input,
       source,
-      maxBytes: this.rasterOptions.maxBytes,
-      maxPixels: this.rasterOptions.maxPixels,
       token: {
         projectId: input.projectId,
         baseRevision: input.baseRevision,
-        requestId: input.requestId ?? this.requestIdFactory()
+        requestId: createRequestId('conversion')
       }
     });
     const { request: internalRequest, pending, promise } = this.createPending(requested, options.signal);
@@ -329,7 +272,7 @@ export class ConversionWorkerClient {
     pending.signalCleanup();
     pending.reject(new ConversionCancelledError(pending.request.token.requestId));
     try {
-      this.worker?.postMessage(createConversionCancel(pending.request.token));
+      this.connection.current?.postMessage(createConversionCancel(pending.request.token));
     } catch {
       // Cancellation already rejected the local job; transport failure is immaterial.
     }
@@ -338,46 +281,15 @@ export class ConversionWorkerClient {
   private dispatch(pending: PendingConversion, request: ConversionRequestMessage, forceFallback = false): void {
     if (this.pending !== pending || this.disposed) return;
     const { signal } = pending;
-    const worker = forceFallback ? null : this.ensureWorker();
+    const worker = forceFallback ? null : this.connection.ensure();
     if (worker) {
-      try {
-        const wireRequest = copyRequest(request);
-        if (wireRequest.inputType === 'raster') worker.postMessage(wireRequest, [wireRequest.pixels.buffer]);
-        else worker.postMessage(wireRequest);
-      } catch (error) {
-        this.handleWorkerFailure(new ConversionWorkerTransportError(eventMessage(error, 'The conversion worker could not receive the request.')));
-      }
+      const wireRequest = copyRequest(request);
+      this.connection.post(worker, wireRequest, wireRequest.inputType === 'raster' ? [wireRequest.pixels.buffer] : undefined);
       return;
     }
-    const queueJob = mainThreadConversionQueue.enqueue(async () => {
+    const queueJob = mainThreadConversionQueue.enqueue(() => {
       const cancellation: ConversionCancellation = { signal, isCancelled: () => this.pending !== pending || this.disposed };
-      conversionCancelled(cancellation, request.token.requestId);
-      const workRequest = copyRequest(request);
-      let result: ConversionResultMessage;
-      if (workRequest.inputType === 'image') {
-        const raster = await rasterForConversion(workRequest.image, workRequest.targetWidth, workRequest.targetHeight, this.rasterOptions, cancellation);
-        conversionCancelled(cancellation, request.token.requestId);
-        const rasterRequest = createConversionRequest(raster, {
-          targetWidth: workRequest.targetWidth,
-          targetHeight: workRequest.targetHeight,
-          paletteBudget: workRequest.paletteBudget,
-          backgroundSourceId: workRequest.backgroundSourceId,
-          autoCrop: workRequest.autoCrop,
-          confettiDistance: workRequest.confettiDistance,
-          catalog: workRequest.catalog,
-          token: workRequest.token,
-          sourceImage: {
-            ...(workRequest.sourceAssetId === undefined ? {} : { assetId: workRequest.sourceAssetId }),
-            ...(workRequest.sourceMimeType === undefined ? {} : { mimeType: workRequest.sourceMimeType })
-          }
-        });
-        conversionCancelled(cancellation, workRequest.token.requestId);
-        result = await convertConversionRequestAsync(rasterRequest, cancellation);
-      } else {
-        result = await convertConversionRequestAsync(workRequest, cancellation);
-      }
-      conversionCancelled(cancellation, request.token.requestId);
-      return result;
+      return runConversionRequest(copyRequest(request), cancellation);
     });
     pending.fallbackCancel = queueJob.cancel;
     void queueJob.promise.then((result) => this.resolvePending(pending, result), (error: unknown) => this.rejectPending(pending, error));
@@ -387,58 +299,7 @@ export class ConversionWorkerClient {
     if (this.disposed) return;
     this.disposed = true;
     if (this.pending) this.cancel(this.pending);
-    this.removeWorkerListeners(this.worker);
-    try {
-      this.worker?.terminate?.();
-    } catch {
-      // Disposal is best effort.
-    }
-    this.worker = null;
-  }
-
-  private ensureWorker(): ConversionWorkerLike | null {
-    if (!this.useWorker || this.worker) return this.worker;
-    let worker: ConversionWorkerLike | null;
-    try {
-      worker = this.workerFactory();
-    } catch {
-      worker = null;
-    }
-    this.worker = worker;
-    if (worker) {
-      const target = workerEventTarget(worker);
-      target.addEventListener('message', this.onMessage as unknown as (event: unknown) => void);
-      target.addEventListener('error', this.onWorkerError);
-      target.addEventListener('messageerror', this.onWorkerMessageError);
-    }
-    return worker;
-  }
-
-  private removeWorkerListeners(worker: ConversionWorkerLike | null): void {
-    if (!worker) return;
-    const target = workerEventTarget(worker);
-    target.removeEventListener?.('message', this.onMessage as unknown as (event: unknown) => void);
-    target.removeEventListener?.('error', this.onWorkerError);
-    target.removeEventListener?.('messageerror', this.onWorkerMessageError);
-  }
-
-  private handleWorkerFailure(error: ConversionWorkerTransportError): void {
-    if (this.disposed) return;
-    const failedWorker = this.worker;
-    this.worker = null;
-    this.removeWorkerListeners(failedWorker);
-    try {
-      failedWorker?.terminate?.();
-    } catch {
-      // A failed worker may already be terminated.
-    }
-    const job = this.pending;
-    if (!job) return;
-    this.pending = null;
-    job.fallbackCancel?.();
-    job.fallbackCancel = undefined;
-    job.signalCleanup();
-    job.reject(error);
+    this.connection.dispose();
   }
 
   private handleMessage(message: unknown): void {
@@ -470,6 +331,14 @@ export class ConversionWorkerClient {
     } catch (error) {
       this.rejectPending(pending, error);
     }
+  }
+
+  /** A worker failure can arrive while the job runs on the fallback queue, so it cancels that run too. */
+  private failPending(error: Error): void {
+    const job = this.pending;
+    if (!job) return;
+    job.fallbackCancel?.();
+    this.rejectPending(job, error);
   }
 
   private resolvePending(pending: PendingConversion, result: ConversionResultMessage): void {

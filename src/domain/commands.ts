@@ -12,7 +12,6 @@ import {
   UINT32_MAX,
   isThreeQuarterKind,
   isThreeQuarterPairKind,
-  isThreeQuarterSingleKind,
   oppositeQuarterCorner,
   threeQuarterCornerForKind,
   threeQuarterKindForCorner
@@ -380,7 +379,7 @@ function writeThreeQuarterAtIndex(
   if (!isActiveCell(document, index)) return false;
   const currentKind = document.kind[index];
   const currentCorner = threeQuarterCornerForKind(currentKind);
-  if (isThreeQuarterSingleKind(currentKind)) {
+  if (isThreeQuarterKind(currentKind)) {
     if (currentCorner === undefined) return false;
     if (corner === currentCorner) return writeThreeQuarterKindAtIndex(document, index, currentKind, color);
     if (corner === oppositeQuarterCorner(currentCorner)) {
@@ -425,7 +424,7 @@ function writeThreeQuarterKindAtIndex(
   desiredKind: number,
   color: number
 ): boolean {
-  if (!isThreeQuarterSingleKind(desiredKind)) throw new DomainError('invalid-kind', `Cell kind ${String(desiredKind)} is not a single three-quarter kind.`);
+  if (!isThreeQuarterKind(desiredKind)) throw new DomainError('invalid-kind', `Cell kind ${String(desiredKind)} is not a single three-quarter kind.`);
   if (!isActiveCell(document, index)) return false;
   const offset = colorsOffset(index);
   const nextCompletion = document.kind[index] === desiredKind ? document.completed[index] & 1 : 0;
@@ -1485,7 +1484,7 @@ function pasteCellWouldChange(document: PatternDocument, targetIndex: number, fr
       || document.colors[targetOffset + 3] !== fragment.colors[sourceOffset + 3]
       || document.completed[targetIndex] !== 0;
   }
-  if (sourceKind === CellKind.Full || sourceKind === CellKind.HalfBackslash || sourceKind === CellKind.HalfSlash || isThreeQuarterSingleKind(sourceKind)) {
+  if (sourceKind === CellKind.Full || sourceKind === CellKind.HalfBackslash || sourceKind === CellKind.HalfSlash || isThreeQuarterKind(sourceKind)) {
     return document.kind[targetIndex] !== sourceKind
       || document.colors[targetOffset] !== fragment.colors[sourceOffset]
       || document.colors[targetOffset + 1] !== 0
@@ -1590,7 +1589,7 @@ function applyPastedCell(document: PatternDocument, targetIndex: number, fragmen
   if (sourceKind === CellKind.Full) writeFullAtIndex(document, targetIndex, fragment.colors[sourceOffset]);
   else if (sourceKind === CellKind.HalfBackslash) writeFullAtIndex(document, targetIndex, fragment.colors[sourceOffset], HalfDirection.Backslash);
   else if (sourceKind === CellKind.HalfSlash) writeFullAtIndex(document, targetIndex, fragment.colors[sourceOffset], HalfDirection.Slash);
-  else if (isThreeQuarterSingleKind(sourceKind)) writeThreeQuarterKindAtIndex(document, targetIndex, sourceKind, fragment.colors[sourceOffset]);
+  else if (isThreeQuarterKind(sourceKind)) writeThreeQuarterKindAtIndex(document, targetIndex, sourceKind, fragment.colors[sourceOffset]);
   else if (isThreeQuarterPairKind(sourceKind)) writeThreeQuarterPairAtIndex(document, targetIndex, fragment.colors, sourceOffset);
   else if (sourceKind === CellKind.Quarters) writeQuartersAtIndex(document, targetIndex, fragment.colors, sourceOffset, false);
   document.completed[targetIndex] = 0;

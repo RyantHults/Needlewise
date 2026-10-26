@@ -1,4 +1,4 @@
-// The PDF `PatternImporter`: pdf.js reads every page into primitives once in
+// The PDF importer: pdf.js reads every page into primitives once in
 // `open`, then `analyze` classifies pages, reads the chart and key, and builds
 // an `ImportedChart`, as often as the user changes page roles.
 import { getDmcColor } from '../../catalog';
@@ -14,8 +14,7 @@ import {
   type ImportPageSummary,
   type ImportRunOptions,
   type ImportSession,
-  type ImportWarning,
-  type PatternImporter
+  type ImportWarning
 } from '../types';
 import { assembleChart } from './assemble';
 import { readChartPage } from './chart-page';
@@ -26,9 +25,6 @@ import { openPdf } from './pdfjs';
 import { renderPageThumbnail } from './thumbnail';
 import type { AssembledCells, PdfGrid, PdfPagePrimitives } from './types';
 
-const PDF_MAGIC = '%PDF-';
-/** The PDF spec lets the header sit anywhere in the first 1024 bytes. */
-const PDF_HEADER_WINDOW = 1024;
 /** A page mostly covered by images, with no chart found, is a scan. */
 const SCANNED_IMAGE_COVERAGE = 0.5;
 
@@ -226,7 +222,7 @@ function createSession(pages: PdfPagePrimitives[], thumbnails: (Blob | undefined
       });
 
       return {
-        format: pdfImporter.id,
+        format: 'pdf',
         pages: summaries,
         chart: {
           width: assembled.width,
@@ -248,48 +244,37 @@ function createSession(pages: PdfPagePrimitives[], thumbnails: (Blob | undefined
   };
 }
 
-export const pdfImporter: PatternImporter = {
-  id: 'pdf',
-  label: 'PDF',
-  accept: ['.pdf', 'application/pdf'],
-
-  sniff(head) {
-    const window = String.fromCharCode(...head.subarray(0, PDF_HEADER_WINDOW));
-    return window.includes(PDF_MAGIC);
-  },
-
-  /** pdf.js detaches `bytes.buffer`; pass a copy if the caller still needs the bytes. */
-  async open(bytes, options = {}): Promise<ImportSession> {
-    const { signal, onProgress, fileName } = options;
-    throwIfImportCancelled(signal);
-    let pdf: Awaited<ReturnType<typeof openPdf>>;
-    try {
-      pdf = await openPdf(bytes);
-    } catch (error) {
-      if ((error as { name?: unknown } | null)?.name === 'PasswordException') {
-        throw new ImportError('encrypted-pdf', 'This PDF is password protected.', { cause: error });
-      }
-      throw new ImportError('invalid-pdf', 'This file could not be read as a PDF.', { cause: error });
+/** pdf.js detaches `bytes.buffer`; pass a copy if the caller still needs the bytes. */
+export async function openPdfImport(bytes: Uint8Array, options: ImportRunOptions & { readonly fileName?: string } = {}): Promise<ImportSession> {
+  const { signal, onProgress, fileName } = options;
+  throwIfImportCancelled(signal);
+  let pdf: Awaited<ReturnType<typeof openPdf>>;
+  try {
+    pdf = await openPdf(bytes);
+  } catch (error) {
+    if ((error as { name?: unknown } | null)?.name === 'PasswordException') {
+      throw new ImportError('encrypted-pdf', 'This PDF is password protected.', { cause: error });
     }
-
-    try {
-      const pages: PdfPagePrimitives[] = [];
-      // Thumbnails render while the PDF is loaded; every analysis reuses them.
-      const thumbnails: (Blob | undefined)[] = [];
-      for (let index = 0; index < pdf.numPages; index += 1) {
-        throwIfImportCancelled(signal);
-        pages.push(await extractPagePrimitives(pdf, index, signal));
-        throwIfImportCancelled(signal);
-        thumbnails.push(await pdf.getPage(index + 1).then((page) => renderPageThumbnail(page), () => undefined));
-        onProgress?.({ stage: 'reading', done: index + 1, total: pdf.numPages });
-      }
-      const title = (await readPdfTitle(pdf))?.trim() || titleFrom(fileName);
-      return createSession(pages, thumbnails, title);
-    } catch (error) {
-      throwIfImportCancelled(signal);
-      throw error;
-    } finally {
-      await pdf.loadingTask.destroy();
-    }
+    throw new ImportError('invalid-pdf', 'This file could not be read as a PDF.', { cause: error });
   }
-};
+
+  try {
+    const pages: PdfPagePrimitives[] = [];
+    // Thumbnails render while the PDF is loaded; every analysis reuses them.
+    const thumbnails: (Blob | undefined)[] = [];
+    for (let index = 0; index < pdf.numPages; index += 1) {
+      throwIfImportCancelled(signal);
+      pages.push(await extractPagePrimitives(pdf, index, signal));
+      throwIfImportCancelled(signal);
+      thumbnails.push(await pdf.getPage(index + 1).then((page) => renderPageThumbnail(page), () => undefined));
+      onProgress?.({ stage: 'reading', done: index + 1, total: pdf.numPages });
+    }
+    const title = (await readPdfTitle(pdf))?.trim() || titleFrom(fileName);
+    return createSession(pages, thumbnails, title);
+  } catch (error) {
+    throwIfImportCancelled(signal);
+    throw error;
+  } finally {
+    await pdf.loadingTask.destroy();
+  }
+}

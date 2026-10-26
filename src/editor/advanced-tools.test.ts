@@ -12,7 +12,6 @@ import { createFillResult } from './fill';
 import { getCanvasMetrics } from './coordinates';
 import type { EditorSurfaceController } from './controller';
 import { createUiStore } from './ui-store';
-import { ThreeQuarterPair } from './cell-kinds';
 import type { ActiveLayerId } from './gateway';
 import type { PointerSample } from './input';
 import { fixture as layeredFixture, LayeredTestBoundary } from './test-support';
@@ -109,7 +108,7 @@ afterEach(() => vi.unstubAllGlobals());
 describe('advanced headless editor tools', () => {
   it('erases whole cells, one pair triangle by touch, and honors keyboard Delete on emptied cells', () => {
     const document = documentWithStitches();
-    document.kind[3] = ThreeQuarterPair;
+    document.kind[3] = CellKind.ThreeQuarterPair;
     document.colors.set([1, 0, 2, 0], 12);
     const { controller, boundary, uiStore } = fixture(document);
     controller.setTool({ tool: 'eraser' });
@@ -142,9 +141,9 @@ describe('advanced headless editor tools', () => {
       { id: 1, name: 'Red', color: '#d33' },
       { id: 2, name: 'Blue', color: '#36c' }
     ] });
-    document.kind[0] = ThreeQuarterPair;
+    document.kind[0] = CellKind.ThreeQuarterPair;
     document.colors.set([1, 0, 2, 0], 0);
-    document.kind[1] = ThreeQuarterPair;
+    document.kind[1] = CellKind.ThreeQuarterPair;
     document.colors.set([0, 1, 0, 2], 4);
     const { controller, boundary, uiStore } = fixture(document);
     controller.setTool({ tool: 'eraser' });
@@ -173,9 +172,9 @@ describe('advanced headless editor tools', () => {
 
   it('uses one mixed-erase command and one history entry across a whole cell and pair components', () => {
     const document = documentWithStitches();
-    document.kind[1] = ThreeQuarterPair;
+    document.kind[1] = CellKind.ThreeQuarterPair;
     document.colors.set([1, 0, 2, 0], 4);
-    document.kind[2] = ThreeQuarterPair;
+    document.kind[2] = CellKind.ThreeQuarterPair;
     document.colors.set([0, 1, 0, 2], 8);
     const { controller, boundary } = fixture(document);
     controller.setTool({ tool: 'eraser' });
@@ -196,13 +195,13 @@ describe('advanced headless editor tools', () => {
     expect(boundary.activeLayerSurface()?.kind[0]).toBe(CellKind.Empty);
     expect(boundary.activeLayerSurface()?.kind[1]).toBe(CellKind.ThreeQuarterSE);
     // The NE/SW pair has no NW component, so the drag skips it.
-    expect(boundary.activeLayerSurface()?.kind[2]).toBe(ThreeQuarterPair);
+    expect(boundary.activeLayerSurface()?.kind[2]).toBe(CellKind.ThreeQuarterPair);
     expect(boundary.activeLayerSurface()?.colors.slice(8, 12)).toEqual(new Uint16Array([0, 1, 0, 2]));
 
     controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
     expect(boundary.undoDepth).toBe(0);
     expect(boundary.activeLayerSurface()?.kind[0]).toBe(CellKind.Full);
-    expect(boundary.activeLayerSurface()?.kind[1]).toBe(ThreeQuarterPair);
+    expect(boundary.activeLayerSurface()?.kind[1]).toBe(CellKind.ThreeQuarterPair);
     expect(boundary.activeLayerSurface()?.colors.slice(4, 8)).toEqual(new Uint16Array([1, 0, 2, 0]));
     controller.handleKeyDown({ key: 'y', ctrlKey: true, preventDefault: () => undefined });
     expect(boundary.activeLayerSurface()?.kind[0]).toBe(CellKind.Empty);

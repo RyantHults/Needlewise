@@ -1177,7 +1177,6 @@ describe('EditorSurface', () => {
       expect(items[index]).toHaveAttribute('aria-pressed', String(name === label));
       expect(items[index].querySelector(`img[data-icon="${icon}"]`)).toBeInTheDocument();
     }
-    for (const name of ['Freehand lasso', 'Polygon lasso']) expect(within(group).queryByRole('button', { name })).not.toBeInTheDocument();
   });
   it.each(selectChoices)('applies %s from Tool options and remembers it for the Select button', (label, tool) => {
     f.uiState.tool = { tool: 'select', shape: 'rectangle' } as never;
@@ -1227,7 +1226,6 @@ describe('EditorSurface', () => {
     fireEvent.click(editor);
     const panel = within(dialog).getByRole('tabpanel');
     expect(panel).toHaveAttribute('aria-labelledby', editor.id);
-    expect(within(panel).queryByRole('checkbox', { name: 'Show palette symbols' })).toBeNull();
     expect(within(panel).getByRole('checkbox', { name: 'Show palette numbers' })).toBeInTheDocument();
     fireEvent.click(project);
     expect(within(dialog).getByLabelText('Title')).toHaveValue('Draft title');

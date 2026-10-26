@@ -1,6 +1,5 @@
-import { CellKind, componentKind, componentSlotMask, FIXED_POINT_UNITS_PER_CELL, isLegacyQuarterKind, type PaletteEntry } from '../domain';
+import { CellKind, componentKind, componentSlotMask, FIXED_POINT_UNITS_PER_CELL, isLegacyQuarterKind, isThreeQuarterPairKind, type PaletteEntry } from '../domain';
 import { DEFAULT_RENDERER_STYLE, type CanvasContextAdapter } from '../editor/contracts';
-import { isThreeQuarterPairKind } from '../editor/cell-kinds';
 import {
   drawThreadBackstitch,
   drawThreadFabric,

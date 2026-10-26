@@ -3,6 +3,7 @@ import {
   CellKind,
   createPatternFragment,
   layerAddCommand,
+  LayerErrorCode,
   layerSetVisibilityCommand,
   applyLayerStructureCommand,
   LayerType,
@@ -19,7 +20,7 @@ import { acceptConversionDraft } from '../conversion/image-to-pattern';
 import { createStarterDocument, ProjectWorkspace } from './workspace';
 import { defaultActiveLayerId, ProjectSession } from './session';
 import { MemoryRepository } from './test-support';
-import { cell } from '../domain/test-fixtures';
+import { cell, errorCode } from '../domain/test-fixtures';
 import { layeredDocument } from '../editor/test-support';
 
 function openSession(document: LayeredDocument): ProjectSession {
@@ -82,7 +83,7 @@ describe('project session layers', () => {
     expect(stitches(3).kind[0]).toBe(CellKind.Empty);
 
     session.setActiveLayer('canvas');
-    expect(() => session.execute(cell(session.document, { type: 'set-full', x: 3, y: 3, color: 1 }))).toThrow(/Select a stitch or specialty layer/);
+    expect(errorCode(() => session.execute(cell(session.document, { type: 'set-full', x: 3, y: 3, color: 1 })))).toBe(LayerErrorCode.NotFound);
   });
 
   it('resolves pastes: create with room, topmost visible at the cap, nothing when all are hidden', () => {

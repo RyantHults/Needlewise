@@ -1,6 +1,8 @@
-import { assertValidLayeredDocument, normalizeAidaCount, normalizeDisplayUnits, normalizeMaterialAssumptions, type LayeredDocument } from '../domain';
+import { assertValidLayeredDocument, isRecord, type LayeredDocument } from '../domain';
+import { isSha256Hex, isValidAssetMetadata, readAssetInputBytes } from './asset-input';
 import { NeedlewiseDatabase } from './database';
-import { PersistenceError } from './errors';
+import { PersistenceError, wrapStorage } from './errors';
+import { isProjectId, parseProjectMetadata, type ParsedProjectMetadata } from './metadata';
 import {
   isBoundedMetadataString,
   isValidAssetId,
@@ -10,7 +12,7 @@ import {
 } from './limits';
 import { applyLegacyAidaCount, cloneLayeredDocument, decodeDocumentWithInfo, encodeDocument, type DecodedDocument } from './binary';
 import { sha256 } from './hash';
-import { inspectSourceImage, validateSourceImageDescriptor } from './source-image';
+import { inspectSourceImage } from './source-image';
 import {
   completeProjectSummary,
   deriveProjectSummary,
@@ -33,8 +35,8 @@ import type {
   RepositoryOptions,
   SaveResult,
   SaveOptions,
-  SaveCommitMode,
   SessionHistoryEnvelope,
+  SessionHistoryInput,
   StoredDocumentSnapshot,
   StoredDocumentHistory,
   StoredProjectHead,
@@ -42,7 +44,6 @@ import type {
 } from './types';
 import { MAX_FOLDER_NAME_CHARS } from './types';
 import { consumePreparedDocumentCapability } from './preparation-client';
-import type { MaterialSettingsV2 } from '../domain';
 import { prepareSessionHistory, prepareSessionHistoryForSave, sessionHistoryMatchesTrace, traceStateCanonical, traceStateFingerprint } from './session-history';
 
 function invalidMetadata(message: string): never {
@@ -66,107 +67,36 @@ function validateFolderName(name: string): string {
 }
 
 /**
- * Validates metadata for writing. A legacy `aidaCount` is still checked but is
- * never written: the stitch count now lives in the document settings.
+ * Parses metadata for writing. Any warning means our own code built bad
+ * metadata, so it fails the save. A legacy `aidaCount` is never written: the
+ * stitch count now lives in the document settings.
  */
-function validateProjectMetadata(projectId: string, metadata: ProjectMetadata, documentOrRevision: LayeredDocument | number): ProjectMetadata {
-  if (typeof projectId !== 'string' || projectId.length < 1 || projectId.length > 256 || !isBoundedMetadataString(projectId) || metadata.id !== projectId) invalidMetadata('Project metadata ID does not match the project being saved.');
-  if (typeof metadata.title !== 'string' || typeof metadata.notes !== 'string' || !isBoundedMetadataString(metadata.title) || !isBoundedMetadataString(metadata.notes) || !Number.isSafeInteger(metadata.createdAt) || metadata.createdAt < 0 || !Number.isSafeInteger(metadata.updatedAt) || metadata.updatedAt < 0 || !Number.isSafeInteger(metadata.revision) || metadata.revision < 0) invalidMetadata('Project metadata is malformed.');
-  const documentRevision = typeof documentOrRevision === 'number' ? documentOrRevision : documentOrRevision.revision;
-  if (metadata.revision !== documentRevision) invalidMetadata('Project metadata and document revisions must match.');
-  if (metadata.aidaCount !== undefined) {
-    try {
-      normalizeAidaCount(metadata.aidaCount);
-    } catch (error) {
-      invalidMetadata(`Project Aida count is malformed: ${errorText(error)}`);
-    }
-  }
-  let materialSettings: ProjectMetadata['materialSettings'];
-  if (metadata.materialSettings !== undefined) {
-    try {
-      materialSettings = normalizeMaterialAssumptions(metadata.materialSettings as MaterialSettingsV2);
-    } catch (error) {
-      invalidMetadata(`Project material settings are malformed: ${errorText(error)}`);
-    }
-  }
-  let units: ProjectMetadata['units'];
-  if (metadata.units !== undefined) {
-    try {
-      units = normalizeDisplayUnits(metadata.units);
-    } catch (error) {
-      invalidMetadata(`Project display units are malformed: ${errorText(error)}`);
-    }
-  }
-  let sourceImage: ProjectMetadata['sourceImage'];
-  if (metadata.sourceImage !== undefined) {
-    try {
-      sourceImage = validateSourceImageDescriptor(metadata.sourceImage);
-    } catch (error) {
-      invalidMetadata(`Project source image settings are malformed: ${errorText(error)}`);
-    }
-  }
-  const written: ProjectMetadata = { ...metadata };
-  delete written.aidaCount;
-  return { ...written, ...(units === undefined ? {} : { units }), ...(materialSettings === undefined ? {} : { materialSettings }), ...(sourceImage === undefined ? {} : { sourceImage }) };
+function metadataForSave(projectId: string, input: ProjectMetadata, revision: number): ProjectMetadata {
+  const { metadata, warnings } = parseProjectMetadata(input);
+  if (metadata.id !== projectId) invalidMetadata('Project metadata ID does not match the project being saved.');
+  if (warnings.length > 0) invalidMetadata(warnings[0]);
+  if (metadata.revision !== revision) invalidMetadata('Project metadata and document revisions must match.');
+  return metadata;
 }
 
-function isMetadataRecord(projectId: string, metadata: ProjectMetadata | undefined): metadata is ProjectMetadata {
-  return metadata !== undefined
-    && typeof metadata.id === 'string'
-    && metadata.id === projectId
-    && metadata.id.length > 0
-    && metadata.id.length <= 256
-    && isBoundedMetadataString(metadata.id)
-    && typeof metadata.title === 'string'
-    && typeof metadata.notes === 'string'
-    && isBoundedMetadataString(metadata.title)
-    && isBoundedMetadataString(metadata.notes)
-    && Number.isSafeInteger(metadata.createdAt)
-    && metadata.createdAt >= 0
-    && Number.isSafeInteger(metadata.updatedAt)
-    && metadata.updatedAt >= 0
-    && Number.isSafeInteger(metadata.revision)
-    && metadata.revision >= 0
-    && (metadata.aidaCount === undefined || (() => {
-      try {
-        normalizeAidaCount(metadata.aidaCount);
-        return true;
-      } catch {
-        return false;
-      }
-    })())
-    && (metadata.materialSettings === undefined || (() => {
-      try {
-        normalizeMaterialAssumptions(metadata.materialSettings as MaterialSettingsV2);
-        return true;
-      } catch {
-        return false;
-      }
-    })())
-    && (metadata.units === undefined || (() => {
-      try {
-        normalizeDisplayUnits(metadata.units);
-        return true;
-      } catch {
-        return false;
-      }
-    })());
+/** Parses a stored metadata row for its key; a missing row or one with a malformed required field yields undefined. */
+function readStoredMetadata(projectId: string, row: unknown): ParsedProjectMetadata | undefined {
+  if (row === undefined) return undefined;
+  try {
+    const parsed = parseProjectMetadata(row);
+    return parsed.metadata.id === projectId ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The row to write back for parsed metadata, keeping a legacy stitch count with its v1/v2 document. */
+function storedMetadataRow(metadata: ProjectMetadata, legacyAidaCount: number | undefined): ProjectMetadata {
+  return legacyAidaCount === undefined ? metadata : { ...metadata, aidaCount: legacyAidaCount };
 }
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : 'The local record is malformed.';
-}
-
-function sanitizeSourceImageMetadata(metadata: ProjectMetadata): { metadata: ProjectMetadata; warning?: string } {
-  if (metadata.sourceImage === undefined) return { metadata };
-  try {
-    const sourceImage = validateSourceImageDescriptor(metadata.sourceImage);
-    return { metadata: { ...metadata, sourceImage } };
-  } catch (error) {
-    const safe = { ...metadata };
-    delete safe.sourceImage;
-    return { metadata: safe, warning: `Optional source image settings were ignored: ${errorText(error)}.` };
-  }
 }
 
 function storedBytes(value: unknown): Uint8Array | undefined {
@@ -176,30 +106,13 @@ function storedBytes(value: unknown): Uint8Array | undefined {
   return undefined;
 }
 
-async function bytesForAsset(input: ProjectAssetInput): Promise<Uint8Array> {
-  if (!isValidAssetId(input.id) || typeof input.name !== 'string' || input.name.length > 512 || typeof input.mimeType !== 'string' || input.mimeType.length > 256) throw new PersistenceError('invalid-asset', 'Asset metadata is malformed.');
-  let bytes: Uint8Array;
-  if (typeof Blob !== 'undefined' && input.data instanceof Blob) {
-    if (input.data.size > MAX_ASSET_BYTES) throw new PersistenceError('invalid-asset', `Asset ${input.id} exceeds the size limit.`);
-    bytes = new Uint8Array(await input.data.arrayBuffer());
-  } else if (input.data instanceof Uint8Array) {
-    bytes = input.data.slice();
-  } else if (input.data instanceof ArrayBuffer) {
-    bytes = new Uint8Array(input.data).slice();
-  } else {
-    throw new PersistenceError('invalid-asset', `Asset ${input.id} has unsupported data.`);
-  }
-  if (bytes.length > MAX_ASSET_BYTES) throw new PersistenceError('invalid-asset', `Asset ${input.id} exceeds the size limit.`);
-  return bytes;
-}
-
 async function normalizeAssets(inputs: readonly ProjectAssetInput[]): Promise<ProjectAsset[]> {
   const assets: ProjectAsset[] = [];
   const ids = new Set<string>();
   let total = 0;
   for (const input of inputs) {
     if (ids.has(input.id)) throw new PersistenceError('invalid-asset', `Asset ${input.id} is duplicated.`);
-    const data = await bytesForAsset(input);
+    const data = await readAssetInputBytes(input);
     total += data.length;
     if (total > MAX_ASSET_TOTAL_BYTES) throw new PersistenceError('invalid-asset', 'Assets exceed the size limit.');
     ids.add(input.id);
@@ -210,7 +123,7 @@ async function normalizeAssets(inputs: readonly ProjectAssetInput[]): Promise<Pr
 
 async function decodeSnapshot(snapshot: StoredDocumentSnapshot): Promise<DecodedDocument> {
   const bytes = storedBytes(snapshot.bytes);
-  if (typeof snapshot.projectId !== 'string' || snapshot.projectId.length < 1 || snapshot.projectId.length > 256 || !bytes || typeof snapshot.checksum !== 'string' || !Number.isSafeInteger(snapshot.revision) || snapshot.revision < 0) {
+  if (!isProjectId(snapshot.projectId) || !bytes || typeof snapshot.checksum !== 'string' || !Number.isSafeInteger(snapshot.revision) || snapshot.revision < 0) {
     throw new PersistenceError('invalid-document', 'Stored snapshot metadata is malformed.');
   }
   const checksum = await sha256(bytes);
@@ -225,9 +138,9 @@ async function verifySnapshot(snapshot: StoredDocumentSnapshot): Promise<Layered
 }
 
 /** Decodes a snapshot for use, copying a legacy metadata stitch count into v1/v2 documents. */
-async function loadSnapshotDocument(snapshot: StoredDocumentSnapshot, metadata: ProjectMetadata): Promise<LayeredDocument> {
+async function loadSnapshotDocument(snapshot: StoredDocumentSnapshot, legacyAidaCount: number | undefined): Promise<LayeredDocument> {
   const decoded = await decodeSnapshot(snapshot);
-  applyLegacyAidaCount(decoded, metadata.aidaCount);
+  applyLegacyAidaCount(decoded, legacyAidaCount);
   return decoded.document;
 }
 
@@ -251,16 +164,13 @@ function isStoredHistory(projectId: string, value: StoredDocumentHistory | undef
     && value.projectId === projectId
     && Number.isSafeInteger(value.revision)
     && value.revision >= 0
-    && typeof value.checksum === 'string'
-    && /^[0-9a-f]{64}$/.test(value.checksum)
+    && isSha256Hex(value.checksum)
     && Number.isSafeInteger(value.generation)
     && value.generation > 0
-    && typeof value.traceFingerprint === 'string'
-    && /^[0-9a-f]{64}$/.test(value.traceFingerprint)
+    && isSha256Hex(value.traceFingerprint)
     && Number.isSafeInteger(value.savedAt)
     && value.savedAt >= 0
-    && typeof value.history === 'object'
-    && value.history !== null;
+    && isRecord(value.history);
 }
 
 function headFromSnapshot(projectId: string, snapshot: StoredDocumentSnapshot | undefined): StoredProjectHead | undefined {
@@ -269,8 +179,7 @@ function headFromSnapshot(projectId: string, snapshot: StoredDocumentSnapshot | 
     || snapshot.projectId !== projectId
     || !Number.isSafeInteger(snapshot.revision)
     || snapshot.revision < 0
-    || typeof snapshot.checksum !== 'string'
-    || !/^[0-9a-f]{64}$/.test(snapshot.checksum)
+    || !isSha256Hex(snapshot.checksum)
   ) return undefined;
   return toStoredHead(projectId, snapshot.revision, snapshot.checksum);
 }
@@ -280,8 +189,7 @@ function isStoredHead(projectId: string, head: StoredProjectHead | undefined): h
     && head.projectId === projectId
     && Number.isSafeInteger(head.revision)
     && head.revision >= 0
-    && typeof head.checksum === 'string'
-    && /^[0-9a-f]{64}$/.test(head.checksum)
+    && isSha256Hex(head.checksum)
     && (head.historyGeneration === undefined || (Number.isSafeInteger(head.historyGeneration) && head.historyGeneration >= 0));
 }
 
@@ -328,15 +236,10 @@ function assetHealth(
 function storedAssetIssue(projectId: string, asset: StoredProjectAsset, bytes: Uint8Array | undefined): string | undefined {
   if (
     asset.projectId !== projectId
-    || !isValidAssetId(asset.id)
-    || typeof asset.name !== 'string'
-    || asset.name.length > 512
-    || typeof asset.mimeType !== 'string'
-    || asset.mimeType.length > 256
+    || !isValidAssetMetadata(asset)
     || !bytes
     || bytes.length > MAX_ASSET_BYTES
-    || typeof asset.checksum !== 'string'
-    || !/^[0-9a-f]{64}$/.test(asset.checksum)
+    || !isSha256Hex(asset.checksum)
   ) return `Asset ${String(asset.id)} has malformed stored metadata.`;
   return undefined;
 }
@@ -376,7 +279,7 @@ function makeProjectHealth(
   sourceImage?: ProjectHealth['sourceImage']
 ): ProjectHealth {
   const warnings: string[] = [];
-  if (!metadata) warnings.push('Project metadata is missing.');
+  if (!metadata) warnings.push('Project metadata is missing or malformed.');
   if (current.status !== 'valid') warnings.push(current.warning ?? 'Current snapshot is not readable.');
   if (current.status === 'valid' && metadata && metadata.revision !== current.revision) warnings.push('Project metadata and current snapshot revisions do not match.');
   if (recovery.status === 'corrupt') warnings.push(recovery.warning ?? 'Recovery snapshot is not readable.');
@@ -387,7 +290,7 @@ function makeProjectHealth(
   const recoveryAvailable = recovery.status === 'valid';
   return {
     projectId,
-    metadata: metadata && isMetadataRecord(projectId, metadata) ? { ...metadata } : null,
+    metadata: metadata ? { ...metadata } : null,
     current,
     recovery,
     assets,
@@ -401,6 +304,13 @@ function makeProjectHealth(
 interface LoadedAssets {
   assets: ProjectAsset[];
   health: ProjectHealth['assets'];
+}
+
+/** A session history checked against the trace state it is saved with. */
+interface PreparedHistory {
+  history: SessionHistoryEnvelope;
+  traceCanonical: string;
+  traceFingerprint: string;
 }
 
 type WarmCommitDecision =
@@ -479,19 +389,19 @@ export class ProjectRepository {
         && projectThumbnailsEqual(existing.thumbnail, summary.thumbnail)
       ) return;
       await this.db.transaction('rw', [this.db.projects, this.db.projectHeads], async () => {
-        const [metadata, storedHead] = await Promise.all([
+        const [row, storedHead] = await Promise.all([
           this.db.projects.get(projectId),
           this.db.projectHeads.get(projectId)
         ]);
+        const stored = readStoredMetadata(projectId, row);
         if (
-          !metadata
-          || !isMetadataRecord(projectId, metadata)
-          || metadata.revision !== loadedMetadata.revision
+          !stored
+          || stored.metadata.revision !== loadedMetadata.revision
           || !isStoredHead(projectId, storedHead)
           || storedHead.revision !== head.revision
           || storedHead.checksum !== head.checksum
         ) return;
-        const freshSummary = completeProjectSummary(metadata);
+        const freshSummary = completeProjectSummary(stored.metadata);
         if (
           freshSummary?.width === summary.width
           && freshSummary.height === summary.height
@@ -500,7 +410,7 @@ export class ProjectRepository {
         // Merge with the row read inside the CAS transaction so unrelated
         // metadata edits made after load are not overwritten by this cache
         // repair.
-        await this.db.projects.put(withProjectSummary(metadata, summary));
+        await this.db.projects.put(withProjectSummary(storedMetadataRow(stored.metadata, stored.legacyAidaCount), summary));
       });
     } catch {
       // Metadata is a cache of verified document data. A quota or transaction
@@ -574,70 +484,117 @@ export class ProjectRepository {
   }
 
   async save(projectId: string, metadata: ProjectMetadata, document: LayeredDocument, assets?: readonly ProjectAssetInput[], options: SaveOptions = {}): Promise<SaveResult> {
-    const previous = this.queues.get(projectId) ?? Promise.resolve();
-    const operation = previous.catch(() => undefined).then(() => this.saveSerialized(projectId, metadata, document, assets, options));
-    const tracked = operation.then(() => {
-      if (this.queues.get(projectId) === tracked) this.queues.delete(projectId);
-    }, () => {
-      if (this.queues.get(projectId) === tracked) this.queues.delete(projectId);
-    });
-    this.queues.set(projectId, tracked);
-    return operation;
+    return this.enqueue(projectId, () => options.mode === 'retain'
+      ? this.saveRetained(projectId, metadata, assets, options)
+      : this.saveReplaced(projectId, metadata, document, assets, options));
   }
 
   async savePrepared(projectId: string, metadata: ProjectMetadata, prepared: PreparedDocumentCapability, assets?: readonly ProjectAssetInput[], options: SaveOptions = {}): Promise<SaveResult> {
+    return this.enqueue(projectId, () => this.savePreparedSerialized(projectId, metadata, prepared, assets, options));
+  }
+
+  /** Runs the saves of one project one at a time, in call order, whatever the outcome of the one before. */
+  private enqueue<T>(projectId: string, operation: () => Promise<T>): Promise<T> {
     const previous = this.queues.get(projectId) ?? Promise.resolve();
-    const operation = previous.catch(() => undefined).then(() => this.savePreparedSerialized(projectId, metadata, prepared, assets, options));
-    const tracked = operation.then(() => {
+    const result = previous.catch(() => undefined).then(() => operation());
+    const settle = (): void => {
       if (this.queues.get(projectId) === tracked) this.queues.delete(projectId);
-    }, () => {
-      if (this.queues.get(projectId) === tracked) this.queues.delete(projectId);
-    });
+    };
+    const tracked = result.then(settle, settle);
     this.queues.set(projectId, tracked);
-    return operation;
-  }
-
-  private async saveSerialized(projectId: string, metadataInput: ProjectMetadata, sourceDocument: LayeredDocument, assetsInput?: readonly ProjectAssetInput[], options: SaveOptions = {}): Promise<SaveResult> {
-    const mode = this.resolveSaveMode(options);
-    if (mode === 'retain') return this.saveRetained(projectId, metadataInput, assetsInput, options);
-    return this.saveReplaced(projectId, metadataInput, sourceDocument, assetsInput, options);
-  }
-
-  private resolveSaveMode(options: SaveOptions): SaveCommitMode {
-    const requestedModes = [options.mode, options.commit, options.commitMode].filter((mode): mode is SaveCommitMode => mode !== undefined);
-    if (requestedModes.some((mode) => mode !== 'replace' && mode !== 'retain')) invalidMetadata('Project save mode is invalid.');
-    if (new Set(requestedModes).size > 1) invalidMetadata('Project save mode was specified more than once.');
-    const explicitMode = requestedModes[0];
-    if (explicitMode !== undefined) return explicitMode;
-    // `allowSameRevision` is the pre-Phase-1 compatibility spelling. It
-    // remains a replace commit, including its historical equal-revision
-    // behavior. Only an explicit retain mode may skip document preparation.
-    return 'replace';
+    return result;
   }
 
   private async savePreparedSerialized(projectId: string, metadataInput: ProjectMetadata, prepared: PreparedDocumentCapability, assetsInput?: readonly ProjectAssetInput[], options: SaveOptions = {}): Promise<SaveResult> {
-    if (this.resolveSaveMode(options) === 'retain') invalidMetadata('Prepared document commits must use replace mode.');
+    if (options.mode === 'retain') invalidMetadata('Prepared document commits must use replace mode.');
     if (typeof options.preparedRequestId !== 'string' || options.preparedRequestId.length < 1 || options.preparedRequestId.length > 256) throw new PersistenceError('invalid-document', 'Prepared document request identity is malformed.');
-    const metadata = validateProjectMetadata(projectId, metadataInput, metadataInput.revision);
+    const metadata = metadataForSave(projectId, metadataInput, metadataInput.revision);
     return consumePreparedDocumentCapability(
       prepared,
       { projectId, revision: metadata.revision, requestId: options.preparedRequestId },
-      async (bytes, checksum, summary) => {
-        const history: SessionHistoryEnvelope | null = options.history === undefined ? null : await prepareSessionHistoryForSave(options.history) ?? null;
-        return this.commitReplaced(projectId, metadata, summary, metadata.revision, bytes, checksum, assetsInput, options, history, false);
-      }
+      async (bytes, checksum, summary) => this.commitReplaced(projectId, metadata, summary, metadata.revision, bytes, checksum, assetsInput, options, false)
     );
   }
 
   private async saveReplaced(projectId: string, metadataInput: ProjectMetadata, sourceDocument: LayeredDocument, assetsInput?: readonly ProjectAssetInput[], options: SaveOptions = {}): Promise<SaveResult> {
     assertValidLayeredDocument(sourceDocument);
-    const history: SessionHistoryEnvelope | null = options.history === undefined ? null : await prepareSessionHistoryForSave(options.history) ?? null;
     const document = cloneLayeredDocument(sourceDocument);
-    const metadata = validateProjectMetadata(projectId, metadataInput, document);
+    const metadata = metadataForSave(projectId, metadataInput, document.revision);
     const summary = deriveProjectSummary(document);
     const bytes = encodeDocument(document);
     const checksum = await sha256(bytes);
-    return this.commitReplaced(projectId, metadata, summary, document.revision, bytes, checksum, assetsInput, options, history, true);
+    return this.commitReplaced(projectId, metadata, summary, document.revision, bytes, checksum, assetsInput, options, true);
+  }
+
+  /**
+   * Prepares the rows a save writes beside the document. `history` is
+   * undefined when the save leaves stored history alone, and null when the
+   * save clears it.
+   */
+  private async prepareAuxiliaryRows(
+    projectId: string,
+    metadata: ProjectMetadata,
+    assetsInput: readonly ProjectAssetInput[] | undefined,
+    historyInput: SessionHistoryInput | undefined
+  ): Promise<{ assets: ProjectAsset[] | undefined; history: PreparedHistory | null | undefined }> {
+    const envelope = historyInput === undefined ? undefined : await prepareSessionHistoryForSave(historyInput) ?? null;
+    const assets = assetsInput === undefined ? undefined : await normalizeAssets(assetsInput);
+    const history = envelope === undefined || envelope === null ? envelope : await this.prepareHistoryTrace(projectId, metadata, assets, envelope);
+    return { assets, history };
+  }
+
+  /** Anchors a history to the trace state it is saved with. A history that does not match it, or whose trace cannot be read, is cleared. */
+  private async prepareHistoryTrace(projectId: string, metadata: ProjectMetadata, assets: readonly ProjectAsset[] | undefined, history: SessionHistoryEnvelope): Promise<PreparedHistory | null> {
+    try {
+      const traceAssets = assets ?? await this.db.assets.where('projectId').equals(projectId).toArray();
+      if (!sessionHistoryMatchesTrace(history, metadata, traceAssets)) return null;
+      return { history, traceCanonical: traceStateCanonical(metadata, traceAssets), traceFingerprint: await traceStateFingerprint(metadata, traceAssets) };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Re-checks a prepared history inside the commit transaction. Returns
+   * 'trace-changed' when the trace state moved after preparation, and null
+   * when the history no longer matches it.
+   */
+  private async checkHistoryAnchor(projectId: string, metadata: ProjectMetadata, assets: readonly ProjectAsset[] | undefined, prepared: PreparedHistory): Promise<SessionHistoryEnvelope | null | 'trace-changed'> {
+    const fingerprintAssets = assets ?? await this.db.assets.where('projectId').equals(projectId).toArray();
+    if (traceStateCanonical(metadata, fingerprintAssets) !== prepared.traceCanonical) return 'trace-changed';
+    return sessionHistoryMatchesTrace(prepared.history, metadata, fingerprintAssets) ? prepared.history : null;
+  }
+
+  private tablesFor(includeHistory: boolean) {
+    const { projects, currentSnapshots, recoverySnapshots, projectHeads, documentHistories, assets } = this.db;
+    return includeHistory
+      ? [projects, currentSnapshots, recoverySnapshots, projectHeads, documentHistories, assets]
+      : [projects, currentSnapshots, recoverySnapshots, projectHeads, assets];
+  }
+
+  /**
+   * Runs a save's commit transaction, and when a history write fails, runs it
+   * once more without the history table: a history clone or quota failure must
+   * not roll back the canonical commit. Stored history is cleared only after
+   * that fallback commits, because its anchor no longer matches the new head.
+   */
+  private async commitWithOptionalHistory<R>(
+    projectId: string,
+    includeHistory: boolean,
+    commit: (includeHistory: boolean, markHistoryWrite: () => void) => Promise<R>,
+    committedHead: (result: R) => StoredProjectHead | undefined
+  ): Promise<R> {
+    let historyWriteStarted = false;
+    const markHistoryWrite = (): void => { historyWriteStarted = true; };
+    try {
+      return await commit(includeHistory, markHistoryWrite);
+    } catch (historyError) {
+      if (!historyWriteStarted) throw historyError;
+      const result = await commit(false, markHistoryWrite).catch(() => { throw historyError; });
+      const head = committedHead(result);
+      if (head !== undefined) await this.bestEffortClearHistoryUnlessHead(projectId, head);
+      return result;
+    }
   }
 
   private async tryWarmReplacement(
@@ -646,19 +603,14 @@ export class ProjectRepository {
     metadata: ProjectMetadata,
     nextSnapshot: StoredDocumentSnapshot,
     assets: readonly ProjectAsset[] | undefined,
-    history: SessionHistoryEnvelope | null,
-    traceCanonical: string | undefined,
-    traceFingerprint: string | undefined,
+    history: PreparedHistory | null,
     options: SaveOptions
   ): Promise<WarmCommitDecision | undefined> {
     const cached = this.verifiedCurrentCache;
     if (!cached || cached.projectId !== projectId) return undefined;
-    try {
-      let historyWriteStarted = false;
+    return wrapStorage('Unable to commit the project locally.', async () => {
       let warmPreflightHead: StoredProjectHead | undefined;
-      const commitWarm = async (includeHistory: boolean): Promise<WarmCommitDecision> => this.db.transaction('rw', includeHistory
-        ? [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.documentHistories, this.db.assets]
-        : [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.assets], async (): Promise<WarmCommitDecision> => {
+      const decision = await this.commitWithOptionalHistory(projectId, true, async (includeHistory, markHistoryWrite) => this.db.transaction('rw', this.tablesFor(includeHistory), async (): Promise<WarmCommitDecision> => {
         const head = await this.db.projectHeads.get(projectId);
         if (!isStoredHead(projectId, head)) return { kind: 'fallback', invalidateCache: true };
         if (includeHistory) warmPreflightHead = head;
@@ -681,60 +633,34 @@ export class ProjectRepository {
         const storedHistory = includeHistory ? await this.db.documentHistories.get(projectId) : undefined;
         const generation = nextHistoryGeneration(head, isStoredHistory(projectId, storedHistory) ? storedHistory : undefined);
         const nextHead = toStoredHead(projectId, revision, nextSnapshot.checksum, generation);
-        let effectiveHistory = history;
+        let effectiveHistory = history?.history ?? null;
         if (includeHistory && history !== null) {
-          const fingerprintAssets = assets ?? await this.db.assets.where('projectId').equals(projectId).toArray();
-          if (traceCanonical !== undefined && traceStateCanonical(metadata, fingerprintAssets) !== traceCanonical) return { kind: 'fallback', invalidateCache: true };
-          if (!sessionHistoryMatchesTrace(history, metadata, fingerprintAssets)) effectiveHistory = null;
+          const anchored = await this.checkHistoryAnchor(projectId, metadata, assets, history);
+          if (anchored === 'trace-changed') return { kind: 'fallback', invalidateCache: true };
+          effectiveHistory = anchored;
         }
 
         // The cache is a fully verified exact current record. Dexie clones it
         // as part of the transaction, so no main-thread byte copy is needed.
         await this.db.recoverySnapshots.put(cached);
-        await this.writeReplacementRows(projectId, metadata, nextSnapshot, nextHead, assets, includeHistory ? effectiveHistory : undefined, traceFingerprint, () => { historyWriteStarted = true; });
+        await this.writeReplacementRows(projectId, metadata, nextSnapshot, nextHead, assets, includeHistory ? effectiveHistory : undefined, history?.traceFingerprint, markHistoryWrite);
         return { kind: 'committed', result: { committed: true, stale: false, revision, head: nextHead } };
-      });
-      let decision: WarmCommitDecision;
-      let historyCommitted = true;
-      try {
-        decision = await commitWarm(true);
-      } catch (historyError) {
-        if (!historyWriteStarted) throw historyError;
-        historyCommitted = false;
-        decision = await commitWarm(false).catch(() => { throw historyError; });
-      }
-      if (!historyCommitted && decision.kind === 'committed') await this.bestEffortClearHistoryUnlessHead(projectId, decision.result.head ?? toStoredHead(projectId, revision, nextSnapshot.checksum));
+      }), (decision) => decision.kind === 'committed' ? decision.result.head : undefined);
       if (decision.kind === 'committed') this.cacheVerifiedCurrentSnapshot(nextSnapshot);
       return decision;
-    } catch (error) {
-      if (error instanceof PersistenceError) throw error;
-      throw new PersistenceError('storage-failure', 'Unable to commit the project locally.', error);
-    }
+    });
   }
 
-  private async commitReplaced(projectId: string, metadataInput: ProjectMetadata, summary: ProjectDocumentSummary, revision: number, bytes: Uint8Array, checksum: string, assetsInput: readonly ProjectAssetInput[] | undefined, options: SaveOptions, history: SessionHistoryEnvelope | null, clonePreparedBytes: boolean): Promise<SaveResult> {
+  private async commitReplaced(projectId: string, metadataInput: ProjectMetadata, summary: ProjectDocumentSummary, revision: number, bytes: Uint8Array, checksum: string, assetsInput: readonly ProjectAssetInput[] | undefined, options: SaveOptions, clonePreparedBytes: boolean): Promise<SaveResult> {
     const metadata = withProjectSummary(metadataInput, summary);
-    const assets = assetsInput === undefined ? undefined : await normalizeAssets(assetsInput);
+    const auxiliary = await this.prepareAuxiliaryRows(projectId, metadata, assetsInput, options.history);
+    const { assets } = auxiliary;
+    // A replace commit always rewrites stored history, since the new head
+    // orphans whatever history was anchored to the old one.
+    const history = auxiliary.history ?? null;
     const savedAt = this.now();
-    const nextSnapshot = clonePreparedBytes
-      ? toStoredPreparedSnapshot(projectId, revision, bytes.slice(), checksum, savedAt)
-      : toStoredPreparedSnapshot(projectId, revision, bytes, checksum, savedAt);
-    let historyForCommit = history;
-    let traceCanonical: string | undefined;
-    let traceFingerprint: string | undefined;
-    if (history !== null) {
-      try {
-        const traceAssets = assets ?? await this.db.assets.where('projectId').equals(projectId).toArray();
-        if (!sessionHistoryMatchesTrace(history, metadata, traceAssets)) historyForCommit = null;
-        else {
-          traceCanonical = traceStateCanonical(metadata, traceAssets);
-          traceFingerprint = await traceStateFingerprint(metadata, traceAssets);
-        }
-      } catch {
-        historyForCommit = null;
-      }
-    }
-    const warmDecision = await this.tryWarmReplacement(projectId, revision, metadata, nextSnapshot, assets, historyForCommit, traceCanonical, traceFingerprint, options);
+    const nextSnapshot = toStoredPreparedSnapshot(projectId, revision, clonePreparedBytes ? bytes.slice() : bytes, checksum, savedAt);
+    const warmDecision = await this.tryWarmReplacement(projectId, revision, metadata, nextSnapshot, assets, history, options);
     if (warmDecision?.kind === 'committed') return warmDecision.result;
     if (warmDecision?.kind === 'stale') {
       if (warmDecision.invalidateCache) this.clearVerifiedCurrentCache(projectId);
@@ -743,108 +669,68 @@ export class ProjectRepository {
     if (warmDecision?.kind === 'fallback' && warmDecision.invalidateCache) this.clearVerifiedCurrentCache(projectId);
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      let previouslyValid: StoredDocumentSnapshot | undefined;
-      let preflightHead: StoredProjectHead | undefined;
-      try {
+      const { previouslyValid, preflightHead } = await wrapStorage('Unable to inspect the current local snapshot.', async () => {
         const [candidate, head] = await Promise.all([
           this.db.currentSnapshots.get(projectId),
           this.db.projectHeads.get(projectId)
         ]);
-        preflightHead = head;
+        let verified: StoredDocumentSnapshot | undefined;
         if (candidate && candidate.revision < revision) {
           try {
             await verifySnapshot(candidate);
-            previouslyValid = candidate;
+            verified = candidate;
           } catch (error) {
             // A corrupt current snapshot must never become recovery data. The
             // new validated revision can still replace it atomically.
             if (!(error instanceof PersistenceError)) throw error;
           }
         }
-      } catch (error) {
-        if (error instanceof PersistenceError) throw error;
-        throw new PersistenceError('storage-failure', 'Unable to inspect the current local snapshot.', error);
-      }
-      try {
-        let historyWriteStarted = false;
-        const commitTransaction = async (includeHistory: boolean) => this.db.transaction('rw', includeHistory
-          ? [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.documentHistories, this.db.assets]
-          : [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.assets], async () => {
-          const existing = await this.db.currentSnapshots.get(projectId);
-          const existingHead = await this.db.projectHeads.get(projectId);
-          if (headSignature(projectId, existingHead) !== headSignature(projectId, preflightHead)) {
-            const headRevision = isStoredHead(projectId, existingHead) ? existingHead.revision : existing?.revision ?? revision;
-            return { committed: false, stale: true, revision: headRevision };
-          }
-          if (existing && (existing.revision > revision || (existing.revision === revision && !options.allowSameRevision))) return { committed: false, stale: true, revision: existing.revision };
-          if (existing && previouslyValid && existing.revision === previouslyValid.revision && existing.checksum === previouslyValid.checksum) {
-            // The old current record is copied before the new current record is
-            // installed, in this same transaction, so a partial save cannot
-            // expose recovery data.
-            await this.db.recoverySnapshots.put({ ...existing, bytes: existing.bytes.slice() });
-          }
-          const storedHistory = includeHistory ? await this.db.documentHistories.get(projectId) : undefined;
-          const generation = nextHistoryGeneration(existingHead, isStoredHistory(projectId, storedHistory) ? storedHistory : undefined);
-          const nextHead = toStoredHead(projectId, revision, checksum, generation);
-          let effectiveHistory = historyForCommit;
-          if (includeHistory && historyForCommit !== null) {
-            const fingerprintAssets = assets ?? await this.db.assets.where('projectId').equals(projectId).toArray();
-            if (traceCanonical !== undefined && traceStateCanonical(metadata, fingerprintAssets) !== traceCanonical) return { committed: false, stale: true, revision };
-            if (!sessionHistoryMatchesTrace(historyForCommit, metadata, fingerprintAssets)) effectiveHistory = null;
-          }
-          await this.writeReplacementRows(projectId, metadata, nextSnapshot, nextHead, assets, includeHistory ? effectiveHistory : undefined, traceFingerprint, () => { historyWriteStarted = true; });
-          return { committed: true, stale: false, revision, head: nextHead };
-        });
-        let result;
-        let historyCommitted = true;
-        try {
-          result = await commitTransaction(true);
-        } catch (historyError) {
-          // A history clone/quota failure must not roll back the canonical
-          // project save. Retry the exact CAS commit without the optional
-          // history table; stale history remains harmless because its anchor
-          // no longer matches the new head.
-          if (!historyWriteStarted) throw historyError;
-          historyCommitted = false;
-          result = await commitTransaction(false).catch(() => { throw historyError; });
+        return { previouslyValid: verified, preflightHead: head };
+      });
+      const result = await wrapStorage('Unable to commit the project locally.', async () => this.commitWithOptionalHistory(projectId, true, async (includeHistory, markHistoryWrite) => this.db.transaction('rw', this.tablesFor(includeHistory), async (): Promise<SaveResult> => {
+        const existing = await this.db.currentSnapshots.get(projectId);
+        const existingHead = await this.db.projectHeads.get(projectId);
+        if (headSignature(projectId, existingHead) !== headSignature(projectId, preflightHead)) {
+          const headRevision = isStoredHead(projectId, existingHead) ? existingHead.revision : existing?.revision ?? revision;
+          return { committed: false, stale: true, revision: headRevision };
         }
-        if (historyCommitted === false && result.committed) await this.bestEffortClearHistoryUnlessHead(projectId, result.head ?? toStoredHead(projectId, revision, checksum));
-        if (!result.committed && result.stale) {
-          this.clearVerifiedCurrentCache(projectId);
-          if (attempt === 0) continue;
-        } else if (result.committed) {
-          this.cacheVerifiedCurrentSnapshot(nextSnapshot);
+        if (existing && (existing.revision > revision || (existing.revision === revision && !options.allowSameRevision))) return { committed: false, stale: true, revision: existing.revision };
+        if (existing && previouslyValid && existing.revision === previouslyValid.revision && existing.checksum === previouslyValid.checksum) {
+          // The old current record is copied before the new current record is
+          // installed, in this same transaction, so a partial save cannot
+          // expose recovery data.
+          await this.db.recoverySnapshots.put({ ...existing, bytes: existing.bytes.slice() });
         }
-        return result;
-      } catch (error) {
-        if (error instanceof PersistenceError) throw error;
-        throw new PersistenceError('storage-failure', 'Unable to commit the project locally.', error);
+        const storedHistory = includeHistory ? await this.db.documentHistories.get(projectId) : undefined;
+        const generation = nextHistoryGeneration(existingHead, isStoredHistory(projectId, storedHistory) ? storedHistory : undefined);
+        const nextHead = toStoredHead(projectId, revision, checksum, generation);
+        let effectiveHistory = history?.history ?? null;
+        if (includeHistory && history !== null) {
+          const anchored = await this.checkHistoryAnchor(projectId, metadata, assets, history);
+          if (anchored === 'trace-changed') return { committed: false, stale: true, revision };
+          effectiveHistory = anchored;
+        }
+        await this.writeReplacementRows(projectId, metadata, nextSnapshot, nextHead, assets, includeHistory ? effectiveHistory : undefined, history?.traceFingerprint, markHistoryWrite);
+        return { committed: true, stale: false, revision, head: nextHead };
+      }), (committed) => committed.committed ? committed.head : undefined));
+      if (result.committed) {
+        this.cacheVerifiedCurrentSnapshot(nextSnapshot);
+      } else if (result.stale) {
+        this.clearVerifiedCurrentCache(projectId);
+        if (attempt === 0) continue;
       }
+      return result;
     }
     throw new PersistenceError('storage-failure', 'Unable to commit the project locally.');
   }
 
   private async saveRetained(projectId: string, metadataInput: ProjectMetadata, assetsInput?: readonly ProjectAssetInput[], options: SaveOptions = {}): Promise<SaveResult> {
     const requestedHead = options.expectedHead;
-    const requestedRevision = options.expectedRevision;
-    let expectedRevision: number | undefined = requestedRevision;
-    let expectedChecksum: string | undefined;
-    let expectedGeneration: number | undefined;
-    if (requestedHead !== undefined) {
-      if (typeof requestedHead === 'number') {
-        if (expectedRevision !== undefined && expectedRevision !== requestedHead) invalidMetadata('Expected project revisions do not match.');
-        expectedRevision = requestedHead;
-      } else if (typeof requestedHead === 'object' && requestedHead !== null) {
-        if (requestedHead.projectId !== undefined && requestedHead.projectId !== projectId) invalidMetadata('Expected project head does not match the project being saved.');
-        if (expectedRevision !== undefined && expectedRevision !== requestedHead.revision) invalidMetadata('Expected project revisions do not match.');
-        expectedRevision = requestedHead.revision;
-        expectedChecksum = requestedHead.checksum;
-        expectedGeneration = requestedHead.historyGeneration;
-      } else {
-        invalidMetadata('Expected project head is malformed.');
-      }
-    }
-    if (expectedRevision === undefined) expectedRevision = metadataInput.revision;
+    if (requestedHead?.projectId !== undefined && requestedHead.projectId !== projectId) invalidMetadata('Expected project head does not match the project being saved.');
+    if (requestedHead !== undefined && options.expectedRevision !== undefined && options.expectedRevision !== requestedHead.revision) invalidMetadata('Expected project revisions do not match.');
+    const expectedRevision = requestedHead?.revision ?? options.expectedRevision ?? metadataInput.revision;
+    const expectedChecksum = requestedHead?.checksum;
+    const expectedGeneration = requestedHead?.historyGeneration;
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) invalidMetadata('Expected project revision is invalid.');
     if (expectedChecksum !== undefined && typeof expectedChecksum !== 'string') invalidMetadata('Expected project head is malformed.');
     if (expectedGeneration !== undefined && (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 0)) invalidMetadata('Expected history generation is invalid.');
@@ -852,235 +738,195 @@ export class ProjectRepository {
     // Retain mode deliberately validates only the metadata and auxiliary
     // rows. It never touches the document value, so no document clone,
     // assertion, encoding, checksum, or snapshot readback is performed.
-    const validatedMetadata = validateProjectMetadata(projectId, metadataInput, expectedRevision);
-    const incomingMetadata = sanitizeProjectMetadata(validatedMetadata);
+    const incomingMetadata = metadataForSave(projectId, metadataInput, expectedRevision);
     const incomingSummary = completeProjectSummary(incomingMetadata);
-    let history: SessionHistoryEnvelope | null | undefined;
     // The head check inside the commit transaction anchors this history to
     // the current snapshot; no snapshot decode or chain replay happens here.
-    if (options.history !== undefined) history = await prepareSessionHistoryForSave(options.history) ?? null;
-    const assets = assetsInput === undefined ? undefined : await normalizeAssets(assetsInput);
+    const { assets, history } = await this.prepareAuxiliaryRows(projectId, incomingMetadata, assetsInput, options.history);
 
-    let historyTraceCanonical: string | undefined;
-    let historyTraceFingerprint: string | undefined;
-    if (history !== undefined && history !== null) {
-      try {
-        const traceAssets = assets ?? await this.db.assets.where('projectId').equals(projectId).toArray();
-        if (!sessionHistoryMatchesTrace(history, incomingMetadata, traceAssets)) history = null;
-        else {
-          historyTraceCanonical = traceStateCanonical(incomingMetadata, traceAssets);
-          historyTraceFingerprint = await traceStateFingerprint(incomingMetadata, traceAssets);
-        }
-      } catch {
-        history = null;
+    const result = await wrapStorage('Unable to commit the project locally.', async () => this.commitWithOptionalHistory(projectId, history !== undefined, async (includeHistory, markHistoryWrite) => this.db.transaction('rw', this.tablesFor(includeHistory), async (): Promise<SaveResult> => {
+      const [storedRow, storedHead] = await Promise.all([
+        this.db.projects.get(projectId),
+        this.db.projectHeads.get(projectId)
+      ]);
+      let head = storedHead;
+      let legacyCurrent: StoredDocumentSnapshot | undefined;
+      let needsBackfill = false;
+      if (!isStoredHead(projectId, head)) {
+        // Databases created before the compact head table are allowed one
+        // compatibility read. Every normal retain path reads only this
+        // small record and never structured-clones snapshot bytes.
+        legacyCurrent = await this.db.currentSnapshots.get(projectId);
+        head = headFromSnapshot(projectId, legacyCurrent);
+        if (head !== undefined && expectedGeneration !== undefined) head = { ...head, historyGeneration: expectedGeneration };
+        needsBackfill = head !== undefined;
       }
-    }
-
-    try {
-      let historyWriteStarted = false;
-      const commitTransaction = async (includeHistory: boolean) => this.db.transaction('rw', includeHistory
-        ? [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.documentHistories, this.db.assets]
-        : [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.assets], async () => {
-        const [storedMetadata, storedHead] = await Promise.all([
-          this.db.projects.get(projectId),
-          this.db.projectHeads.get(projectId)
-        ]);
-        let head = storedHead;
-        let legacyCurrent: StoredDocumentSnapshot | undefined;
-        let needsBackfill = false;
-        if (!isStoredHead(projectId, head)) {
-          // Databases created before the compact head table are allowed one
-          // compatibility read. Every normal retain path reads only this
-          // small record and never structured-clones snapshot bytes.
-          legacyCurrent = await this.db.currentSnapshots.get(projectId);
-          head = headFromSnapshot(projectId, legacyCurrent);
-          if (head !== undefined && expectedGeneration !== undefined) head = { ...head, historyGeneration: expectedGeneration };
-          needsBackfill = head !== undefined;
-        }
-        if (
-          !head
-          || head.revision !== expectedRevision
-          || (expectedChecksum !== undefined && head.checksum !== expectedChecksum)
-          || (expectedGeneration !== undefined && head.historyGeneration !== expectedGeneration)
-        ) {
-          return { committed: false, stale: true, revision: head?.revision ?? legacyCurrent?.revision ?? expectedRevision };
-        }
-
-        // Retain changes metadata and auxiliary rows only. A complete summary
-        // already stored for the head wins as one unit; otherwise a complete
-        // incoming summary fills all three fields. Partial summaries are
-        // never assembled field-by-field.
-        const safeStoredMetadata = storedMetadata !== undefined
-          && storedMetadata.revision === expectedRevision
-          && isMetadataRecord(projectId, storedMetadata)
-          ? sanitizeProjectMetadata(storedMetadata)
-          : undefined;
-        const retainedSummary = (safeStoredMetadata === undefined ? undefined : completeProjectSummary(safeStoredMetadata)) ?? incomingSummary;
-        const retainedMetadata: ProjectMetadata = { ...incomingMetadata };
-        delete retainedMetadata.width;
-        delete retainedMetadata.height;
-        delete retainedMetadata.thumbnail;
-        // Retain never rewrites the snapshot, so a stored legacy stitch count
-        // stays with its v1/v2 document until the next replace commit.
-        if (safeStoredMetadata?.aidaCount !== undefined) retainedMetadata.aidaCount = safeStoredMetadata.aidaCount;
-        if (retainedSummary !== undefined) {
-          retainedMetadata.width = retainedSummary.width;
-          retainedMetadata.height = retainedSummary.height;
-          retainedMetadata.thumbnail = retainedSummary.thumbnail;
-        }
-
-        // This transaction intentionally excludes all snapshot writes. The
-        // expected-head check and every auxiliary-row update are atomic.
-        const storedHistory = includeHistory ? await this.db.documentHistories.get(projectId) : undefined;
-        const historyAttempted = options.history !== undefined;
-        const generation = historyAttempted
-          ? nextHistoryGeneration(head, isStoredHistory(projectId, storedHistory) ? storedHistory : undefined)
-          : head.historyGeneration;
-        const nextHead = toStoredHead(projectId, head.revision, head.checksum, generation);
-        if (needsBackfill || nextHead.historyGeneration !== head.historyGeneration) await this.db.projectHeads.put(nextHead);
-        await this.db.projects.put(retainedMetadata);
-        let effectiveHistory = history;
-        if (includeHistory && history !== undefined && history !== null) {
-          const fingerprintAssets = assets ?? await this.db.assets.where('projectId').equals(projectId).toArray();
-          if (historyTraceCanonical !== undefined && traceStateCanonical(retainedMetadata, fingerprintAssets) !== historyTraceCanonical) return { committed: false, stale: true, revision: expectedRevision };
-          if (!sessionHistoryMatchesTrace(history, retainedMetadata, fingerprintAssets)) effectiveHistory = null;
-        }
-        if (assets !== undefined) {
-          await this.db.assets.where('projectId').equals(projectId).delete();
-          const storedAssets: StoredProjectAsset[] = assets.map((asset) => ({ ...asset, projectId, data: asset.data.slice() }));
-          if (storedAssets.length > 0) await this.db.assets.bulkPut(storedAssets);
-        }
-        if (includeHistory && effectiveHistory !== undefined) {
-          historyWriteStarted = true;
-          await this.db.documentHistories.delete(projectId);
-          if (effectiveHistory !== null) {
-            if (nextHead.historyGeneration === undefined || historyTraceFingerprint === undefined) throw new Error('session history anchor is incomplete.');
-            await this.db.documentHistories.put(toStoredHistory(projectId, nextHead, effectiveHistory, nextHead.historyGeneration, historyTraceFingerprint, this.now()));
-          }
-        }
-        return { committed: true, stale: false, revision: expectedRevision, head: nextHead };
-      });
-      let result;
-      try {
-        result = await commitTransaction(options.history !== undefined);
-      } catch (historyError) {
-        // Retain commits remain useful even when an optional history clone or
-        // quota operation fails. The existing anchored history is safer than
-        // replacing it with an uncommitted payload.
-        if (!historyWriteStarted) throw historyError;
-        result = await commitTransaction(false).catch(() => { throw historyError; });
+      if (
+        !head
+        || head.revision !== expectedRevision
+        || (expectedChecksum !== undefined && head.checksum !== expectedChecksum)
+        || (expectedGeneration !== undefined && head.historyGeneration !== expectedGeneration)
+      ) {
+        return { committed: false, stale: true, revision: head?.revision ?? legacyCurrent?.revision ?? expectedRevision };
       }
-      if (options.history !== undefined && result.committed && result.head?.historyGeneration !== undefined) await this.bestEffortClearHistoryUnlessHead(projectId, result.head);
-      if (!result.committed && result.stale) this.clearVerifiedCurrentCache(projectId);
-      return result;
-    } catch (error) {
-      if (error instanceof PersistenceError) throw error;
-      throw new PersistenceError('storage-failure', 'Unable to commit the project locally.', error);
+
+      // Retain changes metadata and auxiliary rows only. A complete summary
+      // already stored for the head wins as one unit; otherwise a complete
+      // incoming summary fills all three fields. Partial summaries are
+      // never assembled field-by-field.
+      const parsedStored = readStoredMetadata(projectId, storedRow);
+      const stored = parsedStored?.metadata.revision === expectedRevision ? parsedStored : undefined;
+      const retainedSummary = (stored === undefined ? undefined : completeProjectSummary(stored.metadata)) ?? incomingSummary;
+      const retainedMetadata: ProjectMetadata = { ...incomingMetadata };
+      delete retainedMetadata.width;
+      delete retainedMetadata.height;
+      delete retainedMetadata.thumbnail;
+      // Retain never rewrites the snapshot, so a stored legacy stitch count
+      // stays with its v1/v2 document until the next replace commit.
+      if (stored?.legacyAidaCount !== undefined) retainedMetadata.aidaCount = stored.legacyAidaCount;
+      if (retainedSummary !== undefined) {
+        retainedMetadata.width = retainedSummary.width;
+        retainedMetadata.height = retainedSummary.height;
+        retainedMetadata.thumbnail = retainedSummary.thumbnail;
+      }
+
+      // This transaction intentionally excludes all snapshot writes. The
+      // expected-head check and every auxiliary-row update are atomic.
+      const storedHistory = includeHistory ? await this.db.documentHistories.get(projectId) : undefined;
+      const generation = history !== undefined
+        ? nextHistoryGeneration(head, isStoredHistory(projectId, storedHistory) ? storedHistory : undefined)
+        : head.historyGeneration;
+      const nextHead = toStoredHead(projectId, head.revision, head.checksum, generation);
+      if (needsBackfill || nextHead.historyGeneration !== head.historyGeneration) await this.db.projectHeads.put(nextHead);
+      await this.db.projects.put(retainedMetadata);
+      let effectiveHistory = history === undefined || history === null ? history : history.history;
+      if (includeHistory && history !== undefined && history !== null) {
+        const anchored = await this.checkHistoryAnchor(projectId, retainedMetadata, assets, history);
+        if (anchored === 'trace-changed') return { committed: false, stale: true, revision: expectedRevision };
+        effectiveHistory = anchored;
+      }
+      if (assets !== undefined) {
+        await this.db.assets.where('projectId').equals(projectId).delete();
+        const storedAssets: StoredProjectAsset[] = assets.map((asset) => ({ ...asset, projectId, data: asset.data.slice() }));
+        if (storedAssets.length > 0) await this.db.assets.bulkPut(storedAssets);
+      }
+      if (includeHistory && effectiveHistory !== undefined) {
+        markHistoryWrite();
+        await this.db.documentHistories.delete(projectId);
+        if (effectiveHistory !== null) {
+          if (nextHead.historyGeneration === undefined || history?.traceFingerprint === undefined) throw new Error('session history anchor is incomplete.');
+          await this.db.documentHistories.put(toStoredHistory(projectId, nextHead, effectiveHistory, nextHead.historyGeneration, history.traceFingerprint, this.now()));
+        }
+      }
+      return { committed: true, stale: false, revision: expectedRevision, head: nextHead };
+    }), (committed) => committed.committed ? committed.head : undefined));
+    if (!result.committed && result.stale) this.clearVerifiedCurrentCache(projectId);
+    return result;
+  }
+
+  /** The head a load trusts: the stored head when it names the current snapshot, else one derived from the snapshot and written back. */
+  private async reconcileHead(projectId: string, current: StoredDocumentSnapshot | undefined, storedHead: StoredProjectHead | undefined): Promise<StoredProjectHead | undefined> {
+    const snapshotHead = headFromSnapshot(projectId, current);
+    const head = snapshotHead === undefined
+      ? (isStoredHead(projectId, storedHead) ? storedHead : undefined)
+      : isStoredHead(projectId, storedHead)
+        && storedHead.revision === snapshotHead.revision
+        && storedHead.checksum === snapshotHead.checksum
+        ? storedHead
+        : snapshotHead;
+    if (head !== undefined && (!isStoredHead(projectId, storedHead) || storedHead.revision !== head.revision || storedHead.checksum !== head.checksum)) {
+      await this.db.projectHeads.put(head);
     }
+    return head;
   }
 
   async load(projectId: string): Promise<ProjectRecord | undefined> {
-    if (typeof projectId !== 'string' || projectId.length < 1 || projectId.length > 256) invalidMetadata('Project ID is invalid.');
+    if (!isProjectId(projectId)) invalidMetadata('Project ID is invalid.');
     this.clearVerifiedCurrentCache(projectId);
     try {
-      const { metadata, current, recovery, storedAssets, storedHistory, head } = await this.db.transaction('rw', [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.documentHistories, this.db.assets], async () => {
-        const [metadata, current, recovery, storedAssets, storedHead, storedHistory] = await Promise.all([
-          this.db.projects.get(projectId),
-          this.db.currentSnapshots.get(projectId),
-          this.db.recoverySnapshots.get(projectId),
-          this.db.assets.where('projectId').equals(projectId).toArray(),
-          this.db.projectHeads.get(projectId),
-          this.db.documentHistories.get(projectId)
-        ]);
-        const snapshotHead = headFromSnapshot(projectId, current);
-        const head = snapshotHead === undefined
-          ? (isStoredHead(projectId, storedHead) ? storedHead : undefined)
-          : isStoredHead(projectId, storedHead)
-            && storedHead.revision === snapshotHead.revision
-            && storedHead.checksum === snapshotHead.checksum
-            ? storedHead
-            : snapshotHead;
-        if (head !== undefined && (!isStoredHead(projectId, storedHead) || storedHead.revision !== head.revision || storedHead.checksum !== head.checksum)) {
-          await this.db.projectHeads.put(head);
+      return await wrapStorage('Unable to load the project locally.', async () => {
+        const { row, current, recovery, storedAssets, storedHistory, head } = await this.db.transaction('rw', [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.documentHistories, this.db.assets], async () => {
+          const [row, current, recovery, storedAssets, storedHead, storedHistory] = await Promise.all([
+            this.db.projects.get(projectId),
+            this.db.currentSnapshots.get(projectId),
+            this.db.recoverySnapshots.get(projectId),
+            this.db.assets.where('projectId').equals(projectId).toArray(),
+            this.db.projectHeads.get(projectId),
+            this.db.documentHistories.get(projectId)
+          ]);
+          return { row, current, recovery, storedAssets, storedHistory, head: await this.reconcileHead(projectId, current, storedHead) };
+        });
+        if (!row && !current && !recovery && storedAssets.length === 0) return undefined;
+        const currentHealth = await inspectSnapshot(current, projectId);
+        const recoveryHealth = await inspectSnapshot(recovery, projectId);
+        const parsed = readStoredMetadata(projectId, row);
+        if (!parsed) throw new PersistenceError('storage-failure', 'Project metadata is missing or malformed.');
+        const { metadata, legacyAidaCount, warnings } = parsed;
+        if (currentHealth.status !== 'valid' || !current) throw new PersistenceError('storage-failure', 'Current project snapshot is corrupt or missing.');
+        const document = await loadSnapshotDocument(current, legacyAidaCount);
+        if (metadata.revision !== document.revision) throw new PersistenceError('storage-failure', 'Project metadata and current snapshot are inconsistent.');
+        let recoveryRecord: ProjectRecord['recovery'] = null;
+        if (recovery && recoveryHealth.status === 'valid') {
+          const recoveryDocument = await loadSnapshotDocument(recovery, legacyAidaCount);
+          recoveryRecord = { revision: recovery.revision, document: recoveryDocument };
         }
-        return { metadata, current, recovery, storedAssets, storedHistory, head };
+        const loadedAssets = await loadAssets(projectId, storedAssets);
+        const sourceImage = inspectSourceImage(metadata.sourceImage, loadedAssets.assets);
+        const summary = deriveProjectSummary(document);
+        const canonicalMetadata = withProjectSummary(metadata, summary);
+        let loadedHistory: SessionHistoryEnvelope | undefined;
+        if (
+          isStoredHistory(projectId, storedHistory)
+          && head !== undefined
+          && storedHistory.revision === head.revision
+          && storedHistory.checksum === head.checksum
+          && storedHistory.generation === head.historyGeneration
+        ) {
+          try {
+            const fingerprint = await traceStateFingerprint(metadata, loadedAssets.assets);
+            if (fingerprint === storedHistory.traceFingerprint) loadedHistory = await prepareSessionHistory(document, storedHistory.history, { metadata, assets: loadedAssets.assets });
+          } catch {
+            loadedHistory = undefined;
+          }
+        }
+        if (storedHistory !== undefined && loadedHistory === undefined) await this.bestEffortDeleteHistory(projectId, storedHistory);
+        const health = makeProjectHealth(projectId, canonicalMetadata, currentHealth, recoveryHealth, loadedAssets.health, warnings, sourceImage);
+        this.cacheVerifiedCurrentSnapshot(current);
+        await this.bestEffortBackfillSummary(projectId, metadata, head, summary);
+        return { metadata: sanitizeProjectMetadata(canonicalMetadata), document, head, history: loadedHistory, recovery: recoveryRecord, assets: loadedAssets.assets, health };
       });
-      if (!metadata && !current && !recovery && storedAssets.length === 0) return undefined;
-      const currentHealth = await inspectSnapshot(current, projectId);
-      const recoveryHealth = await inspectSnapshot(recovery, projectId);
-      if (!metadata || !isMetadataRecord(projectId, metadata)) throw new PersistenceError('storage-failure', 'Project metadata is missing or malformed.');
-      if (currentHealth.status !== 'valid' || !current) throw new PersistenceError('storage-failure', 'Current project snapshot is corrupt or missing.');
-      const document = await loadSnapshotDocument(current, metadata);
-      if (metadata.revision !== document.revision) throw new PersistenceError('storage-failure', 'Project metadata and current snapshot are inconsistent.');
-      let recoveryRecord: ProjectRecord['recovery'] = null;
-      if (recovery && recoveryHealth.status === 'valid') {
-        const recoveryDocument = await loadSnapshotDocument(recovery, metadata);
-        recoveryRecord = { revision: recovery.revision, document: recoveryDocument };
-      }
-      const loadedAssets = await loadAssets(projectId, storedAssets);
-      const sourceImage = inspectSourceImage(metadata.sourceImage, loadedAssets.assets);
-      const safeMetadata = sanitizeSourceImageMetadata(metadata);
-      const summary = deriveProjectSummary(document);
-      const canonicalMetadata = withProjectSummary(safeMetadata.metadata, summary);
-      let loadedHistory: SessionHistoryEnvelope | undefined;
-      if (
-        isStoredHistory(projectId, storedHistory)
-        && head !== undefined
-        && storedHistory.revision === head.revision
-        && storedHistory.checksum === head.checksum
-        && storedHistory.generation === head.historyGeneration
-      ) {
-        try {
-          const fingerprint = await traceStateFingerprint(safeMetadata.metadata, loadedAssets.assets);
-          if (fingerprint === storedHistory.traceFingerprint) loadedHistory = await prepareSessionHistory(document, storedHistory.history, { metadata: safeMetadata.metadata, assets: loadedAssets.assets });
-        } catch {
-          loadedHistory = undefined;
-        }
-      }
-      if (storedHistory !== undefined && loadedHistory === undefined) await this.bestEffortDeleteHistory(projectId, storedHistory);
-      const extraWarnings = safeMetadata.warning === undefined ? [] : [safeMetadata.warning];
-      const health = makeProjectHealth(projectId, canonicalMetadata, currentHealth, recoveryHealth, loadedAssets.health, extraWarnings, sourceImage);
-      this.cacheVerifiedCurrentSnapshot(current);
-      await this.bestEffortBackfillSummary(projectId, metadata, head, summary);
-      return { metadata: sanitizeProjectMetadata(canonicalMetadata), document, head, history: loadedHistory, recovery: recoveryRecord, assets: loadedAssets.assets, health };
     } catch (error) {
       this.clearVerifiedCurrentCache(projectId);
-      if (error instanceof PersistenceError) throw error;
-      throw new PersistenceError('storage-failure', 'Unable to load the project locally.', error);
+      throw error;
     }
   }
 
   async getAsset(projectId: string, assetId: string): Promise<ProjectAsset | undefined> {
-    if (typeof projectId !== 'string' || projectId.length < 1 || projectId.length > 256 || typeof assetId !== 'string' || assetId.length < 1 || assetId.length > 256) invalidMetadata('Project or asset ID is invalid.');
-    try {
+    if (!isProjectId(projectId) || !isValidAssetId(assetId)) invalidMetadata('Project or asset ID is invalid.');
+    return wrapStorage('Unable to retrieve the project asset.', async () => {
       const stored = await this.db.assets.get([projectId, assetId]);
       if (!stored) return undefined;
       const bytes = storedBytes(stored.data);
       const issue = storedAssetIssue(projectId, stored, bytes);
       if (issue || !bytes || await sha256(bytes) !== stored.checksum) return undefined;
       return { id: stored.id, name: stored.name, mimeType: stored.mimeType, data: bytes.slice(), checksum: stored.checksum };
-    } catch (error) {
-      if (error instanceof PersistenceError) throw error;
-      throw new PersistenceError('storage-failure', 'Unable to retrieve the project asset.', error);
-    }
+    });
   }
 
   /**
-   * Lists metadata without requiring the project to be fully readable. This
-   * preserves the old return shape while ensuring a corrupt current snapshot
-   * remains visible to callers; use inspectProjectHealth for diagnostics.
+   * Lists metadata without requiring the project to be fully readable. A
+   * corrupt current snapshot or a malformed optional field leaves the project
+   * listed; use inspectProjectHealth for diagnostics.
    */
   async listProjects(): Promise<ProjectMetadata[]> {
-    try {
-      const candidates = await this.db.projects.toArray();
-      const visible = candidates
-        .filter((candidate) => isMetadataRecord(candidate.id, candidate))
-        .map((candidate) => sanitizeProjectMetadata(candidate));
+    return wrapStorage('Unable to list local projects.', async () => {
+      const rows = await this.db.projects.toArray();
+      const visible = rows.flatMap((row) => {
+        const parsed = readStoredMetadata(row.id, row);
+        return parsed === undefined ? [] : [parsed.metadata];
+      });
       return visible.sort((left, right) => right.updatedAt - left.updatedAt || right.revision - left.revision || left.id.localeCompare(right.id));
-    } catch (error) {
-      if (error instanceof PersistenceError) throw error;
-      throw new PersistenceError('storage-failure', 'Unable to list local projects.', error);
-    }
+    });
   }
 
   async listProjectMetadata(): Promise<ProjectMetadata[]> {
@@ -1088,23 +934,21 @@ export class ProjectRepository {
   }
 
   async inspectProjectHealth(projectId: string): Promise<ProjectHealth | undefined> {
-    if (typeof projectId !== 'string' || projectId.length < 1 || projectId.length > 256) invalidMetadata('Project ID is invalid.');
-    try {
-      const [metadata, current, recovery, storedAssets] = await this.db.transaction('r', this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.assets, async () => Promise.all([
+    if (!isProjectId(projectId)) invalidMetadata('Project ID is invalid.');
+    return wrapStorage('Unable to inspect the local project.', async () => {
+      const [row, current, recovery, storedAssets] = await this.db.transaction('r', this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.assets, async () => Promise.all([
         this.db.projects.get(projectId),
         this.db.currentSnapshots.get(projectId),
         this.db.recoverySnapshots.get(projectId),
         this.db.assets.where('projectId').equals(projectId).toArray()
       ]));
-      if (!metadata && !current && !recovery && storedAssets.length === 0) return undefined;
+      if (!row && !current && !recovery && storedAssets.length === 0) return undefined;
       const currentHealth = await inspectSnapshot(current, projectId);
       const recoveryHealth = await inspectSnapshot(recovery, projectId);
       if (currentHealth.status === 'corrupt') this.clearVerifiedCurrentCache(projectId);
-      return makeProjectHealth(projectId, metadata, currentHealth, recoveryHealth, inspectStoredAssets(projectId, storedAssets));
-    } catch (error) {
-      if (error instanceof PersistenceError) throw error;
-      throw new PersistenceError('storage-failure', 'Unable to inspect the local project.', error);
-    }
+      const parsed = readStoredMetadata(projectId, row);
+      return makeProjectHealth(projectId, parsed?.metadata, currentHealth, recoveryHealth, inspectStoredAssets(projectId, storedAssets), parsed?.warnings);
+    });
   }
 
   /**
@@ -1113,65 +957,51 @@ export class ProjectRepository {
    * was not used.
    */
   async loadRecoveryRevision(projectId: string, revision?: number): Promise<ProjectRecord | undefined> {
-    if (typeof projectId !== 'string' || projectId.length < 1 || projectId.length > 256) invalidMetadata('Project ID is invalid.');
+    if (!isProjectId(projectId)) invalidMetadata('Project ID is invalid.');
     if (revision !== undefined && (!Number.isSafeInteger(revision) || revision < 0)) invalidMetadata('Recovery revision is invalid.');
     try {
-      const { metadata, current, recovery, storedAssets, head } = await this.db.transaction('rw', [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.assets], async () => {
-        const [metadata, current, recovery, storedAssets, storedHead] = await Promise.all([
-          this.db.projects.get(projectId),
-          this.db.currentSnapshots.get(projectId),
-          this.db.recoverySnapshots.get(projectId),
-          this.db.assets.where('projectId').equals(projectId).toArray(),
-          this.db.projectHeads.get(projectId)
-        ]);
-        const snapshotHead = headFromSnapshot(projectId, current);
-        const head = snapshotHead === undefined
-          ? (isStoredHead(projectId, storedHead) ? storedHead : undefined)
-          : isStoredHead(projectId, storedHead)
-            && storedHead.revision === snapshotHead.revision
-            && storedHead.checksum === snapshotHead.checksum
-            ? storedHead
-            : snapshotHead;
-        if (head !== undefined && (!isStoredHead(projectId, storedHead) || storedHead.revision !== head.revision || storedHead.checksum !== head.checksum)) {
-          await this.db.projectHeads.put(head);
-        }
-        return { metadata, current, recovery, storedAssets, head };
+      return await wrapStorage('Unable to load the project recovery revision.', async () => {
+        const { row, current, recovery, storedAssets, head } = await this.db.transaction('rw', [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.assets], async () => {
+          const [row, current, recovery, storedAssets, storedHead] = await Promise.all([
+            this.db.projects.get(projectId),
+            this.db.currentSnapshots.get(projectId),
+            this.db.recoverySnapshots.get(projectId),
+            this.db.assets.where('projectId').equals(projectId).toArray(),
+            this.db.projectHeads.get(projectId)
+          ]);
+          return { row, current, recovery, storedAssets, head: await this.reconcileHead(projectId, current, storedHead) };
+        });
+        if (!row && !current && !recovery && storedAssets.length === 0) return undefined;
+        const parsed = readStoredMetadata(projectId, row);
+        if (!parsed || !recovery) throw new PersistenceError('storage-failure', 'Project recovery data is incomplete.');
+        const { metadata, legacyAidaCount, warnings } = parsed;
+        const recoveryHealth = await inspectSnapshot(recovery, projectId);
+        if (recoveryHealth.status !== 'valid') throw new PersistenceError('storage-failure', 'Project recovery snapshot is corrupt.');
+        if (revision !== undefined && recovery.revision !== revision) throw new PersistenceError('storage-failure', `Recovery revision ${String(revision)} is not available.`);
+        const document = await loadSnapshotDocument(recovery, legacyAidaCount);
+        const loadedAssets = await loadAssets(projectId, storedAssets);
+        const sourceImage = inspectSourceImage(metadata.sourceImage, loadedAssets.assets);
+        const summary = deriveProjectSummary(document);
+        const canonicalMetadata = withProjectSummary({ ...metadata, revision: document.revision }, summary);
+        const currentHealth = await inspectSnapshot(current, projectId);
+        if (currentHealth.status === 'corrupt') this.clearVerifiedCurrentCache(projectId);
+        const health = makeProjectHealth(projectId, canonicalMetadata, currentHealth, recoveryHealth, loadedAssets.health, warnings, sourceImage);
+        return {
+          metadata: sanitizeProjectMetadata(canonicalMetadata),
+          document,
+          head,
+          recovery: null,
+          assets: loadedAssets.assets,
+          health
+        };
       });
-      if (!metadata && !current && !recovery && storedAssets.length === 0) return undefined;
-      if (!metadata || !isMetadataRecord(projectId, metadata) || !recovery) throw new PersistenceError('storage-failure', 'Project recovery data is incomplete.');
-      const recoveryHealth = await inspectSnapshot(recovery, projectId);
-      if (recoveryHealth.status !== 'valid') throw new PersistenceError('storage-failure', 'Project recovery snapshot is corrupt.');
-      if (revision !== undefined && recovery.revision !== revision) throw new PersistenceError('storage-failure', `Recovery revision ${String(revision)} is not available.`);
-      const document = await loadSnapshotDocument(recovery, metadata);
-      const loadedAssets = await loadAssets(projectId, storedAssets);
-      const sourceImage = inspectSourceImage(metadata.sourceImage, loadedAssets.assets);
-      const safeMetadata = sanitizeSourceImageMetadata(metadata);
-      const summary = deriveProjectSummary(document);
-      const canonicalMetadata = withProjectSummary({ ...safeMetadata.metadata, revision: document.revision }, summary);
-      const extraWarnings = safeMetadata.warning === undefined ? [] : [safeMetadata.warning];
-      const currentHealth = await inspectSnapshot(current, projectId);
-      if (currentHealth.status === 'corrupt') this.clearVerifiedCurrentCache(projectId);
-      const health = makeProjectHealth(projectId, canonicalMetadata, currentHealth, recoveryHealth, loadedAssets.health, extraWarnings, sourceImage);
-      return {
-        metadata: sanitizeProjectMetadata(canonicalMetadata),
-        document,
-        head,
-        recovery: null,
-        assets: loadedAssets.assets,
-        health
-      };
     } catch (error) {
       this.clearVerifiedCurrentCache(projectId);
-      if (error instanceof PersistenceError) throw error;
-      throw new PersistenceError('storage-failure', 'Unable to load the project recovery revision.', error);
+      throw error;
     }
   }
 
-  /**
-   * Explicitly promotes the validated recovery snapshot to current. The
-   * operation is copy-on-write and never treats a recovery record as current
-   * merely because the current record is unreadable.
-   */
+  /** Deletes the project and every row keyed to it, in one transaction. */
   async deleteProject(projectId: string): Promise<void> {
     this.clearVerifiedCurrentCache(projectId);
     await this.db.transaction('rw', [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.documentHistories, this.db.assets, this.db.dailyActivity, this.db.projectFolders], async () => {
@@ -1187,7 +1017,7 @@ export class ProjectRepository {
   }
 
   async listFolderIndex(): Promise<ProjectFolderIndex> {
-    try {
+    return wrapStorage('Unable to list local folders.', async () => {
       return await this.db.transaction('r', [this.db.folders, this.db.projectFolders, this.db.projects], async () => {
         const [folderRows, assignmentRows, projectRows] = await Promise.all([
           this.db.folders.toArray(),
@@ -1202,10 +1032,7 @@ export class ProjectRepository {
         const assignments = assignmentRows.filter((assignment) => folderIds.has(assignment.folderId) && projectIds.has(assignment.projectId));
         return { folders, assignments };
       });
-    } catch (error) {
-      if (error instanceof PersistenceError) throw error;
-      throw new PersistenceError('storage-failure', 'Unable to list local folders.', error);
-    }
+    });
   }
 
   async createFolder(input: CreateFolderInput): Promise<ProjectFolder> {
@@ -1214,7 +1041,7 @@ export class ProjectRepository {
     if (parentId !== null && (typeof parentId !== 'string' || parentId.length < 1 || parentId.length > 256 || !isBoundedMetadataString(parentId))) invalidMetadata('Folder parent ID is malformed.');
     if (typeof input.id !== 'string' || input.id.length < 1 || input.id.length > 256 || !isBoundedMetadataString(input.id)) invalidMetadata('Folder ID is malformed.');
     const { id } = input;
-    try {
+    return wrapStorage('Unable to create the local folder.', async () => {
       return await this.db.transaction('rw', [this.db.folders], async () => {
         if (parentId !== null) {
           const parent = await this.db.folders.get(parentId);
@@ -1225,15 +1052,12 @@ export class ProjectRepository {
         await this.db.folders.put(folder);
         return folder;
       });
-    } catch (error) {
-      if (error instanceof PersistenceError) throw error;
-      throw new PersistenceError('storage-failure', 'Unable to create the local folder.', error);
-    }
+    });
   }
 
   async renameFolder(folderId: string, name: string): Promise<ProjectFolder> {
     const trimmed = validateFolderName(name);
-    try {
+    return wrapStorage('Unable to rename the local folder.', async () => {
       return await this.db.transaction('rw', [this.db.folders], async () => {
         const existing = await this.db.folders.get(folderId);
         if (!existing) invalidMetadata('Folder does not exist.');
@@ -1241,14 +1065,11 @@ export class ProjectRepository {
         await this.db.folders.put(renamed);
         return renamed;
       });
-    } catch (error) {
-      if (error instanceof PersistenceError) throw error;
-      throw new PersistenceError('storage-failure', 'Unable to rename the local folder.', error);
-    }
+    });
   }
 
   async deleteFolder(folderId: string): Promise<void> {
-    try {
+    return wrapStorage('Unable to delete the local folder.', async () => {
       await this.db.transaction('rw', [this.db.folders, this.db.projectFolders], async () => {
         const deleted = await this.db.folders.get(folderId);
         if (!deleted) return;
@@ -1263,14 +1084,11 @@ export class ProjectRepository {
         }
         await this.db.folders.delete(folderId);
       });
-    } catch (error) {
-      if (error instanceof PersistenceError) throw error;
-      throw new PersistenceError('storage-failure', 'Unable to delete the local folder.', error);
-    }
+    });
   }
 
   async moveProjectToFolder(projectId: string, folderId: string | null): Promise<void> {
-    try {
+    return wrapStorage('Unable to move the project to the folder.', async () => {
       await this.db.transaction('rw', [this.db.projects, this.db.folders, this.db.projectFolders], async () => {
         const project = await this.db.projects.get(projectId);
         if (!project) invalidMetadata('Project does not exist.');
@@ -1283,14 +1101,11 @@ export class ProjectRepository {
         const assignment: ProjectFolderAssignment = { projectId, folderId };
         await this.db.projectFolders.put(assignment);
       });
-    } catch (error) {
-      if (error instanceof PersistenceError) throw error;
-      throw new PersistenceError('storage-failure', 'Unable to move the project to the folder.', error);
-    }
+    });
   }
 
   async moveFolder(folderId: string, parentId: string | null): Promise<void> {
-    try {
+    return wrapStorage('Unable to move the local folder.', async () => {
       await this.db.transaction('rw', [this.db.folders], async () => {
         const folder = await this.db.folders.get(folderId);
         if (!folder) invalidMetadata('Folder does not exist.');
@@ -1305,10 +1120,7 @@ export class ProjectRepository {
         if (children.length > 0) invalidMetadata('A folder with subfolders cannot be moved into another folder.');
         await this.db.folders.update(folderId, { parentId, updatedAt: this.now() });
       });
-    } catch (error) {
-      if (error instanceof PersistenceError) throw error;
-      throw new PersistenceError('storage-failure', 'Unable to move the local folder.', error);
-    }
+    });
   }
 
   async close(): Promise<void> {

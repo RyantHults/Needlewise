@@ -5,6 +5,8 @@ import {
   componentSlotMask,
   forEachActiveRun,
   isLegacyQuarterKind,
+  isThreeQuarterKind,
+  isThreeQuarterPairKind,
   type PatternDocument
 } from '../domain';
 import {
@@ -23,6 +25,7 @@ import {
   type FixedPoint,
   type FloatingPasteOverlay,
   type FloatingPasteSelectionOverlay,
+  type AtlasTargetFactory,
   type Invalidation,
   type InvalidationLayer,
   type LassoPathOverlay,
@@ -58,7 +61,7 @@ import {
   paintOverviewCell,
   patternBackgroundColor
 } from './atlas';
-import { clearTarget, clipToRect, defaultAtlasTargetFactory, drawImage, prepareTarget, rectPath, restore, save } from './context';
+import { clearTarget, clipToRect, createDefaultAtlasTarget, drawImage, prepareTarget, rectPath, restore, save } from './context';
 import { grayscaleColor, paletteColor } from './colors';
 import { parseHexColor, rgbToHex } from '../domain/color';
 import { contrastSymbolInk, isDarkColor, relativeLuminance } from './contrast';
@@ -74,7 +77,6 @@ import {
 } from './thread-preview';
 import targetSvg from '../assets/ui-icons/target.svg?raw';
 import { createTraceImageProjection, drawTraceImage } from './trace';
-import { isThreeQuarterKind, isThreeQuarterPairKind } from '../editor/cell-kinds';
 import { selectionBoundarySegments } from '../editor/lasso';
 
 const EMPTY_STATS: RenderStats = {
@@ -2476,7 +2478,7 @@ export class Canvas2DRenderer implements CanvasRenderer {
   private readonly atlas = new ColorAtlasCache();
   private readonly symbolAtlas = new SymbolAtlasCache();
   private threadSprites: ThreadSpriteCache | undefined;
-  private readonly atlasFactory: CanvasRendererOptions['atlasTargetFactory'];
+  private readonly atlasFactory: AtlasTargetFactory;
   private readonly requestFrame: (callback: (time: number) => void) => number;
   private readonly cancelFrame: (handle: number) => void;
   private frameHandle: number | undefined;
@@ -2504,7 +2506,7 @@ export class Canvas2DRenderer implements CanvasRenderer {
     this.traceDisposer = this.traceImage?.dispose;
     this.overlay = options.overlay ?? {};
     this.thresholds = resolveLodThresholds(options.lodThresholds);
-    this.atlasFactory = options.atlasTargetFactory ?? defaultAtlasTargetFactory;
+    this.atlasFactory = options.atlasTargetFactory ?? createDefaultAtlasTarget;
     this.requestFrame = options.requestAnimationFrame ?? defaultFrameRequest;
     this.cancelFrame = options.cancelAnimationFrame ?? defaultFrameCancel;
   }
@@ -2818,7 +2820,7 @@ export class Canvas2DRenderer implements CanvasRenderer {
   private threadSpritesFor(): ThreadSpriteCache {
     const cellPx = Math.max(1, Math.round(this.viewport.zoom * this.metrics.dpr));
     if (!this.threadSprites || this.threadSprites.cellPx !== cellPx) {
-      this.threadSprites = createThreadSpriteCache(this.atlasFactory ?? defaultAtlasTargetFactory, cellPx);
+      this.threadSprites = createThreadSpriteCache(this.atlasFactory, cellPx);
     }
     return this.threadSprites;
   }

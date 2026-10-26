@@ -1,4 +1,5 @@
 import { assertValidLayeredDocument, isRecord, LayerType, type LayeredDocument } from '../domain';
+import { isSha256Hex } from './asset-input';
 import { MAX_DOCUMENT_BYTES } from './limits';
 import { sha256 } from './hash';
 import { encodeDocument } from './binary';
@@ -78,8 +79,7 @@ export function validatePreparedMessage(value: unknown): asserts value is Persis
     || !(value.bytes instanceof Uint8Array)
     || value.bytes.byteLength === 0
     || value.bytes.byteLength > MAX_DOCUMENT_BYTES
-    || typeof value.checksum !== 'string'
-    || !/^[0-9a-f]{64}$/.test(value.checksum)
+    || !isSha256Hex(value.checksum)
     || !isValidProjectSummary(value.summary, value.token.revision)
   ) throw new PersistenceError('invalid-document', 'Prepared document output is malformed.');
 }

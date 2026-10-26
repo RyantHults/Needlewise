@@ -298,18 +298,14 @@ export interface ExpectedProjectHead {
 }
 
 export interface SaveOptions {
-  /** Legacy spelling for allowing a same-revision save when no mode is supplied. */
+  /** Lets a replace commit overwrite a current snapshot at the same revision instead of reporting it stale. */
   allowSameRevision?: boolean;
   /** Explicitly select whether the document snapshot is replaced or retained. */
   mode?: SaveCommitMode;
-  /** Alias for `mode`, for callers that name the operation a commit. */
-  commit?: SaveCommitMode;
-  /** Alias for `mode` for repository integrations using commitMode terminology. */
-  commitMode?: SaveCommitMode;
   /** Expected current document revision for a retain commit. */
   expectedRevision?: number;
-  /** Expected current head for a retain commit; a number is shorthand for revision. */
-  expectedHead?: number | ExpectedProjectHead;
+  /** Expected current head for a retain commit. */
+  expectedHead?: ExpectedProjectHead;
   /** Replaces the local undo/redo history when supplied. */
   history?: SessionHistoryInput;
   /** Internal exact preparation request identity for a prepared commit. */

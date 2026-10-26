@@ -21,7 +21,7 @@ vi.mock('./assemble', () => ({ assembleChart: mocks.assembleChart }));
 vi.mock('./key', () => ({ readKeyPage: mocks.readKeyPage }));
 vi.mock('./thumbnail', () => ({ renderPageThumbnail: mocks.renderPageThumbnail }));
 
-const { pdfImporter } = await import('./pdf-importer');
+const { openPdfImport } = await import('./pdf-importer');
 
 const grid: PdfGrid = { xs: [], ys: [], columns: 2, rows: 1, pitch: 10, bounds: { x: 0, y: 0, width: 20, height: 10 } };
 
@@ -67,25 +67,18 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe('pdfImporter', () => {
-  it('sniffs the PDF header within the first 1024 bytes', () => {
-    expect(pdfImporter.sniff(new TextEncoder().encode('%PDF-1.7\n'))).toBe(true);
-    expect(pdfImporter.sniff(new TextEncoder().encode(`${' '.repeat(100)}%PDF-1.4`))).toBe(true);
-    expect(pdfImporter.sniff(new TextEncoder().encode('PK\u0003\u0004'))).toBe(false);
-    expect(pdfImporter.accept).toEqual(['.pdf', 'application/pdf']);
-  });
-
+describe('openPdfImport', () => {
   it('maps a password failure to encrypted-pdf and anything else to invalid-pdf', async () => {
     mocks.openPdf.mockRejectedValueOnce(Object.assign(new Error('pw'), { name: 'PasswordException' }));
-    await expect(pdfImporter.open(new Uint8Array())).rejects.toMatchObject({ code: 'encrypted-pdf' });
+    await expect(openPdfImport(new Uint8Array())).rejects.toMatchObject({ code: 'encrypted-pdf' });
     mocks.openPdf.mockRejectedValueOnce(new Error('bad xref'));
-    await expect(pdfImporter.open(new Uint8Array())).rejects.toMatchObject({ code: 'invalid-pdf' });
+    await expect(openPdfImport(new Uint8Array())).rejects.toMatchObject({ code: 'invalid-pdf' });
   });
 
   it('extracts every page with progress, then releases pdf.js', async () => {
     const pdf = setup([keyPage(0), page(1, { marks: [chartMark] })]);
     const onProgress = vi.fn();
-    await pdfImporter.open(new Uint8Array(), { onProgress });
+    await openPdfImport(new Uint8Array(), { onProgress });
     expect(mocks.extractPagePrimitives).toHaveBeenCalledTimes(2);
     expect(onProgress.mock.calls.map(([p]) => p)).toEqual([
       { stage: 'reading', done: 1, total: 2 },
@@ -103,7 +96,7 @@ describe('pdfImporter', () => {
       if (pageNumber === 3) throw new Error('page gone');
       return { pageNumber };
     });
-    const session = await pdfImporter.open(new Uint8Array());
+    const session = await openPdfImport(new Uint8Array());
     const analysis = await session.analyze();
     expect(analysis.pages.map((p) => p.thumbnail)).toEqual([first, second, undefined]);
     expect('thumbnail' in analysis.pages[2]).toBe(false);
@@ -117,7 +110,7 @@ describe('pdfImporter', () => {
       { symbolKey: 'a', brand: 'DMC', code: '310' },
       { symbolKey: 'z', brand: 'DMC', code: '666' }
     ]);
-    const session = await pdfImporter.open(new Uint8Array(), { fileName: 'Rose garden.PDF' });
+    const session = await openPdfImport(new Uint8Array(), { fileName: 'Rose garden.PDF' });
     const analysis = await session.analyze();
 
     expect(analysis.format).toBe('pdf');
@@ -144,18 +137,18 @@ describe('pdfImporter', () => {
       { symbolKey: 'b', brand: 'DMC', code: '310', blendCodes: ['310', '413'] }
     ]);
     mocks.readPdfTitle.mockResolvedValue(' Roses ');
-    const { chart } = await (await pdfImporter.open(new Uint8Array(), { fileName: 'x.pdf' })).analyze();
+    const { chart } = await (await openPdfImport(new Uint8Array(), { fileName: 'x.pdf' })).analyze();
     expect(chart.title).toBe('Roses');
     expect(chart.warnings.map((w) => w.code)).toEqual(['multi-symbol-cell', 'unsupported-brand', 'blend-not-supported']);
 
     setup([keyPage(0), page(1, { marks: [chartMark] })], [{ symbolKey: 'a', brand: 'DMC', code: '9999' }]);
-    const again = await (await pdfImporter.open(new Uint8Array())).analyze();
+    const again = await (await openPdfImport(new Uint8Array())).analyze();
     expect(again.chart.warnings.map((w) => w.code)).toContain('unknown-thread-code');
   });
 
   it('applies role overrides without re-reading the PDF', async () => {
     setup([keyPage(0), page(1, { marks: [chartMark] }), page(2, { marks: [chartMark] })], [{ symbolKey: 'a', code: '310' }]);
-    const session = await pdfImporter.open(new Uint8Array());
+    const session = await openPdfImport(new Uint8Array());
     await session.analyze();
     const analysis = await session.analyze({ pageRoles: { 2: 'other' } });
     expect(mocks.extractPagePrimitives).toHaveBeenCalledTimes(3);
@@ -166,31 +159,31 @@ describe('pdfImporter', () => {
 
   it('reads the key beside the chart when no page is a key page', async () => {
     setup([page(0, { marks: [chartMark] })]);
-    await (await pdfImporter.open(new Uint8Array())).analyze();
+    await (await openPdfImport(new Uint8Array())).analyze();
     expect(mocks.readKeyPage).toHaveBeenLastCalledWith(expect.objectContaining({ pageIndex: 0 }), [grid.bounds]);
   });
 
   it('rejects image-only PDFs as scanned and others without a chart as no-chart-found', async () => {
     setup([page(0, { imageCoverage: 0.9 })]);
-    const scanned = (await pdfImporter.open(new Uint8Array())).analyze();
+    const scanned = (await openPdfImport(new Uint8Array())).analyze();
     await expect(scanned).rejects.toMatchObject({ code: 'unsupported-scanned-pdf' });
 
     setup([keyPage(0)]);
-    await expect((await pdfImporter.open(new Uint8Array())).analyze()).rejects.toMatchObject({ code: 'no-chart-found' });
+    await expect((await openPdfImport(new Uint8Array())).analyze()).rejects.toMatchObject({ code: 'no-chart-found' });
   });
 
   it('honours cancellation', async () => {
     setup([page(0, { marks: [chartMark] })]);
     const controller = new AbortController();
     controller.abort();
-    await expect(pdfImporter.open(new Uint8Array(), { signal: controller.signal })).rejects.toMatchObject({ code: 'cancelled' });
-    const session = await pdfImporter.open(new Uint8Array());
+    await expect(openPdfImport(new Uint8Array(), { signal: controller.signal })).rejects.toMatchObject({ code: 'cancelled' });
+    const session = await openPdfImport(new Uint8Array());
     await expect(session.analyze({}, { signal: controller.signal })).rejects.toMatchObject({ code: 'cancelled' });
   });
 
   it('returns an empty chart, with the key, when overrides leave no chart page', async () => {
     setup([keyPage(0), page(1, { marks: [chartMark] })], [{ symbolKey: 'a', brand: 'DMC', code: '310' }]);
-    const session = await pdfImporter.open(new Uint8Array());
+    const session = await openPdfImport(new Uint8Array());
     const analysis = await session.analyze({ pageRoles: { 1: 'other' } });
     expect(analysis.pages.map((p) => p.role)).toEqual(['key', 'other']);
     expect(analysis.chart).toMatchObject({ width: 0, height: 0, symbols: [] });
@@ -204,12 +197,12 @@ describe('pdfImporter', () => {
     const fill = { bounds: { x: 0, y: 0, width: 10, height: 10 }, color: '#ff0000' } as const;
     setup([page(0, { fills: [fill] })]);
     mocks.detectGrid.mockReturnValue(grid);
-    const colourOnly = (await pdfImporter.open(new Uint8Array())).analyze();
+    const colourOnly = (await openPdfImport(new Uint8Array())).analyze();
     await expect(colourOnly).rejects.toMatchObject({ code: 'no-chart-found', message: expect.stringContaining('without symbols') });
 
     // A chart page whose marks all fall outside cells reads as fills only.
     setup([page(0, { marks: [chartMark] })]);
     mocks.assembleChart.mockReturnValue({ ...assembled, keys: [null, null, null], symbols: new Map() });
-    await expect((await pdfImporter.open(new Uint8Array())).analyze()).rejects.toMatchObject({ code: 'no-chart-found', message: expect.stringContaining('without symbols') });
+    await expect((await openPdfImport(new Uint8Array())).analyze()).rejects.toMatchObject({ code: 'no-chart-found', message: expect.stringContaining('without symbols') });
   });
 });

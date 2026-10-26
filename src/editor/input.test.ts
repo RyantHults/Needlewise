@@ -206,7 +206,6 @@ describe('DOM pointer event adapter', () => {
   });
 
   it('delivers touch pointer sequences through the DOM surface with capture lifecycle intact', () => {
-    const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
     const surface = document.createElement('div');
     const captures: number[] = [];
     const releases: number[] = [];
@@ -265,7 +264,6 @@ describe('DOM pointer event adapter', () => {
     expect(captures).toEqual([11]);
     expect(releases).toEqual([11]);
     expect(upEvent.defaultPrevented).toBe(true);
-    debug.mockRestore();
   });
 
   it('prevents touch compatibility activation without changing mouse or pen pointer-up behavior', () => {

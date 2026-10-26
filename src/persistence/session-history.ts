@@ -1,4 +1,5 @@
 import { createEditorFromHistory, DOCUMENT_EDITOR_HISTORY_VERSION, isRecord, type DocumentEditorHistoryDto, type LayeredDocument } from '../domain';
+import { isSha256Hex } from './asset-input';
 import { sha256 } from './hash';
 import { isValidAssetId, MAX_ASSET_BYTES } from './limits';
 import { validateSourceImageDescriptor } from './source-image';
@@ -20,7 +21,6 @@ import {
   SESSION_HISTORY_ENVELOPE_VERSION
 } from './types';
 
-const HEX_SHA256 = /^[0-9a-f]{64}$/;
 const MAX_HISTORY_OBJECTS = MAX_SESSION_HISTORY_ENTRIES * 32;
 
 type UnknownRecord = Record<string, unknown>;
@@ -106,7 +106,7 @@ function validateTraceAssetShape(value: unknown): void {
   if (!isTypedArray(value.data) || Object.prototype.toString.call(value.data) !== '[object Uint8Array]') throw new Error('trace asset bytes are invalid.');
   if (value.data.byteLength > MAX_ASSET_BYTES) throw new Error('trace asset exceeds its size limit.');
   stringValue(value.checksum, 'trace asset checksum', 64);
-  if (!HEX_SHA256.test(value.checksum)) throw new Error('trace asset checksum is invalid.');
+  if (!isSha256Hex(value.checksum)) throw new Error('trace asset checksum is invalid.');
 }
 
 function validateTraceAssetState(value: unknown): asserts value is TraceHistoryAssetState {

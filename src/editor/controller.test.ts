@@ -6,7 +6,6 @@ import { fixture, LayeredTestBoundary } from './test-support';
 import { getCanvasMetrics } from './coordinates';
 import { EditorSurfaceController, selectedCellSemantics, type EditorSurfaceControllerOptions } from './controller';
 import { createUiStore } from './ui-store';
-import { ThreeQuarterPair } from './cell-kinds';
 import { DEFAULT_CATALOG_DEFINITION, type CatalogDefinition, type CatalogRecord } from '../catalog';
 import type { TraceImage } from './contracts';
 import { CHART_EDGE_MARGIN, HIDDEN_LAYER_PICK_HINT } from './contracts';
@@ -1724,7 +1723,7 @@ describe('EditorSurfaceController', () => {
     add.controller.setBrush({ kind: 'three-quarter', paletteId: 1 });
     add.controller.handlePointerDown(pointer(2, 12, 12));
     expect(add.uiStore.getState().overlay.pendingCellStates).toMatchObject([
-      { kind: ThreeQuarterPair, colors: [1, 0, 1, 0], completed: 0 }
+      { kind: CellKind.ThreeQuarterPair, colors: [1, 0, 1, 0], completed: 0 }
     ]);
     add.controller.handlePointerCancel(pointer(2, 12, 12));
     add.controller.dispose();
@@ -1733,7 +1732,7 @@ describe('EditorSurfaceController', () => {
     addSlash.controller.setBrush({ kind: 'three-quarter', paletteId: 1 });
     addSlash.controller.handlePointerDown(pointer(5, 4, 12));
     expect(addSlash.uiStore.getState().overlay.pendingCellStates).toMatchObject([
-      { kind: ThreeQuarterPair, colors: [0, 1, 0, 1], completed: 0 }
+      { kind: CellKind.ThreeQuarterPair, colors: [0, 1, 0, 1], completed: 0 }
     ]);
     addSlash.controller.handlePointerCancel(pointer(5, 4, 12));
     addSlash.controller.dispose();
@@ -1745,7 +1744,7 @@ describe('EditorSurfaceController', () => {
     adjacent.controller.handlePointerCancel(pointer(3, 12, 4));
     adjacent.controller.dispose();
 
-    const erased = controllerFixture({}, withFirstCell(ThreeQuarterPair, [1, 0, 2, 0], 5));
+    const erased = controllerFixture({}, withFirstCell(CellKind.ThreeQuarterPair, [1, 0, 2, 0], 5));
     erased.controller.setTool({ tool: 'eraser' });
     erased.controller.handlePointerDown(pointer(4, 4, 4));
     expect(erased.uiStore.getState().overlay.pendingCellStates).toMatchObject([
@@ -1763,7 +1762,7 @@ describe('EditorSurfaceController', () => {
         { id: 2, name: 'Blue', color: '#00f' }
       ]
     });
-    selectedDocument.kind[0] = ThreeQuarterPair;
+    selectedDocument.kind[0] = CellKind.ThreeQuarterPair;
     selectedDocument.colors.set([1, 0, 2, 0]);
     selectedDocument.completed[0] = 5;
     expect(selectedCellSemantics(selectedDocument, { x: 0, y: 0 })).toMatchObject({
@@ -1775,9 +1774,9 @@ describe('EditorSurfaceController', () => {
 
   it('eyedrops the clicked triangle color from both paired axes', () => {
     const document = createDocument({ width: 8, height: 8, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Thread', color: '#123456' }, { id: 2, name: 'Blue', color: '#00f' }] });
-    document.kind[0] = ThreeQuarterPair;
+    document.kind[0] = CellKind.ThreeQuarterPair;
     document.colors.set([1, 0, 2, 0], 0);
-    document.kind[1] = ThreeQuarterPair;
+    document.kind[1] = CellKind.ThreeQuarterPair;
     document.colors.set([0, 2, 0, 1], 4);
     const fixture = controllerFixture({}, document);
     fixture.controller.setTool({ tool: 'eyedropper' });
@@ -1797,12 +1796,12 @@ describe('EditorSurfaceController', () => {
 
   it.skipIf(!(() => {
     const probe = createDocument({ width: 1, height: 1, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Thread', color: '#123456' }] });
-    probe.kind[0] = ThreeQuarterPair;
+    probe.kind[0] = CellKind.ThreeQuarterPair;
     probe.colors.set([1, 0, 1, 0]);
     return collectValidationErrors(probe).length === 0;
   })())('commits paired component erase canonically and restores it through undo/redo', () => {
     const document = createDocument({ width: 8, height: 8, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Thread', color: '#123456' }, { id: 2, name: 'Blue', color: '#0000ff' }] });
-    document.kind[0] = ThreeQuarterPair;
+    document.kind[0] = CellKind.ThreeQuarterPair;
     document.colors.set([1, 0, 2, 0], 0);
     document.completed[0] = 5;
     const fixture = controllerFixture({}, document);
@@ -1814,7 +1813,7 @@ describe('EditorSurfaceController', () => {
     expect(Array.from(fixture.gateway.getSnapshot().document!.colors.slice(0, 4))).toEqual([2, 0, 0, 0]);
     expect(fixture.gateway.getSnapshot().document?.completed[0]).toBe(1);
     fixture.controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
-    expect(fixture.gateway.getSnapshot().document?.kind[0]).toBe(ThreeQuarterPair);
+    expect(fixture.gateway.getSnapshot().document?.kind[0]).toBe(CellKind.ThreeQuarterPair);
     expect(Array.from(fixture.gateway.getSnapshot().document!.colors.slice(0, 4))).toEqual([1, 0, 2, 0]);
     expect(fixture.gateway.getSnapshot().document?.completed[0]).toBe(5);
     fixture.controller.handleKeyDown({ key: 'y', ctrlKey: true, preventDefault: () => undefined });
@@ -1848,7 +1847,7 @@ describe('EditorSurfaceController', () => {
       ];
       for (const entry of cases) {
         const fixture = eraserFixture((document) => {
-          document.kind[0] = ThreeQuarterPair;
+          document.kind[0] = CellKind.ThreeQuarterPair;
           document.colors.set(entry.colors, 0);
         });
         tap(fixture, entry.x, entry.y);
@@ -1857,7 +1856,7 @@ describe('EditorSurfaceController', () => {
         expect(Array.from(after.colors.slice(0, 4))).toEqual(entry.colorsAfter);
         fixture.controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
         const undone = fixture.gateway.getSnapshot().document!;
-        expect(undone.kind[0]).toBe(ThreeQuarterPair);
+        expect(undone.kind[0]).toBe(CellKind.ThreeQuarterPair);
         expect(Array.from(undone.colors.slice(0, 4))).toEqual(entry.colors);
         fixture.controller.dispose();
       }
@@ -1878,11 +1877,11 @@ describe('EditorSurfaceController', () => {
 
     it('erases only the side the drag started on and previews the same state', () => {
       const build = (lastKind: CellKind = CellKind.ThreeQuarterNW) => eraserFixture((document) => {
-        document.kind[0] = ThreeQuarterPair;
+        document.kind[0] = CellKind.ThreeQuarterPair;
         document.colors.set([1, 0, 1, 0], 0);
-        document.kind[1] = ThreeQuarterPair;
+        document.kind[1] = CellKind.ThreeQuarterPair;
         document.colors.set([1, 0, 1, 0], 4);
-        document.kind[2] = ThreeQuarterPair;
+        document.kind[2] = CellKind.ThreeQuarterPair;
         document.colors.set([0, 1, 0, 1], 8);
         document.kind[3] = lastKind;
         document.colors[12] = 1;
@@ -1903,12 +1902,12 @@ describe('EditorSurfaceController', () => {
         const after = fixture.gateway.getSnapshot().document!;
         expect(after.kind[0]).toBe(CellKind.ThreeQuarterSE);
         expect(after.kind[1]).toBe(CellKind.ThreeQuarterSE);
-        expect(after.kind[2]).toBe(ThreeQuarterPair);
+        expect(after.kind[2]).toBe(CellKind.ThreeQuarterPair);
         expect(after.kind[3]).toBe(CellKind.Empty);
         fixture.controller.handleKeyDown({ key: 'z', ctrlKey: true, preventDefault: () => undefined });
         const undone = fixture.gateway.getSnapshot().document!;
-        expect(undone.kind[0]).toBe(ThreeQuarterPair);
-        expect(undone.kind[1]).toBe(ThreeQuarterPair);
+        expect(undone.kind[0]).toBe(CellKind.ThreeQuarterPair);
+        expect(undone.kind[1]).toBe(CellKind.ThreeQuarterPair);
         expect(undone.kind[3]).toBe(CellKind.ThreeQuarterNW);
         fixture.controller.dispose();
       }
@@ -1919,7 +1918,7 @@ describe('EditorSurfaceController', () => {
       mixed.controller.handlePointerMove(pointer(1, 52, 14));
       mixed.controller.handlePointerUp(pointer(1, 52, 14));
       const mixedAfter = mixed.gateway.getSnapshot().document!;
-      expect([0, 1, 2, 3].map((index) => mixedAfter.kind[index])).toEqual([CellKind.ThreeQuarterSE, CellKind.ThreeQuarterSE, ThreeQuarterPair, CellKind.Empty]);
+      expect([0, 1, 2, 3].map((index) => mixedAfter.kind[index])).toEqual([CellKind.ThreeQuarterSE, CellKind.ThreeQuarterSE, CellKind.ThreeQuarterPair, CellKind.Empty]);
       mixed.controller.dispose();
     });
   });
@@ -1961,12 +1960,12 @@ describe('EditorSurfaceController', () => {
     const { uiStore, controller } = controllerFixture();
     uiStore.setState({ brushSize: 10 });
     expect(controller.getBrushSize()).toBe(10);
-    expect(() => uiStore.setState({ brushSize: 0 })).toThrow(/integer/);
-    expect(() => uiStore.setState({ brushSize: 11 })).toThrow(/integer/);
-    expect(() => uiStore.setState({ brushSize: 1.5 })).toThrow(/integer/);
-    expect(() => uiStore.setState({ brushSize: Number.NaN })).toThrow(/integer/);
-    expect(() => uiStore.setState({ brushSize: -1 })).toThrow(/integer/);
-    expect(() => controller.setToolBrushSize('full', 0)).toThrow(/integer/);
+    expect(() => uiStore.setState({ brushSize: 0 })).toThrow(RangeError);
+    expect(() => uiStore.setState({ brushSize: 11 })).toThrow(RangeError);
+    expect(() => uiStore.setState({ brushSize: 1.5 })).toThrow(RangeError);
+    expect(() => uiStore.setState({ brushSize: Number.NaN })).toThrow(RangeError);
+    expect(() => uiStore.setState({ brushSize: -1 })).toThrow(RangeError);
+    expect(() => controller.setToolBrushSize('full', 0)).toThrow(RangeError);
     controller.dispose();
   });
 

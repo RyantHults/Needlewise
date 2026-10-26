@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ConversionCancelledError,
   ConversionWorkerTransportError,
@@ -16,11 +16,10 @@ const passthroughCatalog: CatalogSnapshot = {
   ]
 };
 
-function input(requestId = 'request') {
+function input() {
   return {
     projectId: 'project-a',
     baseRevision: 7,
-    requestId,
     targetWidth: 2,
     targetHeight: 1,
     catalog: passthroughCatalog,
@@ -56,12 +55,24 @@ function mislabeledWebpBlob(): Blob {
   return new Blob([bytes.buffer as ArrayBuffer], { type: 'image/jpeg' });
 }
 
+interface StubBitmap { readonly width: number; readonly height: number; close?(): void }
+
+/** Stands in for the browser decoder and canvas the main-thread fallback reads pixels through. */
+function stubBrowserDecode(createImageBitmap: () => Promise<StubBitmap>, pixels: () => ArrayLike<number> = () => new Uint8ClampedArray([1, 2, 3, 255])): void {
+  vi.stubGlobal('createImageBitmap', createImageBitmap);
+  vi.stubGlobal('OffscreenCanvas', class {
+    constructor(readonly width: number, readonly height: number) {}
+    getContext() { return { drawImage: () => undefined, getImageData: () => ({ data: pixels() }) }; }
+  });
+}
+
 describe('image conversion worker client', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
   it('uses the fallback conversion when no worker is available', async () => {
-    const client = createConversionWorkerClient({ workerFactory: () => null, requestIdFactory: () => 'fallback' });
-    const result = await client.request({ ...input(), requestId: undefined });
+    const client = createConversionWorkerClient({ workerFactory: () => null });
+    const result = await client.request(input());
     expect(result.draft.document.width).toBe(2);
-    expect(result.token.requestId).toBe('fallback');
     client.dispose();
   });
 
@@ -112,7 +123,7 @@ describe('image conversion worker client', () => {
   it('applies backgroundSourceId on the fallback path without a worker', async () => {
     const client = createConversionWorkerClient({ useWorker: false });
     const result = await client.request({
-      ...input('background-fallback'),
+      ...input(),
       catalog: passthroughCatalog,
       backgroundSourceId: 'blue'
     });
@@ -143,13 +154,17 @@ describe('image conversion worker client', () => {
     workers[0].emit(await convertConversionRequestAsync(request));
     await expect(first.promise).resolves.toMatchObject({ token: request.token });
 
-    const second = client.submit(input('second'));
+    const second = client.submit(input());
     workers[0].emitTransport('error', { message: 'worker crashed' });
     await expect(second.promise).rejects.toBeInstanceOf(ConversionWorkerTransportError);
     expect(workers[0].terminated.count).toBe(1);
 
-    const third = client.submit(input('third'));
-    expect(workers).toHaveLength(2);
+    const unreadable = client.submit(input());
+    workers[1].emitTransport('messageerror', {});
+    await expect(unreadable.promise).rejects.toBeInstanceOf(ConversionWorkerTransportError);
+
+    const third = client.submit(input());
+    expect(workers).toHaveLength(3);
     third.cancel();
     await expect(third.promise).rejects.toBeInstanceOf(ConversionCancelledError);
     client.dispose();
@@ -175,7 +190,7 @@ describe('image conversion worker client', () => {
   it('ignores responses without a full token', async () => {
     const worker = new FakeWorker();
     const client = createConversionWorkerClient({ workerFactory: () => worker });
-    const job = client.submit(input('shared-request'));
+    const job = client.submit(input());
     const request = worker.posted[0] as ConversionRasterRequestMessage;
     worker.emit({ protocol: request.protocol, type: 'conversion-error', code: 'missing-token', message: 'ignored' });
     worker.emit(await convertConversionRequestAsync(request));
@@ -186,11 +201,9 @@ describe('image conversion worker client', () => {
   it('sends image blobs to a worker without decoding them on the main thread', async () => {
     const worker = new FakeWorker();
     let mainThreadDecodeCalls = 0;
-    const client = createConversionWorkerClient({
-      workerFactory: () => worker,
-      rasterOptions: { createImageBitmap: async () => { mainThreadDecodeCalls += 1; return { width: 1, height: 1 }; } }
-    });
-    const job = client.submitImage(imageBlob(), { ...input(), requestId: 'image-worker' });
+    stubBrowserDecode(async () => { mainThreadDecodeCalls += 1; return { width: 1, height: 1 }; });
+    const client = createConversionWorkerClient({ workerFactory: () => worker });
+    const job = client.submitImage(imageBlob(), { ...input() });
     expect((worker.posted[0] as { inputType?: string }).inputType).toBe('image');
     expect(mainThreadDecodeCalls).toBe(0);
     job.cancel();
@@ -201,14 +214,9 @@ describe('image conversion worker client', () => {
   it('falls back to bounded main-thread rasterization when the worker lacks image decoding', async () => {
     const worker = new FakeWorker();
     let decodeCalls = 0;
-    const client = createConversionWorkerClient({
-      workerFactory: () => worker,
-      rasterOptions: {
-        createImageBitmap: async () => { decodeCalls += 1; return { width: 1, height: 1 }; },
-        surfaceFactory: () => ({ context: { drawImage: () => undefined, getImageData: () => ({ data: new Uint8ClampedArray([1, 2, 3, 255]) }) } })
-      }
-    });
-    const job = client.submitImage(imageBlob(), { ...input(), targetWidth: 1, targetHeight: 1, requestId: 'worker-decode-fallback' });
+    stubBrowserDecode(async () => { decodeCalls += 1; return { width: 1, height: 1 }; });
+    const client = createConversionWorkerClient({ workerFactory: () => worker });
+    const job = client.submitImage(imageBlob(), { ...input(), targetWidth: 1, targetHeight: 1 });
     const request = worker.posted[0] as ConversionRequestMessage;
     worker.emit({ protocol: request.protocol, type: 'conversion-error', token: request.token, code: 'unavailable', message: 'no OffscreenCanvas' });
     await expect(job.promise).resolves.toMatchObject({ token: request.token });
@@ -217,14 +225,9 @@ describe('image conversion worker client', () => {
   });
 
   it('converts WebP content when the browser declares the blob as JPEG', async () => {
-    const client = createConversionWorkerClient({
-      useWorker: false,
-      rasterOptions: {
-        createImageBitmap: async () => ({ width: 1_057, height: 1_600 }),
-        surfaceFactory: () => ({ context: { drawImage: () => undefined, getImageData: () => ({ data: new Uint8ClampedArray(16) }) } })
-      }
-    });
-    const result = await client.requestImage(mislabeledWebpBlob(), { ...input(), targetWidth: 2, targetHeight: 2, requestId: 'mislabeled-webp' });
+    stubBrowserDecode(async () => ({ width: 1_057, height: 1_600 }), () => new Uint8ClampedArray(16));
+    const client = createConversionWorkerClient({ useWorker: false });
+    const result = await client.requestImage(mislabeledWebpBlob(), { ...input(), targetWidth: 2, targetHeight: 2 });
     expect(result.draft.stats.sourceWidth).toBe(1_057);
     expect(result.draft.stats.sourceHeight).toBe(1_600);
     expect(result.draft.document.width).toBe(2);
@@ -234,11 +237,9 @@ describe('image conversion worker client', () => {
 
   it('cancels a fallback image before decode starts', async () => {
     let decodeCalls = 0;
-    const client = createConversionWorkerClient({
-      useWorker: false,
-      rasterOptions: { createImageBitmap: async () => { decodeCalls += 1; return { width: 1, height: 1 }; } }
-    });
-    const job = client.submitImage(imageBlob(), { ...input(), requestId: 'cancel-before-decode' });
+    stubBrowserDecode(async () => { decodeCalls += 1; return { width: 1, height: 1 }; });
+    const client = createConversionWorkerClient({ useWorker: false });
+    const job = client.submitImage(imageBlob(), { ...input() });
     job.cancel();
     await expect(job.promise).rejects.toBeInstanceOf(ConversionCancelledError);
     expect(decodeCalls).toBe(0);
@@ -248,14 +249,9 @@ describe('image conversion worker client', () => {
   it('cancels a fallback image while decode is pending and releases the bitmap', async () => {
     let resolveBitmap!: (bitmap: { width: number; height: number; close: () => void }) => void;
     let closed = 0;
-    const client = createConversionWorkerClient({
-      useWorker: false,
-      rasterOptions: {
-        createImageBitmap: async () => new Promise((resolve) => { resolveBitmap = (bitmap) => resolve(bitmap); }),
-        surfaceFactory: () => ({ context: { drawImage: () => undefined, getImageData: () => ({ data: new Uint8ClampedArray([1, 2, 3, 255]) }) } })
-      }
-    });
-    const job = client.submitImage(imageBlob(), { ...input(), requestId: 'cancel-during-decode' });
+    stubBrowserDecode(async () => new Promise((resolve) => { resolveBitmap = (bitmap) => resolve(bitmap); }));
+    const client = createConversionWorkerClient({ useWorker: false });
+    const job = client.submitImage(imageBlob(), { ...input() });
     await new Promise((resolve) => setTimeout(resolve, 0));
     job.cancel();
     resolveBitmap({ width: 1, height: 1, close: () => { closed += 1; } });
@@ -266,12 +262,9 @@ describe('image conversion worker client', () => {
 
   it('keeps worker and fallback conversion results equivalent', async () => {
     const pixels = new Uint8ClampedArray([10, 20, 30, 255]);
-    const surfaceFactory = () => ({ context: { drawImage: () => undefined, getImageData: () => ({ data: pixels }) } });
-    const client = createConversionWorkerClient({ useWorker: false, rasterOptions: {
-      createImageBitmap: async () => ({ width: 1, height: 1 }),
-      surfaceFactory
-    } });
-    const result = await client.requestImage(imageBlob(), { ...input(), targetWidth: 1, targetHeight: 1, requestId: 'fallback-parity' });
+    stubBrowserDecode(async () => ({ width: 1, height: 1 }), () => pixels);
+    const client = createConversionWorkerClient({ useWorker: false });
+    const result = await client.requestImage(imageBlob(), { ...input(), targetWidth: 1, targetHeight: 1 });
     const expected = await convertRasterToPatternAsync({ width: 1, height: 1, pixels }, { targetWidth: 1, targetHeight: 1, catalog: passthroughCatalog, token: result.token });
     expect(result.draft.document.kind).toEqual(expected.document.kind);
     expect(result.draft.document.colors).toEqual(expected.document.colors);
@@ -282,12 +275,10 @@ describe('image conversion worker client', () => {
   it('applies confettiDistance on the fallback image path', async () => {
     const red = [255, 0, 0, 255];
     const pixels = new Uint8ClampedArray([...red, ...red, ...red, ...red, 0, 0, 255, 255, ...red, ...red, ...red, ...red]);
-    const client = createConversionWorkerClient({ useWorker: false, rasterOptions: {
-      createImageBitmap: async () => ({ width: 3, height: 3 }),
-      surfaceFactory: () => ({ context: { drawImage: () => undefined, getImageData: () => ({ data: pixels }) } })
-    } });
+    stubBrowserDecode(async () => ({ width: 3, height: 3 }), () => pixels);
+    const client = createConversionWorkerClient({ useWorker: false });
     const image = new Blob([pngBytes(3, 3).buffer as ArrayBuffer], { type: 'image/png' });
-    const result = await client.requestImage(image, { ...input(), targetWidth: 3, targetHeight: 3, confettiDistance: 1, requestId: 'fallback-confetti' });
+    const result = await client.requestImage(image, { ...input(), targetWidth: 3, targetHeight: 3, confettiDistance: 1 });
     expect(result.draft.stats.paletteUsage).toEqual([{ paletteId: 1, catalogId: 'red', count: 9 }]);
     expect(result.draft.document.colors[4 * 4]).toBe(1);
     client.dispose();
@@ -296,21 +287,19 @@ describe('image conversion worker client', () => {
   it('serializes fallback rasterization and conversion to one active main-thread job', async () => {
     let active = 0;
     let maximumActive = 0;
-    const create = () => createConversionWorkerClient({ useWorker: false, rasterOptions: {
-      createImageBitmap: async () => ({ width: 1, height: 1 }),
-      surfaceFactory: () => {
-        // The factory itself is the expensive target allocation boundary.
-        // Queueing must keep this count at one.
-        active += 1;
-        maximumActive = Math.max(maximumActive, active);
-        return {
-          context: { drawImage: () => undefined, getImageData: () => ({ data: new Uint8ClampedArray(8).fill(255) }) },
-          dispose: () => { active -= 1; }
-        };
-      }
-    } });
-    const jobs = Array.from({ length: 4 }, (_, index) => {
-      const job = create().submitImage(imageBlob(), { ...input(`serialized-${index}`) });
+    // A job is active from its decode until its pixels are read back.
+    // Queueing must keep this count at one.
+    stubBrowserDecode(async () => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      return { width: 1, height: 1 };
+    }, () => {
+      active -= 1;
+      return new Uint8ClampedArray(8).fill(255);
+    });
+    const create = () => createConversionWorkerClient({ useWorker: false });
+    const jobs = Array.from({ length: 4 }, () => {
+      const job = create().submitImage(imageBlob(), { ...input() });
       return job.promise;
     });
     await Promise.all(jobs);
@@ -320,12 +309,12 @@ describe('image conversion worker client', () => {
   it('tears down pending work and ignores late messages after disposal', async () => {
     const worker = new FakeWorker();
     const client = createConversionWorkerClient({ workerFactory: () => worker });
-    const job = client.submit(input('dispose-pending'));
+    const job = client.submit(input());
     client.dispose();
     await expect(job.promise).rejects.toBeInstanceOf(ConversionCancelledError);
     expect(worker.terminated.count).toBe(1);
     worker.emit(await convertConversionRequestAsync(worker.posted[0] as ConversionRequestMessage));
-    expect(() => client.submit(input('after-dispose'))).toThrow();
+    expect(() => client.submit(input())).toThrow();
   });
 
   it('cancels during a long fallback mapping loop without accepting a late result', async () => {
@@ -341,7 +330,7 @@ describe('image conversion worker client', () => {
     }
     const controller = new AbortController();
     const client = createConversionWorkerClient({ useWorker: false });
-    const job = client.submit({ ...input('long-fallback'), targetWidth: width, targetHeight: height, raster: { width, height, pixels } }, { signal: controller.signal });
+    const job = client.submit({ ...input(), targetWidth: width, targetHeight: height, raster: { width, height, pixels } }, { signal: controller.signal });
     await new Promise((resolve) => setTimeout(resolve, 0));
     controller.abort();
     await expect(job.promise).rejects.toBeInstanceOf(ConversionCancelledError);
@@ -352,17 +341,15 @@ describe('image conversion worker client', () => {
   it('removes cancelled queued fallback jobs so the bounded queue can accept replacement work', async () => {
     let resolveBitmap!: (bitmap: { width: number; height: number; close: () => void }) => void;
     const bitmapGate = new Promise<{ width: number; height: number; close: () => void }>((resolve) => { resolveBitmap = resolve; });
-    const create = () => createConversionWorkerClient({ useWorker: false, rasterOptions: {
-      createImageBitmap: async () => bitmapGate,
-      surfaceFactory: () => ({ context: { drawImage: () => undefined, getImageData: () => ({ data: new Uint8ClampedArray([1, 2, 3, 255]) }) } })
-    } });
+    stubBrowserDecode(async () => bitmapGate);
+    const create = () => createConversionWorkerClient({ useWorker: false });
     const source = imageBlob();
-    const first = create().submitImage(source, { ...input(), targetWidth: 1, targetHeight: 1, requestId: 'queue-active' });
+    const first = create().submitImage(source, { ...input(), targetWidth: 1, targetHeight: 1 });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const queued = Array.from({ length: 32 }, (_, index) => create().submitImage(source, { ...input(), targetWidth: 1, targetHeight: 1, requestId: `queue-${index}` }));
-    const busy = create().submitImage(source, { ...input(), targetWidth: 1, targetHeight: 1, requestId: 'queue-busy' });
+    const queued = Array.from({ length: 32 }, () => create().submitImage(source, { ...input(), targetWidth: 1, targetHeight: 1 }));
+    const busy = create().submitImage(source, { ...input(), targetWidth: 1, targetHeight: 1 });
     for (const job of queued) job.cancel();
-    const replacement = create().submitImage(source, { ...input(), targetWidth: 1, targetHeight: 1, requestId: 'queue-replacement' });
+    const replacement = create().submitImage(source, { ...input(), targetWidth: 1, targetHeight: 1 });
     await Promise.all(queued.map((job) => expect(job.promise).rejects.toBeInstanceOf(ConversionCancelledError)));
     await expect(busy.promise).rejects.toMatchObject({ code: 'main-thread-busy' });
     resolveBitmap({ width: 1, height: 1, close: () => undefined });

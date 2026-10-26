@@ -653,7 +653,7 @@ describe('durable document history persistence', () => {
       const head = await repo.db.projectHeads.get('history-save-path');
       await expect(repo.save('history-save-path', metadata(document, 'history-save-path'), { revision: document.revision } as LayeredDocument, undefined, { mode: 'retain', expectedHead: head, history })).resolves.toMatchObject({ committed: true });
       const next = executeLayered(editor, cell(editor.document, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 0, y: 0, color: 1 }));
-      const prepared = await preparation.prepare({ projectId: 'history-save-path', revision: next.revision, document: next, requestId: 'history-save-path' });
+      const prepared = await preparation.prepare({ projectId: 'history-save-path', revision: next.revision, document: next });
       await expect(repo.savePrepared('history-save-path', metadata(next, 'history-save-path'), prepared, undefined, { preparedRequestId: preparation.getRequestId(prepared), history: editor.exportHistory() })).resolves.toMatchObject({ committed: true });
 
       const loaded = await repo.load('history-save-path');
@@ -933,8 +933,8 @@ describe('durable document history persistence', () => {
       await expect(repo.save('history-invalid-input', metadata(document, 'history-invalid-input'), { revision: document.revision } as LayeredDocument, undefined, { mode: 'retain', expectedRevision: document.revision, history: oversized as never })).resolves.toMatchObject({ committed: true, stale: false });
       expect(await repo.db.documentHistories.get('history-invalid-input')).toBeUndefined();
 
-      const prepared = await preparation.prepare({ projectId: 'history-prepared-invalid', revision: document.revision, document, requestId: 'history-prepared-invalid' });
-      await expect(repo.savePrepared('history-prepared-invalid', metadata(document, 'history-prepared-invalid'), prepared, undefined, { preparedRequestId: 'history-prepared-invalid', history: { version: 99, undo: [], redo: [] } as never })).resolves.toMatchObject({ committed: true, stale: false });
+      const prepared = await preparation.prepare({ projectId: 'history-prepared-invalid', revision: document.revision, document });
+      await expect(repo.savePrepared('history-prepared-invalid', metadata(document, 'history-prepared-invalid'), prepared, undefined, { preparedRequestId: preparation.getRequestId(prepared), history: { version: 99, undo: [], redo: [] } as never })).resolves.toMatchObject({ committed: true, stale: false });
       expect(await repo.db.documentHistories.get('history-prepared-invalid')).toBeUndefined();
     } finally {
       preparation.dispose();
@@ -1485,6 +1485,26 @@ describe('binary document persistence', () => {
     }
   });
 
+  it('lists and opens a project whose stored optional field is malformed, with a warning, and drops unknown fields', async () => {
+    const document = createDocument({ width: 2, height: 3, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    const repo = await repository();
+    try {
+      await repo.save('bad-units', metadata(document, 'bad-units'), document);
+      const stored = await repo.db.projects.get('bad-units');
+      await repo.db.projects.put({ ...stored!, units: 'furlongs', leftover: true } as unknown as ProjectMetadata);
+      expect((await repo.listProjects()).map((project) => project.id)).toContain('bad-units');
+      const loaded = await repo.load('bad-units');
+      expect(loaded?.metadata.units).toBeUndefined();
+      expect(loaded?.metadata).not.toHaveProperty('leftover');
+      expect(loaded?.health?.warnings.length).toBeGreaterThan(0);
+      await repo.save('bad-units', loaded!.metadata, document, undefined, { mode: 'retain', expectedHead: loaded!.head });
+      expect(await repo.db.projects.get('bad-units')).not.toHaveProperty('units');
+      expect(await repo.db.projects.get('bad-units')).not.toHaveProperty('leftover');
+    } finally {
+      await closeRepository(repo);
+    }
+  });
+
   it('accepts and round-trips unbounded negative and overflowing source image chart bounds', async () => {
     const document = createDocument({ width: 4, height: 3, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     const sourceImage = {
@@ -1873,7 +1893,7 @@ describe('local project repository', () => {
       const rawPrepared = await prepareDocumentSnapshot(cloneLayeredDocument(revision1), { projectId: 'prepared', revision: revision1.revision, requestId: 'raw-prepared' });
       const preparedSummary = deriveProjectSummary(revision1);
       const validRevision1 = cloneLayeredDocument(revision1);
-      const prepared = await preparation.prepare({ projectId: 'prepared', revision: revision1.revision, document: revision1, requestId: 'prepared-1' });
+      const prepared = await preparation.prepare({ projectId: 'prepared', revision: revision1.revision, document: revision1 });
       // The preparation client must retain its summary from the owned clone,
       // not from a document the caller continues to mutate.
       stitchLayer(revision1).colors.fill(0);
@@ -1894,13 +1914,13 @@ describe('local project repository', () => {
       await expect(repo.savePrepared('prepared', metadata(revision1, 'prepared'), rawPrepared as unknown as PreparedDocumentCapability, undefined, { preparedRequestId: 'raw-prepared' })).rejects.toMatchObject({ code: 'invalid-document' });
       await expect(repo.savePrepared('prepared', metadata(revision1, 'prepared'), Object.freeze({}) as PreparedDocumentCapability, undefined, { preparedRequestId: preparedRequestId })).rejects.toMatchObject({ code: 'invalid-document' });
 
-      const wrongProject = await preparation.prepare({ projectId: 'other-project', revision: revision1.revision, document: validRevision1, requestId: 'wrong-project' });
-      await expect(repo.savePrepared('prepared', metadata(revision1, 'prepared'), wrongProject, undefined, { preparedRequestId: 'wrong-project' })).rejects.toMatchObject({ code: 'invalid-document' });
+      const wrongProject = await preparation.prepare({ projectId: 'other-project', revision: revision1.revision, document: validRevision1 });
+      await expect(repo.savePrepared('prepared', metadata(revision1, 'prepared'), wrongProject, undefined, { preparedRequestId: preparation.getRequestId(wrongProject) })).rejects.toMatchObject({ code: 'invalid-document' });
 
-      const wrongRevision = await preparation.prepare({ projectId: 'prepared', revision: revision0.revision, document: revision0, requestId: 'wrong-revision' });
-      await expect(repo.savePrepared('prepared', metadata(revision1, 'prepared'), wrongRevision, undefined, { preparedRequestId: 'wrong-revision' })).rejects.toMatchObject({ code: 'invalid-document' });
+      const wrongRevision = await preparation.prepare({ projectId: 'prepared', revision: revision0.revision, document: revision0 });
+      await expect(repo.savePrepared('prepared', metadata(revision1, 'prepared'), wrongRevision, undefined, { preparedRequestId: preparation.getRequestId(wrongRevision) })).rejects.toMatchObject({ code: 'invalid-document' });
 
-      const otherRequest = await preparation.prepare({ projectId: 'prepared', revision: revision1.revision, document: validRevision1, requestId: 'other-request' });
+      const otherRequest = await preparation.prepare({ projectId: 'prepared', revision: revision1.revision, document: validRevision1 });
       await expect(repo.savePrepared('prepared', metadata(revision1, 'prepared'), otherRequest, undefined, { preparedRequestId: preparedRequestId })).rejects.toMatchObject({ code: 'invalid-document' });
       await expect(repo.savePrepared('prepared', metadata(revision1, 'prepared'), prepared, undefined, { preparedRequestId })).rejects.toMatchObject({ code: 'invalid-document' });
       expect(await repo.db.currentSnapshots.get('prepared')).toEqual(before);
@@ -1923,7 +1943,7 @@ describe('local project repository', () => {
       const head = await repo.db.projectHeads.get('stale-cache');
       if (!current || !head) throw new Error('missing stale-cache state');
       await repo.db.projectHeads.put({ ...head, checksum: 'f'.repeat(64) });
-      const prepared = await preparation.prepare({ projectId: 'stale-cache', revision: revision1.revision, document: revision1, requestId: 'stale-head-revision' });
+      const prepared = await preparation.prepare({ projectId: 'stale-cache', revision: revision1.revision, document: revision1 });
 
       await repo.savePrepared('stale-cache', metadata(revision1, 'stale-cache'), prepared, undefined, { preparedRequestId: preparation.getRequestId(prepared) });
 
@@ -1946,7 +1966,7 @@ describe('local project repository', () => {
       const corrupted = { ...verified, bytes: verified.bytes.slice() };
       corrupted.bytes[0] ^= 0xff;
       await repo.db.currentSnapshots.put(corrupted);
-      const prepared = await preparation.prepare({ projectId: 'corrupt-warm', revision: revision1.revision, document: revision1, requestId: 'corrupt-warm-revision' });
+      const prepared = await preparation.prepare({ projectId: 'corrupt-warm', revision: revision1.revision, document: revision1 });
 
       await repo.savePrepared('corrupt-warm', metadata(revision1, 'corrupt-warm'), prepared, undefined, { preparedRequestId: preparation.getRequestId(prepared) });
 
@@ -1973,7 +1993,7 @@ describe('local project repository', () => {
       if (!current) throw new Error('missing corrupt-cold snapshot');
       current.bytes[0] ^= 0xff;
       await db.currentSnapshots.put(current);
-      const prepared = await preparation.prepare({ projectId: 'corrupt-cold', revision: revision1.revision, document: revision1, requestId: 'corrupt-cold-revision' });
+      const prepared = await preparation.prepare({ projectId: 'corrupt-cold', revision: revision1.revision, document: revision1 });
 
       await repo.savePrepared('corrupt-cold', metadata(revision1, 'corrupt-cold'), prepared, undefined, { preparedRequestId: preparation.getRequestId(prepared) });
 
@@ -1992,7 +2012,7 @@ describe('local project repository', () => {
       const revision0 = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
       const revision1 = applyCommand(revision0, cell(revision0, { type: 'set-full', x: 1, y: 1, color: 1 })).document;
       await repo.save('failed-cache', metadata(revision0, 'failed-cache'), revision0);
-      const prepared = await preparation.prepare({ projectId: 'failed-cache', revision: revision1.revision, document: revision1, requestId: 'failed-cache-revision' });
+      const prepared = await preparation.prepare({ projectId: 'failed-cache', revision: revision1.revision, document: revision1 });
       const currentPut = vi.spyOn(repo.db.currentSnapshots, 'put').mockRejectedValueOnce(new Error('forced transaction failure'));
 
       await expect(repo.savePrepared('failed-cache', metadata(revision1, 'failed-cache'), prepared, undefined, { preparedRequestId: preparation.getRequestId(prepared) })).rejects.toMatchObject({ code: 'storage-failure' });

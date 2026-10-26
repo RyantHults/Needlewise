@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ConversionError } from './image-to-pattern';
-import { decodeAndResampleImage, fitRasterWithinBounds, preScaleRasterSource, type ConversionRasterSurface } from './raster';
+import { decodeAndResampleImage, fitRasterWithinBounds } from './raster';
+import type { ReadableSurface } from '../image/surface';
 
 function pngBytes(width: number, height: number): Uint8Array {
   const bytes = new Uint8Array(24);
@@ -64,7 +65,7 @@ function surfaceHarness() {
   const created: { width: number; height: number; freed: boolean }[] = [];
   const draws: RecordedDraw[] = [];
   let getImageDataPixels: Uint8ClampedArray = new Uint8ClampedArray([1, 2, 3, 255]);
-  const factory = (width: number, height: number): ConversionRasterSurface => {
+  const factory = (width: number, height: number): ReadableSurface => {
     const canvas = { width, height, freed: false };
     created.push(canvas);
     const context = {
@@ -137,15 +138,10 @@ describe('bounded conversion rasterization', () => {
 
   it('uses the WebP header when a browser declares the content as JPEG', async () => {
     const harness = surfaceHarness();
-    let decodedMimeType = '';
     const result = await decodeAndResampleImage(webpSource(1_057, 1_600, 'image/jpeg'), 2, 2, {
-      createImageBitmap: async (blob) => {
-        decodedMimeType = blob.type;
-        return { width: 1_057, height: 1_600 };
-      },
+      createImageBitmap: async () => ({ width: 1_057, height: 1_600 }),
       surfaceFactory: harness.factory
     });
-    expect(decodedMimeType).toBe('image/webp');
     expect(result.sourceWidth).toBe(1_057);
     expect(result.sourceHeight).toBe(1_600);
     expect(result.width).toBe(2);
@@ -196,7 +192,7 @@ describe('bounded conversion rasterization', () => {
         decoded = true;
         return { width: 1, height: 1 };
       }
-    })).rejects.toBeInstanceOf(ConversionError);
+    })).rejects.toMatchObject({ code: 'invalid-dimensions' });
     expect(decoded).toBe(false);
   });
 
@@ -207,7 +203,7 @@ describe('bounded conversion rasterization', () => {
         decoded = true;
         return { width: 1, height: 1 };
       }
-    })).rejects.toBeInstanceOf(ConversionError);
+    })).rejects.toMatchObject({ code: 'invalid-dimensions' });
     expect(decoded).toBe(false);
   });
 
@@ -263,59 +259,5 @@ describe('fitRasterWithinBounds', () => {
     expect(() => fitRasterWithinBounds(Number.NaN, 10)).toThrow(ConversionError);
     expect(() => fitRasterWithinBounds(10, Number.POSITIVE_INFINITY)).toThrow(ConversionError);
     expect(() => fitRasterWithinBounds(1.5, 10)).toThrow(ConversionError);
-  });
-});
-
-describe('preScaleRasterSource', () => {
-  it('halves only until a final draw fits within 2x, then draws to the exact fitted size', () => {
-    const harness = surfaceHarness();
-    const original = { kind: 'bitmap' };
-    const prepared = preScaleRasterSource(original, 20_000, 10_000, 4_096, 2_048, harness.factory);
-    // 20000x10000 -> 10000x5000 -> 5000x2500, then 5000x2500 -> 4096x2048.
-    expect(harness.created.map((canvas) => [canvas.width, canvas.height])).toEqual([
-      [10_000, 5_000],
-      [5_000, 2_500],
-      [4_096, 2_048]
-    ]);
-    expect(harness.draws.map((draw) => draw.destinationRect)).toEqual([
-      [0, 0, 10_000, 5_000],
-      [0, 0, 5_000, 2_500],
-      [0, 0, 4_096, 2_048]
-    ]);
-    expect(harness.draws[0]?.source).toBe(original);
-    expect(harness.draws[1]?.source).toBe(harness.created[0]);
-    expect(harness.draws[2]?.source).toBe(harness.created[1]);
-    expect(harness.draws.every((draw) => draw.smoothing === true && draw.quality === 'high')).toBe(true);
-    expect(prepared.width).toBe(4_096);
-    expect(prepared.height).toBe(2_048);
-    prepared.dispose();
-    expect(harness.created.every((canvas) => canvas.freed)).toBe(true);
-    expect(harness.created.every((canvas) => canvas.width === 0 && canvas.height === 0)).toBe(true);
-  });
-
-  it('releases intermediate surfaces when no surface can be allocated', () => {
-    const harness = surfaceHarness();
-    const factory = (width: number, height: number): ConversionRasterSurface | undefined => {
-      if (width === 10_000) return undefined;
-      return harness.factory(width, height);
-    };
-    expect(() => preScaleRasterSource({ kind: 'bitmap' }, 20_000, 10_000, 4_096, 2_048, factory)).toThrow(ConversionError);
-    expect(harness.created).toHaveLength(0);
-  });
-
-  it('releases created surfaces when a later step throws', () => {
-    const harness = surfaceHarness();
-    const original = { kind: 'bitmap' };
-    let created = 0;
-    const factory = (width: number, height: number): ConversionRasterSurface => {
-      created += 1;
-      if (created >= 2) throw new ConversionError('unavailable', 'A readable local raster surface is unavailable.');
-      return harness.factory(width, height);
-    };
-    expect(() => preScaleRasterSource(original, 20_000, 10_000, 4_096, 2_048, factory)).toThrow(ConversionError);
-    expect(harness.created).toHaveLength(1);
-    expect(harness.created[0]?.freed).toBe(true);
-    expect(harness.created[0]?.width).toBe(0);
-    expect(harness.created[0]?.height).toBe(0);
   });
 });

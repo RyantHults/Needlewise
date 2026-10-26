@@ -21,6 +21,7 @@ import {
   type PatternSettings,
   type PatternDocument
 } from '../domain';
+import { ByteReader } from './byte-cursor';
 import { PersistenceError } from './errors';
 import {
   isBoundedMetadataString,
@@ -407,6 +408,84 @@ function readBackstitches(view: DataView, offset: number, count: number, recordB
   return store;
 }
 
+function decodePalette(reader: ByteReader, paletteCount: number): PaletteEntry[] {
+  const palette: PaletteEntry[] = [];
+  for (let index = 0; index < paletteCount; index += 1) {
+    reader.require(7, 'Document ended while reading the palette.');
+    const id = reader.u16();
+    if (id === PALETTE_ID_RESERVED) fail('Palette uses a reserved ID.');
+    const activeValue = reader.u8();
+    if (activeValue > 1) fail('Palette active flag is invalid.');
+    const name = reader.string('Palette name');
+    const color = reader.string('Palette color');
+    const symbol = reader.string('Palette symbol');
+    const materialKind = reader.string('Palette material kind');
+    const materialLabel = reader.string('Palette material label');
+    const materialUnit = reader.string('Palette material unit');
+    reader.require(1, 'Document ended while reading palette material amount flag.');
+    const hasAmount = reader.u8();
+    if (hasAmount > 1) fail('Palette material amount flag is invalid.');
+    let amount: number | undefined;
+    if (hasAmount === 1) {
+      reader.require(8, 'Document ended while reading palette material amount.');
+      amount = reader.f64();
+    }
+    reader.require(1, 'Document ended while reading palette catalog flag.');
+    const hasCatalog = reader.u8();
+    if (hasCatalog > 1) fail('Palette catalog flag is invalid.');
+    let catalog: PaletteCatalogReference | undefined;
+    if (hasCatalog === 1) {
+      const catalogId = reader.string('Palette catalog ID');
+      const sourceId = reader.string('Palette catalog source ID');
+      const code = reader.string('Palette catalog code');
+      const catalogName = reader.string('Palette catalog name');
+      const hex = reader.string('Palette catalog HEX');
+      reader.require(3, 'Document ended while reading palette catalog RGB.');
+      catalog = { catalogId, sourceId, code, name: catalogName, hex, rgb: [reader.u8(), reader.u8(), reader.u8()] };
+    }
+    palette.push({
+      id,
+      name,
+      color,
+      active: activeValue === 1,
+      symbol,
+      material: { kind: materialKind as PaletteMaterial['kind'], label: materialLabel, unit: materialUnit as PaletteMaterial['unit'], ...(amount === undefined ? {} : { amount }) },
+      ...(catalog === undefined ? {} : { catalog })
+    });
+  }
+  return palette;
+}
+
+function decodeCatalog(reader: ByteReader): LayeredDocument['catalog'] {
+  const catalogId = reader.string('Document catalog ID');
+  const brandLabel = reader.string('Document catalog brand label');
+  reader.require(4, 'Document ended while reading catalog color count.');
+  return { catalogId, brandLabel, colorCount: reader.u32() };
+}
+
+function decodeColorPlane(reader: ByteReader, cellCount: number): Uint16Array {
+  const colorsBytes = reader.take(cellCount * 4 * 2, 'cell colors');
+  const decodedColors = new Uint16Array(cellCount * 4);
+  const colorView = new DataView(colorsBytes.buffer, colorsBytes.byteOffset, colorsBytes.byteLength);
+  for (let index = 0; index < decodedColors.length; index += 1) decodedColors[index] = colorView.getUint16(index * 2, true);
+  return decodedColors;
+}
+
+function decodeBackstitches(reader: ByteReader, count: number, recordBytes: number): BackstitchStore {
+  const store = allocateBackstitches(count);
+  const { ids, x1, y1, x2, y2, colors, completed } = store;
+  for (let index = 0; index < count; index += 1) {
+    ids[index] = reader.u32();
+    x1[index] = reader.u32();
+    y1[index] = reader.u32();
+    x2[index] = reader.u32();
+    y2[index] = reader.u32();
+    colors[index] = reader.u16();
+    if (recordBytes === BACKSTITCH_BYTES) completed[index] = reader.u8();
+  }
+  return store;
+}
+
 interface DecodedHeader {
   binaryVersion: number;
   hasMask: boolean;
@@ -523,39 +602,32 @@ function decodeLegacyDocument(bytes: Uint8Array, view: DataView, header: Decoded
   return layeredFromSurface(surface);
 }
 
-function decodeLayeredDocument(bytes: Uint8Array, view: DataView, header: DecodedHeader): LayeredDocument {
+function decodeLayeredDocument(bytes: Uint8Array, header: DecodedHeader): LayeredDocument {
   const { binaryVersion, hasMask, width, height, cellCount, revision, nextBackstitchId, nextPaletteId, paletteCount } = header;
   const layerCount = header.tableCount;
   if (layerCount > MAX_LAYERS) fail('Layer count exceeds the size limit.');
   const minimumPayload = 12n + BigInt(paletteCount) * 29n + 12n + 8n + 4n + (binaryVersion >= CANVAS_SCHEMA_VERSION ? 8n : 0n) + BigInt(layerCount) * 10n;
   if (minimumPayload > BigInt(bytes.length - HEADER_BYTES)) fail('Document counts exceed the remaining payload.');
 
-  const catalogResult = readCatalog(bytes, view, HEADER_BYTES);
-  const paletteResult = readPalette(bytes, view, catalogResult.offset, paletteCount);
-  let offset = paletteResult.offset;
-  const symbolSet = readString(bytes, view, offset, 'Document symbol set');
-  offset = symbolSet.offset;
-  const materialUnit = readString(bytes, view, offset, 'Document material unit');
-  offset = materialUnit.offset;
-  const backgroundColor = readString(bytes, view, offset, 'Document background color');
-  offset = backgroundColor.offset;
-  if (offset + 12 > bytes.length) fail('Document ended while reading document settings.');
-  const aidaCount = view.getFloat64(offset, true);
-  offset += 8;
-  const nextLayerId = view.getUint32(offset, true);
-  offset += 4;
-  const settings: PatternSettings = { symbolSet: symbolSet.value, materialUnit: materialUnit.value as PatternSettings['materialUnit'], backgroundColor: backgroundColor.value, aidaCount };
+  const reader = new ByteReader(bytes, HEADER_BYTES);
+  const catalog = decodeCatalog(reader);
+  const palette = decodePalette(reader, paletteCount);
+  const symbolSet = reader.string('Document symbol set');
+  const materialUnit = reader.string('Document material unit');
+  const backgroundColor = reader.string('Document background color');
+  reader.require(12, 'Document ended while reading document settings.');
+  const aidaCount = reader.f64();
+  const nextLayerId = reader.u32();
+  const settings: PatternSettings = { symbolSet, materialUnit: materialUnit as PatternSettings['materialUnit'], backgroundColor, aidaCount };
   let originX = 0;
   let originY = 0;
   let canvasMask: Uint8Array | undefined;
   if (binaryVersion >= CANVAS_SCHEMA_VERSION) {
-    if (offset + 8 > bytes.length) fail('Document ended while reading the canvas origin.');
-    originX = view.getInt32(offset, true);
-    originY = view.getInt32(offset + 4, true);
-    offset += 8;
+    reader.require(8, 'Document ended while reading the canvas origin.');
+    originX = reader.i32();
+    originY = reader.i32();
     if (hasMask) {
-      const maskBytes = take(bytes, offset, Math.ceil(cellCount / 8), 'canvas mask');
-      offset += maskBytes.length;
+      const maskBytes = reader.take(Math.ceil(cellCount / 8), 'canvas mask');
       if (cellCount % 8 !== 0 && maskBytes[maskBytes.length - 1] >> (cellCount % 8) !== 0) fail('Canvas mask padding bits are not zero.');
       canvasMask = new Uint8Array(cellCount);
       for (let index = 0; index < cellCount; index += 1) canvasMask[index] = (maskBytes[index >> 3] >> (index & 7)) & 1;
@@ -564,51 +636,40 @@ function decodeLayeredDocument(bytes: Uint8Array, view: DataView, header: Decode
 
   const layers: Layer[] = [];
   for (let index = 0; index < layerCount; index += 1) {
-    if (offset + 6 > bytes.length) fail('Document ended while reading a layer.');
-    const id = view.getUint32(offset, true);
-    offset += 4;
-    const typeCode = view.getUint8(offset);
-    offset += 1;
-    const visibleValue = view.getUint8(offset);
-    offset += 1;
+    reader.require(6, 'Document ended while reading a layer.');
+    const id = reader.u32();
+    const typeCode = reader.u8();
+    const visibleValue = reader.u8();
     if (visibleValue > 1) fail('Layer visible flag is invalid.');
-    const name = readString(bytes, view, offset, 'Layer name');
-    offset = name.offset;
+    const name = reader.string('Layer name');
     if (typeCode === LAYER_TYPE_CODES[LayerType.Stitch]) {
       // Every plane is bounds-checked by `take` before any allocation.
       const planeBytes = binaryVersion >= COMPLETION_SCHEMA_VERSION ? 10n : 9n;
-      if (BigInt(cellCount) * planeBytes > BigInt(bytes.length - offset)) fail('Document ended while reading layer cells.');
-      const kind = new Uint8Array(take(bytes, offset, cellCount, 'cell kinds'));
-      offset += cellCount;
-      const colors = readColorPlane(bytes, offset, cellCount);
-      offset += cellCount * 4 * 2;
-      const completed = binaryVersion >= COMPLETION_SCHEMA_VERSION ? new Uint8Array(take(bytes, offset, cellCount, 'cell completion')) : new Uint8Array(cellCount);
-      if (binaryVersion >= COMPLETION_SCHEMA_VERSION) offset += cellCount;
-      layers.push({ id, type: LayerType.Stitch, name: name.value, visible: visibleValue === 1, kind, colors, completed });
+      if (BigInt(cellCount) * planeBytes > BigInt(reader.remaining)) fail('Document ended while reading layer cells.');
+      const kind = reader.take(cellCount, 'cell kinds');
+      const colors = decodeColorPlane(reader, cellCount);
+      const completed = binaryVersion >= COMPLETION_SCHEMA_VERSION ? reader.take(cellCount, 'cell completion') : new Uint8Array(cellCount);
+      layers.push({ id, type: LayerType.Stitch, name, visible: visibleValue === 1, kind, colors, completed });
     } else if (typeCode === LAYER_TYPE_CODES[LayerType.Specialty]) {
-      if (offset + 4 > bytes.length) fail('Document ended while reading a backstitch count.');
-      const count = view.getUint32(offset, true);
-      offset += 4;
+      reader.require(4, 'Document ended while reading a backstitch count.');
+      const count = reader.u32();
       if (count > 0x1000000) fail('Backstitch count exceeds the size limit.');
       const recordSize = binaryVersion >= COMPLETION_SCHEMA_VERSION ? BACKSTITCH_BYTES : UNMARKED_BACKSTITCH_BYTES;
-      const recordBytes = BigInt(count) * BigInt(recordSize);
-      if (recordBytes > BigInt(bytes.length - offset)) fail('Backstitch payload exceeds the document size limit.');
-      const backstitches = readBackstitches(view, offset, count, recordSize);
-      offset += Number(recordBytes);
-      layers.push({ id, type: LayerType.Specialty, name: name.value, visible: visibleValue === 1, backstitches });
+      if (BigInt(count) * BigInt(recordSize) > BigInt(reader.remaining)) fail('Backstitch payload exceeds the document size limit.');
+      layers.push({ id, type: LayerType.Specialty, name, visible: visibleValue === 1, backstitches: decodeBackstitches(reader, count, recordSize) });
     } else {
       fail('Layer type is invalid.');
     }
   }
-  if (offset !== bytes.length) fail('Document contains an invalid trailing payload.');
+  if (reader.offset !== bytes.length) fail('Document contains an invalid trailing payload.');
 
   const document: LayeredDocument = {
     version: LAYERED_DOCUMENT_VERSION,
-    catalog: catalogResult.catalog,
+    catalog,
     width,
     height,
     layers,
-    palette: paletteResult.palette,
+    palette,
     settings,
     revision,
     nextBackstitchId,
@@ -635,7 +696,7 @@ export function decodeDocumentWithInfo(input: Uint8Array | ArrayBuffer): Decoded
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const header = readHeader(bytes, view);
   const legacy = header.binaryVersion < LAYERED_SCHEMA_VERSION;
-  const document = legacy ? decodeLegacyDocument(bytes, view, header) : decodeLayeredDocument(bytes, view, header);
+  const document = legacy ? decodeLegacyDocument(bytes, view, header) : decodeLayeredDocument(bytes, header);
   return { document, binaryVersion: header.binaryVersion, legacy };
 }
 

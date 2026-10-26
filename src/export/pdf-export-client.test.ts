@@ -3,8 +3,9 @@ import { createDocument } from '../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { computePatternMetrics } from '../domain';
 import { handlePdfExportWorkerMessage, type PdfExportWorkerDependencies } from '../workers/pdf-export.worker';
+import type { WorkerLike } from '../workers/client';
 import { DEFAULT_EXPORT_SETTINGS } from './export-settings';
-import { PdfExportError, prepareWorkerInput, startPdfExport, type PdfExportWorkerLike } from './pdf-export-client';
+import { PdfExportError, prepareWorkerInput, startPdfExport } from './pdf-export-client';
 import { PDF_EXPORT_PROTOCOL, type PdfExportWorkerInput } from './pdf-export-protocol';
 
 function input(): PdfExportWorkerInput {
@@ -22,8 +23,9 @@ function input(): PdfExportWorkerInput {
 }
 
 /** A worker double that runs the real message handler against injected dependencies. */
-function fakeWorker(dependencies: PdfExportWorkerDependencies): PdfExportWorkerLike & { terminated: boolean; sent: unknown[] } {
+function fakeWorker(dependencies: PdfExportWorkerDependencies): WorkerLike & { terminated: boolean; sent: unknown[]; emitMessageError(): void } {
   const listeners: Array<(event: unknown) => void> = [];
+  const messageErrorListeners: Array<(event: unknown) => void> = [];
   const active = new Map<string, AbortController>();
   const worker = {
     terminated: false,
@@ -34,7 +36,11 @@ function fakeWorker(dependencies: PdfExportWorkerDependencies): PdfExportWorkerL
         queueMicrotask(() => { if (!worker.terminated) listeners.forEach((listener) => { listener({ data: response }); }); });
       }, active, dependencies);
     },
-    addEventListener(type: string, listener: (event: unknown) => void) { if (type === 'message') listeners.push(listener); },
+    addEventListener(type: string, listener: (event: unknown) => void) {
+      if (type === 'message') listeners.push(listener);
+      if (type === 'messageerror') messageErrorListeners.push(listener);
+    },
+    emitMessageError() { messageErrorListeners.forEach((listener) => { listener({}); }); },
     terminate() { worker.terminated = true; }
   };
   return worker;
@@ -63,11 +69,11 @@ describe('startPdfExport', () => {
       write: (_input, options) => { options.onProgress?.({ completed: 1, total: 2 }); return Promise.resolve(pdfBytes); }
     });
     const progress: number[] = [];
-    const job = startPdfExport(input(), { workerFactory: () => worker, requestIdFactory: () => 'r1', onProgress: (p) => progress.push(p.completed) });
+    const job = startPdfExport(input(), { workerFactory: () => worker, onProgress: (p) => progress.push(p.completed) });
     await expect(job.promise).resolves.toEqual(pdfBytes);
     expect(progress).toEqual([1]);
     expect(worker.terminated).toBe(true);
-    expect(worker.sent[0]).toMatchObject({ protocol: PDF_EXPORT_PROTOCOL, type: 'export', requestId: 'r1' });
+    expect(worker.sent[0]).toMatchObject({ protocol: PDF_EXPORT_PROTOCOL, type: 'export' });
   });
 
   it('cancels, terminating the worker', async () => {
@@ -75,11 +81,11 @@ describe('startPdfExport', () => {
       loadFont: () => new Promise<Uint8Array>(() => undefined),
       write: () => Promise.resolve(pdfBytes)
     });
-    const job = startPdfExport(input(), { workerFactory: () => worker, requestIdFactory: () => 'r2' });
+    const job = startPdfExport(input(), { workerFactory: () => worker });
     job.cancel();
     await expect(job.promise).rejects.toMatchObject({ name: 'AbortError' });
     expect(worker.terminated).toBe(true);
-    expect(worker.sent.at(-1)).toMatchObject({ type: 'cancel', requestId: 'r2' });
+    expect(worker.sent.at(-1)).toMatchObject({ type: 'cancel', requestId: (worker.sent[0] as { requestId: string }).requestId });
   });
 
   it('cancels from an AbortSignal, including one already aborted', async () => {
@@ -97,6 +103,14 @@ describe('startPdfExport', () => {
   it('reports worker errors', async () => {
     const worker = fakeWorker({ loadFont: () => Promise.resolve(new Uint8Array(1)), write: () => Promise.reject(new Error('boom')) });
     await expect(startPdfExport(input(), { workerFactory: () => worker }).promise).rejects.toEqual(new PdfExportError('boom'));
+  });
+
+  it('rejects when a worker message cannot be deserialized', async () => {
+    const worker = fakeWorker({ loadFont: () => new Promise<Uint8Array>(() => undefined), write: () => Promise.resolve(pdfBytes) });
+    const job = startPdfExport(input(), { workerFactory: () => worker });
+    worker.emitMessageError();
+    await expect(job.promise).rejects.toBeInstanceOf(PdfExportError);
+    expect(worker.terminated).toBe(true);
   });
 
   it('falls back to the calling thread without a worker', async () => {

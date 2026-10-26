@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CellKind } from '../domain';
 import type { CanvasContextAdapter, CanvasTarget } from '../editor/contracts';
-import { ThreeQuarterNE, ThreeQuarterNW, ThreeQuarterPair } from '../editor/cell-kinds';
 import {
   createThreadSpriteCache,
   drawThreadBackstitch,
@@ -104,7 +103,7 @@ describe('drawThreadStitch', () => {
     expect(half.strokes).toHaveLength(3);
 
     const threeQuarter = recordingContext();
-    drawThreadStitch(threeQuarter, ThreeQuarterNW, rect(20), '#000000');
+    drawThreadStitch(threeQuarter, CellKind.ThreeQuarterNW, rect(20), '#000000');
     expect(threeQuarter.strokes).toHaveLength(6);
     const [short, hypotenuse] = bodies(threeQuarter);
     expect(Math.hypot(short.to[0] - short.from[0], short.to[1] - short.from[1]))
@@ -117,7 +116,7 @@ describe('drawThreadStitch', () => {
 
   it('puts the NE three-quarter short stroke in the NE corner, drawn over the hypotenuse', () => {
     const context = recordingContext();
-    drawThreadStitch(context, ThreeQuarterNE, rect(20), '#000000');
+    drawThreadStitch(context, CellKind.ThreeQuarterNE, rect(20), '#000000');
     const [hypotenuse, short] = bodies(context);
     expect(hypotenuse.from[0]).toBeLessThan(hypotenuse.to[0]);
     expect(short.from[0]).toBeGreaterThan(10);
@@ -136,7 +135,7 @@ describe('drawThreadStitch', () => {
   it('paints nothing for empty cells and for a pair kind', () => {
     const context = recordingContext();
     drawThreadStitch(context, CellKind.Empty, rect(20), '#000000');
-    drawThreadStitch(context, ThreeQuarterPair, rect(20), '#000000');
+    drawThreadStitch(context, CellKind.ThreeQuarterPair, rect(20), '#000000');
     expect(context.strokes).toHaveLength(0);
   });
 

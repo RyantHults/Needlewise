@@ -4,6 +4,7 @@ import {
   createDocument,
   MAX_PERSISTABLE_CELL_COUNT,
   isRecord,
+  parseHexColor,
   type PaletteEntryInput,
   type PatternDocument
 } from '../domain';
@@ -218,12 +219,8 @@ function assertCatalogRecord(value: unknown, index: number): asserts value is Ca
   if (typeof value.name !== 'string' || !value.name.trim()) catalogFailure(`Catalog record ${String(index)} has an empty name.`);
   if (typeof value.hex !== 'string' || !/^#[0-9A-Fa-f]{6}$/.test(value.hex)) catalogFailure(`Catalog record ${String(index)} has an invalid HEX value.`);
   if (!validRgb(value.rgb)) catalogFailure(`Catalog record ${String(index)} has invalid RGB data.`);
-  const expected = [
-    Number.parseInt(value.hex.slice(1, 3), 16),
-    Number.parseInt(value.hex.slice(3, 5), 16),
-    Number.parseInt(value.hex.slice(5, 7), 16)
-  ];
-  if (value.rgb.some((channel, channelIndex) => channel !== expected[channelIndex])) catalogFailure(`Catalog record ${String(index)} has inconsistent HEX/RGB data.`);
+  const expected = parseHexColor(value.hex);
+  if (expected === undefined || value.rgb.some((channel, channelIndex) => channel !== expected[channelIndex])) catalogFailure(`Catalog record ${String(index)} has inconsistent HEX/RGB data.`);
 }
 
 function assertCatalogSnapshot(value: unknown): asserts value is CatalogSnapshot {

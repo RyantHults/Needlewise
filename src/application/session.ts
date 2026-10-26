@@ -37,7 +37,7 @@ import {
   type ProgressCommand,
   type ProgressEntry
 } from '../domain';
-import { cloneProjectHealth, PersistenceError } from '../persistence';
+import { cloneProjectHealth, isSha256Hex, PersistenceError } from '../persistence';
 import {
   normalizeSourceImageDescriptor,
   normalizeSourceImageAsset,
@@ -756,8 +756,8 @@ export class ProjectSession {
     const mode = !documentRevisionChanged && this.hasExactCurrentHead() ? 'retain' : 'replace';
     return {
       mode,
-      // Keep the legacy flag for repository implementations that have not
-      // adopted the explicit mode yet.
+      // A replace commit at an unchanged revision (for example after a
+      // metadata-only change without an exact head) must not count as stale.
       allowSameRevision: !documentRevisionChanged,
       ...(mode === 'retain' && this.projectHead !== null ? { expectedHead: { ...this.projectHead }, expectedRevision: this.document.revision } : {})
     };
@@ -767,8 +767,7 @@ export class ProjectSession {
     return this.projectHead !== null
       && this.projectHead.projectId === this.projectId
       && this.projectHead.revision === this.document.revision
-      && typeof this.projectHead.checksum === 'string'
-      && /^[0-9a-f]{64}$/.test(this.projectHead.checksum);
+      && isSha256Hex(this.projectHead.checksum);
   }
 
   private async savePreparedOrRetain(
@@ -777,7 +776,7 @@ export class ProjectSession {
     assets: readonly ProjectAssetInput[] | undefined,
     options: SaveOptions
   ): Promise<SaveResult> {
-    const mode = options.mode ?? options.commit ?? options.commitMode ?? 'replace';
+    const mode = options.mode ?? 'replace';
     if (mode !== 'replace') return this.repository.save(this.projectId, metadata, document, assets, options);
     const prepared = await this.preparationClient.prepare({
       projectId: this.projectId,

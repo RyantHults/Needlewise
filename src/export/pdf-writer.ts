@@ -1,8 +1,7 @@
 import type { PDFDocument, PDFFont, PDFPage, RGB } from 'pdf-lib';
 import type { DisplayUnits, PatternDocument, PatternMetrics } from '../domain';
-import { CellKind, componentKind, componentSlotMask, FIXED_POINT_UNITS_PER_CELL, isLegacyQuarterKind, parseHexColor } from '../domain';
+import { CellKind, componentKind, componentSlotMask, FIXED_POINT_UNITS_PER_CELL, isLegacyQuarterKind, isThreeQuarterPairKind, parseHexColor } from '../domain';
 import { DEFAULT_RENDERER_STYLE, type CanvasContextAdapter } from '../editor/contracts';
-import { isThreeQuarterPairKind } from '../editor/cell-kinds';
 import { contrastSymbolInk, relativeLuminance } from '../rendering/contrast';
 import { drawStitchGeometry } from '../rendering/symbol-painter';
 import { getSymbolOutline, SYMBOL_POOL_VERSION } from '../symbols';

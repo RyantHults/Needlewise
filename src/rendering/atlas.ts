@@ -1,9 +1,8 @@
-import { CellKind, componentKind, componentSlotMask, defaultPaletteSymbol, forEachActiveRun, isLegacyQuarterKind, paletteIdsInCells, type PatternDocument } from '../domain';
+import { CellKind, componentKind, componentSlotMask, defaultPaletteSymbol, forEachActiveRun, isLegacyQuarterKind, isThreeQuarterPairKind, paletteIdsInCells, type PatternDocument } from '../domain';
 import type { CanvasTarget, Rect, RendererStyle } from '../editor/contracts';
 import { MAX_ATLAS_PIXELS, restore, save } from './context';
 import { grayscaleColor, paletteColor, paletteEntry } from './colors';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
-import { isThreeQuarterPairKind } from '../editor/cell-kinds';
 
 /** Document-owned Aida color. */
 export function patternBackgroundColor(document: PatternDocument): string {

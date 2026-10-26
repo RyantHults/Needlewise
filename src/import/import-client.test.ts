@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createPatternImportClient, type PatternImportFallback, type PatternImportWorkerLike } from './import-client';
+import { createPatternImportClient, type PatternImportFallback } from './import-client';
+import type { WorkerLike } from '../workers/client';
 import { PATTERN_IMPORT_PROTOCOL } from './import-protocol';
 import { ImportError, type ImportAnalysis } from './types';
 
@@ -8,7 +9,7 @@ const analysis: ImportAnalysis = {
   chart: { width: 1, height: 1, cells: new Uint16Array(1), symbols: [], key: [], warnings: [] }
 };
 
-class FakeWorker implements PatternImportWorkerLike {
+class FakeWorker implements WorkerLike {
   readonly posted: Record<string, unknown>[] = [];
   readonly terminate = vi.fn();
   private listeners: Record<string, ((event: unknown) => void)[]> = {};
@@ -17,57 +18,58 @@ class FakeWorker implements PatternImportWorkerLike {
   reply(message: Record<string, unknown>): void {
     for (const listener of this.listeners.message ?? []) listener({ data: { protocol: PATTERN_IMPORT_PROTOCOL, ...message } });
   }
-  fail(message: string): void { for (const listener of this.listeners.error ?? []) listener({ message }); }
+  fail(message: string, type: 'error' | 'messageerror' = 'error'): void { for (const listener of this.listeners[type] ?? []) listener({ message }); }
 }
 
 function setup() {
   const worker = new FakeWorker();
-  let n = 0;
-  const client = createPatternImportClient({ workerFactory: () => worker, requestIdFactory: () => `id${String(n++)}` });
-  return { worker, client };
+  const client = createPatternImportClient({ workerFactory: () => worker });
+  /** The id of the nth request the client posted. */
+  const id = (n: number): unknown => worker.posted[n]?.requestId;
+  return { worker, client, id };
 }
 
 const file = new Blob(['%PDF-']);
 
 describe('pattern import client', () => {
   it('resolves an open with the worker result and reports progress', async () => {
-    const { worker, client } = setup();
+    const { worker, client, id } = setup();
     const onProgress = vi.fn();
     const promise = client.open(file, 'a.pdf', { onProgress });
-    expect(worker.posted[0]).toMatchObject({ type: 'open', requestId: 'id0', fileName: 'a.pdf' });
-    worker.reply({ type: 'progress', requestId: 'id0', progress: { stage: 'reading', done: 1, total: 2 } });
-    worker.reply({ type: 'result', requestId: 'id0', analysis });
+    expect(worker.posted[0]).toMatchObject({ type: 'open', fileName: 'a.pdf' });
+    worker.reply({ type: 'progress', requestId: id(0), progress: { stage: 'reading', done: 1, total: 2 } });
+    worker.reply({ type: 'result', requestId: id(0), analysis });
     await expect(promise).resolves.toBe(analysis);
     expect(onProgress).toHaveBeenCalledWith({ stage: 'reading', done: 1, total: 2 });
   });
 
   it('correlates concurrent requests by id and ignores strangers', async () => {
-    const { worker, client } = setup();
+    const { worker, client, id } = setup();
     const first = client.open(file, 'a.pdf');
     const second = client.reanalyze({ pageRoles: { 0: 'key' } });
     worker.reply({ type: 'result', requestId: 'other', analysis });
-    worker.reply({ type: 'result', requestId: 'id1', analysis: { ...analysis, format: 'second' } });
-    worker.reply({ type: 'result', requestId: 'id0', analysis });
+    worker.reply({ type: 'result', requestId: id(1), analysis: { ...analysis, format: 'second' } });
+    worker.reply({ type: 'result', requestId: id(0), analysis });
     await expect(second).resolves.toMatchObject({ format: 'second' });
     await expect(first).resolves.toBe(analysis);
   });
 
   it('rehydrates ImportError', async () => {
-    const { worker, client } = setup();
+    const { worker, client, id } = setup();
     const promise = client.open(file, 'a.pdf');
-    worker.reply({ type: 'error', requestId: 'id0', error: { code: 'no-chart-found', message: 'none' } });
+    worker.reply({ type: 'error', requestId: id(0), error: { code: 'no-chart-found', message: 'none' } });
     const error = await promise.catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ImportError);
     expect((error as ImportError).code).toBe('no-chart-found');
   });
 
   it('sends cancel on abort and rejects as cancelled', async () => {
-    const { worker, client } = setup();
+    const { worker, client, id } = setup();
     const controller = new AbortController();
     const promise = client.open(file, 'a.pdf', { signal: controller.signal });
     controller.abort();
     await expect(promise).rejects.toMatchObject({ code: 'cancelled' });
-    expect(worker.posted[1]).toMatchObject({ type: 'cancel', requestId: 'id0' });
+    expect(worker.posted[1]).toMatchObject({ type: 'cancel', requestId: id(0) });
   });
 
   it('rejects immediately for an already aborted signal', async () => {
@@ -83,6 +85,14 @@ describe('pattern import client', () => {
     const promise = client.open(file, 'a.pdf');
     worker.fail('crashed');
     await expect(promise).rejects.toThrow('crashed');
+    expect(worker.terminate).toHaveBeenCalled();
+  });
+
+  it('rejects pending requests when a worker message cannot be deserialized', async () => {
+    const { worker, client } = setup();
+    const promise = client.open(file, 'a.pdf');
+    worker.fail('bad clone', 'messageerror');
+    await expect(promise).rejects.toThrow('bad clone');
     expect(worker.terminate).toHaveBeenCalled();
   });
 

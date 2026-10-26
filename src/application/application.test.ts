@@ -36,7 +36,7 @@ class FakePreparationClient implements PersistencePreparationClient {
 
   async prepare(input: PersistencePreparationInput): Promise<PreparedDocumentCapability> {
     this.requests.push(input);
-    return this.delegate.prepare({ ...input, requestId: `prepared-${String(this.requests.length)}` });
+    return this.delegate.prepare(input);
   }
 
   getRequestId(capability: PreparedDocumentCapability): string {

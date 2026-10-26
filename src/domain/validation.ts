@@ -44,7 +44,7 @@ function collectCanvasErrors(document: PatternDocument, cellCount: number, error
   return true;
 }
 
-function isKnownCellKind(kind: number): boolean {
+export function isKnownCellKind(kind: number): boolean {
   return kind === CellKind.Empty
     || kind === CellKind.Full
     || kind === CellKind.HalfBackslash

@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import { CellKind, createDocument } from '../domain';
 import { getCanvasMetrics } from '../editor/coordinates';
 import type { CanvasContextAdapter, CanvasTarget, RendererStyle } from '../editor/contracts';
-import { ThreeQuarterPair } from '../editor/cell-kinds';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { createCanvasRenderer } from './renderer';
 
@@ -46,7 +45,7 @@ function sampleDocument(completed: boolean) {
   document.colors[0] = 1;
   document.kind[1] = CellKind.HalfBackslash;
   document.colors[4] = 35;
-  document.kind[2] = ThreeQuarterPair;
+  document.kind[2] = CellKind.ThreeQuarterPair;
   document.colors.set([1, 0, 35, 0], 8);
   document.kind[3] = CellKind.Full;
   document.colors[12] = 35;

@@ -7,6 +7,7 @@ import {
   type PatternImportRequest
 } from './import-protocol';
 import { isAbortError } from '../workers/abort';
+import { createDeferred, createRequestId, eventMessage, linkAbort, tryCreateWorker, type WorkerLike } from '../workers/client';
 import { findImporter } from './registry';
 import {
   ImportError,
@@ -25,15 +26,8 @@ export interface PatternImportClient {
   dispose(): void;
 }
 
-export interface PatternImportWorkerLike {
-  postMessage(message: unknown, transfer?: Transferable[]): void;
-  addEventListener(type: 'message' | 'error', listener: (event: unknown) => void): void;
-  terminate?(): void;
-}
-
 export interface PatternImportClientOptions {
-  readonly workerFactory?: () => PatternImportWorkerLike | null;
-  readonly requestIdFactory?: () => string;
+  readonly workerFactory?: () => WorkerLike | null;
   /** Runs requests on the calling thread when no worker can be created. */
   readonly fallback?: () => PatternImportFallback;
 }
@@ -52,16 +46,8 @@ interface Pending {
   readonly onProgress: ((progress: ImportProgress) => void) | undefined;
 }
 
-let requestCounter = 0;
-const defaultRequestId = (): string => `pattern-import-${String(Date.now())}-${String(requestCounter++)}`;
-
-function createDefaultWorker(): PatternImportWorkerLike | null {
-  if (typeof Worker === 'undefined') return null;
-  try {
-    return new Worker(new URL('../workers/pattern-import.worker.ts', import.meta.url), { type: 'module' });
-  } catch {
-    return null;
-  }
+function createDefaultWorker(): WorkerLike {
+  return new Worker(new URL('../workers/pattern-import.worker.ts', import.meta.url), { type: 'module' });
 }
 
 function createDefaultFallback(): PatternImportFallback {
@@ -88,7 +74,7 @@ function createDefaultFallback(): PatternImportFallback {
 
 export function createPatternImportClient(clientOptions: PatternImportClientOptions = {}): PatternImportClient {
   const pending = new Map<string, Pending>();
-  let worker: PatternImportWorkerLike | null = null;
+  let worker: WorkerLike | null = null;
   let fallback: PatternImportFallback | null = null;
   let disposed = false;
 
@@ -98,9 +84,15 @@ export function createPatternImportClient(clientOptions: PatternImportClientOpti
     for (const entry of entries) entry.reject(error);
   }
 
-  function ensureWorker(): PatternImportWorkerLike | null {
+  function failWorker(failed: WorkerLike, message: string): void {
+    failed.terminate?.();
+    if (worker === failed) worker = null;
+    failAll(new Error(message));
+  }
+
+  function ensureWorker(): WorkerLike | null {
     if (worker) return worker;
-    const created = (clientOptions.workerFactory ?? createDefaultWorker)();
+    const created = tryCreateWorker(clientOptions.workerFactory ?? createDefaultWorker);
     if (!created) return null;
     created.addEventListener('message', (event) => {
       const data = (event as MessageEvent<unknown>).data;
@@ -113,12 +105,8 @@ export function createPatternImportClient(clientOptions: PatternImportClientOpti
       else if (data.type === 'cancelled') entry.reject(importCancelledError());
       else entry.reject(deserializeImportError(data.error));
     });
-    created.addEventListener('error', (event) => {
-      const message = (event as { message?: string }).message || 'The import worker failed.';
-      created.terminate?.();
-      if (worker === created) worker = null;
-      failAll(new Error(message));
-    });
+    created.addEventListener('error', (event) => { failWorker(created, eventMessage(event, 'The import worker failed.')); });
+    created.addEventListener('messageerror', (event) => { failWorker(created, eventMessage(event, 'The import worker could not read a message.')); });
     worker = created;
     return created;
   }
@@ -130,43 +118,41 @@ export function createPatternImportClient(clientOptions: PatternImportClientOpti
   ): Promise<ImportAnalysis> {
     if (disposed) return Promise.reject(new Error('The import client was disposed.'));
     if (options.signal?.aborted) return Promise.reject(importCancelledError());
-    const requestId = (clientOptions.requestIdFactory ?? defaultRequestId)();
+    const requestId = createRequestId('pattern-import');
     const target = ensureWorker();
     const controller = new AbortController();
-    return new Promise<ImportAnalysis>((resolve, reject) => {
-      const onAbort = (): void => {
-        if (!pending.delete(requestId)) return;
-        controller.abort();
-        target?.postMessage({ protocol: PATTERN_IMPORT_PROTOCOL, type: 'cancel', requestId } satisfies PatternImportRequest);
-        reject(importCancelledError());
-      };
-      const cleanup = (): void => { options.signal?.removeEventListener('abort', onAbort); };
-      pending.set(requestId, {
-        resolve: (value) => { cleanup(); resolve(value); },
-        reject: (error) => { cleanup(); reject(error instanceof Error ? error : new Error(String(error))); },
-        onProgress: options.onProgress
-      });
-      options.signal?.addEventListener('abort', onAbort, { once: true });
-      if (target) {
-        try {
-          target.postMessage(build(requestId));
-        } catch (error) {
-          pending.get(requestId)?.reject(error);
-          pending.delete(requestId);
-        }
-        return;
-      }
-      fallback ??= (clientOptions.fallback ?? createDefaultFallback)();
-      viaFallback(fallback, controller.signal).then(
-        (value) => { const entry = pending.get(requestId); if (entry) { pending.delete(requestId); entry.resolve(value); } },
-        (error: unknown) => {
-          const entry = pending.get(requestId);
-          if (!entry) return;
-          pending.delete(requestId);
-          entry.reject(controller.signal.aborted || isAbortError(error) ? importCancelledError() : error);
-        }
-      );
+    const { promise, resolve, reject } = createDeferred<ImportAnalysis>();
+    const cleanup = linkAbort(options.signal, () => {
+      if (!pending.delete(requestId)) return;
+      controller.abort();
+      target?.postMessage({ protocol: PATTERN_IMPORT_PROTOCOL, type: 'cancel', requestId } satisfies PatternImportRequest);
+      reject(importCancelledError());
     });
+    pending.set(requestId, {
+      resolve: (value) => { cleanup(); resolve(value); },
+      reject: (error) => { cleanup(); reject(error instanceof Error ? error : new Error(String(error))); },
+      onProgress: options.onProgress
+    });
+    if (target) {
+      try {
+        target.postMessage(build(requestId));
+      } catch (error) {
+        pending.get(requestId)?.reject(error);
+        pending.delete(requestId);
+      }
+      return promise;
+    }
+    fallback ??= (clientOptions.fallback ?? createDefaultFallback)();
+    viaFallback(fallback, controller.signal).then(
+      (value) => { const entry = pending.get(requestId); if (entry) { pending.delete(requestId); entry.resolve(value); } },
+      (error: unknown) => {
+        const entry = pending.get(requestId);
+        if (!entry) return;
+        pending.delete(requestId);
+        entry.reject(controller.signal.aborted || isAbortError(error) ? importCancelledError() : error);
+      }
+    );
+    return promise;
   }
 
   const runOptions = (options: ImportRunOptions | undefined, signal: AbortSignal): ImportRunOptions => ({

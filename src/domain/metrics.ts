@@ -8,6 +8,7 @@ import {
   type PatternSettings
 } from './types';
 import { componentSlotMask } from './cell-components';
+import { isRecord } from './guards';
 
 /**
  * Material settings used by the estimator.  The document's v2 settings do
@@ -192,7 +193,7 @@ export const DEFAULT_MATERIAL_SETTINGS: NormalizedMaterialSettings = {
 type MaterialSettingsRecord = Record<string, unknown>;
 
 function asRecord(value: unknown): MaterialSettingsRecord {
-  return typeof value === 'object' && value !== null ? value as MaterialSettingsRecord : {};
+  return isRecord(value) ? value : {};
 }
 
 function readFirst(record: MaterialSettingsRecord, keys: readonly string[]): unknown {

@@ -1,10 +1,14 @@
-import { CellKind, isLegacyQuarterKind, isRecord, threeQuarterPairComponents } from '../domain';
 import {
+  CellKind,
   isKnownCellKind,
+  isLegacyQuarterKind,
+  isRecord,
   isThreeQuarterKind,
   isThreeQuarterPairKind,
-  threeQuarterCornerForKind
-} from './cell-kinds';
+  threeQuarterCornerForKind,
+  threeQuarterPairComponents
+} from '../domain';
+import { WorkerConnection, createDeferred, createRequestId, linkAbort, type WorkerLike } from '../workers/client';
 
 /** The structured-clone protocol shared by the fill client and worker. */
 export const FILL_PROTOCOL = 'needlewise.fill.v2' as const;
@@ -375,7 +379,7 @@ export function validateFillResult(value: unknown): value is FillResultMessage {
   }
 }
 
-export function createFillRequest(input: FillRequestInput, requestId = createFillRequestId()): FillRequestMessage {
+export function createFillRequest(input: FillRequestInput, requestId = createRequestId('fill')): FillRequestMessage {
   const request: FillRequestMessage = {
     protocol: FILL_PROTOCOL,
     type: FILL_REQUEST_TYPE,
@@ -611,15 +615,6 @@ export function runExactFloodFillAsync(request: FillRequestMessage, cancellation
   });
 }
 
-export interface FillWorkerLike {
-  postMessage(message: unknown, transfer?: Transferable[]): void;
-  addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
-  removeEventListener?(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
-  terminate?(): void;
-}
-
-export type FillWorkerFactory = () => FillWorkerLike | null;
-
 export interface FillJob {
   readonly request: FillRequestMessage;
   readonly promise: Promise<FillResultMessage>;
@@ -627,8 +622,7 @@ export interface FillJob {
 }
 
 export interface FillWorkerClientOptions {
-  readonly workerFactory?: FillWorkerFactory;
-  readonly requestIdFactory?: () => string;
+  readonly workerFactory?: () => WorkerLike | null;
   readonly useWorker?: boolean;
 }
 
@@ -641,28 +635,8 @@ interface PendingFill {
   sent: boolean;
 }
 
-interface FillWorkerEventTarget {
-  addEventListener(type: string, listener: (event: unknown) => void): void;
-  removeEventListener?(type: string, listener: (event: unknown) => void): void;
-}
-
-function workerEventTarget(worker: FillWorkerLike): FillWorkerEventTarget {
-  return worker as unknown as FillWorkerEventTarget;
-}
-
-function eventMessage(event: unknown, fallback: string): string {
-  if (event instanceof Error && event.message) return event.message;
-  if (isRecord(event) && typeof event.message === 'string' && event.message) return event.message;
-  return fallback;
-}
-
-function createDefaultWorker(): FillWorkerLike | null {
-  if (typeof Worker === 'undefined') return null;
-  try {
-    return new Worker(new URL('../workers/fill.worker.ts', import.meta.url), { type: 'module' });
-  } catch {
-    return null;
-  }
+function createDefaultWorker(): WorkerLike {
+  return new Worker(new URL('../workers/fill.worker.ts', import.meta.url), { type: 'module' });
 }
 
 function copyFillRequest(request: FillRequestMessage): FillRequestMessage {
@@ -673,14 +647,6 @@ function copyFillRequest(request: FillRequestMessage): FillRequestMessage {
     ...(request.canvasMask === undefined ? {} : { canvasMask: new Uint8Array(request.canvasMask) })
   };
 }
-
-function createFillRequestId(): string {
-  const cryptoObject = globalThis.crypto;
-  if (cryptoObject?.randomUUID) return cryptoObject.randomUUID();
-  return `fill-${Date.now().toString(36)}-${String(++fillRequestSequence)}`;
-}
-
-let fillRequestSequence = 0;
 
 function asIdentity(value: FillResultIdentity): FillResultIdentity {
   return { projectId: value.projectId, baseRevision: value.baseRevision, requestId: value.requestId };
@@ -697,63 +663,46 @@ function assertCurrentResult(result: unknown, request: FillRequestMessage): asse
 }
 
 export class FillWorkerClient {
-  private readonly workerFactory: FillWorkerFactory;
-  private readonly requestIdFactory: () => string;
-  private readonly useWorker: boolean;
-  private worker: FillWorkerLike | null = null;
-  /** Pending jobs are keyed by the complete protocol request identity. */
+  private readonly connection: WorkerConnection<WorkerLike>;
+  /** Pending jobs are keyed by request id. */
   private readonly pending = new Map<string, PendingFill>();
   private disposed = false;
-  private readonly onMessage = (event: MessageEvent<unknown>): void => this.handleMessage(event.data);
-  private readonly onWorkerError = (event: unknown): void => this.handleWorkerFailure(new FillWorkerTransportError(eventMessage(event, 'The fill worker failed.')));
-  private readonly onWorkerMessageError = (event: unknown): void => this.handleWorkerFailure(new FillWorkerTransportError(eventMessage(event, 'The fill worker could not read a message.')));
 
   constructor(options: FillWorkerClientOptions = {}) {
-    this.workerFactory = options.workerFactory ?? createDefaultWorker;
-    this.requestIdFactory = options.requestIdFactory ?? createFillRequestId;
-    this.useWorker = options.useWorker ?? true;
+    const workerFactory = options.workerFactory ?? createDefaultWorker;
+    this.connection = new WorkerConnection({
+      label: 'fill worker',
+      create: options.useWorker === false ? () => null : workerFactory,
+      onMessage: (data) => { this.handleMessage(data); },
+      transportError: (message) => new FillWorkerTransportError(message),
+      onFailure: (error) => { this.rejectAll(error); }
+    });
   }
 
   submit(input: FillRequestInput, options: { readonly signal?: AbortSignal } = {}): FillJob {
     if (this.disposed) throw new Error('The fill worker client has been disposed.');
-    const request = createFillRequest(input, this.requestIdFactory());
-    const requestKey = fillRequestIdentityKey(request);
-    if (this.pending.has(requestKey)) throw new FillProtocolError(`Fill request ID ${request.requestId} is already pending.`);
-    let resolvePromise!: (result: FillResultMessage) => void;
-    let rejectPromise!: (error: unknown) => void;
-    const promise = new Promise<FillResultMessage>((resolve, reject) => {
-      resolvePromise = resolve;
-      rejectPromise = reject;
-    });
+    const request = createFillRequest(input);
+    const requestKey = request.requestId;
+    const { promise, resolve, reject } = createDeferred<FillResultMessage>();
     const pending: PendingFill = {
       request,
-      resolve: resolvePromise,
-      reject: rejectPromise,
-      signalCleanup: () => undefined,
+      resolve,
+      reject,
+      signalCleanup: linkAbort(options.signal, () => { this.cancel(request); }),
       cancelled: false,
       sent: false
     };
     this.pending.set(requestKey, pending);
-    const signal = options.signal;
-    if (signal) {
-      const abort = (): void => { this.cancel(request); };
-      signal.addEventListener('abort', abort, { once: true });
-      pending.signalCleanup = () => signal.removeEventListener('abort', abort);
-      if (signal.aborted) {
-        this.cancel(request);
-        return { request, promise, cancel: () => this.cancel(request) };
-      }
+    if (options.signal?.aborted) {
+      this.cancel(request);
+      return { request, promise, cancel: () => this.cancel(request) };
     }
 
-    const worker = this.ensureWorker();
+    const worker = this.connection.ensure();
     if (worker) {
-      try {
-        const wireRequest = copyFillRequest(request);
-        worker.postMessage(wireRequest, [wireRequest.kind.buffer, wireRequest.colors.buffer, ...(wireRequest.canvasMask ? [wireRequest.canvasMask.buffer] : [])]);
-        pending.sent = true;
-      } catch (error) {
-        this.handleWorkerFailure(new FillWorkerTransportError(eventMessage(error, 'The fill worker could not receive the request.')));
-      }
+      const wireRequest = copyFillRequest(request);
+      pending.sent = true;
+      this.connection.post(worker, wireRequest, [wireRequest.kind.buffer, wireRequest.colors.buffer, ...(wireRequest.canvasMask ? [wireRequest.canvasMask.buffer] : [])]);
     } else {
       globalThis.queueMicrotask(() => {
         const current = this.pending.get(requestKey);
@@ -778,14 +727,14 @@ export class FillWorkerClient {
   }
 
   cancel(request: FillResultIdentity): boolean {
-    const requestKey = fillRequestIdentityKey(request);
+    const requestKey = request.requestId;
     const pending = this.pending.get(requestKey);
     if (!pending) return false;
     pending.cancelled = true;
     pending.signalCleanup();
     this.pending.delete(requestKey);
     pending.reject(new FillCancelledError(pending.request.requestId));
-    const worker = this.worker;
+    const worker = this.connection.current;
     if (worker && pending.sent) {
       try {
         worker.postMessage(createFillCancel(pending.request));
@@ -800,50 +749,10 @@ export class FillWorkerClient {
     if (this.disposed) return;
     this.disposed = true;
     for (const pending of [...this.pending.values()]) this.cancel(pending.request);
-    this.removeWorkerListeners(this.worker);
-    try {
-      this.worker?.terminate?.();
-    } catch {
-      // Disposal is best effort; the worker reference is still cleared below.
-    }
-    this.worker = null;
+    this.connection.dispose();
   }
 
-  private ensureWorker(): FillWorkerLike | null {
-    if (!this.useWorker || this.worker) return this.worker;
-    let worker: FillWorkerLike | null;
-    try {
-      worker = this.workerFactory();
-    } catch {
-      worker = null;
-    }
-    this.worker = worker;
-    if (this.worker) {
-      const target = workerEventTarget(this.worker);
-      target.addEventListener('message', this.onMessage as unknown as (event: unknown) => void);
-      target.addEventListener('error', this.onWorkerError);
-      target.addEventListener('messageerror', this.onWorkerMessageError);
-    }
-    return this.worker;
-  }
-
-  private removeWorkerListeners(worker: FillWorkerLike | null): void {
-    if (!worker) return;
-    const target = workerEventTarget(worker);
-    target.removeEventListener?.('message', this.onMessage as unknown as (event: unknown) => void);
-    target.removeEventListener?.('error', this.onWorkerError);
-    target.removeEventListener?.('messageerror', this.onWorkerMessageError);
-  }
-
-  private handleWorkerFailure(error: FillWorkerTransportError): void {
-    const failedWorker = this.worker;
-    this.worker = null;
-    this.removeWorkerListeners(failedWorker);
-    try {
-      failedWorker?.terminate?.();
-    } catch {
-      // A failed worker may already have been terminated by the platform.
-    }
+  private rejectAll(error: Error): void {
     const pending = [...this.pending.values()];
     this.pending.clear();
     for (const job of pending) {
@@ -858,13 +767,13 @@ export class FillWorkerClient {
     if (type !== FILL_RESULT_TYPE && type !== FILL_CANCELLED_TYPE && type !== FILL_ERROR_TYPE) return;
     const identity = responseIdentity(message, type);
     // A response without a valid complete identity cannot be associated with
-    // a pending request. In particular, do not let a malformed/stale payload
-    // with a reused request ID consume the current job.
+    // a pending request.
     if (!identity) return;
-    const requestKey = fillRequestIdentityKey(identity);
+    const requestKey = identity.requestId;
     const pending = this.pending.get(requestKey);
     if (!pending) return;
     try {
+      if (fillRequestIdentityKey(identity) !== fillRequestIdentityKey(pending.request)) throw new FillStaleResultError(asIdentity(pending.request), identity);
       if (type === FILL_RESULT_TYPE) {
         assertCurrentResult(message, pending.request);
         this.resolvePending(requestKey, message);

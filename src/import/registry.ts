@@ -17,8 +17,8 @@ const pdfDescriptor: PatternImporter = {
     return false;
   },
   async open(bytes, options?: ImportRunOptions & { readonly fileName?: string }): Promise<ImportSession> {
-    const { pdfImporter } = await import('./pdf/pdf-importer');
-    return pdfImporter.open(bytes, options);
+    const { openPdfImport } = await import('./pdf/pdf-importer');
+    return openPdfImport(bytes, options);
   }
 };
 

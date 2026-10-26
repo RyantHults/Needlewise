@@ -36,6 +36,10 @@ import {
   allocateBackstitches,
   copyBackstitch,
   isLegacyQuarterKind,
+  isThreeQuarterKind,
+  isThreeQuarterPairKind,
+  threeQuarterCornerForKind,
+  threeQuarterKindForCorner,
   threeQuarterPairComponents,
   layerSurface,
   findLayer,
@@ -170,14 +174,6 @@ import {
 } from './canvas-tools';
 import { clampCell, indexBounds, intersectRect } from './rect';
 import { countLabel } from './status-text';
-import {
-  isThreeQuarterKind,
-  isThreeQuarterPairKind,
-  ThreeQuarterPair,
-  threeQuarterCornersShareAxis,
-  threeQuarterCornerForKind,
-  threeQuarterKindForCorner
-} from './cell-kinds';
 
 export interface EditorSurfaceControllerOptions {
   readonly gateway: WorkspaceEditorGateway;
@@ -856,6 +852,10 @@ function applyEraseQuarterState(
   return { kind, colors, completed };
 }
 
+function threeQuarterCornersShareAxis(left: number, right: number): boolean {
+  return (left === 0 || left === 2) === (right === 0 || right === 2);
+}
+
 function applyThreeQuarterPaintState(
   kind: CellKind,
   colors: [number, number, number, number],
@@ -871,7 +871,7 @@ function applyThreeQuarterPaintState(
     nextColors[existingCorner] = colors[0];
     nextColors[corner] = color;
     return {
-      kind: ThreeQuarterPair,
+      kind: CellKind.ThreeQuarterPair,
       colors: nextColors,
       completed: (completed & 1) !== 0 ? 1 << existingCorner : 0
     };

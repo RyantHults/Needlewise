@@ -52,9 +52,8 @@ export class MemoryRepository implements WorkspaceRepository {
     this.saveDocuments.push(document);
     const current = this.records.get(projectId);
     if (options.mode === 'retain') {
-      const expectedHead = options.expectedHead;
-      const expectedRevision = options.expectedRevision ?? (typeof expectedHead === 'number' ? expectedHead : expectedHead?.revision);
-      const expectedChecksum = typeof expectedHead === 'object' && expectedHead !== null ? expectedHead.checksum : undefined;
+      const expectedRevision = options.expectedRevision ?? options.expectedHead?.revision;
+      const expectedChecksum = options.expectedHead?.checksum;
       if (!current?.head || expectedRevision !== current.head.revision || (expectedChecksum !== undefined && expectedChecksum !== current.head.checksum)) return { committed: false, stale: true, revision: current?.document.revision ?? document.revision };
     } else if (current && (current.document.revision > document.revision || (current.document.revision === document.revision && !options.allowSameRevision))) return { committed: false, stale: true, revision: current.document.revision };
     const retained = options.mode === 'retain';

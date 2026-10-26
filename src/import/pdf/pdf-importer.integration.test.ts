@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildImportedDocument, proposeMappings } from '../build-document';
 import type { ImportAnalysis, ImportOverrides } from '../types';
-import { pdfImporter } from './pdf-importer';
+import { openPdfImport } from './pdf-importer';
 import {
   buildImageOnlyPdf,
   buildSyntheticChartPdf,
@@ -15,7 +15,7 @@ import {
 } from './test-fixtures';
 
 async function importPdf(bytes: Uint8Array, fileName?: string, overrides?: ImportOverrides): Promise<ImportAnalysis> {
-  const session = await pdfImporter.open(bytes, fileName === undefined ? {} : { fileName });
+  const session = await openPdfImport(bytes, fileName === undefined ? {} : { fileName });
   try {
     return await session.analyze(overrides);
   } finally {

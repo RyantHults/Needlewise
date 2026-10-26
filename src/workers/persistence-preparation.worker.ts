@@ -11,11 +11,7 @@ import {
   type PersistencePreparationToken
 } from '../persistence/preparation';
 import { isRecord } from '../domain';
-
-interface PersistencePreparationWorkerScope {
-  addEventListener(type: 'message', listener: (event: MessageEvent<unknown>) => void): void;
-  postMessage(message: PersistencePreparationResponse, transfer?: Transferable[]): void;
-}
+import { bootWorker, type WorkerScope } from './runtime';
 
 function tokenFromMessage(value: unknown): PersistencePreparationToken | undefined {
   return isRecord(value) && validatePreparationToken(value.token) ? value.token : undefined;
@@ -57,19 +53,11 @@ export function handlePersistencePreparationWorkerMessage(
     });
 }
 
-function installPersistencePreparationWorker(scope: PersistencePreparationWorkerScope): void {
+function installPersistencePreparationWorker(scope: WorkerScope<PersistencePreparationResponse>): void {
   const activeRequests = new Set<string>();
   scope.addEventListener('message', (event) => {
     handlePersistencePreparationWorkerMessage(event.data, (message, transfer) => scope.postMessage(message, transfer), activeRequests);
   });
 }
 
-function isWorkerScope(value: unknown): value is PersistencePreparationWorkerScope {
-  return isRecord(value)
-    && typeof value.postMessage === 'function'
-    && typeof value.addEventListener === 'function'
-    && !('document' in value);
-}
-
-const globalScope: unknown = typeof globalThis === 'undefined' ? undefined : globalThis;
-if (isWorkerScope(globalScope)) installPersistencePreparationWorker(globalScope);
+bootWorker(installPersistencePreparationWorker);
