@@ -694,20 +694,13 @@ describe('canvas editing in the controller', () => {
     controller.dispose();
   });
 
-  it('never previews stitches in a canvas hole, for strokes, shapes or the hover brush', () => {
+  it('never previews stitches in a canvas hole, for strokes or shapes', () => {
     const { controller, uiStore } = fixture(maskedDocument(), 1);
     controller.setTool({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
-    // Hover over the hole column (x = 3) with a 3-wide brush.
-    controller.setToolBrushSize('full', 3);
-    controller.handlePointerMove(atViewport(uiStore, 9, 3, 5, { buttons: 0 }));
-    const hover = uiStore.getState().overlay.brushPreview?.states ?? [];
-    expect(hover.length).toBeGreaterThan(0);
-    expect(hover.every((state) => state.index % 10 !== 3)).toBe(true);
-
     controller.handlePointerDown(atViewport(uiStore, 1, 1, 5));
     controller.handlePointerMove(atViewport(uiStore, 1, 6, 5));
-    const cells = uiStore.getState().overlay.pendingCells ?? [];
     const states = uiStore.getState().overlay.pendingCellStates ?? [];
+    const cells = states.map((state) => state.cell);
     expect(cells.some((cell) => cell.x === 2) && cells.some((cell) => cell.x === 4)).toBe(true);
     expect(cells.every((cell) => cell.x !== 3)).toBe(true);
     expect(states.length).toBeGreaterThan(0);
@@ -717,7 +710,7 @@ describe('canvas editing in the controller', () => {
     controller.setTool({ tool: 'shape', shape: 'line' });
     controller.handlePointerDown(atViewport(uiStore, 2, 0, 8));
     controller.handlePointerMove(atViewport(uiStore, 2, 9, 8));
-    const shape = uiStore.getState().overlay.pendingCells ?? [];
+    const shape = uiStore.getState().overlay.pendingCellStates?.map((state) => state.cell) ?? [];
     expect(shape.length).toBeGreaterThan(0);
     expect(shape.every((cell) => cell.x !== 3)).toBe(true);
     controller.handlePointerUp(atViewport(uiStore, 2, 9, 8));

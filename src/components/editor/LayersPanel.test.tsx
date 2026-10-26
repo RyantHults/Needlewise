@@ -1,7 +1,7 @@
 import { act, fireEvent, render } from '@testing-library/react';
 import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyLayerStructureCommand, CellKind, layerAddCommand, layerSetVisibilityCommand, type LayeredDocument, type StitchLayer } from '../../domain';
+import { applyLayerStructureCommand, CellKind, layerAddCommand, layerDuplicateCommand, layerSetVisibilityCommand, type LayeredDocument, type StitchLayer } from '../../domain';
 import { LAYER_LONG_PRESS_MS, LayersPanel } from './LayersPanel';
 import { createLayeredDocument } from '../../domain/test-fixtures';
 
@@ -73,6 +73,25 @@ describe('LayersPanel thumbnails', () => {
     expect(renderedIds()).toEqual([3]);
   });
 
+  it('keeps the surviving rows\' thumbnails when a layer is deleted', () => {
+    const document = makeDocument();
+    const view = render(panel(document));
+    const before = Array.from(view.container.querySelectorAll('canvas.layer-thumbnail'));
+    const remaining = { ...document, layers: document.layers.filter((layer) => layer.id !== 2) };
+    view.rerender(panel(remaining));
+    const after = Array.from(view.container.querySelectorAll('canvas.layer-thumbnail'));
+    expect(after).toHaveLength(before.length - 1);
+    for (const canvas of after) expect(before).toContain(canvas);
+  });
+
+  it('shows the reference image on the reference row', () => {
+    URL.createObjectURL = vi.fn(() => 'blob:reference');
+    URL.revokeObjectURL = vi.fn();
+    const image = new Blob(['x'], { type: 'image/png' });
+    const view = render(<LayersPanel {...panel(makeDocument()).props} reference={{ present: true, visible: true, image }} />);
+    expect(view.container.querySelector('[data-layer-type="reference"] img.layer-thumbnail')).not.toBeNull();
+  });
+
   it('coalesces a burst of edits into at most one recompute per window', () => {
     let document = makeDocument();
     const view = render(panel(document));
@@ -103,6 +122,21 @@ describe('LayersPanel thumbnails', () => {
     expect(painted).toHaveLength(3);
     const opaque = (pixels: { data: Uint8ClampedArray }) => pixels.data.filter((_, offset) => offset % 4 === 3 && pixels.data[offset] === 255).length;
     expect(painted.map(opaque).sort((a, b) => b - a)[0]).toBe(40 * 40);
+  });
+
+  it('paints the thumbnail of a duplicated layer under StrictMode', () => {
+    // Regression: the replayed schedule effect saw identical inputs left by the
+    // cancelled mount and skipped scheduling, so the copy never painted.
+    const document = makeDocument();
+    const view = render(<StrictMode>{panel(document)}</StrictMode>);
+    act(() => vi.advanceTimersByTime(600));
+    thumbnails.render.mockClear();
+    const duplicated = { ...document, layers: [...document.layers], palette: [...document.palette] } as LayeredDocument;
+    applyLayerStructureCommand(duplicated, layerDuplicateCommand(1));
+    const copy = duplicated.layers.find((layer) => !document.layers.some((existing) => existing.id === layer.id))!;
+    view.rerender(<StrictMode>{panel(duplicated)}</StrictMode>);
+    act(() => vi.advanceTimersByTime(600));
+    expect(renderedIds()).toContain(copy.id);
   });
 
   it('does not recompute any thumbnail when a layer is shown or hidden', () => {

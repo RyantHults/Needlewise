@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import targetSvg from '../assets/ui-icons/target.svg?raw';
-import { CellKind, createDocument, createPatternFragment } from '../domain';
+import { CellKind, createDocument, createPatternFragment, type PatternDocument } from '../domain';
 import { cellToScreenRect, fitViewport, getCanvasMetrics, visibleCellRect } from '../editor/coordinates';
 import { CHART_EDGE_MARGIN, DEFAULT_RENDERER_STYLE, type CanvasTarget, type FloatingPasteOverlay, type PendingCellState, type RendererStyle, type TraceImage } from '../editor/contracts';
 import { MAX_ATLAS_PIXELS, createDefaultAtlasTarget } from './context';
@@ -153,14 +153,12 @@ describe('Canvas 2D chart renderer', () => {
       viewport: { x: 0, y: 0, zoom: 16 },
       style: { backgroundColor: '#010203', showGrid: false },
       overlay: {
-        pendingCellStates: [{ index: 0, cell: { x: 0, y: 0 }, kind: CellKind.Empty, colors: [0, 0, 0, 0], completed: 0 }],
         floatingPaste: { fragment, destination: { x: 1, y: 0, width: 1, height: 1 } }
       }
     });
     detailRenderer.renderNow();
 
     expect(base.records.some((call) => call.name === 'fillRect' && call.args.join(',') === '0,0,32,16' && call.fillStyle === '#aabbcc')).toBe(true);
-    expect(overlay.records.some((call) => call.name === 'fillRect' && call.args.join(',') === '0,0,16,16' && call.fillStyle === '#aabbcc')).toBe(true);
     expect(overlay.records.some((call) => call.name === 'fillRect' && call.args.join(',') === '16,0,16,16' && call.fillStyle === '#aabbcc')).toBe(true);
     detailRenderer.dispose();
 
@@ -737,398 +735,6 @@ describe('Canvas 2D chart renderer', () => {
         document.colors.set([1, 0, 0, 0], 0);
       }))).toEqual([]);
     });
-  });
-
-  it('renders pending paired colors and only the occupied completion mark', () => {
-    const document = chart(1, 1);
-    const overlay = recordingContext();
-    const renderer = createCanvasRenderer({
-      document,
-      targets: { base: target(recordingContext()), overlay: target(overlay) },
-      metrics: getCanvasMetrics(16, 16),
-      viewport: { x: 0, y: 0, zoom: 16 },
-      style: { showGrid: false },
-      overlay: {
-        pendingCellStates: [{ index: 0, cell: { x: 0, y: 0 }, kind: CellKind.ThreeQuarterPair, colors: [1, 0, 35, 0], completed: 1 }]
-      }
-    });
-    renderer.renderNow();
-    const paths = overlay.records
-      .filter((call) => (call.fillStyle === '#ff0000' || call.fillStyle === '#0000ff') && call.strokeStyle !== '#ffffff' && call.args[1] !== 4 && (call.name === 'moveTo' || call.name === 'lineTo'))
-      .map((call) => [call.name, ...(call.args as number[]), call.fillStyle]);
-    expect(paths).toEqual([
-      ['moveTo', 0, 0, '#ff0000'], ['lineTo', 16, 0, '#ff0000'], ['lineTo', 0, 16, '#ff0000'],
-      ['moveTo', 16, 0, '#0000ff'], ['lineTo', 16, 16, '#0000ff'], ['lineTo', 0, 16, '#0000ff']
-    ]);
-    expect(overlay.records.filter((call) => call.name === 'stroke' && call.strokeStyle === '#242424')).toHaveLength(1);
-    expect(overlay.records.find((call) => call.name === 'stroke' && call.strokeStyle === '#242424')?.globalAlpha).toBe(1);
-    renderer.dispose();
-  });
-
-  it('renders a paired clear preview without removing the opposite completion mark', () => {
-    const document = chart(1, 1);
-    const overlay = recordingContext();
-    const renderer = createCanvasRenderer({
-      document,
-      targets: { base: target(recordingContext()), overlay: target(overlay) },
-      metrics: getCanvasMetrics(16, 16),
-      viewport: { x: 0, y: 0, zoom: 16 },
-      overlay: {
-        pendingCellStates: [{ index: 0, cell: { x: 0, y: 0 }, kind: CellKind.ThreeQuarterPair, colors: [1, 0, 35, 0], completed: 4 }]
-      }
-    });
-    renderer.renderNow();
-    const paths = overlay.records
-      .filter((call) => (call.fillStyle === '#ff0000' || call.fillStyle === '#0000ff') && call.strokeStyle === '' && (call.name === 'moveTo' || call.name === 'lineTo'))
-      .map((call) => [call.name, ...(call.args as number[]), call.fillStyle]);
-    expect(paths).toEqual([
-      ['moveTo', 0, 0, '#ff0000'], ['lineTo', 16, 0, '#ff0000'], ['lineTo', 0, 16, '#ff0000'],
-      ['moveTo', 16, 0, '#0000ff'], ['lineTo', 16, 16, '#0000ff'], ['lineTo', 0, 16, '#0000ff']
-    ]);
-    expect(overlay.records.filter((call) => call.name === 'stroke' && call.strokeStyle === '#242424')).toHaveLength(1);
-    renderer.dispose();
-  });
-
-  it('renders a brush preview as an opaque, high-contrast outer footprint outline', () => {
-    const document = chart(5, 5);
-    document.palette[0] = { ...document.palette[0], color: '#ffffff' };
-    document.palette[1] = { ...document.palette[1], color: '#000000' };
-    for (const [index, paletteId] of [[1, 35], [5, 1], [6, 35], [7, 35], [11, 35]]) {
-      document.kind[index] = CellKind.Full;
-      document.colors[index * 4] = paletteId;
-    }
-    const base = recordingContext();
-    const overlay = recordingContext();
-    const renderer = createCanvasRenderer({
-      document,
-      targets: { base: target(base), overlay: target(overlay) },
-      metrics: getCanvasMetrics(80, 80),
-      viewport: { x: 0, y: 0, zoom: 16 },
-      overlay: {
-        brushPreview: {
-          kind: 'paint',
-          states: [
-            { index: 1, cell: { x: 1, y: 0 }, kind: CellKind.Full, colors: [35, 0, 0, 0], completed: 0 },
-            { index: 5, cell: { x: 0, y: 1 }, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 },
-            { index: 6, cell: { x: 1, y: 1 }, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 },
-            { index: 7, cell: { x: 2, y: 1 }, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 },
-            { index: 11, cell: { x: 1, y: 2 }, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 }
-          ]
-        }
-      }
-    });
-    renderer.renderNow();
-    expect(base.records.some((call) => call.name === 'fillRect' && call.args.join(',') === '16,0,16,16' && call.fillStyle === '#000000')).toBe(true);
-    expect(base.records.some((call) => call.name === 'fillRect' && call.args.join(',') === '0,16,16,16' && call.fillStyle === '#ffffff')).toBe(true);
-    expect(overlay.records.some((call) => call.name === 'fillRect' && call.globalAlpha < 0.3)).toBe(false);
-    expect(overlay.records.filter((call) => call.name === 'fill').length).toBe(0);
-    expect(overlay.records.some((call) => call.name === 'stroke' && call.globalAlpha === 1)).toBe(true);
-    // Exact per-edge colors below depend on the *committed* neighbour across
-    // each edge (mixing painted cells and out-of-bounds/background), not on a
-    // single per-cell proposed color, so only the overall geometry and the
-    // restricted {ink, keyline} palette are asserted here (via the `stroke()`
-    // calls, since strokeStyle is set right before each stroke, not before the
-    // moveTo/lineTo that defines its path). See the dedicated committed-color
-    // regressions below for exact ink/keyline assertions.
-    const strokes = overlay.records.filter((call) => call.name === 'stroke');
-    expect(strokes.length).toBeGreaterThan(0);
-    expect(new Set(strokes.map((call) => call.globalAlpha))).toEqual(new Set([1]));
-    expect(strokes.every((call) => call.strokeStyle === '#242424' || call.strokeStyle === '#ffffff')).toBe(true);
-    renderer.dispose();
-  });
-
-  it('derives the brush-preview ink from committed colour, ignoring the pending paint colour (dark region)', () => {
-    // Regression: the hover outline must read the colour it is drawn OVER
-    // (the committed document), never the pending/proposed selected thread.
-    const document = chart(3, 3);
-    document.palette[0] = { ...document.palette[0], color: '#000000' }; // id 1: committed region colour
-    document.palette[1] = { ...document.palette[1], color: '#ffffff' }; // id 35: the (irrelevant) selected thread
-    for (let index = 0; index < 9; index += 1) {
-      document.kind[index] = CellKind.Full;
-      document.colors[index * 4] = 1;
-    }
-    const overlay = recordingContext();
-    const renderer = createCanvasRenderer({
-      document,
-      targets: { base: target(recordingContext()), overlay: target(overlay) },
-      metrics: getCanvasMetrics(48, 48),
-      viewport: { x: 0, y: 0, zoom: 16 },
-      overlay: {
-        brushPreview: {
-          kind: 'paint',
-          // Hover the center cell; its proposed paint colour (id 35, light)
-          // is the opposite of the committed colour underneath it and must
-          // have zero effect on the outline.
-          states: [{ index: 4, cell: { x: 1, y: 1 }, kind: CellKind.Full, colors: [35, 0, 0, 0], completed: 0 }]
-        }
-      }
-    });
-    renderer.renderNow();
-
-    const strokes = overlay.records.filter((call) => call.name === 'stroke');
-    expect(strokes.length).toBeGreaterThan(0);
-    expect(strokes.every((call) => call.globalAlpha === 1)).toBe(true);
-    const keylineWidth = Math.max(...strokes.map((call) => call.lineWidth));
-    const keylineStrokes = strokes.filter((call) => call.lineWidth === keylineWidth);
-    const inkStrokes = strokes.filter((call) => call.lineWidth < keylineWidth);
-    expect(inkStrokes.length).toBeGreaterThan(0);
-    expect(inkStrokes.every((call) => call.strokeStyle === '#ffffff')).toBe(true);
-    expect(keylineStrokes.every((call) => call.strokeStyle === '#242424')).toBe(true);
-    renderer.dispose();
-  });
-
-  it('derives the brush-preview ink from committed colour, ignoring the pending paint colour (light region)', () => {
-    const document = chart(3, 3);
-    document.palette[0] = { ...document.palette[0], color: '#ffffff' }; // id 1: committed region colour
-    document.palette[1] = { ...document.palette[1], color: '#000000' }; // id 35: the (irrelevant) selected thread
-    for (let index = 0; index < 9; index += 1) {
-      document.kind[index] = CellKind.Full;
-      document.colors[index * 4] = 1;
-    }
-    const base = recordingContext();
-    const overlay = recordingContext();
-    const renderer = createCanvasRenderer({
-      document,
-      targets: { base: target(base), overlay: target(overlay) },
-      metrics: getCanvasMetrics(48, 48),
-      viewport: { x: 0, y: 0, zoom: 16 },
-      overlay: {
-        brushPreview: {
-          kind: 'paint',
-          // Proposed paint colour is DARK (selected thread); committed region
-          // is white, so a correct outline stays dark-ink/white-keyline
-          // regardless of what is about to be painted.
-          states: [{ index: 4, cell: { x: 1, y: 1 }, kind: CellKind.Full, colors: [35, 0, 0, 0], completed: 0 }]
-        }
-      }
-    });
-    renderer.renderNow();
-
-    expect(base.records.some((call) => call.name === 'fillRect' && call.fillStyle === '#ffffff')).toBe(true);
-    const strokes = overlay.records.filter((call) => call.name === 'stroke');
-    expect(strokes.length).toBeGreaterThan(0);
-    expect(strokes.every((call) => call.globalAlpha === 1)).toBe(true);
-    const keylineWidth = Math.max(...strokes.map((call) => call.lineWidth));
-    const keylineStrokes = strokes.filter((call) => call.lineWidth === keylineWidth);
-    const inkStrokes = strokes.filter((call) => call.lineWidth < keylineWidth);
-    expect(inkStrokes.length).toBeGreaterThan(0);
-    expect(keylineStrokes.every((call) => call.strokeStyle === '#ffffff')).toBe(true);
-    expect(inkStrokes.every((call) => call.strokeStyle === '#242424')).toBe(true);
-    expect(keylineWidth).toBeGreaterThan(inkStrokes[0]?.lineWidth ?? 0);
-    renderer.dispose();
-  });
-
-  it('keys the outline from the committed neighbour across each footprint edge (mixed colours)', () => {
-    // A hovered black cell ringed entirely by white committed neighbours puts
-    // both candidate inks {white, symbolColor} in front of every edge; the
-    // renderer must make the worst-case-contrast choice consistently rather
-    // than leaking the (unused) proposed colour.
-    const document = chart(3, 3);
-    document.palette[0] = { ...document.palette[0], color: '#000000' }; // id 1: the hovered cell
-    document.palette[1] = { ...document.palette[1], color: '#ffffff' }; // id 35: its committed neighbours
-    for (let index = 0; index < 9; index += 1) {
-      document.kind[index] = CellKind.Full;
-      document.colors[index * 4] = index === 4 ? 1 : 35;
-    }
-    const overlay = recordingContext();
-    const renderer = createCanvasRenderer({
-      document,
-      targets: { base: target(recordingContext()), overlay: target(overlay) },
-      metrics: getCanvasMetrics(48, 48),
-      viewport: { x: 0, y: 0, zoom: 16 },
-      overlay: {
-        brushPreview: {
-          kind: 'paint',
-          states: [{ index: 4, cell: { x: 1, y: 1 }, kind: CellKind.Full, colors: [35, 0, 0, 0], completed: 0 }]
-        }
-      }
-    });
-    renderer.renderNow();
-
-    const strokes = overlay.records.filter((call) => call.name === 'stroke');
-    expect(strokes.length).toBeGreaterThan(0);
-    const allowedInks = new Set(['#ffffff', '#242424']);
-    expect(strokes.every((call) => allowedInks.has(call.strokeStyle))).toBe(true);
-    expect(new Set(strokes.map((call) => call.strokeStyle)).size).toBe(2);
-    const keylineWidth = Math.max(...strokes.map((call) => call.lineWidth));
-    const keylineStrokes = strokes.filter((call) => call.lineWidth === keylineWidth);
-    const inkStrokes = strokes.filter((call) => call.lineWidth < keylineWidth);
-    expect(inkStrokes.length).toBeGreaterThan(0);
-    // Ink and keyline must always differ, and (since every neighbour is
-    // uniformly white) the choice is uniform across every edge.
-    expect(keylineStrokes.every((call) => call.strokeStyle === '#ffffff')).toBe(true);
-    expect(inkStrokes.every((call) => call.strokeStyle === '#242424')).toBe(true);
-    renderer.dispose();
-  });
-
-  it('strokes the keyline solid and wider, then the ink dashed and narrower', () => {
-    const document = chart(3, 3);
-    document.palette[0] = { ...document.palette[0], color: '#000000' };
-    document.palette[1] = { ...document.palette[1], color: '#ffffff' };
-    for (let index = 0; index < 9; index += 1) {
-      document.kind[index] = CellKind.Full;
-      document.colors[index * 4] = 1;
-    }
-    const overlay = recordingContext();
-    const renderer = createCanvasRenderer({
-      document,
-      targets: { base: target(recordingContext()), overlay: target(overlay) },
-      metrics: getCanvasMetrics(48, 48),
-      viewport: { x: 0, y: 0, zoom: 16 },
-      overlay: {
-        brushPreview: {
-          kind: 'paint',
-          states: [{ index: 4, cell: { x: 1, y: 1 }, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 }]
-        }
-      }
-    });
-    renderer.renderNow();
-
-    const records = overlay.records;
-    const strokeIndices: number[] = [];
-    records.forEach((call, index) => { if (call.name === 'stroke') strokeIndices.push(index); });
-    expect(strokeIndices.length).toBeGreaterThanOrEqual(2);
-    const [firstStrokeIndex, secondStrokeIndex] = strokeIndices;
-    const lastDashBefore = (index: number): unknown => {
-      for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
-        if (records[cursor].name === 'setLineDash') return records[cursor].args[0];
-      }
-      return undefined;
-    };
-    // Keyline: solid, wider. Ink: dashed, narrower. Keyline strokes first.
-    expect(records[firstStrokeIndex].lineWidth).toBeGreaterThan(records[secondStrokeIndex].lineWidth);
-    expect(lastDashBefore(firstStrokeIndex)).toEqual([]);
-    const inkDash = lastDashBefore(secondStrokeIndex);
-    expect(Array.isArray(inkDash) && (inkDash as unknown[]).length > 0).toBe(true);
-    renderer.dispose();
-  });
-
-  it('keys a split-cell outline from its painted slot plus the exposed light background', () => {
-    // Regression: unpainted quarters expose the pattern background as an
-    // underlying colour too (not just the one painted dark slot), so a light
-    // background must pull the outline toward a dark ink / white keyline.
-    const document = chart(1, 1);
-    document.settings = { ...document.settings, backgroundColor: '#ffffff' };
-    document.palette[0] = { ...document.palette[0], color: '#ffffff' };
-    document.palette[1] = { ...document.palette[1], color: '#000000' };
-    document.kind[0] = CellKind.Quarters;
-    document.colors.set([35, 0, 0, 0], 0);
-    const base = recordingContext();
-    const overlay = recordingContext();
-    const renderer = createCanvasRenderer({
-      document,
-      targets: { base: target(base), overlay: target(overlay) },
-      metrics: getCanvasMetrics(16, 16),
-      viewport: { x: 0, y: 0, zoom: 16 },
-      overlay: {
-        brushPreview: {
-          kind: 'paint',
-          states: [{ index: 0, cell: { x: 0, y: 0 }, kind: CellKind.Quarters, colors: [35, 0, 0, 0], completed: 0 }]
-        }
-      }
-    });
-    renderer.renderNow();
-
-    expect(base.records.some((call) => call.name === 'fillRect' && call.fillStyle === document.settings.backgroundColor)).toBe(true);
-    expect(base.records.some((call) => call.name === 'fill' && call.fillStyle === '#000000')).toBe(true);
-    const strokes = overlay.records.filter((call) => call.name === 'stroke');
-    expect(strokes.length).toBeGreaterThan(0);
-    expect(strokes.every((call) => call.globalAlpha === 1)).toBe(true);
-    const keylineWidth = Math.max(...strokes.map((call) => call.lineWidth));
-    const keylineStrokes = strokes.filter((call) => call.lineWidth === keylineWidth);
-    const inkStrokes = strokes.filter((call) => call.lineWidth < keylineWidth);
-    expect(inkStrokes.length).toBeGreaterThan(0);
-    // Underlying colours here are {dark painted slot, white background}: the
-    // worst-case-contrast choice is a dark ink (style.symbolColor) with a
-    // white keyline beneath it.
-    expect(keylineStrokes.every((call) => call.strokeStyle === '#ffffff')).toBe(true);
-    expect(inkStrokes.every((call) => call.strokeStyle === '#242424')).toBe(true);
-    renderer.dispose();
-  });
-
-  it('keys a half-stitch outline from its exposed corner background, not just its painted band', () => {
-    // Regression: HalfBackslash/HalfSlash paint a diagonal hexagon that
-    // leaves two corner triangles as exposed pattern background. Without
-    // that background, an edge shared with an equally-coloured committed
-    // neighbour sees only one (duplicated) colour and picks the *worse*
-    // worst-case ink; the exposed white background must pull it back to
-    // the correct dark ink / white keyline pair.
-    const document = chart(2, 1);
-    document.settings = { ...document.settings, backgroundColor: '#ffffff' };
-    document.palette[0] = { ...document.palette[0], color: '#4d4d4d' };
-    document.kind[0] = CellKind.HalfBackslash;
-    document.colors[0] = 1;
-    document.kind[1] = CellKind.Full;
-    document.colors[4] = 1;
-    const base = recordingContext();
-    const overlay = recordingContext();
-    const renderer = createCanvasRenderer({
-      document,
-      targets: { base: target(base), overlay: target(overlay) },
-      metrics: getCanvasMetrics(32, 16),
-      viewport: { x: 0, y: 0, zoom: 16 },
-      overlay: {
-        brushPreview: {
-          kind: 'paint',
-          states: [{ index: 0, cell: { x: 0, y: 0 }, kind: CellKind.HalfBackslash, colors: [1, 0, 0, 0], completed: 0 }]
-        }
-      }
-    });
-    renderer.renderNow();
-
-    expect(base.records.some((call) => call.name === 'fill' && call.fillStyle === '#4d4d4d')).toBe(true);
-    expect(base.records.some((call) => call.name === 'fillRect' && call.fillStyle === '#4d4d4d')).toBe(true);
-    const strokes = overlay.records.filter((call) => call.name === 'stroke');
-    expect(strokes.length).toBeGreaterThan(0);
-    const keylineWidth = Math.max(...strokes.map((call) => call.lineWidth));
-    const keylineStrokes = strokes.filter((call) => call.lineWidth === keylineWidth);
-    const inkStrokes = strokes.filter((call) => call.lineWidth < keylineWidth);
-    expect(inkStrokes.length).toBeGreaterThan(0);
-    // Every edge (including the one shared with the equally-dark Full
-    // neighbour) must resolve to the same dark-ink/white-keyline pair.
-    expect(inkStrokes.every((call) => call.strokeStyle === '#242424')).toBe(true);
-    expect(keylineStrokes.every((call) => call.strokeStyle === '#ffffff')).toBe(true);
-    renderer.dispose();
-  });
-
-  it('keys a directional three-quarter outline from its exposed corner background', () => {
-    // Same regression as the half-stitch case above, for a single-direction
-    // three-quarter stitch (CellKind.ThreeQuarterNW/NE/SE/SW), which paints one
-    // triangle and leaves the opposite corner as exposed background.
-    const document = chart(2, 1);
-    document.settings = { ...document.settings, backgroundColor: '#ffffff' };
-    document.palette[0] = { ...document.palette[0], color: '#4d4d4d' };
-    document.kind[0] = CellKind.ThreeQuarterSE;
-    document.colors[0] = 1;
-    document.kind[1] = CellKind.Full;
-    document.colors[4] = 1;
-    const base = recordingContext();
-    const overlay = recordingContext();
-    const renderer = createCanvasRenderer({
-      document,
-      targets: { base: target(base), overlay: target(overlay) },
-      metrics: getCanvasMetrics(32, 16),
-      viewport: { x: 0, y: 0, zoom: 16 },
-      overlay: {
-        brushPreview: {
-          kind: 'paint',
-          states: [{ index: 0, cell: { x: 0, y: 0 }, kind: CellKind.ThreeQuarterSE, colors: [1, 0, 0, 0], completed: 0 }]
-        }
-      }
-    });
-    renderer.renderNow();
-
-    expect(base.records.some((call) => call.name === 'fill' && call.fillStyle === '#4d4d4d')).toBe(true);
-    expect(base.records.some((call) => call.name === 'fillRect' && call.fillStyle === '#4d4d4d')).toBe(true);
-    const strokes = overlay.records.filter((call) => call.name === 'stroke');
-    expect(strokes.length).toBeGreaterThan(0);
-    const keylineWidth = Math.max(...strokes.map((call) => call.lineWidth));
-    const keylineStrokes = strokes.filter((call) => call.lineWidth === keylineWidth);
-    const inkStrokes = strokes.filter((call) => call.lineWidth < keylineWidth);
-    expect(inkStrokes.length).toBeGreaterThan(0);
-    expect(inkStrokes.every((call) => call.strokeStyle === '#242424')).toBe(true);
-    expect(keylineStrokes.every((call) => call.strokeStyle === '#ffffff')).toBe(true);
-    renderer.dispose();
   });
 
   it('dims the committed pattern while move-image dimming is active', () => {
@@ -1959,44 +1565,51 @@ describe('Canvas 2D chart renderer', () => {
     renderer.dispose();
   });
 
-  it('adds the 10, 5 and 1-cell tiers at 1/0.9, 1/0.4 and 1/0.1 of the fit zoom', () => {
+  const gridTierColorsAt = (document: PatternDocument, zoom: number): Set<string | undefined> => {
+    const base = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(base), overlay: target(recordingContext()) },
+      metrics: getCanvasMetrics(640, 320, { dpr: 2 }),
+      viewport: { x: 0, y: 0, zoom },
+      style: { gridColor: '#00ff00', midGridColor: '#0000ff', majorGridColor: '#ff0000', gridInterval: 10, midGridInterval: 5 }
+    });
+    renderer.renderNow();
+    renderer.dispose();
+    return new Set(
+      base.records
+        .filter((call) => call.name === 'stroke' && (call.strokeStyle === '#00ff00' || call.strokeStyle === '#0000ff' || call.strokeStyle === '#ff0000'))
+        .map((call) => call.strokeStyle)
+    );
+  };
+
+  it('adds the 10, 5 and 1-cell tiers at 3, 8 and 16 CSS px per cell', () => {
     const document = chart(200, 100);
-    const metrics = getCanvasMetrics(640, 320, { dpr: 2 });
-    const fitZoom = fitViewport(document, metrics, CHART_EDGE_MARGIN).zoom;
+    const fitZoom = fitViewport(document, getCanvasMetrics(640, 320, { dpr: 2 }), CHART_EDGE_MARGIN).zoom;
     const cases = [
       { zoom: fitZoom, tiers: [] },
-      { zoom: (fitZoom / 0.9) * 0.999, tiers: [] },
-      { zoom: fitZoom / 0.9, tiers: ['#ff0000'] },
-      { zoom: (fitZoom / 0.4) * 0.999, tiers: ['#ff0000'] },
-      { zoom: fitZoom / 0.4, tiers: ['#ff0000', '#0000ff'] },
-      { zoom: (fitZoom / 0.1) * 0.999, tiers: ['#ff0000', '#0000ff'] },
-      { zoom: fitZoom / 0.1, tiers: ['#ff0000', '#0000ff', '#00ff00'] }
+      { zoom: 3, tiers: ['#ff0000'] },
+      { zoom: 8 * 0.999, tiers: ['#ff0000'] },
+      { zoom: 8, tiers: ['#ff0000', '#0000ff'] },
+      { zoom: 16 * 0.999, tiers: ['#ff0000', '#0000ff'] },
+      { zoom: 16, tiers: ['#ff0000', '#0000ff', '#00ff00'] }
     ];
 
     for (const { zoom, tiers } of cases) {
-      const base = recordingContext();
-      const renderer = createCanvasRenderer({
-        document,
-        targets: { base: target(base), overlay: target(recordingContext()) },
-        metrics,
-        viewport: { x: 0, y: 0, zoom },
-        style: { gridColor: '#00ff00', midGridColor: '#0000ff', majorGridColor: '#ff0000', gridInterval: 10, midGridInterval: 5 }
-      });
-      renderer.renderNow();
-      const colors = new Set(
-        base.records
-          .filter((call) => call.name === 'stroke' && (call.strokeStyle === '#00ff00' || call.strokeStyle === '#0000ff' || call.strokeStyle === '#ff0000'))
-          .map((call) => call.strokeStyle)
-      );
-      expect(colors, `zoom ${String(zoom)}`).toEqual(new Set(tiers));
-      renderer.dispose();
+      expect(gridTierColorsAt(document, zoom), `zoom ${String(zoom)}`).toEqual(new Set(tiers));
     }
+  });
+
+  it('shows no tier at the fit zoom and every tier just past it on a small pattern', () => {
+    const document = chart(20, 10);
+    const fitZoom = fitViewport(document, getCanvasMetrics(640, 320, { dpr: 2 }), CHART_EDGE_MARGIN).zoom;
+    expect(gridTierColorsAt(document, fitZoom)).toEqual(new Set());
+    expect(gridTierColorsAt(document, fitZoom * 1.001)).toEqual(new Set(['#ff0000', '#0000ff', '#00ff00']));
   });
 
   it('draws the 10-cell lines at 1px below the 5-cell breakpoint and restores them at it', () => {
     const document = chart(200, 100);
     const metrics = getCanvasMetrics(640, 320, { dpr: 2 });
-    const fitZoom = fitViewport(document, metrics, CHART_EDGE_MARGIN).zoom;
     const majorWidths = (zoom: number, midGridInterval: number) => {
       const base = recordingContext();
       const renderer = createCanvasRenderer({
@@ -2010,30 +1623,11 @@ describe('Canvas 2D chart renderer', () => {
       renderer.dispose();
       return new Set(base.records.filter((call) => call.name === 'stroke' && call.strokeStyle === '#ff0000').map((call) => call.lineWidth));
     };
-    const breakpoint = fitZoom / 0.4;
+    const breakpoint = 8;
     for (const midGridInterval of [5, 1]) {
       expect(majorWidths(breakpoint * 0.999, midGridInterval)).toEqual(new Set([1]));
       expect(majorWidths(breakpoint, midGridInterval)).toEqual(new Set([1.7]));
     }
-  });
-
-  it('draws the 5-cell tier at overview LOD once it clears its threshold', () => {
-    const base = recordingContext();
-    const renderer = createCanvasRenderer({
-      document: chart(1_000, 1_000),
-      targets: { base: target(base), overlay: target(recordingContext()) },
-      metrics: getCanvasMetrics(400, 400),
-      viewport: { x: 0, y: 0, zoom: 3 },
-      atlasTargetFactory: (width, height) => target(recordingContext(), new FakeCanvasImageSource(width, height)),
-      style: { gridColor: '#00ff00', midGridColor: '#0000ff', majorGridColor: '#ff0000', gridInterval: 10, midGridInterval: 5 }
-    });
-    // Fit is 0.352: 3 px per cell is past the 5-cell threshold (0.88) and below the 1-cell floor.
-    expect(renderer.renderNow().lod).toBe('overview');
-    const colors = new Set(base.records.filter((call) => call.name === 'stroke').map((call) => call.strokeStyle));
-    expect(colors.has('#0000ff')).toBe(true);
-    expect(colors.has('#ff0000')).toBe(true);
-    expect(colors.has('#00ff00')).toBe(false);
-    renderer.dispose();
   });
 
   it('draws the 5-cell tier thicker than the 1-cell tier and thinner than the 10-cell tier', () => {
@@ -2053,7 +1647,8 @@ describe('Canvas 2D chart renderer', () => {
     };
     for (const lod of ['detail', 'compact'] as const) {
       const [cell, mid, major] = widths(lod) as number[];
-      expect(cell).toBeLessThan(mid);
+      // The 1-cell tier needs 16px per cell, which is past compact geometry.
+      if (lod === 'detail') expect(cell).toBeLessThan(mid);
       expect(mid).toBeLessThan(major);
     }
   });
@@ -2068,8 +1663,8 @@ describe('Canvas 2D chart renderer', () => {
       style: { gridInterval: 10, midGridInterval: 5, chartBorderColor: '#123456' }
     });
     renderer.renderNow();
-    // The per-stitch tier shows here too; its smaller labels are covered separately.
-    const labels = base.records.filter((call) => call.name === 'fillText' && call.font === '12px sans-serif');
+    // The per-stitch tier shows here too; its labels are covered separately.
+    const labels = base.records.filter((call) => call.name === 'fillText' && Number(call.args[0]) % 5 === 0);
     // The chart origin is at (31, 31); label n is centered on the nth column or row.
     // Labels from 30 on would sit past the canvas edge and are not drawn.
     const columns = labels.filter((call) => call.textAlign === 'center');
@@ -2112,24 +1707,9 @@ describe('Canvas 2D chart renderer', () => {
       renderer.renderNow();
       renderer.dispose();
       const labels = base.records.filter((call) => call.name === 'fillText');
-      return { main: labels.filter((call) => call.globalAlpha === 1), minor: labels.filter((call) => call.globalAlpha !== 1) };
+      const perStitch = (call: (typeof labels)[number]) => Number(call.args[0]) % 5 !== 0;
+      return { main: labels.filter((call) => !perStitch(call)), minor: labels.filter(perStitch) };
     }
-
-    it('labels the lines between the 5-cell labels smaller and lighter', () => {
-      const { main, minor } = renderNumbers(300, 31);
-      const columns = minor.filter((call) => call.textAlign === 'center');
-      const rows = minor.filter((call) => call.textAlign === 'right');
-      expect(main.length).toBeGreaterThan(0);
-      expect(columns.map((call) => call.args[0])).toEqual(['1', '2', '3', '4', '6', '7', '8', '9', '11', '12', '13', '14', '16', '17', '18', '19', '21', '22', '23', '24']);
-      expect(rows).toHaveLength(columns.length);
-      for (const call of minor) {
-        expect(call.globalAlpha).toBe(0.55);
-        expect(call.fillStyle).toBe('#123456');
-        expect(call.font).toBe(`${12 * 0.8}px sans-serif`);
-      }
-      expect(columns[0].args[1]).toBe(31 + 0.5 * 31);
-      expect(rows[0].args[2]).toBe(31 + 0.5 * 31);
-    });
 
     it('draws no minor labels while the per-stitch tier is hidden', () => {
       const { main, minor } = renderNumbers(60, 7.5, 400);
@@ -2204,7 +1784,7 @@ describe('Canvas 2D chart renderer', () => {
 
   it('keeps grid coordinates inside the pattern and canvas bounds at every LOD and DPR', () => {
     const cases = [
-      { name: 'overview', document: chart(100, 100), metrics: getCanvasMetrics(40, 32, { dpr: 2 }), viewport: { x: 3.25, y: 4.5, zoom: 1 }, grid: true },
+      { name: 'overview', document: chart(100, 100), metrics: getCanvasMetrics(40, 32, { dpr: 2 }), viewport: { x: 3.25, y: 4.5, zoom: 3.5 }, grid: true },
       { name: 'compact', document: chart(7, 7), metrics: getCanvasMetrics(40, 32, { dpr: 1.5 }), viewport: { x: 0.25, y: 0.5, zoom: 8 }, grid: true },
       { name: 'detail', document: chart(3, 3), metrics: getCanvasMetrics(40, 32, { dpr: 2 }), viewport: { x: 0, y: 0, zoom: 16 }, grid: true },
       { name: 'centered pattern', document: chart(2, 2), metrics: getCanvasMetrics(80, 60, { dpr: 2 }), viewport: { x: 0, y: 0, zoom: 40 }, grid: true }
@@ -2298,6 +1878,26 @@ describe('Canvas 2D chart renderer', () => {
       return base;
     };
 
+    it('colors the edge of a pending stitch as the committed stitch will, and restores it when the stroke ends', () => {
+      const pending = { index: 0, cell: { x: 0, y: 0 }, kind: CellKind.Full, colors: [DARK, 0, 0, 0] as const, completed: 0 };
+      const base = recordingContext();
+      const renderer = createCanvasRenderer({
+        document: toneChart([0, DARK]),
+        targets: { base: target(base), overlay: target(recordingContext()) },
+        metrics: getCanvasMetrics(40, 20),
+        viewport: { x: 0, y: 0, zoom: 20 },
+        style: gridStyle,
+        overlay: { pendingCellStates: [pending] }
+      });
+      renderer.renderNow();
+      expect(verticalAt(base, 20)).toEqual(verticalAt(render(toneChart([DARK, DARK])), 20));
+      base.records.length = 0;
+      renderer.setOverlay({});
+      renderer.renderNow();
+      expect(verticalAt(base, 20)).toEqual(verticalAt(render(toneChart([0, DARK])), 20));
+      renderer.dispose();
+    });
+
     it('darkens lines between light stitches and lightens lines between dark stitches', () => {
       const base = render(toneChart([LIGHT, LIGHT, DARK, DARK]));
       expect(verticalAt(base, 20)).toEqual(['#111111']);
@@ -2333,31 +1933,6 @@ describe('Canvas 2D chart renderer', () => {
       expect(gridSegments(base).length).toBeGreaterThan(0);
       expect(gridSegments(base).every((segment) => segment.color === '#00ff00')).toBe(true);
     });
-
-    it('judges pending overlay cells by their pending colors', () => {
-      const document = toneChart([0, 0, 0, 0]);
-      const overlay = recordingContext();
-      const renderer = createCanvasRenderer({
-        document,
-        targets: { base: target(recordingContext()), overlay: target(overlay) },
-        metrics: getCanvasMetrics(80, 20),
-        viewport: { x: 0, y: 0, zoom: 20 },
-        style: gridStyle,
-        overlay: {
-          pendingCells: [{ x: 1, y: 0 }, { x: 2, y: 0 }],
-          pendingCellStates: [
-            { index: 1, cell: { x: 1, y: 0 }, kind: CellKind.Full, colors: [DARK, 0, 0, 0], completed: 0 },
-            { index: 2, cell: { x: 2, y: 0 }, kind: CellKind.Full, colors: [DARK, 0, 0, 0], completed: 0 }
-          ]
-        }
-      });
-      renderer.renderNow();
-      expect(verticalAt(overlay, 40)).toEqual(['#eeeeee']);
-      // Each pending cell borders light fabric on its outer side.
-      expect(verticalAt(overlay, 20)).toEqual(['#00ff00']);
-      expect(verticalAt(overlay, 60)).toEqual(['#00ff00']);
-      renderer.dispose();
-    });
   });
 
   it('clips interaction overlays to the visible PatternDocument rectangle', () => {
@@ -2370,7 +1945,10 @@ describe('Canvas 2D chart renderer', () => {
       metrics,
       viewport: { x: 0, y: 0, zoom: 10 },
       overlay: {
-        pendingCells: [{ x: -1, y: 0 }, { x: 0, y: 0 }, { x: 3, y: 2 }, { x: 4, y: 3 }],
+        pendingCellStates: [
+          { index: 0, cell: { x: 0, y: 0 }, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 },
+          { index: 11, cell: { x: 3, y: 2 }, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 }
+        ],
         backstitchPreview: { start: { x: -8, y: -4 }, end: { x: 24, y: 16 } },
         selection: { x: -2, y: -1, width: 8, height: 6 },
         cursor: { x: 3, y: 2 }
@@ -2605,51 +2183,6 @@ describe('Canvas 2D chart renderer', () => {
     });
   });
 
-  it('renders exact sparse pending after-states for full, half, erase, legacy, and no-op cells', () => {
-    const document = chart(6, 1);
-    document.kind[3] = CellKind.Full;
-    document.colors[3 * 4] = 35;
-    document.kind[4] = CellKind.Quarters;
-    document.colors.set([1, 35, 1, 35], 4 * 4);
-    document.kind[5] = CellKind.Full;
-    document.colors[5 * 4] = 35;
-    const pendingCellStates: PendingCellState[] = [
-      { index: 0, cell: { x: 0, y: 0 }, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 },
-      { index: 1, cell: { x: 1, y: 0 }, kind: CellKind.HalfBackslash, colors: [1, 0, 0, 0], completed: 0 },
-      { index: 2, cell: { x: 2, y: 0 }, kind: CellKind.HalfSlash, colors: [35, 0, 0, 0], completed: 0 },
-      { index: 3, cell: { x: 3, y: 0 }, kind: CellKind.Empty, colors: [0, 0, 0, 0], completed: 0 },
-      { index: 4, cell: { x: 4, y: 0 }, kind: CellKind.Quarters, colors: [1, 0, 1, 0], completed: 0 }
-    ];
-    const overlay = recordingContext();
-    const renderer = createCanvasRenderer({
-      document,
-      targets: { base: target(recordingContext()), overlay: target(overlay) },
-      metrics: getCanvasMetrics(96, 16),
-      viewport: { x: 0, y: 0, zoom: 16 },
-      overlay: {
-        pendingCells: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 2, y: 0 }, { x: 3, y: 0 }, { x: 4, y: 0 }, { x: 5, y: 0 }],
-        pendingCellStates
-      }
-    });
-    renderer.renderNow();
-
-    const fillRects = overlay.records.filter((call) => call.name === 'fillRect');
-    const paths = overlay.records.filter((call) => call.name === 'moveTo' || call.name === 'lineTo');
-    const halfLeg = 16 * Math.SQRT1_2;
-    expect(fillRects.some((call) => call.args.join(',') === '0,0,16,16' && call.fillStyle === '#ff0000')).toBe(true);
-    expect(paths.some((call) => call.name === 'moveTo' && call.args.join(',') === '16,0' && call.fillStyle === '#ff0000')).toBe(true);
-    expect(paths.some((call) => call.name === 'lineTo' && call.args[0] === 16 - halfLeg + 16 && call.args[1] === 0 && call.fillStyle === '#ff0000')).toBe(true);
-    expect(paths.some((call) => call.name === 'moveTo' && call.args[0] === 32 + halfLeg && call.args[1] === 0 && call.fillStyle === '#0000ff')).toBe(true);
-    expect(paths.some((call) => call.name === 'lineTo' && call.args.join(',') === '32,16' && call.fillStyle === '#0000ff')).toBe(true);
-    expect(fillRects.some((call) => call.args.join(',') === '48,0,16,16' && call.fillStyle === document.settings.backgroundColor)).toBe(true);
-    expect(paths.some((call) => call.name === 'moveTo' && call.args[0] === 48 && (call.strokeStyle === '#ff0000' || call.strokeStyle === '#0000ff'))).toBe(false);
-    expect(paths.some((call) => call.name === 'moveTo' && call.args.join(',') === '64,0' && call.fillStyle === '#ff0000')).toBe(true);
-    expect(paths.some((call) => call.name === 'moveTo' && call.args.join(',') === '80,16' && call.fillStyle === '#ff0000')).toBe(true);
-    expect(paths.some((call) => call.fillStyle === '#0000ff' && Number(call.args[0]) >= 64)).toBe(false);
-    expect(fillRects.some((call) => call.args[0] === 80)).toBe(false);
-    renderer.dispose();
-  });
-
   describe('move source hole', () => {
     function holeSetup(lifted?: ReadonlySet<number>) {
       const document = chart(3, 1);
@@ -2767,10 +2300,8 @@ describe('Canvas 2D chart renderer', () => {
     });
   });
 
-  it('repaints affected grid and crossing backstitches above a pending mask', () => {
+  it('leaves backstitches being erased out of the base pass', () => {
     const document = chart(3, 1);
-    document.kind[1] = CellKind.Full;
-    document.colors[4] = 35;
     document.backstitches = {
       ids: new Uint32Array([1, 2]),
       x1: new Uint32Array([2, 9]),
@@ -2780,125 +2311,18 @@ describe('Canvas 2D chart renderer', () => {
       colors: new Uint16Array([35, 35]),
       completed: new Uint8Array([0, 0])
     };
-    const overlay = recordingContext();
+    const base = recordingContext();
     const renderer = createCanvasRenderer({
       document,
-      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      targets: { base: target(base), overlay: target(recordingContext()) },
       metrics: getCanvasMetrics(48, 20),
       viewport: { x: 0, y: 0, zoom: 20 },
-      // The pending stitch is dark, so its outer edges take the dark-stitch variant.
-      style: { gridColor: '#00aa00', majorGridColor: '#00aa00', darkStitchGridColor: '#00aa00', darkStitchMajorGridColor: '#00aa00', gridInterval: 1 },
-      overlay: {
-        pendingCells: [{ x: 1, y: 0 }],
-        pendingCellStates: [{ index: 1, cell: { x: 1, y: 0 }, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 }]
-      }
+      style: { showGrid: false },
+      overlay: { erasingBackstitchIds: new Set([2]) }
     });
     renderer.renderNow();
-
-    const maskIndex = overlay.records.findIndex((call) => call.name === 'fillRect' && call.args.join(',') === '20,0,20,20' && call.fillStyle === document.settings.backgroundColor);
-    const stateIndex = overlay.records.findIndex((call) => call.name === 'fillRect' && call.args.join(',') === '20,0,20,20' && call.fillStyle === '#ff0000');
-    const gridIndices = overlay.records
-      .map((call, index, records) => call.name === 'moveTo' && call.strokeStyle === '#00aa00' && records[index + 1]?.name === 'lineTo' && records[index + 2]?.name === 'stroke' ? index : -1)
-      .filter((index) => index >= 0);
-    const backstitchIndices = overlay.records
-      .map((call, index, records) => call.name === 'moveTo' && call.strokeStyle === '#0000ff' && records[index + 1]?.name === 'lineTo' && records[index + 2]?.name === 'stroke' ? index : -1)
-      .filter((index) => index >= 0);
-    expect(maskIndex).toBeGreaterThanOrEqual(0);
-    expect(stateIndex).toBeGreaterThan(maskIndex);
-    expect(gridIndices.length).toBe(4);
-    expect(backstitchIndices).toHaveLength(1);
-    expect(gridIndices[0]).toBeGreaterThan(stateIndex);
-    expect(backstitchIndices[0]).toBeGreaterThan(gridIndices.at(-1) ?? -1);
-    for (const index of gridIndices) {
-      const from = overlay.records[index].args as number[];
-      const to = overlay.records[index + 1].args as number[];
-      expect(overlay.records[index + 1].name).toBe('lineTo');
-      expect(from[0]).toBeGreaterThanOrEqual(20);
-      expect(from[0]).toBeLessThanOrEqual(40);
-      expect(to[0]).toBeGreaterThanOrEqual(20);
-      expect(to[0]).toBeLessThanOrEqual(40);
-      expect(from[1]).toBeGreaterThanOrEqual(0);
-      expect(from[1]).toBeLessThanOrEqual(20);
-      expect(to[1]).toBeGreaterThanOrEqual(0);
-      expect(to[1]).toBeLessThanOrEqual(20);
-    }
-    renderer.dispose();
-  });
-
-  it('clips pending backstitch repairs to the sparse pending-cell union', () => {
-    const document = chart(4, 1);
-    document.kind[1] = CellKind.Full;
-    document.colors[4] = 1;
-    document.kind[3] = CellKind.Full;
-    document.colors[12] = 1;
-    document.backstitches = {
-      ids: new Uint32Array([1, 2]),
-      x1: new Uint32Array([2, 9]),
-      y1: new Uint32Array([2, 2]),
-      x2: new Uint32Array([14, 11]),
-      y2: new Uint32Array([2, 2]),
-      colors: new Uint16Array([35, 35]),
-      completed: new Uint8Array([0, 0])
-    };
-    const overlay = recordingContext();
-    const renderer = createCanvasRenderer({
-      document,
-      targets: { base: target(recordingContext()), overlay: target(overlay) },
-      metrics: getCanvasMetrics(64, 16),
-      viewport: { x: 0, y: 0, zoom: 16 },
-      style: { gridColor: '#00aa00', majorGridColor: '#00aa00', gridInterval: 1 },
-      overlay: {
-        pendingCellStates: [
-          { index: 1, cell: { x: 1, y: 0 }, kind: CellKind.Empty, colors: [0, 0, 0, 0], completed: 0 },
-          { index: 3, cell: { x: 3, y: 0 }, kind: CellKind.Empty, colors: [0, 0, 0, 0], completed: 0 }
-        ]
-      }
-    });
-    renderer.renderNow();
-
-    const backstitchMoves = overlay.records
-      .filter((call, index, records) => call.name === 'moveTo' && call.strokeStyle === '#0000ff' && records[index + 1]?.name === 'lineTo' && records[index + 2]?.name === 'stroke')
-      .map((call) => call.args as number[]);
-    const backstitchLines = overlay.records
-      .filter((call, index, records) => call.name === 'lineTo' && call.strokeStyle === '#0000ff' && records[index - 1]?.name === 'moveTo' && records[index + 1]?.name === 'stroke')
-      .map((call) => call.args as number[]);
-    expect(backstitchMoves).toEqual([[16, 8], [48, 8]]);
-    expect(backstitchLines).toEqual([[32, 8], [56, 8]]);
-    expect(backstitchMoves.some(([x]) => x === 8)).toBe(false);
-    for (const [x, y] of [...backstitchMoves, ...backstitchLines]) {
-      expect(y).toBe(8);
-      expect(x === 16 || x === 32 || x === 48 || x === 56).toBe(true);
-    }
-    renderer.dispose();
-  });
-
-  it('repairs pending backstitches at overview LOD', () => {
-    const document = chart(2, 1);
-    document.kind[0] = CellKind.Full;
-    document.colors[0] = 1;
-    document.backstitches = {
-      ids: new Uint32Array([1]),
-      x1: new Uint32Array([0]),
-      y1: new Uint32Array([2]),
-      x2: new Uint32Array([8]),
-      y2: new Uint32Array([2]),
-      colors: new Uint16Array([35]),
-      completed: new Uint8Array([0])
-    };
-    const overlay = recordingContext();
-    const renderer = createCanvasRenderer({
-      document,
-      targets: { base: target(recordingContext()), overlay: target(overlay) },
-      metrics: getCanvasMetrics(80, 80),
-      viewport: { x: 0, y: 0, zoom: 1 },
-      style: { gridColor: '#00aa00', majorGridColor: '#00aa00' },
-      overlay: {
-        pendingCellStates: [{ index: 0, cell: { x: 0, y: 0 }, kind: CellKind.Empty, colors: [0, 0, 0, 0], completed: 0 }]
-      }
-    });
-    expect(renderer.renderNow().lod).toBe('overview');
-    expect(overlay.records.some((call) => call.name === 'moveTo' && call.strokeStyle === '#0000ff')).toBe(true);
-    expect(overlay.records.some((call) => call.name === 'moveTo' && call.strokeStyle === '#00aa00')).toBe(false);
+    const strokes = base.records.filter((call) => call.name === 'moveTo' && call.strokeStyle === '#0000ff' && call.args[1] === 10);
+    expect(strokes.map((call) => call.args[0])).toEqual([10]);
     renderer.dispose();
   });
 
@@ -3379,7 +2803,7 @@ describe('Canvas 2D chart renderer', () => {
       document: chart(1_000, 1_000),
       targets: { base: target(base), overlay: target(recordingContext()) },
       metrics: getCanvasMetrics(160, 120),
-      viewport: { x: 500, y: 500, zoom: 0.5 },
+      viewport: { x: 500, y: 500, zoom: 3.5 },
       atlasTargetFactory: (width, height) => target(recordingContext(), new FakeCanvasImageSource(width, height)),
       style: { gridColor: '#00ff00', majorGridColor: '#ff0000' }
     });

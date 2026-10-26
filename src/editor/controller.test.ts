@@ -465,10 +465,10 @@ describe('EditorSurfaceController', () => {
     const cancelled = controllerFixture();
     cancelled.controller.handlePointerDown(pointer(1, 8, 8));
     cancelled.controller.handlePointerMove(pointer(1, 40, 8));
-    expect(cancelled.uiStore.getState().overlay.pendingCells).toHaveLength(3);
+    expect(cancelled.uiStore.getState().overlay.pendingCellStates).toHaveLength(3);
     cancelled.controller.handlePointerCancel(pointer(1, 40, 8));
     expect(cancelled.boundary.log).toHaveLength(0);
-    expect(cancelled.uiStore.getState().overlay.pendingCells).toBeUndefined();
+    expect(cancelled.uiStore.getState().overlay.pendingCellStates).toBeUndefined();
     cancelled.controller.handlePointerUp(pointer(1, 40, 8));
     expect(cancelled.boundary.log).toHaveLength(0);
 
@@ -476,7 +476,7 @@ describe('EditorSurfaceController', () => {
     cancelled.controller.handlePointerMove(pointer(2, 40, 8));
     cancelled.controller.handlePointerLostCapture(pointer(2, 40, 8));
     expect(cancelled.boundary.log).toHaveLength(0);
-    expect(cancelled.uiStore.getState().overlay.pendingCells).toBeUndefined();
+    expect(cancelled.uiStore.getState().overlay.pendingCellStates).toBeUndefined();
     cancelled.controller.dispose();
   });
 
@@ -513,15 +513,15 @@ describe('EditorSurfaceController', () => {
     const { boundary, uiStore, controller } = controllerFixture();
     controller.handlePointerDown(pointer(1, 8, 8));
     controller.handlePointerMove(pointer(1, 19, 8));
-    expect(uiStore.getState().overlay.pendingCells).toHaveLength(1);
+    expect(uiStore.getState().overlay.pendingCellStates).toHaveLength(1);
     controller.handlePointerMove(pointer(1, 20, 8));
-    expect(uiStore.getState().overlay.pendingCells).toHaveLength(2);
+    expect(uiStore.getState().overlay.pendingCellStates).toHaveLength(2);
     controller.handlePointerMove(pointer(1, 24, 19));
-    expect(uiStore.getState().overlay.pendingCells).toHaveLength(2);
+    expect(uiStore.getState().overlay.pendingCellStates).toHaveLength(2);
     controller.handlePointerMove(pointer(1, 24, 20));
-    expect(uiStore.getState().overlay.pendingCells).toHaveLength(3);
+    expect(uiStore.getState().overlay.pendingCellStates).toHaveLength(3);
     controller.handlePointerMove(pointer(1, 13, 24));
-    expect(uiStore.getState().overlay.pendingCells).toHaveLength(3);
+    expect(uiStore.getState().overlay.pendingCellStates).toHaveLength(3);
     controller.handlePointerUp(pointer(1, 13, 24));
     expect(boundary.log).toHaveLength(1);
     expect(boundary.log[0]).toMatchObject({ indices: new Uint32Array([0, 1, 9]) });
@@ -554,7 +554,7 @@ describe('EditorSurfaceController', () => {
     controller.handlePointerDown(pointer(1, 8, 8));
     controller.handlePointerMove(pointer(1, 72, 8));
     expect(gateway.getSnapshot().document?.kind.every((kind) => kind === 0)).toBe(true);
-    expect(uiStore.getState().overlay.pendingCells).toHaveLength(5);
+    expect(uiStore.getState().overlay.pendingCellStates).toHaveLength(5);
     expect(uiStore.getState().overlay.pendingCellStates?.slice(0, 2)).toMatchObject([
       { index: 0, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 },
       { index: 1, kind: CellKind.Full, colors: [1, 0, 0, 0], completed: 0 }
@@ -564,7 +564,7 @@ describe('EditorSurfaceController', () => {
     expect(gateway.getSnapshot().document?.kind.slice(0, 5)).toEqual(new Uint8Array([1, 1, 1, 1, 1]));
     expect(calls.setDocument).toHaveLength(2);
     expect(calls.setDocument.at(-1)?.invalidation).toMatchObject({ layer: 'base', cellRect: { x: 0, y: 0, width: 5, height: 1 } });
-    expect(uiStore.getState().overlay.pendingCells).toBeUndefined();
+    expect(uiStore.getState().overlay.pendingCellStates).toBeUndefined();
     expect(uiStore.getState().status).toBe('Stitched 5 cells');
     expect(boundary.undoDepth).toBe(1);
     gateway.undo({ projectId: 'project-a', revision: 1 });
@@ -602,15 +602,15 @@ describe('EditorSurfaceController', () => {
     controller.setTool({ tool: 'shape', shape: 'line' });
 
     expect(controller.handlePointerDown(pointer(1, 8, 8))).toBe(true);
-    expect(uiStore.getState().overlay.pendingCells).toEqual([{ x: 0, y: 0 }]);
+    expect(uiStore.getState().overlay.pendingCellStates?.map((state) => state.cell)).toEqual([{ x: 0, y: 0 }]);
     expect(uiStore.getState().overlay.pendingCellStates).toMatchObject([
       { index: 0, kind: CellKind.Full, colors: [2, 0, 0, 0], completed: 0 }
     ]);
     controller.handlePointerMove(pointer(1, 72, 8));
-    expect(uiStore.getState().overlay.pendingCells).toHaveLength(5);
+    expect(uiStore.getState().overlay.pendingCellStates).toHaveLength(5);
     expect(gateway.getSnapshot().document?.kind.every((kind) => kind === CellKind.Empty)).toBe(true);
     controller.handlePointerMove(pointer(1, 24, 8));
-    expect(uiStore.getState().overlay.pendingCells).toEqual([{ x: 0, y: 0 }, { x: 1, y: 0 }]);
+    expect(uiStore.getState().overlay.pendingCellStates?.map((state) => state.cell)).toEqual([{ x: 0, y: 0 }, { x: 1, y: 0 }]);
 
     controller.handlePointerUp(pointer(1, 24, 8));
     expect(boundary.log).toHaveLength(1);
@@ -622,7 +622,7 @@ describe('EditorSurfaceController', () => {
     expect(gateway.getSnapshot().document?.kind.slice(0, 2)).toEqual(new Uint8Array([CellKind.Full, CellKind.Full]));
     expect(gateway.getSnapshot().document?.colors[0]).toBe(2);
     expect(boundary.undoDepth).toBe(1);
-    expect(uiStore.getState().overlay.pendingCells).toBeUndefined();
+    expect(uiStore.getState().overlay.pendingCellStates).toBeUndefined();
     expect(calls.setDocument.at(-1)?.invalidation).toMatchObject({
       layer: 'base',
       cellRect: { x: 0, y: 0, width: 2, height: 1 },
@@ -702,7 +702,7 @@ describe('EditorSurfaceController', () => {
     oval.controller.setTool({ tool: 'shape', shape: 'oval' });
     oval.controller.handlePointerDown(pointer(1, 8, 8));
     oval.controller.handlePointerMove(pointer(1, 104, 72));
-    const ovalCells = oval.uiStore.getState().overlay.pendingCells ?? [];
+    const ovalCells = oval.uiStore.getState().overlay.pendingCellStates?.map((state) => state.cell) ?? [];
     expect({
       minX: Math.min(...ovalCells.map(({ x }) => x)),
       maxX: Math.max(...ovalCells.map(({ x }) => x)),
@@ -717,7 +717,7 @@ describe('EditorSurfaceController', () => {
     clamped.controller.setTool({ tool: 'shape', shape: 'line' });
     clamped.controller.handlePointerDown(pointer(2, 104, 104));
     clamped.controller.handlePointerMove(pointer(2, 300, 300));
-    expect(clamped.uiStore.getState().overlay.pendingCells?.every(({ x, y }) => x >= 0 && x < 8 && y >= 0 && y < 8)).toBe(true);
+    expect(clamped.uiStore.getState().overlay.pendingCellStates?.map((state) => state.cell).every(({ x, y }) => x >= 0 && x < 8 && y >= 0 && y < 8)).toBe(true);
     clamped.controller.handlePointerUp(pointer(2, 300, 300));
     expect(clamped.boundary.log[0]).toMatchObject({
       type: 'bulk-cell',
@@ -733,7 +733,7 @@ describe('EditorSurfaceController', () => {
       fixture.controller.handlePointerDown(pointer(1, 72, 120)); // cell (4, 7)
       fixture.controller.handlePointerMove(pointer(1, 104, 120)); // cell (6, 7); locking would extend below the chart
 
-      const cells = fixture.uiStore.getState().overlay.pendingCells ?? [];
+      const cells = fixture.uiStore.getState().overlay.pendingCellStates?.map((state) => state.cell) ?? [];
       expect(cells.length, `${shape} preview should not be empty`).toBeGreaterThan(0);
       const minX = Math.min(...cells.map(({ x }) => x));
       const maxX = Math.max(...cells.map(({ x }) => x));
@@ -759,7 +759,7 @@ describe('EditorSurfaceController', () => {
     touch.controller.setTool({ tool: 'shape', shape: 'rectangle' });
     touch.controller.handlePointerDown(pointer(1, 8, 8, 'touch'));
     touch.controller.handlePointerMove(pointer(1, 40, 24, 'touch'));
-    expect(touch.uiStore.getState().overlay.pendingCells?.length).toBeGreaterThan(1);
+    expect(touch.uiStore.getState().overlay.pendingCellStates?.length).toBeGreaterThan(1);
     touch.controller.handlePointerUp(pointer(1, 40, 24, 'touch'));
     expect(touch.boundary.log).toHaveLength(1);
     expect(touch.boundary.log[0].type).toBe('bulk-cell');
@@ -770,7 +770,7 @@ describe('EditorSurfaceController', () => {
     cancelled.controller.handlePointerDown(pointer(2, 8, 8, 'pen'));
     cancelled.controller.handlePointerMove(pointer(2, 40, 8, 'pen'));
     expect(cancelled.controller.handlePointerCancel(pointer(2, 40, 8, 'pen'))).toBe(true);
-    expect(cancelled.uiStore.getState().overlay.pendingCells).toBeUndefined();
+    expect(cancelled.uiStore.getState().overlay.pendingCellStates).toBeUndefined();
     expect(cancelled.boundary.log).toHaveLength(0);
 
     cancelled.controller.handlePointerDown(pointer(3, 8, 8));
@@ -781,7 +781,7 @@ describe('EditorSurfaceController', () => {
 
     cancelled.controller.handlePointerDown(pointer(4, 8, 8));
     cancelled.controller.setTool({ tool: 'pan' });
-    expect(cancelled.uiStore.getState().overlay.pendingCells).toBeUndefined();
+    expect(cancelled.uiStore.getState().overlay.pendingCellStates).toBeUndefined();
     cancelled.controller.handlePointerUp(pointer(4, 8, 8));
     expect(cancelled.boundary.log).toHaveLength(0);
     cancelled.controller.dispose();
@@ -793,7 +793,7 @@ describe('EditorSurfaceController', () => {
     stale.controller.handlePointerDown(pointer(1, 8, 8));
     stale.controller.handlePointerMove(pointer(1, 40, 40));
     stale.gateway.execute({ type: 'bulk-cell', indices: new Uint32Array([63]), edit: { kind: 'full', color: 1 } });
-    expect(stale.uiStore.getState().overlay.pendingCells).toBeUndefined();
+    expect(stale.uiStore.getState().overlay.pendingCellStates).toBeUndefined();
     expect(stale.uiStore.getState().status).toBe('Stroke cancelled: project changed');
     stale.controller.handlePointerUp(pointer(1, 40, 40));
     expect(stale.boundary.log.filter((command) => command.type === 'bulk-cell')).toHaveLength(1);
@@ -821,7 +821,7 @@ describe('EditorSurfaceController', () => {
     noPalette.uiStore.setPaletteId(null);
     noPalette.controller.setTool({ tool: 'shape', shape: 'line' });
     expect(noPalette.controller.handlePointerDown(pointer(1, 8, 8))).toBe(false);
-    expect(noPalette.uiStore.getState().overlay.pendingCells).toBeUndefined();
+    expect(noPalette.uiStore.getState().overlay.pendingCellStates).toBeUndefined();
     expect(noPalette.boundary.log).toHaveLength(0);
     noPalette.controller.dispose();
   });
@@ -1414,7 +1414,7 @@ describe('EditorSurfaceController', () => {
     uiStore.setState({ brushSize: 3 });
     expect(uiStore.getState().brushSize).toBe(3);
     controller.handlePointerDown(pointer(1, 8, 8));
-    expect(uiStore.getState().overlay.pendingCells).toEqual([
+    expect(uiStore.getState().overlay.pendingCellStates?.map((state) => state.cell)).toEqual([
       { x: 0, y: 0 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: 1, y: 1 }
     ]);
     expect(uiStore.getState().overlay.pendingCellStates).toMatchObject([
@@ -1487,30 +1487,25 @@ describe('EditorSurfaceController', () => {
     controller.dispose();
   });
 
-  it('uses each retained brush size for hover previews and tool behavior', () => {
+  it('uses each retained brush size for tool behavior', () => {
     const paint = controllerFixture();
     paint.controller.setToolBrushSize('full', 2);
     paint.controller.setToolBrushSize('half', 3);
     paint.controller.setToolBrushSize('three-quarter', 4);
-    const hover = { ...pointer(1, 56, 56), buttons: 0 };
 
     paint.controller.setTool({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
-    paint.controller.handlePointerMove(hover);
-    expect(paint.uiStore.getState().overlay.brushPreview?.states).toHaveLength(4);
     paint.controller.handlePointerDown(pointer(2, 56, 56));
-    expect(paint.uiStore.getState().overlay.pendingCells).toHaveLength(4);
+    expect(paint.uiStore.getState().overlay.pendingCellStates).toHaveLength(4);
     paint.controller.handlePointerCancel(pointer(2, 56, 56));
 
     paint.controller.setTool({ tool: 'paint', brush: { kind: 'half', paletteId: 1 } });
-    expect(paint.uiStore.getState().overlay.brushPreview?.states).toHaveLength(9);
     paint.controller.handlePointerDown(pointer(3, 56, 56));
-    expect(paint.uiStore.getState().overlay.pendingCells).toHaveLength(9);
+    expect(paint.uiStore.getState().overlay.pendingCellStates).toHaveLength(9);
     paint.controller.handlePointerCancel(pointer(3, 56, 56));
 
     paint.controller.setTool({ tool: 'paint', brush: { kind: 'three-quarter', paletteId: 1 } });
-    expect(paint.uiStore.getState().overlay.brushPreview?.states).toHaveLength(12);
     paint.controller.handlePointerDown(pointer(4, 56, 56));
-    expect(paint.uiStore.getState().overlay.pendingCells).toHaveLength(12);
+    expect(paint.uiStore.getState().overlay.pendingCellStates).toHaveLength(12);
     paint.controller.handlePointerCancel(pointer(4, 56, 56));
     paint.controller.dispose();
 
@@ -1524,13 +1519,9 @@ describe('EditorSurfaceController', () => {
     for (let index = 0; index < occupied.kind.length; index += 1) occupied.colors[index * 4] = 1;
     const otherTools = controllerFixture({}, occupied);
     otherTools.controller.setToolBrushSize('eraser', 6);
-    otherTools.controller.setTool({ tool: 'select' });
-    otherTools.controller.handlePointerMove(hover);
-    expect(otherTools.uiStore.getState().overlay.brushPreview).toBeUndefined();
     otherTools.controller.setTool({ tool: 'eraser' });
-    expect(otherTools.uiStore.getState().overlay.brushPreview?.states).toHaveLength(32);
     otherTools.controller.handlePointerDown(pointer(5, 56, 56));
-    expect(otherTools.uiStore.getState().overlay.pendingCells).toHaveLength(32);
+    expect(otherTools.uiStore.getState().overlay.pendingCellStates).toHaveLength(32);
     otherTools.controller.dispose();
   });
 
@@ -1570,46 +1561,15 @@ describe('EditorSurfaceController', () => {
     fixture.controller.dispose();
   });
 
-  it('previews the whole brush footprint over stitches already in the selected color', () => {
-    const occupied = createDocument({
-      width: 8,
-      height: 8,
-      catalog: DEFAULT_CATALOG_DEFINITION.association,
-      palette: [{ id: 1, name: 'Thread', color: '#000000', active: true }]
-    });
-    // Column 0..2, rows 0..2 already hold full palette-1 stitches; the rest are empty.
-    for (const index of [0, 1, 2, 8, 9, 10, 16, 17, 18]) {
-      occupied.kind[index] = CellKind.Full;
-      occupied.colors[index * 4] = 1;
-    }
-    const { uiStore, controller } = controllerFixture({}, occupied);
-    const previewIndices = (): number[] | undefined =>
-      uiStore.getState().overlay.brushPreview?.states.map((state) => state.index);
-
-    uiStore.setState({ brushSize: 1 });
-    controller.handlePointerMove({ ...pointer(1, 24, 24), buttons: 0 });
-    expect(previewIndices()).toEqual([9]);
-
-    uiStore.setState({ brushSize: 3 });
-    controller.handlePointerMove({ ...pointer(1, 25, 25), buttons: 0 });
-    expect(previewIndices()).toEqual([0, 1, 2, 8, 9, 10, 16, 17, 18]);
-
-    // A footprint straddling same-color and empty cells keeps every stamped cell.
-    controller.handlePointerMove({ ...pointer(1, 40, 24), buttons: 0 });
-    expect(previewIndices()).toEqual([1, 2, 3, 9, 10, 11, 17, 18, 19]);
-    controller.dispose();
-  });
-
-  it('shows and clears a hover brush preview without committing a gesture', () => {
+  it('publishes no overlay while hovering with paint or eraser', () => {
     const { boundary, uiStore, controller } = controllerFixture();
     uiStore.setState({ brushSize: 2 });
+    const before = uiStore.getState().overlay;
     controller.handlePointerMove({ ...pointer(1, 24, 24), buttons: 0 });
-    expect(uiStore.getState().overlay.brushPreview).toMatchObject({ kind: 'paint' });
-    expect(uiStore.getState().overlay.brushPreview?.states).toHaveLength(4);
-    expect(uiStore.getState().overlay.brushPreview?.states.map((state) => state.index)).toEqual([9, 10, 17, 18]);
+    controller.setTool({ tool: 'eraser' });
+    controller.handlePointerMove({ ...pointer(1, 40, 24), buttons: 0 });
+    expect(uiStore.getState().overlay).toBe(before);
     expect(boundary.log).toHaveLength(0);
-    controller.handlePointerLeave();
-    expect(uiStore.getState().overlay.brushPreview).toBeUndefined();
     controller.dispose();
   });
 
@@ -2446,9 +2406,9 @@ describe('EditorSurfaceController', () => {
   it('resets transient state when the active project changes', () => {
     const { boundary, gateway, uiStore, controller } = controllerFixture();
     controller.handlePointerDown(pointer(1, 8, 8));
-    expect(uiStore.getState().overlay.pendingCells).toHaveLength(1);
+    expect(uiStore.getState().overlay.pendingCellStates).toHaveLength(1);
     boundary.open(createDocument({ width: 4, height: 4, catalog: DEFAULT_CATALOG_DEFINITION.association, palette: [{ id: 1, name: 'Thread', color: '#123456' }] }), 'project-b');
-    expect(uiStore.getState().overlay.pendingCells).toBeUndefined();
+    expect(uiStore.getState().overlay.pendingCellStates).toBeUndefined();
     expect(uiStore.getState().keyboardCursor).toBeNull();
     controller.handlePointerUp(pointer(1, 8, 8));
     expect(gateway.getSnapshot().document?.width).toBe(4);
@@ -2459,9 +2419,9 @@ describe('EditorSurfaceController', () => {
     const paint = controllerFixture();
     paint.controller.handlePointerDown(pointer(1, 8, 8));
     paint.controller.handlePointerMove(pointer(1, 40, 8));
-    expect(paint.uiStore.getState().overlay.pendingCells).toHaveLength(3);
+    expect(paint.uiStore.getState().overlay.pendingCellStates).toHaveLength(3);
     paint.controller.setMetrics(getCanvasMetrics(96, 96, { dpr: 2 }));
-    expect(paint.uiStore.getState().overlay.pendingCells).toBeUndefined();
+    expect(paint.uiStore.getState().overlay.pendingCellStates).toBeUndefined();
     expect(paint.boundary.log).toHaveLength(0);
     paint.controller.handlePointerUp(pointer(1, 40, 8));
     expect(paint.boundary.log).toHaveLength(0);

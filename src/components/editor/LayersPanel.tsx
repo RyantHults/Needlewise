@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import {
   DndContext,
   MouseSensor,
@@ -16,6 +16,7 @@ import { canAddLayer, layerLimitMessage, type Layer, type LayeredDocument, type 
 import { createThumbnailQueue, layerContentChanged, paintLayerThumbnail, paletteSignature, renderLayerThumbnailPixels, type ThumbnailQueue } from "../../rendering/layer-thumbnail";
 import { pointerWithinOrClosestCenter } from "../dnd-shared";
 import { useDismissable } from "../dismiss";
+import { useObjectUrl } from "../object-url";
 import { prefersReducedMotion } from "../motion";
 import stitchIcon from "../../assets/editor-tools/stitch.svg";
 import {
@@ -173,7 +174,9 @@ function LayerThumbnail({ queue, source, layer, palette }: { queue: ThumbnailQue
       if (canvas.current) paintLayerThumbnail(canvas.current, renderLayerThumbnailPixels(source.current, layer));
     });
   }, [queue, source, layer, palette, width, height]);
-  useEffect(() => () => queue?.cancel(layer.id), [queue, layer.id]);
+  // The cancelled job is gone, so the next mount (or StrictMode's replay) must
+  // schedule again instead of treating its inputs as already painted.
+  useEffect(() => () => { queue?.cancel(layer.id); scheduled.current = null; }, [queue, layer.id]);
   return <canvas ref={canvas} className="layer-thumbnail" aria-hidden="true" />;
 }
 
@@ -181,7 +184,7 @@ interface Props {
   document: LayeredDocument;
   layerSelection: LayerSelection;
   backgroundColor: string;
-  reference: { present: boolean; visible: boolean };
+  reference: { present: boolean; visible: boolean; image?: Blob };
   onSelect: (id: ActiveLayerId, modifiers?: LayerSelectModifiers) => void;
   onToggleVisibility: (layerId: number, visible: boolean) => void;
   onToggleReferenceVisibility: (visible: boolean) => void;
@@ -321,6 +324,7 @@ export function LayersPanel({
   const [dragging, setDragging] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const activeLayerId = layerSelection.primary;
+  const referenceUrl = useObjectUrl(reference.image);
   const addButton = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   // Created in an effect, not a memo: StrictMode replays effects, and a queue
@@ -398,7 +402,9 @@ export function LayersPanel({
               <LayerRowShell
                 kind="reference"
                 selected={activeLayerId === "reference"}
-                thumbnail={<span className="layer-thumbnail layer-thumbnail-reference" aria-hidden="true" />}
+                thumbnail={referenceUrl
+                  ? <img className="layer-thumbnail" src={referenceUrl} alt="" aria-hidden="true" />
+                  : <span className="layer-thumbnail layer-thumbnail-reference" aria-hidden="true" />}
                 name="Reference"
                 aria-label={`Reference image${reference.visible ? "" : ", hidden"}`}
                 title="Reference image"
@@ -414,25 +420,26 @@ export function LayersPanel({
               </button>
             </li>
           )}
-          {rows.map((layer, index) => [
-            rows[index - 1]?.type !== layer.type && groupSize(layer.type) > 1 && (
-              <li key={`group-${layer.type}`} className="layers-group-header">{GROUP_LABELS[layer.type]}</li>
-            ),
-            <LayerRow
-              key={layer.id}
-              document={document}
-              layer={layer}
-              selected={layerSelection.layerIds.includes(layer.id)}
-              primary={activeLayerId === layer.id}
-              dragging={dragging}
-              thumbnails={thumbnails}
-              thumbnailSource={thumbnailSource}
-              palette={palette}
-              onSelect={onSelect}
-              onToggleVisibility={onToggleVisibility}
-              onMove={onMove}
-            />,
-          ])}
+          {rows.map((layer, index) => (
+            <Fragment key={layer.id}>
+              {rows[index - 1]?.type !== layer.type && groupSize(layer.type) > 1 && (
+                <li className="layers-group-header">{GROUP_LABELS[layer.type]}</li>
+              )}
+              <LayerRow
+                document={document}
+                layer={layer}
+                selected={layerSelection.layerIds.includes(layer.id)}
+                primary={activeLayerId === layer.id}
+                dragging={dragging}
+                thumbnails={thumbnails}
+                thumbnailSource={thumbnailSource}
+                palette={palette}
+                onSelect={onSelect}
+                onToggleVisibility={onToggleVisibility}
+                onMove={onMove}
+              />
+            </Fragment>
+          ))}
           <li className={`layer-row layer-row-pinned${activeLayerId === "canvas" ? " layer-row-selected" : ""}`} data-layer-type="canvas">
             <LayerRowShell
               kind="canvas"

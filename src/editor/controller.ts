@@ -88,7 +88,6 @@ import type {
   StitchBrush,
   Viewport,
   EditorActiveLayer,
-  PendingBackstitchRemoval,
   ToolAvailability
 } from './contracts';
 import { CANVAS_BASIC_LOCKED_HINT, CHART_EDGE_MARGIN, DEFAULT_HALF_DIRECTION, FOCUS_COLOR_PROTECTED_HINT, HIDDEN_LAYER_PICK_HINT, normalizeBrushSize, toolStateAvailability } from './contracts';
@@ -319,7 +318,7 @@ interface EraserGesture {
   /** The three-quarter side the gesture began on; every cell the drag reaches erases that side only. */
   startCorner?: 0 | 1 | 2 | 3;
   /** Specialty-layer erase: backstitches on the selected layer the eraser has reached. */
-  readonly backstitches?: Map<number, PendingBackstitchRemoval>;
+  readonly backstitches?: Set<number>;
   /** Backstitches bucketed by cell, for a specialty erase wider than one cell. */
   readonly backstitchIndex?: BackstitchCellIndex;
   lastCell: ModelPoint | undefined;
@@ -1111,21 +1110,21 @@ function distanceBetweenSegments(a0: ModelPoint, a1: ModelPoint, b0: ModelPoint,
   return Math.min(distanceToSegment(a0, b0, b1), distanceToSegment(a1, b0, b1), distanceToSegment(b0, a0, a1), distanceToSegment(b1, a0, a1));
 }
 
-/** Backstitches in `document` within `radius` cells of the eraser path `from`→`to`, keyed by id. */
+/** Ids of the backstitches in `document` within `radius` cells of the eraser path `from`→`to`. */
 function backstitchesNearPath(
   document: PatternDocument,
   from: ModelPoint,
   to: ModelPoint,
   radius: number,
-  into: Map<number, PendingBackstitchRemoval>
+  into: Set<number>
 ): void {
   const store = document.backstitches;
   for (let position = 0; position < store.ids.length; position += 1) {
     const id = store.ids[position];
     if (into.has(id)) continue;
-    const start = { x: store.x1[position], y: store.y1[position] };
-    const end = { x: store.x2[position], y: store.y2[position] };
-    if (distanceBetweenSegments(from, to, fixedPointToModel(start), fixedPointToModel(end)) <= radius) into.set(id, { id, start, end });
+    const start = fixedPointToModel({ x: store.x1[position], y: store.y1[position] });
+    const end = fixedPointToModel({ x: store.x2[position], y: store.y2[position] });
+    if (distanceBetweenSegments(from, to, start, end) <= radius) into.add(id);
   }
 }
 
@@ -1226,20 +1225,16 @@ function forEachCellThroughBackstitch(document: PatternDocument, x1: number, y1:
   }
 }
 
-/** Backstitches in `document` that pass through any of `cells`, keyed by id. */
+/** Ids of the backstitches in `document` that pass through any of `cells`. */
 function backstitchesThroughCells(
   document: PatternDocument,
   cells: readonly ModelPoint[],
-  into: Map<number, PendingBackstitchRemoval>,
+  into: Set<number>,
   cellIndex: BackstitchCellIndex = buildBackstitchCellIndex(document)
 ): void {
   const store = document.backstitches;
   for (const cell of cells) {
-    for (const position of cellIndex.get(cell.y * document.width + cell.x) ?? []) {
-      const id = store.ids[position];
-      if (into.has(id)) continue;
-      into.set(id, { id, start: { x: store.x1[position], y: store.y1[position] }, end: { x: store.x2[position], y: store.y2[position] } });
-    }
+    for (const position of cellIndex.get(cell.y * document.width + cell.x) ?? []) into.add(store.ids[position]);
   }
 }
 
@@ -3040,7 +3035,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.ensureStarted();
     if (this.disposed) return false;
     if (!validScreenSample(sample)) return false;
-    this.clearBrushPreview();
     const floatingPointerDown = this.handleFloatingPointerDown(sample);
     if (floatingPointerDown !== undefined) return floatingPointerDown;
     if (sample.pointerType !== 'touch') this.editorFocused = true;
@@ -3177,7 +3171,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const cells = new Map<string, ModelPoint>();
       const components = new Map<string, { readonly cell: ModelPoint; readonly corner: number }>();
       const specialty = snapshot.activeLayer?.kind === 'specialty';
-      const backstitches = specialty ? new Map<number, PendingBackstitchRemoval>() : undefined;
+      const backstitches = specialty ? new Set<number>() : undefined;
       const backstitchIndex = specialty && brushSize > 1 ? buildBackstitchCellIndex(surface) : undefined;
       const gesture: EraserGesture = { kind: 'eraser', pointerId: sample.pointerId, transaction, brushSize, cells, components, backstitches, backstitchIndex, lastCell: cell };
       this.addEraserSample(gesture, cell, sample, surface);
@@ -3207,7 +3201,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (floatingPointerMove !== undefined) return floatingPointerMove;
     if (sample.pointerType !== 'touch') {
       this.lastHoverSample = sample;
-      if (!this.gesture) this.updateBrushPreview(sample);
       if (!this.gesture && this.lassoPath) this.hoverLasso(sample);
     }
     if (sample.pointerType === 'touch') {
@@ -3412,7 +3405,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   handlePointerCancel(sample: PointerSample): boolean {
     this.ensureStarted();
     this.spaceHeld = false;
-    this.clearBrushPreview();
     const floatingPointerCancel = this.handleFloatingPointerCancel(sample);
     if (floatingPointerCancel !== undefined) return floatingPointerCancel;
     if (sample.pointerType === 'touch') {
@@ -3427,7 +3419,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   handlePointerLeave(): void {
     this.lastHoverSample = undefined;
-    this.clearBrushPreview();
   }
 
   handlePointerLostCapture(sample: PointerSample): boolean {
@@ -4268,7 +4259,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (!gesture || gesture.kind !== 'eraser') return;
     this.gesture = undefined;
     this.clearPendingCells();
-    this.clearPendingBackstitchRemovals();
+    this.clearErasingBackstitches();
     if (!commit || gesture.cells.size === 0) return;
     const snapshot = this.gateway.getSnapshot();
     const surface = snapshot.editSurface;
@@ -4322,7 +4313,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
    * Color leaves editable, as one history entry committed by `commit`.
    */
   private commitBackstitchRemovals(
-    touched: Map<number, PendingBackstitchRemoval>,
+    touched: Set<number>,
     snapshot: WorkspaceEditorSnapshot,
     surface: PatternDocument,
     label: string,
@@ -4334,7 +4325,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       else this.setStatus('No change');
       return;
     }
-    const ids = [...removals.keys()].sort((left, right) => left - right);
+    const ids = [...removals].sort((left, right) => left - right);
     const commands = ids.map((id): DomainCommand => this.stamp({ type: 'remove-backstitch', id }, snapshot));
     const result = this.runCommand(label, () => commit(commands));
     if (!result) return;
@@ -4934,7 +4925,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (cell.x < 0 || cell.y < 0 || cell.x >= surface.width || cell.y >= surface.height) return;
     const cells = brushCells(cell, this.getBrushSize(), surface);
     if (snapshot.activeLayer?.kind === 'specialty') {
-      const touched = new Map<number, PendingBackstitchRemoval>();
+      const touched = new Set<number>();
       backstitchesThroughCells(surface, cells, touched);
       const token = tokenOf(snapshot);
       this.commitBackstitchRemovals(touched, snapshot, surface, 'Action', (commands) => this.gateway.executeBatch(commands, token));
@@ -5175,7 +5166,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if (state.highlightColor !== previous.highlightColor) this.renderer.setStyle({ highlightColor: state.highlightColor });
     if (state.overlay !== previous.overlay) this.renderer.setOverlay(state.overlay);
-    if ((state.tool !== previous.tool || state.brushSize !== previous.brushSize || state.viewport !== previous.viewport) && this.lastHoverSample && !this.gesture) this.updateBrushPreview(this.lastHoverSample);
     if (state.focusColor !== previous.focusColor || (state.focusColor && state.paletteId !== previous.paletteId)) this.onFocusColorChange();
   }
 
@@ -5185,7 +5175,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const highlightColor = state.focusColor ? state.paletteId : null;
     if (state.highlightColor !== highlightColor) this.uiStore.setState({ highlightColor });
     if (this.floatingPaste) this.publishFloatingPasteOverlay();
-    if (this.lastHoverSample && !this.gesture) this.updateBrushPreview(this.lastHoverSample);
   }
 
   private projectUiState(state: ReturnType<EditorUiStore['getState']>): void {
@@ -5270,11 +5259,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   /** The backstitch removals Focus Color allows: focus-color stitches only. */
-  private focusRemovals(removals: Map<number, PendingBackstitchRemoval>, document: PatternDocument): Map<number, PendingBackstitchRemoval> {
+  private focusRemovals(removals: Set<number>, document: PatternDocument): Set<number> {
     const focus = this.focusColorId();
     if (focus === undefined) return removals;
-    const kept = new Set(focusBackstitchIds(document, [...removals.keys()], focus));
-    return new Map([...removals].filter(([id]) => kept.has(id)));
+    return new Set(focusBackstitchIds(document, [...removals], focus));
   }
 
   private pendingPaintStates(cells: Map<string, ModelPoint>, edit: BulkCellEdit, revision: number, document: PatternDocument): PendingCellState[] {
@@ -5337,17 +5325,9 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const state = this.uiStore.getState();
     const overlay: OverlayState = {
       ...state.overlay,
-      pendingCells: this.activeCellsOnly([...cells.values()]),
       pendingCellStates: this.activeStatesOnly(this.compositePreviewStates(states))
     };
     this.uiStore.setOverlay(overlay);
-  }
-
-  /** Previews skip canvas holes: the domain drops writes there, so a stroke must not show them. */
-  private activeCellsOnly(cells: ModelPoint[]): ModelPoint[] {
-    const composite = this.gateway.getSnapshot().document;
-    if (composite?.canvasMask === undefined) return cells;
-    return cells.filter((cell) => isActiveCanvasCell(composite, cell.x, cell.y));
   }
 
   private activeStatesOnly(states: PendingCellState[]): PendingCellState[] {
@@ -5372,8 +5352,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   private clearPendingCells(): void {
     const state = this.uiStore.getState();
-    if (!state.overlay.pendingCells && !state.overlay.pendingCellStates) return;
-    this.uiStore.setOverlay({ ...state.overlay, pendingCells: undefined, pendingCellStates: undefined });
+    if (!state.overlay.pendingCellStates) return;
+    this.uiStore.setOverlay({ ...state.overlay, pendingCellStates: undefined });
   }
 
   /** Cancel a one-finger chart edit when a second finger takes over. */
@@ -5398,7 +5378,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     this.clearTouchHistoryCandidate();
     this.clearPendingCells();
-    this.clearPendingBackstitchRemovals();
+    this.clearErasingBackstitches();
     // A cancelled stroke, such as one a second finger interrupts, leaves the rest of the lasso open.
     if (lassoStroke) this.removeLassoStroke();
     if (backstitch) this.resetBackstitchState();
@@ -5420,65 +5400,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.cancelLassoPath();
     this.cancelFill(false);
     this.resetBackstitchState();
-    this.clearBrushPreview();
-  }
-
-  private clearBrushPreview(): void {
-    const overlay = this.uiStore.getState().overlay;
-    // Outside an erase gesture, pending backstitch removals are the specialty hover's marks.
-    const hoverRemovals = overlay.pendingBackstitchRemovals !== undefined && this.gesture?.kind !== 'eraser';
-    if (!overlay.brushPreview && !hoverRemovals) return;
-    this.uiStore.setOverlay({ ...overlay, brushPreview: undefined, ...(hoverRemovals ? { pendingBackstitchRemovals: undefined } : {}) });
-  }
-
-  private updateBrushPreview(sample: PointerSample): void {
-    const state = this.uiStore.getState();
-    const tool = state.tool;
-    const snapshot = this.gateway.getSnapshot();
-    const document = this.editableSurface(snapshot, tool);
-    if (!document || this.spaceHeld || (sample.buttons ?? 0) !== 0) {
-      this.clearBrushPreview();
-      return;
-    }
-    const eligible = tool.tool === 'paint' || tool.tool === 'eraser';
-    const cell = eligible ? this.paintHitCell(sample, document) : undefined;
-    if (!eligible || !cell) {
-      this.clearBrushPreview();
-      return;
-    }
-    const brushSize = this.getBrushSize();
-    let states: PendingCellState[];
-    const kind: 'paint' | 'eraser' = tool.tool === 'paint' ? 'paint' : 'eraser';
-    if (tool.tool === 'eraser' && snapshot.activeLayer?.kind === 'specialty') {
-      // A specialty erase removes backstitches: the hover outlines the brush
-      // footprint and marks the backstitches a press here would remove.
-      const composite = snapshot.document ?? document;
-      const footprint = brushCells(cell, brushSize, document);
-      states = footprint.map((stamped) => cellState(composite, stamped.y * composite.width + stamped.x, { kind: 'erase-cell' }));
-      const removals = new Map<number, PendingBackstitchRemoval>();
-      if (brushSize > 1) backstitchesThroughCells(document, footprint, removals);
-      else {
-        const point = screenToModel({ x: sample.screenX, y: sample.screenY }, state.viewport);
-        backstitchesNearPath(document, point, point, this.backstitchHitTolerance(), removals);
-      }
-      const allowed = this.focusRemovals(removals, document);
-      this.uiStore.setOverlay({ ...state.overlay, brushPreview: { states: this.activeStatesOnly(states), kind }, pendingBackstitchRemovals: allowed.size ? [...allowed.values()] : undefined });
-      return;
-    } else if (tool.tool === 'paint') {
-      const cells = new Map<string, ModelPoint>();
-      stampBrush(cells, cell, brushSize, document);
-      // The hover outline marks the brush footprint, so keep cells the stroke
-      // would leave unchanged (e.g. stitches already in the selected color).
-      const edit = editForBrush(tool.brush, this.paintCorner(sample));
-      states = Array.from(indicesForCells([...this.focusEditableCells(cells, document).values()], document.width), (index) => cellState(document, index, edit));
-    } else {
-      const cells = new Map<string, ModelPoint>();
-      const components = new Map<string, { readonly cell: ModelPoint; readonly corner: number }>();
-      this.addEraserSample({ cells, components, brushSize }, cell, sample, document);
-      const targets = this.focusEraserTargets(cells, components, document);
-      states = this.pendingEraserStates(targets.cells, targets.components, document);
-    }
-    this.uiStore.setOverlay({ ...state.overlay, brushPreview: { states: this.activeStatesOnly(states), kind } });
   }
 
   /**
@@ -6014,23 +5935,22 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   private publishEraserPreview(gesture: EraserGesture, document: PatternDocument): void {
     if (gesture.backstitches) {
-      const state = this.uiStore.getState();
-      this.uiStore.setOverlay({
-        ...state.overlay,
-        pendingCells: this.activeCellsOnly([...gesture.cells.values()]),
-        pendingCellStates: undefined,
-        pendingBackstitchRemovals: [...this.focusRemovals(gesture.backstitches, document).values()]
-      });
+      const overlay = this.uiStore.getState().overlay;
+      const ids = this.focusRemovals(gesture.backstitches, document);
+      const previous = overlay.erasingBackstitchIds;
+      // Keep the published set while its members are unchanged, so the renderer redraws only when a line disappears.
+      if (previous && previous.size === ids.size && [...ids].every((id) => previous.has(id))) return;
+      this.uiStore.setOverlay({ ...overlay, erasingBackstitchIds: new Set(ids) });
       return;
     }
     const targets = this.focusEraserTargets(gesture.cells, gesture.components, document);
     this.publishPendingCells(targets.cells, this.pendingEraserStates(targets.cells, targets.components, document));
   }
 
-  private clearPendingBackstitchRemovals(): void {
+  private clearErasingBackstitches(): void {
     const state = this.uiStore.getState();
-    if (!state.overlay.pendingBackstitchRemovals) return;
-    this.uiStore.setOverlay({ ...state.overlay, pendingBackstitchRemovals: undefined });
+    if (!state.overlay.erasingBackstitchIds) return;
+    this.uiStore.setOverlay({ ...state.overlay, erasingBackstitchIds: undefined });
   }
 
   private ensureStarted(): void {

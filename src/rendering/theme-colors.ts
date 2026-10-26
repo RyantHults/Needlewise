@@ -19,7 +19,6 @@ export const RENDERER_COLOR_FIELDS = [
   'selectionColor',
   'cursorColor',
   'missingPaletteColor',
-  'pendingCellColor',
   'offCanvasColor',
   'ghostGridColor',
   'ghostMajorGridColor',

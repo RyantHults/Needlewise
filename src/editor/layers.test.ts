@@ -361,10 +361,10 @@ describe('layered editor controller', () => {
     controller.setTool({ tool: 'eraser' });
     controller.handlePointerDown(at(1, 1, 1));
     controller.handlePointerMove(at(1, 1, 1));
-    expect(uiStore.getState().overlay.pendingBackstitchRemovals?.map((removal) => removal.id).sort()).toEqual([touchedDiagonal, touchedEdge].sort());
+    expect([...uiStore.getState().overlay.erasingBackstitchIds ?? []].sort()).toEqual([touchedDiagonal, touchedEdge].sort());
     controller.handlePointerUp(at(1, 1, 1));
 
-    expect(uiStore.getState().overlay.pendingBackstitchRemovals).toBeUndefined();
+    expect(uiStore.getState().overlay.erasingBackstitchIds).toBeUndefined();
     expect(ids(2)).toEqual([cornerOnly, far]);
     expect(ids(other)).toEqual(otherIds);
     expect(boundary.batches).toHaveLength(1);
@@ -431,9 +431,8 @@ describe('layered editor controller', () => {
     const [corner, outside] = ids();
     controller.setTool({ tool: 'eraser' });
     uiStore.setState({ brushSize: 3 });
-    controller.handlePointerMove({ ...at(1, 1, 1), buttons: 0 });
-    expect(uiStore.getState().overlay.pendingBackstitchRemovals?.map((removal) => removal.id)).toEqual([corner]);
     controller.handlePointerDown(at(1, 1, 1));
+    expect([...uiStore.getState().overlay.erasingBackstitchIds ?? []]).toEqual([corner]);
     controller.handlePointerUp(at(1, 1, 1));
     expect(ids()).toEqual([outside]);
     controller.dispose();
@@ -451,9 +450,8 @@ describe('layered editor controller', () => {
     const [touched, sharing] = ids();
     const press = { ...at(1, 1, 1), screenX: 20 };
     controller.setTool({ tool: 'eraser' });
-    controller.handlePointerMove({ ...press, buttons: 0 });
-    expect(uiStore.getState().overlay.pendingBackstitchRemovals?.map((removal) => removal.id)).toEqual([touched]);
     controller.handlePointerDown(press);
+    expect([...uiStore.getState().overlay.erasingBackstitchIds ?? []]).toEqual([touched]);
     controller.handlePointerUp(press);
     expect(ids()).toEqual([sharing]);
     controller.dispose();
@@ -489,24 +487,32 @@ describe('layered editor controller', () => {
     controller.handlePointerDown(at(1, 0, 1));
     // One sample jumps the whole stroke, so the segment between samples is measured.
     controller.handlePointerMove(at(1, 6, 1));
-    expect(uiStore.getState().overlay.pendingBackstitchRemovals?.map((removal) => removal.id).sort()).toEqual([crossedOnTheWay, endpointOnPath].sort());
+    expect([...uiStore.getState().overlay.erasingBackstitchIds ?? []].sort()).toEqual([crossedOnTheWay, endpointOnPath].sort());
     controller.handlePointerUp(at(1, 6, 1));
     expect(ids()).toEqual([oneCellAway]);
     controller.dispose();
   });
 
-  it('marks the backstitches an eraser hover would remove and clears them on leave', () => {
+  it('hides the backstitches an eraser drag reaches and removes them on release', () => {
     const document = layeredDocument();
-    seed(document, 2, backstitch(4, 4, 4, 12));
-    seed(document, 2, backstitch(20, 20, 28, 20));
+    seed(document, 2, backstitch(4, 4, 4, 8)); // x = 1, under the press
+    seed(document, 2, backstitch(20, 4, 20, 8)); // x = 5, reached by the drag
+    seed(document, 2, backstitch(4, 28, 8, 28)); // y = 7, never reached
     const { boundary, controller, uiStore } = fixture(document, 2);
-    const layer = findLayer(boundary.layeredDocument, 2)!;
-    const [near] = layer.type === LayerType.Specialty ? Array.from(layer.backstitches.ids) : [];
+    const ids = () => {
+      const layer = findLayer(boundary.layeredDocument, 2)!;
+      return layer.type === LayerType.Specialty ? Array.from(layer.backstitches.ids) : [];
+    };
+    const [first, second, untouched] = ids();
     controller.setTool({ tool: 'eraser' });
-    controller.handlePointerMove({ ...at(1, 1, 1), buttons: 0 });
-    expect(uiStore.getState().overlay.pendingBackstitchRemovals?.map((removal) => removal.id)).toEqual([near]);
-    controller.handlePointerLeave();
-    expect(uiStore.getState().overlay.pendingBackstitchRemovals).toBeUndefined();
+    controller.handlePointerDown(at(1, 1, 1));
+    expect([...uiStore.getState().overlay.erasingBackstitchIds ?? []]).toEqual([first]);
+    controller.handlePointerMove(at(1, 5, 1));
+    expect([...uiStore.getState().overlay.erasingBackstitchIds ?? []].sort()).toEqual([first, second].sort());
+    expect(ids()).toEqual([first, second, untouched]);
+    controller.handlePointerUp(at(1, 5, 1));
+    expect(uiStore.getState().overlay.erasingBackstitchIds).toBeUndefined();
+    expect(ids()).toEqual([untouched]);
     controller.dispose();
   });
 

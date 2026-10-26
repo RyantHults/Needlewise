@@ -89,7 +89,6 @@
   --renderer-selection-color: #2266cc;
   --renderer-cursor-color: #cc4422;
   --renderer-missing-palette-color: #9b9b9b;
-  --renderer-pending-cell-color: #2266cc;
   --renderer-off-canvas-color: #e4e1dc;
   --renderer-ghost-grid-color: #d3cfc8;
   --renderer-ghost-major-grid-color: #bdb8b0;
@@ -1144,6 +1143,7 @@ a.button { display: inline-flex; align-items: center; gap: .4rem; text-decoratio
 .layer-type-specialty { color:var(--color-panel-ink-body); }
 .layer-type-canvas, .layer-type-reference { color:var(--color-ink-faint); }
 .layer-thumbnail { display:block; flex:0 0 1.5rem; width:1.5rem; height:1.5rem; border:1px solid var(--color-line-soft); border-radius:.25rem; background:repeating-conic-gradient(var(--color-fabric) 0 25%, var(--color-surface) 0 50%) 0 0 / .5rem .5rem; object-fit:contain; image-rendering:pixelated; }
+img.layer-thumbnail { object-fit:cover; image-rendering:auto; }
 .layer-thumbnail-reference { background:linear-gradient(160deg, var(--color-panel), var(--color-panel-line-soft)); }
 .layer-row-eye, .layer-row-handle { display:grid; flex:0 0 1.4rem; place-items:center; width:1.4rem; height:2rem; border:0; border-radius:.3rem; padding:0; background:transparent; color:var(--color-ink-secondary); cursor:pointer; }
 .layer-row-eye svg { width:1rem; height:1rem; }

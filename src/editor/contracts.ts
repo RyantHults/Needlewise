@@ -225,15 +225,12 @@ export interface OverlayState {
   readonly lassoPath?: LassoPathOverlay | readonly ModelPoint[] | null;
   readonly cursor?: CursorOverlay | ModelPoint | null;
   readonly backstitchPreview?: BackstitchPreviewOverlay | null;
-  readonly brushPreview?: BrushPreviewOverlay | null;
   readonly fillPending?: boolean;
-  /** Cells in an uncommitted paint or erase gesture; these never belong to the document. */
-  readonly pendingCells?: readonly ModelPoint[];
   /** Exact sparse cell states that the pending gesture would produce. */
   readonly pendingCellStates?: readonly PendingCellState[];
   readonly floatingPaste?: FloatingPasteOverlay | null;
-  /** Backstitches an uncommitted specialty-layer erase gesture would remove. */
-  readonly pendingBackstitchRemovals?: readonly PendingBackstitchRemoval[];
+  /** Ids of the backstitches an uncommitted specialty-layer erase gesture removes; the renderer hides them. */
+  readonly erasingBackstitchIds?: ReadonlySet<number>;
   readonly color?: string;
   readonly showCursor?: boolean;
   readonly showSelection?: boolean;
@@ -271,19 +268,6 @@ export interface BackstitchPreviewOverlay {
   readonly start: FixedPoint;
   readonly end: FixedPoint;
   readonly color?: string;
-}
-
-export interface BrushPreviewOverlay {
-  readonly states: readonly PendingCellState[];
-  readonly color?: string;
-  readonly kind: 'paint' | 'eraser';
-}
-
-/** A backstitch segment an uncommitted specialty-layer erase would remove. */
-export interface PendingBackstitchRemoval {
-  readonly id: number;
-  readonly start: FixedPoint;
-  readonly end: FixedPoint;
 }
 
 /** Presentation-only preview for a controller-owned, uncommitted paste. */
@@ -371,7 +355,6 @@ export interface RendererTheme {
   readonly selectionColor: string;
   readonly cursorColor: string;
   readonly missingPaletteColor: string;
-  readonly pendingCellColor: string;
   /** Fill for everything that is not an active canvas cell: outside the box and holes inside it. */
   readonly offCanvasColor: string;
   /** Lines of the ghost grid drawn over the workspace while the Canvas layer is edited. */
@@ -402,7 +385,6 @@ export interface RendererStyle extends RendererTheme {
   readonly completedOpacity: number;
   readonly completedMarkWidth: number;
   readonly overlayLineWidth: number;
-  readonly pendingCellOpacity: number;
   /** Palette id whose stitches stay at full strength; every other color is dimmed. Null dims nothing. */
   readonly highlightColor: number | null;
   /** Thin line traced around each connected group of the highlighted color. */
@@ -430,7 +412,6 @@ export const DEFAULT_RENDERER_STYLE: RendererStyle = {
   selectionColor: '#2266cc',
   cursorColor: '#cc4422',
   missingPaletteColor: '#9b9b9b',
-  pendingCellColor: '#2266cc',
   offCanvasColor: '#e4e1dc',
   ghostGridColor: '#d3cfc8',
   ghostMajorGridColor: '#bdb8b0',
@@ -448,7 +429,6 @@ export const DEFAULT_RENDERER_STYLE: RendererStyle = {
   completedOpacity: 0.62,
   completedMarkWidth: 1,
   overlayLineWidth: 2,
-  pendingCellOpacity: 0.34,
   highlightColor: null,
   highlightOutlineColor: 'rgba(36, 36, 36, 0.7)',
   highlightHaloColor: 'rgba(255, 255, 255, 0.75)'

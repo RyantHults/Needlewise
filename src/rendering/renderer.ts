@@ -64,7 +64,7 @@ import {
 import { clearTarget, clipToRect, createDefaultAtlasTarget, drawImage, prepareTarget, rectPath, restore, save } from './context';
 import { grayscaleColor, paletteColor } from './colors';
 import { parseHexColor, rgbToHex } from '../domain/color';
-import { contrastSymbolInk, isDarkColor, relativeLuminance } from './contrast';
+import { contrastSymbolInk, isDarkColor } from './contrast';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
 import { readRendererColors, subscribeThemeChange, type RendererColors } from './theme-colors';
 import {
@@ -731,16 +731,12 @@ function fillCanvasFabric(
 }
 
 /**
- * Each grid tier appears once the chart is zoomed in past this fraction of fit
- * (a tier shows at zoom >= fit / fraction), independent of the render LOD.
+ * Above the fit zoom, each grid tier appears once a cell is at least this many
+ * CSS px on screen, independent of the render LOD.
  */
-const MAJOR_GRID_FIT_FRACTION = 0.9;
-const MID_GRID_FIT_FRACTION = 0.4;
-const MINOR_GRID_FIT_FRACTION = 0.1;
-/** A tier is skipped while its line spacing is below this many CSS px. */
-const GRID_MIN_SPACING_PX = 4;
-const MINOR_NUMBER_SIZE_RATIO = 0.8;
-const MINOR_NUMBER_ALPHA = 0.55;
+const MAJOR_GRID_CELL_PX = 3;
+const MID_GRID_CELL_PX = 8;
+const MINOR_GRID_CELL_PX = 16;
 /** Width in CSS px of the 10-cell lines while zoomed out below the 5-cell breakpoint. */
 const MAJOR_GRID_ZOOMED_OUT_WIDTH = 1;
 
@@ -775,7 +771,7 @@ function gridInterval(value: number, fallback: number): number {
   return Number.isFinite(value) ? Math.max(1, Math.floor(value)) : fallback;
 }
 
-/** Which grid tiers show at this zoom; every grid caller goes through this. */
+/** Which grid tiers show at this zoom: none at or below fit, then by on-screen cell size. Every grid caller goes through this. */
 function gridTierVisibility(
   document: PatternDocument,
   viewport: Viewport,
@@ -786,15 +782,14 @@ function gridTierVisibility(
   const midInterval = gridInterval(style.midGridInterval, 5);
   if (!style.showGrid) return { major: false, mid: false, minor: false, belowMidBreakpoint: false, majorInterval, midInterval };
   const zoom = viewport.zoom > 0 && Number.isFinite(viewport.zoom) ? viewport.zoom : 1;
-  const fitZoom = fitViewport(document, metrics, CHART_EDGE_MARGIN).zoom;
-  const tier = (fraction: number, interval: number): boolean =>
-    zoom >= fitZoom / fraction && interval * zoom >= GRID_MIN_SPACING_PX;
+  const pastFit = zoom > fitViewport(document, metrics, CHART_EDGE_MARGIN).zoom;
+  const tier = (cellPx: number): boolean => pastFit && zoom >= cellPx;
   return {
-    major: tier(MAJOR_GRID_FIT_FRACTION, majorInterval),
+    major: tier(MAJOR_GRID_CELL_PX),
     // An interval of 1 is identical to the per-stitch grid.
-    mid: midInterval > 1 && tier(MID_GRID_FIT_FRACTION, midInterval),
-    minor: tier(MINOR_GRID_FIT_FRACTION, 1),
-    belowMidBreakpoint: zoom < fitZoom / MID_GRID_FIT_FRACTION,
+    mid: midInterval > 1 && tier(MID_GRID_CELL_PX),
+    minor: tier(MINOR_GRID_CELL_PX),
+    belowMidBreakpoint: zoom < MID_GRID_CELL_PX,
     majorInterval,
     midInterval
   };
@@ -962,12 +957,9 @@ function drawStitchNumbers(
       context.fillText(String(n), origin.x - gap, y);
     }
     if (tiers.minor) {
-      const minorSize = Math.max(7, size * MINOR_NUMBER_SIZE_RATIO);
       // Per-stitch labels are never thinned: an axis that cannot fit them all gets none.
-      const minorColumns = columnStride === 1 && digits * minorSize * 0.6 + gap <= zoom;
-      const minorRows = rowStride === 1 && minorSize + gap <= zoom;
-      setAlpha(context, MINOR_NUMBER_ALPHA);
-      context.font = `${minorSize}px sans-serif`;
+      const minorColumns = columnStride === 1 && digits * size * 0.6 + gap <= zoom;
+      const minorRows = rowStride === 1 && size + gap <= zoom;
       if (minorColumns) {
         context.textAlign = 'center';
         context.textBaseline = 'bottom';
@@ -1332,6 +1324,19 @@ function drawCanvasEditing(
   );
 }
 
+/** Save the context and clip to the union of `cells` within `bounds`; see clipToRect. */
+function clipToCells(context: CanvasContextAdapter, cells: readonly CellRect[], viewport: Viewport, bounds: Rect): boolean {
+  if (!context.clip || !context.save || !context.restore) return false;
+  context.save();
+  context.beginPath();
+  for (const cell of cells) {
+    const rect = intersectRect(cellToScreenRect(cell, viewport), bounds);
+    if (rect) rectPath(context, rect);
+  }
+  context.clip();
+  return true;
+}
+
 function drawGridForCells(
   context: CanvasContextAdapter,
   document: PatternDocument,
@@ -1368,7 +1373,8 @@ function drawGridForCells(
     }
   }
   const contrast = gridEdgeContrast(document, style, pending);
-  const clipped = clipToRect(context, bounds);
+  // Restroke only what the cell masks covered, so lines outside them are not drawn twice.
+  const clipped = clipToCells(context, cells, viewport, bounds);
   try {
     for (const { x, y } of vertical.values()) {
       const tier = tierAt(x, document.width);
@@ -1621,6 +1627,22 @@ function drawBackstitchesForCells(
       if (clipped) restore(context);
     }
   }
+}
+
+/** Backstitch ids the base pass leaves out: those lifted by a move and those being erased. */
+function hiddenBackstitchIds(overlay: OverlayState): ReadonlySet<number> | undefined {
+  const lifted = overlay.floatingPaste?.liftedBackstitchIds;
+  const erasing = overlay.erasingBackstitchIds;
+  if (!lifted?.size) return erasing;
+  if (!erasing?.size) return lifted;
+  return new Set([...lifted, ...erasing]);
+}
+
+function sameIds(left: ReadonlySet<number> | undefined, right: ReadonlySet<number> | undefined): boolean {
+  if (left === right) return true;
+  if ((left?.size ?? 0) !== (right?.size ?? 0)) return false;
+  for (const id of left ?? []) if (!right?.has(id)) return false;
+  return true;
 }
 
 /** Whole-cell bounds of the backstitches with these ids, or undefined when none exist. */
@@ -1880,27 +1902,6 @@ function drawSelectionRect(
   restore(context);
 }
 
-function drawPendingCells(
-  context: CanvasContextAdapter,
-  document: PatternDocument,
-  pendingCells: readonly ModelPoint[] | undefined,
-  viewport: Viewport,
-  style: RendererStyle,
-  bounds: Rect
-): void {
-  if (!pendingCells || pendingCells.length === 0) return;
-  save(context);
-  context.fillStyle = style.pendingCellColor;
-  setAlpha(context, style.pendingCellOpacity);
-  for (const cell of pendingCells) {
-    if (cell.x < 0 || cell.y < 0 || cell.x >= document.width || cell.y >= document.height) continue;
-    const rect = cellToScreenRect({ x: Math.floor(cell.x), y: Math.floor(cell.y), width: 1, height: 1 }, viewport);
-    const clipped = intersectRect(rect, bounds);
-    if (clipped) context.fillRect(clipped.x, clipped.y, clipped.width, clipped.height);
-  }
-  restore(context);
-}
-
 function drawPendingCellState(
   context: CanvasContextAdapter,
   document: PatternDocument,
@@ -1975,7 +1976,8 @@ function drawFloatingPaste(
   metrics: CanvasMetrics,
   style: RendererStyle,
   lod: RenderLod,
-  bounds: Rect
+  bounds: Rect,
+  hidden: ReadonlySet<number> | undefined
 ): void {
   if (!preview) return;
   // A cross-pattern paste previews its new palette entries as if already created.
@@ -1996,7 +1998,7 @@ function drawFloatingPaste(
       const holeStates = new Map<number, PendingCellState>();
       for (const state of states) holeStates.set(state.index, state);
       drawGridForCells(context, document, viewport, metrics, style, holeCells, lod, holeStates);
-      drawBackstitchesForCells(context, document, viewport, metrics, style, holeCells, lod, bounds, preview.liftedBackstitchIds);
+      drawBackstitchesForCells(context, document, viewport, metrics, style, holeCells, lod, bounds, hidden);
     }
     drawFloatingSelectionContour(context, document, preview.sourceSelection, preview.sourceSelection.rect.x, preview.sourceSelection.rect.y, viewport, style, bounds, style.cursorColor, false);
   }
@@ -2078,33 +2080,6 @@ function drawFloatingPaste(
   drawSelectionRect(context, destination, viewport, style, bounds, preview.color, true);
 }
 
-/** Mark backstitches an uncommitted specialty-layer erase would remove. */
-function drawPendingBackstitchRemovals(
-  context: CanvasContextAdapter,
-  document: PatternDocument,
-  removals: OverlayState['pendingBackstitchRemovals'],
-  viewport: Viewport,
-  style: RendererStyle,
-  bounds: Rect
-): void {
-  if (!removals || removals.length === 0) return;
-  save(context);
-  context.strokeStyle = style.pendingCellColor;
-  context.lineWidth = Math.max(style.overlayLineWidth * 2, Math.min(8, viewport.zoom * 0.24));
-  context.setLineDash?.([4, 3]);
-  for (const removal of removals) {
-    const modelSegment = clipSegmentToRect(
-      fixedToModel(removal.start),
-      fixedToModel(removal.end),
-      { x: 0, y: 0, width: document.width, height: document.height }
-    );
-    if (!modelSegment) continue;
-    const screenSegment = clipSegmentToRect(modelToScreen(modelSegment.start, viewport), modelToScreen(modelSegment.end, viewport), bounds);
-    if (screenSegment) linePath(context, screenSegment.start, screenSegment.end);
-  }
-  restore(context);
-}
-
 function drawBackstitchPreview(
   context: CanvasContextAdapter,
   document: PatternDocument,
@@ -2143,40 +2118,7 @@ function compositeHexColor(foreground: string, background: string, alpha: number
   return rgbToHex(red, green, blue);
 }
 
-// Pick the brush-preview outline ink for the colors a cell can expose at once
-// (split-stitch slots, the pattern background, or both). A single color
-// delegates to contrastSymbolInk, so it uses its 60%-gray threshold that favors
-// white. Several colors deliberately keep the best worst-case WCAG contrast of
-// `#ffffff` vs `darkInk` across all of them, because this only inks the preview
-// outline, not symbols. Unparseable input keeps darkInk.
-function bestContrastInk(colors: readonly string[], darkInk: string): string {
-  if (colors.length === 0) return darkInk;
-  if (colors.length === 1) return contrastSymbolInk(colors[0], darkInk);
-  const luminances = colors.map(relativeLuminance);
-  const darkLuminance = relativeLuminance(darkInk);
-  if (darkLuminance === undefined || luminances.some((value) => value === undefined)) {
-    return contrastSymbolInk(colors[0], darkInk);
-  }
-  const contrast = (left: number, right: number): number => (Math.max(left, right) + 0.05) / (Math.min(left, right) + 0.05);
-  const darkContrast = Math.min(...luminances.map((value) => contrast(darkLuminance, value!)));
-  const whiteContrast = Math.min(...luminances.map((value) => contrast(1, value!)));
-  return whiteContrast > darkContrast ? '#ffffff' : darkInk;
-}
-
-// The brush hover preview draws no fill of its own — what's actually on
-// screen under it is whatever the committed document already painted there.
-// This returns every color a cell could show: the painted slot colors (split
-// cells can have several), composited for completed slots, plus the pattern
-// background for empty cells, unpainted split slots, and out-of-bounds
-// neighbours past the chart edge.
-function visibleCellColors(document: PatternDocument, x: number, y: number, style: RendererStyle): string[] {
-  if (x < 0 || y < 0 || x >= document.width || y >= document.height) return [patternBackgroundColor(document)];
-  const index = y * document.width + x;
-  const offset = index * 4;
-  return cellStateColors(document, document.kind[index], document.colors.subarray(offset, offset + 4), document.completed[index], style);
-}
-
-/** The colors one cell state shows; see visibleCellColors. */
+/** The colors one cell state shows: its painted slots, composited when completed, plus any exposed pattern background. */
 function cellStateColors(
   document: PatternDocument,
   kind: number,
@@ -2216,70 +2158,6 @@ function cellStateColors(
   return visible;
 }
 
-function drawBrushPreview(
-  context: CanvasContextAdapter,
-  document: PatternDocument,
-  preview: OverlayState['brushPreview'],
-  viewport: Viewport,
-  style: RendererStyle,
-  lod: RenderLod,
-  bounds: Rect
-): void {
-  if (!preview?.states.length) return;
-  const cells = new Set<string>();
-  for (const state of preview.states) {
-    const x = Math.floor(state.cell.x);
-    const y = Math.floor(state.cell.y);
-    if (x >= 0 && y >= 0 && x < document.width && y < document.height) cells.add(`${x},${y}`);
-  }
-  if (!cells.size) return;
-  save(context);
-  setAlpha(context, 1);
-  const strokeWidth = Math.max(0.75, Math.min(1.5, viewport.zoom * 0.06));
-
-  // Each outer edge segment gets its own ink/keyline pair, judged against the
-  // colors actually visible there: the hovered cell and the cell just outside
-  // the footprint across that edge. The keyline is drawn solid and wider so it
-  // stays visible through the dashed ink's gaps; preview.color (when set)
-  // overrides ink only — the keyline still tracks the underlying colors, so it
-  // stays legible regardless of what color is being previewed.
-  const strokeEdge = (from: ScreenPoint, to: ScreenPoint, hoveredColors: readonly string[], neighborColors: readonly string[]): void => {
-    const underlyingColors = [...hoveredColors, ...neighborColors];
-    const bestInk = bestContrastInk(underlyingColors, style.symbolColor);
-    const keylineInk = bestInk === '#ffffff' ? style.symbolColor : '#ffffff';
-    context.beginPath();
-    context.moveTo(from.x, from.y);
-    context.lineTo(to.x, to.y);
-    context.strokeStyle = keylineInk;
-    context.lineWidth = strokeWidth + 1;
-    context.setLineDash?.([]);
-    context.stroke();
-    context.beginPath();
-    context.moveTo(from.x, from.y);
-    context.lineTo(to.x, to.y);
-    context.strokeStyle = preview.color ?? bestInk;
-    context.lineWidth = strokeWidth;
-    context.setLineDash?.([3, 2]);
-    context.stroke();
-  };
-
-  for (const key of cells) {
-    const [x, y] = key.split(',').map(Number);
-    const rect = intersectRect(cellToScreenRect({ x, y, width: 1, height: 1 }, viewport), bounds);
-    if (!rect) continue;
-    const hoveredColors = visibleCellColors(document, x, y, style);
-    const left = modelToScreen({ x, y }, viewport);
-    const right = modelToScreen({ x: x + 1, y }, viewport);
-    const bottomRight = modelToScreen({ x: x + 1, y: y + 1 }, viewport);
-    const bottom = modelToScreen({ x, y: y + 1 }, viewport);
-    if (!cells.has(`${x},${y - 1}`)) strokeEdge(left, right, hoveredColors, visibleCellColors(document, x, y - 1, style));
-    if (!cells.has(`${x + 1},${y}`)) strokeEdge(right, bottomRight, hoveredColors, visibleCellColors(document, x + 1, y, style));
-    if (!cells.has(`${x},${y + 1}`)) strokeEdge(bottomRight, bottom, hoveredColors, visibleCellColors(document, x, y + 1, style));
-    if (!cells.has(`${x - 1},${y}`)) strokeEdge(bottom, left, hoveredColors, visibleCellColors(document, x - 1, y, style));
-  }
-  restore(context);
-}
-
 function drawOverlay(
   context: CanvasContextAdapter,
   document: PatternDocument,
@@ -2310,20 +2188,9 @@ function drawOverlay(
   const patternClip = clipToRect(context, bounds);
   save(context);
   context.lineWidth = style.overlayLineWidth;
-  let pendingStateCells: CellRect[] = [];
-  const pendingStates = new Map<number, PendingCellState>();
-  if (overlay.pendingCellStates !== undefined) {
-    pendingStateCells = drawPendingCellStates(context, document, overlay.pendingCellStates, viewport, style, lod, bounds, metrics.dpr);
-    for (const state of overlay.pendingCellStates) pendingStates.set(state.index, state);
-  } else {
-    drawPendingCells(context, document, overlay.pendingCells, viewport, style, bounds);
-  }
-  drawGridForCells(context, document, viewport, metrics, style, pendingStateCells, lod, pendingStates);
-  drawBrushPreview(context, document, overlay.brushPreview, viewport, style, lod, bounds);
-  drawBackstitchesForCells(context, document, viewport, metrics, style, pendingStateCells, lod, bounds, overlay.floatingPaste?.liftedBackstitchIds);
-  drawPendingBackstitchRemovals(context, document, overlay.pendingBackstitchRemovals, viewport, style, bounds);
+  const hidden = hiddenBackstitchIds(overlay);
   drawBackstitchPreview(context, document, overlay.backstitchPreview, viewport, style, bounds);
-  drawFloatingPaste(context, document, overlay.floatingPaste, viewport, metrics, style, lod, bounds);
+  drawFloatingPaste(context, document, overlay.floatingPaste, viewport, metrics, style, lod, bounds, hidden);
   const selectionValue = overlay.selection;
   const selection = overlayRect(selectionValue);
   if (selection && overlay.showSelection !== false) {
@@ -2461,6 +2328,14 @@ function setterInvalidation(request: Invalidation, layer: 'base' | 'overlay'): I
     : { ...request, layer };
 }
 
+interface PendingPreview {
+  readonly document: PatternDocument;
+  /** The states applied, by cell index. */
+  readonly states: ReadonlyMap<number, PendingCellState>;
+  /** Every cell the preview has written, which must repaint from the document when it ends. */
+  readonly touched: Set<number>;
+}
+
 export class Canvas2DRenderer implements CanvasRenderer {
   private document: PatternDocument;
   private viewport: Viewport;
@@ -2474,6 +2349,8 @@ export class Canvas2DRenderer implements CanvasRenderer {
   private traceDisposed = false;
   private patternDimmed = false;
   private overlay: OverlayState;
+  /** The document with the overlay's pending cell states applied, while there are any; the base pass draws it. */
+  private preview: PendingPreview | undefined;
   private thresholds: LodThresholds;
   private readonly atlas = new ColorAtlasCache();
   private readonly symbolAtlas = new SymbolAtlasCache();
@@ -2509,6 +2386,7 @@ export class Canvas2DRenderer implements CanvasRenderer {
     this.atlasFactory = options.atlasTargetFactory ?? createDefaultAtlasTarget;
     this.requestFrame = options.requestAnimationFrame ?? defaultFrameRequest;
     this.cancelFrame = options.cancelAnimationFrame ?? defaultFrameCancel;
+    this.updatePreview(this.overlay.pendingCellStates);
   }
 
   get lastStats(): RenderStats {
@@ -2538,6 +2416,12 @@ export class Canvas2DRenderer implements CanvasRenderer {
   setDocument(document: PatternDocument, invalidation?: Invalidation): void {
     if (this.disposed) return;
     this.document = document;
+    // A document that arrives mid-stroke gets the stroke's states reapplied to a fresh copy.
+    if (this.preview) {
+      const states = this.overlay.pendingCellStates;
+      this.preview = undefined;
+      this.updatePreview(states);
+    }
     const request: Invalidation = invalidation ? setterInvalidation(invalidation, 'base') : { layer: 'all', full: true };
     const changedCells = atlasChangedCells(request, document);
     const cellCount = document.width * document.height;
@@ -2604,9 +2488,10 @@ export class Canvas2DRenderer implements CanvasRenderer {
     if (this.disposed) return;
     const previous = this.overlay.canvasEditing?.workspace;
     const next = overlay.canvasEditing?.workspace;
-    const previousLifted = this.overlay.floatingPaste?.liftedBackstitchIds;
-    const nextLifted = overlay.floatingPaste?.liftedBackstitchIds;
+    const previousHidden = hiddenBackstitchIds(this.overlay);
+    const nextHidden = hiddenBackstitchIds(overlay);
     this.overlay = overlay;
+    this.updatePreview(overlay.pendingCellStates);
     const request: Invalidation = invalidation ? setterInvalidation(invalidation, 'overlay') : { layer: 'overlay', full: true };
     this.invalidate(request);
     // The ghost grid lives in the base target, so entering or leaving canvas
@@ -2614,11 +2499,89 @@ export class Canvas2DRenderer implements CanvasRenderer {
     const sameWorkspace = previous === next || (previous !== undefined && next !== undefined
       && previous.x === next.x && previous.y === next.y && previous.width === next.width && previous.height === next.height);
     if (!sameWorkspace) this.invalidate('base');
-    // Lifting, committing, or cancelling a move changes which backstitches the base draws.
-    if (previousLifted !== nextLifted) {
-      const cellRect = backstitchCellBounds(this.document, previousLifted, nextLifted);
+    // Lifting or erasing, and committing or cancelling either, changes which backstitches the base draws.
+    if (!sameIds(previousHidden, nextHidden)) {
+      const cellRect = backstitchCellBounds(this.document, previousHidden, nextHidden);
       if (cellRect) this.invalidate({ layer: 'base', cellRect: growCellRect(cellRect, 1) });
     }
+  }
+
+  /** What the base pass draws: the document, with any pending cell states applied. */
+  private get shown(): PatternDocument {
+    return this.preview?.document ?? this.document;
+  }
+
+  /**
+   * Bring the preview in line with `states`: copy the cell planes once when a
+   * stroke starts, then write each changed state and restore each cell that
+   * dropped out, invalidating only those cells.
+   */
+  private updatePreview(states: readonly PendingCellState[] | undefined): void {
+    const document = this.document;
+    const previous = this.preview;
+    if (!states) {
+      if (!previous) return;
+      this.preview = undefined;
+      this.invalidatePreviewCells([...previous.touched]);
+      return;
+    }
+    const planes = previous?.document ?? { kind: document.kind.slice(), colors: document.colors.slice(), completed: document.completed.slice() };
+    const touched = previous?.touched ?? new Set<number>();
+    const next = new Map<number, PendingCellState>();
+    const changed: number[] = [];
+    const cellCount = document.width * document.height;
+    const write = (index: number, kind: number, colors: ArrayLike<number>, completed: number): void => {
+      const offset = index * 4;
+      if (planes.kind[index] === kind && planes.completed[index] === completed
+        && planes.colors[offset] === colors[0] && planes.colors[offset + 1] === colors[1]
+        && planes.colors[offset + 2] === colors[2] && planes.colors[offset + 3] === colors[3]) return;
+      planes.kind[index] = kind;
+      planes.colors.set([colors[0], colors[1], colors[2], colors[3]], offset);
+      planes.completed[index] = completed;
+      changed.push(index);
+    };
+    for (const state of states) {
+      if (state.index < 0 || state.index >= cellCount) continue;
+      next.set(state.index, state);
+      write(state.index, state.kind, state.colors, state.completed);
+    }
+    for (const index of previous?.states.keys() ?? []) {
+      if (!next.has(index)) write(index, document.kind[index], document.colors.subarray(index * 4, index * 4 + 4), document.completed[index]);
+    }
+    for (const index of changed) touched.add(index);
+    // Fresh views over the same buffers tell the atlases the planes changed, without another copy.
+    const shown = changed.length > 0 || !previous
+      ? {
+          ...document,
+          kind: new Uint8Array(planes.kind.buffer, planes.kind.byteOffset, planes.kind.length),
+          colors: new Uint16Array(planes.colors.buffer, planes.colors.byteOffset, planes.colors.length),
+          completed: new Uint8Array(planes.completed.buffer, planes.completed.byteOffset, planes.completed.length)
+        }
+      : previous.document;
+    this.preview = { document: shown, states: next, touched };
+    this.invalidatePreviewCells(changed);
+  }
+
+  /** Repaint the base over `cells` and one cell around them, so the grid lines on their edges follow too. */
+  private invalidatePreviewCells(cells: readonly number[]): void {
+    if (cells.length === 0) return;
+    const width = this.document.width;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const index of cells) {
+      const x = index % width;
+      const y = Math.floor(index / width);
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+    }
+    const cellCount = width * this.document.height;
+    this.atlas.invalidate(cells, cellCount);
+    this.symbolAtlas.invalidate(cells, cellCount);
+    this.invalidate({ layer: 'base', cellRect: growCellRect({ x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 }, 1) });
   }
 
   invalidate(invalidation: Invalidation | InvalidationLayer = 'all'): void {
@@ -2720,7 +2683,7 @@ export class Canvas2DRenderer implements CanvasRenderer {
     const target = this.options.targets.base;
     prepareTarget(target, this.metrics);
     const context = target.context;
-    const patternBackground = patternBackgroundColor(this.document);
+    const patternBackground = patternBackgroundColor(this.shown);
     // A highlight outline straddles cell edges, and a changed cell can add or remove
     // an edge on its neighbors, so a partial redraw covers one more cell around it.
     const outlineMargin = this.style.highlightColor === null ? 0 : 1;
@@ -2742,8 +2705,8 @@ export class Canvas2DRenderer implements CanvasRenderer {
     const workspace = this.overlay.canvasEditing?.workspace;
     if (workspace) drawGhostGrid(context, workspace, this.viewport, this.metrics, this.style, lod);
     // The overview atlas carries a masked canvas's fabric, so walking its cells here is left to the fallbacks.
-    if (lod !== RenderLod.Overview || this.document.canvasMask === undefined) {
-      fillCanvasFabric(context, this.document, this.viewport, this.metrics, fillArea, patternBackground);
+    if (lod !== RenderLod.Overview || this.shown.canvasMask === undefined) {
+      fillCanvasFabric(context, this.shown, this.viewport, this.metrics, fillArea, patternBackground);
     }
     // Move-image mode dims the committed pattern so the reference image reads
     // on top; the reference image itself keeps its configured opacity.
@@ -2751,17 +2714,17 @@ export class Canvas2DRenderer implements CanvasRenderer {
     if (lod === RenderLod.Overview) {
       const drawn = withAlpha(context, dimAlpha, 1, () => {
         const cells = this.drawOverviewCells(context, dimAlpha);
-        const visible = visibleCellRect(this.viewport, this.metrics, this.document);
-        drawGrid(context, this.document, this.viewport, this.metrics, this.style, visible, lod);
-        drawChartBorder(context, this.document, this.viewport, this.metrics, this.style);
-        drawStitchNumbers(context, this.document, this.viewport, this.metrics, this.style);
-        const drawnBackstitches = drawBackstitches(context, this.document, this.viewport, this.metrics, this.style, undefined, dimAlpha, this.overlay.floatingPaste?.liftedBackstitchIds);
+        const visible = visibleCellRect(this.viewport, this.metrics, this.shown);
+        drawGrid(context, this.shown, this.viewport, this.metrics, this.style, visible, lod);
+        drawChartBorder(context, this.shown, this.viewport, this.metrics, this.style);
+        drawStitchNumbers(context, this.shown, this.viewport, this.metrics, this.style);
+        const drawnBackstitches = drawBackstitches(context, this.shown, this.viewport, this.metrics, this.style, undefined, dimAlpha, hiddenBackstitchIds(this.overlay));
         return { ...cells, drawnBackstitches };
       });
-      drawTraceImage(context, this.traceImage, this.document, this.viewport, this.metrics);
+      drawTraceImage(context, this.traceImage, this.shown, this.viewport, this.metrics);
       return drawn;
     }
-    const visible = visibleCellRect(this.viewport, this.metrics, this.document);
+    const visible = visibleCellRect(this.viewport, this.metrics, this.shown);
     const invalidationCellRect = (invalidation.cellRect && invalidationRect
       ? unionRect(invalidation.cellRect, screenRectToCellRect(invalidationRect, this.viewport))
       : invalidation.cellRect ?? (invalidationRect ? screenRectToCellRect(invalidationRect, this.viewport) : visible));
@@ -2773,7 +2736,7 @@ export class Canvas2DRenderer implements CanvasRenderer {
     let drawnCells = 0;
     const drawnBackstitches = withAlpha(context, dimAlpha, 1, () => {
       const sprites = this.style.threadView && this.viewport.zoom >= THREAD_MIN_DETAIL_CELL_PX ? this.threadSpritesFor() : undefined;
-      if (dirtyCells && sprites && this.document.canvasMask === undefined) {
+      if (dirtyCells && sprites && this.shown.canvasMask === undefined) {
         // The weave is aligned to whole cells, so a clipped redraw lines up with the rest.
         const origin = cellToScreenRect({ x: dirtyCells.x, y: dirtyCells.y, width: 1, height: 1 }, this.viewport);
         drawThreadFabric(
@@ -2787,31 +2750,31 @@ export class Canvas2DRenderer implements CanvasRenderer {
         for (let y = dirtyCells.y; y < dirtyCells.y + dirtyCells.height; y += 1) {
           for (let x = dirtyCells.x; x < dirtyCells.x + dirtyCells.width; x += 1) {
             const drawn = sprites
-              ? drawThreadCell(context, this.document, x, y, this.style, this.viewport, sprites, dimAlpha)
-              : drawCell(context, this.document, x, y, this.style, this.viewport, lod, dimAlpha, this.metrics.dpr);
+              ? drawThreadCell(context, this.shown, x, y, this.style, this.viewport, sprites, dimAlpha)
+              : drawCell(context, this.shown, x, y, this.style, this.viewport, lod, dimAlpha, this.metrics.dpr);
             if (drawn) drawnCells += 1;
           }
         }
-        drawGrid(context, this.document, this.viewport, this.metrics, this.style, dirtyCells, lod);
+        drawGrid(context, this.shown, this.viewport, this.metrics, this.style, dirtyCells, lod);
       }
-      drawChartBorder(context, this.document, this.viewport, this.metrics, this.style);
-      drawStitchNumbers(context, this.document, this.viewport, this.metrics, this.style);
+      drawChartBorder(context, this.shown, this.viewport, this.metrics, this.style);
+      drawStitchNumbers(context, this.shown, this.viewport, this.metrics, this.style);
       // Edges of cells just outside the redraw can reach into its clip, so trace one cell further.
       // A redraw that misses the visible cells still traces around the corner nearest them.
       const outlineCells = dirtyCells ?? { x: Math.max(visible.x, boundedCellRect.x), y: Math.max(visible.y, boundedCellRect.y), width: 0, height: 0 };
-      if (this.viewport.zoom >= HIGHLIGHT_OUTLINE_MIN_CELL_PX) drawHighlightOutline(context, this.document, this.viewport, this.style, growCellRect(outlineCells, 1));
+      if (this.viewport.zoom >= HIGHLIGHT_OUTLINE_MIN_CELL_PX) drawHighlightOutline(context, this.shown, this.viewport, this.style, growCellRect(outlineCells, 1));
       const dirtyModel = partial ? {
         x: this.viewport.x + invalidationRect.x / this.viewport.zoom,
         y: this.viewport.y + invalidationRect.y / this.viewport.zoom,
         width: invalidationRect.width / this.viewport.zoom,
         height: invalidationRect.height / this.viewport.zoom
       } : undefined;
-      const lifted = this.overlay.floatingPaste?.liftedBackstitchIds;
+      const hidden = hiddenBackstitchIds(this.overlay);
       return sprites
-        ? drawThreadBackstitches(context, this.document, this.viewport, this.metrics, this.style, dirtyModel, dimAlpha, lifted)
-        : drawBackstitches(context, this.document, this.viewport, this.metrics, this.style, dirtyModel, dimAlpha, lifted);
+        ? drawThreadBackstitches(context, this.shown, this.viewport, this.metrics, this.style, dirtyModel, dimAlpha, hidden)
+        : drawBackstitches(context, this.shown, this.viewport, this.metrics, this.style, dirtyModel, dimAlpha, hidden);
     });
-    drawTraceImage(context, this.traceImage, this.document, this.viewport, this.metrics);
+    drawTraceImage(context, this.traceImage, this.shown, this.viewport, this.metrics);
     if (partial) restore(context);
     return { visitedCells: dirtyCells ? dirtyCells.width * dirtyCells.height : 0, drawnCells, drawnBackstitches };
   }
@@ -2829,7 +2792,7 @@ export class Canvas2DRenderer implements CanvasRenderer {
    * cell by cell; the caller draws the grid, border, and backstitches over them. */
   private drawOverviewCells(context: CanvasContextAdapter, dimAlpha: number): { visitedCells: number; drawnCells: number } {
     if (this.style.mode === ChartPresentationMode.Symbol) {
-      const symbolAtlas = this.symbolAtlas.get(this.document, this.style, this.atlasFactory);
+      const symbolAtlas = this.symbolAtlas.get(this.shown, this.style, this.atlasFactory);
       const canDrawCachedSymbols = Boolean(
         this.style.highlightColor === null &&
         symbolAtlas.source &&
@@ -2848,8 +2811,8 @@ export class Canvas2DRenderer implements CanvasRenderer {
             symbolAtlas.height,
             -this.viewport.x * this.viewport.zoom,
             -this.viewport.y * this.viewport.zoom,
-            this.document.width * this.viewport.zoom,
-            this.document.height * this.viewport.zoom
+            this.shown.width * this.viewport.zoom,
+            this.shown.height * this.viewport.zoom
           );
           drawnFromAtlas = true;
         } catch {
@@ -2861,23 +2824,23 @@ export class Canvas2DRenderer implements CanvasRenderer {
         if (drawnFromAtlas) return { visitedCells: 0, drawnCells: 0 };
       }
       this.fillMaskedOverviewFabric(context);
-      return drawOverviewSymbolFallback(context, this.document, this.viewport, this.metrics, this.style, dimAlpha);
+      return drawOverviewSymbolFallback(context, this.shown, this.viewport, this.metrics, this.style, dimAlpha);
     }
     context.imageSmoothingEnabled = false;
-    const atlas = this.style.highlightColor === null ? this.atlas.get(this.document, this.style, this.atlasFactory) : undefined;
+    const atlas = this.style.highlightColor === null ? this.atlas.get(this.shown, this.style, this.atlasFactory) : undefined;
     if (atlas?.source && context.drawImage && isCanvasImageSource(atlas.source)) {
-      drawImage(context, atlas.source, atlas.width, atlas.height, -this.viewport.x * this.viewport.zoom, -this.viewport.y * this.viewport.zoom, this.document.width * this.viewport.zoom, this.document.height * this.viewport.zoom);
+      drawImage(context, atlas.source, atlas.width, atlas.height, -this.viewport.x * this.viewport.zoom, -this.viewport.y * this.viewport.zoom, this.shown.width * this.viewport.zoom, this.shown.height * this.viewport.zoom);
       return { visitedCells: 0, drawnCells: 0 };
     }
     this.fillMaskedOverviewFabric(context);
-    return drawOverviewFallback(context, this.document, this.viewport, this.metrics, this.style, dimAlpha);
+    return drawOverviewFallback(context, this.shown, this.viewport, this.metrics, this.style, dimAlpha);
   }
 
   /** Without an atlas, a masked canvas's fabric is filled run by run like the other levels of detail. */
   private fillMaskedOverviewFabric(context: CanvasContextAdapter): void {
-    if (this.document.canvasMask === undefined) return;
+    if (this.shown.canvasMask === undefined) return;
     const screen = { x: 0, y: 0, width: this.metrics.cssWidth, height: this.metrics.cssHeight };
-    fillCanvasFabric(context, this.document, this.viewport, this.metrics, screen, patternBackgroundColor(this.document));
+    fillCanvasFabric(context, this.shown, this.viewport, this.metrics, screen, patternBackgroundColor(this.shown));
   }
 
   private renderOverlay(fullInvalidation: boolean, invalidation: CoalescedInvalidation, lod: RenderLod): void {

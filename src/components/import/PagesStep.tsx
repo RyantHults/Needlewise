@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useObjectUrl } from '../object-url';
 import type { ImportAnalysis, ImportPageRole } from '../../import/types';
 
 const ROLE_LABELS: Record<ImportPageRole, string> = { chart: 'Chart', key: 'Key', other: 'Ignore' };
@@ -9,15 +9,9 @@ interface Props {
   onRole: (page: number, role: ImportPageRole) => void;
 }
 
-/** The page render through an object URL that lives exactly as long as its blob is shown. */
+/** The page render, shown through an object URL. */
 function PageThumbnail({ blob, page }: { blob: Blob | undefined; page: number }) {
-  const [url, setUrl] = useState<string | null>(null);
-  useEffect(() => {
-    if (!blob) { setUrl(null); return; }
-    const next = URL.createObjectURL(blob);
-    setUrl(next);
-    return () => URL.revokeObjectURL(next);
-  }, [blob]);
+  const url = useObjectUrl(blob);
   return (
     <div className="import-page-thumb">
       {blob && url ? <img src={url} alt={`Page ${page} preview`} /> : <span className="import-page-thumb-empty" aria-hidden="true">{page}</span>}

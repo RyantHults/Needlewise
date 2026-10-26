@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ChartPresentationMode,
   type EditorSurfaceController,
@@ -130,6 +130,11 @@ export function EditorSurface({
 }: Props) {
   const catalog = workspace.catalogFor(document);
   const availableCatalogs = workspace.availableCatalogs();
+  const referenceAssetId = workspace.sourceImage?.assetId;
+  const referenceImage = useMemo(() => {
+    const asset = referenceAssetId === undefined ? undefined : workspace.getAsset(referenceAssetId);
+    return asset && new Blob([new Uint8Array(asset.data) as unknown as ArrayBuffer], { type: asset.mimeType });
+  }, [referenceAssetId]);
   const defaultCatalogId = availableCatalogs.some((item) => item.association.catalogId === catalog?.association.catalogId)
     ? catalog!.association.catalogId
     : availableCatalogs[0]?.association.catalogId ?? "";
@@ -955,7 +960,7 @@ export function EditorSurface({
               document={layeredDocument}
               layerSelection={layerSelection}
               backgroundColor={documentBackgroundColor}
-              reference={{ present: Boolean(workspace.sourceImage), visible: workspace.sourceImage?.traceVisible ?? true }}
+              reference={{ present: Boolean(workspace.sourceImage), visible: workspace.sourceImage?.traceVisible ?? true, image: referenceImage }}
               onSelect={selectLayer}
               onToggleVisibility={(layerId, visible) => runLayerAction(() => session?.setLayerVisibility(layerId, visible))}
               onToggleReferenceVisibility={setReferenceVisible}
