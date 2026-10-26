@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
+import { Icon } from "../controls/Icon";
 import { EditableTitle } from "./EditableTitle";
 import { ExportButton, SettingsButton } from "./PatternHeaderActions";
 import { ViewSwitch, type PatternView } from "./ViewSwitch";
@@ -35,10 +36,10 @@ export function PatternHeader({ titleId, title, onRenameTitle, view, onNavigate,
       </Link>
       <div className="editor-heading-controls">
         <button className="icon-button" type="button" aria-label={undo.label} title={undo.label} disabled={undo.disabled} onClick={undo.onClick}>
-          ↶
+          <Icon name="undo" />
         </button>
         <button className="icon-button" type="button" aria-label={redo.label} title={redo.label} disabled={redo.disabled} onClick={redo.onClick}>
-          ↷
+          <Icon name="redo" />
         </button>
         <ExportButton onClick={onExport} />
         <SettingsButton onClick={onSettings} />

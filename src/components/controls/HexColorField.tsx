@@ -18,7 +18,7 @@ interface HexColorFieldProps {
   className?: string;
 }
 
-/** A native color picker and a hex text input over one color. The text is a draft until it parses, then becomes uppercase `#RRGGBB`. */
+/** A native color picker and a hex text input over one color. The text stays as typed while editing and becomes uppercase `#RRGGBB` on blur when it parses. */
 export function HexColorField({ id, value, onChange, pickerLabel, textLabel, placeholder, help, invalidHelp, className }: HexColorFieldProps) {
   const [draft, setDraft] = useState(value);
   const [picked, setPicked] = useState(() => normalizeHexColor(value) ?? '#000000');
@@ -32,9 +32,13 @@ export function HexColorField({ id, value, onChange, pickerLabel, textLabel, pla
 
   const change = (text: string) => {
     const canonical = normalizeHexColor(text);
-    setDraft(canonical ?? text);
+    setDraft(text);
     if (canonical !== undefined) setPicked(canonical);
     onChange(canonical);
+  };
+  const settle = () => {
+    const canonical = normalizeHexColor(draft);
+    if (canonical !== undefined) setDraft(canonical);
   };
   const invalid = draft !== '' && normalizeHexColor(draft) === undefined;
   const message = invalid ? invalidHelp ?? help : help;
@@ -43,9 +47,9 @@ export function HexColorField({ id, value, onChange, pickerLabel, textLabel, pla
     <>
       <div className={['custom-color-fields', className ?? ''].filter(Boolean).join(' ')}>
         <label htmlFor={`${id}-picker`}>{pickerLabel}</label>
-        <input id={`${id}-picker`} className="custom-color-picker" type="color" value={picked.toLowerCase()} onChange={(event) => change(event.target.value)} />
+        <input id={`${id}-picker`} className="custom-color-picker" type="color" value={picked.toLowerCase()} onChange={(event) => change(normalizeHexColor(event.target.value) ?? event.target.value)} />
         <label htmlFor={id}>{textLabel}</label>
-        <input id={id} type="text" value={draft} maxLength={7} placeholder={placeholder} autoComplete="off" aria-describedby={message ? `${id}-help` : undefined} onChange={(event) => change(event.target.value)} />
+        <input id={id} type="text" value={draft} maxLength={7} placeholder={placeholder} autoComplete="off" aria-describedby={message ? `${id}-help` : undefined} onChange={(event) => change(event.target.value)} onBlur={settle} />
       </div>
       {message && <p id={`${id}-help`} className="custom-color-help" aria-live="polite">{message}</p>}
     </>

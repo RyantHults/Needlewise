@@ -9,7 +9,10 @@ import { applyCommand, cell } from '../../domain/test-fixtures';
 const palette = [{ id: 1, name: 'Ruby', color: '#AA0000' }];
 const makeDocument = (stitched: boolean, width = 14, height = 14) => {
   const pattern = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width, height, palette });
-  return stitched ? applyCommand(pattern, cell(width, { type: 'set-full', x: 0, y: 0, color: 1 })).document : pattern;
+  if (!stitched) return pattern;
+  // Opposite corners, so the stitched content fills the grid and auto-crop leaves it whole.
+  const corner = applyCommand(pattern, cell(width, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
+  return applyCommand(corner, cell(width, { type: 'set-full', x: width - 1, y: height - 1, color: 1 })).document;
 };
 
 function memoryStorage(initial?: ExportSettings) {
@@ -71,7 +74,7 @@ describe('ExportPanel', () => {
     expect(screen.getByLabelText('Waste allowance (%)')).toHaveValue(10);
     const totals = screen.getByRole('region', { name: 'Thread totals' });
     expect(within(totals).getByText('Ruby')).toBeInTheDocument();
-    expect(within(totals).getByText('1 full')).toBeInTheDocument();
+    expect(within(totals).getByText('2 full')).toBeInTheDocument();
     expect(within(totals).getByText(/1 backstitch strand,/)).toBeInTheDocument();
   });
 
@@ -106,6 +109,20 @@ describe('ExportPanel', () => {
     expect(within(screen.getByRole('region', { name: 'Thread totals' })).getByText(/1 in × 1 in/)).toBeInTheDocument();
   });
 
+  it('shows the finished size of the cropped chart unless auto-crop is switched off', async () => {
+    const document = applyCommand(makeDocument(false, 28, 28), cell(28, { type: 'set-full', x: 3, y: 3, color: 1 })).document;
+    const { exportPdf } = setup({ document });
+    const totals = within(screen.getByRole('region', { name: 'Thread totals' }));
+    expect(screen.getByRole('switch', { name: 'Auto-crop to pattern' })).toBeChecked();
+    expect(totals.getByText(/0\.18 cm × 0\.18 cm/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Auto-crop to pattern' }));
+    expect(totals.getByText(/5\.08 cm × 5\.08 cm/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Export PDF' }));
+    await waitFor(() => expect(exportPdf).toHaveBeenCalled());
+    expect(exportPdf.mock.calls[0][0].autoCrop).toBe(false);
+  });
+
   it('round-trips export settings through storage and updates the page estimate', () => {
     const { storage, view, props } = setup({ document: makeDocument(true, 120, 120) });
     const pages = () => Number(/Estimated length: (\d+) page/.exec(screen.getByTestId('export-page-count').textContent ?? '')?.[1]);
@@ -124,7 +141,7 @@ describe('ExportPanel', () => {
     fireEvent.click(screen.getByLabelText('Center mark'));
     fireEvent.change(screen.getByLabelText('Chart style'), { target: { value: 'combined' } });
     const saved = JSON.parse(storage.data.get(EXPORT_SETTINGS_STORAGE_KEY) ?? '{}');
-    expect(saved).toEqual({ paper: 'a4', orientation: 'landscape', margins: 'narrow', pageNumbers: false, centerMark: true, overlap: 3, cellSizeMm: 5, chartStyle: 'combined' });
+    expect(saved).toEqual({ paper: 'a4', orientation: 'landscape', margins: 'narrow', pageNumbers: false, centerMark: true, autoCrop: true, overlap: 3, cellSizeMm: 5, chartStyle: 'combined' });
 
     view.unmount();
     render(<ExportPanel {...props} />);

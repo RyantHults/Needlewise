@@ -30,3 +30,13 @@ export function grayscaleColor(color: string): string {
   const value = luma(rgb);
   return rgbToHex(value, value, value);
 }
+
+/** `foreground` laid over `background` at `alpha`, as one opaque color; an unparseable input keeps `foreground`. */
+export function compositeHexColor(foreground: string, background: string, alpha: number): string {
+  const opacity = Math.max(0, Math.min(1, alpha));
+  const foregroundChannels = parseHexColor(foreground);
+  const backgroundChannels = parseHexColor(background);
+  if (!foregroundChannels || !backgroundChannels || opacity >= 1) return foreground;
+  const [red, green, blue] = foregroundChannels.map((channel, index) => channel * opacity + backgroundChannels[index] * (1 - opacity));
+  return rgbToHex(red, green, blue);
+}

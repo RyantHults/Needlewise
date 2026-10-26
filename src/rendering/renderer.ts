@@ -62,8 +62,7 @@ import {
   patternBackgroundColor
 } from './atlas';
 import { clearTarget, clipToRect, createDefaultAtlasTarget, drawImage, prepareTarget, rectPath, restore, save } from './context';
-import { grayscaleColor, paletteColor } from './colors';
-import { parseHexColor, rgbToHex } from '../domain/color';
+import { compositeHexColor, grayscaleColor, paletteColor } from './colors';
 import { contrastSymbolInk, isDarkColor, relativeLuminance } from './contrast';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
 import { readRendererColors, subscribeThemeChange, type RendererColors } from './theme-colors';
@@ -190,6 +189,16 @@ function completedMark(
     { x: rect.x + rect.width * 0.8, y: rect.y + rect.height * 0.5 }
   );
   restore(context);
+}
+
+/** The quarter of `rect` that slot `slot` marks: 0 top-left, then clockwise. */
+function slotQuadrant(rect: Rect, slot: number): Rect {
+  return {
+    x: rect.x + (slot === 1 || slot === 2 ? rect.width / 2 : 0),
+    y: rect.y + (slot === 2 || slot === 3 ? rect.height / 2 : 0),
+    width: rect.width / 2,
+    height: rect.height / 2
+  };
 }
 
 function drawSymbol(
@@ -350,15 +359,8 @@ function drawCellState(
     withAlpha(context, markAlpha, dimAlpha, () => {
       const combinedSymbol = slot === undefined && viewport.zoom >= COMBINED_SYMBOL_MIN_CELL_PX;
       if (lod === RenderLod.Detail || symbolMode || combinedSymbol) drawSymbol(context, document, id, rect, style, slot);
-      if (completed && lod === RenderLod.Detail) {
-        const completionRect = slot === undefined ? rect : {
-          x: rect.x + (slot === 1 || slot === 2 ? rect.width / 2 : 0),
-          y: rect.y + (slot === 2 || slot === 3 ? rect.height / 2 : 0),
-          width: rect.width / 2,
-          height: rect.height / 2
-        };
-        completedMark(context, completionRect, style, markAlpha);
-      }
+      // A mark line is sub-pixel at Overview zoom, where the fill's fade alone shows completion.
+      if (completed && lod !== RenderLod.Overview) completedMark(context, slot === undefined ? rect : slotQuadrant(rect, slot), style, markAlpha);
     });
   };
   const fill = (id: number, completed: boolean, slot?: number, geometryKind = kind): void => {
@@ -1695,8 +1697,8 @@ function drawOverviewFallback(
   const visible = visibleCellRect(viewport, metrics, document);
   let drawnCells = 0;
   // The color atlas cannot dim by color, so a highlight reaches the Overview through this path.
-  const fill = (id: number): void => {
-    context.fillStyle = overviewColorForPaletteId(document, id, style);
+  const fill = (id: number, completed: boolean): void => {
+    context.fillStyle = overviewColorForPaletteId(document, id, completed, style);
     if (style.highlightColor !== null) setAlpha(context, dimAlpha * highlightAlpha(style, id));
   };
   for (let y = visible.y; y < visible.y + visible.height; y += 1) {
@@ -1704,7 +1706,7 @@ function drawOverviewFallback(
       const index = y * document.width + x;
       if (document.kind[index] === CellKind.Empty) continue;
       const rect = snapRectToDevicePixels(cellToScreenRect({ x, y, width: 1, height: 1 }, viewport), metrics.dpr);
-      paintOverviewCell(context, document.kind[index], document.colors, index * 4, rect, fill);
+      paintOverviewCell(context, document.kind[index], document.colors, index * 4, document.completed[index], rect, fill);
       drawnCells += 1;
     }
   }
@@ -2107,15 +2109,6 @@ function drawBackstitchPreview(
   context.setLineDash?.([6, 4]);
   linePath(context, screenSegment.start, screenSegment.end);
   restore(context);
-}
-
-function compositeHexColor(foreground: string, background: string, alpha: number): string {
-  const opacity = Math.max(0, Math.min(1, alpha));
-  const foregroundChannels = parseHexColor(foreground);
-  const backgroundChannels = parseHexColor(background);
-  if (!foregroundChannels || !backgroundChannels || opacity >= 1) return foreground;
-  const [red, green, blue] = foregroundChannels.map((channel, index) => channel * opacity + backgroundChannels[index] * (1 - opacity));
-  return rgbToHex(red, green, blue);
 }
 
 /** The colors one cell state shows: its painted slots, composited when completed, plus any exposed pattern background. */

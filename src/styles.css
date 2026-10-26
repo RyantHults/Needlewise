@@ -395,7 +395,9 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:var(--
 .editor-heading .icon-button:disabled { opacity:.45; cursor:not-allowed; }
 .editor-export { flex:0 0 auto; }
 .icon-button, .gear-button { display:grid; place-items:center; width:2.5rem; height:2.5rem; border:1px solid var(--color-line); border-radius:50%; background:var(--color-surface); color:var(--color-accent-ink); font-size:1.25rem; line-height:1; }
-.editor-export svg { width:1.2rem; height:1.2rem; }
+.ui-icon { display:block; width:1em; height:1em; flex:none; background:currentColor; mask-size:contain; mask-repeat:no-repeat; mask-position:center; -webkit-mask-size:contain; -webkit-mask-repeat:no-repeat; -webkit-mask-position:center; }
+.editor-export .ui-icon { width:1.2rem; height:1.2rem; }
+.canvas-actions .bottom-control > span > .ui-icon, .canvas-actions .view-actions button > span > .ui-icon { width:1.1rem; height:1.1rem; }
 .icon-button:hover, .gear-button:hover { border-color:var(--color-accent); background:var(--color-accent-soft); }
 .editor-layout { position:relative; grid-template-columns:9.3rem minmax(0,1fr); gap:.55rem; align-items:start; overflow:visible; }
 .editor-layout.rail-right { grid-template-columns:minmax(0,1fr) 9.3rem; }

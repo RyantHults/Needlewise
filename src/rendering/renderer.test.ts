@@ -5,6 +5,7 @@ import { cellToScreenRect, fitViewport, getCanvasMetrics, visibleCellRect } from
 import { CHART_EDGE_MARGIN, DEFAULT_RENDERER_STYLE, type CanvasTarget, type FloatingPasteOverlay, type PendingCellState, type RendererStyle, type TraceImage } from '../editor/contracts';
 import { MAX_ATLAS_PIXELS, createDefaultAtlasTarget } from './context';
 import { isCanvasImageSource } from './atlas';
+import { compositeHexColor } from './colors';
 import { createCanvasRenderer } from './renderer';
 import { record, recordingContext, type RecordingContext } from './test-support';
 import { sparseSelectionGeometry } from '../editor/lasso';
@@ -737,6 +738,102 @@ describe('Canvas 2D chart renderer', () => {
     });
   });
 
+  describe('completion at every zoom', () => {
+    const RED = '#ff0000';
+
+    function completedChart() {
+      // Wide enough that one marked cell is a patch, not a rebuild.
+      const document = chart(4, 1);
+      document.kind[0] = CellKind.Full;
+      document.colors[0] = 1;
+      document.completed[0] = 1;
+      document.kind[1] = CellKind.Full;
+      document.colors[4] = 35;
+      return document;
+    }
+
+    function fadedRed(document: PatternDocument, fill = RED): string {
+      return compositeHexColor(fill, document.settings.backgroundColor, DEFAULT_RENDERER_STYLE.completedOpacity);
+    }
+
+    function render(document: PatternDocument, zoom: number, style: Partial<RendererStyle>, atlasContexts?: RecordingContext[]) {
+      const base = recordingContext();
+      const renderer = createCanvasRenderer({
+        document,
+        targets: { base: target(base), overlay: target(recordingContext()) },
+        metrics: getCanvasMetrics(zoom * 2, zoom),
+        viewport: { x: 0, y: 0, zoom },
+        style: { mode: 'color', showGrid: false, ...style },
+        ...(atlasContexts ? {
+          atlasTargetFactory: (width: number, height: number) => {
+            const context = recordingContext();
+            atlasContexts.push(context);
+            return target(context, new FakeCanvasImageSource(width, height));
+          }
+        } : {})
+      });
+      renderer.renderNow();
+      return { base, renderer };
+    }
+
+    it('fades a completed cell at Compact zoom only while completion shows', () => {
+      const alphas = (showCompletion: boolean) => {
+        const { base, renderer } = render(completedChart(), 6, { showCompletion });
+        renderer.dispose();
+        return base.records.filter((call) => call.name === 'fillRect' && call.fillStyle === RED).map((call) => call.globalAlpha);
+      };
+      expect(alphas(true)).toEqual([DEFAULT_RENDERER_STYLE.completedOpacity]);
+      expect(alphas(false)).toEqual([1]);
+    });
+
+    it('fades a completed cell at Overview zoom without an atlas only while completion shows', () => {
+      const fills = (showCompletion: boolean) => {
+        const document = completedChart();
+        const { base, renderer } = render(document, 2, { showCompletion });
+        renderer.dispose();
+        return base.records.filter((call) => call.name === 'fillRect' && call.args.join(',') === '0,0,2,2').map((call) => call.fillStyle);
+      };
+      expect(fills(true)).toContain(fadedRed(completedChart()));
+      expect(fills(true)).not.toContain(RED);
+      expect(fills(true)).not.toContain(DEFAULT_RENDERER_STYLE.completedColor);
+      expect(fills(false)).toContain(RED);
+    });
+
+    it('paints completion into the color atlas and repaints a newly marked cell', () => {
+      const atlasFills = (atlas: RecordingContext, x: number) =>
+        atlas.records.filter((call) => call.name === 'fillRect' && call.args[0] === x).map((call) => call.fillStyle);
+      const hidden: RecordingContext[] = [];
+      render(completedChart(), 2, { showCompletion: false }, hidden).renderer.dispose();
+      expect(atlasFills(hidden[0], 0)).toContain(RED);
+
+      const atlases: RecordingContext[] = [];
+      const document = completedChart();
+      const { renderer } = render(document, 2, { showCompletion: true }, atlases);
+      expect(atlasFills(atlases[0], 0)).toContain(fadedRed(document));
+      expect(atlasFills(atlases[0], 0)).not.toContain(RED);
+
+      const marked = { ...document, completed: document.completed.slice(), revision: document.revision + 1 };
+      marked.completed[1] = 1;
+      atlases[0].records.length = 0;
+      renderer.setDocument(marked, { layer: 'base', cellRect: { x: 1, y: 0, width: 1, height: 1 }, reason: 'document-overview' });
+      renderer.renderNow();
+      expect(atlases).toHaveLength(1);
+      const pixelsPerCell = atlases[0].records.find((call) => call.name === 'fillRect')?.args[2] as number;
+      expect(atlasFills(atlases[0], pixelsPerCell)).toContain(fadedRed(marked, '#0000ff'));
+      renderer.dispose();
+    });
+
+    it('fades a completed cell in the Symbol atlas only while completion shows', () => {
+      const symbolFills = (showCompletion: boolean) => {
+        const atlases: RecordingContext[] = [];
+        render(completedChart(), 2, { mode: 'symbol', showCompletion }, atlases).renderer.dispose();
+        return atlases[0].records.filter((call) => call.name === 'fillRect' && call.args[0] === 0 && call.args[1] === 0).map((call) => call.fillStyle);
+      };
+      expect(symbolFills(true)).toContain(fadedRed(completedChart(), DEFAULT_RENDERER_STYLE.symbolBackgroundColor));
+      expect(symbolFills(false)).not.toContain(fadedRed(completedChart(), DEFAULT_RENDERER_STYLE.symbolBackgroundColor));
+    });
+  });
+
   it('dims the committed pattern while move-image dimming is active', () => {
     const document = chart(1, 1);
     document.kind[0] = CellKind.Full;
@@ -1426,7 +1523,7 @@ describe('Canvas 2D chart renderer', () => {
     renderer.dispose();
   });
 
-  it('reuses the color overview atlas when only completion and revision change', () => {
+  it('reuses the color overview atlas when only hidden completion and revision change', () => {
     const document = chart(2, 2);
     document.kind[0] = CellKind.Full;
     document.colors[0] = 1;
@@ -1443,7 +1540,7 @@ describe('Canvas 2D chart renderer', () => {
       targets: { base: target(base), overlay: target(recordingContext()) },
       metrics: getCanvasMetrics(20, 20),
       viewport: { x: 0, y: 0, zoom: 1 },
-      style: { showGrid: false },
+      style: { showGrid: false, showCompletion: false },
       atlasTargetFactory: (width, height) => {
         builds += 1;
         const source = recordingContext();
@@ -2439,7 +2536,7 @@ describe('Canvas 2D chart renderer', () => {
       targets: { base: target(base), overlay: target(recordingContext()) },
       metrics: getCanvasMetrics(32, 32),
       viewport: { x: 0, y: 0, zoom: 1 },
-      style: { mode: 'symbol' },
+      style: { mode: 'symbol', showCompletion: false },
       atlasTargetFactory: (width, height) => {
         builds += 1;
         const source = recordingContext();

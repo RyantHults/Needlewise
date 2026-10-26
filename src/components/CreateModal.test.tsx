@@ -77,8 +77,10 @@ describe('CreateModal image lifecycle', () => {
     expect(hex).toHaveValue('#12');
     expect(picker).toHaveValue('#f3eee5');
     fireEvent.change(hex, { target: { value: '#abc' } });
-    expect(hex).toHaveValue('#AABBCC');
+    expect(hex).toHaveValue('#abc');
     expect(picker).toHaveValue('#aabbcc');
+    fireEvent.blur(hex);
+    expect(hex).toHaveValue('#AABBCC');
   });
 
   it('uses the smallest power-of-two enlargement needed for a minimum preview', () => {

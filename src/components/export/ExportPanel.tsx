@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ProjectWorkspace } from '../../application/workspace';
-import { computePatternMetrics } from '../../domain';
+import { computePatternMetrics, cropToContent } from '../../domain';
 import type { DisplayUnits, PatternDocument } from '../../domain';
 import {
   EXPORT_CELL_SIZES_MM,
@@ -107,16 +107,18 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
 
   useEffect(() => () => controller.current?.abort(), []);
 
+  // What the PDF prints: with auto-crop the finished size and page count follow the cropped chart.
+  const exported = useMemo(() => (settings.autoCrop ? cropToContent(pattern) : pattern), [pattern, settings.autoCrop]);
   const metrics = useMemo(() => {
     try {
-      return computePatternMetrics(pattern, materialSettings ?? undefined);
+      return computePatternMetrics(exported, materialSettings ?? undefined);
     } catch {
       return null;
     }
-  }, [pattern, materialSettings]);
+  }, [exported, materialSettings]);
   const legend = useMemo(() => (metrics ? buildLegend(pattern.palette, metrics, units) : null), [pattern.palette, metrics, units]);
   const empty = legend === null || legend.rows.length === 0;
-  const pages = estimateTotalPages(pattern.width, pattern.height, settings, legend?.rows.length ?? 0);
+  const pages = estimateTotalPages(exported.width, exported.height, settings, legend?.rows.length ?? 0);
   const running = run.status === 'running';
   const finished = metrics ? finishedSizeLine(metrics.finishedSize, units) : null;
 
@@ -327,6 +329,7 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
           </SelectField>
           <Switch id="export-page-numbers" label="Page numbers" checked={settings.pageNumbers} disabled={running} onChange={(pageNumbers) => changeSettings({ pageNumbers })} />
           <Switch id="export-center-mark" label="Center mark" checked={settings.centerMark} disabled={running} onChange={(centerMark) => changeSettings({ centerMark })} />
+          <Switch id="export-auto-crop" label="Auto-crop to pattern" checked={settings.autoCrop} disabled={running} onChange={(autoCrop) => changeSettings({ autoCrop })} />
         </div>
         <p className="export-pages" data-testid="export-page-count">Estimated length: {pages} {pages === 1 ? 'page' : 'pages'}</p>
       </section>

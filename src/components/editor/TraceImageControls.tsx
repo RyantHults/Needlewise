@@ -8,6 +8,7 @@ import { decodeTraceImage, disposeTraceImage, fitTraceImageBounds, TraceDecodeEr
 import { MAX_TRACE_IMAGE_BYTES } from '../../rendering/trace';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { ActionButton } from '../controls/ActionButton';
+import { Icon } from '../controls/Icon';
 import { useLatestRequest } from '../latest-request';
 import { RangeInput } from '../RangeInput';
 
@@ -289,7 +290,7 @@ export function TraceImageControls({ workspace, document, controller, activeTool
       <ActionButton disabled={!descriptor} className="trace-mode-button bottom-control" aria-label="Move image" title="Move image" aria-pressed={activeTool === 'move-image'} onClick={() => controller?.setTool({ tool: 'move-image' } as never)} glyph="↔" caption="Move" />
       <ActionButton disabled={!descriptor} className="trace-mode-button bottom-control" aria-label="Resize image" title="Resize image" aria-pressed={activeTool === 'resize-image'} onClick={() => controller?.setTool({ tool: 'resize-image' } as never)} glyph="↗" caption="Resize" />
     </div>
-    {descriptor && <ActionButton ref={removeTrigger} className="trace-icon-button trace-remove bottom-control" aria-label="Remove image" title="Remove image" onClick={() => setRemoveConfirmOpen(true)} glyph="×" caption="Remove" />}
+    {descriptor && <ActionButton ref={removeTrigger} className="trace-icon-button trace-remove bottom-control" aria-label="Remove image" title="Remove image" onClick={() => setRemoveConfirmOpen(true)} glyph={<Icon name="delete" />} caption="Remove" />}
     {removeConfirmOpen && (
       <ConfirmDialog
         eyebrow="Reference image"

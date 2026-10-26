@@ -32,6 +32,8 @@ describe('measurement units end-to-end', () => {
     // Thread totals live in the export dialog, opened from the editor header.
     fireEvent.click(await screen.findByRole('button', { name: 'Export pattern' }));
     const dialog = await screen.findByRole('dialog', { name: 'Export pattern' });
+    // The finished size is of the whole 14 x 14 grid, not the one stitch auto-crop would keep.
+    fireEvent.click(within(dialog).getByRole('switch', { name: 'Auto-crop to pattern' }));
     const totals = () => within(within(dialog).getByRole('region', { name: 'Thread totals' }));
     const setUnits = async (name: 'Metric' | 'Imperial') => {
       fireEvent.click(within(dialog).getByRole('button', { name }));

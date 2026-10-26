@@ -1,0 +1,2 @@
+.stitch-readout { min-height:1.4rem; margin:0; color:var(--color-ink-secondary); font-size:.85rem; }
+.stitch-readout-swatch { display:inline-block; width:.8rem; height:.8rem; margin-right:.4rem; border:1px solid var(--color-line-firm); border-radius:2px; vertical-align:-.1rem; }

@@ -50,6 +50,7 @@ import { CanvasControls } from "./CanvasControls";
 import { useEditorPreferences, type HalfStitchDirection } from "./editor-preferences";
 import { DockPopover, useMobileDock } from "./mobile-dock";
 import { CanvasFrame, useEditorCanvas } from "./editor-canvas";
+import { StitchReadout, useStitchReadout } from "./stitch-readout";
 import { SegmentedControl } from "../controls/SegmentedControl";
 import { ToolButton } from "../controls/ToolButton";
 import { ErrorNotice } from "../controls/Notice";
@@ -149,6 +150,7 @@ export function EditorSurface({
   const { toast, showToast, dismissToast } = useToast();
   const showToastRef = useRef(showToast);
   showToastRef.current = showToast;
+  const { hover, attach: attachReadout } = useStitchReadout(document);
   const { controller, ui, fallback } = useEditorCanvas({
     workspace,
     document,
@@ -186,7 +188,8 @@ export function EditorSurface({
           .catch(() => undefined);
       },
     },
-    onStart: ({ controller: surface, frame: el }) => {
+    onStart: ({ controller: surface, store, frame: el }) => {
+      const detachReadout = attachReadout({ store, frame: el });
       // The adapter prevents default on canvas presses, so focus would stay on
       // the last rail button and Enter/Escape/Backspace would never reach the
       // controller. Pull focus onto the frame unless it is already inside it.
@@ -204,7 +207,10 @@ export function EditorSurface({
         el.focus({ preventScroll: true });
         surface.handleFocus();
       }
-      return () => el.removeEventListener("pointerdown", focusFrame, true);
+      return () => {
+        detachReadout();
+        el.removeEventListener("pointerdown", focusFrame, true);
+      };
     },
   });
   const traceFilePicker = useRef<(() => void) | null>(null);
@@ -1101,6 +1107,7 @@ export function EditorSurface({
               </div>
             )}
           </CanvasFrame>
+          <StitchReadout hover={hover} />
           <Toast toast={toast} onDismiss={dismissToast} />
           <div className="mobile-dock-card">
             <div className="mobile-dock-triggers" aria-label="Open editor controls">

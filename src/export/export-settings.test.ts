@@ -24,17 +24,17 @@ const throwing: ExportSettingsStorage = {
 
 describe('export settings', () => {
   it('defaults', () => {
-    expect(DEFAULT_EXPORT_SETTINGS).toEqual({ paper: 'letter', orientation: 'portrait', margins: 'standard', pageNumbers: true, centerMark: false, overlap: 0, cellSizeMm: 4, chartStyle: 'symbol' });
+    expect(DEFAULT_EXPORT_SETTINGS).toEqual({ paper: 'letter', orientation: 'portrait', margins: 'standard', pageNumbers: true, centerMark: false, autoCrop: true, overlap: 0, cellSizeMm: 4, chartStyle: 'symbol' });
   });
 
   it('normalizes unknown input to defaults and clamps overlap', () => {
     expect(normalizeExportSettings(null)).toEqual(DEFAULT_EXPORT_SETTINGS);
     expect(normalizeExportSettings('x')).toEqual(DEFAULT_EXPORT_SETTINGS);
-    expect(normalizeExportSettings({ paper: 'legal', orientation: 'sideways', margins: 1, pageNumbers: 'yes', centerMark: 1, overlap: NaN, cellSizeMm: 7, chartStyle: 'grayscale' })).toEqual(DEFAULT_EXPORT_SETTINGS);
+    expect(normalizeExportSettings({ paper: 'legal', orientation: 'sideways', margins: 1, pageNumbers: 'yes', centerMark: 1, autoCrop: 'no', overlap: NaN, cellSizeMm: 7, chartStyle: 'grayscale' })).toEqual(DEFAULT_EXPORT_SETTINGS);
     expect(normalizeExportSettings({ overlap: 9 }).overlap).toBe(3);
     expect(normalizeExportSettings({ overlap: -2 }).overlap).toBe(0);
     expect(normalizeExportSettings({ overlap: 1.6 }).overlap).toBe(2);
-    expect(normalizeExportSettings({ paper: 'a4', orientation: 'landscape', margins: 'narrow', pageNumbers: false, centerMark: true, cellSizeMm: 3.2, chartStyle: 'combined' })).toMatchObject({ paper: 'a4', orientation: 'landscape', margins: 'narrow', pageNumbers: false, centerMark: true, cellSizeMm: 3.2, chartStyle: 'combined' });
+    expect(normalizeExportSettings({ paper: 'a4', orientation: 'landscape', margins: 'narrow', pageNumbers: false, centerMark: true, autoCrop: false, cellSizeMm: 3.2, chartStyle: 'combined' })).toMatchObject({ paper: 'a4', orientation: 'landscape', margins: 'narrow', pageNumbers: false, centerMark: true, autoCrop: false, cellSizeMm: 3.2, chartStyle: 'combined' });
   });
 
   it('round-trips through storage', () => {

@@ -1,7 +1,7 @@
 import { CellKind, componentKind, componentSlotMask, defaultPaletteSymbol, forEachActiveRun, isLegacyQuarterKind, isThreeQuarterPairKind, paletteIdsInCells, type PatternDocument } from '../domain';
 import type { CanvasTarget, Rect, RendererStyle } from '../editor/contracts';
 import { MAX_ATLAS_PIXELS, restore, save } from './context';
-import { grayscaleColor, paletteColor, paletteEntry } from './colors';
+import { compositeHexColor, grayscaleColor, paletteColor, paletteEntry } from './colors';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
 
 /** Document-owned Aida color. */
@@ -79,10 +79,16 @@ export function colorAtlasPixelsPerCell(document: PatternDocument): number {
 export function overviewColorForPaletteId(
   document: PatternDocument,
   id: number,
+  completed: boolean,
   style: RendererStyle
 ): string {
   const color = paletteColor(document, id, style.missingPaletteColor);
-  return style.mode === 'grayscale' ? grayscaleColor(color) : color;
+  return completedFill(document, style.mode === 'grayscale' ? grayscaleColor(color) : color, completed, style);
+}
+
+/** A stitch fill as the Detail view shows it: a shown completion fades it over the fabric by `completedOpacity`. */
+function completedFill(document: PatternDocument, fill: string, completed: boolean, style: RendererStyle): string {
+  return completed && style.showCompletion ? compositeHexColor(fill, patternBackgroundColor(document), style.completedOpacity) : fill;
 }
 
 /** Reject cache bookkeeping objects before they reach CanvasRenderingContext2D.drawImage. */
@@ -138,36 +144,37 @@ function paintColorAtlasCell(
   const x = index % document.width;
   const y = Math.floor(index / document.width);
   const cellRect = { x: x * pixelsPerCell, y: y * pixelsPerCell, width: pixelsPerCell, height: pixelsPerCell };
-  paintOverviewCell(context, document.kind[index], document.colors, index * 4, cellRect, (id) => {
-    context.fillStyle = overviewColorForPaletteId(document, id, style);
+  paintOverviewCell(context, document.kind[index], document.colors, index * 4, document.completed[index], cellRect, (id, completed) => {
+    context.fillStyle = overviewColorForPaletteId(document, id, completed, style);
   });
 }
 
 /**
  * Paint one cell's stitches as flat shapes, skipping components with no color.
- * `setFill` readies the context's fill for a palette id before each shape.
+ * `setFill` readies the context's fill for a palette id and its completion bit before each shape.
  */
 export function paintOverviewCell(
   context: CanvasTarget['context'],
   kind: number,
   colors: ArrayLike<number>,
   offset: number,
+  completed: number,
   rect: Rect,
-  setFill: (id: number) => void
+  setFill: (id: number, completed: boolean) => void
 ): void {
   if (kind === CellKind.Empty) return;
   if (isLegacyQuarterKind(kind) || isThreeQuarterPairKind(kind)) {
     const mask = componentSlotMask(kind, colors, offset);
     for (let slot = 0; slot < 4; slot += 1) {
       if ((mask & (1 << slot)) === 0) continue;
-      setFill(colors[offset + slot]);
+      setFill(colors[offset + slot], (completed & (1 << slot)) !== 0);
       drawStitchGeometry(context, componentKind(kind, slot), rect, slot);
     }
     return;
   }
   const id = colors[offset];
   if (id === 0) return;
-  setFill(id);
+  setFill(id, (completed & 1) !== 0);
   if (kind === CellKind.Full) context.fillRect(rect.x, rect.y, rect.width, rect.height);
   else drawStitchGeometry(context, kind, rect);
 }
@@ -207,6 +214,7 @@ interface AtlasState<Key, Atlas> {
   readonly key: Key;
   readonly kindPlane: PatternDocument['kind'];
   readonly colorsPlane: PatternDocument['colors'];
+  readonly completedPlane: PatternDocument['completed'];
   readonly paletteIds: readonly number[];
   readonly paletteProjection: string;
   readonly atlas: Atlas;
@@ -266,7 +274,9 @@ class AtlasCache<Key extends object, Atlas extends { readonly revision: number }
     const strategy = this.strategy;
     const key = strategy.keyFor(document, style);
     const current = this.state && keysEqual(this.state.key, key) ? this.state : undefined;
-    const samePlanes = current?.kindPlane === document.kind && current.colorsPlane === document.colors;
+    // Completion reaches the pixels only while it shows, so hidden marks never repaint.
+    const samePlanes = current?.kindPlane === document.kind && current.colorsPlane === document.colors
+      && (!style.showCompletion || current.completedPlane === document.completed);
     if (samePlanes && strategy.projection(document.palette, current.paletteIds, style) === current.paletteProjection) {
       // Metadata-only changes replace the document and revision, but do not
       // change the atlas pixels. Refresh the public metadata without
@@ -285,6 +295,7 @@ class AtlasCache<Key extends object, Atlas extends { readonly revision: number }
       key,
       kindPlane: document.kind,
       colorsPlane: document.colors,
+      completedPlane: document.completed,
       paletteIds,
       paletteProjection: strategy.projection(document.palette, paletteIds, style),
       atlas: { ...atlas, revision: document.revision } as Atlas,
@@ -306,6 +317,7 @@ class AtlasCache<Key extends object, Atlas extends { readonly revision: number }
       ...current,
       kindPlane: document.kind,
       colorsPlane: document.colors,
+      completedPlane: document.completed,
       paletteIds,
       paletteProjection: paletteIds === current.paletteIds ? current.paletteProjection : strategy.projection(document.palette, paletteIds, style),
       atlas: { ...current.atlas, revision: document.revision }
@@ -320,6 +332,8 @@ interface ColorAtlasKey {
   readonly mode: RendererStyle['mode'];
   readonly patternBackground: string;
   readonly missingColor: string;
+  readonly showCompletion: boolean;
+  readonly completedOpacity: number;
   readonly canvasMask: PatternDocument['canvasMask'];
 }
 
@@ -330,6 +344,8 @@ const colorAtlasStrategy: AtlasStrategy<ColorAtlasKey, ColorAtlas> = {
     mode: style.mode,
     patternBackground: patternBackgroundColor(document),
     missingColor: style.missingPaletteColor,
+    showCompletion: style.showCompletion,
+    completedOpacity: style.completedOpacity,
     canvasMask: document.canvasMask
   }),
   projection: (palette, ids) => colorPaletteProjection(palette, ids),
@@ -498,8 +514,9 @@ function paintSymbolAtlasCell(
   if (kind === CellKind.Empty) return;
   const offset = index * 4;
   const rect = { x: (index % document.width) * ppc, y: Math.floor(index / document.width) * ppc, width: ppc, height: ppc };
+  const completed = document.completed[index];
   const paint = (id: number, slot?: number, geometryKind = kind): void => {
-    context.fillStyle = style.symbolBackgroundColor;
+    context.fillStyle = completedFill(document, style.symbolBackgroundColor, (completed & (1 << (slot ?? 0))) !== 0, style);
     drawStitchGeometry(context, geometryKind, rect, slot);
     if (style.showSymbols) drawPaletteSymbol(context, document, id, rect, style, slot);
   };

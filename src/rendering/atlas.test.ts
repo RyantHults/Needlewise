@@ -189,7 +189,7 @@ describe('paintOverviewCell', () => {
       [1, '#ff0000'],
       [2, '#0000ff']
     ]);
-    paintOverviewCell(context, CellKind.Quarters, [0, 0, 0, 0, 1, 0, 2, 0], 4, { x: 10, y: 20, width: 8, height: 8 }, (id) => {
+    paintOverviewCell(context, CellKind.Quarters, [0, 0, 0, 0, 1, 0, 2, 0], 4, 0, { x: 10, y: 20, width: 8, height: 8 }, (id) => {
       context.fillStyle = fills.get(id) ?? '';
     });
     expect(fillRects).toEqual([]);

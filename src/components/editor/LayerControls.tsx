@@ -8,6 +8,7 @@ import type { ActiveLayerId } from "./LayersPanel";
 import { anchoredPosition, type AnchoredPosition } from "../anchored-position";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { ActionButton } from "../controls/ActionButton";
+import { Icon } from "../controls/Icon";
 import { AidaCountSelect } from "../controls/AidaCountSelect";
 import { nextRovingIndex } from "../controls/roving";
 import { useDismissable } from "../dismiss";
@@ -191,11 +192,11 @@ function StackLayerControls({ document, layer, layerSelection, onRename, onDupli
 
   return (
     <div className="layer-controls" role="group" aria-label={`${layer.name} layer actions`}>
-      <ActionButton ref={renameButton} className="bottom-control layer-action" glyph="✎" caption="Rename" aria-label="Rename layer" title="Rename layer" aria-haspopup="dialog" onClick={() => setRenameOpen(true)} />
-      <ActionButton className="bottom-control layer-action" glyph="⧉" caption="Duplicate" aria-label="Duplicate layer" title={duplicateReason} disabled={!duplicateAllowed} onClick={() => onDuplicate(layer.id)} />
+      <ActionButton ref={renameButton} className="bottom-control layer-action" glyph={<Icon name="rename-outline" />} caption="Rename" aria-label="Rename layer" title="Rename layer" aria-haspopup="dialog" onClick={() => setRenameOpen(true)} />
+      <ActionButton className="bottom-control layer-action" glyph={<Icon name="duplicate" />} caption="Duplicate" aria-label="Duplicate layer" title={duplicateReason} disabled={!duplicateAllowed} onClick={() => onDuplicate(layer.id)} />
       <ActionButton
         className="bottom-control layer-action"
-        glyph="⤓"
+        glyph={<Icon name="merge" />}
         caption="Merge"
         aria-label="Merge"
         title={mergeTitle}
@@ -203,7 +204,7 @@ function StackLayerControls({ document, layer, layerSelection, onRename, onDupli
         disabled={!merge || mergeDisabledReason !== undefined}
         onClick={onMerge}
       />
-      <ActionButton ref={deleteButton} className="bottom-control layer-action layer-action-delete" glyph="×" caption="Delete" aria-label="Delete layer" title="Delete layer" onClick={() => setDeleteOpen(true)} />
+      <ActionButton ref={deleteButton} className="bottom-control layer-action layer-action-delete" glyph={<Icon name="delete" />} caption="Delete" aria-label="Delete layer" title="Delete layer" onClick={() => setDeleteOpen(true)} />
       {renameOpen && <RenameLayerDialog name={layer.name} onSave={(name) => onRename(layer.id, name)} onClose={closeRename} />}
       {deleteOpen && (
         <ConfirmDialog

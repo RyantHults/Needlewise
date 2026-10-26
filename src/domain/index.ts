@@ -13,3 +13,4 @@ export * from './metrics';
 export * from './layers';
 export * from './canvas';
 export * from './progress';
+export * from './content-box';

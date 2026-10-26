@@ -32,16 +32,33 @@ describe('HexColorField', () => {
     return <HexColorField id="hex" value={color} onChange={(next) => { onColor?.(next); if (next) setColor(next); }} pickerLabel="Pick" textLabel="Hex" placeholder="#C72B3B" help="Use a hex value." invalidHelp="Enter a valid hex." />;
   }
 
-  it('normalizes a valid draft and reports it', () => {
+  it('reports a valid draft, keeps it as typed, and normalizes on blur', () => {
     const onColor = vi.fn();
     render(<Harness onColor={onColor} />);
     const text = screen.getByLabelText('Hex');
 
     fireEvent.change(text, { target: { value: 'c72' } });
     expect(onColor).toHaveBeenLastCalledWith('#CC7722');
-    expect(text).toHaveValue('#CC7722');
+    expect(text).toHaveValue('c72');
     expect(screen.getByLabelText('Pick')).toHaveValue('#cc7722');
     expect(text).toHaveAttribute('maxlength', '7');
+
+    fireEvent.blur(text);
+    expect(text).toHaveValue('#CC7722');
+  });
+
+  it('lets a long code be shortened and retyped without rewriting the draft', () => {
+    const onColor = vi.fn();
+    render(<Harness initial="#123456" onColor={onColor} />);
+    const text = screen.getByLabelText('Hex');
+
+    fireEvent.change(text, { target: { value: '#123' } });
+    expect(text).toHaveValue('#123');
+    fireEvent.change(text, { target: { value: '#123A' } });
+    fireEvent.change(text, { target: { value: '#123AB' } });
+    fireEvent.change(text, { target: { value: '#123ABC' } });
+    expect(text).toHaveValue('#123ABC');
+    expect(onColor).toHaveBeenLastCalledWith('#123ABC');
   });
 
   it('keeps an invalid draft, reports undefined, and swaps the help', () => {

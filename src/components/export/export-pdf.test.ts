@@ -39,11 +39,28 @@ describe('createExportPdf', () => {
     options.onProgress({ completed: 1, total: 4 });
     expect(fractions).toEqual([0.25]);
     expect(input).toMatchObject({ name: 'Garden', units: 'imperial', settings: DEFAULT_EXPORT_SETTINGS });
-    expect(input.document).toMatchObject({ width: 3, height: 2 });
     expect('completed' in input.document).toBe(false);
     expect(input.metrics.totals.full).toBe(1);
     expect(options.signal).toBe(signal);
     expect(input.coverImagePng).toEqual(new Uint8Array([9]));
-    expect(cover.mock.calls[0][0].document.width).toBe(3);
+  });
+
+  it('crops the chart, finished size and cover to the stitched content unless auto-crop is off', async () => {
+    start.mockReturnValue({ promise: Promise.resolve(new Uint8Array()), cancel: vi.fn() });
+    const document = pattern();
+    const workspace = { metadata: null, materialSettings: null } as never;
+    const exportPdf = createExportPdf(document, workspace, 'Garden');
+    const options = { signal: new AbortController().signal, onProgress: () => undefined };
+
+    await exportPdf(DEFAULT_EXPORT_SETTINGS, options);
+    await exportPdf({ ...DEFAULT_EXPORT_SETTINGS, autoCrop: false }, options);
+
+    const [cropped, whole] = start.mock.calls.map(([input]) => input);
+    expect(cropped.document).toMatchObject({ width: 1, height: 1 });
+    expect(cropped.metrics.finishedSize.widthInches).toBeCloseTo(1 / document.settings.aidaCount);
+    expect(cover.mock.calls[0][0].document).toMatchObject({ width: 1, height: 1 });
+    expect(whole.document).toMatchObject({ width: 3, height: 2 });
+    expect(whole.metrics.finishedSize.widthInches).toBeCloseTo(3 / document.settings.aidaCount);
+    expect(document.width).toBe(3);
   });
 });

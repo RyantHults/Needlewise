@@ -41,14 +41,14 @@ vi.mock('../../rendering/trace', async () => {
   const actual = await vi.importActual<typeof import('../../rendering/trace')>('../../rendering/trace');
   return { ...actual, decodeTraceImage: vi.fn(async () => ({ source: {}, bitmap: {}, width: 2, height: 2, dispose: vi.fn() })) };
 });
-vi.mock('../../editor/coordinates', () => ({ getCanvasMetrics: vi.fn(() => ({ cssWidth: 640, cssHeight: 480, pixelWidth: 640, pixelHeight: 480, backingWidth: 640, backingHeight: 480, requestedDpr: 1, dpr: 1, maxDpr: 2, maxBackingPixels: 1e6 })), modelToScreen: vi.fn((point: { x: number; y: number }) => point) }));
+vi.mock('../../editor/coordinates', () => ({ getCanvasMetrics: vi.fn(() => ({ cssWidth: 640, cssHeight: 480, pixelWidth: 640, pixelHeight: 480, backingWidth: 640, backingHeight: 480, requestedDpr: 1, dpr: 1, maxDpr: 2, maxBackingPixels: 1e6 })), modelToScreen: vi.fn((point: { x: number; y: number }) => point), screenToCellUnclamped: vi.fn((point: { x: number; y: number }) => ({ x: Math.floor(point.x / 16), y: Math.floor(point.y / 16) })) }));
 vi.mock('../../editor', () => ({ ChartPresentationMode: { Color: 'color', Symbol: 'symbol', Grayscale: 'grayscale', Combined: 'combined' }, createUiStore: vi.fn((initial: unknown) => { f.createdUiState = initial; return { getState: () => f.uiState, subscribe: vi.fn((listener: unknown) => { f.uiListener = listener as (state: unknown) => void; return () => undefined; }) }; }), createWorkspaceEditorGateway: vi.fn(() => ({ dispose: vi.fn() })), createPointerEventsAdapter: f.adapter, createEditorSurfaceController: vi.fn((options: unknown) => { f.capturedCallback = (options as { onTraceBoundsChange?: (b: { x: number; y: number; width: number; height: number }) => void }).onTraceBoundsChange ?? null; return f.c as never; }) }));
 const ws = { metadata: { title: 'Sampler', notes: '', aidaCount: 14 }, updateActiveMetadata: vi.fn(), updateActiveAidaCount: vi.fn(), execute: vi.fn(), getStateSnapshot: vi.fn(), catalogFor: vi.fn(() => COMPACT_DMC_DEFINITION), availableCatalogs: vi.fn(() => [COMPACT_DMC_DEFINITION]), setSourceImage: vi.fn(() => Promise.resolve()), applyTraceImageChange: vi.fn(() => Promise.resolve()), getAsset: vi.fn(), sourceImage: undefined as ({ chartBounds: { x: number; y: number; width: number; height: number } } | undefined) } as never;
 const executeMock = () => (ws as { execute: ReturnType<typeof vi.fn> }).execute;
-const doc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
-const two = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321' } }, { id: 2, name: 'Sky', color: '#48c', active: true }], backstitches: { ids: new Uint32Array() } } as never;
-const paletteDetailsDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: SYMBOL_IDS[0], catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
-const customColorDocument = (palette: unknown[]) => ({ width: 16, height: 16, colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } }) as never;
+const doc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
+const two = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321' } }, { id: 2, name: 'Sky', color: '#48c', active: true }], backstitches: { ids: new Uint32Array() } } as never;
+const paletteDetailsDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: SYMBOL_IDS[0], catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
+const customColorDocument = (palette: unknown[]) => ({ width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } }) as never;
 const catalogBRecord = { sourceId: 'b-source-1', code: '321', name: 'B Ruby', hex: '#BB0000', rgb: [187, 0, 0] as const } as CatalogRecord;
 const catalogB = makeCatalog('catalog-b', 'Brand B', [catalogBRecord]);
 const multiCatalogWorkspace = () => {
@@ -105,6 +105,16 @@ describe('EditorSurface', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     expect(screen.getByRole('button', { name: 'Undo' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Redo' })).toBeEnabled();
+  });
+
+  it('names the stitch under the pointer', () => {
+    const stitched = { ...(doc as object), kind: new Uint8Array(256).fill(1), colors: new Uint16Array(1024).fill(1) } as never;
+    render(<EditorSurface workspace={ws} document={stitched} />);
+    const frame = screen.getByRole('group', { name: 'Stitch chart canvas' });
+    fireEvent.pointerMove(frame, { clientX: 20, clientY: 4 });
+    expect(screen.getByText(/Ruby · column 2, row 1/)).toBeInTheDocument();
+    fireEvent.pointerLeave(frame);
+    expect(screen.queryByText(/column 2/)).not.toBeInTheDocument();
   });
 
   it('navigates to Track from the header switch', () => {
@@ -359,7 +369,7 @@ describe('EditorSurface', () => {
   });
   it('labels cross-brand palette chips with brand and code', () => {
     multiCatalogWorkspace();
-    const collision = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [
+    const collision = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [
       { id: 1, name: 'Ruby A', color: '#AA0000', active: true, catalog: { catalogId: DEFAULT_CATALOG_DEFINITION.association.catalogId, sourceId: 'a', code: '321' } },
       { id: 2, name: 'Ruby B', color: '#BB0000', active: true, catalog: { catalogId: 'catalog-b', sourceId: 'b', code: '321' } },
     ], backstitches: { ids: new Uint32Array() } } as never;
@@ -374,7 +384,7 @@ describe('EditorSurface', () => {
   it('preserves UI state when the document changes', () => {
     const view = render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Stitch' }));
-    const next = { width: 20, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true }], backstitches: { ids: new Uint32Array() } } as never;
+    const next = { width: 20, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true }], backstitches: { ids: new Uint32Array() } } as never;
     view.rerender(<EditorSurface workspace={ws} document={next} />);
     expect(f.c.start).toHaveBeenCalledOnce(); expect(f.c.dispose).not.toHaveBeenCalled(); expect(f.c.setDocument).toHaveBeenCalledWith(next, expect.objectContaining({ reason: 'external-document' }));
     expect(screen.getByText(/20 × 16 stitches/)).toBeInTheDocument();
@@ -1363,7 +1373,7 @@ describe('EditorSurface', () => {
     expect(numbers).not.toBeChecked();
   });
   it('shows palette swatch symbols only in symbol and combined view modes', () => {
-    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: SYMBOL_IDS[0], catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
+    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: SYMBOL_IDS[0], catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
     const swatch = () => screen.getByRole('button', { name: '321Ruby' }).querySelector('.palette-swatch-symbol');
     render(<EditorSurface workspace={ws} document={symDoc} />);
     expect(swatch()).toBeNull();
@@ -1380,7 +1390,7 @@ describe('EditorSurface', () => {
   it('defaults project details to metric units and saves a switch through metadata', () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); expect(screen.getByRole('button', { name: 'Metric' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: 'Imperial' })).toHaveAttribute('aria-pressed', 'false'); fireEvent.click(screen.getByRole('button', { name: 'Imperial' })); expect(screen.getByRole('button', { name: 'Imperial' })).toHaveAttribute('aria-pressed', 'true'); fireEvent.click(screen.getByRole('button', { name: 'Save settings' })); expect((ws as { updateActiveMetadata: ReturnType<typeof vi.fn> }).updateActiveMetadata).toHaveBeenCalledWith({ title: 'Sampler', notes: '', units: 'imperial' }); });
   it('reflects a stored imperial preference when project details opens', () => { const base = ws as unknown as { metadata: Record<string, unknown> }; const imperialWs = { ...base, metadata: { ...base.metadata, units: 'imperial' } } as never; render(<EditorSurface workspace={imperialWs} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); expect(screen.getByRole('button', { name: 'Imperial' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: 'Metric' })).toHaveAttribute('aria-pressed', 'false'); });
   it('applies units immediately on toggle without waiting for save', () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); fireEvent.click(screen.getByRole('button', { name: 'Imperial' })); expect((ws as { updateActiveMetadata: ReturnType<typeof vi.fn> }).updateActiveMetadata).toHaveBeenCalledWith({ units: 'imperial' }); expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument(); });
-  it('guides users without a thread', () => { const empty = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: false }], backstitches: { ids: new Uint32Array() } } as never; render(<EditorSurface workspace={ws} document={empty} />); expect(screen.getByRole('button', { name: 'Fill' })).toBeDisabled(); expect(screen.getByRole('button', { name: 'Backstitch' })).toBeDisabled(); });
+  it('guides users without a thread', () => { const empty = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: false }], backstitches: { ids: new Uint32Array() } } as never; render(<EditorSurface workspace={ws} document={empty} />); expect(screen.getByRole('button', { name: 'Fill' })).toBeDisabled(); expect(screen.getByRole('button', { name: 'Backstitch' })).toBeDisabled(); });
   it('shows catalog code before the palette name and exposes command buttons', () => { render(<EditorSurface workspace={ws} document={doc} />); const ruby = screen.getByRole('button', { name: '321Ruby' }); expect(ruby).toBeInTheDocument(); for (const name of ['Undo', 'Redo', 'Zoom in', 'Zoom out', 'Fit']) expect(screen.getByRole('button', { name })).toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: 'Undo' })); expect(f.c.handleKeyDown).toHaveBeenCalledWith(expect.objectContaining({ key: 'z', ctrlKey: true })); fireEvent.click(screen.getByRole('button', { name: 'Redo' })); expect(f.c.handleKeyDown).toHaveBeenCalledWith(expect.objectContaining({ key: 'y', ctrlKey: true })); fireEvent.click(screen.getByRole('button', { name: 'Zoom out' })); expect(f.c.handleKeyDown).toHaveBeenCalledWith(expect.objectContaining({ key: '-' })); });
   it('filters the thread-color grid, selects a swatch, and adds the summary color', async () => {
     const createdDocument = customColorDocument([
@@ -1645,7 +1655,7 @@ describe('EditorSurface', () => {
     }
   });
   it('swaps the removed color into an existing palette color that matches the chosen catalog color', () => { const match = DEFAULT_CATALOG_DEFINITION.search('salmon')[0]; const existing = customColorDocument([{ id: 1, name: 'Ruby', color: '#b44', active: true }, { id: 2, name: match.name, color: match.hex, active: true, catalog: createCatalogReference(DEFAULT_CATALOG_DEFINITION, match) }]); (ws as { getStateSnapshot: ReturnType<typeof vi.fn> }).getStateSnapshot.mockReturnValue({ document: existing }); render(<EditorSurface workspace={ws} document={existing} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); const dialog = screen.getByRole('dialog', { name: 'Swap Color' }); fireEvent.change(within(dialog).getByLabelText('Search DMC catalog'), { target: { value: 'salmon' } }); fireEvent.click(within(dialog).getByRole('button', { name: `${match.name}, color ${match.code}` })); fireEvent.click(within(dialog).getByRole('button', { name: `Swap ${match.name}` })); expect(executeMock()).toHaveBeenCalledWith(expect.objectContaining({ type: 'palette-merge', from: 1, to: 2 })); expect(f.c.selectPalette).toHaveBeenCalledWith(2); expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
-  it('swaps the removed color into a newly created catalog color', () => { const match = DEFAULT_CATALOG_DEFINITION.search('salmon')[0]; const merged = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }, { id: 2, name: match.name, color: match.hex, active: true, catalog: { catalogId: 'dmc-compatible-screen-approximation', sourceId: match.sourceId, code: match.code, name: match.name, hex: match.hex, rgb: [...match.rgb] } }], backstitches: { ids: new Uint32Array() } } as never; (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockReturnValue({}); (ws as { getStateSnapshot: ReturnType<typeof vi.fn> }).getStateSnapshot.mockReturnValue({ document: merged }); render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); fireEvent.change(screen.getByLabelText('Search DMC catalog'), { target: { value: 'salmon' } }); fireEvent.click(screen.getByRole('button', { name: `${match.name}, color ${match.code}` })); fireEvent.click(screen.getByRole('button', { name: `Swap ${match.name}` })); expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).toHaveBeenCalledWith(expect.objectContaining({ type: 'palette-merge', from: 1, createTo: expect.objectContaining({ name: match.name, color: match.hex }) })); expect(f.c.selectPalette).toHaveBeenCalledWith(2); });
+  it('swaps the removed color into a newly created catalog color', () => { const match = DEFAULT_CATALOG_DEFINITION.search('salmon')[0]; const merged = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }, { id: 2, name: match.name, color: match.hex, active: true, catalog: { catalogId: 'dmc-compatible-screen-approximation', sourceId: match.sourceId, code: match.code, name: match.name, hex: match.hex, rgb: [...match.rgb] } }], backstitches: { ids: new Uint32Array() } } as never; (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockReturnValue({}); (ws as { getStateSnapshot: ReturnType<typeof vi.fn> }).getStateSnapshot.mockReturnValue({ document: merged }); render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); fireEvent.change(screen.getByLabelText('Search DMC catalog'), { target: { value: 'salmon' } }); fireEvent.click(screen.getByRole('button', { name: `${match.name}, color ${match.code}` })); fireEvent.click(screen.getByRole('button', { name: `Swap ${match.name}` })); expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).toHaveBeenCalledWith(expect.objectContaining({ type: 'palette-merge', from: 1, createTo: expect.objectContaining({ name: match.name, color: match.hex }) })); expect(f.c.selectPalette).toHaveBeenCalledWith(2); });
   it('keeps the dialog open and reports a failed replacement', () => { (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockImplementationOnce(() => { throw new Error('boom'); }); render(<EditorSurface workspace={ws} document={two} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); fireEvent.change(screen.getByLabelText('Search DMC catalog'), { target: { value: 'salmon' } }); const salmon = DEFAULT_CATALOG_DEFINITION.search('salmon')[0]; fireEvent.click(screen.getByRole('button', { name: `${salmon.name}, color ${salmon.code}` })); fireEvent.click(screen.getByRole('button', { name: `Swap ${salmon.name}` })); expect(screen.getByRole('dialog', { name: 'Swap Color' })).toBeInTheDocument(); expect(screen.getByRole('alert')).toHaveTextContent('boom'); });
   it('closes the swap dialog opened from the remove button on Escape', () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); fireEvent.keyDown(screen.getByRole('dialog', { name: 'Swap Color' }), { key: 'Escape' }); expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
   it('portals the details dialog outside the application root and closes it from the backdrop', async () => { const shell = document.createElement('div'); shell.dataset.application = ''; document.body.append(shell); render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); const dialog = screen.getByRole('dialog', { name: 'Settings' }); expect(dialog.closest('[data-application]')).toBeNull(); expect(shell).toHaveProperty('inert', true); fireEvent.click(dialog); expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument(); fireEvent.click(dialog.closest('.modal-backdrop') as HTMLElement); await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument()); expect(shell).toHaveProperty('inert', false); shell.remove(); });
@@ -1705,7 +1715,7 @@ describe('EditorSurface', () => {
       { id: 1, name: 'Ruby', color: '#b44', active: true, symbol: heldSymbol },
       { id: 2, name: 'Sky', color: '#48c', active: true, symbol: otherSymbol }
     ];
-    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } } as never;
+    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     const chip = screen.getByRole('button', { name: 'Change symbol for Ruby' });
     fireEvent.click(chip);
@@ -1722,7 +1732,7 @@ describe('EditorSurface', () => {
       { id: 1, name: 'Ruby', color: '#b44', active: true, symbol: heldSymbol },
       { id: 2, name: 'Sky', color: '#48c', active: true, symbol: otherSymbol }
     ];
-    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } } as never;
+    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
     const dialog = screen.getByRole('dialog', { name: /^Symbol for Ruby/ });
@@ -1742,7 +1752,7 @@ describe('EditorSurface', () => {
     // an empty set of groups would pass in silence.
     expect(groups.length).toBeGreaterThan(0);
     const held = uniquelyNamed();
-    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: held.id }], backstitches: { ids: new Uint32Array() } } as never;
+    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: held.id }], backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
     const dialog = screen.getByRole('dialog');
@@ -1771,7 +1781,7 @@ describe('EditorSurface', () => {
     const group = sharedNameGroups()[0];
     expect(group).toBeDefined();
     const held = group[0];
-    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: held.id }], backstitches: { ids: new Uint32Array() } } as never;
+    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: held.id }], backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
     expect(screen.getByRole('dialog', { name: `Symbol for Ruby — ${held.name} (${held.family})` }))
@@ -1780,7 +1790,7 @@ describe('EditorSurface', () => {
   it('previews each symbol from a shared sprite that carries the pool\'s own path data', () => {
     const assigned = SYMBOL_IDS[0];
     const entry = SYMBOL_POOL.find((s) => s.id === assigned)!;
-    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: assigned }], backstitches: { ids: new Uint32Array() } } as never;
+    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: assigned }], backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
     const dialog = screen.getByRole('dialog', { name: /^Symbol for Ruby/ });
@@ -1804,7 +1814,7 @@ describe('EditorSurface', () => {
   });
   it('draws the palette symbols from the shared sprite instead of printing the pool slug', () => {
     const assigned = SYMBOL_IDS[0];
-    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: assigned, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
+    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: assigned, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
     f.uiState.mode = 'symbol';
     render(<EditorSurface workspace={ws} document={symDoc} />);
     const row = screen.getByRole('button', { name: '321Ruby' });
@@ -1818,7 +1828,7 @@ describe('EditorSurface', () => {
   });
   it('inks palette swatch symbols black or white by swatch color like the chart', () => {
     const entry = (id: number, name: string, color: string) => ({ id, name, color, active: true, symbol: SYMBOL_IDS[0], catalog: { code: String(id), name, hex: color, rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } });
-    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [entry(1, 'Straw', '#f0e68c'), entry(2, 'Night', '#1a1a40')], backstitches: { ids: new Uint32Array() } } as never;
+    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [entry(1, 'Straw', '#f0e68c'), entry(2, 'Night', '#1a1a40')], backstitches: { ids: new Uint32Array() } } as never;
     f.uiState.mode = 'symbol';
     render(<EditorSurface workspace={ws} document={symDoc} />);
     const ink = (label: string) => (screen.getByRole('button', { name: label }).querySelector('.palette-swatch-symbol') as HTMLElement).style.color;
@@ -1832,7 +1842,7 @@ describe('EditorSurface', () => {
       { id: 2, name: 'Sky', color: '#48c', active: true, symbol: symbolB },
       { id: 3, name: 'Sea', color: '#38a', active: true, symbol: symbolC }
     ];
-    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } } as never;
+    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
     const dialog = screen.getByRole('dialog', { name: /^Symbol for Ruby/ });
@@ -1849,7 +1859,7 @@ describe('EditorSurface', () => {
   });
   it('closes the symbol picker on Escape and backdrop click with focus restore', async () => {
     const heldSymbol = SYMBOL_IDS[0];
-    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: heldSymbol }], backstitches: { ids: new Uint32Array() } } as never;
+    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: heldSymbol }], backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     const chip = screen.getByRole('button', { name: 'Change symbol for Ruby' });
     fireEvent.click(chip);
@@ -1865,7 +1875,7 @@ describe('EditorSurface', () => {
   });
   it('offers no way to enter a symbol the pool cannot draw', () => {
     const heldSymbol = SYMBOL_IDS[0];
-    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: heldSymbol }], backstitches: { ids: new Uint32Array() } } as never;
+    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: heldSymbol }], backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
     const dialog = screen.getByRole('dialog', { name: /^Symbol for Ruby/ });
@@ -1876,7 +1886,7 @@ describe('EditorSurface', () => {
   });
   it('filters the symbol grid by a typed query', async () => {
     const heldSymbol = SYMBOL_IDS[0];
-    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: heldSymbol }], backstitches: { ids: new Uint32Array() } } as never;
+    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: heldSymbol }], backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
     const filter = screen.getByLabelText('Filter symbols');
@@ -1901,7 +1911,7 @@ describe('EditorSurface', () => {
       { id: 2, name: 'Sky', color: '#48c', active: true, symbol: sky.id },
       { id: 3, name: 'Sea', color: '#38a', active: true, symbol: sea.id }
     ];
-    const symDoc = { width: 16, height: 16, colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } } as never;
+    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
     const filter = screen.getByLabelText('Filter symbols');

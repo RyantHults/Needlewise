@@ -1,10 +1,14 @@
 import {
   CellKind,
   assertValidDocument,
+  boxFillsDocument,
+  contentBox,
   createDocument,
+  cropDocument,
   MAX_PERSISTABLE_CELL_COUNT,
   isRecord,
   parseHexColor,
+  type DocumentContentBox,
   type PaletteEntryInput,
   type PatternDocument
 } from '../domain';
@@ -339,97 +343,27 @@ function backgroundCatalogIndex(options: ConversionOptions, catalog: readonly Ca
 }
 
 /**
- * Bounding box of the content kept by {@link trimDocumentToContent}, in
- * pre-trim document cell coordinates (which match the sampled raster 1:1,
- * since the document is created at the target dimensions).
- */
-export interface DocumentContentBox {
-  readonly left: number;
-  readonly top: number;
-  readonly right: number;
-  readonly bottom: number;
-}
-
-/**
  * Trim empty border rows and columns from a converted pattern document down to
- * the stitched-content bounding box. A cell counts as content when it holds
- * any stitch (kind !== Empty) or is touched by a backstitch segment (segments
- * use quarter-cell coordinates, four per cell side, so endpoint coverage maps
- * onto cells by integer division).
- *
- * The kept box is copied to the top-left and backstitches are translated by
- * its origin. The document is remapped in place (no clone), the revision stays
- * untouched (a fresh draft must remain revision 0), and the pure translation
- * preserves canonical endpoint order so no re-canonicalization is needed.
- * Palette, usage, revision and ID counters are untouched: only Empty cells
- * (whose color slots hold the none-value 0, which usage counting skips) are
- * ever removed. Returns the kept bounding box, or null — leaving the document
- * untouched — when there is no content (never produce a zero-size document)
- * or the content already fills the document.
+ * its {@link contentBox}. The document is remapped in place (no clone), the
+ * revision stays untouched (a fresh draft must remain revision 0), and palette,
+ * usage and ID counters are untouched: only Empty cells (whose color slots hold
+ * the none-value 0, which usage counting skips) are ever removed. Returns the
+ * kept bounding box in pre-trim cell coordinates (which match the sampled
+ * raster 1:1, since the document is created at the target dimensions), or
+ * null, leaving the document untouched, when there is no content (never
+ * produce a zero-size document) or the content already fills the document.
  */
 export function trimDocumentToContent(document: PatternDocument): DocumentContentBox | null {
-  let left = document.width;
-  let right = -1;
-  let top = document.height;
-  let bottom = -1;
-  const cover = (x: number, y: number): void => {
-    if (x < 0 || y < 0 || x >= document.width || y >= document.height) return;
-    if (x < left) left = x;
-    if (x > right) right = x;
-    if (y < top) top = y;
-    if (y > bottom) bottom = y;
-  };
-  for (let y = 0; y < document.height; y += 1) {
-    for (let x = 0; x < document.width; x += 1) {
-      if (document.kind[y * document.width + x] !== CellKind.Empty) cover(x, y);
-    }
-  }
-  const stitches = document.backstitches;
-  for (let index = 0; index < stitches.ids.length; index += 1) {
-    const minX = Math.floor(Math.min(stitches.x1[index], stitches.x2[index]) / 4);
-    const maxX = Math.floor(Math.max(stitches.x1[index], stitches.x2[index]) / 4);
-    const minY = Math.floor(Math.min(stitches.y1[index], stitches.y2[index]) / 4);
-    const maxY = Math.floor(Math.max(stitches.y1[index], stitches.y2[index]) / 4);
-    for (let y = minY; y <= maxY; y += 1) {
-      for (let x = minX; x <= maxX; x += 1) cover(x, y);
-    }
-  }
-  if (right < left || bottom < top) return null;
-  if (left === 0 && top === 0 && right === document.width - 1 && bottom === document.height - 1) return null;
-  const width = right - left + 1;
-  const height = bottom - top + 1;
-  const oldWidth = document.width;
-  const nextKind = new Uint8Array(width * height);
-  const nextColors = new Uint16Array(width * height * 4);
-  const nextCompleted = new Uint8Array(width * height);
-  for (let y = 0; y < height; y += 1) {
-    for (let x = 0; x < width; x += 1) {
-      const oldIndex = (top + y) * oldWidth + left + x;
-      const nextIndex = y * width + x;
-      nextKind[nextIndex] = document.kind[oldIndex];
-      nextCompleted[nextIndex] = document.completed[oldIndex];
-      const oldOffset = oldIndex * 4;
-      const nextOffset = nextIndex * 4;
-      nextColors[nextOffset] = document.colors[oldOffset];
-      nextColors[nextOffset + 1] = document.colors[oldOffset + 1];
-      nextColors[nextOffset + 2] = document.colors[oldOffset + 2];
-      nextColors[nextOffset + 3] = document.colors[oldOffset + 3];
-    }
-  }
-  document.width = width;
-  document.height = height;
-  document.kind = nextKind;
-  document.colors = nextColors;
-  document.completed = nextCompleted;
-  const shiftX = left * 4;
-  const shiftY = top * 4;
-  for (let index = 0; index < stitches.ids.length; index += 1) {
-    stitches.x1[index] -= shiftX;
-    stitches.x2[index] -= shiftX;
-    stitches.y1[index] -= shiftY;
-    stitches.y2[index] -= shiftY;
-  }
-  return { left, top, right, bottom };
+  const box = contentBox(document);
+  if (!box || boxFillsDocument(document, box)) return null;
+  const cropped = cropDocument(document, box);
+  document.width = cropped.width;
+  document.height = cropped.height;
+  document.kind = cropped.kind;
+  document.colors = cropped.colors;
+  document.completed = cropped.completed;
+  document.backstitches = cropped.backstitches;
+  return box;
 }
 
 function paletteEntry(association: CatalogSnapshot['association'], id: number, color: CatalogRecord): PaletteEntryInput {
