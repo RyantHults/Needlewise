@@ -865,6 +865,25 @@ describe('Canvas 2D chart renderer', () => {
     });
   });
 
+  it('outlines the brush footprint with dashed strokes, including cells past the chart edge', () => {
+    const outline = (cells: Array<{ x: number; y: number }>) => {
+      const base = recordingContext();
+      const overlay = recordingContext();
+      const renderer = createCanvasRenderer({
+        document: chart(4, 4),
+        targets: { base: target(base), overlay: target(overlay) },
+        metrics: getCanvasMetrics(80, 80),
+        viewport: { x: -3, y: -3, zoom: 8 }
+      });
+      renderer.setOverlay({ brushPreview: { cells } });
+      expect(() => renderer.renderNow()).not.toThrow();
+      renderer.dispose();
+      return overlay.records.filter((call) => call.name === 'setLineDash' && (call.args[0] as number[]).length > 0);
+    };
+    expect(outline([{ x: 1, y: 1 }, { x: 2, y: 1 }, { x: 1, y: 2 }, { x: 2, y: 2 }]).length).toBeGreaterThan(0);
+    expect(outline([{ x: -1, y: -1 }, { x: 0, y: -1 }, { x: -1, y: 0 }, { x: 0, y: 0 }]).length).toBeGreaterThan(0);
+  });
+
   it('renders base and overlay independently and coalesces RAF work', () => {
     const base = recordingContext();
     const overlay = recordingContext();

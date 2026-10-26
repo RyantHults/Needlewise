@@ -127,6 +127,14 @@ export class LayeredTestBoundary implements WorkspaceEditorBoundary {
     return this.editor.redoDepth;
   }
 
+  get canUndo(): boolean {
+    return this.editor.undoDepth > 0;
+  }
+
+  get canRedo(): boolean {
+    return this.editor.redoDepth > 0;
+  }
+
   activeLayerSurface(): PatternDocument | null {
     return typeof this.active === 'number' ? layerSurface(this.editor.document, this.active) : null;
   }

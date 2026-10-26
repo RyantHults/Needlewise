@@ -58,6 +58,14 @@ class CanvasBoundary implements WorkspaceEditorBoundary {
 
   readonly selectedLayerIds = null;
 
+  get canUndo(): boolean {
+    return this.undoStack.length > 0;
+  }
+
+  get canRedo(): boolean {
+    return this.redoStack.length > 0;
+  }
+
   activeLayerSurface(): PatternDocument | null {
     return typeof this.activeLayerId === 'number' ? layerSurface(this.layeredDocument, this.activeLayerId) : null;
   }
@@ -275,10 +283,10 @@ describe('canvas editing in the controller', () => {
     controller.handlePointerUp(atViewport(uiStore, 1, 3, 3));
     expect(controller.getCanvasSelection()).toBeDefined();
     controller.setTool({ tool: 'canvas-brush' });
-    controller.handlePointerDown(atViewport(uiStore, 2, -1, 1));
+    controller.handlePointerDown(atViewport(uiStore, 2, 2, 2));
     expect(uiStore.getState().overlay.canvasEditing?.preview).not.toBeNull();
     expect(controller.setCanvasCropActive(false)).toBe(true);
-    controller.handlePointerUp(atViewport(uiStore, 2, -1, 1));
+    controller.handlePointerUp(atViewport(uiStore, 2, 2, 2));
     expect(boundary.log).toHaveLength(0);
     expect(controller.getCanvasSelection()).toBeUndefined();
     expect(uiStore.getState().tool).toEqual({ tool: 'pan' });
@@ -508,6 +516,41 @@ describe('canvas editing in the controller', () => {
     // The workspace is recomputed for the new box after the commit.
     expect(uiStore.getState().overlay.canvasEditing?.workspace).toEqual(canvasWorkspace(boundary.document));
     expect(canvasWorkspace(boundary.document)).not.toEqual(frozen);
+    controller.dispose();
+  });
+
+  it('adds only canvas-selected cells with the canvas brush', () => {
+    const { boundary, controller, uiStore } = fixture();
+    controller.setCanvasMode('advanced');
+    controller.setCanvasCropActive(true);
+    const workspace = canvasWorkspace(boundary.document);
+    controller.setTool({ tool: 'select' });
+    controller.handlePointerDown(atViewport(uiStore, 1, workspace.x, 3));
+    controller.handlePointerMove(atViewport(uiStore, 1, workspace.x + 1, 4));
+    controller.handlePointerUp(atViewport(uiStore, 1, workspace.x + 1, 4));
+    expect(controller.getCanvasSelection()?.rect).toEqual({ x: workspace.x, y: 3, width: 2, height: 2 });
+
+    controller.setTool({ tool: 'canvas-brush' });
+    controller.setToolBrushSize('canvas-brush', 1);
+    controller.handlePointerDown(atViewport(uiStore, 2, workspace.x, 3));
+    controller.handlePointerMove(atViewport(uiStore, 2, workspace.x, 6));
+    controller.handlePointerUp(atViewport(uiStore, 2, workspace.x, 6));
+    // The stroke runs down to row 6; only rows 3 and 4 are selected.
+    expect(canvasCommands(boundary)[0]).toMatchObject({ rect: { x: workspace.x, y: 3, width: 1, height: 2 } });
+    controller.dispose();
+  });
+
+  it('outlines a canvas brush footprint that reaches beyond the document', () => {
+    const { boundary, controller, uiStore } = fixture();
+    controller.setCanvasMode('advanced');
+    controller.setCanvasCropActive(true);
+    controller.setTool({ tool: 'canvas-brush' });
+    controller.setToolBrushSize('canvas-brush', 2);
+    const workspace = canvasWorkspace(boundary.document);
+    controller.handlePointerMove({ ...atViewport(uiStore, 1, workspace.x, 3), buttons: 0 });
+    const cells = uiStore.getState().overlay.brushPreview?.cells ?? [];
+    expect(cells.length).toBeGreaterThan(0);
+    expect(cells.some(({ x }) => x < 0)).toBe(true);
     controller.dispose();
   });
 

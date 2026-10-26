@@ -74,6 +74,8 @@ function fixture(document: LayeredDocument, primary: number, others: readonly nu
     executeBatch: (commands) => session.executeBatch(commands),
     undo: () => session.undo(),
     redo: () => session.redo(),
+    get canUndo() { return session.historyUndoDepth > 0; },
+    get canRedo() { return session.historyRedoDepth > 0; },
     resolvePaste: (type) => session.resolvePaste(type),
     // The gateway hands back the destination the session resolved, layer type included.
     commitPaste: (fragment, position, destination, expectedRevision, palette) => session.commitPaste(fragment, position, destination as Parameters<ProjectSession['commitPaste']>[2], expectedRevision, palette),

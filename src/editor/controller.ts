@@ -19,6 +19,7 @@ import {
   preflightPasteFragmentCommand,
   moveFragmentCommand,
   backstitchEndpointsContainedInCellUnion,
+  isFixedPointContainedInCellUnion,
   containedBackstitchPositions,
   FIXED_POINT_UNITS_PER_CELL,
   rebaseBackstitches,
@@ -115,7 +116,7 @@ import {
   cellToScreenRect,
   type ViewportClampOptions
 } from './coordinates';
-import { brushDisk } from './brush';
+import { brushFootprint } from './brush';
 import { bresenhamLine, cellKey, supercoverLine } from './interpolation';
 import { constrainShapeEndpoint, rasterizeFilledOval, rasterizeShapeOutline } from './shapes';
 import {
@@ -159,6 +160,7 @@ import {
 } from './lasso';
 import {
   canvasCellSet,
+  canvasCellSetHas,
   canvasCellSetSize,
   canvasEdgeDragDelta,
   canvasEdges,
@@ -259,6 +261,8 @@ interface CanvasBrushGesture {
   /** Frozen at pointer-down; every cell index is into this rect. */
   readonly workspace: CellRect;
   readonly brushSize: number;
+  /** The canvas selection at pointer-down; the stroke changes only its cells. */
+  readonly selection: CanvasCellSet | undefined;
   readonly cells: Set<number>;
   lastCell: ModelPoint | undefined;
 }
@@ -293,6 +297,8 @@ interface PaintGesture {
   /** Geometry captured at pointer-down; every stamped cell uses this edit. */
   readonly edit: BulkCellEdit;
   readonly brushSize: number;
+  /** The selected indices at pointer-down; the stroke changes only these cells. */
+  readonly bounds: Uint32Array | undefined;
   readonly cells: Map<string, ModelPoint>;
   lastCell: ModelPoint | undefined;
 }
@@ -304,7 +310,8 @@ interface ShapeGesture {
   readonly shape: ShapeKind;
   readonly anchor: ModelPoint;
   readonly edit: BulkCellEdit;
-  readonly brushSize: number;
+  /** The selected indices at pointer-down; the outline changes only these cells. */
+  readonly bounds: Uint32Array | undefined;
   readonly cells: Map<string, ModelPoint>;
 }
 
@@ -313,6 +320,8 @@ interface EraserGesture {
   readonly pointerId: number;
   readonly transaction: EditorTransaction;
   readonly brushSize: number;
+  /** The selected indices at pointer-down; the eraser reaches only these cells and the backstitches inside them. */
+  readonly bounds: Uint32Array | undefined;
   readonly cells: Map<string, ModelPoint>;
   readonly components: Map<string, { readonly cell: ModelPoint; readonly corner: number }>;
   /** The three-quarter side the gesture began on; every cell the drag reaches erases that side only. */
@@ -382,6 +391,8 @@ interface BackstitchGesture {
   readonly pointerId: number;
   readonly mode: 'create' | 'move';
   readonly token: EditorRevisionToken;
+  /** Draw mode: the selected indices at pointer-down; the drawn segment must lie inside them. */
+  readonly bounds?: Uint32Array;
   readonly selectedId?: number;
   readonly movingEndpoint?: 'start' | 'end';
   /** Where a move press landed; the endpoint stays put until the pointer leaves the tap slop. */
@@ -647,15 +658,30 @@ function indicesForCells(cells: readonly ModelPoint[], width: number): Uint32Arr
   return new Uint32Array(indices);
 }
 
-/** Return the clipped, deterministic disk stamp anchored on a hit cell. */
-function brushCells(center: ModelPoint, size: number, document: PatternDocument): ModelPoint[] {
-  const cells: ModelPoint[] = [];
-  brushDisk(center, size, { x: 0, y: 0, width: document.width, height: document.height }, (x, y) => cells.push({ x, y }));
-  return cells;
+/** Return the deterministic disk stamp anchored on a hit cell, clipped to the document and to the selection `bounds`. */
+function brushCells(center: ModelPoint, size: number, document: PatternDocument, bounds?: Uint32Array): ModelPoint[] {
+  return brushFootprint(center, size, documentRect(document), selectedCellTest(bounds, document));
 }
 
-function stampBrush(cells: Map<string, ModelPoint>, center: ModelPoint, size: number, document: PatternDocument): void {
-  for (const cell of brushCells(center, size, document)) cells.set(cellKey(cell), cell);
+function stampBrush(cells: Map<string, ModelPoint>, center: ModelPoint, size: number, document: PatternDocument, bounds?: Uint32Array): void {
+  for (const cell of brushCells(center, size, document, bounds)) cells.set(cellKey(cell), cell);
+}
+
+function documentRect(document: PatternDocument): CellRect {
+  return { x: 0, y: 0, width: document.width, height: document.height };
+}
+
+/** Whether a cell is among the selected `bounds`; undefined, accepting every cell, without a selection. */
+function selectedCellTest(bounds: Uint32Array | undefined, document: PatternDocument): ((x: number, y: number) => boolean) | undefined {
+  if (!bounds) return undefined;
+  // A cell's centre touches only that cell.
+  const half = FIXED_POINT_UNITS_PER_CELL / 2;
+  return (x, y) => isFixedPointContainedInCellUnion(x * FIXED_POINT_UNITS_PER_CELL + half, y * FIXED_POINT_UNITS_PER_CELL + half, document.width, document.height, bounds);
+}
+
+/** Whether both endpoints of a backstitch touch a selected cell; always true without a selection. */
+function segmentInsideSelection(bounds: Uint32Array | undefined, document: PatternDocument, start: FixedPoint, end: FixedPoint): boolean {
+  return !bounds || backstitchEndpointsContainedInCellUnion(start.x, start.y, end.x, end.y, document.width, document.height, bounds);
 }
 
 function boundedSquareOrigin(origin: number, anchor: number, side: number, extent: number): number {
@@ -1537,6 +1563,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private imageToolKeydownListener: ((event: KeyboardEvent) => void) | null = null;
   /** A finalized Canvas-layer selection in local cells; it may extend beyond the canvas. */
   private canvasSelection: CanvasCellSet | undefined;
+  /** `getSelectionIndices` for the selection object and document size it was computed for; selections are replaced, never mutated. */
+  private selectionIndicesCache: { readonly selection: FinalizedSelection; readonly width: number; readonly height: number; readonly indices: Uint32Array } | undefined;
   private canvasPreview: CanvasEditPreview | undefined;
   private canvasEdgeDrag: CanvasEdgeDrag | undefined;
   /** The canvas origin the view was last framed for, so an origin change can shift the view. */
@@ -1631,6 +1659,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   dispose(): void {
     if (this.disposed) return;
+    this.clearBrushPreview();
     this.exitImageTool();
     this.stop();
     this.fillClient.dispose();
@@ -1701,7 +1730,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   getSelectionIndices(): Uint32Array | undefined {
     const document = this.gateway.getSnapshot().document;
     this.reconcileSelectionDimensions(document);
-    return document ? finalizedSelectionIndices(this.selection, document) : undefined;
+    const selection = this.selection;
+    if (!document || !selection) return undefined;
+    const cache = this.selectionIndicesCache;
+    if (cache?.selection === selection && cache.width === document.width && cache.height === document.height) return cache.indices;
+    const indices = finalizedSelectionIndices(selection, document);
+    if (indices) this.selectionIndicesCache = { selection, width: document.width, height: document.height, indices };
+    return indices;
   }
 
   setSelection(start: ModelPoint, end = start): GridRect | undefined {
@@ -1765,6 +1800,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.pushTimeline(this.undoTimeline, { kind: 'selection', before, after });
     if (this.redoTimeline.some((entry) => entry.kind === 'document')) this.gatewayRedoStale = true;
     this.redoTimeline = [];
+    this.publishHistory();
   }
 
   /** Push a document step, with the selection before it and as it stands now; a new step ends the redo timeline. */
@@ -1773,6 +1809,16 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.pushTimeline(this.undoTimeline, { kind: 'document', before, after: this.selectionSnapshot() });
     this.redoTimeline = [];
     this.gatewayRedoStale = false;
+    this.publishHistory();
+  }
+
+  /** Publish whether Undo and Redo have a step: a floating paste or a selection step first, then the document history. */
+  private publishHistory(): void {
+    const redoTop = this.redoTimeline.at(-1);
+    this.uiStore.setHistory({
+      canUndo: this.floatingPaste !== undefined || this.undoTimeline.at(-1)?.kind === 'selection' || this.gateway.canUndo(),
+      canRedo: redoTop?.kind === 'selection' || ((redoTop !== undefined || !this.gatewayRedoStale) && this.gateway.canRedo())
+    });
   }
 
   /** Take a selection the last document step cleared into that step, so one undo restores both. */
@@ -2559,6 +2605,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       operation: tool.tool === 'eraser' ? 'remove' : 'add',
       workspace,
       brushSize: this.getBrushSize(),
+      selection: this.canvasSelection,
       cells: new Set<number>(),
       lastCell: undefined
     };
@@ -2584,7 +2631,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   /** Stamp the brush along the path from the previous cell, as the stitch eraser does. */
   private appendCanvasBrushCell(gesture: CanvasBrushGesture, cell: ModelPoint, document: PatternDocument): void {
-    const accept = gesture.operation === 'remove' ? (x: number, y: number) => isActiveCanvasCell(document, x, y) : undefined;
+    const { operation, selection } = gesture;
+    const accept = operation === 'remove' || selection
+      ? (x: number, y: number) => (operation === 'add' || isActiveCanvasCell(document, x, y)) && (!selection || canvasCellSetHas(selection, x, y))
+      : undefined;
     const path = gesture.lastCell ? supercoverLine(gesture.lastCell, cell) : [cell];
     for (const step of path) stampCanvasBrush(gesture.cells, step, gesture.brushSize, gesture.workspace, accept);
     gesture.lastCell = cell;
@@ -2627,7 +2677,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   /** Stretch a stitch-layer marquee from its anchor to the cell under the pointer. */
   private updateSelection(gesture: SelectionGesture, sample: PointerSample, document: PatternDocument): void {
-    const cell = this.paintHitCell(sample, document);
+    const cell = this.clampedHitCell(sample, document);
     if (!cell || (cell.x === gesture.current.x && cell.y === gesture.current.y)) return;
     gesture.current = cell;
     if (gesture.shape === 'oval' && (cell.x !== gesture.anchor.x || cell.y !== gesture.anchor.y)) {
@@ -3035,6 +3085,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.ensureStarted();
     if (this.disposed) return false;
     if (!validScreenSample(sample)) return false;
+    this.clearBrushPreview();
     const floatingPointerDown = this.handleFloatingPointerDown(sample);
     if (floatingPointerDown !== undefined) return floatingPointerDown;
     if (sample.pointerType !== 'touch') this.editorFocused = true;
@@ -3099,8 +3150,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       return this.eyedropperAt(sample, snapshot.document);
     }
     if (selectedTool.tool === 'select') {
-      // A press off the pattern never deselects; only Escape and the Select rail button clear.
-      const cell = this.paintHitCell(sample, snapshot.document);
+      const cell = this.clampedHitCell(sample, snapshot.document);
       if (!cell) return false;
       const previousSelection = this.selection;
       const previousSelectionAnchor = this.selectionAnchor;
@@ -3134,7 +3184,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         shape: selectedTool.shape,
         anchor: cell,
         edit: { kind: 'full', color: paletteEntry.id },
-        brushSize: this.getBrushSize(),
+        bounds: this.getSelectionIndices(),
         cells: new Map<string, ModelPoint>()
       };
       this.gesture = gesture;
@@ -3173,7 +3223,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const specialty = snapshot.activeLayer?.kind === 'specialty';
       const backstitches = specialty ? new Set<number>() : undefined;
       const backstitchIndex = specialty && brushSize > 1 ? buildBackstitchCellIndex(surface) : undefined;
-      const gesture: EraserGesture = { kind: 'eraser', pointerId: sample.pointerId, transaction, brushSize, cells, components, backstitches, backstitchIndex, lastCell: cell };
+      const bounds = this.getSelectionIndices();
+      const gesture: EraserGesture = { kind: 'eraser', pointerId: sample.pointerId, transaction, brushSize, bounds, cells, components, backstitches, backstitchIndex, lastCell: cell };
       this.addEraserSample(gesture, cell, sample, surface);
       this.addEraserBackstitches(gesture, sample, surface);
       this.gesture = gesture;
@@ -3185,10 +3236,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (!cell) return false;
     const transaction = this.gateway.beginTransaction();
     const brushSize = this.getBrushSize();
+    const bounds = this.getSelectionIndices();
     const cells = new Map<string, ModelPoint>();
-    stampBrush(cells, cell, brushSize, surface);
+    stampBrush(cells, cell, brushSize, surface, bounds);
     const edit = editForBrush(selectedTool.brush, this.paintCorner(sample));
-    this.gesture = { kind: 'paint', pointerId: sample.pointerId, transaction, brush: selectedTool.brush, edit, brushSize, cells, lastCell: cell };
+    this.gesture = { kind: 'paint', pointerId: sample.pointerId, transaction, brush: selectedTool.brush, edit, brushSize, bounds, cells, lastCell: cell };
     this.publishPendingPaint(cells, edit, transaction.token.revision, surface);
     return true;
   }
@@ -3201,6 +3253,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (floatingPointerMove !== undefined) return floatingPointerMove;
     if (sample.pointerType !== 'touch') {
       this.lastHoverSample = sample;
+      if (!this.gesture) this.updateBrushPreview(sample);
       if (!this.gesture && this.lassoPath) this.hoverLasso(sample);
     }
     if (sample.pointerType === 'touch') {
@@ -3405,6 +3458,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   handlePointerCancel(sample: PointerSample): boolean {
     this.ensureStarted();
     this.spaceHeld = false;
+    this.clearBrushPreview();
     const floatingPointerCancel = this.handleFloatingPointerCancel(sample);
     if (floatingPointerCancel !== undefined) return floatingPointerCancel;
     if (sample.pointerType === 'touch') {
@@ -3419,6 +3473,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   handlePointerLeave(): void {
     this.lastHoverSample = undefined;
+    this.clearBrushPreview();
   }
 
   handlePointerLostCapture(sample: PointerSample): boolean {
@@ -3762,6 +3817,12 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return cell.x < 0 || cell.y < 0 || cell.x >= document.width || cell.y >= document.height ? undefined : cloneCell(cell);
   }
 
+  /** The cell under the pointer, clamped onto the document, so a press or drag off the pattern reaches its nearest edge. */
+  private clampedHitCell(sample: PointerSample, document: PatternDocument): ModelPoint | undefined {
+    if (!validScreenSample(sample) || !isFiniteViewport(this.uiStore.getState().viewport)) return undefined;
+    return clampCell(screenToCellUnclamped({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport), documentRect(document));
+  }
+
   private lassoModelPoint(sample: PointerSample): ModelPoint | undefined {
     if (!validScreenSample(sample) || !isFiniteViewport(this.uiStore.getState().viewport)) return undefined;
     const point = screenToModel({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport);
@@ -3963,9 +4024,9 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       // Full stitches follow an 8-connected line: a supercover walk would claim
       // both side cells whenever the stroke steps diagonally through a corner.
       const segment = gesture.brush.kind === 'full' ? bresenhamLine(gesture.lastCell, nextCell) : supercoverLine(gesture.lastCell, nextCell);
-      for (const cell of segment) stampBrush(gesture.cells, cell, gesture.brushSize, document);
+      for (const cell of segment) stampBrush(gesture.cells, cell, gesture.brushSize, document, gesture.bounds);
     } else {
-      stampBrush(gesture.cells, nextCell, gesture.brushSize, document);
+      stampBrush(gesture.cells, nextCell, gesture.brushSize, document, gesture.bounds);
     }
     gesture.lastCell = nextCell;
   }
@@ -4005,8 +4066,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       shapeEnd = { x: left + side - 1, y: top + side - 1 };
     }
     gesture.cells.clear();
+    const accept = selectedCellTest(gesture.bounds, document);
+    // An outline is always one cell wide, whatever the brush size.
     for (const outlineCell of rasterizeShapeOutline(gesture.shape, shapeStart, shapeEnd)) {
-      stampBrush(gesture.cells, outlineCell, gesture.brushSize, document);
+      if (!accept || accept(outlineCell.x, outlineCell.y)) gesture.cells.set(cellKey(outlineCell), outlineCell);
     }
   }
 
@@ -4016,19 +4079,19 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   private addEraserSample(
-    target: Pick<EraserGesture, 'cells' | 'components' | 'brushSize' | 'backstitches' | 'backstitchIndex' | 'startCorner'>,
+    target: Pick<EraserGesture, 'cells' | 'components' | 'brushSize' | 'bounds' | 'backstitches' | 'backstitchIndex' | 'startCorner'>,
     cell: ModelPoint,
     sample: PointerSample,
     document: PatternDocument
   ): void {
     if (!isFiniteViewport(this.uiStore.getState().viewport)) return;
     const { cells, components } = target;
-    const stamped = brushCells(cell, target.brushSize, document);
+    const stamped = brushCells(cell, target.brushSize, document, target.bounds);
     if (target.backstitches) {
       for (const stampedCell of stamped) cells.set(cellKey(stampedCell), stampedCell);
       // A wider brush reaches exactly its drawn footprint; a one-cell brush is
       // measured from the pointer by addEraserBackstitches instead.
-      if (target.brushSize > 1) backstitchesThroughCells(document, stamped, target.backstitches, target.backstitchIndex);
+      if (target.brushSize > 1) this.addBoundedBackstitches(target, document, (into) => backstitchesThroughCells(document, stamped, into, target.backstitchIndex));
       return;
     }
     const point = screenToModel({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport);
@@ -4071,8 +4134,30 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private addEraserBackstitches(gesture: EraserGesture, sample: PointerSample, document: PatternDocument): void {
     if (!gesture.backstitches || gesture.brushSize > 1) return;
     const point = screenToModel({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport);
-    backstitchesNearPath(document, gesture.lastPoint ?? point, point, this.backstitchHitTolerance(), gesture.backstitches);
+    this.addBoundedBackstitches(gesture, document, (into) => backstitchesNearPath(document, gesture.lastPoint ?? point, point, this.backstitchHitTolerance(), into));
     gesture.lastPoint = point;
+  }
+
+  /** Add the backstitches `collect` reaches to the erase, keeping only those inside the gesture's selection. */
+  private addBoundedBackstitches(
+    target: Pick<EraserGesture, 'bounds' | 'backstitches'>,
+    document: PatternDocument,
+    collect: (into: Set<number>) => void
+  ): void {
+    const erased = target.backstitches;
+    if (!erased) return;
+    if (!target.bounds) {
+      collect(erased);
+      return;
+    }
+    const reached = new Set<number>();
+    collect(reached);
+    const store = document.backstitches;
+    for (let position = 0; position < store.ids.length; position += 1) {
+      const id = store.ids[position];
+      if (!reached.has(id) || erased.has(id)) continue;
+      if (segmentInsideSelection(target.bounds, document, { x: store.x1[position], y: store.y1[position] }, { x: store.x2[position], y: store.y2[position] })) erased.add(id);
+    }
   }
 
   private markToolActive(): boolean {
@@ -4373,6 +4458,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
           }
         : undefined
     });
+    // Starting, committing and discarding a floating paste all publish here, and a live one is an undo step.
+    this.publishHistory();
   }
 
   /** The fragment a floating paste shows: under Focus Color, only what a commit here would paste. */
@@ -4532,6 +4619,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       pointerId: sample.pointerId,
       mode: 'create',
       token: tokenOf(snapshot),
+      bounds: this.getSelectionIndices(),
       start: snapped,
       end: snapped
     };
@@ -4567,6 +4655,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (gesture.mode === 'create') {
       if (gesture.start.x === gesture.end.x && gesture.start.y === gesture.end.y) {
         this.resetBackstitchState();
+        return;
+      }
+      if (!segmentInsideSelection(gesture.bounds, snapshot.document, gesture.start, gesture.end)) {
+        this.resetBackstitchState();
+        this.setStatus('Outside selection');
         return;
       }
       if (this.backstitchProtected(snapshot, gesture.start, gesture.end)) {
@@ -4722,6 +4815,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.cancelFill(false);
     const selectedPaletteId = this.uiStore.getState().paletteId;
     const startIndex = cellY * surface.width + cellX;
+    const selected = this.getSelectionIndices();
+    if (selected && !selected.includes(startIndex)) {
+      this.setStatus('Outside selection');
+      return true;
+    }
     if (!isActiveCell(surface, startIndex)) {
       this.setStatus('No change');
       return true;
@@ -4743,10 +4841,9 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.notifyFocusProtected();
       return true;
     }
-    // A fill that starts inside the selection stops at its edge.
-    const selected = this.getSelectionIndices();
+    // A fill stays inside the selection.
     let bounds: Uint8Array | undefined;
-    if (selected?.includes(startIndex)) {
+    if (selected) {
       bounds = new Uint8Array(surface.width * surface.height);
       for (const index of selected) if (isActiveCell(surface, index)) bounds[index] = 1;
     }
@@ -5001,6 +5098,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.restoreSelectionSnapshot(undo ? entry.before : entry.after);
       this.pushTimeline(to, entry);
       this.setStatus(undo ? 'Undid selection' : 'Redid selection');
+      this.publishHistory();
       return;
     }
     if (!undo && !entry && this.gatewayRedoStale) {
@@ -5022,6 +5120,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.pushTimeline(to, entry ?? { kind: 'document', before: current, after: current });
     } finally {
       this.replayingHistory = false;
+      this.publishHistory();
     }
   }
 
@@ -5076,7 +5175,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.lastGatewaySnapshot = snapshot;
     if (layerSwitched) this.onActiveLayerSwitch();
     this.syncActiveLayer(snapshot);
-    if (!force && !projectChanged && !documentChanged) return;
+    if (!force && !projectChanged && !documentChanged) {
+      this.publishHistory();
+      return;
+    }
     if (projectChanged || documentChanged) this.discardFloatingPaste();
     if (documentChanged && this.touchHistoryCandidate) {
       this.rejectTouchHistoryCandidate('project/document reset');
@@ -5111,6 +5213,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.uiStore.setSelectedCell(null);
     }
     if (staleGestureStatus) this.setStatus(staleGestureStatus);
+    this.publishHistory();
   }
 
   private resetForProjectSwitch(snapshot: WorkspaceEditorSnapshot): void {
@@ -5166,6 +5269,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if (state.highlightColor !== previous.highlightColor) this.renderer.setStyle({ highlightColor: state.highlightColor });
     if (state.overlay !== previous.overlay) this.renderer.setOverlay(state.overlay);
+    if ((state.tool !== previous.tool || state.brushSize !== previous.brushSize || state.viewport !== previous.viewport) && this.lastHoverSample && !this.gesture) this.updateBrushPreview(this.lastHoverSample);
     if (state.focusColor !== previous.focusColor || (state.focusColor && state.paletteId !== previous.paletteId)) this.onFocusColorChange();
   }
 
@@ -5400,6 +5504,61 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.cancelLassoPath();
     this.cancelFill(false);
     this.resetBackstitchState();
+    this.clearBrushPreview();
+  }
+
+  private clearBrushPreview(): void {
+    const overlay = this.uiStore.getState().overlay;
+    if (overlay.brushPreview) this.uiStore.setOverlay({ ...overlay, brushPreview: undefined });
+  }
+
+  /** Outline the cells a press here would reach, for the tools that have a footprint. */
+  private updateBrushPreview(sample: PointerSample): void {
+    const args = this.spaceHeld || (sample.buttons ?? 0) !== 0
+      ? undefined
+      : this.hoverFootprintArgs(this.uiStore.getState().tool, sample, this.gateway.getSnapshot());
+    const cells = args ? brushFootprint(args.center, args.size, args.bounds, args.accept) : [];
+    if (cells.length === 0) {
+      this.clearBrushPreview();
+      return;
+    }
+    this.uiStore.setOverlay({ ...this.uiStore.getState().overlay, brushPreview: { cells } });
+  }
+
+  /** The `brushFootprint` arguments a press of `tool` here would stamp with; undefined for a tool without a footprint. */
+  private hoverFootprintArgs(tool: EditorToolState, sample: PointerSample, snapshot: WorkspaceEditorSnapshot): {
+    readonly center: ModelPoint;
+    readonly size: number;
+    readonly bounds: CellRect;
+    readonly accept?: (x: number, y: number) => boolean;
+  } | undefined {
+    const document = snapshot.document;
+    if (!document) return undefined;
+    if (this.readOnly) {
+      const cell = tool.tool === 'mark' ? this.paintHitCell(sample, document) : undefined;
+      return cell && { center: cell, size: 1, bounds: documentRect(document) };
+    }
+    if (this.isCanvasActive(snapshot)) {
+      if ((tool.tool !== 'canvas-brush' && tool.tool !== 'eraser') || !this.toolAvailable(tool, snapshot.activeLayer).enabled) return undefined;
+      const point = this.lassoModelPoint(sample);
+      const selection = this.canvasSelection;
+      return point && {
+        center: point,
+        size: this.getBrushSize(),
+        bounds: canvasWorkspace(document),
+        accept: selection && ((x, y) => canvasCellSetHas(selection, x, y))
+      };
+    }
+    if (tool.tool !== 'paint' && tool.tool !== 'eraser') return undefined;
+    const surface = this.editableSurface(snapshot, tool);
+    const cell = surface ? this.paintHitCell(sample, surface) : undefined;
+    if (!surface || !cell) return undefined;
+    return {
+      center: cell,
+      size: this.getBrushSize(),
+      bounds: documentRect(surface),
+      accept: selectedCellTest(this.getSelectionIndices(), surface)
+    };
   }
 
   /**

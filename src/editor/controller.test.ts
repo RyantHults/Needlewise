@@ -638,7 +638,7 @@ describe('EditorSurfaceController', () => {
     controller.dispose();
   });
 
-  it('uses the active palette as full stitches and applies the current brush size as outline thickness', () => {
+  it('draws shape outlines one cell thick whatever the brush size is', () => {
     const document = createDocument({
       width: 8,
       height: 8,
@@ -650,18 +650,15 @@ describe('EditorSurfaceController', () => {
     });
     const fixture = controllerFixture({}, document);
     fixture.uiStore.setPaletteId(2);
-    fixture.uiStore.setState({ brushSize: 2 });
-    fixture.controller.setTool({ tool: 'shape', shape: 'line' });
-    fixture.controller.handlePointerDown(pointer(1, 40, 40));
-    fixture.controller.handlePointerMove(pointer(1, 72, 40));
-
-    const states = fixture.uiStore.getState().overlay.pendingCellStates ?? [];
-    expect(states.map((state) => state.index)).toEqual([18, 19, 20, 21, 26, 27, 28, 29]);
-    expect(states.every((state) => state.kind === CellKind.Full && state.colors[0] === 2)).toBe(true);
-    fixture.controller.handlePointerUp(pointer(1, 72, 40));
+    fixture.controller.setToolBrushSize('full', 5);
+    fixture.controller.setTool({ tool: 'shape', shape: 'rectangle' });
+    fixture.controller.handlePointerDown(pointer(1, 8, 8));
+    fixture.controller.handlePointerMove(pointer(1, 4 * 16 + 8, 3 * 16 + 8));
+    fixture.controller.handlePointerUp(pointer(1, 4 * 16 + 8, 3 * 16 + 8));
+    // A 5x4 outline: 14 cells, none of its interior.
     expect(fixture.boundary.log[0]).toMatchObject({
       type: 'bulk-cell',
-      indices: new Uint32Array([18, 19, 20, 21, 26, 27, 28, 29]),
+      indices: new Uint32Array([0, 1, 2, 3, 4, 8, 12, 16, 20, 24, 25, 26, 27, 28]),
       edit: { kind: 'full', color: 2 }
     });
     fixture.controller.dispose();
@@ -1475,6 +1472,64 @@ describe('EditorSurfaceController', () => {
     controller.dispose();
   });
 
+  it('starts a selection from a press off the pattern, snapping to the nearest edge', () => {
+    const { controller } = controllerFixture();
+    controller.setTool({ tool: 'select' });
+    controller.handlePointerDown(pointer(1, -48, -48));
+    controller.handlePointerMove(pointer(1, 2 * 16 + 8, 1 * 16 + 8));
+    controller.handlePointerUp(pointer(1, 2 * 16 + 8, 1 * 16 + 8));
+    expect(controller.getSelection()).toEqual({ x: 0, y: 0, width: 3, height: 2 });
+    controller.dispose();
+  });
+
+  it('extends a selection drag past the far corner of the pattern to the last row and column', () => {
+    const { controller } = controllerFixture();
+    controller.setTool({ tool: 'select' });
+    controller.handlePointerDown(pointer(1, 1 * 16 + 8, 1 * 16 + 8));
+    controller.handlePointerMove(pointer(1, 500, 500));
+    controller.handlePointerUp(pointer(1, 500, 500));
+    expect(controller.getSelection()).toEqual({ x: 1, y: 1, width: 7, height: 7 });
+    controller.dispose();
+  });
+
+  it('keeps the selection after a click off the pattern', () => {
+    const { controller } = controllerFixture();
+    controller.setTool({ tool: 'select' });
+    controller.setSelection({ x: 1, y: 1 }, { x: 2, y: 2 });
+    controller.handlePointerDown(pointer(1, -48, -48));
+    controller.handlePointerUp(pointer(1, -48, -48));
+    expect(controller.getSelection()).toEqual({ x: 1, y: 1, width: 2, height: 2 });
+    controller.dispose();
+  });
+
+  it('enables Undo and Redo only while there is a step to take', () => {
+    const { uiStore, controller } = controllerFixture();
+    const undoKey = { key: 'z', ctrlKey: true, preventDefault: () => undefined };
+    expect(uiStore.getState().history).toEqual({ canUndo: false, canRedo: false });
+
+    controller.handlePointerDown(pointer(1, 8, 8));
+    controller.handlePointerUp(pointer(1, 8, 8));
+    expect(uiStore.getState().history).toEqual({ canUndo: true, canRedo: false });
+
+    controller.handleKeyDown(undoKey);
+    expect(uiStore.getState().history).toEqual({ canUndo: false, canRedo: true });
+
+    controller.handlePointerDown(pointer(2, 24, 8));
+    controller.handlePointerUp(pointer(2, 24, 8));
+    expect(uiStore.getState().history).toEqual({ canUndo: true, canRedo: false });
+    controller.dispose();
+  });
+
+  it('counts a selection drag as an undoable step', () => {
+    const { uiStore, controller } = controllerFixture();
+    controller.setTool({ tool: 'select' });
+    controller.handlePointerDown(pointer(1, 8, 8));
+    controller.handlePointerMove(pointer(1, 40, 40));
+    controller.handlePointerUp(pointer(1, 40, 40));
+    expect(uiStore.getState().history.canUndo).toBe(true);
+    controller.dispose();
+  });
+
   it('keeps each paint brush kind\'s size across tool switches', () => {
     const { uiStore, controller } = controllerFixture();
     controller.setToolBrushSize('full', 2);
@@ -1561,15 +1616,21 @@ describe('EditorSurfaceController', () => {
     fixture.controller.dispose();
   });
 
-  it('publishes no overlay while hovering with paint or eraser', () => {
-    const { boundary, uiStore, controller } = controllerFixture();
-    uiStore.setState({ brushSize: 2 });
-    const before = uiStore.getState().overlay;
-    controller.handlePointerMove({ ...pointer(1, 24, 24), buttons: 0 });
-    controller.setTool({ tool: 'eraser' });
-    controller.handlePointerMove({ ...pointer(1, 40, 24), buttons: 0 });
-    expect(uiStore.getState().overlay).toBe(before);
-    expect(boundary.log).toHaveLength(0);
+  it('outlines the brush footprint under a hover until a press or a leave', () => {
+    const { uiStore, controller } = controllerFixture();
+    controller.setToolBrushSize('full', 3);
+    controller.handlePointerMove({ ...pointer(1, 3 * 16 + 8, 3 * 16 + 8), buttons: 0 });
+    const hovered = uiStore.getState().overlay.brushPreview?.cells.map(({ x, y }) => y * 8 + x).sort((a, b) => a - b);
+    expect(hovered).toEqual([18, 19, 20, 26, 27, 28, 34, 35, 36]);
+
+    controller.handlePointerDown(pointer(1, 3 * 16 + 8, 3 * 16 + 8));
+    expect(uiStore.getState().overlay.brushPreview).toBeFalsy();
+    controller.handlePointerUp(pointer(1, 3 * 16 + 8, 3 * 16 + 8));
+
+    controller.handlePointerMove({ ...pointer(1, 5 * 16 + 8, 5 * 16 + 8), buttons: 0 });
+    expect(uiStore.getState().overlay.brushPreview?.cells).toHaveLength(9);
+    controller.handlePointerLeave();
+    expect(uiStore.getState().overlay.brushPreview).toBeFalsy();
     controller.dispose();
   });
 
@@ -2556,6 +2617,15 @@ describe('EditorSurfaceController mark tool', () => {
     expect([...command.cells!.indices]).toEqual([9]);
     expect([...command.cells!.masks]).toEqual([1 << QuarterCorner.NE]);
     expect(command.backstitchIds).toBeUndefined();
+    controller.dispose();
+  });
+
+  it('outlines only the hovered cell and clears off the pattern', () => {
+    const { uiStore, controller } = markFixture();
+    controller.handlePointerMove({ ...pointer(1, at(2.5, 3.5).x, at(2.5, 3.5).y), buttons: 0 });
+    expect(uiStore.getState().overlay.brushPreview?.cells).toEqual([{ x: 2, y: 3 }]);
+    controller.handlePointerMove({ ...pointer(1, -8, -8), buttons: 0 });
+    expect(uiStore.getState().overlay.brushPreview).toBeFalsy();
     controller.dispose();
   });
 

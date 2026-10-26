@@ -1,5 +1,5 @@
 import { MAX_PERSISTABLE_CELL_COUNT, isActiveCell, type CanvasEdges, type PatternDocument } from '../domain';
-import { brushDisk } from './brush';
+import { brushFootprint } from './brush';
 import type { CanvasCellSet, CellRect, ModelPoint } from './contracts';
 import { indexBounds, intersectRect } from './rect';
 import { rasterizeFilledOval } from './shapes';
@@ -19,9 +19,9 @@ export function isActiveCanvasCell(document: Pick<PatternDocument, 'width' | 'he
 }
 
 /**
- * Add the stitch brush disk (see `brushDisk`) centred on `center` to `into`,
- * clipped to the workspace. `accept` filters cells, so the eraser collects
- * only active ones.
+ * Add the stitch brush footprint (see `brushFootprint`) centred on `center` to
+ * `into`, clipped to the workspace. `accept` filters cells, so the eraser
+ * collects only active ones.
  */
 export function stampCanvasBrush(
   into: Set<number>,
@@ -30,10 +30,7 @@ export function stampCanvasBrush(
   workspace: CellRect,
   accept?: (x: number, y: number) => boolean
 ): void {
-  brushDisk(center, size, workspace, (x, y) => {
-    if (accept && !accept(x, y)) return;
-    into.add((y - workspace.y) * workspace.width + x - workspace.x);
-  });
+  for (const { x, y } of brushFootprint(center, size, workspace, accept)) into.add((y - workspace.y) * workspace.width + x - workspace.x);
 }
 
 /** The tight local rect and 0/1 bitmap of a set of workspace indices; undefined when empty. */
@@ -68,6 +65,13 @@ export function canvasOvalSelection(anchor: ModelPoint, current: ModelPoint, wor
     indices.push((y - workspace.y) * workspace.width + x - workspace.x);
   }
   return canvasCellSet(indices, workspace);
+}
+
+/** True when local cell (x, y) is in the set. */
+export function canvasCellSetHas(set: CanvasCellSet, x: number, y: number): boolean {
+  const { rect, cells } = set;
+  if (x < rect.x || y < rect.y || x >= rect.x + rect.width || y >= rect.y + rect.height) return false;
+  return cells === undefined || cells[(y - rect.y) * rect.width + x - rect.x] === 1;
 }
 
 /** The number of cells in the set. */

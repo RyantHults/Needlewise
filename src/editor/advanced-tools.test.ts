@@ -240,7 +240,7 @@ describe('advanced headless editor tools', () => {
     controller.setTool({ tool: 'select' });
     controller.setSelection({ x: 1, y: 1 }, { x: 2, y: 2 });
 
-    expect(controller.handlePointerDown(pointer(1, 136, 8))).toBe(false);
+    controller.handlePointerDown(pointer(1, 136, 8));
     controller.handlePointerUp(pointer(1, 136, 8));
     expect(controller.getSelection()).toEqual({ x: 1, y: 1, width: 2, height: 2 });
     expect(uiStore.getState().overlay.selection).toMatchObject({ x: 1, y: 1, width: 2, height: 2 });
@@ -1160,7 +1160,7 @@ describe('advanced headless editor tools', () => {
     controller.dispose();
   });
 
-  it('fills the whole region when the fill starts outside the selection', async () => {
+  it('does nothing for a fill that starts outside the selection', async () => {
     const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 3, palette: [
       { id: 1, name: 'Red', color: '#d33' }
     ] });
@@ -1174,12 +1174,63 @@ describe('advanced headless editor tools', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    expect(boundary.log.at(-1)).toMatchObject({
-      type: 'bulk-cell',
-      layerId: STITCH_LAYER_ID,
-      indices: new Uint32Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]),
-      edit: { kind: 'full', color: 1 }
-    });
+    expect(boundary.log).toHaveLength(0);
+    expect(uiStore.getState().status).toBe('Outside selection');
+    controller.dispose();
+  });
+
+  it('paints only the selected cells when a stroke crosses the selection', () => {
+    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 3, palette: [
+      { id: 1, name: 'Red', color: '#d33' }
+    ] });
+    const { controller, boundary } = fixture(document, undefined, true);
+    controller.setSelection({ x: 1, y: 0 }, { x: 2, y: 2 });
+    controller.setTool({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
+    controller.setToolBrushSize('full', 3);
+    controller.handlePointerDown(modelPointer(1, 0.5, 1.5));
+    controller.handlePointerMove(modelPointer(1, 3.5, 1.5));
+    controller.handlePointerUp(modelPointer(1, 3.5, 1.5));
+    expect(Array.from(boundary.activeLayerSurface()!.kind)).toEqual([0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0]);
+    controller.dispose();
+  });
+
+  it('outlines a shape only where it crosses the selection', () => {
+    const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 6, height: 6, palette: [
+      { id: 1, name: 'Red', color: '#d33' }
+    ] });
+    const { controller, boundary } = fixture(document, undefined, true);
+    controller.setSelection({ x: 1, y: 0 }, { x: 2, y: 4 });
+    controller.setTool({ tool: 'shape', shape: 'rectangle' });
+    controller.handlePointerDown(modelPointer(1, 0.5, 0.5));
+    controller.handlePointerMove(modelPointer(1, 4.5, 4.5));
+    controller.handlePointerUp(modelPointer(1, 4.5, 4.5));
+    expect(boundary.log.at(-1)).toMatchObject({ type: 'bulk-cell', indices: new Uint32Array([1, 2, 25, 26]) });
+    controller.dispose();
+  });
+
+  it('erases only the selected cells when the eraser crosses the selection', () => {
+    let document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 4, height: 3, palette: [
+      { id: 1, name: 'Red', color: '#d33' }
+    ] });
+    for (let x = 0; x < 4; x += 1) document = applyCommand(document, cell(4, { type: 'set-full', x, y: 0, color: 1 })).document;
+    const { controller, boundary } = fixture(document, undefined, true);
+    controller.setSelection({ x: 1, y: 0 }, { x: 2, y: 0 });
+    controller.setTool({ tool: 'eraser' });
+    controller.handlePointerDown(modelPointer(1, 0.5, 0.5));
+    controller.handlePointerMove(modelPointer(1, 3.5, 0.5));
+    controller.handlePointerUp(modelPointer(1, 3.5, 0.5));
+    expect(Array.from(boundary.activeLayerSurface()!.kind.slice(0, 4))).toEqual([CellKind.Full, CellKind.Empty, CellKind.Empty, CellKind.Full]);
+    controller.dispose();
+  });
+
+  it('commits no backstitch that leaves the selection', () => {
+    const { controller, boundary, uiStore } = fixture(documentWithStitches(), SPECIALTY_LAYER_ID);
+    controller.setSelection({ x: 0, y: 0 });
+    controller.setTool({ tool: 'backstitch' });
+    controller.handlePointerDown(pointer(1, 8, 8));
+    controller.handlePointerUp(pointer(1, 40, 24));
+    expect(boundary.log).toHaveLength(0);
+    expect(uiStore.getState().status).toBe('Outside selection');
     controller.dispose();
   });
 

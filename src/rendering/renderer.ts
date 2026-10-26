@@ -64,7 +64,7 @@ import {
 import { clearTarget, clipToRect, createDefaultAtlasTarget, drawImage, prepareTarget, rectPath, restore, save } from './context';
 import { grayscaleColor, paletteColor } from './colors';
 import { parseHexColor, rgbToHex } from '../domain/color';
-import { contrastSymbolInk, isDarkColor } from './contrast';
+import { contrastSymbolInk, isDarkColor, relativeLuminance } from './contrast';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
 import { readRendererColors, subscribeThemeChange, type RendererColors } from './theme-colors';
 import {
@@ -2158,6 +2158,85 @@ function cellStateColors(
   return visible;
 }
 
+// Pick the brush-preview outline ink for the colors a cell can expose at once.
+// A single color delegates to contrastSymbolInk; several keep the best
+// worst-case WCAG contrast of white vs `darkInk` across all of them.
+function bestContrastInk(colors: readonly string[], darkInk: string): string {
+  if (colors.length === 0) return darkInk;
+  if (colors.length === 1) return contrastSymbolInk(colors[0], darkInk);
+  const luminances = colors.map(relativeLuminance);
+  const darkLuminance = relativeLuminance(darkInk);
+  if (darkLuminance === undefined || luminances.some((value) => value === undefined)) {
+    return contrastSymbolInk(colors[0], darkInk);
+  }
+  const contrast = (left: number, right: number): number => (Math.max(left, right) + 0.05) / (Math.min(left, right) + 0.05);
+  const darkContrast = Math.min(...luminances.map((value) => contrast(darkLuminance, value!)));
+  const whiteContrast = Math.min(...luminances.map((value) => contrast(1, value!)));
+  return whiteContrast > darkContrast ? '#ffffff' : darkInk;
+}
+
+// What shows under the hover outline: the committed cell's colors, or the
+// pattern background for cells past the chart edge.
+function visibleCellColors(document: PatternDocument, x: number, y: number, style: RendererStyle): string[] {
+  if (x < 0 || y < 0 || x >= document.width || y >= document.height) return [patternBackgroundColor(document)];
+  const index = y * document.width + x;
+  const offset = index * 4;
+  return cellStateColors(document, document.kind[index], document.colors.subarray(offset, offset + 4), document.completed[index], style);
+}
+
+function drawBrushPreview(
+  context: CanvasContextAdapter,
+  document: PatternDocument,
+  preview: OverlayState['brushPreview'],
+  viewport: Viewport,
+  style: RendererStyle,
+  bounds: Rect
+): void {
+  if (!preview?.cells.length) return;
+  const cells = new Set<string>();
+  for (const cell of preview.cells) cells.add(`${Math.floor(cell.x)},${Math.floor(cell.y)}`);
+  save(context);
+  setAlpha(context, 1);
+  const strokeWidth = Math.max(0.75, Math.min(1.5, viewport.zoom * 0.06));
+
+  // Each outer edge gets its own ink/keyline pair, judged against the colors
+  // under the hovered cell and the cell across the edge. The solid, wider
+  // keyline stays visible through the dashed ink's gaps.
+  const strokeEdge = (from: ScreenPoint, to: ScreenPoint, hoveredColors: readonly string[], neighborColors: readonly string[]): void => {
+    const ink = bestContrastInk([...hoveredColors, ...neighborColors], style.symbolColor);
+    const keyline = ink === '#ffffff' ? style.symbolColor : '#ffffff';
+    context.beginPath();
+    context.moveTo(from.x, from.y);
+    context.lineTo(to.x, to.y);
+    context.strokeStyle = keyline;
+    context.lineWidth = strokeWidth + 1;
+    context.setLineDash?.([]);
+    context.stroke();
+    context.beginPath();
+    context.moveTo(from.x, from.y);
+    context.lineTo(to.x, to.y);
+    context.strokeStyle = ink;
+    context.lineWidth = strokeWidth;
+    context.setLineDash?.([3, 2]);
+    context.stroke();
+  };
+
+  for (const key of cells) {
+    const [x, y] = key.split(',').map(Number);
+    if (!intersectRect(cellToScreenRect({ x, y, width: 1, height: 1 }, viewport), bounds)) continue;
+    const hoveredColors = visibleCellColors(document, x, y, style);
+    const left = modelToScreen({ x, y }, viewport);
+    const right = modelToScreen({ x: x + 1, y }, viewport);
+    const bottomRight = modelToScreen({ x: x + 1, y: y + 1 }, viewport);
+    const bottom = modelToScreen({ x, y: y + 1 }, viewport);
+    if (!cells.has(`${x},${y - 1}`)) strokeEdge(left, right, hoveredColors, visibleCellColors(document, x, y - 1, style));
+    if (!cells.has(`${x + 1},${y}`)) strokeEdge(right, bottomRight, hoveredColors, visibleCellColors(document, x + 1, y, style));
+    if (!cells.has(`${x},${y + 1}`)) strokeEdge(bottomRight, bottom, hoveredColors, visibleCellColors(document, x, y + 1, style));
+    if (!cells.has(`${x - 1},${y}`)) strokeEdge(bottom, left, hoveredColors, visibleCellColors(document, x - 1, y, style));
+  }
+  restore(context);
+}
+
 function drawOverlay(
   context: CanvasContextAdapter,
   document: PatternDocument,
@@ -2182,6 +2261,7 @@ function drawOverlay(
     drawCanvasEditing(context, document, editing, viewport, metrics, style, screen, overlay.showSelection === false ? undefined : overlay.color ?? style.selectionColor);
   }
   if (!bounds) {
+    drawBrushPreview(context, document, overlay.brushPreview, viewport, style, screen);
     if (partial) restore(context);
     return;
   }
@@ -2245,6 +2325,7 @@ function drawOverlay(
   drawCenterMark(context, document, viewport, style, bounds);
   restore(context);
   if (patternClip) restore(context);
+  drawBrushPreview(context, document, overlay.brushPreview, viewport, style, screen);
   if (partial) restore(context);
 }
 

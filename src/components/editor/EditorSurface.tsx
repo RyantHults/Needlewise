@@ -837,8 +837,8 @@ export function EditorSurface({
         onRenameTitle={onRenameTitle}
         view="edit"
         onNavigate={onNavigate}
-        undo={{ label: "Undo", onClick: () => command("z", true) }}
-        redo={{ label: "Redo", onClick: () => command("y", true) }}
+        undo={{ label: "Undo", disabled: !ui?.history.canUndo, onClick: () => command("z", true) }}
+        redo={{ label: "Redo", disabled: !ui?.history.canRedo, onClick: () => command("y", true) }}
         onExport={openExport}
         onSettings={openSettings}
         info={<p className="editor-dimensions">{dimensionSummary}</p>}

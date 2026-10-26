@@ -851,6 +851,14 @@ export class ProjectWorkspace {
     this.active?.clearMarkHistory();
   }
 
+  get canUndo(): boolean {
+    return (this.active?.historyUndoDepth ?? 0) > 0;
+  }
+
+  get canRedo(): boolean {
+    return (this.active?.historyRedoDepth ?? 0) > 0;
+  }
+
   get canUndoMark(): boolean {
     return this.active?.canUndoMark ?? false;
   }

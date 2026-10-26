@@ -29,7 +29,7 @@ const f = vi.hoisted(() => ({
   c: { start: vi.fn(), setMetrics: vi.fn(), setDocument: vi.fn(), dispose: vi.fn(), setBrush: vi.fn(), setTool: vi.fn(), toggleFocusColor: vi.fn(), clearSelection: vi.fn(), setBackstitchMode: vi.fn(), selectPalette: vi.fn(), selectCreatedPalette: vi.fn(), setChartMode: vi.fn(), setThreadView: vi.fn(), setToolBrushSize: vi.fn(), setTouchMovementOnly: vi.fn(), copySelection: vi.fn(), pasteSelection: vi.fn(), moveSelection: vi.fn(), deleteSelection: vi.fn(), handleFocus: vi.fn(), handleKeyDown: vi.fn(() => false), getTraceImage: vi.fn(() => undefined), setTraceImage: vi.fn(), setTraceImageSettings: vi.fn(), clearTraceImage: vi.fn() },
   adapter: vi.fn(() => ({ dispose: vi.fn() })),
   r: { dispose: vi.fn() }, resize: undefined as (() => void) | undefined,
-  uiState: { mode: 'color', gridVisible: true, overlay: {}, tool: { tool: 'paint' }, paletteId: 1, pickPulse: null, canPaste: false, toolBrushSizes: { full: 1, half: 1, 'three-quarter': 1, eraser: 1 } }, createdUiState: null as unknown,
+  uiState: { mode: 'color', gridVisible: true, overlay: {}, tool: { tool: 'paint' }, paletteId: 1, pickPulse: null, canPaste: false, history: { canUndo: true, canRedo: true }, toolBrushSizes: { full: 1, half: 1, 'three-quarter': 1, eraser: 1 } }, createdUiState: null as unknown,
   uiListener: null as ((state: unknown) => void) | null,
   capturedCallback: null as ((bounds: { x: number; y: number; width: number; height: number }) => void) | null
 }));
@@ -96,10 +96,17 @@ const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/
 const toolOptions = () => document.querySelector<HTMLElement>('.canvas-actions section.tool-options')!;
 /** Pushes a new active tool through the mocked UI store, as the controller would. */
 const switchTool = (tool: unknown) => act(() => { f.uiState.tool = tool as never; f.uiListener?.({ ...f.uiState }); });
-beforeEach(() => { vi.clearAllMocks(); (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockReset(); (ws as { getStateSnapshot: ReturnType<typeof vi.fn> }).getStateSnapshot.mockReset(); (ws as { catalogFor: ReturnType<typeof vi.fn> }).catalogFor.mockReturnValue(COMPACT_DMC_DEFINITION); (ws as { availableCatalogs: ReturnType<typeof vi.fn> }).availableCatalogs.mockReturnValue([COMPACT_DMC_DEFINITION]); localStorage.clear(); f.createdUiState = null; f.uiListener = null; f.uiState.canPaste = false; (f.uiState as { pickPulse: unknown }).pickPulse = null; f.uiState.overlay = {}; f.uiState.tool = { tool: 'paint' }; f.uiState.gridVisible = true; f.uiState.mode = 'color'; (f.uiState as { threadView?: boolean }).threadView = false; (ws as { sourceImage: unknown }).sourceImage = undefined; vi.stubGlobal('ResizeObserver', vi.fn(function (cb: () => void) { f.resize = cb; return { observe: vi.fn(), disconnect: vi.fn() }; })); });
+beforeEach(() => { vi.clearAllMocks(); (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockReset(); (ws as { getStateSnapshot: ReturnType<typeof vi.fn> }).getStateSnapshot.mockReset(); (ws as { catalogFor: ReturnType<typeof vi.fn> }).catalogFor.mockReturnValue(COMPACT_DMC_DEFINITION); (ws as { availableCatalogs: ReturnType<typeof vi.fn> }).availableCatalogs.mockReturnValue([COMPACT_DMC_DEFINITION]); localStorage.clear(); f.createdUiState = null; f.uiListener = null; f.uiState.canPaste = false; f.uiState.history = { canUndo: true, canRedo: true }; (f.uiState as { pickPulse: unknown }).pickPulse = null; f.uiState.overlay = {}; f.uiState.tool = { tool: 'paint' }; f.uiState.gridVisible = true; f.uiState.mode = 'color'; (f.uiState as { threadView?: boolean }).threadView = false; (ws as { sourceImage: unknown }).sourceImage = undefined; vi.stubGlobal('ResizeObserver', vi.fn(function (cb: () => void) { f.resize = cb; return { observe: vi.fn(), disconnect: vi.fn() }; })); });
 afterEach(() => { vi.useRealTimers(); localStorage.clear(); });
 
 describe('EditorSurface', () => {
+  it('disables Undo and Redo when there is nothing to step', () => {
+    f.uiState.history = { canUndo: false, canRedo: true };
+    render(<EditorSurface workspace={ws} document={doc} />);
+    expect(screen.getByRole('button', { name: 'Undo' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Redo' })).toBeEnabled();
+  });
+
   it('navigates to Track from the header switch', () => {
     const onNavigate = vi.fn();
     render(<EditorSurface workspace={ws} document={doc} onNavigate={onNavigate} />);

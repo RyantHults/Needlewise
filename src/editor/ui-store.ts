@@ -60,6 +60,7 @@ export const DEFAULT_EDITOR_UI_STATE: EditorUiState = {
   pickPulse: null,
   clipboardPulse: null,
   keyboardCursor: null,
+  history: { canUndo: false, canRedo: false },
   selectedCell: null,
   status: null,
   canPaste: false,
@@ -84,6 +85,7 @@ function sameState(left: EditorUiState, right: EditorUiState): boolean {
     && left.pickPulse === right.pickPulse
     && left.clipboardPulse === right.clipboardPulse
     && left.keyboardCursor === right.keyboardCursor
+    && left.history === right.history
     && left.selectedCell === right.selectedCell
     && left.status === right.status
     && left.canPaste === right.canPaste
@@ -206,6 +208,12 @@ export function createUiStore(initial: Partial<EditorUiState> = {}): EditorUiSto
 
     setKeyboardCursor(cursor: ModelPoint | null): void {
       store.setState({ keyboardCursor: cursor });
+    },
+
+    setHistory(history: { readonly canUndo: boolean; readonly canRedo: boolean }): void {
+      const current = store.getState().history;
+      if (current.canUndo === history.canUndo && current.canRedo === history.canRedo) return;
+      store.setState({ history: { canUndo: history.canUndo, canRedo: history.canRedo } });
     },
 
     setSelectedCell(selectedCell: SelectedCellSemantics | null): void {

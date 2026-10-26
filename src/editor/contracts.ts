@@ -225,6 +225,8 @@ export interface OverlayState {
   readonly lassoPath?: LassoPathOverlay | readonly ModelPoint[] | null;
   readonly cursor?: CursorOverlay | ModelPoint | null;
   readonly backstitchPreview?: BackstitchPreviewOverlay | null;
+  /** The hover footprint of the active tool, outlined by the renderer. */
+  readonly brushPreview?: BrushPreviewOverlay | null;
   readonly fillPending?: boolean;
   /** Exact sparse cell states that the pending gesture would produce. */
   readonly pendingCellStates?: readonly PendingCellState[];
@@ -263,6 +265,10 @@ export type CanvasEditPreview =
   | ({ readonly kind: 'add' | 'remove' } & CanvasCellSet)
   /** Basic-mode edge drag: the box the canvas would have on release. */
   | { readonly kind: 'resize'; readonly box: CellRect };
+
+export interface BrushPreviewOverlay {
+  readonly cells: readonly ModelPoint[];
+}
 
 export interface BackstitchPreviewOverlay {
   readonly start: FixedPoint;
@@ -567,6 +573,8 @@ export interface EditorUiState {
   /** Latest Ctrl+C or Ctrl+V that registered, so the matching toolbar button can flash. Transient UI state. */
   readonly clipboardPulse: { readonly action: 'copy' | 'paste'; readonly seq: number } | null;
   readonly keyboardCursor: ModelPoint | null;
+  /** Whether the editor history has a step to undo or redo; mirrors the active project's history. */
+  readonly history: { readonly canUndo: boolean; readonly canRedo: boolean };
   readonly selectedCell: SelectedCellSemantics | null;
   readonly status: string | null;
   /** True when the controller has a cloned in-app fragment available to paste. */
@@ -846,6 +854,7 @@ export interface EditorUiStore {
   pulsePick(paletteId: number): void;
   pulseClipboard(action: 'copy' | 'paste'): void;
   setKeyboardCursor(cursor: ModelPoint | null): void;
+  setHistory(history: { readonly canUndo: boolean; readonly canRedo: boolean }): void;
   setSelectedCell(selectedCell: SelectedCellSemantics | null): void;
   setStatus(status: string | null): void;
   setCanPaste(canPaste: boolean): void;

@@ -30,3 +30,15 @@ export function brushDisk(center: ModelPoint, size: number, bounds: CellRect, vi
     }
   }
 }
+
+/**
+ * The cells of the `brushDisk` stamp that `accept` passes, or all of them
+ * without it. A press stamps this footprint and the hover outlines it.
+ */
+export function brushFootprint(center: ModelPoint, size: number, bounds: CellRect, accept?: (x: number, y: number) => boolean): ModelPoint[] {
+  const cells: ModelPoint[] = [];
+  brushDisk(center, size, bounds, (x, y) => {
+    if (!accept || accept(x, y)) cells.push({ x, y });
+  });
+  return cells;
+}

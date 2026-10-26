@@ -135,6 +135,8 @@ export interface WorkspaceEditorBoundary {
   executeBatch(commands: readonly DomainCommand[]): CommandResult;
   undo(): CommandResult;
   redo(): CommandResult;
+  readonly canUndo: boolean;
+  readonly canRedo: boolean;
   /** The Track page's mark history, kept apart from document history. */
   markProgress(command: ProgressCommand): CommandResult;
   undoMark(): CommandResult;
@@ -156,6 +158,8 @@ export interface WorkspaceEditorGateway {
   executeBatch(commands: readonly DomainCommand[], expected?: EditorRevisionToken): CommandResult;
   undo(expected?: EditorRevisionToken): CommandResult;
   redo(expected?: EditorRevisionToken): CommandResult;
+  canUndo(): boolean;
+  canRedo(): boolean;
   /** Where a paste of this layer type would go; null `layerId` means nowhere. */
   resolvePaste(type: LayerType): PasteDestination;
   /** Paste as one history entry, creating the destination layer when needed. */
@@ -305,6 +309,14 @@ class WorkspaceEditorGatewayImpl implements WorkspaceEditorGateway {
     const result = this.boundary.redo();
     this.refresh();
     return result;
+  }
+
+  canUndo(): boolean {
+    return this.boundary.canUndo;
+  }
+
+  canRedo(): boolean {
+    return this.boundary.canRedo;
   }
 
   resolvePaste(type: LayerType): PasteDestination {

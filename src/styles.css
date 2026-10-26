@@ -468,6 +468,11 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:var(--
 .canvas-actions .reference-actions { margin-right:auto; }
 .canvas-actions .tool-options { margin-inline:auto; }
 .canvas-actions .view-actions { margin-left:auto; }
+@media (min-width:701px) {
+  .rail-right .canvas-actions { flex-direction:row-reverse; }
+  .rail-right .canvas-actions .reference-actions { margin-right:0; margin-left:auto; }
+  .rail-right .canvas-actions .view-actions { margin-left:0; margin-right:auto; }
+}
 .canvas-actions .tool-options { gap:.5rem; }
 .canvas-actions .tool-options [role="group"] { display:flex; align-items:center; gap:.25rem; }
 .canvas-actions .tool-option-button { display:grid; place-items:center; flex:0 0 auto; width:2.5rem; height:2.4rem; min-height:2.4rem; padding:0; }
