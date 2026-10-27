@@ -3,11 +3,12 @@ import type { ProjectWorkspace } from "../../application/workspace";
 import type { DisplayUnits } from "../../domain";
 import { nextRovingIndex } from "../controls/roving";
 import { SegmentedControl } from "../controls/SegmentedControl";
-import { readThemePreference, setThemePreference, THEME_OPTIONS, type ThemeId } from "../app-theme";
+import { readThemePreference, setThemePreference } from "../app-theme";
 import { InfoTip } from "../InfoTip";
 import { Modal } from "../Modal";
 import { useProjectUnits } from "../project-units";
 import type { EditorPreferences } from "./editor-preferences";
+import { ThemePicker } from "./ThemePicker";
 
 type SettingsTab = "project" | "editor";
 const TABS = [["project", "Project"], ["editor", "Editor"]] as const;
@@ -21,8 +22,6 @@ export interface PatternSettingsDialogProps {
   editorOptions: "all" | "placement";
   onClose: () => void;
 }
-
-const THEME_GROUPS = [...new Set(THEME_OPTIONS.map((option) => option.group))];
 
 export function PatternSettingsDialog({
   workspace,
@@ -114,24 +113,10 @@ export function PatternSettingsDialog({
           <section className="settings-section" aria-labelledby="editor-settings-heading">
             <h3 id="editor-settings-heading">Editor</h3>
             <SegmentedControl aria-label="Control placement" options={PLACEMENT_OPTIONS} value={railSide} onChange={(side) => onPreferencesChange((current) => ({ ...current, railSide: side }))} />
-            <label className="theme-field" htmlFor="app-theme-select">
-              Theme
-              <select
-                id="app-theme-select"
-                value={theme}
-                onChange={(e) => {
-                  const next = e.target.value as ThemeId;
-                  setTheme(next);
-                  setThemePreference(next);
-                }}
-              >
-                {THEME_GROUPS.map((group) => (
-                  <optgroup key={group} label={group}>
-                    {THEME_OPTIONS.filter((option) => option.group === group).map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
-                  </optgroup>
-                ))}
-              </select>
-            </label>
+            <div className="theme-field">
+              <span id="theme-label">Theme</span>
+              <ThemePicker value={theme} onChange={(id) => { setTheme(id); setThemePreference(id); }} />
+            </div>
             {editorOptions === "all" && (
               <>
                 <label className="check-row palette-display-toggle">

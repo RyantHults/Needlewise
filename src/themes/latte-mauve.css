@@ -1,5 +1,5 @@
 /* Catppuccin Latte with a mauve accent. */
-:root[data-theme="latte-mauve"] {
+:root[data-theme="latte-mauve"], [data-theme-preview="latte-mauve"] {
   color-scheme: light;
   --ctp-rosewater: #dc8a78;
   --ctp-flamingo: #dd7878;

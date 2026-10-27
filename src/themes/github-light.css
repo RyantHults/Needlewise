@@ -1,5 +1,5 @@
 /* GitHub Light (https://unpkg.com/@primer/primitives@9.1.2/dist/css/functional/themes/light.css). */
-:root[data-theme="github-light"] {
+:root[data-theme="github-light"], [data-theme-preview="github-light"] {
   color-scheme: light;
   --gh-fgColor-default: #1f2328;
   --gh-fgColor-muted: #59636e;

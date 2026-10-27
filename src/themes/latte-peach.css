@@ -1,5 +1,5 @@
 /* Catppuccin Latte with a peach accent. */
-:root[data-theme="latte-peach"] {
+:root[data-theme="latte-peach"], [data-theme-preview="latte-peach"] {
   color-scheme: light;
   --ctp-rosewater: #dc8a78;
   --ctp-flamingo: #dd7878;

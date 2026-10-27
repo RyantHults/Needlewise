@@ -1,5 +1,5 @@
 /* Alucard with a purple accent. Source: https://draculatheme.com/spec */
-:root[data-theme="alucard"] {
+:root[data-theme="alucard"], [data-theme-preview="alucard"] {
   color-scheme: light;
   --drac-bg: #fffbeb;
   --drac-bg-lighter: #ece9df;

@@ -1,5 +1,5 @@
 /* Everforest Dark, medium contrast: https://github.com/sainnhe/everforest */
-:root[data-theme="everforest-dark"] {
+:root[data-theme="everforest-dark"], [data-theme-preview="everforest-dark"] {
   color-scheme: dark;
   --ef-bg_dim: #232A2E;
   --ef-bg0: #2D353B;

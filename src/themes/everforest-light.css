@@ -1,5 +1,5 @@
 /* Everforest Light, medium contrast: https://github.com/sainnhe/everforest */
-:root[data-theme="everforest-light"] {
+:root[data-theme="everforest-light"], [data-theme-preview="everforest-light"] {
   color-scheme: light;
   --ef-bg_dim: #EFEBD4;
   --ef-bg2: #EFEBD4;

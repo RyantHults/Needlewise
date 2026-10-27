@@ -1,5 +1,5 @@
 /* Catppuccin Mocha with a peach accent. */
-:root[data-theme="mocha-peach"] {
+:root[data-theme="mocha-peach"], [data-theme-preview="mocha-peach"] {
   color-scheme: dark;
   --ctp-rosewater: #f5e0dc;
   --ctp-flamingo: #f2cdcd;

@@ -1,5 +1,5 @@
 /* Kanagawa Lotus: https://github.com/rebelot/kanagawa.nvim */
-:root[data-theme="kanagawa-lotus"] {
+:root[data-theme="kanagawa-lotus"], [data-theme-preview="kanagawa-lotus"] {
   color-scheme: light;
   --kg-lotusInk1: #545464;
   --kg-lotusInk2: #43436c;

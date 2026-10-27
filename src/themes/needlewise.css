@@ -1,5 +1,5 @@
 /* Default theme: the tokens every other theme redefines. */
-:root {
+:root, [data-theme-preview="needlewise"] {
   /* Surfaces */
   --color-page: #f5f1ea;
   --color-surface: #fffdf9;

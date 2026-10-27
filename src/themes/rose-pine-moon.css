@@ -1,5 +1,5 @@
 /* Rosé Pine Moon: https://github.com/rose-pine/palette */
-:root[data-theme="rose-pine-moon"] {
+:root[data-theme="rose-pine-moon"], [data-theme-preview="rose-pine-moon"] {
   color-scheme: dark;
   --rp-base: #232136;
   --rp-surface: #2a273f;

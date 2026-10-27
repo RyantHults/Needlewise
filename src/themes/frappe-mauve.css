@@ -1,5 +1,5 @@
 /* Catppuccin Frappe with a mauve accent. */
-:root[data-theme="frappe-mauve"] {
+:root[data-theme="frappe-mauve"], [data-theme-preview="frappe-mauve"] {
   color-scheme: dark;
   --ctp-rosewater: #f2d5cf;
   --ctp-flamingo: #eebebe;

@@ -1,5 +1,5 @@
 /* One Dark with a blue accent. Source: https://github.com/atom/atom/tree/master/packages/one-dark-syntax (surface levels derived from its hue 220 and saturation 13%) */
-:root[data-theme="one-dark"] {
+:root[data-theme="one-dark"], [data-theme-preview="one-dark"] {
   color-scheme: dark;
   --one-mono-1: #abb2bf;
   --one-mono-2: #828997;

@@ -1,5 +1,5 @@
 /* Gruvbox Light, medium contrast: https://github.com/morhetz/gruvbox */
-:root[data-theme="gruvbox-light"] {
+:root[data-theme="gruvbox-light"], [data-theme-preview="gruvbox-light"] {
   color-scheme: light;
   --gb-dark0_hard: #1d2021;
   --gb-dark0: #282828;

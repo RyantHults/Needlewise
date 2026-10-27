@@ -1,5 +1,5 @@
 /* One Light with a blue accent. Source: https://github.com/atom/atom/tree/master/packages/one-light-syntax (surface levels derived from its hue 230 and saturation 1%) */
-:root[data-theme="one-light"] {
+:root[data-theme="one-light"], [data-theme-preview="one-light"] {
   color-scheme: light;
   --one-mono-1: #383a42;
   --one-mono-2: #696c77;

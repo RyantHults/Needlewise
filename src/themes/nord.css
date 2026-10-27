@@ -1,5 +1,5 @@
 /* Nord. Source: https://github.com/nordtheme/nord */
-:root[data-theme="nord"] {
+:root[data-theme="nord"], [data-theme-preview="nord"] {
   color-scheme: dark;
   --nord-nord0: #2e3440;
   --nord-nord1: #3b4252;

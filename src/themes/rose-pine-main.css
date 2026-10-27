@@ -1,5 +1,5 @@
 /* Rosé Pine Main: https://github.com/rose-pine/palette */
-:root[data-theme="rose-pine-main"] {
+:root[data-theme="rose-pine-main"], [data-theme-preview="rose-pine-main"] {
   color-scheme: dark;
   --rp-base: #191724;
   --rp-surface: #1f1d2e;

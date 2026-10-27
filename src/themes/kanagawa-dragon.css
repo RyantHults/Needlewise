@@ -1,5 +1,5 @@
 /* Kanagawa Dragon: https://github.com/rebelot/kanagawa.nvim */
-:root[data-theme="kanagawa-dragon"] {
+:root[data-theme="kanagawa-dragon"], [data-theme-preview="kanagawa-dragon"] {
   color-scheme: dark;
   --kg-sumiInk6: #54546D;
   --kg-waveBlue1: #223249;

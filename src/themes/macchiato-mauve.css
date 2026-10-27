@@ -1,5 +1,5 @@
 /* Catppuccin Macchiato with a mauve accent. */
-:root[data-theme="macchiato-mauve"] {
+:root[data-theme="macchiato-mauve"], [data-theme-preview="macchiato-mauve"] {
   color-scheme: dark;
   --ctp-rosewater: #f4dbd6;
   --ctp-flamingo: #f0c6c6;

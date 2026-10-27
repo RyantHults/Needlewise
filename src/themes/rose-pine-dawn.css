@@ -1,5 +1,5 @@
 /* Rosé Pine Dawn: https://github.com/rose-pine/palette */
-:root[data-theme="rose-pine-dawn"] {
+:root[data-theme="rose-pine-dawn"], [data-theme-preview="rose-pine-dawn"] {
   color-scheme: light;
   --rp-base: #faf4ed;
   --rp-surface: #fffaf3;

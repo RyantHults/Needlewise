@@ -1,5 +1,5 @@
 /* Solarized Light with a blue accent. Source: https://github.com/altercation/solarized */
-:root[data-theme="solarized-light"] {
+:root[data-theme="solarized-light"], [data-theme-preview="solarized-light"] {
   color-scheme: light;
   --sol-base03: #002b36;
   --sol-base02: #073642;

@@ -1,5 +1,5 @@
 /* Tokyo Night Storm (https://github.com/folke/tokyonight.nvim/blob/main/lua/tokyonight/colors/storm.lua). */
-:root[data-theme="tokyo-night-storm"] {
+:root[data-theme="tokyo-night-storm"], [data-theme-preview="tokyo-night-storm"] {
   color-scheme: dark;
   --tn-bg: #24283b;
   --tn-bg_dark: #1f2335;

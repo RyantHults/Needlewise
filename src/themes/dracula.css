@@ -1,5 +1,5 @@
 /* Dracula with a purple accent. Source: https://draculatheme.com/spec */
-:root[data-theme="dracula"] {
+:root[data-theme="dracula"], [data-theme-preview="dracula"] {
   color-scheme: dark;
   --drac-bg: #282a36;
   --drac-bg-dark: #21222c;

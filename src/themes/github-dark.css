@@ -1,5 +1,5 @@
 /* GitHub Dark (https://unpkg.com/@primer/primitives@9.1.2/dist/css/functional/themes/dark.css). */
-:root[data-theme="github-dark"] {
+:root[data-theme="github-dark"], [data-theme-preview="github-dark"] {
   color-scheme: dark;
   --gh-fgColor-default: #f0f6fc;
   --gh-fgColor-muted: #9198a1;

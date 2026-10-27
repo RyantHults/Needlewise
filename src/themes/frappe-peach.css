@@ -1,5 +1,5 @@
 /* Catppuccin Frappe with a peach accent. */
-:root[data-theme="frappe-peach"] {
+:root[data-theme="frappe-peach"], [data-theme-preview="frappe-peach"] {
   color-scheme: dark;
   --ctp-rosewater: #f2d5cf;
   --ctp-flamingo: #eebebe;

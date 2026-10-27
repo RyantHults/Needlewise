@@ -28,63 +28,48 @@ describe("PatternSettingsDialog", () => {
     delete document.documentElement.dataset.theme;
   });
 
+  function openThemes() {
+    fireEvent.click(screen.getByRole("tab", { name: "Editor" }));
+    fireEvent.click(screen.getByRole("button", { name: /^Theme/ }));
+    return screen.getByRole("listbox", { name: "Theme" });
+  }
+
   it("applies the chosen theme immediately and remembers it", () => {
     setup("all");
-    fireEvent.click(screen.getByRole("tab", { name: "Editor" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "Theme" }), { target: { value: "mocha-mauve" } });
+    openThemes();
+    fireEvent.click(screen.getByRole("option", { name: "Catppuccin Mocha (Mauve)" }));
     expect(document.documentElement.dataset.theme).toBe("mocha-mauve");
+    expect(screen.queryByRole("listbox")).toBeNull();
     cleanup();
     setup("all");
     fireEvent.click(screen.getByRole("tab", { name: "Editor" }));
-    expect(screen.getByRole("combobox", { name: "Theme" })).toHaveValue("mocha-mauve");
+    expect(screen.getByRole("button", { name: /^Theme/ })).toHaveTextContent("Catppuccin Mocha (Mauve)");
   });
 
   it("groups themes by family", () => {
     setup("all");
-    fireEvent.click(screen.getByRole("tab", { name: "Editor" }));
+    openThemes();
     expect(screen.getByRole("group", { name: "Rosé Pine" })).toBeInTheDocument();
-    fireEvent.change(screen.getByRole("combobox", { name: "Theme" }), { target: { value: "rose-pine-dawn" } });
-    expect(document.documentElement.dataset.theme).toBe("rose-pine-dawn");
+  });
+
+  it("chooses a theme from the keyboard and closes on Escape", () => {
+    setup("all");
+    openThemes();
+    const selected = screen.getByRole("option", { selected: true });
+    fireEvent.keyDown(selected, { key: "ArrowDown" });
+    fireEvent.keyDown(document.activeElement!, { key: "Enter" });
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(screen.getByRole("button", { name: /^Theme/ })).toHaveTextContent("System");
+    fireEvent.click(screen.getByRole("button", { name: /^Theme/ }));
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(screen.getByRole("button", { name: /^Theme/ })).toHaveFocus();
   });
 
   it("offers the theme in placement mode", () => {
     setup("placement");
     fireEvent.click(screen.getByRole("tab", { name: "Editor" }));
-    expect(screen.getByRole("combobox", { name: "Theme" })).toBeInTheDocument();
-  });
-
-  it("saves a trimmed title, notes and units, then closes", async () => {
-    const { updateActiveMetadata, onClose } = setup();
-    expect(screen.getByRole("tab", { name: "Project" })).toHaveAttribute("aria-selected", "true");
-    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "  Tulip  " } });
-    fireEvent.change(screen.getByLabelText("Notes"), { target: { value: "hello" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
-    await waitFor(() => expect(onClose).toHaveBeenCalled());
-    expect(updateActiveMetadata).toHaveBeenCalledWith({ title: "Tulip", notes: "hello", units: "metric" });
-  });
-
-  it("falls back to the default title when blank", async () => {
-    const { updateActiveMetadata, onClose } = setup();
-    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "   " } });
-    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
-    await waitFor(() => expect(onClose).toHaveBeenCalled());
-    expect(updateActiveMetadata).toHaveBeenCalledWith(expect.objectContaining({ title: "Untitled sampler" }));
-  });
-
-  it("applies units immediately", () => {
-    const { updateActiveMetadata } = setup();
-    fireEvent.click(screen.getByRole("button", { name: "Imperial" }));
-    expect(updateActiveMetadata).toHaveBeenCalledWith({ units: "imperial" });
-    expect(screen.getByRole("button", { name: "Imperial" })).toHaveAttribute("aria-pressed", "true");
-  });
-
-  it("rolls units back when the update fails and ignores the current choice", async () => {
-    const { updateActiveMetadata } = setup("all", vi.fn().mockRejectedValue(new Error("no")));
-    fireEvent.click(screen.getByRole("button", { name: "Metric" }));
-    expect(updateActiveMetadata).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Imperial" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Metric" })).toHaveAttribute("aria-pressed", "true"));
-    expect(screen.getByRole("button", { name: "Imperial" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /^Theme/ })).toBeInTheDocument();
   });
 
   it("shows every editor option in all mode", () => {

@@ -1,5 +1,5 @@
 /* Kanagawa Wave: https://github.com/rebelot/kanagawa.nvim */
-:root[data-theme="kanagawa-wave"] {
+:root[data-theme="kanagawa-wave"], [data-theme-preview="kanagawa-wave"] {
   color-scheme: dark;
   --kg-sumiInk0: #16161D;
   --kg-sumiInk1: #181820;

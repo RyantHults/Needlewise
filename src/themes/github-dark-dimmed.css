@@ -1,5 +1,5 @@
 /* GitHub Dark Dimmed (https://unpkg.com/@primer/primitives@9.1.2/dist/css/functional/themes/dark-dimmed.css). */
-:root[data-theme="github-dark-dimmed"] {
+:root[data-theme="github-dark-dimmed"], [data-theme-preview="github-dark-dimmed"] {
   color-scheme: dark;
   --gh-fgColor-default: #d1d7e0;
   --gh-fgColor-muted: #9198a1;

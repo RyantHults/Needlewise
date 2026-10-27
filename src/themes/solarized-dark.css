@@ -1,5 +1,5 @@
 /* Solarized Dark with a blue accent. Source: https://github.com/altercation/solarized */
-:root[data-theme="solarized-dark"] {
+:root[data-theme="solarized-dark"], [data-theme-preview="solarized-dark"] {
   color-scheme: dark;
   --sol-base03: #002b36;
   --sol-base02: #073642;
