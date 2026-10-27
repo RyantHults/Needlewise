@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { PatternSettingsDialog } from "./PatternSettingsDialog";
 import { defaultEditorPreferences } from "./editor-preferences";
 
@@ -23,6 +23,36 @@ function setup(editorOptions: "all" | "placement" = "all", updateActiveMetadata 
 }
 
 describe("PatternSettingsDialog", () => {
+  afterEach(() => {
+    localStorage.clear();
+    delete document.documentElement.dataset.theme;
+  });
+
+  it("applies the chosen theme immediately and remembers it", () => {
+    setup("all");
+    fireEvent.click(screen.getByRole("tab", { name: "Editor" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Theme" }), { target: { value: "mocha-mauve" } });
+    expect(document.documentElement.dataset.theme).toBe("mocha-mauve");
+    cleanup();
+    setup("all");
+    fireEvent.click(screen.getByRole("tab", { name: "Editor" }));
+    expect(screen.getByRole("combobox", { name: "Theme" })).toHaveValue("mocha-mauve");
+  });
+
+  it("groups themes by family", () => {
+    setup("all");
+    fireEvent.click(screen.getByRole("tab", { name: "Editor" }));
+    expect(screen.getByRole("group", { name: "Rosé Pine" })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: "Theme" }), { target: { value: "rose-pine-dawn" } });
+    expect(document.documentElement.dataset.theme).toBe("rose-pine-dawn");
+  });
+
+  it("offers the theme in placement mode", () => {
+    setup("placement");
+    fireEvent.click(screen.getByRole("tab", { name: "Editor" }));
+    expect(screen.getByRole("combobox", { name: "Theme" })).toBeInTheDocument();
+  });
+
   it("saves a trimmed title, notes and units, then closes", async () => {
     const { updateActiveMetadata, onClose } = setup();
     expect(screen.getByRole("tab", { name: "Project" })).toHaveAttribute("aria-selected", "true");

@@ -1,0 +1,100 @@
+/* Solarized Dark with a blue accent. Source: https://github.com/altercation/solarized */
+:root[data-theme="solarized-dark"] {
+  color-scheme: dark;
+  --sol-base03: #002b36;
+  --sol-base02: #073642;
+  --sol-base01: #586e75;
+  --sol-base00: #657b83;
+  --sol-base0: #839496;
+  --sol-base1: #93a1a1;
+  --sol-base2: #eee8d5;
+  --sol-base3: #fdf6e3;
+  --sol-yellow: #b58900;
+  --sol-orange: #cb4b16;
+  --sol-red: #dc322f;
+  --sol-magenta: #d33682;
+  --sol-violet: #6c71c4;
+  --sol-blue: #268bd2;
+  --sol-cyan: #2aa198;
+  --sol-green: #859900;
+
+  --sol-accent: var(--sol-blue);
+
+  /* Surfaces */
+  --color-page: var(--sol-base03);
+  --color-surface: var(--sol-base02);
+  --color-surface-sunken: var(--sol-base03);
+  --color-surface-muted: var(--sol-base02);
+  --color-surface-inverse: var(--sol-base2);
+  --color-fabric: var(--sol-base02);
+  --color-folder: color-mix(in srgb, var(--sol-base02) 60%, var(--sol-base03));
+  --color-folder-back: var(--sol-base02);
+  /* Ink */
+  --color-ink: var(--sol-base2);
+  --color-ink-soft: var(--sol-base2);
+  --color-ink-body: var(--sol-base1);
+  --color-ink-control: var(--sol-base1);
+  --color-ink-secondary: var(--sol-base0);
+  --color-ink-muted: var(--sol-base0);
+  --color-ink-faint: var(--sol-base00);
+  --color-ink-disabled: var(--sol-base01);
+  --color-on-accent: var(--sol-base3);
+  --color-on-inverse: var(--sol-base03);
+  --color-on-inverse-accent: var(--sol-accent);
+  /* Lines */
+  --color-line: var(--sol-base01);
+  --color-line-soft: var(--sol-base02);
+  --color-line-strong: var(--sol-base01);
+  --color-line-firm: var(--sol-base00);
+  --color-swatch-edge: var(--sol-base01);
+  /* Accent */
+  --color-accent: color-mix(in srgb, var(--sol-accent) 75%, var(--sol-base03));
+  --color-accent-strong: color-mix(in srgb, var(--sol-accent) 85%, var(--sol-base2));
+  --color-accent-ink: color-mix(in srgb, var(--sol-accent) 70%, var(--sol-base2));
+  --color-accent-soft: color-mix(in srgb, var(--sol-accent) 18%, var(--sol-base03));
+  --color-accent-muted: color-mix(in srgb, var(--sol-accent) 26%, var(--sol-base03));
+  --color-accent-halo: color-mix(in srgb, var(--sol-accent) 34%, var(--sol-base03));
+  --color-accent-line: color-mix(in srgb, var(--sol-accent) 55%, var(--sol-base03));
+  --color-accent-wash: color-mix(in srgb, var(--sol-accent) 8%, var(--sol-base03));
+  --color-accent-wash-hover: color-mix(in srgb, var(--sol-accent) 13%, var(--sol-base03));
+  /* Danger and drop targets */
+  --color-danger: var(--sol-red);
+  --color-danger-ink: color-mix(in srgb, var(--sol-red) 70%, var(--sol-base2));
+  --color-danger-soft: color-mix(in srgb, var(--sol-red) 14%, var(--sol-base03));
+  --color-danger-line: color-mix(in srgb, var(--sol-red) 45%, var(--sol-base03));
+  --color-drop-ready: color-mix(in srgb, var(--sol-accent) 14%, var(--sol-base03));
+  --color-drop-over: color-mix(in srgb, var(--sol-accent) 28%, var(--sol-base03));
+  /* Secondary panels */
+  --color-panel: var(--sol-base02);
+  --color-panel-field: var(--sol-base02);
+  --color-panel-line-soft: color-mix(in srgb, var(--sol-green) 14%, var(--sol-base02));
+  --color-panel-line: color-mix(in srgb, var(--sol-green) 22%, var(--sol-base01));
+  --color-panel-line-strong: color-mix(in srgb, var(--sol-green) 35%, var(--sol-base01));
+  --color-panel-ink-strong: var(--sol-base2);
+  --color-panel-ink-body: var(--sol-base1);
+  --color-panel-ink: var(--sol-base0);
+  --color-panel-ink-soft: var(--sol-base0);
+  /* Status */
+  --color-success: var(--sol-green);
+  --color-success-soft: color-mix(in srgb, var(--sol-green) 18%, var(--sol-base03));
+  --color-status-guessed: color-mix(in srgb, var(--sol-yellow) 16%, var(--sol-base03));
+  --color-status-unmapped: color-mix(in srgb, var(--sol-red) 16%, var(--sol-base03));
+  --color-warning-ink: color-mix(in srgb, var(--sol-yellow) 60%, var(--sol-base2));
+  /* Decoration */
+  --color-decor-sage: var(--sol-green);
+  --color-decor-stitch: var(--sol-base00);
+  /* Shadows and scrims */
+  --color-shadow: var(--sol-base03);
+  --color-shadow-deep: var(--sol-base03);
+  --color-scrim: var(--sol-base03);
+
+  /* Chart chrome; fabric, grid, symbol and highlight roles stay pattern data. */
+  --renderer-off-canvas-color: var(--sol-base02);
+  --renderer-ghost-grid-color: var(--sol-base01);
+  --renderer-ghost-major-grid-color: var(--sol-base00);
+  --renderer-selection-color: var(--sol-blue);
+  --renderer-cursor-color: var(--sol-accent);
+  --renderer-canvas-add-color: var(--sol-green);
+  --renderer-canvas-remove-color: var(--sol-red);
+  --renderer-center-mark-color: var(--sol-red);
+}

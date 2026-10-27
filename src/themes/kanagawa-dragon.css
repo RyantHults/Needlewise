@@ -1,0 +1,112 @@
+/* Kanagawa Dragon: https://github.com/rebelot/kanagawa.nvim */
+:root[data-theme="kanagawa-dragon"] {
+  color-scheme: dark;
+  --kg-sumiInk6: #54546D;
+  --kg-waveBlue1: #223249;
+  --kg-waveBlue2: #2D4F67;
+  --kg-dragonBlue: #658594;
+  --kg-oldWhite: #C8C093;
+  --kg-dragonBlack0: #0d0c0c;
+  --kg-dragonBlack1: #12120f;
+  --kg-dragonBlack2: #1D1C19;
+  --kg-dragonBlack3: #181616;
+  --kg-dragonBlack4: #282727;
+  --kg-dragonBlack5: #393836;
+  --kg-dragonBlack6: #625e5a;
+  --kg-dragonWhite: #c5c9c5;
+  --kg-dragonGreen: #87a987;
+  --kg-dragonGreen2: #8a9a7b;
+  --kg-dragonPink: #a292a3;
+  --kg-dragonOrange: #b6927b;
+  --kg-dragonOrange2: #b98d7b;
+  --kg-dragonGray: #a6a69c;
+  --kg-dragonGray2: #9e9b93;
+  --kg-dragonGray3: #7a8382;
+  --kg-dragonBlue2: #8ba4b0;
+  --kg-dragonViolet: #8992a7;
+  --kg-dragonRed: #c4746e;
+  --kg-dragonAqua: #8ea4a2;
+  --kg-dragonAsh: #737c73;
+  --kg-dragonTeal: #949fb5;
+  --kg-dragonYellow: #c4b28a;
+
+  --kg-accent: var(--kg-dragonBlue2);
+
+  /* Surfaces */
+  --color-page: var(--kg-dragonBlack3);
+  --color-surface: var(--kg-dragonBlack2);
+  --color-surface-sunken: var(--kg-dragonBlack0);
+  --color-surface-muted: var(--kg-dragonBlack4);
+  --color-surface-inverse: var(--kg-dragonWhite);
+  --color-fabric: var(--kg-dragonBlack4);
+  --color-folder: color-mix(in srgb, var(--kg-dragonBlack4) 60%, var(--kg-dragonBlack3));
+  --color-folder-back: var(--kg-dragonBlack4);
+  /* Ink */
+  --color-ink: var(--kg-dragonWhite);
+  --color-ink-soft: var(--kg-dragonWhite);
+  --color-ink-body: color-mix(in srgb, var(--kg-dragonWhite) 50%, var(--kg-dragonGray2));
+  --color-ink-control: color-mix(in srgb, var(--kg-dragonWhite) 50%, var(--kg-dragonGray2));
+  --color-ink-secondary: var(--kg-dragonGray2);
+  --color-ink-muted: var(--kg-dragonGray3);
+  --color-ink-faint: var(--kg-dragonAsh);
+  --color-ink-disabled: var(--kg-dragonBlack6);
+  --color-on-accent: var(--kg-dragonBlack3);
+  --color-on-inverse: var(--kg-dragonBlack3);
+  --color-on-inverse-accent: var(--kg-accent);
+  /* Lines */
+  --color-line: var(--kg-dragonBlack5);
+  --color-line-soft: var(--kg-dragonBlack4);
+  --color-line-strong: var(--kg-dragonBlack5);
+  --color-line-firm: var(--kg-dragonBlack6);
+  --color-swatch-edge: var(--kg-dragonBlack6);
+  /* Accent */
+  --color-accent: var(--kg-accent);
+  --color-accent-strong: color-mix(in srgb, var(--kg-accent) 85%, var(--kg-dragonWhite));
+  --color-accent-ink: color-mix(in srgb, var(--kg-accent) 70%, var(--kg-dragonWhite));
+  --color-accent-soft: color-mix(in srgb, var(--kg-accent) 18%, var(--kg-dragonBlack3));
+  --color-accent-muted: color-mix(in srgb, var(--kg-accent) 26%, var(--kg-dragonBlack3));
+  --color-accent-halo: color-mix(in srgb, var(--kg-accent) 34%, var(--kg-dragonBlack3));
+  --color-accent-line: color-mix(in srgb, var(--kg-accent) 55%, var(--kg-dragonBlack3));
+  --color-accent-wash: color-mix(in srgb, var(--kg-accent) 8%, var(--kg-dragonBlack3));
+  --color-accent-wash-hover: color-mix(in srgb, var(--kg-accent) 13%, var(--kg-dragonBlack3));
+  /* Danger and drop targets */
+  --color-danger: var(--kg-dragonRed);
+  --color-danger-ink: color-mix(in srgb, var(--kg-dragonRed) 70%, var(--kg-dragonWhite));
+  --color-danger-soft: color-mix(in srgb, var(--kg-dragonRed) 14%, var(--kg-dragonBlack3));
+  --color-danger-line: color-mix(in srgb, var(--kg-dragonRed) 45%, var(--kg-dragonBlack3));
+  --color-drop-ready: color-mix(in srgb, var(--kg-accent) 14%, var(--kg-dragonBlack3));
+  --color-drop-over: color-mix(in srgb, var(--kg-accent) 28%, var(--kg-dragonBlack3));
+  /* Secondary panels */
+  --color-panel: var(--kg-dragonBlack4);
+  --color-panel-field: var(--kg-dragonBlack2);
+  --color-panel-line-soft: color-mix(in srgb, var(--kg-dragonGreen) 14%, var(--kg-dragonBlack4));
+  --color-panel-line: color-mix(in srgb, var(--kg-dragonGreen) 22%, var(--kg-dragonBlack5));
+  --color-panel-line-strong: color-mix(in srgb, var(--kg-dragonGreen) 35%, var(--kg-dragonBlack6));
+  --color-panel-ink-strong: var(--kg-dragonWhite);
+  --color-panel-ink-body: color-mix(in srgb, var(--kg-dragonWhite) 50%, var(--kg-dragonGray2));
+  --color-panel-ink: var(--kg-dragonGray2);
+  --color-panel-ink-soft: var(--kg-dragonGray3);
+  /* Status */
+  --color-success: var(--kg-dragonGreen);
+  --color-success-soft: color-mix(in srgb, var(--kg-dragonGreen) 18%, var(--kg-dragonBlack3));
+  --color-status-guessed: color-mix(in srgb, var(--kg-dragonYellow) 16%, var(--kg-dragonBlack3));
+  --color-status-unmapped: color-mix(in srgb, var(--kg-dragonRed) 16%, var(--kg-dragonBlack3));
+  --color-warning-ink: color-mix(in srgb, var(--kg-dragonYellow) 60%, var(--kg-dragonWhite));
+  /* Decoration */
+  --color-decor-sage: var(--kg-dragonGreen);
+  --color-decor-stitch: var(--kg-dragonBlack6);
+  /* Shadows and scrims */
+  --color-shadow: var(--kg-dragonBlack0);
+  --color-shadow-deep: var(--kg-dragonBlack0);
+  --color-scrim: var(--kg-dragonBlack0);
+
+  /* Chart chrome; fabric, grid, symbol and highlight roles stay pattern data. */
+  --renderer-off-canvas-color: var(--kg-dragonBlack2);
+  --renderer-ghost-grid-color: var(--kg-dragonBlack5);
+  --renderer-ghost-major-grid-color: var(--kg-dragonBlack6);
+  --renderer-selection-color: var(--kg-dragonBlue2);
+  --renderer-cursor-color: var(--kg-accent);
+  --renderer-canvas-add-color: var(--kg-dragonGreen);
+  --renderer-canvas-remove-color: var(--kg-dragonRed);
+  --renderer-center-mark-color: var(--kg-dragonRed);
+}

@@ -1,0 +1,105 @@
+/* Tokyo Night Storm (https://github.com/folke/tokyonight.nvim/blob/main/lua/tokyonight/colors/storm.lua). */
+:root[data-theme="tokyo-night-storm"] {
+  color-scheme: dark;
+  --tn-bg: #24283b;
+  --tn-bg_dark: #1f2335;
+  --tn-bg_dark1: #1b1e2d;
+  --tn-bg_highlight: #292e42;
+  --tn-fg: #c0caf5;
+  --tn-fg_dark: #a9b1d6;
+  --tn-fg_gutter: #3b4261;
+  --tn-comment: #565f89;
+  --tn-dark3: #545c7e;
+  --tn-dark5: #737aa2;
+  --tn-terminal_black: #414868;
+  --tn-blue: #7aa2f7;
+  --tn-blue5: #89ddff;
+  --tn-cyan: #7dcfff;
+  --tn-green: #9ece6a;
+  --tn-magenta: #bb9af7;
+  --tn-orange: #ff9e64;
+  --tn-purple: #9d7cd8;
+  --tn-red: #f7768e;
+  --tn-teal: #1abc9c;
+  --tn-yellow: #e0af68;
+
+  --tn-accent: var(--tn-blue);
+
+  /* Surfaces */
+  --color-page: var(--tn-bg);
+  --color-surface: var(--tn-bg_dark);
+  --color-surface-sunken: var(--tn-bg_dark1);
+  --color-surface-muted: var(--tn-bg_highlight);
+  --color-surface-inverse: var(--tn-fg);
+  --color-fabric: var(--tn-bg_highlight);
+  --color-folder: color-mix(in srgb, var(--tn-bg_highlight) 60%, var(--tn-bg));
+  --color-folder-back: var(--tn-bg_highlight);
+  /* Ink */
+  --color-ink: var(--tn-fg);
+  --color-ink-soft: var(--tn-fg);
+  --color-ink-body: var(--tn-fg_dark);
+  --color-ink-control: var(--tn-fg_dark);
+  --color-ink-secondary: var(--tn-fg_dark);
+  --color-ink-muted: var(--tn-dark5);
+  --color-ink-faint: var(--tn-comment);
+  --color-ink-disabled: var(--tn-dark3);
+  --color-on-accent: var(--tn-bg);
+  --color-on-inverse: var(--tn-bg);
+  --color-on-inverse-accent: var(--tn-accent);
+  /* Lines */
+  --color-line: var(--tn-fg_gutter);
+  --color-line-soft: var(--tn-bg_highlight);
+  --color-line-strong: var(--tn-fg_gutter);
+  --color-line-firm: var(--tn-terminal_black);
+  --color-swatch-edge: var(--tn-dark3);
+  /* Accent */
+  --color-accent: var(--tn-accent);
+  --color-accent-strong: color-mix(in srgb, var(--tn-accent) 85%, var(--tn-fg));
+  --color-accent-ink: color-mix(in srgb, var(--tn-accent) 70%, var(--tn-fg));
+  --color-accent-soft: color-mix(in srgb, var(--tn-accent) 18%, var(--tn-bg));
+  --color-accent-muted: color-mix(in srgb, var(--tn-accent) 26%, var(--tn-bg));
+  --color-accent-halo: color-mix(in srgb, var(--tn-accent) 34%, var(--tn-bg));
+  --color-accent-line: color-mix(in srgb, var(--tn-accent) 55%, var(--tn-bg));
+  --color-accent-wash: color-mix(in srgb, var(--tn-accent) 8%, var(--tn-bg));
+  --color-accent-wash-hover: color-mix(in srgb, var(--tn-accent) 13%, var(--tn-bg));
+  /* Danger and drop targets */
+  --color-danger: var(--tn-red);
+  --color-danger-ink: color-mix(in srgb, var(--tn-red) 70%, var(--tn-fg));
+  --color-danger-soft: color-mix(in srgb, var(--tn-red) 14%, var(--tn-bg));
+  --color-danger-line: color-mix(in srgb, var(--tn-red) 45%, var(--tn-bg));
+  --color-drop-ready: color-mix(in srgb, var(--tn-accent) 14%, var(--tn-bg));
+  --color-drop-over: color-mix(in srgb, var(--tn-accent) 28%, var(--tn-bg));
+  /* Secondary panels */
+  --color-panel: var(--tn-bg_highlight);
+  --color-panel-field: var(--tn-bg_dark);
+  --color-panel-line-soft: color-mix(in srgb, var(--tn-green) 14%, var(--tn-bg_highlight));
+  --color-panel-line: color-mix(in srgb, var(--tn-green) 22%, var(--tn-fg_gutter));
+  --color-panel-line-strong: color-mix(in srgb, var(--tn-green) 35%, var(--tn-dark3));
+  --color-panel-ink-strong: var(--tn-fg);
+  --color-panel-ink-body: var(--tn-fg_dark);
+  --color-panel-ink: var(--tn-fg_dark);
+  --color-panel-ink-soft: var(--tn-dark5);
+  /* Status */
+  --color-success: var(--tn-green);
+  --color-success-soft: color-mix(in srgb, var(--tn-green) 18%, var(--tn-bg));
+  --color-status-guessed: color-mix(in srgb, var(--tn-yellow) 16%, var(--tn-bg));
+  --color-status-unmapped: color-mix(in srgb, var(--tn-red) 16%, var(--tn-bg));
+  --color-warning-ink: color-mix(in srgb, var(--tn-yellow) 60%, var(--tn-fg));
+  /* Decoration */
+  --color-decor-sage: var(--tn-green);
+  --color-decor-stitch: var(--tn-terminal_black);
+  /* Shadows and scrims */
+  --color-shadow: var(--tn-bg_dark1);
+  --color-shadow-deep: var(--tn-bg_dark1);
+  --color-scrim: var(--tn-bg_dark1);
+
+  /* Chart chrome; fabric, grid, symbol and highlight roles stay pattern data. */
+  --renderer-off-canvas-color: var(--tn-bg_dark);
+  --renderer-ghost-grid-color: var(--tn-fg_gutter);
+  --renderer-ghost-major-grid-color: var(--tn-terminal_black);
+  --renderer-selection-color: var(--tn-blue);
+  --renderer-cursor-color: var(--tn-accent);
+  --renderer-canvas-add-color: var(--tn-green);
+  --renderer-canvas-remove-color: var(--tn-red);
+  --renderer-center-mark-color: var(--tn-red);
+}

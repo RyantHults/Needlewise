@@ -1,0 +1,124 @@
+/* Kanagawa Lotus: https://github.com/rebelot/kanagawa.nvim */
+:root[data-theme="kanagawa-lotus"] {
+  color-scheme: light;
+  --kg-lotusInk1: #545464;
+  --kg-lotusInk2: #43436c;
+  --kg-lotusGray: #dcd7ba;
+  --kg-lotusGray2: #716e61;
+  --kg-lotusGray3: #8a8980;
+  --kg-lotusWhite0: #d5cea3;
+  --kg-lotusWhite1: #dcd5ac;
+  --kg-lotusWhite2: #e5ddb0;
+  --kg-lotusWhite3: #f2ecbc;
+  --kg-lotusWhite4: #e7dba0;
+  --kg-lotusWhite5: #e4d794;
+  --kg-lotusViolet1: #a09cac;
+  --kg-lotusViolet2: #766b90;
+  --kg-lotusViolet3: #c9cbd1;
+  --kg-lotusViolet4: #624c83;
+  --kg-lotusBlue1: #c7d7e0;
+  --kg-lotusBlue2: #b5cbd2;
+  --kg-lotusBlue3: #9fb5c9;
+  --kg-lotusBlue4: #4d699b;
+  --kg-lotusBlue5: #5d57a3;
+  --kg-lotusGreen: #6f894e;
+  --kg-lotusGreen2: #6e915f;
+  --kg-lotusGreen3: #b7d0ae;
+  --kg-lotusPink: #b35b79;
+  --kg-lotusOrange: #cc6d00;
+  --kg-lotusOrange2: #e98a00;
+  --kg-lotusYellow: #77713f;
+  --kg-lotusYellow2: #836f4a;
+  --kg-lotusYellow3: #de9800;
+  --kg-lotusYellow4: #f9d791;
+  --kg-lotusRed: #c84053;
+  --kg-lotusRed2: #d7474b;
+  --kg-lotusRed3: #e82424;
+  --kg-lotusRed4: #d9a594;
+  --kg-lotusAqua: #597b75;
+  --kg-lotusAqua2: #5e857a;
+  --kg-lotusTeal1: #4e8ca2;
+  --kg-lotusTeal2: #6693bf;
+  --kg-lotusTeal3: #5a7785;
+  --kg-lotusCyan: #d7e3d8;
+
+  --kg-accent: var(--kg-lotusBlue4);
+
+  /* Surfaces */
+  --color-page: var(--kg-lotusWhite3);
+  --color-surface: var(--kg-lotusWhite2);
+  --color-surface-sunken: var(--kg-lotusWhite0);
+  --color-surface-muted: var(--kg-lotusWhite4);
+  --color-surface-inverse: var(--kg-lotusInk1);
+  --color-fabric: var(--kg-lotusWhite4);
+  --color-folder: color-mix(in srgb, var(--kg-lotusWhite4) 60%, var(--kg-lotusWhite3));
+  --color-folder-back: var(--kg-lotusWhite4);
+  /* Ink */
+  --color-ink: var(--kg-lotusInk1);
+  --color-ink-soft: var(--kg-lotusInk1);
+  --color-ink-body: color-mix(in srgb, var(--kg-lotusInk1) 50%, var(--kg-lotusGray2));
+  --color-ink-control: color-mix(in srgb, var(--kg-lotusInk1) 50%, var(--kg-lotusGray2));
+  --color-ink-secondary: var(--kg-lotusGray2);
+  --color-ink-muted: var(--kg-lotusGray2);
+  --color-ink-faint: var(--kg-lotusGray3);
+  --color-ink-disabled: var(--kg-lotusViolet1);
+  --color-on-accent: var(--kg-lotusWhite3);
+  --color-on-inverse: var(--kg-lotusWhite3);
+  --color-on-inverse-accent: var(--kg-accent);
+  /* Lines */
+  --color-line: var(--kg-lotusWhite5);
+  --color-line-soft: var(--kg-lotusWhite4);
+  --color-line-strong: var(--kg-lotusWhite5);
+  --color-line-firm: var(--kg-lotusGray3);
+  --color-swatch-edge: var(--kg-lotusViolet1);
+  /* Accent */
+  --color-accent: var(--kg-accent);
+  --color-accent-strong: color-mix(in srgb, var(--kg-accent) 85%, var(--kg-lotusInk1));
+  --color-accent-ink: color-mix(in srgb, var(--kg-accent) 70%, var(--kg-lotusInk1));
+  --color-accent-soft: color-mix(in srgb, var(--kg-accent) 18%, var(--kg-lotusWhite3));
+  --color-accent-muted: color-mix(in srgb, var(--kg-accent) 26%, var(--kg-lotusWhite3));
+  --color-accent-halo: color-mix(in srgb, var(--kg-accent) 34%, var(--kg-lotusWhite3));
+  --color-accent-line: color-mix(in srgb, var(--kg-accent) 55%, var(--kg-lotusWhite3));
+  --color-accent-wash: color-mix(in srgb, var(--kg-accent) 8%, var(--kg-lotusWhite3));
+  --color-accent-wash-hover: color-mix(in srgb, var(--kg-accent) 13%, var(--kg-lotusWhite3));
+  /* Danger and drop targets */
+  --color-danger: var(--kg-lotusRed);
+  --color-danger-ink: color-mix(in srgb, var(--kg-lotusRed) 70%, var(--kg-lotusInk1));
+  --color-danger-soft: color-mix(in srgb, var(--kg-lotusRed) 14%, var(--kg-lotusWhite3));
+  --color-danger-line: color-mix(in srgb, var(--kg-lotusRed) 45%, var(--kg-lotusWhite3));
+  --color-drop-ready: color-mix(in srgb, var(--kg-accent) 14%, var(--kg-lotusWhite3));
+  --color-drop-over: color-mix(in srgb, var(--kg-accent) 28%, var(--kg-lotusWhite3));
+  /* Secondary panels */
+  --color-panel: var(--kg-lotusWhite4);
+  --color-panel-field: var(--kg-lotusWhite2);
+  --color-panel-line-soft: color-mix(in srgb, var(--kg-lotusGreen) 14%, var(--kg-lotusWhite4));
+  --color-panel-line: color-mix(in srgb, var(--kg-lotusGreen) 22%, var(--kg-lotusWhite5));
+  --color-panel-line-strong: color-mix(in srgb, var(--kg-lotusGreen) 35%, var(--kg-lotusViolet1));
+  --color-panel-ink-strong: var(--kg-lotusInk1);
+  --color-panel-ink-body: color-mix(in srgb, var(--kg-lotusInk1) 50%, var(--kg-lotusGray2));
+  --color-panel-ink: var(--kg-lotusGray2);
+  --color-panel-ink-soft: var(--kg-lotusGray2);
+  /* Status */
+  --color-success: var(--kg-lotusGreen);
+  --color-success-soft: color-mix(in srgb, var(--kg-lotusGreen) 18%, var(--kg-lotusWhite3));
+  --color-status-guessed: color-mix(in srgb, var(--kg-lotusYellow2) 16%, var(--kg-lotusWhite3));
+  --color-status-unmapped: color-mix(in srgb, var(--kg-lotusRed) 16%, var(--kg-lotusWhite3));
+  --color-warning-ink: color-mix(in srgb, var(--kg-lotusYellow2) 60%, var(--kg-lotusInk1));
+  /* Decoration */
+  --color-decor-sage: var(--kg-lotusGreen);
+  --color-decor-stitch: var(--kg-lotusGray3);
+  /* Shadows and scrims */
+  --color-shadow: var(--kg-lotusInk1);
+  --color-shadow-deep: var(--kg-lotusInk1);
+  --color-scrim: var(--kg-lotusInk1);
+
+  /* Chart chrome; fabric, grid, symbol and highlight roles stay pattern data. */
+  --renderer-off-canvas-color: var(--kg-lotusWhite2);
+  --renderer-ghost-grid-color: var(--kg-lotusWhite5);
+  --renderer-ghost-major-grid-color: var(--kg-lotusGray3);
+  --renderer-selection-color: var(--kg-lotusBlue4);
+  --renderer-cursor-color: var(--kg-accent);
+  --renderer-canvas-add-color: var(--kg-lotusGreen);
+  --renderer-canvas-remove-color: var(--kg-lotusRed);
+  --renderer-center-mark-color: var(--kg-lotusRed);
+}

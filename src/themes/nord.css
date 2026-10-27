@@ -1,0 +1,100 @@
+/* Nord. Source: https://github.com/nordtheme/nord */
+:root[data-theme="nord"] {
+  color-scheme: dark;
+  --nord-nord0: #2e3440;
+  --nord-nord1: #3b4252;
+  --nord-nord2: #434c5e;
+  --nord-nord3: #4c566a;
+  --nord-nord4: #d8dee9;
+  --nord-nord5: #e5e9f0;
+  --nord-nord6: #eceff4;
+  --nord-nord7: #8fbcbb;
+  --nord-nord8: #88c0d0;
+  --nord-nord9: #81a1c1;
+  --nord-nord10: #5e81ac;
+  --nord-nord11: #bf616a;
+  --nord-nord12: #d08770;
+  --nord-nord13: #ebcb8b;
+  --nord-nord14: #a3be8c;
+  --nord-nord15: #b48ead;
+
+  --nord-accent: var(--nord-nord8);
+
+  /* Surfaces */
+  --color-page: var(--nord-nord0);
+  --color-surface: var(--nord-nord1);
+  --color-surface-sunken: var(--nord-nord0);
+  --color-surface-muted: var(--nord-nord1);
+  --color-surface-inverse: var(--nord-nord6);
+  --color-fabric: var(--nord-nord1);
+  --color-folder: color-mix(in srgb, var(--nord-nord1) 60%, var(--nord-nord0));
+  --color-folder-back: var(--nord-nord1);
+  /* Ink */
+  --color-ink: var(--nord-nord6);
+  --color-ink-soft: var(--nord-nord6);
+  --color-ink-body: var(--nord-nord5);
+  --color-ink-control: var(--nord-nord5);
+  --color-ink-secondary: var(--nord-nord4);
+  --color-ink-muted: var(--nord-nord4);
+  --color-ink-faint: var(--nord-nord3);
+  --color-ink-disabled: var(--nord-nord3);
+  --color-on-accent: var(--nord-nord0);
+  --color-on-inverse: var(--nord-nord0);
+  --color-on-inverse-accent: var(--nord-accent);
+  /* Lines */
+  --color-line: var(--nord-nord2);
+  --color-line-soft: var(--nord-nord1);
+  --color-line-strong: var(--nord-nord2);
+  --color-line-firm: var(--nord-nord3);
+  --color-swatch-edge: var(--nord-nord3);
+  /* Accent */
+  --color-accent: var(--nord-accent);
+  --color-accent-strong: color-mix(in srgb, var(--nord-accent) 85%, var(--nord-nord6));
+  --color-accent-ink: color-mix(in srgb, var(--nord-accent) 70%, var(--nord-nord6));
+  --color-accent-soft: color-mix(in srgb, var(--nord-accent) 18%, var(--nord-nord0));
+  --color-accent-muted: color-mix(in srgb, var(--nord-accent) 26%, var(--nord-nord0));
+  --color-accent-halo: color-mix(in srgb, var(--nord-accent) 34%, var(--nord-nord0));
+  --color-accent-line: color-mix(in srgb, var(--nord-accent) 55%, var(--nord-nord0));
+  --color-accent-wash: color-mix(in srgb, var(--nord-accent) 8%, var(--nord-nord0));
+  --color-accent-wash-hover: color-mix(in srgb, var(--nord-accent) 13%, var(--nord-nord0));
+  /* Danger and drop targets */
+  --color-danger: var(--nord-nord11);
+  --color-danger-ink: color-mix(in srgb, var(--nord-nord11) 70%, var(--nord-nord6));
+  --color-danger-soft: color-mix(in srgb, var(--nord-nord11) 14%, var(--nord-nord0));
+  --color-danger-line: color-mix(in srgb, var(--nord-nord11) 45%, var(--nord-nord0));
+  --color-drop-ready: color-mix(in srgb, var(--nord-accent) 14%, var(--nord-nord0));
+  --color-drop-over: color-mix(in srgb, var(--nord-accent) 28%, var(--nord-nord0));
+  /* Secondary panels */
+  --color-panel: var(--nord-nord1);
+  --color-panel-field: var(--nord-nord1);
+  --color-panel-line-soft: color-mix(in srgb, var(--nord-nord14) 14%, var(--nord-nord1));
+  --color-panel-line: color-mix(in srgb, var(--nord-nord14) 22%, var(--nord-nord2));
+  --color-panel-line-strong: color-mix(in srgb, var(--nord-nord14) 35%, var(--nord-nord3));
+  --color-panel-ink-strong: var(--nord-nord6);
+  --color-panel-ink-body: var(--nord-nord5);
+  --color-panel-ink: var(--nord-nord4);
+  --color-panel-ink-soft: var(--nord-nord4);
+  /* Status */
+  --color-success: var(--nord-nord14);
+  --color-success-soft: color-mix(in srgb, var(--nord-nord14) 18%, var(--nord-nord0));
+  --color-status-guessed: color-mix(in srgb, var(--nord-nord13) 16%, var(--nord-nord0));
+  --color-status-unmapped: color-mix(in srgb, var(--nord-nord11) 16%, var(--nord-nord0));
+  --color-warning-ink: color-mix(in srgb, var(--nord-nord13) 60%, var(--nord-nord6));
+  /* Decoration */
+  --color-decor-sage: var(--nord-nord14);
+  --color-decor-stitch: var(--nord-nord3);
+  /* Shadows and scrims */
+  --color-shadow: var(--nord-nord0);
+  --color-shadow-deep: var(--nord-nord0);
+  --color-scrim: var(--nord-nord0);
+
+  /* Chart chrome; fabric, grid, symbol and highlight roles stay pattern data. */
+  --renderer-off-canvas-color: var(--nord-nord1);
+  --renderer-ghost-grid-color: var(--nord-nord2);
+  --renderer-ghost-major-grid-color: var(--nord-nord3);
+  --renderer-selection-color: var(--nord-nord9);
+  --renderer-cursor-color: var(--nord-accent);
+  --renderer-canvas-add-color: var(--nord-nord14);
+  --renderer-canvas-remove-color: var(--nord-nord11);
+  --renderer-center-mark-color: var(--nord-nord11);
+}

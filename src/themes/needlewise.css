@@ -1,0 +1,100 @@
+/* Default theme: the tokens every other theme redefines. */
+:root {
+  /* Surfaces */
+  --color-page: #f5f1ea;
+  --color-surface: #fffdf9;
+  --color-surface-sunken: #f8f5ef;
+  --color-surface-muted: #f3eee5;
+  --color-surface-inverse: #272321;
+  --color-fabric: #f3eee5;
+  --color-folder: #f8f1e6;
+  --color-folder-back: #efe6d6;
+  /* Ink */
+  --color-ink: #272321;
+  --color-ink-soft: #3a342f;
+  --color-ink-body: #4e4842;
+  --color-ink-control: #5c5148;
+  --color-ink-secondary: #625c55;
+  --color-ink-muted: #777169;
+  --color-ink-faint: #8a837a;
+  --color-ink-disabled: #aaa49c;
+  --color-on-accent: #fffdf9;
+  --color-on-inverse: #fffaf5;
+  --color-on-inverse-accent: #f4b184;
+  /* Lines */
+  --color-line: #d5cec3;
+  --color-line-soft: #e4ddd3;
+  --color-line-strong: #c9c1b6;
+  --color-line-firm: #b9b2a8;
+  --color-swatch-edge: #9c958b;
+  /* Outline of buttons and other clickable controls; themes may override it. */
+  --color-control-line: var(--color-ink-control);
+  /* Accent */
+  --color-accent: #bc5a3d;
+  --color-accent-strong: #a94e34;
+  --color-accent-ink: #88452f;
+  --color-accent-soft: #f1e4da;
+  --color-accent-muted: #ead8cc;
+  --color-accent-halo: #f1d6c9;
+  --color-accent-line: #d9a891;
+  --color-accent-wash: #fbf4ef;
+  --color-accent-wash-hover: #f8eee7;
+  --focus-ring: var(--color-accent);
+  /* Danger and drop targets */
+  --color-danger: #a94e34;
+  --color-danger-ink: #81432f;
+  --color-danger-soft: #fff0e9;
+  --color-danger-line: #e1b9a9;
+  --color-drop-ready: #fff0e9;
+  --color-drop-over: #ffdec9;
+  /* Secondary (sage) panels */
+  --color-panel: #e5ebe1;
+  --color-panel-field: #f8faf6;
+  --color-panel-line-soft: #d1dbce;
+  --color-panel-line: #c5d0c2;
+  --color-panel-line-strong: #8f9c8e;
+  --color-panel-ink-strong: #3e493e;
+  --color-panel-ink-body: #4e5a50;
+  --color-panel-ink: #687568;
+  --color-panel-ink-soft: #7b887b;
+  /* Status */
+  --color-success: #708d6f;
+  --color-success-soft: #dce5d9;
+  --color-status-guessed: #fbf4e4;
+  --color-status-unmapped: #f8e6e1;
+  --color-warning-ink: #6f4b2f;
+  /* Decoration */
+  --color-decor-sage: #718471;
+  --color-decor-stitch: #c8b9a1;
+  /* Shadows and scrims; used through color-mix() for alpha */
+  --color-shadow: #43372a;
+  --color-shadow-deep: #272321;
+  --color-scrim: #272321;
+
+  /* Chart renderer roles, one per DEFAULT_RENDERER_STYLE colour field, same values. */
+  --renderer-background-color: #ffffff;
+  --renderer-grid-color: #d8d8d8;
+  --renderer-mid-grid-color: #b8b8b8;
+  --renderer-major-grid-color: #858585;
+  --renderer-light-stitch-grid-color: #8c8c8c;
+  --renderer-light-stitch-mid-grid-color: #5e5e5e;
+  --renderer-light-stitch-major-grid-color: #2e2e2e;
+  --renderer-dark-stitch-grid-color: #7a7a7a;
+  --renderer-dark-stitch-mid-grid-color: #a8a8a8;
+  --renderer-dark-stitch-major-grid-color: #dcdcdc;
+  --renderer-chart-border-color: #4b4b4b;
+  --renderer-symbol-color: #242424;
+  --renderer-symbol-background-color: #ffffff;
+  --renderer-completed-color: #242424;
+  --renderer-selection-color: #2266cc;
+  --renderer-cursor-color: #cc4422;
+  --renderer-missing-palette-color: #9b9b9b;
+  --renderer-off-canvas-color: #e4e1dc;
+  --renderer-ghost-grid-color: #d3cfc8;
+  --renderer-ghost-major-grid-color: #bdb8b0;
+  --renderer-canvas-add-color: #2a9d5c;
+  --renderer-canvas-remove-color: #cc3333;
+  --renderer-center-mark-color: #d62f2f;
+  --renderer-highlight-outline-color: rgba(36, 36, 36, 0.7);
+  --renderer-highlight-halo-color: rgba(255, 255, 255, 0.75);
+}

@@ -28,17 +28,8 @@ import type { ThreadColorPickerProps } from "../ThreadColorPicker";
 import { normalizeHexColor } from "../../domain/color";
 import { rectsEqual } from "../../editor/rect";
 import { PaletteManagerModal } from "./PaletteManagerModal";
-import backstitchIcon from "../../assets/editor-tools/backstitch.svg";
-import eraserIcon from "../../assets/editor-tools/eraser.svg";
-import focusIcon from "../../assets/editor-tools/focus.svg";
-import fillIcon from "../../assets/editor-tools/paint-bucket.svg";
-import selectIcon from "../../assets/editor-tools/select.svg";
-import selectOvalIcon from "../../assets/editor-tools/select-oval.svg";
-import lassoIcon from "../../assets/editor-tools/lasso.svg";
-import eyedropperIcon from "../../assets/editor-tools/eyedropper.svg";
-import panIcon from "../../assets/editor-tools/pan.svg";
+import { Icon, type IconName } from "../controls/Icon";
 import { StitchOptionSlideout } from "./StitchOptionSlideout";
-import stitchIcon from "../../assets/editor-tools/stitch.svg";
 import { CanvasEdgeControls } from "./CanvasEdgeControls";
 import { ViewSettings } from "./ViewSettings";
 import { ActionSection } from "./ActionSection";
@@ -80,11 +71,11 @@ const SHAPE_CHOICES: readonly ShapeKind[] = [
   "right-triangle",
 ];
 /** The Select rail button's shapes, offered in Tool options while selecting or lassoing. */
-type SelectChoice = { tool: "select"; shape: SelectShape; label: string; icon: string; dataIcon: string } | { tool: "lasso"; label: string; icon: string; dataIcon: string };
+type SelectChoice = { tool: "select"; shape: SelectShape; label: string; icon: IconName } | { tool: "lasso"; label: string; icon: IconName };
 const SELECT_CHOICES: readonly SelectChoice[] = [
-  { tool: "select", shape: "rectangle", label: "Rectangle select", icon: selectIcon, dataIcon: "select" },
-  { tool: "select", shape: "oval", label: "Oval select", icon: selectOvalIcon, dataIcon: "select-oval" },
-  { tool: "lasso", label: "Lasso", icon: lassoIcon, dataIcon: "lasso" },
+  { tool: "select", shape: "rectangle", label: "Rectangle select", icon: "select" },
+  { tool: "select", shape: "oval", label: "Oval select", icon: "select-oval" },
+  { tool: "lasso", label: "Lasso", icon: "lasso" },
 ];
 const STITCH_CHOICES = [["full", "Full stitch"], ["half", "Half stitch"], ["three-quarter", "3/4 stitch"]] as const;
 type StitchKind = (typeof STITCH_CHOICES)[number][0];
@@ -854,7 +845,7 @@ export function EditorSurface({
           <DockPopover dock={dock} panel="tools">
           <nav className="editor-rail" aria-label="Editor sections">
             <button className="rail-button" type="button" aria-label="Pan" title="Pan" aria-pressed={ui?.tool.tool === "pan"} onClick={() => invoke("pan")}>
-              <img data-icon="pan" src={panIcon} alt="" aria-hidden="true" />
+              <Icon name="pan" />
             </button>
             <button
               {...toolGate(selectChoice.tool, "Select")}
@@ -863,7 +854,7 @@ export function EditorSurface({
               aria-pressed={activeSelectChoice != null}
               onClick={() => { if (activeSelectChoice) invoke(activeSelectChoice.tool); else applySelectChoice(selectChoice); }}
             >
-              <img data-icon="select" src={selectIcon} alt="" aria-hidden="true" />
+              <Icon name="select" />
             </button>
             <button
               {...(canvasAdvanced ? toolGate("canvas-brush", "Canvas brush") : toolGate("paint", "Stitch"))}
@@ -877,7 +868,7 @@ export function EditorSurface({
                 choose(lastStitchKind);
               }}
             >
-              <img data-icon="stitch" src={stitchIcon} alt="" aria-hidden="true" />
+              <Icon name="stitch" />
             </button>
             <button
               {...toolGate("shape", "Shape")}
@@ -897,7 +888,7 @@ export function EditorSurface({
               aria-pressed={backstitchActive}
               onClick={() => { if (refuseUnavailable("backstitch")) return; controller?.setBackstitchMode(lastBackstitchMode); }}
             >
-              <img data-icon="backstitch" src={backstitchIcon} alt="" aria-hidden="true" />
+              <Icon name="backstitch" />
             </button>
             <button
               {...toolGate("eraser", canvasAdvanced ? "Canvas eraser" : "Eraser")}
@@ -906,7 +897,7 @@ export function EditorSurface({
               aria-pressed={ui?.tool.tool === "eraser"}
               onClick={() => invoke("eraser")}
             >
-              <img data-icon="eraser" src={eraserIcon} alt="" aria-hidden="true" />
+              <Icon name="eraser" />
             </button>
             <button
               {...toolGate("fill", "Fill")}
@@ -916,7 +907,7 @@ export function EditorSurface({
               aria-pressed={ui?.tool.tool === "fill"}
               onClick={() => invoke("fill")}
             >
-              <img data-icon="paint-bucket" src={fillIcon} alt="" aria-hidden="true" />
+              <Icon name="paint-bucket" />
             </button>
             <button
               {...toolGate("eyedropper", "Eyedropper")}
@@ -925,7 +916,7 @@ export function EditorSurface({
               aria-pressed={ui?.tool.tool === "eyedropper"}
               onClick={() => invoke("eyedropper")}
             >
-              <img data-icon="eyedropper" src={eyedropperIcon} alt="" aria-hidden="true" />
+              <Icon name="eyedropper" />
             </button>
           </nav>
           </DockPopover>
@@ -955,7 +946,7 @@ export function EditorSurface({
                 title="Focus Color"
                 disabled={palette.length === 0}
                 onClick={() => controller?.toggleFocusColor()}
-              ><span className="palette-focus-glyph" aria-hidden="true"><img data-icon="focus" src={focusIcon} alt="" aria-hidden="true" /></span></button>
+              ><span className="palette-focus-glyph" aria-hidden="true"><Icon name="focus" /></span></button>
             </div>
             <div className="palette-rail-items">
               {palette.map(paletteRow)}
@@ -1062,7 +1053,7 @@ export function EditorSurface({
                     <div role="group" aria-label="Selection shape">
                       {SELECT_CHOICES.map((choice) => (
                         <ToolButton key={choice.label} label={choice.label} pressed={activeSelectChoice === choice} onClick={() => applySelectChoice(choice)}>
-                          <img data-icon={choice.dataIcon} src={choice.icon} alt="" aria-hidden="true" />
+                          <Icon name={choice.icon} />
                         </ToolButton>
                       ))}
                     </div>
@@ -1112,10 +1103,10 @@ export function EditorSurface({
           <div className="mobile-dock-card">
             <div className="mobile-dock-triggers" aria-label="Open editor controls">
               <button ref={dock.toolsTriggerRef} className="mobile-dock-trigger" type="button" aria-label="Tools" aria-expanded={dock.panel === "tools"} aria-controls="mobile-tools-popover" onClick={() => dock.setPanel(dock.panel === "tools" ? null : "tools")}>
-                <img src={stitchIcon} alt="" aria-hidden="true" />
+                <Icon name="stitch" />
               </button>
               <button ref={dock.colorsTriggerRef} className="mobile-dock-trigger mobile-colors-trigger" type="button" aria-label={selectedPalette ? `Colors: ${selectedPalette.name}` : "Colors"} title={selectedPalette ? `Colors: ${selectedPalette.name}` : "Colors"} aria-expanded={dock.panel === "colors"} aria-controls="mobile-colors-popover" onClick={() => dock.setPanel(dock.panel === "colors" ? null : "colors")}>
-                <span className="mobile-dock-color-swatch" style={{ backgroundColor: selectedPalette?.color ?? "#fffdf9" }} aria-hidden="true" />
+                <span className="mobile-dock-color-swatch" style={{ backgroundColor: selectedPalette?.color ?? "var(--color-surface)" }} aria-hidden="true" />
               </button>
             </div>
           </div>

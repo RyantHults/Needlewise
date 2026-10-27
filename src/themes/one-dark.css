@@ -1,0 +1,101 @@
+/* One Dark with a blue accent. Source: https://github.com/atom/atom/tree/master/packages/one-dark-syntax (surface levels derived from its hue 220 and saturation 13%) */
+:root[data-theme="one-dark"] {
+  color-scheme: dark;
+  --one-mono-1: #abb2bf;
+  --one-mono-2: #828997;
+  --one-mono-3: #5c6370;
+  --one-cyan: #56b6c2;
+  --one-blue: #61afef;
+  --one-purple: #c678dd;
+  --one-green: #98c379;
+  --one-red: #e06c75;
+  --one-red-2: #be5046;
+  --one-orange: #d19a66;
+  --one-orange-2: #e5c07b;
+  --one-bg: #282c34;
+  --one-bg-dark: #21252b;
+  --one-bg-darker: #181a1f;
+  --one-bg-light: #2c313a;
+  --one-line: #3e4451;
+  --one-line-strong: #4b5263;
+
+  --one-accent: var(--one-blue);
+
+  /* Surfaces */
+  --color-page: var(--one-bg);
+  --color-surface: var(--one-bg-dark);
+  --color-surface-sunken: var(--one-bg-darker);
+  --color-surface-muted: var(--one-bg-light);
+  --color-surface-inverse: var(--one-mono-1);
+  --color-fabric: var(--one-bg-light);
+  --color-folder: color-mix(in srgb, var(--one-bg-light) 60%, var(--one-bg));
+  --color-folder-back: var(--one-bg-light);
+  /* Ink */
+  --color-ink: var(--one-mono-1);
+  --color-ink-soft: var(--one-mono-1);
+  --color-ink-body: var(--one-mono-1);
+  --color-ink-control: var(--one-mono-1);
+  --color-ink-secondary: var(--one-mono-2);
+  --color-ink-muted: var(--one-mono-2);
+  --color-ink-faint: var(--one-mono-3);
+  --color-ink-disabled: var(--one-mono-3);
+  --color-on-accent: var(--one-bg-darker);
+  --color-on-inverse: var(--one-bg);
+  --color-on-inverse-accent: var(--one-accent);
+  /* Lines */
+  --color-line: var(--one-line);
+  --color-line-soft: var(--one-bg-light);
+  --color-line-strong: var(--one-line);
+  --color-line-firm: var(--one-line-strong);
+  --color-swatch-edge: var(--one-mono-3);
+  /* Accent */
+  --color-accent: var(--one-accent);
+  --color-accent-strong: color-mix(in srgb, var(--one-accent) 85%, var(--one-mono-1));
+  --color-accent-ink: color-mix(in srgb, var(--one-accent) 70%, var(--one-mono-1));
+  --color-accent-soft: color-mix(in srgb, var(--one-accent) 18%, var(--one-bg));
+  --color-accent-muted: color-mix(in srgb, var(--one-accent) 26%, var(--one-bg));
+  --color-accent-halo: color-mix(in srgb, var(--one-accent) 34%, var(--one-bg));
+  --color-accent-line: color-mix(in srgb, var(--one-accent) 55%, var(--one-bg));
+  --color-accent-wash: color-mix(in srgb, var(--one-accent) 8%, var(--one-bg));
+  --color-accent-wash-hover: color-mix(in srgb, var(--one-accent) 13%, var(--one-bg));
+  /* Danger and drop targets */
+  --color-danger: var(--one-red);
+  --color-danger-ink: color-mix(in srgb, var(--one-red) 70%, var(--one-mono-1));
+  --color-danger-soft: color-mix(in srgb, var(--one-red) 14%, var(--one-bg));
+  --color-danger-line: color-mix(in srgb, var(--one-red) 45%, var(--one-bg));
+  --color-drop-ready: color-mix(in srgb, var(--one-accent) 14%, var(--one-bg));
+  --color-drop-over: color-mix(in srgb, var(--one-accent) 28%, var(--one-bg));
+  /* Secondary panels */
+  --color-panel: var(--one-bg-light);
+  --color-panel-field: var(--one-bg-dark);
+  --color-panel-line-soft: color-mix(in srgb, var(--one-green) 14%, var(--one-bg-light));
+  --color-panel-line: color-mix(in srgb, var(--one-green) 22%, var(--one-line));
+  --color-panel-line-strong: color-mix(in srgb, var(--one-green) 35%, var(--one-mono-3));
+  --color-panel-ink-strong: var(--one-mono-1);
+  --color-panel-ink-body: var(--one-mono-1);
+  --color-panel-ink: var(--one-mono-2);
+  --color-panel-ink-soft: var(--one-mono-2);
+  /* Status */
+  --color-success: var(--one-green);
+  --color-success-soft: color-mix(in srgb, var(--one-green) 18%, var(--one-bg));
+  --color-status-guessed: color-mix(in srgb, var(--one-orange-2) 16%, var(--one-bg));
+  --color-status-unmapped: color-mix(in srgb, var(--one-red) 16%, var(--one-bg));
+  --color-warning-ink: color-mix(in srgb, var(--one-orange-2) 60%, var(--one-mono-1));
+  /* Decoration */
+  --color-decor-sage: var(--one-green);
+  --color-decor-stitch: var(--one-line-strong);
+  /* Shadows and scrims */
+  --color-shadow: var(--one-bg-darker);
+  --color-shadow-deep: var(--one-bg-darker);
+  --color-scrim: var(--one-bg-darker);
+
+  /* Chart chrome; fabric, grid, symbol and highlight roles stay pattern data. */
+  --renderer-off-canvas-color: var(--one-bg-dark);
+  --renderer-ghost-grid-color: var(--one-line);
+  --renderer-ghost-major-grid-color: var(--one-line-strong);
+  --renderer-selection-color: var(--one-blue);
+  --renderer-cursor-color: var(--one-accent);
+  --renderer-canvas-add-color: var(--one-green);
+  --renderer-canvas-remove-color: var(--one-red);
+  --renderer-center-mark-color: var(--one-red);
+}

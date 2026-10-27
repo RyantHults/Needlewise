@@ -1,0 +1,100 @@
+/* Alucard with a purple accent. Source: https://draculatheme.com/spec */
+:root[data-theme="alucard"] {
+  color-scheme: light;
+  --drac-bg: #fffbeb;
+  --drac-bg-lighter: #ece9df;
+  --drac-bg-light: #dedccf;
+  --drac-bg-dark: #ceccc0;
+  --drac-bg-darker: #bcbab3;
+  --drac-floating: #efeddc;
+  --drac-selection: #cfcfde;
+  --drac-fg: #1f1f1f;
+  --drac-comment: #6c664b;
+  --drac-red: #cb3a2a;
+  --drac-orange: #a34d14;
+  --drac-yellow: #846e15;
+  --drac-green: #14710a;
+  --drac-cyan: #036a96;
+  --drac-purple: #644ac9;
+  --drac-pink: #a3144d;
+
+  --drac-accent: var(--drac-purple);
+
+  /* Surfaces */
+  --color-page: var(--drac-bg);
+  --color-surface: var(--drac-floating);
+  --color-surface-sunken: var(--drac-bg-lighter);
+  --color-surface-muted: var(--drac-bg-lighter);
+  --color-surface-inverse: var(--drac-fg);
+  --color-fabric: var(--drac-bg-lighter);
+  --color-folder: color-mix(in srgb, var(--drac-bg-lighter) 60%, var(--drac-bg));
+  --color-folder-back: var(--drac-bg-lighter);
+  /* Ink */
+  --color-ink: var(--drac-fg);
+  --color-ink-soft: var(--drac-fg);
+  --color-ink-body: var(--drac-fg);
+  --color-ink-control: var(--drac-fg);
+  --color-ink-secondary: var(--drac-comment);
+  --color-ink-muted: var(--drac-comment);
+  --color-ink-faint: var(--drac-comment);
+  --color-ink-disabled: var(--drac-bg-darker);
+  --color-on-accent: var(--drac-bg);
+  --color-on-inverse: var(--drac-bg);
+  --color-on-inverse-accent: var(--drac-accent);
+  /* Lines */
+  --color-line: var(--drac-bg-light);
+  --color-line-soft: var(--drac-bg-lighter);
+  --color-line-strong: var(--drac-bg-light);
+  --color-line-firm: var(--drac-bg-dark);
+  --color-swatch-edge: var(--drac-bg-darker);
+  /* Accent */
+  --color-accent: var(--drac-accent);
+  --color-accent-strong: color-mix(in srgb, var(--drac-accent) 85%, var(--drac-fg));
+  --color-accent-ink: color-mix(in srgb, var(--drac-accent) 70%, var(--drac-fg));
+  --color-accent-soft: color-mix(in srgb, var(--drac-accent) 18%, var(--drac-bg));
+  --color-accent-muted: color-mix(in srgb, var(--drac-accent) 26%, var(--drac-bg));
+  --color-accent-halo: color-mix(in srgb, var(--drac-accent) 34%, var(--drac-bg));
+  --color-accent-line: color-mix(in srgb, var(--drac-accent) 55%, var(--drac-bg));
+  --color-accent-wash: color-mix(in srgb, var(--drac-accent) 8%, var(--drac-bg));
+  --color-accent-wash-hover: color-mix(in srgb, var(--drac-accent) 13%, var(--drac-bg));
+  /* Danger and drop targets */
+  --color-danger: var(--drac-red);
+  --color-danger-ink: color-mix(in srgb, var(--drac-red) 70%, var(--drac-fg));
+  --color-danger-soft: color-mix(in srgb, var(--drac-red) 14%, var(--drac-bg));
+  --color-danger-line: color-mix(in srgb, var(--drac-red) 45%, var(--drac-bg));
+  --color-drop-ready: color-mix(in srgb, var(--drac-accent) 14%, var(--drac-bg));
+  --color-drop-over: color-mix(in srgb, var(--drac-accent) 28%, var(--drac-bg));
+  /* Secondary panels */
+  --color-panel: var(--drac-bg-lighter);
+  --color-panel-field: var(--drac-floating);
+  --color-panel-line-soft: color-mix(in srgb, var(--drac-green) 14%, var(--drac-bg-lighter));
+  --color-panel-line: color-mix(in srgb, var(--drac-green) 22%, var(--drac-bg-light));
+  --color-panel-line-strong: color-mix(in srgb, var(--drac-green) 35%, var(--drac-bg-darker));
+  --color-panel-ink-strong: var(--drac-fg);
+  --color-panel-ink-body: var(--drac-fg);
+  --color-panel-ink: var(--drac-comment);
+  --color-panel-ink-soft: var(--drac-comment);
+  /* Status */
+  --color-success: var(--drac-green);
+  --color-success-soft: color-mix(in srgb, var(--drac-green) 18%, var(--drac-bg));
+  --color-status-guessed: color-mix(in srgb, var(--drac-yellow) 16%, var(--drac-bg));
+  --color-status-unmapped: color-mix(in srgb, var(--drac-red) 16%, var(--drac-bg));
+  --color-warning-ink: color-mix(in srgb, var(--drac-yellow) 60%, var(--drac-fg));
+  /* Decoration */
+  --color-decor-sage: var(--drac-green);
+  --color-decor-stitch: var(--drac-bg-dark);
+  /* Shadows and scrims */
+  --color-shadow: var(--drac-fg);
+  --color-shadow-deep: var(--drac-fg);
+  --color-scrim: var(--drac-fg);
+
+  /* Chart chrome; fabric, grid, symbol and highlight roles stay pattern data. */
+  --renderer-off-canvas-color: var(--drac-floating);
+  --renderer-ghost-grid-color: var(--drac-bg-light);
+  --renderer-ghost-major-grid-color: var(--drac-bg-dark);
+  --renderer-selection-color: var(--drac-cyan);
+  --renderer-cursor-color: var(--drac-accent);
+  --renderer-canvas-add-color: var(--drac-green);
+  --renderer-canvas-remove-color: var(--drac-red);
+  --renderer-center-mark-color: var(--drac-red);
+}

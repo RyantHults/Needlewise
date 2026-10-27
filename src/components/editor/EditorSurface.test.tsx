@@ -570,7 +570,7 @@ describe('EditorSurface', () => {
     for (const name of ['Select', 'Stitch', 'Eraser', 'Backstitch']) {
       expect(adapterOptions.shouldExcludeTarget(screen.getByRole('button', { name }), 'keydown')).toBe(true);
     }
-    const brushDescendant = screen.getByRole('button', { name: 'Stitch' }).querySelector('img[data-icon="stitch"]')!;
+    const brushDescendant = screen.getByRole('button', { name: 'Stitch' }).querySelector('[data-icon="stitch"]')!;
     expect(adapterOptions.shouldExcludeTarget(brushDescendant, 'keydown')).toBe(true);
     expect(adapterOptions.shouldExcludeTarget(screen.getByRole('button', { name: 'Select' }).querySelector('[data-icon="select"]'), 'keydown')).toBe(true);
     switchTool({ tool: 'backstitch', mode: 'move' });
@@ -986,7 +986,7 @@ describe('EditorSurface', () => {
     const stitch = screen.getByRole('button', { name: 'Stitch' });
     expect(stitch).toHaveAttribute('title', 'Stitch');
     expect(stitch).toHaveAttribute('aria-pressed', 'true');
-    expect(stitch.querySelector('img[data-icon="stitch"]')).toBeInTheDocument();
+    expect(stitch.querySelector('[data-icon="stitch"]')).toBeInTheDocument();
     const group = within(toolOptions()).getByRole('group', { name: 'Stitch type' });
     const items = within(group).getAllByRole('button').filter((item) => !item.classList.contains('stitch-slideout-option'));
     expect(items.map((item) => item.getAttribute('aria-label'))).toEqual(['Full stitch', 'Half stitch', '3/4 stitch']);
@@ -1192,7 +1192,7 @@ describe('EditorSurface', () => {
       expect(items[index]).toHaveClass('tool-option-button');
       expect(items[index]).toHaveAttribute('title', name);
       expect(items[index]).toHaveAttribute('aria-pressed', String(name === label));
-      expect(items[index].querySelector(`img[data-icon="${icon}"]`)).toBeInTheDocument();
+      expect(items[index].querySelector(`[data-icon="${icon}"]`)).toBeInTheDocument();
     }
   });
   it.each(selectChoices)('applies %s from Tool options and remembers it for the Select button', (label, tool) => {
@@ -2290,7 +2290,7 @@ describe('EditorSurface on the Canvas layer', () => {
   /** Each rail button's name and icon, in order, so two rails can be compared. */
   const railSnapshot = () => [...document.querySelectorAll<HTMLButtonElement>('.editor-rail > button')].map((button) => ({
     name: button.getAttribute('aria-label')?.replace(/, \w+ mode$/, ''),
-    icon: button.querySelector('img')?.getAttribute('data-icon') ?? button.querySelector('.stitch-brush-icon')?.className ?? button.querySelector('svg') !== null
+    icon: button.querySelector('[data-icon]')?.getAttribute('data-icon') ?? button.querySelector('.stitch-brush-icon')?.className ?? button.querySelector('svg') !== null
   }));
 
   it('keeps the same rail on Canvas+Advanced, with Stitch driving the canvas brush', () => {
@@ -2304,13 +2304,13 @@ describe('EditorSurface on the Canvas layer', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     expect(stitchRail.map((entry) => entry.name)).toEqual(['Pan', 'Select', 'Stitch', 'Shape', 'Backstitch', 'Eraser', 'Fill', 'Eyedropper']);
     expect(railSnapshot()).toEqual(stitchRail);
-    expect(document.querySelector('img[data-icon="canvas-brush"]')).toBeNull();
+    expect(document.querySelector('[data-icon="canvas-brush"]')).toBeNull();
 
     const full = screen.getByRole('button', { name: 'Stitch' });
     expect(full).toHaveAttribute('title', 'Canvas brush');
     expect(full).not.toHaveAttribute('aria-disabled');
     expect(full).toHaveAttribute('aria-pressed', 'true');
-    expect(full.querySelector('img[data-icon="stitch"]')).not.toBeNull();
+    expect(full.querySelector('[data-icon="stitch"]')).not.toBeNull();
     fireEvent.click(full);
     expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'canvas-brush' });
     expect(f.c.setBrush).not.toHaveBeenCalled();
@@ -2331,7 +2331,7 @@ describe('EditorSurface on the Canvas layer', () => {
     const eraser = screen.getByRole('button', { name: 'Eraser' });
     expect(eraser).not.toHaveAttribute('aria-disabled');
     expect(eraser).toHaveAttribute('title', 'Canvas eraser');
-    expect(eraser.querySelector('img[data-icon="eraser"]')).not.toBeNull();
+    expect(eraser.querySelector('[data-icon="eraser"]')).not.toBeNull();
     // Its size control is named for the canvas eraser but keeps the eraser's retained size.
     switchTool({ tool: 'eraser' });
     expect(within(toolOptions()).queryByRole('slider', { name: 'Canvas brush size' })).not.toBeInTheDocument();

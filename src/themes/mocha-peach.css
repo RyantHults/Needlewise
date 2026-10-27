@@ -1,0 +1,110 @@
+/* Catppuccin Mocha with a peach accent. */
+:root[data-theme="mocha-peach"] {
+  color-scheme: dark;
+  --ctp-rosewater: #f5e0dc;
+  --ctp-flamingo: #f2cdcd;
+  --ctp-pink: #f5c2e7;
+  --ctp-mauve: #cba6f7;
+  --ctp-red: #f38ba8;
+  --ctp-maroon: #eba0ac;
+  --ctp-peach: #fab387;
+  --ctp-yellow: #f9e2af;
+  --ctp-green: #a6e3a1;
+  --ctp-teal: #94e2d5;
+  --ctp-sky: #89dceb;
+  --ctp-sapphire: #74c7ec;
+  --ctp-blue: #89b4fa;
+  --ctp-lavender: #b4befe;
+  --ctp-text: #cdd6f4;
+  --ctp-subtext1: #bac2de;
+  --ctp-subtext0: #a6adc8;
+  --ctp-overlay2: #9399b2;
+  --ctp-overlay1: #7f849c;
+  --ctp-overlay0: #6c7086;
+  --ctp-surface2: #585b70;
+  --ctp-surface1: #45475a;
+  --ctp-surface0: #313244;
+  --ctp-base: #1e1e2e;
+  --ctp-mantle: #181825;
+  --ctp-crust: #11111b;
+
+  --ctp-accent: var(--ctp-peach);
+
+  /* Surfaces */
+  --color-page: var(--ctp-base);
+  --color-surface: var(--ctp-mantle);
+  --color-surface-sunken: var(--ctp-crust);
+  --color-surface-muted: var(--ctp-surface0);
+  --color-surface-inverse: var(--ctp-text);
+  --color-fabric: var(--ctp-surface0);
+  --color-folder: color-mix(in srgb, var(--ctp-surface0) 60%, var(--ctp-base));
+  --color-folder-back: var(--ctp-surface0);
+  /* Ink */
+  --color-ink: var(--ctp-text);
+  --color-ink-soft: var(--ctp-text);
+  --color-ink-body: var(--ctp-subtext1);
+  --color-ink-control: var(--ctp-subtext1);
+  --color-ink-secondary: var(--ctp-subtext0);
+  --color-ink-muted: var(--ctp-overlay2);
+  --color-ink-faint: var(--ctp-overlay1);
+  --color-ink-disabled: var(--ctp-overlay0);
+  --color-on-accent: var(--ctp-base);
+  --color-on-inverse: var(--ctp-base);
+  --color-on-inverse-accent: var(--ctp-accent);
+  /* Lines */
+  --color-line: var(--ctp-surface1);
+  --color-line-soft: var(--ctp-surface0);
+  --color-line-strong: var(--ctp-surface1);
+  --color-line-firm: var(--ctp-surface2);
+  --color-swatch-edge: var(--ctp-overlay0);
+  /* Accent */
+  --color-accent: var(--ctp-accent);
+  --color-accent-strong: color-mix(in srgb, var(--ctp-accent) 85%, var(--ctp-text));
+  --color-accent-ink: color-mix(in srgb, var(--ctp-accent) 70%, var(--ctp-text));
+  --color-accent-soft: color-mix(in srgb, var(--ctp-accent) 18%, var(--ctp-base));
+  --color-accent-muted: color-mix(in srgb, var(--ctp-accent) 26%, var(--ctp-base));
+  --color-accent-halo: color-mix(in srgb, var(--ctp-accent) 34%, var(--ctp-base));
+  --color-accent-line: color-mix(in srgb, var(--ctp-accent) 55%, var(--ctp-base));
+  --color-accent-wash: color-mix(in srgb, var(--ctp-accent) 8%, var(--ctp-base));
+  --color-accent-wash-hover: color-mix(in srgb, var(--ctp-accent) 13%, var(--ctp-base));
+  /* Danger and drop targets */
+  --color-danger: var(--ctp-red);
+  --color-danger-ink: color-mix(in srgb, var(--ctp-red) 70%, var(--ctp-text));
+  --color-danger-soft: color-mix(in srgb, var(--ctp-red) 14%, var(--ctp-base));
+  --color-danger-line: color-mix(in srgb, var(--ctp-red) 45%, var(--ctp-base));
+  --color-drop-ready: color-mix(in srgb, var(--ctp-accent) 14%, var(--ctp-base));
+  --color-drop-over: color-mix(in srgb, var(--ctp-accent) 28%, var(--ctp-base));
+  /* Secondary panels */
+  --color-panel: var(--ctp-surface0);
+  --color-panel-field: var(--ctp-mantle);
+  --color-panel-line-soft: color-mix(in srgb, var(--ctp-green) 14%, var(--ctp-surface0));
+  --color-panel-line: color-mix(in srgb, var(--ctp-green) 22%, var(--ctp-surface1));
+  --color-panel-line-strong: color-mix(in srgb, var(--ctp-green) 35%, var(--ctp-overlay0));
+  --color-panel-ink-strong: var(--ctp-text);
+  --color-panel-ink-body: var(--ctp-subtext1);
+  --color-panel-ink: var(--ctp-subtext0);
+  --color-panel-ink-soft: var(--ctp-overlay2);
+  /* Status */
+  --color-success: var(--ctp-green);
+  --color-success-soft: color-mix(in srgb, var(--ctp-green) 18%, var(--ctp-base));
+  --color-status-guessed: color-mix(in srgb, var(--ctp-yellow) 16%, var(--ctp-base));
+  --color-status-unmapped: color-mix(in srgb, var(--ctp-red) 16%, var(--ctp-base));
+  --color-warning-ink: color-mix(in srgb, var(--ctp-yellow) 60%, var(--ctp-text));
+  /* Decoration */
+  --color-decor-sage: var(--ctp-green);
+  --color-decor-stitch: var(--ctp-surface2);
+  /* Shadows and scrims */
+  --color-shadow: var(--ctp-crust);
+  --color-shadow-deep: var(--ctp-crust);
+  --color-scrim: var(--ctp-crust);
+
+  /* Chart chrome; fabric, grid, symbol and highlight roles stay pattern data. */
+  --renderer-off-canvas-color: var(--ctp-mantle);
+  --renderer-ghost-grid-color: var(--ctp-surface1);
+  --renderer-ghost-major-grid-color: var(--ctp-surface2);
+  --renderer-selection-color: var(--ctp-blue);
+  --renderer-cursor-color: var(--ctp-accent);
+  --renderer-canvas-add-color: var(--ctp-green);
+  --renderer-canvas-remove-color: var(--ctp-red);
+  --renderer-center-mark-color: var(--ctp-red);
+}

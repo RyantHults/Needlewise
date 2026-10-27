@@ -1,0 +1,123 @@
+/* Kanagawa Wave: https://github.com/rebelot/kanagawa.nvim */
+:root[data-theme="kanagawa-wave"] {
+  color-scheme: dark;
+  --kg-sumiInk0: #16161D;
+  --kg-sumiInk1: #181820;
+  --kg-sumiInk2: #1a1a22;
+  --kg-sumiInk3: #1F1F28;
+  --kg-sumiInk4: #2A2A37;
+  --kg-sumiInk5: #363646;
+  --kg-sumiInk6: #54546D;
+  --kg-waveBlue1: #223249;
+  --kg-waveBlue2: #2D4F67;
+  --kg-winterGreen: #2B3328;
+  --kg-winterYellow: #49443C;
+  --kg-winterRed: #43242B;
+  --kg-winterBlue: #252535;
+  --kg-autumnGreen: #76946A;
+  --kg-autumnRed: #C34043;
+  --kg-autumnYellow: #DCA561;
+  --kg-samuraiRed: #E82424;
+  --kg-roninYellow: #FF9E3B;
+  --kg-waveAqua1: #6A9589;
+  --kg-oldWhite: #C8C093;
+  --kg-fujiWhite: #DCD7BA;
+  --kg-fujiGray: #727169;
+  --kg-oniViolet: #957FB8;
+  --kg-oniViolet2: #b8b4d0;
+  --kg-crystalBlue: #7E9CD8;
+  --kg-springViolet1: #938AA9;
+  --kg-springViolet2: #9CABCA;
+  --kg-springBlue: #7FB4CA;
+  --kg-lightBlue: #A3D4D5;
+  --kg-waveAqua2: #7AA89F;
+  --kg-springGreen: #98BB6C;
+  --kg-boatYellow1: #938056;
+  --kg-boatYellow2: #C0A36E;
+  --kg-carpYellow: #E6C384;
+  --kg-sakuraPink: #D27E99;
+  --kg-waveRed: #E46876;
+  --kg-peachRed: #FF5D62;
+  --kg-surimiOrange: #FFA066;
+  --kg-katanaGray: #717C7C;
+
+  --kg-accent: var(--kg-crystalBlue);
+
+  /* Surfaces */
+  --color-page: var(--kg-sumiInk3);
+  --color-surface: var(--kg-sumiInk2);
+  --color-surface-sunken: var(--kg-sumiInk0);
+  --color-surface-muted: var(--kg-sumiInk4);
+  --color-surface-inverse: var(--kg-fujiWhite);
+  --color-fabric: var(--kg-sumiInk4);
+  --color-folder: color-mix(in srgb, var(--kg-sumiInk4) 60%, var(--kg-sumiInk3));
+  --color-folder-back: var(--kg-sumiInk4);
+  /* Ink */
+  --color-ink: var(--kg-fujiWhite);
+  --color-ink-soft: var(--kg-fujiWhite);
+  --color-ink-body: color-mix(in srgb, var(--kg-fujiWhite) 50%, var(--kg-oldWhite));
+  --color-ink-control: color-mix(in srgb, var(--kg-fujiWhite) 50%, var(--kg-oldWhite));
+  --color-ink-secondary: var(--kg-oldWhite);
+  --color-ink-muted: var(--kg-fujiGray);
+  --color-ink-faint: var(--kg-katanaGray);
+  --color-ink-disabled: var(--kg-sumiInk6);
+  --color-on-accent: var(--kg-sumiInk3);
+  --color-on-inverse: var(--kg-sumiInk3);
+  --color-on-inverse-accent: var(--kg-accent);
+  /* Lines */
+  --color-line: var(--kg-sumiInk5);
+  --color-line-soft: var(--kg-sumiInk4);
+  --color-line-strong: var(--kg-sumiInk5);
+  --color-line-firm: var(--kg-sumiInk6);
+  --color-swatch-edge: var(--kg-sumiInk6);
+  /* Accent */
+  --color-accent: var(--kg-accent);
+  --color-accent-strong: color-mix(in srgb, var(--kg-accent) 85%, var(--kg-fujiWhite));
+  --color-accent-ink: color-mix(in srgb, var(--kg-accent) 70%, var(--kg-fujiWhite));
+  --color-accent-soft: color-mix(in srgb, var(--kg-accent) 18%, var(--kg-sumiInk3));
+  --color-accent-muted: color-mix(in srgb, var(--kg-accent) 26%, var(--kg-sumiInk3));
+  --color-accent-halo: color-mix(in srgb, var(--kg-accent) 34%, var(--kg-sumiInk3));
+  --color-accent-line: color-mix(in srgb, var(--kg-accent) 55%, var(--kg-sumiInk3));
+  --color-accent-wash: color-mix(in srgb, var(--kg-accent) 8%, var(--kg-sumiInk3));
+  --color-accent-wash-hover: color-mix(in srgb, var(--kg-accent) 13%, var(--kg-sumiInk3));
+  /* Danger and drop targets */
+  --color-danger: var(--kg-waveRed);
+  --color-danger-ink: color-mix(in srgb, var(--kg-waveRed) 70%, var(--kg-fujiWhite));
+  --color-danger-soft: color-mix(in srgb, var(--kg-waveRed) 14%, var(--kg-sumiInk3));
+  --color-danger-line: color-mix(in srgb, var(--kg-waveRed) 45%, var(--kg-sumiInk3));
+  --color-drop-ready: color-mix(in srgb, var(--kg-accent) 14%, var(--kg-sumiInk3));
+  --color-drop-over: color-mix(in srgb, var(--kg-accent) 28%, var(--kg-sumiInk3));
+  /* Secondary panels */
+  --color-panel: var(--kg-sumiInk4);
+  --color-panel-field: var(--kg-sumiInk2);
+  --color-panel-line-soft: color-mix(in srgb, var(--kg-springGreen) 14%, var(--kg-sumiInk4));
+  --color-panel-line: color-mix(in srgb, var(--kg-springGreen) 22%, var(--kg-sumiInk5));
+  --color-panel-line-strong: color-mix(in srgb, var(--kg-springGreen) 35%, var(--kg-sumiInk6));
+  --color-panel-ink-strong: var(--kg-fujiWhite);
+  --color-panel-ink-body: color-mix(in srgb, var(--kg-fujiWhite) 50%, var(--kg-oldWhite));
+  --color-panel-ink: var(--kg-oldWhite);
+  --color-panel-ink-soft: var(--kg-fujiGray);
+  /* Status */
+  --color-success: var(--kg-springGreen);
+  --color-success-soft: color-mix(in srgb, var(--kg-springGreen) 18%, var(--kg-sumiInk3));
+  --color-status-guessed: color-mix(in srgb, var(--kg-carpYellow) 16%, var(--kg-sumiInk3));
+  --color-status-unmapped: color-mix(in srgb, var(--kg-waveRed) 16%, var(--kg-sumiInk3));
+  --color-warning-ink: color-mix(in srgb, var(--kg-carpYellow) 60%, var(--kg-fujiWhite));
+  /* Decoration */
+  --color-decor-sage: var(--kg-springGreen);
+  --color-decor-stitch: var(--kg-sumiInk6);
+  /* Shadows and scrims */
+  --color-shadow: var(--kg-sumiInk0);
+  --color-shadow-deep: var(--kg-sumiInk0);
+  --color-scrim: var(--kg-sumiInk0);
+
+  /* Chart chrome; fabric, grid, symbol and highlight roles stay pattern data. */
+  --renderer-off-canvas-color: var(--kg-sumiInk2);
+  --renderer-ghost-grid-color: var(--kg-sumiInk5);
+  --renderer-ghost-major-grid-color: var(--kg-sumiInk6);
+  --renderer-selection-color: var(--kg-crystalBlue);
+  --renderer-cursor-color: var(--kg-accent);
+  --renderer-canvas-add-color: var(--kg-springGreen);
+  --renderer-canvas-remove-color: var(--kg-waveRed);
+  --renderer-center-mark-color: var(--kg-waveRed);
+}

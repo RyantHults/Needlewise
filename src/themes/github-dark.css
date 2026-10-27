@@ -1,0 +1,96 @@
+/* GitHub Dark (https://unpkg.com/@primer/primitives@9.1.2/dist/css/functional/themes/dark.css). */
+:root[data-theme="github-dark"] {
+  color-scheme: dark;
+  --gh-fgColor-default: #f0f6fc;
+  --gh-fgColor-muted: #9198a1;
+  --gh-fgColor-accent: #4493f8;
+  --gh-fgColor-success: #3fb950;
+  --gh-fgColor-attention: #d29922;
+  --gh-fgColor-danger: #f85149;
+  --gh-bgColor-default: #0d1117;
+  --gh-bgColor-muted: #151b23;
+  --gh-bgColor-inset: #010409;
+  --gh-bgColor-disabled: #212830;
+  --gh-borderColor-default: #3d444d;
+  --gh-borderColor-emphasis: #656c76;
+
+  --gh-accent: var(--gh-fgColor-accent);
+
+  /* Surfaces */
+  --color-page: var(--gh-bgColor-default);
+  --color-surface: var(--gh-bgColor-muted);
+  --color-surface-sunken: var(--gh-bgColor-inset);
+  --color-surface-muted: var(--gh-bgColor-disabled);
+  --color-surface-inverse: var(--gh-fgColor-default);
+  --color-fabric: var(--gh-bgColor-disabled);
+  --color-folder: color-mix(in srgb, var(--gh-bgColor-disabled) 60%, var(--gh-bgColor-default));
+  --color-folder-back: var(--gh-bgColor-disabled);
+  /* Ink */
+  --color-ink: var(--gh-fgColor-default);
+  --color-ink-soft: var(--gh-fgColor-default);
+  --color-ink-body: var(--gh-fgColor-default);
+  --color-ink-control: var(--gh-fgColor-default);
+  --color-ink-secondary: var(--gh-fgColor-muted);
+  --color-ink-muted: var(--gh-fgColor-muted);
+  --color-ink-faint: var(--gh-borderColor-emphasis);
+  --color-ink-disabled: var(--gh-borderColor-emphasis);
+  --color-on-accent: var(--gh-bgColor-default);
+  --color-on-inverse: var(--gh-bgColor-default);
+  --color-on-inverse-accent: var(--gh-accent);
+  /* Lines */
+  --color-line: var(--gh-borderColor-default);
+  --color-line-soft: var(--gh-bgColor-disabled);
+  --color-line-strong: var(--gh-borderColor-default);
+  --color-line-firm: var(--gh-borderColor-emphasis);
+  --color-swatch-edge: var(--gh-borderColor-emphasis);
+  /* Accent */
+  --color-accent: var(--gh-accent);
+  --color-accent-strong: color-mix(in srgb, var(--gh-accent) 85%, var(--gh-fgColor-default));
+  --color-accent-ink: color-mix(in srgb, var(--gh-accent) 70%, var(--gh-fgColor-default));
+  --color-accent-soft: color-mix(in srgb, var(--gh-accent) 18%, var(--gh-bgColor-default));
+  --color-accent-muted: color-mix(in srgb, var(--gh-accent) 26%, var(--gh-bgColor-default));
+  --color-accent-halo: color-mix(in srgb, var(--gh-accent) 34%, var(--gh-bgColor-default));
+  --color-accent-line: color-mix(in srgb, var(--gh-accent) 55%, var(--gh-bgColor-default));
+  --color-accent-wash: color-mix(in srgb, var(--gh-accent) 8%, var(--gh-bgColor-default));
+  --color-accent-wash-hover: color-mix(in srgb, var(--gh-accent) 13%, var(--gh-bgColor-default));
+  /* Danger and drop targets */
+  --color-danger: var(--gh-fgColor-danger);
+  --color-danger-ink: color-mix(in srgb, var(--gh-fgColor-danger) 70%, var(--gh-fgColor-default));
+  --color-danger-soft: color-mix(in srgb, var(--gh-fgColor-danger) 14%, var(--gh-bgColor-default));
+  --color-danger-line: color-mix(in srgb, var(--gh-fgColor-danger) 45%, var(--gh-bgColor-default));
+  --color-drop-ready: color-mix(in srgb, var(--gh-accent) 14%, var(--gh-bgColor-default));
+  --color-drop-over: color-mix(in srgb, var(--gh-accent) 28%, var(--gh-bgColor-default));
+  /* Secondary panels */
+  --color-panel: var(--gh-bgColor-disabled);
+  --color-panel-field: var(--gh-bgColor-muted);
+  --color-panel-line-soft: color-mix(in srgb, var(--gh-fgColor-success) 14%, var(--gh-bgColor-disabled));
+  --color-panel-line: color-mix(in srgb, var(--gh-fgColor-success) 22%, var(--gh-borderColor-default));
+  --color-panel-line-strong: color-mix(in srgb, var(--gh-fgColor-success) 35%, var(--gh-borderColor-emphasis));
+  --color-panel-ink-strong: var(--gh-fgColor-default);
+  --color-panel-ink-body: var(--gh-fgColor-default);
+  --color-panel-ink: var(--gh-fgColor-muted);
+  --color-panel-ink-soft: var(--gh-fgColor-muted);
+  /* Status */
+  --color-success: var(--gh-fgColor-success);
+  --color-success-soft: color-mix(in srgb, var(--gh-fgColor-success) 18%, var(--gh-bgColor-default));
+  --color-status-guessed: color-mix(in srgb, var(--gh-fgColor-attention) 16%, var(--gh-bgColor-default));
+  --color-status-unmapped: color-mix(in srgb, var(--gh-fgColor-danger) 16%, var(--gh-bgColor-default));
+  --color-warning-ink: color-mix(in srgb, var(--gh-fgColor-attention) 60%, var(--gh-fgColor-default));
+  /* Decoration */
+  --color-decor-sage: var(--gh-fgColor-success);
+  --color-decor-stitch: var(--gh-borderColor-emphasis);
+  /* Shadows and scrims */
+  --color-shadow: var(--gh-bgColor-inset);
+  --color-shadow-deep: var(--gh-bgColor-inset);
+  --color-scrim: var(--gh-bgColor-inset);
+
+  /* Chart chrome; fabric, grid, symbol and highlight roles stay pattern data. */
+  --renderer-off-canvas-color: var(--gh-bgColor-muted);
+  --renderer-ghost-grid-color: var(--gh-borderColor-default);
+  --renderer-ghost-major-grid-color: var(--gh-borderColor-emphasis);
+  --renderer-selection-color: var(--gh-fgColor-accent);
+  --renderer-cursor-color: var(--gh-accent);
+  --renderer-canvas-add-color: var(--gh-fgColor-success);
+  --renderer-canvas-remove-color: var(--gh-fgColor-danger);
+  --renderer-center-mark-color: var(--gh-fgColor-danger);
+}

@@ -18,7 +18,7 @@ import { pointerWithinOrClosestCenter } from "../dnd-shared";
 import { useDismissable } from "../dismiss";
 import { useObjectUrl } from "../object-url";
 import { prefersReducedMotion } from "../motion";
-import stitchIcon from "../../assets/editor-tools/stitch.svg";
+import { Icon } from "../controls/Icon";
 import {
   displayLayerOrder,
   layerDragId,
@@ -44,7 +44,7 @@ export function LayerTypeSymbol({ kind }: { kind: RowKind }) {
   if (kind === "stitch") {
     return (
       <span className={`layer-type-symbol layer-type-${kind}`} title={LAYER_TYPE_LABELS[kind]} aria-hidden="true">
-        <img data-icon="stitch" src={stitchIcon} alt="" aria-hidden="true" />
+        <Icon name="stitch" />
       </span>
     );
   }

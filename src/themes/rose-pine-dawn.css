@@ -1,0 +1,96 @@
+/* Rosé Pine Dawn: https://github.com/rose-pine/palette */
+:root[data-theme="rose-pine-dawn"] {
+  color-scheme: light;
+  --rp-base: #faf4ed;
+  --rp-surface: #fffaf3;
+  --rp-overlay: #f2e9e1;
+  --rp-muted: #9893a5;
+  --rp-subtle: #797593;
+  --rp-text: #464261;
+  --rp-love: #b4637a;
+  --rp-gold: #ea9d34;
+  --rp-rose: #d7827e;
+  --rp-pine: #286983;
+  --rp-foam: #56949f;
+  --rp-iris: #907aa9;
+
+  --rp-accent: color-mix(in srgb, var(--rp-rose) 45%, var(--rp-text));
+
+  /* Surfaces */
+  --color-page: var(--rp-base);
+  --color-surface: var(--rp-surface);
+  --color-surface-sunken: var(--rp-base);
+  --color-surface-muted: var(--rp-overlay);
+  --color-surface-inverse: var(--rp-text);
+  --color-fabric: var(--rp-overlay);
+  --color-folder: color-mix(in srgb, var(--rp-overlay) 60%, var(--rp-base));
+  --color-folder-back: var(--rp-overlay);
+  /* Ink */
+  --color-ink: var(--rp-text);
+  --color-ink-soft: var(--rp-text);
+  --color-ink-body: color-mix(in srgb, var(--rp-text) 50%, var(--rp-subtle));
+  --color-ink-control: color-mix(in srgb, var(--rp-text) 50%, var(--rp-subtle));
+  --color-ink-secondary: var(--rp-subtle);
+  --color-ink-muted: var(--rp-subtle);
+  --color-ink-faint: color-mix(in srgb, var(--rp-subtle) 50%, var(--rp-muted));
+  --color-ink-disabled: var(--rp-muted);
+  --color-on-accent: var(--rp-base);
+  --color-on-inverse: var(--rp-base);
+  --color-on-inverse-accent: var(--rp-accent);
+  /* Lines */
+  --color-line: color-mix(in srgb, var(--rp-muted) 45%, var(--rp-overlay));
+  --color-line-soft: var(--rp-overlay);
+  --color-line-strong: color-mix(in srgb, var(--rp-muted) 45%, var(--rp-overlay));
+  --color-line-firm: var(--rp-muted);
+  --color-swatch-edge: var(--rp-muted);
+  /* Accent */
+  --color-accent: var(--rp-accent);
+  --color-accent-strong: color-mix(in srgb, var(--rp-accent) 85%, var(--rp-text));
+  --color-accent-ink: color-mix(in srgb, var(--rp-accent) 70%, var(--rp-text));
+  --color-accent-soft: color-mix(in srgb, var(--rp-accent) 18%, var(--rp-base));
+  --color-accent-muted: color-mix(in srgb, var(--rp-accent) 26%, var(--rp-base));
+  --color-accent-halo: color-mix(in srgb, var(--rp-accent) 34%, var(--rp-base));
+  --color-accent-line: color-mix(in srgb, var(--rp-accent) 55%, var(--rp-base));
+  --color-accent-wash: color-mix(in srgb, var(--rp-accent) 8%, var(--rp-base));
+  --color-accent-wash-hover: color-mix(in srgb, var(--rp-accent) 13%, var(--rp-base));
+  /* Danger and drop targets */
+  --color-danger: var(--rp-love);
+  --color-danger-ink: color-mix(in srgb, var(--rp-love) 70%, var(--rp-text));
+  --color-danger-soft: color-mix(in srgb, var(--rp-love) 14%, var(--rp-base));
+  --color-danger-line: color-mix(in srgb, var(--rp-love) 45%, var(--rp-base));
+  --color-drop-ready: color-mix(in srgb, var(--rp-accent) 14%, var(--rp-base));
+  --color-drop-over: color-mix(in srgb, var(--rp-accent) 28%, var(--rp-base));
+  /* Secondary panels */
+  --color-panel: var(--rp-overlay);
+  --color-panel-field: var(--rp-surface);
+  --color-panel-line-soft: color-mix(in srgb, var(--rp-pine) 14%, var(--rp-overlay));
+  --color-panel-line: color-mix(in srgb, var(--rp-pine) 22%, color-mix(in srgb, var(--rp-muted) 45%, var(--rp-overlay)));
+  --color-panel-line-strong: color-mix(in srgb, var(--rp-pine) 35%, var(--rp-muted));
+  --color-panel-ink-strong: var(--rp-text);
+  --color-panel-ink-body: color-mix(in srgb, var(--rp-text) 50%, var(--rp-subtle));
+  --color-panel-ink: var(--rp-subtle);
+  --color-panel-ink-soft: var(--rp-subtle);
+  /* Status */
+  --color-success: var(--rp-pine);
+  --color-success-soft: color-mix(in srgb, var(--rp-pine) 18%, var(--rp-base));
+  --color-status-guessed: color-mix(in srgb, var(--rp-gold) 16%, var(--rp-base));
+  --color-status-unmapped: color-mix(in srgb, var(--rp-love) 16%, var(--rp-base));
+  --color-warning-ink: color-mix(in srgb, var(--rp-gold) 60%, var(--rp-text));
+  /* Decoration */
+  --color-decor-sage: var(--rp-pine);
+  --color-decor-stitch: var(--rp-muted);
+  /* Shadows and scrims */
+  --color-shadow: var(--rp-text);
+  --color-shadow-deep: var(--rp-text);
+  --color-scrim: var(--rp-text);
+
+  /* Chart chrome; fabric, grid, symbol and highlight roles stay pattern data. */
+  --renderer-off-canvas-color: var(--rp-surface);
+  --renderer-ghost-grid-color: color-mix(in srgb, var(--rp-muted) 45%, var(--rp-overlay));
+  --renderer-ghost-major-grid-color: var(--rp-muted);
+  --renderer-selection-color: var(--rp-pine);
+  --renderer-cursor-color: var(--rp-accent);
+  --renderer-canvas-add-color: var(--rp-pine);
+  --renderer-canvas-remove-color: var(--rp-love);
+  --renderer-center-mark-color: var(--rp-love);
+}

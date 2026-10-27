@@ -1,0 +1,121 @@
+/* Gruvbox Light, medium contrast: https://github.com/morhetz/gruvbox */
+:root[data-theme="gruvbox-light"] {
+  color-scheme: light;
+  --gb-dark0_hard: #1d2021;
+  --gb-dark0: #282828;
+  --gb-dark0_soft: #32302f;
+  --gb-dark1: #3c3836;
+  --gb-dark2: #504945;
+  --gb-dark3: #665c54;
+  --gb-dark4: #7c6f64;
+  --gb-gray_245: #928374;
+  --gb-gray_244: #928374;
+  --gb-light0_hard: #f9f5d7;
+  --gb-light0: #fbf1c7;
+  --gb-light0_soft: #f2e5bc;
+  --gb-light1: #ebdbb2;
+  --gb-light2: #d5c4a1;
+  --gb-light3: #bdae93;
+  --gb-light4: #a89984;
+  --gb-bright_red: #fb4934;
+  --gb-bright_green: #b8bb26;
+  --gb-bright_yellow: #fabd2f;
+  --gb-bright_blue: #83a598;
+  --gb-bright_purple: #d3869b;
+  --gb-bright_aqua: #8ec07c;
+  --gb-bright_orange: #fe8019;
+  --gb-neutral_red: #cc241d;
+  --gb-neutral_green: #98971a;
+  --gb-neutral_yellow: #d79921;
+  --gb-neutral_blue: #458588;
+  --gb-neutral_purple: #b16286;
+  --gb-neutral_aqua: #689d6a;
+  --gb-neutral_orange: #d65d0e;
+  --gb-faded_red: #9d0006;
+  --gb-faded_green: #79740e;
+  --gb-faded_yellow: #b57614;
+  --gb-faded_blue: #076678;
+  --gb-faded_purple: #8f3f71;
+  --gb-faded_aqua: #427b58;
+  --gb-faded_orange: #af3a03;
+
+  --gb-accent: var(--gb-faded_orange);
+
+  /* Surfaces */
+  --color-page: var(--gb-light0);
+  --color-surface: var(--gb-light0_hard);
+  --color-surface-sunken: var(--gb-light0_soft);
+  --color-surface-muted: var(--gb-light1);
+  --color-surface-inverse: var(--gb-dark1);
+  --color-fabric: var(--gb-light1);
+  --color-folder: color-mix(in srgb, var(--gb-light1) 60%, var(--gb-light0));
+  --color-folder-back: var(--gb-light1);
+  /* Ink */
+  --color-ink: var(--gb-dark1);
+  --color-ink-soft: var(--gb-dark1);
+  --color-ink-body: var(--gb-dark2);
+  --color-ink-control: var(--gb-dark2);
+  --color-ink-secondary: var(--gb-dark3);
+  --color-ink-muted: var(--gb-dark4);
+  --color-ink-faint: var(--gb-gray_244);
+  --color-ink-disabled: var(--gb-light4);
+  --color-on-accent: var(--gb-light0);
+  --color-on-inverse: var(--gb-light0);
+  --color-on-inverse-accent: var(--gb-accent);
+  /* Lines */
+  --color-line: var(--gb-light2);
+  --color-line-soft: var(--gb-light1);
+  --color-line-strong: var(--gb-light2);
+  --color-line-firm: var(--gb-light3);
+  --color-swatch-edge: var(--gb-light4);
+  /* Accent */
+  --color-accent: var(--gb-accent);
+  --color-accent-strong: color-mix(in srgb, var(--gb-accent) 85%, var(--gb-dark1));
+  --color-accent-ink: color-mix(in srgb, var(--gb-accent) 70%, var(--gb-dark1));
+  --color-accent-soft: color-mix(in srgb, var(--gb-accent) 18%, var(--gb-light0));
+  --color-accent-muted: color-mix(in srgb, var(--gb-accent) 26%, var(--gb-light0));
+  --color-accent-halo: color-mix(in srgb, var(--gb-accent) 34%, var(--gb-light0));
+  --color-accent-line: color-mix(in srgb, var(--gb-accent) 55%, var(--gb-light0));
+  --color-accent-wash: color-mix(in srgb, var(--gb-accent) 8%, var(--gb-light0));
+  --color-accent-wash-hover: color-mix(in srgb, var(--gb-accent) 13%, var(--gb-light0));
+  /* Danger and drop targets */
+  --color-danger: var(--gb-faded_red);
+  --color-danger-ink: color-mix(in srgb, var(--gb-faded_red) 70%, var(--gb-dark1));
+  --color-danger-soft: color-mix(in srgb, var(--gb-faded_red) 14%, var(--gb-light0));
+  --color-danger-line: color-mix(in srgb, var(--gb-faded_red) 45%, var(--gb-light0));
+  --color-drop-ready: color-mix(in srgb, var(--gb-accent) 14%, var(--gb-light0));
+  --color-drop-over: color-mix(in srgb, var(--gb-accent) 28%, var(--gb-light0));
+  /* Secondary panels */
+  --color-panel: var(--gb-light1);
+  --color-panel-field: var(--gb-light0_hard);
+  --color-panel-line-soft: color-mix(in srgb, var(--gb-faded_green) 14%, var(--gb-light1));
+  --color-panel-line: color-mix(in srgb, var(--gb-faded_green) 22%, var(--gb-light2));
+  --color-panel-line-strong: color-mix(in srgb, var(--gb-faded_green) 35%, var(--gb-light4));
+  --color-panel-ink-strong: var(--gb-dark1);
+  --color-panel-ink-body: var(--gb-dark2);
+  --color-panel-ink: var(--gb-dark3);
+  --color-panel-ink-soft: var(--gb-dark4);
+  /* Status */
+  --color-success: var(--gb-faded_green);
+  --color-success-soft: color-mix(in srgb, var(--gb-faded_green) 18%, var(--gb-light0));
+  --color-status-guessed: color-mix(in srgb, var(--gb-faded_yellow) 16%, var(--gb-light0));
+  --color-status-unmapped: color-mix(in srgb, var(--gb-faded_red) 16%, var(--gb-light0));
+  --color-warning-ink: color-mix(in srgb, var(--gb-faded_yellow) 60%, var(--gb-dark1));
+  /* Decoration */
+  --color-decor-sage: var(--gb-faded_green);
+  --color-decor-stitch: var(--gb-light3);
+  /* Shadows and scrims */
+  --color-shadow: var(--gb-dark1);
+  --color-shadow-deep: var(--gb-dark1);
+  --color-scrim: var(--gb-dark1);
+
+  /* Chart chrome; fabric, grid, symbol and highlight roles stay pattern data. */
+  --renderer-off-canvas-color: var(--gb-light0_hard);
+  --renderer-ghost-grid-color: var(--gb-light2);
+  --renderer-ghost-major-grid-color: var(--gb-light3);
+  --renderer-selection-color: var(--gb-faded_blue);
+  --renderer-cursor-color: var(--gb-accent);
+  --renderer-canvas-add-color: var(--gb-faded_green);
+  --renderer-canvas-remove-color: var(--gb-faded_red);
+  --renderer-center-mark-color: var(--gb-faded_red);
+}

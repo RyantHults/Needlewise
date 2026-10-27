@@ -1,0 +1,111 @@
+/* Everforest Dark, medium contrast: https://github.com/sainnhe/everforest */
+:root[data-theme="everforest-dark"] {
+  color-scheme: dark;
+  --ef-bg_dim: #232A2E;
+  --ef-bg0: #2D353B;
+  --ef-bg1: #343F44;
+  --ef-bg2: #3D484D;
+  --ef-bg3: #475258;
+  --ef-bg4: #4F585E;
+  --ef-bg5: #56635f;
+  --ef-bg_visual: #543A48;
+  --ef-bg_red: #514045;
+  --ef-bg_yellow: #4D4C43;
+  --ef-bg_green: #425047;
+  --ef-bg_blue: #3A515D;
+  --ef-bg_purple: #4A444E;
+  --ef-fg: #D3C6AA;
+  --ef-statusline2: #D3C6AA;
+  --ef-red: #E67E80;
+  --ef-statusline3: #E67E80;
+  --ef-orange: #E69875;
+  --ef-yellow: #DBBC7F;
+  --ef-green: #A7C080;
+  --ef-statusline1: #A7C080;
+  --ef-aqua: #83C092;
+  --ef-blue: #7FBBB3;
+  --ef-purple: #D699B6;
+  --ef-grey0: #7A8478;
+  --ef-grey1: #859289;
+  --ef-grey2: #9DA9A0;
+
+  --ef-accent: var(--ef-green);
+
+  /* Surfaces */
+  --color-page: var(--ef-bg0);
+  --color-surface: var(--ef-bg_dim);
+  --color-surface-sunken: var(--ef-bg_dim);
+  --color-surface-muted: var(--ef-bg1);
+  --color-surface-inverse: var(--ef-fg);
+  --color-fabric: var(--ef-bg1);
+  --color-folder: color-mix(in srgb, var(--ef-bg1) 60%, var(--ef-bg0));
+  --color-folder-back: var(--ef-bg1);
+  /* Ink */
+  --color-ink: var(--ef-fg);
+  --color-ink-soft: var(--ef-fg);
+  --color-ink-body: color-mix(in srgb, var(--ef-fg) 50%, var(--ef-grey2));
+  --color-ink-control: color-mix(in srgb, var(--ef-fg) 50%, var(--ef-grey2));
+  --color-ink-secondary: var(--ef-grey2);
+  --color-ink-muted: var(--ef-grey2);
+  --color-ink-faint: var(--ef-grey1);
+  --color-ink-disabled: var(--ef-grey0);
+  --color-on-accent: var(--ef-bg0);
+  --color-on-inverse: var(--ef-bg0);
+  --color-on-inverse-accent: var(--ef-accent);
+  /* Lines */
+  --color-line: var(--ef-bg2);
+  --color-line-soft: var(--ef-bg1);
+  --color-line-strong: var(--ef-bg2);
+  --color-line-firm: var(--ef-bg5);
+  --color-swatch-edge: var(--ef-grey0);
+  /* Accent */
+  --color-accent: var(--ef-accent);
+  --color-accent-strong: color-mix(in srgb, var(--ef-accent) 85%, var(--ef-fg));
+  --color-accent-ink: color-mix(in srgb, var(--ef-accent) 70%, var(--ef-fg));
+  --color-accent-soft: color-mix(in srgb, var(--ef-accent) 18%, var(--ef-bg0));
+  --color-accent-muted: color-mix(in srgb, var(--ef-accent) 26%, var(--ef-bg0));
+  --color-accent-halo: color-mix(in srgb, var(--ef-accent) 34%, var(--ef-bg0));
+  --color-accent-line: color-mix(in srgb, var(--ef-accent) 55%, var(--ef-bg0));
+  --color-accent-wash: color-mix(in srgb, var(--ef-accent) 8%, var(--ef-bg0));
+  --color-accent-wash-hover: color-mix(in srgb, var(--ef-accent) 13%, var(--ef-bg0));
+  /* Danger and drop targets */
+  --color-danger: var(--ef-red);
+  --color-danger-ink: color-mix(in srgb, var(--ef-red) 70%, var(--ef-fg));
+  --color-danger-soft: color-mix(in srgb, var(--ef-red) 14%, var(--ef-bg0));
+  --color-danger-line: color-mix(in srgb, var(--ef-red) 45%, var(--ef-bg0));
+  --color-drop-ready: color-mix(in srgb, var(--ef-accent) 14%, var(--ef-bg0));
+  --color-drop-over: color-mix(in srgb, var(--ef-accent) 28%, var(--ef-bg0));
+  /* Secondary panels */
+  --color-panel: var(--ef-bg1);
+  --color-panel-field: var(--ef-bg_dim);
+  --color-panel-line-soft: color-mix(in srgb, var(--ef-green) 14%, var(--ef-bg1));
+  --color-panel-line: color-mix(in srgb, var(--ef-green) 22%, var(--ef-bg2));
+  --color-panel-line-strong: color-mix(in srgb, var(--ef-green) 35%, var(--ef-grey0));
+  --color-panel-ink-strong: var(--ef-fg);
+  --color-panel-ink-body: color-mix(in srgb, var(--ef-fg) 50%, var(--ef-grey2));
+  --color-panel-ink: var(--ef-grey2);
+  --color-panel-ink-soft: var(--ef-grey2);
+  /* Status */
+  --color-success: var(--ef-green);
+  --color-success-soft: color-mix(in srgb, var(--ef-green) 18%, var(--ef-bg0));
+  --color-status-guessed: color-mix(in srgb, var(--ef-yellow) 16%, var(--ef-bg0));
+  --color-status-unmapped: color-mix(in srgb, var(--ef-red) 16%, var(--ef-bg0));
+  --color-warning-ink: color-mix(in srgb, var(--ef-yellow) 60%, var(--ef-fg));
+  /* Decoration */
+  --color-decor-sage: var(--ef-green);
+  --color-decor-stitch: var(--ef-bg5);
+  /* Shadows and scrims */
+  --color-shadow: var(--ef-bg_dim);
+  --color-shadow-deep: var(--ef-bg_dim);
+  --color-scrim: var(--ef-bg_dim);
+
+  /* Chart chrome; fabric, grid, symbol and highlight roles stay pattern data. */
+  --renderer-off-canvas-color: var(--ef-bg_dim);
+  --renderer-ghost-grid-color: var(--ef-bg2);
+  --renderer-ghost-major-grid-color: var(--ef-bg5);
+  --renderer-selection-color: var(--ef-blue);
+  --renderer-cursor-color: var(--ef-accent);
+  --renderer-canvas-add-color: var(--ef-green);
+  --renderer-canvas-remove-color: var(--ef-red);
+  --renderer-center-mark-color: var(--ef-red);
+}

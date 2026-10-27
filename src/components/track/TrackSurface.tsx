@@ -17,8 +17,7 @@ import { ToolButton } from '../controls/ToolButton';
 import { PatternViewer } from './PatternViewer';
 import { ProgressStrip, progressPercent } from './ProgressStrip';
 import { TrackPalette } from './TrackPalette';
-import panIcon from '../../assets/editor-tools/pan.svg';
-import markIcon from '../../assets/editor-tools/mark.svg';
+import { Icon } from '../controls/Icon';
 import './track.css';
 
 type TrackTool = 'pan' | 'mark';
@@ -89,10 +88,10 @@ export function TrackSurface({ workspace, document, title, metrics, onNavigate, 
             <ActionSection id="tool-actions-label" label="Tools" className="track-tools">
               <div role="group" aria-label="Track tools">
                 <ToolButton label="Pan" pressed={tool === 'pan'} onClick={() => setTool('pan')}>
-                  <img data-icon="pan" src={panIcon} alt="" aria-hidden="true" />
+                  <Icon name="pan" />
                 </ToolButton>
                 <ToolButton label="Mark" pressed={tool === 'mark'} onClick={() => setTool('mark')}>
-                  <img data-icon="mark" src={markIcon} alt="" aria-hidden="true" />
+                  <Icon name="mark" />
                 </ToolButton>
               </div>
             </ActionSection>

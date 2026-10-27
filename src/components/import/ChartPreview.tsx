@@ -1,6 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { contrastSymbolInk } from '../../rendering/contrast';
-import { readThemeColor } from '../../rendering/theme-colors';
+import { readThemeColor, subscribeThemeChange } from '../../rendering/theme-colors';
 import { toSymbolOutline } from '../../symbols';
 import type { ImportedChart, SymbolMapping } from '../../import/types';
 import { mappingColor } from './mapping';
@@ -24,6 +24,8 @@ export function previewCellSize(chart: ImportedChart): number {
 export function ChartPreview({ chart, mappings, slugs }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cell = previewCellSize(chart);
+  const [themeRevision, setThemeRevision] = useState(0);
+  useEffect(() => subscribeThemeChange(() => setThemeRevision((revision) => revision + 1)), []);
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -59,7 +61,7 @@ export function ChartPreview({ chart, mappings, slugs }: Props) {
         }
       }
     }
-  }, [chart, mappings, slugs, cell]);
+  }, [chart, mappings, slugs, cell, themeRevision]);
   return (
     <div className="import-preview-frame">
       <canvas ref={canvasRef} className="import-preview" role="img" aria-label={`Chart preview, ${chart.width} by ${chart.height} stitches`} />
