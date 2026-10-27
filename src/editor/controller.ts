@@ -1065,8 +1065,8 @@ function threeQuarterTriangleContains(corner: 0 | 1 | 2 | 3, point: ModelPoint):
   return corner === 1 ? y <= x : y >= x;
 }
 
-/** The corner an eraser touch at `point` hits in `index`: the triangle for a three-quarter cell, else the quadrant. */
-function eraserHitCornerAt(document: PatternDocument, index: number, point: ModelPoint): 0 | 1 | 2 | 3 {
+/** The corner a touch at `point` hits in `index`: the triangle for a three-quarter cell, else the quadrant. */
+export function hitCornerAt(document: PatternDocument, index: number, point: ModelPoint): 0 | 1 | 2 | 3 {
   const kind = document.kind[index];
   if (isThreeQuarterPairKind(kind)) return pairCornerAt(point, document.colors.subarray(index * 4, index * 4 + 4));
   const single = isThreeQuarterKind(kind) ? threeQuarterCornerForKind(kind) : undefined;
@@ -4096,7 +4096,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     const point = screenToModel({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport);
     if (target.startCorner === undefined) {
-      target.startCorner = eraserHitCornerAt(document, cell.y * document.width + cell.x, point);
+      target.startCorner = hitCornerAt(document, cell.y * document.width + cell.x, point);
     }
     for (const stampedCell of stamped) {
       const key = cellKey(stampedCell);

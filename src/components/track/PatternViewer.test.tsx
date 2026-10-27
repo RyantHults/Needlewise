@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createDocument, type PatternDocument } from '../../domain';
+import { CellKind, createDocument, type PatternDocument } from '../../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../../catalog';
 import type { ProjectWorkspace } from '../../application/workspace';
 import { PatternViewer } from './PatternViewer';
@@ -52,6 +52,18 @@ vi.mock('../../editor', async () => {
 
 const workspace = { availableCatalogs: () => [] } as unknown as ProjectWorkspace;
 
+function twoColorPattern(): PatternDocument {
+  return createDocument({
+    catalog: DEFAULT_CATALOG_DEFINITION.association,
+    width: 3,
+    height: 2,
+    palette: [
+      { id: 1, name: 'Ruby', color: '#AA0000' },
+      { id: 2, name: 'Sky', color: '#0000AA' }
+    ]
+  });
+}
+
 function pattern(): PatternDocument {
   return createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 3, height: 2, palette: [{ id: 1, name: 'Ruby', color: '#AA0000' }] });
 }
@@ -97,9 +109,23 @@ describe('PatternViewer', () => {
 
     // The store's default viewport draws a cell 16 pixels wide from the origin.
     fireEvent.pointerMove(frame, { clientX: 20, clientY: 4 });
-    expect(screen.getByText(/#AA0000 Ruby · column 2, row 1/)).toBeInTheDocument();
+    expect(screen.getByText(/#AA0000 Ruby · Full stitch · column 2, row 1/)).toBeInTheDocument();
     fireEvent.pointerLeave(frame);
     expect(screen.queryByText(/column 2/)).not.toBeInTheDocument();
+  });
+
+  it('reports the triangle of a three-quarter pair under the pointer', () => {
+    const document = twoColorPattern();
+    document.kind[1] = CellKind.ThreeQuarterPair;
+    document.colors[5] = 1;
+    document.colors[7] = 2;
+    render(<PatternViewer workspace={workspace} document={document} />);
+    const frame = screen.getByRole('group', { name: 'Pattern preview canvas' });
+
+    fireEvent.pointerMove(frame, { clientX: 28, clientY: 2 });
+    expect(screen.getByText(/#AA0000 Ruby · Three-quarter stitch · column 2, row 1/)).toBeInTheDocument();
+    fireEvent.pointerMove(frame, { clientX: 20, clientY: 14 });
+    expect(screen.getByText(/#0000AA Sky · Three-quarter stitch · column 2, row 1/)).toBeInTheDocument();
   });
 
   it('unsubscribes and tells the page the controller is gone before disposing it', () => {

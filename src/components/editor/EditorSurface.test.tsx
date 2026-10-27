@@ -41,7 +41,7 @@ vi.mock('../../rendering/trace', async () => {
   const actual = await vi.importActual<typeof import('../../rendering/trace')>('../../rendering/trace');
   return { ...actual, decodeTraceImage: vi.fn(async () => ({ source: {}, bitmap: {}, width: 2, height: 2, dispose: vi.fn() })) };
 });
-vi.mock('../../editor/coordinates', () => ({ getCanvasMetrics: vi.fn(() => ({ cssWidth: 640, cssHeight: 480, pixelWidth: 640, pixelHeight: 480, backingWidth: 640, backingHeight: 480, requestedDpr: 1, dpr: 1, maxDpr: 2, maxBackingPixels: 1e6 })), modelToScreen: vi.fn((point: { x: number; y: number }) => point), screenToCellUnclamped: vi.fn((point: { x: number; y: number }) => ({ x: Math.floor(point.x / 16), y: Math.floor(point.y / 16) })) }));
+vi.mock('../../editor/coordinates', () => ({ getCanvasMetrics: vi.fn(() => ({ cssWidth: 640, cssHeight: 480, pixelWidth: 640, pixelHeight: 480, backingWidth: 640, backingHeight: 480, requestedDpr: 1, dpr: 1, maxDpr: 2, maxBackingPixels: 1e6 })), modelToScreen: vi.fn((point: { x: number; y: number }) => point), screenToModel: vi.fn((point: { x: number; y: number }) => ({ x: point.x / 16, y: point.y / 16 })) }));
 vi.mock('../../editor', () => ({ ChartPresentationMode: { Color: 'color', Symbol: 'symbol', Grayscale: 'grayscale', Combined: 'combined' }, createUiStore: vi.fn((initial: unknown) => { f.createdUiState = initial; return { getState: () => f.uiState, subscribe: vi.fn((listener: unknown) => { f.uiListener = listener as (state: unknown) => void; return () => undefined; }) }; }), createWorkspaceEditorGateway: vi.fn(() => ({ dispose: vi.fn() })), createPointerEventsAdapter: f.adapter, createEditorSurfaceController: vi.fn((options: unknown) => { f.capturedCallback = (options as { onTraceBoundsChange?: (b: { x: number; y: number; width: number; height: number }) => void }).onTraceBoundsChange ?? null; return f.c as never; }) }));
 const ws = { metadata: { title: 'Sampler', notes: '', aidaCount: 14 }, updateActiveMetadata: vi.fn(), updateActiveAidaCount: vi.fn(), execute: vi.fn(), getStateSnapshot: vi.fn(), catalogFor: vi.fn(() => COMPACT_DMC_DEFINITION), availableCatalogs: vi.fn(() => [COMPACT_DMC_DEFINITION]), setSourceImage: vi.fn(() => Promise.resolve()), applyTraceImageChange: vi.fn(() => Promise.resolve()), getAsset: vi.fn(), sourceImage: undefined as ({ chartBounds: { x: number; y: number; width: number; height: number } } | undefined) } as never;
 const executeMock = () => (ws as { execute: ReturnType<typeof vi.fn> }).execute;
@@ -112,7 +112,7 @@ describe('EditorSurface', () => {
     render(<EditorSurface workspace={ws} document={stitched} />);
     const frame = screen.getByRole('group', { name: 'Stitch chart canvas' });
     fireEvent.pointerMove(frame, { clientX: 20, clientY: 4 });
-    expect(screen.getByText(/321 Ruby · column 2, row 1/)).toBeInTheDocument();
+    expect(screen.getByText(/321 Ruby · Full stitch · column 2, row 1/)).toBeInTheDocument();
     fireEvent.pointerLeave(frame);
     expect(screen.queryByText(/column 2/)).not.toBeInTheDocument();
   });
