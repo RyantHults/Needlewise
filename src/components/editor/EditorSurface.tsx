@@ -150,7 +150,7 @@ export function EditorSurface({
   const { toast, showToast, dismissToast } = useToast();
   const showToastRef = useRef(showToast);
   showToastRef.current = showToast;
-  const { hover, attach: attachReadout } = useStitchReadout(document);
+  const { hover, attach: attachReadout } = useStitchReadout(document, availableCatalogs);
   const { controller, ui, fallback } = useEditorCanvas({
     workspace,
     document,

@@ -25,6 +25,9 @@ export interface ModalProps {
   children: React.ReactNode;
 }
 
+// Modals open and close in any order (a confirm closes together with the modal that opened it), so count them.
+let openModals = 0;
+
 const FOCUSABLE_SELECTOR = 'button,input,select,textarea,a[href],[tabindex]';
 
 function focusableWithin(root: HTMLElement) {
@@ -70,12 +73,11 @@ export function Modal({
   // Escape reaches the modal only when nothing opened above it, wherever focus is.
   useDismissable({ open: true, refs: [backdropRef], onDismiss: onEscape ?? onClose });
 
-  // Inerts the rest of the app, moves focus in, and traps Tab. Nested
-  // modals unmount in LIFO order, so each restores the inert value it found.
+  // Inerts the rest of the app while any modal is open, moves focus in, and traps Tab.
   useEffect(() => {
     previousFocusRef.current ??= document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const root = document.querySelector<HTMLElement>('[data-application]');
-    const wasInert = root?.inert ?? false;
+    openModals += 1;
     if (root) root.inert = true;
     const el = elementRef.current;
 
@@ -97,7 +99,8 @@ export function Modal({
 
     return () => {
       el?.removeEventListener('keydown', handleKeyDown);
-      if (root) root.inert = wasInert;
+      openModals -= 1;
+      if (root && openModals === 0) root.inert = false;
       const returnTo = returnFocusRef.current;
       if (returnTo === false) return;
       const restoreTarget = returnTo ? returnTo.current : previousFocusRef.current;

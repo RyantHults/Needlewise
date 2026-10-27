@@ -112,7 +112,7 @@ describe('EditorSurface', () => {
     render(<EditorSurface workspace={ws} document={stitched} />);
     const frame = screen.getByRole('group', { name: 'Stitch chart canvas' });
     fireEvent.pointerMove(frame, { clientX: 20, clientY: 4 });
-    expect(screen.getByText(/Ruby · column 2, row 1/)).toBeInTheDocument();
+    expect(screen.getByText(/321 Ruby · column 2, row 1/)).toBeInTheDocument();
     fireEvent.pointerLeave(frame);
     expect(screen.queryByText(/column 2/)).not.toBeInTheDocument();
   });

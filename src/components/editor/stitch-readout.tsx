@@ -1,12 +1,15 @@
 import { useCallback, useRef, useState } from 'react';
+import type { CatalogDefinition } from '../../catalog';
 import type { PatternDocument } from '../../domain';
 import { screenToCellUnclamped } from '../../editor/coordinates';
 import type { EditorCanvasParts } from './editor-canvas';
+import { paletteCodeFor } from './palette-code';
 import './stitch-readout.css';
 
 interface HoverInfo {
   readonly x: number;
   readonly y: number;
+  readonly code: string | null;
   readonly name: string | null;
   readonly color: string | null;
 }
@@ -16,12 +19,14 @@ interface HoverInfo {
  * goes inside `useEditorCanvas`'s `onStart`, and its cleanup belongs in the
  * one that `onStart` returns.
  */
-export function useStitchReadout(document: PatternDocument): {
+export function useStitchReadout(document: PatternDocument, catalogs: readonly CatalogDefinition[]): {
   hover: HoverInfo | null;
   attach: (parts: Pick<EditorCanvasParts, 'store' | 'frame'>) => () => void;
 } {
   const documentRef = useRef(document);
   documentRef.current = document;
+  const catalogsRef = useRef(catalogs);
+  catalogsRef.current = catalogs;
   const [hover, setHover] = useState<HoverInfo | null>(null);
   const attach = useCallback(({ store, frame }: Pick<EditorCanvasParts, 'store' | 'frame'>) => {
     const inspect = (event: PointerEvent) => {
@@ -37,7 +42,13 @@ export function useStitchReadout(document: PatternDocument): {
       const index = y * current.width + x;
       const paletteId = current.kind[index] === 0 ? 0 : current.colors[index * 4];
       const entry = paletteId ? current.palette.find((candidate) => candidate.id === paletteId) : undefined;
-      setHover({ x, y, name: entry?.name ?? null, color: entry?.color ?? null });
+      setHover({
+        x,
+        y,
+        code: entry ? paletteCodeFor(entry, current.palette, catalogsRef.current).label : null,
+        name: entry?.name ?? null,
+        color: entry?.color ?? null,
+      });
     };
     const clearHover = () => setHover(null);
     frame.addEventListener('pointermove', inspect);
@@ -52,14 +63,14 @@ export function useStitchReadout(document: PatternDocument): {
   return { hover, attach };
 }
 
-/** The name, color and position of the hovered stitch, shown below the canvas. */
+/** The code, name, color and position of the hovered stitch, shown below the canvas. */
 export function StitchReadout({ hover }: { hover: HoverInfo | null }) {
   return (
     <p className="stitch-readout" aria-live="off">
       {hover && (
         <>
           {hover.color && <span className="stitch-readout-swatch" style={{ background: hover.color }} aria-hidden="true" />}
-          {hover.name ?? 'No stitch'} · column {hover.x + 1}, row {hover.y + 1}
+          {hover.name === null ? 'No stitch' : `${hover.code} ${hover.name}`} · column {hover.x + 1}, row {hover.y + 1}
         </>
       )}
     </p>

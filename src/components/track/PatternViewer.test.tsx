@@ -50,7 +50,7 @@ vi.mock('../../editor', async () => {
   };
 });
 
-const workspace = {} as ProjectWorkspace;
+const workspace = { availableCatalogs: () => [] } as unknown as ProjectWorkspace;
 
 function pattern(): PatternDocument {
   return createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 3, height: 2, palette: [{ id: 1, name: 'Ruby', color: '#AA0000' }] });
@@ -97,7 +97,7 @@ describe('PatternViewer', () => {
 
     // The store's default viewport draws a cell 16 pixels wide from the origin.
     fireEvent.pointerMove(frame, { clientX: 20, clientY: 4 });
-    expect(screen.getByText(/Ruby · column 2, row 1/)).toBeInTheDocument();
+    expect(screen.getByText(/#AA0000 Ruby · column 2, row 1/)).toBeInTheDocument();
     fireEvent.pointerLeave(frame);
     expect(screen.queryByText(/column 2/)).not.toBeInTheDocument();
   });

@@ -63,6 +63,27 @@ describe('Modal', () => {
     expect(app.inert).toBe(false);
   });
 
+  it('releases the application when a modal closes together with one opened inside it', () => {
+    const app = document.getElementById('app') as HTMLElement;
+    function Wizard() {
+      const [open, setOpen] = useState(true);
+      const [confirming, setConfirming] = useState(false);
+      if (!open) return null;
+      return (
+        <Modal title="Outer" onClose={() => {}}>
+          <button type="button" onClick={() => setConfirming(true)}>Close</button>
+          {confirming && <Modal title="Inner" onClose={() => {}}><button type="button" onClick={() => { setConfirming(false); setOpen(false); }}>Leave</button></Modal>}
+        </Modal>
+      );
+    }
+    render(<Wizard />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Leave' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(app.inert).toBe(false);
+  });
+
   describe('initial focus', () => {
     it('defaults to the first focusable control', () => {
       renderModal({}, <><button type="button" disabled>Off</button><button type="button">On</button></>);

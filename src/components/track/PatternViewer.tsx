@@ -35,7 +35,7 @@ export function PatternViewer({ workspace, document, showCompletion = false, sho
   onReadyRef.current = onReady;
   const onUiStateRef = useRef(onUiState);
   onUiStateRef.current = onUiState;
-  const { hover, attach: attachReadout } = useStitchReadout(document);
+  const { hover, attach: attachReadout } = useStitchReadout(document, workspace.availableCatalogs());
   const { controller, renderer, ui, fallback } = useEditorCanvas({
     workspace,
     document,
