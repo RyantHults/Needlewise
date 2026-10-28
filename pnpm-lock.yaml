@@ -78,6 +78,9 @@ importers:
       opentype.js:
         specifier: 2.0.0
         version: 2.0.0
+      postcss:
+        specifier: 8.5.26
+        version: 8.5.26
       stylelint:
         specifier: ^17.16.0
         version: 17.16.0(typescript@5.9.3)

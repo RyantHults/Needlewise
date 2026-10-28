@@ -1,0 +1,362 @@
+/*
+ * Styling for the dev theme editor overlay.
+ *
+ * This is a developer tool, not part of the application. It keeps its own fixed
+ * neutral colours instead of the role tokens, so the panel stays readable
+ * whatever the theme being edited does to them. The theme picker and the colour
+ * swatch are the app's own controls and keep the app's styling.
+ *
+ * The editor sits above everything in the app, modals included: the toggle,
+ * panel and hover box are portalled into the topmost modal backdrop while one
+ * is open (see ThemeEditor.tsx), and their z-index beats the app's highest,
+ * the 300 of the settings tooltip. The editor's own confirm dialogs are modals
+ * too, so the panel sits above them as well; at narrow widths it can cover part
+ * of a centred confirm.
+ */
+
+.theme-editor-toggle,
+.theme-editor {
+  --editor-border: #c9c9c9;
+  --editor-ink: #1f1f1f;
+  --editor-muted: #666666;
+  --editor-accent: #2457c5;
+  --editor-wash: #f2f2f2;
+  --editor-paper: #ffffff;
+  --editor-edited: #b25d00;
+
+  color: var(--editor-ink);
+  font: 13px/1.4 ui-sans-serif, system-ui, sans-serif;
+  color-scheme: light;
+}
+
+.theme-editor-toggle {
+  position: fixed;
+  left: 0.75rem;
+  bottom: 0.75rem;
+  z-index: 1001;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--editor-border);
+  border-radius: 999px;
+  background: var(--editor-paper);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 20%);
+  cursor: pointer;
+}
+
+.theme-editor-toggle[aria-expanded="true"] {
+  left: calc(min(24rem, 100vw) + 0.75rem);
+}
+
+/* Docked right: the panel and its toggle mirror to the right edge. */
+.theme-editor-toggle[data-dock="right"] {
+  right: 0.75rem;
+  left: auto;
+}
+
+.theme-editor-toggle[data-dock="right"][aria-expanded="true"] {
+  right: calc(min(24rem, 100vw) + 0.75rem);
+}
+
+.theme-editor[data-dock="right"] {
+  right: 0;
+  left: auto;
+  border-right: 0;
+  border-left: 1px solid var(--editor-border);
+  box-shadow: -2px 0 12px rgb(0 0 0 / 15%);
+}
+
+.theme-editor {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: min(24rem, 100vw);
+  padding: 0.75rem;
+  box-sizing: border-box;
+  overflow-y: auto;
+  border-right: 1px solid var(--editor-border);
+  background: rgb(255 255 255 / 88%);
+  backdrop-filter: blur(6px);
+  box-shadow: 2px 0 12px rgb(0 0 0 / 15%);
+}
+
+.theme-editor *,
+.theme-editor *::before,
+.theme-editor *::after {
+  box-sizing: border-box;
+}
+
+.theme-editor h2,
+.theme-editor h3,
+.theme-editor ul,
+.theme-editor p {
+  margin: 0;
+}
+
+.theme-editor h2 {
+  font-size: 1rem;
+}
+
+.theme-editor h3 {
+  margin-top: 0.5rem;
+  color: var(--editor-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.theme-editor ul {
+  padding: 0;
+  list-style: none;
+}
+
+.theme-editor button:not(.theme-picker-card, .color-swatch-button),
+.theme-editor input,
+.theme-editor select {
+  font: inherit;
+  color: var(--editor-ink);
+}
+
+.theme-editor button:not(.theme-picker-card, .color-swatch-button) {
+  padding: 0.2rem 0.5rem;
+  border: 1px solid var(--editor-border);
+  border-radius: 4px;
+  background: var(--editor-wash);
+  cursor: pointer;
+}
+
+.theme-editor button:disabled {
+  color: var(--editor-muted);
+  cursor: default;
+}
+
+.theme-editor input,
+.theme-editor select {
+  width: 100%;
+  padding: 0.2rem 0.35rem;
+  border: 1px solid var(--editor-border);
+  border-radius: 4px;
+  background: var(--editor-paper);
+}
+
+.theme-editor label,
+.theme-editor .theme-field > span {
+  display: grid;
+  gap: 0.15rem;
+  color: var(--editor-muted);
+  font-size: 0.75rem;
+}
+
+.theme-editor :focus-visible {
+  outline: 2px solid var(--editor-accent);
+  outline-offset: 1px;
+}
+
+.theme-editor-header,
+.theme-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.theme-editor-header h2 {
+  margin-right: auto;
+}
+
+.theme-editor-status {
+  min-height: 1.4em;
+  color: var(--editor-muted);
+}
+
+.theme-editor-file {
+  margin-left: auto;
+  color: var(--editor-muted);
+  font-family: ui-monospace, monospace;
+  font-size: 0.75rem;
+}
+
+.theme-editor-create,
+.theme-editor-meta {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  border: 1px solid var(--editor-border);
+  border-radius: 6px;
+  background: var(--editor-wash);
+}
+
+.theme-editor-detail {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.theme-editor-group li {
+  margin-top: 0.2rem;
+}
+
+.theme-editor-token {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.theme-editor-token > button:first-child {
+  display: grid;
+  flex: 1;
+  grid-template-columns: 1.4rem 1fr;
+  column-gap: 0.5rem;
+  align-items: center;
+  min-width: 0;
+  text-align: left;
+  background: var(--editor-paper);
+}
+
+.theme-editor-token > button[aria-expanded="true"] {
+  border-color: var(--editor-accent);
+}
+
+.theme-editor-swatch {
+  grid-row: span 2;
+  width: 1.4rem;
+  height: 1.4rem;
+  border: 1px solid var(--editor-border);
+  border-radius: 3px;
+}
+
+.theme-editor-name,
+.theme-editor-value {
+  overflow: hidden;
+  font-family: ui-monospace, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.theme-editor-value {
+  color: var(--editor-muted);
+  font-size: 0.75rem;
+}
+
+.theme-editor-edited {
+  grid-column: 2;
+  color: var(--editor-edited);
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.is-edited .theme-editor-token > button:first-child {
+  border-left: 3px solid var(--editor-edited);
+}
+
+.theme-editor-token-editor {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.25rem 0 0.5rem;
+  padding: 0.5rem;
+  border: 1px solid var(--editor-border);
+  border-radius: 6px;
+  background: var(--editor-wash);
+}
+
+.theme-editor-token-editor .custom-color-fields {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.25rem 0.5rem;
+  align-items: center;
+}
+
+/* The toggle, the panel and the hover box; `contents` keeps it out of layout. */
+.theme-editor-root {
+  display: contents;
+}
+
+/* Pick mode: a crosshair over the page, but not over the panel, whose presses pass through. */
+html.theme-editor-picking,
+html.theme-editor-picking *:not(.theme-editor, .theme-editor *) {
+  cursor: crosshair !important;
+}
+
+.theme-editor-hover {
+  position: fixed;
+  z-index: 999;
+  border: 2px solid #2457c5;
+  background: rgb(36 87 197 / 12%);
+  pointer-events: none;
+  box-sizing: border-box;
+}
+
+.theme-editor-hover[hidden] {
+  display: none;
+}
+
+.theme-editor-picked {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.5rem;
+  border: 1px solid var(--editor-border);
+  border-radius: 6px;
+  background: var(--editor-wash);
+}
+
+.theme-editor-picked h3 {
+  margin-top: 0;
+  font-family: ui-monospace, monospace;
+  text-transform: none;
+}
+
+.theme-editor-picked li {
+  margin-top: 0.2rem;
+}
+
+.theme-editor-picked li > button,
+.theme-editor-picked li > span {
+  display: grid;
+  width: 100%;
+  text-align: left;
+}
+
+.theme-editor-picked li > button {
+  background: var(--editor-paper);
+}
+
+.theme-editor-picked-category {
+  color: var(--editor-muted);
+  font-size: 0.7rem;
+}
+
+.is-picked .theme-editor-token > button:first-child {
+  outline: 2px solid var(--editor-accent);
+  outline-offset: -1px;
+}
+
+.theme-editor .theme-editor-check {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--editor-ink);
+  font-size: inherit;
+}
+
+.theme-editor .theme-editor-check input {
+  width: auto;
+}
+
+.theme-editor-note {
+  color: var(--editor-muted);
+  font-size: 0.75rem;
+}
+
+/* Pick mode is on: the Eyedropper button fills with the accent so it reads at a glance. */
+.theme-editor button[aria-pressed="true"]:not(.theme-picker-card, .color-swatch-button) {
+  border-color: var(--editor-accent);
+  background: var(--editor-accent);
+  color: var(--editor-paper);
+  font-weight: 600;
+}
+
+/* A colour picker opened from the panel must paint over it; its own z-index is set inline. */
+body:has(.theme-editor) .color-picker-popover {
+  z-index: 1002 !important;
+}

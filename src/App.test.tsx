@@ -478,7 +478,7 @@ describe('application shell', () => {
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: 'New Pattern' }));
     const select = screen.getByLabelText('Aida count');
-    fireEvent.change(screen.getByLabelText('Background color', { selector: 'input[type="color"]' }), { target: { value: '#aabbcc' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'HEX Code' }), { target: { value: '#aabbcc' } });
     expect(select).toHaveValue('14');
     fireEvent.change(select, { target: { value: '18' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create blank pattern' }));
@@ -507,7 +507,7 @@ describe('application shell', () => {
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: 'New Pattern' }));
     fireEvent.click(screen.getByRole('radio', { name: /From image/ }));
-    fireEvent.change(screen.getByLabelText('Background color', { selector: 'input[type="color"]' }), { target: { value: '#aabbcc' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'HEX Code' }), { target: { value: '#aabbcc' } });
     fireEvent.change(screen.getByLabelText(/Choose a PNG/), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } });
     act(() => { images[0].onload?.(); });
     await screen.findByLabelText('Width');

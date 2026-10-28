@@ -304,7 +304,8 @@ describe('EditorSurface', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     const dialog = openCustomColorDialog();
     expect(within(dialog).getByLabelText('Hex color')).toHaveValue('#000000');
-    fireEvent.change(within(dialog).getByLabelText('Choose custom color'), { target: { value: '#123456' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Choose custom color' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Hex value' }), { target: { value: '#123456' } });
     expect(within(dialog).getByLabelText('Hex color')).toHaveValue('#123456');
   });
   it('keeps the chosen catalog and query when the open picker receives a document update', () => {
@@ -1418,15 +1419,11 @@ describe('EditorSurface', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name: /Add new color/ }));
     const dialog = screen.getByRole('dialog', { name: 'Add a thread color' });
-    const picker = within(dialog).getByLabelText('Choose custom color');
     const hex = within(dialog).getByLabelText('Hex color');
-    expect(picker).toHaveAttribute('type', 'color');
     expect(hex).toHaveValue('#000000');
     expect(within(dialog).getByRole('button', { name: 'Add #000000' })).toBeEnabled();
     fireEvent.change(hex, { target: { value: '#c72b3b' } });
     expect(within(dialog).getByRole('button', { name: 'Add Red' })).toBeEnabled();
-    fireEvent.change(picker, { target: { value: '#123456' } });
-    expect(hex).toHaveValue('#123456');
     fireEvent.change(hex, { target: { value: '#12' } });
     expect(within(dialog).getByRole('button', { name: 'Add custom color' })).toBeDisabled();
     expect(within(dialog).getByText(/enter a 3- or 6-digit hex color/i)).toBeInTheDocument();
@@ -1446,13 +1443,14 @@ describe('EditorSurface', () => {
   it('synchronizes the circular color picker and HEX input while preserving the last valid color', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     const dialog = openCustomColorDialog();
-    const picker = within(dialog).getByLabelText('Choose custom color');
     const hex = within(dialog).getByLabelText('Hex color');
-    fireEvent.change(picker, { target: { value: '#123456' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Choose custom color' }));
+    const picked = screen.getByRole('textbox', { name: 'Hex value' });
+    fireEvent.change(picked, { target: { value: '#123456' } });
     expect(hex).toHaveValue('#123456');
     fireEvent.change(hex, { target: { value: '#12' } });
     expect(hex).toHaveValue('#12');
-    expect(picker).toHaveValue('#123456');
+    expect(picked).toHaveValue('#123456');
     expect(customColorAction(dialog)).toBeDisabled();
   });
   it('keeps custom creation available when the runtime catalog is unavailable', () => {

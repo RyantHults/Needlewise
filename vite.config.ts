@@ -4,6 +4,7 @@ import { VitePWA } from 'vite-plugin-pwa';
 import { resolve } from 'node:path';
 
 import symbolPickerPlugin from './scripts/symbol-picker-plugin.mjs';
+import themeEditorPlugin from './scripts/theme-editor-plugin.mjs';
 
 const pwaOptions = {
   registerType: 'prompt' as const,
@@ -91,6 +92,8 @@ export default defineConfig(({ mode }) => ({
     // Serves the vendored font and writes selection.json for /__symbols. The
     // plugin declares `apply: 'serve'`, so it is absent from a production build.
     symbolPickerPlugin(),
+    // Reads and writes src/themes/ and THEME_OPTIONS for the dev-only theme editor.
+    themeEditorPlugin(),
     ...(mode === 'test' ? [] : [VitePWA(pwaOptions)])
   ],
   // Tests read a fixed symbol pool rather than the curated one, which the build

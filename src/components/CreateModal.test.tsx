@@ -60,25 +60,27 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('CreateModal image lifecycle', () => {
-  it('shows a synchronized background color picker and editable hex field', () => {
+  it('shows a background color swatch whose picker follows the hex field', () => {
     render(<ControlledModal />);
-    const picker = screen.getByRole('textbox', { name: 'HEX Code' });
-    expect(picker).toHaveValue('#F3EEE5');
-    expect(screen.getByLabelText('Background color', { selector: 'input[type="color"]' })).toHaveValue('#f3eee5');
-    fireEvent.change(picker, { target: { value: '#abc' } });
-    expect(screen.getByLabelText('Background color', { selector: 'input[type="color"]' })).toHaveValue('#aabbcc');
+    const hex = screen.getByRole('textbox', { name: 'HEX Code' });
+    expect(hex).toHaveValue('#F3EEE5');
+    fireEvent.change(hex, { target: { value: '#abc' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Background color' }));
+    expect(screen.getByRole('dialog', { name: 'Background color' })).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Hex value' })).toHaveValue('#AABBCC');
   });
 
   it('keeps incomplete HEX drafts editable without changing the selected color', () => {
     render(<ControlledModal />);
-    const picker = screen.getByLabelText('Background color', { selector: 'input[type="color"]' });
     const hex = screen.getByRole('textbox', { name: 'HEX Code' });
     fireEvent.change(hex, { target: { value: '#12' } });
     expect(hex).toHaveValue('#12');
-    expect(picker).toHaveValue('#f3eee5');
+    fireEvent.click(screen.getByRole('button', { name: 'Background color' }));
+    const picked = screen.getByRole('textbox', { name: 'Hex value' });
+    expect(picked).toHaveValue('#F3EEE5');
     fireEvent.change(hex, { target: { value: '#abc' } });
     expect(hex).toHaveValue('#abc');
-    expect(picker).toHaveValue('#aabbcc');
+    expect(picked).toHaveValue('#AABBCC');
     fireEvent.blur(hex);
     expect(hex).toHaveValue('#AABBCC');
   });
@@ -393,18 +395,15 @@ describe('CreateModal image lifecycle', () => {
       await vi.waitFor(() => screen.getByRole('button', { name: 'Use red as background' }));
     }
     const hex = () => screen.getByLabelText('HEX Code');
-    const picker = () => screen.getByLabelText('Background color', { selector: 'input' });
 
     it('sets the canvas color from the chosen swatch, follows switches, and restores it when cleared', async () => {
       await setup();
       fireEvent.click(screen.getByRole('button', { name: 'Use red as background' }));
       expect(hex()).toHaveValue('#FF0000');
-      expect(picker()).toHaveValue('#ff0000');
       fireEvent.click(await vi.waitFor(() => screen.getByRole('button', { name: 'Use blue as background' })));
       expect(hex()).toHaveValue('#0000FF');
       fireEvent.click(await vi.waitFor(() => screen.getByRole('button', { name: 'Clear background selection' })));
       expect(hex()).toHaveValue('#F3EEE5');
-      expect(picker()).toHaveValue('#f3eee5');
     });
 
     it('restores the canvas color when the selected swatch is toggled off', async () => {

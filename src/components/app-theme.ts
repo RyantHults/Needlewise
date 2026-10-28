@@ -14,6 +14,7 @@ export const THEME_OPTIONS = [
   { id: "rose-pine-main", label: "Rosé Pine Main", group: "Rosé Pine" },
   { id: "rose-pine-moon", label: "Rosé Pine Moon", group: "Rosé Pine" },
   { id: "rose-pine-dawn", label: "Rosé Pine Dawn", group: "Rosé Pine" },
+  { id: "rose-pine-moon-desaturated", label: "Rosé Pine Moon desaturated", group: "Rosé Pine" },
   { id: "gruvbox-dark", label: "Gruvbox Dark", group: "Gruvbox" },
   { id: "gruvbox-light", label: "Gruvbox Light", group: "Gruvbox" },
   { id: "everforest-dark", label: "Everforest Dark", group: "Everforest" },

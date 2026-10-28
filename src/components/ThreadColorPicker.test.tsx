@@ -105,7 +105,8 @@ describe('ThreadColorPicker', () => {
     expect(action()).toHaveAccessibleName('Add custom color');
     fireEvent.change(hex, { target: { value: 'cc0000' } });
     expect(screen.getByText('Use a three- or six-digit hex value.')).toBeInTheDocument();
-    expect(screen.getByLabelText('Choose custom color')).toHaveValue('#cc0000');
+    fireEvent.click(screen.getByRole('button', { name: 'Choose custom color' }));
+    expect(screen.getByRole('textbox', { name: 'Hex value' })).toHaveValue('#CC0000');
     expect(action()).toHaveAccessibleName('Add Red');
     fireEvent.click(action());
     expect(onPickCustomColor).toHaveBeenLastCalledWith('#CC0000', red, catalogA);

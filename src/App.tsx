@@ -343,6 +343,17 @@ const SymbolPickerPage = import.meta.env.DEV
   ? lazy(() => import('./dev/SymbolPickerPage'))
   : null;
 
+/**
+ * The theme editor overlay. Like the symbol picker it only exists in a dev
+ * build, and is loaded lazily so the panel and the dev-only theme file
+ * endpoints never reach a deployed bundle. It sits outside the routes so it
+ * stays open across navigation. Vitest runs as dev too, so test mode is
+ * excluded to keep the overlay out of the App tests.
+ */
+const ThemeEditor = import.meta.env.DEV && import.meta.env.MODE !== 'test'
+  ? lazy(() => import('./dev/ThemeEditor'))
+  : null;
+
 export default function App() {
   return (
     <BrowserRouter>
@@ -359,6 +370,7 @@ export default function App() {
         )}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
+      {ThemeEditor && <Suspense fallback={null}><ThemeEditor /></Suspense>}
     </BrowserRouter>
   );
 }

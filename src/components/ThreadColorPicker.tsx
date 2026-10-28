@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { CatalogDefinition, CatalogRecord } from "../catalog";
 import { normalizeHexColor } from "../domain/color";
-import { HexColorField } from "./controls/HexColorField";
+import { ColorField } from "./controls/ColorField";
 import { nextRovingIndex } from "./controls/roving";
 
 export interface ThreadColorPickerProps {
@@ -164,7 +164,7 @@ export function ThreadColorPicker({
     </div> : <p className="catalog-unavailable" role="status">Catalog unavailable</p>}
     <section className="custom-color-section" aria-labelledby="custom-color-title">
       <h3 id="custom-color-title">Custom color</h3>
-      <HexColorField
+      <ColorField
         id="custom-color-hex"
         className="custom-color-fields-compact"
         value={customColor ?? ""}
