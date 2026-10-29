@@ -78,6 +78,10 @@ class CanvasBoundary implements WorkspaceEditorBoundary {
     throw new Error('not used');
   }
 
+  resolveMultiLayerPaste(): never {
+    throw new Error('not used');
+  }
+
   commitPaste(): never {
     throw new Error('not used');
   }

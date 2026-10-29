@@ -238,6 +238,35 @@ describe('Canvas 2D chart renderer', () => {
     renderer.dispose();
   });
 
+  it('draws a floating paste\'s backstitches at overview zoom, as the committed chart does', () => {
+    const document = chart(40, 40);
+    const source = chart(2, 1);
+    source.backstitches = {
+      ids: new Uint32Array([1]),
+      x1: new Uint32Array([0]),
+      y1: new Uint32Array([0]),
+      x2: new Uint32Array([8]),
+      y2: new Uint32Array([0]),
+      colors: new Uint16Array([1]),
+      completed: new Uint8Array([0])
+    };
+    source.nextBackstitchId = 2;
+    const fragment = createPatternFragment(source, { x: 0, y: 0, width: 2, height: 1 });
+    const overlay = recordingContext();
+    const renderer = createCanvasRenderer({
+      document,
+      targets: { base: target(recordingContext()), overlay: target(overlay) },
+      metrics: getCanvasMetrics(120, 120),
+      viewport: { x: 0, y: 0, zoom: 3 },
+      style: { showGrid: false },
+      overlay: { floatingPaste: { fragment, destination: { x: 4, y: 4, width: 2, height: 1 } } }
+    });
+    renderer.renderNow();
+    expect(renderer.lastStats.lod).toBe('overview');
+    expect(overlay.records.some((record) => record.name === 'lineTo' && record.strokeStyle === '#ff0000' && record.args[0] === 18 && record.args[1] === 12)).toBe(true);
+    renderer.dispose();
+  });
+
   it('draws no cell, backstitch, or outline of an off-edge floating paste outside the chart, and colors it through its pending palette', () => {
     const document = chart(4, 2);
     const source = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 3, height: 3, palette: [{ id: 5, name: 'Green', color: '#00ff00' }] });

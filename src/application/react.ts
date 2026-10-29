@@ -35,7 +35,7 @@ export interface UseProjectWorkspaceResult {
   deleteProject(projectId: string): Promise<void>;
   duplicateProject(projectId: string): Promise<ProjectMetadata>;
   renameProject(projectId: string, title: string): Promise<ProjectMetadata>;
-  createFolder(name: string, parentId?: string | null): Promise<ProjectFolder>;
+  createFolder(name: string, parentId?: string | null, projectIds?: readonly string[]): Promise<ProjectFolder>;
   renameFolder(folderId: string, name: string): Promise<ProjectFolder>;
   deleteFolder(folderId: string): Promise<void>;
   moveProjectToFolder(projectId: string, folderId: string | null): Promise<void>;
@@ -188,7 +188,7 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
   const createProjectFromConversion = useCallback((createOptions: CreateConvertedProjectOptions) => runAction((instance) => instance.createProjectFromConversion(createOptions)), [runAction]);
   const openProject = useCallback((projectId: string) => runAction((instance) => instance.openProject(projectId)), [runAction]);
   const deleteProject = useCallback((projectId: string) => runAction((instance) => instance.deleteProject(projectId)), [runAction]);
-  const createFolder = useCallback((name: string, parentId: string | null = null) => runAction((instance) => instance.createFolder(name, parentId)), [runAction]);
+  const createFolder = useCallback((name: string, parentId: string | null = null, projectIds: readonly string[] = []) => runAction((instance) => instance.createFolder(name, parentId, projectIds)), [runAction]);
   const renameFolder = useCallback((folderId: string, name: string) => runAction((instance) => instance.renameFolder(folderId, name)), [runAction]);
   const deleteFolder = useCallback((folderId: string) => runAction((instance) => instance.deleteFolder(folderId)), [runAction]);
   const moveProjectToFolder = useCallback((projectId: string, folderId: string | null) => runAction((instance) => instance.moveProjectToFolder(projectId, folderId)), [runAction]);

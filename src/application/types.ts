@@ -184,7 +184,7 @@ export interface LayerSummary {
   readonly index: number;
 }
 
-/** Where a paste goes, from `resolvePaste`. `layerId` null and `create` false means nothing is pasted. */
+/** Where a paste goes, from `resolvePaste` or `resolveMultiLayerPaste`. `layerId` null and `create` false means nothing is pasted. */
 export interface PasteDestination {
   readonly layerType: LayerType;
   readonly layerId: number | null;
@@ -195,7 +195,8 @@ export interface PasteDestination {
 
 export interface PasteCommitResult {
   readonly result: CommandResult;
-  readonly layerId: number | null;
+  /** Every layer the paste landed on; empty when nothing was pasted. */
+  readonly layerIds: readonly number[];
   readonly message?: string;
 }
 

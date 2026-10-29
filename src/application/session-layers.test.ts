@@ -50,6 +50,23 @@ function cellFragment(): PatternFragment {
   return createPatternFragment(session.activeLayerSurface()!, { kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } });
 }
 
+/** One stitched cell and one backstitch, as a multi-layer copy of a stitch and a specialty layer captures them. */
+function mixedFragment(): PatternFragment {
+  const session = openSession(layeredDocument(4, 4));
+  session.execute(cell(session.document, { type: 'set-full', x: 0, y: 0, color: 1, layerId: 1 }));
+  session.execute({ type: 'add-backstitch', start: { x: 0, y: 4 }, end: { x: 4, y: 4 }, color: 2, layerId: 2 });
+  return createPatternFragment(session.document, { kind: 'rect', rect: { x: 0, y: 0, width: 2, height: 2 } });
+}
+
+function layerTypes(session: ProjectSession): string[] {
+  return session.layeredDocument.layers.map((layer) => layer.type);
+}
+
+function backstitchCount(session: ProjectSession, layerId: number): number {
+  const layer = session.layeredDocument.layers.find((candidate) => candidate.id === layerId);
+  return layer?.type === LayerType.Specialty ? layer.backstitches.ids.length : 0;
+}
+
 describe('project session layers', () => {
   it('selects the topmost visible stitch layer, then the topmost visible layer, then Canvas on open', () => {
     const document = threeStitchLayers();
@@ -106,7 +123,7 @@ describe('project session layers', () => {
     expect(destination.layerId).toBeNull();
     expect(destination.create).toBe(false);
     expect(destination.message).toMatch(/hidden/);
-    const commit = none.commitPaste(cellFragment(), { x: 0, y: 0 }, destination);
+    const commit = none.commitPaste(cellFragment(), { x: 0, y: 0 }, [destination]);
     expect(commit.result.changed).toBe(false);
     expect(commit.message).toBe(destination.message);
   });
@@ -116,11 +133,11 @@ describe('project session layers', () => {
     session.setActiveLayer(2);
     const fragment = cellFragment();
     const destination = session.resolvePaste(LayerType.Stitch);
-    const commit = session.commitPaste(fragment, { x: 2, y: 1 }, destination);
+    const commit = session.commitPaste(fragment, { x: 2, y: 1 }, [destination]);
     expect(commit.result.changed).toBe(true);
     expect(commit.message).toBe('Added a new stitch layer for your paste.');
     expect(session.layeredDocument.layers.map((layer) => layer.type)).toEqual(['stitch', 'stitch', 'specialty']);
-    expect(session.activeLayerId).toBe(commit.layerId);
+    expect(commit.layerIds).toEqual([session.activeLayerId]);
     expect(session.document.kind[1 * 4 + 2]).toBe(CellKind.Full);
 
     session.undo();
@@ -138,7 +155,7 @@ describe('project session layers', () => {
     existing.setActiveLayer(1);
     const destination = existing.resolvePaste(LayerType.Stitch);
     expect(destination.create).toBe(false);
-    expect(existing.commitPaste(cellFragment(), { x: 2, y: 1 }, destination, undefined, entries).result.changed).toBe(true);
+    expect(existing.commitPaste(cellFragment(), { x: 2, y: 1 }, [destination], undefined, entries).result.changed).toBe(true);
     expect(paletteIds(existing)).toEqual([1, 2, 3, 4]);
     expect(existing.document.kind[1 * 4 + 2]).toBe(CellKind.Full);
     existing.undo();
@@ -153,7 +170,7 @@ describe('project session layers', () => {
     fresh.setActiveLayer(2);
     const created = fresh.resolvePaste(LayerType.Stitch);
     expect(created.create).toBe(true);
-    const commit = fresh.commitPaste(cellFragment(), { x: 2, y: 1 }, created, undefined, entries.slice(0, 1));
+    const commit = fresh.commitPaste(cellFragment(), { x: 2, y: 1 }, [created], undefined, entries.slice(0, 1));
     expect(commit.result.changed).toBe(true);
     expect(paletteIds(fresh)).toEqual([1, 2, 3]);
     expect(fresh.layeredDocument.layers).toHaveLength(3);
@@ -167,6 +184,57 @@ describe('project session layers', () => {
     expect(fresh.document.kind[1 * 4 + 2]).toBe(CellKind.Full);
   });
 
+  it('commits a multi-layer paste onto a new layer of each type as one undo step and selects both', () => {
+    const session = openSession(layeredDocument(4, 4));
+    const destinations = [session.resolveMultiLayerPaste(LayerType.Stitch), session.resolveMultiLayerPaste(LayerType.Specialty)];
+    const commit = session.commitPaste(mixedFragment(), { x: 2, y: 2 }, destinations);
+    expect(commit.result.changed).toBe(true);
+    expect(commit.layerIds).toEqual([3, 4]);
+    expect(commit.message).toBe('Added a new stitch layer for your paste. Added a new specialty layer for your paste.');
+    expect(layerTypes(session)).toEqual(['stitch', 'stitch', 'specialty', 'specialty']);
+    expect(session.layers.find((layer) => layer.id === 3)?.name).toBe('Stitches 2');
+    expect(session.document.kind[2 * 4 + 2]).toBe(CellKind.Full);
+    expect(backstitchCount(session, 4)).toBe(1);
+    expect(backstitchCount(session, 2)).toBe(0);
+    expect(session.layerSelection).toEqual({ primary: 4, layerIds: [3, 4] });
+
+    session.undo();
+    expect(session.layeredDocument.layers.map((layer) => layer.id)).toEqual([1, 2]);
+    expect(session.document.kind[2 * 4 + 2]).toBe(CellKind.Empty);
+    expect(session.historyUndoDepth).toBe(0);
+    session.redo();
+    expect(layerTypes(session)).toEqual(['stitch', 'stitch', 'specialty', 'specialty']);
+    expect(session.document.kind[2 * 4 + 2]).toBe(CellKind.Full);
+    expect(backstitchCount(session, 4)).toBe(1);
+  });
+
+  it('lands the stitch part of a multi-layer paste on the topmost visible stitch layer when the group is full', () => {
+    const session = openSession(threeStitchLayers());
+    session.setActiveLayer(1);
+    const destinations = [session.resolveMultiLayerPaste(LayerType.Stitch), session.resolveMultiLayerPaste(LayerType.Specialty)];
+    const commit = session.commitPaste(mixedFragment(), { x: 2, y: 2 }, destinations);
+    expect(commit.layerIds).toEqual([4, 5]);
+    expect(commit.message).toBe('You have 3 stitch layers already, so this went on the top one. Added a new specialty layer for your paste.');
+    const top = session.layeredDocument.layers.find((layer) => layer.id === 4) as StitchLayer;
+    expect(top.kind[2 * 4 + 2]).toBe(CellKind.Full);
+    expect(backstitchCount(session, 5)).toBe(1);
+    expect(session.layerSelection).toEqual({ primary: 5, layerIds: [4, 5] });
+    session.undo();
+    expect(session.layeredDocument.layers.map((layer) => layer.id)).toEqual([1, 3, 4, 2]);
+    expect((session.layeredDocument.layers.find((layer) => layer.id === 4) as StitchLayer).kind[2 * 4 + 2]).toBe(CellKind.Empty);
+  });
+
+  it('creates new palette entries in the same undo step as a multi-layer paste', () => {
+    const session = openSession(layeredDocument(4, 4));
+    const destinations = [session.resolveMultiLayerPaste(LayerType.Stitch), session.resolveMultiLayerPaste(LayerType.Specialty)];
+    session.commitPaste(mixedFragment(), { x: 2, y: 2 }, destinations, undefined, [{ id: 3, name: 'Green', color: '#3a3' }]);
+    expect(session.document.palette.map((entry) => entry.id)).toEqual([1, 2, 3]);
+    session.undo();
+    expect(session.document.palette.map((entry) => entry.id)).toEqual([1, 2]);
+    expect(session.layeredDocument.layers.map((layer) => layer.id)).toEqual([1, 2]);
+    expect(session.historyUndoDepth).toBe(0);
+  });
+
   it('ignores an empty paste without adding a layer or a history entry', () => {
     const session = openSession(layeredDocument(4, 4));
     session.setActiveLayer(2);
@@ -174,9 +242,9 @@ describe('project session layers', () => {
     const destination = session.resolvePaste(LayerType.Stitch);
     expect(destination.create).toBe(true);
     const revision = session.document.revision;
-    const commit = session.commitPaste(empty, { x: 0, y: 0 }, destination);
+    const commit = session.commitPaste(empty, { x: 0, y: 0 }, [destination]);
     expect(commit.result.changed).toBe(false);
-    expect(commit.layerId).toBeNull();
+    expect(commit.layerIds).toEqual([]);
     expect(commit.message).toBeUndefined();
     expect(session.layeredDocument.layers.map((layer) => layer.id)).toEqual([1, 2]);
     expect(session.document.revision).toBe(revision);

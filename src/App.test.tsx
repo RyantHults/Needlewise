@@ -190,7 +190,7 @@ describe('application shell', () => {
     const surface = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 2, height: 1, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
     surface.kind[0] = CellKind.Full;
     surface.colors[0] = 1;
-    writeClipboard({ fragment: createPatternFragment(surface, { x: 0, y: 0, width: 2, height: 1 }), selection: { kind: 'rect', rect: { x: 0, y: 0, width: 2, height: 1 } }, layerType: LayerType.Stitch, palette: surface.palette });
+    writeClipboard({ fragment: createPatternFragment(surface, { x: 0, y: 0, width: 2, height: 1 }), selection: { kind: 'rect', rect: { x: 0, y: 0, width: 2, height: 1 } }, layerType: LayerType.Stitch, multiLayer: false, palette: surface.palette });
     try {
       window.history.replaceState({}, '', '/patterns/one/edit');
       const { unmount } = render(<App />);
@@ -378,7 +378,7 @@ describe('application shell', () => {
     window.history.replaceState({}, '', '/patterns?folder=folder-one');
     const folder = { id: 'folder-one', name: 'Crafts', parentId: null, createdAt: 1, updatedAt: 1 };
     const project = { id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 };
-    mockedWorkspace.mockReturnValue({ ...baseWorkspace, projects: [project], folders: [folder], folderAssignments: [{ projectId: 'one', folderId: 'folder-one' }] } as never);
+    mockedWorkspace.mockReturnValue({ ...baseWorkspace, projects: [project], folders: [folder], folderAssignments: [{ projectId: 'one', folderId: 'folder-one', assignedAt: 1 }] } as never);
     render(<App />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Duplicate Garden sampler' }));
@@ -580,6 +580,37 @@ describe('application shell', () => {
     await waitFor(() => expect(moveProjectToFolder).toHaveBeenLastCalledWith('one', null));
     expect(screen.getByText('Move undone.')).toBeInTheDocument();
     expect(screen.queryByText('Moved “Garden sampler” to Archive')).not.toBeInTheDocument();
+  });
+
+  it('groups two patterns into a new folder when one is dropped on the other, and undo removes the folder', async () => {
+    const one = { id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 };
+    const two = { id: 'two', title: 'Winter scene', notes: '', createdAt: 1, updatedAt: 2, revision: 4 };
+    mockedWorkspace.mockReturnValue({ ...baseWorkspace, projects: [one, two] } as never);
+    render(<App />);
+
+    const handle = screen.getByRole('button', { name: 'Drag Garden sampler' });
+    const stubRect = (element: Element, top: number): void => {
+      vi.spyOn(element, 'getBoundingClientRect').mockReturnValue({
+        top, left: 0, width: 200, height: 200, right: 200, bottom: top + 200, x: 0, y: top, toJSON() { return this; }
+      } as DOMRect);
+    };
+    stubRect(handle.closest('article') as Element, 300);
+    stubRect(screen.getByRole('button', { name: 'Drag Winter scene' }).closest('article') as Element, 0);
+
+    handle.focus();
+    fireEvent.keyDown(handle, { code: 'Space' });
+    // KeyboardSensor attaches its document-level keydown listener after a setTimeout(0).
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    document.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowUp', bubbles: true, cancelable: true }));
+    document.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', bubbles: true, cancelable: true }));
+
+    await waitFor(() => expect(createFolder).toHaveBeenCalledWith('New folder', null, ['two', 'one']));
+    expect(moveProjectToFolder).not.toHaveBeenCalled();
+    expect(await screen.findByText('Created “New folder” with “Winter scene” and “Garden sampler”')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    await waitFor(() => expect(deleteFolder).toHaveBeenCalledWith('folder-new'));
+    expect(await screen.findByText('Folder removed.')).toBeInTheDocument();
   });
 
   it('auto-hides the undo toast after 6 seconds', async () => {

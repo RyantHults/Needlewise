@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { PROJECT_THUMBNAIL_MAX_AXIS, PROJECT_THUMBNAIL_MAX_BACKSTITCHES, type ProjectThumbnailSummary } from '../persistence';
 import type { CanvasContextAdapter } from '../editor/contracts';
 import { parseHexColor, type Rgb } from '../domain/color';
@@ -16,7 +16,7 @@ const MAX_SAMPLE_CELLS = PROJECT_THUMBNAIL_MAX_AXIS * PROJECT_THUMBNAIL_MAX_AXIS
 const FIXED_UNITS_PER_CELL = 4;
 const colorPattern = /^#[\da-f]{6}$/i;
 
-function colorValue(value: string | undefined): string | null {
+function colorValue(value: string | null | undefined): string | null {
   if (typeof value !== 'string' || !colorPattern.test(value)) return null;
   return value;
 }
@@ -29,7 +29,7 @@ function isUsableThumbnail(value: ProjectThumbnailSummary | undefined): value is
   if (!value || value.version !== 2 || !Number.isSafeInteger(value.revision) || value.revision < 0) return false;
   if (!Number.isSafeInteger(value.columns) || !Number.isSafeInteger(value.rows) || value.columns < 1 || value.rows < 1) return false;
   if (value.columns > PROJECT_THUMBNAIL_MAX_AXIS || value.rows > PROJECT_THUMBNAIL_MAX_AXIS || value.columns * value.rows > MAX_SAMPLE_CELLS) return false;
-  if (!isPlainArray(value.palette) || value.palette.length < 1 || !value.palette.every((entry) => Boolean(colorValue(entry)))) return false;
+  if (!isPlainArray(value.palette) || value.palette.length < 1 || !value.palette.every((entry, index) => (entry === null ? index > 0 : Boolean(colorValue(entry))))) return false;
   const { indices } = value;
   const expectedTag = value.palette.length <= 256 ? '[object Uint8Array]' : '[object Uint16Array]';
   if (!ArrayBuffer.isView(indices) || Object.prototype.toString.call(indices) !== expectedTag || indices.length !== value.columns * value.rows) return false;
@@ -45,9 +45,35 @@ function isUsableThumbnail(value: ProjectThumbnailSummary | undefined): value is
   if (segments > PROJECT_THUMBNAIL_MAX_BACKSTITCHES) return false;
   if (!ArrayBuffer.isView(segmentColors) || Object.prototype.toString.call(segmentColors) !== expectedTag || segmentColors.length !== segments) return false;
   for (let index = 0; index < segments; index += 1) {
-    if (segmentColors[index] >= value.palette.length) return false;
+    if (segmentColors[index] >= value.palette.length || value.palette[segmentColors[index]] === null) return false;
   }
   return true;
+}
+
+/** Stitch texture behind the canvas; it takes its colours from theme roles, so it follows the active theme. */
+function StitchTexture() {
+  const patternId = useId();
+  const cross = (x1: number, y1: number, x2: number, y2: number) => (
+    <>
+      <path className="project-gallery-stitch-shadow" d={`M${x1 + 0.8} ${y1 + 0.8}L${x2 - 0.8} ${y2 - 0.8}`} strokeWidth="2.2" />
+      <path className="project-gallery-stitch-thread" d={`M${x1 + 0.8} ${y1 + 0.8}L${x2 - 0.8} ${y2 - 0.8}`} strokeWidth="1.5" />
+      <path className="project-gallery-stitch-highlight" d={`M${x1 + 0.4} ${y1 + 0.4}L${x2 - 1.2} ${y2 - 1.2}`} strokeWidth="0.5" />
+      <path className="project-gallery-stitch-shadow" d={`M${x2 - 0.8} ${y1 + 0.8}L${x1 + 0.8} ${y2 - 0.8}`} strokeWidth="2.2" />
+      <path className="project-gallery-stitch-thread" d={`M${x2 - 0.8} ${y1 + 0.8}L${x1 + 0.8} ${y2 - 0.8}`} strokeWidth="1.5" />
+      <path className="project-gallery-stitch-highlight" d={`M${x2 - 1.2} ${y1 + 0.4}L${x1 + 0.4} ${y2 - 1.2}`} strokeWidth="0.5" />
+    </>
+  );
+  return (
+    <svg className="project-gallery-stitch-texture" aria-hidden="true">
+      <defs>
+        <pattern id={patternId} width="16" height="16" patternUnits="userSpaceOnUse">
+          {cross(0, 0, 8, 8)}
+          {cross(8, 8, 16, 16)}
+        </pattern>
+      </defs>
+      <rect width="100%" height="100%" fill={`url(#${patternId})`} />
+    </svg>
+  );
 }
 
 function NeutralPreview() {
@@ -83,13 +109,15 @@ export function ProjectThumbnail({ revision, width, height, thumbnail }: Props) 
       const sourceContext = source.getContext('2d');
       if (!sourceContext) return;
       const image = sourceContext.createImageData(thumbnail.columns, thumbnail.rows);
-      const colors = thumbnail.palette.map((entry) => parseHexColor(colorValue(entry) as string) as Rgb);
+      const colors = thumbnail.palette.map((entry) => (entry === null ? null : parseHexColor(colorValue(entry) as string) as Rgb));
       for (let index = 0; index < thumbnail.indices.length; index += 1) {
-        const [red, green, blue] = colors[thumbnail.indices[index]];
+        // A canvas hole stays transparent, as createImageData zero-fills.
+        const color = colors[thumbnail.indices[index]];
+        if (color === null) continue;
         const offset = index * 4;
-        image.data[offset] = red;
-        image.data[offset + 1] = green;
-        image.data[offset + 2] = blue;
+        image.data[offset] = color[0];
+        image.data[offset + 1] = color[1];
+        image.data[offset + 2] = color[2];
         image.data[offset + 3] = 255;
       }
       sourceContext.putImageData(image, 0, 0);
@@ -110,7 +138,7 @@ export function ProjectThumbnail({ revision, width, height, thumbnail }: Props) 
           const at = segment * 4;
           const from = { x: backstitches.points[at] * cellUnit, y: backstitches.points[at + 1] * cellUnit };
           const to = { x: backstitches.points[at + 2] * cellUnit, y: backstitches.points[at + 3] * cellUnit };
-          const color = thumbnail.palette[backstitches.colors[segment]];
+          const color = thumbnail.palette[backstitches.colors[segment]] as string;
           if (detailed) {
             drawThreadBackstitch(context as unknown as CanvasContextAdapter, from, to, cellPx, color);
           } else {
@@ -157,9 +185,10 @@ export function ProjectThumbnail({ revision, width, height, thumbnail }: Props) 
   }, [height, revision, thumbnail, usable, width]);
 
   return <span className="project-gallery-thumbnail">
-    {usable ? <>
-      <span className="project-gallery-thumbnail-fallback"><NeutralPreview /></span>
-      <canvas ref={canvasRef} className={drawn ? 'project-gallery-thumbnail-canvas' : 'project-gallery-thumbnail-canvas project-gallery-thumbnail-pending'} aria-hidden="true" />
-    </> : <NeutralPreview />}
+    <span className="project-gallery-thumbnail-fallback">
+      <StitchTexture />
+      {usable && drawn ? null : <NeutralPreview />}
+    </span>
+    {usable ? <canvas ref={canvasRef} className={drawn ? 'project-gallery-thumbnail-canvas' : 'project-gallery-thumbnail-canvas project-gallery-thumbnail-pending'} aria-hidden="true" /> : null}
   </span>;
 }

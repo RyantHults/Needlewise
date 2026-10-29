@@ -15,6 +15,7 @@ import { DEFAULT_PATTERN_SETTINGS } from './domain';
 import { BrandLink } from './components/controls/BrandLink';
 import { StorageFooter } from './components/controls/StorageFooter';
 import { useTimedValue } from './components/timed-value';
+import { ToastProvider, usePinnedToast, useToast } from './components/toast';
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import type { ProjectFolder, ProjectMetadata } from './persistence';
 
@@ -22,7 +23,6 @@ const projectPath = (id: string, view: PatternView = 'edit') => `/patterns/${enc
 /** The pattern page a path names: `/patterns/:projectId/edit` or `/track`. */
 const patternView = (pathname: string): PatternView | null =>
   pathname.endsWith('/edit') ? 'edit' : pathname.endsWith('/track') ? 'track' : null;
-interface UndoableMove { kind: 'project' | 'folder'; id: string; name: string; from: string | null; to: string | null }
 function WorkspaceApp() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -58,7 +58,7 @@ function WorkspaceApp() {
   // which falls back to the top level on its own.
   const folderIdParam = searchParams.get('folder');
   const currentFolderId = folderIdParam !== null && folders.some((folder) => folder.id === folderIdParam) ? folderIdParam : null;
-  const [message, setMessage] = useState('');
+  const showToast = useToast();
   const [pwa, setPwa] = useState<PwaUpdateAdapter | null>(null);
   const [pwaState, setPwaState] = useState<PwaUpdateState>({ supported: false, registered: false, updateAvailable: false, offlineReady: false, error: null });
   const [updating, setUpdating] = useState(false);
@@ -76,7 +76,6 @@ function WorkspaceApp() {
   const [routeIssue, setRouteIssue] = useState('');
   const [confirmDeleteId, setConfirmDeleteId, clearConfirmDeleteId] = useTimedValue<string>(3000);
   const [confirmDeleteFolderId, setConfirmDeleteFolderId, clearConfirmDeleteFolderId] = useTimedValue<string>(3000);
-  const [undoMove, showUndoToast, clearUndoMove] = useTimedValue<UndoableMove>(6000);
   const attemptedRoute = useRef<string | null>(null);
   const view = patternView(location.pathname);
   const isProjectPage = view !== null;
@@ -127,14 +126,14 @@ function WorkspaceApp() {
   }
   async function moveIntoCurrentFolder(projectId: string, targetFolderId: string | null, failureMessage: string) {
     if (!targetFolderId) return;
-    try { await moveProjectToFolder(projectId, targetFolderId); } catch { setMessage(failureMessage); }
+    try { await moveProjectToFolder(projectId, targetFolderId); } catch { showToast({ message: failureMessage, tone: 'error' }); }
   }
 
   async function submitCreate(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault(); const width = Number(createWidth); const height = Number(createHeight);
     if (createMode === 'image') return;
     if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || width * height > 1_000_000) { setCreateError('Use whole numbers from 1 upward, with no more than 1,000,000 cells total.'); return; }
-    setCreateError(''); setMessage('Creating and saving your blank pattern…');
+    setCreateError('');
     const targetFolderId = currentFolderId;
     try {
       const session = await createProject({ title: createTitle.trim() || 'Untitled sampler', width, height, aidaCount: Number(createAida), settings: { backgroundColor: createBackgroundColor } });
@@ -154,11 +153,11 @@ function WorkspaceApp() {
 
   async function handleUpdate() {
     if (!pwa) return;
-    setUpdating(true); setMessage('Saving before update…');
-    try { await (active ? flush() : Promise.resolve()); await pwa.activateUpdate(); setMessage('Update applied.'); } catch { setMessage('Update could not be applied. Your current document was retained.'); } finally { setUpdating(false); }
+    setUpdating(true);
+    try { await (active ? flush() : Promise.resolve()); await pwa.activateUpdate(); showToast({ message: 'Update applied.' }); } catch { showToast({ message: 'Update could not be applied. Your current document was retained.', tone: 'error' }); } finally { setUpdating(false); }
   }
 
-  function handleDeleteClick(projectId: string, title: string) {
+  function handleDeleteClick(projectId: string) {
     // Two-step inline confirm: the first click arms the row, the second (or a
     // fresh click after the timeout) actually deletes.
     if (confirmDeleteId !== projectId) {
@@ -166,31 +165,28 @@ function WorkspaceApp() {
       return;
     }
     clearConfirmDeleteId();
-    setMessage(`Deleting “${title}”…`);
-    void deleteProject(projectId).then(() => { setMessage('Project deleted.'); }).catch(() => {
-      setMessage('The project could not be deleted.');
+    void deleteProject(projectId).then(() => { showToast({ message: 'Project deleted.' }); }).catch(() => {
+      showToast({ message: 'The project could not be deleted.', tone: 'error' });
     });
   }
 
   async function handleDuplicate(project: ProjectMetadata) {
-    setMessage(`Duplicating “${project.title}”…`);
     const targetFolderId = currentFolderId;
     try {
       const copy = await duplicateProject(project.id);
       await moveIntoCurrentFolder(copy.id, targetFolderId, 'Pattern duplicated, but it could not be moved into the folder.');
-      setMessage('Pattern duplicated.');
+      showToast({ message: 'Pattern duplicated.' });
     } catch {
-      setMessage('The pattern could not be duplicated.');
+      showToast({ message: 'The pattern could not be duplicated.', tone: 'error' });
     }
   }
 
   async function handleRenameProject(project: ProjectMetadata, title: string) {
-    setMessage('');
     try {
       await renameProject(project.id, title);
-      setMessage('Pattern renamed.');
+      showToast({ message: 'Pattern renamed.' });
     } catch {
-      setMessage('The pattern could not be renamed.');
+      showToast({ message: 'The pattern could not be renamed.', tone: 'error' });
     }
   }
 
@@ -200,13 +196,11 @@ function WorkspaceApp() {
   }
 
   async function handleCreateFolder(name: string, parentId: string | null) {
-    setMessage('');
-    try { await createFolder(name, parentId); setMessage('Folder created.'); } catch { setMessage('The folder could not be created.'); }
+    try { await createFolder(name, parentId); showToast({ message: 'Folder created.' }); } catch { showToast({ message: 'The folder could not be created.', tone: 'error' }); }
   }
 
   async function handleRenameFolder(folderId: string, name: string) {
-    setMessage('');
-    try { await renameFolder(folderId, name); setMessage('Folder renamed.'); } catch { setMessage('The folder could not be renamed.'); }
+    try { await renameFolder(folderId, name); showToast({ message: 'Folder renamed.' }); } catch { showToast({ message: 'The folder could not be renamed.', tone: 'error' }); }
   }
 
   function folderName(folderId: string | null): string {
@@ -214,35 +208,59 @@ function WorkspaceApp() {
     return folders.find((folder) => folder.id === folderId)?.name ?? 'Projects';
   }
 
-  function handleUndoMove() {
-    if (!undoMove) return;
-    const move = undoMove;
-    clearUndoMove();
-    const reverse = move.kind === 'project' ? moveProjectToFolder(move.id, move.from) : moveFolder(move.id, move.from);
-    void reverse.then(() => {
-      setMessage('Move undone.');
-    }).catch(() => {
-      setMessage('The move could not be undone.');
+  function showMoveToast(name: string, to: string | null, reverse: () => Promise<void>) {
+    showToast({
+      message: `Moved “${name}” to ${folderName(to)}`,
+      action: {
+        label: 'Undo',
+        run: () => {
+          void reverse().then(() => {
+            showToast({ message: 'Move undone.' });
+          }).catch(() => {
+            showToast({ message: 'The move could not be undone.', tone: 'error' });
+          });
+        },
+      },
     });
   }
 
   function handleMoveProject(project: ProjectMetadata, folderId: string | null) {
-    setMessage('');
     const previousFolderId = folderAssignments.find((assignment) => assignment.projectId === project.id)?.folderId ?? null;
-    void moveProjectToFolder(project.id, folderId).then(() => {
-      if (appMounted.current) showUndoToast({ kind: 'project', id: project.id, name: project.title, from: previousFolderId, to: folderId });
+    return moveProjectToFolder(project.id, folderId).then(() => {
+      if (appMounted.current) showMoveToast(project.title, folderId, () => moveProjectToFolder(project.id, previousFolderId));
     }).catch(() => {
-      setMessage('The pattern could not be moved.');
+      showToast({ message: 'The pattern could not be moved.', tone: 'error' });
     });
   }
 
+  async function handleGroupProjects(dragged: ProjectMetadata, target: ProjectMetadata, parentId: string | null) {
+    try {
+      const folder = await createFolder('New folder', parentId, [target.id, dragged.id]);
+      if (!appMounted.current) return;
+      showToast({
+        message: `Created “New folder” with “${target.title}” and “${dragged.title}”`,
+        action: {
+          label: 'Undo',
+          run: () => {
+            void deleteFolder(folder.id).then(() => {
+              showToast({ message: 'Folder removed.' });
+            }).catch(() => {
+              showToast({ message: 'The folder could not be removed.', tone: 'error' });
+            });
+          },
+        },
+      });
+    } catch {
+      showToast({ message: 'The folder could not be created.', tone: 'error' });
+    }
+  }
+
   function handleMoveFolder(folder: ProjectFolder, parentId: string | null) {
-    setMessage('');
     const previousParentId = folder.parentId;
-    void moveFolder(folder.id, parentId).then(() => {
-      if (appMounted.current) showUndoToast({ kind: 'folder', id: folder.id, name: folder.name, from: previousParentId, to: parentId });
+    return moveFolder(folder.id, parentId).then(() => {
+      if (appMounted.current) showMoveToast(folder.name, parentId, () => moveFolder(folder.id, previousParentId));
     }).catch(() => {
-      setMessage('The folder could not be moved.');
+      showToast({ message: 'The folder could not be moved.', tone: 'error' });
     });
   }
 
@@ -255,23 +273,29 @@ function WorkspaceApp() {
       return;
     }
     clearConfirmDeleteFolderId();
-    setMessage('Deleting folder…');
     // If the deleted folder is the one being viewed, or is the parent of the
     // one being viewed, the view can no longer show what it was showing:
     // step up to the deleted folder's own parent.
     const viewedFolder = folders.find((candidate) => candidate.id === currentFolderId) ?? null;
     const shouldNavigateUp = currentFolderId === folder.id || viewedFolder?.parentId === folder.id;
     void deleteFolder(folder.id).then(() => {
-      setMessage('Folder deleted. Its patterns moved up a level.');
+      showToast({ message: 'Folder deleted. Its patterns moved up a level.' });
       if (shouldNavigateUp && appMounted.current) handleNavigateFolder(folder.parentId);
     }).catch(() => {
-      setMessage('The folder could not be deleted.');
+      showToast({ message: 'The folder could not be deleted.', tone: 'error' });
     });
   }
 
   const actionDisabled = !initialized || busy || updating;
   const routePending = isProjectPage && (resolvedRoute !== routeIdentity || (!routeIssue && state.projectId !== decodedRouteId));
   const routeError = isProjectPage && Boolean(routeIssue);
+  useEffect(() => {
+    if (error) showToast({ message: error.message, tone: 'error' });
+  }, [error, showToast]);
+  usePinnedToast(pwaState.updateAvailable && !routeError ? {
+    message: 'A Needlewise update is ready. Your current document will be saved first.',
+    action: { label: updating ? 'Updating…' : 'Update now', run: () => void handleUpdate() },
+  } : null);
   // The gallery carries the brand in its own header; other non-project states keep the plain topbar.
   const galleryVisible = !isProjectPage && initialized;
   // Editor autosaves bypass the hook's actions, so the listing is stale after navigating back.
@@ -299,7 +323,7 @@ function WorkspaceApp() {
               projects={projects}
               disabled={actionDisabled}
               onOpen={(project) => navigate(projectPath(project.id))}
-              onDelete={(project) => handleDeleteClick(project.id, project.title)}
+              onDelete={(project) => handleDeleteClick(project.id)}
               onRenameProject={handleRenameProject}
               onDuplicate={(project) => void handleDuplicate(project)}
               deleteConfirmId={confirmDeleteId}
@@ -315,15 +339,13 @@ function WorkspaceApp() {
               folderDeleteConfirmId={confirmDeleteFolderId}
               onMoveProject={handleMoveProject}
               onMoveFolder={handleMoveFolder}
+              onGroupProjects={handleGroupProjects}
             />}
             {view === 'edit' && active && workspace && state.document && !state.usingRecovery && <EditorSurface key={state.projectId} workspace={workspace} document={state.document} onNavigate={(next) => navigate(projectPath(active.metadata.id, next))} onRenameTitle={(title) => void handleRenameProject(active.metadata, title)} />}
             {view === 'track' && active && workspace && state.document && !state.usingRecovery && <TrackSurface key={state.projectId} workspace={workspace} document={state.document} title={active.metadata.title} metrics={state.metrics ?? null} onNavigate={(next) => navigate(projectPath(active.metadata.id, next))} onRenameTitle={(title) => void handleRenameProject(active.metadata, title)} />}
           </>
         )}
-        {!routeError && <div className="feedback" aria-live="polite" role={error && !active ? 'alert' : undefined}>{error ? error.message : message}</div>}
       </main>
-      {!isProjectPage && !routeError && undoMove && <div className="undo-toast" role="status"><span className="undo-toast-text">Moved “{undoMove.name}” to {folderName(undoMove.to)}</span><button className="undo-toast-action" type="button" onClick={handleUndoMove}>Undo</button></div>}
-      {pwaState.updateAvailable && !routeError && <div className="update-notice" role="status"><strong>A Needlewise update is ready.</strong><span>Your current document will be saved before the update is applied.</span><button className="button button-primary" type="button" disabled={updating} onClick={() => void handleUpdate()}>{updating ? 'Updating…' : 'Update now'}</button></div>}
       <StorageFooter />
     </div>
     </div>
@@ -354,7 +376,7 @@ const ThemeEditor = import.meta.env.DEV && import.meta.env.MODE !== 'test'
   ? lazy(() => import('./dev/ThemeEditor'))
   : null;
 
-export default function App() {
+function AppContent() {
   return (
     <BrowserRouter>
       <Routes>
@@ -372,5 +394,13 @@ export default function App() {
       </Routes>
       {ThemeEditor && <Suspense fallback={null}><ThemeEditor /></Suspense>}
     </BrowserRouter>
+  );
+}
+
+export default function App() {
+  return (
+    <ToastProvider>
+      <AppContent />
+    </ToastProvider>
   );
 }

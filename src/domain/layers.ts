@@ -448,6 +448,16 @@ export function fragmentLayerRequirement(fragment: PatternFragment): LayerType |
   return null;
 }
 
+/** The part of `fragment` a layer of `type` holds: stitch keeps the cells and drops the backstitches; specialty keeps the backstitches over empty cells. */
+export function fragmentPartForLayerType(fragment: PatternFragment, type: LayerType): PatternFragment {
+  const { version, width, height } = fragment;
+  if (type === LayerType.Stitch) {
+    const none = new Uint32Array(0);
+    return { version, width, height, kind: fragment.kind, colors: fragment.colors, backstitches: { x1: none, y1: none, x2: none, y2: none, colors: new Uint16Array(0) } };
+  }
+  return { version, width, height, kind: new Uint8Array(fragment.kind.length), colors: new Uint16Array(fragment.colors.length), backstitches: fragment.backstitches };
+}
+
 /**
  * The layer type a layer-scoped command needs, or null when it works on both
  * (delete-region, delete-cell-set, move-fragment, an empty paste). Commands

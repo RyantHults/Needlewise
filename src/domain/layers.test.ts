@@ -12,6 +12,8 @@ import {
   DEFAULT_PATTERN_AIDA_COUNT,
   findLayer,
   FlattenCache,
+  fragmentLayerRequirement,
+  fragmentPartForLayerType,
   flattenDocument,
   HalfDirection,
   layerAddCommand,
@@ -344,6 +346,17 @@ describe('layer queries', () => {
     expect(commandLayerType(paste(CellKind.Empty, 1))).toBe('specialty');
     expect(commandLayerType(paste(CellKind.Full, 1))).toBe('mixed');
     expect(commandLayerType({ type: 'batch', commands: [setFull, addBackstitch] })).toBe('mixed');
+  });
+
+  it('splits a mixed fragment into the part each layer type holds', () => {
+    const line = new Uint32Array([0]);
+    const fragment = { version: PATTERN_FRAGMENT_VERSION, width: 1, height: 1, kind: new Uint8Array([CellKind.Full]), colors: new Uint16Array([2, 0, 0, 0]), backstitches: { x1: line, y1: line, x2: line, y2: line, colors: new Uint16Array([1]) } };
+    const stitch = fragmentPartForLayerType(fragment, LayerType.Stitch);
+    const specialty = fragmentPartForLayerType(fragment, LayerType.Specialty);
+    expect(fragmentLayerRequirement(stitch)).toBe(LayerType.Stitch);
+    expect([...stitch.colors]).toEqual([2, 0, 0, 0]);
+    expect(fragmentLayerRequirement(specialty)).toBe(LayerType.Specialty);
+    expect([...specialty.backstitches.colors]).toEqual([1]);
   });
 });
 

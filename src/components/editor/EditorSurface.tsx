@@ -17,7 +17,7 @@ import { RangeInput } from "../RangeInput";
 import { TraceImageControls, traceBoundsToWorkspace } from "./TraceImageControls";
 import { LayersPanel, LAYER_TYPE_LABELS, type ActiveLayerId, type LayerSelectModifiers } from "./LayersPanel";
 import { LayerControls } from "./LayerControls";
-import { Toast, useToast } from "./Toast";
+import { useToast } from "../toast";
 import type { PatternView } from "./ViewSwitch";
 import { createCatalogReference, type CatalogDefinition, type CatalogRecord } from "../../catalog";
 import { createPortal } from "react-dom";
@@ -138,7 +138,7 @@ export function EditorSurface({
   const [selectChoice, setSelectChoice] = useState<SelectChoice>(SELECT_CHOICES[0]!);
   const [lastStitchKind, setLastStitchKind] = useState<StitchKind>("full");
   const documentBackgroundColor = normalizeHexColor(document.settings?.backgroundColor ?? "") ?? DEFAULT_PATTERN_SETTINGS.backgroundColor;
-  const { toast, showToast, dismissToast } = useToast();
+  const showToast = useToast();
   const showToastRef = useRef(showToast);
   showToastRef.current = showToast;
   const { hover, attach: attachReadout } = useStitchReadout(document, availableCatalogs);
@@ -154,7 +154,7 @@ export function EditorSurface({
     },
     controllerOptions: {
       catalogDefinition: catalog,
-      onNotice: (message: string) => showToastRef.current(message),
+      onNotice: (message: string) => showToastRef.current({ message }),
       onTraceBoundsChange: (bounds, surface) => {
         const current = workspace.sourceImage;
         if (!current) return;
@@ -284,7 +284,7 @@ export function EditorSurface({
   const refuseUnavailable = (tool: string) => {
     const state = availability(tool);
     if (state.enabled) return false;
-    if (state.hint) showToast(state.hint);
+    if (state.hint) showToast({ message: state.hint });
     return true;
   };
   const invoke = (tool: string) => {
@@ -297,7 +297,7 @@ export function EditorSurface({
     try {
       action();
     } catch (error) {
-      showToast(error instanceof Error ? error.message : "That layer change could not be made.");
+      showToast({ message: error instanceof Error ? error.message : "That layer change could not be made.", tone: "error" });
     }
   };
   const selectLayer = (id: ActiveLayerId, modifiers?: LayerSelectModifiers) => runLayerAction(() => {
@@ -1099,7 +1099,6 @@ export function EditorSurface({
             )}
           </CanvasFrame>
           <StitchReadout hover={hover} />
-          <Toast toast={toast} onDismiss={dismissToast} />
           <div className="mobile-dock-card">
             <div className="mobile-dock-triggers" aria-label="Open editor controls">
               <button ref={dock.toolsTriggerRef} className="mobile-dock-trigger" type="button" aria-label="Tools" aria-expanded={dock.panel === "tools"} aria-controls="mobile-tools-popover" onClick={() => dock.setPanel(dock.panel === "tools" ? null : "tools")}>

@@ -11,6 +11,7 @@ import {
   useSensors,
   type Announcements,
   type DragEndEvent,
+  type DragOverEvent,
   type DragStartEvent,
   type KeyboardCoordinateGetter
 } from '@dnd-kit/core';
@@ -29,6 +30,8 @@ import {
   parseDragId,
   pickNextDropTarget,
   projectDragId,
+  projectDropId,
+  resolveGroupTarget,
   resolveMoveTarget,
   type AnnouncementContext,
   type Direction,
@@ -40,6 +43,9 @@ import { useInlineEdit } from './inline-edit';
 import { prefersReducedMotion } from './motion';
 
 const DROP_ANIMATION = { duration: 150, easing: 'ease' };
+
+/** A dropped card stays hidden in its slot until the drop lands, so it does not flash back before it leaves. */
+const SETTLING_STYLE = { visibility: 'hidden' } as const;
 
 const ARROW_DIRECTIONS: Record<string, Direction> = {
   ArrowRight: 'right',
@@ -81,8 +87,9 @@ interface ProjectGalleryProps {
   onRenameFolder?: (folderId: string, name: string) => Promise<unknown> | void;
   onDeleteFolder?: (folder: ProjectFolder) => void;
   folderDeleteConfirmId?: string | null;
-  onMoveProject?: (project: ProjectMetadata, folderId: string | null) => void;
-  onMoveFolder?: (folder: ProjectFolder, parentId: string | null) => void;
+  onMoveProject?: (project: ProjectMetadata, folderId: string | null) => Promise<unknown> | void;
+  onMoveFolder?: (folder: ProjectFolder, parentId: string | null) => Promise<unknown> | void;
+  onGroupProjects?: (dragged: ProjectMetadata, target: ProjectMetadata, parentId: string | null) => Promise<unknown> | void;
 }
 
 function editedDate(value: number): string {
@@ -107,12 +114,33 @@ function sortProjects(projects: readonly ProjectMetadata[]): ProjectMetadata[] {
   );
 }
 
-function mostRecentProject(candidates: readonly ProjectMetadata[]): ProjectMetadata | undefined {
-  return candidates.reduce<ProjectMetadata | undefined>((best, candidate) => {
-    if (!best) return candidate;
-    if (candidate.updatedAt !== best.updatedAt) return candidate.updatedAt > best.updatedAt ? candidate : best;
-    return candidate.revision > best.revision ? candidate : best;
-  }, undefined);
+const FOLDER_PREVIEW_SLOTS = 4;
+
+/** The patterns a folder card previews: the most recently put into a folder first, then the most recently edited. */
+function folderPreviewProjects(candidates: readonly ProjectMetadata[], assignedAtByProjectId: ReadonlyMap<string, number>): ProjectMetadata[] {
+  return [...candidates].sort((left, right) =>
+    (assignedAtByProjectId.get(right.id) ?? 0) - (assignedAtByProjectId.get(left.id) ?? 0)
+    || right.updatedAt - left.updatedAt
+    || left.id.localeCompare(right.id)
+  ).slice(0, FOLDER_PREVIEW_SLOTS);
+}
+
+function FolderPreview({ projects }: { projects: readonly ProjectMetadata[] }) {
+  if (projects.length < 2) {
+    const [only] = projects;
+    return <ProjectThumbnail revision={only?.revision} width={only?.width} height={only?.height} thumbnail={only?.thumbnail} />;
+  }
+  const emptySlots = FOLDER_PREVIEW_SLOTS - projects.length;
+  return (
+    <span className="project-gallery-folder-grid">
+      {projects.map((item) => (
+        <ProjectThumbnail key={item.id} revision={item.revision} width={item.width} height={item.height} thumbnail={item.thumbnail} />
+      ))}
+      {Array.from({ length: emptySlots }, (_, index) => (
+        <span key={index} className="project-gallery-folder-grid-empty"><ProjectThumbnail /></span>
+      ))}
+    </span>
+  );
 }
 
 function dropStateClassName(dragActive: boolean, dropActive: boolean, isOver: boolean): string {
@@ -140,10 +168,11 @@ interface FolderCardProps {
   disabled: boolean;
   patternCount: number;
   folderCount: number;
-  preview: ProjectMetadata | undefined;
+  preview: readonly ProjectMetadata[];
   confirming: boolean;
   dragActive: boolean;
   dropActive: boolean;
+  settling: boolean;
   onNavigateFolder?: (folderId: string | null) => void;
   onRenameFolder?: (folderId: string, name: string) => Promise<unknown> | void;
   onDeleteFolder?: (folder: ProjectFolder) => void;
@@ -158,6 +187,7 @@ function FolderCard({
   confirming,
   dragActive,
   dropActive,
+  settling,
   onNavigateFolder,
   onRenameFolder,
   onDeleteFolder
@@ -182,6 +212,7 @@ function FolderCard({
     <article
       ref={(node) => { setDragNodeRef(node); setDropNodeRef(node); }}
       className={className}
+      style={settling ? SETTLING_STYLE : undefined}
       {...listeners}
     >
       <span className="project-gallery-folder-tab" aria-hidden="true" />
@@ -197,28 +228,36 @@ function FolderCard({
         aria-describedby={metadataDescriptionId}
       >
         <span className="project-gallery-folder-preview">
-          <ProjectThumbnail
-            revision={preview?.revision}
-            width={preview?.width}
-            height={preview?.height}
-            thumbnail={preview?.thumbnail}
-          />
+          <FolderPreview projects={preview} />
         </span>
         <span className="project-gallery-copy">
           <span id={metadataDescriptionId} className="project-gallery-meta">{meta}</span>
-          {!renaming && <span className="project-gallery-name">{folder.name}</span>}
         </span>
       </button>
-      {renaming && (
-        <div className="project-gallery-folder-rename">
-          <label className="visually-hidden" htmlFor={renameInputId}>Rename folder {folder.name}</label>
-          <input
-            id={renameInputId}
-            maxLength={MAX_FOLDER_NAME_CHARS}
-            {...renameInputProps}
-          />
-        </div>
-      )}
+      <div className="project-gallery-title-row">
+        {renaming ? (
+          <>
+            <label className="visually-hidden" htmlFor={renameInputId}>Rename folder {folder.name}</label>
+            <input
+              id={renameInputId}
+              className="project-gallery-title-input"
+              maxLength={MAX_FOLDER_NAME_CHARS}
+              {...renameInputProps}
+            />
+          </>
+        ) : (
+          <button
+            ref={renameTriggerRef}
+            className="project-gallery-name project-gallery-name-button"
+            type="button"
+            disabled={disabled || !onRenameFolder}
+            aria-label={`Rename ${folder.name}`}
+            onClick={startRename}
+          >
+            {folder.name}
+          </button>
+        )}
+      </div>
       <div className="project-gallery-card-actions">
         <button
           ref={setActivatorNodeRef}
@@ -230,11 +269,6 @@ function FolderCard({
         >
           <span aria-hidden="true">⠿</span>
         </button>
-        {onRenameFolder && !renaming && (
-          <CardActionButton ref={renameTriggerRef} disabled={disabled} onClick={startRename}>
-            Rename
-          </CardActionButton>
-        )}
         {onDeleteFolder && (
           <CardActionButton
             armed={confirming}
@@ -262,17 +296,21 @@ interface ProjectCardProps {
   project: ProjectMetadata;
   disabled: boolean;
   confirming: boolean;
+  dropActive: boolean;
+  settling: boolean;
   onOpen: (project: ProjectMetadata) => void;
   onDelete: (project: ProjectMetadata) => void;
   onDuplicate: (project: ProjectMetadata) => void;
   onRenameProject: (project: ProjectMetadata, title: string) => Promise<unknown> | void;
 }
 
-function ProjectCard({ project, disabled, confirming, onOpen, onDelete, onDuplicate, onRenameProject }: ProjectCardProps) {
+function ProjectCard({ project, disabled, confirming, dropActive, settling, onOpen, onDelete, onDuplicate, onRenameProject }: ProjectCardProps) {
   const metadataDescriptionId = useId();
   const renameInputId = useId();
   const { editing: renaming, start: startRename, triggerRef: renameTriggerRef, inputProps: renameInputProps } = useInlineEdit(project.title, (title) => onRenameProject(project, title));
-  const { attributes, listeners, setNodeRef, setActivatorNodeRef, isDragging } = useDraggable({ id: projectDragId(project.id), disabled: disabled || renaming });
+  const { attributes, listeners, setNodeRef: setDragNodeRef, setActivatorNodeRef, isDragging } = useDraggable({ id: projectDragId(project.id), disabled: disabled || renaming });
+  const { setNodeRef: setDropNodeRef, isOver } = useDroppable({ id: projectDropId(project.id), disabled: !dropActive });
+  const groupOver = isOver && dropActive;
 
   const size = typeof project.width === 'number' && typeof project.height === 'number'
     && Number.isInteger(project.width) && Number.isInteger(project.height)
@@ -282,10 +320,14 @@ function ProjectCard({ project, disabled, confirming, onOpen, onDelete, onDuplic
 
   return (
     <article
-      ref={setNodeRef}
-      className={`project-gallery-card${isDragging ? ' project-gallery-dragging' : ''}`}
+      ref={(node) => { setDragNodeRef(node); setDropNodeRef(node); }}
+      className={`project-gallery-card${isDragging ? ' project-gallery-dragging' : ''}${groupOver ? ' project-gallery-drop-over' : ''}`}
+      style={settling ? SETTLING_STYLE : undefined}
       {...listeners}
     >
+      {groupOver && (
+        <span className="project-gallery-drop-label" aria-hidden="true">Create folder with {project.title}</span>
+      )}
       <button
         className="project-gallery-open"
         type="button"
@@ -383,10 +425,13 @@ export function ProjectGallery({
   folderDeleteConfirmId = null,
   onMoveProject,
   onMoveFolder,
+  onGroupProjects,
   brand
 }: ProjectGalleryProps) {
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
+  const [overId, setOverId] = useState<string | null>(null);
+  const [settlingId, setSettlingId] = useState<string | null>(null);
   const [reducedMotion] = useState(prefersReducedMotion);
 
   const mouseSensor = useSensor(MouseSensor, { activationConstraint: { distance: 6 } });
@@ -420,6 +465,10 @@ export function ProjectGallery({
     }
     return map;
   }, [folderAssignments, projectsById, folderById]);
+  const assignedAtByProjectId = useMemo(
+    () => new Map(folderAssignments.map((assignment) => [assignment.projectId, assignment.assignedAt])),
+    [folderAssignments]
+  );
   const projectsByFolderId = useMemo(() => {
     const map = new Map<string, ProjectMetadata[]>();
     for (const [projectId, folderId] of folderIdByProjectId) {
@@ -475,10 +524,21 @@ export function ProjectGallery({
     return folder ? { kind: 'folder' as const, folder } : null;
   }, [activeDragId, projectsById, folderById]);
 
+  const groupingOver = activeDragId !== null && overId !== null && resolveGroupTarget(activeDragId, overId, moveContext) !== null;
+
+  function groupTargetTitle(draggedId: string, dropId: string): string | null {
+    const group = resolveGroupTarget(draggedId, dropId, moveContext);
+    return group ? projectsById.get(group.targetProjectId)?.title ?? null : null;
+  }
+
   const announcements: Announcements = {
     onDragStart: ({ active }) => `Picked up ${describeDraggedName(String(active.id), announceContext)}.`,
     onDragOver: ({ active, over }) => {
       if (!over) return undefined;
+      const groupTitle = groupTargetTitle(String(active.id), String(over.id));
+      if (groupTitle !== null) {
+        return `${describeDraggedName(String(active.id), announceContext)} is over ${groupTitle}. Drop to create a folder with both.`;
+      }
       const targetName = describeDropTargetName(String(over.id), announceContext);
       if (!targetName) return undefined;
       return `${describeDraggedName(String(active.id), announceContext)} is over ${targetName}.`;
@@ -486,6 +546,8 @@ export function ProjectGallery({
     onDragEnd: ({ active, over }) => {
       const name = describeDraggedName(String(active.id), announceContext);
       if (!over) return `Cancelled moving ${name}.`;
+      const groupTitle = groupTargetTitle(String(active.id), String(over.id));
+      if (groupTitle !== null) return `Created a folder with ${name} and ${groupTitle}.`;
       const target = resolveMoveTarget(String(active.id), String(over.id), announceContext);
       if (!target) return `Cancelled moving ${name}.`;
       return `Moved ${name} to ${describeDropTargetName(String(over.id), announceContext)}.`;
@@ -497,24 +559,45 @@ export function ProjectGallery({
     setActiveDragId(String(event.active.id));
   }
 
+  function handleDragOver(event: DragOverEvent) {
+    setOverId(event.over ? String(event.over.id) : null);
+  }
+
   function handleDragEnd(event: DragEndEvent) {
     const draggedId = String(event.active.id);
     const dropId = event.over ? String(event.over.id) : null;
     setActiveDragId(null);
+    setOverId(null);
     if (!dropId) return;
+    const drop = performDrop(draggedId, dropId);
+    if (drop === null) return;
+    // Set in the same batch that clears the active drag, so the overlay skips its animation home.
+    setSettlingId(draggedId);
+    const settle = () => setSettlingId((current) => (current === draggedId ? null : current));
+    void Promise.resolve(drop).then(settle, settle);
+  }
+
+  /** Runs the drop's handler, or returns null when the drop does nothing. */
+  function performDrop(draggedId: string, dropId: string): Promise<unknown> | void | null {
+    const group = resolveGroupTarget(draggedId, dropId, moveContext);
+    if (group) {
+      const dragged = projectsById.get(group.draggedProjectId);
+      const target = projectsById.get(group.targetProjectId);
+      return dragged && target ? onGroupProjects?.(dragged, target, group.parentId) : null;
+    }
     const target = resolveMoveTarget(draggedId, dropId, moveContext);
-    if (!target) return;
+    if (!target) return null;
     if (target.kind === 'project') {
       const project = projectsById.get(target.id);
-      if (project) onMoveProject?.(project, target.targetFolderId);
-    } else {
-      const folder = folderById.get(target.id);
-      if (folder) onMoveFolder?.(folder, target.targetFolderId);
+      return project ? onMoveProject?.(project, target.targetFolderId) : null;
     }
+    const folder = folderById.get(target.id);
+    return folder ? onMoveFolder?.(folder, target.targetFolderId) : null;
   }
 
   function handleDragCancel() {
     setActiveDragId(null);
+    setOverId(null);
   }
 
   const upBarLabel = currentFolder
@@ -527,6 +610,7 @@ export function ProjectGallery({
       collisionDetection={pointerWithinOrClosestCenter}
       accessibility={{ announcements }}
       onDragStart={handleDragStart}
+      onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
       onDragCancel={handleDragCancel}
     >
@@ -614,10 +698,11 @@ export function ProjectGallery({
                   disabled={disabled}
                   patternCount={scopedProjects.length}
                   folderCount={children.length}
-                  preview={mostRecentProject(scopedProjects)}
+                  preview={folderPreviewProjects(scopedProjects, assignedAtByProjectId)}
                   confirming={folderDeleteConfirmId === folder.id}
                   dragActive={activeDragId !== null}
                   dropActive={isActiveTarget(dropId)}
+                  settling={settlingId === folderDragId(folder.id)}
                   onNavigateFolder={onNavigateFolder}
                   onRenameFolder={onRenameFolder}
                   onDeleteFolder={onDeleteFolder}
@@ -630,6 +715,8 @@ export function ProjectGallery({
                 project={project}
                 disabled={disabled}
                 confirming={deleteConfirmId === project.id}
+                dropActive={isActiveTarget(projectDropId(project.id))}
+                settling={settlingId === projectDragId(project.id)}
                 onOpen={onOpen}
                 onDelete={onDelete}
                 onDuplicate={onDuplicate}
@@ -639,10 +726,15 @@ export function ProjectGallery({
           </div>
         )}
       </section>
-      <DragOverlay dropAnimation={reducedMotion ? null : DROP_ANIMATION} modifiers={[snapCenterToPointer]}>
+      <DragOverlay dropAnimation={reducedMotion || settlingId !== null ? null : DROP_ANIMATION} modifiers={[snapCenterToPointer]}>
         {activeDragInfo && (
           <div className="project-gallery-drag-preview" aria-hidden="true">
-            {activeDragInfo.kind === 'project' ? (
+            {groupingOver ? (
+              <>
+                <span className="project-gallery-drag-preview-folder-mark" aria-hidden="true" />
+                <span className="project-gallery-drag-preview-name">New folder</span>
+              </>
+            ) : activeDragInfo.kind === 'project' ? (
               <>
                 <ProjectThumbnail
                   revision={activeDragInfo.project.revision}

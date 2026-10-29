@@ -33,6 +33,7 @@ export interface AnnouncementContext extends MoveContext {
 const PROJECT_DRAG_PREFIX = 'project:';
 const FOLDER_DRAG_PREFIX = 'folder:';
 const FOLDER_DROP_PREFIX = 'folder-drop:';
+const PROJECT_DROP_PREFIX = 'project-drop:';
 
 export const UP_DROP_ID = 'up';
 
@@ -46,6 +47,10 @@ export function folderDragId(id: string): string {
 
 export function folderDropId(id: string): string {
   return `${FOLDER_DROP_PREFIX}${id}`;
+}
+
+export function projectDropId(id: string): string {
+  return `${PROJECT_DROP_PREFIX}${id}`;
 }
 
 export function parseDragId(rawId: string): ParsedDrag | null {
@@ -106,8 +111,32 @@ export function resolveMoveTarget(draggedId: string, dropId: string, context: Mo
   return { kind: 'folder', id: dragged.id, targetFolderId };
 }
 
+export interface GroupTarget {
+  draggedProjectId: string;
+  targetProjectId: string;
+  parentId: string | null;
+}
+
+/**
+ * A pattern dropped on another pattern in a view that can hold a new folder:
+ * the top level or a top-level folder. Returns null otherwise.
+ */
+export function resolveGroupTarget(draggedId: string, dropId: string, context: MoveContext): GroupTarget | null {
+  const dragged = parseDragId(draggedId);
+  if (!dragged || dragged.kind !== 'project') return null;
+  if (!dropId.startsWith(PROJECT_DROP_PREFIX)) return null;
+  const targetProjectId = dropId.slice(PROJECT_DROP_PREFIX.length);
+  if (targetProjectId === dragged.id) return null;
+  const parentId = context.currentFolderId;
+  if (parentId !== null) {
+    const parent = context.folders.find((folder) => folder.id === parentId);
+    if (!parent || parent.parentId !== null) return null;
+  }
+  return { draggedProjectId: dragged.id, targetProjectId, parentId };
+}
+
 export function isValidDropTarget(draggedId: string, dropId: string, context: MoveContext): boolean {
-  return resolveMoveTarget(draggedId, dropId, context) !== null;
+  return resolveMoveTarget(draggedId, dropId, context) !== null || resolveGroupTarget(draggedId, dropId, context) !== null;
 }
 
 export function describeDraggedName(draggedId: string, context: AnnouncementContext): string {

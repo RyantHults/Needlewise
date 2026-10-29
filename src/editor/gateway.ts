@@ -49,6 +49,7 @@ export type ActiveLayerId = number | 'canvas' | 'reference';
 
 /** Where a paste of a given layer type lands; see `ProjectSession.resolvePaste`. */
 export interface PasteDestination {
+  readonly layerType: LayerType;
   readonly layerId: number | null;
   readonly create: boolean;
   readonly message?: string;
@@ -56,8 +57,8 @@ export interface PasteDestination {
 
 export interface PasteCommitResult {
   readonly result: CommandResult;
-  /** Null when nothing was pasted (every layer of the type is hidden). */
-  readonly layerId?: number | null;
+  /** Every layer the paste landed on; empty when nothing was pasted. */
+  readonly layerIds: readonly number[];
   readonly message?: string;
 }
 
@@ -129,7 +130,8 @@ export interface WorkspaceEditorBoundary {
   activeLayerSurface(): PatternDocument | null;
   getEditorLayerSnapshot(): { readonly compositeInvalidation: CompositeInvalidationReport | null } | null;
   resolvePaste(type: LayerType): PasteDestination;
-  commitPaste(fragment: PatternFragment, position: { x: number; y: number }, destination: PasteDestination, expectedRevision?: number, palette?: readonly PaletteEntryInput[]): PasteCommitResult;
+  resolveMultiLayerPaste(type: LayerType): PasteDestination;
+  commitPaste(fragment: PatternFragment, position: { x: number; y: number }, destinations: readonly PasteDestination[], expectedRevision?: number, palette?: readonly PaletteEntryInput[]): PasteCommitResult;
   subscribe(listener: () => void): () => void;
   execute(command: DomainCommand): CommandResult;
   executeBatch(commands: readonly DomainCommand[]): CommandResult;
@@ -162,8 +164,10 @@ export interface WorkspaceEditorGateway {
   canRedo(): boolean;
   /** Where a paste of this layer type would go; null `layerId` means nowhere. */
   resolvePaste(type: LayerType): PasteDestination;
-  /** Paste as one history entry, creating the destination layer when needed. */
-  commitPaste(fragment: PatternFragment, position: { x: number; y: number }, destination: PasteDestination, expected?: EditorRevisionToken, palette?: readonly PaletteEntryInput[]): PasteCommitResult;
+  /** Where one layer type's part of a multi-layer paste would go; never the selected layer as such. */
+  resolveMultiLayerPaste(type: LayerType): PasteDestination;
+  /** Paste as one history entry, each destination taking its layer type's part, creating layers when needed. */
+  commitPaste(fragment: PatternFragment, position: { x: number; y: number }, destinations: readonly PasteDestination[], expected?: EditorRevisionToken, palette?: readonly PaletteEntryInput[]): PasteCommitResult;
   /** Record stitch progress outside document history; true when a mark changed. */
   markProgress(command: ProgressCommand): boolean;
   undoMark(): boolean;
@@ -323,12 +327,16 @@ class WorkspaceEditorGatewayImpl implements WorkspaceEditorGateway {
     return this.boundary.resolvePaste(type);
   }
 
-  commitPaste(fragment: PatternFragment, position: { x: number; y: number }, destination: PasteDestination, expected?: EditorRevisionToken, palette?: readonly PaletteEntryInput[]): PasteCommitResult {
+  resolveMultiLayerPaste(type: LayerType): PasteDestination {
+    return this.boundary.resolveMultiLayerPaste(type);
+  }
+
+  commitPaste(fragment: PatternFragment, position: { x: number; y: number }, destinations: readonly PasteDestination[], expected?: EditorRevisionToken, palette?: readonly PaletteEntryInput[]): PasteCommitResult {
     this.ensureLive();
     this.refreshFromBoundary();
     expectedToken(expected, this.snapshot);
     const revision = expected?.revision ?? this.snapshot.revision ?? undefined;
-    const outcome = this.boundary.commitPaste(fragment, position, destination, revision, palette);
+    const outcome = this.boundary.commitPaste(fragment, position, destinations, revision, palette);
     this.refresh();
     return outcome;
   }

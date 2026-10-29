@@ -5,6 +5,7 @@ import { createDocument } from '../../domain';
 import { DEFAULT_EXPORT_SETTINGS, EXPORT_SETTINGS_STORAGE_KEY, type ExportSettings } from '../../export';
 import { ExportDialog, ExportPanel, type ExportPanelProps, type ExportPanelWorkspace, type ExportPdf } from './ExportPanel';
 import { applyCommand, cell } from '../../domain/test-fixtures';
+import { ToastProvider } from '../toast';
 
 const palette = [{ id: 1, name: 'Ruby', color: '#AA0000' }];
 const makeDocument = (stitched: boolean, width = 14, height = 14) => {
@@ -42,7 +43,7 @@ function setup(overrides: Partial<ExportPanelProps> = {}) {
   const storage = memoryStorage();
   const exportPdf = vi.fn<ExportPdf>().mockResolvedValue(new Uint8Array([37, 80, 68, 70]));
   const props: ExportPanelProps = { document: makeDocument(true), title: 'Units quilt', workspace: ws.workspace, exportPdf, storage, ...overrides };
-  const view = render(<ExportPanel {...props} />);
+  const view = render(<ExportPanel {...props} />, { wrapper: ToastProvider });
   return { ...ws, storage, exportPdf, view, props };
 }
 
@@ -144,7 +145,7 @@ describe('ExportPanel', () => {
     expect(saved).toEqual({ paper: 'a4', orientation: 'landscape', margins: 'narrow', pageNumbers: false, centerMark: true, autoCrop: true, overlap: 3, cellSizeMm: 5, chartStyle: 'combined' });
 
     view.unmount();
-    render(<ExportPanel {...props} />);
+    render(<ExportPanel {...props} />, { wrapper: ToastProvider });
     expect(screen.getByLabelText('Paper size')).toHaveValue('a4');
     expect(screen.getByLabelText('Orientation')).toHaveValue('landscape');
     expect(screen.getByLabelText('Page overlap (cells)')).toHaveValue('3');
@@ -271,7 +272,7 @@ describe('ExportPanel', () => {
     const exportPdf = vi.fn<ExportPdf>((_settings, options) => new Promise(() => { signal = options.signal; }));
     const onClose = vi.fn();
     const ws = makeWorkspace();
-    const view = render(<ExportDialog document={makeDocument(true)} title="Quilt" workspace={ws.workspace} exportPdf={exportPdf} storage={memoryStorage()} onClose={onClose} />);
+    const view = render(<ExportDialog document={makeDocument(true)} title="Quilt" workspace={ws.workspace} exportPdf={exportPdf} storage={memoryStorage()} onClose={onClose} />, { wrapper: ToastProvider });
     const dialog = screen.getByRole('dialog', { name: 'Export pattern' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Export PDF' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close export' }));
@@ -283,7 +284,7 @@ describe('ExportPanel', () => {
   it('closes the dialog once the PDF is downloaded', async () => {
     const onClose = vi.fn();
     const ws = makeWorkspace();
-    render(<ExportDialog document={makeDocument(true)} title="Quilt" workspace={ws.workspace} exportPdf={vi.fn<ExportPdf>(async () => new Uint8Array([1]))} storage={memoryStorage()} onClose={onClose} />);
+    render(<ExportDialog document={makeDocument(true)} title="Quilt" workspace={ws.workspace} exportPdf={vi.fn<ExportPdf>(async () => new Uint8Array([1]))} storage={memoryStorage()} onClose={onClose} />, { wrapper: ToastProvider });
     fireEvent.click(within(screen.getByRole('dialog', { name: 'Export pattern' })).getByRole('button', { name: 'Export PDF' }));
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
     expect(URL.createObjectURL).toHaveBeenCalled();
@@ -292,7 +293,7 @@ describe('ExportPanel', () => {
   it('does not close the dialog when the export fails', async () => {
     const onClose = vi.fn();
     const ws = makeWorkspace();
-    render(<ExportDialog document={makeDocument(true)} title="Quilt" workspace={ws.workspace} exportPdf={vi.fn<ExportPdf>(async () => { throw new Error('Boom.'); })} storage={memoryStorage()} onClose={onClose} />);
+    render(<ExportDialog document={makeDocument(true)} title="Quilt" workspace={ws.workspace} exportPdf={vi.fn<ExportPdf>(async () => { throw new Error('Boom.'); })} storage={memoryStorage()} onClose={onClose} />, { wrapper: ToastProvider });
     fireEvent.click(within(screen.getByRole('dialog', { name: 'Export pattern' })).getByRole('button', { name: 'Export PDF' }));
     await screen.findByText('Boom.');
     expect(onClose).not.toHaveBeenCalled();
@@ -300,7 +301,7 @@ describe('ExportPanel', () => {
 
   it('shows thread totals in the dialog', () => {
     const ws = makeWorkspace();
-    render(<ExportDialog document={makeDocument(true)} title="Quilt" workspace={ws.workspace} exportPdf={vi.fn<ExportPdf>()} storage={memoryStorage()} onClose={vi.fn()} />);
+    render(<ExportDialog document={makeDocument(true)} title="Quilt" workspace={ws.workspace} exportPdf={vi.fn<ExportPdf>()} storage={memoryStorage()} onClose={vi.fn()} />, { wrapper: ToastProvider });
     const dialog = screen.getByRole('dialog', { name: 'Export pattern' });
     expect(within(dialog).getByRole('region', { name: 'Thread totals' })).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: 'Export PDF' })).toBeInTheDocument();

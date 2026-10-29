@@ -11,6 +11,7 @@ import {
   DomainError,
   findLayer,
   fragmentLayerRequirement,
+  fragmentPartForLayerType,
   layerAddCommand,
   LayerErrorCode,
   layerSetVisibilityCommand,
@@ -172,41 +173,46 @@ export class LayeredTestBoundary implements WorkspaceEditorBoundary {
     return this.publish(this.editor.redo());
   }
 
-  /**
-   * The selected layer when it is visible and of the fragment's type; else a
-   * new layer when there is room; else the topmost visible layer of the type;
-   * else nowhere.
-   */
+  /** The selected layer when it is visible and of the fragment's type; else `resolveMultiLayerPaste`. */
   resolvePaste(type: LayerType): PasteDestination {
-    const document = this.editor.document;
-    const active = typeof this.active === 'number' ? findLayer(document, this.active) : undefined;
-    if (active?.type === type && active.visible) return { layerId: active.id, create: false };
-    const noun = LAYER_TYPE_NOUN[type];
-    if (canAddLayer(document, type)) return { layerId: null, create: true, message: `Added a new ${noun} layer for your paste.` };
-    const top = topmostVisibleLayer(document, type);
-    if (top) return { layerId: top.id, create: false, message: `You have ${String(MAX_LAYERS_PER_TYPE)} ${noun} layers already, so this went on the top one.` };
-    return { layerId: null, create: false, message: `Your ${noun} layers are all hidden, so nothing was pasted.` };
+    const active = typeof this.active === 'number' ? findLayer(this.editor.document, this.active) : undefined;
+    if (active?.type === type && active.visible) return { layerType: type, layerId: active.id, create: false };
+    return this.resolveMultiLayerPaste(type);
   }
 
-  /** Pastes as one undo step, creating the layer and any palette entries in it, and selects the destination layer. */
-  commitPaste(fragment: PatternFragment, position: { x: number; y: number }, destination: PasteDestination, expectedRevision?: number, palette: readonly PaletteEntryInput[] = []): PasteCommitResult {
-    const message = destination.message === undefined ? {} : { message: destination.message };
-    const type = fragmentLayerRequirement(fragment);
-    if (type === null) return { result: this.unchanged(), layerId: null };
+  /** A new layer when there is room; else the topmost visible layer of the type; else nowhere. */
+  resolveMultiLayerPaste(type: LayerType): PasteDestination {
+    const document = this.editor.document;
+    const noun = LAYER_TYPE_NOUN[type];
+    if (canAddLayer(document, type)) return { layerType: type, layerId: null, create: true, message: `Added a new ${noun} layer for your paste.` };
+    const top = topmostVisibleLayer(document, type);
+    if (top) return { layerType: type, layerId: top.id, create: false, message: `You have ${String(MAX_LAYERS_PER_TYPE)} ${noun} layers already, so this went on the top one.` };
+    return { layerType: type, layerId: null, create: false, message: `Your ${noun} layers are all hidden, so nothing was pasted.` };
+  }
+
+  /** Pastes each destination's part as one undo step, creating layers and any palette entries in it, and selects every destination layer. */
+  commitPaste(fragment: PatternFragment, position: { x: number; y: number }, destinations: readonly PasteDestination[], expectedRevision?: number, palette: readonly PaletteEntryInput[] = []): PasteCommitResult {
+    const messages = destinations.flatMap((destination) => destination.message === undefined ? [] : [destination.message]);
+    const message = messages.length === 0 ? {} : { message: messages.join(' ') };
+    const targets = destinations.filter((destination) => destination.create || destination.layerId !== null);
+    if (fragmentLayerRequirement(fragment) === null) return { result: this.unchanged(), layerIds: [] };
+    if (targets.length === 0) return { result: this.unchanged(), layerIds: [], ...message };
     const creates = palette.map(createPaletteCommand);
-    const paste = pasteFragmentCommand(fragment, position, expectedRevision);
-    if (destination.create) {
-      if (type === 'mixed') throw new Error('A new paste layer needs a fragment of one layer type.');
-      const layerId = this.editor.document.nextLayerId;
-      const result = this.run({ type: 'batch', commands: [...creates, layerAddCommand(type, { id: layerId }), { ...paste, layerId }] });
-      if (result.changed) this.selectLayer(layerId);
-      return { result, layerId: result.changed ? layerId : null, ...message };
+    let nextLayerId = this.editor.document.nextLayerId;
+    const layerIds: number[] = [];
+    const commands: DomainCommand[] = [];
+    for (const destination of targets) {
+      const layerId = destination.create ? nextLayerId++ : destination.layerId as number;
+      if (destination.create) commands.push(layerAddCommand(destination.layerType, { id: layerId }));
+      commands.push({ ...pasteFragmentCommand(fragmentPartForLayerType(fragment, destination.layerType), position, expectedRevision), layerId });
+      layerIds.push(layerId);
     }
-    if (destination.layerId === null) return { result: this.unchanged(), layerId: null, ...message };
-    const layerPaste: DomainCommand = { ...paste, layerId: destination.layerId };
-    const result = this.run(creates.length === 0 ? layerPaste : { type: 'batch', commands: [...creates, layerPaste] });
-    this.selectLayer(destination.layerId);
-    return { result, layerId: destination.layerId, ...message };
+    const result = this.run(commands.length === 1 && creates.length === 0 ? commands[0] : { type: 'batch', commands: [...creates, ...commands] });
+    this.active = layerIds[layerIds.length - 1] as number;
+    this.selected = layerIds;
+    this.refreshSelection();
+    this.emit();
+    return { result, layerIds, ...message };
   }
 
   /** Marks bypass document history: each is a step on Track's own stack. */

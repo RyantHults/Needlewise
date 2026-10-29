@@ -39,7 +39,13 @@ describe('ProjectThumbnail', () => {
     expect(renderThumbnail({ ...base, backstitches })).toBeInTheDocument();
   });
 
+  it('renders a thumbnail whose off-canvas samples are null palette entries', () => {
+    expect(renderThumbnail({ ...base, palette: ['#123456', null], indices: Uint8Array.of(0, 1) })).toBeInTheDocument();
+  });
+
   it.each([
+    ['null fabric colour', { ...base, palette: [null, '#AA0000'] }],
+    ['backstitch on an off-canvas entry', { ...base, palette: ['#123456', null], backstitches: { points: Uint32Array.of(0, 0, 8, 4), colors: Uint8Array.of(1) } }],
     ['version 1 array', { ...base, version: 1, indices: [0, 1] }],
     ['plain array', { ...base, indices: [0, 1] }],
     ['wrong typed array width', { ...base, indices: Uint16Array.of(0, 1) }],

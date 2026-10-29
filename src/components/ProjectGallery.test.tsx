@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type ProjectFolder, type ProjectFolderAssignment, type ProjectMetadata } from '../persistence';
 import { ProjectGallery } from './ProjectGallery';
@@ -47,8 +47,8 @@ function folder(id: string, name: string, parentId: string | null = null): Proje
   return { id, name, parentId, createdAt: Date.UTC(2026, 0, 1), updatedAt: Date.UTC(2026, 0, 1) };
 }
 
-function assignment(projectId: string, folderId: string): ProjectFolderAssignment {
-  return { projectId, folderId };
+function assignment(projectId: string, folderId: string, assignedAt = 0): ProjectFolderAssignment {
+  return { projectId, folderId, assignedAt };
 }
 
 function editedDate(value: number): string {
@@ -77,6 +77,7 @@ function renderGallery(projects: readonly ProjectMetadata[], deleteConfirmId?: s
   const onDeleteFolder = vi.fn();
   const onMoveProject = vi.fn();
   const onMoveFolder = vi.fn();
+  const onGroupProjects = vi.fn();
   const withFolderHandlers = options.withFolderHandlers ?? true;
   const view = render(
     <ProjectGallery
@@ -96,10 +97,35 @@ function renderGallery(projects: readonly ProjectMetadata[], deleteConfirmId?: s
       onDeleteFolder={withFolderHandlers ? onDeleteFolder : undefined}
       onMoveProject={withFolderHandlers ? onMoveProject : undefined}
       onMoveFolder={withFolderHandlers ? onMoveFolder : undefined}
+      onGroupProjects={withFolderHandlers ? onGroupProjects : undefined}
       {...required()}
     />
   );
-  return { view, onOpen, onDelete, onCreate, onImport, onNavigateFolder, onCreateFolder, onRenameFolder, onDeleteFolder, onMoveProject, onMoveFolder };
+  return { view, onOpen, onDelete, onCreate, onImport, onNavigateFolder, onCreateFolder, onRenameFolder, onDeleteFolder, onMoveProject, onMoveFolder, onGroupProjects };
+}
+
+function stubRect(element: Element, rect: { top: number; left: number; width: number; height: number }): void {
+  vi.spyOn(element, 'getBoundingClientRect').mockReturnValue({
+    top: rect.top,
+    left: rect.left,
+    width: rect.width,
+    height: rect.height,
+    right: rect.left + rect.width,
+    bottom: rect.top + rect.height,
+    x: rect.left,
+    y: rect.top,
+    toJSON() { return this; }
+  } as DOMRect);
+}
+
+/** Picks up the pattern behind `handle` with Space, presses `arrow`, then drops it with Space. */
+async function keyboardDrag(handle: HTMLElement, arrow: string): Promise<void> {
+  handle.focus();
+  fireEvent.keyDown(handle, { code: 'Space' });
+  // KeyboardSensor attaches its document-level keydown listener after a setTimeout(0).
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  document.dispatchEvent(new KeyboardEvent('keydown', { code: arrow, bubbles: true, cancelable: true }));
+  document.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', bubbles: true, cancelable: true }));
 }
 
 const required = () => ({ brand: <a href="/">Needlewise</a>, onDuplicate: vi.fn(), onRenameProject: vi.fn() });
@@ -436,7 +462,7 @@ describe('ProjectGallery folders', () => {
     const top = folder('top', 'Charts');
     const { onRenameFolder } = renderGallery([], null, { folders: [top] });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Rename Charts' }));
     const input = screen.getByLabelText('Rename folder Charts');
     fireEvent.change(input, { target: { value: 'Seasonal charts' } });
     fireEvent.keyDown(input, { key: 'Enter' });
@@ -449,7 +475,7 @@ describe('ProjectGallery folders', () => {
     renderGallery([], null, { folders: [top] });
 
     expect(screen.getByRole('button', { name: 'Drag Charts' })).toBeEnabled();
-    fireEvent.click(screen.getByRole('button', { name: 'Rename' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Rename Charts' }));
 
     expect(screen.getByLabelText('Rename folder Charts')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Drag Charts' })).toBeDisabled();
@@ -489,27 +515,31 @@ describe('ProjectGallery folders', () => {
     expect(screen.getByRole('button', { name: 'Drag Loose pattern' })).toBeInTheDocument();
   });
 
-  it('shows the most recently updated project (by updatedAt then revision) as the folder preview', () => {
+  it('shows a pattern in the folder preview as soon as it is put into the folder, ahead of older ones', () => {
     const top = folder('top', 'Charts');
-    const child = folder('child', 'Winter', 'top');
-    const older = project('older', 'Older', 10, 10, Date.UTC(2026, 0, 1), validThumbnail);
-    const newer = project('newer', 'Newer', 20, 15, Date.UTC(2026, 0, 20), { ...validThumbnail, revision: 1 });
-    const imageData = { data: new Uint8ClampedArray(16) };
+    // Each pattern's thumbnail has its own column count, so the drawn image size names the pattern.
+    const patterns = [1, 2, 3, 4, 5].map((columns) => project(`p${columns}`, `Pattern ${columns}`, columns, 1, undefined, {
+      ...validThumbnail,
+      columns,
+      rows: 1,
+      indices: new Uint8Array(columns)
+    }));
+    const imageData = { data: new Uint8ClampedArray(20) };
     const context = {
       imageSmoothingEnabled: true,
       createImageData: vi.fn(() => imageData),
       putImageData: vi.fn()
     } as unknown as CanvasRenderingContext2D;
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context);
+    const props = { projects: patterns, folders: [top], onOpen: vi.fn(), onDelete: vi.fn(), onCreate: vi.fn(), ...required() };
+    const fourInFolder = [1, 2, 3, 4].map((index) => assignment(`p${index}`, 'top', index * 10));
+    const view = render(<ProjectGallery {...props} folderAssignments={fourInFolder} />);
 
-    renderGallery([older, newer], null, {
-      folders: [top, child],
-      folderAssignments: [assignment('older', 'top'), assignment('newer', 'child')]
-    });
+    // Pattern 5 starts loose at the top level, then is put into the full folder.
+    vi.mocked(context.createImageData).mockClear();
+    view.rerender(<ProjectGallery {...props} folderAssignments={[...fourInFolder, assignment('p5', 'top', 50)]} />);
 
-    const folderCard = screen.getByRole('article');
-    expect(folderCard.querySelector('canvas')).toBeInTheDocument();
-    expect(context.createImageData).toHaveBeenCalledWith(2, 2);
+    expect(context.createImageData).toHaveBeenCalledWith(5, 1);
   });
 
   it('shows a neutral preview for an empty folder', () => {
@@ -557,30 +587,49 @@ describe('ProjectGallery folders', () => {
     expect(folderArticle).not.toBeNull();
     expect(projectArticle).not.toBeNull();
 
-    const stubRect = (element: Element, rect: { top: number; left: number; width: number; height: number }): void => {
-      vi.spyOn(element, 'getBoundingClientRect').mockReturnValue({
-        top: rect.top,
-        left: rect.left,
-        width: rect.width,
-        height: rect.height,
-        right: rect.left + rect.width,
-        bottom: rect.top + rect.height,
-        x: rect.left,
-        y: rect.top,
-        toJSON() { return this; }
-      } as DOMRect);
-    };
     // The folder card sits above the project card, so ArrowUp should reach it.
     stubRect(projectArticle as Element, { top: 300, left: 0, width: 200, height: 200 });
     stubRect(folderArticle as Element, { top: 0, left: 0, width: 200, height: 200 });
 
-    projectHandle.focus();
-    fireEvent.keyDown(projectHandle, { code: 'Space' });
-    // KeyboardSensor attaches its document-level keydown listener after a setTimeout(0).
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    document.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowUp', bubbles: true, cancelable: true }));
-    document.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', bubbles: true, cancelable: true }));
+    await keyboardDrag(projectHandle, 'ArrowUp');
 
     expect(onMoveProject).toHaveBeenCalledWith(atTop, 'top');
+  });
+
+  it('performs a keyboard drag that drops a pattern on another pattern to group them into a new folder', async () => {
+    const dragged = project('dragged', 'Dragged pattern', 10, 10, Date.UTC(2026, 0, 10));
+    const target = project('target', 'Target pattern', 10, 10, Date.UTC(2026, 0, 20));
+    const { onGroupProjects, onMoveProject } = renderGallery([dragged, target]);
+
+    const draggedHandle = screen.getByRole('button', { name: 'Drag Dragged pattern' });
+    stubRect(draggedHandle.closest('article') as Element, { top: 300, left: 0, width: 200, height: 200 });
+    stubRect(screen.getByRole('button', { name: 'Drag Target pattern' }).closest('article') as Element, { top: 0, left: 0, width: 200, height: 200 });
+
+    await keyboardDrag(draggedHandle, 'ArrowUp');
+
+    expect(onGroupProjects).toHaveBeenCalledWith(dragged, target, null);
+    expect(onMoveProject).not.toHaveBeenCalled();
+  });
+
+  it('keeps the dragged pattern hidden in place until a group drop settles', async () => {
+    const dragged = project('dragged', 'Dragged pattern', 10, 10, Date.UTC(2026, 0, 10));
+    const target = project('target', 'Target pattern', 10, 10, Date.UTC(2026, 0, 20));
+    const { onGroupProjects } = renderGallery([dragged, target]);
+    let settle = () => {};
+    onGroupProjects.mockReturnValue(new Promise<void>((resolve) => { settle = resolve; }));
+
+    const draggedHandle = screen.getByRole('button', { name: 'Drag Dragged pattern' });
+    const draggedArticle = draggedHandle.closest('article') as HTMLElement;
+    stubRect(draggedArticle, { top: 300, left: 0, width: 200, height: 200 });
+    stubRect(screen.getByRole('button', { name: 'Drag Target pattern' }).closest('article') as Element, { top: 0, left: 0, width: 200, height: 200 });
+
+    await keyboardDrag(draggedHandle, 'ArrowUp');
+
+    expect(onGroupProjects).toHaveBeenCalledOnce();
+    expect(draggedArticle).not.toBeVisible();
+
+    await act(async () => { settle(); });
+
+    expect(draggedArticle).toBeVisible();
   });
 });

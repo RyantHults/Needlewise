@@ -7,6 +7,7 @@ import {
   PersistenceError,
   sha256,
   type CreateFolderInput,
+  type ProjectFolderAssignment,
   type PreparedDocumentCapability,
   type ProjectAsset,
   type ProjectAssetInput,
@@ -41,7 +42,7 @@ export class MemoryRepository implements WorkspaceRepository {
   readonly saveDocuments: LayeredDocument[] = [];
   readonly preparedSaveCalls: string[] = [];
   readonly folders = new Map<string, ProjectFolder>();
-  readonly folderAssignments = new Map<string, string>();
+  readonly folderAssignments = new Map<string, ProjectFolderAssignment>();
   failSaves = false;
   beforeSave: (() => Promise<void> | void) | undefined;
 
@@ -107,7 +108,7 @@ export class MemoryRepository implements WorkspaceRepository {
   async listFolderIndex(): Promise<ProjectFolderIndex> {
     return {
       folders: [...this.folders.values()].map((folder) => ({ ...folder })),
-      assignments: [...this.folderAssignments].map(([projectId, folderId]) => ({ projectId, folderId }))
+      assignments: [...this.folderAssignments.values()].map((assignment) => ({ ...assignment }))
     };
   }
 
@@ -115,6 +116,7 @@ export class MemoryRepository implements WorkspaceRepository {
     const now = Date.now();
     const folder: ProjectFolder = { id: input.id, name: input.name, parentId: input.parentId ?? null, createdAt: now, updatedAt: now };
     this.folders.set(folder.id, folder);
+    for (const projectId of input.projectIds ?? []) this.folderAssignments.set(projectId, { projectId, folderId: folder.id, assignedAt: now });
     return { ...folder };
   }
 
@@ -126,12 +128,12 @@ export class MemoryRepository implements WorkspaceRepository {
 
   async deleteFolder(folderId: string): Promise<void> {
     this.folders.delete(folderId);
-    for (const [projectId, assigned] of this.folderAssignments) if (assigned === folderId) this.folderAssignments.delete(projectId);
+    for (const [projectId, assignment] of this.folderAssignments) if (assignment.folderId === folderId) this.folderAssignments.delete(projectId);
   }
 
   async moveProjectToFolder(projectId: string, folderId: string | null): Promise<void> {
     if (folderId === null) this.folderAssignments.delete(projectId);
-    else this.folderAssignments.set(projectId, folderId);
+    else this.folderAssignments.set(projectId, { projectId, folderId, assignedAt: Date.now() });
   }
 
   async moveFolder(folderId: string, parentId: string | null): Promise<void> {

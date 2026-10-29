@@ -17,8 +17,10 @@ export interface ClipboardSelectionGeometry {
 export interface ClipboardEntry {
   readonly fragment: PatternFragment;
   readonly selection: ClipboardSelectionGeometry;
-  /** The layer type the copy came from; it decides where a paste lands. */
+  /** The layer type the copy came from; it decides where a paste lands. Undefined for a multi-layer copy. */
   readonly layerType: LayerType | undefined;
+  /** Whether the copy came from several layers; its paste lands per type, cells on one stitch layer and backstitches on one specialty layer. */
+  readonly multiLayer: boolean;
   /** The source palette entries the fragment uses, so a paste into another pattern can match or create them. */
   readonly palette: readonly PaletteEntry[];
 }
@@ -31,6 +33,7 @@ function cloneEntry(entry: ClipboardEntry): ClipboardEntry {
     fragment: clonePatternFragment(entry.fragment),
     selection: entry.selection,
     layerType: entry.layerType,
+    multiLayer: entry.multiLayer,
     palette: entry.palette.map(clonePaletteEntry)
   };
 }

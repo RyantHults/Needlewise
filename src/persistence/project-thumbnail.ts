@@ -8,11 +8,6 @@ export const PROJECT_THUMBNAIL_MAX_CELLS = PROJECT_THUMBNAIL_MAX_AXIS * PROJECT_
 export const PROJECT_THUMBNAIL_MAX_BACKSTITCHES = 65536;
 /** The default fabric, for cells without a stitch; lowercase like every summary color. */
 export const PROJECT_THUMBNAIL_FABRIC_COLOR = DEFAULT_PATTERN_SETTINGS.backgroundColor.toLowerCase();
-/**
- * Samples that land in a hole of a non-rectangular canvas. The summary format
- * is opaque hex only, so holes match the editor's default off-canvas color.
- */
-export const PROJECT_THUMBNAIL_OFF_CANVAS_COLOR = '#e4e1dc';
 
 export interface ProjectDocumentSummary {
   width: number;
@@ -86,8 +81,14 @@ export function sanitizeProjectThumbnail(value: unknown, expectedRevision?: numb
     || value.palette.length > PROJECT_THUMBNAIL_MAX_CELLS + 1) return undefined;
 
   const length = value.columns * value.rows;
-  const palette: string[] = [];
-  for (const color of value.palette) {
+  const palette: (string | null)[] = [];
+  for (const [position, color] of value.palette.entries()) {
+    // A null entry is the canvas hole: never the fabric, and at most one.
+    if (color === null) {
+      if (position === 0 || palette.includes(null)) return undefined;
+      palette.push(null);
+      continue;
+    }
     const normalized = normalizeThumbnailColor(color);
     if (normalized === undefined) return undefined;
     palette.push(normalized);
@@ -117,15 +118,16 @@ export function sanitizeProjectThumbnail(value: unknown, expectedRevision?: numb
     indices
   };
   if (value.backstitches !== undefined) {
-    const backstitches = sanitizeThumbnailBackstitches(value.backstitches, palette.length);
+    const backstitches = sanitizeThumbnailBackstitches(value.backstitches, palette);
     if (backstitches === undefined) return undefined;
     result.backstitches = backstitches;
   }
   return result;
 }
 
-function sanitizeThumbnailBackstitches(value: unknown, paletteLength: number): ProjectThumbnailSummary['backstitches'] {
+function sanitizeThumbnailBackstitches(value: unknown, palette: (string | null)[]): ProjectThumbnailSummary['backstitches'] {
   if (!isRecord(value)) return undefined;
+  const paletteLength = palette.length;
   const { points, colors } = value;
   if (!ArrayBuffer.isView(points) || Object.prototype.toString.call(points) !== '[object Uint32Array]') return undefined;
   const pointSource = points as unknown as Uint32Array;
@@ -139,7 +141,7 @@ function sanitizeThumbnailBackstitches(value: unknown, paletteLength: number): P
   const safeColors = createThumbnailIndices(paletteLength, count);
   for (let i = 0; i < count; i += 1) {
     const index = colorSource[i];
-    if (index >= paletteLength) return undefined;
+    if (index >= paletteLength || palette[index] === null) return undefined;
     safeColors[i] = index;
   }
   return { points: pointSource.slice(), colors: safeColors };
@@ -192,8 +194,8 @@ export function deriveProjectThumbnail(source: LayeredDocument | PatternDocument
     if (normalized !== undefined) paletteById.set(entry.id, normalized);
   }
 
-  const palette = [fabricColor];
-  const paletteIndices = new Map<string, number>();
+  const palette: (string | null)[] = [fabricColor];
+  const paletteIndices = new Map<string | null, number>();
   paletteIndices.set(fabricColor, 0);
   const sampled = new Uint16Array(columns * rows);
   let cursor = 0;
@@ -204,9 +206,9 @@ export function deriveProjectThumbnail(source: LayeredDocument | PatternDocument
     for (let column = 0; column < columns; column += 1) {
       const sourceX = Math.min(document.width - 1, Math.floor((column + 0.5) * document.width / columns));
       const offset = (sourceY * document.width + sourceX) * 4;
-      let color = fabricColor;
+      let color: string | null = fabricColor;
       if (document.canvasMask !== undefined && document.canvasMask[sourceY * document.width + sourceX] !== 1) {
-        color = PROJECT_THUMBNAIL_OFF_CANVAS_COLOR;
+        color = null;
       }
       let firstNonZeroColorId = 0;
       for (let slot = 0; slot < 4; slot += 1) {

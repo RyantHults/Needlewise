@@ -101,7 +101,7 @@ describe('project folders', () => {
       await repo.db.projects.put(fakeProject('project-1'));
       await repo.moveProjectToFolder('project-1', folder.id);
       let index = await repo.listFolderIndex();
-      expect(index.assignments).toEqual([{ projectId: 'project-1', folderId: 'folder-1' }]);
+      expect(index.assignments).toEqual([{ projectId: 'project-1', folderId: 'folder-1', assignedAt: 10 }]);
 
       await repo.moveProjectToFolder('project-1', null);
       index = await repo.listFolderIndex();
@@ -161,8 +161,8 @@ describe('project folders', () => {
       const folder = await repo.createFolder({ name: 'Folder', id: 'folder-1' });
       await repo.db.projects.put(fakeProject('project-1'));
       await repo.moveProjectToFolder('project-1', folder.id);
-      await repo.db.projectFolders.put({ projectId: 'ghost-project', folderId: folder.id });
-      await repo.db.projectFolders.put({ projectId: 'project-1', folderId: 'ghost-folder' });
+      await repo.db.projectFolders.put({ projectId: 'ghost-project', folderId: folder.id, assignedAt: 0 });
+      await repo.db.projectFolders.put({ projectId: 'project-1', folderId: 'ghost-folder', assignedAt: 0 });
       const index = await repo.listFolderIndex();
       expect(index.assignments).toEqual([]);
     } finally {
@@ -204,14 +204,59 @@ describe('project folders', () => {
 
     const repo = new ProjectRepository(new NeedlewiseDatabase(databaseName), { now: () => 10 });
     try {
-      expect(repo.db.verno).toBe(7);
+      expect(repo.db.verno).toBe(8);
       const projects = await repo.listProjects();
       expect(projects.map((project) => project.id)).toEqual(['old-project']);
       const folder = await repo.createFolder({ name: 'New folder', id: 'new-folder' });
       await repo.moveProjectToFolder('old-project', folder.id);
       const index = await repo.listFolderIndex();
       expect(index.folders).toHaveLength(1);
-      expect(index.assignments).toEqual([{ projectId: 'old-project', folderId: 'new-folder' }]);
+      expect(index.assignments).toEqual([{ projectId: 'old-project', folderId: 'new-folder', assignedAt: 10 }]);
+    } finally {
+      await closeRepository(repo);
+    }
+  });
+
+  it('assigns projects to a new folder in one transaction and creates nothing for a missing project', async () => {
+    const repo = await repository();
+    try {
+      await repo.db.projects.bulkPut([fakeProject('a'), fakeProject('b')]);
+      await repo.createFolder({ name: 'Group', id: 'group', projectIds: ['a', 'b'] });
+      await expect(repo.createFolder({ name: 'Broken', id: 'broken', projectIds: ['a', 'missing'] })).rejects.toMatchObject({ code: 'invalid-metadata' });
+      const index = await repo.listFolderIndex();
+      expect(index.folders.map((folder) => folder.id)).toEqual(['group']);
+      expect(index.assignments).toEqual(expect.arrayContaining([{ projectId: 'a', folderId: 'group', assignedAt: 10 }, { projectId: 'b', folderId: 'group', assignedAt: 10 }]));
+      expect(index.assignments).toHaveLength(2);
+    } finally {
+      await closeRepository(repo);
+    }
+  });
+
+  it('opens a v7 database with an assignment row at v8 with assignedAt 0', async () => {
+    databaseCounter += 1;
+    const databaseName = `needlewise-folders-v7-migration-${String(databaseCounter)}`;
+    const legacy = new Dexie(databaseName);
+    legacy.version(7).stores({
+      projects: 'id, aidaCount',
+      currentSnapshots: 'projectId',
+      recoverySnapshots: 'projectId',
+      projectHeads: 'projectId',
+      documentHistories: 'projectId',
+      assets: '[projectId+id], projectId',
+      dailyActivity: '[projectId+date], projectId',
+      folders: 'id, parentId',
+      projectFolders: 'projectId, folderId'
+    });
+    await legacy.open();
+    await legacy.table('folders').put({ id: 'f', name: 'F', parentId: null, createdAt: 1, updatedAt: 1 });
+    await legacy.table('projects').put(fakeProject('p'));
+    await legacy.table('projectFolders').put({ projectId: 'p', folderId: 'f' });
+    legacy.close();
+
+    const repo = new ProjectRepository(new NeedlewiseDatabase(databaseName), { now: () => 10 });
+    try {
+      const index = await repo.listFolderIndex();
+      expect(index.assignments).toEqual([{ projectId: 'p', folderId: 'f', assignedAt: 0 }]);
     } finally {
       await closeRepository(repo);
     }

@@ -632,9 +632,9 @@ export class ProjectWorkspace {
     }, { supersede: false });
   }
 
-  async createFolder(name: string, parentId: string | null = null): Promise<ProjectFolder> {
+  async createFolder(name: string, parentId: string | null = null, projectIds: readonly string[] = []): Promise<ProjectFolder> {
     return this.runRepositoryOperation('Unable to create the folder.', async () => {
-      const folder = await this.repository.createFolder({ name, parentId, id: this.projectIdFactory() });
+      const folder = await this.repository.createFolder({ name, parentId, id: this.projectIdFactory(), projectIds });
       return { ...folder };
     }, { supersede: true });
   }
@@ -779,8 +779,12 @@ export class ProjectWorkspace {
     return this.ensureActiveSession().resolvePaste(fragmentType);
   }
 
-  commitPaste(fragment: PatternFragment, at: Point, destination: PasteDestination, expectedRevision?: number, palette?: readonly PaletteEntryInput[]): PasteCommitResult {
-    return this.ensureActiveSession().commitPaste(fragment, at, destination, expectedRevision, palette);
+  resolveMultiLayerPaste(type: LayerType): PasteDestination {
+    return this.ensureActiveSession().resolveMultiLayerPaste(type);
+  }
+
+  commitPaste(fragment: PatternFragment, at: Point, destinations: readonly PasteDestination[], expectedRevision?: number, palette?: readonly PaletteEntryInput[]): PasteCommitResult {
+    return this.ensureActiveSession().commitPaste(fragment, at, destinations, expectedRevision, palette);
   }
 
   async updateActiveMaterialSettings(changes: Parameters<ProjectSession['updateMaterialSettings']>[0]): Promise<void> {

@@ -1042,7 +1042,7 @@ export class ProjectRepository {
     if (typeof input.id !== 'string' || input.id.length < 1 || input.id.length > 256 || !isBoundedMetadataString(input.id)) invalidMetadata('Folder ID is malformed.');
     const { id } = input;
     return wrapStorage('Unable to create the local folder.', async () => {
-      return await this.db.transaction('rw', [this.db.folders], async () => {
+      return await this.db.transaction('rw', [this.db.folders, this.db.projects, this.db.projectFolders], async () => {
         if (parentId !== null) {
           const parent = await this.db.folders.get(parentId);
           if (!parent || parent.parentId !== null) invalidMetadata('Folder parent must be an existing top-level folder.');
@@ -1050,6 +1050,10 @@ export class ProjectRepository {
         const now = this.now();
         const folder: ProjectFolder = { id, name, parentId, createdAt: now, updatedAt: now };
         await this.db.folders.put(folder);
+        for (const projectId of input.projectIds ?? []) {
+          if (!(await this.db.projects.get(projectId))) invalidMetadata('Project does not exist.');
+          await this.db.projectFolders.put({ projectId, folderId: id, assignedAt: now });
+        }
         return folder;
       });
     });
@@ -1080,7 +1084,7 @@ export class ProjectRepository {
         if (reparentedId === null) {
           await Promise.all(assignments.map((assignment) => this.db.projectFolders.delete(assignment.projectId)));
         } else {
-          await Promise.all(assignments.map((assignment) => this.db.projectFolders.put({ projectId: assignment.projectId, folderId: reparentedId })));
+          await Promise.all(assignments.map((assignment) => this.db.projectFolders.put({ ...assignment, folderId: reparentedId })));
         }
         await this.db.folders.delete(folderId);
       });
@@ -1098,7 +1102,7 @@ export class ProjectRepository {
         }
         const folder = await this.db.folders.get(folderId);
         if (!folder) invalidMetadata('Folder does not exist.');
-        const assignment: ProjectFolderAssignment = { projectId, folderId };
+        const assignment: ProjectFolderAssignment = { projectId, folderId, assignedAt: this.now() };
         await this.db.projectFolders.put(assignment);
       });
     });

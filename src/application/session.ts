@@ -6,6 +6,7 @@ import {
   DomainError,
   findLayer,
   fragmentLayerRequirement,
+  fragmentPartForLayerType,
   layerAddCommand,
   layerDeleteCommand,
   layerDuplicateCommand,
@@ -836,47 +837,68 @@ export class ProjectSession {
 
   /**
    * Where a paste of `fragmentType` content goes: the selected layer when it
-   * is visible and of that type; otherwise a new layer at the top of its group
-   * when there is room; otherwise the topmost visible layer of the group; and
-   * nowhere when every layer of that type is hidden.
+   * is visible and of that type, otherwise `resolveMultiLayerPaste`.
    */
   resolvePaste(fragmentType: LayerType): PasteDestination {
-    const document = this.editor.document;
     const active = this.activeLayerIdState;
-    const activeLayer = typeof active === 'number' ? findLayer(document, active) : undefined;
+    const activeLayer = typeof active === 'number' ? findLayer(this.editor.document, active) : undefined;
     if (activeLayer && activeLayer.type === fragmentType && activeLayer.visible) return { layerType: fragmentType, layerId: activeLayer.id, create: false };
-    const noun = LAYER_TYPE_NOUN[fragmentType];
-    if (canAddLayerOfType(document, fragmentType)) return { layerType: fragmentType, layerId: null, create: true, message: `Added a new ${noun} layer for your paste.` };
-    const top = topmostVisibleLayer(document, fragmentType);
-    if (top) return { layerType: fragmentType, layerId: top.id, create: false, message: `You have ${String(MAX_LAYERS_PER_TYPE)} ${noun} layers already, so this went on the top one.` };
-    return { layerType: fragmentType, layerId: null, create: false, message: PASTE_HIDDEN_MESSAGE[fragmentType] };
+    return this.resolveMultiLayerPaste(fragmentType);
   }
 
   /**
-   * Pastes `fragment` at `at` on the resolved destination as one undo step
-   * (creating the layer first when needed) and selects that layer. Any `palette`
-   * entries are created in the same step, ahead of the paste.
+   * Where the `type` part of a multi-layer paste goes: a new layer at the top
+   * of its group when there is room; otherwise the topmost visible layer of
+   * the group; and nowhere when every layer of that type is hidden.
    */
-  commitPaste(fragment: PatternFragment, at: Point, destination: PasteDestination, expectedRevision?: number, palette: readonly PaletteEntryInput[] = []): PasteCommitResult {
+  resolveMultiLayerPaste(type: LayerType): PasteDestination {
+    const document = this.editor.document;
+    const noun = LAYER_TYPE_NOUN[type];
+    if (canAddLayerOfType(document, type)) return { layerType: type, layerId: null, create: true, message: `Added a new ${noun} layer for your paste.` };
+    const top = topmostVisibleLayer(document, type);
+    if (top) return { layerType: type, layerId: top.id, create: false, message: `You have ${String(MAX_LAYERS_PER_TYPE)} ${noun} layers already, so this went on the top one.` };
+    return { layerType: type, layerId: null, create: false, message: PASTE_HIDDEN_MESSAGE[type] };
+  }
+
+  /**
+   * Pastes `fragment` at `at` as one undo step, each destination taking the
+   * part its layer type holds (creating the layer first when needed), and
+   * selects every destination layer. Any `palette` entries are created in the
+   * same step, ahead of the paste. Destinations that go nowhere are skipped.
+   */
+  commitPaste(fragment: PatternFragment, at: Point, destinations: readonly PasteDestination[], expectedRevision?: number, palette: readonly PaletteEntryInput[] = []): PasteCommitResult {
     this.ensureWritable();
-    const message = destination.message === undefined ? {} : { message: destination.message };
+    const messages = destinations.flatMap((destination) => destination.message === undefined ? [] : [destination.message]);
+    const message = messages.length === 0 ? {} : { message: messages.join(' ') };
+    const targets = destinations.filter((destination) => destination.create || destination.layerId !== null);
     // An empty fragment changes nothing; never add a layer or a history entry for it.
-    if (fragmentLayerRequirement(fragment) === null) return { result: this.unchangedResult(), layerId: null };
+    if (fragmentLayerRequirement(fragment) === null) return { result: this.unchangedResult(), layerIds: [] };
+    if (targets.length === 0) return { result: this.unchangedResult(), layerIds: [], ...message };
     const creates = palette.map(createPaletteCommand);
-    if (destination.create) {
-      const layerId = this.editor.document.nextLayerId;
-      const result = this.execute({
-        type: 'batch',
-        commands: [...creates, layerAddCommand(destination.layerType, { id: layerId }), { ...pasteFragmentCommand(fragment, at, expectedRevision), layerId }]
-      });
-      if (result.changed) this.selectLayerQuietly(layerId);
-      return { result, layerId: result.changed ? layerId : null, ...message };
+    let nextLayerId = this.editor.document.nextLayerId;
+    const layerIds: number[] = [];
+    const commands: DomainCommand[] = [];
+    for (const destination of targets) {
+      const layerId = destination.create ? nextLayerId++ : destination.layerId as number;
+      if (destination.create) commands.push(layerAddCommand(destination.layerType, { id: layerId }));
+      commands.push({ ...pasteFragmentCommand(fragmentPartForLayerType(fragment, destination.layerType), at, expectedRevision), layerId });
+      layerIds.push(layerId);
     }
-    if (destination.layerId === null) return { result: this.unchangedResult(), layerId: null, ...message };
-    const paste: DomainCommand = { ...pasteFragmentCommand(fragment, at, expectedRevision), layerId: destination.layerId };
-    const result = this.execute(creates.length === 0 ? paste : { type: 'batch', commands: [...creates, paste] });
-    this.selectLayerQuietly(destination.layerId);
-    return { result, layerId: destination.layerId, ...message };
+    const result = this.execute(commands.length === 1 && creates.length === 0 ? commands[0] : { type: 'batch', commands: [...creates, ...commands] });
+    this.selectLayersQuietly(layerIds);
+    return { result, layerIds, ...message };
+  }
+
+  /** `selectLayerQuietly` for several layers: the last (topmost) id is primary. */
+  private selectLayersQuietly(ids: readonly number[]): void {
+    if (ids.length < 2) {
+      if (ids.length === 1) this.selectLayerQuietly(ids[0] as number);
+      return;
+    }
+    this.activeLayerIdState = ids[ids.length - 1] as number;
+    this.selectedLayerIdsState = ids;
+    this.refreshLayerState();
+    this.notify();
   }
 
   private selectLayerQuietly(id: ActiveLayerId): void {

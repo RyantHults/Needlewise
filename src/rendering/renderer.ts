@@ -2046,7 +2046,8 @@ function drawFloatingPaste(
     }
   }
 
-  if (lod !== RenderLod.Overview && visibleDestination) {
+  // The base pass draws backstitches at every zoom, so the preview does too.
+  if (visibleDestination) {
     const backstitches = preview.backstitches ?? {
       ids: [],
       x1: preview.fragment.backstitches.x1,

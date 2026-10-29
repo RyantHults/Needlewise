@@ -11,7 +11,6 @@ import {
   PROJECT_THUMBNAIL_MAX_BACKSTITCHES,
   PROJECT_THUMBNAIL_MAX_AXIS,
   PROJECT_THUMBNAIL_MAX_CELLS,
-  PROJECT_THUMBNAIL_OFF_CANVAS_COLOR,
   sanitizeProjectMetadata,
   sanitizeProjectThumbnail
 } from './project-thumbnail';
@@ -32,7 +31,7 @@ describe('project thumbnail summaries', () => {
     expect(sanitizeProjectThumbnail(thumbnail, document.revision)).toEqual(thumbnail);
   });
 
-  it('samples holes of a masked canvas as the off-canvas color', () => {
+  it('samples holes of a masked canvas as a null palette entry', () => {
     const document = createDocument({
       catalog: DEFAULT_CATALOG_DEFINITION.association,
       width: 3,
@@ -41,7 +40,7 @@ describe('project thumbnail summaries', () => {
     });
     const thumbnail = deriveProjectThumbnail({ ...document, canvasMask: new Uint8Array([1, 0, 1]) });
 
-    expect(thumbnail.palette).toEqual(['#123456', PROJECT_THUMBNAIL_OFF_CANVAS_COLOR]);
+    expect(thumbnail.palette).toEqual(['#123456', null]);
     expect(Array.from(thumbnail.indices)).toEqual([0, 1, 0]);
     expect(sanitizeProjectThumbnail(thumbnail, document.revision)).toEqual(thumbnail);
   });
@@ -159,6 +158,16 @@ describe('project thumbnail summaries', () => {
     const widePalette = Array.from({ length: 257 }, () => '#123456');
     expect(sanitizeProjectThumbnail({ ...base, palette: widePalette, indices: new Uint8Array([1, 0]) }, 3)).toBeUndefined();
     expect(sanitizeProjectThumbnail({ ...base, palette: widePalette, indices: new Uint16Array([256, 0]) }, 3)).toBeDefined();
+  });
+
+  it('accepts one hole entry but rejects it as fabric or as a backstitch color', () => {
+    const base = { version: 2, revision: 3, columns: 2, rows: 1, indices: new Uint8Array([1, 0]) };
+    expect(sanitizeProjectThumbnail({ ...base, palette: ['#f3eee5', null] }, 3)?.palette).toEqual(['#f3eee5', null]);
+    expect(sanitizeProjectThumbnail({ ...base, palette: [null, '#f3eee5'] }, 3)).toBeUndefined();
+    expect(sanitizeProjectThumbnail({ ...base, palette: ['#f3eee5', null, null], indices: new Uint8Array([1, 2]) }, 3)).toBeUndefined();
+    const backstitches = (color: number) => ({ points: new Uint32Array([0, 0, 1, 1]), colors: new Uint8Array([color]) });
+    expect(sanitizeProjectThumbnail({ ...base, palette: ['#f3eee5', null, '#dd3333'], backstitches: backstitches(2) }, 3)).toBeDefined();
+    expect(sanitizeProjectThumbnail({ ...base, palette: ['#f3eee5', null, '#dd3333'], backstitches: backstitches(1) }, 3)).toBeUndefined();
   });
 
   it('compares thumbnails field-wise and element-wise, and clones independently', () => {

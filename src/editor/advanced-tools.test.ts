@@ -4,6 +4,7 @@ import {
   CellKind,
   createDocument,
   DomainError,
+  LayerType,
   type PatternDocument
 } from '../domain';
 import { markCellComplete, SPECIALTY_LAYER_ID, STITCH_LAYER_ID, applyCommand, cell } from '../domain/test-fixtures';
@@ -93,7 +94,7 @@ function refuseNext(boundary: LayeredTestBoundary, method: 'commitPaste' | 'exec
 /** Every paste committed so far landed on the selected stitch layer, as `count` commits. */
 function expectPastesOnStitchLayer(commitPaste: ReturnType<typeof fixture>['commitPaste'], count: number): void {
   expect(commitPaste).toHaveBeenCalledTimes(count);
-  for (const call of commitPaste.mock.calls) expect(call[2]).toEqual({ layerId: STITCH_LAYER_ID, create: false });
+  for (const call of commitPaste.mock.calls) expect(call[2]).toEqual([{ layerType: LayerType.Stitch, layerId: STITCH_LAYER_ID, create: false }]);
 }
 
 /** The 4x4 project the workspace switches to. */

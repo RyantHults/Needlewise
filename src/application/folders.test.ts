@@ -25,13 +25,13 @@ async function deleteRepository(repository: ProjectRepository): Promise<void> {
 
 describe('ProjectWorkspace folder delegation', () => {
   it('delegates folder operations to the repository', async () => {
-    const index: ProjectFolderIndex = { folders: [folder('a', 'Alphas')], assignments: [{ projectId: 'p1', folderId: 'a' }] };
+    const index: ProjectFolderIndex = { folders: [folder('a', 'Alphas')], assignments: [{ projectId: 'p1', folderId: 'a', assignedAt: 0 }] };
     const created = folder('b', 'Betas');
     const renamed = folder('b', 'Betas renamed');
     const repository = Object.assign(new MemoryRepository(), {
       listFolderIndex: vi.fn(async () => index),
       createFolder: vi.fn(async (input) => {
-        expect(input).toEqual({ name: 'Betas', parentId: null, id: expect.any(String) });
+        expect(input).toEqual({ name: 'Betas', parentId: null, id: expect.any(String), projectIds: [] });
         return created;
       }),
       renameFolder: vi.fn(async (folderId, name) => {
@@ -79,7 +79,7 @@ describe('ProjectWorkspace folder delegation', () => {
     const workspace = new ProjectWorkspace({ repository });
 
     await workspace.createFolder('Child', 'parent');
-    expect(createFolder).toHaveBeenCalledWith({ name: 'Child', parentId: 'parent', id: expect.any(String) });
+    expect(createFolder).toHaveBeenCalledWith({ name: 'Child', parentId: 'parent', id: expect.any(String), projectIds: [] });
   });
 });
 
@@ -107,7 +107,7 @@ describe('useProjectWorkspace folder state', () => {
       await act(async () => {
         await rendered.result.current.moveProjectToFolder(projectId as string, created?.id ?? null);
       });
-      expect(rendered.result.current.folderAssignments).toEqual([{ projectId, folderId: created?.id }]);
+      expect(rendered.result.current.folderAssignments).toEqual([{ projectId, folderId: created?.id, assignedAt: expect.any(Number) }]);
 
       await act(async () => {
         await rendered.result.current.renameFolder(created?.id as string, 'Renamed kits');

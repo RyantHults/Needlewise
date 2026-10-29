@@ -11,6 +11,7 @@ function entry(): ClipboardEntry {
     fragment: createPatternFragment(document, { x: 0, y: 0, width: 2, height: 1 }),
     selection: { kind: 'rect', rect: { x: 0, y: 0, width: 2, height: 1 } },
     layerType: LayerType.Stitch,
+    multiLayer: false,
     palette: document.palette
   };
 }

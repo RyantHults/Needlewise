@@ -66,6 +66,10 @@
   /* Decoration */
   --color-decor-sage: #718471;
   --color-decor-stitch: #c8b9a1;
+  /* Gallery thumbnail stitch texture, derived from the fabric so every theme inherits it */
+  --color-fabric-stitch-shadow: color-mix(in srgb, var(--color-fabric), var(--color-shadow) 14%);
+  --color-fabric-stitch: color-mix(in srgb, var(--color-fabric), var(--color-shadow) 7%);
+  --color-fabric-stitch-highlight: color-mix(in srgb, var(--color-fabric), var(--color-surface) 50%);
   /* Shadows and scrims; used through color-mix() for alpha */
   --color-shadow: #43372a;
   --color-shadow-deep: #272321;

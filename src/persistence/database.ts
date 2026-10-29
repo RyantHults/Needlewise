@@ -73,5 +73,20 @@ export class NeedlewiseDatabase extends Dexie {
       folders: 'id, parentId',
       projectFolders: 'projectId, folderId'
     });
+    this.version(8).stores({
+      projects: 'id, aidaCount',
+      currentSnapshots: 'projectId',
+      recoverySnapshots: 'projectId',
+      projectHeads: 'projectId',
+      documentHistories: 'projectId',
+      assets: '[projectId+id], projectId',
+      dailyActivity: '[projectId+date], projectId',
+      folders: 'id, parentId',
+      projectFolders: 'projectId, folderId'
+    }).upgrade(async (transaction) => {
+      await transaction.table('projectFolders').toCollection().modify((assignment: Partial<ProjectFolderAssignment>) => {
+        assignment.assignedAt = 0;
+      });
+    });
   }
 }

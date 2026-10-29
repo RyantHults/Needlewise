@@ -3,6 +3,7 @@ import {
   CellKind,
   LayerType,
   applyLayerStructureCommand,
+  findLayer,
   layerAddCommand,
   layerSurface,
   type DomainCommand,
@@ -77,8 +78,8 @@ function fixture(document: LayeredDocument, primary: number, others: readonly nu
     get canUndo() { return session.historyUndoDepth > 0; },
     get canRedo() { return session.historyRedoDepth > 0; },
     resolvePaste: (type) => session.resolvePaste(type),
-    // The gateway hands back the destination the session resolved, layer type included.
-    commitPaste: (fragment, position, destination, expectedRevision, palette) => session.commitPaste(fragment, position, destination as Parameters<ProjectSession['commitPaste']>[2], expectedRevision, palette),
+    resolveMultiLayerPaste: (type) => session.resolveMultiLayerPaste(type),
+    commitPaste: (fragment, position, destinations, expectedRevision, palette) => session.commitPaste(fragment, position, destinations, expectedRevision, palette),
     markProgress: (command) => session.markProgress(command),
     undoMark: () => session.undoMark(),
     redoMark: () => session.redoMark()
@@ -215,20 +216,6 @@ describe('multi-layer move', () => {
     controller.dispose();
   });
 
-  it('copies from the primary layer only', () => {
-    const document = layeredDocument();
-    seed(document, 1, full(0, 0, 1));
-    seed(document, 3, full(1, 0, 2));
-    const { session, controller } = fixture(document, 1, [3]);
-    session.toggleLayerSelected(3);
-    session.toggleLayerSelected(3);
-    expect(session.layerSelection.primary).toBe(3);
-    controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 0 });
-    const copied = controller.copySelection()!;
-    expect(Array.from(copied.kind)).toEqual([CellKind.Empty, CellKind.Full]);
-    controller.dispose();
-  });
-
   it('deletes the selection from every selected visible layer as one undo step', () => {
     const document = layeredDocument();
     seed(document, 1, full(0, 0));
@@ -246,6 +233,124 @@ describe('multi-layer move', () => {
     expect(stitchLayer(session.layeredDocument, 3).kind[0]).toBe(CellKind.Full);
     expect(specialtyLayer(session.layeredDocument, 2).backstitches.ids).toHaveLength(1);
     controller.dispose();
+  });
+});
+
+/** Copy cells (0,0)-(1,1) and paste them with their top-left at (4,4). */
+function copyAndPaste(from: EditorSurfaceController, to: EditorSurfaceController = from): void {
+  from.setSelection({ x: 0, y: 0 }, { x: 1, y: 1 });
+  expect(from.copySelection()).toBeDefined();
+  to.setSelection({ x: 4, y: 4 });
+  expect(to.pasteSelection()).toBe(true);
+  expect(to.confirmFloatingPaste()).toBe(true);
+}
+
+describe('multi-layer copy', () => {
+  it('pastes stitch and specialty layers onto one new layer of each type as one undo step', () => {
+    const document = layeredDocument();
+    seed(document, 1, full(0, 0, 1));
+    seed(document, 1, full(1, 0, 1));
+    seed(document, 3, full(0, 0, 2));
+    seed(document, 2, backstitch(0, 0, 4, 4));
+    const { session, controller } = fixture(document, 1, [2, 3]);
+    copyAndPaste(controller);
+    const pasted = stitchLayer(session.layeredDocument, 4);
+    // The top layer's cell wins where both stitch layers have one.
+    expect(pasted.kind[36]).toBe(CellKind.Full);
+    expect(pasted.colors[36 * 4]).toBe(2);
+    expect(pasted.kind[37]).toBe(CellKind.Full);
+    expect(pasted.colors[37 * 4]).toBe(1);
+    const lines = specialtyLayer(session.layeredDocument, 5).backstitches;
+    expect(Array.from(lines.x1)).toEqual([16]);
+    expect(Array.from(lines.x2)).toEqual([20]);
+    expect([...session.layerSelection.layerIds].sort()).toEqual([4, 5]);
+
+    controller.handleKeyDown(undo);
+    expect(findLayer(session.layeredDocument, 4)).toBeUndefined();
+    expect(findLayer(session.layeredDocument, 5)).toBeUndefined();
+    controller.dispose();
+  });
+
+  it('merges the stitch part onto the topmost visible stitch layer when the stitch group is full', () => {
+    const document = layeredDocument();
+    applyLayerStructureCommand(document, layerAddCommand(LayerType.Stitch));
+    seed(document, 1, full(0, 0, 1));
+    seed(document, 2, backstitch(0, 0, 4, 4));
+    const { session, controller } = fixture(document, 1, [2]);
+    copyAndPaste(controller);
+    expect(stitchLayer(session.layeredDocument, 4).kind[36]).toBe(CellKind.Full);
+    expect(findLayer(session.layeredDocument, 5)?.type).toBe(LayerType.Specialty);
+    expect(specialtyLayer(session.layeredDocument, 5).backstitches.ids).toHaveLength(1);
+    expect(session.layeredDocument.layers.filter((layer) => layer.type === LayerType.Stitch)).toHaveLength(3);
+    controller.dispose();
+  });
+
+  it('takes nothing from a hidden selected layer', () => {
+    const document = layeredDocument();
+    seed(document, 1, full(0, 0, 1));
+    seed(document, 2, backstitch(0, 0, 4, 4));
+    seed(document, 3, full(1, 0, 2));
+    const { session, controller } = fixture(document, 1, [2, 3]);
+    session.setLayerVisibility(3, false);
+    copyAndPaste(controller);
+    const pasted = stitchLayer(session.layeredDocument, 4);
+    expect(pasted.kind[36]).toBe(CellKind.Full);
+    expect(pasted.kind[37]).toBe(CellKind.Empty);
+    controller.dispose();
+  });
+
+  it('copies as one layer when the other selected layer is hidden, so the paste lands on the selected layer', () => {
+    const document = layeredDocument();
+    seed(document, 1, full(0, 0, 1));
+    seed(document, 3, full(1, 0, 2));
+    const { session, controller } = fixture(document, 1, [3]);
+    session.setLayerVisibility(3, false);
+    copyAndPaste(controller);
+    expect(stitchLayer(session.layeredDocument, 1).kind[36]).toBe(CellKind.Full);
+    expect(stitchLayer(session.layeredDocument, 1).kind[37]).toBe(CellKind.Empty);
+    expect(findLayer(session.layeredDocument, 4)).toBeUndefined();
+    controller.dispose();
+  });
+
+  it('filters each layer by Focus Color', () => {
+    const document = layeredDocument();
+    seed(document, 1, full(0, 0, 1));
+    seed(document, 1, full(1, 0, 2));
+    seed(document, 3, full(0, 1, 1));
+    seed(document, 3, full(1, 1, 2));
+    const { session, controller, uiStore } = fixture(document, 1, [3]);
+    uiStore.setState({ paletteId: 1 });
+    controller.setFocusColor(true);
+    controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 1 });
+    expect(controller.copySelection()).toBeDefined();
+    controller.setFocusColor(false);
+    controller.setSelection({ x: 4, y: 4 });
+    expect(controller.pasteSelection()).toBe(true);
+    expect(controller.confirmFloatingPaste()).toBe(true);
+    const pasted = stitchLayer(session.layeredDocument, 4);
+    expect(pasted.kind[36]).toBe(CellKind.Full);
+    expect(pasted.kind[44]).toBe(CellKind.Full);
+    expect(pasted.kind[37]).toBe(CellKind.Empty);
+    expect(pasted.kind[45]).toBe(CellKind.Empty);
+    controller.dispose();
+  });
+
+  it('pastes into the next pattern after a project switch', () => {
+    const source = layeredDocument();
+    seed(source, 1, full(0, 0, 1));
+    seed(source, 2, backstitch(0, 0, 4, 4));
+    const first = fixture(source, 1, [2]);
+    first.controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 1 });
+    expect(first.controller.copySelection()).toBeDefined();
+    first.controller.dispose();
+
+    const second = fixture(layeredDocument(), 1);
+    second.controller.setSelection({ x: 4, y: 4 });
+    expect(second.controller.pasteSelection()).toBe(true);
+    expect(second.controller.confirmFloatingPaste()).toBe(true);
+    expect(stitchLayer(second.session.layeredDocument, 4).kind[36]).toBe(CellKind.Full);
+    expect(specialtyLayer(second.session.layeredDocument, 5).backstitches.ids).toHaveLength(1);
+    second.controller.dispose();
   });
 });
 

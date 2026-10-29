@@ -5,6 +5,7 @@ import {
   createPatternFragmentFromCells,
   clonePatternFragment,
   cropPatternFragment,
+  fragmentLayerRequirement,
   fragmentPaletteIds,
   normalizePaletteEntry,
   planPastePalette,
@@ -462,6 +463,8 @@ interface FloatingPasteState {
   readonly pendingPalette?: readonly PaletteEntryInput[];
   /** A paste's source layer type, which decides where it lands. */
   readonly layerType?: LayerType;
+  /** A paste copied from several layers: it lands per type, cells on one stitch layer and backstitches on one specialty layer. */
+  readonly multiLayer?: true;
   readonly destination: GridRect;
   readonly token: EditorRevisionToken;
   readonly previousSelection: FinalizedSelection | undefined;
@@ -483,6 +486,14 @@ interface MoveCapture {
   readonly source: FragmentSelection;
   readonly completion: Uint8Array;
   readonly backstitches: FloatingPasteBackstitches;
+}
+
+/** One target layer's part of a multi-layer move or copy. */
+interface TargetCapture {
+  readonly layer: FloatingMoveLayer;
+  readonly surface: PatternDocument;
+  readonly selection: FinalizedSelection;
+  readonly capture: MoveCapture;
 }
 
 interface FloatingPasteBackstitches {
@@ -1866,11 +1877,18 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return { fragment, geometry, source, completion, backstitches };
   }
 
-  /** Copy the selection from the selected layer only, so a copy holds cells or backstitches, never both. */
+  /**
+   * Copy the selection. From one layer the copy holds cells or backstitches,
+   * never both; from several visible selected layers it is their composite,
+   * the topmost cell winning, with every layer's backstitches.
+   */
   copySelection(): PatternFragment | undefined {
     const snapshot = this.gateway.getSnapshot();
     this.reconcileSelectionDimensions(snapshot.document);
-    if (!snapshot.document || !this.selection) return undefined;
+    if (!hasDocument(snapshot) || !this.selection) return undefined;
+    const targets = this.selectionTargets(snapshot);
+    if (!targets) return undefined;
+    if (targets.length > 1) return this.copyLayers(snapshot.document, targets, this.selection);
     const surface = this.editableSurface(snapshot, { tool: 'select' }, true);
     if (!surface) return undefined;
     const focus = this.focusColorId();
@@ -1892,12 +1910,77 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       fragment: copied,
       selection: copySelection,
       layerType: activeKind === 'specialty' ? LayerType.Specialty : activeKind === 'stitch' ? LayerType.Stitch : undefined,
+      multiLayer: false,
       palette: surface.palette.filter((entry) => usedIds.has(entry.id))
     });
     this.setStatus(selection.kind === 'sparse'
       ? `Copied ${String(selection.indices.length)} cells`
       : `Copied ${String(bounds.width)}×${String(bounds.height)} cells`);
     return clonePatternFragment(copied);
+  }
+
+  /** Copy several layers' parts as one composite fragment over their union. */
+  private copyLayers(document: PatternDocument, targets: readonly { readonly layerId: number; readonly surface: PatternDocument }[], selection: FinalizedSelection): PatternFragment | undefined {
+    const captured = this.captureTargets(document, targets, selection, this.focusColorId());
+    if (!captured) return undefined;
+    const { fragment, geometry } = captured;
+    // Layer surfaces share the palette.
+    const usedIds = new Set(fragmentPaletteIds(fragment));
+    writeClipboard({
+      fragment,
+      selection: geometry,
+      layerType: undefined,
+      multiLayer: true,
+      palette: targets[0].surface.palette.filter((entry) => usedIds.has(entry.id))
+    });
+    this.setStatus(`Copied ${String(geometry.rect.width)}×${String(geometry.rect.height)} cells from ${String(targets.length)} layers`);
+    return clonePatternFragment(fragment);
+  }
+
+  /**
+   * Each target layer's content inside `selection`, filtered by Focus Color per
+   * layer, and the geometry it floats as. With several targets a layer holding
+   * nothing inside the selection is left out; undefined when none holds anything.
+   */
+  private captureTargets(
+    document: PatternDocument,
+    targets: readonly { readonly layerId: number; readonly surface: PatternDocument }[],
+    selection: FinalizedSelection,
+    focus: number | undefined
+  ): { readonly parts: TargetCapture[]; readonly geometry: ClipboardSelectionGeometry } & Pick<MoveCapture, 'fragment' | 'completion' | 'backstitches'> | undefined {
+    const several = targets.length > 1;
+    const parts: TargetCapture[] = [];
+    for (const { layerId, surface } of targets) {
+      const layerSelection = focus === undefined ? selection : this.focusSelection(surface, selection, focus, !several);
+      if (!layerSelection) continue;
+      let capture = this.captureMoveSelection(surface, layerSelection);
+      if (!capture) continue;
+      // With no focus-color cells, a Focus Color capture carries only the focus-color backstitches.
+      const focusBackstitches = focus !== undefined && layerSelection === selection ? focusFloatingBackstitches(capture.backstitches, focus) : undefined;
+      if (focus !== undefined && focusBackstitches) {
+        capture = { ...capture, fragment: focusPasteFragment(capture.fragment, surface, capture.geometry.rect, focus), backstitches: focusBackstitches };
+      }
+      if (several && isEmptyFragment(capture.fragment)) continue;
+      const layer: FloatingMoveLayer = {
+        layerId,
+        moveSelection: capture.source,
+        backstitches: capture.backstitches,
+        ...(focusBackstitches ? { focusBackstitchIds: Array.from(focusBackstitches.ids) } : {})
+      };
+      parts.push({ layer, surface, selection: layerSelection, capture });
+    }
+    if (parts.length === 0) return undefined;
+    // Layers cut by Focus Color differ in shape; they then float as their union.
+    const shared = parts.every((part) => part.selection === parts[0].selection);
+    const union = shared ? undefined : sparseSelection(
+      parts.flatMap((part) => Array.from(fragmentSelectionIndices(part.capture.source, part.surface))),
+      document
+    );
+    const geometry = union
+      ? selectionGeometry(union, union.bounds)
+      : parts[0].capture.geometry;
+    const captured = parts.length === 1 ? parts[0].capture : compositeMoveCaptures(parts.map((part) => part.capture), geometry.rect);
+    return { parts, geometry, fragment: captured.fragment, completion: captured.completion, backstitches: captured.backstitches };
   }
 
   /**
@@ -1912,42 +1995,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const targets = this.selectionTargets(snapshot);
     if (!targets) return false;
     const focus = this.focusColorId();
-    const several = targets.length > 1;
-    const parts: { readonly layer: FloatingMoveLayer; readonly surface: PatternDocument; readonly selection: FinalizedSelection; readonly capture: MoveCapture }[] = [];
-    for (const { layerId, surface } of targets) {
-      const selection = focus === undefined ? this.selection : this.focusSelection(surface, this.selection, focus, !several);
-      if (!selection) continue;
-      let capture = this.captureMoveSelection(surface, selection);
-      if (!capture) continue;
-      // With no focus-color cells, a Focus Color move carries only the focus-color backstitches.
-      const focusBackstitches = focus !== undefined && selection === this.selection ? focusFloatingBackstitches(capture.backstitches, focus) : undefined;
-      if (focus !== undefined && focusBackstitches) {
-        capture = { ...capture, fragment: focusPasteFragment(capture.fragment, surface, capture.geometry.rect, focus), backstitches: focusBackstitches };
-      }
-      if (several && isEmptyFragment(capture.fragment)) continue;
-      const layer: FloatingMoveLayer = {
-        layerId,
-        moveSelection: capture.source,
-        backstitches: capture.backstitches,
-        ...(focusBackstitches ? { focusBackstitchIds: Array.from(focusBackstitches.ids) } : {})
-      };
-      parts.push({ layer, surface, selection, capture });
-    }
-    if (parts.length === 0) {
-      const selection = this.selection;
-      if (several && focus !== undefined && targets.some(({ surface }) => focusSelectionContent(surface, selection, focus).protectedContent)) this.notifyFocusProtected();
+    const selection = this.selection;
+    const captured = this.captureTargets(snapshot.document, targets, selection, focus);
+    if (!captured) {
+      if (targets.length > 1 && focus !== undefined && targets.some(({ surface }) => focusSelectionContent(surface, selection, focus).protectedContent)) this.notifyFocusProtected();
       return false;
     }
-    // Layers cut by Focus Color differ in shape; the move then floats their union.
-    const shared = parts.every((part) => part.selection === parts[0].selection);
-    const union = shared ? undefined : sparseSelection(
-      parts.flatMap((part) => Array.from(fragmentSelectionIndices(part.capture.source, part.surface))),
-      snapshot.document
-    );
-    const geometry = union
-      ? selectionGeometry(union, union.bounds)
-      : parts[0].capture.geometry;
-    const captured = parts.length === 1 ? parts[0].capture : compositeMoveCaptures(parts.map((part) => part.capture), geometry.rect);
+    const { parts, geometry } = captured;
     const destination = clampFloatingDestination(geometry.rect, captured.fragment, snapshot.document);
     const previousSelection = this.selection;
     const previousSelectionAnchor = this.selectionAnchor;
@@ -2068,6 +2122,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       copySelection,
       ...(plan.creates.length > 0 ? { pendingPalette: plan.creates } : {}),
       ...(clipboard.layerType === undefined ? {} : { layerType: clipboard.layerType }),
+      ...(clipboard.multiLayer ? { multiLayer: true as const } : {}),
       destination,
       token: tokenOf(snapshot),
       previousSelection,
@@ -2162,7 +2217,9 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   /**
    * Commit a paste. The session picks the destination
    * layer: the selected layer when it has the clipboard's type, otherwise a new
-   * or the topmost visible layer of that type. Its message becomes a notice.
+   * or the topmost visible layer of that type. A multi-layer copy lands per
+   * type, on a new or the topmost visible layer of each type it holds. Each
+   * destination's message becomes a notice.
    */
   private commitLayeredPaste(floating: FloatingPasteState, snapshot: DocumentSnapshot): boolean {
     if (!hasRevision(snapshot)) return false;
@@ -2172,12 +2229,16 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.setStatus('No change');
       return true;
     }
-    const type = floating.layerType ?? fragmentLayerType(floating.fragment);
-    const destination = this.gateway.resolvePaste(type);
-    if (destination.layerId === null && !destination.create) {
+    const resolved = floating.multiLayer
+      ? (fragmentLayerRequirement(floating.fragment) === 'mixed' ? [LayerType.Stitch, LayerType.Specialty] : [fragmentLayerType(floating.fragment)]).map((type) => this.gateway.resolveMultiLayerPaste(type))
+      : [this.gateway.resolvePaste(floating.layerType ?? fragmentLayerType(floating.fragment))];
+    // A type whose every layer is hidden goes nowhere; the rest still paste.
+    const destinations = resolved.filter((destination) => destination.create || destination.layerId !== null);
+    const dropped = resolved.filter((destination) => !destinations.includes(destination));
+    for (const { message } of dropped) if (message) this.notify(message);
+    if (destinations.length === 0) {
       this.discardFloatingPaste();
-      if (destination.message) this.notify(destination.message);
-      this.setStatus(destination.message ?? 'Paste unavailable');
+      this.setStatus(dropped[0]?.message ?? 'Paste unavailable');
       return false;
     }
     const position = { x: floating.destination.x, y: floating.destination.y };
@@ -2186,6 +2247,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const focus = this.focusColorId();
     let fragment = floating.fragment;
     if (focus !== undefined) {
+      // Focus Color protects cells, so the stitch destination is the surface that matters.
+      const destination = destinations.find((candidate) => candidate.layerType === LayerType.Stitch) ?? destinations[0];
       const target = destination.create || destination.layerId === null
         ? undefined
         : destination.layerId === activeId && snapshot.editSurface ? snapshot.editSurface : layerSurface(snapshot.layeredDocument, destination.layerId);
@@ -2198,7 +2261,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     const creates = usedPaletteCreates(floating.pendingPalette, fragment);
     try {
-      if (!destination.create && destination.layerId === activeId && snapshot.editSurface) {
+      const [destination] = destinations;
+      if (!floating.multiLayer && !destination.create && destination.layerId === activeId && snapshot.editSurface) {
         const preflight = preflightPasteFragmentCommand(withPendingPalette(snapshot.editSurface, creates), pasteFragmentCommand(fragment, position, snapshot.revision));
         if (preflight.changedCellCount === 0 && preflight.newBackstitchCount === 0) {
           this.discardFloatingPaste();
@@ -2206,7 +2270,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
           return true;
         }
       }
-      const outcome = this.runCommand('Paste', () => this.gateway.commitPaste(fragment, position, destination, token, creates));
+      const outcome = this.runCommand('Paste', () => this.gateway.commitPaste(fragment, position, destinations, token, creates));
       if (!outcome) {
         // A stale paste is dropped; a refused one stays floating.
         if (!this.isCurrentTransaction(token, this.gateway.getSnapshot())) this.discardFloatingPaste();
@@ -2225,7 +2289,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.publishFloatingPasteOverlay();
       this.projectCommandResult(outcome.result, undefined, `Pasted ${String(floating.fragment.width)}×${String(floating.fragment.height)} cells`, this.floatingSelectionSnapshot(floating));
       this.publishSelectionOverlay();
-      const message = outcome.message ?? destination.message;
+      const message = outcome.message ?? destinations.flatMap((candidate) => candidate.message === undefined ? [] : [candidate.message]).join(' ');
       if (message) this.notify(message);
       return true;
     } catch (error) {

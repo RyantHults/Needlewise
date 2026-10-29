@@ -61,8 +61,12 @@ export interface ProjectThumbnailSummary {
   revision: number;
   columns: number;
   rows: number;
-  /** Palette index zero is always the neutral fabric color. */
-  palette: string[];
+  /**
+   * Palette index zero is always the fabric color. A `null` entry, at most one
+   * and never a backstitch color, marks samples in a hole of a non-rectangular
+   * canvas; they are drawn transparent.
+   */
+  palette: (string | null)[];
   /**
    * One palette index for every sampled cell, in row-major order. A
    * `Uint8Array` when the palette has at most 256 colors, else a `Uint16Array`.
@@ -330,6 +334,7 @@ export interface ProjectFolder {
 export interface ProjectFolderAssignment {
   projectId: string;
   folderId: string;
+  assignedAt: number;
 }
 
 export interface ProjectFolderIndex {
@@ -341,4 +346,6 @@ export interface CreateFolderInput {
   name: string;
   parentId?: string | null;
   id: string;
+  /** Projects assigned to the new folder in the same transaction. */
+  projectIds?: readonly string[];
 }

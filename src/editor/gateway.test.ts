@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createPatternFragment, type DomainCommand, type ProgressCommand } from '../domain';
+import { createPatternFragment, LayerType, type DomainCommand, type ProgressCommand } from '../domain';
 import { createWorkspaceEditorGateway, hasRevision, StaleEditorTransactionError, tokenOf } from './gateway';
 import { LayeredTestBoundary, plainDocument } from './test-support';
 import { cell } from '../domain/test-fixtures';
@@ -33,7 +33,7 @@ describe('WorkspaceEditorGateway', () => {
     const gateway = createWorkspaceEditorGateway(boundary);
     const fragment = createPatternFragment(boundary.document, { kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } });
     const palette = [{ id: 2, name: 'Green', color: '#3a3' }];
-    gateway.commitPaste(fragment, { x: 0, y: 0 }, { layerId: null, create: false }, undefined, palette);
+    gateway.commitPaste(fragment, { x: 0, y: 0 }, [{ layerType: LayerType.Stitch, layerId: null, create: false }], undefined, palette);
     expect(commitPaste.mock.calls[0]?.[4]).toEqual(palette);
     gateway.dispose();
   });

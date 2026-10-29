@@ -6,11 +6,13 @@ import { createCatalogReference, DEFAULT_CATALOG_DEFINITION, type CatalogDefinit
 import { makeCatalog } from '../../catalog/test-support';
 import { layerAddCommand, applyLayerStructureCommand, type LayeredDocument } from '../../domain';
 import { SYMBOL_POOL, SYMBOL_IDS } from '../../symbols';
-import type { ReactElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
+import { ToastProvider } from '../toast';
 import { createLayeredDocument } from '../../domain/test-fixtures';
 
-const render = (ui: ReactElement) => renderBare(ui, { wrapper: MemoryRouter });
+const Providers = ({ children }: { children: ReactNode }) => <MemoryRouter><ToastProvider>{children}</ToastProvider></MemoryRouter>;
+const render = (ui: ReactElement) => renderBare(ui, { wrapper: Providers });
 
 const compactDmcRecords = [...new Map([
   ...DEFAULT_CATALOG_DEFINITION.search('31', { limit: 12 }),
@@ -2228,7 +2230,7 @@ describe('EditorSurface layers', () => {
     expect(screen.getByRole('button', { name: 'Eraser' })).not.toHaveAttribute('aria-disabled');
     fireEvent.click(full);
     expect(f.c.setBrush).not.toHaveBeenCalled();
-    expect(document.querySelector('.editor-toast-region')).toHaveTextContent('Select a stitch layer to use this tool.');
+    expect(screen.getByText('Select a stitch layer to use this tool.', { selector: '[role="status"] *' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Fill' }));
     expect(f.c.setTool).not.toHaveBeenCalledWith({ tool: 'fill' });
   });
@@ -2242,16 +2244,11 @@ describe('EditorSurface layers', () => {
     for (const name of ['Pan', 'Eyedropper']) expect(screen.getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
   });
 
-  it('shows controller notices such as paste routing as a toast that dismisses itself', () => {
-    vi.useFakeTimers();
+  it('shows controller notices such as paste routing as a toast', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     const options = vi.mocked(createEditorSurfaceController).mock.calls.at(-1)![0] as { onNotice?: (message: string) => void };
     act(() => options.onNotice?.('Added a new stitch layer for your paste.'));
-    const region = document.querySelector('.editor-toast-region')!;
-    expect(region).toHaveAttribute('role', 'status');
-    expect(region).toHaveTextContent('Added a new stitch layer for your paste.');
-    act(() => vi.advanceTimersByTime(3300));
-    expect(region).toBeEmptyDOMElement();
+    expect(screen.getByText('Added a new stitch layer for your paste.')).toBeInTheDocument();
   });
 });
 

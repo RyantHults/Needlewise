@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ProjectWorkspace } from '../../application/workspace';
+import { useToast } from '../toast';
 import { computePatternMetrics, cropToContent } from '../../domain';
 import type { DisplayUnits, PatternDocument } from '../../domain';
 import {
@@ -67,7 +68,7 @@ const STITCH_SIZE_LABELS: readonly string[] = ['Small', 'Medium', 'Large'];
 const CHART_STYLE_LABELS: Record<ExportChartStyle, string> = { symbol: 'Symbols', color: 'Color', combined: 'Color and symbols' };
 
 type MaterialDraft = { strands: string; backstitchStrands: string; waste: string };
-type Run = { status: 'idle' } | { status: 'running'; progress: number } | { status: 'done' | 'cancelled'; message: string } | { status: 'error'; message: string };
+type Run = { status: 'idle' } | { status: 'running'; progress: number } | { status: 'error'; message: string };
 
 const draftOf = (settings: { strands: number; backstitchStrands?: number; waste: number } | null): MaterialDraft => ({
   strands: String(settings?.strands ?? 1),
@@ -92,9 +93,9 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
   const [units, changeUnits] = useProjectUnits(workspace);
   const [draft, setDraft] = useState<MaterialDraft>(() => draftOf(workspace.materialSettings));
   const [errors, setErrors] = useState<Partial<Record<keyof MaterialDraft, string>>>({});
-  const [saveMessage, setSaveMessage] = useState('');
   const [settings, setSettings] = useState<ExportSettings>(() => loadExportSettings(storage));
   const [run, setRun] = useState<Run>({ status: 'idle' });
+  const showToast = useToast();
   const controller = useRef<AbortController | null>(null);
 
   // Settings belong to the active project; do not carry a previous project's draft over.
@@ -102,7 +103,6 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
     setMaterialSettings(workspace.materialSettings);
     setDraft(draftOf(workspace.materialSettings));
     setErrors({});
-    setSaveMessage('');
   }, [workspace.activeProjectId]);
 
   useEffect(() => () => controller.current?.abort(), []);
@@ -124,7 +124,6 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
 
   const updateDraft = (field: keyof MaterialDraft, value: string) => {
     setDraft((current) => ({ ...current, [field]: value }));
-    setSaveMessage('');
   };
 
   const draftDirty = () => {
@@ -136,7 +135,6 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
   const commitDraft = async (): Promise<boolean> => {
     const found = validateDraft(draft);
     setErrors(found);
-    setSaveMessage('');
     if (Object.keys(found).length > 0) return false;
     try {
       await workspace.updateActiveMaterialSettings({
@@ -145,7 +143,7 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
         waste: Number(draft.waste) / 100
       });
       setMaterialSettings(workspace.materialSettings);
-      setSaveMessage('Material settings saved.');
+      showToast({ message: 'Material settings saved.' });
       return true;
     } catch (error) {
       setErrors({ strands: error instanceof Error ? error.message : 'Material settings could not be saved.' });
@@ -219,7 +217,8 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
         return;
       }
       if (abort.signal.aborted) {
-        setRun({ status: 'cancelled', message: 'Export cancelled.' });
+        showToast({ message: 'Export cancelled.' });
+        setRun({ status: 'idle' });
         return;
       }
       const bytes = await exportPdf(settings, {
@@ -229,15 +228,19 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
         }
       });
       if (abort.signal.aborted) {
-        setRun({ status: 'cancelled', message: 'Export cancelled.' });
+        showToast({ message: 'Export cancelled.' });
+        setRun({ status: 'idle' });
         return;
       }
       download(bytes);
-      setRun({ status: 'done', message: `Exported ${pdfFilename(title)}.` });
+      showToast({ message: `Exported ${pdfFilename(title)}.` });
+      setRun({ status: 'idle' });
       onExported?.();
     } catch (error) {
-      if (abort.signal.aborted || isAbortError(error)) setRun({ status: 'cancelled', message: 'Export cancelled.' });
-      else setRun({ status: 'error', message: error instanceof Error && error.message ? error.message : 'The PDF could not be exported.' });
+      if (abort.signal.aborted || isAbortError(error)) {
+        showToast({ message: 'Export cancelled.' });
+        setRun({ status: 'idle' });
+      } else setRun({ status: 'error', message: error instanceof Error && error.message ? error.message : 'The PDF could not be exported.' });
     } finally {
       if (controller.current === abort) controller.current = null;
     }
@@ -253,7 +256,6 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
           <NumberField id="export-strands" label="Strands per stitch" value={draft.strands} inputMode="numeric" min="1" error={errors.strands} onChange={(value) => updateDraft('strands', value)} />
           <NumberField id="export-backstitch-strands" label="Backstitch strands" value={draft.backstitchStrands} inputMode="numeric" min="1" error={errors.backstitchStrands} onChange={(value) => updateDraft('backstitchStrands', value)} />
           <NumberField id="export-waste" label="Waste allowance (%)" value={draft.waste} inputMode="decimal" min="0" error={errors.waste} onChange={(value) => updateDraft('waste', value)} />
-          {saveMessage && <p className="export-note" role="status">{saveMessage}</p>}
         </form>
         <div className="export-field">
           <label htmlFor="export-aida-count">Aida count</label>
@@ -350,7 +352,6 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
           </div>
         )}
         {run.status === 'error' && <p className="export-error" role="alert">{run.message}</p>}
-        {(run.status === 'done' || run.status === 'cancelled') && <p className="export-note" role="status">{run.message}</p>}
       </section>
     </div>
   );

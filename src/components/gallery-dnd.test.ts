@@ -11,7 +11,9 @@ import {
   parseDragId,
   pickNextDropTarget,
   projectDragId,
+  projectDropId,
   resolveDropFolderId,
+  resolveGroupTarget,
   resolveMoveTarget,
   type MoveContext
 } from './gallery-dnd';
@@ -25,7 +27,7 @@ function project(id: string, title: string): ProjectMetadata {
 }
 
 function assignment(projectId: string, folderId: string): ProjectFolderAssignment {
-  return { projectId, folderId };
+  return { projectId, folderId, assignedAt: 1 };
 }
 
 const top1 = folder('top1', 'Top One', null);
@@ -241,5 +243,39 @@ describe('keyboard coordinate helpers', () => {
     const near = { id: 'near', rect: { left: -10, top: 100, width: 20, height: 20 } };
     const far = { id: 'far', rect: { left: -10, top: 400, width: 20, height: 20 } };
     expect(pickNextDropTarget('down', { x: 0, y: 0 }, [near, far])).toBe(near);
+  });
+});
+
+describe('resolveGroupTarget', () => {
+  it('groups a pattern onto another pattern at the top level', () => {
+    expect(resolveGroupTarget(projectDragId('p1'), projectDropId('p3'), context())).toEqual({
+      draggedProjectId: 'p1',
+      targetProjectId: 'p3',
+      parentId: null
+    });
+  });
+
+  it('groups inside a top-level folder', () => {
+    expect(resolveGroupTarget(projectDragId('p1'), projectDropId('p3'), context('top1'))?.parentId).toBe('top1');
+  });
+
+  it('rejects a pattern dropped on itself', () => {
+    expect(resolveGroupTarget(projectDragId('p1'), projectDropId('p1'), context())).toBeNull();
+  });
+
+  it('rejects grouping inside a nested folder', () => {
+    expect(resolveGroupTarget(projectDragId('p2'), projectDropId('p3'), context('child1'))).toBeNull();
+  });
+
+  it('rejects a folder dragged onto a pattern', () => {
+    expect(resolveGroupTarget(folderDragId('top1'), projectDropId('p3'), context())).toBeNull();
+  });
+
+  it('rejects unknown drop ids', () => {
+    expect(resolveGroupTarget(projectDragId('p1'), folderDropId('top1'), context())).toBeNull();
+  });
+
+  it('counts as a valid drop target', () => {
+    expect(isValidDropTarget(projectDragId('p1'), projectDropId('p3'), context())).toBe(true);
   });
 });
