@@ -4,6 +4,7 @@ import deleteIcon from "../../assets/ui-icons/delete.svg";
 import download from "../../assets/ui-icons/download.svg";
 import duplicate from "../../assets/ui-icons/duplicate.svg";
 import fittopage from "../../assets/ui-icons/fittopage.svg";
+import folder from "../../assets/ui-icons/folder.svg";
 import grayscale from "../../assets/ui-icons/grayscale.svg";
 import merge from "../../assets/ui-icons/merge.svg";
 import redo from "../../assets/ui-icons/redo.svg";
@@ -33,6 +34,7 @@ const ICONS = {
   download,
   duplicate,
   fittopage,
+  folder,
   grayscale,
   merge,
   redo,

@@ -1047,7 +1047,8 @@ a.button { display: inline-flex; align-items: center; gap: .4rem; text-decoratio
 .project-gallery-up-bar.project-gallery-drop-over { border-style:solid; border-color:var(--color-accent); color:var(--color-accent-ink); background:var(--color-drop-over); }
 .project-gallery-drag-preview { display:flex; align-items:center; gap:.6rem; width:14rem; border:1px solid var(--color-line); border-radius:.8rem; padding:.5rem; background:var(--color-surface); box-shadow:0 1.2rem 2.4rem color-mix(in srgb, var(--color-shadow-deep) 28%, transparent); transform:rotate(2deg); }
 .project-gallery-drag-preview .project-gallery-thumbnail { flex:0 0 3.4rem; width:3.4rem; height:3.4rem; border-radius:.4rem; }
-.project-gallery-drag-preview-folder-mark { flex:0 0 3.4rem; width:3.4rem; height:3.4rem; padding:.45rem; border-radius:.4rem; background:var(--color-folder-back); color:var(--color-accent-ink); }
+.project-gallery-drag-preview-folder-mark { flex:0 0 3.4rem; width:3.4rem; height:3.4rem; display:grid; place-items:center; border-radius:.4rem; background:var(--color-folder-back); color:var(--color-accent-ink); }
+.project-gallery-drag-preview-folder-mark .ui-icon { width:2rem; height:2rem; }
 .project-gallery-drag-preview-name { overflow:hidden; color:var(--color-ink); font-family:Georgia,serif; font-size:.95rem; text-overflow:ellipsis; white-space:nowrap; }
 @media (prefers-reduced-motion: reduce) {
   .project-gallery-drag-preview { transform:none; }

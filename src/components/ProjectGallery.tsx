@@ -19,6 +19,7 @@ import { MAX_FOLDER_NAME_CHARS, type ProjectFolder, type ProjectFolderAssignment
 import { ProjectThumbnail } from './ProjectThumbnail';
 import { NewFolderModal } from './NewFolderModal';
 import { CardActionButton } from './CardActionButton';
+import { Icon } from './controls/Icon';
 import {
   UP_DROP_ID,
   centerOf,
@@ -140,12 +141,6 @@ function FolderPreview({ projects }: { projects: readonly ProjectMetadata[] }) {
         <span key={index} className="project-gallery-folder-grid-empty"><ProjectThumbnail /></span>
       ))}
     </span>
-  );
-}
-
-function DragPreviewFolderMark() {
-  return (
-    <svg className="project-gallery-drag-preview-folder-mark" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></svg>
   );
 }
 
@@ -734,7 +729,7 @@ export function ProjectGallery({
           <div className="project-gallery-drag-preview" aria-hidden="true">
             {groupingOver || addingToFolder ? (
               <>
-                <DragPreviewFolderMark />
+                <span className="project-gallery-drag-preview-folder-mark" aria-hidden="true"><Icon name="folder" /></span>
                 <span className="project-gallery-drag-preview-name">{groupingOver ? 'Create folder' : 'Add to folder'}</span>
               </>
             ) : activeDragInfo.kind === 'project' ? (
@@ -749,7 +744,7 @@ export function ProjectGallery({
               </>
             ) : (
               <>
-                <DragPreviewFolderMark />
+                <span className="project-gallery-drag-preview-folder-mark" aria-hidden="true"><Icon name="folder" /></span>
                 <span className="project-gallery-drag-preview-name">{activeDragInfo.folder.name}</span>
               </>
             )}
