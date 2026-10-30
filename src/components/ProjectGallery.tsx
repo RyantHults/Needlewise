@@ -143,6 +143,12 @@ function FolderPreview({ projects }: { projects: readonly ProjectMetadata[] }) {
   );
 }
 
+function DragPreviewFolderMark() {
+  return (
+    <svg className="project-gallery-drag-preview-folder-mark" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></svg>
+  );
+}
+
 function dropStateClassName(dragActive: boolean, dropActive: boolean, isOver: boolean): string {
   if (!dragActive) return '';
   if (!dropActive) return ' project-gallery-drop-disabled';
@@ -216,9 +222,6 @@ function FolderCard({
       {...listeners}
     >
       <span className="project-gallery-folder-tab" aria-hidden="true" />
-      {dragActive && dropActive && (
-        <span className="project-gallery-drop-label" aria-hidden="true">Move into {folder.name}</span>
-      )}
       <button
         className="project-gallery-open"
         type="button"
@@ -325,9 +328,6 @@ function ProjectCard({ project, disabled, confirming, dropActive, settling, onOp
       style={settling ? SETTLING_STYLE : undefined}
       {...listeners}
     >
-      {groupOver && (
-        <span className="project-gallery-drop-label" aria-hidden="true">Create folder with {project.title}</span>
-      )}
       <button
         className="project-gallery-open"
         type="button"
@@ -525,6 +525,9 @@ export function ProjectGallery({
   }, [activeDragId, projectsById, folderById]);
 
   const groupingOver = activeDragId !== null && overId !== null && resolveGroupTarget(activeDragId, overId, moveContext) !== null;
+
+  const addingToFolder = activeDragId !== null && overId !== null && overId !== UP_DROP_ID
+    && activeDragInfo?.kind === 'project' && resolveMoveTarget(activeDragId, overId, moveContext) !== null;
 
   function groupTargetTitle(draggedId: string, dropId: string): string | null {
     const group = resolveGroupTarget(draggedId, dropId, moveContext);
@@ -729,10 +732,10 @@ export function ProjectGallery({
       <DragOverlay dropAnimation={reducedMotion || settlingId !== null ? null : DROP_ANIMATION} modifiers={[snapCenterToPointer]}>
         {activeDragInfo && (
           <div className="project-gallery-drag-preview" aria-hidden="true">
-            {groupingOver ? (
+            {groupingOver || addingToFolder ? (
               <>
-                <span className="project-gallery-drag-preview-folder-mark" aria-hidden="true" />
-                <span className="project-gallery-drag-preview-name">New folder</span>
+                <DragPreviewFolderMark />
+                <span className="project-gallery-drag-preview-name">{groupingOver ? 'Create folder' : 'Add to folder'}</span>
               </>
             ) : activeDragInfo.kind === 'project' ? (
               <>
@@ -746,7 +749,7 @@ export function ProjectGallery({
               </>
             ) : (
               <>
-                <span className="project-gallery-drag-preview-folder-mark" aria-hidden="true" />
+                <DragPreviewFolderMark />
                 <span className="project-gallery-drag-preview-name">{activeDragInfo.folder.name}</span>
               </>
             )}
