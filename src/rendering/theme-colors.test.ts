@@ -30,11 +30,12 @@ afterEach(() => {
 describe('theme colors', () => {
   it('names each renderer colour token after its field', () => {
     expect(rendererColorToken('selectionColor')).toBe('--renderer-selection-color');
-    expect(rendererColorToken('lightStitchMajorGridColor')).toBe('--renderer-light-stitch-major-grid-color');
+    expect(rendererColorToken('chartBorderColor')).toBe('--renderer-chart-border-color');
   });
 
-  it('covers every string colour field of the default style', () => {
-    const colorFields = Object.keys(DEFAULT_RENDERER_STYLE).filter((key) => key.endsWith('Color') && typeof DEFAULT_RENDERER_STYLE[key as keyof typeof DEFAULT_RENDERER_STYLE] === 'string');
+  it('covers every string colour field of the default style except the fixed grid colours', () => {
+    const fixed = new Set(['gridColor', 'midGridColor', 'majorGridColor']);
+    const colorFields = Object.keys(DEFAULT_RENDERER_STYLE).filter((key) => key.endsWith('Color') && !fixed.has(key) && typeof DEFAULT_RENDERER_STYLE[key as keyof typeof DEFAULT_RENDERER_STYLE] === 'string');
     expect([...RENDERER_COLOR_FIELDS].sort()).toEqual(colorFields.sort());
   });
 
@@ -48,7 +49,7 @@ describe('theme colors', () => {
     stubTokens({ '--renderer-selection-color': ' #00ff00', '--color-ink': '#111111 ' });
     const colors = readRendererColors();
     expect(colors.selectionColor).toBe('#00ff00');
-    expect(colors.gridColor).toBe(DEFAULT_RENDERER_STYLE.gridColor);
+    expect(colors.cursorColor).toBe(DEFAULT_RENDERER_STYLE.cursorColor);
     expect(readThemeColor('--color-ink', '#272321')).toBe('#111111');
   });
 
@@ -80,9 +81,9 @@ describe('theme colors', () => {
 
 describe('renderer theme colours', () => {
   it('takes the theme colours at creation, under caller settings', () => {
-    stubTokens({ '--renderer-grid-color': '#010101', '--renderer-cursor-color': '#020202' });
+    stubTokens({ '--renderer-chart-border-color': '#010101', '--renderer-cursor-color': '#020202' });
     const subject = renderer({ cursorColor: '#030303' });
-    expect(subject.getStyle().gridColor).toBe('#010101');
+    expect(subject.getStyle().chartBorderColor).toBe('#010101');
     expect(subject.getStyle().cursorColor).toBe('#030303');
     expect(subject.getStyle().selectionColor).toBe(DEFAULT_RENDERER_STYLE.selectionColor);
     subject.dispose();
@@ -91,10 +92,10 @@ describe('renderer theme colours', () => {
   it('re-reads the theme colours on a theme change and keeps its settings', async () => {
     const subject = renderer();
     subject.setStyle({ showGrid: false });
-    stubTokens({ '--renderer-grid-color': '#0a0a0a' });
+    stubTokens({ '--renderer-chart-border-color': '#0a0a0a' });
     document.documentElement.setAttribute('data-theme', 'dark');
     await Promise.resolve();
-    expect(subject.getStyle().gridColor).toBe('#0a0a0a');
+    expect(subject.getStyle().chartBorderColor).toBe('#0a0a0a');
     expect(subject.getStyle().showGrid).toBe(false);
     subject.dispose();
   });
@@ -102,9 +103,9 @@ describe('renderer theme colours', () => {
   it('stops following the theme once disposed', async () => {
     const subject = renderer();
     subject.dispose();
-    stubTokens({ '--renderer-grid-color': '#0b0b0b' });
+    stubTokens({ '--renderer-chart-border-color': '#0b0b0b' });
     document.documentElement.setAttribute('data-theme', 'dark');
     await Promise.resolve();
-    expect(subject.getStyle().gridColor).toBe(DEFAULT_RENDERER_STYLE.gridColor);
+    expect(subject.getStyle().chartBorderColor).toBe(DEFAULT_RENDERER_STYLE.chartBorderColor);
   });
 });

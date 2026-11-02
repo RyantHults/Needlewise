@@ -2529,17 +2529,6 @@ describe('EditorSurfaceController read-only mode', () => {
     controller.dispose();
   });
 
-  it('ignores the two-finger undo tap', () => {
-    const { boundary, controller } = controllerFixture({ readOnly: true });
-    controller.handlePointerDown(pointer(1, 20, 20, 'touch', 0, { timeStamp: 0 }));
-    controller.handlePointerDown(pointer(2, 60, 20, 'touch', 0, { timeStamp: 10 }));
-    controller.handlePointerUp(pointer(1, 20, 20, 'touch', 0, { timeStamp: 40 }));
-    controller.handlePointerUp(pointer(2, 60, 20, 'touch', 0, { timeStamp: 50 }));
-    expect(boundary.undoDepth).toBe(0);
-    expect(boundary.log).toHaveLength(0);
-    controller.dispose();
-  });
-
   it('routes undo and redo keys to the progress history', () => {
     const { boundary, controller } = controllerFixture({ readOnly: true });
     const undoMark = vi.spyOn(boundary, 'undoMark');
@@ -2617,6 +2606,17 @@ describe('EditorSurfaceController mark tool', () => {
     expect([...command.cells!.indices]).toEqual([9]);
     expect([...command.cells!.masks]).toEqual([1 << QuarterCorner.NE]);
     expect(command.backstitchIds).toBeUndefined();
+    controller.dispose();
+  });
+
+  it('undoes the last mark on a stationary two-finger tap', () => {
+    const { boundary, controller } = markFixture();
+    const undoMark = vi.spyOn(boundary, 'undoMark');
+    controller.handlePointerDown(pointer(1, 20, 20, 'touch', 0, { timeStamp: 0 }));
+    controller.handlePointerDown(pointer(2, 60, 20, 'touch', 0, { timeStamp: 10 }));
+    controller.handlePointerUp(pointer(1, 20, 20, 'touch', 0, { timeStamp: 40 }));
+    controller.handlePointerUp(pointer(2, 60, 20, 'touch', 0, { timeStamp: 50 }));
+    expect(undoMark).toHaveBeenCalledTimes(1);
     controller.dispose();
   });
 

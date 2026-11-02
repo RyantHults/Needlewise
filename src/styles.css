@@ -1123,10 +1123,10 @@ img.layer-thumbnail { object-fit:cover; image-rendering:auto; }
 .toast { display:flex; align-items:center; gap:.9rem; max-width:min(26rem, calc(100vw - 2rem)); margin:0; border-radius:.7rem; padding:.65rem 1rem; background:var(--color-surface-inverse); color:var(--color-on-inverse); font-size:.82rem; font-weight:700; box-shadow:0 1rem 2.4rem color-mix(in srgb, var(--color-shadow-deep) 28%, transparent); pointer-events:auto; animation:toast-in 160ms ease-out; }
 .toast[data-tone="error"] { border-left:.3rem solid var(--color-danger); }
 .toast-message { flex:1 1 auto; }
-.toast-action { flex:0 0 auto; border:1px solid color-mix(in srgb, var(--color-on-inverse) 40%, transparent); border-radius:.4rem; padding:.4rem .75rem; background:transparent; color:var(--color-on-inverse-accent); font-size:.78rem; font-weight:700; white-space:nowrap; }
-.toast-action:hover { background:color-mix(in srgb, var(--color-on-inverse) 14%, transparent); }
-/* The toast is an inverse surface, so its ring uses the inverse accent for contrast. */
-.toast-action:focus-visible { outline:2px solid var(--color-on-inverse-accent); outline-offset:2px; }
+.toast-action { flex:0 0 auto; border:0; border-radius:.4rem; padding:.4rem .75rem; background:var(--color-accent); color:var(--color-on-accent); font-size:.78rem; font-weight:700; white-space:nowrap; }
+.toast-action:hover { background:color-mix(in srgb, var(--color-accent) 85%, var(--color-on-accent)); }
+/* The toast is an inverse surface, so its ring uses the inverse ink for contrast. */
+.toast-action:focus-visible { outline:2px solid var(--color-on-inverse); outline-offset:2px; }
 @keyframes toast-in { from { opacity:0; transform:translateY(.4rem); } to { opacity:1; transform:none; } }
 @media (prefers-reduced-motion: reduce) { .toast { animation:none; } }
 @media (max-width:600px) {

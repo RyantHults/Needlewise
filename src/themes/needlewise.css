@@ -75,17 +75,8 @@
   --color-shadow-deep: #272321;
   --color-scrim: #272321;
 
-  /* Chart renderer roles, one per DEFAULT_RENDERER_STYLE colour field, same values. */
+  /* Chart renderer roles, one per RendererTheme field, same values as DEFAULT_RENDERER_STYLE. */
   --renderer-background-color: #ffffff;
-  --renderer-grid-color: #d8d8d8;
-  --renderer-mid-grid-color: #b8b8b8;
-  --renderer-major-grid-color: #858585;
-  --renderer-light-stitch-grid-color: #8c8c8c;
-  --renderer-light-stitch-mid-grid-color: #5e5e5e;
-  --renderer-light-stitch-major-grid-color: #2e2e2e;
-  --renderer-dark-stitch-grid-color: #7a7a7a;
-  --renderer-dark-stitch-mid-grid-color: #a8a8a8;
-  --renderer-dark-stitch-major-grid-color: #dcdcdc;
   --renderer-chart-border-color: #4b4b4b;
   --renderer-symbol-color: #242424;
   --renderer-symbol-background-color: #ffffff;

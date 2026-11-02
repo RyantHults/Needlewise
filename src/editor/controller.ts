@@ -3790,7 +3790,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (!valid || distinctCount === undefined) return;
     const action = distinctCount === 2 ? 'undo' : 'redo';
     debugTouch('history-dispatch', { action, distinctContacts: distinctCount });
-    this.historyAction(action);
+    if (this.readOnly) this.markHistoryAction(action);
+    else this.historyAction(action);
   }
 
   private beginPinch(): void {

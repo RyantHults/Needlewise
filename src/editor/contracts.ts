@@ -343,17 +343,6 @@ export interface CoalescedInvalidation {
 
 export interface RendererTheme {
   readonly backgroundColor: string;
-  readonly gridColor: string;
-  readonly midGridColor: string;
-  readonly majorGridColor: string;
-  /** Grid lines between two light stitches, so dark: minor, mid, and major. */
-  readonly lightStitchGridColor: string;
-  readonly lightStitchMidGridColor: string;
-  readonly lightStitchMajorGridColor: string;
-  /** Grid lines between two dark stitches, so light: minor, mid, and major. */
-  readonly darkStitchGridColor: string;
-  readonly darkStitchMidGridColor: string;
-  readonly darkStitchMajorGridColor: string;
   readonly chartBorderColor: string;
   readonly symbolColor: string;
   readonly symbolBackgroundColor: string;
@@ -376,6 +365,10 @@ export interface RendererTheme {
 
 export interface RendererStyle extends RendererTheme {
   readonly mode: ChartPresentationMode;
+  /** Grid tier colours are fixed, not themed: the grid is drawn over the user's fabric, whatever the app theme. */
+  readonly gridColor: string;
+  readonly midGridColor: string;
+  readonly majorGridColor: string;
   readonly gridInterval: number;
   readonly midGridInterval: number;
   readonly showGrid: boolean;
@@ -402,15 +395,9 @@ export interface RendererStyle extends RendererTheme {
 export const DEFAULT_RENDERER_STYLE: RendererStyle = {
   mode: ChartPresentationMode.Color,
   backgroundColor: '#ffffff',
-  gridColor: '#d8d8d8',
-  midGridColor: '#b8b8b8',
-  majorGridColor: '#858585',
-  lightStitchGridColor: '#8c8c8c',
-  lightStitchMidGridColor: '#5e5e5e',
-  lightStitchMajorGridColor: '#2e2e2e',
-  darkStitchGridColor: '#7a7a7a',
-  darkStitchMidGridColor: '#a8a8a8',
-  darkStitchMajorGridColor: '#dcdcdc',
+  gridColor: '#c8c8c8',
+  midGridColor: '#6e6e6e',
+  majorGridColor: '#000000',
   chartBorderColor: '#4b4b4b',
   symbolColor: '#242424',
   symbolBackgroundColor: '#ffffff',

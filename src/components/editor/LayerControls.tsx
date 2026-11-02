@@ -196,7 +196,7 @@ function StackLayerControls({ document, layer, layerSelection, onRename, onDupli
       <ActionButton className="bottom-control layer-action" glyph={<Icon name="duplicate" />} caption="Duplicate" aria-label="Duplicate layer" title={duplicateReason} disabled={!duplicateAllowed} onClick={() => onDuplicate(layer.id)} />
       <ActionButton
         className="bottom-control layer-action"
-        glyph={<Icon name="merge" />}
+        glyph={<Icon name={layerSelection.layerIds.length <= 1 ? "merge-down" : "merge"} />}
         caption="Merge"
         aria-label="Merge"
         title={mergeTitle}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { CanvasContextAdapter, RendererStyle } from '../editor/contracts';
 import { ChartPresentationMode, DEFAULT_RENDERER_STYLE } from '../editor/contracts';
-import type { PatternDocument } from '../domain';
+import { CellKind, type PatternDocument } from '../domain';
 import { getSymbolOutline, SYMBOL_IDS, SYMBOL_POOL } from '../symbols';
 import { drawPaletteSymbol, drawSymbolOutline } from './symbol-painter';
 
@@ -145,7 +145,7 @@ describe('drawPaletteSymbol', () => {
     const [id] = SYMBOL_IDS;
     const outline = getSymbolOutline(id);
 
-    drawPaletteSymbol(context, documentWith(id), 1, rect, style({ mode: ChartPresentationMode.Symbol }));
+    drawPaletteSymbol(context, documentWith(id), 1, rect, style({ mode: ChartPresentationMode.Symbol }), CellKind.Full);
 
     expect(painted(context)).toEqual([outline?.d]);
   });
@@ -154,7 +154,7 @@ describe('drawPaletteSymbol', () => {
     const context = recordingContext();
     const entry = SYMBOL_POOL[0];
 
-    drawPaletteSymbol(context, documentWith(undefined), 1, rect, style({ mode: ChartPresentationMode.Symbol }));
+    drawPaletteSymbol(context, documentWith(undefined), 1, rect, style({ mode: ChartPresentationMode.Symbol }), CellKind.Full);
 
     expect(painted(context)).toEqual([entry.d]);
   });
@@ -162,7 +162,7 @@ describe('drawPaletteSymbol', () => {
   it('paints nothing for a slug the pool does not own', () => {
     const context = recordingContext();
 
-    drawPaletteSymbol(context, documentWith('not-a-symbol'), 1, rect, style({ mode: ChartPresentationMode.Symbol }));
+    drawPaletteSymbol(context, documentWith('not-a-symbol'), 1, rect, style({ mode: ChartPresentationMode.Symbol }), CellKind.Full);
 
     expect(painted(context)).toEqual([]);
   });
@@ -174,23 +174,39 @@ describe('drawPaletteSymbol', () => {
       { mode: ChartPresentationMode.Grayscale }
     ]) {
       const context = recordingContext();
-      drawPaletteSymbol(context, documentWith(SYMBOL_IDS[0]), 1, rect, style(overrides as Partial<RendererStyle>));
+      drawPaletteSymbol(context, documentWith(SYMBOL_IDS[0]), 1, rect, style(overrides as Partial<RendererStyle>), CellKind.Full);
       expect(painted(context), JSON.stringify(overrides)).toEqual([]);
     }
   });
 
-  it('centres the symbol in the cell and offsets it for a quarter slot', () => {
-    const centre = recordingContext();
-    const slotted = recordingContext();
+  it('fits the symbol to the largest square inside the stitch shape', () => {
+    const fit = (kind: number, slot?: number): RecordingContext => {
+      const context = recordingContext();
+      drawPaletteSymbol(context, documentWith(SYMBOL_IDS[0]), 1, rect, style({ mode: ChartPresentationMode.Symbol }), kind, slot);
+      return context;
+    };
 
-    drawPaletteSymbol(centre, documentWith(SYMBOL_IDS[0]), 1, rect, style({ mode: ChartPresentationMode.Symbol }));
-    // Slot 1 is the top-right quadrant, matching the stitch geometry the
-    // painter draws there, so the symbol lands in the same quadrant.
-    drawPaletteSymbol(slotted, documentWith(SYMBOL_IDS[0]), 1, rect, style({ mode: ChartPresentationMode.Symbol }), 1);
+    const full = fit(CellKind.Full);
+    expect(named(full, 'translate')?.args).toEqual([18, 28]);
+    expect(named(full, 'scale')?.args).toEqual([16, 16]);
 
-    expect(named(centre, 'translate')?.args).toEqual([18, 28]);
-    expect(named(centre, 'scale')?.args).toEqual([16, 16]);
-    expect(named(slotted, 'translate')?.args).toEqual([22, 24]);
+    // A three-quarter triangle holds a half-cell square centred 0.25 in from its right angle.
+    const threeQuarter = fit(CellKind.ThreeQuarterNE);
+    expect(named(threeQuarter, 'translate')?.args).toEqual([22, 24]);
+    expect(named(threeQuarter, 'scale')?.args).toEqual([8, 8]);
+
+    const half = fit(CellKind.HalfSlash);
+    expect(named(half, 'translate')?.args).toEqual([18, 28]);
+    expect((named(half, 'scale')?.args[0] as number)).toBeCloseTo(16 * (1 - Math.SQRT1_2));
+  });
+
+  it('places the symbol in the right-angle corner of a legacy quarter slot', () => {
+    const context = recordingContext();
+
+    drawPaletteSymbol(context, documentWith(SYMBOL_IDS[0]), 1, rect, style({ mode: ChartPresentationMode.Symbol }), CellKind.Quarters, 1);
+
+    expect(named(context, 'translate')?.args).toEqual([24, 26]);
+    expect(named(context, 'scale')?.args).toEqual([4, 4]);
   });
 
   it('does not throw when the canvas rejects the outline', () => {
@@ -200,7 +216,7 @@ describe('drawPaletteSymbol', () => {
     };
 
     expect(() =>
-      drawPaletteSymbol(context, documentWith(SYMBOL_IDS[0]), 1, rect, style({ mode: ChartPresentationMode.Symbol }))
+      drawPaletteSymbol(context, documentWith(SYMBOL_IDS[0]), 1, rect, style({ mode: ChartPresentationMode.Symbol }), CellKind.Full)
     ).not.toThrow();
   });
 

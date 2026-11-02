@@ -1,7 +1,6 @@
 /**
  * Luminance helpers for picking the symbol ink (dark or white, favoring white)
- * against the stitch color underneath it in Combined chart presentation mode,
- * and for telling light stitches from dark ones when choosing grid line colors.
+ * against the stitch color underneath it in Combined chart presentation mode.
  * Pure functions only — no canvas or document access, so they are unit-testable
  * in isolation.
  */

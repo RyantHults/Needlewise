@@ -7,6 +7,7 @@ import fittopage from "../../assets/ui-icons/fittopage.svg";
 import folder from "../../assets/ui-icons/folder.svg";
 import grayscale from "../../assets/ui-icons/grayscale.svg";
 import merge from "../../assets/ui-icons/merge.svg";
+import mergeDown from "../../assets/ui-icons/merge-down.svg";
 import redo from "../../assets/ui-icons/redo.svg";
 import renameOutline from "../../assets/ui-icons/rename-outline.svg";
 import settings from "../../assets/ui-icons/settings.svg";
@@ -37,6 +38,7 @@ const ICONS = {
   folder,
   grayscale,
   merge,
+  "merge-down": mergeDown,
   redo,
   "rename-outline": renameOutline,
   settings,

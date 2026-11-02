@@ -3,15 +3,6 @@ import { DEFAULT_RENDERER_STYLE, type RendererStyle } from '../editor/contracts'
 /** The RendererStyle fields that are theme colours, each read from a `--renderer-*` token in styles.css. */
 export const RENDERER_COLOR_FIELDS = [
   'backgroundColor',
-  'gridColor',
-  'midGridColor',
-  'majorGridColor',
-  'lightStitchGridColor',
-  'lightStitchMidGridColor',
-  'lightStitchMajorGridColor',
-  'darkStitchGridColor',
-  'darkStitchMidGridColor',
-  'darkStitchMajorGridColor',
   'chartBorderColor',
   'symbolColor',
   'symbolBackgroundColor',

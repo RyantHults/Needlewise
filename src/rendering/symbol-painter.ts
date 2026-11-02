@@ -174,11 +174,36 @@ function symbolInkColor(document: PatternDocument, id: number, style: RendererSt
     : style.symbolColor;
 }
 
-function symbolPosition(rect: Rect, slot?: number): ScreenPoint {
-  if (slot === undefined) return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
-  const column = slot === 1 || slot === 2 ? 0.75 : 0.25;
-  const row = slot === 2 || slot === 3 ? 0.75 : 0.25;
-  return { x: rect.x + rect.width * column, y: rect.y + rect.height * row };
+interface SymbolFit {
+  readonly center: ScreenPoint;
+  readonly side: number;
+}
+
+const HALF_SIDE = 1 - Math.SQRT1_2;
+/** Legacy quarter triangles: centre of the side-0.25 square in each right-angle corner, in cell fractions. */
+const QUARTER_CENTERS: readonly (readonly [number, number])[] = [
+  [0.375, 0.125],
+  [0.875, 0.375],
+  [0.625, 0.875],
+  [0.125, 0.625]
+];
+
+/** The largest axis-aligned square inside the shape `drawStitchGeometry` draws for `kind`. */
+function symbolFit(rect: Rect, kind: number, slot = 0): SymbolFit {
+  const unit = Math.min(rect.width, rect.height);
+  const at = (column: number, row: number, side: number): SymbolFit => ({
+    center: { x: rect.x + rect.width * column, y: rect.y + rect.height * row },
+    side: unit * side
+  });
+  if (kind === CellKind.Full || kind === CellKind.HalfBackslash || kind === CellKind.HalfSlash) {
+    return at(0.5, 0.5, kind === CellKind.Full ? 1 : HALF_SIDE);
+  }
+  if (kind === CellKind.ThreeQuarterNW) return at(0.25, 0.25, 0.5);
+  if (kind === CellKind.ThreeQuarterNE) return at(0.75, 0.25, 0.5);
+  if (kind === CellKind.ThreeQuarterSE) return at(0.75, 0.75, 0.5);
+  if (kind === CellKind.ThreeQuarterSW) return at(0.25, 0.75, 0.5);
+  const [column, row] = QUARTER_CENTERS[slot] ?? QUARTER_CENTERS[0];
+  return at(column, row, 0.25);
 }
 
 /**
@@ -195,15 +220,15 @@ export function drawPaletteSymbol(
   id: number,
   rect: Rect,
   style: RendererStyle,
+  kind: number,
   slot?: number
 ): void {
   if (!style.showSymbols || style.mode === ChartPresentationMode.Color || style.mode === ChartPresentationMode.Grayscale) return;
   const outline = getSymbolOutline(paletteSymbol(document, id));
   if (!outline) return;
-  const position = symbolPosition(rect, slot);
-  const cellSize = Math.min(rect.width, rect.height);
+  const { center, side } = symbolFit(rect, kind, slot);
   try {
-    drawSymbolOutline(context, outline, position, cellSize, symbolInkColor(document, id, style));
+    drawSymbolOutline(context, outline, center, side, symbolInkColor(document, id, style));
   } catch {
     // A restricted or partially implemented canvas may expose the path methods
     // but reject a particular operation. The cell geometry the caller painted
