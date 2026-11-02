@@ -5,7 +5,7 @@ import { cellToScreenRect, fitViewport, getCanvasMetrics, visibleCellRect } from
 import { CHART_EDGE_MARGIN, DEFAULT_RENDERER_STYLE, type CanvasTarget, type FloatingPasteOverlay, type PendingCellState, type RendererStyle, type TraceImage } from '../editor/contracts';
 import { MAX_ATLAS_PIXELS, createDefaultAtlasTarget } from './context';
 import { isCanvasImageSource } from './atlas';
-import { compositeHexColor } from './colors';
+import { grayscaleColor } from './colors';
 import { createCanvasRenderer } from './renderer';
 import { record, recordingContext, type RecordingContext } from './test-support';
 import { sparseSelectionGeometry } from '../editor/lasso';
@@ -348,7 +348,8 @@ describe('Canvas 2D chart renderer', () => {
     const destinationFill = overlay.records.findIndex((record) => record.name === 'fillRect' && record.args[0] === 20 && record.args[1] === 0);
     expect(sourceContour).toBeGreaterThanOrEqual(0);
     expect(destinationFill).toBeGreaterThan(sourceContour);
-    expect(overlay.records.some((record) => record.name === 'fillRect' && record.args[0] === 20 && record.globalAlpha < 1)).toBe(true);
+    // The carried completion draws the cell as Combined (white ink on red) and fades the backstitch.
+    expect(overlay.records.some((record) => record.name === 'fill' && record.args[0] instanceof Path2D && record.fillStyle === '#ffffff')).toBe(true);
     expect(overlay.records.some((record) => record.name === 'lineTo' && record.args.join(',') === '30,0' && record.globalAlpha < 1)).toBe(true);
     renderer.dispose();
   });
@@ -708,7 +709,8 @@ describe('Canvas 2D chart renderer', () => {
       ['moveTo', 16, 0, '#0000ff'], ['lineTo', 32, 0, '#0000ff'], ['lineTo', 32, 16, '#0000ff'],
       ['moveTo', 16, 0, '#ff0000'], ['lineTo', 32, 16, '#ff0000'], ['lineTo', 16, 16, '#ff0000']
     ]);
-    expect(base.records.filter((call) => call.name === 'stroke' && call.strokeStyle === '#242424')).toHaveLength(2);
+    // Only the completed component of each pair draws as Combined, with its contrast symbol.
+    expect(base.records.filter((call) => call.name === 'fill' && call.args[0] instanceof Path2D).map((call) => call.fillStyle)).toEqual(['#ffffff', '#ffffff']);
     renderer.dispose();
   });
 
@@ -791,10 +793,6 @@ describe('Canvas 2D chart renderer', () => {
       return document;
     }
 
-    function fadedRed(document: PatternDocument, fill = RED): string {
-      return compositeHexColor(fill, document.settings.backgroundColor, DEFAULT_RENDERER_STYLE.completedOpacity);
-    }
-
     function render(document: PatternDocument, zoom: number, style: Partial<RendererStyle>, atlasContexts?: RecordingContext[]) {
       const base = recordingContext();
       const renderer = createCanvasRenderer({
@@ -815,41 +813,48 @@ describe('Canvas 2D chart renderer', () => {
       return { base, renderer };
     }
 
-    it('fades a completed cell at Compact zoom only while completion shows', () => {
-      const alphas = (showCompletion: boolean) => {
-        const { base, renderer } = render(completedChart(), 6, { showCompletion });
-        renderer.dispose();
-        return base.records.filter((call) => call.name === 'fillRect' && call.fillStyle === RED).map((call) => call.globalAlpha);
-      };
-      expect(alphas(true)).toEqual([DEFAULT_RENDERER_STYLE.completedOpacity]);
-      expect(alphas(false)).toEqual([1]);
+    // Symbol ink is a pool path filled with one Path2D argument; red and blue take white ink in Combined.
+    const symbolInks = (context: RecordingContext) =>
+      context.records.filter((call) => call.name === 'fill' && call.args[0] instanceof Path2D).map((call) => call.fillStyle);
+    const cellFills = (context: RecordingContext, rect: string) =>
+      context.records.filter((call) => call.name === 'fillRect' && call.args.join(',') === rect).map((call) => call.fillStyle);
+
+    it('draws a completed cell in Symbol mode as Combined at Compact zoom only while completion shows', () => {
+      const shown = render(completedChart(), 6, { mode: 'symbol', showCompletion: true });
+      expect(cellFills(shown.base, '0,0,6,6')).toContain(RED);
+      expect(cellFills(shown.base, '6,0,6,6')).toEqual([DEFAULT_RENDERER_STYLE.symbolBackgroundColor]);
+      expect(shown.base.records.filter((call) => call.name === 'fillRect' && call.fillStyle === RED).map((call) => call.globalAlpha)).toEqual([1]);
+      expect(symbolInks(shown.base)).toEqual(['#ffffff', DEFAULT_RENDERER_STYLE.symbolColor]);
+      shown.renderer.dispose();
+
+      const hidden = render(completedChart(), 6, { mode: 'symbol', showCompletion: false });
+      expect(cellFills(hidden.base, '0,0,6,6')).not.toContain(RED);
+      expect(symbolInks(hidden.base)).toEqual([DEFAULT_RENDERER_STYLE.symbolColor, DEFAULT_RENDERER_STYLE.symbolColor]);
+      hidden.renderer.dispose();
     });
 
-    it('fades a completed cell at Overview zoom without an atlas only while completion shows', () => {
+    it('draws a completed cell in its thread color at Overview zoom without an atlas only while completion shows', () => {
       const fills = (showCompletion: boolean) => {
-        const document = completedChart();
-        const { base, renderer } = render(document, 2, { showCompletion });
+        const { base, renderer } = render(completedChart(), 2, { mode: 'grayscale', showCompletion });
         renderer.dispose();
-        return base.records.filter((call) => call.name === 'fillRect' && call.args.join(',') === '0,0,2,2').map((call) => call.fillStyle);
+        return [cellFills(base, '0,0,2,2'), cellFills(base, '2,0,2,2')];
       };
-      expect(fills(true)).toContain(fadedRed(completedChart()));
-      expect(fills(true)).not.toContain(RED);
-      expect(fills(true)).not.toContain(DEFAULT_RENDERER_STYLE.completedColor);
-      expect(fills(false)).toContain(RED);
+      expect(fills(true)).toEqual([[RED], [grayscaleColor('#0000ff')]]);
+      expect(fills(false)).toEqual([[grayscaleColor(RED)], [grayscaleColor('#0000ff')]]);
     });
 
     it('paints completion into the color atlas and repaints a newly marked cell', () => {
       const atlasFills = (atlas: RecordingContext, x: number) =>
         atlas.records.filter((call) => call.name === 'fillRect' && call.args[0] === x).map((call) => call.fillStyle);
       const hidden: RecordingContext[] = [];
-      render(completedChart(), 2, { showCompletion: false }, hidden).renderer.dispose();
-      expect(atlasFills(hidden[0], 0)).toContain(RED);
+      render(completedChart(), 2, { mode: 'grayscale', showCompletion: false }, hidden).renderer.dispose();
+      expect(atlasFills(hidden[0], 0)).toContain(grayscaleColor(RED));
+      expect(atlasFills(hidden[0], 0)).not.toContain(RED);
 
       const atlases: RecordingContext[] = [];
       const document = completedChart();
-      const { renderer } = render(document, 2, { showCompletion: true }, atlases);
-      expect(atlasFills(atlases[0], 0)).toContain(fadedRed(document));
-      expect(atlasFills(atlases[0], 0)).not.toContain(RED);
+      const { renderer } = render(document, 2, { mode: 'grayscale', showCompletion: true }, atlases);
+      expect(atlasFills(atlases[0], 0)).toContain(RED);
 
       const marked = { ...document, completed: document.completed.slice(), revision: document.revision + 1 };
       marked.completed[1] = 1;
@@ -858,18 +863,38 @@ describe('Canvas 2D chart renderer', () => {
       renderer.renderNow();
       expect(atlases).toHaveLength(1);
       const pixelsPerCell = atlases[0].records.find((call) => call.name === 'fillRect')?.args[2] as number;
-      expect(atlasFills(atlases[0], pixelsPerCell)).toContain(fadedRed(marked, '#0000ff'));
+      expect(atlasFills(atlases[0], pixelsPerCell)).toContain('#0000ff');
       renderer.dispose();
     });
 
-    it('fades a completed cell in the Symbol atlas only while completion shows', () => {
-      const symbolFills = (showCompletion: boolean) => {
+    it('paints a completed cell in the Symbol atlas as Combined only while completion shows', () => {
+      const symbolAtlas = (showCompletion: boolean) => {
         const atlases: RecordingContext[] = [];
         render(completedChart(), 2, { mode: 'symbol', showCompletion }, atlases).renderer.dispose();
-        return atlases[0].records.filter((call) => call.name === 'fillRect' && call.args[0] === 0 && call.args[1] === 0).map((call) => call.fillStyle);
+        return atlases[0];
       };
-      expect(symbolFills(true)).toContain(fadedRed(completedChart(), DEFAULT_RENDERER_STYLE.symbolBackgroundColor));
-      expect(symbolFills(false)).not.toContain(fadedRed(completedChart(), DEFAULT_RENDERER_STYLE.symbolBackgroundColor));
+      const atCell = (atlas: RecordingContext) => atlas.records.filter((call) => call.name === 'fillRect' && call.args[0] === 0 && call.args[1] === 0).map((call) => call.fillStyle);
+      const shown = symbolAtlas(true);
+      expect(atCell(shown)).toContain(RED);
+      expect(symbolInks(shown)).toEqual(['#ffffff', DEFAULT_RENDERER_STYLE.symbolColor]);
+      const hidden = symbolAtlas(false);
+      expect(atCell(hidden)).not.toContain(RED);
+      expect(symbolInks(hidden)).toEqual([DEFAULT_RENDERER_STYLE.symbolColor, DEFAULT_RENDERER_STYLE.symbolColor]);
+    });
+
+    it('repaints the Symbol atlas when a completed cell\'s thread color changes', () => {
+      const atlases: RecordingContext[] = [];
+      const document = completedChart();
+      const { renderer } = render(document, 2, { mode: 'symbol', showCompletion: true }, atlases);
+      const recolored = {
+        ...document,
+        palette: document.palette.map((entry) => entry.id === 1 ? { ...entry, color: '#00ff00' } : entry),
+        revision: document.revision + 1
+      };
+      renderer.setDocument(recolored);
+      renderer.renderNow();
+      expect(atlases.at(-1)?.records.some((call) => call.name === 'fillRect' && call.fillStyle === '#00ff00')).toBe(true);
+      renderer.dispose();
     });
   });
 
@@ -877,28 +902,23 @@ describe('Canvas 2D chart renderer', () => {
     const document = chart(1, 1);
     document.kind[0] = CellKind.Full;
     document.colors[0] = 1;
-    document.completed[0] = 1;
     const base = recordingContext();
     const renderer = createCanvasRenderer({
       document,
       targets: { base: target(base), overlay: target(recordingContext()) },
       metrics: getCanvasMetrics(16, 16),
-      viewport: { x: 0, y: 0, zoom: 16 },
-      style: { completedOpacity: 1 }
+      viewport: { x: 0, y: 0, zoom: 16 }
     });
     const cellFills = () => base.records.filter((call) => call.name === 'fillRect' && call.args[0] === 0 && call.args[1] === 0 && call.args[2] === 16 && call.args[3] === 16);
-    const completionMarks = () => base.records.filter((call) => call.name === 'stroke' && call.strokeStyle === '#242424');
     renderer.renderNow();
     // The background fill and the (0,0) cell fill share the same rect; the cell
     // is drawn last, so it is the final record while the background stays opaque.
     expect(cellFills().at(-1)?.globalAlpha).toBe(1);
-    expect(completionMarks().at(-1)?.globalAlpha).toBe(1);
     base.calls.length = 0;
     base.records.length = 0;
     renderer.setPatternDimmed?.(true);
     renderer.renderNow();
     expect(cellFills().at(-1)?.globalAlpha).toBe(0.5);
-    expect(completionMarks().at(-1)?.globalAlpha).toBe(0.5);
     renderer.setPatternDimmed?.(false);
     renderer.dispose();
   });
@@ -909,8 +929,6 @@ describe('Canvas 2D chart renderer', () => {
       document.kind.set([CellKind.Full, CellKind.Full]);
       document.colors[0] = 1;
       document.colors[4] = 35;
-      document.completed[0] = 1;
-      document.completed[1] = 1;
       document.backstitches = {
         ids: new Uint32Array([1, 2]),
         x1: new Uint32Array([0, 0]),
@@ -930,7 +948,7 @@ describe('Canvas 2D chart renderer', () => {
         targets: { base: target(base), overlay: target(recordingContext()) },
         metrics: getCanvasMetrics(64, 64, { dpr: 1 }),
         viewport: { x: 0, y: 0, zoom },
-        style: { completedOpacity: 1, ...style }
+        style
       });
       renderer.renderNow();
       return { base, renderer };
@@ -947,14 +965,10 @@ describe('Canvas 2D chart renderer', () => {
       renderer.dispose();
     });
 
-    it('dims cells, backstitches, and completion marks of the other colors only', () => {
+    it('dims cells and backstitches of the other colors only', () => {
       const { base, renderer } = renderHighlight({ highlightColor: 1 });
       expect(cellAlpha(base, '#ff0000')).toBe(1);
       expect(cellAlpha(base, '#0000ff')).toBeLessThan(1);
-      const strokesAt = (alpha: number) => base.records.filter((call) => call.name === 'stroke' && call.strokeStyle === '#242424' && call.globalAlpha === alpha);
-      // Completion still draws for the highlighted color and dims with the other one.
-      expect(strokesAt(1).length).toBeGreaterThan(0);
-      expect(base.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#242424' && call.globalAlpha < 1)).toBe(true);
       expect(base.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#ff0000' && call.globalAlpha === 1)).toBe(true);
       expect(base.records.some((call) => call.name === 'stroke' && call.strokeStyle === '#0000ff' && call.globalAlpha < 1)).toBe(true);
       renderer.dispose();

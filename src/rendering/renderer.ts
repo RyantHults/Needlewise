@@ -57,12 +57,13 @@ import {
   ColorAtlasCache,
   SymbolAtlasCache,
   isCanvasImageSource,
+  completedStyle,
   overviewColorForPaletteId,
   paintOverviewCell,
   patternBackgroundColor
 } from './atlas';
 import { clearTarget, clipToRect, createDefaultAtlasTarget, drawImage, prepareTarget, rectPath, restore, save } from './context';
-import { compositeHexColor, grayscaleColor, paletteColor } from './colors';
+import { grayscaleColor, paletteColor } from './colors';
 import { contrastSymbolInk, relativeLuminance } from './contrast';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
 import { readRendererColors, subscribeThemeChange, type RendererColors } from './theme-colors';
@@ -150,6 +151,11 @@ function styleColor(document: PatternDocument, id: number, style: RendererStyle)
   return style.mode === ChartPresentationMode.Grayscale ? grayscaleColor(color) : color;
 }
 
+/** A stitch's fill: the symbol background in Symbol mode, its thread color otherwise. */
+function cellFill(document: PatternDocument, id: number, style: RendererStyle): string {
+  return style.mode === ChartPresentationMode.Symbol ? style.symbolBackgroundColor : styleColor(document, id, style);
+}
+
 function linePath(context: CanvasContextAdapter, from: ScreenPoint, to: ScreenPoint): void {
   context.beginPath();
   context.moveTo(from.x, from.y);
@@ -171,34 +177,6 @@ function withAlpha<T>(context: CanvasContextAdapter, alpha: number, ambient: num
   } finally {
     restore(context);
   }
-}
-
-function completedMark(
-  context: CanvasContextAdapter,
-  rect: Rect,
-  style: RendererStyle,
-  dimAlpha = 1
-): void {
-  save(context);
-  context.strokeStyle = style.completedColor;
-  context.lineWidth = style.completedMarkWidth;
-  setAlpha(context, dimAlpha);
-  linePath(
-    context,
-    { x: rect.x + rect.width * 0.2, y: rect.y + rect.height * 0.5 },
-    { x: rect.x + rect.width * 0.8, y: rect.y + rect.height * 0.5 }
-  );
-  restore(context);
-}
-
-/** The quarter of `rect` that slot `slot` marks: 0 top-left, then clockwise. */
-function slotQuadrant(rect: Rect, slot: number): Rect {
-  return {
-    x: rect.x + (slot === 1 || slot === 2 ? rect.width / 2 : 0),
-    y: rect.y + (slot === 2 || slot === 3 ? rect.height / 2 : 0),
-    width: rect.width / 2,
-    height: rect.height / 2
-  };
 }
 
 /** Grow a partial-redraw rect to cover the outer halves of grid lines on its
@@ -390,22 +368,19 @@ function drawCellState(
   // cells tile with no gap or overlap, and so every shape, seam and mark in the
   // cell shares the same device-pixel rect.
   const rect = snapRectToDevicePixels(cellToScreenRect({ x, y, width: 1, height: 1 }, viewport), pixelRatio);
-  const symbolMode = style.mode === ChartPresentationMode.Symbol;
+  // A completed component draws as Combined; `completed` is already zero unless completion shows.
   const paintShape = (id: number, completed: boolean, slot?: number, geometryKind = kind): void => {
     save(context);
-    context.fillStyle = symbolMode ? style.symbolBackgroundColor : styleColor(document, id, style);
-    setAlpha(context, (completed ? style.completedOpacity : 1) * dimAlpha * highlightAlpha(style, id));
+    context.fillStyle = cellFill(document, id, completed ? completedStyle(style) : style);
+    setAlpha(context, dimAlpha * highlightAlpha(style, id));
     drawStitchGeometry(context, geometryKind, rect, slot);
     restore(context);
   };
   const paintMarks = (id: number, completed: boolean, slot?: number, geometryKind = kind): void => {
-    const markAlpha = dimAlpha * highlightAlpha(style, id);
     // Symbols draw at the ambient alpha, so a dimmed color needs its own scope.
-    withAlpha(context, markAlpha, dimAlpha, () => {
+    withAlpha(context, dimAlpha * highlightAlpha(style, id), dimAlpha, () => {
       // Symbol and Combined draw symbols at every zoom; the painter draws none in Color or Grayscale.
-      drawPaletteSymbol(context, document, id, rect, style, geometryKind, slot);
-      // A mark line is sub-pixel at Overview zoom, where the fill's fade alone shows completion.
-      if (completed && lod !== RenderLod.Overview) completedMark(context, slot === undefined ? rect : slotQuadrant(rect, slot), style, markAlpha);
+      drawPaletteSymbol(context, document, id, rect, completed ? completedStyle(style) : style, geometryKind, slot);
     });
   };
   const fill = (id: number, completed: boolean, slot?: number, geometryKind = kind): void => {
@@ -424,7 +399,7 @@ function drawCellState(
       if ((mask & (1 << slot)) !== 0) paintShape(colors[slot], (completed & (1 << slot)) !== 0, slot, componentKind(kind, slot));
     }
     // The seam keeps two same-colored three-quarters from reading as one full stitch. It sits above
-    // the fills and below the symbols and completion marks. One triangle, or two colors, already
+    // the fills and below the symbols. One triangle, or two colors, already
     // shows the split, so only a same-colored pair gets it.
     const firstSlot = 31 - Math.clz32(mask & -mask);
     const firstId = colors[firstSlot];
@@ -433,12 +408,10 @@ function drawCellState(
       const backslashSeam = firstSlot === 0;
       // A butt cap on a diagonal reaches past both cell edges at the corner, so the seam is clipped to its cell.
       if (!clipToRect(context, rect)) save(context);
-      context.strokeStyle = contrastSymbolInk(
-        symbolMode ? style.symbolBackgroundColor : styleColor(document, firstId, style),
-        style.symbolColor
-      );
+      const seamStyle = (completed & (1 << firstSlot)) !== 0 ? completedStyle(style) : style;
+      context.strokeStyle = contrastSymbolInk(cellFill(document, firstId, seamStyle), style.symbolColor);
       context.lineWidth = Math.max(1, Math.min(2, viewport.zoom * 0.06));
-      setAlpha(context, ((completed & (1 << firstSlot)) !== 0 ? style.completedOpacity : 1) * dimAlpha * highlightAlpha(style, firstId));
+      setAlpha(context, dimAlpha * highlightAlpha(style, firstId));
       linePath(
         context,
         backslashSeam ? { x: rect.x + rect.width, y: rect.y } : { x: rect.x, y: rect.y },
@@ -2030,7 +2003,7 @@ function drawBackstitchPreview(
   restore(context);
 }
 
-/** The colors one cell state shows: its painted slots, composited when completed, plus any exposed pattern background. */
+/** The colors one cell state shows: its painted slots, as Combined when completed, plus any exposed pattern background. */
 function cellStateColors(
   document: PatternDocument,
   kind: number,
@@ -2046,13 +2019,7 @@ function cellStateColors(
   const visible: string[] = [];
   for (let slot = 0; slot < 4; slot += 1) {
     if ((mask & (1 << slot)) === 0) continue;
-    const paletteId = colors[slot];
-    const fill = style.mode === ChartPresentationMode.Symbol
-      ? style.symbolBackgroundColor
-      : styleColor(document, paletteId, style);
-    visible.push((completed & (1 << slot)) !== 0
-      ? compositeHexColor(fill, patternBackground, style.completedOpacity)
-      : fill);
+    visible.push(cellFill(document, colors[slot], (completed & (1 << slot)) !== 0 ? completedStyle(style) : style));
   }
   // Every kind whose drawStitchGeometry shape doesn't fully tile the cell
   // leaves some pattern background exposed: legacy quarters and

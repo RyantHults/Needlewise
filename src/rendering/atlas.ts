@@ -1,7 +1,7 @@
 import { CellKind, componentKind, componentSlotMask, defaultPaletteSymbol, forEachActiveRun, isLegacyQuarterKind, isThreeQuarterPairKind, paletteIdsInCells, type PatternDocument } from '../domain';
-import type { CanvasTarget, Rect, RendererStyle } from '../editor/contracts';
+import { ChartPresentationMode, type CanvasTarget, type Rect, type RendererStyle } from '../editor/contracts';
 import { MAX_ATLAS_PIXELS, restore, save } from './context';
-import { compositeHexColor, grayscaleColor, paletteColor, paletteEntry } from './colors';
+import { grayscaleColor, paletteColor, paletteEntry } from './colors';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
 
 /** Document-owned Aida color. */
@@ -35,19 +35,19 @@ function colorPaletteProjection(
 function symbolPaletteProjection(
   palette: PatternDocument['palette'],
   ids: readonly number[],
-  mode: RendererStyle['mode'],
-  showSymbols: boolean
+  style: RendererStyle
 ): string {
-  const symbolsAreVisual = showSymbols && (mode === 'symbol' || mode === 'combined');
+  const symbolsAreVisual = style.showSymbols && (style.mode === 'symbol' || style.mode === 'combined');
+  // Combined mode, and every shown completed stitch, fills with its palette
+  // color and picks symbol ink against it. Otherwise Symbol mode fills with the
+  // symbol background and uses the configured ink, so palette color is not a visual input.
+  const colorsAreVisual = style.mode === 'combined' || style.showCompletion;
   return JSON.stringify(ids.map((id) => {
     const entry = paletteEntry(palette, id);
-    // Combined mode fills each stitch with its palette color and picks symbol
-    // ink against it. Symbol mode fills with the symbol background and uses
-    // the configured ink color, so palette color is not a visual input.
     return [
       id,
       symbolsAreVisual ? entry?.symbol ?? defaultPaletteSymbol(id) : null,
-      mode === 'combined' ? entry?.color ?? null : null
+      colorsAreVisual ? entry?.color ?? null : null
     ];
   })) ?? '';
 }
@@ -84,12 +84,24 @@ export function overviewColorForPaletteId(
   style: RendererStyle
 ): string {
   const color = paletteColor(document, id, style.missingPaletteColor);
-  return completedFill(document, style.mode === 'grayscale' ? grayscaleColor(color) : color, completed, style);
+  return componentStyle(style, completed).mode === 'grayscale' ? grayscaleColor(color) : color;
 }
 
-/** A stitch fill as the Detail view shows it: a shown completion fades it over the fabric by `completedOpacity`. */
-function completedFill(document: PatternDocument, fill: string, completed: boolean, style: RendererStyle): string {
-  return completed && style.showCompletion ? compositeHexColor(fill, patternBackgroundColor(document), style.completedOpacity) : fill;
+const completedStyles = new WeakMap<RendererStyle, RendererStyle>();
+
+/** The style a shown completed cell component draws in: Combined (thread fill, contrast symbol), whatever the base mode. */
+export function completedStyle(style: RendererStyle): RendererStyle {
+  let completed = completedStyles.get(style);
+  if (completed === undefined) {
+    completed = style.mode === 'combined' ? style : { ...style, mode: ChartPresentationMode.Combined };
+    completedStyles.set(style, completed);
+  }
+  return completed;
+}
+
+/** The style one cell component draws in: `completedStyle` when its completion shows, else `style`. */
+function componentStyle(style: RendererStyle, completed: boolean): RendererStyle {
+  return completed && style.showCompletion ? completedStyle(style) : style;
 }
 
 /** Reject cache bookkeeping objects before they reach CanvasRenderingContext2D.drawImage. */
@@ -334,7 +346,6 @@ interface ColorAtlasKey {
   readonly patternBackground: string;
   readonly missingColor: string;
   readonly showCompletion: boolean;
-  readonly completedOpacity: number;
   readonly canvasMask: PatternDocument['canvasMask'];
 }
 
@@ -346,7 +357,6 @@ const colorAtlasStrategy: AtlasStrategy<ColorAtlasKey, ColorAtlas> = {
     patternBackground: patternBackgroundColor(document),
     missingColor: style.missingPaletteColor,
     showCompletion: style.showCompletion,
-    completedOpacity: style.completedOpacity,
     canvasMask: document.canvasMask
   }),
   projection: (palette, ids) => colorPaletteProjection(palette, ids),
@@ -443,7 +453,7 @@ const symbolAtlasStrategy: AtlasStrategy<SymbolAtlasKey, SymbolAtlas> = {
     showSymbols: style.showSymbols,
     ppc: symbolAtlasPixelsPerCell(document)
   }),
-  projection: (palette, ids, style) => symbolPaletteProjection(palette, ids, style.mode, style.showSymbols),
+  projection: (palette, ids, style) => symbolPaletteProjection(palette, ids, style),
   allocate(document, style, key, targetFactory) {
     const dimensions = symbolAtlasDimensions(document, key.ppc);
     if (!dimensions || !targetFactory) {
@@ -503,7 +513,7 @@ export class SymbolAtlasCache extends AtlasCache<SymbolAtlasKey, SymbolAtlas> {
   }
 }
 
-/** Paint one cell's geometry, in its stitch color in Combined and the symbol background in Symbol, and its symbols. */
+/** Paint one cell's geometry, in its stitch color in Combined and the symbol background in Symbol, and its symbols; a shown completed component paints as Combined. */
 function paintSymbolAtlasCell(
   context: CanvasTarget['context'],
   document: PatternDocument,
@@ -517,12 +527,12 @@ function paintSymbolAtlasCell(
   const rect = { x: (index % document.width) * ppc, y: Math.floor(index / document.width) * ppc, width: ppc, height: ppc };
   const completed = document.completed[index];
   const paint = (id: number, slot?: number, geometryKind = kind): void => {
-    const done = (completed & (1 << (slot ?? 0))) !== 0;
-    context.fillStyle = style.mode === 'combined'
-      ? overviewColorForPaletteId(document, id, done, style)
-      : completedFill(document, style.symbolBackgroundColor, done, style);
+    const shown = componentStyle(style, (completed & (1 << (slot ?? 0))) !== 0);
+    context.fillStyle = shown.mode === 'combined'
+      ? overviewColorForPaletteId(document, id, false, shown)
+      : style.symbolBackgroundColor;
     drawStitchGeometry(context, geometryKind, rect, slot);
-    if (style.showSymbols) drawPaletteSymbol(context, document, id, rect, style, geometryKind, slot);
+    if (style.showSymbols) drawPaletteSymbol(context, document, id, rect, shown, geometryKind, slot);
   };
   if (isLegacyQuarterKind(kind) || isThreeQuarterPairKind(kind)) {
     const mask = componentSlotMask(kind, document.colors, offset);

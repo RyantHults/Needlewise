@@ -1,29 +1,25 @@
-import { Icon } from "../controls/Icon";
+import { Icon, type IconName } from "../controls/Icon";
 
-export function ExportButton({ onClick }: { onClick: () => void }) {
+interface HeaderIconButtonProps {
+  icon: IconName;
+  label: string;
+  title?: string;
+  disabled?: boolean;
+  onClick: () => void;
+}
+
+export function HeaderIconButton({ icon, label, title = label, disabled, onClick }: HeaderIconButtonProps) {
   return (
-    <button
-      className="icon-button editor-export"
-      type="button"
-      aria-label="Export pattern"
-      title="Export pattern"
-      onClick={onClick}
-    >
-      <Icon name="download" />
+    <button className="icon-button" type="button" aria-label={label} title={title} disabled={disabled} onClick={onClick}>
+      <Icon name={icon} />
     </button>
   );
 }
 
+export function ExportButton({ onClick }: { onClick: () => void }) {
+  return <HeaderIconButton icon="download" label="Export pattern" onClick={onClick} />;
+}
+
 export function SettingsButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      className="gear-button"
-      type="button"
-      aria-label="Open settings"
-      title="Settings"
-      onClick={onClick}
-    >
-      <Icon name="settings" />
-    </button>
-  );
+  return <HeaderIconButton icon="settings" label="Open settings" title="Settings" onClick={onClick} />;
 }

@@ -1,5 +1,6 @@
 /* The Track page reuses the editor layout; these rules size its colors column and swatches. */
 .canvas-actions .track-tools [role="group"] { display:flex; align-items:center; gap:.25rem; }
+.canvas-actions .track-tools { margin-right:auto; }
 .canvas-actions .track-tools .tool-option-button { width:2.75rem; height:2.75rem; min-height:2.75rem; }
 .track-colors { display:flex; flex-direction:column; min-width:0; min-height:0; overflow-y:auto; }
 .progress-strip { display:grid; gap:.45rem; padding:.75rem .85rem; border:1px solid var(--color-line-soft); border-radius:.75rem; background:var(--color-surface-sunken); }
@@ -29,6 +30,7 @@
 @media (prefers-reduced-motion: reduce) { .track-palette-expanded > .progress-strip { animation:none; } }
 .track-palette-empty { margin:0; color:var(--color-ink-secondary); font-size:.9rem; }
 @media (min-width: 701px) {
+  .rail-right .canvas-actions .track-tools { margin-right:0; margin-left:auto; }
   .editor-rail-shell .track-colors { grid-column:1; grid-row:1; margin-right:.35rem; }
   .rail-right .editor-rail-shell .track-colors { grid-column:2; margin-right:0; margin-left:.35rem; }
 }

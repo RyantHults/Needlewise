@@ -6,7 +6,6 @@ export const RENDERER_COLOR_FIELDS = [
   'chartBorderColor',
   'symbolColor',
   'symbolBackgroundColor',
-  'completedColor',
   'selectionColor',
   'cursorColor',
   'missingPaletteColor',

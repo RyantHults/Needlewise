@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { type PaletteEntry, type PatternDocument, type PatternMetrics } from '../../domain';
-import type { EditorSurfaceController, EditorUiState } from '../../editor';
+import type { EditorSurfaceController } from '../../editor';
 import type { ProjectWorkspace } from '../../application/workspace';
 import { paletteProgress } from '../../application/progress';
 import type { PatternView } from '../editor/ViewSwitch';
-import { ViewSettings } from '../editor/ViewSettings';
 import { CanvasControls } from '../editor/CanvasControls';
 import { ActionSection } from '../editor/ActionSection';
 import { PatternHeader } from '../editor/PatternHeader';
@@ -33,14 +32,13 @@ interface Props {
 
 /**
  * The Track page: mark stitches done while stitching. It shares the editor's
- * layout, tool actions, view settings, canvas controls and mobile dock. Marks
+ * layout, tool actions, canvas controls and mobile dock. Marks
  * change only stitch progress, never the pattern, and their undo history
  * lasts while this page is open.
  */
 export function TrackSurface({ workspace, document, title, metrics, onNavigate, onRenameTitle }: Props) {
   const [tool, setTool] = useState<TrackTool>('mark');
   const [highlightColor, setHighlightColor] = useState<number | null>(null);
-  const [ui, setUi] = useState<EditorUiState | null>(null);
   const controllerRef = useRef<EditorSurfaceController | null>(null);
   const [preferences, setPreferences] = useEditorPreferences(workspace);
   const { openExport, openSettings, dialogs } = usePatternDialogs({ workspace, document, title, preferences, onPreferencesChange: setPreferences, editorOptions: 'placement' });
@@ -93,23 +91,15 @@ export function TrackSurface({ workspace, document, title, metrics, onNavigate, 
                 </ToolButton>
               </div>
             </ActionSection>
-            <ViewSettings
-              mode={ui?.mode}
-              threadView={ui?.threadView ?? false}
-              onChartMode={(mode) => controllerRef.current?.setChartMode(mode)}
-              onThreadView={() => controllerRef.current?.setThreadView(true)}
-            />
             <CanvasControls onCommand={(key) => controllerRef.current?.handleKeyDown({ key })} />
           </div>
           <PatternViewer
             workspace={workspace}
             document={document}
-            showCompletion
             showCenterMark={preferences.showCenterMark}
             tool={tool}
             highlightColor={focused?.id ?? null}
             onReady={(controller) => { controllerRef.current = controller; }}
-            onUiState={setUi}
           />
           <p className="mobile-dock-title">Color completion</p>
           <div className="mobile-dock-card">

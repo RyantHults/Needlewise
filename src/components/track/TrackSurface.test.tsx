@@ -1,11 +1,10 @@
-import { act, fireEvent, render as renderBare, screen, within } from '@testing-library/react';
+import { fireEvent, render as renderBare, screen, within } from '@testing-library/react';
 import { useEffect } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { computePatternMetrics, createDocument, type PatternDocument } from '../../domain';
 import { markCellComplete, applyCommand, cell } from '../../domain/test-fixtures';
 import { DEFAULT_CATALOG_DEFINITION } from '../../catalog';
 import type { ProjectWorkspace } from '../../application/workspace';
-import { ChartPresentationMode, type EditorUiState } from '../../editor';
 import { TrackSurface } from './TrackSurface';
 import type { ReactElement } from 'react';
 import { MemoryRouter } from 'react-router-dom';
@@ -29,7 +28,7 @@ vi.mock('../export/export-pdf', () => ({ createExportPdf: () => vi.fn() }));
 // records what the page asks of it and hands the page a stand-in controller.
 const viewer = vi.hoisted(() => ({
   props: [] as Record<string, unknown>[],
-  controller: { setChartMode: vi.fn(), setThreadView: vi.fn(), handleKeyDown: vi.fn() }
+  controller: { handleKeyDown: vi.fn() }
 }));
 vi.mock('./PatternViewer', () => ({
   PatternViewer: (props: { onReady?: (controller: unknown) => void } & Record<string, unknown>) => {
@@ -42,8 +41,6 @@ vi.mock('./PatternViewer', () => ({
 }));
 
 const lastViewerProps = () => viewer.props[viewer.props.length - 1];
-const publishUiState = (state: Partial<EditorUiState>) =>
-  act(() => (lastViewerProps().onUiState as (state: EditorUiState) => void)(state as EditorUiState));
 
 function trackedDocument(): PatternDocument {
   let pattern = createDocument({
@@ -90,7 +87,7 @@ beforeEach(() => {
 });
 
 describe('TrackSurface', () => {
-  it('shows overall progress and opens with the Mark tool and completion drawn', () => {
+  it('shows overall progress and opens with the Mark tool', () => {
     setup();
 
     const strip = screen.getByRole('region', { name: 'Progress' });
@@ -98,7 +95,7 @@ describe('TrackSurface', () => {
     expect(strip).toHaveTextContent('50%');
     expect(strip).toHaveTextContent('3 of 6 stitches done');
     expect(screen.getByRole('button', { name: 'Mark' })).toHaveAttribute('aria-pressed', 'true');
-    expect(lastViewerProps()).toMatchObject({ tool: 'mark', showCompletion: true, highlightColor: null });
+    expect(lastViewerProps()).toMatchObject({ tool: 'mark', highlightColor: null });
   });
 
   it('expands "All colors" with overall progress when nothing is focused', () => {
@@ -167,23 +164,6 @@ describe('TrackSurface', () => {
     expect(lastViewerProps()).toMatchObject({ tool: 'mark' });
   });
 
-  it("drives view settings through the viewer's controller and shows its UI state", () => {
-    setup();
-    const view = screen.getByRole('group', { name: 'View settings' });
-
-    fireEvent.click(within(view).getByRole('button', { name: 'Symbol' }));
-    expect(viewer.controller.setChartMode).toHaveBeenCalledWith(ChartPresentationMode.Symbol);
-    fireEvent.click(within(view).getByRole('button', { name: 'Render' }));
-    expect(viewer.controller.setThreadView).toHaveBeenCalledWith(true);
-
-    publishUiState({ mode: ChartPresentationMode.Symbol, threadView: false });
-    expect(within(view).getByRole('button', { name: 'Symbol' })).toHaveAttribute('aria-pressed', 'true');
-    expect(within(view).getByRole('button', { name: 'Color' })).toHaveAttribute('aria-pressed', 'false');
-    publishUiState({ mode: ChartPresentationMode.Symbol, threadView: true });
-    expect(within(view).getByRole('button', { name: 'Render' })).toHaveAttribute('aria-pressed', 'true');
-    expect(within(view).getByRole('button', { name: 'Symbol' })).toHaveAttribute('aria-pressed', 'false');
-  });
-
   it('zooms with the canvas controls', () => {
     setup();
 
@@ -226,16 +206,32 @@ describe('TrackSurface', () => {
     localStorage.clear();
     const { view } = setup();
 
+    const hidden = () => screen.queryByRole('button', { name: 'Show top bar' });
     fireEvent.click(screen.getByRole('button', { name: 'Hide top bar' }));
-    expect(screen.queryByRole('button', { name: 'Undo mark' })).not.toBeInTheDocument();
+    expect(hidden()).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Needlewise home' })).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Garden sampler' })).toBeInTheDocument();
 
     view.unmount();
     setup();
-    expect(screen.queryByRole('button', { name: 'Undo mark' })).not.toBeInTheDocument();
+    expect(hidden()).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Needlewise home' })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Show top bar' }));
-    expect(screen.getByRole('button', { name: 'Undo mark' })).toBeInTheDocument();
+    expect(hidden()).not.toBeInTheDocument();
+    localStorage.clear();
+  });
+
+  it('keeps undo, export and settings within reach while the top bar is hidden', () => {
+    localStorage.clear();
+    const { workspace } = setup({ canUndoMark: true });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide top bar' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Undo mark' }));
+    expect(workspace.undoMark).toHaveBeenCalledOnce();
+    expect(screen.getByRole('button', { name: 'Redo mark' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Export pattern' }));
+    expect(screen.getByRole('dialog', { name: 'Export stub' })).toBeInTheDocument();
     localStorage.clear();
   });
 

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CellKind, createDocument, type PatternDocument } from '../../domain';
 import { DEFAULT_CATALOG_DEFINITION } from '../../catalog';
 import type { ProjectWorkspace } from '../../application/workspace';
+import { ChartPresentationMode } from '../../editor';
 import { PatternViewer } from './PatternViewer';
 
 // The real UI store runs; the controller, renderer and pointer adapter are stand-ins
@@ -76,16 +77,15 @@ beforeEach(() => {
 });
 
 describe('PatternViewer', () => {
-  it('starts a read-only controller, fits the pattern, and hands it and the UI state to the page', () => {
+  it('starts a read-only controller, fits the pattern, and starts in Symbol mode with completion drawn, and hands it to the page', () => {
     const onReady = vi.fn();
-    const onUiState = vi.fn();
-    render(<PatternViewer workspace={workspace} document={pattern()} showCompletion onReady={onReady} onUiState={onUiState} />);
+    render(<PatternViewer workspace={workspace} document={pattern()} onReady={onReady} />);
 
     expect(f.controllerOptions).toMatchObject({ readOnly: true });
     expect(f.createRenderer).toHaveBeenCalledWith(expect.objectContaining({ style: { showCompletion: true } }));
     expect(f.calls).toEqual(['start', 'key 0']);
     expect(onReady).toHaveBeenCalledWith(f.controller);
-    expect(onUiState).toHaveBeenCalledWith(expect.objectContaining({ tool: { tool: 'pan' }, paletteId: null }));
+    expect((f.controllerOptions?.uiStore as { getState: () => unknown }).getState()).toMatchObject({ mode: ChartPresentationMode.Symbol, tool: { tool: 'pan' } });
     expect(screen.getByRole('group', { name: 'Pattern preview canvas' })).toHaveClass('canvas-frame', 'viewer-canvas');
   });
 

@@ -346,7 +346,6 @@ export interface RendererTheme {
   readonly chartBorderColor: string;
   readonly symbolColor: string;
   readonly symbolBackgroundColor: string;
-  readonly completedColor: string;
   readonly selectionColor: string;
   readonly cursorColor: string;
   readonly missingPaletteColor: string;
@@ -373,7 +372,7 @@ export interface RendererStyle extends RendererTheme {
   readonly midGridInterval: number;
   readonly showGrid: boolean;
   readonly showSymbols: boolean;
-  /** Whether completion marks and dimming are drawn. The Preview renders with this off. */
+  /** Whether completed cells draw as Combined and completed backstitches fade. The Preview renders with this off. */
   readonly showCompletion: boolean;
   /** Draw a fixed-size mark at the pattern's center point. */
   readonly showCenterMark: boolean;
@@ -381,8 +380,8 @@ export interface RendererStyle extends RendererTheme {
   readonly centerMarkOpacity: number;
   /** Draw stitches as rendered thread instead of flat fills; ignored below a few pixels per cell. */
   readonly threadView: boolean;
+  /** Opacity of a completed backstitch while completion shows. */
   readonly completedOpacity: number;
-  readonly completedMarkWidth: number;
   readonly overlayLineWidth: number;
   /** Palette id whose stitches stay at full strength; every other color is dimmed. Null dims nothing. */
   readonly highlightColor: number | null;
@@ -401,7 +400,6 @@ export const DEFAULT_RENDERER_STYLE: RendererStyle = {
   chartBorderColor: '#4b4b4b',
   symbolColor: '#242424',
   symbolBackgroundColor: '#ffffff',
-  completedColor: '#242424',
   selectionColor: '#2266cc',
   cursorColor: '#cc4422',
   missingPaletteColor: '#9b9b9b',
@@ -420,7 +418,6 @@ export const DEFAULT_RENDERER_STYLE: RendererStyle = {
   centerMarkOpacity: 0.5,
   threadView: false,
   completedOpacity: 0.62,
-  completedMarkWidth: 1,
   overlayLineWidth: 2,
   highlightColor: null,
   highlightOutlineColor: 'rgba(36, 36, 36, 0.7)',

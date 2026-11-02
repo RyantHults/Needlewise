@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
-import { Icon } from "../controls/Icon";
+import { BrandMark } from "../controls/BrandLink";
 import { EditableTitle } from "./EditableTitle";
-import { ExportButton, SettingsButton } from "./PatternHeaderActions";
+import { ExportButton, HeaderIconButton, SettingsButton } from "./PatternHeaderActions";
 import { ViewSwitch, type PatternView } from "./ViewSwitch";
 
 interface HistoryAction {
@@ -27,6 +27,23 @@ interface Props {
 /** The header shared by a pattern's Edit and Track pages. */
 export function PatternHeader({ titleId, title, onRenameTitle, view, onNavigate, undo, redo, onExport, onSettings, hidden, onToggleHidden }: Props) {
   const toggleLabel = hidden ? "Show top bar" : "Hide top bar";
+  const toggle = (
+    <button type="button" className="pattern-header-toggle" aria-label={toggleLabel} title={toggleLabel} aria-expanded={!hidden} onClick={onToggleHidden}>
+      <span className="pattern-header-toggle-grip" aria-hidden="true" />
+    </button>
+  );
+  const history = (
+    <>
+      <HeaderIconButton icon="undo" label={undo.label} disabled={undo.disabled} onClick={undo.onClick} />
+      <HeaderIconButton icon="redo" label={redo.label} disabled={redo.disabled} onClick={redo.onClick} />
+    </>
+  );
+  const actions = (
+    <>
+      <ExportButton onClick={onExport} />
+      <SettingsButton onClick={onSettings} />
+    </>
+  );
   return (
     <>
       {hidden ? (
@@ -34,38 +51,39 @@ export function PatternHeader({ titleId, title, onRenameTitle, view, onNavigate,
           {title}
         </h2>
       ) : (
-    <header className="editor-heading">
-      <Link className="editor-brand" to="/patterns" aria-label="Needlewise home">
-        <span className="brand-mark" aria-hidden="true">
-          ✣
-        </span>
-        <span>Needlewise</span>
-      </Link>
-      <div className="editor-heading-controls">
-        <button className="icon-button" type="button" aria-label={undo.label} title={undo.label} disabled={undo.disabled} onClick={undo.onClick}>
-          <Icon name="undo" />
-        </button>
-        <button className="icon-button" type="button" aria-label={redo.label} title={redo.label} disabled={redo.disabled} onClick={redo.onClick}>
-          <Icon name="redo" />
-        </button>
-        <ExportButton onClick={onExport} />
-        <SettingsButton onClick={onSettings} />
-      </div>
-      <div className="editor-heading-project">
-        {onRenameTitle ? (
-          <EditableTitle value={title} headingId={titleId} onCommit={onRenameTitle} />
-        ) : (
-          <h2 id={titleId}>{title}</h2>
-        )}
-      </div>
-      <div className="editor-heading-info">
-        <ViewSwitch current={view} onNavigate={onNavigate} />
-      </div>
-    </header>
+        <header className="editor-heading">
+          <div className="editor-heading-start">
+            <Link className="editor-brand" to="/patterns" aria-label="Needlewise home">
+              <BrandMark />
+              <span>Needlewise</span>
+            </Link>
+            <div className="editor-heading-controls">
+              {history}
+              {actions}
+            </div>
+          </div>
+          <div className="editor-heading-project">
+            {onRenameTitle ? <EditableTitle value={title} headingId={titleId} onCommit={onRenameTitle} /> : <h2 id={titleId}>{title}</h2>}
+          </div>
+          <div className="editor-heading-info">
+            <ViewSwitch current={view} onNavigate={onNavigate} />
+          </div>
+        </header>
       )}
-      <button type="button" className="pattern-header-toggle" aria-label={toggleLabel} title={toggleLabel} aria-expanded={!hidden} onClick={onToggleHidden}>
-        <span className="pattern-header-toggle-grip" aria-hidden="true" />
-      </button>
+      {hidden ? (
+        <div className="pattern-header-strip">
+          <div className="pattern-header-strip-start">
+            <Link className="pattern-header-logo" to="/patterns" aria-label="Needlewise home">
+              <BrandMark />
+            </Link>
+            {history}
+          </div>
+          {toggle}
+          <div className="pattern-header-strip-end">{actions}</div>
+        </div>
+      ) : (
+        toggle
+      )}
     </>
   );
 }
