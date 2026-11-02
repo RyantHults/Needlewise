@@ -13,6 +13,8 @@ function setup(overrides: Partial<Parameters<typeof PatternHeader>[0]> = {}) {
     onExport: vi.fn(),
     onSettings: vi.fn(),
     onNavigate: vi.fn(),
+    hidden: false,
+    onToggleHidden: vi.fn(),
     ...overrides,
   };
   render(
@@ -28,7 +30,7 @@ function setup(overrides: Partial<Parameters<typeof PatternHeader>[0]> = {}) {
 
 describe("PatternHeader", () => {
   it("wires history, export, settings, and navigation", () => {
-    const props = setup({ info: <p>10 x 10</p> });
+    const props = setup();
     fireEvent.click(screen.getByRole("button", { name: "Undo mark" }));
     expect(props.undo.onClick).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "Redo mark" })).toBeDisabled();
@@ -38,7 +40,6 @@ describe("PatternHeader", () => {
     expect(props.onSettings).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     expect(props.onNavigate).toHaveBeenCalledWith("edit");
-    expect(screen.getByText("10 x 10")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Needlewise home" })).toBeInTheDocument();
   });
 

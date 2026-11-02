@@ -400,7 +400,7 @@ function coverFacts(ctx: Context): string[] {
   const facts: string[] = [`${String(input.document.width)} × ${String(input.document.height)} stitches`];
   const finished = input.metrics.finishedSize;
   if (finished) {
-    facts.push(`Finished size: ${finishedSizeLine(finished, input.units)}${legend.aidaCount === undefined ? '' : ` on ${String(legend.aidaCount)}-count Aida`}`);
+    facts.push(`Finished size: ${finishedSizeLine(finished, input.units)}${legend.aidaCount === undefined ? '' : ` on ${String(legend.aidaCount)}-count fabric`}`);
   }
   facts.push(`${String(legend.rows.length)} colors · ${fmt(stitchTotal(legend.totals.counts))} stitches · ${fmt(legend.totals.counts.backstitch)} backstitch`);
   facts.push(legend.totals.length

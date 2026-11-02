@@ -101,6 +101,32 @@ describe('TrackSurface', () => {
     expect(lastViewerProps()).toMatchObject({ tool: 'mark', showCompletion: true, highlightColor: null });
   });
 
+  it('expands "All colors" with overall progress when nothing is focused', () => {
+    setup();
+
+    expect(screen.getByRole('button', { name: 'All colors, 50% done' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: '#AA0000 Ruby, 25% done' })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByRole('progressbar', { name: 'All colors progress' })).toHaveAttribute('aria-valuenow', '50');
+  });
+
+  it('expands the focused color and collapses "All colors"', () => {
+    setup();
+
+    fireEvent.click(screen.getByRole('button', { name: '#AA0000 Ruby, 25% done' }));
+    expect(screen.getByRole('button', { name: '#AA0000 Ruby, 25% done' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'All colors, 50% done' })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByRole('progressbar', { name: '#AA0000 Ruby progress' })).toHaveAttribute('aria-valuenow', '25');
+  });
+
+  it('clears the focus from the collapsed "All colors" row', () => {
+    setup();
+    fireEvent.click(screen.getByRole('button', { name: '#AA0000 Ruby, 25% done' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'All colors, 50% done' }));
+    expect(screen.getByRole('button', { name: 'All colors, 50% done' })).toHaveAttribute('aria-pressed', 'true');
+    expect(lastViewerProps()).toMatchObject({ highlightColor: null });
+  });
+
   it('lists only the colors in use, each with its percent', () => {
     setup();
 
@@ -110,20 +136,20 @@ describe('TrackSurface', () => {
     expect(within(colors).queryByRole('button', { name: /^Unused/ })).not.toBeInTheDocument();
   });
 
-  it('focuses a color on tap, shows its percent, and clears it on a second tap', () => {
+  it('focuses a color on tap, shows its percent, and clears it from the expanded header', () => {
     setup();
-    const ruby = screen.getByRole('button', { name: '#AA0000 Ruby, 25% done' });
+    const ruby = () => screen.getByRole('button', { name: '#AA0000 Ruby, 25% done' });
 
-    fireEvent.click(ruby);
-    expect(ruby).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(ruby());
+    expect(ruby()).toHaveAttribute('aria-pressed', 'true');
     expect(lastViewerProps()).toMatchObject({ highlightColor: 7 });
     const strip = screen.getByRole('region', { name: 'Progress' });
     expect(strip).toHaveTextContent('#AA0000 · Ruby');
     expect(strip).toHaveTextContent('25%');
     expect(strip).toHaveTextContent('1 of 4 stitches done');
 
-    fireEvent.click(ruby);
-    expect(ruby).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(ruby());
+    expect(ruby()).toHaveAttribute('aria-pressed', 'false');
     expect(lastViewerProps()).toMatchObject({ highlightColor: null });
     expect(screen.getByRole('region', { name: 'Progress' })).toHaveTextContent('All colors');
   });
@@ -196,10 +222,21 @@ describe('TrackSurface', () => {
     expect(screen.getByRole('dialog', { name: 'Settings stub' })).toHaveAttribute('data-options', 'placement');
   });
 
-  it('shows the same dimension summary as the editor in the header', () => {
-    setup();
+  it('hides and shows the top bar, and remembers the choice on the next visit', () => {
+    localStorage.clear();
+    const { view } = setup();
 
-    expect(screen.getByText('3 × 2 stitches · 0.54 cm × 0.36 cm')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Hide top bar' }));
+    expect(screen.queryByRole('button', { name: 'Undo mark' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Garden sampler' })).toBeInTheDocument();
+
+    view.unmount();
+    setup();
+    expect(screen.queryByRole('button', { name: 'Undo mark' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show top bar' }));
+    expect(screen.getByRole('button', { name: 'Undo mark' })).toBeInTheDocument();
+    localStorage.clear();
   });
 
   it('renames the pattern from the header title', () => {

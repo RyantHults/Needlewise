@@ -9,7 +9,7 @@ import { anchoredPosition, type AnchoredPosition } from "../anchored-position";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { ActionButton } from "../controls/ActionButton";
 import { Icon } from "../controls/Icon";
-import { AidaCountSelect } from "../controls/AidaCountSelect";
+import { FabricCountSelect } from "../controls/FabricCountSelect";
 import { nextRovingIndex } from "../controls/roving";
 import { useDismissable } from "../dismiss";
 import { RenameLayerDialog } from "./RenameLayerDialog";
@@ -157,7 +157,7 @@ function CanvasControls({ backgroundColor, backgroundCatalog, aidaCount, onChoos
       </button>
       <label className="layer-control-field" htmlFor="canvas-stitch-count">
         <span>Stitch count</span>
-        <AidaCountSelect id="canvas-stitch-count" value={aidaCount} onChange={onAidaCountChange} />
+        <FabricCountSelect id="canvas-stitch-count" value={aidaCount} onChange={onAidaCountChange} />
       </label>
     </div>
   );

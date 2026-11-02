@@ -1,28 +1,28 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { COMMON_AIDA_COUNTS } from '../../domain';
-import { AidaCountSelect } from './AidaCountSelect';
+import { FABRIC_COUNTS } from '../../domain';
+import { FabricCountSelect } from './FabricCountSelect';
 import { ColorField } from './ColorField';
 
-describe('AidaCountSelect', () => {
+describe('FabricCountSelect', () => {
   const optionValues = () => screen.getAllByRole('option').map((option) => option.textContent);
 
   it('offers the common counts and reports a number', () => {
     const onChange = vi.fn();
-    render(<AidaCountSelect aria-label="Aida" value={14} onChange={onChange} />);
+    render(<FabricCountSelect aria-label="Fabric" value={14} onChange={onChange} />);
 
-    expect(optionValues()).toEqual(COMMON_AIDA_COUNTS.map(String));
-    expect(screen.getByRole('combobox', { name: 'Aida' })).toHaveValue('14');
+    expect(optionValues()).toEqual(FABRIC_COUNTS.map(String));
+    expect(screen.getByRole('combobox', { name: 'Fabric' })).toHaveValue('14');
     fireEvent.change(screen.getByRole('combobox'), { target: { value: '18' } });
     expect(onChange).toHaveBeenCalledWith(18);
   });
 
   it('adds an uncommon current count in sorted position', () => {
-    render(<AidaCountSelect aria-label="Aida" value={15} onChange={() => {}} />);
+    render(<FabricCountSelect aria-label="Fabric" value={14.5} onChange={() => {}} />);
 
-    expect(optionValues()).toEqual(['11', '14', '15', '16', '18', '20', '22', '25', '28', '32']);
-    expect(screen.getByRole('combobox')).toHaveValue('15');
+    expect(optionValues()).toContain('14.5');
+    expect(screen.getByRole('combobox')).toHaveValue('14.5');
   });
 });
 

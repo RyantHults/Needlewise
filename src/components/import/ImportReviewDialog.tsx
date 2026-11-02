@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { buildImportedDocument, assignSymbolSlugs, maxImportColors, proposeMappings } from '../../import/build-document';
 import { createPatternImportClient, type PatternImportClient } from '../../import/import-client';
 import { ImportError, type ImportAnalysis, type ImportOverrides, type ImportPageRole, type ImportProgress, type SymbolMapping } from '../../import/types';
-import { COMMON_AIDA_COUNTS, type PatternDocument } from '../../domain';
+import { FABRIC_COUNTS, type PatternDocument } from '../../domain';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { ErrorNotice, WarningNotice } from '../controls/Notice';
 import { useLatestRequest } from '../latest-request';
@@ -72,7 +72,7 @@ export function ImportReviewDialog({ file, returnFocus, onClose, onCreate }: Pro
       setAnalysis(first);
       setTitle(first.chart.title ?? (file.name.replace(/\.pdf$/i, '') || 'Imported pattern'));
       const fabric = first.chart.fabricCount;
-      if (fabric !== undefined && COMMON_AIDA_COUNTS.includes(fabric)) setAida(String(fabric));
+      if (fabric !== undefined && FABRIC_COUNTS.includes(fabric)) setAida(String(fabric));
     }).catch((error: unknown) => {
       if (isCurrent() && !(error instanceof ImportError && error.code === 'cancelled')) setLoadError(messageFor(error, 'This file could not be read.'));
     });

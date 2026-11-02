@@ -154,7 +154,7 @@ describe('ImportReviewDialog', () => {
 
     next();
     expect(screen.getByLabelText('Title')).toHaveValue('Garden');
-    expect(screen.getByLabelText('Aida count')).toHaveValue('18');
+    expect(screen.getByLabelText('Fabric count')).toHaveValue('18');
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: ' My sampler ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create pattern' }));
     await waitFor(() => expect(onCreate).toHaveBeenCalledWith({ document: { width: 3, height: 2 }, title: 'My sampler', aidaCount: 18, format: 'pdf' }));

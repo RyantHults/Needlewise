@@ -1,9 +1,12 @@
 /* The Track page reuses the editor layout; these rules size its colors column and swatches. */
 .canvas-actions .track-tools [role="group"] { display:flex; align-items:center; gap:.25rem; }
-.track-colors { display:flex; flex-direction:column; gap:.75rem; min-width:0; min-height:0; overflow-y:auto; }
+.canvas-actions .track-tools .tool-option-button { width:2.75rem; height:2.75rem; min-height:2.75rem; }
+.track-colors { display:flex; flex-direction:column; min-width:0; min-height:0; overflow-y:auto; }
 .progress-strip { display:grid; gap:.45rem; padding:.75rem .85rem; border:1px solid var(--color-line-soft); border-radius:.75rem; background:var(--color-surface-sunken); }
 .progress-strip p { margin:0; }
-.progress-strip-label { display:flex; align-items:center; gap:.5rem; color:var(--color-ink); font-weight:600; }
+.progress-strip-label { display:flex; align-items:center; gap:.5rem; width:100%; padding:0; border:0; background:transparent; color:var(--color-ink); font:inherit; font-weight:600; text-align:left; cursor:pointer; }
+.progress-strip-label:hover .progress-strip-name { color:var(--color-accent-ink); }
+.progress-strip-label:focus-visible { outline:2px solid var(--focus-ring); outline-offset:2px; border-radius:.25rem; }
 .progress-strip-name { flex:1 1 auto; min-width:0; font-size:.8rem; line-height:1.15; overflow-wrap:anywhere; text-overflow:clip; white-space:normal; }
 .progress-strip-percent { color:var(--color-accent-ink); font-size:1.35rem; }
 .progress-strip-swatch { flex:0 0 auto; width:1.1rem; height:1.1rem; border:1px solid var(--color-line-firm); border-radius:.25rem; }
@@ -18,6 +21,12 @@
 .track-swatch-code { font-size:.85rem; font-weight:700; line-height:1.15; overflow-wrap:normal; white-space:nowrap; }
 .track-swatch-name { min-width:0; font-size:.7rem; line-height:1.15; overflow-wrap:anywhere; text-overflow:clip; white-space:normal; }
 .track-swatch-percent { color:var(--color-accent-ink); font-size:.9rem; font-weight:700; }
+.track-palette > li { min-width:0; }
+.track-swatch-all { grid-template-columns:minmax(0,1fr) auto; }
+.track-palette-expanded { grid-column:1 / -1; }
+.track-palette-expanded > .progress-strip { width:100%; margin:0; border-color:var(--color-accent); background:var(--color-accent-soft); box-shadow:inset 0 0 0 1px var(--color-accent); animation:track-expand .16s ease-out; }
+@keyframes track-expand { from { opacity:0; transform:translateY(-.25rem); } to { opacity:1; transform:none; } }
+@media (prefers-reduced-motion: reduce) { .track-palette-expanded > .progress-strip { animation:none; } }
 .track-palette-empty { margin:0; color:var(--color-ink-secondary); font-size:.9rem; }
 @media (min-width: 701px) {
   .editor-rail-shell .track-colors { grid-column:1; grid-row:1; margin-right:.35rem; }

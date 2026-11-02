@@ -838,7 +838,8 @@ export function EditorSurface({
         redo={{ label: "Redo", disabled: !ui?.history.canRedo, onClick: () => command("y", true) }}
         onExport={openExport}
         onSettings={openSettings}
-        info={<p className="editor-dimensions">{dimensionSummary}</p>}
+        hidden={preferences.headerHidden}
+        onToggleHidden={() => setPreferences((current) => ({ ...current, headerHidden: !current.headerHidden }))}
       />
       <div className={`editor-layout rail-${railSide}`}>
         <aside ref={dock.dockRef} className="editor-rail-shell" aria-label="Editor controls">
@@ -1098,7 +1099,7 @@ export function EditorSurface({
               </div>
             )}
           </CanvasFrame>
-          <StitchReadout hover={hover} />
+          <StitchReadout hover={hover} dimensions={dimensionSummary} />
           <div className="mobile-dock-card">
             <div className="mobile-dock-triggers" aria-label="Open editor controls">
               <button ref={dock.toolsTriggerRef} className="mobile-dock-trigger" type="button" aria-label="Tools" aria-expanded={dock.panel === "tools"} aria-controls="mobile-tools-popover" onClick={() => dock.setPanel(dock.panel === "tools" ? null : "tools")}>

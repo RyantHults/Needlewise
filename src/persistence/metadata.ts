@@ -59,7 +59,7 @@ export function parseProjectMetadata(value: unknown): ParsedProjectMetadata {
     try {
       legacyAidaCount = normalizeAidaCount(value.aidaCount);
     } catch (error) {
-      warnings.push(`The legacy project Aida count was ignored: ${errorText(error)}`);
+      warnings.push(`The legacy project Fabric count was ignored: ${errorText(error)}`);
     }
   }
   if (value.units !== undefined) {

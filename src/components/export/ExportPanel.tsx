@@ -23,7 +23,7 @@ import {
   type ExportSettingsStorage
 } from '../../export';
 import { isAbortError } from '../../workers/abort';
-import { AidaCountSelect } from '../controls/AidaCountSelect';
+import { FabricCountSelect } from '../controls/FabricCountSelect';
 import { SegmentedControl } from '../controls/SegmentedControl';
 import { Modal } from '../Modal';
 import { useProjectUnits } from '../project-units';
@@ -177,7 +177,7 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
     try {
       await workspace.updateActiveAidaCount(next);
     } catch (error) {
-      setAidaError(error instanceof Error ? error.message : 'The Aida count could not be saved.');
+      setAidaError(error instanceof Error ? error.message : 'The Fabric count could not be saved.');
     }
   };
 
@@ -258,8 +258,8 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
           <NumberField id="export-waste" label="Waste allowance (%)" value={draft.waste} inputMode="decimal" min="0" error={errors.waste} onChange={(value) => updateDraft('waste', value)} />
         </form>
         <div className="export-field">
-          <label htmlFor="export-aida-count">Aida count</label>
-          <AidaCountSelect id="export-aida-count" value={aidaCount} disabled={running} onChange={(count) => void changeAidaCount(count)} />
+          <label htmlFor="export-aida-count">Fabric count</label>
+          <FabricCountSelect id="export-aida-count" value={aidaCount} disabled={running} onChange={(count) => void changeAidaCount(count)} />
           {aidaError && <p className="export-error" role="alert">{aidaError}</p>}
         </div>
         <div className="export-field">
@@ -300,7 +300,7 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
             <p className="export-note">
               {legend.strands} strand{legend.strands === 1 ? '' : 's'} per stitch, {legend.backstitchStrands} backstitch strand{legend.backstitchStrands === 1 ? '' : 's'}, {number(legend.waste * 100)}% waste.
             </p>
-            {!legend.note && <p className="export-note">Physical length is unavailable until an Aida count or manual stitch-length calibration is supplied.</p>}
+            {!legend.note && <p className="export-note">Physical length is unavailable until a fabric count or manual stitch-length calibration is supplied.</p>}
           </>
         )}
       </section>

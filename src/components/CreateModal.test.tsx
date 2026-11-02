@@ -5,7 +5,7 @@ import { calculatePreviewSize, CreateModal, PREVIEW_LENS_SIZE, previewFinishedSi
 import { dropData } from './test-support';
 import { DEFAULT_CATALOG_DEFINITION, type CatalogSnapshot } from '../catalog';
 import { MAX_CONFETTI_DISTANCE } from '../conversion/image-to-pattern';
-import { COMMON_AIDA_COUNTS } from '../domain';
+import { FABRIC_COUNTS } from '../domain';
 
 vi.mock('../import/registry', () => ({ importerAccept: () => '.pdf,application/pdf' }));
 
@@ -1031,23 +1031,23 @@ describe('CreateModal image lifecycle', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('offers an Aida count select with the catalog options in blank mode', () => {
+  it('offers a fabric count select with the catalog options in blank mode', () => {
     const p = props();
     render(<CreateModal {...p} mode="blank" />);
-    const select = screen.getByLabelText('Aida count');
+    const select = screen.getByLabelText('Fabric count');
     expect(select).toHaveValue('14');
-    expect([...select.querySelectorAll('option')].map((o) => o.textContent)).toEqual(COMMON_AIDA_COUNTS.map(String));
+    expect([...select.querySelectorAll('option')].map((o) => o.textContent)).toEqual(FABRIC_COUNTS.map(String));
     fireEvent.change(select, { target: { value: '18' } });
     expect(p.onAida).toHaveBeenCalledWith('18');
   });
 
-  it('gates the Aida count select on a decoded image without reconverting', async () => {
+  it('gates the Fabric count select on a decoded image without reconverting', async () => {
     render(<ControlledModal />);
-    expect(screen.queryByLabelText('Aida count')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Fabric count')).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(/Choose a PNG/), { target: { files: [new File(['one'], 'one.png', { type: 'image/png' })] } });
     act(() => { images[0].onload?.(); });
     act(() => { vi.advanceTimersByTime(300); });
-    const select = await vi.waitFor(() => screen.getByLabelText('Aida count'));
+    const select = await vi.waitFor(() => screen.getByLabelText('Fabric count'));
     expect(select).toHaveValue('14');
     expect(conversion.convert).toHaveBeenCalledTimes(1);
     // Aida is project metadata, not a conversion input: changing it must not
@@ -1071,11 +1071,11 @@ describe('CreateModal image lifecycle', () => {
     const p = props();
     const view = render(<CreateModal {...p} mode="blank" />);
     expect(screen.getByText(`Expected finished size: ${previewFinishedSize('100', '100', '14')}`)).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('Aida count'), { target: { value: '22' } });
+    fireEvent.change(screen.getByLabelText('Fabric count'), { target: { value: '22' } });
     expect(p.onAida).toHaveBeenCalledWith('22');
     view.rerender(<CreateModal {...p} mode="blank" aida="22" />);
     expect(screen.getByText(`Expected finished size: ${previewFinishedSize('100', '100', '22')}`)).toBeInTheDocument();
-    expect(screen.queryByText(/at 14-count Aida/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/at 14-count fabric/)).not.toBeInTheDocument();
   });
 
   it('hides the expected size while dimensions are invalid', () => {
@@ -1105,7 +1105,7 @@ describe('CreateModal image lifecycle', () => {
     expect(screen.getByText(`Expected finished size: ${expected}`)).toBeInTheDocument();
     // Changing aida updates the review line without reconverting.
     const calls = conversion.convert.mock.calls.length;
-    fireEvent.change(screen.getByLabelText('Aida count'), { target: { value: '18' } });
+    fireEvent.change(screen.getByLabelText('Fabric count'), { target: { value: '18' } });
     expect(screen.getByText(`Expected finished size: ${previewFinishedSize('1', '1', '18')}`)).toBeInTheDocument();
     act(() => { vi.advanceTimersByTime(600); });
     expect(conversion.convert.mock.calls.length).toBe(calls);
@@ -1151,7 +1151,7 @@ describe('CreateModal image lifecycle', () => {
     images[0].naturalWidth = 1568;
     images[0].naturalHeight = 784;
     act(() => { images[0].onload?.(); });
-    // 1568×784 at the default 14-count Aida prefills 196×98 (~14in long side).
+    // 1568×784 at the default 14-count fabric prefills 196×98 (~14in long side).
     expect(screen.getByLabelText('Width')).toHaveValue('196');
     expect(screen.getByLabelText('Height')).toHaveValue('98');
   });

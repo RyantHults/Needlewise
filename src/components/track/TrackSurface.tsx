@@ -9,13 +9,12 @@ import { CanvasControls } from '../editor/CanvasControls';
 import { ActionSection } from '../editor/ActionSection';
 import { PatternHeader } from '../editor/PatternHeader';
 import { paletteCodeFor } from '../editor/palette-code';
-import { patternDimensionInfo } from '../editor/pattern-dimensions';
 import { usePatternDialogs } from '../editor/pattern-dialogs';
 import { useEditorPreferences } from '../editor/editor-preferences';
 import { DockPopover, useMobileDock } from '../editor/mobile-dock';
 import { ToolButton } from '../controls/ToolButton';
 import { PatternViewer } from './PatternViewer';
-import { ProgressStrip, progressPercent } from './ProgressStrip';
+import { progressPercent } from './ProgressStrip';
 import { TrackPalette } from './TrackPalette';
 import { Icon } from '../controls/Icon';
 import './track.css';
@@ -53,7 +52,6 @@ export function TrackSurface({ workspace, document, title, metrics, onNavigate, 
 
   const focused = highlightColor !== null ? document.palette.find((entry) => entry.id === highlightColor) ?? null : null;
   const progress = metrics ? paletteProgress(metrics, focused?.id ?? null) : null;
-  const dimensionSummary = patternDimensionInfo(workspace, document).summary;
   const catalogs = workspace.availableCatalogs();
   const codeFor = (entry: PaletteEntry) => paletteCodeFor(entry, document.palette, catalogs).label;
   const focusedCode = focused ? codeFor(focused) : 'Total';
@@ -67,7 +65,8 @@ export function TrackSurface({ workspace, document, title, metrics, onNavigate, 
         title={title}
         onRenameTitle={onRenameTitle}
         view="track"
-        info={<p className="editor-dimensions">{dimensionSummary}</p>}
+        hidden={preferences.headerHidden}
+        onToggleHidden={() => setPreferences((current) => ({ ...current, headerHidden: !current.headerHidden }))}
         onNavigate={onNavigate}
         undo={{ label: 'Undo mark', disabled: !workspace.canUndoMark, onClick: () => workspace.undoMark() }}
         redo={{ label: 'Redo mark', disabled: !workspace.canRedoMark, onClick: () => workspace.redoMark() }}
@@ -78,7 +77,6 @@ export function TrackSurface({ workspace, document, title, metrics, onNavigate, 
         <aside ref={dock.dockRef} className="editor-rail-shell" aria-label="Track controls">
           <DockPopover dock={dock} panel="colors">
             <div className="track-colors">
-              <ProgressStrip label={focused?.name ?? 'All colors'} code={focused ? codeFor(focused) : undefined} color={focused?.color} completed={progress?.completedComponents ?? 0} total={progress?.totalComponents ?? 0} />
               <TrackPalette codeFor={codeFor} palette={document.palette} metrics={metrics} focused={focused?.id ?? null} onFocus={setHighlightColor} />
             </div>
           </DockPopover>

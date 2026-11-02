@@ -477,7 +477,7 @@ describe('application shell', () => {
   it('passes the selected aida count when creating a blank pattern', async () => {
     render(<App />);
     fireEvent.click(screen.getByRole('button', { name: 'New Pattern' }));
-    const select = screen.getByLabelText('Aida count');
+    const select = screen.getByLabelText('Fabric count');
     fireEvent.change(screen.getByRole('textbox', { name: 'HEX Code' }), { target: { value: '#aabbcc' } });
     expect(select).toHaveValue('14');
     fireEvent.change(select, { target: { value: '18' } });
@@ -512,7 +512,7 @@ describe('application shell', () => {
     act(() => { images[0].onload?.(); });
     await screen.findByLabelText('Width');
     await screen.findByRole('slider', { name: /Color budget/ });
-    fireEvent.change(screen.getByLabelText('Aida count'), { target: { value: '22' } });
+    fireEvent.change(screen.getByLabelText('Fabric count'), { target: { value: '22' } });
     fireEvent.click(screen.getByRole('button', { name: 'Create from image' }));
 
     await waitFor(() => expect(createProjectFromConversion).toHaveBeenCalledOnce());

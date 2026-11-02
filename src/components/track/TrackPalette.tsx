@@ -1,6 +1,6 @@
 import type { PaletteEntry, PatternMetrics } from '../../domain';
 import { paletteProgress } from '../../application/progress';
-import { progressPercent } from './ProgressStrip';
+import { ProgressStrip, progressPercent } from './ProgressStrip';
 
 interface Props {
   palette: readonly PaletteEntry[];
@@ -13,37 +13,57 @@ interface Props {
 }
 
 /**
- * The pattern's colors as large swatches, each with its percent done. Tapping
- * a color focuses it; tapping the focused color again clears the focus.
+ * The Track rail: "All colors" first, then each color in use. Exactly one row
+ * is expanded into its progress card, the focused color or "All colors" when
+ * nothing is focused. Tapping a collapsed row focuses it; tapping the
+ * expanded color's header clears the focus.
  */
 export function TrackPalette({ palette, metrics, focused, onFocus, codeFor }: Props) {
-  const used = metrics ? palette.map((entry) => ({ entry, progress: paletteProgress(metrics, entry.id) })).filter(({ progress }) => progress.totalComponents > 0) : [];
-  if (used.length === 0) return <p className="track-palette-empty">This pattern has no stitches to track yet.</p>;
+  const rows = metrics ? palette.map((entry) => ({ entry, progress: paletteProgress(metrics, entry.id) })).filter(({ progress }) => progress.totalComponents > 0) : [];
+  const overall = metrics ? paletteProgress(metrics, null) : { completedComponents: 0, totalComponents: 0 };
+  const overallPercent = progressPercent(overall.completedComponents, overall.totalComponents);
+  const clearFocus = () => onFocus(null);
   return (
-    <ul className="track-palette" aria-label="Colors">
-      {used.map(({ entry, progress }) => {
-        const percent = progressPercent(progress.completedComponents, progress.totalComponents);
-        const pressed = entry.id === focused;
-        const code = codeFor(entry);
-        return (
-          <li key={entry.id}>
-            <button
-              type="button"
-              className="track-swatch"
-              aria-pressed={pressed}
-              aria-label={`${code} ${entry.name}, ${percent}% done`}
-              onClick={() => onFocus(pressed ? null : entry.id)}
-            >
-              <span className="track-swatch-chip" style={{ background: entry.color }} aria-hidden="true" />
+    <>
+      <ul className="track-palette" aria-label="Colors">
+        <li className={focused === null ? 'track-palette-expanded' : undefined}>
+          {focused === null ? (
+            <ProgressStrip label="All colors" completed={overall.completedComponents} total={overall.totalComponents} onClear={clearFocus} />
+          ) : (
+            <button type="button" className="track-swatch track-swatch-all" aria-pressed={false} aria-label={`All colors, ${overallPercent}% done`} onClick={clearFocus}>
               <span className="track-swatch-text" aria-hidden="true">
-                <span className="track-swatch-code">{code}</span>
-                <span className="track-swatch-name">{entry.name}</span>
+                <span className="track-swatch-code">All colors</span>
+                <span className="track-swatch-name" />
               </span>
-              <span className="track-swatch-percent" aria-hidden="true">{percent}%</span>
+              <span className="track-swatch-percent" aria-hidden="true">{overallPercent}%</span>
             </button>
-          </li>
-        );
-      })}
-    </ul>
+          )}
+        </li>
+        {rows.map(({ entry, progress }) => {
+          const code = codeFor(entry);
+          if (entry.id === focused) {
+            return (
+              <li key={entry.id} className="track-palette-expanded">
+                <ProgressStrip label={entry.name} code={code} color={entry.color} completed={progress.completedComponents} total={progress.totalComponents} onClear={clearFocus} />
+              </li>
+            );
+          }
+          const percent = progressPercent(progress.completedComponents, progress.totalComponents);
+          return (
+            <li key={entry.id}>
+              <button type="button" className="track-swatch" aria-pressed={false} aria-label={`${code} ${entry.name}, ${percent}% done`} onClick={() => onFocus(entry.id)}>
+                <span className="track-swatch-chip" style={{ background: entry.color }} aria-hidden="true" />
+                <span className="track-swatch-text" aria-hidden="true">
+                  <span className="track-swatch-code">{code}</span>
+                  <span className="track-swatch-name">{entry.name}</span>
+                </span>
+                <span className="track-swatch-percent" aria-hidden="true">{percent}%</span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      {rows.length === 0 && <p className="track-palette-empty">This pattern has no stitches to track yet.</p>}
+    </>
   );
 }

@@ -16,6 +16,8 @@ export type EditorPreferences = {
   halfStitchDirection: HalfStitchDirection;
   /** Draws the pattern's center guides on the Track canvas. The editor never draws them. */
   showCenterMark: boolean;
+  /** Collapses the pattern page's top bar. */
+  headerHidden: boolean;
 };
 
 export const defaultEditorPreferences = (): EditorPreferences => ({
@@ -25,6 +27,7 @@ export const defaultEditorPreferences = (): EditorPreferences => ({
   pencilModeEnabled: false,
   halfStitchDirection: DEFAULT_HALF_DIRECTION,
   showCenterMark: false,
+  headerHidden: false,
 });
 
 export const isEditorPreferences = (value: unknown): value is EditorPreferences => {
@@ -46,6 +49,8 @@ export const isEditorPreferences = (value: unknown): value is EditorPreferences 
       typeof candidate.pencilModeEnabled === "boolean") &&
     (candidate.showCenterMark === undefined ||
       typeof candidate.showCenterMark === "boolean") &&
+    (candidate.headerHidden === undefined ||
+      typeof candidate.headerHidden === "boolean") &&
     (candidate.touchEditingEnabled === undefined ||
       typeof candidate.touchEditingEnabled === "boolean")
   );
@@ -66,6 +71,7 @@ export const normalizeEditorPreferences = (value: EditorPreferences): EditorPref
         : !legacy.touchEditingEnabled),
     halfStitchDirection: value.halfStitchDirection === "\\" || value.halfStitchDirection === "/" ? value.halfStitchDirection : DEFAULT_HALF_DIRECTION,
     showCenterMark: value.showCenterMark === true,
+    headerHidden: value.headerHidden === true,
   };
 };
 

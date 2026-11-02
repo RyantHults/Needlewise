@@ -1249,7 +1249,7 @@ describe('EditorSurface', () => {
     expect(within(panel).getByRole('checkbox', { name: 'Show palette numbers' })).toBeInTheDocument();
     fireEvent.click(project);
     expect(within(dialog).getByLabelText('Title')).toHaveValue('Draft title');
-    expect(within(dialog).queryByLabelText(/Background color|Stitch count|Aida count/)).not.toBeInTheDocument();
+    expect(within(dialog).queryByLabelText(/Background color|Stitch count|Fabric count/)).not.toBeInTheDocument();
     project.focus();
     fireEvent.keyDown(project, { key: 'ArrowRight' });
     await waitFor(() => expect(editor).toHaveFocus());
@@ -1294,7 +1294,7 @@ describe('EditorSurface', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Editor' }));
     fireEvent.click(screen.getByRole('button', { name: 'Right' }));
     fireEvent.click(within(screen.getByRole('dialog', { name: 'Settings' })).getByRole('checkbox', { name: 'Show palette numbers' }));
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'right', paletteDisplay: { numbers: false }, pencilModeEnabled: false, halfStitchDirection: '/', showCenterMark: false }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'right', paletteDisplay: { numbers: false }, pencilModeEnabled: false, halfStitchDirection: '/', showCenterMark: false, headerHidden: false }));
   });
   it('does not offer center guides in the editor', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
@@ -1330,7 +1330,7 @@ describe('EditorSurface', () => {
     fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' }));
     expect(within(settings).getByRole('button', { name: 'Left' })).toHaveAttribute('aria-pressed', 'true');
     expect(within(settings).getByRole('checkbox', { name: 'Show palette numbers' })).toBeChecked();
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'left', paletteDisplay: { numbers: true }, pencilModeEnabled: false, halfStitchDirection: '/', showCenterMark: false }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'left', paletteDisplay: { numbers: true }, pencilModeEnabled: false, halfStitchDirection: '/', showCenterMark: false, headerHidden: false }));
   });
   it('defaults pencil mode off and updates the controller', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
@@ -1352,7 +1352,7 @@ describe('EditorSurface', () => {
     fireEvent.click(within(settings).getByRole('tab', { name: 'Editor' }));
     expect(within(settings).getByRole('checkbox', { name: 'Enable pencil mode' })).toBeChecked();
     expect(f.c.setTouchMovementOnly).toHaveBeenCalledWith(true);
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'left', paletteDisplay: { numbers: true }, pencilModeEnabled: true, halfStitchDirection: '/', showCenterMark: false }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('needlewise-editor-preferences:v1') ?? 'null')).toEqual({ version: 1, railSide: 'left', paletteDisplay: { numbers: true }, pencilModeEnabled: true, halfStitchDirection: '/', showCenterMark: false, headerHidden: false }));
   });
   it('provides an accessible pencil mode tooltip trigger', () => {
     render(<EditorSurface workspace={ws} document={doc} />);

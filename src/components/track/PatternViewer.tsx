@@ -3,6 +3,7 @@ import type { EditorSurfaceController, EditorUiState } from '../../editor';
 import type { PatternDocument } from '../../domain';
 import type { ProjectWorkspace } from '../../application/workspace';
 import { CanvasFrame, useEditorCanvas } from '../editor/editor-canvas';
+import { patternDimensionInfo } from '../editor/pattern-dimensions';
 import { StitchReadout, useStitchReadout } from '../editor/stitch-readout';
 import './viewer.css';
 
@@ -77,7 +78,7 @@ export function PatternViewer({ workspace, document, showCompletion = false, sho
   return (
     <div className="viewer-main">
       <CanvasFrame refs={refs} fallback={fallback} className="viewer-canvas" aria-label="Pattern preview canvas" />
-      <StitchReadout hover={hover} />
+      <StitchReadout hover={hover} dimensions={patternDimensionInfo(workspace, document).summary} />
     </div>
   );
 }

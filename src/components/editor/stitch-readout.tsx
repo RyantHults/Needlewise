@@ -80,16 +80,19 @@ export function useStitchReadout(document: PatternDocument, catalogs: readonly C
   return { hover, attach };
 }
 
-/** The code, name, color and position of the hovered stitch, shown below the canvas. */
-export function StitchReadout({ hover }: { hover: HoverInfo | null }) {
+/** The code, name, color and position of the hovered stitch, and the pattern size, shown below the canvas. */
+export function StitchReadout({ hover, dimensions }: { hover: HoverInfo | null; dimensions: string }) {
   return (
-    <p className="stitch-readout" aria-live="off">
-      {hover && (
-        <>
-          {hover.color && <span className="stitch-readout-swatch" style={{ background: hover.color }} aria-hidden="true" />}
-          {hover.name === null ? 'No stitch' : `${hover.code} ${hover.name} · ${hover.stitch}`} · column {hover.x + 1}, row {hover.y + 1}
-        </>
-      )}
-    </p>
+    <div className="canvas-footer">
+      <p className="stitch-readout" aria-live="off">
+        {hover && (
+          <>
+            {hover.color && <span className="stitch-readout-swatch" style={{ background: hover.color }} aria-hidden="true" />}
+            {hover.name === null ? 'No stitch' : `${hover.code} ${hover.name} · ${hover.stitch}`} · column {hover.x + 1}, row {hover.y + 1}
+          </>
+        )}
+      </p>
+      <p className="canvas-dimensions">{dimensions}</p>
+    </div>
   );
 }

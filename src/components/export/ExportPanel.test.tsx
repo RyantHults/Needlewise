@@ -48,9 +48,9 @@ function setup(overrides: Partial<ExportPanelProps> = {}) {
 }
 
 describe('ExportPanel', () => {
-  it('shows the project Aida count and saves a change through the workspace', () => {
+  it('shows the project Fabric count and saves a change through the workspace', () => {
     const { updateActiveAidaCount } = setup();
-    const select = screen.getByLabelText('Aida count');
+    const select = screen.getByLabelText('Fabric count');
     expect(select).toHaveValue('14');
     fireEvent.change(select, { target: { value: '18' } });
     expect(updateActiveAidaCount).toHaveBeenCalledWith(18);

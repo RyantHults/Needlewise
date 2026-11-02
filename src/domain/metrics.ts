@@ -33,8 +33,8 @@ export interface MaterialSettingsV2 {
   readonly metersPerSkein?: number;
 }
 
-/** Fabric counts the Aida pickers offer; a project's current count is added when it is not one of these. */
-export const COMMON_AIDA_COUNTS: readonly number[] = [11, 14, 16, 18, 20, 22, 25, 28, 32];
+/** Fabric counts 6 through 40 the pickers offer; a project's current count is added when it is not one of these. */
+export const FABRIC_COUNTS: readonly number[] = Array.from({ length: 35 }, (_, i) => i + 6);
 
 /** One standard skein holds 8.7 yards. Estimates fall back to it when no skein length is calibrated. */
 export const DEFAULT_SKEIN_LENGTH_METERS = 8.7 * 0.9144;
@@ -46,7 +46,7 @@ const BACKSTITCH_CROSS_FRACTION = 0.5;
 
 export function normalizeAidaCount(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
-    throw new DomainError('invalid-aida-count', 'Aida count must be a finite number greater than zero.');
+    throw new DomainError('invalid-aida-count', 'Fabric count must be a finite number greater than zero.');
   }
   return value;
 }
@@ -135,7 +135,7 @@ export interface MaterialEstimate {
   readonly strandLength: number;
   /** Abstract strand-units after adding waste; not a physical length. */
   readonly estimatedLength: number;
-  /** Physical length, present with either Aida modelling or stitch calibration. */
+  /** Physical length, present with either fabric-count modelling or stitch calibration. */
   readonly estimatedMeters?: number;
   /** Fractional skeins, present only when an explicit skein length is supplied. */
   readonly estimatedSkeins?: number;
@@ -261,11 +261,11 @@ export function normalizeMaterialAssumptions(value: MaterialSettingsV2 | undefin
   const backstitchStrandsValue = readFirst(source, ['backstitchStrands', 'backstitchStrandCount']);
   const stitchLengthValue = readFirst(source, ['stitchLengthMeters', 'metersPerStitch']);
   const skeinLengthValue = readFirst(source, ['skeinLengthMeters', 'skeinLength', 'metersPerSkein']);
-  // Aida projects have useful physical estimates without a manual calibration.
+  // Projects with a fabric count have useful physical estimates without a manual calibration.
   // Keep the historical abstract defaults for documents that have no project
-  // fabric metadata, while allowing either Aida default to be overridden.
+  // fabric metadata, while allowing either fabric-count default to be overridden.
   const strands = strandsValue === undefined ? (aidaCount === undefined ? DEFAULT_MATERIAL_SETTINGS.strands : 2) : requiredPositive(strandsValue, 'Strands');
-  // Backstitch is conventionally one strand, including on Aida.
+  // Backstitch is conventionally one strand, including on any fabric.
   const backstitchStrands = backstitchStrandsValue === undefined
     ? DEFAULT_MATERIAL_SETTINGS.backstitchStrands
     : requiredPositiveInteger(backstitchStrandsValue, 'Backstitch strands');
@@ -296,7 +296,7 @@ export function getMetricsAidaCount(options?: MetricsOptions | MaterialSettingsV
 /**
  * The stitch count metrics use: an explicit option wins, otherwise the
  * document's canvas setting. Normalized material settings read the same
- * document setting, so strands and the Aida model always agree.
+ * document setting, so strands and the fabric-count model always agree.
  */
 export function resolveMetricsAidaCount(document: PatternDocument, options?: MetricsOptions | MaterialSettingsV2): number | undefined {
   return getMetricsAidaCount(options) ?? aidaCountFrom(asRecord(document.settings as PatternSettings).aidaCount);
@@ -313,7 +313,7 @@ export function deriveFinishedSize(
   const width = typeof widthOrDocument === 'number' ? widthOrDocument : widthOrDocument.width;
   const height = typeof widthOrDocument === 'number' ? heightOrAidaCount : widthOrDocument.height;
   const aidaCount = typeof widthOrDocument === 'number' ? suppliedAidaCount : heightOrAidaCount;
-  if (aidaCount === undefined) throw new DomainError('invalid-aida-count', 'Aida count must be a finite number greater than zero.');
+  if (aidaCount === undefined) throw new DomainError('invalid-aida-count', 'Fabric count must be a finite number greater than zero.');
   const count = normalizeAidaCount(aidaCount);
   if (!Number.isFinite(width) || !Number.isFinite(height) || width < 0 || height < 0) {
     throw new DomainError('invalid-dimensions', 'Finished-size dimensions must be finite non-negative numbers.');
@@ -416,7 +416,7 @@ export interface MaterialCountInput {
 
 /**
  * Estimate material in abstract units and, when possible, physical metres.
- * Aida projects use the count-based thread-length model; a manual stitch
+ * Projects with a fabric count use the count-based thread-length model; a manual stitch
  * calibration overrides that model. Skeins still require an explicit skein
  * length.
  */
@@ -458,7 +458,7 @@ export function materialEstimateFromCounts(
         + backstitchCells * STITCH_THREAD_INCHES_AT_14 * (14 / count) * BACKSTITCH_CROSS_FRACTION * settings.backstitchStrands
       ) / 39.37007874015748
     );
-  // Manual calibration wins over the Aida model when both are supplied.
+  // Manual calibration wins over the fabric-count model when both are supplied.
   const baseMeters = calibratedBaseMeters ?? aidaBaseMeters;
   const estimatedMeters = baseMeters === undefined ? undefined : baseMeters * (1 + settings.waste);
   const skeinLengthMeters = settings.skeinLengthMeters ?? DEFAULT_SKEIN_LENGTH_METERS;
@@ -483,8 +483,8 @@ export function materialEstimateFromCounts(
         waste: settings.waste,
         ...(calibratedStitchLength === undefined ? { singleStrandFullCrossInchesAt14: STITCH_THREAD_INCHES_AT_14 } : {}),
         note: calibratedStitchLength === undefined
-          ? 'Aida estimate: 0.8 single-strand inches (2.03 cm) per full cross at 14-count, scaled by count; half and quarter stitches are proportional; backstitch is half a cross per cell of line length at its own strand count.'
-          : 'Manual stitch-length calibration overrides the Aida thread-length model; actual use varies.'
+          ? 'Fabric-count estimate: 0.8 single-strand inches (2.03 cm) per full cross at 14-count, scaled by count; half and quarter stitches are proportional; backstitch is half a cross per cell of line length at its own strand count.'
+          : 'Manual stitch-length calibration overrides the fabric-count thread-length model; actual use varies.'
       };
   const estimateRange: MaterialEstimateRange | undefined = baseMeters === undefined || estimatedMeters === undefined
     ? undefined

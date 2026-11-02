@@ -35,7 +35,7 @@ export class NeedlewiseDatabase extends Dexie {
       dailyActivity: '[projectId+date], projectId'
     });
     // Project metadata is JSON-like data in the projects object store, so the
-    // new optional Aida count needs no index. This version is nevertheless
+    // new optional Fabric count needs no index. This version is nevertheless
     // explicit: opening an older database runs the copy-on-write migration
     // boundary while records that predate Aida remain without the field.
     this.version(4).stores({

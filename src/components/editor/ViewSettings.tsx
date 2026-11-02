@@ -6,8 +6,8 @@ import { ActionSection } from "./ActionSection";
 const modes = [
   [ChartPresentationMode.Color, "Color", "color"],
   [ChartPresentationMode.Symbol, "Symbol", "symbol"],
-  [ChartPresentationMode.Grayscale, "B/W", "grayscale"],
   [ChartPresentationMode.Combined, "Both", "shapes"],
+  [ChartPresentationMode.Grayscale, "B/W", "grayscale"],
 ] as const satisfies readonly (readonly [ChartPresentationMode, string, IconName])[];
 
 interface Props {

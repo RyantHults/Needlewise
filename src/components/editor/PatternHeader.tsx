@@ -1,4 +1,3 @@
-import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Icon } from "../controls/Icon";
 import { EditableTitle } from "./EditableTitle";
@@ -21,12 +20,20 @@ interface Props {
   redo: HistoryAction;
   onExport: () => void;
   onSettings: () => void;
-  info?: ReactNode;
+  hidden: boolean;
+  onToggleHidden: () => void;
 }
 
 /** The header shared by a pattern's Edit and Track pages. */
-export function PatternHeader({ titleId, title, onRenameTitle, view, onNavigate, undo, redo, onExport, onSettings, info }: Props) {
+export function PatternHeader({ titleId, title, onRenameTitle, view, onNavigate, undo, redo, onExport, onSettings, hidden, onToggleHidden }: Props) {
+  const toggleLabel = hidden ? "Show top bar" : "Hide top bar";
   return (
+    <>
+      {hidden ? (
+        <h2 id={titleId} className="visually-hidden">
+          {title}
+        </h2>
+      ) : (
     <header className="editor-heading">
       <Link className="editor-brand" to="/patterns" aria-label="Needlewise home">
         <span className="brand-mark" aria-hidden="true">
@@ -52,9 +59,13 @@ export function PatternHeader({ titleId, title, onRenameTitle, view, onNavigate,
         )}
       </div>
       <div className="editor-heading-info">
-        {info}
         <ViewSwitch current={view} onNavigate={onNavigate} />
       </div>
     </header>
+      )}
+      <button type="button" className="pattern-header-toggle" aria-label={toggleLabel} title={toggleLabel} aria-expanded={!hidden} onClick={onToggleHidden}>
+        <span className="pattern-header-toggle-grip" aria-hidden="true" />
+      </button>
+    </>
   );
 }
