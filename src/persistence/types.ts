@@ -337,9 +337,54 @@ export interface ProjectFolderAssignment {
   assignedAt: number;
 }
 
-export interface ProjectFolderIndex {
+/** The level id of the top of the gallery; every other level id is a folder id. */
+export const ROOT_LEVEL_ID = 'root';
+
+/** One level's stored item-key sequence. */
+export interface GalleryOrder {
+  levelId: string;
+  keys: string[];
+}
+
+export interface ProjectOpened {
+  projectId: string;
+  openedAt: number;
+}
+
+/** How long a trashed project stays restorable before an app start may purge it. */
+export const TRASH_RETENTION_MS = 10 * 60_000;
+
+export interface DeletedProject {
+  projectId: string;
+  deletedAt: number;
+}
+
+export interface ProjectGalleryIndex {
   folders: ProjectFolder[];
   assignments: ProjectFolderAssignment[];
+  orders: GalleryOrder[];
+  opens: ProjectOpened[];
+}
+
+/** What an undoable move changed. Memberships only: an undo never rewrites a stored order. */
+export interface GalleryUndo {
+  assignments: { projectId: string; assignment: ProjectFolderAssignment | null }[];
+  folderParents: { folderId: string; parentId: string | null }[];
+  createdFolderId: string | null;
+}
+
+export interface CreatedFolder {
+  folder: ProjectFolder;
+  undo: GalleryUndo;
+}
+
+/** One copy for duplicateProjects: the caller names it and dates it, and everything else comes from the source. */
+export interface ProjectCopy {
+  sourceId: string;
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface CreateFolderInput {
@@ -348,4 +393,6 @@ export interface CreateFolderInput {
   id: string;
   /** Projects assigned to the new folder in the same transaction. */
   projectIds?: readonly string[];
+  /** A project in the parent level whose spot the new folder takes. */
+  takesSpotOf?: string;
 }

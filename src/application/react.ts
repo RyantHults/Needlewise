@@ -13,7 +13,7 @@ import type {
   CreateConvertedProjectOptions,
   WorkspaceOptions
 } from './types';
-import type { ProjectFolder, ProjectFolderAssignment, ProjectMetadata } from '../persistence';
+import type { CreatedFolder, GalleryOrder, GalleryUndo, ProjectFolder, ProjectFolderAssignment, ProjectMetadata, ProjectOpened } from '../persistence';
 import type { ProjectSession } from './session';
 
 export interface UseProjectWorkspaceOptions extends WorkspaceOptions {
@@ -28,18 +28,23 @@ export interface UseProjectWorkspaceResult {
   projects: ProjectMetadata[];
   folders: ProjectFolder[];
   folderAssignments: ProjectFolderAssignment[];
+  galleryOrders: GalleryOrder[];
+  projectOpens: ProjectOpened[];
   error: Error | null;
   createProject(options?: CreateProjectOptions): Promise<ProjectSession>;
   createProjectFromConversion(options: CreateConvertedProjectOptions): Promise<ProjectSession>;
   openProject(projectId: string): Promise<ProjectSession>;
-  deleteProject(projectId: string): Promise<void>;
-  duplicateProject(projectId: string): Promise<ProjectMetadata>;
+  deleteProjects(projectIds: readonly string[]): Promise<void>;
+  restoreDeletedProjects(projectIds: readonly string[]): Promise<void>;
+  duplicateProjects(projectIds: readonly string[], folderId: string | null): Promise<ProjectMetadata[]>;
   renameProject(projectId: string, title: string): Promise<ProjectMetadata>;
-  createFolder(name: string, parentId?: string | null, projectIds?: readonly string[]): Promise<ProjectFolder>;
+  createFolder(name: string, parentId?: string | null, projectIds?: readonly string[], takesSpotOf?: string): Promise<CreatedFolder>;
   renameFolder(folderId: string, name: string): Promise<ProjectFolder>;
   deleteFolder(folderId: string): Promise<void>;
-  moveProjectToFolder(projectId: string, folderId: string | null): Promise<void>;
-  moveFolder(folderId: string, parentId: string | null): Promise<void>;
+  moveProjectsToFolder(projectIds: readonly string[], folderId: string | null): Promise<GalleryUndo>;
+  moveFolder(folderId: string, parentId: string | null): Promise<GalleryUndo>;
+  setGalleryOrder(levelId: string, keys: readonly string[]): Promise<void>;
+  restoreGallery(undo: GalleryUndo): Promise<void>;
   flush(): Promise<void>;
   /** Flush pending saves and re-read the project listing without marking the hook busy. */
   refreshProjectList(): Promise<void>;
@@ -77,6 +82,8 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
   const [projects, setProjects] = useState<ProjectMetadata[]>([]);
   const [folders, setFolders] = useState<ProjectFolder[]>([]);
   const [folderAssignments, setFolderAssignments] = useState<ProjectFolderAssignment[]>([]);
+  const [galleryOrders, setGalleryOrders] = useState<GalleryOrder[]>([]);
+  const [projectOpens, setProjectOpens] = useState<ProjectOpened[]>([]);
   const [actionError, setActionError] = useState<Error | null>(null);
 
   const subscribe = useCallback((listener: () => void) => {
@@ -96,11 +103,13 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
   }, []);
 
   const refreshProjects = useCallback(async (instance: ProjectWorkspace): Promise<ProjectMetadata[]> => {
-    const [nextProjects, folderIndex] = await Promise.all([instance.listProjects(), instance.listFolderIndex()]);
+    const [nextProjects, galleryIndex] = await Promise.all([instance.listProjects(), instance.listGalleryIndex()]);
     if (lifecycleRef.current.mounted && workspaceRef.current === instance) {
       setProjects(nextProjects);
-      setFolders(folderIndex.folders);
-      setFolderAssignments(folderIndex.assignments);
+      setFolders(galleryIndex.folders);
+      setFolderAssignments(galleryIndex.assignments);
+      setGalleryOrders(galleryIndex.orders);
+      setProjectOpens(galleryIndex.opens);
     }
     return nextProjects;
   }, []);
@@ -136,6 +145,8 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
       const token = ++initializationTokenRef.current;
       void (async () => {
         try {
+          // Patterns a previous session deleted can no longer be undone.
+          await instance.purgeDeletedProjects().catch(() => undefined);
           const initialProjects = await refreshProjects(instance);
           // Out-of-date thumbnails refresh in the background; failures are ignored.
           void instance.refreshStaleThumbnails?.(initialProjects).then((refreshed) => {
@@ -187,13 +198,16 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
   const createProject = useCallback((createOptions: CreateProjectOptions = {}) => runAction((instance) => instance.createProject(createOptions)), [runAction]);
   const createProjectFromConversion = useCallback((createOptions: CreateConvertedProjectOptions) => runAction((instance) => instance.createProjectFromConversion(createOptions)), [runAction]);
   const openProject = useCallback((projectId: string) => runAction((instance) => instance.openProject(projectId)), [runAction]);
-  const deleteProject = useCallback((projectId: string) => runAction((instance) => instance.deleteProject(projectId)), [runAction]);
-  const createFolder = useCallback((name: string, parentId: string | null = null, projectIds: readonly string[] = []) => runAction((instance) => instance.createFolder(name, parentId, projectIds)), [runAction]);
+  const deleteProjects = useCallback((projectIds: readonly string[]) => runAction((instance) => instance.deleteProjects(projectIds)), [runAction]);
+  const restoreDeletedProjects = useCallback((projectIds: readonly string[]) => runAction((instance) => instance.restoreDeletedProjects(projectIds)), [runAction]);
+  const createFolder = useCallback((name: string, parentId: string | null = null, projectIds: readonly string[] = [], takesSpotOf?: string) => runAction((instance) => instance.createFolder(name, parentId, projectIds, takesSpotOf)), [runAction]);
   const renameFolder = useCallback((folderId: string, name: string) => runAction((instance) => instance.renameFolder(folderId, name)), [runAction]);
   const deleteFolder = useCallback((folderId: string) => runAction((instance) => instance.deleteFolder(folderId)), [runAction]);
-  const moveProjectToFolder = useCallback((projectId: string, folderId: string | null) => runAction((instance) => instance.moveProjectToFolder(projectId, folderId)), [runAction]);
+  const moveProjectsToFolder = useCallback((projectIds: readonly string[], folderId: string | null) => runAction((instance) => instance.moveProjectsToFolder(projectIds, folderId)), [runAction]);
   const moveFolder = useCallback((folderId: string, parentId: string | null) => runAction((instance) => instance.moveFolder(folderId, parentId)), [runAction]);
-  const duplicateProject = useCallback((projectId: string) => runAction((instance) => instance.duplicateProject(projectId)), [runAction]);
+  const setGalleryOrder = useCallback((levelId: string, keys: readonly string[]) => runAction((instance) => instance.setGalleryOrder(levelId, keys)), [runAction]);
+  const restoreGallery = useCallback((undo: GalleryUndo) => runAction((instance) => instance.restoreGallery(undo)), [runAction]);
+  const duplicateProjects = useCallback((projectIds: readonly string[], folderId: string | null) => runAction((instance) => instance.duplicateProjects(projectIds, folderId)), [runAction]);
   const renameProject = useCallback((projectId: string, title: string) => runAction((instance) => instance.renameProject(projectId, title)), [runAction]);
   const flush = useCallback(() => runAction((instance) => instance.flush()), [runAction]);
   // Passive: editor autosaves bypass runAction, so the listing is re-read on demand without toggling busy.
@@ -216,18 +230,23 @@ export function useProjectWorkspace(options: UseProjectWorkspaceOptions = {}): U
     projects,
     folders,
     folderAssignments,
+    galleryOrders,
+    projectOpens,
     error: state.error ?? actionError,
     createProject,
     createProjectFromConversion,
     openProject,
-    deleteProject,
-    duplicateProject,
+    deleteProjects,
+    restoreDeletedProjects,
+    duplicateProjects,
     renameProject,
     createFolder,
     renameFolder,
     deleteFolder,
-    moveProjectToFolder,
+    moveProjectsToFolder,
     moveFolder,
+    setGalleryOrder,
+    restoreGallery,
     flush,
     refreshProjectList
   };

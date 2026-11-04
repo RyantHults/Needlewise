@@ -22,12 +22,15 @@ import {
   type ProjectDocumentSummary
 } from './project-thumbnail';
 import type {
+  CreatedFolder,
   CreateFolderInput,
+  GalleryOrder,
+  GalleryUndo,
   ProjectAsset,
   ProjectAssetInput,
+  ProjectCopy,
   ProjectFolder,
-  ProjectFolderAssignment,
-  ProjectFolderIndex,
+  ProjectGalleryIndex,
   ProjectHealth,
   ProjectMetadata,
   ProjectRecord,
@@ -42,7 +45,26 @@ import type {
   StoredProjectHead,
   StoredProjectAsset
 } from './types';
-import { MAX_FOLDER_NAME_CHARS } from './types';
+import { MAX_FOLDER_NAME_CHARS, ROOT_LEVEL_ID, TRASH_RETENTION_MS } from './types';
+import {
+  compareFolders,
+  compareProjectsByModified,
+  folderItemKey,
+  keepHiddenKeys,
+  levelOfFolder,
+  levelOfProject,
+  MAX_GALLERY_ORDER_KEYS,
+  ordersAfterFolderDelete,
+  ordersAfterLeaving,
+  ordersTakingSpot,
+  ordersWithoutKeys,
+  parseItemKey,
+  priorAssignments,
+  projectItemKey,
+  projectsLeaving,
+  restoreMemberships,
+  type GalleryLevelData
+} from './gallery-order';
 import { consumePreparedDocumentCapability } from './preparation-client';
 import { prepareSessionHistory, prepareSessionHistoryForSave, sessionHistoryMatchesTrace, traceStateCanonical, traceStateFingerprint } from './session-history';
 
@@ -845,8 +867,9 @@ export class ProjectRepository {
     this.clearVerifiedCurrentCache(projectId);
     try {
       return await wrapStorage('Unable to load the project locally.', async () => {
-        const { row, current, recovery, storedAssets, storedHistory, head } = await this.db.transaction('rw', [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.documentHistories, this.db.assets], async () => {
-          const [row, current, recovery, storedAssets, storedHead, storedHistory] = await Promise.all([
+        const { trashed, row, current, recovery, storedAssets, storedHistory, head } = await this.db.transaction('rw', [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.documentHistories, this.db.assets, this.db.deletedProjects], async () => {
+          const [trashed, row, current, recovery, storedAssets, storedHead, storedHistory] = await Promise.all([
+            this.db.deletedProjects.get(projectId),
             this.db.projects.get(projectId),
             this.db.currentSnapshots.get(projectId),
             this.db.recoverySnapshots.get(projectId),
@@ -854,9 +877,9 @@ export class ProjectRepository {
             this.db.projectHeads.get(projectId),
             this.db.documentHistories.get(projectId)
           ]);
-          return { row, current, recovery, storedAssets, storedHistory, head: await this.reconcileHead(projectId, current, storedHead) };
+          return { trashed, row, current, recovery, storedAssets, storedHistory, head: await this.reconcileHead(projectId, current, storedHead) };
         });
-        if (!row && !current && !recovery && storedAssets.length === 0) return undefined;
+        if (trashed !== undefined || (!row && !current && !recovery && storedAssets.length === 0)) return undefined;
         const currentHealth = await inspectSnapshot(current, projectId);
         const recoveryHealth = await inspectSnapshot(recovery, projectId);
         const parsed = readStoredMetadata(projectId, row);
@@ -920,12 +943,16 @@ export class ProjectRepository {
    */
   async listProjects(): Promise<ProjectMetadata[]> {
     return wrapStorage('Unable to list local projects.', async () => {
-      const rows = await this.db.projects.toArray();
+      const [rows, trashedRows] = await this.db.transaction('r', [this.db.projects, this.db.deletedProjects], async () => Promise.all([
+        this.db.projects.toArray(),
+        this.db.deletedProjects.toArray()
+      ]));
+      const trashed = new Set(trashedRows.map((row) => row.projectId));
       const visible = rows.flatMap((row) => {
-        const parsed = readStoredMetadata(row.id, row);
+        const parsed = trashed.has(row.id) ? undefined : readStoredMetadata(row.id, row);
         return parsed === undefined ? [] : [parsed.metadata];
       });
-      return visible.sort((left, right) => right.updatedAt - left.updatedAt || right.revision - left.revision || left.id.localeCompare(right.id));
+      return visible.sort(compareProjectsByModified);
     });
   }
 
@@ -1001,10 +1028,16 @@ export class ProjectRepository {
     }
   }
 
-  /** Deletes the project and every row keyed to it, in one transaction. */
-  async deleteProject(projectId: string): Promise<void> {
-    this.clearVerifiedCurrentCache(projectId);
-    await this.db.transaction('rw', [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.documentHistories, this.db.assets, this.db.dailyActivity, this.db.projectFolders], async () => {
+  /** Every table a permanent project delete writes. */
+  private projectDeleteTables() {
+    return [this.db.projects, this.db.currentSnapshots, this.db.recoverySnapshots, this.db.projectHeads, this.db.documentHistories, this.db.assets, this.db.dailyActivity, this.db.projectFolders, this.db.galleryOrders, this.db.projectOpens, this.db.deletedProjects];
+  }
+
+  /** Permanently deletes projects and every row keyed to them. Runs inside a transaction over projectDeleteTables(). */
+  private async deleteProjectRows(projectIds: readonly string[]): Promise<void> {
+    if (projectIds.length === 0) return;
+    for (const projectId of projectIds) {
+      this.clearVerifiedCurrentCache(projectId);
       await this.db.projects.delete(projectId);
       await this.db.currentSnapshots.delete(projectId);
       await this.db.recoverySnapshots.delete(projectId);
@@ -1013,48 +1046,79 @@ export class ProjectRepository {
       await this.db.assets.where('projectId').equals(projectId).delete();
       await this.db.dailyActivity.where('projectId').equals(projectId).delete();
       await this.db.projectFolders.delete(projectId);
-    });
+      await this.db.projectOpens.delete(projectId);
+      await this.db.deletedProjects.delete(projectId);
+    }
+    await this.writeOrders(ordersWithoutKeys(await this.db.galleryOrders.toArray(), new Set(projectIds.map(projectItemKey))));
   }
 
-  async listFolderIndex(): Promise<ProjectFolderIndex> {
+  /** Replaces every stored order. Runs inside a transaction over galleryOrders. */
+  private async writeOrders(orders: readonly GalleryOrder[]): Promise<void> {
+    await this.db.galleryOrders.clear();
+    await this.db.galleryOrders.bulkPut([...orders]);
+  }
+
+  /** Runs inside a transaction over folders, projectFolders, projects, and deletedProjects. */
+  private async readLevelData(): Promise<GalleryLevelData> {
+    const [folders, assignments, projectRows, trashedRows] = await Promise.all([
+      this.db.folders.toArray(),
+      this.db.projectFolders.toArray(),
+      this.db.projects.toArray(),
+      this.db.deletedProjects.toArray()
+    ]);
+    const trashed = new Set(trashedRows.map((row) => row.projectId));
+    const projects = projectRows.filter((project) => !trashed.has(project.id)).map((project) => ({ id: project.id, createdAt: project.createdAt }));
+    return { folders, assignments, projects };
+  }
+
+  async listGalleryIndex(): Promise<ProjectGalleryIndex> {
     return wrapStorage('Unable to list local folders.', async () => {
-      return await this.db.transaction('r', [this.db.folders, this.db.projectFolders, this.db.projects], async () => {
-        const [folderRows, assignmentRows, projectRows] = await Promise.all([
+      return await this.db.transaction('r', [this.db.folders, this.db.projectFolders, this.db.projects, this.db.deletedProjects, this.db.galleryOrders, this.db.projectOpens], async () => {
+        const [folderRows, assignmentRows, projectRows, trashedRows, orders, openRows] = await Promise.all([
           this.db.folders.toArray(),
           this.db.projectFolders.toArray(),
-          this.db.projects.toArray()
+          this.db.projects.toArray(),
+          this.db.deletedProjects.toArray(),
+          this.db.galleryOrders.toArray(),
+          this.db.projectOpens.toArray()
         ]);
-        const folders = folderRows
-          .slice()
-          .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: 'base' }) || left.id.localeCompare(right.id));
+        const folders = folderRows.slice().sort(compareFolders);
         const folderIds = new Set(folders.map((folder) => folder.id));
-        const projectIds = new Set(projectRows.map((project) => project.id));
+        const trashed = new Set(trashedRows.map((row) => row.projectId));
+        const projectIds = new Set(projectRows.filter((project) => !trashed.has(project.id)).map((project) => project.id));
         const assignments = assignmentRows.filter((assignment) => folderIds.has(assignment.folderId) && projectIds.has(assignment.projectId));
-        return { folders, assignments };
+        const opens = openRows.filter((open) => projectIds.has(open.projectId));
+        return { folders, assignments, orders, opens };
       });
     });
   }
 
-  async createFolder(input: CreateFolderInput): Promise<ProjectFolder> {
+  async createFolder(input: CreateFolderInput): Promise<CreatedFolder> {
     const name = validateFolderName(input.name);
     const parentId = input.parentId ?? null;
     if (parentId !== null && (typeof parentId !== 'string' || parentId.length < 1 || parentId.length > 256 || !isBoundedMetadataString(parentId))) invalidMetadata('Folder parent ID is malformed.');
     if (typeof input.id !== 'string' || input.id.length < 1 || input.id.length > 256 || !isBoundedMetadataString(input.id)) invalidMetadata('Folder ID is malformed.');
-    const { id } = input;
+    const { id, takesSpotOf } = input;
+    const projectIds = input.projectIds ?? [];
     return wrapStorage('Unable to create the local folder.', async () => {
-      return await this.db.transaction('rw', [this.db.folders, this.db.projects, this.db.projectFolders], async () => {
+      return await this.db.transaction('rw', [this.db.folders, this.db.projects, this.db.projectFolders, this.db.deletedProjects, this.db.galleryOrders], async () => {
         if (parentId !== null) {
           const parent = await this.db.folders.get(parentId);
           if (!parent || parent.parentId !== null) invalidMetadata('Folder parent must be an existing top-level folder.');
         }
+        const data = await this.readLevelData();
+        const existing = new Set(data.projects.map((project) => project.id));
+        if (projectIds.some((projectId) => !existing.has(projectId))) invalidMetadata('Project does not exist.');
+        const parentLevel = parentId ?? ROOT_LEVEL_ID;
+        if (takesSpotOf !== undefined && (!existing.has(takesSpotOf) || levelOfProject(data, takesSpotOf) !== parentLevel)) invalidMetadata('A new folder can only take the spot of a project in its level.');
+        const undo: GalleryUndo = { assignments: priorAssignments(data, projectIds), folderParents: [], createdFolderId: id };
+        const left = ordersAfterLeaving(data, await this.db.galleryOrders.toArray(), projectsLeaving(data, projectIds), id);
+        await this.writeOrders(takesSpotOf === undefined ? left : ordersTakingSpot(data, left, parentLevel, takesSpotOf, id));
         const now = this.now();
         const folder: ProjectFolder = { id, name, parentId, createdAt: now, updatedAt: now };
         await this.db.folders.put(folder);
-        for (const projectId of input.projectIds ?? []) {
-          if (!(await this.db.projects.get(projectId))) invalidMetadata('Project does not exist.');
-          await this.db.projectFolders.put({ projectId, folderId: id, assignedAt: now });
-        }
-        return folder;
+        await this.db.projectFolders.bulkPut(projectIds.map((projectId) => ({ projectId, folderId: id, assignedAt: now })));
+        return { folder, undo };
       });
     });
   }
@@ -1072,11 +1136,13 @@ export class ProjectRepository {
     });
   }
 
+  /** Deletes a folder; its contents take its spot in the parent level, in their arranged order. */
   async deleteFolder(folderId: string): Promise<void> {
     return wrapStorage('Unable to delete the local folder.', async () => {
-      await this.db.transaction('rw', [this.db.folders, this.db.projectFolders], async () => {
+      await this.db.transaction('rw', [this.db.folders, this.db.projectFolders, this.db.projects, this.db.deletedProjects, this.db.galleryOrders], async () => {
         const deleted = await this.db.folders.get(folderId);
         if (!deleted) return;
+        await this.writeOrders(ordersAfterFolderDelete(await this.readLevelData(), await this.db.galleryOrders.toArray(), deleted));
         const reparentedId = deleted.parentId;
         const children = await this.db.folders.where('parentId').equals(folderId).toArray();
         await Promise.all(children.map((child) => this.db.folders.update(child.id, { parentId: reparentedId, updatedAt: this.now() })));
@@ -1091,39 +1157,191 @@ export class ProjectRepository {
     });
   }
 
-  async moveProjectToFolder(projectId: string, folderId: string | null): Promise<void> {
+  async moveProjectsToFolder(projectIds: readonly string[], folderId: string | null): Promise<GalleryUndo> {
+    if (projectIds.length === 0 || new Set(projectIds).size !== projectIds.length) invalidMetadata('Projects to move must be a non-empty list without repeats.');
     return wrapStorage('Unable to move the project to the folder.', async () => {
-      await this.db.transaction('rw', [this.db.projects, this.db.folders, this.db.projectFolders], async () => {
-        const project = await this.db.projects.get(projectId);
-        if (!project) invalidMetadata('Project does not exist.');
+      return await this.db.transaction('rw', [this.db.projects, this.db.folders, this.db.projectFolders, this.db.deletedProjects, this.db.galleryOrders], async () => {
+        const data = await this.readLevelData();
+        const existing = new Set(data.projects.map((project) => project.id));
+        if (projectIds.some((projectId) => !existing.has(projectId))) invalidMetadata('Project does not exist.');
+        if (folderId !== null && !data.folders.some((folder) => folder.id === folderId)) invalidMetadata('Folder does not exist.');
+        const undo: GalleryUndo = { assignments: priorAssignments(data, projectIds), folderParents: [], createdFolderId: null };
+        await this.writeOrders(ordersAfterLeaving(data, await this.db.galleryOrders.toArray(), projectsLeaving(data, projectIds), folderId ?? ROOT_LEVEL_ID));
         if (folderId === null) {
-          await this.db.projectFolders.delete(projectId);
-          return;
+          await this.db.projectFolders.bulkDelete([...projectIds]);
+        } else {
+          const now = this.now();
+          await this.db.projectFolders.bulkPut(projectIds.map((projectId) => ({ projectId, folderId, assignedAt: now })));
         }
-        const folder = await this.db.folders.get(folderId);
-        if (!folder) invalidMetadata('Folder does not exist.');
-        const assignment: ProjectFolderAssignment = { projectId, folderId, assignedAt: this.now() };
-        await this.db.projectFolders.put(assignment);
+        return undo;
       });
     });
   }
 
-  async moveFolder(folderId: string, parentId: string | null): Promise<void> {
+  async moveFolder(folderId: string, parentId: string | null): Promise<GalleryUndo> {
     return wrapStorage('Unable to move the local folder.', async () => {
-      await this.db.transaction('rw', [this.db.folders], async () => {
+      return await this.db.transaction('rw', [this.db.folders, this.db.projectFolders, this.db.projects, this.db.deletedProjects, this.db.galleryOrders], async () => {
         const folder = await this.db.folders.get(folderId);
         if (!folder) invalidMetadata('Folder does not exist.');
-        if (parentId === null) {
-          await this.db.folders.update(folderId, { parentId: null, updatedAt: this.now() });
-          return;
+        if (parentId !== null) {
+          if (parentId === folderId) invalidMetadata('A folder cannot be moved into itself.');
+          const parent = await this.db.folders.get(parentId);
+          if (!parent || parent.parentId !== null) invalidMetadata('Folder parent must be an existing top-level folder.');
+          const children = await this.db.folders.where('parentId').equals(folderId).toArray();
+          if (children.length > 0) invalidMetadata('A folder with subfolders cannot be moved into another folder.');
         }
-        if (parentId === folderId) invalidMetadata('A folder cannot be moved into itself.');
-        const parent = await this.db.folders.get(parentId);
-        if (!parent || parent.parentId !== null) invalidMetadata('Folder parent must be an existing top-level folder.');
-        const children = await this.db.folders.where('parentId').equals(folderId).toArray();
-        if (children.length > 0) invalidMetadata('A folder with subfolders cannot be moved into another folder.');
+        const data = await this.readLevelData();
+        const undo: GalleryUndo = { assignments: [], folderParents: [{ folderId, parentId: folder.parentId }], createdFolderId: null };
+        await this.writeOrders(ordersAfterLeaving(data, await this.db.galleryOrders.toArray(), [{ key: folderItemKey(folderId), from: levelOfFolder(data, folder) }], parentId ?? ROOT_LEVEL_ID));
         await this.db.folders.update(folderId, { parentId, updatedAt: this.now() });
+        return undo;
       });
+    });
+  }
+
+  /** Stores a level's order, keeping the spots of items that are away from it. */
+  async setGalleryOrder(levelId: string, keys: readonly string[]): Promise<void> {
+    if (!Array.isArray(keys) || keys.length > MAX_GALLERY_ORDER_KEYS) invalidMetadata('Gallery order is malformed.');
+    if (new Set(keys).size !== keys.length || keys.some((key) => typeof key !== 'string' || parseItemKey(key) === null)) invalidMetadata('Gallery order keys must be unique item keys.');
+    return wrapStorage('Unable to save the gallery order.', async () => {
+      await this.db.transaction('rw', [this.db.folders, this.db.galleryOrders], async () => {
+        if (levelId !== ROOT_LEVEL_ID && !(await this.db.folders.get(levelId))) invalidMetadata('Gallery level does not exist.');
+        const stored = await this.db.galleryOrders.get(levelId);
+        await this.db.galleryOrders.put({ levelId, keys: keepHiddenKeys(stored?.keys ?? [], keys) });
+      });
+    });
+  }
+
+  /** Puts back the memberships an undoable move changed. Never writes a stored order. */
+  async restoreGallery(undo: GalleryUndo): Promise<void> {
+    return wrapStorage('Unable to undo the move.', async () => {
+      await this.db.transaction('rw', [this.db.projects, this.db.folders, this.db.projectFolders, this.db.galleryOrders], async () => {
+        const [folders, assignments, projectIds] = await Promise.all([this.db.folders.toArray(), this.db.projectFolders.toArray(), this.db.projects.toCollection().primaryKeys()]);
+        const next = restoreMemberships(undo, { folders, assignments }, new Set(projectIds), this.now());
+        await this.db.folders.clear();
+        await this.db.folders.bulkPut(next.folders);
+        await this.db.projectFolders.clear();
+        await this.db.projectFolders.bulkPut(next.assignments);
+        if (undo.createdFolderId !== null) await this.db.galleryOrders.delete(undo.createdFolderId);
+      });
+    });
+  }
+
+  async recordProjectOpen(projectId: string): Promise<void> {
+    if (!isProjectId(projectId)) invalidMetadata('Project ID is invalid.');
+    return wrapStorage('Unable to record the project open.', async () => {
+      await this.db.transaction('rw', [this.db.projects, this.db.projectOpens], async () => {
+        if (!(await this.db.projects.get(projectId))) return;
+        await this.db.projectOpens.put({ projectId, openedAt: this.now() });
+      });
+    });
+  }
+
+  /**
+   * Hides projects until restored or purged. Their assignments and order keys
+   * stay, so a restore puts them back in their spots. Projects an earlier
+   * trash left behind are deleted permanently first.
+   */
+  async trashProjects(projectIds: readonly string[]): Promise<void> {
+    return wrapStorage('Unable to delete the local projects.', async () => {
+      await this.db.transaction('rw', [...this.projectDeleteTables(), this.db.folders], async () => {
+        await this.deleteProjectRows((await this.db.deletedProjects.toArray()).map((row) => row.projectId));
+        const data = await this.readLevelData();
+        const existing = new Set(data.projects.map((project) => project.id));
+        const trashed = projectIds.filter((projectId) => existing.has(projectId));
+        await this.writeOrders(ordersAfterLeaving(data, await this.db.galleryOrders.toArray(), projectsLeaving(data, trashed), null));
+        const now = this.now();
+        await this.db.deletedProjects.bulkPut(trashed.map((projectId) => ({ projectId, deletedAt: now })));
+      });
+    });
+  }
+
+  async restoreTrashedProjects(projectIds: readonly string[]): Promise<void> {
+    return wrapStorage('Unable to restore the local projects.', async () => {
+      await this.db.deletedProjects.bulkDelete([...projectIds]);
+    });
+  }
+
+  /**
+   * Permanently deletes projects trashed longer than TRASH_RETENTION_MS ago,
+   * so a delete another tab can still undo survives this tab's start.
+   */
+  async purgeTrashedProjects(): Promise<void> {
+    return wrapStorage('Unable to delete the local projects.', async () => {
+      await this.db.transaction('rw', this.projectDeleteTables(), async () => {
+        const cutoff = this.now() - TRASH_RETENTION_MS;
+        const expired = (await this.db.deletedProjects.toArray()).filter((row) => row.deletedAt < cutoff);
+        await this.deleteProjectRows(expired.map((row) => row.projectId));
+      });
+    });
+  }
+
+  /**
+   * Copies projects in one transaction, assigning every copy to `folderId`.
+   * The current snapshot and asset rows are copied re-keyed, since neither
+   * the snapshot bytes nor any checksum is bound to the project id. The
+   * snapshot is decoded only to verify it and to derive the copy's summary.
+   * Recovery data, history, and activity are not copied. Trashed sources are
+   * skipped; any missing source fails the whole batch with nothing written.
+   */
+  async duplicateProjects(copies: readonly ProjectCopy[], folderId: string | null): Promise<ProjectMetadata[]> {
+    if (copies.some((copy) => !isProjectId(copy.sourceId) || !isProjectId(copy.id))) invalidMetadata('Project ID is invalid.');
+    if (new Set(copies.map((copy) => copy.id)).size !== copies.length) invalidMetadata('Copy IDs must be unique.');
+    const sourceIds = [...new Set(copies.map((copy) => copy.sourceId))];
+    return wrapStorage('Unable to duplicate the local projects.', async () => {
+      const sources = await this.db.transaction('r', [this.db.projects, this.db.currentSnapshots, this.db.assets, this.db.deletedProjects], async () => Promise.all(sourceIds.map(async (sourceId) => {
+        const [trashed, row, current, storedAssets] = await Promise.all([
+          this.db.deletedProjects.get(sourceId),
+          this.db.projects.get(sourceId),
+          this.db.currentSnapshots.get(sourceId),
+          this.db.assets.where('projectId').equals(sourceId).toArray()
+        ]);
+        return { sourceId, trashed: trashed !== undefined, row, current, storedAssets };
+      })));
+      const prepared = new Map<string, { current: StoredDocumentSnapshot; metadata: ParsedProjectMetadata; document: LayeredDocument; assets: ProjectAsset[] }>();
+      for (const { sourceId, trashed, row, current, storedAssets } of sources) {
+        if (trashed) continue;
+        if (row === undefined) invalidMetadata(`Project ${sourceId} does not exist.`);
+        const metadata = readStoredMetadata(sourceId, row);
+        if (!metadata) throw new PersistenceError('storage-failure', 'Project metadata is missing or malformed.');
+        if (!current || current.projectId !== sourceId) throw new PersistenceError('storage-failure', 'Current project snapshot is corrupt or missing.');
+        const document = await loadSnapshotDocument(current, metadata.legacyAidaCount);
+        if (metadata.metadata.revision !== document.revision) throw new PersistenceError('storage-failure', 'Project metadata and current snapshot are inconsistent.');
+        prepared.set(sourceId, { current, metadata, document, assets: (await loadAssets(sourceId, storedAssets)).assets });
+      }
+      const savedAt = this.now();
+      const rows = copies.flatMap((copy) => {
+        const source = prepared.get(copy.sourceId);
+        if (!source) return [];
+        const { units, materialSettings, sourceImage, notes } = source.metadata.metadata;
+        const { revision } = source.document;
+        const input: ProjectMetadata = { id: copy.id, title: copy.title, notes, createdAt: copy.createdAt, updatedAt: copy.updatedAt, revision, ...(units === undefined ? {} : { units }), ...(materialSettings === undefined ? {} : { materialSettings }), ...(sourceImage === undefined ? {} : { sourceImage }) };
+        const metadata = withProjectSummary(metadataForSave(copy.id, input, revision), deriveProjectSummary(source.document));
+        return [{
+          source,
+          metadata,
+          row: storedMetadataRow(metadata, source.metadata.legacyAidaCount),
+          snapshot: toStoredPreparedSnapshot(copy.id, revision, source.current.bytes, source.current.checksum, savedAt),
+          head: toStoredHead(copy.id, revision, source.current.checksum, nextHistoryGeneration(undefined, undefined)),
+          assets: source.assets.map((asset): StoredProjectAsset => ({ ...asset, projectId: copy.id }))
+        }];
+      });
+      await this.db.transaction('rw', [this.db.projects, this.db.currentSnapshots, this.db.projectHeads, this.db.assets, this.db.deletedProjects, this.db.folders, this.db.projectFolders], async () => {
+        if (folderId !== null && !(await this.db.folders.get(folderId))) invalidMetadata('Folder does not exist.');
+        for (const [sourceId, { current }] of prepared) {
+          const [latest, trashed] = await Promise.all([this.db.currentSnapshots.get(sourceId), this.db.deletedProjects.get(sourceId)]);
+          if (!latest || latest.revision !== current.revision || latest.checksum !== current.checksum || trashed) throw new PersistenceError('stale-save', `Project ${sourceId} changed while it was being duplicated.`);
+        }
+        for (const copy of rows) {
+          if (await this.db.projects.get(copy.metadata.id) || await this.db.currentSnapshots.get(copy.metadata.id)) invalidMetadata('A project with the copy ID already exists.');
+          await this.db.projects.put(copy.row);
+          await this.db.currentSnapshots.put(copy.snapshot);
+          await this.db.projectHeads.put(copy.head);
+          if (copy.assets.length > 0) await this.db.assets.bulkPut(copy.assets);
+        }
+        if (folderId !== null) await this.db.projectFolders.bulkPut(rows.map((copy) => ({ projectId: copy.metadata.id, folderId, assignedAt: savedAt })));
+      });
+      return rows.map((copy) => sanitizeProjectMetadata(copy.metadata));
     });
   }
 

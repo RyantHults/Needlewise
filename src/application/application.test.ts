@@ -654,7 +654,7 @@ describe('headless project workspace', () => {
       await workspace.flush();
       await workspace.createProject({ id: 'duplicate-active', title: 'Active', width: 1, height: 1 });
 
-      const copy = await workspace.duplicateProject('duplicate-source');
+      const [copy] = await workspace.duplicateProjects(['duplicate-source'], null);
       expect(copy).toMatchObject({ id: 'duplicate-copy', title: 'Source copy', notes: 'keep me', createdAt: 100, updatedAt: 100 });
       expect(workspace.metadata?.id).toBe('duplicate-active');
       const projects = await workspace.listProjects();
@@ -663,6 +663,39 @@ describe('headless project workspace', () => {
       const saved = await repository.load('duplicate-copy');
       expect(saved?.metadata.title).toBe('Source copy');
       expect(saved?.document).toEqual(source?.document);
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
+  it('duplicates several patterns into a folder, flushing the open one first', async () => {
+    const ids = ['copies', 'copy-a', 'copy-b'];
+    const repository = new MemoryRepository();
+    const workspace = new ProjectWorkspace({ repository, debounceMs: 60_000, clock: { now: () => 100 }, projectIdFactory: () => ids.shift() ?? 'extra' });
+    try {
+      await workspace.createProject({ id: 'source-a', title: 'Alpha', width: 2, height: 2, document: createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }) });
+      await workspace.createProject({ id: 'source-b', title: 'Beta', width: 2, height: 2, document: createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Ruby', color: '#b44' }] }) });
+      const { folder } = await workspace.createFolder('Copies');
+      workspace.execute(cell(workspace.document!, { type: 'set-full', x: 1, y: 1, color: 1 }));
+      const editedRevision = workspace.document!.revision;
+
+      const copies = await workspace.duplicateProjects(['source-a', 'source-b'], folder.id);
+      expect(copies.map((copy) => [copy.id, copy.title])).toEqual([['copy-a', 'Alpha copy'], ['copy-b', 'Beta copy']]);
+      const index = await workspace.listGalleryIndex();
+      expect(index.assignments.map((assignment) => [assignment.projectId, assignment.folderId]).sort()).toEqual([['copy-a', folder.id], ['copy-b', folder.id]]);
+      const titles = (await workspace.listProjects()).map((project) => project.title).sort();
+      expect(titles).toEqual(['Alpha', 'Alpha copy', 'Beta', 'Beta copy']);
+      expect((await repository.load('copy-b'))?.document.revision).toBe(editedRevision);
+      expect((await repository.load('copy-b'))?.document).toEqual((await repository.load('source-b'))?.document);
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
+  it('rejects duplicating an empty selection', async () => {
+    const workspace = new ProjectWorkspace({ repository: new MemoryRepository() });
+    try {
+      await expect(workspace.duplicateProjects([], null)).rejects.toMatchObject({ code: 'save-failed' });
     } finally {
       await workspace.dispose();
     }
@@ -686,7 +719,7 @@ describe('headless project workspace', () => {
       await workspace.setSourceImage(descriptor);
       await workspace.flush();
 
-      await workspace.duplicateProject('duplicate-image');
+      await workspace.duplicateProjects(['duplicate-image'], null);
       const saved = await repository.load('duplicate-image-copy');
       expect(saved?.metadata.sourceImage).toEqual(descriptor);
       expect(saved?.assets.map((asset) => asset.id)).toEqual(['reference']);
@@ -701,7 +734,7 @@ describe('headless project workspace', () => {
     const workspace = new ProjectWorkspace({ repository, clock: { now: () => 100 }, projectIdFactory: () => 'duplicate-missing-copy' });
     try {
       await workspace.createProject({ id: 'duplicate-existing', width: 1, height: 1 });
-      await expect(workspace.duplicateProject('does-not-exist')).rejects.toMatchObject({ code: 'project-not-found' });
+      await expect(workspace.duplicateProjects(['duplicate-existing', 'does-not-exist'], null)).rejects.toMatchObject({ code: 'project-not-found' });
       expect(await repository.load('duplicate-missing-copy')).toBeUndefined();
     } finally {
       await workspace.dispose();
@@ -1028,7 +1061,7 @@ describe('headless project workspace', () => {
     }
   });
 
-  it('deletes a project record, closing it first when it is the active session', async () => {
+  it('deletes a project, closing it first when it is the active session', async () => {
     const repository = new MemoryRepository();
     const workspace = new ProjectWorkspace({ repository, projectIdFactory: () => 'target' });
     try {
@@ -1036,12 +1069,12 @@ describe('headless project workspace', () => {
       expect(workspace.activeProjectId).toBe('target');
       let notified = 0;
       workspace.subscribe(() => { notified += 1; });
-      await workspace.deleteProject('target');
+      await workspace.deleteProjects(['target']);
       // The active session was detached and the workspace returned to the
-      // empty state with the record gone.
+      // empty state with the project gone from the listing.
       expect(workspace.activeProjectId).toBeNull();
       expect(workspace.session).toBeNull();
-      expect(repository.records.has('target')).toBe(false);
+      expect(await workspace.listProjects()).toEqual([]);
       expect(notified).toBeGreaterThan(0);
     } finally {
       await workspace.dispose();
@@ -1055,10 +1088,9 @@ describe('headless project workspace', () => {
       await workspace.createProject({ id: 'other' });
       await workspace.createProject({ id: 'keeper' });
       await workspace.openProject('other');
-      await workspace.deleteProject('keeper');
-      expect(repository.records.has('keeper')).toBe(false);
+      await workspace.deleteProjects(['keeper']);
+      expect((await workspace.listProjects()).map((project) => project.id)).toEqual(['other']);
       expect(workspace.activeProjectId).toBe('other');
-      expect(repository.records.has('other')).toBe(true);
     } finally {
       await workspace.dispose();
     }
@@ -1069,10 +1101,25 @@ describe('headless project workspace', () => {
     const workspace = new ProjectWorkspace({ repository, projectIdFactory: () => 'known' });
     try {
       await workspace.createProject({ id: 'known' });
-      await workspace.deleteProject('missing');
+      await workspace.deleteProjects(['missing']);
       expect(workspace.activeProjectId).toBe('known');
-      expect(repository.records.has('known')).toBe(true);
-      await expect(workspace.deleteProject('missing')).resolves.toBeUndefined();
+      expect((await workspace.listProjects()).map((project) => project.id)).toEqual(['known']);
+      await expect(workspace.deleteProjects(['missing'])).resolves.toBeUndefined();
+    } finally {
+      await workspace.dispose();
+    }
+  });
+
+  it('rejects an empty delete, so earlier deletes stay undoable', async () => {
+    const repository = new MemoryRepository();
+    const workspace = new ProjectWorkspace({ repository });
+    try {
+      await workspace.createProject({ id: 'earlier' });
+      await workspace.createProject({ id: 'kept' });
+      await workspace.deleteProjects(['earlier']);
+      await expect(workspace.deleteProjects([])).rejects.toMatchObject({ code: 'save-failed' });
+      await workspace.restoreDeletedProjects(['earlier']);
+      expect((await workspace.listProjects()).map((project) => project.id).sort()).toEqual(['earlier', 'kept']);
     } finally {
       await workspace.dispose();
     }

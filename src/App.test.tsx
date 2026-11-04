@@ -3,14 +3,24 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { useProjectWorkspace } from './application/react';
 import { ProjectGallery } from './components/ProjectGallery';
+import { ProjectWorkspace } from './application/workspace';
+import { MemoryRepository } from './application/test-support';
+import type { GallerySort } from './components/gallery-sort';
 import { DEFAULT_CATALOG_DEFINITION } from './catalog';
 import { CellKind, createDocument, createPatternFragment, LayerType } from './domain';
 import { clearClipboard, readClipboard, writeClipboard } from './editor/clipboard-store';
 
-vi.mock('./application/react', () => ({ useProjectWorkspace: vi.fn() }));
+// The hook is mocked for the shell tests; the gallery tests at the end run
+// the real hook over a MemoryRepository so moves, deletes, and orders persist.
+const workspaceControls = vi.hoisted(() => ({ real: null as unknown as typeof import('./application/react').useProjectWorkspace }));
+vi.mock('./application/react', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./application/react')>();
+  workspaceControls.real = actual.useProjectWorkspace;
+  return { useProjectWorkspace: vi.fn() };
+});
 // Wraps the real gallery so every existing test still renders it unchanged;
 // the undo-toast tests below swap in a persistent override (reset to the
-// real component before every test) to trigger onMoveProject directly
+// real component before every test) to trigger onMoveProjects directly
 // instead of driving the gallery's drag-and-drop, which jsdom can't
 // simulate. A `mockImplementationOnce` isn't enough here: WorkspaceApp
 // re-renders (its effects fire post-mount) call the gallery mock more than
@@ -64,14 +74,18 @@ const createProjectFromConversion = vi.fn().mockResolvedValue({ projectId: 'new-
 const openProject = vi.fn().mockResolvedValue(undefined);
 const flush = vi.fn().mockResolvedValue(undefined);
 const refreshProjectList = vi.fn().mockResolvedValue(undefined);
-const deleteProject = vi.fn().mockResolvedValue(undefined);
-const createFolder = vi.fn().mockResolvedValue({ id: 'folder-new', name: 'New folder', parentId: null, createdAt: 1, updatedAt: 1 });
+const emptyUndo = { assignments: [], folderParents: [], createdFolderId: null };
+const deleteProjects = vi.fn().mockResolvedValue(undefined);
+const restoreDeletedProjects = vi.fn().mockResolvedValue(undefined);
+const createFolder = vi.fn().mockResolvedValue({ folder: { id: 'folder-new', name: 'New folder', parentId: null, createdAt: 1, updatedAt: 1 }, undo: { ...emptyUndo, createdFolderId: 'folder-new' } });
 const renameFolder = vi.fn().mockResolvedValue({ id: 'folder-one', name: 'Renamed', parentId: null, createdAt: 1, updatedAt: 2 });
 const deleteFolder = vi.fn().mockResolvedValue(undefined);
-const moveProjectToFolder = vi.fn().mockResolvedValue(undefined);
-const moveFolder = vi.fn().mockResolvedValue(undefined);
+const moveProjectsToFolder = vi.fn().mockResolvedValue(emptyUndo);
+const moveFolder = vi.fn().mockResolvedValue(emptyUndo);
+const setGalleryOrder = vi.fn().mockResolvedValue(undefined);
+const restoreGallery = vi.fn().mockResolvedValue(undefined);
 const renameProject = vi.fn().mockResolvedValue({ id: 'one', title: 'Renamed', notes: '', createdAt: 1, updatedAt: 2, revision: 4 });
-const duplicateProject = vi.fn().mockResolvedValue({ id: 'copy-id', title: 'Garden sampler copy', notes: '', createdAt: 3, updatedAt: 3, revision: 4 });
+const duplicateProjects = vi.fn().mockResolvedValue([{ id: 'copy-id', title: 'Garden sampler copy', notes: '', createdAt: 3, updatedAt: 3, revision: 4 }]);
 const editorWorkspace = { metadata: { title: 'Garden sampler', notes: '', aidaCount: 14 }, canUndoMark: false, canRedoMark: false, clearMarkHistory: vi.fn(), catalogFor: () => DEFAULT_CATALOG_DEFINITION, availableCatalogs: () => [DEFAULT_CATALOG_DEFINITION] };
 
 const baseWorkspace = {
@@ -81,6 +95,8 @@ const baseWorkspace = {
   projects: [],
   folders: [],
   folderAssignments: [],
+  galleryOrders: [],
+  projectOpens: [],
   error: null,
   saveState: { status: 'idle', dirty: false, pendingRevision: null, lastSavedRevision: null, error: null },
   workspace: null,
@@ -88,15 +104,18 @@ const baseWorkspace = {
   createProjectFromConversion,
   openProject,
   selectProject: vi.fn(),
-  deleteProject,
+  deleteProjects,
+  restoreDeletedProjects,
   flush,
   refreshProjectList,
   createFolder,
   renameFolder,
   deleteFolder,
-  moveProjectToFolder,
+  moveProjectsToFolder,
   moveFolder,
-  duplicateProject,
+  setGalleryOrder,
+  restoreGallery,
+  duplicateProjects,
   renameProject,
 };
 
@@ -107,7 +126,7 @@ beforeEach(() => {
   pwaControls.adapter.register.mockResolvedValue(pwaControls.adapter.state);
   mockedWorkspace.mockReturnValue(baseWorkspace as never);
   // clearAllMocks() only clears call history, not implementations: restore
-  // the real gallery so a previous test's onMoveProject-triggering override
+  // the real gallery so a previous test's onMoveProjects-triggering override
   // (see the undo-toast tests below) never leaks into the next test.
   vi.mocked(ProjectGallery).mockImplementation(galleryControls.real);
 });
@@ -160,7 +179,7 @@ describe('application shell', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Finish import' }));
     await waitFor(() => expect(createProject).toHaveBeenCalledWith({ title: 'Imported', document: { width: 1, height: 1 }, aidaCount: 14 }));
-    await waitFor(() => expect(moveProjectToFolder).toHaveBeenCalledWith('new-project', 'folder-one'));
+    await waitFor(() => expect(moveProjectsToFolder).toHaveBeenCalledWith(['new-project'], 'folder-one'));
     await waitFor(() => expect(window.location.pathname).toBe('/patterns/new-project/edit'));
   });
 
@@ -367,14 +386,13 @@ describe('application shell', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Duplicate Garden sampler' }));
 
-    await waitFor(() => expect(duplicateProject).toHaveBeenCalledWith('one'));
+    await waitFor(() => expect(duplicateProjects).toHaveBeenCalledWith(['one'], null));
     expect(await screen.findByText('Pattern duplicated.')).toBeInTheDocument();
-    expect(moveProjectToFolder).not.toHaveBeenCalled();
     expect(openProject).not.toHaveBeenCalled();
     expect(window.location.pathname).toBe('/patterns');
   });
 
-  it('moves a duplicated pattern into the folder being viewed', async () => {
+  it('duplicates a pattern into the folder being viewed', async () => {
     window.history.replaceState({}, '', '/patterns?folder=folder-one');
     const folder = { id: 'folder-one', name: 'Crafts', parentId: null, createdAt: 1, updatedAt: 1 };
     const project = { id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 };
@@ -383,12 +401,12 @@ describe('application shell', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Duplicate Garden sampler' }));
 
-    await waitFor(() => expect(moveProjectToFolder).toHaveBeenCalledWith('copy-id', 'folder-one'));
+    await waitFor(() => expect(duplicateProjects).toHaveBeenCalledWith(['one'], 'folder-one'));
   });
 
   it('reports a failed duplicate', async () => {
     const project = { id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 };
-    duplicateProject.mockRejectedValueOnce(new Error('nope'));
+    duplicateProjects.mockRejectedValueOnce(new Error('nope'));
     mockedWorkspace.mockReturnValue({ ...baseWorkspace, projects: [project] } as never);
     render(<App />);
 
@@ -431,22 +449,20 @@ describe('application shell', () => {
     window.history.replaceState({}, '', '/patterns');
     mockedWorkspace.mockReturnValue({
       ...baseWorkspace,
-      projects: [{ id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 }],
-      deleteProject: deleteProject.mockResolvedValue(undefined)
+      projects: [{ id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 }]
     } as never);
-    deleteProject.mockClear();
     render(<App />);
 
     const deleteButton = screen.getByRole('button', { name: 'Delete Garden sampler' });
     expect(deleteButton).toHaveTextContent('Delete');
     // First click arms the confirm state; nothing is deleted yet.
     fireEvent.click(deleteButton);
-    expect(deleteProject).not.toHaveBeenCalled();
+    expect(deleteProjects).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Confirm delete Garden sampler' })).toHaveTextContent('Confirm delete?');
     // Second click performs the deletion.
     fireEvent.click(screen.getByRole('button', { name: 'Confirm delete Garden sampler' }));
-    await waitFor(() => expect(deleteProject).toHaveBeenCalledWith('one'));
-    expect(screen.getByText('Project deleted.')).toBeInTheDocument();
+    await waitFor(() => expect(deleteProjects).toHaveBeenCalledWith(['one']));
+    expect(await screen.findByText('Pattern deleted.')).toBeInTheDocument();
   });
 
   it('drops the deleted project from the list after the workspace refreshes', async () => {
@@ -460,15 +476,15 @@ describe('application shell', () => {
         { id: 'one', title: 'Garden sampler', notes: '', createdAt: 1, updatedAt: 2, revision: 4 },
         ...remaining
       ],
-      deleteProject: deleteThenRefresh
+      deleteProjects: deleteThenRefresh
     } as never);
     rerender(<App />);
     fireEvent.click(screen.getByRole('button', { name: 'Delete Garden sampler' }));
     fireEvent.click(screen.getByRole('button', { name: 'Confirm delete Garden sampler' }));
-    await waitFor(() => expect(deleteThenRefresh).toHaveBeenCalledWith('one'));
+    await waitFor(() => expect(deleteThenRefresh).toHaveBeenCalledWith(['one']));
     // The refreshed list (which the adapter re-reads after every action) no
     // longer contains the deleted row.
-    mockedWorkspace.mockReturnValue({ ...baseWorkspace, projects: remaining, deleteProject: deleteThenRefresh } as never);
+    mockedWorkspace.mockReturnValue({ ...baseWorkspace, projects: remaining, deleteProjects: deleteThenRefresh } as never);
     rerender(<App />);
     expect(screen.queryByRole('button', { name: 'Delete Garden sampler' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Delete Keeper' })).toBeInTheDocument();
@@ -542,7 +558,7 @@ describe('application shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'New Pattern' }));
     fireEvent.click(screen.getByRole('button', { name: 'Create blank pattern' }));
 
-    await waitFor(() => expect(moveProjectToFolder).toHaveBeenCalledWith('new-project', 'folder-one'));
+    await waitFor(() => expect(moveProjectsToFolder).toHaveBeenCalledWith(['new-project'], 'folder-one'));
   });
 
   it('deletes a folder through a two-step inline confirm', async () => {
@@ -567,17 +583,16 @@ describe('application shell', () => {
     const folder = { id: 'folder-two', name: 'Archive', parentId: null, createdAt: 1, updatedAt: 1 };
     mockedWorkspace.mockReturnValue({ ...baseWorkspace, projects: [project], folders: [folder], folderAssignments: [] } as never);
     vi.mocked(ProjectGallery).mockImplementation((props) => (
-      <button type="button" onClick={() => props.onMoveProject?.(project, 'folder-two')}>trigger move</button>
+      <button type="button" onClick={() => props.onMoveProjects?.([project], 'folder-two')}>trigger move</button>
     ));
     render(<App />);
 
     fireEvent.click(screen.getByRole('button', { name: 'trigger move' }));
-    await waitFor(() => expect(moveProjectToFolder).toHaveBeenCalledWith('one', 'folder-two'));
+    await waitFor(() => expect(moveProjectsToFolder).toHaveBeenCalledWith(['one'], 'folder-two'));
     expect(screen.getByText('Moved “Garden sampler” to Archive')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
-    // The pattern had no prior folder assignment, so undo moves it back to the top level.
-    await waitFor(() => expect(moveProjectToFolder).toHaveBeenLastCalledWith('one', null));
+    await waitFor(() => expect(restoreGallery).toHaveBeenCalledWith(emptyUndo));
     expect(screen.getByText('Move undone.')).toBeInTheDocument();
     expect(screen.queryByText('Moved “Garden sampler” to Archive')).not.toBeInTheDocument();
   });
@@ -604,12 +619,12 @@ describe('application shell', () => {
     document.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowUp', bubbles: true, cancelable: true }));
     document.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', bubbles: true, cancelable: true }));
 
-    await waitFor(() => expect(createFolder).toHaveBeenCalledWith('New folder', null, ['two', 'one']));
-    expect(moveProjectToFolder).not.toHaveBeenCalled();
+    await waitFor(() => expect(createFolder).toHaveBeenCalledWith('New folder', null, ['two', 'one'], 'two'));
+    expect(moveProjectsToFolder).not.toHaveBeenCalled();
     expect(await screen.findByText('Created “New folder” with “Winter scene” and “Garden sampler”')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
-    await waitFor(() => expect(deleteFolder).toHaveBeenCalledWith('folder-new'));
+    await waitFor(() => expect(restoreGallery).toHaveBeenCalledWith({ ...emptyUndo, createdFolderId: 'folder-new' }));
     expect(await screen.findByText('Folder removed.')).toBeInTheDocument();
   });
 
@@ -620,7 +635,7 @@ describe('application shell', () => {
       const folder = { id: 'folder-two', name: 'Archive', parentId: null, createdAt: 1, updatedAt: 1 };
       mockedWorkspace.mockReturnValue({ ...baseWorkspace, projects: [project], folders: [folder], folderAssignments: [] } as never);
       vi.mocked(ProjectGallery).mockImplementation((props) => (
-        <button type="button" onClick={() => props.onMoveProject?.(project, 'folder-two')}>trigger move</button>
+        <button type="button" onClick={() => props.onMoveProjects?.([project], 'folder-two')}>trigger move</button>
       ));
       render(<App />);
 
@@ -649,5 +664,179 @@ describe('application shell', () => {
 
     expect(screen.getByRole('heading', { level: 1 })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Go to your patterns/ })).toHaveAttribute('href', '/patterns');
+  });
+});
+
+describe('gallery over a real workspace', () => {
+  let repository: MemoryRepository;
+
+  /** Saves patterns created in order, so each later one is newer, then renders the app over the same repository. */
+  async function seed(titles: Record<string, string>, folders: Record<string, string> = {}): Promise<void> {
+    let now = 1;
+    const ids = Object.keys(titles);
+    const seeder = new ProjectWorkspace({ repository, clock: { now: () => now++ }, debounceMs: 0 });
+    for (const id of ids) await seeder.createProject({ id, title: titles[id], width: 2, height: 2 });
+    await seeder.flush();
+    for (const [id, name] of Object.entries(folders)) await repository.createFolder({ id, name });
+  }
+
+  function cardTitles(): string[] {
+    return screen.getAllByRole('article').map((card) => within(card).getAllByRole('button', { name: /^Rename / })[0].textContent ?? '');
+  }
+
+  /** Places a card for both box readings jsdom leaves at zero: its client rect, and its layout box in the grid. */
+  function stubRect(element: Element, left: number): void {
+    for (const [name, value] of [['offsetLeft', left], ['offsetTop', 0], ['offsetWidth', 200], ['offsetHeight', 200]] as const) {
+      Object.defineProperty(element, name, { configurable: true, get: () => value });
+    }
+    vi.spyOn(element, 'getBoundingClientRect').mockReturnValue({
+      top: 0, left, width: 200, height: 200, right: left + 200, bottom: 200, x: left, y: 0, toJSON() { return this; }
+    } as DOMRect);
+  }
+
+  /** Lays every card out side by side in display order, 200px wide with 20px between. */
+  function layOutRow(): void {
+    screen.getAllByRole('article').forEach((card, index) => stubRect(card, index * 220));
+  }
+
+  async function keyboardDrag(name: string, arrows: readonly string[]): Promise<void> {
+    const handle = screen.getByRole('button', { name: `Drag ${name}` });
+    handle.focus();
+    fireEvent.keyDown(handle, { code: 'Space' });
+    // KeyboardSensor attaches its document-level keydown listener after a setTimeout(0).
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    for (const arrow of arrows) act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { code: arrow, bubbles: true, cancelable: true })); });
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', bubbles: true, cancelable: true })); });
+  }
+
+  function chooseSort(sort: GallerySort): void {
+    fireEvent.change(screen.getByRole('combobox', { name: 'Sort patterns' }), { target: { value: sort } });
+  }
+
+  beforeEach(() => {
+    localStorage.clear();
+    repository = new MemoryRepository();
+    mockedWorkspace.mockImplementation(() => workspaceControls.real({ workspaceFactory: (options) => new ProjectWorkspace({ ...options, repository }) }));
+  });
+
+  it('moves selected patterns into a folder and Undo puts them back', async () => {
+    await seed({ a: 'Alpha', b: 'Beta' }, { gifts: 'Gifts' });
+    render(<App />);
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Alpha' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select Beta' }));
+    fireEvent.click(within(screen.getByRole('toolbar', { name: 'Selected patterns' })).getByRole('button', { name: 'Move to folder…' }));
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Move to folder' })).getByRole('button', { name: 'Gifts' }));
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Open Alpha' })).not.toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Open Beta' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Open folder Gifts' }));
+    expect(await screen.findByRole('button', { name: 'Open Alpha' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open Beta' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Open Alpha' })).not.toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Open Beta' })).not.toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Folder breadcrumb' })).getByRole('button', { name: 'Projects' }));
+    expect(await screen.findByRole('button', { name: 'Open Alpha' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open Beta' })).toBeInTheDocument();
+  });
+
+  it('duplicates selected patterns into the folder being viewed', async () => {
+    await seed({ a: 'Alpha', b: 'Beta', c: 'Gamma' }, { gifts: 'Gifts' });
+    await repository.moveProjectsToFolder(['a', 'b'], 'gifts');
+    window.history.replaceState({}, '', '/patterns?folder=gifts');
+    render(<App />);
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Select Alpha' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select Beta' }));
+    fireEvent.click(within(screen.getByRole('toolbar', { name: 'Selected patterns' })).getByRole('button', { name: 'Duplicate' }));
+
+    expect(await screen.findByRole('button', { name: 'Open Alpha copy' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open Beta copy' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open Gamma' })).not.toBeInTheDocument();
+  });
+
+  it('bulk deletes the selected patterns after confirmation', async () => {
+    await seed({ a: 'Alpha', b: 'Beta', c: 'Gamma' });
+    render(<App />);
+    await screen.findByRole('button', { name: 'Open Alpha' });
+    const before = cardTitles();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select Alpha' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select Gamma' }));
+    fireEvent.click(within(screen.getByRole('toolbar', { name: 'Selected patterns' })).getByRole('button', { name: 'Delete' }));
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Delete 2 patterns?' })).getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => expect(cardTitles()).toEqual(['Beta']));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Undo' }));
+    await waitFor(() => expect(cardTitles()).toEqual(before));
+  });
+
+  it('undoes a single-card delete', async () => {
+    await seed({ a: 'Alpha', b: 'Beta' });
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete Alpha' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete Alpha' }));
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Open Alpha' })).not.toBeInTheDocument());
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Undo' }));
+    expect(await screen.findByRole('button', { name: 'Open Alpha' })).toBeInTheDocument();
+  });
+
+  it('does not undo a rearrangement when a later move is undone', async () => {
+    await seed({ a: 'Alpha', b: 'Beta', c: 'Gamma' }, { f: 'Folder' });
+    await repository.setGalleryOrder('root', ['project:c', 'project:a', 'project:b', 'folder:f']);
+    localStorage.setItem('needlewise-gallery-sort:v1', 'custom');
+    render(<App />);
+    await waitFor(() => expect(cardTitles()).toEqual(['Gamma', 'Alpha', 'Beta', 'Folder']));
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select Alpha' }));
+    fireEvent.click(within(screen.getByRole('toolbar', { name: 'Selected patterns' })).getByRole('button', { name: 'Move to folder…' }));
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Move to folder' })).getByRole('button', { name: 'Folder' }));
+    await waitFor(() => expect(cardTitles()).toEqual(['Gamma', 'Beta', 'Folder']));
+
+    layOutRow();
+    // From Beta's slot, ArrowLeft stops at Gamma's middle, then the gap before Gamma.
+    await keyboardDrag('Beta', ['ArrowLeft', 'ArrowLeft']);
+    await waitFor(() => expect(cardTitles()).toEqual(['Beta', 'Gamma', 'Folder']));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    await waitFor(() => expect(cardTitles()).toEqual(['Beta', 'Gamma', 'Alpha', 'Folder']));
+  });
+
+  it('keeps a custom order after switching sorts and reloading', async () => {
+    await seed({ a: 'Alpha', b: 'Beta', c: 'Gamma' });
+    const view = render(<App />);
+    await screen.findByRole('button', { name: 'Open Alpha' });
+    chooseSort('custom');
+    const arranged = cardTitles();
+    layOutRow();
+    // From the last card's slot, ArrowLeft stops at the previous card's middle, then the gap before it.
+    await keyboardDrag(arranged[2], ['ArrowLeft', 'ArrowLeft']);
+    const reordered = [arranged[0], arranged[2], arranged[1]];
+    await waitFor(() => expect(cardTitles()).toEqual(reordered));
+
+    chooseSort('created');
+    chooseSort('custom');
+    expect(cardTitles()).toEqual(reordered);
+
+    view.unmount();
+    render(<App />);
+    await screen.findByRole('button', { name: 'Open Alpha' });
+    await waitFor(() => expect(cardTitles()).toEqual(reordered));
+  });
+
+  it('lists a pattern under Recently opened after it is opened', async () => {
+    await seed({ a: 'Alpha', b: 'Beta', c: 'Gamma' });
+    const view = render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Alpha' }));
+    expect(await screen.findByRole('button', { name: 'Export pattern' })).toBeInTheDocument();
+    view.unmount();
+
+    window.history.replaceState({}, '', '/patterns');
+    render(<App />);
+    await screen.findByRole('button', { name: 'Open Alpha' });
+    chooseSort('opened');
+    await waitFor(() => expect(cardTitles()[0]).toBe('Alpha'));
   });
 });

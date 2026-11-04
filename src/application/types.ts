@@ -10,11 +10,14 @@ import type {
   PatternSettings
 } from '../domain';
 import type {
+  CreatedFolder,
   CreateFolderInput,
+  GalleryUndo,
   ProjectAsset,
   ProjectAssetInput,
+  ProjectCopy,
   ProjectFolder,
-  ProjectFolderIndex,
+  ProjectGalleryIndex,
   ProjectMetadata,
   ProjectHealth,
   PreparedDocumentCapability,
@@ -58,16 +61,22 @@ export interface WorkspaceRepository {
   ): Promise<SaveResult>;
   load(projectId: string): Promise<ProjectRecord | undefined>;
   listProjects(): Promise<ProjectMetadata[]>;
-  deleteProject(projectId: string): Promise<void>;
   getAsset?(projectId: string, assetId: string): Promise<ProjectAsset | undefined>;
   inspectProjectHealth?(projectId: string): Promise<ProjectHealth | undefined>;
   loadRecoveryRevision?(projectId: string, revision?: number): Promise<ProjectRecord | undefined>;
-  listFolderIndex(): Promise<ProjectFolderIndex>;
-  createFolder(input: CreateFolderInput): Promise<ProjectFolder>;
+  listGalleryIndex(): Promise<ProjectGalleryIndex>;
+  createFolder(input: CreateFolderInput): Promise<CreatedFolder>;
   renameFolder(folderId: string, name: string): Promise<ProjectFolder>;
   deleteFolder(folderId: string): Promise<void>;
-  moveProjectToFolder(projectId: string, folderId: string | null): Promise<void>;
-  moveFolder(folderId: string, parentId: string | null): Promise<void>;
+  moveProjectsToFolder(projectIds: readonly string[], folderId: string | null): Promise<GalleryUndo>;
+  moveFolder(folderId: string, parentId: string | null): Promise<GalleryUndo>;
+  setGalleryOrder(levelId: string, keys: readonly string[]): Promise<void>;
+  restoreGallery(undo: GalleryUndo): Promise<void>;
+  recordProjectOpen(projectId: string): Promise<void>;
+  trashProjects(projectIds: readonly string[]): Promise<void>;
+  restoreTrashedProjects(projectIds: readonly string[]): Promise<void>;
+  purgeTrashedProjects(): Promise<void>;
+  duplicateProjects(copies: readonly ProjectCopy[], folderId: string | null): Promise<ProjectMetadata[]>;
   close?(): Promise<void> | void;
 }
 

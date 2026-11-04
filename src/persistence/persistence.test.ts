@@ -757,7 +757,8 @@ describe('durable document history persistence', () => {
       const replacementWithHistory = executeLayered(replacementEditor, cell(replacementEditor.document, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 1, y: 0, color: 2 }));
       await repo.save('history-lifecycle', metadata(replacementWithHistory, 'history-lifecycle'), replacementWithHistory, undefined, { history: replacementEditor.exportHistory() });
       expect(await repo.db.documentHistories.get('history-lifecycle')).toBeDefined();
-      await repo.deleteProject('history-lifecycle');
+      await repo.trashProjects(['history-lifecycle']);
+      await repo.trashProjects([]);
       expect(await repo.db.documentHistories.get('history-lifecycle')).toBeUndefined();
     } finally {
       await closeRepository(repo);
@@ -980,8 +981,9 @@ describe('session history lifecycle transaction rollback', () => {
       const revision2 = executeLayered(editor1, cell(editor1.document, { type: 'set-full', layerId: STITCH_LAYER_ID, x: 1, y: 0, color: 1 }));
       await repo.save('rollback-target', metadata(revision2, 'rollback-target'), revision2, undefined, { history: editor1.exportHistory() });
       const currentBeforeDelete = await repo.db.currentSnapshots.get('rollback-target');
+      await repo.trashProjects(['rollback-target']);
       const deleteForProject = vi.spyOn(repo.db.documentHistories, 'delete').mockRejectedValueOnce(new Error('project history cleanup failed'));
-      await expect(repo.deleteProject('rollback-target')).rejects.toBeDefined();
+      await expect(repo.trashProjects([])).rejects.toBeDefined();
       deleteForProject.mockRestore();
       expect(await repo.db.currentSnapshots.get('rollback-target')).toEqual(currentBeforeDelete);
       expect(await repo.db.documentHistories.get('rollback-target')).toBeDefined();
@@ -1788,6 +1790,65 @@ describe('local project repository', () => {
     }
   });
 
+  it('duplicates patterns into a folder in one batch, and the copies reload like their sources', async () => {
+    databaseCounter += 1;
+    const databaseName = `needlewise-duplicate-test-${String(databaseCounter)}`;
+    const repo = new ProjectRepository(new NeedlewiseDatabase(databaseName), { now: () => 10 });
+    const first = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+    const second = applyCommand(first, cell(first, { type: 'set-full', x: 1, y: 0, color: 1 })).document;
+    const sourceImage = { assetId: 'reference', mimeType: 'image/png' as const, width: 2, height: 2, crop: { x: 0, y: 0, width: 1, height: 1 }, chartBounds: { x: 0, y: 0, width: 2, height: 2 }, traceVisible: true, opacity: 1 };
+    await repo.save('source-a', { ...metadata(first, 'source-a'), sourceImage }, first, [{ id: 'reference', name: 'reference.png', mimeType: 'image/png', data: new Uint8Array([1, 2, 3, 4]) }]);
+    await repo.save('source-b', metadata(second, 'source-b'), second);
+    await repo.createFolder({ name: 'Copies', id: 'copies' });
+    const copies = await repo.duplicateProjects([
+      { sourceId: 'source-a', id: 'copy-a', title: 'A copy', createdAt: 20, updatedAt: 20 },
+      { sourceId: 'source-b', id: 'copy-b', title: 'B copy', createdAt: 20, updatedAt: 20 }
+    ], 'copies');
+    expect(copies.map((copy) => copy.id)).toEqual(['copy-a', 'copy-b']);
+    await repo.close();
+
+    const reopened = new ProjectRepository(new NeedlewiseDatabase(databaseName), { now: () => 30 });
+    try {
+      for (const [sourceId, copyId] of [['source-a', 'copy-a'], ['source-b', 'copy-b']] as const) {
+        const source = await reopened.load(sourceId);
+        const copy = await reopened.load(copyId);
+        expect(copy?.document).toEqual(source?.document);
+        expect(copy?.assets).toEqual(source?.assets);
+        expect(copy?.metadata).toMatchObject({ notes: source?.metadata.notes, createdAt: 20, updatedAt: 20 });
+        expect(copy?.metadata.sourceImage).toEqual(source?.metadata.sourceImage);
+      }
+      expect((await reopened.load('copy-a'))?.metadata.title).toBe('A copy');
+      expect((await reopened.load('source-a'))?.metadata.title).toBe('Test project');
+      expect((await reopened.listGalleryIndex()).assignments.map((assignment) => [assignment.projectId, assignment.folderId])).toEqual([['copy-a', 'copies'], ['copy-b', 'copies']]);
+    } finally {
+      await closeRepository(reopened);
+    }
+  });
+
+  it('writes nothing when a source to duplicate is missing, and skips trashed sources', async () => {
+    const repo = await repository();
+    try {
+      const document = createDocument({ width: 2, height: 2, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
+      await repo.save('source-a', metadata(document, 'source-a'), document);
+      await repo.save('source-b', metadata(document, 'source-b'), document);
+      await expect(repo.duplicateProjects([
+        { sourceId: 'source-a', id: 'copy-a', title: 'A copy', createdAt: 20, updatedAt: 20 },
+        { sourceId: 'missing', id: 'copy-m', title: 'M copy', createdAt: 20, updatedAt: 20 }
+      ], null)).rejects.toMatchObject({ code: 'invalid-metadata' });
+      expect((await repo.listProjects()).map((project) => project.id).sort()).toEqual(['source-a', 'source-b']);
+
+      await repo.trashProjects(['source-b']);
+      const copies = await repo.duplicateProjects([
+        { sourceId: 'source-a', id: 'copy-a', title: 'A copy', createdAt: 20, updatedAt: 20 },
+        { sourceId: 'source-b', id: 'copy-b', title: 'B copy', createdAt: 20, updatedAt: 20 }
+      ], null);
+      expect(copies.map((copy) => copy.id)).toEqual(['copy-a']);
+      expect((await repo.listProjects()).map((project) => project.id).sort()).toEqual(['copy-a', 'source-a']);
+    } finally {
+      await closeRepository(repo);
+    }
+  });
+
   it('deletes the project record together with its assets and snapshots', async () => {
     const repo = await repository();
     try {
@@ -1806,13 +1867,14 @@ describe('local project repository', () => {
       expect(await repo.db.projectHeads.get('to-delete')).toMatchObject({ projectId: 'to-delete', revision: document.revision });
       expect(await repo.load('to-delete')).toBeDefined();
       expect(await repo.getAsset('to-delete', 'reference')).toBeDefined();
-      await repo.deleteProject('to-delete');
+      await repo.trashProjects(['to-delete']);
+      await repo.trashProjects([]);
       expect(await repo.db.projectHeads.get('to-delete')).toBeUndefined();
       expect(await repo.load('to-delete')).toBeUndefined();
       expect(await repo.getAsset('to-delete', 'reference')).toBeUndefined();
       // Deleting a missing id is a safe no-op.
-      await expect(repo.deleteProject('to-delete')).resolves.toBeUndefined();
-      await expect(repo.deleteProject('never-existed')).resolves.toBeUndefined();
+      await expect(repo.trashProjects(['to-delete', 'never-existed'])).resolves.toBeUndefined();
+      await expect(repo.trashProjects([])).resolves.toBeUndefined();
     } finally {
       await closeRepository(repo);
     }
@@ -2285,7 +2347,7 @@ describe('storage boundaries', () => {
     try {
       const loaded = await repo.load('old-database-project');
       expect(loaded?.metadata.aidaCount).toBeUndefined();
-      expect(repo.db.verno).toBe(8);
+      expect(repo.db.verno).toBe(9);
       expect(await repo.db.documentHistories.get('old-database-project')).toBeUndefined();
     } finally {
       await closeRepository(repo);

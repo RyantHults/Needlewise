@@ -17,7 +17,7 @@ import { StorageFooter } from './components/controls/StorageFooter';
 import { useTimedValue } from './components/timed-value';
 import { ToastProvider, usePinnedToast, useToast } from './components/toast';
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import type { ProjectFolder, ProjectMetadata } from './persistence';
+import type { GalleryUndo, ProjectFolder, ProjectMetadata } from './persistence';
 
 const projectPath = (id: string, view: PatternView = 'edit') => `/patterns/${encodeURIComponent(id)}/${view}`;
 /** The pattern page a path names: `/patterns/:projectId/edit` or `/track`. */
@@ -36,19 +36,24 @@ function WorkspaceApp() {
     projects,
     folders,
     folderAssignments,
+    galleryOrders,
+    projectOpens,
     error,
     createProject,
     createProjectFromConversion,
     openProject,
-    deleteProject,
+    deleteProjects,
+    restoreDeletedProjects,
     flush,
     refreshProjectList,
     createFolder,
     renameFolder,
     deleteFolder,
-    moveProjectToFolder,
+    moveProjectsToFolder,
     moveFolder,
-    duplicateProject,
+    setGalleryOrder,
+    restoreGallery,
+    duplicateProjects,
     renameProject,
   } = useProjectWorkspace();
   // The URL is the source of truth for the folder being viewed (so Back
@@ -126,7 +131,7 @@ function WorkspaceApp() {
   }
   async function moveIntoCurrentFolder(projectId: string, targetFolderId: string | null, failureMessage: string) {
     if (!targetFolderId) return;
-    try { await moveProjectToFolder(projectId, targetFolderId); } catch { showToast({ message: failureMessage, tone: 'error' }); }
+    try { await moveProjectsToFolder([projectId], targetFolderId); } catch { showToast({ message: failureMessage, tone: 'error' }); }
   }
 
   async function submitCreate(event: React.FormEvent<HTMLFormElement>) {
@@ -157,28 +162,53 @@ function WorkspaceApp() {
     try { await (active ? flush() : Promise.resolve()); await pwa.activateUpdate(); showToast({ message: 'Update applied.' }); } catch { showToast({ message: 'Update could not be applied. Your current document was retained.', tone: 'error' }); } finally { setUpdating(false); }
   }
 
-  function handleDeleteClick(projectId: string) {
+  function handleDeleteClick(project: ProjectMetadata) {
     // Two-step inline confirm: the first click arms the row, the second (or a
     // fresh click after the timeout) actually deletes.
-    if (confirmDeleteId !== projectId) {
-      setConfirmDeleteId(projectId);
+    if (confirmDeleteId !== project.id) {
+      setConfirmDeleteId(project.id);
       return;
     }
     clearConfirmDeleteId();
-    void deleteProject(projectId).then(() => { showToast({ message: 'Project deleted.' }); }).catch(() => {
-      showToast({ message: 'The project could not be deleted.', tone: 'error' });
+    void handleDeleteProjects([project]);
+  }
+
+  async function handleDeleteProjects(selected: readonly ProjectMetadata[]) {
+    const ids = selected.map((project) => project.id);
+    const single = ids.length === 1;
+    try {
+      await deleteProjects(ids);
+    } catch {
+      showToast({ message: single ? 'The pattern could not be deleted.' : 'The patterns could not be deleted.', tone: 'error' });
+      return;
+    }
+    if (!appMounted.current) return;
+    showToast({
+      message: single ? 'Pattern deleted.' : `Deleted ${ids.length} patterns.`,
+      action: {
+        label: 'Undo',
+        run: () => {
+          void restoreDeletedProjects(ids).then(() => {
+            showToast({ message: 'Delete undone.' });
+          }).catch(() => {
+            showToast({ message: 'The delete could not be undone.', tone: 'error' });
+          });
+        },
+      },
     });
   }
 
-  async function handleDuplicate(project: ProjectMetadata) {
-    const targetFolderId = currentFolderId;
+  async function handleDuplicateProjects(selected: readonly ProjectMetadata[]) {
     try {
-      const copy = await duplicateProject(project.id);
-      await moveIntoCurrentFolder(copy.id, targetFolderId, 'Pattern duplicated, but it could not be moved into the folder.');
-      showToast({ message: 'Pattern duplicated.' });
+      await duplicateProjects(selected.map((project) => project.id), currentFolderId);
+      showToast({ message: selected.length === 1 ? 'Pattern duplicated.' : `Duplicated ${selected.length} patterns.` });
     } catch {
       showToast({ message: 'The pattern could not be duplicated.', tone: 'error' });
     }
+  }
+
+  async function handleReorder(levelId: string, keys: readonly string[]) {
+    try { await setGalleryOrder(levelId, keys); } catch { showToast({ message: 'The order could not be saved.', tone: 'error' }); }
   }
 
   async function handleRenameProject(project: ProjectMetadata, title: string) {
@@ -208,13 +238,13 @@ function WorkspaceApp() {
     return folders.find((folder) => folder.id === folderId)?.name ?? 'Projects';
   }
 
-  function showMoveToast(name: string, to: string | null, reverse: () => Promise<void>) {
+  function showMoveToast(message: string, undo: GalleryUndo) {
     showToast({
-      message: `Moved “${name}” to ${folderName(to)}`,
+      message,
       action: {
         label: 'Undo',
         run: () => {
-          void reverse().then(() => {
+          void restoreGallery(undo).then(() => {
             showToast({ message: 'Move undone.' });
           }).catch(() => {
             showToast({ message: 'The move could not be undone.', tone: 'error' });
@@ -224,25 +254,27 @@ function WorkspaceApp() {
     });
   }
 
-  function handleMoveProject(project: ProjectMetadata, folderId: string | null) {
-    const previousFolderId = folderAssignments.find((assignment) => assignment.projectId === project.id)?.folderId ?? null;
-    return moveProjectToFolder(project.id, folderId).then(() => {
-      if (appMounted.current) showMoveToast(project.title, folderId, () => moveProjectToFolder(project.id, previousFolderId));
+  function handleMoveProjects(selected: readonly ProjectMetadata[], folderId: string | null) {
+    const single = selected.length === 1;
+    return moveProjectsToFolder(selected.map((project) => project.id), folderId).then((undo) => {
+      if (appMounted.current) showMoveToast(single ? `Moved “${selected[0].title}” to ${folderName(folderId)}` : `Moved ${selected.length} patterns to ${folderName(folderId)}`, undo);
     }).catch(() => {
-      showToast({ message: 'The pattern could not be moved.', tone: 'error' });
+      showToast({ message: single ? 'The pattern could not be moved.' : 'The patterns could not be moved.', tone: 'error' });
     });
   }
 
-  async function handleGroupProjects(dragged: ProjectMetadata, target: ProjectMetadata, parentId: string | null) {
+  async function handleGroupProjects(dragged: readonly ProjectMetadata[], target: ProjectMetadata, parentId: string | null) {
     try {
-      const folder = await createFolder('New folder', parentId, [target.id, dragged.id]);
+      const created = await createFolder('New folder', parentId, [target.id, ...dragged.map((project) => project.id)], target.id);
       if (!appMounted.current) return;
       showToast({
-        message: `Created “New folder” with “${target.title}” and “${dragged.title}”`,
+        message: dragged.length === 1
+          ? `Created “New folder” with “${target.title}” and “${dragged[0].title}”`
+          : `Created “New folder” with ${dragged.length + 1} patterns`,
         action: {
           label: 'Undo',
           run: () => {
-            void deleteFolder(folder.id).then(() => {
+            void restoreGallery(created.undo).then(() => {
               showToast({ message: 'Folder removed.' });
             }).catch(() => {
               showToast({ message: 'The folder could not be removed.', tone: 'error' });
@@ -256,9 +288,8 @@ function WorkspaceApp() {
   }
 
   function handleMoveFolder(folder: ProjectFolder, parentId: string | null) {
-    const previousParentId = folder.parentId;
-    return moveFolder(folder.id, parentId).then(() => {
-      if (appMounted.current) showMoveToast(folder.name, parentId, () => moveFolder(folder.id, previousParentId));
+    return moveFolder(folder.id, parentId).then((undo) => {
+      if (appMounted.current) showMoveToast(`Moved “${folder.name}” to ${folderName(parentId)}`, undo);
     }).catch(() => {
       showToast({ message: 'The folder could not be moved.', tone: 'error' });
     });
@@ -323,23 +354,27 @@ function WorkspaceApp() {
               projects={projects}
               disabled={actionDisabled}
               onOpen={(project) => navigate(projectPath(project.id))}
-              onDelete={(project) => handleDeleteClick(project.id)}
+              onDelete={handleDeleteClick}
               onRenameProject={handleRenameProject}
-              onDuplicate={(project) => void handleDuplicate(project)}
+              onDuplicateProjects={handleDuplicateProjects}
+              onDeleteProjects={handleDeleteProjects}
               deleteConfirmId={confirmDeleteId}
               onCreate={handleCreate}
               onImport={() => { importReturnRef.current = globalThis.document.activeElement as HTMLElement | null; setImportUploadOpen(true); }}
               folders={folders}
               folderAssignments={folderAssignments}
+              galleryOrders={galleryOrders}
+              projectOpens={projectOpens}
               currentFolderId={folderIdParam}
               onNavigateFolder={handleNavigateFolder}
               onCreateFolder={handleCreateFolder}
               onRenameFolder={handleRenameFolder}
               onDeleteFolder={handleDeleteFolderClick}
               folderDeleteConfirmId={confirmDeleteFolderId}
-              onMoveProject={handleMoveProject}
+              onMoveProjects={handleMoveProjects}
               onMoveFolder={handleMoveFolder}
               onGroupProjects={handleGroupProjects}
+              onReorder={handleReorder}
             />}
             {view === 'edit' && active && workspace && state.document && !state.usingRecovery && <EditorSurface key={state.projectId} workspace={workspace} document={state.document} onNavigate={(next) => navigate(projectPath(active.metadata.id, next))} onRenameTitle={(title) => void handleRenameProject(active.metadata, title)} />}
             {view === 'track' && active && workspace && state.document && !state.usingRecovery && <TrackSurface key={state.projectId} workspace={workspace} document={state.document} title={active.metadata.title} metrics={state.metrics ?? null} onNavigate={(next) => navigate(projectPath(active.metadata.id, next))} onRenameTitle={(title) => void handleRenameProject(active.metadata, title)} />}

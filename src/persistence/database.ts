@@ -1,5 +1,5 @@
 import Dexie, { type Table } from 'dexie';
-import type { ProjectMetadata, ProjectFolder, ProjectFolderAssignment, StoredDocumentHistory, StoredDocumentSnapshot, StoredProjectAsset, StoredDailyProgressAggregate, StoredProjectHead } from './types';
+import type { DeletedProject, GalleryOrder, ProjectMetadata, ProjectFolder, ProjectFolderAssignment, ProjectOpened, StoredDocumentHistory, StoredDocumentSnapshot, StoredProjectAsset, StoredDailyProgressAggregate, StoredProjectHead } from './types';
 
 export class NeedlewiseDatabase extends Dexie {
   projects!: Table<ProjectMetadata, string>;
@@ -11,6 +11,9 @@ export class NeedlewiseDatabase extends Dexie {
   dailyActivity!: Table<StoredDailyProgressAggregate, [string, string]>;
   folders!: Table<ProjectFolder, string>;
   projectFolders!: Table<ProjectFolderAssignment, string>;
+  galleryOrders!: Table<GalleryOrder, string>;
+  projectOpens!: Table<ProjectOpened, string>;
+  deletedProjects!: Table<DeletedProject, string>;
 
   constructor(name = 'needlewise-local') {
     super(name);
@@ -87,6 +90,20 @@ export class NeedlewiseDatabase extends Dexie {
       await transaction.table('projectFolders').toCollection().modify((assignment: Partial<ProjectFolderAssignment>) => {
         assignment.assignedAt = 0;
       });
+    });
+    this.version(9).stores({
+      projects: 'id, aidaCount',
+      currentSnapshots: 'projectId',
+      recoverySnapshots: 'projectId',
+      projectHeads: 'projectId',
+      documentHistories: 'projectId',
+      assets: '[projectId+id], projectId',
+      dailyActivity: '[projectId+date], projectId',
+      folders: 'id, parentId',
+      projectFolders: 'projectId, folderId',
+      galleryOrders: 'levelId',
+      projectOpens: 'projectId',
+      deletedProjects: 'projectId'
     });
   }
 }

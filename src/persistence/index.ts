@@ -5,6 +5,7 @@ export * from './hash';
 export * from './binary';
 export * from './database';
 export * from './repository';
+export * from './gallery-order';
 export * from './source-image';
 export * from './project-thumbnail';
 export * from './session-history';

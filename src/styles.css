@@ -954,7 +954,8 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:var(--
 .project-gallery-brand { grid-column:1; justify-self:start; }
 .project-gallery-heading { grid-column:2; min-width:0; text-align:center; }
 .project-gallery-header h1 { margin:0; font-size:clamp(1.8rem, 3vw, 2.4rem); line-height:1.1; overflow-wrap:anywhere; }
-.project-gallery-actions { grid-column:3; justify-self:end; display:flex; flex-wrap:wrap; justify-content:flex-end; gap:.65rem; }
+.project-gallery-toolbar { display:flex; align-items:center; justify-content:space-between; gap:.75rem; flex-wrap:wrap; margin-top:1rem; }
+.project-gallery-actions { display:flex; flex-wrap:nowrap; justify-content:flex-end; gap:.65rem; }
 .project-gallery-actions .button { min-height:2.75rem; }
 .project-gallery-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:1.1rem; margin-top:1.5rem; }
 .project-gallery-card { min-width:0; overflow:hidden; border:1px solid var(--color-line); border-radius:1rem; background:color-mix(in srgb, var(--color-surface) 84%, transparent); box-shadow:0 1.5rem 3rem color-mix(in srgb, var(--color-shadow) 5.5%, transparent); transition:transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease; }
@@ -1002,9 +1003,10 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:var(--
 @media (max-width: 900px) { .project-gallery-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 700px) {
   .project-gallery-header { grid-template-columns:minmax(0,1fr); gap:1rem; }
-  .project-gallery-brand, .project-gallery-heading, .project-gallery-actions { grid-column:1; }
-  .project-gallery-actions { justify-self:stretch; }
-  .project-gallery-actions .button { flex:1 1 10rem; }
+  .project-gallery-brand, .project-gallery-heading { grid-column:1; }
+  /* The sort keeps its own width; the buttons share the next line. */
+  .project-gallery-toolbar .project-gallery-actions { flex:1 1 100%; flex-wrap:wrap; }
+  .project-gallery-toolbar .project-gallery-actions .button { flex:1 1 10rem; }
 }
 @media (max-width: 600px) {
   .project-gallery-grid { grid-template-columns:1fr; }
@@ -1074,6 +1076,36 @@ a.button { display: inline-flex; align-items: center; gap: .4rem; text-decoratio
 @media (prefers-reduced-motion: reduce) {
   .project-gallery-drag-preview { transform:none; }
 }
+
+/* Project gallery: sorting, selection, and custom order */
+.project-gallery-sort { min-height:2.75rem; border:1px solid var(--color-control-line); border-radius:.4rem; padding:0 .6rem; background:var(--color-surface); color:var(--color-ink-body); font:inherit; font-size:.85rem; }
+/* Hidden with opacity, not display, so the box stays focusable and labelled. */
+.project-gallery-select { position:absolute; top:.65rem; left:.65rem; z-index:2; width:1.25rem; height:1.25rem; margin:0; accent-color:var(--color-accent); opacity:0; cursor:pointer; transition:opacity 120ms ease; }
+.project-gallery-card:hover .project-gallery-select, .project-gallery-select:focus-visible, .project-gallery-selecting .project-gallery-select { opacity:1; }
+@media (hover: none) { .project-gallery-select { opacity:1; } }
+.project-gallery-card.project-gallery-selected { border-color:var(--color-accent); box-shadow:0 0 0 2px var(--color-accent-soft), 0 1.5rem 3rem color-mix(in srgb, var(--color-shadow) 5.5%, transparent); }
+.project-gallery-selection-bar { position:sticky; top:.75rem; z-index:5; display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:.75rem; margin-top:1.25rem; border:1px solid var(--color-accent); border-radius:.8rem; padding:.55rem .75rem .55rem 1rem; background:var(--color-surface); box-shadow:0 .8rem 1.6rem color-mix(in srgb, var(--color-shadow) 10%, transparent); }
+.project-gallery-selection-count { color:var(--color-ink); font-weight:700; }
+.project-gallery-selection-actions { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem; }
+.project-gallery-selection-actions .button { min-height:2.5rem; }
+.project-gallery-selection-delete { color:var(--color-danger); }
+.project-gallery-selection-clear { display:inline-grid; place-items:center; width:2.5rem; height:2.5rem; border:1px solid transparent; border-radius:50%; background:transparent; color:var(--color-ink-muted); font-size:1rem; cursor:pointer; }
+.project-gallery-selection-clear:hover { border-color:var(--color-line-strong); color:var(--color-ink); }
+/* Custom-order drags: lifted cards are placed against the grid, and each dragged card leaves an empty slot in the gap. */
+.project-gallery-grid { position:relative; }
+.project-gallery-placeholder { border:2px dashed var(--color-accent); border-radius:1rem; background:var(--color-drop-ready); }
+.project-gallery-drag-stack { position:relative; display:grid; flex:0 0 3.4rem; width:3.4rem; height:3.4rem; }
+.project-gallery-drag-stack .project-gallery-thumbnail { grid-area:1 / 1; width:3.4rem; height:3.4rem; border:1px solid var(--color-line); border-radius:.4rem; }
+.project-gallery-drag-stack .project-gallery-thumbnail:nth-child(2) { transform:translate(3px, -3px); }
+.project-gallery-drag-stack .project-gallery-thumbnail:nth-child(3) { transform:translate(6px, -6px); }
+.project-gallery-drag-count { position:absolute; top:-.55rem; right:-.75rem; z-index:1; min-width:1.4rem; border-radius:999px; padding:.1rem .35rem; background:var(--color-accent); color:var(--color-on-accent); font-size:.72rem; font-weight:700; line-height:1.2; text-align:center; }
+.project-gallery-move-list { display:flex; flex-direction:column; gap:.35rem; margin:1rem 0 0; padding:0; list-style:none; }
+.project-gallery-move-children { margin-top:.35rem; padding-left:1.25rem; }
+.project-gallery-move-destination { display:block; width:100%; border:1px solid var(--color-line); border-radius:.45rem; padding:.6rem .8rem; background:var(--color-surface); color:var(--color-ink-body); font:inherit; text-align:left; cursor:pointer; }
+.project-gallery-move-destination:hover:not(:disabled) { border-color:var(--color-accent); background:var(--color-accent-soft); color:var(--color-accent-ink); }
+.project-gallery-move-destination:disabled { opacity:.5; cursor:not-allowed; }
+/* Cards slide to new slots on the card's own transform transition, which reduced motion already turns off. */
+@media (prefers-reduced-motion: reduce) { .project-gallery-select { transition:none; } }
 
 /* Layers: panel under the thread colors, contextual controls, editor toast */
 .rail-button[aria-disabled="true"] { opacity:.42; cursor:not-allowed; }

@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -9,36 +9,66 @@ import {
   useDroppable,
   useSensor,
   useSensors,
+  type Active,
   type Announcements,
+  type CollisionDetection,
   type DragEndEvent,
+  type DragMoveEvent,
   type DragOverEvent,
   type DragStartEvent,
   type KeyboardCoordinateGetter
 } from '@dnd-kit/core';
-import { MAX_FOLDER_NAME_CHARS, type ProjectFolder, type ProjectFolderAssignment, type ProjectMetadata } from '../persistence';
+import {
+  MAX_FOLDER_NAME_CHARS,
+  ROOT_LEVEL_ID,
+  folderItemKey,
+  parseItemKey,
+  projectItemKey,
+  type GalleryOrder,
+  type ProjectFolder,
+  type ProjectFolderAssignment,
+  type ProjectMetadata,
+  type ProjectOpened
+} from '../persistence';
 import { ProjectThumbnail } from './ProjectThumbnail';
 import { NewFolderModal } from './NewFolderModal';
+import { MoveToFolderModal } from './MoveToFolderModal';
+import { GallerySelectionBar } from './GallerySelectionBar';
+import { ConfirmDialog } from './ConfirmDialog';
 import { CardActionButton } from './CardActionButton';
 import { Icon } from './controls/Icon';
 import {
   UP_DROP_ID,
   centerOf,
-  describeDraggedName,
+  containsPoint,
   describeDropTargetName,
-  folderDragId,
+  describeSubject,
   folderDropId,
+  gapStops,
   isValidDropTarget,
-  parseDragId,
-  pickNextDropTarget,
-  projectDragId,
+  pickNextPoint,
   projectDropId,
+  resolveGapHit,
   resolveGroupTarget,
   resolveMoveTarget,
   type AnnouncementContext,
   type Direction,
+  type DragSubject,
+  type GapLayout,
   type MoveContext,
+  type Point,
   type Rect
 } from './gallery-dnd';
+import {
+  GALLERY_SORT_OPTIONS,
+  insertBlock,
+  orderGalleryItems,
+  readGallerySort,
+  selectRange,
+  writeGallerySort,
+  type GalleryItem,
+  type GallerySort
+} from './gallery-sort';
 import { pointerWithinOrClosestCenter, snapCenterToPointer } from './dnd-shared';
 import { useInlineEdit } from './inline-edit';
 import { prefersReducedMotion } from './motion';
@@ -55,18 +85,75 @@ const ARROW_DIRECTIONS: Record<string, Direction> = {
   ArrowUp: 'up'
 };
 
-/** Jumps keyboard-drag focus between droppable rects in the arrow direction, instead of the default 25px step. */
-const galleryCoordinateGetter: KeyboardCoordinateGetter = (event, { currentCoordinates, context }) => {
-  const direction = ARROW_DIRECTIONS[event.code];
-  if (!direction) return undefined;
-  const candidates: { id: string; rect: Rect }[] = [];
-  for (const container of context.droppableContainers.getEnabled()) {
-    const rect = context.droppableRects.get(container.id);
-    if (rect) candidates.push({ id: String(container.id), rect });
-  }
-  const next = pickNextDropTarget(direction, currentCoordinates, candidates);
-  return next ? centerOf(next.rect) : undefined;
-};
+/** The most thumbnails a group drag's overlay stacks. */
+const STACKED_THUMBNAILS = 3;
+
+/**
+ * Jumps keyboard-drag focus between drop stops in the arrow direction, instead
+ * of the default 25px step: the custom-order stops while a custom drag lays out
+ * its gap, otherwise the centre of each enabled droppable. The sensor's
+ * coordinates are the dragged rect's top-left, so the rect's centre is what
+ * lands on a stop. Before the first step the drag stands at the centre of the
+ * card it lifted.
+ */
+function galleryCoordinateGetter(customStops: () => Point[] | null): KeyboardCoordinateGetter {
+  return (event, { currentCoordinates, context }) => {
+    const direction = ARROW_DIRECTIONS[event.code];
+    if (!direction) return undefined;
+    const halfWidth = (context.collisionRect?.width ?? 0) / 2;
+    const halfHeight = (context.collisionRect?.height ?? 0) / 2;
+    const moved = context.scrollAdjustedTranslate !== null
+      && (context.scrollAdjustedTranslate.x !== 0 || context.scrollAdjustedTranslate.y !== 0);
+    const from = moved || !context.activeNode
+      ? { x: currentCoordinates.x + halfWidth, y: currentCoordinates.y + halfHeight }
+      : centerOf(context.activeNode.getBoundingClientRect());
+    let points = customStops();
+    if (points === null) {
+      points = [];
+      for (const container of context.droppableContainers.getEnabled()) {
+        const rect = context.droppableRects.get(container.id);
+        if (rect) points.push(centerOf(rect));
+      }
+    }
+    const next = pickNextPoint(direction, from, points);
+    return next ? { x: next.x - halfWidth, y: next.y - halfHeight } : undefined;
+  };
+}
+
+/** A custom-order drag hit-tests its own gap layout, so dnd-kit picks no target. */
+const NO_COLLISIONS: CollisionDetection = () => [];
+
+/** What a custom-order drag is over: the gap, or a card or the up bar to drop into. */
+type CustomHit = { kind: 'gap'; gapIndex: number } | { kind: 'drop'; dropId: string };
+
+/** A dragged card leaves the grid in custom order: it keeps its old cell's box, out of flow and unseen, so its slot closes up. */
+function liftedStyle(slot: Rect): CSSProperties {
+  return { position: 'absolute', left: slot.left, top: slot.top, width: slot.width, height: slot.height, visibility: 'hidden' };
+}
+
+/** The card's current transform offset, which is mid-slide when a FLIP animation is running. */
+function currentTranslate(node: HTMLElement): Point {
+  const transform = getComputedStyle(node).transform;
+  if (!transform || transform === 'none' || typeof DOMMatrixReadOnly !== 'function') return { x: 0, y: 0 };
+  const matrix = new DOMMatrixReadOnly(transform);
+  return { x: matrix.m41, y: matrix.m42 };
+}
+
+function dropIdOf(item: GalleryItem): string {
+  return item.kind === 'folder' ? folderDropId(item.folder.id) : projectDropId(item.project.id);
+}
+
+function itemName(item: GalleryItem): string {
+  return item.kind === 'folder' ? item.folder.name : item.project.title;
+}
+
+function subjectKeys(subject: DragSubject): string[] {
+  return subject.kind === 'folder' ? [folderItemKey(subject.id)] : subject.ids.map(projectItemKey);
+}
+
+function isTextEntry(target: EventTarget | null): boolean {
+  return target instanceof HTMLTextAreaElement || (target instanceof HTMLInputElement && target.type === 'text');
+}
 
 interface ProjectGalleryProps {
   projects: readonly ProjectMetadata[];
@@ -75,22 +162,27 @@ interface ProjectGalleryProps {
   disabled?: boolean;
   onOpen: (project: ProjectMetadata) => void;
   onDelete: (project: ProjectMetadata) => void;
-  onDuplicate: (project: ProjectMetadata) => void;
+  onDuplicateProjects: (projects: readonly ProjectMetadata[]) => Promise<unknown> | void;
+  /** Bulk delete; the card's own Delete keeps `onDelete` and its inline confirm. */
+  onDeleteProjects: (projects: readonly ProjectMetadata[]) => Promise<unknown> | void;
   onRenameProject: (project: ProjectMetadata, title: string) => Promise<unknown> | void;
   deleteConfirmId?: string | null;
   onCreate: (button: HTMLButtonElement) => void;
   onImport?: () => void;
   folders?: readonly ProjectFolder[];
   folderAssignments?: readonly ProjectFolderAssignment[];
+  galleryOrders?: readonly GalleryOrder[];
+  projectOpens?: readonly ProjectOpened[];
   currentFolderId?: string | null;
   onNavigateFolder?: (folderId: string | null) => void;
   onCreateFolder?: (name: string, parentId: string | null) => Promise<unknown> | void;
   onRenameFolder?: (folderId: string, name: string) => Promise<unknown> | void;
   onDeleteFolder?: (folder: ProjectFolder) => void;
   folderDeleteConfirmId?: string | null;
-  onMoveProject?: (project: ProjectMetadata, folderId: string | null) => Promise<unknown> | void;
+  onMoveProjects?: (projects: readonly ProjectMetadata[], folderId: string | null) => Promise<unknown> | void;
   onMoveFolder?: (folder: ProjectFolder, parentId: string | null) => Promise<unknown> | void;
-  onGroupProjects?: (dragged: ProjectMetadata, target: ProjectMetadata, parentId: string | null) => Promise<unknown> | void;
+  onGroupProjects?: (dragged: readonly ProjectMetadata[], target: ProjectMetadata, parentId: string | null) => Promise<unknown> | void;
+  onReorder?: (levelId: string, keys: readonly string[]) => Promise<unknown> | void;
 }
 
 function editedDate(value: number): string {
@@ -98,21 +190,6 @@ function editedDate(value: number): string {
     month: 'short',
     day: 'numeric'
   });
-}
-
-function sortFolders(folders: readonly ProjectFolder[]): ProjectFolder[] {
-  return [...folders].sort((left, right) =>
-    left.name.localeCompare(right.name, undefined, { sensitivity: 'base' })
-    || left.id.localeCompare(right.id)
-  );
-}
-
-function sortProjects(projects: readonly ProjectMetadata[]): ProjectMetadata[] {
-  return [...projects].sort((left, right) =>
-    right.updatedAt - left.updatedAt
-    || right.revision - left.revision
-    || left.id.localeCompare(right.id)
-  );
 }
 
 const FOLDER_PREVIEW_SLOTS = 4;
@@ -150,15 +227,22 @@ function dropStateClassName(dragActive: boolean, dropActive: boolean, isOver: bo
   return isOver ? ' project-gallery-drop-over' : ' project-gallery-drop-ready';
 }
 
+
 interface UpDropBarProps {
   label: string;
   active: boolean;
+  isOver: boolean;
+  barRef: React.RefObject<HTMLDivElement | null>;
 }
 
-function UpDropBar({ label, active }: UpDropBarProps) {
-  const { setNodeRef, isOver } = useDroppable({ id: UP_DROP_ID, disabled: !active });
+function UpDropBar({ label, active, isOver, barRef }: UpDropBarProps) {
+  const { setNodeRef } = useDroppable({ id: UP_DROP_ID, disabled: !active });
   return (
-    <div ref={setNodeRef} className={`project-gallery-up-bar${dropStateClassName(true, active, isOver)}`} aria-hidden="true">
+    <div
+      ref={(node) => { setNodeRef(node); barRef.current = node; }}
+      className={`project-gallery-up-bar${dropStateClassName(true, active, isOver)}`}
+      aria-hidden="true"
+    >
       <span>{label}</span>
     </div>
   );
@@ -172,8 +256,14 @@ interface FolderCardProps {
   preview: readonly ProjectMetadata[];
   confirming: boolean;
   dragActive: boolean;
-  dropActive: boolean;
-  settling: boolean;
+  /** Whether the card takes drops at all; in custom order its gaps do even when its middle does not. */
+  dropEnabled: boolean;
+  /** Whether a drop on the card's middle would move the dragged items into it. */
+  intoAllowed: boolean;
+  intoOver: boolean;
+  /** Hides the card while a drop settles, or lifts it out of the grid during a custom-order drag. */
+  style: CSSProperties | undefined;
+  nodeRef: (node: HTMLElement | null) => void;
   onNavigateFolder?: (folderId: string | null) => void;
   onRenameFolder?: (folderId: string, name: string) => Promise<unknown> | void;
   onDeleteFolder?: (folder: ProjectFolder) => void;
@@ -187,8 +277,11 @@ function FolderCard({
   preview,
   confirming,
   dragActive,
-  dropActive,
-  settling,
+  dropEnabled,
+  intoAllowed,
+  intoOver,
+  style,
+  nodeRef,
   onNavigateFolder,
   onRenameFolder,
   onDeleteFolder
@@ -197,8 +290,8 @@ function FolderCard({
   const renameInputId = useId();
   const { editing: renaming, start: startRename, triggerRef: renameTriggerRef, inputProps: renameInputProps } = useInlineEdit(folder.name, (name) => onRenameFolder?.(folder.id, name));
 
-  const { attributes, listeners, setNodeRef: setDragNodeRef, setActivatorNodeRef, isDragging } = useDraggable({ id: folderDragId(folder.id), disabled: disabled || renaming });
-  const { setNodeRef: setDropNodeRef, isOver } = useDroppable({ id: folderDropId(folder.id), disabled: !dropActive });
+  const { attributes, listeners, setNodeRef: setDragNodeRef, setActivatorNodeRef, isDragging } = useDraggable({ id: folderItemKey(folder.id), disabled: disabled || renaming });
+  const { setNodeRef: setDropNodeRef } = useDroppable({ id: folderDropId(folder.id), disabled: !dropEnabled });
 
   const meta = `${patternCount} pattern${patternCount === 1 ? '' : 's'}${folderCount > 0 ? ` · ${folderCount} folder${folderCount === 1 ? '' : 's'}` : ''}`;
 
@@ -206,14 +299,14 @@ function FolderCard({
     'project-gallery-card',
     'project-gallery-folder',
     isDragging && 'project-gallery-dragging',
-    dropStateClassName(dragActive, dropActive, isOver).trim()
+    dragActive && (intoAllowed || !dropEnabled) && dropStateClassName(dragActive, intoAllowed, intoOver).trim()
   ].filter(Boolean).join(' ');
 
   return (
     <article
-      ref={(node) => { setDragNodeRef(node); setDropNodeRef(node); }}
+      ref={(node) => { setDragNodeRef(node); setDropNodeRef(node); nodeRef(node); }}
       className={className}
-      style={settling ? SETTLING_STYLE : undefined}
+      style={style}
       {...listeners}
     >
       <span className="project-gallery-folder-tab" aria-hidden="true" />
@@ -294,21 +387,44 @@ interface ProjectCardProps {
   project: ProjectMetadata;
   disabled: boolean;
   confirming: boolean;
-  dropActive: boolean;
-  settling: boolean;
+  selected: boolean;
+  /** Carried by a group drag, so dimmed in place with the card being dragged. */
+  carried: boolean;
+  /** Whether the card takes drops at all; in custom order its gaps do even when its middle does not. */
+  dropEnabled: boolean;
+  /** Over the card's middle, where a drop groups the dragged patterns with it. */
+  groupOver: boolean;
+  /** Hides the card while a drop settles, or lifts it out of the grid during a custom-order drag. */
+  style: CSSProperties | undefined;
+  nodeRef: (node: HTMLElement | null) => void;
+  onToggleSelected: (project: ProjectMetadata, range: boolean) => void;
   onOpen: (project: ProjectMetadata) => void;
   onDelete: (project: ProjectMetadata) => void;
-  onDuplicate: (project: ProjectMetadata) => void;
+  onDuplicateProjects: (projects: readonly ProjectMetadata[]) => Promise<unknown> | void;
   onRenameProject: (project: ProjectMetadata, title: string) => Promise<unknown> | void;
 }
 
-function ProjectCard({ project, disabled, confirming, dropActive, settling, onOpen, onDelete, onDuplicate, onRenameProject }: ProjectCardProps) {
+function ProjectCard({
+  project,
+  disabled,
+  confirming,
+  selected,
+  carried,
+  dropEnabled,
+  groupOver,
+  style,
+  nodeRef,
+  onToggleSelected,
+  onOpen,
+  onDelete,
+  onDuplicateProjects,
+  onRenameProject
+}: ProjectCardProps) {
   const metadataDescriptionId = useId();
   const renameInputId = useId();
   const { editing: renaming, start: startRename, triggerRef: renameTriggerRef, inputProps: renameInputProps } = useInlineEdit(project.title, (title) => onRenameProject(project, title));
-  const { attributes, listeners, setNodeRef: setDragNodeRef, setActivatorNodeRef, isDragging } = useDraggable({ id: projectDragId(project.id), disabled: disabled || renaming });
-  const { setNodeRef: setDropNodeRef, isOver } = useDroppable({ id: projectDropId(project.id), disabled: !dropActive });
-  const groupOver = isOver && dropActive;
+  const { attributes, listeners, setNodeRef: setDragNodeRef, setActivatorNodeRef, isDragging } = useDraggable({ id: projectItemKey(project.id), disabled: disabled || renaming });
+  const { setNodeRef: setDropNodeRef } = useDroppable({ id: projectDropId(project.id), disabled: !dropEnabled });
 
   const size = typeof project.width === 'number' && typeof project.height === 'number'
     && Number.isInteger(project.width) && Number.isInteger(project.height)
@@ -316,13 +432,28 @@ function ProjectCard({ project, disabled, confirming, dropActive, settling, onOp
     ? `${project.width} × ${project.height} stitches`
     : 'Size unavailable';
 
+  const className = [
+    'project-gallery-card',
+    selected && 'project-gallery-selected',
+    (isDragging || carried) && 'project-gallery-dragging',
+    groupOver && 'project-gallery-drop-over'
+  ].filter(Boolean).join(' ');
+
   return (
     <article
-      ref={(node) => { setDragNodeRef(node); setDropNodeRef(node); }}
-      className={`project-gallery-card${isDragging ? ' project-gallery-dragging' : ''}${groupOver ? ' project-gallery-drop-over' : ''}`}
-      style={settling ? SETTLING_STYLE : undefined}
+      ref={(node) => { setDragNodeRef(node); setDropNodeRef(node); nodeRef(node); }}
+      className={className}
+      style={style}
       {...listeners}
     >
+      <input
+        className="project-gallery-select"
+        type="checkbox"
+        checked={selected}
+        disabled={disabled}
+        aria-label={`Select ${project.title}`}
+        onChange={(event) => onToggleSelected(project, (event.nativeEvent as MouseEvent).shiftKey)}
+      />
       <button
         className="project-gallery-open"
         type="button"
@@ -375,7 +506,7 @@ function ProjectCard({ project, disabled, confirming, dropActive, settling, onOp
         <CardActionButton
           disabled={disabled}
           aria-label={`Duplicate ${project.title}`}
-          onClick={() => onDuplicate(project)}
+          onClick={() => onDuplicateProjects([project])}
         >
           Duplicate
         </CardActionButton>
@@ -405,37 +536,69 @@ export function ProjectGallery({
   disabled = false,
   onOpen,
   onDelete,
-  onDuplicate,
+  onDuplicateProjects,
+  onDeleteProjects,
   onRenameProject,
   deleteConfirmId = null,
   onCreate,
   onImport,
   folders = [],
   folderAssignments = [],
+  galleryOrders = [],
+  projectOpens = [],
   currentFolderId = null,
   onNavigateFolder,
   onCreateFolder,
   onRenameFolder,
   onDeleteFolder,
   folderDeleteConfirmId = null,
-  onMoveProject,
+  onMoveProjects,
   onMoveFolder,
   onGroupProjects,
+  onReorder,
   brand
 }: ProjectGalleryProps) {
   const [creatingFolder, setCreatingFolder] = useState(false);
+  const [movingSelection, setMovingSelection] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [sort, setSort] = useState<GallerySort>(() => readGallerySort(localStorage));
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [anchorId, setAnchorId] = useState<string | null>(null);
+  const [selectionFolderId, setSelectionFolderId] = useState(currentFolderId);
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
+  /** The card or up bar a drop would go into; in custom order, null while over the gap. */
   const [overId, setOverId] = useState<string | null>(null);
-  const [settlingId, setSettlingId] = useState<string | null>(null);
+  /** The level's grid cells, keyed by the item in each when a custom-order drag starts, relative to the grid. */
+  const [dragCells, setDragCells] = useState<{ keys: readonly string[]; cells: ReadonlyMap<string, Rect> } | null>(null);
+  /** Cards out of the grid's flow in custom order: while they are dragged, and until an into drop settles. */
+  const [liftedCells, setLiftedCells] = useState<ReadonlyMap<string, Rect>>(() => new Map());
+  const [gapIndex, setGapIndex] = useState(0);
+  /** A dropped custom order, shown until its save settles so the cards do not slide back first. */
+  const [pendingOrder, setPendingOrder] = useState<{ levelId: string; keys: readonly string[] } | null>(null);
+  const [settlingKeys, setSettlingKeys] = useState<readonly string[]>([]);
   const [reducedMotion] = useState(prefersReducedMotion);
+  const lastAnnounced = useRef<string | null>(null);
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const upBarRef = useRef<HTMLDivElement | null>(null);
+  const nodesRef = useRef(new Map<string, HTMLElement>());
+  const layoutOffsetsRef = useRef(new Map<string, Point & { lifted: boolean }>());
+  const customStopsRef = useRef<() => Point[] | null>(() => null);
 
+  // The selection belongs to one folder view.
+  if (selectionFolderId !== currentFolderId) {
+    setSelectionFolderId(currentFolderId);
+    setSelectedIds(new Set());
+    setAnchorId(null);
+  }
+
+  const custom = sort === 'custom';
+  const coordinateGetter = useMemo(() => galleryCoordinateGetter(() => customStopsRef.current()), []);
   const mouseSensor = useSensor(MouseSensor, { activationConstraint: { distance: 6 } });
   const touchSensor = useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 8 } });
-  const keyboardSensor = useSensor(KeyboardSensor, { coordinateGetter: galleryCoordinateGetter });
+  const keyboardSensor = useSensor(KeyboardSensor, { coordinateGetter });
   const sensors = useSensors(mouseSensor, touchSensor, keyboardSensor);
 
-  const sortedFolders = useMemo(() => sortFolders(folders), [folders]);
-  const folderById = useMemo(() => new Map(sortedFolders.map((folder) => [folder.id, folder])), [sortedFolders]);
+  const folderById = useMemo(() => new Map(folders.map((folder) => [folder.id, folder])), [folders]);
   const currentFolder = currentFolderId ? folderById.get(currentFolderId) ?? null : null;
 
   const ancestors = useMemo(() => {
@@ -477,137 +640,452 @@ export function ProjectGallery({
 
   const childFoldersOf = useMemo(() => {
     const map = new Map<string | null, ProjectFolder[]>();
-    for (const folder of sortedFolders) {
+    for (const folder of folders) {
       const list = map.get(folder.parentId);
       if (list) list.push(folder); else map.set(folder.parentId, [folder]);
     }
     return map;
-  }, [sortedFolders]);
+  }, [folders]);
 
-  const visibleFolders = childFoldersOf.get(currentFolder ? currentFolder.id : null) ?? [];
-  const visibleProjects = sortProjects(
-    currentFolder ? projectsByFolderId.get(currentFolder.id) ?? [] : projects.filter((item) => !folderIdByProjectId.has(item.id))
-  );
+  const openedAt = useMemo(() => new Map(projectOpens.map((open) => [open.projectId, open.openedAt])), [projectOpens]);
+  const levelId = currentFolder ? currentFolder.id : ROOT_LEVEL_ID;
+  const items = orderGalleryItems({
+    sort,
+    folders: childFoldersOf.get(currentFolder ? currentFolder.id : null) ?? [],
+    projects: currentFolder ? projectsByFolderId.get(currentFolder.id) ?? [] : projects.filter((item) => !folderIdByProjectId.has(item.id)),
+    storedOrder: (pendingOrder?.levelId === levelId ? pendingOrder.keys : undefined) ?? galleryOrders.find((order) => order.levelId === levelId)?.keys,
+    openedAt
+  });
+  const visibleProjects = items.flatMap((item) => (item.kind === 'project' ? [item.project] : []));
+  const selectedProjects = visibleProjects.filter((project) => selectedIds.has(project.id));
+
+  // A pattern that leaves the view is deselected for good, so it does not come back ticked after an undo.
+  if (selectedProjects.length !== selectedIds.size) setSelectedIds(new Set(selectedProjects.map((project) => project.id)));
+  if (anchorId !== null && !visibleProjects.some((project) => project.id === anchorId)) setAnchorId(null);
 
   const canCreateFolderHere = currentFolder === null || currentFolder.parentId === null;
   const newFolderParentId = currentFolder ? currentFolder.id : null;
 
-  const isEmpty = visibleFolders.length === 0 && visibleProjects.length === 0;
+  const isEmpty = items.length === 0;
   const isTopLevel = currentFolder === null;
 
   const moveContext: MoveContext = useMemo(() => ({
-    folders: sortedFolders,
+    folders,
     folderAssignments,
     currentFolderId: currentFolder ? currentFolder.id : null
-  }), [sortedFolders, folderAssignments, currentFolder]);
+  }), [folders, folderAssignments, currentFolder]);
 
   const announceContext: AnnouncementContext = useMemo(() => ({ ...moveContext, projects }), [moveContext, projects]);
 
-  function isActiveTarget(dropId: string): boolean {
-    return activeDragId !== null && isValidDropTarget(activeDragId, dropId, moveContext);
+  /** What dragging `dragId` carries: every visible selected pattern when it is one of two or more, otherwise just itself. */
+  function subjectOf(dragId: string): DragSubject | null {
+    const parsed = parseItemKey(dragId);
+    if (!parsed) return null;
+    if (parsed.kind === 'folder') return { kind: 'folder', id: parsed.id };
+    if (selectedIds.has(parsed.id) && selectedProjects.length >= 2) return { kind: 'projects', ids: selectedProjects.map((project) => project.id) };
+    return { kind: 'projects', ids: [parsed.id] };
   }
 
-  const activeDragInfo = useMemo(() => {
-    if (!activeDragId) return null;
-    const parsed = parseDragId(activeDragId);
-    if (!parsed) return null;
-    if (parsed.kind === 'project') {
-      const project = projectsById.get(parsed.id);
-      return project ? { kind: 'project' as const, project } : null;
+  const activeSubject = activeDragId ? subjectOf(activeDragId) : null;
+  const carriedKeys = new Set(activeSubject ? subjectKeys(activeSubject) : []);
+
+  function intoAllowed(dropId: string): boolean {
+    return activeSubject !== null && isValidDropTarget(activeSubject, dropId, moveContext);
+  }
+
+  /** In custom order every card but the carried ones shows as a target, for its gaps; otherwise only valid targets do. */
+  function dropEnabled(item: GalleryItem): boolean {
+    if (activeSubject === null) return false;
+    return custom ? !carriedKeys.has(item.key) : intoAllowed(dropIdOf(item));
+  }
+
+  // During a custom-order drag the carried items leave the level and the rest close up around the gap.
+  const rest = items.filter((item) => !carriedKeys.has(item.key));
+  const itemKeys = items.map((item) => item.key).join('\n');
+  // The cells only describe the level the drag started over; a refresh that changes it mid-drag cancels the drag.
+  const dragStale = dragCells !== null && dragCells.keys.join('\n') !== itemKeys;
+  const layout: GapLayout | null = custom && activeSubject !== null && dragCells !== null && !dragStale
+    ? {
+      slots: dragCells.keys.map((key) => dragCells.cells.get(key) as Rect),
+      restLength: rest.length,
+      gapIndex: Math.min(gapIndex, rest.length),
+      count: items.length - rest.length
     }
-    const folder = folderById.get(parsed.id);
-    return folder ? { kind: 'folder' as const, folder } : null;
-  }, [activeDragId, projectsById, folderById]);
+    : null;
+  useEffect(() => {
+    // dnd-kit has no call to cancel a drag; every sensor cancels on an Escape keydown, which the selection and dialog handlers ignore without its key.
+    if (dragStale) document.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', bubbles: true, cancelable: true }));
+  }, [dragStale]);
 
-  const groupingOver = activeDragId !== null && overId !== null && resolveGroupTarget(activeDragId, overId, moveContext) !== null;
+  function restIntoAllowed(restIndex: number): boolean {
+    const item = rest[restIndex];
+    return item !== undefined && intoAllowed(dropIdOf(item));
+  }
 
-  const addingToFolder = activeDragId !== null && overId !== null && overId !== UP_DROP_ID
-    && activeDragInfo?.kind === 'project' && resolveMoveTarget(activeDragId, overId, moveContext) !== null;
+  function gridOrigin(): Point {
+    const rect = gridRef.current?.getBoundingClientRect();
+    return { x: rect?.left ?? 0, y: rect?.top ?? 0 };
+  }
 
-  function groupTargetTitle(draggedId: string, dropId: string): string | null {
-    const group = resolveGroupTarget(draggedId, dropId, moveContext);
+  /** What the dragged rect's centre is over during a custom-order drag: the up bar, a card's middle, or the gap. */
+  function customHit(active: Active): CustomHit | null {
+    const translated = active.rect.current.translated;
+    if (!layout || !translated) return null;
+    const pointer = centerOf(translated);
+    const upBar = upBarRef.current?.getBoundingClientRect();
+    if (upBar && intoAllowed(UP_DROP_ID) && containsPoint(upBar, pointer)) return { kind: 'drop', dropId: UP_DROP_ID };
+    const origin = gridOrigin();
+    const hit = resolveGapHit({ x: pointer.x - origin.x, y: pointer.y - origin.y }, layout, restIntoAllowed);
+    if (hit?.kind === 'into') return { kind: 'drop', dropId: dropIdOf(rest[hit.restIndex]) };
+    return hit;
+  }
+
+  customStopsRef.current = () => {
+    if (!layout) return null;
+    const origin = gridOrigin();
+    const stops = gapStops(layout, restIntoAllowed).map((point) => ({ x: point.x + origin.x, y: point.y + origin.y }));
+    const upBar = upBarRef.current?.getBoundingClientRect();
+    if (upBar && intoAllowed(UP_DROP_ID)) stops.push(centerOf(upBar));
+    return stops;
+  };
+
+  /** The order a gap drop would save, or null when it would change nothing. */
+  function reorderedKeys(subject: DragSubject, gap: number): string[] | null {
+    const arranged = items.map((item) => item.key);
+    const block = subjectKeys(subject);
+    const remaining = arranged.filter((key) => !block.includes(key));
+    const index = gap < remaining.length ? arranged.indexOf(remaining[gap]) : arranged.length;
+    const keys = insertBlock(arranged, block, index);
+    return keys.every((key, position) => key === arranged[position]) ? null : keys;
+  }
+
+  function projectsOf(ids: readonly string[]): ProjectMetadata[] {
+    return ids.flatMap((id) => projectsById.get(id) ?? []);
+  }
+
+  function groupTargetTitle(subject: DragSubject, dropId: string): string | null {
+    const group = resolveGroupTarget(subject, dropId, moveContext);
     return group ? projectsById.get(group.targetProjectId)?.title ?? null : null;
   }
 
+  function describeGap(subject: DragSubject, gap: number): string | undefined {
+    const name = describeSubject(subject, announceContext);
+    if (gap < rest.length) return `${name} is before ${itemName(rest[gap])}.`;
+    const last = rest.at(-1);
+    return last ? `${name} is after ${itemName(last)}.` : undefined;
+  }
+
+  function describeInto(subject: DragSubject, dropId: string): string | undefined {
+    const name = describeSubject(subject, announceContext);
+    const groupTitle = groupTargetTitle(subject, dropId);
+    if (groupTitle !== null) return `${name} is over ${groupTitle}. Drop to create a folder with both.`;
+    const targetName = describeDropTargetName(dropId, announceContext);
+    return targetName ? `${name} is over ${targetName}.` : undefined;
+  }
+
+  function describeDrop(subject: DragSubject, dropId: string): string {
+    const name = describeSubject(subject, announceContext);
+    const groupTitle = groupTargetTitle(subject, dropId);
+    if (groupTitle !== null) return `Created a folder with ${name} and ${groupTitle}.`;
+    if (!resolveMoveTarget(subject, dropId, announceContext)) return `Cancelled moving ${name}.`;
+    return `Moved ${name} to ${describeDropTargetName(dropId, announceContext)}.`;
+  }
+
   const announcements: Announcements = {
-    onDragStart: ({ active }) => `Picked up ${describeDraggedName(String(active.id), announceContext)}.`,
+    onDragStart: ({ active }) => {
+      lastAnnounced.current = null;
+      const subject = subjectOf(String(active.id));
+      return subject ? `Picked up ${describeSubject(subject, announceContext)}.` : undefined;
+    },
     onDragOver: ({ active, over }) => {
-      if (!over) return undefined;
-      const groupTitle = groupTargetTitle(String(active.id), String(over.id));
-      if (groupTitle !== null) {
-        return `${describeDraggedName(String(active.id), announceContext)} is over ${groupTitle}. Drop to create a folder with both.`;
-      }
-      const targetName = describeDropTargetName(String(over.id), announceContext);
-      if (!targetName) return undefined;
-      return `${describeDraggedName(String(active.id), announceContext)} is over ${targetName}.`;
+      const subject = subjectOf(String(active.id));
+      return subject && over ? describeInto(subject, String(over.id)) : undefined;
+    },
+    // A custom-order drag picks no dnd-kit target, so its gap and middle targets are announced as they change.
+    onDragMove: ({ active }) => {
+      const subject = subjectOf(String(active.id));
+      const hit = custom && subject ? customHit(active) : null;
+      if (!subject || !hit) return undefined;
+      const key = hit.kind === 'gap' ? `gap:${hit.gapIndex}` : hit.dropId;
+      if (key === lastAnnounced.current) return undefined;
+      lastAnnounced.current = key;
+      return hit.kind === 'gap' ? describeGap(subject, hit.gapIndex) : describeInto(subject, hit.dropId);
     },
     onDragEnd: ({ active, over }) => {
-      const name = describeDraggedName(String(active.id), announceContext);
-      if (!over) return `Cancelled moving ${name}.`;
-      const groupTitle = groupTargetTitle(String(active.id), String(over.id));
-      if (groupTitle !== null) return `Created a folder with ${name} and ${groupTitle}.`;
-      const target = resolveMoveTarget(String(active.id), String(over.id), announceContext);
-      if (!target) return `Cancelled moving ${name}.`;
-      return `Moved ${name} to ${describeDropTargetName(String(over.id), announceContext)}.`;
+      const subject = subjectOf(String(active.id));
+      if (!subject) return undefined;
+      const name = describeSubject(subject, announceContext);
+      if (custom) {
+        const hit = customHit(active);
+        if (hit?.kind === 'drop') return describeDrop(subject, hit.dropId);
+        return hit && reorderedKeys(subject, hit.gapIndex) ? `Moved ${name} to here.` : `Cancelled moving ${name}.`;
+      }
+      return over ? describeDrop(subject, String(over.id)) : `Cancelled moving ${name}.`;
     },
-    onDragCancel: ({ active }) => `Cancelled moving ${describeDraggedName(String(active.id), announceContext)}.`
+    onDragCancel: ({ active }) => {
+      const subject = subjectOf(String(active.id));
+      return subject ? `Cancelled moving ${describeSubject(subject, announceContext)}.` : undefined;
+    }
   };
 
   function handleDragStart(event: DragStartEvent) {
-    setActiveDragId(String(event.active.id));
+    const key = String(event.active.id);
+    setActiveDragId(key);
+    const subject = subjectOf(key);
+    if (!custom || !subject) return;
+    // Layout boxes, which ignore the hover lift and any slide still running.
+    const cells = new Map(items.map((item): [string, Rect] => {
+      const node = nodesRef.current.get(item.key);
+      return [item.key, node ? { left: node.offsetLeft, top: node.offsetTop, width: node.offsetWidth, height: node.offsetHeight } : { left: 0, top: 0, width: 0, height: 0 }];
+    }));
+    const carried = subjectKeys(subject);
+    setDragCells({ keys: items.map((item) => item.key), cells });
+    setLiftedCells(new Map(carried.flatMap((carriedKey): [string, Rect][] => {
+      const cell = cells.get(carriedKey);
+      return cell ? [[carriedKey, cell]] : [];
+    })));
+    // The gap opens where the lifted card was, among the items that stay.
+    const index = items.findIndex((item) => item.key === key);
+    setGapIndex(items.slice(0, index).filter((item) => !carried.includes(item.key)).length);
+  }
+
+  function handleDragMove(event: DragMoveEvent) {
+    if (!custom) return;
+    const hit = customHit(event.active);
+    if (hit?.kind === 'gap') setGapIndex(hit.gapIndex);
+    setOverId(hit?.kind === 'drop' ? hit.dropId : null);
   }
 
   function handleDragOver(event: DragOverEvent) {
+    if (custom) return;
     setOverId(event.over ? String(event.over.id) : null);
   }
 
   function handleDragEnd(event: DragEndEvent) {
-    const draggedId = String(event.active.id);
-    const dropId = event.over ? String(event.over.id) : null;
-    setActiveDragId(null);
-    setOverId(null);
-    if (!dropId) return;
-    const drop = performDrop(draggedId, dropId);
-    if (drop === null) return;
-    // Set in the same batch that clears the active drag, so the overlay skips its animation home.
-    setSettlingId(draggedId);
-    const settle = () => setSettlingId((current) => (current === draggedId ? null : current));
+    const subject = subjectOf(String(event.active.id));
+    const hit = custom ? customHit(event.active) : event.over ? { kind: 'drop' as const, dropId: String(event.over.id) } : null;
+    clearDrag();
+    const drop = subject && hit?.kind === 'drop' ? performDrop(subject, hit.dropId) : null;
+    if (subject && hit?.kind === 'gap') performReorder(subject, hit.gapIndex);
+    if (!subject || drop === null) {
+      setLiftedCells(new Map());
+      return;
+    }
+    // Set in the same batch that clears the active drag, so the overlay skips its animation home. In custom order
+    // the carried cards stay out of the grid until the drop lands, so the others close up once instead of parting first.
+    const keys = subjectKeys(subject);
+    setSettlingKeys(keys);
+    const settle = () => {
+      setSettlingKeys((current) => (current === keys ? [] : current));
+      setLiftedCells((current) => (keys.every((key) => current.has(key)) ? new Map() : current));
+    };
     void Promise.resolve(drop).then(settle, settle);
   }
 
-  /** Runs the drop's handler, or returns null when the drop does nothing. */
-  function performDrop(draggedId: string, dropId: string): Promise<unknown> | void | null {
-    const group = resolveGroupTarget(draggedId, dropId, moveContext);
-    if (group) {
-      const dragged = projectsById.get(group.draggedProjectId);
-      const target = projectsById.get(group.targetProjectId);
-      return dragged && target ? onGroupProjects?.(dragged, target, group.parentId) : null;
-    }
-    const target = resolveMoveTarget(draggedId, dropId, moveContext);
-    if (!target) return null;
-    if (target.kind === 'project') {
-      const project = projectsById.get(target.id);
-      return project ? onMoveProject?.(project, target.targetFolderId) : null;
-    }
-    const folder = folderById.get(target.id);
-    return folder ? onMoveFolder?.(folder, target.targetFolderId) : null;
+  function handleDragCancel() {
+    clearDrag();
+    setLiftedCells(new Map());
   }
 
-  function handleDragCancel() {
+  /** Runs the drop's handler, or returns null when the drop does nothing. */
+  function performDrop(subject: DragSubject, dropId: string): Promise<unknown> | void | null {
+    const group = resolveGroupTarget(subject, dropId, moveContext);
+    if (group) {
+      const target = projectsById.get(group.targetProjectId);
+      return target && onGroupProjects ? onGroupProjects(projectsOf(group.projectIds), target, group.parentId) : null;
+    }
+    const target = resolveMoveTarget(subject, dropId, moveContext);
+    if (!target) return null;
+    if (subject.kind === 'projects') {
+      return onMoveProjects ? onMoveProjects(projectsOf(subject.ids), target.targetFolderId) : null;
+    }
+    const folder = folderById.get(subject.id);
+    return folder && onMoveFolder ? onMoveFolder(folder, target.targetFolderId) : null;
+  }
+
+  /** Saves the order a gap drop makes, showing it at once; the lifted cards land in their new slots under the overlay. */
+  function performReorder(subject: DragSubject, gap: number) {
+    const keys = reorderedKeys(subject, gap);
+    if (!keys || !onReorder) return;
+    const pending = { levelId, keys };
+    setPendingOrder(pending);
+    const settle = () => setPendingOrder((current) => (current === pending ? null : current));
+    void Promise.resolve(onReorder(levelId, keys)).then(settle, settle);
+  }
+
+  function clearDrag() {
     setActiveDragId(null);
     setOverId(null);
+    setDragCells(null);
   }
 
-  const upBarLabel = currentFolder
-    ? `↑ Drop here to move out to ${currentFolder.parentId ? folderById.get(currentFolder.parentId)?.name ?? 'Projects' : 'Projects'}`
-    : '';
+  function clearSelection() {
+    setSelectedIds(new Set());
+    setAnchorId(null);
+  }
+
+  function toggleSelected(project: ProjectMetadata, range: boolean) {
+    if (range) {
+      const ids = selectRange(visibleProjects.map((item) => item.id), anchorId ?? project.id, project.id);
+      setSelectedIds((current) => new Set([...current, ...ids]));
+      setAnchorId(project.id);
+      return;
+    }
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(project.id)) next.delete(project.id); else next.add(project.id);
+      return next;
+    });
+    setAnchorId(project.id);
+  }
+
+  function changeSort(next: GallerySort) {
+    setSort(next);
+    writeGallerySort(localStorage, next);
+  }
+
+  const hasSelection = selectedProjects.length > 0;
+  const dialogOpen = creatingFolder || movingSelection || confirmingDelete;
+  const dragging = activeDragId !== null;
+  useEffect(() => {
+    if (!hasSelection || dialogOpen || dragging) return undefined;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || isTextEntry(event.target)) return;
+      clearSelection();
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [hasSelection, dialogOpen, dragging]);
+
+  const upBarParentName = describeDropTargetName(UP_DROP_ID, moveContext);
+  const upBarLabel = currentFolder ? `↑ Drop here to move out to ${upBarParentName}` : '';
+
+  const activeItem = activeDragId === null ? null : items.find((item) => item.key === activeDragId) ?? null;
+  const overInto = activeSubject !== null && overId !== null;
+  const groupingOver = overInto && resolveGroupTarget(activeSubject, overId, moveContext) !== null;
+  const movingOver = overInto && resolveMoveTarget(activeSubject, overId, moveContext) !== null;
+  const carriedProjects = activeSubject?.kind === 'projects' ? projectsOf(activeSubject.ids) : [];
+
+  function nodeRefFor(key: string) {
+    return (node: HTMLElement | null) => {
+      if (node) nodesRef.current.set(key, node); else nodesRef.current.delete(key);
+    };
+  }
+
+  /**
+   * The grid's children as one keyed list. Lifted cards come first: they are out of flow, so their place in the
+   * list does not change the layout, and React never moves the first nodes of a list, so a dragged card keeps its
+   * element and its handle keeps focus. The rest follow in order, with the gap's empty slots among them.
+   */
+  function gridChildren(): { key: string; node: React.ReactNode }[] {
+    const lifted = items.flatMap((item) => {
+      const cell = liftedCells.get(item.key);
+      return custom && cell ? [{ key: `^${item.key}`, node: renderItem(item, liftedStyle(cell)) }] : [];
+    });
+    const placeholders = layout
+      ? Array.from({ length: layout.count }, (_, index) => ({
+        key: `gap-${index}`,
+        node: <div key={`gap-${index}`} className="project-gallery-placeholder" style={{ minHeight: layout.slots[0]?.height }} aria-hidden="true" />
+      }))
+      : [];
+    const inFlow = items
+      .filter((item) => !(custom && liftedCells.has(item.key)))
+      .map((item) => ({ key: item.key, node: renderItem(item, settlingKeys.includes(item.key) ? SETTLING_STYLE : undefined) }));
+    const gapAt = layout ? layout.gapIndex : inFlow.length;
+    return [...lifted, ...inFlow.slice(0, gapAt), ...placeholders, ...inFlow.slice(gapAt)];
+  }
+  const children = gridChildren();
+  const flipSignature = custom ? children.map((child) => child.key).join('\n') : '';
+
+  // Custom order slides cards to their new cells (FLIP): each card that moved in the layout starts from where it was seen and eases home.
+  useLayoutEffect(() => {
+    if (!flipSignature) {
+      layoutOffsetsRef.current = new Map();
+      return;
+    }
+    const previous = layoutOffsetsRef.current;
+    const next = new Map<string, Point & { lifted: boolean }>();
+    for (const [key, node] of nodesRef.current) {
+      const offset = { x: node.offsetLeft, y: node.offsetTop, lifted: liftedCells.has(key) };
+      next.set(key, offset);
+      const before = previous.get(key);
+      if (reducedMotion || !before || before.lifted || offset.lifted) continue;
+      if (before.x === offset.x && before.y === offset.y) continue;
+      const seen = currentTranslate(node);
+      node.style.transition = 'none';
+      node.style.transform = `translate(${before.x + seen.x - offset.x}px, ${before.y + seen.y - offset.y}px)`;
+      void node.offsetWidth;
+      node.style.transition = '';
+      node.style.transform = '';
+    }
+    layoutOffsetsRef.current = next;
+  }, [flipSignature]);
+
+  function renderItem(item: GalleryItem, style: CSSProperties | undefined) {
+    const dropId = dropIdOf(item);
+    const intoOver = overId === dropId;
+    if (item.kind === 'folder') {
+      const { folder } = item;
+      const children = childFoldersOf.get(folder.id) ?? [];
+      const scopedFolderIds = [folder.id, ...children.map((child) => child.id)];
+      const scopedProjects = scopedFolderIds.flatMap((id) => projectsByFolderId.get(id) ?? []);
+      return (
+        <FolderCard
+          key={item.key}
+          folder={folder}
+          disabled={disabled}
+          patternCount={scopedProjects.length}
+          folderCount={children.length}
+          preview={folderPreviewProjects(scopedProjects, assignedAtByProjectId)}
+          confirming={folderDeleteConfirmId === folder.id}
+          dragActive={activeSubject !== null}
+          dropEnabled={dropEnabled(item)}
+          intoAllowed={intoAllowed(dropId)}
+          intoOver={intoOver}
+          style={style}
+          nodeRef={nodeRefFor(item.key)}
+          onNavigateFolder={onNavigateFolder}
+          onRenameFolder={onRenameFolder}
+          onDeleteFolder={onDeleteFolder}
+        />
+      );
+    }
+    const { project } = item;
+    return (
+      <ProjectCard
+        key={item.key}
+        project={project}
+        disabled={disabled}
+        confirming={deleteConfirmId === project.id}
+        selected={selectedIds.has(project.id)}
+        carried={carriedKeys.size > 1 && carriedKeys.has(item.key)}
+        dropEnabled={dropEnabled(item)}
+        groupOver={intoOver && intoAllowed(dropId)}
+        style={style}
+        nodeRef={nodeRefFor(item.key)}
+        onToggleSelected={toggleSelected}
+        onOpen={onOpen}
+        onDelete={onDelete}
+        onDuplicateProjects={onDuplicateProjects}
+        onRenameProject={onRenameProject}
+      />
+    );
+  }
+
+  function groupDragLabel(count: number): string {
+    if (groupingOver && overId !== null) return `Create folder with ${groupTargetTitle(activeSubject as DragSubject, overId)} (${count + 1})`;
+    if (movingOver && overId === UP_DROP_ID) return `Move ${count} out to ${upBarParentName}`;
+    if (movingOver && overId !== null) return `Move ${count} to ${describeDropTargetName(overId, moveContext)}`;
+    return `${count} patterns`;
+  }
 
   return (
     <DndContext
       sensors={sensors}
-      collisionDetection={pointerWithinOrClosestCenter}
+      collisionDetection={custom ? NO_COLLISIONS : pointerWithinOrClosestCenter}
       accessibility={{ announcements }}
       onDragStart={handleDragStart}
+      onDragMove={handleDragMove}
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
       onDragCancel={handleDragCancel}
@@ -631,7 +1109,18 @@ export function ProjectGallery({
             )}
             <h1 id="projects-title">{currentFolder ? currentFolder.name : 'Projects'}</h1>
           </div>
-          {!(isTopLevel && isEmpty) && (
+        </header>
+
+        {!(isTopLevel && isEmpty) && (
+          <div className="project-gallery-toolbar">
+            <select
+              className="project-gallery-sort"
+              aria-label="Sort patterns"
+              value={sort}
+              onChange={(event) => changeSort(event.target.value as GallerySort)}
+            >
+              {GALLERY_SORT_OPTIONS.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+            </select>
             <div className="project-gallery-actions">
               {onCreateFolder && canCreateFolderHere && (
                 <button className="button button-secondary" type="button" disabled={disabled} onClick={() => setCreatingFolder(true)}>
@@ -647,8 +1136,8 @@ export function ProjectGallery({
                 <span aria-hidden="true">＋</span> New Pattern
               </button>
             </div>
-          )}
-        </header>
+          </div>
+        )}
 
         {onCreateFolder && creatingFolder && (
           <NewFolderModal
@@ -659,8 +1148,50 @@ export function ProjectGallery({
           />
         )}
 
+        {hasSelection && (
+          <GallerySelectionBar
+            count={selectedProjects.length}
+            disabled={disabled}
+            onSelectAll={() => setSelectedIds(new Set(visibleProjects.map((project) => project.id)))}
+            onMove={() => setMovingSelection(true)}
+            onDuplicate={() => {
+              clearSelection();
+              void onDuplicateProjects(selectedProjects);
+            }}
+            onDelete={() => setConfirmingDelete(true)}
+            onClear={clearSelection}
+          />
+        )}
+
+        {movingSelection && hasSelection && (
+          <MoveToFolderModal
+            folders={folders}
+            currentFolderId={currentFolder ? currentFolder.id : null}
+            onSelect={(folderId) => {
+              setMovingSelection(false);
+              clearSelection();
+              void onMoveProjects?.(selectedProjects, folderId);
+            }}
+            onClose={() => setMovingSelection(false)}
+          />
+        )}
+
+        {confirmingDelete && hasSelection && (
+          <ConfirmDialog
+            title={`Delete ${selectedProjects.length} pattern${selectedProjects.length === 1 ? '' : 's'}?`}
+            message="You can undo this from the notice that follows."
+            confirmLabel="Delete"
+            onConfirm={() => {
+              setConfirmingDelete(false);
+              clearSelection();
+              void onDeleteProjects(selectedProjects);
+            }}
+            onCancel={() => setConfirmingDelete(false)}
+          />
+        )}
+
         {activeDragId && currentFolder && (
-          <UpDropBar label={upBarLabel} active={isActiveTarget(UP_DROP_ID)} />
+          <UpDropBar label={upBarLabel} active={intoAllowed(UP_DROP_ID)} isOver={overId === UP_DROP_ID} barRef={upBarRef} />
         )}
 
         {isTopLevel && isEmpty ? (
@@ -683,71 +1214,45 @@ export function ProjectGallery({
             <p>This folder is empty. Drag patterns here, or create a new pattern.</p>
           </div>
         ) : (
-          <div className="project-gallery-grid">
-            {visibleFolders.map((folder) => {
-              const children = childFoldersOf.get(folder.id) ?? [];
-              const scopedFolderIds = [folder.id, ...children.map((child) => child.id)];
-              const scopedProjects = scopedFolderIds.flatMap((id) => projectsByFolderId.get(id) ?? []);
-              const dropId = folderDropId(folder.id);
-              return (
-                <FolderCard
-                  key={folder.id}
-                  folder={folder}
-                  disabled={disabled}
-                  patternCount={scopedProjects.length}
-                  folderCount={children.length}
-                  preview={folderPreviewProjects(scopedProjects, assignedAtByProjectId)}
-                  confirming={folderDeleteConfirmId === folder.id}
-                  dragActive={activeDragId !== null}
-                  dropActive={isActiveTarget(dropId)}
-                  settling={settlingId === folderDragId(folder.id)}
-                  onNavigateFolder={onNavigateFolder}
-                  onRenameFolder={onRenameFolder}
-                  onDeleteFolder={onDeleteFolder}
-                />
-              );
-            })}
-            {visibleProjects.map((project) => (
-              <ProjectCard
-                key={project.id}
-                project={project}
-                disabled={disabled}
-                confirming={deleteConfirmId === project.id}
-                dropActive={isActiveTarget(projectDropId(project.id))}
-                settling={settlingId === projectDragId(project.id)}
-                onOpen={onOpen}
-                onDelete={onDelete}
-                onDuplicate={onDuplicate}
-                onRenameProject={onRenameProject}
-              />
-            ))}
+          <div ref={gridRef} className={`project-gallery-grid${hasSelection ? ' project-gallery-selecting' : ''}`}>
+            {children.map((child) => child.node)}
           </div>
         )}
       </section>
-      <DragOverlay dropAnimation={reducedMotion || settlingId !== null ? null : DROP_ANIMATION} modifiers={[snapCenterToPointer]}>
-        {activeDragInfo && (
+      <DragOverlay dropAnimation={reducedMotion || settlingKeys.length > 0 ? null : DROP_ANIMATION} modifiers={[snapCenterToPointer]}>
+        {activeSubject && (
           <div className="project-gallery-drag-preview" aria-hidden="true">
-            {groupingOver || addingToFolder ? (
+            {carriedProjects.length > 1 ? (
+              <>
+                <span className="project-gallery-drag-stack">
+                  {carriedProjects.slice(0, STACKED_THUMBNAILS).map((item) => (
+                    <ProjectThumbnail key={item.id} revision={item.revision} width={item.width} height={item.height} thumbnail={item.thumbnail} />
+                  ))}
+                  <span className="project-gallery-drag-count">{carriedProjects.length}</span>
+                </span>
+                <span className="project-gallery-drag-preview-name">{groupDragLabel(carriedProjects.length)}</span>
+              </>
+            ) : groupingOver || (movingOver && activeSubject.kind === 'projects' && overId !== UP_DROP_ID) ? (
               <>
                 <span className="project-gallery-drag-preview-folder-mark" aria-hidden="true"><Icon name="folder" /></span>
                 <span className="project-gallery-drag-preview-name">{groupingOver ? 'Create folder' : 'Add to folder'}</span>
               </>
-            ) : activeDragInfo.kind === 'project' ? (
+            ) : activeItem?.kind === 'project' ? (
               <>
                 <ProjectThumbnail
-                  revision={activeDragInfo.project.revision}
-                  width={activeDragInfo.project.width}
-                  height={activeDragInfo.project.height}
-                  thumbnail={activeDragInfo.project.thumbnail}
+                  revision={activeItem.project.revision}
+                  width={activeItem.project.width}
+                  height={activeItem.project.height}
+                  thumbnail={activeItem.project.thumbnail}
                 />
-                <span className="project-gallery-drag-preview-name">{activeDragInfo.project.title}</span>
+                <span className="project-gallery-drag-preview-name">{activeItem.project.title}</span>
               </>
-            ) : (
+            ) : activeItem?.kind === 'folder' ? (
               <>
                 <span className="project-gallery-drag-preview-folder-mark" aria-hidden="true"><Icon name="folder" /></span>
-                <span className="project-gallery-drag-preview-name">{activeDragInfo.folder.name}</span>
+                <span className="project-gallery-drag-preview-name">{activeItem.folder.name}</span>
               </>
-            )}
+            ) : null}
           </div>
         )}
       </DragOverlay>

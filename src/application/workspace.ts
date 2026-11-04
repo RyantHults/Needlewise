@@ -23,8 +23,11 @@ import {
   cloneLayeredDocument,
   PersistenceError,
   ProjectRepository,
+  type CreatedFolder,
+  type GalleryUndo,
   type ProjectFolder,
-  type ProjectFolderIndex,
+  type ProjectCopy,
+  type ProjectGalleryIndex,
   type ProjectHealth,
   type ProjectMetadata,
   type ProjectRecord,
@@ -572,6 +575,7 @@ export class ProjectWorkspace {
         this.setActive(session);
         this.operationError = null;
         this.notify();
+        this.recordProjectOpen(projectId);
         return session;
       } catch (recoveryError) {
         if (recoveryError instanceof WorkspaceError && recoveryError.code === 'stale-operation') throw recoveryError;
@@ -590,6 +594,7 @@ export class ProjectWorkspace {
       this.setActive(session);
       this.operationError = null;
       this.notify();
+      this.recordProjectOpen(projectId);
       return session;
     } catch (error) {
       if (error instanceof WorkspaceError && error.code === 'stale-operation') throw error;
@@ -597,11 +602,18 @@ export class ProjectWorkspace {
     }
   }
 
-  async deleteProject(projectId: string): Promise<void> {
+  /** Feeds the Recently opened sort. Fire and forget: opening never waits for it or fails because of it. */
+  private recordProjectOpen(projectId: string): void {
+    void this.repository.recordProjectOpen(projectId).catch(() => undefined);
+  }
+
+  /** Moves projects to the trash, where an undo can restore them until the next delete or app start. */
+  async deleteProjects(projectIds: readonly string[]): Promise<void> {
     this.ensureActiveWorkspace();
-    if (!isProjectId(projectId)) return this.rememberOperationError(new WorkspaceError('save-failed', 'Project ID is invalid.'), 'Unable to delete the local project.');
-    return this.runRepositoryOperation('Unable to delete the local project.', async (token) => {
-      if (this.active?.projectId === projectId) {
+    // An empty delete would still purge the earlier trash, so it is rejected.
+    if (projectIds.length === 0 || !projectIds.every(isProjectId)) return this.rememberOperationError(new WorkspaceError('save-failed', 'Project IDs are invalid.'), 'Unable to delete the local projects.');
+    return this.runRepositoryOperation('Unable to delete the local projects.', async (token) => {
+      if (this.active !== null && projectIds.includes(this.active.projectId)) {
         // Detach the session before deleting. dispose() commits any pending
         // autosave to the record (so it is part of the same deletion), then
         // cancels the debounce timer, so a later save can never re-create the
@@ -618,24 +630,42 @@ export class ProjectWorkspace {
         }
         this.ensureOperation(token);
       }
-      // The repository deletes the record, its assets (source images), current
-      // snapshots, recovery snapshots, and activity in one transaction.
       // Deleting a project that no longer exists is a safe no-op.
-      await this.repository.deleteProject(projectId);
+      await this.repository.trashProjects(projectIds);
     }, { supersede: true });
   }
 
-  async listFolderIndex(): Promise<ProjectFolderIndex> {
+  async restoreDeletedProjects(projectIds: readonly string[]): Promise<void> {
+    this.ensureActiveWorkspace();
+    return this.runRepositoryOperation('Unable to restore the local projects.', async () => {
+      await this.repository.restoreTrashedProjects(projectIds);
+    }, { supersede: true });
+  }
+
+  /**
+   * Permanently deletes whatever an earlier session left in the trash. Like
+   * refreshStaleThumbnails it is outside the operation-token protocol, so a
+   * failure never becomes the workspace error.
+   */
+  async purgeDeletedProjects(): Promise<void> {
+    await this.repository.purgeTrashedProjects();
+  }
+
+  async listGalleryIndex(): Promise<ProjectGalleryIndex> {
     return this.runRepositoryOperation('Unable to list local folders.', async () => {
-      const index = await this.repository.listFolderIndex();
-      return { folders: index.folders.map((folder) => ({ ...folder })), assignments: index.assignments.map((assignment) => ({ ...assignment })) };
+      const index = await this.repository.listGalleryIndex();
+      return {
+        folders: index.folders.map((folder) => ({ ...folder })),
+        assignments: index.assignments.map((assignment) => ({ ...assignment })),
+        orders: index.orders.map((order) => ({ levelId: order.levelId, keys: [...order.keys] })),
+        opens: index.opens.map((open) => ({ ...open }))
+      };
     }, { supersede: false });
   }
 
-  async createFolder(name: string, parentId: string | null = null, projectIds: readonly string[] = []): Promise<ProjectFolder> {
+  async createFolder(name: string, parentId: string | null = null, projectIds: readonly string[] = [], takesSpotOf?: string): Promise<CreatedFolder> {
     return this.runRepositoryOperation('Unable to create the folder.', async () => {
-      const folder = await this.repository.createFolder({ name, parentId, id: this.projectIdFactory(), projectIds });
-      return { ...folder };
+      return await this.repository.createFolder({ name, parentId, id: this.projectIdFactory(), projectIds, ...(takesSpotOf === undefined ? {} : { takesSpotOf }) });
     }, { supersede: true });
   }
 
@@ -652,15 +682,27 @@ export class ProjectWorkspace {
     }, { supersede: true });
   }
 
-  async moveProjectToFolder(projectId: string, folderId: string | null): Promise<void> {
-    return this.runRepositoryOperation('Unable to move the project.', async () => {
-      await this.repository.moveProjectToFolder(projectId, folderId);
+  async moveProjectsToFolder(projectIds: readonly string[], folderId: string | null): Promise<GalleryUndo> {
+    return this.runRepositoryOperation('Unable to move the projects.', async () => {
+      return await this.repository.moveProjectsToFolder(projectIds, folderId);
     }, { supersede: true });
   }
 
-  async moveFolder(folderId: string, parentId: string | null): Promise<void> {
+  async moveFolder(folderId: string, parentId: string | null): Promise<GalleryUndo> {
     return this.runRepositoryOperation('Unable to move the folder.', async () => {
-      await this.repository.moveFolder(folderId, parentId);
+      return await this.repository.moveFolder(folderId, parentId);
+    }, { supersede: true });
+  }
+
+  async setGalleryOrder(levelId: string, keys: readonly string[]): Promise<void> {
+    return this.runRepositoryOperation('Unable to save the gallery order.', async () => {
+      await this.repository.setGalleryOrder(levelId, keys);
+    }, { supersede: true });
+  }
+
+  async restoreGallery(undo: GalleryUndo): Promise<void> {
+    return this.runRepositoryOperation('Unable to undo the move.', async () => {
+      await this.repository.restoreGallery(undo);
     }, { supersede: true });
   }
 
@@ -688,30 +730,31 @@ export class ProjectWorkspace {
     }, { supersede: true });
   }
 
-  async duplicateProject(projectId: string): Promise<ProjectMetadata> {
+  /**
+   * Copies projects in one repository transaction, assigning the copies to
+   * `folderId`. Unlike forkActiveProject, no copy becomes the active session,
+   * so the gallery can duplicate any project in place.
+   */
+  async duplicateProjects(projectIds: readonly string[], folderId: string | null): Promise<ProjectMetadata[]> {
     this.ensureActiveWorkspace();
-    if (!isProjectId(projectId)) return this.rememberOperationError(new WorkspaceError('save-failed', 'Project ID is invalid.'), 'Unable to duplicate the local project.');
-    return this.runRepositoryOperation('Unable to duplicate the local project.', async (token) => {
-      // Unlike forkActiveProject, the copy is saved without becoming the active
-      // session, so the gallery can duplicate any project in place.
-      const active = this.active?.projectId === projectId ? this.active : null;
+    if (projectIds.length === 0 || !projectIds.every(isProjectId)) return this.rememberOperationError(new WorkspaceError('save-failed', 'Project IDs are invalid.'), 'Unable to duplicate the local projects.');
+    return this.runRepositoryOperation('Unable to duplicate the local projects.', async (token) => {
+      const active = this.active !== null && projectIds.includes(this.active.projectId) ? this.active : null;
       if (active && active.saveState.status !== 'conflict' && active.saveState.status !== 'error') {
         await active.flush();
         this.ensureOperation(token);
       }
-      const record = await this.repository.load(projectId);
+      const titles = new Map((await this.repository.listProjects()).map((project) => [project.id, project.title]));
       this.ensureOperation(token);
-      if (!record) throw new WorkspaceError('project-not-found', `Project ${projectId} was not found.`);
-      const copyId = this.projectIdFactory();
-      if (!isProjectId(copyId)) throw new WorkspaceError('save-failed', 'Generated project ID is invalid.');
-      const document = cloneLayeredDocument(record.document);
-      const { units, materialSettings, sourceImage } = record.metadata;
       const now = this.clock.now();
-      const metadata: ProjectMetadata = { id: copyId, title: `${record.metadata.title} copy`, notes: record.metadata.notes, createdAt: now, updatedAt: now, revision: document.revision, ...(units === undefined ? {} : { units }), ...(materialSettings === undefined ? {} : { materialSettings }), ...(sourceImage === undefined ? {} : { sourceImage }) };
-      const saveResult = await this.repository.save(copyId, metadata, document, record.assets);
-      this.ensureOperation(token);
-      if (!saveResult.committed || saveResult.stale) throw new PersistenceError('stale-save', `Project ${copyId} was not committed.`);
-      return metadata;
+      const copies: ProjectCopy[] = projectIds.map((sourceId) => {
+        const title = titles.get(sourceId);
+        if (title === undefined) throw new WorkspaceError('project-not-found', `Project ${sourceId} was not found.`);
+        const id = this.projectIdFactory();
+        if (!isProjectId(id)) throw new WorkspaceError('save-failed', 'Generated project ID is invalid.');
+        return { sourceId, id, title: `${title} copy`, createdAt: now, updatedAt: now };
+      });
+      return await this.repository.duplicateProjects(copies, folderId);
     }, { supersede: true });
   }
 
