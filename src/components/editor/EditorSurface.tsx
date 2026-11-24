@@ -21,12 +21,14 @@ import { LayersPanel, LAYER_TYPE_LABELS, type ActiveLayerId, type LayerSelectMod
 import { LayerControls } from "./LayerControls";
 import { useToast } from "../toast";
 import type { PatternView } from "./ViewSwitch";
-import { createCatalogReference, type CatalogDefinition, type CatalogRecord } from "../../catalog";
+import { beadKindOf, createCatalogReference, type CatalogDefinition, type CatalogRecord } from "../../catalog";
 import { createPortal } from "react-dom";
 import { Modal } from "../Modal";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { CatalogPickerDialog } from "../ColorPickerModal";
-import { CatalogColorPicker, ThreadColorPicker, type ThreadColorPickerProps } from "../ThreadColorPicker";
+import { BeadColorPicker } from "../BeadColorPicker";
+import { beadKindLabel } from "../bead-kind";
+import { ThreadColorPicker, type ThreadColorPickerProps } from "../ThreadColorPicker";
 import { normalizeHexColor } from "../../domain/color";
 import { rectsEqual } from "../../editor/rect";
 import { PaletteManagerModal } from "./PaletteManagerModal";
@@ -608,17 +610,21 @@ export function EditorSurface({
   const swapEntry = swapTarget === null ? undefined : palette.find((entry) => entry.id === swapTarget);
   const beadPicking = swapEntry ? isBeadEntry(swapEntry) : beadAdding && !backgroundPicking;
   const colorPicker = (key: string) => beadPicking ? (
-    <CatalogColorPicker
+    <BeadColorPicker
       key={key}
       catalogs={beadCatalogs}
       defaultCatalogId={beadCatalogs[0]?.association.catalogId ?? ""}
-      noun="bead"
       verb={swapTarget === null ? "Add" : "Swap"}
+      swapping={swapEntry && isBeadEntry(swapEntry) && swapEntry.catalog ? beadKindOf(swapEntry.catalog) : undefined}
       onPickCatalogColor={pickerProps.onPickCatalogColor}
     />
   ) : <ThreadColorPicker key={key} {...pickerProps} />;
   const catalogEntryCode = (entry: (typeof palette)[number]) => paletteCodeFor(entry, palette, labelCatalogs);
   const catalogEntryLabel = (entry: (typeof palette)[number]) => catalogEntryCode(entry).label;
+  const managerEntryLabel = (entry: (typeof palette)[number]) => {
+    const kind = isBeadEntry(entry) && entry.catalog ? beadKindOf(entry.catalog) : undefined;
+    return kind ? `${catalogEntryLabel(entry)} · ${beadKindLabel(kind)}` : catalogEntryLabel(entry);
+  };
   const openPaletteMenu = (id: number, anchor: HTMLElement) => {
     window.clearTimeout(palettePress.current ?? undefined);
     palettePress.current = null;
@@ -1229,7 +1235,7 @@ export function EditorSurface({
           palette={palette}
           selected={managerEntry}
           panel={managerPanel}
-          entryLabel={catalogEntryLabel}
+          entryLabel={managerEntryLabel}
           swatchContent={showPaletteSymbols ? (entry) => <SwatchSymbol symbol={entry.symbol} color={entry.color} /> : undefined}
           picker={colorPicker(managerPanel ?? "closed")}
           notice={paletteNotice}

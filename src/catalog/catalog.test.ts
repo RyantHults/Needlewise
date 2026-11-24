@@ -12,7 +12,9 @@ import {
   DMC_CATALOG_RECORD_COUNT,
   INSTALLED_CATALOG_REGISTRY,
   SEED_BEAD_SIZE_MM,
+  beadKindOf,
   beadSizeMm,
+  beadSizes,
   createCatalogReference,
   getDmcColor,
   validateDmcCatalogBundle,
@@ -226,9 +228,27 @@ describe('Mill Hill bead catalog', () => {
       const record = millHillCatalog().records.find((candidate) => candidate.code === code)!;
       return { catalog: createCatalogReference(millHillCatalog(), record) };
     };
-    expect(beadSizeMm(reference('00479'))).toEqual({ diameterMm: 2.5, lengthMm: 1.75 });
-    expect(beadSizeMm(reference('05002'))).toEqual({ diameterMm: 5.5, lengthMm: 3.85 });
+    expect(beadSizeMm(reference('00479'))).toMatchObject({ diameterMm: 2.5, lengthMm: 1.75 });
+    expect(beadSizeMm(reference('05002'))).toMatchObject({ diameterMm: 5.5, lengthMm: 3.85 });
     expect(beadSizeMm({ catalog: { ...reference('00479').catalog, sourceId: 'mill-hill-99999' } })).toBe(SEED_BEAD_SIZE_MM);
+  });
+
+  it('lists the sizes it sells smallest first and gives every bead one of them', () => {
+    const sizes = beadSizes(millHillCatalog());
+    expect(sizes.length).toBeGreaterThan(1);
+    for (let index = 1; index < sizes.length; index += 1) expect(sizes[index]!.diameterMm).toBeGreaterThan(sizes[index - 1]!.diameterMm);
+    for (const record of millHillCatalog().records) {
+      expect(sizes).toContain(beadKindOf(createCatalogReference(millHillCatalog(), record))!.size);
+    }
+    expect(beadSizes(DMC_CATALOG_DEFINITION)).toEqual([]);
+  });
+
+  it('finds a bead kind only for a Mill Hill bead', () => {
+    const record = millHillCatalog().records[0]!;
+    const reference = createCatalogReference(millHillCatalog(), record);
+    expect(beadKindOf(reference)).toMatchObject({ series: expect.any(String) });
+    expect(beadKindOf({ ...reference, sourceId: 'mill-hill-99999' })).toBeUndefined();
+    expect(beadKindOf(createCatalogReference(DMC_CATALOG_DEFINITION, DMC_CATALOG[0]!))).toBeUndefined();
   });
 
   it('rejects a bead whose colour differs from its DMC record', () => {

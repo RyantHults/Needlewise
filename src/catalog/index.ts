@@ -245,19 +245,47 @@ export interface BeadSizeMm {
   readonly lengthMm: number;
 }
 
-const millHillSizeBySourceId = new Map<string, BeadSizeMm>(MILL_HILL_CATALOG_DEFINITION.records.map((record) => [
+/** One size of bead a catalog sells. */
+export interface BeadSize extends BeadSizeMm {
+  readonly id: string;
+  readonly label: string;
+  readonly gauge: string;
+}
+
+/** A catalog bead's series and size. */
+export interface BeadKind {
+  readonly series: string;
+  readonly size: BeadSize;
+}
+
+const millHillKindBySourceId = new Map<string, BeadKind>(MILL_HILL_CATALOG_DEFINITION.records.map((record) => [
   record.sourceId,
-  Object.freeze({ diameterMm: record.diameterMm, lengthMm: record.lengthMm }),
+  Object.freeze({ series: record.series, size: record.size }),
 ]));
+
+const MILL_HILL_SIZES: readonly BeadSize[] = Object.freeze(
+  [...new Set(MILL_HILL_CATALOG_DEFINITION.records.map((record) => record.size))].sort((a, b) => a.diameterMm - b.diameterMm),
+);
+
+const NO_BEAD_SIZES: readonly BeadSize[] = Object.freeze([]);
+
+/** The sizes a bead catalog sells, smallest first; empty for any catalog without bead sizes. */
+export function beadSizes(catalog: Pick<CatalogDefinition, 'association'>): readonly BeadSize[] {
+  return catalog.association.catalogId === MILL_HILL_CATALOG_DEFINITION.association.catalogId ? MILL_HILL_SIZES : NO_BEAD_SIZES;
+}
+
+/** A catalog bead's series and size, or undefined when no installed bead catalog lists it. */
+export function beadKindOf(reference: { readonly catalogId: string; readonly sourceId: string }): BeadKind | undefined {
+  if (reference.catalogId !== MILL_HILL_CATALOG_DEFINITION.association.catalogId) return undefined;
+  return millHillKindBySourceId.get(reference.sourceId);
+}
 
 /** An 11/0 seed bead's size: the size of a bead the installed catalog no longer lists. */
 export const SEED_BEAD_SIZE_MM: BeadSizeMm = Object.freeze({ diameterMm: 2.5, lengthMm: 1.75 });
 
 /** A bead entry's size in millimetres, from its Mill Hill record, or a seed bead's when the catalog lacks it. */
 export function beadSizeMm(entry: Pick<PaletteEntry, 'catalog'>): BeadSizeMm {
-  const reference = entry.catalog;
-  if (reference?.catalogId !== MILL_HILL_CATALOG_DEFINITION.association.catalogId) return SEED_BEAD_SIZE_MM;
-  return millHillSizeBySourceId.get(reference.sourceId) ?? SEED_BEAD_SIZE_MM;
+  return (entry.catalog && beadKindOf(entry.catalog)?.size) || SEED_BEAD_SIZE_MM;
 }
 
 export const DEFAULT_CATALOG_DEFINITION = DMC_CATALOG_DEFINITION;

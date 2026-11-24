@@ -13,11 +13,27 @@ export interface CatalogColorPickerProps {
   initialColor?: CatalogRecord | null;
   /** What the catalogs hold, used in the accessible names: "thread" or "bead". */
   noun: string;
+  /** Whether a catalog color is listed; it must be stable between renders. The selection falls back to the first listed color. */
+  include: (color: CatalogRecord, catalog: CatalogDefinition) => boolean;
+  /** The selected chip's detail lines. */
+  detail: (color: CatalogRecord, catalog: CatalogDefinition) => ReactNode;
+  /** Rendered beside the search, given the catalog whose tab is selected. */
+  filter?: (catalog: CatalogDefinition) => ReactNode;
+  /** Lays out the listed colors. */
+  renderResults: (results: CatalogResults) => ReactNode;
   /** The chip button's text and aria-label prefix: "Add", "Swap" or "Use". */
   verb: string;
   onPickCatalogColor: (color: CatalogRecord, catalog: CatalogDefinition) => void;
   /** Rendered last inside the box, given the catalog whose tab is selected. */
   children?: (catalog: CatalogDefinition | undefined) => ReactNode;
+}
+
+/** What a results renderer is given: the listed colors and the selection. */
+export interface CatalogResults {
+  catalog: CatalogDefinition;
+  colors: readonly CatalogRecord[];
+  selected: CatalogRecord | null;
+  onSelect: (color: CatalogRecord) => void;
 }
 
 export interface CustomColorSectionProps {
@@ -28,14 +44,46 @@ export interface CustomColorSectionProps {
   customActionLabel: (hex: string | null, catalogMatch: CatalogRecord | undefined, catalog: CatalogDefinition | undefined) => string;
 }
 
-export type ThreadColorPickerProps = Omit<CatalogColorPickerProps, "noun" | "children"> & Omit<CustomColorSectionProps, "catalog">;
+export type ThreadColorPickerProps = Omit<CatalogColorPickerProps, "noun" | "include" | "detail" | "filter" | "renderResults" | "children"> & Omit<CustomColorSectionProps, "catalog">;
 
 /** The thread picker: the catalogs plus custom hex entry. Callers reset it by remounting it with a new `key`. */
 export function ThreadColorPicker({ initialCustomHex, onPickCustomColor, customActionLabel, ...catalogProps }: ThreadColorPickerProps) {
   return (
-    <CatalogColorPicker {...catalogProps} noun="thread">
+    <CatalogColorPicker {...catalogProps} noun="thread" include={includeAll} detail={threadDetail} renderResults={renderThreadResults}>
       {(catalog) => <CustomColorSection catalog={catalog} initialCustomHex={initialCustomHex} onPickCustomColor={onPickCustomColor} customActionLabel={customActionLabel} />}
     </CatalogColorPicker>
+  );
+}
+
+const includeAll = () => true;
+
+function threadDetail(color: CatalogRecord, catalog: CatalogDefinition) {
+  return <span>{catalog.association.brandLabel} · #{color.code}</span>;
+}
+
+function renderThreadResults({ catalog, colors, selected, onSelect }: CatalogResults) {
+  return (
+    <ColorGrid label="Available thread colors">
+      {colors.map((color) => (
+        <ColorSwatchButton key={`${catalog.association.catalogId}:${color.sourceId}`} color={color} label={`${color.name}, color ${color.code}`} pressed={selected?.sourceId === color.sourceId} onSelect={onSelect} />
+      ))}
+    </ColorGrid>
+  );
+}
+
+/** A list of color swatches. */
+export function ColorGrid({ label, children }: { label: string; children: ReactNode }) {
+  return <div className="catalog-color-grid" role="list" aria-label={label}>{children}</div>;
+}
+
+/** One selectable swatch in a `ColorGrid`. */
+export function ColorSwatchButton({ color, label, pressed, onSelect }: { color: CatalogRecord; label: string; pressed: boolean; onSelect: (color: CatalogRecord) => void }) {
+  return (
+    <div role="listitem">
+      <button className="catalog-color-button" type="button" aria-label={label} aria-pressed={pressed} onClick={() => onSelect(color)}>
+        <span className="catalog-color-swatch" style={{ background: color.hex }} aria-hidden="true" />
+      </button>
+    </div>
   );
 }
 
@@ -49,6 +97,10 @@ export function CatalogColorPicker({
   initialCatalogId,
   initialColor,
   noun,
+  include,
+  detail,
+  filter,
+  renderResults,
   verb,
   onPickCatalogColor,
   children,
@@ -62,8 +114,8 @@ export function CatalogColorPicker({
   const [selectedColor, setSelectedColor] = useState<CatalogRecord | null>(() => initialColor ?? firstColor(selectedCatalogId));
   const pickerCatalog = catalogs.find((item) => item.association.catalogId === selectedCatalogId);
   const catalogResults = useMemo(
-    () => pickerCatalog?.search(query) ?? [],
-    [query, pickerCatalog],
+    () => pickerCatalog?.search(query).filter((color) => include(color, pickerCatalog)) ?? [],
+    [query, pickerCatalog, include],
   );
   const installedCatalogIds = catalogs.map((item) => item.association.catalogId).join("\u0000");
   useEffect(() => {
@@ -97,7 +149,7 @@ export function CatalogColorPicker({
           />
           <span className="catalog-selection-details">
             <strong>{selectedColor.name}</strong>
-             <span>{pickerCatalog?.association.brandLabel} · #{selectedColor.code}</span>
+            {pickerCatalog && detail(selectedColor, pickerCatalog)}
           </span>
           <button
             className="small-action"
@@ -152,30 +204,13 @@ export function CatalogColorPicker({
           disabled={!pickerCatalog}
           aria-label={`Search ${pickerCatalog?.association.brandLabel ? `${pickerCatalog.association.brandLabel} catalog` : "catalog"}`}
         />
-        <div className="catalog-color-grid" role="list" aria-label={`Available ${noun} colors`}>
-        {pickerCatalog && catalogResults.map((color) => (
-         <div role="listitem" key={`${pickerCatalog.association.catalogId}:${color.sourceId}`}>
-          <button
-            className="catalog-color-button"
-            type="button"
-             aria-label={`${color.name}, color ${color.code}`}
-             aria-pressed={selectedColor?.sourceId === color.sourceId}
-            onClick={() => setSelectedColor(color)}
-          >
-            <span
-              className="catalog-color-swatch"
-              style={{ background: color.hex }}
-              aria-hidden="true"
-            />
-          </button>
-        </div>
-      ))}
-      {!catalogResults.length && (
-        <p className="catalog-empty" role="status">
-          No matching colors.
-        </p>
-      )}
-        </div>
+        {filter?.(pickerCatalog)}
+        {renderResults({ catalog: pickerCatalog, colors: catalogResults, selected: selectedColor, onSelect: setSelectedColor })}
+        {!catalogResults.length && (
+          <p className="catalog-empty" role="status">
+            No matching colors.
+          </p>
+        )}
       </div>}
     </div> : <p className="catalog-unavailable" role="status">Catalog unavailable</p>}
     {children?.(pickerCatalog)}

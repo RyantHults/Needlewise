@@ -3,16 +3,14 @@ import provenanceAsset from '../../catalog/mill-hill-provenance.json';
 import { MaterialKind } from '../domain/types';
 import { isRecord } from '../domain/guards';
 import { createCatalogDefinition, expectedRgb, hasExactKeys, isRgb, isSha256, sha256, stableJson } from './catalog-asset';
-import type { CatalogDefinition, CatalogRecord } from './index';
+import type { BeadSize, CatalogDefinition, CatalogRecord } from './index';
 
 /** A Mill Hill bead, coloured by the DMC thread the official conversion chart maps it to. */
 export interface MillHillBead extends CatalogRecord {
   readonly series: string;
   readonly dmcCode: string;
-  /** The bead's diameter in millimetres, from its series. */
-  readonly diameterMm: number;
-  /** The bead's length along its hole in millimetres, from its series. */
-  readonly lengthMm: number;
+  /** The size this bead shares with every other bead of its diameter. */
+  readonly size: BeadSize;
 }
 
 /** The Mill Hill definition, whose records keep their bead fields. */
@@ -42,6 +40,16 @@ interface MillHillAsset {
 const EXPECTED_SCHEMA_VERSION = 1;
 const EXPECTED_CATALOG_ID = 'mill-hill-dmc-mapped-approximation';
 const EXPECTED_SOURCE_URL = 'http://www.millhillbeads.com/images/bead_to_dmc_conversion.pdf';
+/** Every size Mill Hill sells, keyed by diameter in millimetres. */
+const SIZE_NAMES: ReadonlyMap<number, Pick<BeadSize, 'id' | 'label' | 'gauge'>> = new Map([
+  [1.6, { id: 'magnifica', label: 'Magnifica', gauge: '11/0 cylinder' }],
+  [2, { id: 'petite', label: 'Petite', gauge: '15/0' }],
+  [2.5, { id: 'seed', label: 'Seed', gauge: '11/0' }],
+  [3, { id: 'size-8', label: 'Size 8', gauge: '8/0' }],
+  [4, { id: 'size-6', label: 'Size 6', gauge: '6/0' }],
+  [5.5, { id: 'pebble', label: 'Pebble', gauge: '3/0' }],
+]);
+
 const RECORD_KEYS = ['sourceId', 'code', 'name', 'series', 'dmcCode', 'diameterMm', 'lengthMm', 'hex', 'rgb'];
 
 function validateRecords(records: unknown, dmcByCode: ReadonlyMap<string, CatalogRecord>, errors: string[]): void {
@@ -124,17 +132,26 @@ export function createMillHillCatalogDefinition(dmcRecords: readonly CatalogReco
   const validation = validateMillHillCatalogBundle(beadAsset, provenanceAsset, dmcRecords);
   if (!validation.valid) throw new Error(`Invalid committed Mill Hill catalog bundle: ${validation.errors.join(' ')}`);
   const asset = beadAsset as MillHillAsset;
-  const records: readonly MillHillBead[] = Object.freeze(asset.records.map((record) => Object.freeze({
-    sourceId: record.sourceId,
-    code: record.code,
-    name: record.name,
-    series: record.series,
-    dmcCode: record.dmcCode,
-    diameterMm: record.diameterMm,
-    lengthMm: record.lengthMm,
-    hex: record.hex as `#${string}`,
-    rgb: Object.freeze([record.rgb[0], record.rgb[1], record.rgb[2]]) as readonly [number, number, number]
-  })));
+  const sizes = new Map<number, BeadSize>();
+  const records: readonly MillHillBead[] = Object.freeze(asset.records.map((record) => {
+    const names = SIZE_NAMES.get(record.diameterMm);
+    if (!names) throw new Error(`Mill Hill bead ${record.sourceId} has no named size for ${String(record.diameterMm)} mm.`);
+    let size = sizes.get(record.diameterMm);
+    if (!size) {
+      size = Object.freeze({ ...names, diameterMm: record.diameterMm, lengthMm: record.lengthMm });
+      sizes.set(record.diameterMm, size);
+    }
+    return Object.freeze({
+      sourceId: record.sourceId,
+      code: record.code,
+      name: record.name,
+      series: record.series,
+      dmcCode: record.dmcCode,
+      size,
+      hex: record.hex as `#${string}`,
+      rgb: Object.freeze([record.rgb[0], record.rgb[1], record.rgb[2]]) as readonly [number, number, number]
+    });
+  }));
   // The definition holds exactly `records`, so its records are bead records.
   return createCatalogDefinition(
     { catalogId: asset.catalogId, brandLabel: 'Mill Hill', colorCount: records.length },

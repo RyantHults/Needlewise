@@ -2,13 +2,14 @@ import { act, fireEvent, render as renderBare, screen, waitFor, within } from '@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EditorSurface } from './EditorSurface';
 import { createEditorSurfaceController } from '../../editor';
-import { createCatalogReference, DEFAULT_CATALOG_DEFINITION, type CatalogDefinition, type CatalogRecord } from '../../catalog';
+import { beadKindOf, beadSizes, createCatalogReference, DEFAULT_CATALOG_DEFINITION, type CatalogDefinition, type CatalogRecord } from '../../catalog';
 import { makeCatalog, millHillBeadEntry, millHillCatalog } from '../../catalog/test-support';
 import { layerAddCommand, applyLayerStructureCommand, MaterialKind, MaterialUnit, type LayeredDocument } from '../../domain';
 import { SYMBOL_POOL, SYMBOL_IDS } from '../../symbols';
 import type { ReactElement, ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { ToastProvider } from '../toast';
+import { beadKindLabel, beadSizeHeading } from '../bead-kind';
 import { createLayeredDocument } from '../../domain/test-fixtures';
 
 const Providers = ({ children }: { children: ReactNode }) => <MemoryRouter><ToastProvider>{children}</ToastProvider></MemoryRouter>;
@@ -742,7 +743,8 @@ describe('EditorSurface', () => {
     expect(within(dialog).getByRole('tab', { name: 'Mill Hill' })).toHaveAttribute('aria-selected', 'true');
     expect(within(dialog).queryByRole('textbox', { name: 'Hex color' })).not.toBeInTheDocument();
     fireEvent.change(within(dialog).getByRole('textbox', { name: 'Search Mill Hill catalog' }), { target: { value: '00479' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: `${bead.name}, color ${bead.code}` }));
+    const series = beadKindOf(createCatalogReference(millHillCatalog(), bead))!.series;
+    fireEvent.click(within(dialog).getByRole('button', { name: `${bead.name}, ${series}, color ${bead.code}` }));
     fireEvent.click(within(dialog).getByRole('button', { name: `Add ${bead.name}` }));
     expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).toHaveBeenCalledWith({
       type: 'palette-create',
@@ -757,6 +759,45 @@ describe('EditorSurface', () => {
     const beads = screen.getByRole('tabpanel', { name: 'Beads' });
     expect(within(beads).getByRole('button', { name: `${bead.code}${bead.name}` })).toBeInTheDocument();
     expect(within(beads).queryByRole('button', { name: /Ruby/ })).not.toBeInTheDocument();
+  });
+  it('groups the add-bead picker by size, starting on All', () => {
+    f.uiState.tool = { tool: 'specialty', stitch: 'bead' } as never;
+    const bead = millHillCatalog().records.find((record) => record.code === '00479')!;
+    const size = beadKindOf(createCatalogReference(millHillCatalog(), bead))!.size;
+    (ws as { beadCatalogs: ReturnType<typeof vi.fn> }).beadCatalogs.mockReturnValue([millHillCatalog()]);
+    render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add bead' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add a bead' });
+    const filter = within(dialog).getByRole('group', { name: 'Bead size' });
+    expect(within(filter).getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Search Mill Hill catalog' }), { target: { value: '00479' } });
+    expect(within(dialog).getByRole('list', { name: beadSizeHeading(size) })).toBeInTheDocument();
+  });
+  describe('swapping a petite bead', () => {
+    const catalog = millHillCatalog();
+    const petite = catalog.records.find((record) => beadKindOf(createCatalogReference(catalog, record))?.size.id === 'petite')!;
+    const petiteKind = beadKindOf(createCatalogReference(catalog, petite))!;
+    const seedSize = beadSizes(catalog).find((size) => size.id === 'seed')!;
+    const renderSwap = () => {
+      (ws as { beadCatalogs: ReturnType<typeof vi.fn> }).beadCatalogs.mockReturnValue([catalog]);
+      const bead = { ...millHillBeadEntry(2, petite.code), active: true, symbol: SYMBOL_IDS[1] };
+      render(<EditorSurface workspace={ws} document={{ ...(doc as object), palette: [bead] } as never} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Manage palette' }));
+      const dialog = screen.getByRole('dialog', { name: 'Manage' });
+      return { bead, dialog };
+    };
+    it('starts the size filter on the bead size and lists only that size', () => {
+      const { bead, dialog } = renderSwap();
+      fireEvent.click(within(within(dialog).getByRole('group', { name: 'Selected palette color' })).getByRole('button', { name: `Swap ${bead.name}` }));
+      const filter = within(dialog).getByRole('group', { name: 'Bead size' });
+      expect(within(filter).getByRole('button', { name: petiteKind.size.label })).toHaveAttribute('aria-pressed', 'true');
+      expect(within(dialog).getByRole('list', { name: beadSizeHeading(petiteKind.size) })).toBeInTheDocument();
+      expect(within(dialog).queryByRole('list', { name: beadSizeHeading(seedSize) })).not.toBeInTheDocument();
+    });
+    it('shows the bead series and size in the selected palette color', () => {
+      const { dialog } = renderSwap();
+      expect(within(dialog).getByRole('group', { name: 'Selected palette color' })).toHaveTextContent(beadKindLabel(petiteKind));
+    });
   });
   it('shows only threads in the rail outside Bead mode, and disables Fill when the palette holds only beads', () => {
     const bead = { ...millHillBeadEntry(2), active: true, symbol: SYMBOL_IDS[1] };
