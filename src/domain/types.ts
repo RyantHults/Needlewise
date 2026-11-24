@@ -58,7 +58,9 @@ export const PALETTE_ID_RESERVED = 0xffff;
 
 export const MaterialKind = {
   Floss: 'floss',
-  Custom: 'custom'
+  Custom: 'custom',
+  /** A catalog bead, counted rather than measured; it colours only point stitches. */
+  Bead: 'bead'
 } as const;
 
 export type MaterialKind = (typeof MaterialKind)[keyof typeof MaterialKind];
@@ -163,6 +165,36 @@ export interface Point {
   y: number;
 }
 
+/**
+ * French knots and beads, kept sparse like backstitches. Each point sits on a
+ * cell corner or a cell centre in fixed-point units; whether it is a knot or a
+ * bead comes from its palette entry's material. `ids` are the stable identities
+ * and share the document's specialty id allocator with backstitches.
+ */
+export interface PointStitchStore {
+  ids: Uint32Array;
+  x: Uint32Array;
+  y: Uint32Array;
+  colors: Uint16Array;
+  completed: Uint8Array;
+  /** A `BeadOrientation` per point; always 0 for a knot. */
+  orientations: Uint8Array;
+}
+
+/** The direction a bead lies in: `/`, `|`, `\`, `-`, in rotation order. */
+export type BeadOrientation = 0 | 1 | 2 | 3;
+
+export const BEAD_ORIENTATIONS = { Slash: 0, Vertical: 1, Backslash: 2, Horizontal: 3 } as const;
+
+export interface PointStitchRecord {
+  readonly id: number;
+  readonly x: number;
+  readonly y: number;
+  readonly color: number;
+  readonly completed: boolean;
+  readonly orientation: BeadOrientation;
+}
+
 export interface PatternDocument {
   readonly version: typeof DOCUMENT_SCHEMA_VERSION;
   readonly catalog: CatalogAssociation;
@@ -172,10 +204,11 @@ export interface PatternDocument {
   colors: Uint16Array;
   completed: Uint8Array;
   backstitches: BackstitchStore;
+  pointStitches: PointStitchStore;
   palette: PaletteEntry[];
   settings: PatternSettings;
   revision: number;
-  /** The next value allocated for a backstitch. It is never decremented. */
+  /** The next value allocated for a specialty stitch id (backstitches and point stitches). It is never decremented. */
   nextBackstitchId: number;
   /** The next value allocated for a palette entry. It is never decremented. */
   nextPaletteId: number;
@@ -233,6 +266,7 @@ export interface StitchLayer extends LayerBase {
 export interface SpecialtyLayer extends LayerBase {
   readonly type: typeof LayerType.Specialty;
   backstitches: BackstitchStore;
+  pointStitches: PointStitchStore;
 }
 
 export type Layer = StitchLayer | SpecialtyLayer;
@@ -247,7 +281,7 @@ export interface LayeredDocument {
   palette: PaletteEntry[];
   settings: PatternSettings;
   revision: number;
-  /** Document-wide, so backstitch ids are unique across layers. It is never decremented. */
+  /** Document-wide, so specialty stitch ids (backstitches and point stitches) are unique across layers. It is never decremented. */
   nextBackstitchId: number;
   nextPaletteId: number;
   /** The next value allocated for a layer. It is never decremented. */
@@ -294,6 +328,14 @@ export interface PatternFragmentBackstitches {
   readonly colors: Uint16Array;
 }
 
+/** Point stitch positions in fixed-point units relative to the fragment origin. */
+export interface PatternFragmentPointStitches {
+  readonly x: Uint32Array;
+  readonly y: Uint32Array;
+  readonly colors: Uint16Array;
+  readonly orientations: Uint8Array;
+}
+
 /** A v1 clipboard fragment. Progress is deliberately not part of the type. */
 export interface PatternFragment {
   readonly version: typeof PATTERN_FRAGMENT_VERSION;
@@ -302,6 +344,7 @@ export interface PatternFragment {
   readonly kind: Uint8Array;
   readonly colors: Uint16Array;
   readonly backstitches: PatternFragmentBackstitches;
+  readonly pointStitches: PatternFragmentPointStitches;
 }
 
 export interface RectangularFragmentSelection {
@@ -358,6 +401,13 @@ export interface BulkCompletionCommand extends CommandBase {
 export interface BulkBackstitchCompletionCommand extends CommandBase {
   readonly type: 'bulk-backstitch-completion';
   /** Stable backstitch IDs, not storage positions. */
+  readonly ids: Uint32Array;
+  readonly operation: BulkProgressOperation;
+}
+
+export interface BulkPointStitchCompletionCommand extends CommandBase {
+  readonly type: 'bulk-point-stitch-completion';
+  /** Stable point stitch IDs, not storage positions. */
   readonly ids: Uint32Array;
   readonly operation: BulkProgressOperation;
 }
@@ -499,6 +549,41 @@ export interface MoveBackstitchCommand extends CommandBase {
   readonly dy?: number;
 }
 
+/**
+ * Places a French knot or bead at a cell corner or centre, in fixed-point
+ * units. The palette entry's material decides which; a knot's `orientation`
+ * must be 0. An occupied point in another colour is recoloured and its
+ * completion cleared: a bead over a bead keeps its orientation, a bead over a
+ * knot takes `orientation`, and a knot uses 0; the same colour is a
+ * `duplicate-point-stitch`.
+ */
+export interface AddPointStitchCommand extends CommandBase {
+  readonly type: 'add-point-stitch';
+  readonly point: Point;
+  readonly color: number;
+  readonly orientation: BeadOrientation;
+}
+
+export interface RemovePointStitchCommand extends CommandBase {
+  readonly type: 'remove-point-stitch';
+  readonly id: number;
+}
+
+/** Translates one knot or bead by `dx`/`dy` fixed-point units, keeping its id, colour and completion. */
+export interface MovePointStitchCommand extends CommandBase {
+  readonly type: 'move-point-stitch';
+  readonly id: number;
+  readonly dx: number;
+  readonly dy: number;
+}
+
+/** Turns one bead to `orientation`, keeping its completion. A knot is `invalid-point-stitch`; the same orientation is `duplicate-point-stitch`. */
+export interface SetPointStitchOrientationCommand extends CommandBase {
+  readonly type: 'set-point-stitch-orientation';
+  readonly id: number;
+  readonly orientation: BeadOrientation;
+}
+
 /** `id` defaults to the document's next palette ID; the entry is created active. */
 export interface PaletteCreateCommand extends CommandBase, Omit<PaletteEntryInput, 'active'> {
   readonly type: 'palette-create';
@@ -553,6 +638,7 @@ export type DomainCommand =
   | BulkRecolorCommand
   | BulkCompletionCommand
   | BulkBackstitchCompletionCommand
+  | BulkPointStitchCompletionCommand
   | PasteFragmentCommand
   | MoveFragmentCommand
   | MixedEraseCommand
@@ -561,6 +647,10 @@ export type DomainCommand =
   | AddBackstitchCommand
   | RemoveBackstitchCommand
   | MoveBackstitchCommand
+  | AddPointStitchCommand
+  | MovePointStitchCommand
+  | SetPointStitchOrientationCommand
+  | RemovePointStitchCommand
   | PaletteCreateCommand
   | PaletteUpdateCommand
   | PaletteSwapCommand
@@ -583,6 +673,7 @@ export const ATOMIC_COMMAND_TYPES = [
   'bulk-recolor',
   'bulk-completion',
   'bulk-backstitch-completion',
+  'bulk-point-stitch-completion',
   'paste-fragment',
   'move-fragment',
   'mixed-erase',
@@ -608,6 +699,8 @@ export interface CommandResult {
   touchedBackstitchIds?: Uint32Array;
   /** Stable backstitch IDs whose progress state actually changed. */
   changedBackstitchIds?: Uint32Array;
+  /** Stable point stitch IDs whose state actually changed. */
+  changedPointStitchIds?: Uint32Array;
   /** Newly allocated backstitch IDs created by a fragment paste. */
   createdBackstitchIds?: Uint32Array;
   /** Stable backstitch IDs whose geometry moved with a fragment. */

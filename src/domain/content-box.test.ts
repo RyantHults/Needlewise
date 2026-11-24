@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { backstitchesFromRecords, readBackstitch } from './backstitch-store';
+import { pointStitchesFromRecords } from './point-stitch-store';
 import { contentBox, cropToContent } from './content-box';
 import { createDocument } from './model';
 import { TEST_CATALOG, getCell } from './test-fixtures';
@@ -22,6 +23,31 @@ describe('content box', () => {
     // Quarter coords x=16, y=4..12: column 4, rows 1 to 3.
     document.backstitches = backstitchesFromRecords([{ id: 7, x1: 16, y1: 4, x2: 16, y2: 12, start: { x: 16, y: 4 }, end: { x: 16, y: 12 }, color: 1, completed: false }]);
     expect(contentBox(document)).toEqual({ left: 1, top: 1, right: 4, bottom: 3 });
+  });
+
+  it('crops a pattern holding only a centre knot to that cell', () => {
+    const document = stitched(5, 4, []);
+    document.pointStitches = pointStitchesFromRecords([{ id: 1, x: 10, y: 6, color: 1, completed: false, orientation: 0 }]);
+    const cropped = cropToContent(document);
+    expect({ width: cropped.width, height: cropped.height }).toEqual({ width: 1, height: 1 });
+    expect([cropped.pointStitches.x[0], cropped.pointStitches.y[0]]).toEqual([2, 2]);
+  });
+
+  it('keeps a knot in place relative to the cells it was stitched beside', () => {
+    const document = stitched(6, 5, [[2, 1], [3, 3]]);
+    // The centre of cell (3, 1).
+    document.pointStitches = pointStitchesFromRecords([{ id: 1, x: 14, y: 6, color: 1, completed: false, orientation: 0 }]);
+    const cropped = cropToContent(document);
+    expect(getCell(cropped, 0, 0).kind).toBe(CellKind.Full);
+    expect([cropped.pointStitches.x[0] / 4, cropped.pointStitches.y[0] / 4]).toEqual([1.5, 0.5]);
+  });
+
+  it('keeps a corner knot on the right and bottom canvas edge on the cropped edge', () => {
+    const document = stitched(4, 3, [[1, 1]]);
+    document.pointStitches = pointStitchesFromRecords([{ id: 1, x: 16, y: 12, color: 1, completed: false, orientation: 0 }]);
+    const cropped = cropToContent(document);
+    expect({ width: cropped.width, height: cropped.height }).toEqual({ width: 3, height: 2 });
+    expect([cropped.pointStitches.x[0], cropped.pointStitches.y[0]]).toEqual([cropped.width * 4, cropped.height * 4]);
   });
 
   it('has no box for an empty pattern, including a masked canvas', () => {

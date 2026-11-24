@@ -1,9 +1,10 @@
 import { CellKind, DOCUMENT_SCHEMA_VERSION, DomainError, MaterialKind, MaterialUnit, MAX_PERSISTABLE_CELL_COUNT, PALETTE_ID_MAX, type PatternDocument } from './types';
-import { UINT32_MAX, isAutoOverflowEntry, isThreeQuarterKind, isThreeQuarterPairKind, paletteLimit } from './model';
-import { backstitchWithinCanvas, isValidCanvasOrigin } from './canvas';
+import { UINT32_MAX, isAutoOverflowEntry, isPointStitchPosition, isThreeQuarterKind, isThreeQuarterPairKind, paletteLimit } from './model';
+import { backstitchWithinCanvas, isValidCanvasOrigin, pointWithinCanvas } from './canvas';
 import { parseHexColor } from './color';
 import { isRecord } from './guards';
 import { segmentKey } from './backstitch-store';
+import { pointKey } from './point-stitch-store';
 
 function isPositiveInteger(value: number): boolean {
   return Number.isSafeInteger(value) && value > 0;
@@ -97,6 +98,8 @@ export function collectValidationErrors(document: PatternDocument): string[] {
 
   const paletteIds = new Set<number>();
   const activePaletteIds = new Set<number>();
+  /** Bead entries colour only point stitches. */
+  const beadPaletteIds = new Set<number>();
   const limit = validCatalog ? paletteLimit(document) : PALETTE_ID_MAX;
   if (document.palette.length > limit) {
     errors.push(`The palette cannot exceed the brand's color count (${String(limit)}).`);
@@ -128,7 +131,8 @@ export function collectValidationErrors(document: PatternDocument): string[] {
     if (!isRecord(entry.material)) {
       errors.push(`Palette ID ${String(entry.id)} has invalid material data.`);
     } else {
-      if (entry.material.kind !== MaterialKind.Floss && entry.material.kind !== MaterialKind.Custom) errors.push(`Palette ID ${String(entry.id)} has an invalid material kind.`);
+      if (entry.material.kind !== MaterialKind.Floss && entry.material.kind !== MaterialKind.Custom && entry.material.kind !== MaterialKind.Bead) errors.push(`Palette ID ${String(entry.id)} has an invalid material kind.`);
+      if (entry.material.kind === MaterialKind.Bead && (entry.material.unit !== MaterialUnit.Count || entry.catalog === undefined)) errors.push(`Bead palette ID ${String(entry.id)} must be counted and have a catalog reference.`);
       if (typeof entry.material.label !== 'string' || entry.material.label.trim() === '') errors.push(`Palette ID ${String(entry.id)} has an empty material label.`);
       if (entry.material.unit !== MaterialUnit.Skeins && entry.material.unit !== MaterialUnit.Meters && entry.material.unit !== MaterialUnit.Count) errors.push(`Palette ID ${String(entry.id)} has an invalid material unit.`);
       if (entry.material.amount !== undefined && (!Number.isFinite(entry.material.amount) || entry.material.amount < 0)) errors.push(`Palette ID ${String(entry.id)} has an invalid material amount.`);
@@ -142,6 +146,7 @@ export function collectValidationErrors(document: PatternDocument): string[] {
     }
     paletteIds.add(entry.id);
     if (entry.active === true) activePaletteIds.add(entry.id);
+    if (isRecord(entry.material) && entry.material.kind === MaterialKind.Bead) beadPaletteIds.add(entry.id);
   }
 
   const symbols = new Set<string>();
@@ -244,6 +249,9 @@ export function collectValidationErrors(document: PatternDocument): string[] {
     }
     if (quarterCount < 1 || quarterCount > 4) errors.push(`Quarter cell ${String(index)} must contain one to four quarters.`);
   }
+  if (beadPaletteIds.size > 0) for (let slot = 0; slot < document.colors.length; slot += 1) {
+    if (beadPaletteIds.has(document.colors[slot])) errors.push(`Cell ${String(Math.floor(slot / 4))} uses a bead palette ID.`);
+  }
 
   const store = document.backstitches;
   const recordLengths = [store.ids.length, store.x1.length, store.y1.length, store.x2.length, store.y2.length, store.colors.length, store.completed.length];
@@ -269,15 +277,38 @@ export function collectValidationErrors(document: PatternDocument): string[] {
     if (x1 > x2 || (x1 === x2 && y1 > y2)) errors.push(`Backstitch ${String(id)} endpoints are not canonical.`);
     if (segments.has(key)) errors.push(`Backstitch ${String(id)} duplicates another segment.`);
     if (!activePaletteIds.has(store.colors[index])) errors.push(`Backstitch ${String(id)} has an unknown palette ID.`);
+    else if (beadPaletteIds.has(store.colors[index])) errors.push(`Backstitch ${String(id)} uses a bead palette ID.`);
     if (store.completed[index] > 1) errors.push(`Backstitch ${String(id)} has an invalid completion bit.`);
     ids.add(id);
     segments.add(key);
     maxId = Math.max(maxId, id);
   }
+  const points = document.pointStitches;
+  if ([points.x.length, points.y.length, points.colors.length, points.completed.length, points.orientations.length].some((length) => length !== points.ids.length)) {
+    errors.push('Point stitch typed arrays must have equal lengths.');
+  }
+  const positions = new Set<string>();
+  for (let index = 0; index < points.ids.length; index += 1) {
+    const id = points.ids[index];
+    const x = points.x[index];
+    const y = points.y[index];
+    const key = pointKey(x, y);
+    if (id === 0 || ids.has(id)) errors.push(`Point stitch ID ${String(id)} is invalid or duplicated.`);
+    if (!isPointStitchPosition({ x, y })) errors.push(`Point stitch ${String(id)} is not on a cell corner or centre.`);
+    else if (!pointWithinCanvas({ width: document.width, height: document.height, canvasMask: mask }, x, y)) errors.push(`Point stitch ${String(id)} is outside the canvas.`);
+    if (positions.has(key)) errors.push(`Point stitch ${String(id)} duplicates another point.`);
+    if (!activePaletteIds.has(points.colors[index])) errors.push(`Point stitch ${String(id)} has an unknown palette ID.`);
+    if (points.completed[index] > 1) errors.push(`Point stitch ${String(id)} has an invalid completion bit.`);
+    if (points.orientations[index] > 3) errors.push(`Point stitch ${String(id)} has an invalid orientation.`);
+    else if (points.orientations[index] !== 0 && !beadPaletteIds.has(points.colors[index])) errors.push(`French knot ${String(id)} has an orientation.`);
+    ids.add(id);
+    positions.add(key);
+    maxId = Math.max(maxId, id);
+  }
   if (!Number.isSafeInteger(document.nextBackstitchId) || document.nextBackstitchId < 1 || document.nextBackstitchId > UINT32_MAX + 1) {
     errors.push('nextBackstitchId is invalid.');
   } else if (document.nextBackstitchId <= maxId) {
-    errors.push('nextBackstitchId must be greater than every allocated backstitch ID.');
+    errors.push('nextBackstitchId must be greater than every allocated specialty stitch ID.');
   }
 
   if (!Number.isSafeInteger(document.revision) || document.revision < 0) errors.push('revision must be a non-negative integer.');

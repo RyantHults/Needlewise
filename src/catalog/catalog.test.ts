@@ -1,11 +1,18 @@
 import { describe, expect, it } from 'vitest';
+import { millHillCatalog } from './test-support';
 import provenanceAsset from '../../catalog/provenance.json';
+import millHillAsset from '../../catalog/mill-hill-beads.json';
+import millHillProvenanceAsset from '../../catalog/mill-hill-provenance.json';
+import { MaterialKind } from '../domain/types';
+import { validateMillHillCatalogBundle } from './mill-hill';
 import {
   DMC_CATALOG_DEFINITION,
   DEFAULT_CATALOG_DEFINITION,
   DMC_CATALOG,
   DMC_CATALOG_RECORD_COUNT,
   INSTALLED_CATALOG_REGISTRY,
+  SEED_BEAD_SIZE_MM,
+  beadSizeMm,
   createCatalogReference,
   getDmcColor,
   validateDmcCatalogBundle,
@@ -182,5 +189,77 @@ describe('offline DMC-compatible catalog', () => {
     const black = DMC_CATALOG_DEFINITION.nearest({ r: 0, g: 0, b: 0 });
     expect(black).toBeDefined();
     expect(Math.min(...black!.rgb)).toBeLessThan(40);
+  });
+});
+
+describe('Mill Hill bead catalog', () => {
+  const beadRecords = millHillAsset.records;
+
+  it('validates the committed bundle against the DMC catalog it was mapped from', () => {
+    const validation = validateMillHillCatalogBundle(millHillAsset, millHillProvenanceAsset, DMC_CATALOG);
+    expect(validation.errors).toEqual([]);
+    expect(validation.valid).toBe(true);
+  });
+
+  it('is installed as a bead catalog beside the DMC thread catalog', () => {
+    expect(INSTALLED_CATALOG_REGISTRY.resolve(millHillCatalog().association)).toBe(millHillCatalog());
+    expect(millHillCatalog().materialKind).toBe(MaterialKind.Bead);
+    expect(DMC_CATALOG_DEFINITION.materialKind).toBe(MaterialKind.Floss);
+    expect(millHillCatalog().association.colorCount).toBe(beadRecords.length);
+  });
+
+  it('colours each bead with its mapped DMC thread and lets beads share a colour', () => {
+    const blanc = getDmcColor('Blanc')!;
+    const whiteBeads = millHillCatalog().records.filter((record) => record.hex === blanc.hex);
+    expect(whiteBeads.length).toBeGreaterThan(1);
+    expect(millHillCatalog().getByHex(blanc.hex.toLowerCase())).toBe(whiteBeads[0]);
+    expect(millHillCatalog().search('00479')).toEqual([expect.objectContaining({ code: '00479', sourceId: 'mill-hill-00479', hex: blanc.hex })]);
+    expect(millHillCatalog().nearest({ r: blanc.rgb[0], g: blanc.rgb[1], b: blanc.rgb[2] })?.hex).toBe(blanc.hex);
+  });
+
+  it('gives every bead a positive diameter and length and resolves an entry to its bead size', () => {
+    for (const record of beadRecords) {
+      expect(record.diameterMm).toBeGreaterThan(0);
+      expect(record.lengthMm).toBeGreaterThan(0);
+    }
+    const reference = (code: string) => {
+      const record = millHillCatalog().records.find((candidate) => candidate.code === code)!;
+      return { catalog: createCatalogReference(millHillCatalog(), record) };
+    };
+    expect(beadSizeMm(reference('00479'))).toEqual({ diameterMm: 2.5, lengthMm: 1.75 });
+    expect(beadSizeMm(reference('05002'))).toEqual({ diameterMm: 5.5, lengthMm: 3.85 });
+    expect(beadSizeMm({ catalog: { ...reference('00479').catalog, sourceId: 'mill-hill-99999' } })).toBe(SEED_BEAD_SIZE_MM);
+  });
+
+  it('rejects a bead whose colour differs from its DMC record', () => {
+    const records = beadRecords.map((record, index) => index === 0 ? { ...record, hex: '#010203', rgb: [1, 2, 3] } : record);
+    const result = validateMillHillCatalogBundle({ ...millHillAsset, records }, millHillProvenanceAsset, DMC_CATALOG);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((error) => error.includes('does not match its DMC record'))).toBe(true);
+  });
+
+  it('rejects a bead mapped to a DMC code the catalog lacks', () => {
+    const records = beadRecords.map((record, index) => index === 0 ? { ...record, dmcCode: 'missing' } : record);
+    const result = validateMillHillCatalogBundle({ ...millHillAsset, records }, millHillProvenanceAsset, DMC_CATALOG);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((error) => error.includes('dmcCode'))).toBe(true);
+  });
+
+  it('rejects duplicate bead codes', () => {
+    const result = validateMillHillCatalogBundle({ ...millHillAsset, records: [...beadRecords, beadRecords[0]] }, millHillProvenanceAsset, DMC_CATALOG);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((error) => error.includes('duplicates a code'))).toBe(true);
+    expect(result.errors.some((error) => error.includes('duplicates a source ID'))).toBe(true);
+  });
+
+  it('binds provenance to the catalog and requires the approximation status', () => {
+    const renamed = beadRecords.map((record, index) => index === 0 ? { ...record, name: 'Changed' } : record);
+    const hashResult = validateMillHillCatalogBundle({ ...millHillAsset, records: renamed }, millHillProvenanceAsset, DMC_CATALOG);
+    expect(hashResult.errors.some((error) => error.includes('normalizedCatalogSha256'))).toBe(true);
+
+    const official = { ...millHillProvenanceAsset, status: { ...millHillProvenanceAsset.status, official: true, millHillAffiliation: true } };
+    const statusResult = validateMillHillCatalogBundle(millHillAsset, official, DMC_CATALOG);
+    expect(statusResult.errors.some((error) => error.includes('official must be false'))).toBe(true);
+    expect(statusResult.errors.some((error) => error.includes('millHillAffiliation must be false'))).toBe(true);
   });
 });

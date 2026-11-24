@@ -8,12 +8,15 @@ import {
   type FragmentSelection,
   type PatternDocument,
   type PatternFragment,
-  type PatternFragmentBackstitches
+  type PatternFragmentBackstitches,
+  type PatternFragmentPointStitches,
+  type PointStitchStore
 } from './types';
 import { assertStrictlyIncreasing, isRecord } from './guards';
 import { segmentKey, type BackstitchEndpoints } from './backstitch-store';
 import { assertValidDocument } from './validation';
-import { isThreeQuarterKind, isThreeQuarterPairKind } from './model';
+import { isPointStitchPosition, isThreeQuarterKind, isThreeQuarterPairKind } from './model';
+import { pointKey } from './point-stitch-store';
 
 function cellCount(width: number, height: number): number | undefined {
   const count = width * height;
@@ -61,7 +64,14 @@ export function isFixedPointContainedInCellUnion(
   return false;
 }
 
-/** Shared endpoint containment rule for sparse fragment capture and deletion. */
+/**
+ * Shared endpoint containment rule for sparse fragment capture and deletion.
+ * A line is contained when both endpoints are; a knot or bead is contained
+ * when its one position passes `isFixedPointContainedInCellUnion` directly.
+ * The rule is closed, so a corner on the selection border belongs to the
+ * selection. Rect selections apply the same rule with edges included
+ * (`segmentInRect`, `pointInRect`).
+ */
 export function backstitchEndpointsContainedInCellUnion(
   x1: number,
   y1: number,
@@ -75,6 +85,32 @@ export function backstitchEndpointsContainedInCellUnion(
     && isFixedPointContainedInCellUnion(x2, y2, documentWidth, documentHeight, indices);
 }
 
+/**
+ * Ids of the knots and beads in the closed union of the cells at sorted
+ * `indices`, in storage order: a corner belongs to every cell around it.
+ */
+export function pointStitchIdsInCellUnion(document: Pick<PatternDocument, 'width' | 'height' | 'pointStitches'>, indices: Uint32Array): Uint32Array {
+  const store = document.pointStitches;
+  const ids: number[] = [];
+  for (let index = 0; index < store.ids.length; index += 1) {
+    if (isFixedPointContainedInCellUnion(store.x[index], store.y[index], document.width, document.height, indices)) ids.push(store.ids[index]);
+  }
+  return new Uint32Array(ids);
+}
+
+/** Whether a fixed-point coordinate lies in `rect` (cells), edges included. */
+export function isFixedPointInRect(x: number, y: number, rect: CropRect): boolean {
+  const units = FIXED_POINT_UNITS_PER_CELL;
+  return x >= rect.x * units && x <= (rect.x + rect.width) * units && y >= rect.y * units && y <= (rect.y + rect.height) * units;
+}
+
+/** Ids of the knots and beads in `rect` (cells), edges included, in storage order. */
+export function pointStitchIdsInRect(store: PointStitchStore, rect: CropRect): Uint32Array {
+  const ids: number[] = [];
+  for (let index = 0; index < store.ids.length; index += 1) if (isFixedPointInRect(store.x[index], store.y[index], rect)) ids.push(store.ids[index]);
+  return new Uint32Array(ids);
+}
+
 function fragmentBackstitches(value: unknown): value is PatternFragmentBackstitches {
   if (!isRecord(value)) return false;
   return value.x1 instanceof Uint32Array
@@ -84,7 +120,12 @@ function fragmentBackstitches(value: unknown): value is PatternFragmentBackstitc
     && value.colors instanceof Uint16Array;
 }
 
-export function getPatternFragmentValidationErrors(fragment: PatternFragment): string[] {
+function fragmentPointStitches(value: unknown): value is PatternFragmentPointStitches {
+  if (!isRecord(value)) return false;
+  return value.x instanceof Uint32Array && value.y instanceof Uint32Array && value.colors instanceof Uint16Array && value.orientations instanceof Uint8Array;
+}
+
+function getPatternFragmentValidationErrors(fragment: PatternFragment): string[] {
   const errors: string[] = [];
   if (!isRecord(fragment) || fragment.version !== PATTERN_FRAGMENT_VERSION) {
     errors.push('Pattern fragment version must be 1.');
@@ -107,6 +148,13 @@ export function getPatternFragmentValidationErrors(fragment: PatternFragment): s
   }
   const stores = [fragment.backstitches.x1, fragment.backstitches.y1, fragment.backstitches.x2, fragment.backstitches.y2, fragment.backstitches.colors];
   if (stores.some((store) => store.length !== fragment.backstitches.x1.length)) errors.push('Pattern fragment backstitch arrays must have equal lengths.');
+  if (!fragmentPointStitches(fragment.pointStitches)) {
+    errors.push('Pattern fragment point stitches must contain typed coordinate, color and orientation arrays.');
+    return errors;
+  }
+  const points = fragment.pointStitches;
+  if (points.y.length !== points.x.length || points.colors.length !== points.x.length || points.orientations.length !== points.x.length) errors.push('Pattern fragment point stitch arrays must have equal lengths.');
+  if (points.orientations.some((orientation) => orientation > 3)) errors.push('Pattern fragment point stitch orientations must be 0 to 3.');
   if (errors.length > 0) return errors;
 
   for (let index = 0; index < count; index += 1) {
@@ -144,6 +192,17 @@ export function getPatternFragmentValidationErrors(fragment: PatternFragment): s
     if (segments.has(key)) errors.push(`Pattern fragment backstitch ${String(index)} duplicates another segment.`);
     segments.add(key);
   }
+  const positions = new Set<string>();
+  for (let index = 0; index < points.x.length; index += 1) {
+    const x = points.x[index];
+    const y = points.y[index];
+    const key = pointKey(x, y);
+    if (!isPointStitchPosition({ x, y })) errors.push(`Pattern fragment point stitch ${String(index)} is not on a cell corner or centre.`);
+    if (x > maxX || y > maxY) errors.push(`Pattern fragment point stitch ${String(index)} is outside the fragment boundary.`);
+    if (points.colors[index] === 0) errors.push(`Pattern fragment point stitch ${String(index)} has no palette color.`);
+    if (positions.has(key)) errors.push(`Pattern fragment point stitch ${String(index)} duplicates another position.`);
+    positions.add(key);
+  }
   return errors;
 }
 
@@ -179,11 +238,31 @@ type SegmentContains = (x1: number, y1: number, x2: number, y2: number) => boole
 
 /** Whether both endpoints lie in `rect` (cells), edges included. */
 function segmentInRect(rect: CropRect): SegmentContains {
-  const left = rect.x * FIXED_POINT_UNITS_PER_CELL;
-  const top = rect.y * FIXED_POINT_UNITS_PER_CELL;
-  const right = (rect.x + rect.width) * FIXED_POINT_UNITS_PER_CELL;
-  const bottom = (rect.y + rect.height) * FIXED_POINT_UNITS_PER_CELL;
-  return (x1, y1, x2, y2) => x1 >= left && x1 <= right && x2 >= left && x2 <= right && y1 >= top && y1 <= bottom && y2 >= top && y2 <= bottom;
+  return (x1, y1, x2, y2) => isFixedPointInRect(x1, y1, rect) && isFixedPointInRect(x2, y2, rect);
+}
+
+type PointContains = (x: number, y: number) => boolean;
+
+/** Whether a point lies in `rect` (cells), edges included. */
+function pointInRect(rect: CropRect): PointContains {
+  return (x, y) => isFixedPointInRect(x, y, rect);
+}
+
+/** Storage positions of the point stitches `contains` accepts, in storage order. */
+function containedPointStitchPositions(store: PatternFragmentPointStitches, contains: PointContains): number[] {
+  const positions: number[] = [];
+  for (let index = 0; index < store.x.length; index += 1) if (contains(store.x[index], store.y[index])) positions.push(index);
+  return positions;
+}
+
+/** The point stitches at `positions`, moved so (`left`, `top`) in fixed-point units becomes the origin. */
+function rebasePointStitches(store: PatternFragmentPointStitches, positions: readonly number[], left: number, top: number): PatternFragmentPointStitches {
+  return {
+    x: Uint32Array.from(positions, (index) => store.x[index] - left),
+    y: Uint32Array.from(positions, (index) => store.y[index] - top),
+    colors: Uint16Array.from(positions, (index) => store.colors[index]),
+    orientations: Uint8Array.from(positions, (index) => store.orientations[index])
+  };
 }
 
 /** Storage positions of the backstitches `contains` accepts, in storage order. */
@@ -210,9 +289,11 @@ export function createPatternFragment(document: PatternDocument, selection: Frag
   const rect = 'kind' in selection ? selection.rect : selection;
   validateSelection(document, rect);
   const { kind, colors } = copyCellRows(document, rect);
-  const positions = containedBackstitchPositions(document.backstitches, segmentInRect(rect));
-  const backstitches = rebaseBackstitches(document.backstitches, positions, rect.x * FIXED_POINT_UNITS_PER_CELL, rect.y * FIXED_POINT_UNITS_PER_CELL);
-  return { version: PATTERN_FRAGMENT_VERSION, width: rect.width, height: rect.height, kind, colors, backstitches };
+  const left = rect.x * FIXED_POINT_UNITS_PER_CELL;
+  const top = rect.y * FIXED_POINT_UNITS_PER_CELL;
+  const backstitches = rebaseBackstitches(document.backstitches, containedBackstitchPositions(document.backstitches, segmentInRect(rect)), left, top);
+  const pointStitches = rebasePointStitches(document.pointStitches, containedPointStitchPositions(document.pointStitches, pointInRect(rect)), left, top);
+  return { version: PATTERN_FRAGMENT_VERSION, width: rect.width, height: rect.height, kind, colors, backstitches, pointStitches };
 }
 
 function validateCellSetSelection(document: PatternDocument, indices: Uint32Array): void {
@@ -251,9 +332,13 @@ export function createPatternFragmentFromCells(document: PatternDocument, indice
     colors.set(document.colors.subarray(index * 4, index * 4 + 4), targetIndex * 4);
   }
 
-  const positions = containedBackstitchPositions(document.backstitches, (x1, y1, x2, y2) => backstitchEndpointsContainedInCellUnion(x1, y1, x2, y2, document.width, document.height, indices));
-  const backstitches = rebaseBackstitches(document.backstitches, positions, minX * FIXED_POINT_UNITS_PER_CELL, minY * FIXED_POINT_UNITS_PER_CELL);
-  return { version: PATTERN_FRAGMENT_VERSION, width, height, kind, colors, backstitches };
+  const left = minX * FIXED_POINT_UNITS_PER_CELL;
+  const top = minY * FIXED_POINT_UNITS_PER_CELL;
+  const linePositions = containedBackstitchPositions(document.backstitches, (x1, y1, x2, y2) => backstitchEndpointsContainedInCellUnion(x1, y1, x2, y2, document.width, document.height, indices));
+  const backstitches = rebaseBackstitches(document.backstitches, linePositions, left, top);
+  const pointPositions = containedPointStitchPositions(document.pointStitches, (x, y) => isFixedPointContainedInCellUnion(x, y, document.width, document.height, indices));
+  const pointStitches = rebasePointStitches(document.pointStitches, pointPositions, left, top);
+  return { version: PATTERN_FRAGMENT_VERSION, width, height, kind, colors, backstitches, pointStitches };
 }
 
 export function clonePatternFragment(fragment: PatternFragment): PatternFragment {
@@ -270,18 +355,26 @@ export function clonePatternFragment(fragment: PatternFragment): PatternFragment
       x2: fragment.backstitches.x2.slice(),
       y2: fragment.backstitches.y2.slice(),
       colors: fragment.backstitches.colors.slice()
+    },
+    pointStitches: {
+      x: fragment.pointStitches.x.slice(),
+      y: fragment.pointStitches.y.slice(),
+      colors: fragment.pointStitches.colors.slice(),
+      orientations: fragment.pointStitches.orientations.slice()
     }
   };
 }
 
-/** Keeps the cells in `rect` (fragment coordinates) and the backstitches wholly inside it, rebased to the origin. */
+/** Keeps the cells in `rect` (fragment coordinates) and the backstitches and point stitches wholly inside it, rebased to the origin. */
 export function cropPatternFragment(fragment: PatternFragment, rect: CropRect): PatternFragment {
   assertValidPatternFragment(fragment);
   if (!rectInside(rect, fragment.width, fragment.height)) {
     throw new DomainError('invalid-selection', 'Fragment crop must be a non-empty rectangle inside the fragment.');
   }
   const { kind, colors } = copyCellRows(fragment, rect);
-  const positions = containedBackstitchPositions(fragment.backstitches, segmentInRect(rect));
-  const backstitches = rebaseBackstitches(fragment.backstitches, positions, rect.x * FIXED_POINT_UNITS_PER_CELL, rect.y * FIXED_POINT_UNITS_PER_CELL);
-  return { version: PATTERN_FRAGMENT_VERSION, width: rect.width, height: rect.height, kind, colors, backstitches };
+  const left = rect.x * FIXED_POINT_UNITS_PER_CELL;
+  const top = rect.y * FIXED_POINT_UNITS_PER_CELL;
+  const backstitches = rebaseBackstitches(fragment.backstitches, containedBackstitchPositions(fragment.backstitches, segmentInRect(rect)), left, top);
+  const pointStitches = rebasePointStitches(fragment.pointStitches, containedPointStitchPositions(fragment.pointStitches, pointInRect(rect)), left, top);
+  return { version: PATTERN_FRAGMENT_VERSION, width: rect.width, height: rect.height, kind, colors, backstitches, pointStitches };
 }

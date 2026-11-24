@@ -52,6 +52,7 @@ async function defaultFallback(
 export function prepareWorkerInput(input: PdfExportWorkerInput): { input: PdfExportWorkerInput; transfer: Transferable[] } {
   const { document } = input;
   const store = document.backstitches;
+  const points = document.pointStitches;
   const copy = {
     width: document.width,
     height: document.height,
@@ -66,14 +67,24 @@ export function prepareWorkerInput(input: PdfExportWorkerInput): { input: PdfExp
       colors: store.colors.slice(),
       completed: new Uint8Array(0)
     },
+    pointStitches: {
+      ids: points.ids.slice(),
+      x: points.x.slice(),
+      y: points.y.slice(),
+      colors: points.colors.slice(),
+      orientations: points.orientations.slice(),
+      completed: new Uint8Array(0)
+    },
     palette: document.palette,
+    settings: document.settings,
     ...(document.canvasMask ? { canvasMask: document.canvasMask.slice() } : {})
   };
   const coverImagePng = input.coverImagePng?.slice();
   const transfer: Transferable[] = [
     copy.kind.buffer, copy.colors.buffer,
     copy.backstitches.ids.buffer, copy.backstitches.x1.buffer, copy.backstitches.y1.buffer,
-    copy.backstitches.x2.buffer, copy.backstitches.y2.buffer, copy.backstitches.colors.buffer
+    copy.backstitches.x2.buffer, copy.backstitches.y2.buffer, copy.backstitches.colors.buffer,
+    copy.pointStitches.ids.buffer, copy.pointStitches.x.buffer, copy.pointStitches.y.buffer, copy.pointStitches.colors.buffer, copy.pointStitches.orientations.buffer
   ];
   if (copy.canvasMask) transfer.push(copy.canvasMask.buffer);
   if (coverImagePng) transfer.push(coverImagePng.buffer);

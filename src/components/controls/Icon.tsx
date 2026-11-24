@@ -22,6 +22,9 @@ import selectOval from "../../assets/editor-tools/select-oval.svg";
 import lasso from "../../assets/editor-tools/lasso.svg";
 import stitch from "../../assets/editor-tools/stitch.svg";
 import backstitch from "../../assets/editor-tools/backstitch.svg";
+import specialty from "../../assets/editor-tools/specialty.svg";
+import frenchKnot from "../../assets/editor-tools/french-knot.svg";
+import bead from "../../assets/editor-tools/bead.svg";
 import eraser from "../../assets/editor-tools/eraser.svg";
 import paintBucket from "../../assets/editor-tools/paint-bucket.svg";
 import eyedropper from "../../assets/editor-tools/eyedropper.svg";
@@ -52,6 +55,9 @@ const ICONS = {
   lasso,
   stitch,
   backstitch,
+  specialty,
+  "french-knot": frenchKnot,
+  bead,
   eraser,
   "paint-bucket": paintBucket,
   eyedropper,

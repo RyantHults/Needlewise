@@ -11,8 +11,8 @@ describe('material formatting', () => {
   });
 
   it('summarizes stitch counts', () => {
-    expect(stitchSummary({ full: 2, half: 0, quarter: 1, threeQuarter: 3, backstitch: 4 })).toBe('2 full · 3 3/4 · 1 quarter · 4 backstitch');
-    expect(stitchSummary({ full: 0, half: 0, quarter: 0, backstitch: 0 })).toBe('No stitches');
+    expect(stitchSummary({ full: 2, half: 0, quarter: 1, threeQuarter: 3, backstitch: 4, knot: 0 })).toBe('2 full · 3 3/4 · 1 quarter · 4 backstitch');
+    expect(stitchSummary({ full: 0, half: 0, quarter: 0, threeQuarter: 0, backstitch: 0, knot: 0 })).toBe('No stitches');
   });
 
   it('sanitizes the PDF filename', () => {

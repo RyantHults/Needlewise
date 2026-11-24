@@ -26,7 +26,7 @@ describe('persistence preparation protocol and worker', () => {
     const request = createPreparationRequest(clone, token);
     const responses: Array<{ message: PersistencePreparationResponse; transfer?: Transferable[] }> = [];
 
-    expect(preparationTransferList(clone)).toHaveLength(10);
+    expect(preparationTransferList(clone)).toHaveLength(16);
     handlePersistencePreparationWorkerMessage(request, (message, transfer) => responses.push({ message, transfer }));
     await waitForTurn();
 

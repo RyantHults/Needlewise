@@ -8,6 +8,9 @@ import {
 import type { ProjectWorkspace } from "../../application/workspace";
 import {
   DEFAULT_PATTERN_SETTINGS,
+  isBeadEntry,
+  MaterialKind,
+  MaterialUnit,
   findLayer,
 } from "../../domain";
 import type { LayerType, PatternDocument } from "../../domain";
@@ -23,8 +26,8 @@ import { createCatalogReference, type CatalogDefinition, type CatalogRecord } fr
 import { createPortal } from "react-dom";
 import { Modal } from "../Modal";
 import { ConfirmDialog } from "../ConfirmDialog";
-import { ColorPickerModal } from "../ColorPickerModal";
-import type { ThreadColorPickerProps } from "../ThreadColorPicker";
+import { CatalogPickerDialog } from "../ColorPickerModal";
+import { CatalogColorPicker, ThreadColorPicker, type ThreadColorPickerProps } from "../ThreadColorPicker";
 import { normalizeHexColor } from "../../domain/color";
 import { rectsEqual } from "../../editor/rect";
 import { PaletteManagerModal } from "./PaletteManagerModal";
@@ -43,6 +46,7 @@ import { DockPopover, useMobileDock } from "./mobile-dock";
 import { CanvasFrame, useEditorCanvas } from "./editor-canvas";
 import { StitchReadout, useStitchReadout } from "./stitch-readout";
 import { SegmentedControl } from "../controls/SegmentedControl";
+import { nextRovingIndex } from "../controls/roving";
 import { ToolButton } from "../controls/ToolButton";
 import { ErrorNotice } from "../controls/Notice";
 import { SwatchSymbol, SymbolTile, SYMBOL_VIEWBOX, symbolSpriteId } from "../controls/SwatchSymbol";
@@ -50,7 +54,7 @@ import { useDismissable } from "../dismiss";
 import { anchoredPosition } from "../anchored-position";
 import { useTimedValue } from "../timed-value";
 import { prefersReducedMotion } from "../motion";
-import { toolAvailability, type BrushSizeTool, type EditorActiveLayer, type SelectShape, type ShapeKind } from "../../editor/contracts";
+import { toolAvailability, type BrushSizeTool, type EditorActiveLayer, type EditorToolState, type SelectShape, type ShapeKind, type SpecialtyStitch } from "../../editor/contracts";
 import type { ProjectSession } from "../../application/session";
 interface Props {
   workspace: ProjectWorkspace;
@@ -79,6 +83,12 @@ const SELECT_CHOICES: readonly SelectChoice[] = [
 ];
 const STITCH_CHOICES = [["full", "Full stitch"], ["half", "Half stitch"], ["three-quarter", "3/4 stitch"]] as const;
 type StitchKind = (typeof STITCH_CHOICES)[number][0];
+const SPECIALTY_STITCHES = [
+  { value: "backstitch", label: <><Icon name="backstitch" />Backstitch</> },
+  { value: "french-knot", label: <><Icon name="french-knot" />French knot</> },
+  { value: "bead", label: <><Icon name="bead" />Bead</> },
+] as const satisfies readonly { value: SpecialtyStitch; label: React.ReactNode }[];
+/** Beads are counted catalog products that colour only French-knot-style points. */
 const BACKSTITCH_MODES = [{ value: "draw", label: "Draw" }, { value: "move", label: "Move" }] as const satisfies readonly { value: BackstitchMode; label: string }[];
 const STITCH_DIRECTIONS = [{ value: "/", label: "Bottom-left to top-right" }, { value: "\\", label: "Top-left to bottom-right" }] as const;
 
@@ -114,6 +124,16 @@ type SelectionAction = "copy" | "paste" | "move" | "delete" | "add-cells" | "del
 // symbol is reachable, glyphs already held by other palette entries stay
 // visible and picking one swaps the two colors' glyphs (the document keeps
 // one unique symbol per color). The filter above narrows the wall on demand.
+type RailTab = "threads" | "beads";
+const RAIL_TABS: readonly (readonly [RailTab, string])[] = [["threads", "Threads"], ["beads", "Beads"]];
+
+/** The palette tab a tool brings forward: beads for placing beads, threads for every other placing tool, none for tools that place nothing. */
+function railTabForTool(tool: EditorToolState["tool"] | undefined, specialtyStitch: SpecialtyStitch | undefined): RailTab | undefined {
+  if (tool === "specialty") return specialtyStitch === "bead" ? "beads" : "threads";
+  if (tool === "paint" || tool === "shape" || tool === "fill") return "threads";
+  return undefined;
+}
+
 export function EditorSurface({
   workspace,
   document,
@@ -121,19 +141,23 @@ export function EditorSurface({
   onRenameTitle,
 }: Props) {
   const catalog = workspace.catalogFor(document);
-  const availableCatalogs = workspace.availableCatalogs();
+  const threadCatalogs = workspace.threadCatalogs();
+  const beadCatalogs = workspace.beadCatalogs();
+  /** Every installed catalog, for telling palette codes apart by brand. */
+  const labelCatalogs = [...threadCatalogs, ...beadCatalogs];
   const referenceAssetId = workspace.sourceImage?.assetId;
   const referenceImage = useMemo(() => {
     const asset = referenceAssetId === undefined ? undefined : workspace.getAsset(referenceAssetId);
     return asset && new Blob([new Uint8Array(asset.data) as unknown as ArrayBuffer], { type: asset.mimeType });
   }, [referenceAssetId]);
-  const defaultCatalogId = availableCatalogs.some((item) => item.association.catalogId === catalog?.association.catalogId)
+  const defaultCatalogId = threadCatalogs.some((item) => item.association.catalogId === catalog?.association.catalogId)
     ? catalog!.association.catalogId
-    : availableCatalogs[0]?.association.catalogId ?? "";
+    : threadCatalogs[0]?.association.catalogId ?? "";
   const frame = useRef<HTMLDivElement>(null),
     workspaceRoot = useRef<HTMLElement>(null);
   const canvasRefs = { frame, base: useRef<HTMLCanvasElement>(null), overlay: useRef<HTMLCanvasElement>(null), keyboardSurface: workspaceRoot };
   const [lastBackstitchMode, setLastBackstitchMode] = useState<BackstitchMode>("draw");
+  const [lastSpecialtyStitch, setLastSpecialtyStitch] = useState<SpecialtyStitch>("backstitch");
   const [selectedShape, setSelectedShape] = useState<ShapeKind>("triangle");
   const [selectChoice, setSelectChoice] = useState<SelectChoice>(SELECT_CHOICES[0]!);
   const [lastStitchKind, setLastStitchKind] = useState<StitchKind>("full");
@@ -141,7 +165,7 @@ export function EditorSurface({
   const showToast = useToast();
   const showToastRef = useRef(showToast);
   showToastRef.current = showToast;
-  const { hover, attach: attachReadout } = useStitchReadout(document, availableCatalogs);
+  const { hover, attach: attachReadout } = useStitchReadout(document, labelCatalogs);
   const { controller, ui, fallback } = useEditorCanvas({
     workspace,
     document,
@@ -150,7 +174,7 @@ export function EditorSurface({
     adapterOptions: {
       shouldExcludeTarget: (target: unknown) =>
         target instanceof Element &&
-        Boolean(target.closest('.canvas-edge-controls, .floating-paste-controls, button[aria-label="Shape"], button[aria-label="Select"], button[aria-label="Stitch"], button[aria-label="Eraser"], button[aria-label^="Backstitch"], .tool-options')),
+        Boolean(target.closest('.canvas-edge-controls, .floating-paste-controls, button[aria-label="Shape"], button[aria-label="Select"], button[aria-label="Stitch"], button[aria-label="Eraser"], button[aria-label^="Specialty"], .tool-options')),
     },
     controllerOptions: {
       catalogDefinition: catalog,
@@ -221,6 +245,8 @@ export function EditorSurface({
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [swapTarget, setSwapTarget] = useState<number | null>(null);
   const [backgroundPicking, setBackgroundPicking] = useState(false);
+  /** The standalone picker was opened by "Add bead". */
+  const [beadAdding, setBeadAdding] = useState(false);
   const [paletteNotice, setPaletteNotice] = useState("");
   const addTrigger = useRef<HTMLButtonElement>(null);
   const paletteTrigger = useRef<HTMLButtonElement | null>(null);
@@ -246,8 +272,21 @@ export function EditorSurface({
   }, [pencilModeEnabled, controller]);
   const palette = document.palette.filter((x) => x.active),
     noThread = !palette.length;
-  const activeBackstitchMode = ui?.tool.tool === "backstitch" ? (ui.tool.mode ?? "draw") : undefined;
+  const threadPalette = palette.filter((entry) => !isBeadEntry(entry));
+  const beadPalette = palette.filter(isBeadEntry);
+  const [railTab, setRailTab] = useState<RailTab>("threads");
+  const toolKind = ui?.tool.tool;
+  const activeSpecialtyStitch = ui?.tool.tool === "specialty" ? ui.tool.stitch : undefined;
+  // The tab follows a change to a placing tool, however the tool changed; the user can still switch tabs freely.
+  useEffect(() => {
+    const follow = railTabForTool(toolKind, activeSpecialtyStitch);
+    if (follow) setRailTab(follow);
+  }, [toolKind, activeSpecialtyStitch]);
+  const showingBeads = railTab === "beads";
+  const shownPalette = showingBeads ? beadPalette : threadPalette;
+  const activeBackstitchMode = ui?.tool.tool === "specialty" && ui.tool.stitch === "backstitch" ? (ui.tool.mode ?? "draw") : undefined;
   const selectedPalette = palette.find((x) => x.id === ui?.paletteId) ?? palette[0];
+  const noThreadEntry = threadPalette.length === 0;
   const choose = (kind: StitchKind) => {
     const id = selectedPalette?.id;
     if (id)
@@ -289,7 +328,8 @@ export function EditorSurface({
   };
   const invoke = (tool: string) => {
     if (refuseUnavailable(tool)) return;
-    if (noThread && ["paint", "fill", "backstitch"].includes(tool)) return;
+    if (noThread && tool === "specialty") return;
+    if (noThreadEntry && (tool === "paint" || tool === "fill")) return;
     if ((tool === "select" || tool === "lasso") && String(ui?.tool.tool) === tool) controller?.clearSelection();
     else controller?.setTool({ tool } as never);
   };
@@ -317,12 +357,22 @@ export function EditorSurface({
     paletteTrigger.current = addTrigger.current;
     setSwapTarget(null);
     setBackgroundPicking(false);
+    setBeadAdding(false);
+    setPaletteNotice("");
+    setPaletteOpen(true);
+  };
+  const openBeadPicker = () => {
+    paletteTrigger.current = addTrigger.current;
+    setSwapTarget(null);
+    setBackgroundPicking(false);
+    setBeadAdding(true);
     setPaletteNotice("");
     setPaletteOpen(true);
   };
   const openSwapPicker = (id: number, trigger: HTMLButtonElement) => {
     paletteTrigger.current = trigger;
     setBackgroundPicking(false);
+    setBeadAdding(false);
     setPaletteNotice("");
     setSwapTarget(id);
     setPaletteOpen(true);
@@ -390,14 +440,15 @@ export function EditorSurface({
     if (ui?.paletteId === id) controller?.selectPalette(null);
     closeDeleteConfirm();
   };
-  const backgroundCatalogMatch = availableCatalogs.flatMap((item) => {
+  const backgroundCatalogMatch = threadCatalogs.flatMap((item) => {
     const record = item.getByHex(documentBackgroundColor);
     return record ? [{ item, record }] : [];
   })[0];
-  const backgroundCatalog = backgroundCatalogMatch?.item ?? availableCatalogs.find((item) => item.association.catalogId === defaultCatalogId);
+  const backgroundCatalog = backgroundCatalogMatch?.item ?? threadCatalogs.find((item) => item.association.catalogId === defaultCatalogId);
   const openBackgroundPicker = (trigger: HTMLButtonElement) => {
     paletteTrigger.current = trigger;
     setSwapTarget(null);
+    setBeadAdding(false);
     setBackgroundPicking(true);
     setPaletteNotice("");
     setPaletteOpen(true);
@@ -428,6 +479,7 @@ export function EditorSurface({
   const closePalettePicker = () => {
     setPaletteOpen(false);
     setBackgroundPicking(false);
+    setBeadAdding(false);
   };
   const useBackgroundColor = (hex: string) => {
     setCanvasBackground(hex);
@@ -454,6 +506,7 @@ export function EditorSurface({
         name: color.name,
         color: color.hex,
         catalog: createCatalogReference(definition, color),
+        ...(definition.materialKind === MaterialKind.Bead ? { material: beadMaterial(color) } : {}),
       });
       const createdDocument = result?.document ?? workspace.getStateSnapshot().document;
       const added = createdDocument?.palette.find(
@@ -481,13 +534,15 @@ export function EditorSurface({
     }
     closePalettePicker();
   };
+  /** A bead entry is counted, and named after its Mill Hill bead. */
+  const beadMaterial = (color: CatalogColor) => ({ kind: MaterialKind.Bead, label: color.name, unit: MaterialUnit.Count });
   const swapIntoCatalogColor = (color: CatalogColor, definition: CatalogDefinition) => {
     const target = swapTarget;
     if (target === null) return;
     const existing = palette.find((entry) => entry.active && entry.id !== target && entry.catalog?.catalogId === definition.association.catalogId && entry.catalog.sourceId === color.sourceId);
     try {
       if (existing) workspace.execute({ type: "palette-merge", from: target, to: existing.id });
-      else workspace.execute({ type: "palette-merge", from: target, createTo: { name: color.name, color: color.hex, catalog: createCatalogReference(definition, color) } });
+      else workspace.execute({ type: "palette-merge", from: target, createTo: { name: color.name, color: color.hex, catalog: createCatalogReference(definition, color), ...(definition.materialKind === MaterialKind.Bead ? { material: beadMaterial(color) } : {}) } });
       const replacement = existing?.id ?? workspace.getStateSnapshot().document?.palette.find((entry) => entry.active && entry.id !== target && entry.catalog?.catalogId === definition.association.catalogId && entry.catalog.sourceId === color.sourceId)?.id ?? null;
       finishSwap(replacement);
     } catch (error) {
@@ -546,14 +601,27 @@ export function EditorSurface({
   // Shared by the standalone picker and the manager's panel; the mode comes
   // from backgroundPicking and swapTarget.
   const pickerProps: ThreadColorPickerProps = {
-    catalogs: availableCatalogs,
+    catalogs: threadCatalogs,
     defaultCatalogId,
     verb: backgroundPicking ? "Use" : swapTarget === null ? "Add" : "Swap",
     onPickCatalogColor: (color, definition) => backgroundPicking ? useBackgroundColor(color.hex) : swapTarget === null ? void addPaletteColor(color, definition) : swapIntoCatalogColor(color, definition),
     onPickCustomColor: (hex, catalogMatch, definition) => backgroundPicking ? useBackgroundColor(hex) : swapTarget === null ? void addCustomColor(hex, catalogMatch, definition) : swapIntoCustomColor(hex),
     customActionLabel,
   };
-  const catalogEntryCode = (entry: (typeof palette)[number]) => paletteCodeFor(entry, palette, availableCatalogs);
+  /** Swapping a bead, or adding one, picks from the bead catalogs, which have no custom colors. */
+  const swapEntry = swapTarget === null ? undefined : palette.find((entry) => entry.id === swapTarget);
+  const beadPicking = swapEntry ? isBeadEntry(swapEntry) : beadAdding && !backgroundPicking;
+  const colorPicker = (key: string) => beadPicking ? (
+    <CatalogColorPicker
+      key={key}
+      catalogs={beadCatalogs}
+      defaultCatalogId={beadCatalogs[0]?.association.catalogId ?? ""}
+      noun="bead"
+      verb={swapTarget === null ? "Add" : "Swap"}
+      onPickCatalogColor={pickerProps.onPickCatalogColor}
+    />
+  ) : <ThreadColorPicker key={key} {...pickerProps} />;
+  const catalogEntryCode = (entry: (typeof palette)[number]) => paletteCodeFor(entry, palette, labelCatalogs);
   const catalogEntryLabel = (entry: (typeof palette)[number]) => catalogEntryCode(entry).label;
   const openPaletteMenu = (id: number, anchor: HTMLElement) => {
     window.clearTimeout(palettePress.current ?? undefined);
@@ -755,9 +823,15 @@ export function EditorSurface({
   const halfActive = selectedBrush?.kind === "half";
   const threeQuarterActive =
     (selectedBrush as { kind?: string } | undefined)?.kind === "three-quarter";
-  const backstitchActive = ui?.tool.tool === "backstitch";
+  const specialtyActive = ui?.tool.tool === "specialty";
+  useEffect(() => { if (activeSpecialtyStitch) setLastSpecialtyStitch(activeSpecialtyStitch); }, [activeSpecialtyStitch]);
+  /** Backstitch comes back in its last mode; knots and beads have none. */
+  const chooseSpecialtyStitch = (stitch: SpecialtyStitch) => {
+    if (stitch === "backstitch") controller?.setBackstitchMode(lastBackstitchMode);
+    else controller?.setTool({ tool: "specialty", stitch });
+  };
   useEffect(() => { if (activeBackstitchMode) setLastBackstitchMode(activeBackstitchMode); }, [activeBackstitchMode]);
-  const shapeToolDisabled = noThread || ui?.paletteId == null || !palette.some((entry) => entry.id === ui.paletteId);
+  const shapeToolDisabled = noThreadEntry || ui?.paletteId == null || !palette.some((entry) => entry.id === ui.paletteId);
   const applyShapeTool = (shape: ShapeKind) => {
     if (shapeToolDisabled || refuseUnavailable("shape")) return;
     controller?.setTool({ tool: "shape", shape } as never);
@@ -783,8 +857,8 @@ export function EditorSurface({
               : threeQuarterActive ? { tool: "three-quarter", label: "3/4 stitch" }
                 : null;
   /** The Tool options heading: the active tool's rail name, or undefined when the tool has no options and the section is hidden. */
-  const toolOptionsHeading = sizeOption || backstitchActive || ui?.tool.tool === "shape" || activeSelectChoice
-    ? ({ paint: "Stitch", select: "Select", lasso: "Select", shape: "Shape", backstitch: "Backstitch", eraser: "Eraser", "canvas-brush": "Canvas brush" } as Record<string, string>)[String(ui?.tool.tool)]
+  const toolOptionsHeading = sizeOption || specialtyActive || ui?.tool.tool === "shape" || activeSelectChoice
+    ? ({ paint: "Stitch", select: "Select", lasso: "Select", shape: "Shape", specialty: "Specialty", eraser: "Eraser", "canvas-brush": "Canvas brush" } as Record<string, string>)[String(ui?.tool.tool)]
     : undefined;
   /** Apply/Cancel for a floating paste or move: just above the floating rect's top-right corner, below it when there is no room, clamped to the frame. */
   const floatingPaste = ui?.overlay.floatingPaste;
@@ -882,14 +956,14 @@ export function EditorSurface({
               {shapeIcon(selectedShape)}
             </button>
             <button
-              {...toolGate("backstitch", "Backstitch")}
+              {...toolGate("specialty", "Specialty")}
               type="button"
               disabled={noThread}
-              aria-label={activeBackstitchMode ? `Backstitch, ${activeBackstitchMode} mode` : "Backstitch"}
-              aria-pressed={backstitchActive}
-              onClick={() => { if (refuseUnavailable("backstitch")) return; controller?.setBackstitchMode(lastBackstitchMode); }}
+              aria-label={activeBackstitchMode ? `Specialty, ${activeBackstitchMode} mode` : "Specialty"}
+              aria-pressed={specialtyActive}
+              onClick={() => { if (refuseUnavailable("specialty")) return; chooseSpecialtyStitch(lastSpecialtyStitch); }}
             >
-              <Icon name="backstitch" />
+              <Icon name="specialty" />
             </button>
             <button
               {...toolGate("eraser", canvasAdvanced ? "Canvas eraser" : "Eraser")}
@@ -904,7 +978,7 @@ export function EditorSurface({
               {...toolGate("fill", "Fill")}
               type="button"
               aria-label="Fill"
-              disabled={noThread}
+              disabled={noThreadEntry}
               aria-pressed={ui?.tool.tool === "fill"}
               onClick={() => invoke("fill")}
             >
@@ -922,15 +996,38 @@ export function EditorSurface({
           </nav>
           </DockPopover>
           <DockPopover dock={dock} panel="colors">
-          <div className="palette-rail" role="region" aria-label="Thread colors">
+          <div className="palette-rail" role="region" aria-label="Palette">
+            <div className="palette-rail-tabs" role="tablist" aria-label="Palette kind">
+              {RAIL_TABS.map(([tab, label], index) => <button
+                key={tab}
+                id={`palette-rail-tab-${tab}`}
+                className="palette-rail-tab"
+                type="button"
+                role="tab"
+                aria-selected={railTab === tab}
+                aria-controls="palette-rail-panel"
+                tabIndex={railTab === tab ? 0 : -1}
+                onClick={() => setRailTab(tab)}
+                onKeyDown={(event) => {
+                  const target = nextRovingIndex(event.key, index, RAIL_TABS.length, "horizontal");
+                  if (target === null) return;
+                  event.preventDefault();
+                  const next = RAIL_TABS[target][0];
+                  setRailTab(next);
+                  globalThis.document.getElementById(`palette-rail-tab-${next}`)?.focus();
+                }}
+              >{label}</button>)}
+            </div>
+            <div id="palette-rail-panel" className="palette-rail-panel" role="tabpanel" aria-labelledby={`palette-rail-tab-${railTab}`}>
             <div className="palette-rail-actions">
               <button
                 ref={addTrigger}
                 className="palette-add-rail"
                 type="button"
-                aria-label="Add new color"
-                title="Add new color"
-                onClick={openPalettePicker}
+                aria-label={showingBeads ? "Add bead" : "Add new color"}
+                title={showingBeads ? "Add bead" : "Add new color"}
+                disabled={showingBeads && beadCatalogs.length === 0}
+                onClick={showingBeads ? openBeadPicker : openPalettePicker}
               ><span className="palette-add-glyph">+</span></button>
               <button
                 className="palette-manage-rail"
@@ -945,12 +1042,14 @@ export function EditorSurface({
                 aria-label="Focus Color"
                 aria-pressed={ui?.focusColor ?? false}
                 title="Focus Color"
-                disabled={palette.length === 0}
+                disabled={shownPalette.length === 0}
                 onClick={() => controller?.toggleFocusColor()}
               ><span className="palette-focus-glyph" aria-hidden="true"><Icon name="focus" /></span></button>
             </div>
             <div className="palette-rail-items">
-              {palette.map(paletteRow)}
+              {shownPalette.map(paletteRow)}
+              {showingBeads && beadPalette.length === 0 && <p className="palette-rail-empty">No beads yet</p>}
+            </div>
             </div>
           </div>
           {layeredDocument && (
@@ -1034,13 +1133,24 @@ export function EditorSurface({
                       <RangeInput id="tool-brush-size" min="1" max="10" aria-label={brushSizeHeading(sizeOption.label)} value={ui?.toolBrushSizes[sizeOption.tool] ?? 1} onChange={(event) => controller?.setToolBrushSize(sizeOption.tool, Number(event.target.value))} />
                     </div>
                   </>
-                ) : backstitchActive ? (
-                  <SegmentedControl
-                    aria-label="Backstitch mode"
-                    options={BACKSTITCH_MODES}
-                    value={activeBackstitchMode ?? lastBackstitchMode}
-                    onChange={(mode) => { controller?.setBackstitchMode(mode); setLastBackstitchMode(mode); }}
-                  />
+                ) : activeSpecialtyStitch ? (
+                  <>
+                    <SegmentedControl
+                      aria-label="Specialty stitch"
+                      className="specialty-stitch-options"
+                      options={SPECIALTY_STITCHES}
+                      value={activeSpecialtyStitch}
+                      onChange={chooseSpecialtyStitch}
+                    />
+                    {activeBackstitchMode && (
+                      <SegmentedControl
+                        aria-label="Backstitch mode"
+                        options={BACKSTITCH_MODES}
+                        value={activeBackstitchMode}
+                        onChange={(mode) => { controller?.setBackstitchMode(mode); setLastBackstitchMode(mode); }}
+                      />
+                    )}
+                  </>
                 ) : ui?.tool.tool === "shape" ? (
                   <div role="group" aria-label="Shape">
                     {SHAPE_CHOICES.map((shape) => {
@@ -1114,18 +1224,23 @@ export function EditorSurface({
       </div>
       {dialogs}
       {paletteOpen && (
-        <ColorPickerModal
-          {...pickerProps}
-          eyebrow={backgroundPicking ? backgroundCatalog?.association.brandLabel ?? "Catalog" : "Color Catalog"}
-          title={backgroundPicking ? "Choose a background color" : swapTarget === null ? "Add a thread color" : "Swap Color"}
-          hint={swapTarget !== null && <>Stitches and backstitches using {palette.find((entry) => entry.id === swapTarget)?.name ?? "this color"} will be changed.</>}
-          initialCatalogId={backgroundPicking ? backgroundCatalog?.association.catalogId : undefined}
-          initialColor={backgroundPicking ? backgroundCatalogMatch?.record : undefined}
-          initialCustomHex={backgroundPicking ? documentBackgroundColor : undefined}
+        <CatalogPickerDialog
+          eyebrow={backgroundPicking ? backgroundCatalog?.association.brandLabel ?? "Catalog" : beadPicking ? "Bead Catalog" : "Color Catalog"}
+          title={backgroundPicking ? "Choose a background color" : swapTarget !== null ? "Swap Color" : beadPicking ? "Add a bead" : "Add a thread color"}
+          hint={swapEntry && <>{beadPicking ? "Beads" : "Stitches and backstitches"} using {swapEntry.name} will be changed.</>}
           notice={paletteNotice}
           onClose={closePalettePicker}
           returnFocus={paletteTrigger}
-        />
+        >
+          {beadPicking ? colorPicker("bead") : (
+            <ThreadColorPicker
+              {...pickerProps}
+              initialCatalogId={backgroundPicking ? backgroundCatalog?.association.catalogId : undefined}
+              initialColor={backgroundPicking ? backgroundCatalogMatch?.record : undefined}
+              initialCustomHex={backgroundPicking ? documentBackgroundColor : undefined}
+            />
+          )}
+        </CatalogPickerDialog>
       )}{" "}
       {managerOpen && (
         <PaletteManagerModal
@@ -1134,7 +1249,7 @@ export function EditorSurface({
           panel={managerPanel}
           entryLabel={catalogEntryLabel}
           swatchContent={showPaletteSymbols ? (entry) => <SwatchSymbol symbol={entry.symbol} color={entry.color} /> : undefined}
-          picker={pickerProps}
+          picker={colorPicker(managerPanel ?? "closed")}
           notice={paletteNotice}
           onSelect={selectManagerEntry}
           onToggleSwap={toggleManagerSwap}

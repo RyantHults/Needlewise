@@ -32,6 +32,7 @@ import {
   nextDefaultLayerName,
   normalizePatternSettings,
   PATTERN_FRAGMENT_VERSION,
+  pointStitchesFromRecords,
   requireEditableLayer,
   topmostVisibleLayer,
   type DomainCommand,
@@ -317,7 +318,7 @@ describe('layer queries', () => {
       const coordinates = new Uint32Array(lineCount);
       return {
         type: 'paste-fragment',
-        fragment: { version: PATTERN_FRAGMENT_VERSION, width: 1, height: 1, kind: new Uint8Array([kind]), colors: new Uint16Array(4), backstitches: { x1: coordinates, y1: coordinates, x2: coordinates, y2: coordinates, colors: new Uint16Array(lineCount) } },
+        fragment: { version: PATTERN_FRAGMENT_VERSION, width: 1, height: 1, kind: new Uint8Array([kind]), colors: new Uint16Array(4), backstitches: { x1: coordinates, y1: coordinates, x2: coordinates, y2: coordinates, colors: new Uint16Array(lineCount) }, pointStitches: { x: new Uint32Array(0), y: new Uint32Array(0), colors: new Uint16Array(0), orientations: new Uint8Array(0) } },
         destination: { x: 0, y: 0 }
       };
     };
@@ -350,7 +351,7 @@ describe('layer queries', () => {
 
   it('splits a mixed fragment into the part each layer type holds', () => {
     const line = new Uint32Array([0]);
-    const fragment = { version: PATTERN_FRAGMENT_VERSION, width: 1, height: 1, kind: new Uint8Array([CellKind.Full]), colors: new Uint16Array([2, 0, 0, 0]), backstitches: { x1: line, y1: line, x2: line, y2: line, colors: new Uint16Array([1]) } };
+    const fragment = { version: PATTERN_FRAGMENT_VERSION, width: 1, height: 1, kind: new Uint8Array([CellKind.Full]), colors: new Uint16Array([2, 0, 0, 0]), backstitches: { x1: line, y1: line, x2: line, y2: line, colors: new Uint16Array([1]) }, pointStitches: { x: new Uint32Array(0), y: new Uint32Array(0), colors: new Uint16Array(0), orientations: new Uint8Array(0) } };
     const stitch = fragmentPartForLayerType(fragment, LayerType.Stitch);
     const specialty = fragmentPartForLayerType(fragment, LayerType.Specialty);
     expect(fragmentLayerRequirement(stitch)).toBe(LayerType.Stitch);
@@ -508,7 +509,7 @@ describe('layered validation', () => {
 
     const capped = layered();
     for (let id = 3; id <= 4; id += 1) applyLayerStructureCommand(capped, layerAddCommand(LayerType.Specialty, { index: 99 }));
-    capped.layers.push({ id: 9, type: LayerType.Specialty, name: 'Extra', visible: true, backstitches: specialtyLayer(capped, 2).backstitches });
+    capped.layers.push({ id: 9, type: LayerType.Specialty, name: 'Extra', visible: true, backstitches: specialtyLayer(capped, 2).backstitches, pointStitches: specialtyLayer(capped, 2).pointStitches });
     capped.nextLayerId = 10;
     expect(collectLayeredValidationErrors(capped).join(' ')).toContain('at most 3 specialty layers');
 
@@ -521,10 +522,77 @@ describe('layered validation', () => {
     const badPlane = { ...doc, layers: [{ ...stitchLayer(doc, 1), kind: new Uint8Array(3) }, doc.layers[1]] };
     expect(collectLayeredValidationErrors(badPlane).join(' ')).toContain('kind must be a Uint8Array');
 
-    const shared = { ...doc, layers: [...doc.layers, { id: 3, type: LayerType.Specialty, name: 'Twin', visible: true, backstitches: { ...specialtyLayer(doc, 2).backstitches, y1: new Uint32Array([4]), y2: new Uint32Array([4]) } } as SpecialtyLayer], nextLayerId: 4 };
+    const shared = { ...doc, layers: [...doc.layers, { id: 3, type: LayerType.Specialty, name: 'Twin', visible: true, backstitches: { ...specialtyLayer(doc, 2).backstitches, y1: new Uint32Array([4]), y2: new Uint32Array([4]) }, pointStitches: specialtyLayer(doc, 2).pointStitches } as SpecialtyLayer], nextLayerId: 4 };
     expect(collectLayeredValidationErrors(shared).join(' ')).toContain('used by more than one layer');
 
     const stale = { ...doc, nextBackstitchId: 1 };
     expect(collectLayeredValidationErrors(stale).join(' ')).toContain('nextBackstitchId must be greater');
+  });
+});
+
+describe('point stitches on layers', () => {
+  function placePoints(doc: LayeredDocument, layerId: number, points: Array<{ id: number; x: number; y: number; color: number; completed?: boolean }>): void {
+    specialtyLayer(doc, layerId).pointStitches = pointStitchesFromRecords(points.map((point) => ({ completed: false, orientation: 0, ...point })));
+    doc.nextBackstitchId = Math.max(doc.nextBackstitchId, ...points.map((point) => point.id + 1));
+  }
+
+  function withTwoSpecialtyLayers(): LayeredDocument {
+    const doc = layered();
+    applyLayerStructureCommand(doc, layerAddCommand(LayerType.Specialty));
+    placePoints(doc, 2, [{ id: 1, x: 4, y: 4, color: 1 }, { id: 2, x: 6, y: 6, color: 1 }]);
+    placePoints(doc, 3, [{ id: 3, x: 4, y: 4, color: 2, completed: true }]);
+    return doc;
+  }
+
+  it('flattens to the topmost visible point at each position', () => {
+    const doc = withTwoSpecialtyLayers();
+    assertValidLayeredDocument(doc);
+    const composite = flattenDocument(doc);
+    expect(Array.from(composite.pointStitches.ids)).toEqual([2, 3]);
+    expect(Array.from(composite.pointStitches.colors)).toEqual([1, 2]);
+    applyLayerStructureCommand(doc, layerSetVisibilityCommand(3, false));
+    expect(Array.from(new FlattenCache().full(doc).pointStitches.colors)).toEqual([1, 1]);
+  });
+
+  it('keeps the upper point on a shared position when merging', () => {
+    const doc = withTwoSpecialtyLayers();
+    applyLayerStructureCommand(doc, layerMergeCommand(3, 2));
+    const points = specialtyLayer(doc, 2).pointStitches;
+    expect(Array.from(points.ids)).toEqual([2, 3]);
+    expect(Array.from(points.colors)).toEqual([1, 2]);
+    expect(Array.from(points.completed)).toEqual([0, 1]);
+    assertValidLayeredDocument(doc);
+  });
+
+  it('gives duplicated points fresh ids after the backstitches and advances the allocator', () => {
+    const doc = layered();
+    run(doc, 2, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 });
+    placePoints(doc, 2, [{ id: 2, x: 4, y: 4, color: 1 }]);
+    const { layerId } = applyLayerStructureCommand(doc, layerDuplicateCommand(2));
+    const copy = specialtyLayer(doc, layerId!);
+    expect(Array.from(copy.backstitches.ids)).toEqual([3]);
+    expect(Array.from(copy.pointStitches.ids)).toEqual([4]);
+    expect(doc.nextBackstitchId).toBe(5);
+    assertValidLayeredDocument(doc);
+  });
+
+  it('rejects an id shared by a point and a line on different layers', () => {
+    const doc = layered();
+    applyLayerStructureCommand(doc, layerAddCommand(LayerType.Specialty));
+    run(doc, 2, { type: 'add-backstitch', start: { x: 0, y: 0 }, end: { x: 4, y: 0 }, color: 1 });
+    placePoints(doc, 3, [{ id: 2, x: 4, y: 4, color: 1 }]);
+    assertValidLayeredDocument(doc);
+    placePoints(doc, 3, [{ id: 1, x: 4, y: 4, color: 1 }]);
+    expect(errorCode(() => { assertValidLayeredDocument(doc); })).toBe('invalid-document');
+  });
+
+  it('treats points as specialty content in fragments', () => {
+    const none = new Uint32Array(0);
+    const fragment = { version: PATTERN_FRAGMENT_VERSION, width: 1, height: 1, kind: new Uint8Array([CellKind.Full]), colors: new Uint16Array([2, 0, 0, 0]), backstitches: { x1: none, y1: none, x2: none, y2: none, colors: new Uint16Array(0) }, pointStitches: { x: new Uint32Array([2]), y: new Uint32Array([2]), colors: new Uint16Array([1]), orientations: new Uint8Array([0]) } };
+    expect(fragmentLayerRequirement(fragment)).toBe('mixed');
+    const specialty = fragmentPartForLayerType(fragment, LayerType.Specialty);
+    expect(fragmentLayerRequirement(specialty)).toBe(LayerType.Specialty);
+    expect(Array.from(specialty.pointStitches.colors)).toEqual([1]);
+    expect(fragmentLayerRequirement(fragmentPartForLayerType(fragment, LayerType.Stitch))).toBe(LayerType.Stitch);
   });
 });

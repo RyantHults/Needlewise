@@ -1,39 +1,58 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { CatalogDefinition, CatalogRecord } from "../catalog";
 import { normalizeHexColor } from "../domain/color";
 import { ColorField } from "./controls/ColorField";
 import { nextRovingIndex } from "./controls/roving";
 
-export interface ThreadColorPickerProps {
+export interface CatalogColorPickerProps {
   catalogs: readonly CatalogDefinition[];
   defaultCatalogId: string;
   /** Preselects this catalog's tab, when it is installed. */
   initialCatalogId?: string;
   /** Preselects the chip color; otherwise the catalog's first color. */
   initialColor?: CatalogRecord | null;
-  initialCustomHex?: string;
+  /** What the catalogs hold, used in the accessible names: "thread" or "bead". */
+  noun: string;
   /** The chip button's text and aria-label prefix: "Add", "Swap" or "Use". */
   verb: string;
   onPickCatalogColor: (color: CatalogRecord, catalog: CatalogDefinition) => void;
+  /** Rendered last inside the box, given the catalog whose tab is selected. */
+  children?: (catalog: CatalogDefinition | undefined) => ReactNode;
+}
+
+export interface CustomColorSectionProps {
+  /** The selected catalog tab, matched against the typed hex. */
+  catalog: CatalogDefinition | undefined;
+  initialCustomHex?: string;
   onPickCustomColor: (hex: string, catalogMatch: CatalogRecord | undefined, catalog: CatalogDefinition | undefined) => void;
   customActionLabel: (hex: string | null, catalogMatch: CatalogRecord | undefined, catalog: CatalogDefinition | undefined) => string;
 }
 
+export type ThreadColorPickerProps = Omit<CatalogColorPickerProps, "noun" | "children"> & Omit<CustomColorSectionProps, "catalog">;
+
+/** The thread picker: the catalogs plus custom hex entry. Callers reset it by remounting it with a new `key`. */
+export function ThreadColorPicker({ initialCustomHex, onPickCustomColor, customActionLabel, ...catalogProps }: ThreadColorPickerProps) {
+  return (
+    <CatalogColorPicker {...catalogProps} noun="thread">
+      {(catalog) => <CustomColorSection catalog={catalog} initialCustomHex={initialCustomHex} onPickCustomColor={onPickCustomColor} customActionLabel={customActionLabel} />}
+    </CatalogColorPicker>
+  );
+}
+
 /**
- * The catalog tabs, search, color grid and custom hex entry shared by every
- * thread color picker. Callers reset it by remounting it with a new `key`.
+ * The catalog tabs, search, color grid and selected-color chip shared by every
+ * color picker. Callers reset it by remounting it with a new `key`.
  */
-export function ThreadColorPicker({
+export function CatalogColorPicker({
   catalogs,
   defaultCatalogId,
   initialCatalogId,
   initialColor,
-  initialCustomHex = "#000000",
+  noun,
   verb,
   onPickCatalogColor,
-  onPickCustomColor,
-  customActionLabel,
-}: ThreadColorPickerProps) {
+  children,
+}: CatalogColorPickerProps) {
   const isInstalled = (catalogId: string) => catalogs.some((item) => item.association.catalogId === catalogId);
   const firstColor = (catalogId: string) => catalogs.find((item) => item.association.catalogId === catalogId)?.search("", { limit: 1 })[0] ?? null;
   const [selectedCatalogId, setSelectedCatalogId] = useState(() =>
@@ -41,7 +60,6 @@ export function ThreadColorPicker({
   );
   const [query, setQuery] = useState("");
   const [selectedColor, setSelectedColor] = useState<CatalogRecord | null>(() => initialColor ?? firstColor(selectedCatalogId));
-  const [customColor, setCustomColor] = useState<string | undefined>(() => normalizeHexColor(initialCustomHex));
   const pickerCatalog = catalogs.find((item) => item.association.catalogId === selectedCatalogId);
   const catalogResults = useMemo(
     () => pickerCatalog?.search(query) ?? [],
@@ -67,11 +85,9 @@ export function ThreadColorPicker({
     setQuery("");
     setSelectedColor(firstColor(catalogId));
   };
-  const customCatalogColor = customColor ? pickerCatalog?.getByHex(customColor) : undefined;
-  const actionLabel = customActionLabel(customColor ?? null, customCatalogColor, pickerCatalog);
   return (
     <div className="catalog-box">
-      <div className="catalog-selection" aria-label="Selected thread color" role="group" aria-live="polite">
+      <div className="catalog-selection" aria-label={`Selected ${noun} color`} role="group" aria-live="polite">
       {selectedColor ? (
         <>
           <span
@@ -98,7 +114,7 @@ export function ThreadColorPicker({
       )}
     </div>
     {catalogs.length > 0 ? <div className="catalog-tabs-area">
-      <div className="catalog-tabs" role="tablist" aria-label="Thread catalogs">
+      <div className="catalog-tabs" role="tablist" aria-label={`${noun[0]!.toUpperCase()}${noun.slice(1)} catalogs`}>
         {catalogs.map((item) => <button
           key={item.association.catalogId}
           id={`editor-catalog-tab-${item.association.catalogId}`}
@@ -136,7 +152,7 @@ export function ThreadColorPicker({
           disabled={!pickerCatalog}
           aria-label={`Search ${pickerCatalog?.association.brandLabel ? `${pickerCatalog.association.brandLabel} catalog` : "catalog"}`}
         />
-        <div className="catalog-color-grid" role="list" aria-label="Available thread colors">
+        <div className="catalog-color-grid" role="list" aria-label={`Available ${noun} colors`}>
         {pickerCatalog && catalogResults.map((color) => (
          <div role="listitem" key={`${pickerCatalog.association.catalogId}:${color.sourceId}`}>
           <button
@@ -162,6 +178,17 @@ export function ThreadColorPicker({
         </div>
       </div>}
     </div> : <p className="catalog-unavailable" role="status">Catalog unavailable</p>}
+    {children?.(pickerCatalog)}
+    </div>
+  );
+}
+
+/** Custom hex entry, matched against the selected catalog. */
+export function CustomColorSection({ catalog, initialCustomHex = "#000000", onPickCustomColor, customActionLabel }: CustomColorSectionProps) {
+  const [customColor, setCustomColor] = useState<string | undefined>(() => normalizeHexColor(initialCustomHex));
+  const customCatalogColor = customColor ? catalog?.getByHex(customColor) : undefined;
+  const actionLabel = customActionLabel(customColor ?? null, customCatalogColor, catalog);
+  return (
     <section className="custom-color-section" aria-labelledby="custom-color-title">
       <h3 id="custom-color-title">Custom color</h3>
       <ColorField
@@ -180,11 +207,10 @@ export function ThreadColorPicker({
         type="button"
          disabled={!customColor}
         aria-label={actionLabel}
-         onClick={() => customColor && onPickCustomColor(customColor, customCatalogColor, pickerCatalog)}
+         onClick={() => customColor && onPickCustomColor(customColor, customCatalogColor, catalog)}
       >
         {actionLabel}
       </button>
     </section>
-    </div>
   );
 }

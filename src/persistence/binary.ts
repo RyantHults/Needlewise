@@ -1,5 +1,6 @@
 import {
   allocateBackstitches,
+  allocatePointStitches,
   assertValidDocument,
   assertValidLayeredDocument,
   DOCUMENT_SCHEMA_VERSION,
@@ -10,10 +11,13 @@ import {
   PALETTE_ID_RESERVED,
   cloneBackstitches,
   clonePaletteEntry,
+  clonePointStitches,
+  emptyPointStitches,
   clonePatternSettings,
   layeredFromSurface,
   type BackstitchStore,
   type Layer,
+  type PointStitchStore,
   type LayeredDocument,
   type PaletteCatalogReference,
   type PaletteEntry,
@@ -32,11 +36,15 @@ import {
 } from './limits';
 
 const MAGIC = new Uint8Array([0x4e, 0x57, 0x44, 0x4f, 0x43, 0x31, 0x01, 0x00]);
-export const BINARY_SCHEMA_VERSION = 5 as const;
+export const BINARY_SCHEMA_VERSION = 7 as const;
 /** First layered schema. Layered documents before v4 have no origin or canvas mask. */
 const LAYERED_SCHEMA_VERSION = 3;
 /** First schema that stores completion for stitch layers and backstitches. */
 const COMPLETION_SCHEMA_VERSION = 5;
+/** First schema whose specialty layers store point stitches (French knots and beads) after their backstitches. */
+const POINT_STITCH_SCHEMA_VERSION = 6;
+/** First schema whose point stitch records carry an orientation byte. */
+const POINT_ORIENTATION_SCHEMA_VERSION = 7;
 /** First schema with an origin, canvas mask, and header flags. */
 const CANVAS_SCHEMA_VERSION = 4;
 /** v4 header flags byte: bit 0 means a canvas mask follows the origin. */
@@ -47,6 +55,12 @@ const HEADER_BYTES = 40;
 const UNMARKED_BACKSTITCH_BYTES = 22;
 /** v1/v2 and v5 backstitch record: id, x1, y1, x2, y2, color, completed. */
 const BACKSTITCH_BYTES = 23;
+/** v7 point stitch record: id, x, y, color, completed, orientation. */
+const POINT_STITCH_BYTES = 16;
+/** v6 point stitch record: id, x, y, color, completed. */
+const UNORIENTED_POINT_STITCH_BYTES = 15;
+/** Most backstitches or point stitches one specialty layer may hold. */
+const MAX_SPECIALTY_RECORDS = 0x1000000;
 const LAYER_TYPE_CODES: Record<LayerType, number> = { [LayerType.Stitch]: 0, [LayerType.Specialty]: 1 };
 const MAX_LAYERS = MAX_LAYERS_PER_TYPE * 2;
 
@@ -140,7 +154,7 @@ function byteLengthFor(document: LayeredDocument): number {
   for (const layer of document.layers) {
     length += 4n + 1n + 1n + 4n + BigInt(stringBytes(layer.name, 'Layer name').length);
     if (layer.type === LayerType.Stitch) length += BigInt(layer.kind.length) * 2n + BigInt(layer.colors.length) * 2n;
-    else length += 4n + BigInt(layer.backstitches.ids.length) * BigInt(BACKSTITCH_BYTES);
+    else length += 4n + BigInt(layer.backstitches.ids.length) * BigInt(BACKSTITCH_BYTES) + 4n + BigInt(layer.pointStitches.ids.length) * BigInt(POINT_STITCH_BYTES);
   }
   if (length > BigInt(MAX_DOCUMENT_BYTES) || length > BigInt(Number.MAX_SAFE_INTEGER)) fail('Document snapshot exceeds the size limit.');
   return Number(length);
@@ -226,13 +240,28 @@ function writeBackstitches(view: DataView, offset: number, store: BackstitchStor
   return offset;
 }
 
+function writePointStitches(view: DataView, offset: number, store: PointStitchStore): number {
+  view.setUint32(offset, store.ids.length, true);
+  offset += 4;
+  for (let index = 0; index < store.ids.length; index += 1) {
+    view.setUint32(offset, store.ids[index], true);
+    view.setUint32(offset + 4, store.x[index], true);
+    view.setUint32(offset + 8, store.y[index], true);
+    view.setUint16(offset + 12, store.colors[index], true);
+    view.setUint8(offset + 14, store.completed[index]);
+    view.setUint8(offset + 15, store.orientations[index]);
+    offset += POINT_STITCH_BYTES;
+  }
+  return offset;
+}
+
 /**
- * Encodes the v5 layered format: header, catalog, palette, settings (including
+ * Encodes the v7 layered format: header, catalog, palette, settings (including
  * aidaCount), nextLayerId, originX/originY (int32), the canvas mask bitset when
  * header flag bit 0 is set (LSB first, trailing bits zero), then the layer table
  * bottom to top. Stitch layers
  * store kind, color, and completion planes; specialty layers store their
- * backstitches, each with a completion byte.
+ * backstitches, then their point stitches, each with a completion byte.
  */
 export function encodeDocument(document: LayeredDocument): Uint8Array {
   checkedDocumentDimensions(document.width, document.height);
@@ -290,7 +319,7 @@ export function encodeDocument(document: LayeredDocument): Uint8Array {
     offset = writeString(view, bytes, offset, layer.name, 'Layer name');
     offset = layer.type === LayerType.Stitch
       ? writeStitchLayer(view, bytes, offset, layer.kind, layer.colors, layer.completed)
-      : writeBackstitches(view, offset, layer.backstitches);
+      : writePointStitches(view, writeBackstitches(view, offset, layer.backstitches), layer.pointStitches);
   }
   if (offset !== length) fail('Document snapshot length is inconsistent.');
   return bytes;
@@ -486,6 +515,22 @@ function decodeBackstitches(reader: ByteReader, count: number, recordBytes: numb
   return store;
 }
 
+function decodePointStitches(reader: ByteReader, count: number, oriented: boolean): PointStitchStore {
+  const store = allocatePointStitches(count);
+  const { ids, x, y, colors, completed, orientations } = store;
+  for (let index = 0; index < count; index += 1) {
+    ids[index] = reader.u32();
+    x[index] = reader.u32();
+    y[index] = reader.u32();
+    colors[index] = reader.u16();
+    completed[index] = reader.u8();
+    if (!oriented) continue;
+    orientations[index] = reader.u8();
+    if (orientations[index] > 3) fail('Point stitch orientation is invalid.');
+  }
+  return store;
+}
+
 interface DecodedHeader {
   binaryVersion: number;
   hasMask: boolean;
@@ -588,6 +633,7 @@ function decodeLegacyDocument(bytes: Uint8Array, view: DataView, header: Decoded
     colors,
     completed: new Uint8Array(completedBytes),
     backstitches,
+    pointStitches: emptyPointStitches(),
     revision,
     nextBackstitchId,
     nextPaletteId,
@@ -653,10 +699,20 @@ function decodeLayeredDocument(bytes: Uint8Array, header: DecodedHeader): Layere
     } else if (typeCode === LAYER_TYPE_CODES[LayerType.Specialty]) {
       reader.require(4, 'Document ended while reading a backstitch count.');
       const count = reader.u32();
-      if (count > 0x1000000) fail('Backstitch count exceeds the size limit.');
+      if (count > MAX_SPECIALTY_RECORDS) fail('Backstitch count exceeds the size limit.');
       const recordSize = binaryVersion >= COMPLETION_SCHEMA_VERSION ? BACKSTITCH_BYTES : UNMARKED_BACKSTITCH_BYTES;
       if (BigInt(count) * BigInt(recordSize) > BigInt(reader.remaining)) fail('Backstitch payload exceeds the document size limit.');
-      layers.push({ id, type: LayerType.Specialty, name, visible: visibleValue === 1, backstitches: decodeBackstitches(reader, count, recordSize) });
+      const backstitches = decodeBackstitches(reader, count, recordSize);
+      let pointStitches = emptyPointStitches();
+      if (binaryVersion >= POINT_STITCH_SCHEMA_VERSION) {
+        reader.require(4, 'Document ended while reading a point stitch count.');
+        const pointCount = reader.u32();
+        if (pointCount > MAX_SPECIALTY_RECORDS) fail('Point stitch count exceeds the size limit.');
+        const oriented = binaryVersion >= POINT_ORIENTATION_SCHEMA_VERSION;
+        if (BigInt(pointCount) * BigInt(oriented ? POINT_STITCH_BYTES : UNORIENTED_POINT_STITCH_BYTES) > BigInt(reader.remaining)) fail('Point stitch payload exceeds the document size limit.');
+        pointStitches = decodePointStitches(reader, pointCount, oriented);
+      }
+      layers.push({ id, type: LayerType.Specialty, name, visible: visibleValue === 1, backstitches, pointStitches });
     } else {
       fail('Layer type is invalid.');
     }
@@ -721,7 +777,7 @@ export function cloneLayeredDocument(document: LayeredDocument): LayeredDocument
     height: document.height,
     layers: document.layers.map((layer): Layer => layer.type === LayerType.Stitch
       ? { id: layer.id, type: LayerType.Stitch, name: layer.name, visible: layer.visible, kind: layer.kind.slice(), colors: layer.colors.slice(), completed: layer.completed.slice() }
-      : { id: layer.id, type: LayerType.Specialty, name: layer.name, visible: layer.visible, backstitches: cloneBackstitches(layer.backstitches) }),
+      : { id: layer.id, type: LayerType.Specialty, name: layer.name, visible: layer.visible, backstitches: cloneBackstitches(layer.backstitches), pointStitches: clonePointStitches(layer.pointStitches) }),
     palette: document.palette.map(clonePaletteEntry),
     settings: clonePatternSettings(document.settings),
     revision: document.revision,

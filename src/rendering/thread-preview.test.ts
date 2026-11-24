@@ -4,14 +4,16 @@ import type { CanvasContextAdapter, CanvasTarget } from '../editor/contracts';
 import {
   createThreadSpriteCache,
   drawThreadBackstitch,
+  drawThreadBead,
   drawThreadFabric,
+  drawThreadKnot,
   drawThreadFlat,
   drawThreadStitch,
   THREAD_BACKSTITCH_WIDTH,
-  THREAD_STITCH_WIDTH,
-  threadEdgeColor,
-  threadHighlightColor
+  THREAD_STITCH_WIDTH
 } from './thread-preview';
+import { threadEdgeColor, threadHighlightColor } from './colors';
+import { recordingContext as paintRecorder } from './test-support';
 
 interface StrokeRecord {
   from: [number, number];
@@ -203,6 +205,33 @@ describe('drawThreadBackstitch', () => {
     expect(body.lineWidth).toBeCloseTo(10 * THREAD_BACKSTITCH_WIDTH);
     expect(body.lineCap).toBe('round');
     expect(THREAD_BACKSTITCH_WIDTH).toBeLessThan(THREAD_STITCH_WIDTH);
+  });
+});
+
+describe('drawThreadKnot and drawThreadBead', () => {
+  it('shades a knot as filled discs at its centre, the thread colour among them', () => {
+    const context = paintRecorder();
+    drawThreadKnot(context, { x: 30, y: 40 }, 20, '#cc3333');
+    const fills = context.records.filter((call) => call.name === 'fill');
+    expect(fills.map((call) => call.fillStyle)).toContain('#cc3333');
+    expect(context.records.find((call) => call.name === 'arc')?.args.slice(0, 2)).toEqual([30, 40]);
+    expect(context.records.some((call) => call.name === 'stroke')).toBe(false);
+  });
+
+  it('draws a bead as a shaded barrel on the "/" diagonal with the bead colour inside', () => {
+    const context = paintRecorder();
+    drawThreadBead(context, { x: 30, y: 40 }, 20, { width: 1.38, length: 0.96 }, 0, '#3366cc');
+    const fills = context.records.filter((call) => call.name === 'fill');
+    expect(fills.map((call) => call.fillStyle)).toContain('#3366cc');
+    const corners = context.records.filter((call) => call.name === 'arc');
+    expect(corners.length).toBeGreaterThan(0);
+    for (const call of corners) expect((call.args[4] as number) - (call.args[3] as number)).toBeCloseTo(Math.PI / 2);
+    // The outer barrel's corner arcs give its extent along the "/" diagonal (the hole) and across it.
+    const outer = corners.slice(0, 4).map((call) => call.args as number[]);
+    const along = Math.max(...outer.map(([x, y, radius]) => Math.abs((x - 30) - (y - 40)) / Math.SQRT2 + radius));
+    const across = Math.max(...outer.map(([x, y, radius]) => Math.abs((x - 30) + (y - 40)) / Math.SQRT2 + radius));
+    expect(along).toBeCloseTo((0.96 * 20) / 2);
+    expect(across).toBeCloseTo((1.38 * 20) / 2);
   });
 });
 

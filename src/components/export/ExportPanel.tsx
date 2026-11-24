@@ -10,6 +10,7 @@ import {
   MIN_EXPORT_OVERLAP,
   buildLegend,
   estimateTotalPages,
+  legendLineCount,
   loadExportSettings,
   finishedSizeLine,
   number,
@@ -117,8 +118,8 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
     }
   }, [exported, materialSettings]);
   const legend = useMemo(() => (metrics ? buildLegend(pattern.palette, metrics, units) : null), [pattern.palette, metrics, units]);
-  const empty = legend === null || legend.rows.length === 0;
-  const pages = estimateTotalPages(exported.width, exported.height, settings, legend?.rows.length ?? 0);
+  const empty = legend === null || (legend.rows.length === 0 && legend.beads.length === 0);
+  const pages = estimateTotalPages(exported.width, exported.height, settings, legend === null ? 0 : legendLineCount(legend));
   const running = run.status === 'running';
   const finished = metrics ? finishedSizeLine(metrics.finishedSize, units) : null;
 
@@ -297,6 +298,22 @@ export function ExportPanel({ document: pattern, title, workspace, exportPdf, st
                 {formatLength(legend.totals.length) && <> · {formatLength(legend.totals.length)}</>}
               </span>
             </div>
+            {legend.beads.length > 0 && (
+              <>
+                <h4 id="export-beads-title">Beads</h4>
+                <ul className="export-rows" aria-labelledby="export-beads-title">
+                  {legend.beads.map((bead) => (
+                    <li className="export-row" key={bead.paletteId}>
+                      <span className="export-swatch" style={{ background: bead.color }} aria-hidden="true" />
+                      <span className="export-row-main">
+                        <strong>{bead.name}{bead.code && <small className="export-code">{bead.code}</small>}</strong>
+                      </span>
+                      <span className="export-row-estimate">{bead.count} {bead.count === 1 ? 'bead' : 'beads'}</span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
             <p className="export-note">
               {legend.strands} strand{legend.strands === 1 ? '' : 's'} per stitch, {legend.backstitchStrands} backstitch strand{legend.backstitchStrands === 1 ? '' : 's'}, {number(legend.waste * 100)}% waste.
             </p>

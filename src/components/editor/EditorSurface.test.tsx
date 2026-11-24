@@ -3,8 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EditorSurface } from './EditorSurface';
 import { createEditorSurfaceController } from '../../editor';
 import { createCatalogReference, DEFAULT_CATALOG_DEFINITION, type CatalogDefinition, type CatalogRecord } from '../../catalog';
-import { makeCatalog } from '../../catalog/test-support';
-import { layerAddCommand, applyLayerStructureCommand, type LayeredDocument } from '../../domain';
+import { makeCatalog, millHillBeadEntry, millHillCatalog } from '../../catalog/test-support';
+import { layerAddCommand, applyLayerStructureCommand, MaterialKind, MaterialUnit, type LayeredDocument } from '../../domain';
 import { SYMBOL_POOL, SYMBOL_IDS } from '../../symbols';
 import type { ReactElement, ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
@@ -45,18 +45,20 @@ vi.mock('../../rendering/trace', async () => {
 });
 vi.mock('../../editor/coordinates', () => ({ getCanvasMetrics: vi.fn(() => ({ cssWidth: 640, cssHeight: 480, pixelWidth: 640, pixelHeight: 480, backingWidth: 640, backingHeight: 480, requestedDpr: 1, dpr: 1, maxDpr: 2, maxBackingPixels: 1e6 })), modelToScreen: vi.fn((point: { x: number; y: number }) => point), screenToModel: vi.fn((point: { x: number; y: number }) => ({ x: point.x / 16, y: point.y / 16 })) }));
 vi.mock('../../editor', () => ({ ChartPresentationMode: { Color: 'color', Symbol: 'symbol', Grayscale: 'grayscale', Combined: 'combined' }, createUiStore: vi.fn((initial: unknown) => { f.createdUiState = initial; return { getState: () => f.uiState, subscribe: vi.fn((listener: unknown) => { f.uiListener = listener as (state: unknown) => void; return () => undefined; }) }; }), createWorkspaceEditorGateway: vi.fn(() => ({ dispose: vi.fn() })), createPointerEventsAdapter: f.adapter, createEditorSurfaceController: vi.fn((options: unknown) => { f.capturedCallback = (options as { onTraceBoundsChange?: (b: { x: number; y: number; width: number; height: number }) => void }).onTraceBoundsChange ?? null; return f.c as never; }) }));
-const ws = { metadata: { title: 'Sampler', notes: '', aidaCount: 14 }, updateActiveMetadata: vi.fn(), updateActiveAidaCount: vi.fn(), execute: vi.fn(), getStateSnapshot: vi.fn(), catalogFor: vi.fn(() => COMPACT_DMC_DEFINITION), availableCatalogs: vi.fn(() => [COMPACT_DMC_DEFINITION]), setSourceImage: vi.fn(() => Promise.resolve()), applyTraceImageChange: vi.fn(() => Promise.resolve()), getAsset: vi.fn(), sourceImage: undefined as ({ chartBounds: { x: number; y: number; width: number; height: number } } | undefined) } as never;
+const ws = { metadata: { title: 'Sampler', notes: '', aidaCount: 14 }, updateActiveMetadata: vi.fn(), updateActiveAidaCount: vi.fn(), execute: vi.fn(), getStateSnapshot: vi.fn(), catalogFor: vi.fn(() => COMPACT_DMC_DEFINITION), threadCatalogs: vi.fn(() => [COMPACT_DMC_DEFINITION]), beadCatalogs: vi.fn(() => [] as CatalogDefinition[]), setSourceImage: vi.fn(() => Promise.resolve()), applyTraceImageChange: vi.fn(() => Promise.resolve()), getAsset: vi.fn(), sourceImage: undefined as ({ chartBounds: { x: number; y: number; width: number; height: number } } | undefined) } as never;
 const executeMock = () => (ws as { execute: ReturnType<typeof vi.fn> }).execute;
-const doc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
-const two = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321' } }, { id: 2, name: 'Sky', color: '#48c', active: true }], backstitches: { ids: new Uint32Array() } } as never;
-const paletteDetailsDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: SYMBOL_IDS[0], catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
+/** Palette literals carry the material every production entry has. */
+const FLOSS = { kind: MaterialKind.Floss, label: "DMC", unit: MaterialUnit.Skeins };
+const doc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, material: FLOSS, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
+const two = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, material: FLOSS, catalog: { code: '321' } }, { id: 2, name: 'Sky', color: '#48c', active: true, material: FLOSS }], backstitches: { ids: new Uint32Array() } } as never;
+const paletteDetailsDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, material: FLOSS, symbol: SYMBOL_IDS[0], catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
 const customColorDocument = (palette: unknown[]) => ({ width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } }) as never;
 const catalogBRecord = { sourceId: 'b-source-1', code: '321', name: 'B Ruby', hex: '#BB0000', rgb: [187, 0, 0] as const } as CatalogRecord;
 const catalogB = makeCatalog('catalog-b', 'Brand B', [catalogBRecord]);
 const multiCatalogWorkspace = () => {
-  const workspace = ws as { catalogFor: ReturnType<typeof vi.fn>; availableCatalogs: ReturnType<typeof vi.fn>; getStateSnapshot: ReturnType<typeof vi.fn> };
+  const workspace = ws as { catalogFor: ReturnType<typeof vi.fn>; threadCatalogs: ReturnType<typeof vi.fn>; getStateSnapshot: ReturnType<typeof vi.fn> };
   workspace.catalogFor.mockReturnValue(COMPACT_DMC_DEFINITION);
-  workspace.availableCatalogs.mockReturnValue([COMPACT_DMC_DEFINITION, catalogB]);
+  workspace.threadCatalogs.mockReturnValue([COMPACT_DMC_DEFINITION, catalogB]);
   return workspace;
 };
 const openCustomColorDialog = () => {
@@ -98,7 +100,7 @@ const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/
 const toolOptions = () => document.querySelector<HTMLElement>('.canvas-actions section.tool-options')!;
 /** Pushes a new active tool through the mocked UI store, as the controller would. */
 const switchTool = (tool: unknown) => act(() => { f.uiState.tool = tool as never; f.uiListener?.({ ...f.uiState }); });
-beforeEach(() => { vi.clearAllMocks(); (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockReset(); (ws as { getStateSnapshot: ReturnType<typeof vi.fn> }).getStateSnapshot.mockReset(); (ws as { catalogFor: ReturnType<typeof vi.fn> }).catalogFor.mockReturnValue(COMPACT_DMC_DEFINITION); (ws as { availableCatalogs: ReturnType<typeof vi.fn> }).availableCatalogs.mockReturnValue([COMPACT_DMC_DEFINITION]); localStorage.clear(); f.createdUiState = null; f.uiListener = null; f.uiState.canPaste = false; f.uiState.history = { canUndo: true, canRedo: true }; (f.uiState as { pickPulse: unknown }).pickPulse = null; f.uiState.overlay = {}; f.uiState.tool = { tool: 'paint' }; f.uiState.gridVisible = true; f.uiState.mode = 'color'; (f.uiState as { threadView?: boolean }).threadView = false; (ws as { sourceImage: unknown }).sourceImage = undefined; vi.stubGlobal('ResizeObserver', vi.fn(function (cb: () => void) { f.resize = cb; return { observe: vi.fn(), disconnect: vi.fn() }; })); });
+beforeEach(() => { vi.clearAllMocks(); (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockReset(); (ws as { getStateSnapshot: ReturnType<typeof vi.fn> }).getStateSnapshot.mockReset(); (ws as { catalogFor: ReturnType<typeof vi.fn> }).catalogFor.mockReturnValue(COMPACT_DMC_DEFINITION); (ws as { threadCatalogs: ReturnType<typeof vi.fn> }).threadCatalogs.mockReturnValue([COMPACT_DMC_DEFINITION]); (ws as { beadCatalogs: ReturnType<typeof vi.fn> }).beadCatalogs.mockReturnValue([]); localStorage.clear(); f.createdUiState = null; f.uiListener = null; f.uiState.canPaste = false; (f.uiState as { paletteId: number }).paletteId = 1; f.uiState.history = { canUndo: true, canRedo: true }; (f.uiState as { pickPulse: unknown }).pickPulse = null; f.uiState.overlay = {}; f.uiState.tool = { tool: 'paint' }; f.uiState.gridVisible = true; f.uiState.mode = 'color'; (f.uiState as { threadView?: boolean }).threadView = false; (ws as { sourceImage: unknown }).sourceImage = undefined; vi.stubGlobal('ResizeObserver', vi.fn(function (cb: () => void) { f.resize = cb; return { observe: vi.fn(), disconnect: vi.fn() }; })); });
 afterEach(() => { vi.useRealTimers(); localStorage.clear(); });
 
 describe('EditorSurface', () => {
@@ -216,7 +218,7 @@ describe('EditorSurface', () => {
     fireEvent.change(within(dialog).getByLabelText('Search Brand B catalog'), { target: { value: '321' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'B Ruby, color 321' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add B Ruby' }));
-    expect(workspace.availableCatalogs).toHaveBeenCalled();
+    expect(workspace.threadCatalogs).toHaveBeenCalled();
     expect(executeMock()).toHaveBeenCalledWith(expect.objectContaining({ type: 'palette-create', catalog: createCatalogReference(catalogB, catalogBRecord) }));
   });
   it('keeps the selected swatch above accessible catalog tabs and exposes only the active catalog search', () => {
@@ -261,7 +263,7 @@ describe('EditorSurface', () => {
       search: (query: string, options: { limit?: number } = {}) => records.filter((record) => !query || `${record.name} ${record.code}`.toLowerCase().includes(query.toLowerCase())).slice(0, options.limit),
     };
     const workspace = multiCatalogWorkspace();
-    workspace.availableCatalogs.mockReturnValue([COMPACT_DMC_DEFINITION, fullCatalog]);
+    workspace.threadCatalogs.mockReturnValue([COMPACT_DMC_DEFINITION, fullCatalog]);
     render(<EditorSurface workspace={ws} document={doc} />);
     const dialog = openCustomColorDialog();
     fireEvent.click(within(dialog).getByRole('tab', { name: 'Full Catalog' }));
@@ -358,7 +360,7 @@ describe('EditorSurface', () => {
     const duplicateCodeCatalog = makeCatalog('catalog-b', 'Brand B', records);
     const workspace = multiCatalogWorkspace();
     workspace.catalogFor.mockReturnValue(DEFAULT_CATALOG_DEFINITION);
-    workspace.availableCatalogs.mockReturnValue([DEFAULT_CATALOG_DEFINITION, duplicateCodeCatalog]);
+    workspace.threadCatalogs.mockReturnValue([DEFAULT_CATALOG_DEFINITION, duplicateCodeCatalog]);
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' }));
@@ -373,8 +375,8 @@ describe('EditorSurface', () => {
   it('labels cross-brand palette chips with brand and code', () => {
     multiCatalogWorkspace();
     const collision = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [
-      { id: 1, name: 'Ruby A', color: '#AA0000', active: true, catalog: { catalogId: DEFAULT_CATALOG_DEFINITION.association.catalogId, sourceId: 'a', code: '321' } },
-      { id: 2, name: 'Ruby B', color: '#BB0000', active: true, catalog: { catalogId: 'catalog-b', sourceId: 'b', code: '321' } },
+      { id: 1, name: 'Ruby A', color: '#AA0000', active: true, material: FLOSS, catalog: { catalogId: DEFAULT_CATALOG_DEFINITION.association.catalogId, sourceId: 'a', code: '321' } },
+      { id: 2, name: 'Ruby B', color: '#BB0000', active: true, material: FLOSS, catalog: { catalogId: 'catalog-b', sourceId: 'b', code: '321' } },
     ], backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={collision} />);
     const chip = screen.getByRole('button', { name: /Brand B 321Ruby B/ });
@@ -387,7 +389,7 @@ describe('EditorSurface', () => {
   it('preserves UI state when the document changes', () => {
     const view = render(<EditorSurface workspace={ws} document={doc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Stitch' }));
-    const next = { width: 20, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true }], backstitches: { ids: new Uint32Array() } } as never;
+    const next = { width: 20, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, material: FLOSS }], backstitches: { ids: new Uint32Array() } } as never;
     view.rerender(<EditorSurface workspace={ws} document={next} />);
     expect(f.c.start).toHaveBeenCalledOnce(); expect(f.c.dispose).not.toHaveBeenCalled(); expect(f.c.setDocument).toHaveBeenCalledWith(next, expect.objectContaining({ reason: 'external-document' }));
     expect(screen.getByText(/20 × 16 stitches/)).toBeInTheDocument();
@@ -519,8 +521,8 @@ describe('EditorSurface', () => {
       height: 16,
       colors: new Uint16Array(1024),
       palette: [
-        { id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321' } },
-        { id: 2, name: red.name, color: red.hex, active: true, catalog: createCatalogReference(DEFAULT_CATALOG_DEFINITION, red) }
+        { id: 1, name: 'Ruby', color: '#b44', active: true, material: FLOSS, catalog: { code: '321' } },
+        { id: 2, name: red.name, color: red.hex, active: true, material: FLOSS, catalog: createCatalogReference(DEFAULT_CATALOG_DEFINITION, red) }
       ],
       backstitches: { ids: new Uint32Array() }
     } as never;
@@ -561,7 +563,7 @@ describe('EditorSurface', () => {
     expect(options.keyboardSurface).toBe(document.querySelector('.editor-workspace'));
     expect(pointerSurface).not.toBe(options.keyboardSurface);
   });
-  it('excludes Shape, Select, Stitch, Eraser and Backstitch from native keyboard routing', () => {
+  it('excludes Shape, Select, Stitch, Eraser and Specialty from native keyboard routing', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     const adapterOptions = (f.adapter.mock.calls[0] as unknown as [unknown, unknown, {
       shouldExcludeTarget: (target: unknown, eventType: string) => boolean;
@@ -570,14 +572,14 @@ describe('EditorSurface', () => {
     const path = shape.querySelector('path')!;
     expect(adapterOptions.shouldExcludeTarget(shape, 'keydown')).toBe(true);
     expect(adapterOptions.shouldExcludeTarget(path, 'keydown')).toBe(true);
-    for (const name of ['Select', 'Stitch', 'Eraser', 'Backstitch']) {
+    for (const name of ['Select', 'Stitch', 'Eraser', 'Specialty']) {
       expect(adapterOptions.shouldExcludeTarget(screen.getByRole('button', { name }), 'keydown')).toBe(true);
     }
     const brushDescendant = screen.getByRole('button', { name: 'Stitch' }).querySelector('[data-icon="stitch"]')!;
     expect(adapterOptions.shouldExcludeTarget(brushDescendant, 'keydown')).toBe(true);
     expect(adapterOptions.shouldExcludeTarget(screen.getByRole('button', { name: 'Select' }).querySelector('[data-icon="select"]'), 'keydown')).toBe(true);
-    switchTool({ tool: 'backstitch', mode: 'move' });
-    expect(adapterOptions.shouldExcludeTarget(screen.getByRole('button', { name: 'Backstitch, move mode' }), 'keydown')).toBe(true);
+    switchTool({ tool: 'specialty', stitch: 'backstitch', mode: 'move' });
+    expect(adapterOptions.shouldExcludeTarget(screen.getByRole('button', { name: 'Specialty, move mode' }), 'keydown')).toBe(true);
     expect(adapterOptions.shouldExcludeTarget(document.querySelector('.canvas-frame'), 'keydown')).toBe(false);
   });
   it('wires the top-level stitch tools', () => { render(<EditorSurface workspace={ws} document={doc} />); f.resize?.(); expect(f.c.setMetrics).toHaveBeenCalled(); fireEvent.click(screen.getByRole('button', { name: 'Stitch' })); expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'full', paletteId: 1 }); });
@@ -697,9 +699,9 @@ describe('EditorSurface', () => {
     }
   });
   it('chooses a backstitch mode from Tool options and remembers it for plain clicks', () => {
-    f.uiState.tool = { tool: 'backstitch' } as never;
+    f.uiState.tool = { tool: 'specialty', stitch: 'backstitch' } as never;
     render(<EditorSurface workspace={ws} document={doc} />);
-    const backstitch = screen.getByRole('button', { name: 'Backstitch, draw mode' });
+    const backstitch = screen.getByRole('button', { name: 'Specialty, draw mode' });
     const group = within(toolOptions()).getByRole('group', { name: 'Backstitch mode' });
     expect(within(group).getByRole('button', { name: 'Draw' })).toHaveAttribute('aria-pressed', 'true');
     expect(within(group).getByRole('button', { name: 'Move' })).toHaveAttribute('aria-pressed', 'false');
@@ -712,20 +714,134 @@ describe('EditorSurface', () => {
     expect(f.c.setBackstitchMode).toHaveBeenCalledWith('move');
     expect(f.c.setTool).not.toHaveBeenCalled();
   });
-  it('labels the Backstitch button with the current mode and presses that mode in Tool options', () => {
-    f.uiState.tool = { tool: 'backstitch', mode: 'move' } as never;
+  it('labels the Specialty button with the current mode and presses that mode in Tool options', () => {
+    f.uiState.tool = { tool: 'specialty', stitch: 'backstitch', mode: 'move' } as never;
     render(<EditorSurface workspace={ws} document={doc} />);
-    expect(screen.getByRole('button', { name: 'Backstitch, move mode' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Specialty, move mode' })).toHaveAttribute('aria-pressed', 'true');
     const group = within(toolOptions()).getByRole('group', { name: 'Backstitch mode' });
     expect(within(group).getByRole('button', { name: 'Move' })).toHaveAttribute('aria-pressed', 'true');
     expect(within(group).getByRole('button', { name: 'Draw' })).toHaveAttribute('aria-pressed', 'false');
+  });
+  it('offers Backstitch, French knot and Bead as Specialty stitches and keeps Draw/Move for Backstitch only', () => {
+    f.uiState.tool = { tool: 'specialty', stitch: 'backstitch' } as never;
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const stitches = within(toolOptions()).getByRole('group', { name: 'Specialty stitch' });
+    expect(within(stitches).getByRole('button', { name: 'Backstitch' })).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(within(stitches).getByRole('button', { name: 'French knot' }));
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'specialty', stitch: 'french-knot' });
+
+    switchTool({ tool: 'specialty', stitch: 'french-knot' });
+    const knotStitches = within(toolOptions()).getByRole('group', { name: 'Specialty stitch' });
+    expect(within(knotStitches).getByRole('button', { name: 'French knot' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(knotStitches).getByRole('button', { name: 'Backstitch' })).toHaveAttribute('aria-pressed', 'false');
+    expect(within(toolOptions()).queryByRole('group', { name: 'Backstitch mode' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Specialty' })).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(within(knotStitches).getByRole('button', { name: 'Bead' }));
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'specialty', stitch: 'bead' });
+  });
+  it('returns to the last Specialty stitch from the rail', () => {
+    f.uiState.tool = { tool: 'specialty', stitch: 'bead' } as never;
+    render(<EditorSurface workspace={ws} document={doc} />);
+    switchTool({ tool: 'pan' });
+    f.c.setTool.mockClear();
+    fireEvent.click(screen.getByRole('button', { name: 'Specialty' }));
+    expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'specialty', stitch: 'bead' });
+    expect(f.c.setBackstitchMode).not.toHaveBeenCalled();
+  });
+  it('disables the Specialty tool on a stitch layer', () => {
+    (f.uiState as { activeLayer?: unknown }).activeLayer = { id: 1, kind: 'stitch', visible: true };
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const specialty = screen.getByRole('button', { name: 'Specialty' });
+    expect(specialty).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(specialty);
+    expect(f.c.setBackstitchMode).not.toHaveBeenCalled();
+    expect(f.c.setTool).not.toHaveBeenCalled();
+  });
+  it('adds a Mill Hill bead from the rail in Bead mode and shows it among the beads', () => {
+    f.uiState.tool = { tool: 'specialty', stitch: 'bead' } as never;
+    const bead = millHillCatalog().records.find((record) => record.code === '00479')!;
+    (ws as { beadCatalogs: ReturnType<typeof vi.fn> }).beadCatalogs.mockReturnValue([millHillCatalog()]);
+    (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockReturnValue({});
+    const view = render(<EditorSurface workspace={ws} document={doc} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add bead' }));
+    const dialog = screen.getByRole('dialog', { name: 'Add a bead' });
+    expect(within(dialog).getByRole('tab', { name: 'Mill Hill' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(dialog).queryByRole('textbox', { name: 'Hex color' })).not.toBeInTheDocument();
+    fireEvent.change(within(dialog).getByRole('textbox', { name: 'Search Mill Hill catalog' }), { target: { value: '00479' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: `${bead.name}, color ${bead.code}` }));
+    fireEvent.click(within(dialog).getByRole('button', { name: `Add ${bead.name}` }));
+    expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).toHaveBeenCalledWith({
+      type: 'palette-create',
+      name: bead.name,
+      color: bead.hex,
+      catalog: createCatalogReference(millHillCatalog(), bead),
+      material: { kind: 'bead', label: bead.name, unit: 'count' },
+    });
+
+    const withBead = { ...(doc as object), palette: [...(doc as { palette: unknown[] }).palette, { ...millHillBeadEntry(2), active: true, symbol: SYMBOL_IDS[1] }] } as never;
+    view.rerender(<EditorSurface workspace={ws} document={withBead} />);
+    const beads = screen.getByRole('tabpanel', { name: 'Beads' });
+    expect(within(beads).getByRole('button', { name: `${bead.code}${bead.name}` })).toBeInTheDocument();
+    expect(within(beads).queryByRole('button', { name: /Ruby/ })).not.toBeInTheDocument();
+  });
+  it('shows only threads in the rail outside Bead mode, and disables Fill when the palette holds only beads', () => {
+    const bead = { ...millHillBeadEntry(2), active: true, symbol: SYMBOL_IDS[1] };
+    const withBead = { ...(doc as object), palette: [...(doc as { palette: unknown[] }).palette, bead] } as never;
+    const view = render(<EditorSurface workspace={ws} document={withBead} />);
+    const threads = screen.getByRole('tabpanel', { name: 'Threads' });
+    expect(within(threads).getByRole('button', { name: '321Ruby' })).toBeInTheDocument();
+    expect(within(threads).queryByRole('button', { name: new RegExp(bead.name) })).not.toBeInTheDocument();
+    expect(within(threads).getByRole('button', { name: 'Add new color' })).toBeEnabled();
+
+    view.rerender(<EditorSurface workspace={ws} document={{ ...(doc as object), palette: [bead] } as never} />);
+    expect(screen.getByRole('button', { name: 'Fill' })).toBeDisabled();
+  });
+  it('disables Add bead without a bead catalog and Focus Color while no beads are shown', () => {
+    f.uiState.tool = { tool: 'specialty', stitch: 'bead' } as never;
+    render(<EditorSurface workspace={ws} document={doc} />);
+    const beads = screen.getByRole('tabpanel', { name: 'Beads' });
+    expect(within(beads).getByRole('button', { name: 'Add bead' })).toBeDisabled();
+    expect(within(beads).getByRole('button', { name: 'Focus Color' })).toBeDisabled();
+    expect(within(beads).queryByRole('button', { name: /Ruby/ })).not.toBeInTheDocument();
+  });
+  it('switches the palette between thread and bead tabs freely, and follows tool changes that place stitches', () => {
+    const bead = { ...millHillBeadEntry(2), active: true, symbol: SYMBOL_IDS[1] };
+    const withBead = { ...(doc as object), palette: [...(doc as { palette: unknown[] }).palette, bead] } as never;
+    f.uiState.tool = { tool: 'paint', brush: { kind: 'full', paletteId: 1 } } as never;
+    render(<EditorSurface workspace={ws} document={withBead} />);
+    const tabs = within(screen.getByRole('tablist', { name: 'Palette kind' }));
+    const threadsTab = tabs.getByRole('tab', { name: 'Threads' });
+    const beadsTab = tabs.getByRole('tab', { name: 'Beads' });
+    expect(threadsTab).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.click(beadsTab);
+    const beads = screen.getByRole('tabpanel', { name: 'Beads' });
+    expect(within(beads).getByRole('button', { name: `${bead.catalog!.code}${bead.name}` })).toBeInTheDocument();
+    expect(within(beads).queryByRole('button', { name: '321Ruby' })).not.toBeInTheDocument();
+    expect(within(beads).getByRole('button', { name: 'Add bead' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Stitch' })).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.keyDown(beadsTab, { key: 'ArrowRight' });
+    expect(threadsTab).toHaveAttribute('aria-selected', 'true');
+    expect(threadsTab).toHaveFocus();
+
+    switchTool({ tool: 'specialty', stitch: 'bead' });
+    expect(beadsTab).toHaveAttribute('aria-selected', 'true');
+    switchTool({ tool: 'eraser' });
+    expect(beadsTab).toHaveAttribute('aria-selected', 'true');
+    switchTool({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
+    expect(threadsTab).toHaveAttribute('aria-selected', 'true');
+    expect(within(screen.getByRole('tabpanel', { name: 'Threads' })).getByRole('button', { name: 'Add new color' })).toBeInTheDocument();
+    switchTool({ tool: 'eraser' });
+    expect(threadsTab).toHaveAttribute('aria-selected', 'true');
   });
   it('orders movement and selection tools first without reordering the remaining tools', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     const rail = within(screen.getByRole('navigation', { name: 'Editor sections' }));
     expect(rail.getAllByRole('button').map((button) => button.getAttribute('aria-label'))).toEqual([
       'Pan', 'Select', 'Stitch',
-      'Shape', 'Backstitch', 'Eraser', 'Fill', 'Eyedropper',
+      'Shape', 'Specialty', 'Eraser', 'Fill', 'Eyedropper',
     ]);
   });
   it('offers a default Triangle shape tool and picks its shape from Tool options', () => {
@@ -902,7 +1018,7 @@ describe('EditorSurface', () => {
     expect(shapes.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
   it.each([
-    { tool: 'paint', brush: { kind: 'full', paletteId: 1 } }, { tool: 'eraser' }, { tool: 'backstitch', mode: 'draw' }, { tool: 'shape', shape: 'triangle' }, { tool: 'pan' },
+    { tool: 'paint', brush: { kind: 'full', paletteId: 1 } }, { tool: 'eraser' }, { tool: 'specialty', stitch: 'backstitch', mode: 'draw' }, { tool: 'shape', shape: 'triangle' }, { tool: 'pan' },
   ] as const)('shows no Selection actions for %j', (tool) => {
     f.uiState.tool = tool as never;
     f.uiState.overlay = { selection: { x: 1, y: 1, width: 2, height: 2 } };
@@ -1000,9 +1116,9 @@ describe('EditorSurface', () => {
     expect(items[2].querySelector('.stitch-brush-icon-three-quarter')).toBeInTheDocument();
   });
   it('leaves the Stitch button unpressed for other tools', () => {
-    f.uiState.tool = { tool: 'backstitch' };
+    f.uiState.tool = { tool: 'specialty', stitch: 'backstitch' } as never;
     render(<EditorSurface workspace={ws} document={doc} />);
-    expect(screen.getByRole('button', { name: 'Backstitch, draw mode' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Specialty, draw mode' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', { name: 'Stitch' })).toHaveAttribute('aria-pressed', 'false');
     expect(within(toolOptions()).queryByRole('group', { name: 'Stitch type' })).not.toBeInTheDocument();
   });
@@ -1048,7 +1164,7 @@ describe('EditorSurface', () => {
     expect(screen.getByRole('button', { name: 'Undo' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Redo' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Stitch' })).toBeVisible();
-    const paletteRegion = screen.getByRole('region', { name: 'Thread colors' });
+    const paletteRegion = screen.getByRole('region', { name: 'Palette' });
     const rail = screen.getByRole('complementary', { name: 'Editor controls' });
     expect(rail).toContainElement(paletteRegion);
   });
@@ -1096,7 +1212,7 @@ describe('EditorSurface', () => {
     [{ tool: 'select', shape: 'oval' }, 'Select'],
     [{ tool: 'lasso' }, 'Select'],
     [{ tool: 'shape', shape: 'triangle' }, 'Shape'],
-    [{ tool: 'backstitch', mode: 'draw' }, 'Backstitch'],
+    [{ tool: 'specialty', stitch: 'backstitch', mode: 'draw' }, 'Specialty'],
     [{ tool: 'eraser' }, 'Eraser'],
     [{ tool: 'canvas-brush' }, 'Canvas brush'],
   ] as const)('names the Tool options section after %j', (tool, name) => {
@@ -1112,7 +1228,7 @@ describe('EditorSurface', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     const heading = () => within(toolOptions()).getByRole('heading', { level: 3 });
     expect(heading()).toHaveTextContent('Stitch');
-    for (const [tool, name] of [[{ tool: 'lasso' }, 'Select'], [{ tool: 'backstitch', mode: 'move' }, 'Backstitch']] as const) {
+    for (const [tool, name] of [[{ tool: 'lasso' }, 'Select'], [{ tool: 'specialty', stitch: 'backstitch', mode: 'move' }, 'Specialty']] as const) {
       switchTool(tool);
       expect(heading()).toHaveTextContent(name);
       expect(screen.getByRole('region', { name })).toBe(toolOptions());
@@ -1135,7 +1251,7 @@ describe('EditorSurface', () => {
     switchTool({ tool: 'paint', brush: { kind: 'half', paletteId: 1 } });
     expect(within(toolOptions()).getByRole('group', { name: 'Half stitch direction' })).toBeInTheDocument();
     expect(within(toolOptions()).getByRole('slider', { name: 'Half stitch brush size' })).toBeInTheDocument();
-    switchTool({ tool: 'backstitch', mode: 'draw' });
+    switchTool({ tool: 'specialty', stitch: 'backstitch', mode: 'draw' });
     expect(within(toolOptions()).getByRole('group', { name: 'Backstitch mode' })).toBeInTheDocument();
     expect(within(toolOptions()).queryByRole('slider')).not.toBeInTheDocument();
     switchTool({ tool: 'shape', shape: 'triangle' });
@@ -1376,7 +1492,7 @@ describe('EditorSurface', () => {
     expect(numbers).not.toBeChecked();
   });
   it('shows palette swatch symbols only in symbol and combined view modes', () => {
-    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: SYMBOL_IDS[0], catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
+    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, material: FLOSS, symbol: SYMBOL_IDS[0], catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
     const swatch = () => screen.getByRole('button', { name: '321Ruby' }).querySelector('.palette-swatch-symbol');
     render(<EditorSurface workspace={ws} document={symDoc} />);
     expect(swatch()).toBeNull();
@@ -1393,12 +1509,12 @@ describe('EditorSurface', () => {
   it('defaults project details to metric units and saves a switch through metadata', () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); expect(screen.getByRole('button', { name: 'Metric' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: 'Imperial' })).toHaveAttribute('aria-pressed', 'false'); fireEvent.click(screen.getByRole('button', { name: 'Imperial' })); expect(screen.getByRole('button', { name: 'Imperial' })).toHaveAttribute('aria-pressed', 'true'); fireEvent.click(screen.getByRole('button', { name: 'Save settings' })); expect((ws as { updateActiveMetadata: ReturnType<typeof vi.fn> }).updateActiveMetadata).toHaveBeenCalledWith({ title: 'Sampler', notes: '', units: 'imperial' }); });
   it('reflects a stored imperial preference when project details opens', () => { const base = ws as unknown as { metadata: Record<string, unknown> }; const imperialWs = { ...base, metadata: { ...base.metadata, units: 'imperial' } } as never; render(<EditorSurface workspace={imperialWs} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); expect(screen.getByRole('button', { name: 'Imperial' })).toHaveAttribute('aria-pressed', 'true'); expect(screen.getByRole('button', { name: 'Metric' })).toHaveAttribute('aria-pressed', 'false'); });
   it('applies units immediately on toggle without waiting for save', () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); fireEvent.click(screen.getByRole('button', { name: 'Imperial' })); expect((ws as { updateActiveMetadata: ReturnType<typeof vi.fn> }).updateActiveMetadata).toHaveBeenCalledWith({ units: 'imperial' }); expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument(); });
-  it('guides users without a thread', () => { const empty = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: false }], backstitches: { ids: new Uint32Array() } } as never; render(<EditorSurface workspace={ws} document={empty} />); expect(screen.getByRole('button', { name: 'Fill' })).toBeDisabled(); expect(screen.getByRole('button', { name: 'Backstitch' })).toBeDisabled(); });
+  it('guides users without a thread', () => { const empty = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: false, material: FLOSS }], backstitches: { ids: new Uint32Array() } } as never; render(<EditorSurface workspace={ws} document={empty} />); expect(screen.getByRole('button', { name: 'Fill' })).toBeDisabled(); expect(screen.getByRole('button', { name: 'Specialty' })).toBeDisabled(); });
   it('shows catalog code before the palette name and exposes command buttons', () => { render(<EditorSurface workspace={ws} document={doc} />); const ruby = screen.getByRole('button', { name: '321Ruby' }); expect(ruby).toBeInTheDocument(); for (const name of ['Undo', 'Redo', 'Zoom in', 'Zoom out', 'Fit']) expect(screen.getByRole('button', { name })).toBeInTheDocument(); fireEvent.click(screen.getByRole('button', { name: 'Undo' })); expect(f.c.handleKeyDown).toHaveBeenCalledWith(expect.objectContaining({ key: 'z', ctrlKey: true })); fireEvent.click(screen.getByRole('button', { name: 'Redo' })); expect(f.c.handleKeyDown).toHaveBeenCalledWith(expect.objectContaining({ key: 'y', ctrlKey: true })); fireEvent.click(screen.getByRole('button', { name: 'Zoom out' })); expect(f.c.handleKeyDown).toHaveBeenCalledWith(expect.objectContaining({ key: '-' })); });
   it('filters the thread-color grid, selects a swatch, and adds the summary color', async () => {
     const createdDocument = customColorDocument([
       ...(doc as { palette: unknown[] }).palette,
-      { id: 2, name: 'Red', color: '#C72B3B', active: true, catalog: createCatalogReference(DEFAULT_CATALOG_DEFINITION, DEFAULT_CATALOG_DEFINITION.getByHex('#C72B3B')!) },
+      { id: 2, name: 'Red', color: '#C72B3B', active: true, material: FLOSS, catalog: createCatalogReference(DEFAULT_CATALOG_DEFINITION, DEFAULT_CATALOG_DEFINITION.getByHex('#C72B3B')!) },
     ]);
     executeMock().mockResolvedValueOnce({ document: createdDocument });
     render(<EditorSurface workspace={ws} document={doc} />);
@@ -1457,7 +1573,7 @@ describe('EditorSurface', () => {
   });
   it('keeps custom creation available when the runtime catalog is unavailable', () => {
     (ws as { catalogFor: ReturnType<typeof vi.fn> }).catalogFor.mockReturnValue(undefined);
-    (ws as { availableCatalogs: ReturnType<typeof vi.fn> }).availableCatalogs.mockReturnValue([]);
+    (ws as { threadCatalogs: ReturnType<typeof vi.fn> }).threadCatalogs.mockReturnValue([]);
     render(<EditorSurface workspace={ws} document={doc} />);
     const dialog = openCustomColorDialog();
     expect(within(dialog).getByText('Catalog unavailable')).toBeInTheDocument();
@@ -1468,8 +1584,8 @@ describe('EditorSurface', () => {
   });
   it('selects an active catalog match before an active custom match without executing', async () => {
     const matchingDocument = customColorDocument([
-      { id: 2, name: 'Custom Ruby', color: '#BB4444', active: true },
-      { id: 1, name: 'Catalog Ruby', color: '#b44', active: true, catalog: { catalogId: DEFAULT_CATALOG_DEFINITION.association.catalogId, sourceId: 'catalog-ruby', code: '321' } },
+      { id: 2, name: 'Custom Ruby', color: '#BB4444', active: true, material: FLOSS },
+      { id: 1, name: 'Catalog Ruby', color: '#b44', active: true, material: FLOSS, catalog: { catalogId: DEFAULT_CATALOG_DEFINITION.association.catalogId, sourceId: 'catalog-ruby', code: '321' } },
     ]);
     render(<EditorSurface workspace={ws} document={matchingDocument} />);
     const dialog = openCustomColorDialog();
@@ -1485,10 +1601,10 @@ describe('EditorSurface', () => {
     const noncanonical = { sourceId: 'same-hex-a', code: 'A1', name: 'Alternate Ruby', hex: '#BB0000', rgb: [187, 0, 0] as const } as CatalogRecord;
     const canonical = { sourceId: 'same-hex-b', code: 'B1', name: 'Canonical Ruby', hex: '#BB0000', rgb: [187, 0, 0] as const } as CatalogRecord;
     const definition = makeCatalog('same-hex-catalog', 'Same Hex', [noncanonical, canonical]);
-    const workspace = ws as { catalogFor: ReturnType<typeof vi.fn>; availableCatalogs: ReturnType<typeof vi.fn> };
+    const workspace = ws as { catalogFor: ReturnType<typeof vi.fn>; threadCatalogs: ReturnType<typeof vi.fn> };
     workspace.catalogFor.mockReturnValue(definition);
-    workspace.availableCatalogs.mockReturnValue([definition]);
-    const document = customColorDocument([{ id: 1, name: noncanonical.name, color: noncanonical.hex, active: true, catalog: createCatalogReference(definition, noncanonical) }]);
+    workspace.threadCatalogs.mockReturnValue([definition]);
+    const document = customColorDocument([{ id: 1, name: noncanonical.name, color: noncanonical.hex, active: true, material: FLOSS, catalog: createCatalogReference(definition, noncanonical) }]);
     render(<EditorSurface workspace={ws} document={document} />);
     const dialog = openCustomColorDialog();
     fireEvent.change(within(dialog).getByLabelText('Hex color'), { target: { value: '#bb0000' } });
@@ -1500,13 +1616,13 @@ describe('EditorSurface', () => {
   it('does not select a canonical catalog entry whose palette swatch was recolored', async () => {
     const canonical = { sourceId: 'canonical-source', code: 'C1', name: 'Canonical Ruby', hex: '#BB0000', rgb: [187, 0, 0] as const } as CatalogRecord;
     const definition = makeCatalog('recolored-catalog', 'Recolored Brand', [canonical]);
-    const workspace = ws as { catalogFor: ReturnType<typeof vi.fn>; availableCatalogs: ReturnType<typeof vi.fn> };
+    const workspace = ws as { catalogFor: ReturnType<typeof vi.fn>; threadCatalogs: ReturnType<typeof vi.fn> };
     workspace.catalogFor.mockReturnValue(definition);
-    workspace.availableCatalogs.mockReturnValue([definition]);
-    const originalDocument = customColorDocument([{ id: 1, name: canonical.name, color: '#0000BB', active: true, catalog: createCatalogReference(definition, canonical) }]);
+    workspace.threadCatalogs.mockReturnValue([definition]);
+    const originalDocument = customColorDocument([{ id: 1, name: canonical.name, color: '#0000BB', active: true, material: FLOSS, catalog: createCatalogReference(definition, canonical) }]);
     const createdDocument = customColorDocument([
       ...(originalDocument as { palette: unknown[] }).palette,
-      { id: 2, name: canonical.name, color: canonical.hex, active: true, catalog: createCatalogReference(definition, canonical) },
+      { id: 2, name: canonical.name, color: canonical.hex, active: true, material: FLOSS, catalog: createCatalogReference(definition, canonical) },
     ]);
     executeMock().mockResolvedValueOnce({ document: createdDocument });
     render(<EditorSurface workspace={ws} document={originalDocument} />);
@@ -1520,8 +1636,8 @@ describe('EditorSurface', () => {
   });
   it('selects an active custom match after expanding a short hex without executing', async () => {
     const matchingDocument = customColorDocument([
-      { id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { catalogId: DEFAULT_CATALOG_DEFINITION.association.catalogId, sourceId: 'catalog-ruby', code: '321' } },
-      { id: 2, name: 'Sky', color: '#4488CC', active: true },
+      { id: 1, name: 'Ruby', color: '#b44', active: true, material: FLOSS, catalog: { catalogId: DEFAULT_CATALOG_DEFINITION.association.catalogId, sourceId: 'catalog-ruby', code: '321' } },
+      { id: 2, name: 'Sky', color: '#4488CC', active: true, material: FLOSS },
     ]);
     render(<EditorSurface workspace={ws} document={matchingDocument} />);
     const dialog = openCustomColorDialog();
@@ -1533,8 +1649,8 @@ describe('EditorSurface', () => {
   });
   it('adds an absent exact DMC color with catalog metadata', async () => {
     const createdDocument = customColorDocument([
-      { id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { catalogId: DEFAULT_CATALOG_DEFINITION.association.catalogId, sourceId: 'ruby', code: '321' } },
-      { id: 2, name: 'Red', color: '#C72B3B', active: true, catalog: createCatalogReference(DEFAULT_CATALOG_DEFINITION, DEFAULT_CATALOG_DEFINITION.getByHex('#C72B3B')!) },
+      { id: 1, name: 'Ruby', color: '#b44', active: true, material: FLOSS, catalog: { catalogId: DEFAULT_CATALOG_DEFINITION.association.catalogId, sourceId: 'ruby', code: '321' } },
+      { id: 2, name: 'Red', color: '#C72B3B', active: true, material: FLOSS, catalog: createCatalogReference(DEFAULT_CATALOG_DEFINITION, DEFAULT_CATALOG_DEFINITION.getByHex('#C72B3B')!) },
     ]);
     (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockResolvedValueOnce({ document: createdDocument });
     render(<EditorSurface workspace={ws} document={doc} />);
@@ -1551,8 +1667,8 @@ describe('EditorSurface', () => {
   });
   it('creates a novel custom color without catalog metadata', async () => {
     const createdDocument = customColorDocument([
-      { id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321' } },
-      { id: 2, name: '#12AB34', color: '#12AB34', active: true },
+      { id: 1, name: 'Ruby', color: '#b44', active: true, material: FLOSS, catalog: { code: '321' } },
+      { id: 2, name: '#12AB34', color: '#12AB34', active: true, material: FLOSS },
     ]);
     (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockResolvedValueOnce({ document: createdDocument });
     render(<EditorSurface workspace={ws} document={doc} />);
@@ -1570,11 +1686,11 @@ describe('EditorSurface', () => {
   });
   it('ignores inactive matches and follows the creation path', async () => {
     const inactiveDocument = customColorDocument([
-      { id: 1, name: 'Inactive custom', color: '#12AB34', active: false },
+      { id: 1, name: 'Inactive custom', color: '#12AB34', active: false, material: FLOSS },
     ]);
     const createdDocument = customColorDocument([
-      { id: 1, name: 'Inactive custom', color: '#12AB34', active: false },
-      { id: 2, name: '#12AB34', color: '#12AB34', active: true },
+      { id: 1, name: 'Inactive custom', color: '#12AB34', active: false, material: FLOSS },
+      { id: 2, name: '#12AB34', color: '#12AB34', active: true, material: FLOSS },
     ]);
     executeMock().mockResolvedValueOnce({ document: createdDocument });
     render(<EditorSurface workspace={ws} document={inactiveDocument} />);
@@ -1615,14 +1731,14 @@ describe('EditorSurface', () => {
   it('shows a clear empty state when no thread colors match', () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: /Add new color/ })); fireEvent.change(screen.getByLabelText('Search DMC catalog'), { target: { value: 'not-a-real-thread-color' } }); expect(screen.getByText('No matching colors.')).toBeInTheDocument(); expect(within(screen.getByRole('list', { name: 'Available thread colors' })).queryAllByRole('button')).toHaveLength(0); });
   it('keeps query 31 results limited to catalog matches', async () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: /Add new color/ })); const grid = screen.getByRole('list', { name: 'Available thread colors' }); fireEvent.change(screen.getByLabelText('Search DMC catalog'), { target: { value: '31' } }); await waitFor(() => expect(within(grid).getAllByRole('button').length).toBeGreaterThan(0)); for (const button of within(grid).getAllByRole('button')) { const label = button.getAttribute('aria-label') ?? ''; const code = label.split(', color ')[1] ?? ''; const record = DEFAULT_CATALOG_DEFINITION.records.find((entry) => entry.code === code); expect(record).toBeDefined(); expect([record?.code ?? '', record?.name ?? '', record?.hex ?? '', record?.sourceId ?? ''].some((field) => field.toLowerCase().includes('31'))).toBe(true); } expect(within(grid).queryByRole('button', { name: /Snow White/ })).not.toBeInTheDocument(); });
   it('renders the palette roster in palette order regardless of reference status', () => { render(<EditorSurface workspace={ws} document={two} />); const ruby = screen.getByRole('button', { name: '321Ruby' }); const sky = screen.getByRole('button', { name: 'Sky' }); expect(ruby.compareDocumentPosition(sky) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy(); });
-  it('keeps the palette add action and swatches together in the palette rail', () => { render(<EditorSurface workspace={ws} document={two} />); const rail = screen.getByRole('complementary', { name: 'Editor controls' }); const dock = screen.getByRole('region', { name: 'Thread colors' }); const add = screen.getByRole('button', { name: /Add new color/ }); const sky = screen.getByRole('button', { name: 'Sky' }); const ruby = screen.getByRole('button', { name: '321Ruby' }); expect(rail).toContainElement(dock); expect(dock).toHaveClass('palette-rail'); expect(dock).toContainElement(add); expect(dock).toContainElement(sky); expect(dock).toContainElement(ruby); });
+  it('keeps the palette add action and swatches together in the palette rail', () => { render(<EditorSurface workspace={ws} document={two} />); const rail = screen.getByRole('complementary', { name: 'Editor controls' }); const dock = screen.getByRole('region', { name: 'Palette' }); const add = screen.getByRole('button', { name: /Add new color/ }); const sky = screen.getByRole('button', { name: 'Sky' }); const ruby = screen.getByRole('button', { name: '321Ruby' }); expect(rail).toContainElement(dock); expect(dock).toHaveClass('palette-rail'); expect(dock).toContainElement(add); expect(dock).toContainElement(sky); expect(dock).toContainElement(ruby); });
   it('shows a normalized custom hex label in the palette rail', () => {
-    render(<EditorSurface workspace={ws} document={customColorDocument([{ id: 2, name: 'Custom Ruby', color: '#12AB34', active: true }])} />);
+    render(<EditorSurface workspace={ws} document={customColorDocument([{ id: 2, name: 'Custom Ruby', color: '#12AB34', active: true, material: FLOSS }])} />);
     const number = screen.getByText('#12AB34', { selector: '.palette-number' });
     expect(number).toHaveClass('palette-number-hex');
   });
   it('shows a normalized custom hex label in the palette details menu', () => {
-    render(<EditorSurface workspace={ws} document={customColorDocument([{ id: 2, name: 'Custom Ruby', color: '#12AB34', active: true }])} />);
+    render(<EditorSurface workspace={ws} document={customColorDocument([{ id: 2, name: 'Custom Ruby', color: '#12AB34', active: true, material: FLOSS }])} />);
     fireEvent.keyDown(screen.getByRole('button', { name: 'Custom Ruby' }), { key: 'ContextMenu' });
     const menu = screen.getByRole('menu', { name: 'Details for Custom Ruby' });
     expect(menu).toHaveTextContent('#12AB34');
@@ -1654,8 +1770,8 @@ describe('EditorSurface', () => {
       vi.useRealTimers();
     }
   });
-  it('swaps the removed color into an existing palette color that matches the chosen catalog color', () => { const match = DEFAULT_CATALOG_DEFINITION.search('salmon')[0]; const existing = customColorDocument([{ id: 1, name: 'Ruby', color: '#b44', active: true }, { id: 2, name: match.name, color: match.hex, active: true, catalog: createCatalogReference(DEFAULT_CATALOG_DEFINITION, match) }]); (ws as { getStateSnapshot: ReturnType<typeof vi.fn> }).getStateSnapshot.mockReturnValue({ document: existing }); render(<EditorSurface workspace={ws} document={existing} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); const dialog = screen.getByRole('dialog', { name: 'Swap Color' }); fireEvent.change(within(dialog).getByLabelText('Search DMC catalog'), { target: { value: 'salmon' } }); fireEvent.click(within(dialog).getByRole('button', { name: `${match.name}, color ${match.code}` })); fireEvent.click(within(dialog).getByRole('button', { name: `Swap ${match.name}` })); expect(executeMock()).toHaveBeenCalledWith(expect.objectContaining({ type: 'palette-merge', from: 1, to: 2 })); expect(f.c.selectPalette).toHaveBeenCalledWith(2); expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
-  it('swaps the removed color into a newly created catalog color', () => { const match = DEFAULT_CATALOG_DEFINITION.search('salmon')[0]; const merged = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }, { id: 2, name: match.name, color: match.hex, active: true, catalog: { catalogId: 'dmc-compatible-screen-approximation', sourceId: match.sourceId, code: match.code, name: match.name, hex: match.hex, rgb: [...match.rgb] } }], backstitches: { ids: new Uint32Array() } } as never; (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockReturnValue({}); (ws as { getStateSnapshot: ReturnType<typeof vi.fn> }).getStateSnapshot.mockReturnValue({ document: merged }); render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); fireEvent.change(screen.getByLabelText('Search DMC catalog'), { target: { value: 'salmon' } }); fireEvent.click(screen.getByRole('button', { name: `${match.name}, color ${match.code}` })); fireEvent.click(screen.getByRole('button', { name: `Swap ${match.name}` })); expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).toHaveBeenCalledWith(expect.objectContaining({ type: 'palette-merge', from: 1, createTo: expect.objectContaining({ name: match.name, color: match.hex }) })); expect(f.c.selectPalette).toHaveBeenCalledWith(2); });
+  it('swaps the removed color into an existing palette color that matches the chosen catalog color', () => { const match = DEFAULT_CATALOG_DEFINITION.search('salmon')[0]; const existing = customColorDocument([{ id: 1, name: 'Ruby', color: '#b44', active: true, material: FLOSS }, { id: 2, name: match.name, color: match.hex, active: true, material: FLOSS, catalog: createCatalogReference(DEFAULT_CATALOG_DEFINITION, match) }]); (ws as { getStateSnapshot: ReturnType<typeof vi.fn> }).getStateSnapshot.mockReturnValue({ document: existing }); render(<EditorSurface workspace={ws} document={existing} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); const dialog = screen.getByRole('dialog', { name: 'Swap Color' }); fireEvent.change(within(dialog).getByLabelText('Search DMC catalog'), { target: { value: 'salmon' } }); fireEvent.click(within(dialog).getByRole('button', { name: `${match.name}, color ${match.code}` })); fireEvent.click(within(dialog).getByRole('button', { name: `Swap ${match.name}` })); expect(executeMock()).toHaveBeenCalledWith(expect.objectContaining({ type: 'palette-merge', from: 1, to: 2 })); expect(f.c.selectPalette).toHaveBeenCalledWith(2); expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
+  it('swaps the removed color into a newly created catalog color', () => { const match = DEFAULT_CATALOG_DEFINITION.search('salmon')[0]; const merged = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, material: FLOSS, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }, { id: 2, name: match.name, color: match.hex, active: true, material: FLOSS, catalog: { catalogId: 'dmc-compatible-screen-approximation', sourceId: match.sourceId, code: match.code, name: match.name, hex: match.hex, rgb: [...match.rgb] } }], backstitches: { ids: new Uint32Array() } } as never; (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockReturnValue({}); (ws as { getStateSnapshot: ReturnType<typeof vi.fn> }).getStateSnapshot.mockReturnValue({ document: merged }); render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); fireEvent.change(screen.getByLabelText('Search DMC catalog'), { target: { value: 'salmon' } }); fireEvent.click(screen.getByRole('button', { name: `${match.name}, color ${match.code}` })); fireEvent.click(screen.getByRole('button', { name: `Swap ${match.name}` })); expect((ws as { execute: ReturnType<typeof vi.fn> }).execute).toHaveBeenCalledWith(expect.objectContaining({ type: 'palette-merge', from: 1, createTo: expect.objectContaining({ name: match.name, color: match.hex }) })); expect(f.c.selectPalette).toHaveBeenCalledWith(2); });
   it('keeps the dialog open and reports a failed replacement', () => { (ws as { execute: ReturnType<typeof vi.fn> }).execute.mockImplementationOnce(() => { throw new Error('boom'); }); render(<EditorSurface workspace={ws} document={two} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); fireEvent.change(screen.getByLabelText('Search DMC catalog'), { target: { value: 'salmon' } }); const salmon = DEFAULT_CATALOG_DEFINITION.search('salmon')[0]; fireEvent.click(screen.getByRole('button', { name: `${salmon.name}, color ${salmon.code}` })); fireEvent.click(screen.getByRole('button', { name: `Swap ${salmon.name}` })); expect(screen.getByRole('dialog', { name: 'Swap Color' })).toBeInTheDocument(); expect(screen.getByRole('alert')).toHaveTextContent('boom'); });
   it('closes the swap dialog opened from the remove button on Escape', () => { render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Remove Ruby' })); fireEvent.keyDown(screen.getByRole('dialog', { name: 'Swap Color' }), { key: 'Escape' }); expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); });
   it('portals the details dialog outside the application root and closes it from the backdrop', async () => { const shell = document.createElement('div'); shell.dataset.application = ''; document.body.append(shell); render(<EditorSurface workspace={ws} document={doc} />); fireEvent.click(screen.getByRole('button', { name: 'Open settings' })); const dialog = screen.getByRole('dialog', { name: 'Settings' }); expect(dialog.closest('[data-application]')).toBeNull(); expect(shell).toHaveProperty('inert', true); fireEvent.click(dialog); expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument(); fireEvent.click(dialog.closest('.modal-backdrop') as HTMLElement); await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument()); expect(shell).toHaveProperty('inert', false); shell.remove(); });
@@ -1712,8 +1828,8 @@ describe('EditorSurface', () => {
     // Entry 1 holds one slug, entry 2 another, so the target below is free.
     const [heldSymbol, otherSymbol, target] = [SYMBOL_IDS[1], SYMBOL_IDS[2], SYMBOL_IDS[3]];
     const palette = [
-      { id: 1, name: 'Ruby', color: '#b44', active: true, symbol: heldSymbol },
-      { id: 2, name: 'Sky', color: '#48c', active: true, symbol: otherSymbol }
+      { id: 1, name: 'Ruby', color: '#b44', active: true, material: FLOSS, symbol: heldSymbol },
+      { id: 2, name: 'Sky', color: '#48c', active: true, material: FLOSS, symbol: otherSymbol }
     ];
     const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
@@ -1729,8 +1845,8 @@ describe('EditorSurface', () => {
   it('renders every reachable symbol as one continuous grid with held tiles visible, no categories, or pagination', () => {
     const [heldSymbol, otherSymbol] = [SYMBOL_IDS[1], SYMBOL_IDS[2]];
     const palette = [
-      { id: 1, name: 'Ruby', color: '#b44', active: true, symbol: heldSymbol },
-      { id: 2, name: 'Sky', color: '#48c', active: true, symbol: otherSymbol }
+      { id: 1, name: 'Ruby', color: '#b44', active: true, material: FLOSS, symbol: heldSymbol },
+      { id: 2, name: 'Sky', color: '#48c', active: true, material: FLOSS, symbol: otherSymbol }
     ];
     const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
@@ -1752,7 +1868,7 @@ describe('EditorSurface', () => {
     // an empty set of groups would pass in silence.
     expect(groups.length).toBeGreaterThan(0);
     const held = uniquelyNamed();
-    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: held.id }], backstitches: { ids: new Uint32Array() } } as never;
+    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, material: FLOSS, symbol: held.id }], backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
     const dialog = screen.getByRole('dialog');
@@ -1781,7 +1897,7 @@ describe('EditorSurface', () => {
     const group = sharedNameGroups()[0];
     expect(group).toBeDefined();
     const held = group[0];
-    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: held.id }], backstitches: { ids: new Uint32Array() } } as never;
+    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, material: FLOSS, symbol: held.id }], backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
     expect(screen.getByRole('dialog', { name: `Symbol for Ruby — ${held.name} (${held.family})` }))
@@ -1790,7 +1906,7 @@ describe('EditorSurface', () => {
   it('previews each symbol from a shared sprite that carries the pool\'s own path data', () => {
     const assigned = SYMBOL_IDS[0];
     const entry = SYMBOL_POOL.find((s) => s.id === assigned)!;
-    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: assigned }], backstitches: { ids: new Uint32Array() } } as never;
+    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, material: FLOSS, symbol: assigned }], backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
     const dialog = screen.getByRole('dialog', { name: /^Symbol for Ruby/ });
@@ -1814,7 +1930,7 @@ describe('EditorSurface', () => {
   });
   it('draws the palette symbols from the shared sprite instead of printing the pool slug', () => {
     const assigned = SYMBOL_IDS[0];
-    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: assigned, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
+    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, material: FLOSS, symbol: assigned, catalog: { code: '321', name: 'Ruby', hex: '#b44', rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } }], backstitches: { ids: new Uint32Array() } } as never;
     f.uiState.mode = 'symbol';
     render(<EditorSurface workspace={ws} document={symDoc} />);
     const row = screen.getByRole('button', { name: '321Ruby' });
@@ -1827,7 +1943,7 @@ describe('EditorSurface', () => {
     expect(chip.querySelector('path')).toBeNull();
   });
   it('inks palette swatch symbols black or white by swatch color like the chart', () => {
-    const entry = (id: number, name: string, color: string) => ({ id, name, color, active: true, symbol: SYMBOL_IDS[0], catalog: { code: String(id), name, hex: color, rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } });
+    const entry = (id: number, name: string, color: string) => ({ id, name, color, active: true, material: FLOSS, symbol: SYMBOL_IDS[0], catalog: { code: String(id), name, hex: color, rgb: [0, 0, 0], catalogId: 'dmc-compatible-screen-approximation', sourceId: 'x' } });
     const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [entry(1, 'Straw', '#f0e68c'), entry(2, 'Night', '#1a1a40')], backstitches: { ids: new Uint32Array() } } as never;
     f.uiState.mode = 'symbol';
     render(<EditorSurface workspace={ws} document={symDoc} />);
@@ -1838,9 +1954,9 @@ describe('EditorSurface', () => {
   it('keeps held symbols visible and swaps glyphs atomically when a held tile is picked', async () => {
     const [symbolA, symbolB, symbolC] = [SYMBOL_IDS[0], SYMBOL_IDS[1], SYMBOL_IDS[2]];
     const palette = [
-      { id: 1, name: 'Ruby', color: '#b44', active: true, symbol: symbolA },
-      { id: 2, name: 'Sky', color: '#48c', active: true, symbol: symbolB },
-      { id: 3, name: 'Sea', color: '#38a', active: true, symbol: symbolC }
+      { id: 1, name: 'Ruby', color: '#b44', active: true, material: FLOSS, symbol: symbolA },
+      { id: 2, name: 'Sky', color: '#48c', active: true, material: FLOSS, symbol: symbolB },
+      { id: 3, name: 'Sea', color: '#38a', active: true, material: FLOSS, symbol: symbolC }
     ];
     const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
@@ -1859,7 +1975,7 @@ describe('EditorSurface', () => {
   });
   it('closes the symbol picker on Escape and backdrop click with focus restore', async () => {
     const heldSymbol = SYMBOL_IDS[0];
-    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: heldSymbol }], backstitches: { ids: new Uint32Array() } } as never;
+    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, material: FLOSS, symbol: heldSymbol }], backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     const chip = screen.getByRole('button', { name: 'Change symbol for Ruby' });
     fireEvent.click(chip);
@@ -1875,7 +1991,7 @@ describe('EditorSurface', () => {
   });
   it('offers no way to enter a symbol the pool cannot draw', () => {
     const heldSymbol = SYMBOL_IDS[0];
-    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: heldSymbol }], backstitches: { ids: new Uint32Array() } } as never;
+    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, material: FLOSS, symbol: heldSymbol }], backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
     const dialog = screen.getByRole('dialog', { name: /^Symbol for Ruby/ });
@@ -1886,7 +2002,7 @@ describe('EditorSurface', () => {
   });
   it('filters the symbol grid by a typed query', async () => {
     const heldSymbol = SYMBOL_IDS[0];
-    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, symbol: heldSymbol }], backstitches: { ids: new Uint32Array() } } as never;
+    const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette: [{ id: 1, name: 'Ruby', color: '#b44', active: true, material: FLOSS, symbol: heldSymbol }], backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
     fireEvent.click(screen.getByRole('button', { name: 'Change symbol for Ruby' }));
     const filter = screen.getByLabelText('Filter symbols');
@@ -1907,9 +2023,9 @@ describe('EditorSurface', () => {
     expect(hearts.length).toBeGreaterThanOrEqual(2);
     const [sky, sea] = hearts;
     const palette = [
-      { id: 1, name: 'Ruby', color: '#b44', active: true, symbol: SYMBOL_IDS[0] },
-      { id: 2, name: 'Sky', color: '#48c', active: true, symbol: sky.id },
-      { id: 3, name: 'Sea', color: '#38a', active: true, symbol: sea.id }
+      { id: 1, name: 'Ruby', color: '#b44', active: true, material: FLOSS, symbol: SYMBOL_IDS[0] },
+      { id: 2, name: 'Sky', color: '#48c', active: true, material: FLOSS, symbol: sky.id },
+      { id: 3, name: 'Sea', color: '#38a', active: true, material: FLOSS, symbol: sea.id }
     ];
     const symDoc = { width: 16, height: 16, kind: new Uint8Array(256), colors: new Uint16Array(1024), palette, backstitches: { ids: new Uint32Array() } } as never;
     render(<EditorSurface workspace={ws} document={symDoc} />);
@@ -2226,7 +2342,7 @@ describe('EditorSurface layers', () => {
     const full = screen.getByRole('button', { name: 'Stitch' });
     expect(full).toHaveAttribute('aria-disabled', 'true');
     expect(full).toHaveAttribute('title', 'Select a stitch layer to use this tool.');
-    expect(screen.getByRole('button', { name: 'Backstitch' })).not.toHaveAttribute('aria-disabled');
+    expect(screen.getByRole('button', { name: 'Specialty' })).not.toHaveAttribute('aria-disabled');
     expect(screen.getByRole('button', { name: 'Eraser' })).not.toHaveAttribute('aria-disabled');
     fireEvent.click(full);
     expect(f.c.setBrush).not.toHaveBeenCalled();
@@ -2238,7 +2354,7 @@ describe('EditorSurface layers', () => {
   it('disables every editing tool on a hidden layer with the show-layer hint', () => {
     (f.uiState as { activeLayer?: unknown }).activeLayer = { id: 1, kind: 'stitch', visible: false };
     render(<EditorSurface workspace={ws} document={doc} />);
-    for (const name of ['Select', 'Stitch', 'Shape', 'Backstitch', 'Eraser', 'Fill']) {
+    for (const name of ['Select', 'Stitch', 'Shape', 'Specialty', 'Eraser', 'Fill']) {
       expect(screen.getByRole('button', { name })).toHaveAttribute('title', 'Show this layer to edit it.');
     }
     for (const name of ['Pan', 'Eyedropper']) expect(screen.getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
@@ -2297,7 +2413,7 @@ describe('EditorSurface on the Canvas layer', () => {
     onCanvas('advanced');
     f.uiState.tool = { tool: 'canvas-brush' } as never;
     render(<EditorSurface workspace={ws} document={doc} />);
-    expect(stitchRail.map((entry) => entry.name)).toEqual(['Pan', 'Select', 'Stitch', 'Shape', 'Backstitch', 'Eraser', 'Fill', 'Eyedropper']);
+    expect(stitchRail.map((entry) => entry.name)).toEqual(['Pan', 'Select', 'Stitch', 'Shape', 'Specialty', 'Eraser', 'Fill', 'Eyedropper']);
     expect(railSnapshot()).toEqual(stitchRail);
     expect(document.querySelector('[data-icon="canvas-brush"]')).toBeNull();
 
@@ -2316,7 +2432,7 @@ describe('EditorSurface on the Canvas layer', () => {
     fireEvent.change(within(toolOptions()).getByRole('slider', { name: 'Canvas brush size' }), { target: { value: '6' } });
     expect(f.c.setToolBrushSize).toHaveBeenCalledWith('canvas-brush', 6);
 
-    for (const name of ['Shape', 'Backstitch', 'Fill', 'Eyedropper']) {
+    for (const name of ['Shape', 'Specialty', 'Fill', 'Eyedropper']) {
       const button = screen.getByRole('button', { name });
       expect(button).toHaveAttribute('aria-disabled', 'true');
       expect(button).toHaveClass('rail-button-unavailable');
@@ -2588,7 +2704,7 @@ describe('palette manager', () => {
     it('adds the chosen color, closes the panel, keeps the manager open, and shows the new color in the chip', async () => {
       const createdDocument = customColorDocument([
         ...(two as { palette: unknown[] }).palette,
-        { id: 3, name: 'Bright Red', color: '#E22B3B', active: true, catalog: createCatalogReference(COMPACT_DMC_DEFINITION, compactDmcRecords[0]) },
+        { id: 3, name: 'Bright Red', color: '#E22B3B', active: true, material: FLOSS, catalog: createCatalogReference(COMPACT_DMC_DEFINITION, compactDmcRecords[0]) },
       ]);
       executeMock().mockResolvedValueOnce({ document: createdDocument });
       const { rerender } = render(<EditorSurface workspace={ws} document={two} />);

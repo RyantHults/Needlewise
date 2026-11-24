@@ -1,0 +1,7131 @@
+{
+  "schemaVersion": 1,
+  "catalogId": "mill-hill-dmc-mapped-approximation",
+  "records": [
+    {
+      "sourceId": "mill-hill-00020",
+      "code": "00020",
+      "name": "Royal Blue",
+      "series": "Glass Seed",
+      "dmcCode": "796",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#11416D",
+      "rgb": [
+        17,
+        65,
+        109
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00081",
+      "code": "00081",
+      "name": "Jet",
+      "series": "Glass Seed",
+      "dmcCode": "3799",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#424242",
+      "rgb": [
+        66,
+        66,
+        66
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00123",
+      "code": "00123",
+      "name": "Cream",
+      "series": "Glass Seed",
+      "dmcCode": "Ecru",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#F0EADA",
+      "rgb": [
+        240,
+        234,
+        218
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00128",
+      "code": "00128",
+      "name": "Yellow",
+      "series": "Glass Seed",
+      "dmcCode": "445",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FFFB8B",
+      "rgb": [
+        255,
+        251,
+        139
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00143",
+      "code": "00143",
+      "name": "Robin Egg Blue",
+      "series": "Glass Seed",
+      "dmcCode": "3761",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#ACD8E2",
+      "rgb": [
+        172,
+        216,
+        226
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00145",
+      "code": "00145",
+      "name": "Pink",
+      "series": "Glass Seed",
+      "dmcCode": "963",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FFD7D7",
+      "rgb": [
+        255,
+        215,
+        215
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00146",
+      "code": "00146",
+      "name": "Light Blue",
+      "series": "Glass Seed",
+      "dmcCode": "341",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#B7BFDD",
+      "rgb": [
+        183,
+        191,
+        221
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00148",
+      "code": "00148",
+      "name": "Pale Peach",
+      "series": "Glass Seed",
+      "dmcCode": "738",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#ECCC9E",
+      "rgb": [
+        236,
+        204,
+        158
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00150",
+      "code": "00150",
+      "name": "Grey",
+      "series": "Glass Seed",
+      "dmcCode": "415",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#D3D3D6",
+      "rgb": [
+        211,
+        211,
+        214
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00151",
+      "code": "00151",
+      "name": "Ash Mauve",
+      "series": "Glass Seed",
+      "dmcCode": "3743",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#D7CBD3",
+      "rgb": [
+        215,
+        203,
+        211
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00161",
+      "code": "00161",
+      "name": "Crystal",
+      "series": "Glass Seed",
+      "dmcCode": "Blanc",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FCFBF8",
+      "rgb": [
+        252,
+        251,
+        248
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00065",
+      "code": "00065",
+      "name": "Christmas Red",
+      "series": "Glass Seed",
+      "dmcCode": "350",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#E04848",
+      "rgb": [
+        224,
+        72,
+        72
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00167",
+      "code": "00167",
+      "name": "Christmas Green",
+      "series": "Glass Seed",
+      "dmcCode": "702",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#47A72F",
+      "rgb": [
+        71,
+        167,
+        47
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00168",
+      "code": "00168",
+      "name": "Sapphire",
+      "series": "Glass Seed",
+      "dmcCode": "340",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#ADA7C7",
+      "rgb": [
+        173,
+        167,
+        199
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00206",
+      "code": "00206",
+      "name": "Violet",
+      "series": "Glass Seed",
+      "dmcCode": "3041",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#956F7C",
+      "rgb": [
+        149,
+        111,
+        124
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00221",
+      "code": "00221",
+      "name": "Bronze",
+      "series": "Glass Seed",
+      "dmcCode": "434",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#985E33",
+      "rgb": [
+        152,
+        94,
+        51
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00252",
+      "code": "00252",
+      "name": "Iris",
+      "series": "Glass Seed",
+      "dmcCode": "3746",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#776B98",
+      "rgb": [
+        119,
+        107,
+        152
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00275",
+      "code": "00275",
+      "name": "Coral",
+      "series": "Glass Seed",
+      "dmcCode": "758",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#EEAA9B",
+      "rgb": [
+        238,
+        170,
+        155
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00283",
+      "code": "00283",
+      "name": "Mercury",
+      "series": "Glass Seed",
+      "dmcCode": "414",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#8C8C8C",
+      "rgb": [
+        140,
+        140,
+        140
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00330",
+      "code": "00330",
+      "name": "Copper",
+      "series": "Glass Seed",
+      "dmcCode": "898",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#492A13",
+      "rgb": [
+        73,
+        42,
+        19
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00332",
+      "code": "00332",
+      "name": "Emerald",
+      "series": "Glass Seed",
+      "dmcCode": "890",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#184923",
+      "rgb": [
+        24,
+        73,
+        35
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00358",
+      "code": "00358",
+      "name": "Cobalt Blue",
+      "series": "Glass Seed",
+      "dmcCode": "824",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#396987",
+      "rgb": [
+        57,
+        105,
+        135
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00367",
+      "code": "00367",
+      "name": "Garnet",
+      "series": "Glass Seed",
+      "dmcCode": "814",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#7B001B",
+      "rgb": [
+        123,
+        0,
+        27
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00374",
+      "code": "00374",
+      "name": "Rainbow",
+      "series": "Glass Seed",
+      "dmcCode": "550",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#5C184E",
+      "rgb": [
+        92,
+        24,
+        78
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00423",
+      "code": "00423",
+      "name": "Tangerine",
+      "series": "Glass Seed",
+      "dmcCode": "740",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FF8B00",
+      "rgb": [
+        255,
+        139,
+        0
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00431",
+      "code": "00431",
+      "name": "Jade",
+      "series": "Glass Seed",
+      "dmcCode": "989",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#8DA675",
+      "rgb": [
+        141,
+        166,
+        117
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00479",
+      "code": "00479",
+      "name": "White",
+      "series": "Glass Seed",
+      "dmcCode": "Blanc",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FCFBF8",
+      "rgb": [
+        252,
+        251,
+        248
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00525",
+      "code": "00525",
+      "name": "Light Green",
+      "series": "Glass Seed",
+      "dmcCode": "955",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#A2D6AD",
+      "rgb": [
+        162,
+        214,
+        173
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00553",
+      "code": "00553",
+      "name": "Old Rose",
+      "series": "Glass Seed",
+      "dmcCode": "3688",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#E7A9AC",
+      "rgb": [
+        231,
+        169,
+        172
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00556",
+      "code": "00556",
+      "name": "Antique Silver",
+      "series": "Glass Seed",
+      "dmcCode": "3722",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#BC6C64",
+      "rgb": [
+        188,
+        108,
+        100
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00557",
+      "code": "00557",
+      "name": "Old Gold",
+      "series": "Glass Seed",
+      "dmcCode": "676",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#E5CE97",
+      "rgb": [
+        229,
+        206,
+        151
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00561",
+      "code": "00561",
+      "name": "Ice Green",
+      "series": "Glass Seed",
+      "dmcCode": "503",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#7BAC94",
+      "rgb": [
+        123,
+        172,
+        148
+      ]
+    },
+    {
+      "sourceId": "mill-hill-00968",
+      "code": "00968",
+      "name": "Red",
+      "series": "Glass Seed",
+      "dmcCode": "321",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#C72B3B",
+      "rgb": [
+        199,
+        43,
+        59
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02001",
+      "code": "02001",
+      "name": "Pearl",
+      "series": "Glass Seed",
+      "dmcCode": "677",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#F5ECCB",
+      "rgb": [
+        245,
+        236,
+        203
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02002",
+      "code": "02002",
+      "name": "Yellow Creme",
+      "series": "Glass Seed",
+      "dmcCode": "745",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FFE9AD",
+      "rgb": [
+        255,
+        233,
+        173
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02003",
+      "code": "02003",
+      "name": "Peach Creme",
+      "series": "Glass Seed",
+      "dmcCode": "353",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FED7CC",
+      "rgb": [
+        254,
+        215,
+        204
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02004",
+      "code": "02004",
+      "name": "Tea Rose",
+      "series": "Glass Seed",
+      "dmcCode": "760",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#F5ADAD",
+      "rgb": [
+        245,
+        173,
+        173
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02005",
+      "code": "02005",
+      "name": "Dusty Rose",
+      "series": "Glass Seed",
+      "dmcCode": "3354",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#E4A6AC",
+      "rgb": [
+        228,
+        166,
+        172
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02006",
+      "code": "02006",
+      "name": "Ice Blue",
+      "series": "Glass Seed",
+      "dmcCode": "334",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#739FC1",
+      "rgb": [
+        115,
+        159,
+        193
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02007",
+      "code": "02007",
+      "name": "Satin Blue",
+      "series": "Glass Seed",
+      "dmcCode": "3325",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#B8D2E6",
+      "rgb": [
+        184,
+        210,
+        230
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02008",
+      "code": "02008",
+      "name": "Sea Breeze",
+      "series": "Glass Seed",
+      "dmcCode": "959",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#59C7B4",
+      "rgb": [
+        89,
+        199,
+        180
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02009",
+      "code": "02009",
+      "name": "Ice Lilac",
+      "series": "Glass Seed",
+      "dmcCode": "210",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#D29FC3",
+      "rgb": [
+        210,
+        159,
+        195
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02010",
+      "code": "02010",
+      "name": "Ice",
+      "series": "Glass Seed",
+      "dmcCode": "762",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#ECECEC",
+      "rgb": [
+        236,
+        236,
+        236
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02011",
+      "code": "02011",
+      "name": "Victorian Gold",
+      "series": "Glass Seed",
+      "dmcCode": "3821",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#F3CE75",
+      "rgb": [
+        243,
+        206,
+        117
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02012",
+      "code": "02012",
+      "name": "Royal Plum",
+      "series": "Glass Seed",
+      "dmcCode": "3685",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#881531",
+      "rgb": [
+        136,
+        21,
+        49
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02013",
+      "code": "02013",
+      "name": "Red Red",
+      "series": "Glass Seed",
+      "dmcCode": "666",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#E31D42",
+      "rgb": [
+        227,
+        29,
+        66
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02014",
+      "code": "02014",
+      "name": "Black",
+      "series": "Glass Seed",
+      "dmcCode": "310",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#000000",
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02015",
+      "code": "02015",
+      "name": "Sea Blue",
+      "series": "Glass Seed",
+      "dmcCode": "926",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#98AEAE",
+      "rgb": [
+        152,
+        174,
+        174
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02016",
+      "code": "02016",
+      "name": "Crystal Mint",
+      "series": "Glass Seed",
+      "dmcCode": "504",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#C4DECC",
+      "rgb": [
+        196,
+        222,
+        204
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02017",
+      "code": "02017",
+      "name": "Crystal Aqua",
+      "series": "Glass Seed",
+      "dmcCode": "747",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#E5FCFD",
+      "rgb": [
+        229,
+        252,
+        253
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02018",
+      "code": "02018",
+      "name": "Crystal Pink",
+      "series": "Glass Seed",
+      "dmcCode": "3689",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FBBFC2",
+      "rgb": [
+        251,
+        191,
+        194
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02019",
+      "code": "02019",
+      "name": "Crystal Honey",
+      "series": "Glass Seed",
+      "dmcCode": "3047",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#E7D6C1",
+      "rgb": [
+        231,
+        214,
+        193
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02020",
+      "code": "02020",
+      "name": "Creme de Mint",
+      "series": "Glass Seed",
+      "dmcCode": "909",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#156F49",
+      "rgb": [
+        21,
+        111,
+        73
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02021",
+      "code": "02021",
+      "name": "Gunmetal",
+      "series": "Glass Seed",
+      "dmcCode": "3768",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#657F7F",
+      "rgb": [
+        101,
+        127,
+        127
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02022",
+      "code": "02022",
+      "name": "Silver",
+      "series": "Glass Seed",
+      "dmcCode": "3072",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#E6E8E8",
+      "rgb": [
+        230,
+        232,
+        232
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02023",
+      "code": "02023",
+      "name": "Root Beer",
+      "series": "Glass Seed",
+      "dmcCode": "801",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#653919",
+      "rgb": [
+        101,
+        57,
+        25
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02024",
+      "code": "02024",
+      "name": "Heather Mauve",
+      "series": "Glass Seed",
+      "dmcCode": "3042",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#B79DA7",
+      "rgb": [
+        183,
+        157,
+        167
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02025",
+      "code": "02025",
+      "name": "Heather",
+      "series": "Glass Seed",
+      "dmcCode": "3740",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#785762",
+      "rgb": [
+        120,
+        87,
+        98
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02026",
+      "code": "02026",
+      "name": "Crystal Blue",
+      "series": "Glass Seed",
+      "dmcCode": "794",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#8F9CC1",
+      "rgb": [
+        143,
+        156,
+        193
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02031",
+      "code": "02031",
+      "name": "Citron",
+      "series": "Glass Seed",
+      "dmcCode": "907",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#C7E666",
+      "rgb": [
+        199,
+        230,
+        102
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02033",
+      "code": "02033",
+      "name": "Brilliant Orange",
+      "series": "Glass Seed",
+      "dmcCode": "741",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FFA32B",
+      "rgb": [
+        255,
+        163,
+        43
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02034",
+      "code": "02034",
+      "name": "Autumn Flame",
+      "series": "Glass Seed",
+      "dmcCode": "720",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#E55C1F",
+      "rgb": [
+        229,
+        92,
+        31
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02035",
+      "code": "02035",
+      "name": "Shim. Apricot",
+      "series": "Glass Seed",
+      "dmcCode": "758",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#EEAA9B",
+      "rgb": [
+        238,
+        170,
+        155
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02036",
+      "code": "02036",
+      "name": "Shim. Bittersweet",
+      "series": "Glass Seed",
+      "dmcCode": "3341",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FCAB98",
+      "rgb": [
+        252,
+        171,
+        152
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02037",
+      "code": "02037",
+      "name": "Sheer Cinnamon",
+      "series": "Glass Seed",
+      "dmcCode": "350",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#E04848",
+      "rgb": [
+        224,
+        72,
+        72
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02038",
+      "code": "02038",
+      "name": "Brilliant Copper",
+      "series": "Glass Seed",
+      "dmcCode": "400",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#8F430F",
+      "rgb": [
+        143,
+        67,
+        15
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02039",
+      "code": "02039",
+      "name": "Matte Maize",
+      "series": "Glass Seed",
+      "dmcCode": "728",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#E4B468",
+      "rgb": [
+        228,
+        180,
+        104
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02040",
+      "code": "02040",
+      "name": "Light Amber",
+      "series": "Glass Seed",
+      "dmcCode": "3829",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#A98204",
+      "rgb": [
+        169,
+        130,
+        4
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02041",
+      "code": "02041",
+      "name": "Maple",
+      "series": "Glass Seed",
+      "dmcCode": "434",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#985E33",
+      "rgb": [
+        152,
+        94,
+        51
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02042",
+      "code": "02042",
+      "name": "Matte Pumpkin",
+      "series": "Glass Seed",
+      "dmcCode": "720",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#E55C1F",
+      "rgb": [
+        229,
+        92,
+        31
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02043",
+      "code": "02043",
+      "name": "Mt. Pomegranate",
+      "series": "Glass Seed",
+      "dmcCode": "3830",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#BC5544",
+      "rgb": [
+        188,
+        85,
+        68
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02044",
+      "code": "02044",
+      "name": "All Spice",
+      "series": "Glass Seed",
+      "dmcCode": "918",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#82340A",
+      "rgb": [
+        130,
+        52,
+        10
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02045",
+      "code": "02045",
+      "name": "Santa Fe Sunset",
+      "series": "Glass Seed",
+      "dmcCode": "3803",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#AB3357",
+      "rgb": [
+        171,
+        51,
+        87
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02046",
+      "code": "02046",
+      "name": "Matte Willow",
+      "series": "Glass Seed",
+      "dmcCode": "3046",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#D8BC9A",
+      "rgb": [
+        216,
+        188,
+        154
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02047",
+      "code": "02047",
+      "name": "Soft Willow",
+      "series": "Glass Seed",
+      "dmcCode": "3012",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#A6A75D",
+      "rgb": [
+        166,
+        167,
+        93
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02048",
+      "code": "02048",
+      "name": "Golden Olive",
+      "series": "Glass Seed",
+      "dmcCode": "830",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#8D784B",
+      "rgb": [
+        141,
+        120,
+        75
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02049",
+      "code": "02049",
+      "name": "Dark Basil",
+      "series": "Glass Seed",
+      "dmcCode": "319",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#205F2E",
+      "rgb": [
+        32,
+        95,
+        46
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02050",
+      "code": "02050",
+      "name": "Mt. Chocolate",
+      "series": "Glass Seed",
+      "dmcCode": "938",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#361F0E",
+      "rgb": [
+        54,
+        31,
+        14
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02051",
+      "code": "02051",
+      "name": "Nutmeg",
+      "series": "Glass Seed",
+      "dmcCode": "3726",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#9B5B66",
+      "rgb": [
+        155,
+        91,
+        102
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02052",
+      "code": "02052",
+      "name": "Dark Coral",
+      "series": "Glass Seed",
+      "dmcCode": "356",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#C56A5B",
+      "rgb": [
+        197,
+        106,
+        91
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02053",
+      "code": "02053",
+      "name": "Opaque Celadon",
+      "series": "Glass Seed",
+      "dmcCode": "501",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#396F52",
+      "rgb": [
+        57,
+        111,
+        82
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02054",
+      "code": "02054",
+      "name": "Bril. Shamrock",
+      "series": "Glass Seed",
+      "dmcCode": "700",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#07731B",
+      "rgb": [
+        7,
+        115,
+        27
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02055",
+      "code": "02055",
+      "name": "Brilliant Green",
+      "series": "Glass Seed",
+      "dmcCode": "3818",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#115A3B",
+      "rgb": [
+        17,
+        90,
+        59
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02056",
+      "code": "02056",
+      "name": "Sable",
+      "series": "Glass Seed",
+      "dmcCode": "838",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#594937",
+      "rgb": [
+        89,
+        73,
+        55
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02057",
+      "code": "02057",
+      "name": "Crystal Sea",
+      "series": "Glass Seed",
+      "dmcCode": "992",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#6FAE9F",
+      "rgb": [
+        111,
+        174,
+        159
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02070",
+      "code": "02070",
+      "name": "Sea Mist",
+      "series": "Glass Seed",
+      "dmcCode": "503",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#7BAC94",
+      "rgb": [
+        123,
+        172,
+        148
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02071",
+      "code": "02071",
+      "name": "Opaque Seafoam",
+      "series": "Glass Seed",
+      "dmcCode": "502",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#5B9071",
+      "rgb": [
+        91,
+        144,
+        113
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02072",
+      "code": "02072",
+      "name": "Teal",
+      "series": "Glass Seed",
+      "dmcCode": "3809",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#3F7C85",
+      "rgb": [
+        63,
+        124,
+        133
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02073",
+      "code": "02073",
+      "name": "Matte Dark Teal",
+      "series": "Glass Seed",
+      "dmcCode": "3847",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#347D75",
+      "rgb": [
+        52,
+        125,
+        117
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02074",
+      "code": "02074",
+      "name": "Brilliant Teal",
+      "series": "Glass Seed",
+      "dmcCode": "3808",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#366970",
+      "rgb": [
+        54,
+        105,
+        112
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02075",
+      "code": "02075",
+      "name": "Grenadine",
+      "series": "Glass Seed",
+      "dmcCode": "221",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#883E43",
+      "rgb": [
+        136,
+        62,
+        67
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02076",
+      "code": "02076",
+      "name": "Elderberry",
+      "series": "Glass Seed",
+      "dmcCode": "3803",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#AB3357",
+      "rgb": [
+        171,
+        51,
+        87
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02077",
+      "code": "02077",
+      "name": "Brilliant Magenta",
+      "series": "Glass Seed",
+      "dmcCode": "915",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#820043",
+      "rgb": [
+        130,
+        0,
+        67
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02078",
+      "code": "02078",
+      "name": "Wild Plum",
+      "series": "Glass Seed",
+      "dmcCode": "3834",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#72375D",
+      "rgb": [
+        114,
+        55,
+        93
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02079",
+      "code": "02079",
+      "name": "Matte Wisteria",
+      "series": "Glass Seed",
+      "dmcCode": "3041",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#956F7C",
+      "rgb": [
+        149,
+        111,
+        124
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02080",
+      "code": "02080",
+      "name": "Dark Plum",
+      "series": "Glass Seed",
+      "dmcCode": "902",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#822637",
+      "rgb": [
+        130,
+        38,
+        55
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02081",
+      "code": "02081",
+      "name": "Matte Lilac",
+      "series": "Glass Seed",
+      "dmcCode": "3041",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#956F7C",
+      "rgb": [
+        149,
+        111,
+        124
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02082",
+      "code": "02082",
+      "name": "Opal Hyacinth",
+      "series": "Glass Seed",
+      "dmcCode": "3607",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#C54989",
+      "rgb": [
+        197,
+        73,
+        137
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02083",
+      "code": "02083",
+      "name": "Opaque Lt. Mauve",
+      "series": "Glass Seed",
+      "dmcCode": "316",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#B7737F",
+      "rgb": [
+        183,
+        115,
+        127
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02084",
+      "code": "02084",
+      "name": "Shimmering Lilac",
+      "series": "Glass Seed",
+      "dmcCode": "3836",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#BA91AA",
+      "rgb": [
+        186,
+        145,
+        170
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02085",
+      "code": "02085",
+      "name": "Brilliant Orchid",
+      "series": "Glass Seed",
+      "dmcCode": "3837",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#6C3A6E",
+      "rgb": [
+        108,
+        58,
+        110
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02086",
+      "code": "02086",
+      "name": "Purple Electra",
+      "series": "Glass Seed",
+      "dmcCode": "552",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#803A6B",
+      "rgb": [
+        128,
+        58,
+        107
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02087",
+      "code": "02087",
+      "name": "Shimmering Sea",
+      "series": "Glass Seed",
+      "dmcCode": "160",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#999FB7",
+      "rgb": [
+        153,
+        159,
+        183
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02088",
+      "code": "02088",
+      "name": "Opal Capri",
+      "series": "Glass Seed",
+      "dmcCode": "517",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#3B768F",
+      "rgb": [
+        59,
+        118,
+        143
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02089",
+      "code": "02089",
+      "name": "Brilliant Sea Blue",
+      "series": "Glass Seed",
+      "dmcCode": "3842",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#32667C",
+      "rgb": [
+        50,
+        102,
+        124
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02090",
+      "code": "02090",
+      "name": "Brilliant Navy",
+      "series": "Glass Seed",
+      "dmcCode": "791",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#464563",
+      "rgb": [
+        70,
+        69,
+        99
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02091",
+      "code": "02091",
+      "name": "Purple Blue",
+      "series": "Glass Seed",
+      "dmcCode": "333",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#5C5478",
+      "rgb": [
+        92,
+        84,
+        120
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02092",
+      "code": "02092",
+      "name": "Dark Denim",
+      "series": "Glass Seed",
+      "dmcCode": "791",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#464563",
+      "rgb": [
+        70,
+        69,
+        99
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02093",
+      "code": "02093",
+      "name": "Opaque Autumn",
+      "series": "Glass Seed",
+      "dmcCode": "921",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#C66218",
+      "rgb": [
+        198,
+        98,
+        24
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02094",
+      "code": "02094",
+      "name": "Opaque Moss",
+      "series": "Glass Seed",
+      "dmcCode": "935",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#424D21",
+      "rgb": [
+        66,
+        77,
+        33
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02095",
+      "code": "02095",
+      "name": "Indigo Passion",
+      "series": "Glass Seed",
+      "dmcCode": "791",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#464563",
+      "rgb": [
+        70,
+        69,
+        99
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02096",
+      "code": "02096",
+      "name": "Orange",
+      "series": "Glass Seed",
+      "dmcCode": "741",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FFA32B",
+      "rgb": [
+        255,
+        163,
+        43
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02097",
+      "code": "02097",
+      "name": "Bahama Blue",
+      "series": "Glass Seed",
+      "dmcCode": "3846",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#06E3E6",
+      "rgb": [
+        6,
+        227,
+        230
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02098",
+      "code": "02098",
+      "name": "Pine Green",
+      "series": "Glass Seed",
+      "dmcCode": "936",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#4C5826",
+      "rgb": [
+        76,
+        88,
+        38
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02099",
+      "code": "02099",
+      "name": "Ruby",
+      "series": "Glass Seed",
+      "dmcCode": "815",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#87071F",
+      "rgb": [
+        135,
+        7,
+        31
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02103",
+      "code": "02103",
+      "name": "Periwinkle",
+      "series": "Glass Seed",
+      "dmcCode": "3746",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#776B98",
+      "rgb": [
+        119,
+        107,
+        152
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02104",
+      "code": "02104",
+      "name": "Grasshopper",
+      "series": "Glass Seed",
+      "dmcCode": "471",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#AEBF79",
+      "rgb": [
+        174,
+        191,
+        121
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02105",
+      "code": "02105",
+      "name": "Sweet Corn",
+      "series": "Glass Seed",
+      "dmcCode": "3827",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#F7BB77",
+      "rgb": [
+        247,
+        187,
+        119
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03002",
+      "code": "03002",
+      "name": "Midnight",
+      "series": "Antique Glass",
+      "dmcCode": "823",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#213063",
+      "rgb": [
+        33,
+        48,
+        99
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03003",
+      "code": "03003",
+      "name": "Ant. Cranberry",
+      "series": "Antique Glass",
+      "dmcCode": "347",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#BF2D2D",
+      "rgb": [
+        191,
+        45,
+        45
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03004",
+      "code": "03004",
+      "name": "Eggplant",
+      "series": "Antique Glass",
+      "dmcCode": "550",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#5C184E",
+      "rgb": [
+        92,
+        24,
+        78
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03005",
+      "code": "03005",
+      "name": "Platinum Rose",
+      "series": "Antique Glass",
+      "dmcCode": "224",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#EBB7AF",
+      "rgb": [
+        235,
+        183,
+        175
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03007",
+      "code": "03007",
+      "name": "Silver Moon",
+      "series": "Antique Glass",
+      "dmcCode": "927",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#BDCBCB",
+      "rgb": [
+        189,
+        203,
+        203
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03008",
+      "code": "03008",
+      "name": "Pewter",
+      "series": "Antique Glass",
+      "dmcCode": "647",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#B0A69C",
+      "rgb": [
+        176,
+        166,
+        156
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03009",
+      "code": "03009",
+      "name": "Charcoal",
+      "series": "Antique Glass",
+      "dmcCode": "413",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#565656",
+      "rgb": [
+        86,
+        86,
+        86
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03010",
+      "code": "03010",
+      "name": "Slate Blue",
+      "series": "Antique Glass",
+      "dmcCode": "3750",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#384C5E",
+      "rgb": [
+        56,
+        76,
+        94
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03011",
+      "code": "03011",
+      "name": "Pebble Grey",
+      "series": "Antique Glass",
+      "dmcCode": "645",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#6E655C",
+      "rgb": [
+        110,
+        101,
+        92
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03012",
+      "code": "03012",
+      "name": "Autumn Heather",
+      "series": "Antique Glass",
+      "dmcCode": "936",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#4C5826",
+      "rgb": [
+        76,
+        88,
+        38
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03013",
+      "code": "03013",
+      "name": "Stormy Blue H.",
+      "series": "Antique Glass",
+      "dmcCode": "3750",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#384C5E",
+      "rgb": [
+        56,
+        76,
+        94
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03014",
+      "code": "03014",
+      "name": "Matte Olive",
+      "series": "Antique Glass",
+      "dmcCode": "3011",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#898A58",
+      "rgb": [
+        137,
+        138,
+        88
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03015",
+      "code": "03015",
+      "name": "Snow White",
+      "series": "Antique Glass",
+      "dmcCode": "Blanc",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FCFBF8",
+      "rgb": [
+        252,
+        251,
+        248
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03016",
+      "code": "03016",
+      "name": "Vanilla",
+      "series": "Antique Glass",
+      "dmcCode": "712",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FFFBEF",
+      "rgb": [
+        255,
+        251,
+        239
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03017",
+      "code": "03017",
+      "name": "Peachy Blush",
+      "series": "Antique Glass",
+      "dmcCode": "543",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#F2E3CE",
+      "rgb": [
+        242,
+        227,
+        206
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03018",
+      "code": "03018",
+      "name": "Coral Reef",
+      "series": "Antique Glass",
+      "dmcCode": "224",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#EBB7AF",
+      "rgb": [
+        235,
+        183,
+        175
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03019",
+      "code": "03019",
+      "name": "Soft Mauve",
+      "series": "Antique Glass",
+      "dmcCode": "3727",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#DBA9B2",
+      "rgb": [
+        219,
+        169,
+        178
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03020",
+      "code": "03020",
+      "name": "Dusty Mauve",
+      "series": "Antique Glass",
+      "dmcCode": "316",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#B7737F",
+      "rgb": [
+        183,
+        115,
+        127
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03021",
+      "code": "03021",
+      "name": "Royal Pearl",
+      "series": "Antique Glass",
+      "dmcCode": "712",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FFFBEF",
+      "rgb": [
+        255,
+        251,
+        239
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03022",
+      "code": "03022",
+      "name": "Royal Teal",
+      "series": "Antique Glass",
+      "dmcCode": "501",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#396F52",
+      "rgb": [
+        57,
+        111,
+        82
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03023",
+      "code": "03023",
+      "name": "Platinum Violet",
+      "series": "Antique Glass",
+      "dmcCode": "3740",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#785762",
+      "rgb": [
+        120,
+        87,
+        98
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03024",
+      "code": "03024",
+      "name": "Mocha",
+      "series": "Antique Glass",
+      "dmcCode": "838",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#594937",
+      "rgb": [
+        89,
+        73,
+        55
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03025",
+      "code": "03025",
+      "name": "Wildberry",
+      "series": "Antique Glass",
+      "dmcCode": "902",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#822637",
+      "rgb": [
+        130,
+        38,
+        55
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03026",
+      "code": "03026",
+      "name": "Wild Blueberry",
+      "series": "Antique Glass",
+      "dmcCode": "336",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#253B73",
+      "rgb": [
+        37,
+        59,
+        115
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03027",
+      "code": "03027",
+      "name": "Caspian Blue",
+      "series": "Antique Glass",
+      "dmcCode": "312",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#35668B",
+      "rgb": [
+        53,
+        102,
+        139
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03028",
+      "code": "03028",
+      "name": "Juniper Green",
+      "series": "Antique Glass",
+      "dmcCode": "3362",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#5E6B47",
+      "rgb": [
+        94,
+        107,
+        71
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03029",
+      "code": "03029",
+      "name": "Autumn Green",
+      "series": "Antique Glass",
+      "dmcCode": "3051",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#5F6648",
+      "rgb": [
+        95,
+        102,
+        72
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03030",
+      "code": "03030",
+      "name": "Camouflage",
+      "series": "Antique Glass",
+      "dmcCode": "3740",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#785762",
+      "rgb": [
+        120,
+        87,
+        98
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03031",
+      "code": "03031",
+      "name": "Smokey Heather",
+      "series": "Antique Glass",
+      "dmcCode": "3041",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#956F7C",
+      "rgb": [
+        149,
+        111,
+        124
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03033",
+      "code": "03033",
+      "name": "Claret",
+      "series": "Antique Glass",
+      "dmcCode": "221",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#883E43",
+      "rgb": [
+        136,
+        62,
+        67
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03034",
+      "code": "03034",
+      "name": "Royal Amethyst",
+      "series": "Antique Glass",
+      "dmcCode": "3685",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#881531",
+      "rgb": [
+        136,
+        21,
+        49
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03035",
+      "code": "03035",
+      "name": "Royal Green",
+      "series": "Antique Glass",
+      "dmcCode": "991",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#477B6E",
+      "rgb": [
+        71,
+        123,
+        110
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03036",
+      "code": "03036",
+      "name": "Cognac",
+      "series": "Antique Glass",
+      "dmcCode": "3740",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#785762",
+      "rgb": [
+        120,
+        87,
+        98
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03037",
+      "code": "03037",
+      "name": "Abalone",
+      "series": "Antique Glass",
+      "dmcCode": "372",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#CCB784",
+      "rgb": [
+        204,
+        183,
+        132
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03038",
+      "code": "03038",
+      "name": "Antique Ginger",
+      "series": "Antique Glass",
+      "dmcCode": "921",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#C66218",
+      "rgb": [
+        198,
+        98,
+        24
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03039",
+      "code": "03039",
+      "name": "Ant. Champagne",
+      "series": "Antique Glass",
+      "dmcCode": "950",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#EED3C4",
+      "rgb": [
+        238,
+        211,
+        196
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03040",
+      "code": "03040",
+      "name": "Flat Black",
+      "series": "Antique Glass",
+      "dmcCode": "310",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#000000",
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03041",
+      "code": "03041",
+      "name": "White Opal",
+      "series": "Antique Glass",
+      "dmcCode": "Blanc",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FCFBF8",
+      "rgb": [
+        252,
+        251,
+        248
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03042",
+      "code": "03042",
+      "name": "Indigo",
+      "series": "Antique Glass",
+      "dmcCode": "312",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#35668B",
+      "rgb": [
+        53,
+        102,
+        139
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03043",
+      "code": "03043",
+      "name": "Oriental Red",
+      "series": "Antique Glass",
+      "dmcCode": "606",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FA3203",
+      "rgb": [
+        250,
+        50,
+        3
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03044",
+      "code": "03044",
+      "name": "Crystal Lilac",
+      "series": "Antique Glass",
+      "dmcCode": "211",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#E3CBE3",
+      "rgb": [
+        227,
+        203,
+        227
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03045",
+      "code": "03045",
+      "name": "Metallic Lilac",
+      "series": "Antique Glass",
+      "dmcCode": "554",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#DBB3CB",
+      "rgb": [
+        219,
+        179,
+        203
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03046",
+      "code": "03046",
+      "name": "Matte Cadet Blue",
+      "series": "Antique Glass",
+      "dmcCode": "931",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#6A859E",
+      "rgb": [
+        106,
+        133,
+        158
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03047",
+      "code": "03047",
+      "name": "Blue Iris",
+      "series": "Antique Glass",
+      "dmcCode": "806",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#3D95A5",
+      "rgb": [
+        61,
+        149,
+        165
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03048",
+      "code": "03048",
+      "name": "Cinnamon Red",
+      "series": "Antique Glass",
+      "dmcCode": "347",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#BF2D2D",
+      "rgb": [
+        191,
+        45,
+        45
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03049",
+      "code": "03049",
+      "name": "Rich Red",
+      "series": "Antique Glass",
+      "dmcCode": "321",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#C72B3B",
+      "rgb": [
+        199,
+        43,
+        59
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03050",
+      "code": "03050",
+      "name": "Champagne Ice",
+      "series": "Antique Glass",
+      "dmcCode": "225",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FFDFD7",
+      "rgb": [
+        255,
+        223,
+        215
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03051",
+      "code": "03051",
+      "name": "Misty",
+      "series": "Antique Glass",
+      "dmcCode": "761",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FFC9C9",
+      "rgb": [
+        255,
+        201,
+        201
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03052",
+      "code": "03052",
+      "name": "Desert Peach",
+      "series": "Antique Glass",
+      "dmcCode": "353",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FED7CC",
+      "rgb": [
+        254,
+        215,
+        204
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03053",
+      "code": "03053",
+      "name": "Purple Passion",
+      "series": "Antique Glass",
+      "dmcCode": "333",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#5C5478",
+      "rgb": [
+        92,
+        84,
+        120
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03054",
+      "code": "03054",
+      "name": "Desert Sand",
+      "series": "Antique Glass",
+      "dmcCode": "437",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#E4BB8E",
+      "rgb": [
+        228,
+        187,
+        142
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03055",
+      "code": "03055",
+      "name": "Bay Leaf",
+      "series": "Antique Glass",
+      "dmcCode": "503",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#7BAC94",
+      "rgb": [
+        123,
+        172,
+        148
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03056",
+      "code": "03056",
+      "name": "Antique Red",
+      "series": "Antique Glass",
+      "dmcCode": "350",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#E04848",
+      "rgb": [
+        224,
+        72,
+        72
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03057",
+      "code": "03057",
+      "name": "Cherry Sorbet",
+      "series": "Antique Glass",
+      "dmcCode": "760",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#F5ADAD",
+      "rgb": [
+        245,
+        173,
+        173
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03058",
+      "code": "03058",
+      "name": "Mardi Gras Red",
+      "series": "Antique Glass",
+      "dmcCode": "309",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#BA4A4A",
+      "rgb": [
+        186,
+        74,
+        74
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03059",
+      "code": "03059",
+      "name": "Green Velvet",
+      "series": "Antique Glass",
+      "dmcCode": "3346",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#406A3A",
+      "rgb": [
+        64,
+        106,
+        58
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03060",
+      "code": "03060",
+      "name": "Sage Blue",
+      "series": "Antique Glass",
+      "dmcCode": "927",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#BDCBCB",
+      "rgb": [
+        189,
+        203,
+        203
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03061",
+      "code": "03061",
+      "name": "Matte Periwinkle",
+      "series": "Antique Glass",
+      "dmcCode": "792",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#555B7B",
+      "rgb": [
+        85,
+        91,
+        123
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03062",
+      "code": "03062",
+      "name": "Blue Velvet",
+      "series": "Antique Glass",
+      "dmcCode": "820",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#0E365C",
+      "rgb": [
+        14,
+        54,
+        92
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03063",
+      "code": "03063",
+      "name": "Blue Twilight",
+      "series": "Antique Glass",
+      "dmcCode": "800",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#C0CCDE",
+      "rgb": [
+        192,
+        204,
+        222
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03501",
+      "code": "03501",
+      "name": "Satin Blush",
+      "series": "Antique Glass",
+      "dmcCode": "152",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#E2A099",
+      "rgb": [
+        226,
+        160,
+        153
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03502",
+      "code": "03502",
+      "name": "Satin Willow",
+      "series": "Antique Glass",
+      "dmcCode": "613",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#DCC4AA",
+      "rgb": [
+        220,
+        196,
+        170
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03503",
+      "code": "03503",
+      "name": "Satin Cranberry",
+      "series": "Antique Glass",
+      "dmcCode": "315",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#814952",
+      "rgb": [
+        129,
+        73,
+        82
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03504",
+      "code": "03504",
+      "name": "Satin Moss",
+      "series": "Antique Glass",
+      "dmcCode": "368",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#A6C298",
+      "rgb": [
+        166,
+        194,
+        152
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03505",
+      "code": "03505",
+      "name": "Satin Purple",
+      "series": "Antique Glass",
+      "dmcCode": "155",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#9891B6",
+      "rgb": [
+        152,
+        145,
+        182
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03506",
+      "code": "03506",
+      "name": "Satin Stone",
+      "series": "Antique Glass",
+      "dmcCode": "822",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#E7E2D3",
+      "rgb": [
+        231,
+        226,
+        211
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03507",
+      "code": "03507",
+      "name": "Satin Turquoise",
+      "series": "Antique Glass",
+      "dmcCode": "3849",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#52B3AE",
+      "rgb": [
+        82,
+        179,
+        174
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03545",
+      "code": "03545",
+      "name": "Satin Lilac",
+      "series": "Antique Glass",
+      "dmcCode": "3042",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#B79DA7",
+      "rgb": [
+        183,
+        157,
+        167
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03550",
+      "code": "03550",
+      "name": "Satin Chocolate",
+      "series": "Antique Glass",
+      "dmcCode": "451",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#917B73",
+      "rgb": [
+        145,
+        123,
+        115
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03553",
+      "code": "03553",
+      "name": "Satin Old Rose",
+      "series": "Antique Glass",
+      "dmcCode": "316",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#B7737F",
+      "rgb": [
+        183,
+        115,
+        127
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03557",
+      "code": "03557",
+      "name": "Satin Old Gold",
+      "series": "Antique Glass",
+      "dmcCode": "422",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#C69F7B",
+      "rgb": [
+        198,
+        159,
+        123
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03561",
+      "code": "03561",
+      "name": "Satin Ice Green",
+      "series": "Antique Glass",
+      "dmcCode": "992",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#6FAE9F",
+      "rgb": [
+        111,
+        174,
+        159
+      ]
+    },
+    {
+      "sourceId": "mill-hill-03575",
+      "code": "03575",
+      "name": "Satin Coral",
+      "series": "Antique Glass",
+      "dmcCode": "3778",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#D98978",
+      "rgb": [
+        217,
+        137,
+        120
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02058",
+      "code": "02058",
+      "name": "Crayon White",
+      "series": "Crayon Seed",
+      "dmcCode": "Blanc",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FCFBF8",
+      "rgb": [
+        252,
+        251,
+        248
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02059",
+      "code": "02059",
+      "name": "Crayon Yellow",
+      "series": "Crayon Seed",
+      "dmcCode": "307",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FDED54",
+      "rgb": [
+        253,
+        237,
+        84
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02061",
+      "code": "02061",
+      "name": "Cr. Dk. Orange",
+      "series": "Crayon Seed",
+      "dmcCode": "947",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FF7B4D",
+      "rgb": [
+        255,
+        123,
+        77
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02063",
+      "code": "02063",
+      "name": "Crayon Crimson",
+      "series": "Crayon Seed",
+      "dmcCode": "321",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#C72B3B",
+      "rgb": [
+        199,
+        43,
+        59
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02064",
+      "code": "02064",
+      "name": "Crayon Sky Blue",
+      "series": "Crayon Seed",
+      "dmcCode": "3761",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#ACD8E2",
+      "rgb": [
+        172,
+        216,
+        226
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02065",
+      "code": "02065",
+      "name": "Cr. Royal Blue",
+      "series": "Crayon Seed",
+      "dmcCode": "796",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#11416D",
+      "rgb": [
+        17,
+        65,
+        109
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02066",
+      "code": "02066",
+      "name": "Cr. Yellow Green",
+      "series": "Crayon Seed",
+      "dmcCode": "905",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#628A28",
+      "rgb": [
+        98,
+        138,
+        40
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02068",
+      "code": "02068",
+      "name": "Crayon Brown",
+      "series": "Crayon Seed",
+      "dmcCode": "801",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#653919",
+      "rgb": [
+        101,
+        57,
+        25
+      ]
+    },
+    {
+      "sourceId": "mill-hill-02069",
+      "code": "02069",
+      "name": "Crayon Purple",
+      "series": "Crayon Seed",
+      "dmcCode": "208",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#835B8B",
+      "rgb": [
+        131,
+        91,
+        139
+      ]
+    },
+    {
+      "sourceId": "mill-hill-60020",
+      "code": "60020",
+      "name": "Fr. Royal Blue",
+      "series": "Frosted Glass",
+      "dmcCode": "796",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#11416D",
+      "rgb": [
+        17,
+        65,
+        109
+      ]
+    },
+    {
+      "sourceId": "mill-hill-60161",
+      "code": "60161",
+      "name": "Frosted Crystal",
+      "series": "Frosted Glass",
+      "dmcCode": "762",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#ECECEC",
+      "rgb": [
+        236,
+        236,
+        236
+      ]
+    },
+    {
+      "sourceId": "mill-hill-60168",
+      "code": "60168",
+      "name": "Fr. Sapphire",
+      "series": "Frosted Glass",
+      "dmcCode": "340",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#ADA7C7",
+      "rgb": [
+        173,
+        167,
+        199
+      ]
+    },
+    {
+      "sourceId": "mill-hill-60367",
+      "code": "60367",
+      "name": "Frosted Garnet",
+      "series": "Frosted Glass",
+      "dmcCode": "815",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#87071F",
+      "rgb": [
+        135,
+        7,
+        31
+      ]
+    },
+    {
+      "sourceId": "mill-hill-60479",
+      "code": "60479",
+      "name": "Frosted White",
+      "series": "Frosted Glass",
+      "dmcCode": "Blanc",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FCFBF8",
+      "rgb": [
+        252,
+        251,
+        248
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62004",
+      "code": "62004",
+      "name": "Fr. Tea Rose",
+      "series": "Frosted Glass",
+      "dmcCode": "962",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#E68A8A",
+      "rgb": [
+        230,
+        138,
+        138
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62005",
+      "code": "62005",
+      "name": "Fr. Dusty Rose",
+      "series": "Frosted Glass",
+      "dmcCode": "3716",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FFBDBD",
+      "rgb": [
+        255,
+        189,
+        189
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62010",
+      "code": "62010",
+      "name": "Frosted Ice",
+      "series": "Frosted Glass",
+      "dmcCode": "3024",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#EBEAE7",
+      "rgb": [
+        235,
+        234,
+        231
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62012",
+      "code": "62012",
+      "name": "Fr. Royal Plum",
+      "series": "Frosted Glass",
+      "dmcCode": "347",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#BF2D2D",
+      "rgb": [
+        191,
+        45,
+        45
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62013",
+      "code": "62013",
+      "name": "Fr. Red Red",
+      "series": "Frosted Glass",
+      "dmcCode": "666",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#E31D42",
+      "rgb": [
+        227,
+        29,
+        66
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62014",
+      "code": "62014",
+      "name": "Frosted Black",
+      "series": "Frosted Glass",
+      "dmcCode": "310",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#000000",
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62020",
+      "code": "62020",
+      "name": "Fr.Creme de Mint",
+      "series": "Frosted Glass",
+      "dmcCode": "909",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#156F49",
+      "rgb": [
+        21,
+        111,
+        73
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62021",
+      "code": "62021",
+      "name": "Fr. Gunmetal",
+      "series": "Frosted Glass",
+      "dmcCode": "3768",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#657F7F",
+      "rgb": [
+        101,
+        127,
+        127
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62023",
+      "code": "62023",
+      "name": "Fr. Root Beer",
+      "series": "Frosted Glass",
+      "dmcCode": "3826",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#AD7239",
+      "rgb": [
+        173,
+        114,
+        57
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62024",
+      "code": "62024",
+      "name": "Fr. Heather Mauve",
+      "series": "Frosted Glass",
+      "dmcCode": "3042",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#B79DA7",
+      "rgb": [
+        183,
+        157,
+        167
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62031",
+      "code": "62031",
+      "name": "Frosted Gold",
+      "series": "Frosted Glass",
+      "dmcCode": "676",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#E5CE97",
+      "rgb": [
+        229,
+        206,
+        151
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62032",
+      "code": "62032",
+      "name": "Fr. Cranberry",
+      "series": "Frosted Glass",
+      "dmcCode": "919",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#A64510",
+      "rgb": [
+        166,
+        69,
+        16
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62033",
+      "code": "62033",
+      "name": "Fr. Dusty Pink",
+      "series": "Frosted Glass",
+      "dmcCode": "818",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FFDFD9",
+      "rgb": [
+        255,
+        223,
+        217
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62034",
+      "code": "62034",
+      "name": "Fr. Blue Violet",
+      "series": "Frosted Glass",
+      "dmcCode": "340",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#ADA7C7",
+      "rgb": [
+        173,
+        167,
+        199
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62035",
+      "code": "62035",
+      "name": "Fr. Peppermint",
+      "series": "Frosted Glass",
+      "dmcCode": "604",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FFB0BE",
+      "rgb": [
+        255,
+        176,
+        190
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62036",
+      "code": "62036",
+      "name": "Fr. Pink Coral",
+      "series": "Frosted Glass",
+      "dmcCode": "3824",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FECDC2",
+      "rgb": [
+        254,
+        205,
+        194
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62037",
+      "code": "62037",
+      "name": "Fr. Mauve",
+      "series": "Frosted Glass",
+      "dmcCode": "3733",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#E8879B",
+      "rgb": [
+        232,
+        135,
+        155
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62038",
+      "code": "62038",
+      "name": "Fr. Aquamarine",
+      "series": "Frosted Glass",
+      "dmcCode": "964",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#A9E2D8",
+      "rgb": [
+        169,
+        226,
+        216
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62039",
+      "code": "62039",
+      "name": "Fr. Ivory Creme",
+      "series": "Frosted Glass",
+      "dmcCode": "3823",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FFFDE3",
+      "rgb": [
+        255,
+        253,
+        227
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62040",
+      "code": "62040",
+      "name": "Frosted Apricot",
+      "series": "Frosted Glass",
+      "dmcCode": "951",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FFE2CF",
+      "rgb": [
+        255,
+        226,
+        207
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62041",
+      "code": "62041",
+      "name": "Fr. Buttercup",
+      "series": "Frosted Glass",
+      "dmcCode": "744",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FFE793",
+      "rgb": [
+        255,
+        231,
+        147
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62042",
+      "code": "62042",
+      "name": "Fr. Royal Purple",
+      "series": "Frosted Glass",
+      "dmcCode": "3746",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#776B98",
+      "rgb": [
+        119,
+        107,
+        152
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62043",
+      "code": "62043",
+      "name": "Fr. Denim",
+      "series": "Frosted Glass",
+      "dmcCode": "930",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#455C71",
+      "rgb": [
+        69,
+        92,
+        113
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62044",
+      "code": "62044",
+      "name": "Fr. Autumn",
+      "series": "Frosted Glass",
+      "dmcCode": "977",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#DC9C56",
+      "rgb": [
+        220,
+        156,
+        86
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62046",
+      "code": "62046",
+      "name": "Fr. Pale Blue",
+      "series": "Frosted Glass",
+      "dmcCode": "3325",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#B8D2E6",
+      "rgb": [
+        184,
+        210,
+        230
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62047",
+      "code": "62047",
+      "name": "Fr. Lavender",
+      "series": "Frosted Glass",
+      "dmcCode": "210",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#D29FC3",
+      "rgb": [
+        210,
+        159,
+        195
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62048",
+      "code": "62048",
+      "name": "Fr. Pink Parfait",
+      "series": "Frosted Glass",
+      "dmcCode": "819",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#FFEEEB",
+      "rgb": [
+        255,
+        238,
+        235
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62049",
+      "code": "62049",
+      "name": "Fr. Spring Green",
+      "series": "Frosted Glass",
+      "dmcCode": "989",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#8DA675",
+      "rgb": [
+        141,
+        166,
+        117
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62056",
+      "code": "62056",
+      "name": "Fr. Boysenberry",
+      "series": "Frosted Glass",
+      "dmcCode": "902",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#822637",
+      "rgb": [
+        130,
+        38,
+        55
+      ]
+    },
+    {
+      "sourceId": "mill-hill-62057",
+      "code": "62057",
+      "name": "Frosted Khaki",
+      "series": "Frosted Glass",
+      "dmcCode": "3828",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#B78B61",
+      "rgb": [
+        183,
+        139,
+        97
+      ]
+    },
+    {
+      "sourceId": "mill-hill-65270",
+      "code": "65270",
+      "name": "Fr. Bottle Green",
+      "series": "Frosted Glass",
+      "dmcCode": "991",
+      "diameterMm": 2.5,
+      "lengthMm": 1.75,
+      "hex": "#477B6E",
+      "rgb": [
+        71,
+        123,
+        110
+      ]
+    },
+    {
+      "sourceId": "mill-hill-40020",
+      "code": "40020",
+      "name": "Royal Blue",
+      "series": "Petite Glass",
+      "dmcCode": "796",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#11416D",
+      "rgb": [
+        17,
+        65,
+        109
+      ]
+    },
+    {
+      "sourceId": "mill-hill-40065",
+      "code": "40065",
+      "name": "Eggplant",
+      "series": "Petite Glass",
+      "dmcCode": "154",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#572433",
+      "rgb": [
+        87,
+        36,
+        51
+      ]
+    },
+    {
+      "sourceId": "mill-hill-40123",
+      "code": "40123",
+      "name": "Cream",
+      "series": "Petite Glass",
+      "dmcCode": "Ecru",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#F0EADA",
+      "rgb": [
+        240,
+        234,
+        218
+      ]
+    },
+    {
+      "sourceId": "mill-hill-40161",
+      "code": "40161",
+      "name": "Crystal",
+      "series": "Petite Glass",
+      "dmcCode": "Blanc",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#FCFBF8",
+      "rgb": [
+        252,
+        251,
+        248
+      ]
+    },
+    {
+      "sourceId": "mill-hill-40168",
+      "code": "40168",
+      "name": "Sapphire",
+      "series": "Petite Glass",
+      "dmcCode": "156",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#A3AED1",
+      "rgb": [
+        163,
+        174,
+        209
+      ]
+    },
+    {
+      "sourceId": "mill-hill-40252",
+      "code": "40252",
+      "name": "Iris",
+      "series": "Petite Glass",
+      "dmcCode": "3746",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#776B98",
+      "rgb": [
+        119,
+        107,
+        152
+      ]
+    },
+    {
+      "sourceId": "mill-hill-40332",
+      "code": "40332",
+      "name": "Emerald",
+      "series": "Petite Glass",
+      "dmcCode": "890",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#184923",
+      "rgb": [
+        24,
+        73,
+        35
+      ]
+    },
+    {
+      "sourceId": "mill-hill-40374",
+      "code": "40374",
+      "name": "Rainbow",
+      "series": "Petite Glass",
+      "dmcCode": "550",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#5C184E",
+      "rgb": [
+        92,
+        24,
+        78
+      ]
+    },
+    {
+      "sourceId": "mill-hill-40479",
+      "code": "40479",
+      "name": "White",
+      "series": "Petite Glass",
+      "dmcCode": "Blanc",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#FCFBF8",
+      "rgb": [
+        252,
+        251,
+        248
+      ]
+    },
+    {
+      "sourceId": "mill-hill-40553",
+      "code": "40553",
+      "name": "Old Rose",
+      "series": "Petite Glass",
+      "dmcCode": "3688",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#E7A9AC",
+      "rgb": [
+        231,
+        169,
+        172
+      ]
+    },
+    {
+      "sourceId": "mill-hill-40556",
+      "code": "40556",
+      "name": "Antique Silver",
+      "series": "Petite Glass",
+      "dmcCode": "3722",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#BC6C64",
+      "rgb": [
+        188,
+        108,
+        100
+      ]
+    },
+    {
+      "sourceId": "mill-hill-40557",
+      "code": "40557",
+      "name": "Old Gold",
+      "series": "Petite Glass",
+      "dmcCode": "676",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#E5CE97",
+      "rgb": [
+        229,
+        206,
+        151
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42010",
+      "code": "42010",
+      "name": "Ice",
+      "series": "Petite Glass",
+      "dmcCode": "762",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#ECECEC",
+      "rgb": [
+        236,
+        236,
+        236
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42011",
+      "code": "42011",
+      "name": "Victorian Gold",
+      "series": "Petite Glass",
+      "dmcCode": "3821",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#F3CE75",
+      "rgb": [
+        243,
+        206,
+        117
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42012",
+      "code": "42012",
+      "name": "Royal Plum",
+      "series": "Petite Glass",
+      "dmcCode": "3685",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#881531",
+      "rgb": [
+        136,
+        21,
+        49
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42013",
+      "code": "42013",
+      "name": "Red Red",
+      "series": "Petite Glass",
+      "dmcCode": "666",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#E31D42",
+      "rgb": [
+        227,
+        29,
+        66
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42014",
+      "code": "42014",
+      "name": "Black",
+      "series": "Petite Glass",
+      "dmcCode": "310",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#000000",
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42017",
+      "code": "42017",
+      "name": "Crystal Aqua",
+      "series": "Petite Glass",
+      "dmcCode": "747",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#E5FCFD",
+      "rgb": [
+        229,
+        252,
+        253
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42018",
+      "code": "42018",
+      "name": "Crystal Pink",
+      "series": "Petite Glass",
+      "dmcCode": "3689",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#FBBFC2",
+      "rgb": [
+        251,
+        191,
+        194
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42024",
+      "code": "42024",
+      "name": "Heather Mauve",
+      "series": "Petite Glass",
+      "dmcCode": "3042",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#B79DA7",
+      "rgb": [
+        183,
+        157,
+        167
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42027",
+      "code": "42027",
+      "name": "Champagne",
+      "series": "Petite Glass",
+      "dmcCode": "225",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#FFDFD7",
+      "rgb": [
+        255,
+        223,
+        215
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42028",
+      "code": "42028",
+      "name": "Ginger",
+      "series": "Petite Glass",
+      "dmcCode": "921",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#C66218",
+      "rgb": [
+        198,
+        98,
+        24
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42029",
+      "code": "42029",
+      "name": "Tapestry Teal",
+      "series": "Petite Glass",
+      "dmcCode": "3810",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#488E9A",
+      "rgb": [
+        72,
+        142,
+        154
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42030",
+      "code": "42030",
+      "name": "Vict. Copper",
+      "series": "Petite Glass",
+      "dmcCode": "950",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#EED3C4",
+      "rgb": [
+        238,
+        211,
+        196
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42031",
+      "code": "42031",
+      "name": "Citron",
+      "series": "Petite Glass",
+      "dmcCode": "907",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#C7E666",
+      "rgb": [
+        199,
+        230,
+        102
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42033",
+      "code": "42033",
+      "name": "Autumn Flame",
+      "series": "Petite Glass",
+      "dmcCode": "720",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#E55C1F",
+      "rgb": [
+        229,
+        92,
+        31
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42034",
+      "code": "42034",
+      "name": "Matte Pumpkin",
+      "series": "Petite Glass",
+      "dmcCode": "720",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#E55C1F",
+      "rgb": [
+        229,
+        92,
+        31
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42035",
+      "code": "42035",
+      "name": "Matte Maize",
+      "series": "Petite Glass",
+      "dmcCode": "728",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#E4B468",
+      "rgb": [
+        228,
+        180,
+        104
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42036",
+      "code": "42036",
+      "name": "Bay Leaf",
+      "series": "Petite Glass",
+      "dmcCode": "522",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#969E7E",
+      "rgb": [
+        150,
+        158,
+        126
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42037",
+      "code": "42037",
+      "name": "Green Velvet",
+      "series": "Petite Glass",
+      "dmcCode": "3345",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#1B5915",
+      "rgb": [
+        27,
+        89,
+        21
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42038",
+      "code": "42038",
+      "name": "Matte Chocolate",
+      "series": "Petite Glass",
+      "dmcCode": "938",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#361F0E",
+      "rgb": [
+        54,
+        31,
+        14
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42039",
+      "code": "42039",
+      "name": "Brilliant Green",
+      "series": "Petite Glass",
+      "dmcCode": "3818",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#115A3B",
+      "rgb": [
+        17,
+        90,
+        59
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42040",
+      "code": "42040",
+      "name": "Periwinkle",
+      "series": "Petite Glass",
+      "dmcCode": "792",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#555B7B",
+      "rgb": [
+        85,
+        91,
+        123
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42041",
+      "code": "42041",
+      "name": "Dark Denim",
+      "series": "Petite Glass",
+      "dmcCode": "791",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#464563",
+      "rgb": [
+        70,
+        69,
+        99
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42042",
+      "code": "42042",
+      "name": "Misty",
+      "series": "Petite Glass",
+      "dmcCode": "761",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#FFC9C9",
+      "rgb": [
+        255,
+        201,
+        201
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42043",
+      "code": "42043",
+      "name": "Rich Red",
+      "series": "Petite Glass",
+      "dmcCode": "321",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#C72B3B",
+      "rgb": [
+        199,
+        43,
+        59
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42101",
+      "code": "42101",
+      "name": "Purple",
+      "series": "Petite Glass",
+      "dmcCode": "552",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#803A6B",
+      "rgb": [
+        128,
+        58,
+        107
+      ]
+    },
+    {
+      "sourceId": "mill-hill-42102",
+      "code": "42102",
+      "name": "Lemon",
+      "series": "Petite Glass",
+      "dmcCode": "445",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#FFFB8B",
+      "rgb": [
+        255,
+        251,
+        139
+      ]
+    },
+    {
+      "sourceId": "mill-hill-45270",
+      "code": "45270",
+      "name": "Bottle Green",
+      "series": "Petite Glass",
+      "dmcCode": "991",
+      "diameterMm": 2,
+      "lengthMm": 1.4,
+      "hex": "#477B6E",
+      "rgb": [
+        71,
+        123,
+        110
+      ]
+    },
+    {
+      "sourceId": "mill-hill-05002",
+      "code": "05002",
+      "name": "Yellow Creme",
+      "series": "Size 3 Pebble",
+      "dmcCode": "746",
+      "diameterMm": 5.5,
+      "lengthMm": 3.85,
+      "hex": "#FCFCEE",
+      "rgb": [
+        252,
+        252,
+        238
+      ]
+    },
+    {
+      "sourceId": "mill-hill-05011",
+      "code": "05011",
+      "name": "Victorian Gold",
+      "series": "Size 3 Pebble",
+      "dmcCode": "3821",
+      "diameterMm": 5.5,
+      "lengthMm": 3.85,
+      "hex": "#F3CE75",
+      "rgb": [
+        243,
+        206,
+        117
+      ]
+    },
+    {
+      "sourceId": "mill-hill-05015",
+      "code": "05015",
+      "name": "Frosted Citrus",
+      "series": "Size 3 Pebble",
+      "dmcCode": "471",
+      "diameterMm": 5.5,
+      "lengthMm": 3.85,
+      "hex": "#AEBF79",
+      "rgb": [
+        174,
+        191,
+        121
+      ]
+    },
+    {
+      "sourceId": "mill-hill-05016",
+      "code": "05016",
+      "name": "Matte Fiesta Sunset",
+      "series": "Size 3 Pebble",
+      "dmcCode": "3731",
+      "diameterMm": 5.5,
+      "lengthMm": 3.85,
+      "hex": "#DA6783",
+      "rgb": [
+        218,
+        103,
+        131
+      ]
+    },
+    {
+      "sourceId": "mill-hill-05021",
+      "code": "05021",
+      "name": "Silver",
+      "series": "Size 3 Pebble",
+      "dmcCode": "762",
+      "diameterMm": 5.5,
+      "lengthMm": 3.85,
+      "hex": "#ECECEC",
+      "rgb": [
+        236,
+        236,
+        236
+      ]
+    },
+    {
+      "sourceId": "mill-hill-05022",
+      "code": "05022",
+      "name": "Frosted Opal Capri",
+      "series": "Size 3 Pebble",
+      "dmcCode": "3746",
+      "diameterMm": 5.5,
+      "lengthMm": 3.85,
+      "hex": "#776B98",
+      "rgb": [
+        119,
+        107,
+        152
+      ]
+    },
+    {
+      "sourceId": "mill-hill-05025",
+      "code": "05025",
+      "name": "Ruby",
+      "series": "Size 3 Pebble",
+      "dmcCode": "666",
+      "diameterMm": 5.5,
+      "lengthMm": 3.85,
+      "hex": "#E31D42",
+      "rgb": [
+        227,
+        29,
+        66
+      ]
+    },
+    {
+      "sourceId": "mill-hill-05065",
+      "code": "05065",
+      "name": "Eggplant",
+      "series": "Size 3 Pebble",
+      "dmcCode": "154",
+      "diameterMm": 5.5,
+      "lengthMm": 3.85,
+      "hex": "#572433",
+      "rgb": [
+        87,
+        36,
+        51
+      ]
+    },
+    {
+      "sourceId": "mill-hill-05081",
+      "code": "05081",
+      "name": "Black Frost",
+      "series": "Size 3 Pebble",
+      "dmcCode": "310",
+      "diameterMm": 5.5,
+      "lengthMm": 3.85,
+      "hex": "#000000",
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "sourceId": "mill-hill-05086",
+      "code": "05086",
+      "name": "Midnight Rainbow",
+      "series": "Size 3 Pebble",
+      "dmcCode": "550",
+      "diameterMm": 5.5,
+      "lengthMm": 3.85,
+      "hex": "#5C184E",
+      "rgb": [
+        92,
+        24,
+        78
+      ]
+    },
+    {
+      "sourceId": "mill-hill-05145",
+      "code": "05145",
+      "name": "Pale Pink",
+      "series": "Size 3 Pebble",
+      "dmcCode": "963",
+      "diameterMm": 5.5,
+      "lengthMm": 3.85,
+      "hex": "#FFD7D7",
+      "rgb": [
+        255,
+        215,
+        215
+      ]
+    },
+    {
+      "sourceId": "mill-hill-05147",
+      "code": "05147",
+      "name": "Oriental Pearl",
+      "series": "Size 3 Pebble",
+      "dmcCode": "Ecru",
+      "diameterMm": 5.5,
+      "lengthMm": 3.85,
+      "hex": "#F0EADA",
+      "rgb": [
+        240,
+        234,
+        218
+      ]
+    },
+    {
+      "sourceId": "mill-hill-05161",
+      "code": "05161",
+      "name": "Crystal",
+      "series": "Size 3 Pebble",
+      "dmcCode": "Blanc",
+      "diameterMm": 5.5,
+      "lengthMm": 3.85,
+      "hex": "#FCFBF8",
+      "rgb": [
+        252,
+        251,
+        248
+      ]
+    },
+    {
+      "sourceId": "mill-hill-05168",
+      "code": "05168",
+      "name": "Sapphire",
+      "series": "Size 3 Pebble",
+      "dmcCode": "340",
+      "diameterMm": 5.5,
+      "lengthMm": 3.85,
+      "hex": "#ADA7C7",
+      "rgb": [
+        173,
+        167,
+        199
+      ]
+    },
+    {
+      "sourceId": "mill-hill-05202",
+      "code": "05202",
+      "name": "Amethyst",
+      "series": "Size 3 Pebble",
+      "dmcCode": "209",
+      "diameterMm": 5.5,
+      "lengthMm": 3.85,
+      "hex": "#A37BA7",
+      "rgb": [
+        163,
+        123,
+        167
+      ]
+    },
+    {
+      "sourceId": "mill-hill-05270",
+      "code": "05270",
+      "name": "Bottle Green",
+      "series": "Size 3 Pebble",
+      "dmcCode": "991",
+      "diameterMm": 5.5,
+      "lengthMm": 3.85,
+      "hex": "#477B6E",
+      "rgb": [
+        71,
+        123,
+        110
+      ]
+    },
+    {
+      "sourceId": "mill-hill-05033",
+      "code": "05033",
+      "name": "Pebble Gray",
+      "series": "Size 3 Pebble",
+      "dmcCode": "645",
+      "diameterMm": 5.5,
+      "lengthMm": 3.85,
+      "hex": "#6E655C",
+      "rgb": [
+        110,
+        101,
+        92
+      ]
+    },
+    {
+      "sourceId": "mill-hill-05555",
+      "code": "05555",
+      "name": "New Penny",
+      "series": "Size 3 Pebble",
+      "dmcCode": "950",
+      "diameterMm": 5.5,
+      "lengthMm": 3.85,
+      "hex": "#EED3C4",
+      "rgb": [
+        238,
+        211,
+        196
+      ]
+    },
+    {
+      "sourceId": "mill-hill-05557",
+      "code": "05557",
+      "name": "Old Gold",
+      "series": "Size 3 Pebble",
+      "dmcCode": "676",
+      "diameterMm": 5.5,
+      "lengthMm": 3.85,
+      "hex": "#E5CE97",
+      "rgb": [
+        229,
+        206,
+        151
+      ]
+    },
+    {
+      "sourceId": "mill-hill-05609",
+      "code": "05609",
+      "name": "Opal Smoky Topaz",
+      "series": "Size 3 Pebble",
+      "dmcCode": "434",
+      "diameterMm": 5.5,
+      "lengthMm": 3.85,
+      "hex": "#985E33",
+      "rgb": [
+        152,
+        94,
+        51
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16002",
+      "code": "16002",
+      "name": "Midnight",
+      "series": "Size 6",
+      "dmcCode": "823",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#213063",
+      "rgb": [
+        33,
+        48,
+        99
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16004",
+      "code": "16004",
+      "name": "Eggplant",
+      "series": "Size 6",
+      "dmcCode": "550",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#5C184E",
+      "rgb": [
+        92,
+        24,
+        78
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16010",
+      "code": "16010",
+      "name": "Ice",
+      "series": "Size 6",
+      "dmcCode": "762",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#ECECEC",
+      "rgb": [
+        236,
+        236,
+        236
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16011",
+      "code": "16011",
+      "name": "Victorian Gold",
+      "series": "Size 6",
+      "dmcCode": "3821",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#F3CE75",
+      "rgb": [
+        243,
+        206,
+        117
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16014",
+      "code": "16014",
+      "name": "Black",
+      "series": "Size 6",
+      "dmcCode": "310",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#000000",
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16021",
+      "code": "16021",
+      "name": "Frosted Periwinkle",
+      "series": "Size 6",
+      "dmcCode": "975",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#914F12",
+      "rgb": [
+        145,
+        79,
+        18
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16022",
+      "code": "16022",
+      "name": "Frosted Opal Capri",
+      "series": "Size 6",
+      "dmcCode": "825",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#4781A5",
+      "rgb": [
+        71,
+        129,
+        165
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16024",
+      "code": "16024",
+      "name": "Heather Mauve",
+      "series": "Size 6",
+      "dmcCode": "3042",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#B79DA7",
+      "rgb": [
+        183,
+        157,
+        167
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16025",
+      "code": "16025",
+      "name": "Wildberry",
+      "series": "Size 6",
+      "dmcCode": "902",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#822637",
+      "rgb": [
+        130,
+        38,
+        55
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16026",
+      "code": "16026",
+      "name": "Crystal Blue",
+      "series": "Size 6",
+      "dmcCode": "794",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#8F9CC1",
+      "rgb": [
+        143,
+        156,
+        193
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16031",
+      "code": "16031",
+      "name": "Frosted Gold",
+      "series": "Size 6",
+      "dmcCode": "676",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#E5CE97",
+      "rgb": [
+        229,
+        206,
+        151
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16037",
+      "code": "16037",
+      "name": "Abalone",
+      "series": "Size 6",
+      "dmcCode": "372",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#CCB784",
+      "rgb": [
+        204,
+        183,
+        132
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16081",
+      "code": "16081",
+      "name": "Jet",
+      "series": "Size 6",
+      "dmcCode": "3799",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#424242",
+      "rgb": [
+        66,
+        66,
+        66
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16151",
+      "code": "16151",
+      "name": "Ash Mauve",
+      "series": "Size 6",
+      "dmcCode": "3743",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#D7CBD3",
+      "rgb": [
+        215,
+        203,
+        211
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16161",
+      "code": "16161",
+      "name": "Crystal",
+      "series": "Size 6",
+      "dmcCode": "Blanc",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#FCFBF8",
+      "rgb": [
+        252,
+        251,
+        248
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16168",
+      "code": "16168",
+      "name": "Sapphire",
+      "series": "Size 6",
+      "dmcCode": "340",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#ADA7C7",
+      "rgb": [
+        173,
+        167,
+        199
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16221",
+      "code": "16221",
+      "name": "Bronze",
+      "series": "Size 6",
+      "dmcCode": "434",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#985E33",
+      "rgb": [
+        152,
+        94,
+        51
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16374",
+      "code": "16374",
+      "name": "Rainbow",
+      "series": "Size 6",
+      "dmcCode": "550",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#5C184E",
+      "rgb": [
+        92,
+        24,
+        78
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16601",
+      "code": "16601",
+      "name": "White Opal",
+      "series": "Size 6",
+      "dmcCode": "Blanc",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#FCFBF8",
+      "rgb": [
+        252,
+        251,
+        248
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16602",
+      "code": "16602",
+      "name": "Frosted Ice",
+      "series": "Size 6",
+      "dmcCode": "762",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#ECECEC",
+      "rgb": [
+        236,
+        236,
+        236
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16603",
+      "code": "16603",
+      "name": "Creamy Pearl",
+      "series": "Size 6",
+      "dmcCode": "746",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#FCFCEE",
+      "rgb": [
+        252,
+        252,
+        238
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16604",
+      "code": "16604",
+      "name": "Antique Mocha",
+      "series": "Size 6",
+      "dmcCode": "3790",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#7F6A55",
+      "rgb": [
+        127,
+        106,
+        85
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16605",
+      "code": "16605",
+      "name": "Golden Amber",
+      "series": "Size 6",
+      "dmcCode": "3820",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#DFB65F",
+      "rgb": [
+        223,
+        182,
+        95
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16606",
+      "code": "16606",
+      "name": "Brilliant Bronze",
+      "series": "Size 6",
+      "dmcCode": "400",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#8F430F",
+      "rgb": [
+        143,
+        67,
+        15
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16607",
+      "code": "16607",
+      "name": "Umber",
+      "series": "Size 6",
+      "dmcCode": "3781",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#6B5743",
+      "rgb": [
+        107,
+        87,
+        67
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16608",
+      "code": "16608",
+      "name": "Amethyst Ice",
+      "series": "Size 6",
+      "dmcCode": "208",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#835B8B",
+      "rgb": [
+        131,
+        91,
+        139
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16609",
+      "code": "16609",
+      "name": "Opal Smokey Topaz",
+      "series": "Size 6",
+      "dmcCode": "3858",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#964A3F",
+      "rgb": [
+        150,
+        74,
+        63
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16610",
+      "code": "16610",
+      "name": "Frosted Lilac",
+      "series": "Size 6",
+      "dmcCode": "3042",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#B79DA7",
+      "rgb": [
+        183,
+        157,
+        167
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16611",
+      "code": "16611",
+      "name": "Frosted Jeweltones",
+      "series": "Size 6",
+      "dmcCode": "3750",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#384C5E",
+      "rgb": [
+        56,
+        76,
+        94
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16612",
+      "code": "16612",
+      "name": "Opal Periwinkle",
+      "series": "Size 6",
+      "dmcCode": "333",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#5C5478",
+      "rgb": [
+        92,
+        84,
+        120
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16613",
+      "code": "16613",
+      "name": "Juniper Green",
+      "series": "Size 6",
+      "dmcCode": "561",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#2C6A45",
+      "rgb": [
+        44,
+        106,
+        69
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16614",
+      "code": "16614",
+      "name": "Brilliant Green",
+      "series": "Size 6",
+      "dmcCode": "699",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#056517",
+      "rgb": [
+        5,
+        101,
+        23
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16615",
+      "code": "16615",
+      "name": "Frosted Citrus",
+      "series": "Size 6",
+      "dmcCode": "704",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#9ECF34",
+      "rgb": [
+        158,
+        207,
+        52
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16616",
+      "code": "16616",
+      "name": "Mt. Fiesta Sunset",
+      "series": "Size 6",
+      "dmcCode": "3731",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#DA6783",
+      "rgb": [
+        218,
+        103,
+        131
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16617",
+      "code": "16617",
+      "name": "Frosted Red Red",
+      "series": "Size 6",
+      "dmcCode": "666",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#E31D42",
+      "rgb": [
+        227,
+        29,
+        66
+      ]
+    },
+    {
+      "sourceId": "mill-hill-16618",
+      "code": "16618",
+      "name": "Mayan Gold",
+      "series": "Size 6",
+      "dmcCode": "371",
+      "diameterMm": 4,
+      "lengthMm": 2.8,
+      "hex": "#BFA671",
+      "rgb": [
+        191,
+        166,
+        113
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18002",
+      "code": "18002",
+      "name": "Midnight",
+      "series": "Size 8",
+      "dmcCode": "823",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#213063",
+      "rgb": [
+        33,
+        48,
+        99
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18010",
+      "code": "18010",
+      "name": "Ice",
+      "series": "Size 8",
+      "dmcCode": "762",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#ECECEC",
+      "rgb": [
+        236,
+        236,
+        236
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18011",
+      "code": "18011",
+      "name": "Victorian Gold",
+      "series": "Size 8",
+      "dmcCode": "3821",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#F3CE75",
+      "rgb": [
+        243,
+        206,
+        117
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18014",
+      "code": "18014",
+      "name": "Black",
+      "series": "Size 8",
+      "dmcCode": "310",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#000000",
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18027",
+      "code": "18027",
+      "name": "Caspian Blue",
+      "series": "Size 8",
+      "dmcCode": "312",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#35668B",
+      "rgb": [
+        53,
+        102,
+        139
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18046",
+      "code": "18046",
+      "name": "Matte Cadet Blue",
+      "series": "Size 8",
+      "dmcCode": "931",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#6A859E",
+      "rgb": [
+        106,
+        133,
+        158
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18081",
+      "code": "18081",
+      "name": "Jet",
+      "series": "Size 8",
+      "dmcCode": "3799",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#424242",
+      "rgb": [
+        66,
+        66,
+        66
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18099",
+      "code": "18099",
+      "name": "Ruby",
+      "series": "Size 8",
+      "dmcCode": "815",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#87071F",
+      "rgb": [
+        135,
+        7,
+        31
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18123",
+      "code": "18123",
+      "name": "Cream",
+      "series": "Size 8",
+      "dmcCode": "Ecru",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#F0EADA",
+      "rgb": [
+        240,
+        234,
+        218
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18221",
+      "code": "18221",
+      "name": "Bronze",
+      "series": "Size 8",
+      "dmcCode": "434",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#985E33",
+      "rgb": [
+        152,
+        94,
+        51
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18801",
+      "code": "18801",
+      "name": "White Opal",
+      "series": "Size 8",
+      "dmcCode": "Blanc",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#FCFBF8",
+      "rgb": [
+        252,
+        251,
+        248
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18812",
+      "code": "18812",
+      "name": "Opal Periwinkle",
+      "series": "Size 8",
+      "dmcCode": "333",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#5C5478",
+      "rgb": [
+        92,
+        84,
+        120
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18819",
+      "code": "18819",
+      "name": "Opal Blush",
+      "series": "Size 8",
+      "dmcCode": "353",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#FED7CC",
+      "rgb": [
+        254,
+        215,
+        204
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18820",
+      "code": "18820",
+      "name": "Opal Persimmon",
+      "series": "Size 8",
+      "dmcCode": "3721",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#A14B51",
+      "rgb": [
+        161,
+        75,
+        81
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18821",
+      "code": "18821",
+      "name": "Opal Dark Mauve",
+      "series": "Size 8",
+      "dmcCode": "315",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#814952",
+      "rgb": [
+        129,
+        73,
+        82
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18822",
+      "code": "18822",
+      "name": "Golden Opal",
+      "series": "Size 8",
+      "dmcCode": "3855",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#FAD396",
+      "rgb": [
+        250,
+        211,
+        150
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18823",
+      "code": "18823",
+      "name": "Fr. Opal Sm. Topaz",
+      "series": "Size 8",
+      "dmcCode": "3802",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#714149",
+      "rgb": [
+        113,
+        65,
+        73
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18824",
+      "code": "18824",
+      "name": "Opal Lilac",
+      "series": "Size 8",
+      "dmcCode": "211",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#E3CBE3",
+      "rgb": [
+        227,
+        203,
+        227
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18825",
+      "code": "18825",
+      "name": "Iced Nutmeg",
+      "series": "Size 8",
+      "dmcCode": "3041",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#956F7C",
+      "rgb": [
+        149,
+        111,
+        124
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18826",
+      "code": "18826",
+      "name": "Opal Hyacinth",
+      "series": "Size 8",
+      "dmcCode": "155",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#9891B6",
+      "rgb": [
+        152,
+        145,
+        182
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18827",
+      "code": "18827",
+      "name": "Mt. Confetti Amethyst",
+      "series": "Size 8",
+      "dmcCode": "552",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#803A6B",
+      "rgb": [
+        128,
+        58,
+        107
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18828",
+      "code": "18828",
+      "name": "Opal Seafoam",
+      "series": "Size 8",
+      "dmcCode": "3811",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#BCE3E6",
+      "rgb": [
+        188,
+        227,
+        230
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18829",
+      "code": "18829",
+      "name": "Opal Cornflower",
+      "series": "Size 8",
+      "dmcCode": "156",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#A3AED1",
+      "rgb": [
+        163,
+        174,
+        209
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18830",
+      "code": "18830",
+      "name": "Ocean Blue Ice",
+      "series": "Size 8",
+      "dmcCode": "798",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#466A8E",
+      "rgb": [
+        70,
+        106,
+        142
+      ]
+    },
+    {
+      "sourceId": "mill-hill-18831",
+      "code": "18831",
+      "name": "Golden Emerald",
+      "series": "Size 8",
+      "dmcCode": "909",
+      "diameterMm": 3,
+      "lengthMm": 2.1,
+      "hex": "#156F49",
+      "rgb": [
+        21,
+        111,
+        73
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10001",
+      "code": "10001",
+      "name": "Ice",
+      "series": "Magnifica",
+      "dmcCode": "762",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#ECECEC",
+      "rgb": [
+        236,
+        236,
+        236
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10002",
+      "code": "10002",
+      "name": "Autumn Flame",
+      "series": "Magnifica",
+      "dmcCode": "720",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#E55C1F",
+      "rgb": [
+        229,
+        92,
+        31
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10003",
+      "code": "10003",
+      "name": "Black",
+      "series": "Magnifica",
+      "dmcCode": "310",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#000000",
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10004",
+      "code": "10004",
+      "name": "Jet",
+      "series": "Magnifica",
+      "dmcCode": "3799",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#424242",
+      "rgb": [
+        66,
+        66,
+        66
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10005",
+      "code": "10005",
+      "name": "Midnight",
+      "series": "Magnifica",
+      "dmcCode": "823",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#213063",
+      "rgb": [
+        33,
+        48,
+        99
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10006",
+      "code": "10006",
+      "name": "Eggplant",
+      "series": "Magnifica",
+      "dmcCode": "550",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#5C184E",
+      "rgb": [
+        92,
+        24,
+        78
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10007",
+      "code": "10007",
+      "name": "Mercury",
+      "series": "Magnifica",
+      "dmcCode": "414",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#8C8C8C",
+      "rgb": [
+        140,
+        140,
+        140
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10008",
+      "code": "10008",
+      "name": "Black Plum",
+      "series": "Magnifica",
+      "dmcCode": "3740",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#785762",
+      "rgb": [
+        120,
+        87,
+        98
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10009",
+      "code": "10009",
+      "name": "White",
+      "series": "Magnifica",
+      "dmcCode": "Blanc",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#FCFBF8",
+      "rgb": [
+        252,
+        251,
+        248
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10010",
+      "code": "10010",
+      "name": "Royal Pearl",
+      "series": "Magnifica",
+      "dmcCode": "Ecru",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#F0EADA",
+      "rgb": [
+        240,
+        234,
+        218
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10011",
+      "code": "10011",
+      "name": "Opal Honey",
+      "series": "Magnifica",
+      "dmcCode": "3855",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#FAD396",
+      "rgb": [
+        250,
+        211,
+        150
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10012",
+      "code": "10012",
+      "name": "Bronze",
+      "series": "Magnifica",
+      "dmcCode": "434",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#985E33",
+      "rgb": [
+        152,
+        94,
+        51
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10013",
+      "code": "10013",
+      "name": "Copper",
+      "series": "Magnifica",
+      "dmcCode": "898",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#492A13",
+      "rgb": [
+        73,
+        42,
+        19
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10014",
+      "code": "10014",
+      "name": "Dk. Blue Iris",
+      "series": "Magnifica",
+      "dmcCode": "924",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#566A6A",
+      "rgb": [
+        86,
+        106,
+        106
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10015",
+      "code": "10015",
+      "name": "Golden Ginger",
+      "series": "Magnifica",
+      "dmcCode": "400",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#8F430F",
+      "rgb": [
+        143,
+        67,
+        15
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10016",
+      "code": "10016",
+      "name": "Royal Plum",
+      "series": "Magnifica",
+      "dmcCode": "3685",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#881531",
+      "rgb": [
+        136,
+        21,
+        49
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10017",
+      "code": "10017",
+      "name": "Olive Brilliance",
+      "series": "Magnifica",
+      "dmcCode": "936",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#4C5826",
+      "rgb": [
+        76,
+        88,
+        38
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10018",
+      "code": "10018",
+      "name": "Sheer Blueberry",
+      "series": "Magnifica",
+      "dmcCode": "3740",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#785762",
+      "rgb": [
+        120,
+        87,
+        98
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10019",
+      "code": "10019",
+      "name": "Claret",
+      "series": "Magnifica",
+      "dmcCode": "221",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#883E43",
+      "rgb": [
+        136,
+        62,
+        67
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10020",
+      "code": "10020",
+      "name": "Royal Amethyst",
+      "series": "Magnifica",
+      "dmcCode": "3685",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#881531",
+      "rgb": [
+        136,
+        21,
+        49
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10021",
+      "code": "10021",
+      "name": "Bril.Blue Green",
+      "series": "Magnifica",
+      "dmcCode": "3750",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#384C5E",
+      "rgb": [
+        56,
+        76,
+        94
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10022",
+      "code": "10022",
+      "name": "Royal Green",
+      "series": "Magnifica",
+      "dmcCode": "991",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#477B6E",
+      "rgb": [
+        71,
+        123,
+        110
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10023",
+      "code": "10023",
+      "name": "Evergreen",
+      "series": "Magnifica",
+      "dmcCode": "3345",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#1B5915",
+      "rgb": [
+        27,
+        89,
+        21
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10024",
+      "code": "10024",
+      "name": "Cognac",
+      "series": "Magnifica",
+      "dmcCode": "3740",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#785762",
+      "rgb": [
+        120,
+        87,
+        98
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10025",
+      "code": "10025",
+      "name": "Platinum Rose",
+      "series": "Magnifica",
+      "dmcCode": "224",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#EBB7AF",
+      "rgb": [
+        235,
+        183,
+        175
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10026",
+      "code": "10026",
+      "name": "Old Rose",
+      "series": "Magnifica",
+      "dmcCode": "3688",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#E7A9AC",
+      "rgb": [
+        231,
+        169,
+        172
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10027",
+      "code": "10027",
+      "name": "Metallic Lilac",
+      "series": "Magnifica",
+      "dmcCode": "554",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#DBB3CB",
+      "rgb": [
+        219,
+        179,
+        203
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10028",
+      "code": "10028",
+      "name": "Silver",
+      "series": "Magnifica",
+      "dmcCode": "822",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#E7E2D3",
+      "rgb": [
+        231,
+        226,
+        211
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10029",
+      "code": "10029",
+      "name": "Brilliant Sage",
+      "series": "Magnifica",
+      "dmcCode": "368",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#A6C298",
+      "rgb": [
+        166,
+        194,
+        152
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10030",
+      "code": "10030",
+      "name": "Ice Green",
+      "series": "Magnifica",
+      "dmcCode": "503",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#7BAC94",
+      "rgb": [
+        123,
+        172,
+        148
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10031",
+      "code": "10031",
+      "name": "Persimmon",
+      "series": "Magnifica",
+      "dmcCode": "720",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#E55C1F",
+      "rgb": [
+        229,
+        92,
+        31
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10032",
+      "code": "10032",
+      "name": "Brilliant Fuchsia",
+      "series": "Magnifica",
+      "dmcCode": "3607",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#C54989",
+      "rgb": [
+        197,
+        73,
+        137
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10033",
+      "code": "10033",
+      "name": "Ant. Cranberry",
+      "series": "Magnifica",
+      "dmcCode": "347",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#BF2D2D",
+      "rgb": [
+        191,
+        45,
+        45
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10034",
+      "code": "10034",
+      "name": "Silver Moon",
+      "series": "Magnifica",
+      "dmcCode": "927",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#BDCBCB",
+      "rgb": [
+        189,
+        203,
+        203
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10035",
+      "code": "10035",
+      "name": "Flat Black",
+      "series": "Magnifica",
+      "dmcCode": "310",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#000000",
+      "rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10036",
+      "code": "10036",
+      "name": "Victorian Gold",
+      "series": "Magnifica",
+      "dmcCode": "3821",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#F3CE75",
+      "rgb": [
+        243,
+        206,
+        117
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10037",
+      "code": "10037",
+      "name": "Wild Blueberry",
+      "series": "Magnifica",
+      "dmcCode": "336",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#253B73",
+      "rgb": [
+        37,
+        59,
+        115
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10038",
+      "code": "10038",
+      "name": "Caspian Blue",
+      "series": "Magnifica",
+      "dmcCode": "312",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#35668B",
+      "rgb": [
+        53,
+        102,
+        139
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10039",
+      "code": "10039",
+      "name": "Juniper Green",
+      "series": "Magnifica",
+      "dmcCode": "3362",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#5E6B47",
+      "rgb": [
+        94,
+        107,
+        71
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10040",
+      "code": "10040",
+      "name": "Autumn Green",
+      "series": "Magnifica",
+      "dmcCode": "3051",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#5F6648",
+      "rgb": [
+        95,
+        102,
+        72
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10041",
+      "code": "10041",
+      "name": "Abalone",
+      "series": "Magnifica",
+      "dmcCode": "372",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#CCB784",
+      "rgb": [
+        204,
+        183,
+        132
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10042",
+      "code": "10042",
+      "name": "Vanilla",
+      "series": "Magnifica",
+      "dmcCode": "712",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#FFFBEF",
+      "rgb": [
+        255,
+        251,
+        239
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10043",
+      "code": "10043",
+      "name": "Butter Cream",
+      "series": "Magnifica",
+      "dmcCode": "745",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#FFE9AD",
+      "rgb": [
+        255,
+        233,
+        173
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10044",
+      "code": "10044",
+      "name": "Blue Iris",
+      "series": "Magnifica",
+      "dmcCode": "931",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#6A859E",
+      "rgb": [
+        106,
+        133,
+        158
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10045",
+      "code": "10045",
+      "name": "Opaline Jade",
+      "series": "Magnifica",
+      "dmcCode": "702",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#47A72F",
+      "rgb": [
+        71,
+        167,
+        47
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10046",
+      "code": "10046",
+      "name": "White Opal",
+      "series": "Magnifica",
+      "dmcCode": "Blanc",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#FCFBF8",
+      "rgb": [
+        252,
+        251,
+        248
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10047",
+      "code": "10047",
+      "name": "Opal. Periwinkle",
+      "series": "Magnifica",
+      "dmcCode": "792",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#555B7B",
+      "rgb": [
+        85,
+        91,
+        123
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10048",
+      "code": "10048",
+      "name": "Opal.Tea Rose",
+      "series": "Magnifica",
+      "dmcCode": "3706",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#FFADBC",
+      "rgb": [
+        255,
+        173,
+        188
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10049",
+      "code": "10049",
+      "name": "Sky Blue Opal",
+      "series": "Magnifica",
+      "dmcCode": "519",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#7EB1C8",
+      "rgb": [
+        126,
+        177,
+        200
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10050",
+      "code": "10050",
+      "name": "Azure Opal",
+      "series": "Magnifica",
+      "dmcCode": "334",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#739FC1",
+      "rgb": [
+        115,
+        159,
+        193
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10051",
+      "code": "10051",
+      "name": "Opal Salmon",
+      "series": "Magnifica",
+      "dmcCode": "223",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#CC847C",
+      "rgb": [
+        204,
+        132,
+        124
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10052",
+      "code": "10052",
+      "name": "Fuchsia Opal",
+      "series": "Magnifica",
+      "dmcCode": "3805",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#F3478B",
+      "rgb": [
+        243,
+        71,
+        139
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10053",
+      "code": "10053",
+      "name": "Crystal Lilac",
+      "series": "Magnifica",
+      "dmcCode": "211",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#E3CBE3",
+      "rgb": [
+        227,
+        203,
+        227
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10054",
+      "code": "10054",
+      "name": "Sheer Deep Teal",
+      "series": "Magnifica",
+      "dmcCode": "3808",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#366970",
+      "rgb": [
+        54,
+        105,
+        112
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10055",
+      "code": "10055",
+      "name": "Royal Blue",
+      "series": "Magnifica",
+      "dmcCode": "797",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#13477D",
+      "rgb": [
+        19,
+        71,
+        125
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10056",
+      "code": "10056",
+      "name": "Misty Pink",
+      "series": "Magnifica",
+      "dmcCode": "3354",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#E4A6AC",
+      "rgb": [
+        228,
+        166,
+        172
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10057",
+      "code": "10057",
+      "name": "Crystal Clear",
+      "series": "Magnifica",
+      "dmcCode": "Blanc",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#FCFBF8",
+      "rgb": [
+        252,
+        251,
+        248
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10058",
+      "code": "10058",
+      "name": "Sheer Aqua",
+      "series": "Magnifica",
+      "dmcCode": "519",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#7EB1C8",
+      "rgb": [
+        126,
+        177,
+        200
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10059",
+      "code": "10059",
+      "name": "Caribbean Blue",
+      "series": "Magnifica",
+      "dmcCode": "3809",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#3F7C85",
+      "rgb": [
+        63,
+        124,
+        133
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10060",
+      "code": "10060",
+      "name": "Sheer Coral Red",
+      "series": "Magnifica",
+      "dmcCode": "3705",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#FF7992",
+      "rgb": [
+        255,
+        121,
+        146
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10061",
+      "code": "10061",
+      "name": "Silver Fox",
+      "series": "Magnifica",
+      "dmcCode": "318",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#ABABAB",
+      "rgb": [
+        171,
+        171,
+        171
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10062",
+      "code": "10062",
+      "name": "Taupe Shimmer",
+      "series": "Magnifica",
+      "dmcCode": "632",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#875539",
+      "rgb": [
+        135,
+        85,
+        57
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10063",
+      "code": "10063",
+      "name": "Deep Periwinkle",
+      "series": "Magnifica",
+      "dmcCode": "792",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#555B7B",
+      "rgb": [
+        85,
+        91,
+        123
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10064",
+      "code": "10064",
+      "name": "Deep Sea Green",
+      "series": "Magnifica",
+      "dmcCode": "561",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#2C6A45",
+      "rgb": [
+        44,
+        106,
+        69
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10065",
+      "code": "10065",
+      "name": "Christmas Gr.",
+      "series": "Magnifica",
+      "dmcCode": "702",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#47A72F",
+      "rgb": [
+        71,
+        167,
+        47
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10066",
+      "code": "10066",
+      "name": "Opal Sm. Topaz",
+      "series": "Magnifica",
+      "dmcCode": "632",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#875539",
+      "rgb": [
+        135,
+        85,
+        57
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10067",
+      "code": "10067",
+      "name": "True Gr.Opal",
+      "series": "Magnifica",
+      "dmcCode": "505",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#338362",
+      "rgb": [
+        51,
+        131,
+        98
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10068",
+      "code": "10068",
+      "name": "Nutmeg",
+      "series": "Magnifica",
+      "dmcCode": "3726",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#9B5B66",
+      "rgb": [
+        155,
+        91,
+        102
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10069",
+      "code": "10069",
+      "name": "Royal Opal",
+      "series": "Magnifica",
+      "dmcCode": "Blanc",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#FCFBF8",
+      "rgb": [
+        252,
+        251,
+        248
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10070",
+      "code": "10070",
+      "name": "Opalescent Aqua",
+      "series": "Magnifica",
+      "dmcCode": "519",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#7EB1C8",
+      "rgb": [
+        126,
+        177,
+        200
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10071",
+      "code": "10071",
+      "name": "Opal.Cinn. Red",
+      "series": "Magnifica",
+      "dmcCode": "347",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#BF2D2D",
+      "rgb": [
+        191,
+        45,
+        45
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10072",
+      "code": "10072",
+      "name": "Khaki",
+      "series": "Magnifica",
+      "dmcCode": "841",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#B69B7E",
+      "rgb": [
+        182,
+        155,
+        126
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10073",
+      "code": "10073",
+      "name": "Soft Willow",
+      "series": "Magnifica",
+      "dmcCode": "3012",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#A6A75D",
+      "rgb": [
+        166,
+        167,
+        93
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10074",
+      "code": "10074",
+      "name": "Purple Passion",
+      "series": "Magnifica",
+      "dmcCode": "550",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#5C184E",
+      "rgb": [
+        92,
+        24,
+        78
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10075",
+      "code": "10075",
+      "name": "Vict. Copper",
+      "series": "Magnifica",
+      "dmcCode": "950",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#EED3C4",
+      "rgb": [
+        238,
+        211,
+        196
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10076",
+      "code": "10076",
+      "name": "Gold",
+      "series": "Magnifica",
+      "dmcCode": "676",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#E5CE97",
+      "rgb": [
+        229,
+        206,
+        151
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10077",
+      "code": "10077",
+      "name": "Charcoal",
+      "series": "Magnifica",
+      "dmcCode": "413",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#565656",
+      "rgb": [
+        86,
+        86,
+        86
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10078",
+      "code": "10078",
+      "name": "Dusty Mauve",
+      "series": "Magnifica",
+      "dmcCode": "316",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#B7737F",
+      "rgb": [
+        183,
+        115,
+        127
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10079",
+      "code": "10079",
+      "name": "Brilliant Teal",
+      "series": "Magnifica",
+      "dmcCode": "3847",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#347D75",
+      "rgb": [
+        52,
+        125,
+        117
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10080",
+      "code": "10080",
+      "name": "Brilliant Bronze",
+      "series": "Magnifica",
+      "dmcCode": "434",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#985E33",
+      "rgb": [
+        152,
+        94,
+        51
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10081",
+      "code": "10081",
+      "name": "Brilliant Green",
+      "series": "Magnifica",
+      "dmcCode": "3818",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#115A3B",
+      "rgb": [
+        17,
+        90,
+        59
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10082",
+      "code": "10082",
+      "name": "Heather Mauve",
+      "series": "Magnifica",
+      "dmcCode": "3042",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#B79DA7",
+      "rgb": [
+        183,
+        157,
+        167
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10083",
+      "code": "10083",
+      "name": "Orange Sherbet",
+      "series": "Magnifica",
+      "dmcCode": "947",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#FF7B4D",
+      "rgb": [
+        255,
+        123,
+        77
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10084",
+      "code": "10084",
+      "name": "Golden Khaki",
+      "series": "Magnifica",
+      "dmcCode": "3045",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#BC966A",
+      "rgb": [
+        188,
+        150,
+        106
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10085",
+      "code": "10085",
+      "name": "Olivine",
+      "series": "Magnifica",
+      "dmcCode": "937",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#627133",
+      "rgb": [
+        98,
+        113,
+        51
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10086",
+      "code": "10086",
+      "name": "Capri Blue",
+      "series": "Magnifica",
+      "dmcCode": "3842",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#32667C",
+      "rgb": [
+        50,
+        102,
+        124
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10087",
+      "code": "10087",
+      "name": "Pale Honey",
+      "series": "Magnifica",
+      "dmcCode": "676",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#E5CE97",
+      "rgb": [
+        229,
+        206,
+        151
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10088",
+      "code": "10088",
+      "name": "Goldenrod",
+      "series": "Magnifica",
+      "dmcCode": "783",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#CE9124",
+      "rgb": [
+        206,
+        145,
+        36
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10089",
+      "code": "10089",
+      "name": "True Silver",
+      "series": "Magnifica",
+      "dmcCode": "3024",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#EBEAE7",
+      "rgb": [
+        235,
+        234,
+        231
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10091",
+      "code": "10091",
+      "name": "Gold Nugget",
+      "series": "Magnifica",
+      "dmcCode": "676",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#E5CE97",
+      "rgb": [
+        229,
+        206,
+        151
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10092",
+      "code": "10092",
+      "name": "Iris",
+      "series": "Magnifica",
+      "dmcCode": "3746",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#776B98",
+      "rgb": [
+        119,
+        107,
+        152
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10093",
+      "code": "10093",
+      "name": "Pink Shimmer",
+      "series": "Magnifica",
+      "dmcCode": "3354",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#E4A6AC",
+      "rgb": [
+        228,
+        166,
+        172
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10094",
+      "code": "10094",
+      "name": "Matte Heather",
+      "series": "Magnifica",
+      "dmcCode": "3740",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#785762",
+      "rgb": [
+        120,
+        87,
+        98
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10095",
+      "code": "10095",
+      "name": "Root Beer",
+      "series": "Magnifica",
+      "dmcCode": "801",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#653919",
+      "rgb": [
+        101,
+        57,
+        25
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10096",
+      "code": "10096",
+      "name": "Brill. Blueberry",
+      "series": "Magnifica",
+      "dmcCode": "336",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#253B73",
+      "rgb": [
+        37,
+        59,
+        115
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10097",
+      "code": "10097",
+      "name": "Matte Olive",
+      "series": "Magnifica",
+      "dmcCode": "3051",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#5F6648",
+      "rgb": [
+        95,
+        102,
+        72
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10098",
+      "code": "10098",
+      "name": "Matte Orange",
+      "series": "Magnifica",
+      "dmcCode": "608",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#FD5D35",
+      "rgb": [
+        253,
+        93,
+        53
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10099",
+      "code": "10099",
+      "name": "Sterling Rose",
+      "series": "Magnifica",
+      "dmcCode": "3042",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#B79DA7",
+      "rgb": [
+        183,
+        157,
+        167
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10100",
+      "code": "10100",
+      "name": "Matte Cranberry",
+      "series": "Magnifica",
+      "dmcCode": "304",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#B71F33",
+      "rgb": [
+        183,
+        31,
+        51
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10101",
+      "code": "10101",
+      "name": "Navy Seas",
+      "series": "Magnifica",
+      "dmcCode": "336",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#253B73",
+      "rgb": [
+        37,
+        59,
+        115
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10102",
+      "code": "10102",
+      "name": "Opal Autumn Gr.",
+      "series": "Magnifica",
+      "dmcCode": "3345",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#1B5915",
+      "rgb": [
+        27,
+        89,
+        21
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10103",
+      "code": "10103",
+      "name": "Sheer Lilac",
+      "series": "Magnifica",
+      "dmcCode": "3042",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#B79DA7",
+      "rgb": [
+        183,
+        157,
+        167
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10104",
+      "code": "10104",
+      "name": "Tropic Seas",
+      "series": "Magnifica",
+      "dmcCode": "991",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#477B6E",
+      "rgb": [
+        71,
+        123,
+        110
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10105",
+      "code": "10105",
+      "name": "Sheer Pink",
+      "series": "Magnifica",
+      "dmcCode": "3716",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#FFBDBD",
+      "rgb": [
+        255,
+        189,
+        189
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10106",
+      "code": "10106",
+      "name": "Azalea",
+      "series": "Magnifica",
+      "dmcCode": "3831",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#B32F48",
+      "rgb": [
+        179,
+        47,
+        72
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10107",
+      "code": "10107",
+      "name": "Spring Green",
+      "series": "Magnifica",
+      "dmcCode": "703",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#7BB547",
+      "rgb": [
+        123,
+        181,
+        71
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10108",
+      "code": "10108",
+      "name": "Matte Pewter",
+      "series": "Magnifica",
+      "dmcCode": "647",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#B0A69C",
+      "rgb": [
+        176,
+        166,
+        156
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10109",
+      "code": "10109",
+      "name": "Antique Silver",
+      "series": "Magnifica",
+      "dmcCode": "3722",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#BC6C64",
+      "rgb": [
+        188,
+        108,
+        100
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10110",
+      "code": "10110",
+      "name": "Purple Pizzazz",
+      "series": "Magnifica",
+      "dmcCode": "3834",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#72375D",
+      "rgb": [
+        114,
+        55,
+        93
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10111",
+      "code": "10111",
+      "name": "Mt. Wildberry",
+      "series": "Magnifica",
+      "dmcCode": "902",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#822637",
+      "rgb": [
+        130,
+        38,
+        55
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10112",
+      "code": "10112",
+      "name": "Cappuccino Rose",
+      "series": "Magnifica",
+      "dmcCode": "152",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#E2A099",
+      "rgb": [
+        226,
+        160,
+        153
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10113",
+      "code": "10113",
+      "name": "Aqua",
+      "series": "Magnifica",
+      "dmcCode": "3849",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#52B3AE",
+      "rgb": [
+        82,
+        179,
+        174
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10114",
+      "code": "10114",
+      "name": "Cherry Red",
+      "series": "Magnifica",
+      "dmcCode": "321",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#C72B3B",
+      "rgb": [
+        199,
+        43,
+        59
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10115",
+      "code": "10115",
+      "name": "Purple",
+      "series": "Magnifica",
+      "dmcCode": "333",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#5C5478",
+      "rgb": [
+        92,
+        84,
+        120
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10116",
+      "code": "10116",
+      "name": "Blue Satin",
+      "series": "Magnifica",
+      "dmcCode": "322",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#5A8FB8",
+      "rgb": [
+        90,
+        143,
+        184
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10117",
+      "code": "10117",
+      "name": "Lilac Satin",
+      "series": "Magnifica",
+      "dmcCode": "208",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#835B8B",
+      "rgb": [
+        131,
+        91,
+        139
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10118",
+      "code": "10118",
+      "name": "Dusty Purple",
+      "series": "Magnifica",
+      "dmcCode": "3837",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#6C3A6E",
+      "rgb": [
+        108,
+        58,
+        110
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10119",
+      "code": "10119",
+      "name": "Pumpkin",
+      "series": "Magnifica",
+      "dmcCode": "3854",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#F2AF68",
+      "rgb": [
+        242,
+        175,
+        104
+      ]
+    },
+    {
+      "sourceId": "mill-hill-10120",
+      "code": "10120",
+      "name": "Spice Brown",
+      "series": "Magnifica",
+      "dmcCode": "3830",
+      "diameterMm": 1.6,
+      "lengthMm": 1.3,
+      "hex": "#BC5544",
+      "rgb": [
+        188,
+        85,
+        68
+      ]
+    }
+  ]
+}

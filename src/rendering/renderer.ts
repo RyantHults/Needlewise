@@ -7,6 +7,8 @@ import {
   isLegacyQuarterKind,
   isThreeQuarterKind,
   isThreeQuarterPairKind,
+  isBeadEntry,
+  type BeadOrientation,
   type PatternDocument
 } from '../domain';
 import {
@@ -63,19 +65,24 @@ import {
   patternBackgroundColor
 } from './atlas';
 import { clearTarget, clipToRect, createDefaultAtlasTarget, drawImage, prepareTarget, rectPath, restore, save } from './context';
-import { grayscaleColor, paletteColor } from './colors';
-import { contrastSymbolInk, relativeLuminance } from './contrast';
+import { grayscaleColor, paletteColor, paletteEntry } from './colors';
+import { contrastRatio, contrastSymbolInk, relativeLuminance } from './contrast';
+import { beadSizeCells, drawBead, drawKnot, maxBeadReachCells, pointMarkReach } from './point-stitches';
 import { drawPaletteSymbol, drawStitchGeometry } from './symbol-painter';
 import { readRendererColors, subscribeThemeChange, type RendererColors } from './theme-colors';
 import {
   createThreadSpriteCache,
   drawThreadBackstitch,
+  drawThreadBead,
   drawThreadFabric,
+  drawThreadKnot,
   drawThreadStitch,
   THREAD_MIN_DETAIL_CELL_PX,
   type ThreadSpriteCache
 } from './thread-preview';
+import rotateSvg from '../assets/ui-icons/rotate.svg?raw';
 import targetSvg from '../assets/ui-icons/target.svg?raw';
+import { canvasIcon, drawCanvasIcon } from './canvas-icon';
 import { createTraceImageProjection, drawTraceImage } from './trace';
 import { selectionBoundarySegments } from '../editor/lasso';
 
@@ -1559,6 +1566,168 @@ function backstitchCellBounds(document: PatternDocument, ...idSets: (ReadonlySet
   return { x, y, width: Math.max(1, Math.ceil(maxX) - x), height: Math.max(1, Math.ceil(maxY) - y) };
 }
 
+function isBead(document: PatternDocument, colorId: number): boolean {
+  const entry = paletteEntry(document.palette, colorId);
+  return entry !== undefined && isBeadEntry(entry);
+}
+
+/** Whether a point mark's footprint, `reach` cells around `point`, meets `rect`. */
+function pointMarkMeetsRect(point: ModelPoint, reach: number, rect: Rect): boolean {
+  return point.x + reach >= rect.x && point.x - reach <= rect.x + rect.width
+    && point.y + reach >= rect.y && point.y - reach <= rect.y + rect.height;
+}
+
+/** One knot or bead on the flat chart; a completed one fades like a completed backstitch. */
+function drawPointStitch(
+  context: CanvasContextAdapter,
+  document: PatternDocument,
+  viewport: Viewport,
+  style: RendererStyle,
+  point: ModelPoint,
+  colorId: number,
+  orientation: BeadOrientation,
+  completed: boolean,
+  dimAlpha = 1
+): void {
+  save(context);
+  setAlpha(context, (completed && style.showCompletion ? style.completedOpacity : 1) * dimAlpha * highlightAlpha(style, colorId));
+  paintPointMark(context, document, viewport, style, point, colorId, orientation);
+  restore(context);
+}
+
+/** A knot or bead mark at the alpha already set; a bead lies along `orientation`. */
+function paintPointMark(
+  context: CanvasContextAdapter,
+  document: PatternDocument,
+  viewport: Viewport,
+  style: RendererStyle,
+  point: ModelPoint,
+  colorId: number,
+  orientation: BeadOrientation
+): void {
+  const color = styleColor(document, colorId, style);
+  const center = modelToScreen(point, viewport);
+  if (isBead(document, colorId)) drawBead(context, center, viewport.zoom, beadSizeCells(document, colorId), orientation, color);
+  else drawKnot(context, center, viewport.zoom, color);
+}
+
+/** Visit the shown knots and beads in view, and inside `dirtyModelRect` when given, skipping `hidden` ids. */
+function forEachShownPoint(
+  document: PatternDocument,
+  viewport: Viewport,
+  metrics: CanvasMetrics,
+  dirtyModelRect: Rect | undefined,
+  hidden: ReadonlySet<number> | undefined,
+  visit: (point: ModelPoint, index: number) => void
+): void {
+  const visible = viewportModelRect(viewport, metrics);
+  const reach = pointMarkReach(viewport.zoom, maxBeadReachCells(document));
+  const store = document.pointStitches;
+  for (let index = 0; index < store.ids.length; index += 1) {
+    if (hidden?.has(store.ids[index])) continue;
+    const point = fixedToModel({ x: store.x[index], y: store.y[index] });
+    if (!pointMarkMeetsRect(point, reach, visible)) continue;
+    if (dirtyModelRect && !pointMarkMeetsRect(point, reach, dirtyModelRect)) continue;
+    visit(point, index);
+  }
+}
+
+function drawPointStitches(
+  context: CanvasContextAdapter,
+  document: PatternDocument,
+  viewport: Viewport,
+  metrics: CanvasMetrics,
+  style: RendererStyle,
+  dirtyModelRect: Rect | undefined,
+  dimAlpha: number,
+  hidden: ReadonlySet<number> | undefined
+): void {
+  const store = document.pointStitches;
+  forEachShownPoint(document, viewport, metrics, dirtyModelRect, hidden, (point, index) => {
+    drawPointStitch(context, document, viewport, style, point, store.colors[index], store.orientations[index] as BeadOrientation, store.completed[index] === 1, dimAlpha);
+  });
+}
+
+/** Thread view of the knots and beads: the same points as `drawPointStitches`, drawn as shaded thread and glass. */
+function drawThreadPointStitches(
+  context: CanvasContextAdapter,
+  document: PatternDocument,
+  viewport: Viewport,
+  metrics: CanvasMetrics,
+  style: RendererStyle,
+  dirtyModelRect: Rect | undefined,
+  dimAlpha: number,
+  hidden: ReadonlySet<number> | undefined
+): void {
+  const store = document.pointStitches;
+  forEachShownPoint(document, viewport, metrics, dirtyModelRect, hidden, (point, index) => {
+    const colorId = store.colors[index];
+    const color = styleColor(document, colorId, style);
+    const center = modelToScreen(point, viewport);
+    withAlpha(context, dimAlpha * highlightAlpha(style, colorId), dimAlpha, () => {
+      if (isBead(document, colorId)) drawThreadBead(context, center, viewport.zoom, beadSizeCells(document, colorId), store.orientations[index] as BeadOrientation, color);
+      else drawThreadKnot(context, center, viewport.zoom, color);
+    });
+  });
+}
+
+/** Redraw the knots and beads over `cells`, each clipped to the cells it reaches, as `drawBackstitchesForCells` does for lines. */
+function drawPointStitchesForCells(
+  context: CanvasContextAdapter,
+  document: PatternDocument,
+  viewport: Viewport,
+  style: RendererStyle,
+  cells: readonly CellRect[],
+  bounds: Rect,
+  hidden: ReadonlySet<number> | undefined
+): void {
+  if (cells.length === 0) return;
+  const reach = pointMarkReach(viewport.zoom, maxBeadReachCells(document));
+  const store = document.pointStitches;
+  for (let index = 0; index < store.ids.length; index += 1) {
+    if (hidden?.has(store.ids[index])) continue;
+    const point = fixedToModel({ x: store.x[index], y: store.y[index] });
+    for (const cell of cells) {
+      if (!pointMarkMeetsRect(point, reach, cell)) continue;
+      const cellBounds = intersectRect(cellToScreenRect(cell, viewport), bounds);
+      if (!cellBounds) continue;
+      const clipped = clipToRect(context, cellBounds);
+      drawPointStitch(context, document, viewport, style, point, store.colors[index], store.orientations[index] as BeadOrientation, store.completed[index] === 1);
+      if (clipped) restore(context);
+    }
+  }
+}
+
+/** Knot and bead ids the base pass leaves out: those lifted by a move and those being erased. */
+function hiddenPointStitchIds(overlay: OverlayState): ReadonlySet<number> | undefined {
+  const lifted = overlay.floatingPaste?.liftedPointStitchIds;
+  const erasing = overlay.erasingPointStitchIds;
+  if (!lifted?.size) return erasing;
+  if (!erasing?.size) return lifted;
+  return new Set([...lifted, ...erasing]);
+}
+
+/** Whole-cell bounds of the cells the knots and beads with these ids reach, or undefined when none exist. */
+function pointStitchCellBounds(document: PatternDocument, ...idSets: (ReadonlySet<number> | undefined)[]): CellRect | undefined {
+  const store = document.pointStitches;
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let index = 0; index < store.ids.length; index += 1) {
+    if (!idSets.some((ids) => ids?.has(store.ids[index]))) continue;
+    const point = fixedToModel({ x: store.x[index], y: store.y[index] });
+    minX = Math.min(minX, point.x);
+    minY = Math.min(minY, point.y);
+    maxX = Math.max(maxX, point.x);
+    maxY = Math.max(maxY, point.y);
+  }
+  if (minX > maxX) return undefined;
+  const x = Math.floor(minX);
+  const y = Math.floor(minY);
+  return { x, y, width: Math.max(1, Math.ceil(maxX) - x), height: Math.max(1, Math.ceil(maxY) - y) };
+}
+
 function growCellRect(rect: CellRect, cells: number): CellRect {
   return cells === 0 ? rect : { x: rect.x - cells, y: rect.y - cells, width: rect.width + cells * 2, height: rect.height + cells * 2 };
 }
@@ -1871,7 +2040,8 @@ function drawFloatingPaste(
   style: RendererStyle,
   lod: RenderLod,
   bounds: Rect,
-  hidden: ReadonlySet<number> | undefined
+  hidden: ReadonlySet<number> | undefined,
+  hiddenPoints: ReadonlySet<number> | undefined
 ): void {
   if (!preview) return;
   // A cross-pattern paste previews its new palette entries as if already created.
@@ -1891,6 +2061,7 @@ function drawFloatingPaste(
       const holeCells = drawPendingCellStates(context, document, states, viewport, style, lod, bounds, metrics.dpr);
       drawGridForCells(context, document, viewport, metrics, style, holeCells);
       drawBackstitchesForCells(context, document, viewport, metrics, style, holeCells, lod, bounds, hidden);
+      drawPointStitchesForCells(context, document, viewport, style, holeCells, bounds, hiddenPoints);
     }
     drawFloatingSelectionContour(context, document, preview.sourceSelection, preview.sourceSelection.rect.x, preview.sourceSelection.rect.y, viewport, style, bounds, style.cursorColor, false);
   }
@@ -1964,6 +2135,14 @@ function drawFloatingPaste(
       const clippedScreen = clipSegmentToRect(modelToScreen(clippedModel.start, viewport), modelToScreen(clippedModel.end, viewport), bounds);
       if (!clippedScreen) continue;
       drawBackstitchScreenSegment(context, document, viewport, style, clippedScreen.start, clippedScreen.end, backstitches.colors[index], (backstitches.completed[index] ?? 0) !== 0);
+    }
+    const points = preview.fragment.pointStitches;
+    const reach = pointMarkReach(viewport.zoom, maxBeadReachCells(document));
+    for (let index = 0; index < points.x.length; index += 1) {
+      const point = fixedToModel({ x: points.x[index] + offsetX, y: points.y[index] + offsetY });
+      if (point.x < 0 || point.y < 0 || point.x > chart.width || point.y > chart.height) continue;
+      if (!pointMarkMeetsRect(modelToScreen(point, viewport), reach * viewport.zoom, bounds)) continue;
+      drawPointStitch(context, document, viewport, style, point, points.colors[index], points.orientations[index] as BeadOrientation, false);
     }
   }
 
@@ -2048,9 +2227,8 @@ function bestContrastInk(colors: readonly string[], darkInk: string): string {
   if (darkLuminance === undefined || luminances.some((value) => value === undefined)) {
     return contrastSymbolInk(colors[0], darkInk);
   }
-  const contrast = (left: number, right: number): number => (Math.max(left, right) + 0.05) / (Math.min(left, right) + 0.05);
-  const darkContrast = Math.min(...luminances.map((value) => contrast(darkLuminance, value!)));
-  const whiteContrast = Math.min(...luminances.map((value) => contrast(1, value!)));
+  const darkContrast = Math.min(...luminances.map((value) => contrastRatio(darkLuminance, value!)));
+  const whiteContrast = Math.min(...luminances.map((value) => contrastRatio(1, value!)));
   return whiteContrast > darkContrast ? '#ffffff' : darkInk;
 }
 
@@ -2116,6 +2294,53 @@ function drawBrushPreview(
   restore(context);
 }
 
+/** Opacity of the hovered knot or bead ghost, so it reads as not yet placed. */
+const POINT_PREVIEW_ALPHA = 0.55;
+
+/** The knot or bead a press would place, as a translucent ghost; a bead at its true size and orientation. */
+function drawPointStitchPreview(
+  context: CanvasContextAdapter,
+  document: PatternDocument,
+  preview: OverlayState['pointStitchPreview'],
+  viewport: Viewport,
+  style: RendererStyle
+): void {
+  if (!preview) return;
+  save(context);
+  setAlpha(context, POINT_PREVIEW_ALPHA);
+  paintPointMark(context, document, viewport, style, fixedToModel(preview.point), preview.paletteId, preview.orientation);
+  restore(context);
+}
+
+const ROTATE_ICON_VIEWBOX = 20;
+const ROTATE_ICON_SIZE = 18;
+/** Half the screen square the rotate icon and its halo stroke can cover. */
+const ROTATE_ICON_REACH = ROTATE_ICON_SIZE / 2 + 3;
+
+/** The rotate icon over a bead a click would turn, at a fixed screen size. */
+function drawPointStitchRotate(context: CanvasContextAdapter, rotate: OverlayState['pointStitchRotate'], viewport: Viewport, style: RendererStyle): void {
+  const icon = rotate ? canvasIcon(rotateSvg) : undefined;
+  if (!rotate || !icon) return;
+  drawCanvasIcon(context, icon, modelToScreen(fixedToModel(rotate.point), viewport), ROTATE_ICON_SIZE, ROTATE_ICON_VIEWBOX, style.highlightOutlineColor, style.highlightHaloColor);
+}
+
+/** The screen rect the rotate icon covers, or undefined without one. */
+function pointRotateRect(rotate: OverlayState['pointStitchRotate'], viewport: Viewport): Rect | undefined {
+  if (!rotate) return undefined;
+  const center = modelToScreen(fixedToModel(rotate.point), viewport);
+  return { x: center.x - ROTATE_ICON_REACH, y: center.y - ROTATE_ICON_REACH, width: ROTATE_ICON_REACH * 2, height: ROTATE_ICON_REACH * 2 };
+}
+
+/** Cells a point preview's ghost can cover, or undefined without one. */
+function pointPreviewCellRect(document: PatternDocument, preview: OverlayState['pointStitchPreview'], zoom: number): CellRect | undefined {
+  if (!preview) return undefined;
+  const point = fixedToModel(preview.point);
+  const reach = pointMarkReach(zoom, maxBeadReachCells(document));
+  const x = Math.floor(point.x - reach);
+  const y = Math.floor(point.y - reach);
+  return { x, y, width: Math.ceil(point.x + reach) - x, height: Math.ceil(point.y + reach) - y };
+}
+
 function drawOverlay(
   context: CanvasContextAdapter,
   document: PatternDocument,
@@ -2149,7 +2374,7 @@ function drawOverlay(
   context.lineWidth = style.overlayLineWidth;
   const hidden = hiddenBackstitchIds(overlay);
   drawBackstitchPreview(context, document, overlay.backstitchPreview, viewport, style, bounds);
-  drawFloatingPaste(context, document, overlay.floatingPaste, viewport, metrics, style, lod, bounds, hidden);
+  drawFloatingPaste(context, document, overlay.floatingPaste, viewport, metrics, style, lod, bounds, hidden, hiddenPointStitchIds(overlay));
   const selectionValue = overlay.selection;
   const selection = overlayRect(selectionValue);
   if (selection && overlay.showSelection !== false) {
@@ -2202,6 +2427,8 @@ function drawOverlay(
     }
   }
   drawCenterMark(context, document, viewport, style, bounds);
+  drawPointStitchPreview(context, document, overlay.pointStitchPreview, viewport, style);
+  drawPointStitchRotate(context, overlay.pointStitchRotate, viewport, style);
   restore(context);
   if (patternClip) restore(context);
   drawBrushPreview(context, document, overlay.brushPreview, viewport, style, screen);
@@ -2212,14 +2439,6 @@ const CENTER_HALO = 'rgba(255, 255, 255, 0.85)';
 const TARGET_ICON_VIEWBOX = 1024;
 const TARGET_ICON_SIZE = 20;
 const TARGET_ICON_GAP = 4;
-const TARGET_ICON_D = /<path[^>]*\sd="([^"]+)"/.exec(targetSvg)?.[1] ?? '';
-let targetIconPath: Path2D | undefined;
-
-function targetIcon(): Path2D | undefined {
-  if (typeof Path2D !== 'function' || !TARGET_ICON_D) return undefined;
-  targetIconPath ??= new Path2D(TARGET_ICON_D);
-  return targetIconPath;
-}
 
 function drawCenterMark(context: CanvasContextAdapter, document: PatternDocument, viewport: Viewport, style: RendererStyle, bounds: Rect): void {
   if (!style.showCenterMark || document.width <= 0 || document.height <= 0) return;
@@ -2230,7 +2449,7 @@ function drawCenterMark(context: CanvasContextAdapter, document: PatternDocument
   save(context);
   setAlpha(context, style.centerMarkOpacity);
   context.setLineDash?.([]);
-  const path = inX && inY ? targetIcon() : undefined;
+  const path = inX && inY ? canvasIcon(targetSvg) : undefined;
   // The lines span the pattern rect, stopping short of the icon.
   const r = path ? TARGET_ICON_SIZE / 2 + TARGET_ICON_GAP : 0;
   const right = bounds.x + bounds.width;
@@ -2250,18 +2469,7 @@ function drawCenterMark(context: CanvasContextAdapter, document: PatternDocument
     }
     context.stroke();
   }
-  if (path) {
-    const s = TARGET_ICON_SIZE / TARGET_ICON_VIEWBOX;
-    context.translate?.(center.x, center.y);
-    context.scale?.(s, s);
-    context.translate?.(-TARGET_ICON_VIEWBOX / 2, -TARGET_ICON_VIEWBOX / 2);
-    context.strokeStyle = CENTER_HALO;
-    context.lineWidth = 3 / s;
-    context.lineJoin = 'round';
-    context.stroke(path);
-    context.fillStyle = style.centerMarkColor;
-    context.fill(path);
-  }
+  if (path) drawCanvasIcon(context, path, center, TARGET_ICON_SIZE, TARGET_ICON_VIEWBOX, style.centerMarkColor, CENTER_HALO);
   restore(context);
 }
 
@@ -2450,10 +2658,30 @@ export class Canvas2DRenderer implements CanvasRenderer {
     const next = overlay.canvasEditing?.workspace;
     const previousHidden = hiddenBackstitchIds(this.overlay);
     const nextHidden = hiddenBackstitchIds(overlay);
+    const previousHiddenPoints = hiddenPointStitchIds(this.overlay);
+    const nextHiddenPoints = hiddenPointStitchIds(overlay);
+    const previousPreview = this.overlay.pointStitchPreview;
+    const nextPreview = overlay.pointStitchPreview;
+    const previousRotate = this.overlay.pointStitchRotate;
+    const nextRotate = overlay.pointStitchRotate;
     this.overlay = overlay;
     this.updatePreview(overlay.pendingCellStates);
     const request: Invalidation = invalidation ? setterInvalidation(invalidation, 'overlay') : { layer: 'overlay', full: true };
     this.invalidate(request);
+    // A moved, turned or cleared knot or bead ghost repaints everywhere it was and now is, whatever the caller's rect covers.
+    const samePreview = previousPreview?.paletteId === nextPreview?.paletteId && previousPreview?.orientation === nextPreview?.orientation
+      && previousPreview?.point.x === nextPreview?.point.x && previousPreview?.point.y === nextPreview?.point.y;
+    if (!samePreview) {
+      for (const cellRect of [pointPreviewCellRect(this.document, previousPreview, this.viewport.zoom), pointPreviewCellRect(this.document, nextPreview, this.viewport.zoom)]) {
+        if (cellRect) this.invalidate({ layer: 'overlay', cellRect });
+      }
+    }
+    // Likewise the rotate icon over a bead a click would turn.
+    if (previousRotate?.point.x !== nextRotate?.point.x || previousRotate?.point.y !== nextRotate?.point.y) {
+      for (const rect of [pointRotateRect(previousRotate, this.viewport), pointRotateRect(nextRotate, this.viewport)]) {
+        if (rect) this.invalidate({ layer: 'overlay', rect });
+      }
+    }
     // The ghost grid lives in the base target, so entering or leaving canvas
     // editing, or a moved workspace, repaints the base as well.
     const sameWorkspace = previous === next || (previous !== undefined && next !== undefined
@@ -2463,6 +2691,12 @@ export class Canvas2DRenderer implements CanvasRenderer {
     if (!sameIds(previousHidden, nextHidden)) {
       const cellRect = backstitchCellBounds(this.document, previousHidden, nextHidden);
       if (cellRect) this.invalidate({ layer: 'base', cellRect: growCellRect(cellRect, 1) });
+    }
+    if (!sameIds(previousHiddenPoints, nextHiddenPoints)) {
+      const cellRect = pointStitchCellBounds(this.document, previousHiddenPoints, nextHiddenPoints);
+      // A mark reaches past the cells its centre touches, so the redraw takes in every cell it can reach.
+      const reach = Math.ceil(pointMarkReach(this.viewport.zoom, maxBeadReachCells(this.document)));
+      if (cellRect) this.invalidate({ layer: 'base', cellRect: growCellRect(cellRect, reach) });
     }
   }
 
@@ -2679,6 +2913,7 @@ export class Canvas2DRenderer implements CanvasRenderer {
         drawChartBorder(context, this.shown, this.viewport, this.metrics, this.style);
         drawStitchNumbers(context, this.shown, this.viewport, this.metrics, this.style);
         const drawnBackstitches = drawBackstitches(context, this.shown, this.viewport, this.metrics, this.style, undefined, dimAlpha, hiddenBackstitchIds(this.overlay));
+        drawPointStitches(context, this.shown, this.viewport, this.metrics, this.style, undefined, dimAlpha, hiddenPointStitchIds(this.overlay));
         return { ...cells, drawnBackstitches };
       });
       drawTraceImage(context, this.traceImage, this.shown, this.viewport, this.metrics);
@@ -2730,9 +2965,15 @@ export class Canvas2DRenderer implements CanvasRenderer {
         height: invalidationRect.height / this.viewport.zoom
       } : undefined;
       const hidden = hiddenBackstitchIds(this.overlay);
-      return sprites
-        ? drawThreadBackstitches(context, this.shown, this.viewport, this.metrics, this.style, dirtyModel, dimAlpha, hidden)
-        : drawBackstitches(context, this.shown, this.viewport, this.metrics, this.style, dirtyModel, dimAlpha, hidden);
+      const hiddenPoints = hiddenPointStitchIds(this.overlay);
+      if (sprites) {
+        const drawn = drawThreadBackstitches(context, this.shown, this.viewport, this.metrics, this.style, dirtyModel, dimAlpha, hidden);
+        drawThreadPointStitches(context, this.shown, this.viewport, this.metrics, this.style, dirtyModel, dimAlpha, hiddenPoints);
+        return drawn;
+      }
+      const drawn = drawBackstitches(context, this.shown, this.viewport, this.metrics, this.style, dirtyModel, dimAlpha, hidden);
+      drawPointStitches(context, this.shown, this.viewport, this.metrics, this.style, dirtyModel, dimAlpha, hiddenPoints);
+      return drawn;
     });
     drawTraceImage(context, this.traceImage, this.shown, this.viewport, this.metrics);
     if (partial) restore(context);

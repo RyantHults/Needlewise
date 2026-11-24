@@ -2,7 +2,8 @@
 import { readFileSync } from 'node:fs';
 import { PDFArray, PDFDocument, decodePDFRawStream, type PDFRawStream } from 'pdf-lib';
 import { describe, expect, it } from 'vitest';
-import { CellKind, computePatternMetrics, createDocument, HalfDirection, QuarterCorner, type PatternDocument } from '../domain';
+import { BEAD_ORIENTATIONS, CellKind, computePatternMetrics, createDocument, HalfDirection, parseHexColor, QuarterCorner, type BeadOrientation, type PatternDocument } from '../domain';
+import { threadEdgeColor } from '../rendering/colors';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { SYMBOL_POOL_VERSION } from '../symbols';
 import { DEFAULT_EXPORT_SETTINGS, type ExportSettings } from './export-settings';
@@ -15,6 +16,7 @@ import {
   fitCoverImage,
   landscapeCoverColumns,
   layoutIndexBlock,
+  legendCountFields,
   sanitizeLabel,
   stitchPolygons,
   symbolPlacement,
@@ -22,6 +24,8 @@ import {
   type PdfPatternInput
 } from './pdf-writer';
 import { applyCommand, cell } from '../domain/test-fixtures';
+import { millHillBeadEntry } from '../catalog/test-support';
+import { buildLegend, legendLineCount } from './legend';
 
 const fontBytes = new Uint8Array(readFileSync(new URL('../../fonts/LibertinusMath-Regular.ttf', import.meta.url)));
 // 1x1 PNG.
@@ -55,10 +59,7 @@ async function load(bytes: Uint8Array): Promise<PDFDocument> {
 }
 
 function legendRows(input: PdfPatternInput): number {
-  return input.document.palette.filter((entry) => {
-    const item = input.metrics.byPalette.get(entry.id);
-    return entry.active && item && item.full + item.half + item.quarter + (item.threeQuarter ?? 0) + item.backstitch > 0;
-  }).length;
+  return legendLineCount(buildLegend(input.document.palette, input.metrics, input.units));
 }
 
 function stitched(document: PatternDocument): PatternDocument {
@@ -389,5 +390,147 @@ describe('backstitch coordinates (fixed-point store, 4 units per cell)', () => {
     const [d] = cellsToPoints(settings, 42, 5, second.x0);
     const onSecond = await backstitchSegments(bytes, second.pageNumber - 1);
     expectExtent(onSecond, [c, ay, d, ay]);
+  });
+});
+
+/** Rimmed circles (four-curve paths filled and stroked) filled in `rgb` on one page: centre in page points (y-up) and the rim colour. */
+async function rimmedDots(bytes: Uint8Array, pageIndex: number, rgb: string): Promise<Array<{ x: number; y: number; rim: string }>> {
+  const pdf = await load(bytes);
+  const contents = pdf.getPage(pageIndex).node.Contents();
+  const streams = contents instanceof PDFArray ? contents.asArray().map((ref) => pdf.context.lookup(ref)) : [contents];
+  const text = streams.map((stream) => new TextDecoder().decode(decodePDFRawStream(stream as PDFRawStream).decode())).join('\n');
+  const out: Array<{ x: number; y: number; rim: string }> = [];
+  let fill = '';
+  let stroke = '';
+  let ends: Array<[number, number]> = [];
+  for (const raw of text.split('\n')) {
+    const op = raw.trim().split(/\s+/);
+    const name = op[op.length - 1];
+    const nums = op.slice(0, -1).map(Number);
+    if (name === 'rg') fill = nums.map((n) => n.toFixed(3)).join(' ');
+    else if (name === 'RG') stroke = nums.map((n) => n.toFixed(3)).join(' ');
+    else if (name === 'm') ends = [];
+    else if (name === 'c') ends.push([nums[4], nums[5]]);
+    else if (name === 'f' || name === 'S' || name === 'B' || name === 'n') {
+      if (name === 'B' && fill === rgb && ends.length === 4) {
+        out.push({ x: (ends[1][0] + ends[3][0]) / 2, y: (ends[1][1] + ends[3][1]) / 2, rim: stroke });
+      }
+      ends = [];
+    }
+  }
+  return out;
+}
+
+/** Bead barrels (filled-and-stroked paths filled in `rgb`) on one page: their placement in page points, y-up, and their horizontal and vertical extent. */
+async function beadMarks(bytes: Uint8Array, pageIndex: number, rgb: string): Promise<Array<{ x: number; y: number; extent: number; height: number }>> {
+  const pdf = await load(bytes);
+  const contents = pdf.getPage(pageIndex).node.Contents();
+  const streams = contents instanceof PDFArray ? contents.asArray().map((ref) => pdf.context.lookup(ref)) : [contents];
+  const text = streams.map((stream) => new TextDecoder().decode(decodePDFRawStream(stream as PDFRawStream).decode())).join('\n');
+  const out: Array<{ x: number; y: number; extent: number; height: number }> = [];
+  let fill = '';
+  let firstTransform = false;
+  let origin: [number, number] = [0, 0];
+  let xs: number[] = [];
+  let ys: number[] = [];
+  for (const raw of text.split('\n')) {
+    const op = raw.trim().split(/\s+/);
+    const name = op[op.length - 1];
+    const nums = op.slice(0, -1).map(Number);
+    if (name === 'q') firstTransform = true;
+    else if (name === 'cm' && firstTransform) { origin = [nums[4], nums[5]]; firstTransform = false; }
+    else if (name === 'rg') fill = nums.map((n) => n.toFixed(3)).join(' ');
+    else if (name === 'm' || name === 'l') { xs.push(nums[0]); ys.push(nums[1]); }
+    else if (name === 'c') { xs.push(nums[0], nums[2], nums[4]); ys.push(nums[1], nums[3], nums[5]); }
+    else if (name === 'B' || name === 'f' || name === 'S' || name === 'n') {
+      if (name === 'B' && fill === rgb && xs.length > 0) out.push({ x: origin[0], y: origin[1], extent: Math.max(...xs) - Math.min(...xs), height: Math.max(...ys) - Math.min(...ys) });
+      xs = [];
+      ys = [];
+    }
+  }
+  return out;
+}
+
+describe('knots and beads', () => {
+  /** Thread #dd3333 and Mill Hill 00020 Royal Blue #11416D. */
+  const RED = '0.867 0.200 0.200';
+  const ROYAL_BLUE = '0.067 0.255 0.427';
+  const withPoints = (knots: boolean, aidaCount = 14): PatternDocument => {
+    let document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 10, height: 10, palette: [{ id: 1, name: 'Red', color: '#dd3333' }, millHillBeadEntry(2, '00020')], settings: { aidaCount } });
+    const apply = (command: Parameters<typeof applyCommand>[1]): void => { document = applyCommand(document, command).document; };
+    apply(cell(10, { type: 'set-full', x: 5, y: 5, color: 1 }));
+    if (knots) apply({ type: 'add-point-stitch', point: { x: 8, y: 12 }, color: 1, orientation: 0 });
+    apply({ type: 'add-point-stitch', point: { x: 6, y: 6 }, color: 2, orientation: 0 });
+    return document;
+  };
+  const pagePoint = (column: number, row: number): [number, number] => {
+    const g = pageGeometry(DEFAULT_EXPORT_SETTINGS);
+    return [g.margin + AXIS_GUTTER_PT + column * g.cellSizePt, g.pageHeight - (g.margin + HEADER_RESERVE_PT + AXIS_GUTTER_PT + row * g.cellSizePt)];
+  };
+
+  it('exports knots as dots and beads as barrels at their chart positions, with every key line paginated', async () => {
+    const input = inputFor(withPoints(true));
+    const bytes = await writePatternPdf(input);
+    const pdf = await load(bytes);
+    expect(pdf.getPageCount()).toBe(estimateTotalPages(10, 10, input.settings, legendRows(input)));
+    const chartPage = pdf.getPageCount() - 1;
+    const [knot] = await rimmedDots(bytes, chartPage, RED);
+    const [knotX, knotY] = pagePoint(2, 3);
+    expect(knot.x).toBeCloseTo(knotX, 2);
+    expect(knot.y).toBeCloseTo(knotY, 2);
+    // Every knot is outlined in its thread's edge colour, as the chart renderer draws it.
+    const edge = parseHexColor(threadEdgeColor('#dd3333'));
+    expect(knot.rim).toBe(edge?.map((channel) => (channel / 255).toFixed(3)).join(' '));
+    const [bead] = await beadMarks(bytes, chartPage, ROYAL_BLUE);
+    const [beadX, beadY] = pagePoint(1.5, 1.5);
+    expect(bead.x).toBeCloseTo(beadX, 2);
+    expect(bead.y).toBeCloseTo(beadY, 2);
+  });
+
+  it('adds the knot column only when the pattern has knots', () => {
+    const fields = (document: PatternDocument) => legendCountFields(buildLegend(document.palette, computePatternMetrics(document), 'metric'));
+    expect(fields(withPoints(true))).toContain('knot');
+    expect(fields(withPoints(false))).not.toContain('knot');
+  });
+
+  it('draws a bead at its true size, larger in cells at a higher fabric count', async () => {
+    const extent = async (aidaCount: number): Promise<number> => {
+      const bytes = await writePatternPdf(inputFor(withPoints(false, aidaCount)));
+      const [bead] = await beadMarks(bytes, (await load(bytes)).getPageCount() - 1, ROYAL_BLUE);
+      return bead.extent;
+    };
+    const at14 = await extent(14);
+    // An 11/0 seed bead is 2.5 mm across: 1.38 cells on 14-count, so it spans more than a cell.
+    expect(at14).toBeGreaterThan(pageGeometry(DEFAULT_EXPORT_SETTINGS).cellSizePt);
+    expect(await extent(28)).toBeCloseTo(at14 * 2, 1);
+  });
+
+  it('draws a bead that reaches across a page edge on both pages', async () => {
+    const settings = DEFAULT_EXPORT_SETTINGS;
+    const layout = layoutChartPages(60, 20, settings, 1);
+    expect(layout.pages[0].x1).toBe(39);
+    let document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 60, height: 20, palette: [{ id: 1, name: 'Red', color: '#dd3333' }, millHillBeadEntry(2, '00020')] });
+    document = applyCommand(document, cell(60, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
+    // The centre of cell (39,5) lies on page 1 only, but a seed bead reaches back over page 0's edge.
+    document = applyCommand(document, { type: 'add-point-stitch', point: { x: 39 * 4 + 2, y: 5 * 4 + 2 }, color: 2, orientation: 0 }).document;
+    const bytes = await writePatternPdf(inputFor(document, { settings }));
+    expect(await beadMarks(bytes, layout.pages[0].pageNumber - 1, ROYAL_BLUE)).toHaveLength(1);
+    expect(await beadMarks(bytes, layout.pages[1].pageNumber - 1, ROYAL_BLUE)).toHaveLength(1);
+  });
+
+  it('turns each bead on the chart to its orientation', async () => {
+    const extents = async (orientation: BeadOrientation): Promise<{ extent: number; height: number }> => {
+      let document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 10, height: 10, palette: [{ id: 1, name: 'Red', color: '#dd3333' }, millHillBeadEntry(2, '00020')] });
+      document = applyCommand(document, cell(10, { type: 'set-full', x: 5, y: 5, color: 1 })).document;
+      document = applyCommand(document, { type: 'add-point-stitch', point: { x: 6, y: 6 }, color: 2, orientation }).document;
+      const bytes = await writePatternPdf(inputFor(document));
+      const [bead] = await beadMarks(bytes, (await load(bytes)).getPageCount() - 1, ROYAL_BLUE);
+      return bead;
+    };
+    // A seed bead is longer across (its diameter) than along its hole, so it is widest across its axis.
+    const vertical = await extents(BEAD_ORIENTATIONS.Vertical);
+    expect(vertical.extent).toBeGreaterThan(vertical.height);
+    const horizontal = await extents(BEAD_ORIENTATIONS.Horizontal);
+    expect(horizontal.height).toBeGreaterThan(horizontal.extent);
   });
 });

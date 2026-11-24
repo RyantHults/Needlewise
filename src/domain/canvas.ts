@@ -12,10 +12,12 @@ import {
   type DomainCommand,
   type Layer,
   type LayeredDocument,
-  type PatternDocument
+  type PatternDocument,
+  type PointStitchRecord
 } from './types';
 import { requireCommandInteger } from './guards';
 import { allocateBackstitches, copyBackstitch, readBackstitch } from './backstitch-store';
+import { allocatePointStitches, copyPointStitch, readPointStitch } from './point-stitch-store';
 
 /** The workspace is at least this many cells on each axis. */
 export const WORKSPACE_MIN_EXTENT = 1000;
@@ -182,6 +184,16 @@ export function backstitchWithinCanvas(doc: CanvasShape, x1: number, y1: number,
   return true;
 }
 
+/**
+ * True when a point stitch position touches an active cell: a corner needs any
+ * of the cells that meet there, a centre needs its own cell. Coordinates are
+ * fixed point; the caller checks that the position is a corner or a centre.
+ */
+export function pointWithinCanvas(doc: CanvasShape, x: number, y: number): boolean {
+  if (x < 0 || y < 0 || x > doc.width * UNITS || y > doc.height * UNITS) return false;
+  return anyActive(doc, cellsAt({ n: x, d: 1 }), cellsAt({ n: y, d: 1 }));
+}
+
 // ---------------------------------------------------------------------------
 // Commands
 
@@ -198,6 +210,8 @@ export interface CanvasRemoval {
   readonly cells: ReadonlyArray<{ layerId: number; indices: Uint32Array; kind: Uint8Array; colors: Uint16Array; completed: Uint8Array }>;
   /** Per specialty layer: full records of the removed backstitches. */
   readonly backstitches: ReadonlyArray<{ layerId: number; records: BackstitchRecord[] }>;
+  /** Per specialty layer: full records of the removed knots and beads. */
+  readonly pointStitches: ReadonlyArray<{ layerId: number; records: PointStitchRecord[] }>;
 }
 
 export interface CanvasCommandResult {
@@ -206,7 +220,7 @@ export interface CanvasCommandResult {
   readonly removal: CanvasRemoval;
 }
 
-const NO_REMOVAL: CanvasRemoval = { cells: [], backstitches: [] };
+const NO_REMOVAL: CanvasRemoval = { cells: [], backstitches: [], pointStitches: [] };
 
 function invalid(message: string): never {
   throw new DomainError('invalid-command', message);
@@ -352,6 +366,7 @@ function reframe(doc: LayeredDocument, box: CropRect, mask: Uint8Array | undefin
   const overlapBottom = Math.min(oldHeight, box.y + box.height);
   const removedCells: Array<CanvasRemoval['cells'][number]> = [];
   const removedLines: Array<CanvasRemoval['backstitches'][number]> = [];
+  const removedPoints: Array<CanvasRemoval['pointStitches'][number]> = [];
 
   const layers = doc.layers.map((layer): Layer => {
     if (layer.type === LayerType.Stitch) {
@@ -403,11 +418,21 @@ function reframe(doc: LayeredDocument, box: CropRect, mask: Uint8Array | undefin
       else records.push(readBackstitch(store, index));
     }
     if (records.length > 0) removedLines.push({ layerId: layer.id, records });
-    if (records.length === 0 && dx === 0 && dy === 0) return layer;
-    const next = allocateBackstitches(kept.length);
+    const points = layer.pointStitches;
+    const keptPoints: number[] = [];
+    const pointRecords: PointStitchRecord[] = [];
+    for (let index = 0; index < points.ids.length; index += 1) {
+      if (pointWithinCanvas(shape, points.x[index] - dx, points.y[index] - dy)) keptPoints.push(index);
+      else pointRecords.push(readPointStitch(points, index));
+    }
+    if (pointRecords.length > 0) removedPoints.push({ layerId: layer.id, records: pointRecords });
+    if (records.length === 0 && pointRecords.length === 0 && dx === 0 && dy === 0) return layer;
     const shift = { x: -dx, y: -dy };
-    kept.forEach((index, position) => copyBackstitch(store, index, next, position, shift));
-    return { ...layer, backstitches: next };
+    const next = allocateBackstitches(kept.length);
+    kept.forEach((index, position) => { copyBackstitch(store, index, next, position, shift); });
+    const nextPoints = allocatePointStitches(keptPoints.length);
+    keptPoints.forEach((index, position) => { copyPointStitch(points, index, nextPoints, position, shift); });
+    return { ...layer, backstitches: next, pointStitches: nextPoints };
   });
 
   const originX = (doc.originX ?? 0) + box.x;
@@ -418,5 +443,5 @@ function reframe(doc: LayeredDocument, box: CropRect, mask: Uint8Array | undefin
   if (originX === 0) delete document.originX;
   if (originY === 0) delete document.originY;
   if (mask === undefined) delete document.canvasMask;
-  return { document, changed: true, removal: { cells: removedCells, backstitches: removedLines } };
+  return { document, changed: true, removal: { cells: removedCells, backstitches: removedLines, pointStitches: removedPoints } };
 }

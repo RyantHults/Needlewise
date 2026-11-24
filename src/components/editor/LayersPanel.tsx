@@ -12,7 +12,7 @@ import {
   type DragStartEvent,
 } from "@dnd-kit/core";
 import type { LayerSelection } from "../../application/types";
-import { canAddLayer, layerLimitMessage, type Layer, type LayeredDocument, type LayerType, type PaletteEntry } from "../../domain";
+import { canAddLayer, layerLimitMessage, type Layer, type LayeredDocument, type LayerType, type PaletteEntry, type PatternSettings } from "../../domain";
 import { createThumbnailQueue, layerContentChanged, paintLayerThumbnail, paletteSignature, renderLayerThumbnailPixels, type ThumbnailQueue } from "../../rendering/layer-thumbnail";
 import { pointerWithinOrClosestCenter } from "../dnd-shared";
 import { useDismissable } from "../dismiss";
@@ -145,6 +145,7 @@ interface ThumbnailSource {
   width: number;
   height: number;
   palette: readonly PaletteEntry[];
+  settings: Pick<PatternSettings, "aidaCount">;
 }
 
 interface ThumbnailInputs {
@@ -153,27 +154,28 @@ interface ThumbnailInputs {
   palette: string;
   width: number;
   height: number;
+  aidaCount: number;
 }
 
 /**
- * Repaints only when this layer's content, the palette's colors or the
- * pattern size change; show/hide and rename don't. Edits replace just the
+ * Repaints only when this layer's content, the palette's colors, the
+ * pattern size or the fabric count (bead size) change; show/hide and rename don't. Edits replace just the
  * layers they touch, so other rows stay put. The work runs from the shared
  * idle queue, never inside the render that caused it.
  */
 function LayerThumbnail({ queue, source, layer, palette }: { queue: ThumbnailQueue | null; source: React.RefObject<ThumbnailSource>; layer: Layer; palette: string }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const scheduled = useRef<ThumbnailInputs | null>(null);
-  const width = source.current.width, height = source.current.height;
+  const width = source.current.width, height = source.current.height, aidaCount = source.current.settings.aidaCount;
   useEffect(() => {
     if (!queue) return;
     const previous = scheduled.current;
-    scheduled.current = { queue, layer, palette, width, height };
-    if (previous && previous.queue === queue && previous.palette === palette && previous.width === width && previous.height === height && !layerContentChanged(previous.layer, layer)) return;
+    scheduled.current = { queue, layer, palette, width, height, aidaCount };
+    if (previous && previous.queue === queue && previous.palette === palette && previous.width === width && previous.height === height && previous.aidaCount === aidaCount && !layerContentChanged(previous.layer, layer)) return;
     queue.schedule(layer.id, () => {
       if (canvas.current) paintLayerThumbnail(canvas.current, renderLayerThumbnailPixels(source.current, layer));
     });
-  }, [queue, source, layer, palette, width, height]);
+  }, [queue, source, layer, palette, width, height, aidaCount]);
   // The cancelled job is gone, so the next mount (or StrictMode's replay) must
   // schedule again instead of treating its inputs as already painted.
   useEffect(() => () => { queue?.cancel(layer.id); scheduled.current = null; }, [queue, layer.id]);

@@ -8,9 +8,11 @@ import {
   normalizeAidaCount,
   normalizeDisplayUnits,
   normalizeMaterialAssumptions,
+  pointStitchesFromRecords,
   QuarterCorner
 } from './index';
 import { markBackstitchComplete, markCellComplete, applyCommand, cell, errorCode } from './test-fixtures';
+import { millHillBeadEntry } from '../catalog/test-support';
 import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 
 describe('derived pattern metrics', () => {
@@ -87,6 +89,8 @@ describe('derived pattern metrics', () => {
       half: 1,
       quarter: 2,
       backstitch: 2,
+      knot: 0,
+      bead: 0,
       backstitchLengthFixed: 4 + Math.SQRT2 * 4,
       backstitchLength: 1 + Math.SQRT2,
       totalComponents: 6,
@@ -261,6 +265,51 @@ describe('derived pattern metrics', () => {
     const first = computePatternMetrics(pattern, { aidaCount: 14, strands: canonical.strands, waste: canonical.waste });
     const second = computePatternMetrics(pattern, { aidaCount: 14, ...canonical });
     expect(second.palettes[0].material.estimatedMeters).toBe(first.palettes[0].material.estimatedMeters);
+  });
+
+  describe('point stitches', () => {
+    const INCHES_PER_METER = 39.37007874015748;
+    const pointPattern = () => ({
+      ...createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
+        width: 4,
+        height: 4,
+        palette: [
+          { id: 1, name: 'Red', color: '#d33' },
+          millHillBeadEntry(2)
+        ]
+      }),
+      pointStitches: pointStitchesFromRecords([
+        { id: 1, x: 0, y: 0, color: 1, completed: true, orientation: 0 },
+        { id: 2, x: 2, y: 2, color: 1, completed: false, orientation: 0 },
+        { id: 3, x: 4, y: 4, color: 2, completed: true, orientation: 0 },
+        { id: 4, x: 6, y: 6, color: 2, completed: false, orientation: 0 },
+        { id: 5, x: 8, y: 8, color: 2, completed: false, orientation: 0 }
+      ])
+    });
+
+    it('counts knots and beads per palette entry by material and includes them in progress', () => {
+      const metrics = computePatternMetrics(pointPattern());
+      expect(metrics.byPalette.get(1)).toMatchObject({ knot: 2, bead: 0, totalComponents: 2, completedComponents: 1 });
+      expect(metrics.byPalette.get(2)).toMatchObject({ knot: 0, bead: 3, totalComponents: 3, completedComponents: 1 });
+      expect(metrics.totals).toMatchObject({ knot: 2, bead: 3, totalComponents: 5, completedComponents: 2, remainingComponents: 3 });
+      expect(metrics.progress).toMatchObject({ totalComponents: 5, completedComponents: 2 });
+    });
+
+    it('charges each knot one full cross of thread', () => {
+      const metrics = computePatternMetrics(pointPattern(), { aidaCount: 14, strands: 2 });
+      const knotMeters = 2 * 0.8 * 2 / INCHES_PER_METER;
+      expect(metrics.byPalette.get(1)?.material.stitchUnits).toBe(2);
+      expect(metrics.byPalette.get(1)?.material.estimatedMeters).toBeCloseTo(knotMeters);
+    });
+
+    it('reports beads by count with no thread length or skeins', () => {
+      const metrics = computePatternMetrics(pointPattern(), { aidaCount: 14, strands: 2 });
+      const bead = metrics.byPalette.get(2)?.material;
+      expect(bead).toMatchObject({ stitchUnits: 0, materialUnit: 'count' });
+      expect(bead?.estimatedMeters).toBeUndefined();
+      expect(bead?.requiredSkeins).toBeUndefined();
+      expect(metrics.totalMaterial?.estimatedMeters).toBeCloseTo(metrics.byPalette.get(1)?.material.estimatedMeters ?? Number.NaN);
+    });
   });
 
   describe('backstitch thread length', () => {

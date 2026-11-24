@@ -1,10 +1,10 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
-import { CellKind, createDocument as createDomainDocument, createEditorFromHistory, layerAddCommand, layerDeleteCommand, layerRenameCommand, DocumentEditor, layeredFromSurface, LayerType, layerSurface, QuarterCorner, topmostVisibleLayer, type CatalogAssociation, type CreateDocumentOptions, type DomainCommand, type LayeredDocument, type PatternDocument, type StitchLayer, type SpecialtyLayer } from '../domain';
+import { CellKind, MaterialKind, MaterialUnit, pointStitchesFromRecords, createDocument as createDomainDocument, createEditorFromHistory, layerAddCommand, layerDeleteCommand, layerRenameCommand, DocumentEditor, layeredFromSurface, LayerType, layerSurface, QuarterCorner, topmostVisibleLayer, type CatalogAssociation, type CreateDocumentOptions, type DomainCommand, type LayeredDocument, type PatternDocument, type StitchLayer, type SpecialtyLayer } from '../domain';
 import { cell, markCellComplete, applyCommand as applySurfaceCommand, commitLayerSurface, PERSISTENCE_TEST_CATALOG, SPECIALTY_LAYER_ID, STITCH_LAYER_ID, specialtyLayer, stitchLayer } from '../domain/test-fixtures';
 import { cloneLayeredDocument, decodeDocumentWithInfo } from './binary';
 import { encodeLegacyDocument } from './legacy-binary.fixture';
-import { DMC_CATALOG_DEFINITION } from '../catalog';
+import { DMC_CATALOG_DEFINITION, createCatalogReference } from '../catalog';
 import { SYMBOL_POOL } from '../symbols';
 import * as binaryModule from './binary';
 import * as hashModule from './hash';
@@ -36,6 +36,7 @@ import {
   type TraceHistoryAsset
 } from './index';
 import { describe, expect, it, vi } from 'vitest';
+import { millHillCatalog } from '../catalog/test-support';
 
 let databaseCounter = 0;
 
@@ -269,7 +270,7 @@ class RepositoryPreparationWorker {
   }
 }
 
-describe('binary schema v4 canvas fields', () => {
+describe('binary schema v4 canvas fields and v7 point stitches', () => {
   /** 3x2 box with the top-left cell removed and one stitch on an active cell. */
   function canvasDocument(width = 3, height = 2, holes: readonly number[] = [0]): LayeredDocument {
     const document = createDocument({ width, height, palette: [{ id: 1, name: 'Red', color: '#d33' }] });
@@ -297,40 +298,91 @@ describe('binary schema v4 canvas fields', () => {
     expect(() => decodeDocumentWithInfo(bytes)).toThrow(expect.objectContaining({ code: 'invalid-document' }));
   }
 
-  /** Rewrites v5 bytes as v4: drops each stitch layer's completion plane and each backstitch's completion byte. */
-  function toV4(v5: Uint8Array, document: LayeredDocument): Uint8Array {
-    const view = new DataView(v5.buffer, v5.byteOffset, v5.byteLength);
+  /** Calls `visit` with the start of each layer's body (after id, type, visible and name) and the layer type code. */
+  function layerBodies(bytes: Uint8Array, document: LayeredDocument, visit: (offset: number, type: number) => number): void {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const cellCount = document.width * document.height;
-    let offset = originOffset(v5, document) + 8 + (document.canvasMask === undefined ? 0 : Math.ceil(cellCount / 8));
-    const out: Uint8Array[] = [v5.subarray(0, offset)];
-    let start = offset;
+    let offset = originOffset(bytes, document) + 8 + (document.canvasMask === undefined ? 0 : Math.ceil(cellCount / 8));
     for (let index = 0; index < document.layers.length; index += 1) {
       const type = view.getUint8(offset + 4);
       offset += 6;
       offset += 4 + view.getUint32(offset, true);
-      if (type === 0) {
-        offset += cellCount * 9;
-        out.push(v5.subarray(start, offset));
-        offset += cellCount;
-        start = offset;
-      } else {
-        const count = view.getUint32(offset, true);
-        offset += 4;
-        out.push(v5.subarray(start, offset));
-        for (let record = 0; record < count; record += 1) {
-          out.push(v5.subarray(offset, offset + 22));
-          offset += 23;
-        }
-        start = offset;
-      }
+      offset = visit(offset, type);
     }
-    out.push(v5.subarray(start));
-    const v4 = new Uint8Array(out.reduce((total, chunk) => total + chunk.length, 0));
+  }
+
+  function concat(chunks: readonly Uint8Array[]): Uint8Array {
+    const out = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.length, 0));
     let at = 0;
-    for (const chunk of out) {
-      v4.set(chunk, at);
+    for (const chunk of chunks) {
+      out.set(chunk, at);
       at += chunk.length;
     }
+    return out;
+  }
+
+  /** Rewrites v7 bytes as v6: drops each point stitch record's orientation byte. */
+  function toV6(v7: Uint8Array, document: LayeredDocument): Uint8Array {
+    const view = new DataView(v7.buffer, v7.byteOffset, v7.byteLength);
+    const cellCount = document.width * document.height;
+    const out: Uint8Array[] = [];
+    let start = 0;
+    layerBodies(v7, document, (offset, type) => {
+      if (type === 0) return offset + cellCount * 10;
+      const lineEnd = offset + 4 + view.getUint32(offset, true) * 23;
+      const count = view.getUint32(lineEnd, true);
+      out.push(v7.subarray(start, lineEnd + 4));
+      let record = lineEnd + 4;
+      for (let index = 0; index < count; index += 1, record += 16) out.push(v7.subarray(record, record + 15));
+      start = record;
+      return start;
+    });
+    out.push(v7.subarray(start));
+    const v6 = concat(out);
+    new DataView(v6.buffer).setUint16(8, 6, true);
+    return v6;
+  }
+
+  /** Rewrites v6 bytes as v5: drops each specialty layer's point stitch section. */
+  function toV5(v6: Uint8Array, document: LayeredDocument): Uint8Array {
+    const view = new DataView(v6.buffer, v6.byteOffset, v6.byteLength);
+    const cellCount = document.width * document.height;
+    const out: Uint8Array[] = [];
+    let start = 0;
+    layerBodies(v6, document, (offset, type) => {
+      if (type === 0) return offset + cellCount * 10;
+      const lineEnd = offset + 4 + view.getUint32(offset, true) * 23;
+      out.push(v6.subarray(start, lineEnd));
+      start = lineEnd + 4 + view.getUint32(lineEnd, true) * 15;
+      return start;
+    });
+    out.push(v6.subarray(start));
+    const v5 = concat(out);
+    new DataView(v5.buffer).setUint16(8, 5, true);
+    return v5;
+  }
+
+  /** Rewrites v5 bytes as v4: drops each stitch layer's completion plane and each backstitch's completion byte. */
+  function toV4(v5: Uint8Array, document: LayeredDocument): Uint8Array {
+    const view = new DataView(v5.buffer, v5.byteOffset, v5.byteLength);
+    const cellCount = document.width * document.height;
+    const out: Uint8Array[] = [];
+    let start = 0;
+    layerBodies(v5, document, (offset, type) => {
+      if (type === 0) {
+        out.push(v5.subarray(start, offset + cellCount * 9));
+        start = offset + cellCount * 10;
+        return start;
+      }
+      const count = view.getUint32(offset, true);
+      out.push(v5.subarray(start, offset + 4));
+      let record = offset + 4;
+      for (let index = 0; index < count; index += 1, record += 23) out.push(v5.subarray(record, record + 22));
+      start = record;
+      return start;
+    });
+    out.push(v5.subarray(start));
+    const v4 = concat(out);
     new DataView(v4.buffer).setUint16(8, 4, true);
     return v4;
   }
@@ -340,7 +392,7 @@ describe('binary schema v4 canvas fields', () => {
     const bytes = encodeDocument(original);
     const { document, binaryVersion, legacy } = decodeDocumentWithInfo(bytes);
 
-    expect(binaryVersion).toBe(5);
+    expect(binaryVersion).toBe(7);
     expect(legacy).toBe(false);
     expect(bytes[11]).toBe(0);
     expect(document).not.toHaveProperty('originX');
@@ -389,8 +441,8 @@ describe('binary schema v4 canvas fields', () => {
 
   it('still decodes a v3 document, with no origin or mask, as non-legacy', () => {
     const original = makeDocument();
-    const v5 = encodeDocument(original);
-    const v4 = toV4(v5, original);
+    const v7 = encodeDocument(original);
+    const v4 = toV4(toV5(toV6(v7, original), original), original);
     const split = originOffset(v4, original);
     const v3 = new Uint8Array(v4.length - 8);
     v3.set(v4.subarray(0, split), 0);
@@ -401,7 +453,7 @@ describe('binary schema v4 canvas fields', () => {
     expect(decoded).toMatchObject({ binaryVersion: 3, legacy: false });
     expect(decoded.document).toEqual(original);
     expect(decoded.document).not.toHaveProperty('canvasMask');
-    expect(encodeDocument(decoded.document)).toEqual(v5);
+    expect(encodeDocument(decoded.document)).toEqual(v7);
     // A v3 header cannot carry the mask flag.
     v3[11] = 1;
     expectInvalid(v3);
@@ -410,13 +462,123 @@ describe('binary schema v4 canvas fields', () => {
   it('still decodes a v4 document, including its canvas mask, with zero completion', () => {
     const original = canvasDocument();
     original.originX = -3;
-    const v4 = toV4(encodeDocument(original), original);
+    const v4 = toV4(toV5(toV6(encodeDocument(original), original), original), original);
     const decoded = decodeDocumentWithInfo(v4);
 
     expect(decoded).toMatchObject({ binaryVersion: 4, legacy: false });
     expect(decoded.document).toEqual(original);
     expect(stitchLayer(decoded.document).completed).toEqual(new Uint8Array(6));
     expect(specialtyLayer(decoded.document).backstitches.completed).toEqual(new Uint8Array(original.layers.length > 0 ? specialtyLayer(original).backstitches.ids.length : 0));
+  });
+
+  /** makeDocument plus a corner knot, a centre knot and four centre Mill Hill beads, one in each orientation; alternate points are completed. */
+  function pointDocument(): LayeredDocument {
+    const document = makeDocument();
+    const bead = millHillCatalog().search('00479')[0];
+    const symbol = createDocument({ width: 1, height: 1, palette: [{ id: 1, name: 'a', color: '#000' }, { id: 2, name: 'b', color: '#000' }, { id: 3, name: 'c', color: '#000' }] }).palette[2].symbol;
+    document.palette = [...document.palette, {
+      id: 3,
+      name: bead.name,
+      color: bead.hex,
+      active: true,
+      symbol,
+      material: { kind: MaterialKind.Bead, label: 'Mill Hill', unit: MaterialUnit.Count },
+      catalog: createCatalogReference(millHillCatalog(), bead)
+    }];
+    document.nextPaletteId = 4;
+    const first = document.nextBackstitchId;
+    specialtyLayer(document).pointStitches = pointStitchesFromRecords([
+      { id: first, x: 4, y: 4, color: 1, completed: true, orientation: 0 },
+      { id: first + 1, x: 2, y: 2, color: 2, completed: false, orientation: 0 },
+      { id: first + 2, x: 6, y: 2, color: 3, completed: true, orientation: 0 },
+      { id: first + 3, x: 10, y: 2, color: 3, completed: false, orientation: 1 },
+      { id: first + 4, x: 6, y: 6, color: 3, completed: true, orientation: 2 },
+      { id: first + 5, x: 10, y: 6, color: 3, completed: false, orientation: 3 }
+    ]);
+    document.nextBackstitchId = first + 6;
+    return document;
+  }
+
+  /** Offset of the specialty layer's point count in v7 bytes. */
+  function pointCountOffset(bytes: Uint8Array, document: LayeredDocument): number {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const cellCount = document.width * document.height;
+    let found = -1;
+    layerBodies(bytes, document, (offset, type) => {
+      if (type === 0) return offset + cellCount * 10;
+      const lineEnd = offset + 4 + view.getUint32(offset, true) * 23;
+      found = lineEnd;
+      return lineEnd + 4 + view.getUint32(lineEnd, true) * 16;
+    });
+    return found;
+  }
+
+  it('round-trips knots, beads, their orientation and completion through binary schema v7', () => {
+    const original = pointDocument();
+    const bytes = encodeDocument(original);
+    const decoded = decodeDocumentWithInfo(bytes);
+
+    expect(decoded.binaryVersion).toBe(7);
+    expect(decoded.document).toEqual(original);
+    expect(specialtyLayer(decoded.document).pointStitches.completed).toEqual(new Uint8Array([1, 0, 1, 0, 1, 0]));
+    expect(specialtyLayer(decoded.document).pointStitches.orientations).toEqual(new Uint8Array([0, 0, 0, 1, 2, 3]));
+    expect(decoded.document.palette.find((entry) => entry.id === 3)).toMatchObject({ material: { kind: 'bead', unit: 'count' }, catalog: { catalogId: millHillCatalog().association.catalogId, code: '00479' } });
+    expect(encodeDocument(decoded.document)).toEqual(bytes);
+  });
+
+  it('still decodes a v6 document, with every bead at orientation 0', () => {
+    const original = pointDocument();
+    const decoded = decodeDocumentWithInfo(toV6(encodeDocument(original), original));
+    const points = specialtyLayer(decoded.document).pointStitches;
+
+    expect(decoded.binaryVersion).toBe(6);
+    expect(points.orientations).toEqual(new Uint8Array(6));
+    expect({ ...points, orientations: specialtyLayer(original).pointStitches.orientations }).toEqual(specialtyLayer(original).pointStitches);
+  });
+
+  it('rejects a point stitch orientation outside 0..3', () => {
+    const original = pointDocument();
+    const bytes = encodeDocument(original);
+    // The last bead's orientation byte, which closes its 16-byte record.
+    const orientation = pointCountOffset(bytes, original) + 4 + 6 * 16 - 1;
+    expect(bytes[orientation]).toBe(3);
+    bytes[orientation] = 4;
+    expectInvalid(bytes);
+  });
+
+  it('still decodes v5 and v4 documents, with no point stitches', () => {
+    const withPoints = pointDocument();
+    const original = makeDocument();
+    const v5 = toV5(toV6(encodeDocument(withPoints), withPoints), withPoints);
+    const fromV5 = decodeDocumentWithInfo(v5);
+    const fromV4 = decodeDocumentWithInfo(toV4(toV5(toV6(encodeDocument(original), original), original), original));
+
+    expect(fromV5.binaryVersion).toBe(5);
+    expect(specialtyLayer(fromV5.document).pointStitches.ids).toHaveLength(0);
+    expect(specialtyLayer(fromV5.document).backstitches).toEqual(specialtyLayer(withPoints).backstitches);
+    expect(fromV4.binaryVersion).toBe(4);
+    expect(fromV4.document).toEqual(original);
+    expect(specialtyLayer(fromV4.document).pointStitches.ids).toHaveLength(0);
+  });
+
+  it('rejects a forged point stitch count before allocating it', () => {
+    const original = pointDocument();
+    const bytes = encodeDocument(original);
+    const offset = pointCountOffset(bytes, original);
+    for (const count of [0x1000001, 0x0fffffff, 4]) {
+      const forged = bytes.slice();
+      new DataView(forged.buffer).setUint32(offset, count, true);
+      expectInvalid(forged);
+    }
+  });
+
+  it('rejects a point stitch that is not on a cell corner or centre', () => {
+    const original = pointDocument();
+    const bytes = encodeDocument(original);
+    const offset = pointCountOffset(bytes, original);
+    // The first point's x: a corner at 4 becomes the edge midpoint at 2 with y 4.
+    new DataView(bytes.buffer).setUint32(offset + 4 + 4, 2, true);
+    expectInvalid(bytes);
   });
 
   it('rejects an unknown header flag bit', () => {
@@ -1099,20 +1261,20 @@ describe('binary document persistence', () => {
     expect(decoded.nextBackstitchId).toBe(original.nextBackstitchId);
   });
 
-  it('round-trips layer names, visibility, order and ids using binary schema v5', () => {
+  it('round-trips layer names, visibility, order and ids using binary schema v7', () => {
     const original = makeDocument();
     const surface = createSurface({ width: 3, height: 2, palette: [] });
     const top: StitchLayer = { id: 7, type: LayerType.Stitch, name: 'Top ✚ stitches', visible: false, kind: surface.kind.slice(), colors: surface.colors.slice(), completed: new Uint8Array(6) };
     top.kind[5] = CellKind.Full;
     top.colors[20] = 2;
-    const emptySpecialty: SpecialtyLayer = { id: 4, type: LayerType.Specialty, name: 'Outlines', visible: true, backstitches: { ...surface.backstitches } };
+    const emptySpecialty: SpecialtyLayer = { id: 4, type: LayerType.Specialty, name: 'Outlines', visible: true, backstitches: { ...surface.backstitches }, pointStitches: { ...surface.pointStitches } };
     original.layers = [stitchLayer(original), top, emptySpecialty, specialtyLayer(original)];
     original.nextLayerId = 9;
     original.settings = { ...original.settings, aidaCount: 18 };
     const bytes = encodeDocument(original);
     const decoded = decodeDocumentWithInfo(bytes);
 
-    expect(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint16(8, true)).toBe(5);
+    expect(new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint16(8, true)).toBe(7);
     expect(decoded.legacy).toBe(false);
     expect(decoded.document.layers.map(({ id, type, name, visible }) => ({ id, type, name, visible }))).toEqual([
       { id: STITCH_LAYER_ID, type: 'stitch', name: 'Stitches', visible: true },
@@ -1146,7 +1308,7 @@ describe('binary document persistence', () => {
     const bytes = encodeDocument(original);
     const decoded = decodeDocumentWithInfo(bytes);
 
-    expect(decoded.binaryVersion).toBe(5);
+    expect(decoded.binaryVersion).toBe(7);
     expect(stitchLayer(decoded.document).completed).toEqual(new Uint8Array([1, 5, 0, 0, 0, 0]));
     expect(stitchLayer(decoded.document, 7).completed).toEqual(new Uint8Array([0, 1, 0, 0, 1, 0]));
     expect(specialtyLayer(decoded.document).backstitches.completed).toEqual(new Uint8Array([1]));
@@ -1191,7 +1353,7 @@ describe('binary document persistence', () => {
     expect(document.revision).toBe(surface.revision);
     expect(document.nextBackstitchId).toBe(surface.nextBackstitchId);
     // Re-encoding writes v5.
-    expect(decodeDocumentWithInfo(encodeDocument(document)).binaryVersion).toBe(5);
+    expect(decodeDocumentWithInfo(encodeDocument(document)).binaryVersion).toBe(7);
   });
 
   it('upgrades legacy binary schema v1 documents with the neutral Aida background', () => {
@@ -1238,9 +1400,9 @@ describe('binary document persistence', () => {
 
     const wrongVersion = original.slice();
     const wrongVersionView = new DataView(wrongVersion.buffer);
-    wrongVersionView.setUint16(8, 6, true);
+    wrongVersionView.setUint16(8, 8, true);
     wrongVersionView.setUint32(32, 0xffffffff, true);
-    expect(() => decodeDocumentWithInfo(wrongVersion)).toThrow(/schema is unsupported/i);
+    expect(() => decodeDocumentWithInfo(wrongVersion)).toThrow(expect.objectContaining({ code: 'unsupported-version' }));
   });
 
   it('rejects forged layer tables and trailing bytes', () => {
@@ -1469,7 +1631,7 @@ describe('binary document persistence', () => {
       expect((await repo.load('legacy-aida'))?.document.settings.aidaCount).toBe(18);
       const currentBytes = (await repo.db.currentSnapshots.get('legacy-aida'))?.bytes;
       if (!currentBytes) throw new Error('Missing current snapshot.');
-      expect(decodeDocumentWithInfo(currentBytes).binaryVersion).toBe(5);
+      expect(decodeDocumentWithInfo(currentBytes).binaryVersion).toBe(7);
     } finally {
       await closeRepository(repo);
     }

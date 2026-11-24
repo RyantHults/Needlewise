@@ -4,6 +4,7 @@ import {
   applyBulkRecolorCommand,
   applyBulkCompletionCommand,
   applyBulkBackstitchCompletionCommand,
+  applyBulkPointStitchCompletionCommand,
   applyPasteFragmentCommand,
   applyMoveFragmentCommand,
   applyMixedEraseCommand,
@@ -15,6 +16,7 @@ import {
   estimateBulkRecolorHistoryBytes,
   estimateBulkCompletionHistoryBytes,
   estimateBulkBackstitchCompletionHistoryBytes,
+  estimateBulkPointStitchCompletionHistoryBytes,
   estimatePasteFragmentHistoryBytes,
   estimateMoveFragmentHistoryBytes,
   estimateMixedEraseHistoryBytes,
@@ -27,6 +29,7 @@ import {
   preflightBulkRecolorCommand,
   preflightBulkCompletionCommand,
   preflightBulkBackstitchCompletionCommand,
+  preflightBulkPointStitchCompletionCommand,
   preflightMixedEraseCommand,
   preflightDeleteRegionCommand,
   preflightDeleteCellSetCommand,
@@ -36,12 +39,14 @@ import {
   bulkCompletionCommand,
   bulkBackstitchCompletionCommand,
   type MutationInfo,
+  type PackedBackstitchCompletionDelta,
   type SparseMutationDelta
 } from './commands';
-import { UINT32_MAX, cloneDocument, clonePaletteEntry, clonePatternSettings, emptyBackstitches } from './model';
+import { UINT32_MAX, cloneDocument, clonePaletteEntry, clonePatternSettings, emptyBackstitches, emptyPointStitches, isBeadEntry, isPointStitchPosition } from './model';
 import type {
   BackstitchStore,
   BulkBackstitchCompletionCommand,
+  BulkPointStitchCompletionCommand,
   BulkCellCommand,
   BulkCompletionCommand,
   BulkRecolorCommand,
@@ -59,11 +64,13 @@ import type {
   PaletteEntry,
   PatternSettings,
   PatternDocument,
+  PointStitchStore,
   StitchLayer
 } from './types';
 import { CellKind, DOCUMENT_SCHEMA_VERSION, DomainError, LAYERED_DOCUMENT_VERSION, LayerType, MAX_LAYER_NAME_CHARS, MAX_LAYERS_PER_TYPE, MaterialUnit, MAX_PERSISTABLE_CELL_COUNT } from './types';
 import { assertValidDocument, collectValidationErrors } from './validation';
 import { allocateBackstitches, backstitchesFromRecords, backstitchLinesEqual, backstitchStoreBytes, backstitchStoresEqual, cloneBackstitches, copyBackstitch, positionsById, segmentKey } from './backstitch-store';
+import { allocatePointStitches, clonePointStitches, copyPointStitch, pointKey, pointStitchesFromRecords, pointStitchPlacementsEqual, pointStitchPositionsById, pointStitchStoreBytes, pointStitchStoresEqual } from './point-stitch-store';
 import { palettesEqual, settingsEqual, typedArraysEqual } from './equality';
 import { assertStrictlyIncreasing } from './guards';
 import {
@@ -76,10 +83,11 @@ import {
   findLayer,
   layerSurface,
   requireEditableLayer,
-  visibleBackstitchOwners
+  visibleBackstitchOwners,
+  visiblePointStitchOwners
 } from './layers';
 import { coveringLayerId, type ProgressCommand, type ProgressEntry, type ProgressEntryPart } from './progress';
-import { applyCanvasCommand, backstitchWithinCanvas, canvasCellsCommand, canvasFields, canvasResizeCommand, isValidCanvasOrigin, packCanvasMask, unpackCanvasMask, type CanvasRemoval } from './canvas';
+import { applyCanvasCommand, backstitchWithinCanvas, pointWithinCanvas, canvasCellsCommand, canvasFields, canvasResizeCommand, isValidCanvasOrigin, packCanvasMask, unpackCanvasMask, type CanvasRemoval } from './canvas';
 
 export const DEFAULT_HISTORY_LIMIT_BYTES = 64 * 1024 * 1024;
 export const MAX_HISTORY_DECODE_BYTES = 64 * 1024 * 1024;
@@ -112,6 +120,7 @@ export interface HistoryCellCompletionDeltaDto {
   readonly afterCompleted: Uint8Array;
 }
 
+/** Completion changes of specialty stitches (backstitches or point stitches) by stable id. */
 export interface HistoryBackstitchCompletionDeltaDto {
   readonly ids: Uint32Array;
   readonly beforeCompleted: Uint8Array;
@@ -122,10 +131,13 @@ export interface HistoryDeltaDto {
   readonly cells: HistoryPackedCellDeltaDto;
   readonly cellCompletions?: HistoryCellCompletionDeltaDto;
   readonly backstitchCompletions?: HistoryBackstitchCompletionDeltaDto;
+  readonly pointStitchCompletions?: HistoryBackstitchCompletionDeltaDto;
   readonly beforePalette?: readonly PaletteEntry[];
   readonly afterPalette?: readonly PaletteEntry[];
   readonly beforeBackstitches?: BackstitchStore;
   readonly afterBackstitches?: BackstitchStore;
+  readonly beforePointStitches?: PointStitchStore;
+  readonly afterPointStitches?: PointStitchStore;
   readonly beforeNextBackstitchId?: number;
   readonly afterNextBackstitchId?: number;
   readonly beforeNextPaletteId?: number;
@@ -226,6 +238,17 @@ function applyDelta(document: PatternDocument, delta: SparseMutationDelta, useAf
       if (backstitchPosition !== undefined) next.backstitches.completed[backstitchPosition] = useAfter ? completionDelta.afterCompleted[position] : completionDelta.beforeCompleted[position];
     }
   }
+  const pointStitches = useAfter ? delta.afterPointStitches : delta.beforePointStitches;
+  if (pointStitches !== undefined) next.pointStitches = clonePointStitches(pointStitches);
+  const pointCompletionDelta = delta.pointStitchCompletions;
+  if (pointCompletionDelta !== undefined && pointCompletionDelta.ids.length > 0) {
+    if (pointStitches === undefined) next.pointStitches = { ...next.pointStitches, completed: next.pointStitches.completed.slice() };
+    const positions = pointStitchPositionsById(next.pointStitches);
+    for (let position = 0; position < pointCompletionDelta.ids.length; position += 1) {
+      const pointPosition = positions.get(pointCompletionDelta.ids[position]);
+      if (pointPosition !== undefined) next.pointStitches.completed[pointPosition] = useAfter ? pointCompletionDelta.afterCompleted[position] : pointCompletionDelta.beforeCompleted[position];
+    }
+  }
   const nextBackstitchId = useAfter ? delta.afterNextBackstitchId : delta.beforeNextBackstitchId;
   const nextPaletteId = useAfter ? delta.afterNextPaletteId : delta.beforeNextPaletteId;
   if (nextBackstitchId !== undefined) next.nextBackstitchId = nextBackstitchId;
@@ -241,8 +264,13 @@ function typedDeltaBytes(delta: SparseMutationDelta): number {
   for (const store of [delta.beforeBackstitches, delta.afterBackstitches]) {
     if (store) bytes += backstitchStoreBytes(store.ids.length);
   }
+  for (const store of [delta.beforePointStitches, delta.afterPointStitches]) {
+    if (store) bytes += pointStitchStoreBytes(store.ids.length);
+  }
   if (delta.cellCompletions) bytes += delta.cellCompletions.indices.byteLength + delta.cellCompletions.beforeCompleted.byteLength + delta.cellCompletions.afterCompleted.byteLength;
-  if (delta.backstitchCompletions) bytes += delta.backstitchCompletions.ids.byteLength + delta.backstitchCompletions.beforeCompleted.byteLength + delta.backstitchCompletions.afterCompleted.byteLength;
+  for (const completions of [delta.backstitchCompletions, delta.pointStitchCompletions]) {
+    if (completions) bytes += completions.ids.byteLength + completions.beforeCompleted.byteLength + completions.afterCompleted.byteLength;
+  }
   for (const palette of [delta.beforePalette, delta.afterPalette]) if (palette) bytes += JSON.stringify(palette).length * 2;
   for (const settings of [delta.beforeSettings, delta.afterSettings]) if (settings) bytes += JSON.stringify(settings).length * 2;
   return bytes + 32;
@@ -250,7 +278,7 @@ function typedDeltaBytes(delta: SparseMutationDelta): number {
 
 function snapshotBytes(document: PatternDocument): number {
   const store = document.backstitches;
-  return document.kind.byteLength + document.colors.byteLength + document.completed.byteLength + backstitchStoreBytes(store.ids.length) + JSON.stringify(document.catalog).length * 2 + JSON.stringify(document.palette).length * 2 + JSON.stringify(document.settings).length * 2 + 64;
+  return document.kind.byteLength + document.colors.byteLength + document.completed.byteLength + backstitchStoreBytes(store.ids.length) + pointStitchStoreBytes(document.pointStitches.ids.length) + JSON.stringify(document.catalog).length * 2 + JSON.stringify(document.palette).length * 2 + JSON.stringify(document.settings).length * 2 + 64;
 }
 
 function result(document: PatternDocument, changed: boolean, backstitchId?: number, paletteId?: number, details?: MutationInfo): CommandResult {
@@ -264,6 +292,7 @@ function result(document: PatternDocument, changed: boolean, backstitchId?: numb
     ...(details?.changedIndices === undefined ? {} : { changedIndices: details.changedIndices.slice() }),
     ...(details?.touchedBackstitchIds === undefined ? {} : { touchedBackstitchIds: details.touchedBackstitchIds.slice() }),
     ...(details?.changedBackstitchIds === undefined ? {} : { changedBackstitchIds: details.changedBackstitchIds.slice() }),
+    ...(details?.changedPointStitchIds === undefined ? {} : { changedPointStitchIds: details.changedPointStitchIds.slice() }),
     ...(details?.createdBackstitchIds === undefined ? {} : { createdBackstitchIds: details.createdBackstitchIds.slice() }),
     ...(details?.movedBackstitchIds === undefined ? {} : { movedBackstitchIds: details.movedBackstitchIds.slice() })
   };
@@ -276,7 +305,10 @@ function deltaRequiresFullRedraw(delta: SparseMutationDelta): boolean {
     || delta.afterSettings !== undefined
     || delta.beforeBackstitches !== undefined
     || delta.afterBackstitches !== undefined
-    || (delta.backstitchCompletions?.ids.length ?? 0) > 0;
+    || delta.beforePointStitches !== undefined
+    || delta.afterPointStitches !== undefined
+    || (delta.backstitchCompletions?.ids.length ?? 0) > 0
+    || (delta.pointStitchCompletions?.ids.length ?? 0) > 0;
 }
 
 type HistoryRecord = Record<string, unknown>;
@@ -394,6 +426,23 @@ function historyBackstitches(value: unknown, label: string): asserts value is Ba
   historyLength(store.completed, length, `${label}.completed`);
 }
 
+function historyPointStitches(value: unknown, label: string): asserts value is PointStitchStore {
+  const store = historyRecord(value, label);
+  historyKeys(store, ['ids', 'x', 'y', 'colors', 'completed', 'orientations'], [], label);
+  historyUint32(store.ids, `${label}.ids`);
+  historyUint32(store.x, `${label}.x`);
+  historyUint32(store.y, `${label}.y`);
+  historyUint16(store.colors, `${label}.colors`);
+  historyUint8(store.completed, `${label}.completed`);
+  historyUint8(store.orientations, `${label}.orientations`);
+  const length = store.ids.length;
+  historyLength(store.x, length, `${label}.x`);
+  historyLength(store.y, length, `${label}.y`);
+  historyLength(store.colors, length, `${label}.colors`);
+  historyLength(store.completed, length, `${label}.completed`);
+  historyLength(store.orientations, length, `${label}.orientations`);
+}
+
 function historyPackedCells(value: unknown, cellCount: number, label: string): asserts value is HistoryPackedCellDeltaDto {
   const cells = historyRecord(value, label);
   historyKeys(cells, ['indices', 'beforeKind', 'beforeColors', 'beforeCompleted', 'afterKind', 'afterColors', 'afterCompleted'], [], label);
@@ -453,19 +502,23 @@ function historyAidaCount(value: unknown, label: string): void {
 
 function historyDelta(value: unknown, cellCount: number, label: string): asserts value is HistoryDeltaDto {
   const delta = historyRecord(value, label);
-  historyKeys(delta, ['cells'], ['cellCompletions', 'backstitchCompletions', 'beforePalette', 'afterPalette', 'beforeBackstitches', 'afterBackstitches', 'beforeNextBackstitchId', 'afterNextBackstitchId', 'beforeNextPaletteId', 'afterNextPaletteId', 'beforeSettings', 'afterSettings'], label);
+  historyKeys(delta, ['cells'], ['cellCompletions', 'backstitchCompletions', 'pointStitchCompletions', 'beforePalette', 'afterPalette', 'beforeBackstitches', 'afterBackstitches', 'beforePointStitches', 'afterPointStitches', 'beforeNextBackstitchId', 'afterNextBackstitchId', 'beforeNextPaletteId', 'afterNextPaletteId', 'beforeSettings', 'afterSettings'], label);
   const cells = historyRecord(delta.cells, `${label}.cells`);
   const cellIndices = cells.indices;
   historyUniqueIndices(cellIndices, cellCount, `${label}.cells.indices`);
   historyPackedCells({ ...cells, indices: cellIndices }, cellCount, `${label}.cells`);
   if (delta.cellCompletions !== undefined) historyCellCompletions(delta.cellCompletions, cellCount, `${label}.cellCompletions`);
   if (delta.backstitchCompletions !== undefined) historyBackstitchCompletions(delta.backstitchCompletions, `${label}.backstitchCompletions`);
+  if (delta.pointStitchCompletions !== undefined) historyBackstitchCompletions(delta.pointStitchCompletions, `${label}.pointStitchCompletions`);
   if (delta.beforePalette !== undefined) historyPalette(delta.beforePalette, `${label}.beforePalette`);
   if (delta.afterPalette !== undefined) historyPalette(delta.afterPalette, `${label}.afterPalette`);
   if ((delta.beforePalette === undefined) !== (delta.afterPalette === undefined)) throw new DomainError('invalid-history-state', `${label} palette sides must be paired.`);
   if (delta.beforeBackstitches !== undefined) historyBackstitches(delta.beforeBackstitches, `${label}.beforeBackstitches`);
   if (delta.afterBackstitches !== undefined) historyBackstitches(delta.afterBackstitches, `${label}.afterBackstitches`);
   if ((delta.beforeBackstitches === undefined) !== (delta.afterBackstitches === undefined)) throw new DomainError('invalid-history-state', `${label} backstitch sides must be paired.`);
+  if (delta.beforePointStitches !== undefined) historyPointStitches(delta.beforePointStitches, `${label}.beforePointStitches`);
+  if (delta.afterPointStitches !== undefined) historyPointStitches(delta.afterPointStitches, `${label}.afterPointStitches`);
+  if ((delta.beforePointStitches === undefined) !== (delta.afterPointStitches === undefined)) throw new DomainError('invalid-history-state', `${label} point stitch sides must be paired.`);
   if (delta.beforeSettings !== undefined) historyPatternSettings(delta.beforeSettings, `${label}.beforeSettings`);
   if (delta.afterSettings !== undefined) historyPatternSettings(delta.afterSettings, `${label}.afterSettings`);
   if ((delta.beforeSettings === undefined) !== (delta.afterSettings === undefined)) throw new DomainError('invalid-history-state', `${label} settings sides must be paired.`);
@@ -483,6 +536,10 @@ function historyDelta(value: unknown, cellCount: number, label: string): asserts
 
 function historyStateMismatch(label: string): never {
   throw new DomainError('invalid-history-state', `${label} is incompatible with the supplied current document.`);
+}
+
+function cloneIdCompletions(completions: PackedBackstitchCompletionDelta): PackedBackstitchCompletionDelta {
+  return { ids: completions.ids.slice(), beforeCompleted: completions.beforeCompleted.slice(), afterCompleted: completions.afterCompleted.slice() };
 }
 
 function historyDeltaToInternal(delta: HistoryDeltaDto): SparseMutationDelta {
@@ -503,17 +560,14 @@ function historyDeltaToInternal(delta: HistoryDeltaDto): SparseMutationDelta {
         afterCompleted: delta.cellCompletions.afterCompleted.slice()
       }
     }),
-    ...(delta.backstitchCompletions === undefined ? {} : {
-      backstitchCompletions: {
-        ids: delta.backstitchCompletions.ids.slice(),
-        beforeCompleted: delta.backstitchCompletions.beforeCompleted.slice(),
-        afterCompleted: delta.backstitchCompletions.afterCompleted.slice()
-      }
-    }),
+    ...(delta.backstitchCompletions === undefined ? {} : { backstitchCompletions: cloneIdCompletions(delta.backstitchCompletions) }),
+    ...(delta.pointStitchCompletions === undefined ? {} : { pointStitchCompletions: cloneIdCompletions(delta.pointStitchCompletions) }),
     ...(delta.beforePalette === undefined ? {} : { beforePalette: delta.beforePalette.map(clonePaletteEntry) }),
     ...(delta.afterPalette === undefined ? {} : { afterPalette: delta.afterPalette.map(clonePaletteEntry) }),
     ...(delta.beforeBackstitches === undefined ? {} : { beforeBackstitches: cloneBackstitches(delta.beforeBackstitches) }),
     ...(delta.afterBackstitches === undefined ? {} : { afterBackstitches: cloneBackstitches(delta.afterBackstitches) }),
+    ...(delta.beforePointStitches === undefined ? {} : { beforePointStitches: clonePointStitches(delta.beforePointStitches) }),
+    ...(delta.afterPointStitches === undefined ? {} : { afterPointStitches: clonePointStitches(delta.afterPointStitches) }),
     ...(delta.beforeNextBackstitchId === undefined ? {} : { beforeNextBackstitchId: delta.beforeNextBackstitchId }),
     ...(delta.afterNextBackstitchId === undefined ? {} : { afterNextBackstitchId: delta.afterNextBackstitchId }),
     ...(delta.beforeNextPaletteId === undefined ? {} : { beforeNextPaletteId: delta.beforeNextPaletteId }),
@@ -541,17 +595,14 @@ function historyDeltaToDto(delta: SparseMutationDelta): HistoryDeltaDto {
         afterCompleted: delta.cellCompletions.afterCompleted.slice()
       }
     }),
-    ...(delta.backstitchCompletions === undefined ? {} : {
-      backstitchCompletions: {
-        ids: delta.backstitchCompletions.ids.slice(),
-        beforeCompleted: delta.backstitchCompletions.beforeCompleted.slice(),
-        afterCompleted: delta.backstitchCompletions.afterCompleted.slice()
-      }
-    }),
+    ...(delta.backstitchCompletions === undefined ? {} : { backstitchCompletions: cloneIdCompletions(delta.backstitchCompletions) }),
+    ...(delta.pointStitchCompletions === undefined ? {} : { pointStitchCompletions: cloneIdCompletions(delta.pointStitchCompletions) }),
     ...(delta.beforePalette === undefined ? {} : { beforePalette: delta.beforePalette.map(clonePaletteEntry) }),
     ...(delta.afterPalette === undefined ? {} : { afterPalette: delta.afterPalette.map(clonePaletteEntry) }),
     ...(delta.beforeBackstitches === undefined ? {} : { beforeBackstitches: cloneBackstitches(delta.beforeBackstitches) }),
     ...(delta.afterBackstitches === undefined ? {} : { afterBackstitches: cloneBackstitches(delta.afterBackstitches) }),
+    ...(delta.beforePointStitches === undefined ? {} : { beforePointStitches: clonePointStitches(delta.beforePointStitches) }),
+    ...(delta.afterPointStitches === undefined ? {} : { afterPointStitches: clonePointStitches(delta.afterPointStitches) }),
     ...(delta.beforeNextBackstitchId === undefined ? {} : { beforeNextBackstitchId: delta.beforeNextBackstitchId }),
     ...(delta.afterNextBackstitchId === undefined ? {} : { afterNextBackstitchId: delta.afterNextBackstitchId }),
     ...(delta.beforeNextPaletteId === undefined ? {} : { beforeNextPaletteId: delta.beforeNextPaletteId }),
@@ -570,9 +621,11 @@ function historyDeltaChanged(delta: HistoryDeltaDto): boolean {
     || cells.beforeColors[index * 4 + 2] !== cells.afterColors[index * 4 + 2]
     || cells.beforeColors[index * 4 + 3] !== cells.afterColors[index * 4 + 3]);
   const changedCompletions = delta.cellCompletions?.indices.some((_, index) => delta.cellCompletions!.beforeCompleted[index] !== delta.cellCompletions!.afterCompleted[index]) ?? false;
-  const changedBackstitchCompletions = delta.backstitchCompletions?.ids.some((_, index) => delta.backstitchCompletions!.beforeCompleted[index] !== delta.backstitchCompletions!.afterCompleted[index]) ?? false;
+  const idCompletionsChanged = (completions: HistoryBackstitchCompletionDeltaDto | undefined): boolean => completions?.ids.some((_, index) => completions.beforeCompleted[index] !== completions.afterCompleted[index]) ?? false;
+  const changedBackstitchCompletions = idCompletionsChanged(delta.backstitchCompletions) || idCompletionsChanged(delta.pointStitchCompletions);
   const changedPalette = delta.beforePalette !== undefined && !palettesEqual(delta.beforePalette, delta.afterPalette ?? []);
-  const changedBackstitches = delta.beforeBackstitches !== undefined && !backstitchStoresEqual(delta.beforeBackstitches, delta.afterBackstitches as BackstitchStore);
+  const changedBackstitches = (delta.beforeBackstitches !== undefined && !backstitchStoresEqual(delta.beforeBackstitches, delta.afterBackstitches as BackstitchStore))
+    || (delta.beforePointStitches !== undefined && !pointStitchStoresEqual(delta.beforePointStitches, delta.afterPointStitches as PointStitchStore));
   const changedAllocators = delta.beforeNextBackstitchId !== delta.afterNextBackstitchId || delta.beforeNextPaletteId !== delta.afterNextPaletteId;
   const changedSettings = delta.beforeSettings !== undefined
     && (delta.afterSettings === undefined || !settingsEqual(delta.beforeSettings, delta.afterSettings));
@@ -654,6 +707,7 @@ function runSurfaceCommand(current: PatternDocument, command: DomainCommand, lim
     case 'bulk-recolor': return runBulkRecolorCommand(current, atomic, limit);
     case 'bulk-completion': return runBulkCompletionCommand(current, atomic, limit);
     case 'bulk-backstitch-completion': return runBulkBackstitchCompletionCommand(current, atomic, limit);
+    case 'bulk-point-stitch-completion': return runBulkPointStitchCompletionCommand(current, atomic, limit);
     case 'paste-fragment': return runPasteFragmentCommand(current, atomic, limit);
     case 'move-fragment': return runMoveFragmentCommand(current, atomic, limit);
     case 'mixed-erase': return runMixedEraseCommand(current, atomic, limit);
@@ -760,9 +814,19 @@ function runBulkBackstitchCompletionCommand(current: PatternDocument, command: B
   return commitDeltaRun(current, draft, mutation, limit, { code: 'invalid-completion-command', message: 'A changed bulk backstitch completion did not produce a history delta.' });
 }
 
+function runBulkPointStitchCompletionCommand(current: PatternDocument, command: BulkPointStitchCompletionCommand, limit: number): SurfaceRun {
+  const preflight = preflightBulkPointStitchCompletionCommand(current, command);
+  ensureHistoryEntryFits(estimateBulkPointStitchCompletionHistoryBytes(preflight.changedIds.length), limit);
+  if (preflight.changedIds.length === 0) return { result: result(current, false, undefined, undefined, noChange({ changedPointStitchIds: preflight.changedIds })) };
+  // Invariant: preflight validated every id, and apply writes only this copied completion plane.
+  const draft: PatternDocument = { ...current, pointStitches: { ...current.pointStitches, completed: current.pointStitches.completed.slice() } };
+  const mutation = applyBulkPointStitchCompletionCommand(draft, command, preflight);
+  return commitDeltaRun(current, draft, mutation, limit, { code: 'invalid-completion-command', message: 'A changed bulk point stitch completion did not produce a history delta.' });
+}
+
 function runPasteFragmentCommand(current: PatternDocument, command: PasteFragmentCommand, limit: number): SurfaceRun {
   const preflight = preflightPasteFragmentCommand(current, command);
-  const estimatedBytes = estimatePasteFragmentHistoryBytes(preflight.changedCellCount, current.backstitches.ids.length, preflight.newBackstitchCount);
+  const estimatedBytes = estimatePasteFragmentHistoryBytes(preflight.changedCellCount, current.backstitches.ids.length, preflight.newBackstitchCount, current.pointStitches.ids.length, preflight.newPointStitchCount);
   ensureHistoryEntryFits(estimatedBytes, limit);
   if (estimatedBytes === 0) return { result: result(current, false) };
 
@@ -777,7 +841,9 @@ function runMoveFragmentCommand(current: PatternDocument, command: MoveFragmentC
   const estimatedBytes = estimateMoveFragmentHistoryBytes(
     preflight.changedIndices.length,
     current.backstitches.ids.length,
-    preflight.backstitchesChanged ? preflight.movedBackstitchIds.length : 0
+    preflight.backstitchesChanged ? preflight.movedBackstitchIds.length : 0,
+    current.pointStitches.ids.length,
+    preflight.changedPointStitchIds.length
   );
   ensureHistoryEntryFits(estimatedBytes, limit);
   if (estimatedBytes === 0) {
@@ -806,11 +872,13 @@ function runDeleteRegionCommand(current: PatternDocument, command: DeleteRegionC
   const estimatedBytes = estimateDeleteRegionHistoryBytes(
     preflight.changedIndices.length,
     current.backstitches.ids.length,
-    preflight.changedBackstitchIds.length
+    preflight.changedBackstitchIds.length,
+    current.pointStitches.ids.length,
+    preflight.changedPointStitchIds.length
   );
   ensureHistoryEntryFits(estimatedBytes, limit);
   if (estimatedBytes === 0) {
-    return { result: result(current, false, undefined, undefined, noChange({ touchedIndices: preflight.touchedIndices, changedIndices: preflight.changedIndices, changedBackstitchIds: preflight.changedBackstitchIds })) };
+    return { result: result(current, false, undefined, undefined, noChange({ touchedIndices: preflight.touchedIndices, changedIndices: preflight.changedIndices, changedBackstitchIds: preflight.changedBackstitchIds, changedPointStitchIds: preflight.changedPointStitchIds })) };
   }
 
   const draft = cloneForDelete(current);
@@ -823,11 +891,13 @@ function runDeleteCellSetCommand(current: PatternDocument, command: DeleteCellSe
   const estimatedBytes = estimateDeleteCellSetHistoryBytes(
     preflight.changedIndices.length,
     current.backstitches.ids.length,
-    preflight.changedBackstitchIds.length
+    preflight.changedBackstitchIds.length,
+    current.pointStitches.ids.length,
+    preflight.changedPointStitchIds.length
   );
   ensureHistoryEntryFits(estimatedBytes, limit);
   if (estimatedBytes === 0) {
-    return { result: result(current, false, undefined, undefined, noChange({ touchedIndices: preflight.touchedIndices, changedIndices: preflight.changedIndices, changedBackstitchIds: preflight.changedBackstitchIds })) };
+    return { result: result(current, false, undefined, undefined, noChange({ touchedIndices: preflight.touchedIndices, changedIndices: preflight.changedIndices, changedBackstitchIds: preflight.changedBackstitchIds, changedPointStitchIds: preflight.changedPointStitchIds })) };
   }
 
   const draft = cloneForDelete(current);
@@ -854,12 +924,13 @@ function runSnapshotCommand(current: PatternDocument, command: DomainCommand, li
 // Layered history
 
 /** Version of the layered `DocumentEditor` history DTO. Version 1 (single surface) is not accepted. */
-export const DOCUMENT_EDITOR_HISTORY_VERSION = 2 as const;
+export const DOCUMENT_EDITOR_HISTORY_VERSION = 3 as const;
 
 /**
  * One layer on one side of a `layers` entry. Content is omitted
  * when it equals the other side's (it is then taken from the current
- * document), and `empty: true` stands for all-zero planes or no backstitches.
+ * document), and `empty: true` stands for all-zero planes or no specialty
+ * stitches. Specialty content carries `backstitches` and `pointStitches` together.
  */
 export interface HistoryLayerDto {
   readonly id: number;
@@ -872,6 +943,7 @@ export interface HistoryLayerDto {
   /** Stitch progress, one value per cell. Only present with `kind` and `colors`, and absent when no cell is marked. */
   readonly completed?: Uint8Array;
   readonly backstitches?: BackstitchStore;
+  readonly pointStitches?: PointStitchStore;
 }
 
 export interface HistoryLayeredSideDto {
@@ -931,6 +1003,13 @@ export interface HistoryCanvasRemovedLinesDto {
   readonly backstitches: BackstitchStore;
 }
 
+/** Knots and beads a canvas edit dropped from one layer, with their ascending positions in the before store. */
+export interface HistoryCanvasRemovedPointsDto {
+  readonly layerId: number;
+  readonly positions: Uint32Array;
+  readonly pointStitches: PointStitchStore;
+}
+
 /**
  * A canvas resize or cell edit. Undo rebuilds `before` from the current
  * geometry plus `removal`; redo runs `command` again. Whole planes are never
@@ -943,6 +1022,7 @@ export interface HistoryCanvasEntryDto {
   readonly removal: {
     readonly cells: readonly HistoryCanvasRemovedCellsDto[];
     readonly backstitches: readonly HistoryCanvasRemovedLinesDto[];
+    readonly pointStitches: readonly HistoryCanvasRemovedPointsDto[];
   };
   readonly bytes: number;
 }
@@ -971,6 +1051,7 @@ interface StitchContent {
 
 interface SpecialtyContent {
   readonly backstitches: BackstitchStore;
+  readonly pointStitches: PointStitchStore;
 }
 
 /** `'empty'` is an all-zero layer. */
@@ -1023,6 +1104,7 @@ interface CanvasEntry {
   removal: {
     cells: readonly HistoryCanvasRemovedCellsDto[];
     backstitches: readonly HistoryCanvasRemovedLinesDto[];
+    pointStitches: readonly HistoryCanvasRemovedPointsDto[];
   };
   bytes: number;
 }
@@ -1041,13 +1123,13 @@ const EMPTY_KIND = new Uint8Array(0);
 const EMPTY_COLORS = new Uint16Array(0);
 
 function layerContent(layer: Layer): StitchContent | SpecialtyContent {
-  if (layer.type === LayerType.Specialty) return { backstitches: layer.backstitches };
+  if (layer.type === LayerType.Specialty) return { backstitches: layer.backstitches, pointStitches: layer.pointStitches };
   return hasNonZero(layer.completed) ? { kind: layer.kind, colors: layer.colors, completed: layer.completed } : { kind: layer.kind, colors: layer.colors };
 }
 
 function sameLayerContent(left: Layer, right: Layer): boolean {
   if (left.type === LayerType.Stitch && right.type === LayerType.Stitch) return left.kind === right.kind && left.colors === right.colors && left.completed === right.completed;
-  if (left.type === LayerType.Specialty && right.type === LayerType.Specialty) return left.backstitches === right.backstitches;
+  if (left.type === LayerType.Specialty && right.type === LayerType.Specialty) return left.backstitches === right.backstitches && left.pointStitches === right.pointStitches;
   return false;
 }
 
@@ -1057,7 +1139,7 @@ function hasNonZero(values: ArrayLike<number>): boolean {
 }
 
 function isEmptyLayer(layer: Layer): boolean {
-  return layer.type === LayerType.Stitch ? !hasNonZero(layer.kind) && !hasNonZero(layer.colors) : layer.backstitches.ids.length === 0;
+  return layer.type === LayerType.Stitch ? !hasNonZero(layer.kind) && !hasNonZero(layer.colors) : layer.backstitches.ids.length === 0 && layer.pointStitches.ids.length === 0;
 }
 
 /**
@@ -1078,7 +1160,16 @@ function buildLayer(record: LayerRecord, content: LayerContent, cellCount: numbe
     return { id: record.id, type: LayerType.Stitch, name: record.name, visible: current?.visible ?? record.visible, kind: cells.kind, colors: cells.colors, completed };
   }
   const backstitches = content === 'empty' ? emptyBackstitches() : (content as SpecialtyContent).backstitches;
-  return { id: record.id, type: LayerType.Specialty, name: record.name, visible: current?.visible ?? record.visible, backstitches: current?.type === LayerType.Specialty ? keepLineCompletion(backstitches, current.backstitches) : backstitches };
+  const pointStitches = content === 'empty' ? emptyPointStitches() : (content as SpecialtyContent).pointStitches;
+  const specialty = current?.type === LayerType.Specialty ? current : undefined;
+  return {
+    id: record.id,
+    type: LayerType.Specialty,
+    name: record.name,
+    visible: current?.visible ?? record.visible,
+    backstitches: specialty === undefined ? backstitches : keepLineCompletion(backstitches, specialty.backstitches),
+    pointStitches: specialty === undefined ? pointStitches : keepPointCompletion(pointStitches, specialty.pointStitches)
+  };
 }
 
 /** The progress plane for restored cells: cells with the same kind and occupied slots keep `current`'s progress, the rest take `stored` (zero when absent). */
@@ -1111,9 +1202,24 @@ function keepLineCompletion(restored: BackstitchStore, current: BackstitchStore)
   return completed === undefined ? restored : { ...restored, completed };
 }
 
+/** A restored store whose points that `current` still holds at the same position keep their current progress. */
+function keepPointCompletion(restored: PointStitchStore, current: PointStitchStore): PointStitchStore {
+  if (restored === current || current.ids.length === 0 || restored.ids.length === 0) return restored;
+  const positionOf = pointStitchPositionsById(current);
+  let completed: Uint8Array | undefined;
+  for (let index = 0; index < restored.ids.length; index += 1) {
+    const position = positionOf.get(restored.ids[index]);
+    if (position === undefined || current.completed[position] === restored.completed[index]) continue;
+    if (current.x[position] !== restored.x[index] || current.y[position] !== restored.y[index]) continue;
+    completed ??= restored.completed.slice();
+    completed[index] = current.completed[position];
+  }
+  return completed === undefined ? restored : { ...restored, completed };
+}
+
 function layerContentBytes(content: LayerContent): number {
   if (content === 'empty') return 0;
-  return 'backstitches' in content ? backstitchStoreBytes(content.backstitches.ids.length) : content.kind.byteLength + content.colors.byteLength + (content.completed?.byteLength ?? 0);
+  return 'backstitches' in content ? backstitchStoreBytes(content.backstitches.ids.length) + pointStitchStoreBytes(content.pointStitches.ids.length) : content.kind.byteLength + content.colors.byteLength + (content.completed?.byteLength ?? 0);
 }
 
 function layeredSideBytes(side: LayeredSide): number {
@@ -1211,6 +1317,7 @@ function canvasEntryBytes(entry: CanvasEntry): number {
   let bytes = 128 + (entry.before.canvasMaskBits?.byteLength ?? 0) + (entry.command.type === 'canvas-cells' ? entry.command.cells?.byteLength ?? 0 : 0);
   for (const cells of entry.removal.cells) bytes += 32 + cells.indices.byteLength + cells.kind.byteLength + cells.colors.byteLength + (cells.completed?.byteLength ?? 0);
   for (const lines of entry.removal.backstitches) bytes += 32 + lines.positions.byteLength + backstitchStoreBytes(lines.backstitches.ids.length);
+  for (const points of entry.removal.pointStitches) bytes += 32 + points.positions.byteLength + pointStitchStoreBytes(points.pointStitches.ids.length);
   return bytes;
 }
 
@@ -1230,12 +1337,23 @@ function removedLines(before: LayeredDocument, removal: CanvasRemoval): HistoryC
   });
 }
 
+/** Removed knots and beads with the positions they held in the before store. */
+function removedPoints(before: LayeredDocument, removal: CanvasRemoval): HistoryCanvasRemovedPointsDto[] {
+  return removal.pointStitches.map(({ layerId, records }) => {
+    const layer = findLayer(before, layerId);
+    if (layer?.type !== LayerType.Specialty) throw new DomainError('invalid-history-state', `Canvas removal names layer ${String(layerId)}, which is not a specialty layer.`);
+    const positionOf = pointStitchPositionsById(layer.pointStitches);
+    const positions = Uint32Array.from(records, (record) => positionOf.get(record.id) ?? -1);
+    return { layerId, positions, pointStitches: pointStitchesFromRecords(records) };
+  });
+}
+
 function captureCanvasEntry(before: LayeredDocument, command: DomainCommand, removal: CanvasRemoval): CanvasEntry {
   const entry: CanvasEntry = {
     kind: 'canvas',
     command: canonicalCanvasCommand(command),
     before: canvasFrame(before),
-    removal: { cells: removedCells(removal), backstitches: removedLines(before, removal) },
+    removal: { cells: removedCells(removal), backstitches: removedLines(before, removal), pointStitches: removedPoints(before, removal) },
     bytes: 0
   };
   entry.bytes = canvasEntryBytes(entry);
@@ -1263,6 +1381,27 @@ function mergeRemovedLines(survivors: BackstitchStore, dx: number, dy: number, r
   return store;
 }
 
+/** Inserts removed points back at their before-store positions between the translated survivors. */
+function mergeRemovedPoints(survivors: PointStitchStore, dx: number, dy: number, removed: HistoryCanvasRemovedPointsDto | undefined): PointStitchStore {
+  const removedCount = removed?.positions.length ?? 0;
+  const total = survivors.ids.length + removedCount;
+  const store = allocatePointStitches(total);
+  let survivor = 0;
+  let next = 0;
+  for (let index = 0; index < total; index += 1) {
+    if (removed !== undefined && next < removedCount && removed.positions[next] === index) {
+      copyPointStitch(removed.pointStitches, next, store, index);
+      next += 1;
+      continue;
+    }
+    if (survivor >= survivors.ids.length) throw new DomainError('invalid-history-state', 'Canvas removal positions are out of range.');
+    copyPointStitch(survivors, survivor, store, index, { x: dx, y: dy });
+    survivor += 1;
+  }
+  if (next !== removedCount) throw new DomainError('invalid-history-state', 'Canvas removal positions are out of range.');
+  return store;
+}
+
 /**
  * Undo of a canvas entry: rebuilds the before frame from the current document.
  * Origins place both boxes in the workspace, so the current box sits at
@@ -1277,11 +1416,16 @@ function restoreCanvasFrame(current: LayeredDocument, entry: CanvasEntry): Layer
   const cellCount = before.width * before.height;
   const cellsById = new Map(entry.removal.cells.map((cells) => [cells.layerId, cells]));
   const linesById = new Map(entry.removal.backstitches.map((lines) => [lines.layerId, lines]));
+  const pointsById = new Map(entry.removal.pointStitches.map((points) => [points.layerId, points]));
   const startX = Math.max(0, -offsetX);
   const endX = Math.min(current.width, before.width - offsetX);
   const layers = current.layers.map((layer): Layer => {
     if (layer.type === LayerType.Specialty) {
-      return { ...layer, backstitches: mergeRemovedLines(layer.backstitches, offsetX * 4, offsetY * 4, linesById.get(layer.id)) };
+      return {
+        ...layer,
+        backstitches: mergeRemovedLines(layer.backstitches, offsetX * 4, offsetY * 4, linesById.get(layer.id)),
+        pointStitches: mergeRemovedPoints(layer.pointStitches, offsetX * 4, offsetY * 4, pointsById.get(layer.id))
+      };
     }
     const kind = new Uint8Array(cellCount);
     const colors = new Uint16Array(cellCount * 4);
@@ -1331,7 +1475,8 @@ function canvasEntryToDto(entry: CanvasEntry): HistoryCanvasEntryDto {
         colors: cells.colors.slice(),
         ...(cells.completed === undefined ? {} : { completed: cells.completed.slice() })
       })),
-      backstitches: entry.removal.backstitches.map((lines) => ({ layerId: lines.layerId, positions: lines.positions.slice(), backstitches: cloneBackstitches(lines.backstitches) }))
+      backstitches: entry.removal.backstitches.map((lines) => ({ layerId: lines.layerId, positions: lines.positions.slice(), backstitches: cloneBackstitches(lines.backstitches) })),
+      pointStitches: entry.removal.pointStitches.map((points) => ({ layerId: points.layerId, positions: points.positions.slice(), pointStitches: clonePointStitches(points.pointStitches) }))
     },
     bytes: entry.bytes
   };
@@ -1367,6 +1512,7 @@ function metadataSurface(document: LayeredDocument): PatternDocument {
     colors: EMPTY_COLORS,
     completed: EMPTY_KIND,
     backstitches: emptyBackstitches(),
+    pointStitches: emptyPointStitches(),
     palette: document.palette,
     settings: document.settings,
     revision: document.revision,
@@ -1396,7 +1542,7 @@ function commitSurfaceToLayer(document: LayeredDocument, layerId: number | null,
         if (layer.id !== layerId) return layer;
         return layer.type === LayerType.Stitch
           ? { ...layer, kind: surface.kind, colors: surface.colors, completed: surface.completed }
-          : { ...layer, backstitches: surface.backstitches };
+          : { ...layer, backstitches: surface.backstitches, pointStitches: surface.pointStitches };
       });
   return {
     ...document,
@@ -1409,9 +1555,9 @@ function commitSurfaceToLayer(document: LayeredDocument, layerId: number | null,
   };
 }
 
-/** A layer edit must leave the other content type empty: no cells on specialty layers, no lines on stitch layers. */
+/** A layer edit must leave the other content type empty: no cells on specialty layers, no lines or points on stitch layers. */
 function assertSurfaceMatchesLayer(layer: Layer, surface: PatternDocument, cellsChanged: boolean): void {
-  const foreign = layer.type === LayerType.Stitch ? surface.backstitches.ids.length > 0 : cellsChanged;
+  const foreign = layer.type === LayerType.Stitch ? surface.backstitches.ids.length > 0 || surface.pointStitches.ids.length > 0 : cellsChanged;
   if (foreign) throw new DomainError('layer-type-mismatch', `This edit cannot be applied to a ${layer.type} layer.`);
 }
 
@@ -1437,7 +1583,7 @@ function batchChildren(command: DomainCommand): readonly DomainCommand[] | undef
 /** Marks go through `applyProgress` and Track's history, so the layered editor refuses completion edits. */
 function rejectProgressCommand(command: DomainCommand): void {
   if (command.type === 'batch') command.commands.forEach(rejectProgressCommand);
-  else if (command.type === 'bulk-completion' || command.type === 'bulk-backstitch-completion') throw new DomainError('invalid-command', 'Stitch progress cannot be edited in the pattern editor.');
+  else if (command.type === 'bulk-completion' || command.type === 'bulk-backstitch-completion' || command.type === 'bulk-point-stitch-completion') throw new DomainError('invalid-command', 'Stitch progress cannot be edited in the pattern editor.');
 }
 
 function collectLayerIds(command: DomainCommand, ids: Set<number>): void {
@@ -1480,8 +1626,8 @@ function layerWithSurfaceContent(layer: Layer, surface: PatternDocument): Layer 
     if (typedArraysEqual(layer.kind, surface.kind) && typedArraysEqual(layer.colors, surface.colors)) return layer;
     return { ...layer, kind: surface.kind, colors: surface.colors, completed: surface.completed };
   }
-  if (backstitchStoresEqual(layer.backstitches, surface.backstitches)) return layer;
-  return { ...layer, backstitches: surface.backstitches };
+  if (backstitchStoresEqual(layer.backstitches, surface.backstitches) && pointStitchStoresEqual(layer.pointStitches, surface.pointStitches)) return layer;
+  return { ...layer, backstitches: surface.backstitches, pointStitches: surface.pointStitches };
 }
 
 /**
@@ -1495,7 +1641,7 @@ function layerWithSurfaceContent(layer: Layer, surface: PatternDocument): Layer 
 function applyDocumentCommandToLayers(document: LayeredDocument, command: DomainCommand): LayeredDocument {
   const draftFor = (layer: Layer): PatternDocument => {
     const surface = layerSurface(document, layer.id);
-    const draft: PatternDocument = { ...surface, palette: surface.palette.slice(), backstitches: cloneBackstitches(surface.backstitches) };
+    const draft: PatternDocument = { ...surface, palette: surface.palette.slice(), backstitches: cloneBackstitches(surface.backstitches), pointStitches: clonePointStitches(surface.pointStitches) };
     if (layer.type === LayerType.Stitch) {
       draft.kind = surface.kind.slice();
       draft.colors = surface.colors.slice();
@@ -1614,7 +1760,7 @@ function planMetadataCommand(document: LayeredDocument, command: DomainCommand, 
   let run: SurfaceRun | undefined;
   for (const surface of surfaces) run = runSurfaceCommand(surface, command, limit);
   if (run === undefined || run.next === undefined || run.entry === undefined) return { result: run?.result ?? result(metadataSurface(document), false) };
-  if (run.entry.kind !== 'delta' || run.entry.delta.cells.indices.length > 0 || run.entry.delta.beforeBackstitches !== undefined) {
+  if (run.entry.kind !== 'delta' || run.entry.delta.cells.indices.length > 0 || run.entry.delta.beforeBackstitches !== undefined || run.entry.delta.beforePointStitches !== undefined) {
     throw new DomainError('invalid-command', 'A palette or settings command changed layer content.');
   }
   return {
@@ -1738,9 +1884,13 @@ function applyLayeredEntry(document: LayeredDocument, entry: LayeredHistoryEntry
       if (entry.layerId !== null && layer === undefined) throw new DomainError('invalid-history-state', `History layer ${String(entry.layerId)} no longer exists.`);
       const surface = layer === undefined ? metadataSurface(document) : layerSurface(document, layer.id);
       const applied = applyDelta(surface, entry.delta, useAfter);
-      // A store snapshot predates any marks made since; lines it leaves unchanged keep them.
-      const next = layer?.type === LayerType.Specialty && applied.backstitches !== surface.backstitches
-        ? { ...applied, backstitches: keepLineCompletion(applied.backstitches, layer.backstitches) }
+      // A store snapshot predates any marks made since; lines and points it leaves unchanged keep them.
+      const next = layer?.type === LayerType.Specialty
+        ? {
+            ...applied,
+            backstitches: applied.backstitches === surface.backstitches ? applied.backstitches : keepLineCompletion(applied.backstitches, layer.backstitches),
+            pointStitches: applied.pointStitches === surface.pointStitches ? applied.pointStitches : keepPointCompletion(applied.pointStitches, layer.pointStitches)
+          }
         : applied;
       const commandResult = result(next, true, undefined, undefined, {
         changed: true,
@@ -1774,7 +1924,7 @@ function recordToDto(record: LayerRecord): HistoryLayerDto {
   const header = { id: record.id, type: record.type, name: record.name, visible: record.visible };
   if (record.content === null) return header;
   if (record.content === 'empty') return { ...header, empty: true };
-  if ('backstitches' in record.content) return { ...header, backstitches: cloneBackstitches(record.content.backstitches) };
+  if ('backstitches' in record.content) return { ...header, backstitches: cloneBackstitches(record.content.backstitches), pointStitches: clonePointStitches(record.content.pointStitches) };
   const { kind, colors, completed } = record.content;
   return { ...header, kind: kind.slice(), colors: colors.slice(), ...(completed === undefined ? {} : { completed: completed.slice() }) };
 }
@@ -1806,15 +1956,15 @@ function layeredEntryToDto(entry: LayeredHistoryEntry): DocumentEditorHistoryEnt
 
 function historyLayerDto(value: unknown, width: number, height: number, label: string): asserts value is HistoryLayerDto {
   const layer = historyRecord(value, label);
-  historyKeys(layer, ['id', 'type', 'name', 'visible'], ['empty', 'kind', 'colors', 'completed', 'backstitches'], label);
+  historyKeys(layer, ['id', 'type', 'name', 'visible'], ['empty', 'kind', 'colors', 'completed', 'backstitches', 'pointStitches'], label);
   historySafeInteger(layer.id, `${label}.id`, 1);
   if (typeof layer.name !== 'string') throw new DomainError('invalid-history-state', `${label}.name is invalid.`);
   const nameLength = Array.from(layer.name).length;
   if (nameLength < 1 || nameLength > MAX_LAYER_NAME_CHARS) throw new DomainError('invalid-history-state', `${label}.name is invalid.`);
   historyBoolean(layer.visible, `${label}.visible`);
-  if (layer.empty !== undefined && (layer.empty !== true || layer.kind !== undefined || layer.colors !== undefined || layer.completed !== undefined || layer.backstitches !== undefined)) throw new DomainError('invalid-history-state', `${label}.empty is invalid.`);
+  if (layer.empty !== undefined && (layer.empty !== true || layer.kind !== undefined || layer.colors !== undefined || layer.completed !== undefined || layer.backstitches !== undefined || layer.pointStitches !== undefined)) throw new DomainError('invalid-history-state', `${label}.empty is invalid.`);
   if (layer.type === LayerType.Stitch) {
-    if (layer.backstitches !== undefined) throw new DomainError('invalid-history-state', `${label} is a stitch layer with backstitches.`);
+    if (layer.backstitches !== undefined || layer.pointStitches !== undefined) throw new DomainError('invalid-history-state', `${label} is a stitch layer with specialty stitches.`);
     if ((layer.kind === undefined) !== (layer.colors === undefined)) throw new DomainError('invalid-history-state', `${label} cell planes must be paired.`);
     if (layer.kind !== undefined) {
       historyUint8(layer.kind, `${label}.kind`);
@@ -1829,7 +1979,9 @@ function historyLayerDto(value: unknown, width: number, height: number, label: s
     }
   } else if (layer.type === LayerType.Specialty) {
     if (layer.kind !== undefined || layer.colors !== undefined || layer.completed !== undefined) throw new DomainError('invalid-history-state', `${label} is a specialty layer with cells.`);
+    if ((layer.backstitches === undefined) !== (layer.pointStitches === undefined)) throw new DomainError('invalid-history-state', `${label} specialty stores must be paired.`);
     if (layer.backstitches !== undefined) historyBackstitches(layer.backstitches, `${label}.backstitches`);
+    if (layer.pointStitches !== undefined) historyPointStitches(layer.pointStitches, `${label}.pointStitches`);
   } else {
     throw new DomainError('invalid-history-state', `${label}.type is unsupported.`);
   }
@@ -1907,7 +2059,7 @@ function historyCanvasEntry(entry: HistoryRecord, label: string): void {
     if (active === 0 || active === cellCount) throw new DomainError('invalid-history-state', `${label}.before.canvasMaskBits must hold some but not all cells.`);
   }
   const removal = historyRecord(entry.removal, `${label}.removal`);
-  historyKeys(removal, ['cells', 'backstitches'], [], `${label}.removal`);
+  historyKeys(removal, ['cells', 'backstitches', 'pointStitches'], [], `${label}.removal`);
   const layerIds = new Set<number>();
   historyArray(removal.cells, `${label}.removal.cells`).forEach((value, index) => {
     const cellsLabel = `${label}.removal.cells[${String(index)}]`;
@@ -1937,6 +2089,19 @@ function historyCanvasEntry(entry: HistoryRecord, label: string): void {
     historyStrictIndices(lines.positions, UINT32_MAX, `${linesLabel}.positions`);
     historyLength(lines.positions, lines.backstitches.ids.length, `${linesLabel}.positions`);
   });
+  // A specialty layer can lose lines and points in one edit, so points keep their own layer set.
+  const pointLayerIds = new Set<number>();
+  historyArray(removal.pointStitches, `${label}.removal.pointStitches`).forEach((value, index) => {
+    const pointsLabel = `${label}.removal.pointStitches[${String(index)}]`;
+    const points = historyRecord(value, pointsLabel);
+    historyKeys(points, ['layerId', 'positions', 'pointStitches'], [], pointsLabel);
+    const layerId = historySafeInteger(points.layerId, `${pointsLabel}.layerId`, 1);
+    if (pointLayerIds.has(layerId)) throw new DomainError('invalid-history-state', `${pointsLabel}.layerId is duplicated.`);
+    pointLayerIds.add(layerId);
+    historyPointStitches(points.pointStitches, `${pointsLabel}.pointStitches`);
+    historyStrictIndices(points.positions, UINT32_MAX, `${pointsLabel}.positions`);
+    historyLength(points.positions, points.pointStitches.ids.length, `${pointsLabel}.positions`);
+  });
 }
 
 function historyLayeredEntry(value: unknown, label: string, allowGroup = true): asserts value is DocumentEditorHistoryEntryDto {
@@ -1947,7 +2112,7 @@ function historyLayeredEntry(value: unknown, label: string, allowGroup = true): 
     historyDelta(entry.delta, MAX_PERSISTABLE_CELL_COUNT, `${label}.delta`);
     const delta = entry.delta as HistoryDeltaDto;
     if (!historyDeltaChanged(delta)) throw new DomainError('invalid-history-state', `${label} contains no mutation.`);
-    if (entry.layerId === null && (delta.cells.indices.length > 0 || delta.cellCompletions !== undefined || delta.backstitchCompletions !== undefined || delta.beforeBackstitches !== undefined)) {
+    if (entry.layerId === null && (delta.cells.indices.length > 0 || delta.cellCompletions !== undefined || delta.backstitchCompletions !== undefined || delta.pointStitchCompletions !== undefined || delta.beforeBackstitches !== undefined || delta.beforePointStitches !== undefined)) {
       throw new DomainError('invalid-history-state', `${label} is a document delta with layer content.`);
     }
   } else if (entry.kind === 'layers') {
@@ -1974,7 +2139,9 @@ function historyLayeredEntry(value: unknown, label: string, allowGroup = true): 
 function recordFromDto(layer: HistoryLayerDto): LayerRecord {
   const header = { id: layer.id, type: layer.type, name: layer.name, visible: layer.visible };
   if (layer.empty === true) return { ...header, content: 'empty' };
-  if (layer.type === LayerType.Specialty) return { ...header, content: layer.backstitches === undefined ? null : { backstitches: cloneBackstitches(layer.backstitches) } };
+  if (layer.type === LayerType.Specialty) {
+    return { ...header, content: layer.backstitches === undefined || layer.pointStitches === undefined ? null : { backstitches: cloneBackstitches(layer.backstitches), pointStitches: clonePointStitches(layer.pointStitches) } };
+  }
   if (layer.kind === undefined || layer.colors === undefined) return { ...header, content: null };
   return { ...header, content: { kind: layer.kind.slice(), colors: layer.colors.slice(), ...(layer.completed === undefined ? {} : { completed: layer.completed.slice() }) } };
 }
@@ -2015,7 +2182,7 @@ interface ChainLayerBase {
   visible: boolean;
   /** Palette id to reference count in this layer. */
   colorUse: Map<number, number>;
-  /** Backstitch ids on this layer. */
+  /** Specialty stitch ids (backstitches and point stitches) on this layer. */
   lineIds: Set<number>;
 }
 
@@ -2030,6 +2197,7 @@ interface ChainStitchLayer extends ChainLayerBase {
 interface ChainSpecialtyLayer extends ChainLayerBase {
   readonly type: typeof LayerType.Specialty;
   backstitches: BackstitchStore;
+  pointStitches: PointStitchStore;
 }
 
 type ChainLayer = ChainStitchLayer | ChainSpecialtyLayer;
@@ -2064,11 +2232,21 @@ function countColors(values: ArrayLike<number>, use = new Map<number, number>())
   return use;
 }
 
+/** The content fields of a chain specialty layer for these stores. */
+function chainSpecialtyContent(backstitches: BackstitchStore, pointStitches: PointStitchStore): Pick<ChainSpecialtyLayer, 'backstitches' | 'pointStitches' | 'colorUse' | 'lineIds'> {
+  return {
+    backstitches,
+    pointStitches,
+    colorUse: countColors(pointStitches.colors, countColors(backstitches.colors)),
+    lineIds: new Set([...backstitches.ids, ...pointStitches.ids])
+  };
+}
+
 function chainLayerFromLayer(layer: Layer): ChainLayer {
   if (layer.type === LayerType.Stitch) {
     return { id: layer.id, type: layer.type, name: layer.name, visible: layer.visible, kind: layer.kind, colors: layer.colors, ownsPlanes: false, colorUse: countColors(layer.colors), lineIds: new Set() };
   }
-  return { id: layer.id, type: layer.type, name: layer.name, visible: layer.visible, backstitches: layer.backstitches, colorUse: countColors(layer.backstitches.colors), lineIds: new Set(layer.backstitches.ids) };
+  return { id: layer.id, type: layer.type, name: layer.name, visible: layer.visible, ...chainSpecialtyContent(layer.backstitches, layer.pointStitches) };
 }
 
 function chainFromDocument(document: LayeredDocument): ChainState {
@@ -2099,6 +2277,7 @@ function assertWrittenCellsValid(state: ChainState, kind: Uint8Array, colors: Ui
     colors,
     completed: completed ?? new Uint8Array(kind.length),
     backstitches: emptyBackstitches(),
+    pointStitches: emptyPointStitches(),
     palette: [...palette],
     settings: state.settings,
     revision: 0,
@@ -2109,14 +2288,32 @@ function assertWrittenCellsValid(state: ChainState, kind: Uint8Array, colors: Ui
   if (errors.length > 0) throw new DomainError('invalid-history-state', `${label} writes invalid cells: ${errors[0]}`);
 }
 
-/** Validates a written backstitch store against the dimensions, palette, allocator and the other layers' ids. */
-function assertWrittenLinesValid(state: ChainState, layerId: number, store: BackstitchStore, width: number, height: number, palette: readonly PaletteEntry[], layers: readonly ChainLayer[], label: string): void {
+/**
+ * Validates a layer's written specialty stores against the dimensions,
+ * palette, allocator and the other layers' ids. Lines and points share one id
+ * space, so ids must be unique across both stores.
+ */
+function assertWrittenSpecialtyValid(state: ChainState, layerId: number, store: BackstitchStore, points: PointStitchStore, width: number, height: number, palette: readonly PaletteEntry[], layers: readonly ChainLayer[], label: string): void {
   const active = new Set(palette.filter((entry) => entry.active).map((entry) => entry.id));
+  const beads = new Set(palette.filter(isBeadEntry).map((entry) => entry.id));
   const others = layers.filter((layer) => layer.id !== layerId);
   const ids = new Set<number>();
   const segments = new Set<string>();
   const fail = (): never => historyStateMismatch(`${label}.backstitches`);
   const mask = state.width === width && state.height === height ? state.canvasMask : undefined;
+  const shape = { width, height, ...(mask === undefined ? {} : { canvasMask: mask }) };
+  const positions = new Set<string>();
+  for (let index = 0; index < points.ids.length; index += 1) {
+    const id = points.ids[index];
+    const point = { x: points.x[index], y: points.y[index] };
+    const key = pointKey(point.x, point.y);
+    if (id === 0 || id >= state.backstitchIdLimit || ids.has(id) || others.some((layer) => layer.lineIds.has(id))) historyStateMismatch(`${label}.pointStitches`);
+    if (!isPointStitchPosition(point) || !pointWithinCanvas(shape, point.x, point.y)) historyStateMismatch(`${label}.pointStitches`);
+    if (positions.has(key) || !active.has(points.colors[index]) || points.completed[index] > 1) historyStateMismatch(`${label}.pointStitches`);
+    if (points.orientations[index] > 3 || (points.orientations[index] !== 0 && !beads.has(points.colors[index]))) historyStateMismatch(`${label}.pointStitches`);
+    ids.add(id);
+    positions.add(key);
+  }
   for (let index = 0; index < store.ids.length; index += 1) {
     const id = store.ids[index];
     const x1 = store.x1[index];
@@ -2127,7 +2324,7 @@ function assertWrittenLinesValid(state: ChainState, layerId: number, store: Back
     if (x1 > width * 4 || x2 > width * 4 || y1 > height * 4 || y2 > height * 4) fail();
     if ((x1 === x2 && y1 === y2) || x1 > x2 || (x1 === x2 && y1 > y2)) fail();
     const key = segmentKey(store, index);
-    if (segments.has(key) || !active.has(store.colors[index]) || store.completed[index] > 1) fail();
+    if (segments.has(key) || !active.has(store.colors[index]) || beads.has(store.colors[index]) || store.completed[index] > 1) fail();
     if (mask !== undefined && !backstitchWithinCanvas({ width, height, canvasMask: mask }, x1, y1, x2, y2)) fail();
     ids.add(id);
     segments.add(key);
@@ -2158,12 +2355,12 @@ function chainMatchesSide(state: ChainState, side: LayeredSide, label: string): 
     if (layer.id !== record.id || layer.type !== record.type || layer.name !== record.name) historyStateMismatch(`${label}.layers[${String(index)}]`);
     if (record.content === null) return;
     if (record.content === 'empty') {
-      const hasContent = layer.type === LayerType.Stitch ? hasNonZero(layer.kind) : layer.backstitches.ids.length > 0;
+      const hasContent = layer.type === LayerType.Stitch ? hasNonZero(layer.kind) : layer.backstitches.ids.length > 0 || layer.pointStitches.ids.length > 0;
       if (hasContent || [...layer.colorUse.values()].some((count) => count > 0)) historyStateMismatch(`${label}.layers[${String(index)}]`);
       return;
     }
     if ('backstitches' in record.content) {
-      if (layer.type !== LayerType.Specialty || !backstitchLinesEqual(layer.backstitches, record.content.backstitches)) historyStateMismatch(`${label}.layers[${String(index)}]`);
+      if (layer.type !== LayerType.Specialty || !backstitchLinesEqual(layer.backstitches, record.content.backstitches) || !pointStitchPlacementsEqual(layer.pointStitches, record.content.pointStitches)) historyStateMismatch(`${label}.layers[${String(index)}]`);
     } else if (layer.type !== LayerType.Stitch || (!typedArraysEqual(layer.kind, record.content.kind) || !typedArraysEqual(layer.colors, record.content.colors))) {
       historyStateMismatch(`${label}.layers[${String(index)}]`);
     }
@@ -2174,7 +2371,7 @@ function chainMatchesSide(state: ChainState, side: LayeredSide, label: string): 
   side.layers.forEach((record, index) => {
     if (record.content === null || record.content === 'empty') return;
     const recordLabel = `${label}.layers[${String(index)}]`;
-    if ('backstitches' in record.content) assertWrittenLinesValid(state, record.id, record.content.backstitches, side.width, side.height, state.palette, state.layers, recordLabel);
+    if ('backstitches' in record.content) assertWrittenSpecialtyValid(state, record.id, record.content.backstitches, record.content.pointStitches, side.width, side.height, state.palette, state.layers, recordLabel);
     else {
       assertWrittenCellsValid(state, record.content.kind, record.content.colors, record.content.completed, state.palette, recordLabel);
       assertCellsInCanvas(state, record.content.kind, recordLabel);
@@ -2204,11 +2401,10 @@ function chainToSide(state: ChainState, side: LayeredSide, label: string): void 
     if (record.content === 'empty') {
       return record.type === LayerType.Stitch
         ? { ...header, type: LayerType.Stitch, kind: new Uint8Array(cellCount), colors: new Uint16Array(cellCount * 4), ownsPlanes: true, colorUse: new Map(), lineIds: new Set() }
-        : { ...header, type: LayerType.Specialty, backstitches: emptyBackstitches(), colorUse: new Map(), lineIds: new Set() };
+        : { ...header, type: LayerType.Specialty, ...chainSpecialtyContent(emptyBackstitches(), emptyPointStitches()) };
     }
     if ('backstitches' in record.content) {
-      const store = record.content.backstitches;
-      return { ...header, type: LayerType.Specialty, backstitches: store, colorUse: countColors(store.colors), lineIds: new Set(store.ids) };
+      return { ...header, type: LayerType.Specialty, ...chainSpecialtyContent(record.content.backstitches, record.content.pointStitches) };
     }
     assertWrittenCellsValid(state, record.content.kind, record.content.colors, record.content.completed, palette, recordLabel);
     assertCellsInCanvas(state, record.content.kind, recordLabel);
@@ -2216,7 +2412,7 @@ function chainToSide(state: ChainState, side: LayeredSide, label: string): void 
   });
   side.layers.forEach((record, index) => {
     if (record.content === null || record.content === 'empty' || !('backstitches' in record.content)) return;
-    assertWrittenLinesValid(state, record.id, record.content.backstitches, side.width, side.height, palette, layers, `${label}.layers[${String(index)}]`);
+    assertWrittenSpecialtyValid(state, record.id, record.content.backstitches, record.content.pointStitches, side.width, side.height, palette, layers, `${label}.layers[${String(index)}]`);
   });
   assertColorsInPalette(layers, palette, label);
   state.width = side.width;
@@ -2240,7 +2436,7 @@ function packedCellsSide(cells: SparseMutationDelta['cells'], useAfter: boolean)
 function stepDeltaForValidation(state: ChainState, entry: LayerDeltaEntry, useAfter: boolean, label: string): void {
   const delta = entry.delta;
   const cells = delta.cells;
-  if (delta.cellCompletions !== undefined || delta.backstitchCompletions !== undefined) historyStateMismatch(`${label}.progress`);
+  if (delta.cellCompletions !== undefined || delta.backstitchCompletions !== undefined || delta.pointStitchCompletions !== undefined) historyStateMismatch(`${label}.progress`);
   const fromPalette = useAfter ? delta.beforePalette : delta.afterPalette;
   const toPalette = useAfter ? delta.afterPalette : delta.beforePalette;
   const fromSettings = useAfter ? delta.beforeSettings : delta.afterSettings;
@@ -2258,7 +2454,11 @@ function stepDeltaForValidation(state: ChainState, entry: LayerDeltaEntry, useAf
     for (const index of cells.indices) if (index >= cellCount) historyStateMismatch(`${label}.cells`);
     const fromStore = useAfter ? delta.beforeBackstitches : delta.afterBackstitches;
     const toStore = useAfter ? delta.afterBackstitches : delta.beforeBackstitches;
-    const foreign = layer.type === LayerType.Specialty ? cells.indices.length > 0 : (fromStore?.ids.length ?? 0) > 0 || (toStore?.ids.length ?? 0) > 0;
+    const fromPoints = useAfter ? delta.beforePointStitches : delta.afterPointStitches;
+    const toPoints = useAfter ? delta.afterPointStitches : delta.beforePointStitches;
+    const foreign = layer.type === LayerType.Specialty
+      ? cells.indices.length > 0
+      : (fromStore?.ids.length ?? 0) > 0 || (toStore?.ids.length ?? 0) > 0 || (fromPoints?.ids.length ?? 0) > 0 || (toPoints?.ids.length ?? 0) > 0;
     if (foreign) historyStateMismatch(`${label}.layerId`);
 
     if (layer.type === LayerType.Stitch && cells.indices.length > 0) {
@@ -2292,13 +2492,14 @@ function stepDeltaForValidation(state: ChainState, entry: LayerDeltaEntry, useAf
         if (to.colors[slot] !== 0) use.set(to.colors[slot], (use.get(to.colors[slot]) ?? 0) + 1);
       }
     }
-    if (layer.type === LayerType.Specialty && fromStore !== undefined && toStore !== undefined) {
-      if (!backstitchLinesEqual(layer.backstitches, fromStore)) historyStateMismatch(`${label}.backstitches`);
-      assertWrittenLinesValid(state, layer.id, fromStore, state.width, state.height, state.palette, state.layers, label);
-      assertWrittenLinesValid(state, layer.id, toStore, state.width, state.height, palette, state.layers, label);
-      layer.backstitches = toStore;
-      layer.colorUse = countColors(toStore.colors);
-      layer.lineIds = new Set(toStore.ids);
+    if (layer.type === LayerType.Specialty && ((fromStore !== undefined && toStore !== undefined) || (fromPoints !== undefined && toPoints !== undefined))) {
+      if (fromStore !== undefined && !backstitchLinesEqual(layer.backstitches, fromStore)) historyStateMismatch(`${label}.backstitches`);
+      if (fromPoints !== undefined && !pointStitchPlacementsEqual(layer.pointStitches, fromPoints)) historyStateMismatch(`${label}.pointStitches`);
+      const nextLines = toStore ?? layer.backstitches;
+      const nextPoints = toPoints ?? layer.pointStitches;
+      assertWrittenSpecialtyValid(state, layer.id, fromStore ?? layer.backstitches, fromPoints ?? layer.pointStitches, state.width, state.height, state.palette, state.layers, label);
+      assertWrittenSpecialtyValid(state, layer.id, nextLines, nextPoints, state.width, state.height, palette, state.layers, label);
+      Object.assign(layer, chainSpecialtyContent(nextLines, nextPoints));
     }
   }
   if (toPalette !== undefined) assertColorsInPalette(state.layers, palette, label);
@@ -2320,7 +2521,7 @@ function chainDocument(state: ChainState): LayeredDocument {
     height: state.height,
     layers: state.layers.map((layer): Layer => layer.type === LayerType.Stitch
       ? { id: layer.id, type: layer.type, name: layer.name, visible: layer.visible, kind: layer.kind, colors: layer.colors, completed }
-      : { id: layer.id, type: layer.type, name: layer.name, visible: layer.visible, backstitches: layer.backstitches }),
+      : { id: layer.id, type: layer.type, name: layer.name, visible: layer.visible, backstitches: layer.backstitches, pointStitches: layer.pointStitches }),
     palette: [...state.palette],
     settings: state.settings,
     revision: 0,
@@ -2360,7 +2561,7 @@ function sameLayeredGeometry(left: LayeredDocument, right: LayeredDocument): boo
       const other = right.layers[index];
       if (layer.id !== other.id) return false;
       if (layer.type === LayerType.Stitch) return other.type === LayerType.Stitch && typedArraysEqual(layer.kind, other.kind) && typedArraysEqual(layer.colors, other.colors);
-      return other.type === LayerType.Specialty && backstitchLinesEqual(layer.backstitches, other.backstitches);
+      return other.type === LayerType.Specialty && backstitchLinesEqual(layer.backstitches, other.backstitches) && pointStitchPlacementsEqual(layer.pointStitches, other.pointStitches);
     });
 }
 
@@ -2375,6 +2576,11 @@ function sameCanvasRemoval(left: CanvasEntry['removal'], right: CanvasEntry['rem
     && left.backstitches.every((lines, index) => {
       const other = right.backstitches[index];
       return lines.layerId === other.layerId && typedArraysEqual(lines.positions, other.positions) && backstitchLinesEqual(lines.backstitches, other.backstitches);
+    })
+    && left.pointStitches.length === right.pointStitches.length
+    && left.pointStitches.every((points, index) => {
+      const other = right.pointStitches[index];
+      return points.layerId === other.layerId && typedArraysEqual(points.positions, other.positions) && pointStitchPlacementsEqual(points.pointStitches, other.pointStitches);
     });
 }
 
@@ -2388,7 +2594,7 @@ function replayCanvasForValidation(document: LayeredDocument, entry: CanvasEntry
     throw error;
   }
   if (!applied.changed) historyStateMismatch(`${label}.command`);
-  return { document: applied.document, cells: removedCells(applied.removal), backstitches: removedLines(document, applied.removal) };
+  return { document: applied.document, cells: removedCells(applied.removal), backstitches: removedLines(document, applied.removal), pointStitches: removedPoints(document, applied.removal) };
 }
 
 /**
@@ -2478,11 +2684,12 @@ function hydrateLayeredHistory(value: unknown, current: LayeredDocument, configu
   return { undo, redo, undoBytes, redoBytes };
 }
 
-/** One layer's share of a Track mark: composite cells with their masks, or backstitch ids. */
+/** One layer's share of a Track mark: composite cells with their masks, or backstitch and point stitch ids. */
 interface ProgressTarget {
   readonly layerId: number;
   readonly cells: Map<number, number>;
   readonly lines: Set<number>;
+  readonly points: Set<number>;
 }
 
 /**
@@ -2495,7 +2702,7 @@ function progressTargets(document: LayeredDocument, command: ProgressCommand): P
   const targetFor = (layerId: number): ProgressTarget => {
     let target = byLayer.get(layerId);
     if (target === undefined) {
-      target = { layerId, cells: new Map(), lines: new Set() };
+      target = { layerId, cells: new Map(), lines: new Set(), points: new Set() };
       byLayer.set(layerId, target);
     }
     return target;
@@ -2526,14 +2733,41 @@ function progressTargets(document: LayeredDocument, command: ProgressCommand): P
       if (layerId !== undefined) targetFor(layerId).lines.add(id);
     }
   }
+  const pointIds = command.pointStitchIds;
+  if (pointIds !== undefined) {
+    if (!(pointIds instanceof Uint32Array)) throw new DomainError('invalid-completion-targets', 'Progress point stitch ids must be a Uint32Array.');
+    const owners = visiblePointStitchOwners(document);
+    for (const id of pointIds) {
+      const layerId = owners.get(id);
+      if (layerId !== undefined) targetFor(layerId).points.add(id);
+    }
+  }
   return document.layers.flatMap((layer) => byLayer.get(layer.id) ?? []);
 }
 
-/** The completion command a target runs on its layer's surface. */
-function progressTargetCommand(target: ProgressTarget, operation: ProgressCommand['operation']): DomainCommand {
-  if (target.lines.size > 0) return bulkBackstitchCompletionCommand(Uint32Array.from(target.lines).sort(), operation);
-  const indices = Uint32Array.from(target.cells.keys()).sort();
-  return bulkCompletionCommand(indices, operation, Uint8Array.from(indices, (index) => target.cells.get(index) ?? 0));
+/** The completion commands a target runs on its layer's surface, in order: cells, or lines then points. */
+function progressTargetCommands(target: ProgressTarget, operation: ProgressCommand['operation']): DomainCommand[] {
+  const commands: DomainCommand[] = [];
+  if (target.cells.size > 0) {
+    const indices = Uint32Array.from(target.cells.keys()).sort();
+    commands.push(bulkCompletionCommand(indices, operation, Uint8Array.from(indices, (index) => target.cells.get(index) ?? 0)));
+  }
+  if (target.lines.size > 0) commands.push(bulkBackstitchCompletionCommand(Uint32Array.from(target.lines).sort(), operation));
+  if (target.points.size > 0) commands.push({ type: 'bulk-point-stitch-completion', ids: Uint32Array.from(target.points).sort(), operation });
+  return commands;
+}
+
+/** Point stitch ids among `candidates` whose completion differs between two surfaces. */
+function changedPointCompletionIds(before: PatternDocument, after: PatternDocument, candidates: Uint32Array): number[] {
+  const beforePositions = pointStitchPositionsById(before.pointStitches);
+  const afterPositions = pointStitchPositionsById(after.pointStitches);
+  return Array.from(candidates).filter((id) => {
+    const beforePosition = beforePositions.get(id);
+    const afterPosition = afterPositions.get(id);
+    const beforeCompleted = beforePosition === undefined ? 0 : before.pointStitches.completed[beforePosition];
+    const afterCompleted = afterPosition === undefined ? 0 : after.pointStitches.completed[afterPosition];
+    return beforeCompleted !== afterCompleted;
+  });
 }
 
 /**
@@ -2647,19 +2881,36 @@ export class DocumentEditor {
     const parts: ProgressEntryPart[] = [];
     const cellIndices: number[] = [];
     const backstitchIds: number[] = [];
+    const pointStitchIds: number[] = [];
     for (const target of progressTargets(document, command)) {
-      // Progress never enters document history, so the history byte limit does not apply.
-      const run = runSurfaceCommand(layerSurface(document, target.layerId), progressTargetCommand(target, command.operation), Number.MAX_SAFE_INTEGER);
-      if (run.next === undefined || run.entry?.kind !== 'delta') continue;
-      const { cellCompletions, backstitchCompletions } = run.entry.delta;
-      document = commitSurfaceToLayer(document, target.layerId, run.next, revision);
-      parts.push({ layerId: target.layerId, ...(cellCompletions === undefined ? {} : { cells: cellCompletions }), ...(backstitchCompletions === undefined ? {} : { backstitches: backstitchCompletions }) });
-      if (cellCompletions !== undefined) cellIndices.push(...cellCompletions.indices);
-      if (backstitchCompletions !== undefined) backstitchIds.push(...backstitchCompletions.ids);
+      let surface = layerSurface(document, target.layerId);
+      let cells: ProgressEntryPart['cells'];
+      let backstitches: ProgressEntryPart['backstitches'];
+      let pointStitches: ProgressEntryPart['pointStitches'];
+      for (const targetCommand of progressTargetCommands(target, command.operation)) {
+        // Progress never enters document history, so the history byte limit does not apply.
+        const run = runSurfaceCommand(surface, targetCommand, Number.MAX_SAFE_INTEGER);
+        if (run.next === undefined || run.entry?.kind !== 'delta') continue;
+        surface = run.next;
+        cells ??= run.entry.delta.cellCompletions;
+        backstitches ??= run.entry.delta.backstitchCompletions;
+        pointStitches ??= run.entry.delta.pointStitchCompletions;
+      }
+      if (cells === undefined && backstitches === undefined && pointStitches === undefined) continue;
+      document = commitSurfaceToLayer(document, target.layerId, surface, revision);
+      parts.push({
+        layerId: target.layerId,
+        ...(cells === undefined ? {} : { cells }),
+        ...(backstitches === undefined ? {} : { backstitches }),
+        ...(pointStitches === undefined ? {} : { pointStitches })
+      });
+      if (cells !== undefined) cellIndices.push(...cells.indices);
+      if (backstitches !== undefined) backstitchIds.push(...backstitches.ids);
+      if (pointStitches !== undefined) pointStitchIds.push(...pointStitches.ids);
     }
     if (parts.length === 0) return null;
     this.layered = document;
-    return { result: this.publishProgress({ cellIndices: Uint32Array.from(cellIndices).sort(), backstitchIds: Uint32Array.from(backstitchIds).sort() }), entry: { parts } };
+    return { result: this.publishProgress({ cellIndices: Uint32Array.from(cellIndices).sort(), backstitchIds: Uint32Array.from(backstitchIds).sort(), pointStitchIds: Uint32Array.from(pointStitchIds).sort() }), entry: { parts } };
   }
 
   /**
@@ -2671,24 +2922,27 @@ export class DocumentEditor {
     let document = this.layered;
     const cellIndices: number[] = [];
     const backstitchIds: number[] = [];
+    const pointStitchIds: number[] = [];
     for (const part of entry.parts) {
       const layer = findLayer(document, part.layerId);
-      if (layer === undefined || (layer.type === LayerType.Stitch ? part.cells === undefined : part.backstitches === undefined)) continue;
+      if (layer === undefined || (layer.type === LayerType.Stitch ? part.cells === undefined : part.backstitches === undefined && part.pointStitches === undefined)) continue;
       const surface = layerSurface(document, layer.id);
       const delta: SparseMutationDelta = {
         cells: emptyCellDelta(),
         ...(part.cells === undefined ? {} : { cellCompletions: part.cells }),
-        ...(part.backstitches === undefined ? {} : { backstitchCompletions: part.backstitches })
+        ...(part.backstitches === undefined ? {} : { backstitchCompletions: part.backstitches }),
+        ...(part.pointStitches === undefined ? {} : { pointStitchCompletions: part.pointStitches })
       };
       const next = applyDelta(surface, delta, forward);
       const changed = deriveExplicitCompletionChanges(surface, next, part.cells?.indices, part.backstitches?.ids);
       document = commitSurfaceToLayer(document, layer.id, next, revision);
       cellIndices.push(...changed.cellIndices);
       backstitchIds.push(...changed.backstitchIds);
+      if (part.pointStitches !== undefined) pointStitchIds.push(...changedPointCompletionIds(surface, next, part.pointStitches.ids));
     }
     if (document === this.layered) return result(this.composite, false);
     this.layered = document;
-    return this.publishProgress({ cellIndices: Uint32Array.from(cellIndices).sort(), backstitchIds: Uint32Array.from(backstitchIds).sort() });
+    return this.publishProgress({ cellIndices: Uint32Array.from(cellIndices).sort(), backstitchIds: Uint32Array.from(backstitchIds).sort(), pointStitchIds: Uint32Array.from(pointStitchIds).sort() });
   }
 
   /** An entry whose apply throws stays on its stack. */
@@ -2766,7 +3020,7 @@ export class DocumentEditor {
       return { ...base, document: composite, revision: this.layered.revision, requiresFullRedraw: true, compositeFull: true };
     }
     const changedIndices = diffCompositeCells(previous, composite);
-    const linesChanged = !backstitchStoresEqual(previous.backstitches, composite.backstitches);
+    const linesChanged = !backstitchStoresEqual(previous.backstitches, composite.backstitches) || !pointStitchStoresEqual(previous.pointStitches, composite.pointStitches);
     return {
       ...base,
       document: composite,
@@ -2779,12 +3033,13 @@ export class DocumentEditor {
   }
 
   /** Publishes a progress-only change: the composite refreshes the marked cells, and backstitches are recomputed as usual. */
-  private publishProgress(progress: { cellIndices: Uint32Array; backstitchIds: Uint32Array }): CommandResult {
+  private publishProgress(progress: { cellIndices: Uint32Array; backstitchIds: Uint32Array; pointStitchIds: Uint32Array }): CommandResult {
     const base = result(metadataSurface(this.layered), true, undefined, undefined, {
       changed: true,
       snapshot: false,
       changedIndices: progress.cellIndices,
-      changedBackstitchIds: progress.backstitchIds
+      changedBackstitchIds: progress.backstitchIds,
+      changedPointStitchIds: progress.pointStitchIds
     });
     return this.publish(base, progress.cellIndices);
   }

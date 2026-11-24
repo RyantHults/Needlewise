@@ -31,7 +31,7 @@ export function PatternViewer({ workspace, document, showCenterMark = false, too
   const refs = { frame: useRef<HTMLDivElement>(null), base: useRef<HTMLCanvasElement>(null), overlay: useRef<HTMLCanvasElement>(null) };
   const onReadyRef = useRef(onReady);
   onReadyRef.current = onReady;
-  const { hover, attach: attachReadout } = useStitchReadout(document, workspace.availableCatalogs());
+  const { hover, attach: attachReadout } = useStitchReadout(document, [...workspace.threadCatalogs(), ...workspace.beadCatalogs()]);
   const { controller, renderer, fallback } = useEditorCanvas({
     workspace,
     document,

@@ -1,4 +1,4 @@
-import type { DisplayUnits, MaterialEstimate, PaletteEntry, PatternMetrics } from '../domain';
+import { isBeadEntry, type DisplayUnits, type MaterialEstimate, type PaletteEntry, type PatternMetrics } from '../domain';
 
 const YARDS_PER_METER = 1.09361;
 
@@ -21,6 +21,7 @@ export interface LegendCounts {
   readonly threeQuarter: number;
   readonly quarter: number;
   readonly backstitch: number;
+  readonly knot: number;
 }
 
 export interface LegendRow {
@@ -35,14 +36,29 @@ export interface LegendRow {
   readonly skeins?: LegendSkeins;
 }
 
+/** A bead entry, counted rather than measured. */
+export interface LegendBead {
+  readonly paletteId: number;
+  /** Pool slug; resolve outlines with `getSymbolOutline`. */
+  readonly symbol: string;
+  /** The catalog (Mill Hill) code. */
+  readonly code: string;
+  readonly name: string;
+  readonly color: string;
+  readonly count: number;
+}
+
 export interface LegendTotals {
   readonly counts: LegendCounts;
+  readonly beads: number;
   readonly length?: LegendLength;
   readonly skeins?: LegendSkeins;
 }
 
 export interface ExportLegend {
+  /** Thread entries. */
   readonly rows: readonly LegendRow[];
+  readonly beads: readonly LegendBead[];
   readonly totals: LegendTotals;
   readonly units: DisplayUnits;
   readonly strands: number;
@@ -75,25 +91,41 @@ function skeinsFor(material: Material | undefined): LegendSkeins | undefined {
 }
 
 function hasStitches(counts: LegendCounts): boolean {
-  return counts.full + counts.half + counts.threeQuarter + counts.quarter + counts.backstitch > 0;
+  return counts.full + counts.half + counts.threeQuarter + counts.quarter + counts.backstitch + counts.knot > 0;
 }
 
 /**
- * Legend rows for active palette entries that have at least one stitch, in
- * palette order, plus totals and the estimate assumptions.
+ * Table lines the PDF key lays out: the thread rows (or one empty-pattern
+ * line), the thread Total, then a Beads heading and one line per bead.
+ */
+export function legendLineCount(legend: ExportLegend): number {
+  const threadLines = legend.rows.length === 0 && legend.beads.length === 0 ? 1 : legend.rows.length;
+  return threadLines + 1 + (legend.beads.length === 0 ? 0 : legend.beads.length + 1);
+}
+
+/**
+ * Legend rows for active thread entries that have at least one stitch and
+ * beads for active bead entries that are placed, each in palette order, plus
+ * totals and the estimate assumptions.
  */
 export function buildLegend(palette: readonly PaletteEntry[], metrics: PatternMetrics, units: DisplayUnits): ExportLegend {
   const rows: LegendRow[] = [];
+  const beads: LegendBead[] = [];
   for (const entry of palette) {
     if (!entry.active) continue;
     const item = metrics.byPalette.get(entry.id);
     if (!item) continue;
+    if (isBeadEntry(entry)) {
+      if (item.bead > 0) beads.push({ paletteId: entry.id, symbol: entry.symbol, code: entry.catalog?.code ?? '', name: entry.name, color: entry.color, count: item.bead });
+      continue;
+    }
     const counts: LegendCounts = {
       full: item.full,
       half: item.half,
       threeQuarter: item.threeQuarter ?? 0,
       quarter: item.quarter,
-      backstitch: item.backstitch
+      backstitch: item.backstitch,
+      knot: item.knot
     };
     if (!hasStitches(counts)) continue;
     rows.push({
@@ -111,14 +143,17 @@ export function buildLegend(palette: readonly PaletteEntry[], metrics: PatternMe
   const assumptions = metrics.totalMaterial?.assumptions ?? metrics.materials.find((material) => material.assumptions)?.assumptions;
   return {
     rows,
+    beads,
     totals: {
       counts: {
         full: totals.full,
         half: totals.half,
         threeQuarter: totals.threeQuarter ?? 0,
         quarter: totals.quarter,
-        backstitch: totals.backstitch
+        backstitch: totals.backstitch,
+        knot: totals.knot
       },
+      beads: totals.bead,
       length: lengthFor(metrics.totalMaterial, units),
       skeins: skeinsFor(metrics.totalMaterial)
     },

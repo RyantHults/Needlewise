@@ -51,7 +51,7 @@ vi.mock('../../editor', async () => {
   };
 });
 
-const workspace = { availableCatalogs: () => [] } as unknown as ProjectWorkspace;
+const workspace = { threadCatalogs: () => [], beadCatalogs: () => [] } as unknown as ProjectWorkspace;
 
 function twoColorPattern(): PatternDocument {
   return createDocument({

@@ -1,4 +1,4 @@
-import type { PaletteEntry, PatternMetrics } from '../../domain';
+import { isBeadEntry, type PaletteEntry, type PatternMetrics } from '../../domain';
 import { paletteProgress } from '../../application/progress';
 import { ProgressStrip, progressPercent } from './ProgressStrip';
 
@@ -13,7 +13,8 @@ interface Props {
 }
 
 /**
- * The Track rail: "All colors" first, then each color in use. Exactly one row
+ * The Track rail: "All colors" first, then each thread in use, then each bead
+ * in use in its own list with its placed count. Exactly one row
  * is expanded into its progress card, the focused color or "All colors" when
  * nothing is focused. Tapping a collapsed row focuses it; tapping the
  * expanded color's header clears the focus.
@@ -23,6 +24,32 @@ export function TrackPalette({ palette, metrics, focused, onFocus, codeFor }: Pr
   const overall = metrics ? paletteProgress(metrics, null) : { completedComponents: 0, totalComponents: 0 };
   const overallPercent = progressPercent(overall.completedComponents, overall.totalComponents);
   const clearFocus = () => onFocus(null);
+  const threadRows = rows.filter(({ entry }) => !isBeadEntry(entry));
+  const beadRows = rows.filter(({ entry }) => isBeadEntry(entry));
+  const row = ({ entry, progress }: (typeof rows)[number]) => {
+    const code = codeFor(entry);
+    if (entry.id === focused) {
+      return (
+        <li key={entry.id} className="track-palette-expanded">
+          <ProgressStrip label={entry.name} code={code} color={entry.color} completed={progress.completedComponents} total={progress.totalComponents} onClear={clearFocus} />
+        </li>
+      );
+    }
+    const percent = progressPercent(progress.completedComponents, progress.totalComponents);
+    const bead = isBeadEntry(entry);
+    return (
+      <li key={entry.id}>
+        <button type="button" className="track-swatch" aria-pressed={false} aria-label={`${code} ${entry.name}, ${bead ? `${progress.completedComponents} of ${progress.totalComponents} beads, ` : ''}${percent}% done`} onClick={() => onFocus(entry.id)}>
+          <span className="track-swatch-chip" style={{ background: entry.color }} aria-hidden="true" />
+          <span className="track-swatch-text" aria-hidden="true">
+            <span className="track-swatch-code">{code}</span>
+            <span className="track-swatch-name">{bead ? `${entry.name} · ${progress.completedComponents}/${progress.totalComponents}` : entry.name}</span>
+          </span>
+          <span className="track-swatch-percent" aria-hidden="true">{percent}%</span>
+        </button>
+      </li>
+    );
+  };
   return (
     <>
       <ul className="track-palette" aria-label="Colors">
@@ -39,30 +66,9 @@ export function TrackPalette({ palette, metrics, focused, onFocus, codeFor }: Pr
             </button>
           )}
         </li>
-        {rows.map(({ entry, progress }) => {
-          const code = codeFor(entry);
-          if (entry.id === focused) {
-            return (
-              <li key={entry.id} className="track-palette-expanded">
-                <ProgressStrip label={entry.name} code={code} color={entry.color} completed={progress.completedComponents} total={progress.totalComponents} onClear={clearFocus} />
-              </li>
-            );
-          }
-          const percent = progressPercent(progress.completedComponents, progress.totalComponents);
-          return (
-            <li key={entry.id}>
-              <button type="button" className="track-swatch" aria-pressed={false} aria-label={`${code} ${entry.name}, ${percent}% done`} onClick={() => onFocus(entry.id)}>
-                <span className="track-swatch-chip" style={{ background: entry.color }} aria-hidden="true" />
-                <span className="track-swatch-text" aria-hidden="true">
-                  <span className="track-swatch-code">{code}</span>
-                  <span className="track-swatch-name">{entry.name}</span>
-                </span>
-                <span className="track-swatch-percent" aria-hidden="true">{percent}%</span>
-              </button>
-            </li>
-          );
-        })}
+        {threadRows.map(row)}
       </ul>
+      {beadRows.length > 0 && <ul className="track-palette" aria-label="Beads">{beadRows.map(row)}</ul>}
       {rows.length === 0 && <p className="track-palette-empty">This pattern has no stitches to track yet.</p>}
     </>
   );

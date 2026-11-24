@@ -4,6 +4,7 @@ import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import type { CanvasContextAdapter } from '../editor/contracts';
 import { coverCellPx, paintCover, renderCoverPng, type CoverCanvas, type CoverImageInput } from './cover-image';
 import { applyCommand, cell } from '../domain/test-fixtures';
+import { millHillBeadEntry } from '../catalog/test-support';
 
 interface Call { readonly op: string; readonly args: readonly unknown[] }
 
@@ -13,7 +14,7 @@ function recorder(): { context: CanvasContextAdapter; calls: Call[] } {
   const context = {
     fillStyle: '', strokeStyle: '', lineWidth: 1, globalAlpha: 1, font: '',
     clearRect: record('clearRect'), fillRect: record('fillRect'), beginPath: record('beginPath'), closePath: record('closePath'),
-    moveTo: record('moveTo'), lineTo: record('lineTo'), fill: record('fill'), stroke: record('stroke')
+    moveTo: record('moveTo'), lineTo: record('lineTo'), fill: record('fill'), stroke: record('stroke'), arc: record('arc')
   } as unknown as CanvasContextAdapter;
   return { context, calls };
 }
@@ -88,6 +89,22 @@ describe('paintCover', () => {
     await paintCover(context, inputOf(document), 8);
     expect(calls).toContainEqual({ op: 'moveTo', args: [16, 24] });
     expect(calls).toContainEqual({ op: 'lineTo', args: [24, 24] });
+  });
+
+  it('draws knots and beads at their fixed-point corners and centres', async () => {
+    let document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 10, height: 10, palette: [{ id: 1, name: 'Red', color: '#d33' }, millHillBeadEntry(2, '00020')] });
+    document = applyCommand(document, { type: 'add-point-stitch', point: { x: 8, y: 12 }, color: 1, orientation: 0 }).document;
+    document = applyCommand(document, { type: 'add-point-stitch', point: { x: 6, y: 6 }, color: 2, orientation: 0 }).document;
+    const { context, calls } = recorder();
+    await paintCover(context, inputOf(document), 8);
+    const arcs = calls.filter((call) => call.op === 'arc').map((call) => [call.args[0], call.args[1]] as [number, number]);
+    // The knot is a dot at its corner; the bead is a barrel whose rounded corners surround its centre.
+    const knot = arcs.filter(([x, y]) => x === 16 && y === 24);
+    const bead = arcs.filter(([x, y]) => !(x === 16 && y === 24));
+    expect(knot.length).toBeGreaterThan(0);
+    expect(bead.length).toBeGreaterThan(0);
+    expect(bead.reduce((sum, [x]) => sum + x, 0) / bead.length).toBeCloseTo(12);
+    expect(bead.reduce((sum, [, y]) => sum + y, 0) / bead.length).toBeCloseTo(12);
   });
 
   it('rejects with an AbortError when aborted', async () => {

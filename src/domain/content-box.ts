@@ -1,4 +1,5 @@
 import { cloneBackstitches } from './backstitch-store';
+import { clonePointStitches } from './point-stitch-store';
 import { CellKind, type PatternDocument } from './types';
 
 /** Inclusive cell bounds of a document's stitched content. */
@@ -11,10 +12,13 @@ export interface DocumentContentBox {
 
 /**
  * Bounding box of the cells that hold content, or null when there is none. A
- * cell counts when it holds any stitch (kind !== Empty) or is touched by a
- * backstitch segment (segments use quarter-cell coordinates, four per cell
- * side, so endpoint coverage maps onto cells by integer division). Masked-off
- * cells are always Empty, so they only count when a backstitch touches them.
+ * cell counts when it holds any stitch (kind !== Empty), is touched by a
+ * backstitch segment, or is covered by a knot or bead. Specialty stitches use
+ * quarter-cell coordinates, four per cell side, so coverage maps onto cells by
+ * integer division: a point's centre covers its own cell, and a corner covers
+ * the cell to its lower right, clamped onto the last row or column. Masked-off
+ * cells are always Empty, so they only count when a specialty stitch touches
+ * them.
  */
 export function contentBox(document: PatternDocument): DocumentContentBox | null {
   let left = document.width;
@@ -43,6 +47,10 @@ export function contentBox(document: PatternDocument): DocumentContentBox | null
       for (let x = minX; x <= maxX; x += 1) cover(x, y);
     }
   }
+  const points = document.pointStitches;
+  for (let index = 0; index < points.ids.length; index += 1) {
+    cover(Math.min(Math.floor(points.x[index] / 4), document.width - 1), Math.min(Math.floor(points.y[index] / 4), document.height - 1));
+  }
   if (right < left || bottom < top) return null;
   return { left, top, right, bottom };
 }
@@ -53,9 +61,11 @@ export function boxFillsDocument(document: PatternDocument, box: DocumentContent
 }
 
 /**
- * A new document holding only the cells inside `box`, with backstitches
- * translated by its origin. Cell planes, the canvas mask and the backstitch
- * store are fresh arrays, so the source document is never touched. The pure
+ * A new document holding only the cells inside `box`, with backstitches,
+ * knots and beads translated by its origin. Cell planes, the canvas mask and
+ * the specialty stores are fresh arrays, so the source document is never
+ * touched. A box from `contentBox` covers every point, so each one stays on
+ * the cropped canvas. The pure
  * translation preserves canonical endpoint order. A cropped mask that keeps
  * every cell active is dropped, since a present mask is never all-ones.
  */
@@ -85,6 +95,11 @@ export function cropDocument(document: PatternDocument, box: DocumentContentBox)
     backstitches.y1[index] -= shiftY;
     backstitches.y2[index] -= shiftY;
   }
+  const pointStitches = clonePointStitches(document.pointStitches);
+  for (let index = 0; index < pointStitches.ids.length; index += 1) {
+    pointStitches.x[index] -= shiftX;
+    pointStitches.y[index] -= shiftY;
+  }
   const cropped: PatternDocument = {
     ...document,
     width,
@@ -93,6 +108,7 @@ export function cropDocument(document: PatternDocument, box: DocumentContentBox)
     colors,
     completed,
     backstitches,
+    pointStitches,
     ...(document.originX === undefined ? {} : { originX: document.originX + box.left }),
     ...(document.originY === undefined ? {} : { originY: document.originY + box.top })
   };

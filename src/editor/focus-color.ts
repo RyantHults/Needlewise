@@ -1,4 +1,4 @@
-import { CellKind, isThreeQuarterPairKind, positionsById, type PatternDocument, type PatternFragment } from '../domain';
+import { CellKind, isThreeQuarterPairKind, pointStitchPositionsById, positionsById, type PatternDocument, type PatternFragment } from '../domain';
 
 /** Empty, or every occupied component of the cell at `index` is `focus`. */
 function occupiedAllFocus(kind: Uint8Array, colors: Uint16Array, index: number, focus: number): boolean {
@@ -52,7 +52,16 @@ export function focusBackstitchIds(surface: PatternDocument, ids: readonly numbe
   });
 }
 
-/** Copy of `fragment` with non-focus cells/backstitches removed, and cells landing on protected destination cells removed. */
+/** Keep ids whose knot or bead colour is `focus`. */
+export function focusPointStitchIds(surface: PatternDocument, ids: readonly number[] | Uint32Array, focus: number): number[] {
+  const positions = pointStitchPositionsById(surface.pointStitches);
+  return Array.from(ids).filter((id) => {
+    const position = positions.get(id);
+    return position !== undefined && surface.pointStitches.colors[position] === focus;
+  });
+}
+
+/** Copy of `fragment` with non-focus cells/backstitches/knots/beads removed, and cells landing on protected destination cells removed. */
 export function focusPasteFragment(
   fragment: PatternFragment,
   surface: PatternDocument,
@@ -78,6 +87,9 @@ export function focusPasteFragment(
   const source = fragment.backstitches;
   const keptLines: number[] = [];
   for (let line = 0; line < source.colors.length; line += 1) if (source.colors[line] === focus) keptLines.push(line);
+  const points = fragment.pointStitches;
+  const keptPoints: number[] = [];
+  for (let point = 0; point < points.colors.length; point += 1) if (points.colors[point] === focus) keptPoints.push(point);
   return {
     version: fragment.version,
     width: fragment.width,
@@ -90,6 +102,12 @@ export function focusPasteFragment(
       x2: Uint32Array.from(keptLines, (line) => source.x2[line]),
       y2: Uint32Array.from(keptLines, (line) => source.y2[line]),
       colors: Uint16Array.from(keptLines, (line) => source.colors[line])
+    },
+    pointStitches: {
+      x: Uint32Array.from(keptPoints, (point) => points.x[point]),
+      y: Uint32Array.from(keptPoints, (point) => points.y[point]),
+      colors: Uint16Array.from(keptPoints, (point) => points.colors[point]),
+      orientations: Uint8Array.from(keptPoints, (point) => points.orientations[point])
     }
   };
 }

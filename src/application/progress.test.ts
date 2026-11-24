@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { cloneDocument, computePatternMetrics, createDocument, DocumentEditor, deleteRegionCommand, HalfDirection, layeredFromSurface, QuarterCorner, type CommandResult, type DomainCommand, type PatternDocument } from '../domain';
+import { cloneDocument, computePatternMetrics, createDocument, pointStitchesFromRecords, DocumentEditor, deleteRegionCommand, HalfDirection, layeredFromSurface, QuarterCorner, type CommandResult, type DomainCommand, type PatternDocument } from '../domain';
 import { createPersistencePreparationClient, type ProjectMetadata } from '../persistence';
 import { cell, editorFromSurface, markBackstitchComplete, markCellComplete, onDefaultLayers, applyCommand, bulkRecolorCommand, bulkSetThreeQuarterCommand, createLayeredDocument } from '../domain/test-fixtures';
+import { millHillBeadEntry } from '../catalog/test-support';
 import { ProjectSession } from './session';
 import { ProgressMetricsService } from './progress';
 import { MemoryRepository } from './test-support';
@@ -376,5 +377,31 @@ describe('application progress integration', () => {
     applyResult(service, editor, redone);
     expect(service.metrics).toEqual(computePatternMetrics(editor.composite, { strands: 2 }));
     expect(service.metrics.byPalette.get(2)).toMatchObject({ totalComponents: 0 });
+  });
+
+  it('updates point stitch totals and progress after a point completion change', () => {
+    const base = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
+      width: 2,
+      height: 1,
+      palette: [
+        { id: 1, name: 'Red', color: '#d33' },
+        millHillBeadEntry(2)
+      ]
+    });
+    const withPoints = (completed: boolean): PatternDocument => ({
+      ...base,
+      pointStitches: pointStitchesFromRecords([
+        { id: 1, x: 0, y: 0, color: 1, completed, orientation: 0 },
+        { id: 2, x: 2, y: 2, color: 2, completed: false, orientation: 0 }
+      ])
+    });
+    const service = new ProgressMetricsService(withPoints(false));
+    expect(service.metrics.totals).toMatchObject({ knot: 1, bead: 1, totalComponents: 2, completedComponents: 0 });
+
+    const marked = withPoints(true);
+    service.applyComposite(marked, { full: false });
+    expectExactMetrics(service, marked);
+    expect(service.metrics.byPalette.get(1)).toMatchObject({ knot: 1, completedComponents: 1 });
+    expect(service.metrics.progress).toMatchObject({ totalComponents: 2, completedComponents: 1, remainingComponents: 1 });
   });
 });

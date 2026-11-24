@@ -1,7 +1,9 @@
 import { CellKind, isThreeQuarterPairKind } from '../domain';
-import { parseHexColor, rgbToHex } from '../domain/color';
 import type { CanvasContextAdapter, CanvasTarget, Rect, ScreenPoint } from '../editor/contracts';
 import { isCanvasImageSource } from './atlas';
+import { mixToward, threadEdgeColor, threadHighlightColor } from './colors';
+import type { BeadOrientation } from '../domain';
+import { beadBarrelPath, beadPixelSize, type BeadSize } from './point-stitches';
 import { drawStitchGeometry } from './symbol-painter';
 
 /**
@@ -62,24 +64,6 @@ function threadStrokes(kind: number, slot: number): readonly Stroke[] {
   // Callers split a pair into its components, as the symbol painter's callers do.
   if (isThreeQuarterPairKind(kind) || kind === CellKind.Empty) return [];
   return [CORNER_TO_CENTER[slot] ?? CORNER_TO_CENTER[0]];
-}
-
-/** Blend `color` toward `target` (0-255 gray) by `amount`; an unparseable color is returned unchanged. */
-function mixToward(color: string, target: number, amount: number): string {
-  const rgb = parseHexColor(color);
-  if (!rgb) return color;
-  const [red, green, blue] = rgb.map((value) => value * (1 - amount) + target * amount);
-  return rgbToHex(red, green, blue);
-}
-
-/** Shaded edge of a thread color. */
-export function threadEdgeColor(color: string): string {
-  return mixToward(color, 0, 0.35);
-}
-
-/** Lit highlight of a thread color. */
-export function threadHighlightColor(color: string): string {
-  return mixToward(color, 255, 0.4);
 }
 
 interface StrokeStyleState {
@@ -201,6 +185,46 @@ export function drawThreadBackstitch(
       color
     );
   });
+}
+
+/** French knot diameter in cell units, matching the flat chart knot. */
+export const THREAD_KNOT_DIAMETER = 0.4;
+
+function disc(context: CanvasContextAdapter, center: ScreenPoint, radius: number, color: string): void {
+  if (!context.arc) return;
+  context.fillStyle = color;
+  context.beginPath();
+  context.arc(center.x, center.y, radius, 0, Math.PI * 2);
+  context.fill();
+}
+
+/** A French knot as a shaded ball: dark rim, thread body, and a highlight toward the upper left. */
+export function drawThreadKnot(context: CanvasContextAdapter, center: ScreenPoint, cellSize: number, color: string): void {
+  const radius = (THREAD_KNOT_DIAMETER / 2) * cellSize;
+  const previousFill = context.fillStyle;
+  disc(context, center, radius, threadEdgeColor(color));
+  disc(context, center, radius * 0.8, color);
+  const shift = radius * 0.3;
+  disc(context, { x: center.x - shift, y: center.y - shift }, radius * 0.3, threadHighlightColor(color));
+  context.fillStyle = previousFill;
+}
+
+/** The shaded rim of a thread-view bead as a share of its smaller dimension. */
+const THREAD_BEAD_RIM = 0.1;
+
+/** A bead of `size` cells lying on its side along `orientation` as glass: a shaded barrel with the bead body inset in it. */
+export function drawThreadBead(context: CanvasContextAdapter, center: ScreenPoint, cellSize: number, size: BeadSize, orientation: BeadOrientation, color: string): void {
+  if (!context.arc) return;
+  const pixels = beadPixelSize(size, cellSize);
+  const inset = Math.min(pixels.width, pixels.length) * THREAD_BEAD_RIM;
+  const previousFill = context.fillStyle;
+  beadBarrelPath(context, center, pixels, orientation);
+  context.fillStyle = threadEdgeColor(color);
+  context.fill();
+  beadBarrelPath(context, center, { width: pixels.width - inset * 2, length: pixels.length - inset * 2 }, orientation);
+  context.fillStyle = color;
+  context.fill();
+  context.fillStyle = previousFill;
 }
 
 /** Flat-color stitch for cells below `THREAD_MIN_DETAIL_CELL_PX`; the caller decides via LOD. */

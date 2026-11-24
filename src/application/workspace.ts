@@ -5,6 +5,7 @@ import {
   createDocument,
   flattenDocument,
   layeredFromSurface,
+  MaterialKind,
   normalizeAidaCount,
   normalizeDisplayUnits,
   normalizeMaterialSettings,
@@ -239,8 +240,14 @@ export class ProjectWorkspace {
     return document === null || document === undefined ? undefined : INSTALLED_CATALOG_REGISTRY.resolve(document.catalog);
   }
 
-  availableCatalogs(): readonly CatalogDefinition[] {
-    return INSTALLED_CATALOG_REGISTRY.definitions;
+  /** Installed thread catalogs: what cells, backstitches, knots and the background are matched against. */
+  threadCatalogs(): readonly CatalogDefinition[] {
+    return INSTALLED_CATALOG_REGISTRY.definitions.filter((definition) => definition.materialKind !== MaterialKind.Bead);
+  }
+
+  /** Installed bead catalogs, offered only when adding beads. */
+  beadCatalogs(): readonly CatalogDefinition[] {
+    return INSTALLED_CATALOG_REGISTRY.definitions.filter((definition) => definition.materialKind === MaterialKind.Bead);
   }
 
   getAsset(assetId: string) {

@@ -159,7 +159,7 @@ describe('canvas-resize', () => {
     expect(stitchLayer(left.document).kind[2]).toBe(CellKind.Full);
     expect(stitchLayer(left.document).colors[(1 * 5 + 4) * 4]).toBe(2);
     expect(lines(left.document)).toEqual([[8, 0, 12, 0], [16, 0, 16, 4]]);
-    expect(left.removal).toEqual({ cells: [], backstitches: [] });
+    expect(left.removal).toEqual({ cells: [], backstitches: [], pointStitches: [] });
 
     const top = apply(left.document, canvasResizeCommand({ top: 1, right: 0, bottom: 0, left: 0 }));
     expect([top.document.width, top.document.height, top.document.originX, top.document.originY]).toEqual([5, 3, -2, -1]);

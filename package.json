@@ -6,9 +6,11 @@
   "packageManager": "pnpm@10.15.0",
   "scripts": {
     "dev": "vite",
-    "build": "pnpm symbols:check && tsc -b && vite build",
+    "build": "pnpm symbols:check && pnpm catalog:mill-hill:check && tsc -b && vite build",
     "symbols:build": "node scripts/build-symbol-outlines.mjs",
     "symbols:check": "node scripts/build-symbol-outlines.mjs --check",
+    "catalog:mill-hill": "node scripts/build-mill-hill-catalog.mjs",
+    "catalog:mill-hill:check": "node scripts/build-mill-hill-catalog.mjs --check",
     "typecheck": "tsc -b --pretty false",
     "lint": "eslint . && stylelint \"src/**/*.css\"",
     "test": "vitest",

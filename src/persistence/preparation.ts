@@ -151,6 +151,12 @@ export function preparationTransferList(document: LayeredDocument): Transferable
       add(layer.backstitches.y2.buffer);
       add(layer.backstitches.colors.buffer);
       add(layer.backstitches.completed.buffer);
+      add(layer.pointStitches.ids.buffer);
+      add(layer.pointStitches.x.buffer);
+      add(layer.pointStitches.y.buffer);
+      add(layer.pointStitches.colors.buffer);
+      add(layer.pointStitches.completed.buffer);
+      add(layer.pointStitches.orientations.buffer);
     }
   }
   return buffers;

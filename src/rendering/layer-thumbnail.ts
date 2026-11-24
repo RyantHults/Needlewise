@@ -1,5 +1,7 @@
-import { CellKind, FIXED_POINT_UNITS_PER_CELL, type Layer, type LayeredDocument, type PaletteEntry } from '../domain';
+import { CellKind, FIXED_POINT_UNITS_PER_CELL, isBeadEntry, type BeadOrientation, type Layer, type LayeredDocument, type PaletteEntry } from '../domain';
 import { parseHexColor, type Rgb } from '../domain/color';
+import { paletteEntry } from './colors';
+import { beadBarrelContains, beadSizeCells } from './point-stitches';
 
 /**
  * Small previews of one layer's own content for the layers panel. The pixel
@@ -52,7 +54,7 @@ function cellColor(kind: Uint8Array, colors: Uint16Array, index: number): number
   return colors[offset] || colors[offset + 1] || colors[offset + 2] || colors[offset + 3] || 0;
 }
 
-export function renderLayerThumbnailPixels(document: Pick<LayeredDocument, 'width' | 'height'> & { readonly palette: readonly PaletteEntry[] }, layer: Layer, maxSize = LAYER_THUMBNAIL_SIZE): ThumbnailPixels {
+export function renderLayerThumbnailPixels(document: Pick<LayeredDocument, 'width' | 'height'> & { readonly palette: readonly PaletteEntry[]; readonly settings: Pick<LayeredDocument['settings'], 'aidaCount'> }, layer: Layer, maxSize = LAYER_THUMBNAIL_SIZE): ThumbnailPixels {
   const { width, height, scale } = thumbnailDimensions(document.width, document.height, maxSize);
   const pixels: ThumbnailPixels = { width, height, data: new Uint8ClampedArray(width * height * 4) };
   const colors = paletteColors(document.palette);
@@ -96,6 +98,28 @@ export function renderLayerThumbnailPixels(document: Pick<LayeredDocument, 'widt
       setPixel(pixels, Math.min(width - 1, Math.floor(x1 + (x2 - x1) * t)), Math.min(height - 1, Math.floor(y1 + (y2 - y1) * t)), rgb);
     }
   }
+  // French knots are one-pixel dots; beads are barrels along their orientation at their real size, at least one pixel. Both go over the lines.
+  const points = layer.pointStitches;
+  for (let index = 0; index < points.ids.length; index += 1) {
+    const colorId = points.colors[index]!;
+    const rgb = colors.get(colorId);
+    if (!rgb) continue;
+    const x = points.x[index]! * unit, y = points.y[index]! * unit;
+    const entry = paletteEntry(document.palette, colorId);
+    const cells = entry && isBeadEntry(entry) ? beadSizeCells(document, colorId) : { width: 0, length: 0 };
+    const size = { width: cells.width * scale, length: cells.length * scale };
+    const reach = Math.max(size.width, size.length);
+    const orientation = points.orientations[index] as BeadOrientation;
+    if (Math.min(size.width, size.length) <= 1) {
+      setPixel(pixels, Math.min(width - 1, Math.floor(x)), Math.min(height - 1, Math.floor(y)), rgb);
+      continue;
+    }
+    for (let py = Math.floor(y - reach); py <= Math.ceil(y + reach); py += 1) {
+      for (let px = Math.floor(x - reach); px <= Math.ceil(x + reach); px += 1) {
+        if (beadBarrelContains(size, orientation, px + 0.5 - x, py + 0.5 - y)) setPixel(pixels, px, py, rgb);
+      }
+    }
+  }
   return pixels;
 }
 
@@ -124,7 +148,8 @@ export function layerContentChanged(previous: Layer | null, next: Layer): boolea
   if (!previous || previous.id !== next.id || previous.type !== next.type) return true;
   const sameStorage = previous.type === 'stitch' && next.type === 'stitch'
     ? previous.kind === next.kind && previous.colors === next.colors
-    : previous.type === 'specialty' && next.type === 'specialty' && previous.backstitches === next.backstitches;
+    : previous.type === 'specialty' && next.type === 'specialty'
+      && previous.backstitches === next.backstitches && previous.pointStitches === next.pointStitches;
   if (!sameStorage) return true;
   return previous.visible === next.visible && previous.name === next.name;
 }

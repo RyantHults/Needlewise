@@ -4,10 +4,12 @@ import { componentSlotMask } from './cell-components';
 
 export type ProgressOperation = 'toggle' | 'set' | 'clear';
 
-/** A Track mark in composite space: indices, component masks and backstitch ids as the flattened view shows them. */
+/** A Track mark in composite space: indices, component masks, backstitch ids and point stitch ids as the flattened view shows them. */
 export interface ProgressCommand {
   readonly cells?: { readonly indices: Uint32Array; readonly masks: Uint8Array };
   readonly backstitchIds?: Uint32Array;
+  /** Knot and bead ids; each resolves to the topmost visible layer showing it. */
+  readonly pointStitchIds?: Uint32Array;
   readonly operation: ProgressOperation;
   readonly expectedRevision?: number;
 }
@@ -17,6 +19,7 @@ export interface ProgressEntryPart {
   readonly layerId: number;
   readonly cells?: PackedCellCompletionDelta;
   readonly backstitches?: PackedBackstitchCompletionDelta;
+  readonly pointStitches?: PackedBackstitchCompletionDelta;
 }
 
 /** One Track undo step: the per-layer completion deltas a mark wrote. */

@@ -16,10 +16,12 @@ import {
 
 type CellPlanes = Pick<PatternDocument, 'kind' | 'colors' | 'completed'>;
 
-function backstitchCounts(document: PatternDocument): Map<number, MetricCounts> {
+/** Per-palette counts of the specialty stitches: backstitches and point stitches. */
+function specialtyCounts(document: PatternDocument): Map<number, MetricCounts> {
   const counts = new Map<number, MetricCounts>();
   const counter = new MetricCounter(counts);
   for (let index = 0; index < document.backstitches.ids.length; index += 1) counter.backstitch(document.backstitches, index, 1);
+  for (let index = 0; index < document.pointStitches.ids.length; index += 1) counter.pointStitch(document.pointStitches, index, 1);
   return counts;
 }
 
@@ -43,7 +45,7 @@ export interface CompositeChange {
 }
 
 /**
- * One palette color's progress, backstitches included, or the whole
+ * One palette color's progress, specialty stitches included, or the whole
  * pattern's for `null`. A color with no stitches is zero of zero.
  */
 export function paletteProgress(metrics: PatternMetrics, paletteId: number | null): ProgressMetrics {
@@ -66,10 +68,10 @@ export class ProgressMetricsService {
   private settings: PatternMetrics['materialSettings'];
   private counts: Map<number, MetricCounts>;
   private current: PatternMetrics;
-  // Copies of the composite's cell planes and backstitch totals as last
+  // Copies of the composite's cell planes and specialty totals as last
   // counted, so a change needs only the composite and its changed cells.
   private shadow: CellPlanes | null = null;
-  private shadowBackstitches = new Map<number, MetricCounts>();
+  private shadowSpecialty = new Map<number, MetricCounts>();
   private shadowSettings: PatternSettings | null = null;
 
   constructor(document: PatternDocument, options?: MetricsOptions) {
@@ -80,7 +82,7 @@ export class ProgressMetricsService {
     this.counts = scanCounts(document);
     this.current = metricsFromCounts(document, this.counts, this.settings, this.aidaCount);
     this.shadow = { kind: document.kind.slice(), colors: document.colors.slice(), completed: document.completed.slice() };
-    this.shadowBackstitches = backstitchCounts(document);
+    this.shadowSpecialty = specialtyCounts(document);
     this.shadowSettings = document.settings;
   }
 
@@ -97,8 +99,9 @@ export class ProgressMetricsService {
   /**
    * Applies a change to the layered editor's composite: changed cells are
    * recounted against a private copy of their previous values, and
-   * backstitches, palette and settings are re-read (flattening can dedupe or
-   * reveal backstitches outside the command's own change set). Returns true
+   * specialty stitches, palette and settings are re-read (flattening can
+   * dedupe or reveal backstitches and point stitches outside the command's
+   * own change set, and marks change their completion). Returns true
    * when the document settings changed.
    */
   applyComposite(composite: PatternDocument, change: CompositeChange): boolean {
@@ -133,10 +136,10 @@ export class ProgressMetricsService {
         counter.cell(composite, index, 1);
       }
     }
-    const backstitches = backstitchCounts(composite);
-    addPaletteCounts(this.counts, this.shadowBackstitches, -1);
-    addPaletteCounts(this.counts, backstitches, 1);
-    this.shadowBackstitches = backstitches;
+    const specialty = specialtyCounts(composite);
+    addPaletteCounts(this.counts, this.shadowSpecialty, -1);
+    addPaletteCounts(this.counts, specialty, 1);
+    this.shadowSpecialty = specialty;
     this.current = metricsFromCounts(composite, this.counts, this.settings, this.aidaCount);
     this.currentDocument = composite;
     return settingsChanged;
@@ -149,7 +152,7 @@ export class ProgressMetricsService {
     this.counts = scanCounts(document);
     this.current = metricsFromCounts(document, this.counts, this.settings, this.aidaCount);
     this.shadow = { kind: document.kind.slice(), colors: document.colors.slice(), completed: document.completed.slice() };
-    this.shadowBackstitches = backstitchCounts(document);
+    this.shadowSpecialty = specialtyCounts(document);
     this.shadowSettings = document.settings;
     return this.current;
   }

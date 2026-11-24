@@ -318,6 +318,11 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:var(--
 .rail-right .canvas-column { grid-column:1; grid-row:1; }
 .editor-rail { display:flex; flex-direction:column; gap:.25rem; }
 .palette-rail { --palette-square:2.55rem; --palette-surround:var(--color-accent-muted); display:flex; min-height:0; max-height:100%; flex-direction:column; gap:.35rem; align-items:center; margin-left:.35rem; }
+.palette-rail-tabs { display:flex; align-self:stretch; gap:.15rem; padding:0 .15rem; border-bottom:1px solid var(--color-panel-line); }
+.palette-rail-tab { flex:1; min-width:0; padding:.3rem .1rem; border:0; border-bottom:2px solid transparent; background:transparent; color:var(--color-ink-faint); font:inherit; font-size:.58rem; font-weight:700; letter-spacing:.06em; line-height:1; text-transform:uppercase; white-space:nowrap; cursor:pointer; }
+.palette-rail-tab[aria-selected="true"] { border-bottom-color:var(--color-accent); color:var(--color-accent-ink); }
+.palette-rail-panel { display:flex; min-height:0; flex-direction:column; gap:.35rem; align-items:center; }
+.palette-rail-empty { grid-column:1 / -1; margin:0; padding:.3rem 0; color:var(--color-ink-faint); font-size:.62rem; text-align:center; }
 .palette-rail-items { display:grid; grid-template-columns:repeat(2, 2.75rem); gap:.35rem; min-height:0; overflow-y:auto; align-content:start; padding:.1rem .15rem .35rem; scrollbar-width:thin; }
 .editor-layout:not(.rail-right) .palette-rail { order:-1; margin-left:0; margin-right:.35rem; }
 .palette-rail .palette-row { display:block; min-height:3.55rem; padding:0; overflow:visible; background:transparent; }
@@ -367,6 +372,10 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:var(--
 .rail-button .ui-icon { width:1.3rem; height:1.3rem; }
 .rail-button .ui-icon[data-icon="backstitch"] { transform:scale(3); transform-origin:center; }
 .rail-button .ui-icon[data-icon="stitch"] { width:1.34rem; height:1.34rem; }
+.palette-add-glyph .ui-icon { width:1.1rem; height:1.1rem; }
+.specialty-stitch-options .segmented-option { display:inline-flex; align-items:center; gap:.3rem; }
+.specialty-stitch-options .ui-icon { width:.9rem; height:.9rem; }
+.specialty-stitch-options .ui-icon[data-icon="backstitch"] { transform:scale(2.4); }
 .chart-view { display:grid; grid-template-columns:1fr 1fr; gap:.35rem; }
 .palette-button[aria-pressed="true"] .palette-swatch,
 .palette-button[aria-pressed="true"] > .swatch { outline:1px solid var(--color-accent); outline-offset:.06rem; }
@@ -726,7 +735,10 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:var(--
   }
 
   .rail-right .palette-rail { grid-column:1; grid-row:1; }
-  .palette-rail::before { flex:0 0 auto; color:var(--color-panel-ink); content:"Colors"; font-size:.62rem; font-weight:700; letter-spacing:.08em; text-transform:uppercase; writing-mode:vertical-rl; }
+  .palette-rail-tabs { flex:0 0 auto; flex-direction:column; align-self:center; padding:0; border-bottom:0; }
+  .palette-rail-tab { border-bottom:0; border-left:2px solid transparent; }
+  .palette-rail-tab[aria-selected="true"] { border-left-color:var(--color-accent); }
+  .palette-rail-panel { flex:1 1 auto; flex-direction:row; min-width:0; }
   .palette-rail-items {
     display:flex;
     flex:1 1 auto;
@@ -866,8 +878,11 @@ fieldset.dimension-fields > legend { grid-column:1 / -1; padding:0; color:var(--
     overflow:visible;
     padding:.1rem;
   }
-  .editor-rail-popover .editor-rail::before,
-  .editor-rail-popover .palette-rail::before { display:none; }
+  .editor-rail-popover .editor-rail::before { display:none; }
+  .editor-rail-popover .palette-rail-tabs { flex-direction:row; border-bottom:1px solid var(--color-panel-line); }
+  .editor-rail-popover .palette-rail-tab { border-left:0; border-bottom:2px solid transparent; }
+  .editor-rail-popover .palette-rail-tab[aria-selected="true"] { border-bottom-color:var(--color-accent); }
+  .editor-rail-popover .palette-rail-panel { display:block; }
   .editor-rail-popover .editor-rail .rail-button {
     width:100%;
     min-width:2.8rem;

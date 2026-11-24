@@ -1,4 +1,4 @@
-import { number, type LegendLength, type LegendSkeins } from '../../export';
+import { number, type LegendCounts, type LegendLength, type LegendSkeins } from '../../export';
 
 const range = (min: number, max: number, unit: string) => {
   // Collapse ranges that round identically (e.g. zero-to-zero) to one value.
@@ -18,13 +18,14 @@ export function formatLength(length: LegendLength | undefined): string | null {
   return length ? range(length.min, length.max, length.unit) : null;
 }
 
-export function stitchSummary(counts: { full: number; half: number; quarter: number; threeQuarter?: number; backstitch: number }): string {
+export function stitchSummary(counts: LegendCounts): string {
   const parts = [
     counts.full > 0 ? `${counts.full} full` : null,
     counts.half > 0 ? `${counts.half} half` : null,
-    (counts.threeQuarter ?? 0) > 0 ? `${counts.threeQuarter} 3/4` : null,
+    counts.threeQuarter > 0 ? `${counts.threeQuarter} 3/4` : null,
     counts.quarter > 0 ? `${counts.quarter} quarter` : null,
-    counts.backstitch > 0 ? `${counts.backstitch} backstitch` : null
+    counts.backstitch > 0 ? `${counts.backstitch} backstitch` : null,
+    counts.knot > 0 ? `${counts.knot} ${counts.knot === 1 ? 'knot' : 'knots'}` : null
   ].filter((part): part is string => part !== null);
   return parts.length > 0 ? parts.join(' · ') : 'No stitches';
 }

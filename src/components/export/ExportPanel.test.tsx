@@ -5,6 +5,7 @@ import { createDocument } from '../../domain';
 import { DEFAULT_EXPORT_SETTINGS, EXPORT_SETTINGS_STORAGE_KEY, type ExportSettings } from '../../export';
 import { ExportDialog, ExportPanel, type ExportPanelProps, type ExportPanelWorkspace, type ExportPdf } from './ExportPanel';
 import { applyCommand, cell } from '../../domain/test-fixtures';
+import { millHillBeadEntry } from '../../catalog/test-support';
 import { ToastProvider } from '../toast';
 
 const palette = [{ id: 1, name: 'Ruby', color: '#AA0000' }];
@@ -256,6 +257,19 @@ describe('ExportPanel', () => {
     expect(screen.getByRole('button', { name: 'Export PDF' })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: 'Export PDF' }));
     await screen.findByText('Exported Units quilt.pdf.');
+  });
+
+  it('lists beads apart from the thread rows', () => {
+    let document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association, width: 14, height: 14, palette: [...palette, millHillBeadEntry(2, '00020')] });
+    document = applyCommand(document, cell(14, { type: 'set-full', x: 0, y: 0, color: 1 })).document;
+    document = applyCommand(document, cell(14, { type: 'set-full', x: 13, y: 13, color: 1 })).document;
+    document = applyCommand(document, { type: 'add-point-stitch', point: { x: 6, y: 6 }, color: 2, orientation: 0 }).document;
+    setup({ document });
+    const bead = document.palette[1];
+    const beads = screen.getByRole('list', { name: 'Beads' });
+    expect(within(beads).getByText(bead.name)).toBeInTheDocument();
+    const totals = screen.getByRole('region', { name: 'Thread totals' });
+    expect(within(totals).getAllByRole('listitem').filter((item) => !beads.contains(item)).map((item) => within(item).queryByText(bead.name))).toEqual([null]);
   });
 
   it('disables export for an empty pattern and says why', () => {

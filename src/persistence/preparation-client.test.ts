@@ -72,7 +72,7 @@ describe('persistence preparation worker client', () => {
     const promise = client.prepare({ projectId: 'client-project', revision: live.revision, document: live });
     expect(factoryCalls).toBe(1);
     expect(worker.posted).toHaveLength(1);
-    expect(worker.posted[0].transfer).toHaveLength(10);
+    expect(worker.posted[0].transfer).toHaveLength(16);
     expect((worker.posted[0].message as { document: LayeredDocument }).document).not.toBe(live);
     expect((worker.posted[0].message as { document: LayeredDocument }).document.catalog).toEqual(live.catalog);
     if (typeof structuredClone === 'function') {

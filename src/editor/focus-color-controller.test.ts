@@ -252,7 +252,7 @@ describe('Focus Color', () => {
     const document = layeredDocument();
     seed(document, 2, backstitch(0, 0, 4, 0, 2));
     const { controller, backstitches, notices } = fixture(document, 2);
-    controller.setTool({ tool: 'backstitch' });
+    controller.setTool({ tool: 'specialty', stitch: 'backstitch' });
     controller.handlePointerDown({ ...at(1, 0, 0), screenX: 0, screenY: 0 });
     controller.handlePointerUp({ ...at(1, 0, 0), screenX: 16, screenY: 0 });
     expect(backstitches()).toEqual({ '0,0-4,0': 2 });

@@ -22,14 +22,16 @@ import {
   type PatternDocument,
   type PatternFragment,
   type PatternSettings,
+  type PointStitchStore,
   type SpecialtyLayer,
   type StitchLayer
 } from './types';
-import { UINT32_MAX, emptyBackstitches, normalizePatternSettings } from './model';
+import { UINT32_MAX, emptyBackstitches, emptyPointStitches, normalizePatternSettings } from './model';
 import { collectValidationErrors } from './validation';
 import { canvasFields } from './canvas';
 import { requireCommandInteger } from './guards';
 import { allocateBackstitches, cloneBackstitches, copyBackstitch, segmentKey } from './backstitch-store';
+import { allocatePointStitches, clonePointStitches, copyPointStitch, pointKey } from './point-stitch-store';
 
 const DEFAULT_LAYER_NAMES: Record<LayerType, string> = {
   [LayerType.Stitch]: 'Stitches',
@@ -41,8 +43,9 @@ const DEFAULT_LAYER_NAMES: Record<LayerType, string> = {
 
 /**
  * Builds a layered document from a single surface: cells go to "Stitches",
- * backstitches to "Specialty", and completion is dropped. The new layers take
- * ownership of the surface's kind/colors planes and backstitch coordinates.
+ * backstitches and point stitches to "Specialty", and completion is dropped.
+ * The new layers take ownership of the surface's kind/colors planes and
+ * specialty stitch coordinates.
  */
 export function layeredFromSurface(surface: PatternDocument, settings?: Partial<PatternSettings>): LayeredDocument {
   const cellCount = surface.width * surface.height;
@@ -60,7 +63,8 @@ export function layeredFromSurface(surface: PatternDocument, settings?: Partial<
     type: LayerType.Specialty,
     name: DEFAULT_LAYER_NAMES[LayerType.Specialty],
     visible: true,
-    backstitches: { ...surface.backstitches, completed: new Uint8Array(surface.backstitches.ids.length) }
+    backstitches: { ...surface.backstitches, completed: new Uint8Array(surface.backstitches.ids.length) },
+    pointStitches: { ...surface.pointStitches, completed: new Uint8Array(surface.pointStitches.ids.length) }
   };
   return {
     version: LAYERED_DOCUMENT_VERSION,
@@ -156,8 +160,8 @@ function zeroPlanes(width: number, height: number): ZeroPlanes {
 
 /**
  * A single-surface view of one layer. Stitch surfaces alias the layer's cell
- * planes and carry an empty backstitch store; specialty surfaces alias the
- * backstitch store over shared all-zero cell planes. Palette and settings are
+ * planes and carry empty specialty stores; specialty surfaces alias the
+ * backstitch and point stitch stores over shared all-zero cell planes. Palette and settings are
  * shared by reference; counters are copied.
  */
 export function layerSurface(document: LayeredDocument, layerId: number): PatternDocument {
@@ -172,6 +176,7 @@ export function layerSurface(document: LayeredDocument, layerId: number): Patter
     colors: planes.colors,
     completed: planes.completed,
     backstitches: layer.type === LayerType.Specialty ? layer.backstitches : emptyBackstitches(),
+    pointStitches: layer.type === LayerType.Specialty ? layer.pointStitches : emptyPointStitches(),
     palette: document.palette,
     settings: document.settings,
     revision: document.revision,
@@ -218,6 +223,45 @@ function flattenBackstitches(document: LayeredDocument): BackstitchStore {
     const store = layer.backstitches;
     for (let index = 0; index < store.ids.length; index += 1) {
       if (owners.get(store.ids[index]) === layer.id) copyBackstitch(store, index, result, cursor++);
+    }
+  }
+  return result;
+}
+
+/**
+ * The visible specialty layer that owns each point stitch the composite shows,
+ * keyed by point stitch id. When the same position holds a point on several
+ * layers only the topmost one is shown, so lower ones have no owner.
+ */
+export function visiblePointStitchOwners(document: LayeredDocument): Map<number, number> {
+  const owners = new Map<number, number>();
+  const seen = new Set<string>();
+  for (let layerIndex = document.layers.length - 1; layerIndex >= 0; layerIndex -= 1) {
+    const layer = document.layers[layerIndex];
+    if (layer.type !== LayerType.Specialty || !layer.visible) continue;
+    const store = layer.pointStitches;
+    for (let index = 0; index < store.ids.length; index += 1) {
+      const key = pointKey(store.x[index], store.y[index]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      owners.set(store.ids[index], layer.id);
+    }
+  }
+  return owners;
+}
+
+/** Concatenates the point stitches each visible specialty layer owns, bottom to top. */
+function flattenPointStitches(document: LayeredDocument): PointStitchStore {
+  const layers = document.layers.filter((layer): layer is SpecialtyLayer => layer.type === LayerType.Specialty && layer.visible);
+  if (layers.length === 0) return emptyPointStitches();
+  if (layers.length === 1) return clonePointStitches(layers[0].pointStitches);
+  const owners = visiblePointStitchOwners(document);
+  const result = allocatePointStitches(owners.size);
+  let cursor = 0;
+  for (const layer of layers) {
+    const store = layer.pointStitches;
+    for (let index = 0; index < store.ids.length; index += 1) {
+      if (owners.get(store.ids[index]) === layer.id) copyPointStitch(store, index, result, cursor++);
     }
   }
   return result;
@@ -271,8 +315,8 @@ function flattenCells(document: LayeredDocument, kind: Uint8Array, colors: Uint1
 
 /**
  * The visible composite as a single surface. Stitch cells follow the covering
- * rule, completion included; backstitches are the visible specialty layers
- * bottom to top, and palette/settings are shared by reference.
+ * rule, completion included; backstitches and point stitches are the visible
+ * specialty layers bottom to top, and palette/settings are shared by reference.
  */
 export function flattenDocument(document: LayeredDocument): PatternDocument {
   const cellCount = document.width * document.height;
@@ -289,6 +333,7 @@ export function flattenDocument(document: LayeredDocument): PatternDocument {
     colors,
     completed,
     backstitches: flattenBackstitches(document),
+    pointStitches: flattenPointStitches(document),
     palette: document.palette,
     settings: document.settings,
     revision: document.revision,
@@ -311,8 +356,8 @@ function frameChanged(previous: PatternDocument, document: LayeredDocument): boo
 /**
  * Keeps one composite up to date. Composites are immutable snapshots: `update`
  * returns a new composite each call, copying the kind/colors/completed planes
- * before recomputing `changedIndices`, and always recomputes backstitches and
- * refreshes shared fields. Structure changes
+ * before recomputing `changedIndices`, and always recomputes backstitches, point
+ * stitches and refreshes shared fields. Structure changes
  * (visibility, order, delete, merge) and canvas changes need `full`; `update`
  * and `touch` fall back to it when the size, origin or mask no longer match.
  */
@@ -347,6 +392,7 @@ export class FlattenCache {
       colors,
       completed,
       backstitches: flattenBackstitches(document),
+      pointStitches: flattenPointStitches(document),
       palette: document.palette,
       settings: document.settings,
       revision: document.revision,
@@ -357,7 +403,7 @@ export class FlattenCache {
   }
 
   /**
-   * A new composite that shares every plane and the backstitch store, for
+   * A new composite that shares every plane and the specialty stores, for
    * changes that cannot alter composite content (rename, palette or settings).
    */
   touch(document: LayeredDocument): PatternDocument {
@@ -422,6 +468,7 @@ export function commandScope(command: DomainCommand): CommandScope {
     case 'bulk-recolor':
     case 'bulk-completion':
     case 'bulk-backstitch-completion':
+    case 'bulk-point-stitch-completion':
     case 'paste-fragment':
     case 'move-fragment':
     case 'mixed-erase':
@@ -430,32 +477,36 @@ export function commandScope(command: DomainCommand): CommandScope {
     case 'add-backstitch':
     case 'remove-backstitch':
     case 'move-backstitch':
+    case 'add-point-stitch':
+    case 'remove-point-stitch':
+    case 'move-point-stitch':
+    case 'set-point-stitch-orientation':
       return 'layer';
   }
 }
 
 /**
  * The layer type pasting `fragment` needs, or null for an empty fragment. A
- * fragment holding both cells and backstitches needs both, which no layer
- * satisfies, so it reports 'mixed'.
+ * fragment holding both cells and specialty stitches (backstitches or point
+ * stitches) needs both, which no layer satisfies, so it reports 'mixed'.
  */
 export function fragmentLayerRequirement(fragment: PatternFragment): LayerType | 'mixed' | null {
   const hasCells = fragment.kind.some((value) => value !== CellKind.Empty);
-  const hasLines = fragment.backstitches.x1.length > 0;
-  if (hasCells && hasLines) return 'mixed';
+  const hasSpecialty = fragment.backstitches.x1.length > 0 || fragment.pointStitches.x.length > 0;
+  if (hasCells && hasSpecialty) return 'mixed';
   if (hasCells) return LayerType.Stitch;
-  if (hasLines) return LayerType.Specialty;
+  if (hasSpecialty) return LayerType.Specialty;
   return null;
 }
 
-/** The part of `fragment` a layer of `type` holds: stitch keeps the cells and drops the backstitches; specialty keeps the backstitches over empty cells. */
+/** The part of `fragment` a layer of `type` holds: stitch keeps the cells and drops the specialty stitches; specialty keeps the backstitches and point stitches over empty cells. */
 export function fragmentPartForLayerType(fragment: PatternFragment, type: LayerType): PatternFragment {
   const { version, width, height } = fragment;
   if (type === LayerType.Stitch) {
     const none = new Uint32Array(0);
-    return { version, width, height, kind: fragment.kind, colors: fragment.colors, backstitches: { x1: none, y1: none, x2: none, y2: none, colors: new Uint16Array(0) } };
+    return { version, width, height, kind: fragment.kind, colors: fragment.colors, backstitches: { x1: none, y1: none, x2: none, y2: none, colors: new Uint16Array(0) }, pointStitches: { x: none, y: none, colors: new Uint16Array(0), orientations: new Uint8Array(0) } };
   }
-  return { version, width, height, kind: new Uint8Array(fragment.kind.length), colors: new Uint16Array(fragment.colors.length), backstitches: fragment.backstitches };
+  return { version, width, height, kind: new Uint8Array(fragment.kind.length), colors: new Uint16Array(fragment.colors.length), backstitches: fragment.backstitches, pointStitches: fragment.pointStitches };
 }
 
 /**
@@ -484,9 +535,14 @@ export function commandLayerType(command: DomainCommand): LayerType | 'mixed' | 
     case 'mixed-erase':
       return LayerType.Stitch;
     case 'bulk-backstitch-completion':
+    case 'bulk-point-stitch-completion':
     case 'add-backstitch':
     case 'remove-backstitch':
     case 'move-backstitch':
+    case 'add-point-stitch':
+    case 'remove-point-stitch':
+    case 'move-point-stitch':
+    case 'set-point-stitch-orientation':
       return LayerType.Specialty;
     case 'move-fragment':
     case 'delete-region':
@@ -605,7 +661,7 @@ export function applyLayerStructureCommand(document: LayeredDocument, command: D
       const cellCount = document.width * document.height;
       const layer: Layer = layerType === LayerType.Stitch
         ? { id, type: LayerType.Stitch, name, visible: true, kind: new Uint8Array(cellCount), colors: new Uint16Array(cellCount * 4), completed: new Uint8Array(cellCount) }
-        : { id, type: LayerType.Specialty, name, visible: true, backstitches: emptyBackstitches() };
+        : { id, type: LayerType.Specialty, name, visible: true, backstitches: emptyBackstitches(), pointStitches: emptyPointStitches() };
       const range = layerGroupRange(document, layerType);
       const index = command.index === undefined ? range.end : clamp(requireCommandInteger(command.index, 'layer-add index'), range.start, range.end);
       const layers = [...document.layers];
@@ -659,12 +715,15 @@ export function applyLayerStructureCommand(document: LayeredDocument, command: D
       if (source.type === LayerType.Stitch) {
         copy = { id, type: LayerType.Stitch, name, visible: source.visible, kind: source.kind.slice(), colors: source.colors.slice(), completed: source.completed.slice() };
       } else {
-        const count = source.backstitches.ids.length;
-        if (document.nextBackstitchId + count > UINT32_MAX + 1) throw new DomainError('backstitch-id-exhausted', 'No backstitch IDs remain for this duplicate.');
+        const lineCount = source.backstitches.ids.length;
+        const pointCount = source.pointStitches.ids.length;
+        if (document.nextBackstitchId + lineCount + pointCount > UINT32_MAX + 1) throw new DomainError('backstitch-id-exhausted', 'No specialty stitch IDs remain for this duplicate.');
         const backstitches = cloneBackstitches(source.backstitches);
-        for (let index = 0; index < count; index += 1) backstitches.ids[index] = document.nextBackstitchId + index;
-        copy = { id, type: LayerType.Specialty, name, visible: source.visible, backstitches };
-        document.nextBackstitchId += count;
+        for (let index = 0; index < lineCount; index += 1) backstitches.ids[index] = document.nextBackstitchId + index;
+        const pointStitches = clonePointStitches(source.pointStitches);
+        for (let index = 0; index < pointCount; index += 1) pointStitches.ids[index] = document.nextBackstitchId + lineCount + index;
+        copy = { id, type: LayerType.Specialty, name, visible: source.visible, backstitches, pointStitches };
+        document.nextBackstitchId += lineCount + pointCount;
       }
       const layers = [...document.layers];
       layers.splice(layerIndex(document, layerId) + 1, 0, copy);
@@ -719,9 +778,22 @@ function mergeLayers(target: Layer, lower: Layer, upper: Layer): Layer {
     let cursor = 0;
     for (const index of lowerKept) copyBackstitch(lower.backstitches, index, backstitches, cursor++);
     for (let index = 0; index < upper.backstitches.ids.length; index += 1) copyBackstitch(upper.backstitches, index, backstitches, cursor++);
-    return { id: target.id, type: LayerType.Specialty, name: target.name, visible: target.visible, backstitches };
+    return { id: target.id, type: LayerType.Specialty, name: target.name, visible: target.visible, backstitches, pointStitches: mergePointStitches(lower.pointStitches, upper.pointStitches) };
   }
   throw new DomainError(LayerErrorCode.MergeInvalid, 'Only layers of the same type can be merged.');
+}
+
+/** Lower points whose position the upper store does not hold, then every upper point. */
+function mergePointStitches(lower: PointStitchStore, upper: PointStitchStore): PointStitchStore {
+  const upperKeys = new Set<string>();
+  for (let index = 0; index < upper.ids.length; index += 1) upperKeys.add(pointKey(upper.x[index], upper.y[index]));
+  const lowerKept: number[] = [];
+  for (let index = 0; index < lower.ids.length; index += 1) if (!upperKeys.has(pointKey(lower.x[index], lower.y[index]))) lowerKept.push(index);
+  const merged = allocatePointStitches(lowerKept.length + upper.ids.length);
+  let cursor = 0;
+  for (const index of lowerKept) copyPointStitch(lower, index, merged, cursor++);
+  for (let index = 0; index < upper.ids.length; index += 1) copyPointStitch(upper, index, merged, cursor++);
+  return merged;
 }
 
 // ---------------------------------------------------------------------------
@@ -764,6 +836,7 @@ export function collectLayeredValidationErrors(document: LayeredDocument): strin
       seenSpecialty = true;
       counts[LayerType.Specialty] += 1;
       if (!layer.backstitches || typeof layer.backstitches !== 'object') { errors.push(`${label} backstitches are invalid.`); layersValid = false; }
+      if (!layer.pointStitches || typeof layer.pointStitches !== 'object') { errors.push(`${label} point stitches are invalid.`); layersValid = false; }
     } else {
       errors.push(`${label} has an unknown type.`);
       layersValid = false;
@@ -782,15 +855,19 @@ export function collectLayeredValidationErrors(document: LayeredDocument): strin
     errors.push(message);
   };
   const planes = zeroPlanes(document.width, document.height);
-  const bare: PatternDocument = { version: DOCUMENT_SCHEMA_VERSION, catalog: document.catalog, width: document.width, height: document.height, kind: planes.kind, colors: planes.colors, completed: planes.completed, backstitches: emptyBackstitches(), palette: document.palette, settings: document.settings, revision: document.revision, nextBackstitchId: document.nextBackstitchId, nextPaletteId: document.nextPaletteId, ...canvasFields(document) };
+  const bare: PatternDocument = { version: DOCUMENT_SCHEMA_VERSION, catalog: document.catalog, width: document.width, height: document.height, kind: planes.kind, colors: planes.colors, completed: planes.completed, backstitches: emptyBackstitches(), pointStitches: emptyPointStitches(), palette: document.palette, settings: document.settings, revision: document.revision, nextBackstitchId: document.nextBackstitchId, nextPaletteId: document.nextPaletteId, ...canvasFields(document) };
   collectValidationErrors(bare).forEach(add);
-  const backstitchIds = new Set<number>();
+  const specialtyIds = new Set<number>();
   for (const layer of document.layers) {
     for (const message of collectValidationErrors(layerSurface(document, layer.id))) add(`Layer ${String(layer.id)}: ${message}`);
     if (layer.type !== LayerType.Specialty) continue;
     for (const id of layer.backstitches.ids) {
-      if (backstitchIds.has(id)) add(`Backstitch ID ${String(id)} is used by more than one layer.`);
-      backstitchIds.add(id);
+      if (specialtyIds.has(id)) add(`Backstitch ID ${String(id)} is used by more than one layer.`);
+      specialtyIds.add(id);
+    }
+    for (const id of layer.pointStitches.ids) {
+      if (specialtyIds.has(id)) add(`Point stitch ID ${String(id)} is used by more than one layer.`);
+      specialtyIds.add(id);
     }
   }
   return errors;

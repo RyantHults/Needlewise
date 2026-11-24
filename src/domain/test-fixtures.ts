@@ -107,7 +107,7 @@ export function layeredWithProgress(surface: PatternDocument): LayeredDocument {
     ...(surface.canvasMask === undefined ? {} : { canvasMask: surface.canvasMask.slice() }),
     layers: layered.layers.map((layer) => layer.type === LayerType.Stitch
       ? { ...layer, completed: surface.completed.slice() }
-      : { ...layer, backstitches: { ...layer.backstitches, completed: surface.backstitches.completed.slice() } })
+      : { ...layer, backstitches: { ...layer.backstitches, completed: surface.backstitches.completed.slice() }, pointStitches: { ...layer.pointStitches, completed: surface.pointStitches.completed.slice() } })
   };
 }
 

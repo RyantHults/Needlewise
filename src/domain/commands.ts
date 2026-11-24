@@ -10,6 +10,8 @@ import {
   clonePatternSettings,
   normalizePatternSettings,
   UINT32_MAX,
+  isBeadEntry,
+  isPointStitchPosition,
   isThreeQuarterKind,
   isThreeQuarterPairKind,
   oppositeQuarterCorner,
@@ -27,6 +29,13 @@ import {
   type BulkProgressOperation,
   type BulkCompletionCommand,
   type BulkBackstitchCompletionCommand,
+  type BulkPointStitchCompletionCommand,
+  type AddPointStitchCommand,
+  type MovePointStitchCommand,
+  type SetPointStitchOrientationCommand,
+  type BeadOrientation,
+  type RemovePointStitchCommand,
+  type PointStitchStore,
   DomainError,
   HalfDirection,
   QuarterCorner,
@@ -62,8 +71,9 @@ import { assertStrictlyIncreasing, requireCommandInteger } from './guards';
 import { palettesEqual, settingsEqual } from './equality';
 import { allocateBackstitches, backstitchStoreBytes, backstitchStoresEqual, backstitchesFromRecords, cloneBackstitches, copyBackstitch, pointsSegmentKey, positionsById, segmentKey } from './backstitch-store';
 import { completedComponentCount, componentSlotMask } from './cell-components';
-import { assertValidPatternFragment, backstitchEndpointsContainedInCellUnion } from './fragment';
-import { backstitchWithinCanvas, isActiveCell } from './canvas';
+import { assertValidPatternFragment, backstitchEndpointsContainedInCellUnion, isFixedPointContainedInCellUnion, isFixedPointInRect, pointStitchIdsInCellUnion, pointStitchIdsInRect } from './fragment';
+import { backstitchWithinCanvas, isActiveCell, pointWithinCanvas } from './canvas';
+import { allocatePointStitches, clonePointStitches, copyPointStitch, pointKey, pointStitchPositionsById, pointStitchStoreBytes, pointStitchStoresEqual } from './point-stitch-store';
 
 export interface MutationInfo {
   changed: boolean;
@@ -74,6 +84,8 @@ export interface MutationInfo {
   changedIndices?: Uint32Array;
   touchedBackstitchIds?: Uint32Array;
   changedBackstitchIds?: Uint32Array;
+  /** Stable point stitch IDs whose state actually changed. */
+  changedPointStitchIds?: Uint32Array;
   /** A packed bulk delta, constructed once and reusable by history callers. */
   delta?: SparseMutationDelta;
   createdBackstitchIds?: Uint32Array;
@@ -90,8 +102,9 @@ export interface PackedCellDelta {
   afterCompleted: Uint8Array;
 }
 
+/** Completion changes of specialty stitches (backstitches or point stitches), by stable id. */
 export interface PackedBackstitchCompletionDelta {
-  /** Stable backstitch IDs, sorted in command order. */
+  /** Stable IDs, sorted in command order. */
   ids: Uint32Array;
   beforeCompleted: Uint8Array;
   afterCompleted: Uint8Array;
@@ -108,10 +121,13 @@ export interface SparseMutationDelta {
   cells: PackedCellDelta;
   cellCompletions?: PackedCellCompletionDelta;
   backstitchCompletions?: PackedBackstitchCompletionDelta;
+  pointStitchCompletions?: PackedBackstitchCompletionDelta;
   beforePalette?: PaletteEntry[];
   afterPalette?: PaletteEntry[];
   beforeBackstitches?: BackstitchStore;
   afterBackstitches?: BackstitchStore;
+  beforePointStitches?: PointStitchStore;
+  afterPointStitches?: PointStitchStore;
   beforeNextBackstitchId?: number;
   afterNextBackstitchId?: number;
   beforeNextPaletteId?: number;
@@ -127,6 +143,7 @@ export interface SparseMutationDelta {
 export class MutationTracker {
   private readonly cells = new Map<number, { kind: number; colors: [number, number, number, number]; completed: number }>();
   private beforeBackstitches: BackstitchStore | undefined;
+  private beforePointStitches: PointStitchStore | undefined;
   private beforePalette: PaletteEntry[] | undefined;
   private beforeNextBackstitchId: number | undefined;
   private beforeNextPaletteId: number | undefined;
@@ -145,7 +162,13 @@ export class MutationTracker {
   touchBackstitches(document: PatternDocument): void {
     if (this.beforeBackstitches !== undefined) return;
     this.beforeBackstitches = cloneBackstitches(document.backstitches);
-    this.beforeNextBackstitchId = document.nextBackstitchId;
+    this.beforeNextBackstitchId ??= document.nextBackstitchId;
+  }
+
+  touchPointStitches(document: PatternDocument): void {
+    if (this.beforePointStitches !== undefined) return;
+    this.beforePointStitches = clonePointStitches(document.pointStitches);
+    this.beforeNextBackstitchId ??= document.nextBackstitchId;
   }
 
   touchPalette(document: PatternDocument): void {
@@ -170,6 +193,7 @@ export class MutationTracker {
       document.completed[index] = before.completed;
     }
     if (this.beforeBackstitches !== undefined) document.backstitches = cloneBackstitches(this.beforeBackstitches);
+    if (this.beforePointStitches !== undefined) document.pointStitches = clonePointStitches(this.beforePointStitches);
     if (this.beforePalette !== undefined) document.palette = this.beforePalette.map(clonePaletteEntry);
     if (this.beforeSettings !== undefined) document.settings = clonePatternSettings(this.beforeSettings);
     if (this.beforeNextBackstitchId !== undefined) document.nextBackstitchId = this.beforeNextBackstitchId;
@@ -217,9 +241,13 @@ export class MutationTracker {
     if (this.beforeBackstitches !== undefined && !backstitchStoresEqual(this.beforeBackstitches, document.backstitches)) {
       delta.beforeBackstitches = cloneBackstitches(this.beforeBackstitches);
       delta.afterBackstitches = cloneBackstitches(document.backstitches);
-      delta.beforeNextBackstitchId = this.beforeNextBackstitchId;
-      delta.afterNextBackstitchId = document.nextBackstitchId;
-    } else if (this.beforeBackstitches !== undefined && this.beforeNextBackstitchId !== document.nextBackstitchId) {
+    }
+    if (this.beforePointStitches !== undefined && !pointStitchStoresEqual(this.beforePointStitches, document.pointStitches)) {
+      delta.beforePointStitches = clonePointStitches(this.beforePointStitches);
+      delta.afterPointStitches = clonePointStitches(document.pointStitches);
+    }
+    // The allocator is shared by both stores, so it is recorded whenever either changed.
+    if (this.beforeNextBackstitchId !== undefined && (delta.beforeBackstitches !== undefined || delta.beforePointStitches !== undefined || this.beforeNextBackstitchId !== document.nextBackstitchId)) {
       delta.beforeNextBackstitchId = this.beforeNextBackstitchId;
       delta.afterNextBackstitchId = document.nextBackstitchId;
     }
@@ -232,12 +260,12 @@ export class MutationTracker {
 
   hasChanges(document: PatternDocument): boolean {
     const delta = this.toDelta(document);
-    return delta.cells.indices.length > 0 || delta.beforePalette !== undefined || delta.beforeBackstitches !== undefined || delta.beforeNextBackstitchId !== undefined || delta.beforeNextPaletteId !== undefined || delta.beforeSettings !== undefined;
+    return delta.cells.indices.length > 0 || delta.beforePalette !== undefined || delta.beforeBackstitches !== undefined || delta.beforePointStitches !== undefined || delta.beforeNextBackstitchId !== undefined || delta.beforeNextPaletteId !== undefined || delta.beforeSettings !== undefined;
   }
 }
 
 /** The targets a command addressed, reported even when it changed nothing. */
-export type MutationTargets = Pick<MutationInfo, 'touchedIndices' | 'changedIndices' | 'touchedBackstitchIds' | 'changedBackstitchIds' | 'movedBackstitchIds'>;
+export type MutationTargets = Pick<MutationInfo, 'touchedIndices' | 'changedIndices' | 'touchedBackstitchIds' | 'changedBackstitchIds' | 'changedPointStitchIds' | 'movedBackstitchIds'>;
 
 export function noChange(targets: MutationTargets = {}): MutationInfo {
   return { changed: false, snapshot: false, ...targets };
@@ -282,6 +310,12 @@ function touchCommandTargets(document: PatternDocument, command: DomainCommand, 
     case 'remove-backstitch':
     case 'move-backstitch':
       tracker.touchBackstitches(document);
+      return;
+    case 'add-point-stitch':
+    case 'remove-point-stitch':
+    case 'move-point-stitch':
+    case 'set-point-stitch-orientation':
+      tracker.touchPointStitches(document);
       return;
     case 'palette-create':
     case 'palette-update':
@@ -621,7 +655,7 @@ export interface BulkCellPreflight {
 export function preflightBulkCellCommand(document: PatternDocument, command: BulkCellCommand): BulkCellPreflight {
   validateBulkRevision(document, command);
   const edit = parseBulkEdit(command.edit);
-  if (edit.kind === 'full' || edit.kind === 'half' || edit.kind === 'quarter' || edit.kind === 'three-quarter') requirePaletteEntry(document, edit.color);
+  if (edit.kind === 'full' || edit.kind === 'half' || edit.kind === 'quarter' || edit.kind === 'three-quarter') requireThreadEntry(document, edit.color);
   const indices = validateBulkIndices(document, command.indices);
   let changedCount = 0;
   for (const index of indices) if (bulkCellWouldChange(document, index, edit)) changedCount += 1;
@@ -678,7 +712,7 @@ export function preflightBulkRecolorCommand(document: PatternDocument, command: 
   // malformed fill result from becoming a history entry with an unknown
   // palette reference.
   requirePaletteEntry(document, fromColor);
-  requirePaletteEntry(document, toColor);
+  requireThreadEntry(document, toColor);
   const indices = validateBulkIndices(document, command.indices);
   const rawMasks = command.masks;
   if (!(rawMasks instanceof Uint8Array)) throw new DomainError('invalid-bulk-recolor', 'Bulk recolor masks must be a Uint8Array.');
@@ -824,6 +858,34 @@ export function estimateBulkBackstitchCompletionHistoryBytes(changedBackstitchCo
   return packedDeltaBytes(changedBackstitchCount, PACKED_COMPLETION_BYTES);
 }
 
+export interface BulkPointStitchCompletionPreflight {
+  readonly operation: BulkProgressOperation;
+  readonly ids: Uint32Array;
+  readonly changedIds: Uint32Array;
+}
+
+/** Validates a point stitch progress command without changing the document. */
+export function preflightBulkPointStitchCompletionCommand(document: PatternDocument, command: BulkPointStitchCompletionCommand): BulkPointStitchCompletionPreflight {
+  validateBulkRevision(document, command);
+  const ids = validateProgressIndices(command.ids, 'Bulk point stitch IDs');
+  if (ids.some((id) => id === 0)) throw new DomainError('invalid-completion-targets', 'Point stitch IDs must be positive.');
+  const operation = parseBulkProgressOperation(command.operation);
+  const changed = [] as number[];
+  const positions = pointStitchPositionsById(document.pointStitches);
+  for (const id of ids) {
+    const position = positions.get(id);
+    if (position === undefined) throw new DomainError('invalid-completion-target', `Point stitch ID ${String(id)} does not exist.`);
+    const next = applyProgressOperation(document.pointStitches.completed[position], 1, operation);
+    if (next !== document.pointStitches.completed[position]) changed.push(id);
+  }
+  return { operation, ids, changedIds: new Uint32Array(changed) };
+}
+
+/** Exact packed point-stitch-completion delta size used by history preflight. */
+export function estimateBulkPointStitchCompletionHistoryBytes(changedPointStitchCount: number): number {
+  return packedDeltaBytes(changedPointStitchCount, PACKED_COMPLETION_BYTES);
+}
+
 export function isAtomicCommand(command: DomainCommand): command is AtomicCommand {
   return (ATOMIC_COMMAND_TYPES as readonly string[]).includes(command.type);
 }
@@ -841,7 +903,7 @@ export function assertBulkBatchPolicy(commands: readonly DomainCommand[]): void 
   const hasBulk = commands.some(containsAtomicCommand);
   const isStandaloneBulk = commands.length === 1 && isAtomicCommand(commands[0]);
   if (hasBulk && !isStandaloneBulk) {
-    throw new DomainError('bulk-batch-unsupported', 'Bulk cell, recolor, completion, backstitch completion, paste-fragment, move-fragment, mixed-erase, delete-region, and delete-cell-set commands must be executed as standalone commands, not in a multi-command batch.');
+    throw new DomainError('bulk-batch-unsupported', 'Bulk cell, recolor, completion, backstitch completion, point stitch completion, paste-fragment, move-fragment, mixed-erase, delete-region, and delete-cell-set commands must be executed as standalone commands, not in a multi-command batch.');
   }
 }
 
@@ -985,6 +1047,30 @@ export function applyBulkBackstitchCompletionCommand(document: PatternDocument, 
     delta: {
       cells: emptyCellDelta(),
       backstitchCompletions: { ids: preflight.changedIds, beforeCompleted, afterCompleted }
+    }
+  };
+}
+
+export function applyBulkPointStitchCompletionCommand(document: PatternDocument, command: BulkPointStitchCompletionCommand, preflight = preflightBulkPointStitchCompletionCommand(document, command)): MutationInfo {
+  if (preflight.changedIds.length === 0) return noChange({ changedPointStitchIds: preflight.changedIds });
+  const beforeCompleted = new Uint8Array(preflight.changedIds.length);
+  const afterCompleted = new Uint8Array(preflight.changedIds.length);
+  const positions = pointStitchPositionsById(document.pointStitches);
+  for (let position = 0; position < preflight.changedIds.length; position += 1) {
+    const id = preflight.changedIds[position];
+    const pointPosition = positions.get(id);
+    if (pointPosition === undefined) throw new DomainError('invalid-completion-target', `Point stitch ID ${String(id)} no longer exists.`);
+    beforeCompleted[position] = document.pointStitches.completed[pointPosition];
+    document.pointStitches.completed[pointPosition] = applyProgressOperation(beforeCompleted[position], 1, preflight.operation);
+    afterCompleted[position] = document.pointStitches.completed[pointPosition];
+  }
+  return {
+    changed: true,
+    snapshot: false,
+    changedPointStitchIds: preflight.changedIds,
+    delta: {
+      cells: emptyCellDelta(),
+      pointStitchCompletions: { ids: preflight.changedIds, beforeCompleted, afterCompleted }
     }
   };
 }
@@ -1241,12 +1327,14 @@ export interface DeleteRegionPreflight {
   readonly touchedIndices: Uint32Array;
   readonly changedIndices: Uint32Array;
   readonly changedBackstitchIds: Uint32Array;
+  readonly changedPointStitchIds: Uint32Array;
 }
 
 interface DeleteSelectionPreflight {
   readonly touchedIndices: Uint32Array;
   readonly changedIndices: Uint32Array;
   readonly changedBackstitchIds: Uint32Array;
+  readonly changedPointStitchIds: Uint32Array;
 }
 
 /** Validate a selection deletion without changing the document. */
@@ -1271,37 +1359,35 @@ export function preflightDeleteRegionCommand(document: PatternDocument, command:
     }
   }
 
-  const left = rect.x * 4;
-  const top = rect.y * 4;
-  const right = (rect.x + rect.width) * 4;
-  const bottom = (rect.y + rect.height) * 4;
+  const lines = document.backstitches;
   const changedLines: number[] = [];
-  for (let index = 0; index < document.backstitches.ids.length; index += 1) {
-    if (document.backstitches.x1[index] >= left && document.backstitches.x1[index] <= right
-      && document.backstitches.x2[index] >= left && document.backstitches.x2[index] <= right
-      && document.backstitches.y1[index] >= top && document.backstitches.y1[index] <= bottom
-      && document.backstitches.y2[index] >= top && document.backstitches.y2[index] <= bottom) {
-      changedLines.push(document.backstitches.ids[index]);
-    }
+  for (let index = 0; index < lines.ids.length; index += 1) {
+    if (isFixedPointInRect(lines.x1[index], lines.y1[index], rect) && isFixedPointInRect(lines.x2[index], lines.y2[index], rect)) changedLines.push(lines.ids[index]);
   }
   return {
     rect,
     touchedIndices,
     changedIndices: new Uint32Array(changedCells),
-    changedBackstitchIds: new Uint32Array(changedLines)
+    changedBackstitchIds: new Uint32Array(changedLines),
+    changedPointStitchIds: pointStitchIdsInRect(document.pointStitches, rect)
   };
 }
 
 /** Exact packed history size for a region deletion. */
 export function estimateDeleteRegionHistoryBytes(
   changedCellCount: number,
-  existingBackstitchCount = 0,
-  deletedBackstitchCount = 0
+  existingBackstitchCount: number,
+  deletedBackstitchCount: number,
+  existingPointStitchCount: number,
+  deletedPointStitchCount: number
 ): number {
   const backstitchBytes = deletedBackstitchCount === 0
     ? 0
     : backstitchStoreBytes(existingBackstitchCount) + backstitchStoreBytes(existingBackstitchCount - deletedBackstitchCount);
-  return cellAndBackstitchDeltaBytes(changedCellCount, deletedBackstitchCount, backstitchBytes);
+  const pointStitchBytes = deletedPointStitchCount === 0
+    ? 0
+    : pointStitchStoreBytes(existingPointStitchCount) + pointStitchStoreBytes(existingPointStitchCount - deletedPointStitchCount);
+  return cellAndBackstitchDeltaBytes(changedCellCount, deletedBackstitchCount + deletedPointStitchCount, backstitchBytes + pointStitchBytes);
 }
 
 function applyDeleteSelectionCommand(
@@ -1355,19 +1441,32 @@ function applyDeleteSelectionCommand(
     afterBackstitches = cloneBackstitches(document.backstitches);
   }
 
-  if (changedIndices.length === 0 && preflight.changedBackstitchIds.length === 0) {
-    return noChange({ touchedIndices: preflight.touchedIndices, changedIndices, changedBackstitchIds: preflight.changedBackstitchIds });
+  let beforePointStitches: PointStitchStore | undefined;
+  let afterPointStitches: PointStitchStore | undefined;
+  if (preflight.changedPointStitchIds.length > 0) {
+    const store = document.pointStitches;
+    beforePointStitches = clonePointStitches(store);
+    const deleted = new Set<number>(preflight.changedPointStitchIds);
+    document.pointStitches = withoutPointStitches(store, (position) => deleted.has(store.ids[position]));
+    afterPointStitches = clonePointStitches(document.pointStitches);
+  }
+
+  const { changedBackstitchIds, changedPointStitchIds } = preflight;
+  if (changedIndices.length === 0 && changedBackstitchIds.length === 0 && changedPointStitchIds.length === 0) {
+    return noChange({ touchedIndices: preflight.touchedIndices, changedIndices, changedBackstitchIds, changedPointStitchIds });
   }
   const delta: SparseMutationDelta = {
     cells: { indices: changedIndices, beforeKind, beforeColors, beforeCompleted, afterKind, afterColors, afterCompleted },
-    ...(beforeBackstitches === undefined ? {} : { beforeBackstitches, afterBackstitches })
+    ...(beforeBackstitches === undefined ? {} : { beforeBackstitches, afterBackstitches }),
+    ...(beforePointStitches === undefined ? {} : { beforePointStitches, afterPointStitches })
   };
   return {
     changed: true,
     snapshot: false,
     touchedIndices: preflight.touchedIndices,
     changedIndices,
-    changedBackstitchIds: preflight.changedBackstitchIds,
+    changedBackstitchIds,
+    changedPointStitchIds,
     delta
   };
 }
@@ -1407,17 +1506,20 @@ export function preflightDeleteCellSetCommand(document: PatternDocument, command
     indices,
     touchedIndices: indices,
     changedIndices: new Uint32Array(changedCells),
-    changedBackstitchIds: new Uint32Array(changedLines)
+    changedBackstitchIds: new Uint32Array(changedLines),
+    changedPointStitchIds: pointStitchIdsInCellUnion(document, indices)
   };
 }
 
 /** Exact packed history size for a sparse cell-set deletion. */
 export function estimateDeleteCellSetHistoryBytes(
   changedCellCount: number,
-  existingBackstitchCount = 0,
-  deletedBackstitchCount = 0
+  existingBackstitchCount: number,
+  deletedBackstitchCount: number,
+  existingPointStitchCount: number,
+  deletedPointStitchCount: number
 ): number {
-  return estimateDeleteRegionHistoryBytes(changedCellCount, existingBackstitchCount, deletedBackstitchCount);
+  return estimateDeleteRegionHistoryBytes(changedCellCount, existingBackstitchCount, deletedBackstitchCount, existingPointStitchCount, deletedPointStitchCount);
 }
 
 export function applyDeleteCellSetCommand(
@@ -1505,12 +1607,14 @@ function validatePastePalette(document: PatternDocument, fragment: PatternFragme
     if (fragment.kind[index] === CellKind.Empty) continue;
     const offset = colorsOffset(index);
     if (fragment.kind[index] === CellKind.Quarters || isThreeQuarterPairKind(fragment.kind[index])) {
-      for (let slot = 0; slot < 4; slot += 1) if (fragment.colors[offset + slot] !== 0) requirePaletteEntry(document, fragment.colors[offset + slot]);
+      for (let slot = 0; slot < 4; slot += 1) if (fragment.colors[offset + slot] !== 0) requireThreadEntry(document, fragment.colors[offset + slot]);
     } else {
-      requirePaletteEntry(document, fragment.colors[offset]);
+      requireThreadEntry(document, fragment.colors[offset]);
     }
   }
-  for (const color of fragment.backstitches.colors) requirePaletteEntry(document, color);
+  for (const color of fragment.backstitches.colors) requireThreadEntry(document, color);
+  // A knot takes a thread entry and a bead a bead entry, so either material is valid here.
+  for (const color of fragment.pointStitches.colors) requirePaletteEntry(document, color);
 }
 
 function keptPasteBackstitches(document: PatternDocument, fragment: PatternFragment, destinationX: number, destinationY: number): Uint32Array {
@@ -1546,6 +1650,39 @@ function validatePasteBackstitches(document: PatternDocument, fragment: PatternF
   }
 }
 
+function keptPastePointStitches(document: PatternDocument, fragment: PatternFragment, destinationX: number, destinationY: number): Uint32Array {
+  const points = fragment.pointStitches;
+  const kept = new Uint32Array(points.x.length);
+  let keptCount = 0;
+  const offsetX = destinationX * FIXED_POINT_UNITS_PER_CELL;
+  const offsetY = destinationY * FIXED_POINT_UNITS_PER_CELL;
+  for (let index = 0; index < points.x.length; index += 1) {
+    if (!pointWithinCanvas(document, points.x[index] + offsetX, points.y[index] + offsetY)) continue;
+    kept[keptCount] = index;
+    keptCount += 1;
+  }
+  return kept.subarray(0, keptCount);
+}
+
+/**
+ * A pasted knot or bead on an occupied position rejects the paste with
+ * `duplicate-point-stitch`, whatever its colour, the same way a pasted line on
+ * existing geometry rejects with `duplicate-backstitch`.
+ */
+function validatePastePointStitches(document: PatternDocument, fragment: PatternFragment, destinationX: number, destinationY: number): void {
+  const occupied = new Set<string>();
+  for (let index = 0; index < document.pointStitches.ids.length; index += 1) occupied.add(pointKey(document.pointStitches.x[index], document.pointStitches.y[index]));
+  const offsetX = destinationX * FIXED_POINT_UNITS_PER_CELL;
+  const offsetY = destinationY * FIXED_POINT_UNITS_PER_CELL;
+  const points = fragment.pointStitches;
+  for (let index = 0; index < points.x.length; index += 1) {
+    const x = points.x[index] + offsetX;
+    const y = points.y[index] + offsetY;
+    if (x > document.width * FIXED_POINT_UNITS_PER_CELL || y > document.height * FIXED_POINT_UNITS_PER_CELL) throw new DomainError('paste-out-of-bounds', 'A pasted knot or bead is outside the destination document.');
+    if (occupied.has(pointKey(x, y))) throw new DomainError('duplicate-point-stitch', 'A pasted knot or bead lands on an existing one.');
+  }
+}
+
 export interface PasteFragmentPreflight {
   readonly fragment: PatternFragment;
   readonly destinationX: number;
@@ -1554,6 +1691,9 @@ export interface PasteFragmentPreflight {
   readonly newBackstitchCount: number;
   /** Fragment backstitch positions that land inside the canvas, ascending. */
   readonly keptBackstitches: Uint32Array;
+  readonly newPointStitchCount: number;
+  /** Fragment point stitch positions that land inside the canvas, ascending. */
+  readonly keptPointStitches: Uint32Array;
 }
 
 export function preflightPasteFragmentCommand(document: PatternDocument, command: PasteFragmentCommand): PasteFragmentPreflight {
@@ -1564,9 +1704,13 @@ export function preflightPasteFragmentCommand(document: PatternDocument, command
   if (destination.x < 0 || destination.y < 0 || destination.x + fragment.width > document.width || destination.y + fragment.height > document.height) throw new DomainError('paste-out-of-bounds', 'The fragment must fit entirely inside the destination document.');
   validatePastePalette(document, fragment);
   validatePasteBackstitches(document, fragment, destination.x, destination.y);
+  validatePastePointStitches(document, fragment, destination.x, destination.y);
   const keptBackstitches = keptPasteBackstitches(document, fragment, destination.x, destination.y);
+  const keptPointStitches = keptPastePointStitches(document, fragment, destination.x, destination.y);
+  // Lines and points draw ids from one allocator: lines first, then points.
   const nextId = document.nextBackstitchId;
-  if (keptBackstitches.length > 0 && (nextId > UINT32_MAX || nextId + keptBackstitches.length - 1 > UINT32_MAX)) throw new DomainError('backstitch-id-exhausted', 'The destination has no remaining backstitch IDs for this paste.');
+  const newIds = keptBackstitches.length + keptPointStitches.length;
+  if (newIds > 0 && (nextId > UINT32_MAX || nextId + newIds - 1 > UINT32_MAX)) throw new DomainError('backstitch-id-exhausted', 'The destination has no remaining backstitch IDs for this paste.');
   let changedCellCount = 0;
   for (let y = 0; y < fragment.height; y += 1) {
     for (let x = 0; x < fragment.width; x += 1) {
@@ -1575,12 +1719,22 @@ export function preflightPasteFragmentCommand(document: PatternDocument, command
       if (pasteCellWouldChange(document, targetIndex, fragment, sourceIndex)) changedCellCount += 1;
     }
   }
-  return { fragment, destinationX: destination.x, destinationY: destination.y, changedCellCount, newBackstitchCount: keptBackstitches.length, keptBackstitches };
+  return {
+    fragment,
+    destinationX: destination.x,
+    destinationY: destination.y,
+    changedCellCount,
+    newBackstitchCount: keptBackstitches.length,
+    keptBackstitches,
+    newPointStitchCount: keptPointStitches.length,
+    keptPointStitches
+  };
 }
 
-export function estimatePasteFragmentHistoryBytes(changedCellCount: number, existingBackstitchCount: number, newBackstitchCount: number): number {
+export function estimatePasteFragmentHistoryBytes(changedCellCount: number, existingBackstitchCount: number, newBackstitchCount: number, existingPointStitchCount: number, newPointStitchCount: number): number {
   const backstitchBytes = newBackstitchCount === 0 ? 0 : backstitchStoreBytes(existingBackstitchCount) + backstitchStoreBytes(existingBackstitchCount + newBackstitchCount);
-  return cellAndBackstitchDeltaBytes(changedCellCount, newBackstitchCount, backstitchBytes);
+  const pointStitchBytes = newPointStitchCount === 0 ? 0 : pointStitchStoreBytes(existingPointStitchCount) + pointStitchStoreBytes(existingPointStitchCount + newPointStitchCount);
+  return cellAndBackstitchDeltaBytes(changedCellCount, newBackstitchCount + newPointStitchCount, backstitchBytes + pointStitchBytes);
 }
 
 function applyPastedCell(document: PatternDocument, targetIndex: number, fragment: PatternFragment, sourceIndex: number): void {
@@ -1623,6 +1777,28 @@ function createPastedBackstitches(document: PatternDocument, fragment: PatternFr
     after.colors[target] = fragment.backstitches.colors[source];
   }
   return { before, after, ids };
+}
+
+/** The document's point stitches with the kept fragment points appended under ids from `firstId`. */
+function createPastedPointStitches(document: PatternDocument, fragment: PatternFragment, kept: Uint32Array, destinationX: number, destinationY: number, firstId: number): { after: PointStitchStore; ids: Uint32Array } {
+  const store = document.pointStitches;
+  const oldCount = store.ids.length;
+  const after = allocatePointStitches(oldCount + kept.length);
+  for (let index = 0; index < oldCount; index += 1) copyPointStitch(store, index, after, index);
+  const ids = new Uint32Array(kept.length);
+  const offsetX = destinationX * FIXED_POINT_UNITS_PER_CELL;
+  const offsetY = destinationY * FIXED_POINT_UNITS_PER_CELL;
+  for (let index = 0; index < kept.length; index += 1) {
+    const target = oldCount + index;
+    const source = kept[index];
+    ids[index] = firstId + index;
+    after.ids[target] = ids[index];
+    after.x[target] = fragment.pointStitches.x[source] + offsetX;
+    after.y[target] = fragment.pointStitches.y[source] + offsetY;
+    after.colors[target] = fragment.pointStitches.colors[source];
+    after.orientations[target] = fragment.pointStitches.orientations[source];
+  }
+  return { after, ids };
 }
 
 export function applyPasteFragmentCommand(document: PatternDocument, command: PasteFragmentCommand, preflight = preflightPasteFragmentCommand(document, command)): MutationInfo {
@@ -1669,14 +1845,27 @@ export function applyPasteFragmentCommand(document: PatternDocument, command: Pa
     document.backstitches = cloneBackstitches(stores.after);
     document.nextBackstitchId += preflight.newBackstitchCount;
   }
-  const changed = changedIndices.length > 0 || preflight.newBackstitchCount > 0;
+  let beforePointStitches: PointStitchStore | undefined;
+  let afterPointStitches: PointStitchStore | undefined;
+  let changedPointStitchIds: Uint32Array | undefined;
+  if (preflight.newPointStitchCount > 0) {
+    beforePointStitches = clonePointStitches(document.pointStitches);
+    const stores = createPastedPointStitches(document, preflight.fragment, preflight.keptPointStitches, preflight.destinationX, preflight.destinationY, document.nextBackstitchId);
+    afterPointStitches = stores.after;
+    changedPointStitchIds = stores.ids;
+    document.pointStitches = clonePointStitches(stores.after);
+    document.nextBackstitchId += preflight.newPointStitchCount;
+  }
+  const newIds = preflight.newBackstitchCount + preflight.newPointStitchCount;
+  const changed = changedIndices.length > 0 || newIds > 0;
   if (!changed) return noChange({ changedIndices });
   const delta: SparseMutationDelta = {
     cells: { indices: changedIndices, beforeKind, beforeColors, beforeCompleted, afterKind, afterColors, afterCompleted },
     ...(beforeBackstitches === undefined ? {} : { beforeBackstitches, afterBackstitches }),
-    ...(preflight.newBackstitchCount === 0 ? {} : { beforeNextBackstitchId: document.nextBackstitchId - preflight.newBackstitchCount, afterNextBackstitchId: document.nextBackstitchId })
+    ...(beforePointStitches === undefined ? {} : { beforePointStitches, afterPointStitches }),
+    ...(newIds === 0 ? {} : { beforeNextBackstitchId: document.nextBackstitchId - newIds, afterNextBackstitchId: document.nextBackstitchId })
   };
-  return { changed: true, snapshot: false, changedIndices, createdBackstitchIds, delta };
+  return { changed: true, snapshot: false, changedIndices, createdBackstitchIds, ...(changedPointStitchIds === undefined ? {} : { changedPointStitchIds }), delta };
 }
 
 export interface NormalizedMoveSelection {
@@ -1700,6 +1889,10 @@ export interface MoveFragmentPreflight {
   readonly beforeBackstitches?: BackstitchStore;
   readonly afterBackstitches?: BackstitchStore;
   readonly backstitchesChanged: boolean;
+  /** Ids of the knots and beads the move shifts or drops, ascending; empty when no point stitch changes. */
+  readonly changedPointStitchIds: Uint32Array;
+  readonly beforePointStitches?: PointStitchStore;
+  readonly afterPointStitches?: PointStitchStore;
 }
 
 function parseMoveRect(value: unknown, label: string): CropRect {
@@ -1880,12 +2073,7 @@ function moveBackstitchContained(
   y2: number
 ): boolean {
   if (!selection.dense) return backstitchEndpointsContainedInCellUnion(x1, y1, x2, y2, document.width, document.height, selection.indices);
-  const units = FIXED_POINT_UNITS_PER_CELL;
-  const left = selection.rect.x * units;
-  const top = selection.rect.y * units;
-  const right = (selection.rect.x + selection.rect.width) * units;
-  const bottom = (selection.rect.y + selection.rect.height) * units;
-  return x1 >= left && x1 <= right && x2 >= left && x2 <= right && y1 >= top && y1 <= bottom && y2 >= top && y2 <= bottom;
+  return isFixedPointInRect(x1, y1, selection.rect) && isFixedPointInRect(x2, y2, selection.rect);
 }
 
 interface MoveBackstitchPlan {
@@ -1969,6 +2157,59 @@ function materializeMovedBackstitches(
   return { movedIds, before, after: pruned };
 }
 
+function movePointStitchContained(selection: NormalizedMoveSelection, document: PatternDocument, x: number, y: number): boolean {
+  if (!selection.dense) return isFixedPointContainedInCellUnion(x, y, document.width, document.height, selection.indices);
+  return isFixedPointInRect(x, y, selection.rect);
+}
+
+/**
+ * The point stitches after a move, following the line rules: contained points
+ * shift with the selection, a point whose destination leaves the canvas is
+ * dropped, and one landing on a retained point rejects the move with
+ * `point-stitch-collision`.
+ */
+function planMovedPointStitches(
+  document: PatternDocument,
+  selection: NormalizedMoveSelection,
+  destinationX: number,
+  destinationY: number
+): { readonly changedIds: Uint32Array; readonly before?: PointStitchStore; readonly after?: PointStitchStore } {
+  const store = document.pointStitches;
+  const deltaX = (destinationX - selection.rect.x) * FIXED_POINT_UNITS_PER_CELL;
+  const deltaY = (destinationY - selection.rect.y) * FIXED_POINT_UNITS_PER_CELL;
+  const moved: number[] = [];
+  const dropped = new Set<number>();
+  const retained = new Set<string>();
+  for (let index = 0; index < store.ids.length; index += 1) {
+    if (!movePointStitchContained(selection, document, store.x[index], store.y[index])) {
+      retained.add(pointKey(store.x[index], store.y[index]));
+      continue;
+    }
+    requirePaletteEntry(document, store.colors[index]);
+    if (pointWithinCanvas(document, store.x[index] + deltaX, store.y[index] + deltaY)) moved.push(index);
+    else dropped.add(index);
+  }
+  const shifts = deltaX !== 0 || deltaY !== 0;
+  if ((moved.length === 0 || !shifts) && dropped.size === 0) return { changedIds: new Uint32Array(0) };
+  for (const index of moved) {
+    if (retained.has(pointKey(store.x[index] + deltaX, store.y[index] + deltaY))) throw new DomainError('point-stitch-collision', 'A moved knot or bead lands on one outside the selection.');
+  }
+  const after = allocatePointStitches(store.ids.length - dropped.size);
+  const changedIds: number[] = [];
+  let position = 0;
+  for (let index = 0; index < store.ids.length; index += 1) {
+    if (dropped.has(index)) {
+      changedIds.push(store.ids[index]);
+      continue;
+    }
+    const shifted = shifts && movePointStitchContained(selection, document, store.x[index], store.y[index]);
+    copyPointStitch(store, index, after, position, shifted ? { x: deltaX, y: deltaY } : { x: 0, y: 0 });
+    if (shifted) changedIds.push(store.ids[index]);
+    position += 1;
+  }
+  return { changedIds: Uint32Array.from(changedIds).sort(), before: clonePointStitches(store), after };
+}
+
 export function preflightMoveFragmentCommand(document: PatternDocument, command: MoveFragmentCommand, historyLimitBytes?: number): MoveFragmentPreflight {
   validateBulkRevision(document, command);
   const selection = parseMoveSelection(command.selection);
@@ -1988,7 +2229,8 @@ export function preflightMoveFragmentCommand(document: PatternDocument, command:
     if (writeOrCompareFinalMoveCell(document, selection, destination.x, destination.y, index)) changedCellCount += 1;
   });
   const backstitchPlan = inspectMovedBackstitches(document, selection, destination.x, destination.y);
-  const estimatedBytes = estimateMoveFragmentHistoryBytes(changedCellCount, document.backstitches.ids.length, backstitchPlan.changed ? backstitchPlan.movedCount + backstitchPlan.dropped.size : 0);
+  const pointStitches = planMovedPointStitches(document, selection, destination.x, destination.y);
+  const estimatedBytes = estimateMoveFragmentHistoryBytes(changedCellCount, document.backstitches.ids.length, backstitchPlan.changed ? backstitchPlan.movedCount + backstitchPlan.dropped.size : 0, document.pointStitches.ids.length, pointStitches.changedIds.length);
   if (historyLimitBytes !== undefined) {
     if (!Number.isSafeInteger(historyLimitBytes) || historyLimitBytes < 1) throw new DomainError('invalid-history-limit', 'Move history limit must be a positive integer.');
     if (estimatedBytes > historyLimitBytes) throw new DomainError('history-entry-too-large', `History entry requires ${String(estimatedBytes)} bytes, exceeding the configured ${String(historyLimitBytes)} byte limit.`);
@@ -2016,18 +2258,21 @@ export function preflightMoveFragmentCommand(document: PatternDocument, command:
     movedBackstitchIds: backstitches.movedIds,
     movedBackstitchCount: backstitches.movedIds.length,
     ...(backstitches.before === undefined ? {} : { beforeBackstitches: backstitches.before, afterBackstitches: backstitches.after }),
-    backstitchesChanged: backstitchPlan.changed
+    backstitchesChanged: backstitchPlan.changed,
+    changedPointStitchIds: pointStitches.changedIds,
+    ...(pointStitches.before === undefined ? {} : { beforePointStitches: pointStitches.before, afterPointStitches: pointStitches.after })
   };
 }
 
-export function estimateMoveFragmentHistoryBytes(changedCellCount: number, existingBackstitchCount: number, changedBackstitchCount: number): number {
-  // Both snapshots are sized at the existing count, which bounds the after store when lines are dropped.
+export function estimateMoveFragmentHistoryBytes(changedCellCount: number, existingBackstitchCount: number, changedBackstitchCount: number, existingPointStitchCount: number, changedPointStitchCount: number): number {
+  // Both snapshots are sized at the existing count, which bounds the after store when stitches are dropped.
   const backstitchBytes = changedBackstitchCount === 0 ? 0 : backstitchStoreBytes(existingBackstitchCount) * 2;
-  return cellAndBackstitchDeltaBytes(changedCellCount, changedBackstitchCount, backstitchBytes);
+  const pointStitchBytes = changedPointStitchCount === 0 ? 0 : pointStitchStoreBytes(existingPointStitchCount) * 2;
+  return cellAndBackstitchDeltaBytes(changedCellCount, changedBackstitchCount + changedPointStitchCount, backstitchBytes + pointStitchBytes);
 }
 
 export function applyMoveFragmentCommand(document: PatternDocument, command: MoveFragmentCommand, preflight = preflightMoveFragmentCommand(document, command)): MutationInfo {
-  if (preflight.changedCellCount === 0 && !preflight.backstitchesChanged) {
+  if (preflight.changedCellCount === 0 && !preflight.backstitchesChanged && preflight.changedPointStitchIds.length === 0) {
     return noChange({ changedIndices: new Uint32Array(0), movedBackstitchIds: new Uint32Array(0) });
   }
   const changedIndices = preflight.changedIndices.slice();
@@ -2048,6 +2293,7 @@ export function applyMoveFragmentCommand(document: PatternDocument, command: Mov
     }
   }
   if (preflight.backstitchesChanged && preflight.afterBackstitches) document.backstitches = cloneBackstitches(preflight.afterBackstitches);
+  if (preflight.afterPointStitches) document.pointStitches = clonePointStitches(preflight.afterPointStitches);
   const delta: SparseMutationDelta = {
     cells: {
       indices: changedIndices,
@@ -2058,13 +2304,15 @@ export function applyMoveFragmentCommand(document: PatternDocument, command: Mov
       afterColors: preflight.changedColors,
       afterCompleted: preflight.changedCompleted
     },
-    ...(preflight.beforeBackstitches === undefined ? {} : { beforeBackstitches: preflight.beforeBackstitches, afterBackstitches: preflight.afterBackstitches })
+    ...(preflight.beforeBackstitches === undefined ? {} : { beforeBackstitches: preflight.beforeBackstitches, afterBackstitches: preflight.afterBackstitches }),
+    ...(preflight.beforePointStitches === undefined ? {} : { beforePointStitches: preflight.beforePointStitches, afterPointStitches: preflight.afterPointStitches })
   };
   return {
     changed: true,
     snapshot: false,
     changedIndices,
     movedBackstitchIds: preflight.movedBackstitchIds,
+    ...(preflight.changedPointStitchIds.length === 0 ? {} : { changedPointStitchIds: preflight.changedPointStitchIds }),
     delta
   };
 }
@@ -2229,7 +2477,7 @@ function applyAddBackstitch(document: PatternDocument, command: AddBackstitchCom
   const { start, end } = snapBackstitchEndpoints(document, requested.start, requested.end);
   ensureBackstitchEndpoints(document, start, end);
   const color = requireCommandInteger(command.color, 'color');
-  requirePaletteEntry(document, color);
+  requireThreadEntry(document, color);
   const records = listBackstitches(document);
   const pieces = splitAtCorners(start, end);
   const existing = pieces.map((piece) => {
@@ -2318,6 +2566,123 @@ function applyMoveBackstitch(document: PatternDocument, command: MoveBackstitchC
   if (createdIds.length === 0) return { ...changed(), backstitchId: id };
   document.nextBackstitchId = createdIds[createdIds.length - 1] + 1;
   return { ...changed(), backstitchId: id, createdBackstitchIds: new Uint32Array(createdIds) };
+}
+
+/** An active palette entry that is a thread, not a bead: beads colour only point stitches. */
+function requireThreadEntry(document: PatternDocument, id: number): PaletteEntry {
+  const entry = requirePaletteEntry(document, id);
+  if (isBeadEntry(entry)) throw new DomainError('palette-material-mismatch', `Palette ID ${String(id)} is a bead and can only be used for beads.`);
+  return entry;
+}
+
+/** A bead orientation (0 to 3); a knot (thread entry) must lie at 0. */
+function requirePointOrientation(entry: PaletteEntry, value: unknown): BeadOrientation {
+  const orientation = requireCommandInteger(value, 'orientation');
+  if (orientation < 0 || orientation > 3) throw new DomainError('invalid-point-stitch', 'Bead orientation must be 0 to 3.');
+  if (orientation !== 0 && !isBeadEntry(entry)) throw new DomainError('invalid-point-stitch', 'A French knot has no orientation.');
+  return orientation as BeadOrientation;
+}
+
+/**
+ * Places a knot (thread entry) or bead (bead entry) on a corner or centre. An
+ * occupied position in another colour is recoloured in place and loses its
+ * progress. A bead over a bead keeps its orientation, a bead over a knot takes
+ * the command's orientation, and a knot lies at 0; the same colour is a duplicate, so a completion mark never
+ * enters the editor history through this command.
+ */
+function applyAddPointStitch(document: PatternDocument, command: AddPointStitchCommand): MutationInfo {
+  const point = parsePoint(command.point, 'point');
+  if (!isPointStitchPosition(point)) throw new DomainError('invalid-point-stitch', 'Knots and beads sit on a cell corner or a cell centre.');
+  if (!endpointInBounds(document, point)) throw new DomainError('out-of-bounds', 'Knots and beads must be within the document boundary.');
+  if (!pointWithinCanvas(document, point.x, point.y)) throw new DomainError('outside-canvas', 'Knots and beads must stay inside the canvas.');
+  const color = requireCommandInteger(command.color, 'color');
+  const entry = requirePaletteEntry(document, color);
+  const orientation = requirePointOrientation(entry, command.orientation);
+  const store = document.pointStitches;
+  const key = pointKey(point.x, point.y);
+  let existing = -1;
+  for (let index = 0; index < store.ids.length; index += 1) if (pointKey(store.x[index], store.y[index]) === key) existing = index;
+  if (existing >= 0) {
+    if (store.colors[existing] === color) throw new DomainError('duplicate-point-stitch', 'A knot or bead in this color is already here.');
+    const next = clonePointStitches(store);
+    next.colors[existing] = color;
+    next.completed[existing] = 0;
+    // A knot lies at 0; a bead replacing a knot takes the command's orientation, and bead to bead keeps its own.
+    const existingIsBead = isBeadEntry(requirePaletteEntry(document, store.colors[existing]));
+    if (!isBeadEntry(entry)) next.orientations[existing] = 0;
+    else if (!existingIsBead) next.orientations[existing] = orientation;
+    document.pointStitches = next;
+    return { ...changed(), changedPointStitchIds: new Uint32Array([next.ids[existing]]) };
+  }
+  const id = document.nextBackstitchId;
+  if (id < 1 || id > UINT32_MAX) throw new DomainError('backstitch-id-exhausted', 'No specialty stitch IDs remain.');
+  const next = allocatePointStitches(store.ids.length + 1);
+  for (let index = 0; index < store.ids.length; index += 1) copyPointStitch(store, index, next, index);
+  const added = store.ids.length;
+  next.ids[added] = id;
+  next.x[added] = point.x;
+  next.y[added] = point.y;
+  next.colors[added] = color;
+  next.orientations[added] = orientation;
+  document.pointStitches = next;
+  document.nextBackstitchId = id + 1;
+  return { ...changed(), changedPointStitchIds: new Uint32Array([id]) };
+}
+
+function applyRemovePointStitch(document: PatternDocument, command: RemovePointStitchCommand): MutationInfo {
+  const id = requireCommandInteger(command.id, 'id');
+  const store = document.pointStitches;
+  const index = store.ids.indexOf(id);
+  if (index < 0) return noChange();
+  document.pointStitches = withoutPointStitches(store, (position) => position === index);
+  return { ...changed(), changedPointStitchIds: new Uint32Array([id]) };
+}
+
+/** Moves one knot or bead to another free corner or centre, keeping its id, colour and completion. */
+function applyMovePointStitch(document: PatternDocument, command: MovePointStitchCommand): MutationInfo {
+  const id = requireCommandInteger(command.id, 'id');
+  const dx = requireCommandInteger(command.dx, 'dx');
+  const dy = requireCommandInteger(command.dy, 'dy');
+  const store = document.pointStitches;
+  const index = store.ids.indexOf(id);
+  if (index < 0 || (dx === 0 && dy === 0)) return noChange();
+  const point = { x: store.x[index] + dx, y: store.y[index] + dy };
+  if (!isPointStitchPosition(point)) throw new DomainError('invalid-point-stitch', 'Knots and beads sit on a cell corner or a cell centre.');
+  if (!endpointInBounds(document, point)) throw new DomainError('out-of-bounds', 'Knots and beads must be within the document boundary.');
+  if (!pointWithinCanvas(document, point.x, point.y)) throw new DomainError('outside-canvas', 'Knots and beads must stay inside the canvas.');
+  for (let other = 0; other < store.ids.length; other += 1) {
+    if (other !== index && store.x[other] === point.x && store.y[other] === point.y) throw new DomainError('point-stitch-collision', 'A moved knot or bead lands on another one.');
+  }
+  const next = clonePointStitches(store);
+  next.x[index] = point.x;
+  next.y[index] = point.y;
+  document.pointStitches = next;
+  return { ...changed(), changedPointStitchIds: new Uint32Array([id]) };
+}
+
+/** Turns one bead to another orientation, keeping its id, position, colour and completion. */
+function applySetPointStitchOrientation(document: PatternDocument, command: SetPointStitchOrientationCommand): MutationInfo {
+  const id = requireCommandInteger(command.id, 'id');
+  const store = document.pointStitches;
+  const index = store.ids.indexOf(id);
+  if (index < 0) return noChange();
+  const entry = requirePaletteEntry(document, store.colors[index]);
+  if (!isBeadEntry(entry)) throw new DomainError('invalid-point-stitch', 'A French knot has no orientation.');
+  const orientation = requirePointOrientation(entry, command.orientation);
+  if (store.orientations[index] === orientation) throw new DomainError('duplicate-point-stitch', 'The bead already lies in this orientation.');
+  const next = clonePointStitches(store);
+  next.orientations[index] = orientation;
+  document.pointStitches = next;
+  return { ...changed(), changedPointStitchIds: new Uint32Array([id]) };
+}
+
+/** A copy of `store` without the point stitches `remove` selects by storage position. */
+function withoutPointStitches(store: PointStitchStore, remove: (position: number) => boolean): PointStitchStore {
+  const kept: number[] = [];
+  for (let index = 0; index < store.ids.length; index += 1) if (!remove(index)) kept.push(index);
+  const next = allocatePointStitches(kept.length);
+  kept.forEach((index, position) => { copyPointStitch(store, index, next, position); });
+  return next;
 }
 
 function paletteCreate(document: PatternDocument, command: PaletteCreateCommand): MutationInfo {
@@ -2409,6 +2774,7 @@ function paletteMerge(document: PatternDocument, command: PaletteMergeCommand): 
   if (from === to) throw new DomainError('palette-merge', 'A palette color cannot merge into itself.');
   if (!toEntry) throw new DomainError('unknown-palette', `Palette ID ${String(to)} does not exist.`);
   if (!toEntry.active) throw new DomainError('palette-inactive', `Palette ID ${String(to)} is not active.`);
+  if (isBeadEntry(fromEntry) !== isBeadEntry(toEntry)) throw new DomainError('palette-material-mismatch', 'A bead and a thread cannot be merged.');
   let didChange = createdTo;
   for (let index = 0; index < document.colors.length; index += 1) {
     if (document.colors[index] !== from) continue;
@@ -2418,6 +2784,11 @@ function paletteMerge(document: PatternDocument, command: PaletteMergeCommand): 
   for (let index = 0; index < document.backstitches.colors.length; index += 1) {
     if (document.backstitches.colors[index] !== from) continue;
     document.backstitches.colors[index] = to;
+    didChange = true;
+  }
+  for (let index = 0; index < document.pointStitches.colors.length; index += 1) {
+    if (document.pointStitches.colors[index] !== from) continue;
+    document.pointStitches.colors[index] = to;
     didChange = true;
   }
   if (fromEntry.active) {
@@ -2446,6 +2817,8 @@ function paletteDelete(document: PatternDocument, command: PaletteDeleteCommand)
 
   const retainedBackstitches = listBackstitches(document).filter((record) => record.color !== id);
   if (retainedBackstitches.length !== document.backstitches.ids.length) document.backstitches = backstitchesFromRecords(retainedBackstitches);
+  const points = document.pointStitches;
+  if (points.colors.includes(id)) document.pointStitches = withoutPointStitches(points, (position) => points.colors[position] === id);
   document.palette = document.palette.map((candidate) => candidate.id === id ? { ...candidate, active: false } : candidate);
   return changed(true);
 }
@@ -2461,10 +2834,12 @@ export function applyCommandsToDraft(document: PatternDocument, commands: readon
   const changedIndices: number[] = [];
   const touchedBackstitchIds: number[] = [];
   const changedBackstitchIds: number[] = [];
+  const changedPointStitchIds: number[] = [];
   let hasTouchedIndices = false;
   let hasChangedIndices = false;
   let hasTouchedBackstitchIds = false;
   let hasChangedBackstitchIds = false;
+  let hasChangedPointStitchIds = false;
   let directDelta: SparseMutationDelta | undefined;
   let deltaCount = 0;
   for (const command of commands) {
@@ -2489,6 +2864,10 @@ export function applyCommandsToDraft(document: PatternDocument, commands: readon
       hasChangedBackstitchIds = true;
       for (const id of result.changedBackstitchIds) changedBackstitchIds.push(id);
     }
+    if (result.changedPointStitchIds !== undefined) {
+      hasChangedPointStitchIds = true;
+      for (const id of result.changedPointStitchIds) changedPointStitchIds.push(id);
+    }
     if (result.delta !== undefined) {
       directDelta = result.delta;
       deltaCount += 1;
@@ -2503,6 +2882,7 @@ export function applyCommandsToDraft(document: PatternDocument, commands: readon
     ...(hasChangedIndices ? { changedIndices: new Uint32Array(changedIndices) } : {}),
     ...(hasTouchedBackstitchIds ? { touchedBackstitchIds: new Uint32Array(touchedBackstitchIds) } : {}),
     ...(hasChangedBackstitchIds ? { changedBackstitchIds: new Uint32Array(changedBackstitchIds) } : {}),
+    ...(hasChangedPointStitchIds ? { changedPointStitchIds: new Uint32Array(changedPointStitchIds) } : {}),
     ...(commands.length === 1 && deltaCount === 1 ? { delta: directDelta } : {})
   };
 }
@@ -2516,6 +2896,7 @@ function applyOneToDraftInternal(document: PatternDocument, command: DomainComma
     case 'bulk-recolor': return applyBulkRecolorCommand(document, command);
     case 'bulk-completion': return applyBulkCompletionCommand(document, command);
     case 'bulk-backstitch-completion': return applyBulkBackstitchCompletionCommand(document, command);
+    case 'bulk-point-stitch-completion': return applyBulkPointStitchCompletionCommand(document, command);
     case 'paste-fragment': return applyPasteFragmentCommand(document, command);
     case 'move-fragment': return applyMoveFragmentCommand(document, command);
     case 'mixed-erase': return applyMixedEraseCommand(document, command);
@@ -2534,6 +2915,10 @@ function applyOneToDraftInternal(document: PatternDocument, command: DomainComma
     case 'add-backstitch': return applyAddBackstitch(document, command);
     case 'remove-backstitch': return applyRemoveBackstitch(document, command);
     case 'move-backstitch': return applyMoveBackstitch(document, command);
+    case 'add-point-stitch': return applyAddPointStitch(document, command);
+    case 'remove-point-stitch': return applyRemovePointStitch(document, command);
+    case 'move-point-stitch': return applyMovePointStitch(document, command);
+    case 'set-point-stitch-orientation': return applySetPointStitchOrientation(document, command);
     case 'palette-create': return paletteCreate(document, command);
     case 'palette-update': return paletteUpdate(document, command);
     case 'palette-swap': return paletteSwap(document, command);

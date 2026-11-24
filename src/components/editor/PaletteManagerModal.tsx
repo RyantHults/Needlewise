@@ -1,7 +1,6 @@
 import { useEffect, useRef } from "react";
-import type { PaletteEntry } from "../../domain";
+import { isBeadEntry, type PaletteEntry } from "../../domain";
 import { Modal, type ModalProps } from "../Modal";
-import { ThreadColorPicker, type ThreadColorPickerProps } from "../ThreadColorPicker";
 import { ErrorNotice } from "../controls/Notice";
 
 export type PaletteManagerPanel = "swap" | "add" | null;
@@ -15,7 +14,8 @@ export interface PaletteManagerModalProps {
   entryLabel: (entry: PaletteEntry) => string;
   /** Drawn inside each grid swatch, e.g. the color's symbol. */
   swatchContent?: (entry: PaletteEntry) => React.ReactNode;
-  picker: ThreadColorPickerProps;
+  /** The open panel's picker: a bead picker when swapping a bead, otherwise the thread picker. Key it per panel so each opening starts a fresh pick. */
+  picker: React.ReactNode;
   notice?: string;
   onSelect: (id: number) => void;
   onToggleSwap: () => void;
@@ -28,8 +28,9 @@ export interface PaletteManagerModalProps {
 
 /**
  * Every active palette color in one grid, with the selected one in a chip that
- * swaps or deletes it. Swap and the add tile open the thread color picker in a
- * panel beside the grid, so the palette stays in view while picking.
+ * swaps or deletes it. Beads are listed in their own grid. Swap and the add
+ * tile open a color picker in a panel beside the grid, so the palette stays
+ * in view while picking.
  */
 export function PaletteManagerModal({
   palette,
@@ -58,6 +59,24 @@ export function PaletteManagerModal({
     if (panel !== null || closed === null) return;
     (closed === "swap" ? swapButton : addButton).current?.focus();
   }, [panel]);
+  const threads = palette.filter((entry) => !isBeadEntry(entry));
+  const beads = palette.filter(isBeadEntry);
+  const entryButton = (entry: PaletteEntry) => (
+    <div role="listitem" key={entry.id}>
+      <button
+        className="catalog-color-button"
+        type="button"
+        aria-label={`${entry.name}, ${entryLabel(entry)}`}
+        aria-pressed={selected?.id === entry.id}
+        onClick={() => onSelect(entry.id)}
+      >
+        <span className="catalog-color-swatch" style={{ background: entry.color }} aria-hidden="true">
+          {swatchContent?.(entry)}
+        </span>
+      </button>
+    </div>
+  );
+  const swappingBead = panel === "swap" && selected !== null && isBeadEntry(selected);
   return (
     <Modal
       className={`catalog-dialog palette-manager-dialog${panel ? " palette-manager-panel-open" : ""}`}
@@ -94,28 +113,18 @@ export function PaletteManagerModal({
               <div role="listitem">
                 <button ref={addButton} className="catalog-color-button palette-manager-add" type="button" aria-label="Add color" title="Add color" aria-expanded={panel === "add"} aria-controls="palette-manager-panel" onClick={onToggleAdd}><span className="palette-manager-add-glyph" aria-hidden="true">+</span></button>
               </div>
-              {palette.map((entry) => (
-                <div role="listitem" key={entry.id}>
-                  <button
-                    className="catalog-color-button"
-                    type="button"
-                    aria-label={`${entry.name}, ${entryLabel(entry)}`}
-                    aria-pressed={selected?.id === entry.id}
-                    onClick={() => onSelect(entry.id)}
-                  >
-                    <span className="catalog-color-swatch" style={{ background: entry.color }} aria-hidden="true">
-                      {swatchContent?.(entry)}
-                    </span>
-                  </button>
-                </div>
-              ))}
+              {threads.map(entryButton)}
             </div>
+            {beads.length > 0 && (
+              <div className="catalog-color-grid palette-manager-grid" role="list" aria-label="Palette beads">
+                {beads.map(entryButton)}
+              </div>
+            )}
           </div>
         </section>
         {(panel === "add" || (panel === "swap" && selected)) && (
-          <section id="palette-manager-panel" className="palette-manager-panel" aria-label={panel === "swap" && selected ? `Swap ${selected.name} for a thread color` : "Add a thread color"}>
-            {/* Remounted per mode, so switching between swap and add starts a fresh pick. */}
-            <ThreadColorPicker key={panel} {...picker} />
+          <section id="palette-manager-panel" className="palette-manager-panel" aria-label={panel === "swap" && selected ? `Swap ${selected.name} for a ${swappingBead ? "bead" : "thread color"}` : "Add a thread color"}>
+            {picker}
             {notice && <ErrorNotice>{notice}</ErrorNotice>}
           </section>
         )}

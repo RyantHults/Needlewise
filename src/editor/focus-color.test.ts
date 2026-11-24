@@ -118,10 +118,11 @@ describe('focusPasteFragment', () => {
       x2: Uint32Array.of(4, 5),
       y2: Uint32Array.of(0, 0),
       colors: Uint16Array.of(1, 2)
-    }
+    },
+    pointStitches: { x: Uint32Array.of(0, 2), y: Uint32Array.of(0, 2), colors: Uint16Array.of(1, 2), orientations: Uint8Array.of(0, 0) }
   } as PatternFragment;
 
-  it('drops non-focus cells and backstitches and stays valid', () => {
+  it('drops non-focus cells, backstitches, knots and beads and stays valid', () => {
     assertValidPatternFragment(fragment);
     const surface = surfaceOf(5, 5);
     const result = focusPasteFragment(fragment, surface, { x: 1, y: 1 }, 1);
@@ -130,6 +131,7 @@ describe('focusPasteFragment', () => {
     expect(Array.from(result.colors.subarray(12, 16))).toEqual([0, 0, 0, 0]);
     expect(Array.from(result.backstitches.colors)).toEqual([1]);
     expect(Array.from(result.backstitches.x2)).toEqual([4]);
+    expect(Array.from(result.pointStitches.colors)).toEqual([1]);
     expect(fragment.kind[1]).toBe(CellKind.Full);
   });
 

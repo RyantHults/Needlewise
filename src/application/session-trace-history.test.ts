@@ -77,7 +77,7 @@ describe('trace image unified history', () => {
     const resolvedDmc = workspace.catalogFor(document);
     expect(resolvedDmc).toMatchObject({ association: DEFAULT_CATALOG_DEFINITION.association });
     expect(resolvedDmc?.records).toEqual(DEFAULT_CATALOG_DEFINITION.records);
-    expect(workspace.availableCatalogs().find((definition) => definition.association.catalogId === brandBReference.catalogId)).toBeUndefined();
+    expect(workspace.threadCatalogs().find((definition) => definition.association.catalogId === brandBReference.catalogId)).toBeUndefined();
     expect(workspace.document?.catalog).toEqual(DEFAULT_CATALOG_DEFINITION.association);
     expect(workspace.document?.palette[1].catalog).toEqual(brandBReference);
     await workspace.dispose();
@@ -93,7 +93,7 @@ describe('trace image unified history', () => {
       const reopenedDmc = reopened.catalogFor(session.document);
       expect(reopenedDmc).toMatchObject({ association: DEFAULT_CATALOG_DEFINITION.association });
       expect(reopenedDmc?.records).toEqual(DEFAULT_CATALOG_DEFINITION.records);
-      expect(reopened.availableCatalogs().find((definition) => definition.association.catalogId === brandBReference.catalogId)).toBeUndefined();
+      expect(reopened.threadCatalogs().find((definition) => definition.association.catalogId === brandBReference.catalogId)).toBeUndefined();
       expect(session.document.catalog).toEqual(DEFAULT_CATALOG_DEFINITION.association);
       expect(session.document.palette[1].catalog).toEqual(brandBReference);
       expect(session.document.palette[2].catalog).toBeUndefined();

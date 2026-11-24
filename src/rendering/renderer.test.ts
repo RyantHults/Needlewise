@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import targetSvg from '../assets/ui-icons/target.svg?raw';
-import { CellKind, createDocument, createPatternFragment, type PatternDocument } from '../domain';
+import { BEAD_ORIENTATIONS, CellKind, createDocument, createPatternFragment, type BeadOrientation, type PatternDocument } from '../domain';
 import { cellToScreenRect, fitViewport, getCanvasMetrics, visibleCellRect } from '../editor/coordinates';
 import { CHART_EDGE_MARGIN, DEFAULT_RENDERER_STYLE, type CanvasTarget, type FloatingPasteOverlay, type PendingCellState, type RendererStyle, type TraceImage } from '../editor/contracts';
 import { MAX_ATLAS_PIXELS, createDefaultAtlasTarget } from './context';
 import { isCanvasImageSource } from './atlas';
-import { grayscaleColor } from './colors';
+import { grayscaleColor, threadEdgeColor } from './colors';
 import { createCanvasRenderer } from './renderer';
 import { record, recordingContext, type RecordingContext } from './test-support';
 import { sparseSelectionGeometry } from '../editor/lasso';
-import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
+import { createCatalogReference, DEFAULT_CATALOG_DEFINITION, INSTALLED_CATALOG_REGISTRY } from '../catalog';
 import { getSymbolOutline, SYMBOL_IDS } from '../symbols';
 
 // Fixtures must name real pool slugs: an unknown slug is deliberately not
@@ -2430,6 +2430,270 @@ describe('Canvas 2D chart renderer', () => {
     const strokes = base.records.filter((call) => call.name === 'moveTo' && call.strokeStyle === '#0000ff' && call.args[1] === 10);
     expect(strokes.map((call) => call.args[0])).toEqual([10]);
     renderer.dispose();
+  });
+
+  describe('French knots and beads', () => {
+    const BEAD = 7;
+    const PEBBLE = 8;
+    const millHill = INSTALLED_CATALOG_REGISTRY.definitions.find((definition) => definition.materialKind === 'bead')!;
+    /** A Mill Hill bead entry drawn in `color`: 00167 is an 11/0 glass seed bead, 05025 a size 3 pebble. */
+    const beadEntry = (id: number, code: string, color: string) => {
+      const record = millHill.records.find((candidate) => candidate.code === code)!;
+      return { id, name: record.name, color, material: { kind: 'bead', label: 'Mill Hill', unit: 'count' } as const, catalog: createCatalogReference(millHill, record) };
+    };
+    function pointChart(points: readonly { id: number; x: number; y: number; color: number; completed?: boolean; orientation?: BeadOrientation }[], aidaCount = 14): PatternDocument {
+      const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
+        width: 4,
+        height: 4,
+        settings: { aidaCount },
+        palette: [
+          { id: 1, name: 'Red', color: '#ff0000' },
+          { id: 35, name: 'Blue', color: '#0000ff' },
+          beadEntry(BEAD, '00167', '#00aa00'),
+          beadEntry(PEBBLE, '05025', '#aa0000')
+        ]
+      });
+      document.pointStitches = {
+        ids: Uint32Array.from(points.map((point) => point.id)),
+        x: Uint32Array.from(points.map((point) => point.x)),
+        y: Uint32Array.from(points.map((point) => point.y)),
+        colors: Uint16Array.from(points.map((point) => point.color)),
+        completed: Uint8Array.from(points.map((point) => (point.completed ? 1 : 0))),
+        orientations: Uint8Array.from(points.map((point) => point.orientation ?? 0))
+      };
+      return document;
+    }
+    function render(document: PatternDocument, options: { style?: Partial<RendererStyle>; overlay?: Parameters<typeof createCanvasRenderer>[0]['overlay'] } = {}) {
+      const base = recordingContext();
+      const overlay = recordingContext();
+      const renderer = createCanvasRenderer({
+        document,
+        targets: { base: target(base), overlay: target(overlay) },
+        metrics: getCanvasMetrics(80, 80),
+        viewport: { x: 0, y: 0, zoom: 20 },
+        style: { showGrid: false, ...options.style },
+        overlay: options.overlay
+      });
+      renderer.renderNow();
+      return { renderer, base, overlay };
+    }
+    /** The paint call that finishes the circle drawn around this screen point, with the colours in force. */
+    const markAt = (context: RecordingContext, x: number, y: number) => {
+      const arc = context.records.findIndex((call) => call.name === 'arc' && call.args[0] === x && call.args[1] === y);
+      if (arc < 0) return undefined;
+      return context.records.slice(arc).find((call) => call.name === 'fill' || call.name === 'stroke');
+    };
+
+    it('fills a knot on a corner in its thread colour at that corner', () => {
+      const { renderer, base } = render(pointChart([{ id: 1, x: 4, y: 8, color: 1 }]));
+      const mark = markAt(base, 20, 40);
+      expect(mark?.name).toBe('fill');
+      expect(mark?.fillStyle).toBe('#ff0000');
+      renderer.dispose();
+    });
+
+    /** Hole axes in y-down screen space for each orientation, written out from the spec. */
+    const SLASH = { x: Math.SQRT1_2, y: -Math.SQRT1_2 };
+    const VERTICAL = { x: 0, y: 1 };
+    const BACKSLASH = { x: Math.SQRT1_2, y: Math.SQRT1_2 };
+    const HORIZONTAL = { x: 1, y: 0 };
+    /**
+     * The barrel filled in `color`, from the corner arcs that trace it: its centre in screen px, and its
+     * extent along `axis` (a unit vector) and across it, in cells.
+     */
+    const beadBarrel = (context: RecordingContext, color: string, axis = SLASH, zoom = 20) => {
+      const fill = context.records.findIndex((call) => call.name === 'fill' && call.fillStyle === color);
+      const begin = context.records.slice(0, fill).map((call) => call.name).lastIndexOf('beginPath');
+      const arcs = context.records.slice(begin, fill).filter((call) => call.name === 'arc').map((call) => call.args as number[]);
+      const centerX = arcs.reduce((sum, [x]) => sum + x, 0) / arcs.length;
+      const centerY = arcs.reduce((sum, [, y]) => sum + y, 0) / arcs.length;
+      const along = Math.max(...arcs.map(([x, y, radius]) => Math.abs((x - centerX) * axis.x + (y - centerY) * axis.y) + radius));
+      const across = Math.max(...arcs.map(([x, y, radius]) => Math.abs(-(x - centerX) * axis.y + (y - centerY) * axis.x) + radius));
+      return { arcs, centerX, centerY, along: (2 * along) / zoom, across: (2 * across) / zoom };
+    };
+    const SEED_14 = { across: (2.5 * 14) / 25.4, along: (1.75 * 14) / 25.4 };
+
+    it('draws a bead as a filled barrel with rounded corners, unlike a knot\'s round dot', () => {
+      const { renderer, base } = render(pointChart([{ id: 1, x: 6, y: 6, color: BEAD }, { id: 2, x: 10, y: 10, color: 1 }]));
+      const bead = beadBarrel(base, '#00aa00');
+      expect(bead.centerX).toBeCloseTo(30);
+      expect(bead.centerY).toBeCloseTo(30);
+      expect(bead.arcs).toHaveLength(4);
+      for (const [, , , start, end] of bead.arcs) expect(end - start).toBeCloseTo(Math.PI / 2);
+      const knot = beadBarrel(base, '#ff0000');
+      expect(knot.arcs).toHaveLength(1);
+      expect(knot.arcs[0][4] - knot.arcs[0][3]).toBeCloseTo(Math.PI * 2);
+      renderer.dispose();
+    });
+
+    it('lays a seed bead on the "/" diagonal at its real size on the fabric', () => {
+      const fourteen = render(pointChart([{ id: 1, x: 6, y: 6, color: BEAD }], 14));
+      // 2.5 x 1.75 mm on 14-count (1.81 mm cells): 1.38 cells across the hole and 0.96 along it.
+      const seed = beadBarrel(fourteen.base, '#00aa00');
+      expect(seed.across).toBeCloseTo(SEED_14.across, 2);
+      expect(seed.along).toBeCloseTo(SEED_14.along, 2);
+      fourteen.renderer.dispose();
+      const twentyEight = render(pointChart([{ id: 1, x: 6, y: 6, color: BEAD }], 28));
+      const doubled = beadBarrel(twentyEight.base, '#00aa00');
+      expect(doubled.across).toBeCloseTo(SEED_14.across * 2, 2);
+      expect(doubled.along).toBeCloseTo(SEED_14.along * 2, 2);
+      twentyEight.renderer.dispose();
+    });
+
+    it('lays each bead along its own orientation', () => {
+      const axes = [
+        [BEAD_ORIENTATIONS.Slash, SLASH],
+        [BEAD_ORIENTATIONS.Vertical, VERTICAL],
+        [BEAD_ORIENTATIONS.Backslash, BACKSLASH],
+        [BEAD_ORIENTATIONS.Horizontal, HORIZONTAL]
+      ] as const;
+      for (const [orientation, axis] of axes) {
+        const { renderer, base } = render(pointChart([{ id: 1, x: 6, y: 6, color: BEAD, orientation }]));
+        // The seed bead is longer across its hole than along it, so only the right axis gives both extents.
+        const bead = beadBarrel(base, '#00aa00', axis);
+        expect(bead.along).toBeCloseTo(SEED_14.along, 2);
+        expect(bead.across).toBeCloseTo(SEED_14.across, 2);
+        renderer.dispose();
+      }
+    });
+
+    it('draws a hovered thread as a translucent knot at the preview point', () => {
+      const { renderer, overlay } = render(pointChart([]), { overlay: { pointStitchPreview: { point: { x: 6, y: 6 }, paletteId: 1, orientation: 0 } } });
+      const knot = markAt(overlay, 30, 30);
+      expect(knot?.name).toBe('fill');
+      expect(knot?.fillStyle).toBe('#ff0000');
+      expect(knot!.globalAlpha).toBeGreaterThan(0);
+      expect(knot!.globalAlpha).toBeLessThan(1);
+      renderer.dispose();
+    });
+
+    it('draws a pebble bead larger than a seed bead', () => {
+      const { renderer, base } = render(pointChart([{ id: 1, x: 6, y: 6, color: BEAD }, { id: 2, x: 10, y: 10, color: PEBBLE }]));
+      const seed = beadBarrel(base, '#00aa00');
+      const pebble = beadBarrel(base, '#aa0000');
+      expect(pebble.across).toBeGreaterThan(seed.across);
+      expect(pebble.along).toBeGreaterThan(seed.along);
+      renderer.dispose();
+    });
+
+    it('draws a large bead whose centre is out of view but whose ring reaches into it', () => {
+      // A pebble on 40-count is about 8.7 cells across, so one centred 3 cells left of the view still shows.
+      const document = createDocument({ catalog: DEFAULT_CATALOG_DEFINITION.association,
+        width: 12,
+        height: 4,
+        settings: { aidaCount: 40 },
+        palette: [beadEntry(PEBBLE, '05025', '#aa0000')]
+      });
+      document.pointStitches = { ids: Uint32Array.of(1), x: Uint32Array.of(2), y: Uint32Array.of(6), colors: Uint16Array.of(PEBBLE), completed: Uint8Array.of(0), orientations: Uint8Array.of(0) };
+      const base = recordingContext();
+      const renderer = createCanvasRenderer({
+        document,
+        targets: { base: target(base), overlay: target(recordingContext()) },
+        metrics: getCanvasMetrics(80, 80),
+        viewport: { x: 3.5, y: 0, zoom: 20 },
+        style: { showGrid: false }
+      });
+      renderer.renderNow();
+      expect(base.records.some((call) => call.name === 'fill' && call.fillStyle === '#aa0000')).toBe(true);
+      renderer.dispose();
+    });
+
+    it('shows the hovered bead as a translucent barrel on the overlay, and nothing without a preview', () => {
+      const { renderer, overlay } = render(pointChart([]), { overlay: { pointStitchPreview: { point: { x: 6, y: 6 }, paletteId: BEAD, orientation: 0 } } });
+      const ghost = beadBarrel(overlay, '#00aa00');
+      expect(ghost.centerX).toBeCloseTo(30);
+      expect(ghost.centerY).toBeCloseTo(30);
+      const fill = overlay.records.find((call) => call.name === 'fill' && call.fillStyle === '#00aa00')!;
+      expect(fill.globalAlpha).toBeGreaterThan(0);
+      expect(fill.globalAlpha).toBeLessThan(1);
+      renderer.dispose();
+      const none = render(pointChart([]));
+      expect(none.overlay.records.some((call) => call.name === 'fill' && call.fillStyle === '#00aa00')).toBe(false);
+      none.renderer.dispose();
+    });
+
+    it('draws the rotate icon centred on a bead a click would turn, and clears it when the hover leaves', () => {
+      const { renderer, overlay } = render(pointChart([{ id: 1, x: 6, y: 6, color: BEAD }]), { overlay: { pointStitchRotate: { point: { x: 6, y: 6 } } } });
+      const iconFill = overlay.records.findIndex((call) => call.name === 'fill' && call.fillStyle === DEFAULT_RENDERER_STYLE.highlightOutlineColor && isPathArgument(call.args[0]));
+      expect(iconFill).toBeGreaterThanOrEqual(0);
+      const centring = overlay.records.slice(0, iconFill).filter((call) => call.name === 'translate').at(-2)!;
+      expect(centring.args).toEqual([30, 30]);
+      overlay.records.length = 0;
+      renderer.setOverlay({}, { layer: 'overlay', cellRect: { x: 0, y: 0, width: 1, height: 1 } });
+      renderer.renderNow();
+      const cleared = overlay.records.filter((call) => call.name === 'clearRect').map((call) => call.args as number[]);
+      expect(cleared.some(([x, y, width, height]) => x <= 21 && y <= 21 && x + width >= 39 && y + height >= 39)).toBe(true);
+      expect(overlay.records.some((call) => call.name === 'fill' && isPathArgument(call.args[0]))).toBe(false);
+      renderer.dispose();
+    });
+
+    it('clears the bead ghost where it was when the preview leaves, even under a narrower caller rect', () => {
+      const { renderer, overlay } = render(pointChart([]), { overlay: { pointStitchPreview: { point: { x: 6, y: 6 }, paletteId: BEAD, orientation: 0 } } });
+      overlay.records.length = 0;
+      renderer.setOverlay({}, { layer: 'overlay', cellRect: { x: 3, y: 3, width: 1, height: 1 } });
+      renderer.renderNow();
+      const cleared = overlay.records.filter((call) => call.name === 'clearRect').map((call) => call.args as number[]);
+      expect(cleared.some(([x, y, width, height]) => x <= 30 - 13 && y <= 30 - 13 && x + width >= 30 + 13 && y + height >= 30 + 13)).toBe(true);
+      expect(overlay.records.some((call) => call.name === 'fill' && call.fillStyle === '#00aa00')).toBe(false);
+      renderer.dispose();
+    });
+
+    it('rims every knot in a darker shade of its colour, on a stitch and on bare fabric alike', () => {
+      const document = pointChart([{ id: 1, x: 6, y: 6, color: 1 }, { id: 2, x: 10, y: 10, color: 1 }]);
+      document.kind[5] = CellKind.Full;
+      document.colors[20] = 35;
+      const { renderer, base } = render(document);
+      // Knot 1 sits on a blue stitch, knot 2 on bare fabric.
+      const rimAt = (x: number, y: number) => {
+        const arc = base.records.findIndex((call) => call.name === 'arc' && call.args[0] === x && call.args[1] === y);
+        return base.records.slice(arc).find((call) => call.name === 'stroke');
+      };
+      expect(rimAt(30, 30)?.strokeStyle).toBe(threadEdgeColor('#ff0000'));
+      expect(rimAt(50, 50)?.strokeStyle).toBe(threadEdgeColor('#ff0000'));
+      renderer.dispose();
+    });
+
+    it('fades completed knots while completion shows', () => {
+      const document = pointChart([{ id: 1, x: 4, y: 4, color: 1, completed: true }]);
+      const shown = render(document);
+      expect(markAt(shown.base, 20, 20)?.globalAlpha).toBeCloseTo(DEFAULT_RENDERER_STYLE.completedOpacity);
+      shown.renderer.dispose();
+      const preview = render(document, { style: { showCompletion: false } });
+      expect(markAt(preview.base, 20, 20)?.globalAlpha).toBe(1);
+      preview.renderer.dispose();
+    });
+
+    it('leaves erased and lifted points out of the base pass and redraws them afterwards', () => {
+      const document = pointChart([{ id: 1, x: 4, y: 4, color: 1 }, { id: 2, x: 8, y: 4, color: 1 }, { id: 3, x: 12, y: 4, color: 1 }]);
+      const fragment = createPatternFragment(chart(1, 1), { x: 0, y: 0, width: 1, height: 1 });
+      const { renderer, base } = render(document, {
+        overlay: {
+          erasingPointStitchIds: new Set([2]),
+          floatingPaste: { mode: 'move', fragment, destination: { x: 3, y: 3, width: 1, height: 1 }, liftedPointStitchIds: new Set([3]) }
+        }
+      });
+      expect(markAt(base, 20, 20)).toBeDefined();
+      expect(markAt(base, 40, 20)).toBeUndefined();
+      expect(markAt(base, 60, 20)).toBeUndefined();
+      base.records.length = 0;
+      renderer.setOverlay({});
+      renderer.renderNow();
+      expect(markAt(base, 40, 20)?.fillStyle).toBe('#ff0000');
+      expect(markAt(base, 60, 20)?.fillStyle).toBe('#ff0000');
+      renderer.dispose();
+    });
+
+    it('previews a floating paste\'s points at the destination', () => {
+      const document = pointChart([]);
+      const fragment = { ...createPatternFragment(chart(1, 1), { x: 0, y: 0, width: 1, height: 1 }), pointStitches: { x: Uint32Array.of(2), y: Uint32Array.of(2), colors: Uint16Array.of(BEAD), orientations: Uint8Array.of(BEAD_ORIENTATIONS.Horizontal) } };
+      const { renderer, overlay } = render(document, { overlay: { floatingPaste: { fragment, destination: { x: 2, y: 1, width: 1, height: 1 } } } });
+      const bead = beadBarrel(overlay, '#00aa00', HORIZONTAL);
+      expect(bead.centerX).toBeCloseTo(50);
+      expect(bead.centerY).toBeCloseTo(30);
+      expect(bead.along).toBeCloseTo(SEED_14.along, 2);
+      expect(bead.across).toBeCloseTo(SEED_14.across, 2);
+      renderer.dispose();
+    });
   });
 
   it('keeps color presentation distinct while Symbol Overview paints actual outlines', () => {

@@ -28,7 +28,9 @@ export function createExportPdf(
       kind: source.kind,
       colors: source.colors,
       backstitches: source.backstitches,
+      pointStitches: source.pointStitches,
       palette: source.palette,
+      settings: source.settings,
       ...(source.canvasMask ? { canvasMask: source.canvasMask } : {})
     };
     let coverImagePng: Uint8Array | undefined;

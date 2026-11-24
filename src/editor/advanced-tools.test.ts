@@ -1227,7 +1227,7 @@ describe('advanced headless editor tools', () => {
   it('commits no backstitch that leaves the selection', () => {
     const { controller, boundary, uiStore } = fixture(documentWithStitches(), SPECIALTY_LAYER_ID);
     controller.setSelection({ x: 0, y: 0 });
-    controller.setTool({ tool: 'backstitch' });
+    controller.setTool({ tool: 'specialty', stitch: 'backstitch' });
     controller.handlePointerDown(pointer(1, 8, 8));
     controller.handlePointerUp(pointer(1, 40, 24));
     expect(boundary.log).toHaveLength(0);
@@ -1489,7 +1489,7 @@ describe('advanced headless editor tools', () => {
   it('keeps drawn and moved backstitches incomplete and deletes the selected one on Backspace', () => {
     const { controller, boundary } = fixture(documentWithStitches(), SPECIALTY_LAYER_ID);
     const backstitches = () => boundary.activeLayerSurface()!.backstitches;
-    controller.setTool({ tool: 'backstitch' });
+    controller.setTool({ tool: 'specialty', stitch: 'backstitch' });
     controller.handlePointerDown(pointer(1, 8, 8));
     controller.handlePointerMove(pointer(1, 40, 24));
     controller.handlePointerUp(pointer(1, 40, 24));
@@ -1512,7 +1512,7 @@ describe('advanced headless editor tools', () => {
 
   it('rejects out-of-document backstitch starts and uses the final pointer-up sample', () => {
     const { controller, boundary } = fixture(documentWithStitches(), SPECIALTY_LAYER_ID);
-    controller.setTool({ tool: 'backstitch' });
+    controller.setTool({ tool: 'specialty', stitch: 'backstitch' });
     expect(controller.handlePointerDown(pointer(1, -8, 8))).toBe(false);
     expect(boundary.log).toHaveLength(0);
     controller.handlePointerDown(pointer(2, 8, 8));
@@ -1523,7 +1523,7 @@ describe('advanced headless editor tools', () => {
 
   it('supports keyboard backstitch anchor/finish, zero-length prevention, cancel, and undo/redo', () => {
     const first = fixture(documentWithStitches(), SPECIALTY_LAYER_ID);
-    first.controller.setTool({ tool: 'backstitch' });
+    first.controller.setTool({ tool: 'specialty', stitch: 'backstitch' });
     first.uiStore.setKeyboardCursor({ x: 1, y: 1 });
     first.controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined });
     expect(first.boundary.log).toHaveLength(0);
@@ -1542,7 +1542,7 @@ describe('advanced headless editor tools', () => {
     first.controller.dispose();
 
     const cancelled = fixture(documentWithStitches(), SPECIALTY_LAYER_ID);
-    cancelled.controller.setTool({ tool: 'backstitch' });
+    cancelled.controller.setTool({ tool: 'specialty', stitch: 'backstitch' });
     cancelled.uiStore.setKeyboardCursor({ x: 1, y: 1 });
     cancelled.controller.handleKeyDown({ key: 'Enter', preventDefault: () => undefined });
     cancelled.controller.handleKeyDown({ key: 'Escape', preventDefault: () => undefined });

@@ -1,8 +1,10 @@
 import type { PDFDocument, PDFFont, PDFPage, RGB } from 'pdf-lib';
 import type { DisplayUnits, PatternDocument, PatternMetrics } from '../domain';
-import { CellKind, componentKind, componentSlotMask, FIXED_POINT_UNITS_PER_CELL, isLegacyQuarterKind, isThreeQuarterPairKind, parseHexColor } from '../domain';
+import { BEAD_ORIENTATIONS, CellKind, componentKind, componentSlotMask, FIXED_POINT_UNITS_PER_CELL, isLegacyQuarterKind, isBeadEntry, isThreeQuarterPairKind, parseHexColor, type BeadOrientation } from '../domain';
 import { DEFAULT_RENDERER_STYLE, type CanvasContextAdapter } from '../editor/contracts';
 import { contrastSymbolInk, relativeLuminance } from '../rendering/contrast';
+import { threadEdgeColor } from '../rendering/colors';
+import { BEAD_CORNER_FRACTION, beadAxis, beadSizeCells, KNOT_DIAMETER, type BeadSize, type Vector } from '../rendering/point-stitches';
 import { drawStitchGeometry } from '../rendering/symbol-painter';
 import { getSymbolOutline, SYMBOL_POOL_VERSION } from '../symbols';
 import { toCubicSvgPath } from '../import/pdf/outline';
@@ -21,14 +23,14 @@ import {
   type ChartLayout,
   type ChartPage
 } from './layout';
-import { buildLegend, type ExportLegend, type LegendCounts, type LegendLength, type LegendRow, type LegendSkeins } from './legend';
+import { buildLegend, legendLineCount, type ExportLegend, type LegendBead, type LegendCounts, type LegendLength, type LegendRow, type LegendSkeins } from './legend';
 
 /**
  * The flattened, visible pattern. Completion planes are deliberately not part
  * of this type: the writer reads stitch kinds and colors only, so it cannot
  * draw completion state.
  */
-export type PdfPatternDocument = Pick<PatternDocument, 'width' | 'height' | 'kind' | 'colors' | 'backstitches' | 'palette'> & {
+export type PdfPatternDocument = Pick<PatternDocument, 'width' | 'height' | 'kind' | 'colors' | 'backstitches' | 'pointStitches' | 'palette' | 'settings'> & {
   readonly canvasMask?: Uint8Array;
 };
 
@@ -80,6 +82,8 @@ interface Context {
   readonly layout: ChartLayout;
   readonly legend: ExportLegend;
   readonly legendPages: number;
+  /** True bead size in cells, keyed by bead palette id; every other point is a knot. */
+  readonly beadSizes: ReadonlyMap<number, BeadSize>;
 }
 
 // --- geometry helpers (pure, exported for tests) -------------------------
@@ -402,7 +406,10 @@ function coverFacts(ctx: Context): string[] {
   if (finished) {
     facts.push(`Finished size: ${finishedSizeLine(finished, input.units)}${legend.aidaCount === undefined ? '' : ` on ${String(legend.aidaCount)}-count fabric`}`);
   }
-  facts.push(`${String(legend.rows.length)} colors · ${fmt(stitchTotal(legend.totals.counts))} stitches · ${fmt(legend.totals.counts.backstitch)} backstitch`);
+  const counts = [`${String(legend.rows.length)} colors`, `${fmt(stitchTotal(legend.totals.counts))} stitches`, `${fmt(legend.totals.counts.backstitch)} backstitch`];
+  if (legend.totals.counts.knot > 0) counts.push(`${fmt(legend.totals.counts.knot)} French knots`);
+  if (legend.totals.beads > 0) counts.push(`${fmt(legend.totals.beads)} beads`);
+  facts.push(counts.join(' · '));
   facts.push(legend.totals.length
     ? `Thread: ${fmtLength(legend.totals.length)}${legend.totals.skeins ? ` · ${fmtSkeins(legend.totals.skeins)}` : ''}`
     : `Thread: ${PDF_ESTIMATE_UNAVAILABLE}`);
@@ -471,16 +478,55 @@ async function drawCover(ctx: Context): Promise<void> {
 
 // --- legend --------------------------------------------------------------
 
-function legendColumns(printableWidth: number): { symbol: number; code: number; name: number; counts: number; length: number; skeins: number; nameWidth: number } {
+const COUNT_COLUMN_WIDTH = 32;
+
+/**
+ * The key's table lines, paginated as rows: the thread rows (or the empty-pattern
+ * message), the thread Total, then the Beads heading and one line per bead.
+ * `legendLineCount` counts the same lines.
+ */
+type LegendLine =
+  | { readonly kind: 'empty' }
+  | { readonly kind: 'thread'; readonly row: LegendRow }
+  | { readonly kind: 'thread-total' }
+  | { readonly kind: 'bead-heading' }
+  | { readonly kind: 'bead'; readonly bead: LegendBead };
+
+function legendLines(legend: ExportLegend): LegendLine[] {
+  const lines: LegendLine[] = legend.rows.length === 0 && legend.beads.length === 0
+    ? [{ kind: 'empty' }]
+    : legend.rows.map((row) => ({ kind: 'thread', row }));
+  lines.push({ kind: 'thread-total' });
+  if (legend.beads.length > 0) {
+    lines.push({ kind: 'bead-heading' });
+    for (const bead of legend.beads) lines.push({ kind: 'bead', bead });
+  }
+  return lines;
+}
+
+const COUNT_LABELS: Readonly<Record<keyof LegendCounts, string>> = { full: 'Full', half: 'Half', threeQuarter: '3/4', quarter: '1/4', backstitch: 'Back', knot: 'Knot' };
+
+/** The key's count columns, in order; the knot column appears only when the pattern has knots. */
+export function legendCountFields(legend: ExportLegend): Array<keyof LegendCounts> {
+  const fields: Array<keyof LegendCounts> = ['full', 'half', 'threeQuarter', 'quarter', 'backstitch'];
+  if (legend.totals.counts.knot > 0) fields.push('knot');
+  return fields;
+}
+
+function legendColumns(printableWidth: number, countColumns: number): { symbol: number; code: number; name: number; counts: number; length: number; skeins: number; nameWidth: number } {
   const symbol = 0;
   const code = 26;
-  const countWidth = 32;
+  const countsWidth = COUNT_COLUMN_WIDTH * countColumns;
   const lengthWidth = 78;
   const skeinsWidth = 56;
-  const nameWidth = Math.max(40, printableWidth - code - 54 - countWidth * 5 - lengthWidth - skeinsWidth);
+  const nameWidth = Math.max(40, printableWidth - code - 54 - countsWidth - lengthWidth - skeinsWidth);
   const name = code + 54;
   const counts = name + nameWidth;
-  return { symbol, code, name, counts, length: counts + countWidth * 5, skeins: counts + countWidth * 5 + lengthWidth, nameWidth };
+  return { symbol, code, name, counts, length: counts + countsWidth, skeins: counts + countsWidth + lengthWidth, nameWidth };
+}
+
+function columnsFor(ctx: Context): ReturnType<typeof legendColumns> {
+  return legendColumns(ctx.layout.geometry.printableWidth, legendCountFields(ctx.legend).length);
 }
 
 function drawLegendHeading(ctx: Context, page: PDFPage, pageIndex: number): void {
@@ -489,12 +535,11 @@ function drawLegendHeading(ctx: Context, page: PDFPage, pageIndex: number): void
   text(ctx, page, pageIndex === 0 ? 'Thread legend' : 'Thread legend (continued)', margin, margin + 16, 14);
   const strands = `${String(legend.strands)} strand${legend.strands === 1 ? '' : 's'} per stitch · ${String(legend.backstitchStrands)} strand${legend.backstitchStrands === 1 ? '' : 's'} backstitch · ${fmt(legend.waste * 100)}% waste`;
   text(ctx, page, strands, margin, margin + 30, 8.5, { color: MUTED });
-  const cols = legendColumns(printableWidth);
+  const cols = columnsFor(ctx);
   const headerTop = margin + 46;
   const labels: ReadonlyArray<readonly [string, number, 'left' | 'right']> = [
     ['Symbol', cols.symbol, 'left'], ['Code', cols.code, 'left'], ['Name', cols.name, 'left'],
-    ['Full', cols.counts + 28, 'right'], ['Half', cols.counts + 60, 'right'], ['3/4', cols.counts + 92, 'right'],
-    ['1/4', cols.counts + 124, 'right'], ['Back', cols.counts + 156, 'right'],
+    ...legendCountFields(legend).map((field, index): readonly [string, number, 'left' | 'right'] => [COUNT_LABELS[field], cols.counts + 28 + index * COUNT_COLUMN_WIDTH, 'right']),
     ['Length', cols.length + 4, 'left'], ['Skeins', cols.skeins + 4, 'left']
   ];
   for (const [label, offset, align] of labels) text(ctx, page, label, margin + offset, headerTop, 8, { align, color: MUTED });
@@ -502,15 +547,15 @@ function drawLegendHeading(ctx: Context, page: PDFPage, pageIndex: number): void
 }
 
 function drawLegendCounts(ctx: Context, page: PDFPage, counts: LegendCounts, left: number, baseline: number, size: number): void {
-  const values = [counts.full, counts.half, counts.threeQuarter, counts.quarter, counts.backstitch];
-  values.forEach((value, index) => {
-    text(ctx, page, value === 0 ? '–' : fmt(value), left + 28 + index * 32, baseline, size, { align: 'right' });
+  legendCountFields(ctx.legend).forEach((field, index) => {
+    const value = counts[field];
+    text(ctx, page, value === 0 ? '–' : fmt(value), left + 28 + index * COUNT_COLUMN_WIDTH, baseline, size, { align: 'right' });
   });
 }
 
 function drawLegendRow(ctx: Context, page: PDFPage, row: LegendRow, top: number): void {
   const { margin, printableWidth } = ctx.layout.geometry;
-  const cols = legendColumns(printableWidth);
+  const cols = columnsFor(ctx);
   const left = margin;
   const baseline = top + LEGEND_ROW_HEIGHT_PT / 2 + 3;
   const swatch = 18;
@@ -533,10 +578,34 @@ function drawLegendRow(ctx: Context, page: PDFPage, row: LegendRow, top: number)
   line(ctx, page, margin, top + LEGEND_ROW_HEIGHT_PT, margin + printableWidth, top + LEGEND_ROW_HEIGHT_PT, 0.25, GRID_THIN);
 }
 
-function drawLegendFooter(ctx: Context, page: PDFPage, top: number): void {
+function drawBeadHeading(ctx: Context, page: PDFPage, top: number): void {
+  const { margin, printableWidth } = ctx.layout.geometry;
+  const cols = columnsFor(ctx);
+  text(ctx, page, 'Beads', margin, top + 13, 11);
+  const labelTop = top + LEGEND_ROW_HEIGHT_PT - 4;
+  text(ctx, page, 'Code', margin + cols.code, labelTop, 8, { color: MUTED });
+  text(ctx, page, 'Name', margin + cols.name, labelTop, 8, { color: MUTED });
+  text(ctx, page, 'Count', margin + cols.counts + 28, labelTop, 8, { align: 'right', color: MUTED });
+  line(ctx, page, margin, top + LEGEND_ROW_HEIGHT_PT, margin + printableWidth, top + LEGEND_ROW_HEIGHT_PT, 0.6, GRID_MID);
+}
+
+/** A bead line: its chart mark, Mill Hill code, name and count. */
+function drawBeadRow(ctx: Context, page: PDFPage, bead: LegendBead, top: number): void {
+  const { margin, printableWidth } = ctx.layout.geometry;
+  const cols = columnsFor(ctx);
+  const baseline = top + LEGEND_ROW_HEIGHT_PT / 2 + 3;
+  const swatch = 18;
+  drawBeadMark(ctx, page, bead.color, margin + cols.symbol + swatch / 2, top + LEGEND_ROW_HEIGHT_PT / 2, { width: swatch * KEY_BEAD_SIZE.width, length: swatch * KEY_BEAD_SIZE.length }, BEAD_ORIENTATIONS.Slash);
+  text(ctx, page, bead.code, margin + cols.code, baseline, 9, { maxWidth: 50 });
+  text(ctx, page, bead.name, margin + cols.name, baseline, 9, { maxWidth: cols.nameWidth - 4 });
+  text(ctx, page, fmt(bead.count), margin + cols.counts + 28, baseline, 9, { align: 'right' });
+  line(ctx, page, margin, top + LEGEND_ROW_HEIGHT_PT, margin + printableWidth, top + LEGEND_ROW_HEIGHT_PT, 0.25, GRID_THIN);
+}
+
+function drawThreadTotal(ctx: Context, page: PDFPage, top: number): void {
   const { margin, printableWidth } = ctx.layout.geometry;
   const { legend } = ctx;
-  const cols = legendColumns(printableWidth);
+  const cols = columnsFor(ctx);
   const baseline = top + LEGEND_ROW_HEIGHT_PT / 2 + 3;
   line(ctx, page, margin, top, margin + printableWidth, top, 0.8, GRID_MAJOR);
   text(ctx, page, 'Total', margin + cols.name, baseline, 9.5);
@@ -547,24 +616,89 @@ function drawLegendFooter(ctx: Context, page: PDFPage, top: number): void {
   } else {
     text(ctx, page, PDF_ESTIMATE_UNAVAILABLE, margin + cols.length + 4, baseline, 7, { color: MUTED });
   }
-  const note = [legend.note, PDF_ESTIMATE_DISCLAIMER].filter(Boolean).join(' ');
+}
+
+/** The estimate note, below the key's last line. */
+function drawLegendNote(ctx: Context, page: PDFPage, top: number): void {
+  const { margin, printableWidth } = ctx.layout.geometry;
+  const note = [ctx.legend.note, PDF_ESTIMATE_DISCLAIMER].filter(Boolean).join(' ');
   wrap(ctx, note, 7.5, printableWidth).slice(0, 4).forEach((noteLine, index) => {
-    text(ctx, page, noteLine, margin, top + LEGEND_ROW_HEIGHT_PT + 12 + index * 10, 7.5, { color: MUTED });
+    text(ctx, page, noteLine, margin, top + 12 + index * 10, 7.5, { color: MUTED });
   });
 }
 
-function drawLegendPage(ctx: Context, rows: readonly LegendRow[], pageIndex: number, pageNumber: number, last: boolean): void {
+function drawLegendPage(ctx: Context, lines: readonly LegendLine[], pageIndex: number, pageNumber: number, last: boolean): void {
   const { pageWidth, pageHeight, margin } = ctx.layout.geometry;
   const page = ctx.doc.addPage([pageWidth, pageHeight]);
   drawLegendHeading(ctx, page, pageIndex);
   let top = margin + 52;
-  if (ctx.legend.rows.length === 0) text(ctx, page, 'No stitches have been placed yet.', margin, top + 18, 10, { color: MUTED });
-  for (const row of rows) {
-    drawLegendRow(ctx, page, row, top);
+  for (const entry of lines) {
+    switch (entry.kind) {
+      case 'empty': text(ctx, page, 'No stitches have been placed yet.', margin, top + 18, 10, { color: MUTED }); break;
+      case 'thread': drawLegendRow(ctx, page, entry.row, top); break;
+      case 'thread-total': drawThreadTotal(ctx, page, top); break;
+      case 'bead-heading': drawBeadHeading(ctx, page, top); break;
+      case 'bead': drawBeadRow(ctx, page, entry.bead, top); break;
+    }
     top += LEGEND_ROW_HEIGHT_PT;
   }
-  if (last) drawLegendFooter(ctx, page, top + (rows.length === 0 ? LEGEND_ROW_HEIGHT_PT : 0));
+  if (last) drawLegendNote(ctx, page, top);
   footer(ctx, page, pageNumber);
+}
+
+// --- point stitches ------------------------------------------------------
+
+/** Light backstitches, knots and beads print in mid grey so they stay visible on white paper. */
+function printableMarkColor(hex: string): string {
+  const lum = relativeLuminance(hex);
+  return lum !== undefined && lum > 0.85 ? GRID_MID : hex;
+}
+
+/** A French knot dot centred at `x`, `top`, sized for a `cellSize` cell: its printable colour with a darker rim, as the chart renderer draws it. */
+function drawKnotMark(ctx: Context, page: PDFPage, hex: string, x: number, top: number, cellSize: number): void {
+  const fill = printableMarkColor(hex);
+  page.drawCircle({ x, y: page.getHeight() - top, size: Math.max(0.6, cellSize * KNOT_DIAMETER / 2), color: color(ctx, fill), borderColor: color(ctx, threadEdgeColor(fill)), borderWidth: Math.max(0.25, cellSize * 0.05) });
+}
+
+/** The key's bead glyph, in swatch widths: a seed bead's proportions at a fixed key size. The chart draws beads at true size. */
+const KEY_BEAD_SIZE: BeadSize = { width: 0.55, length: 0.385 };
+const KAPPA = 0.5522847498;
+
+/**
+ * The side-view barrel as an SVG path (y down) centred on the origin: a
+ * rounded rectangle `length` along the unit `axis` (screen space, y down) and
+ * `width` across it, corners drawn as exact cubics.
+ */
+function beadPath(size: BeadSize, axis: Vector): string {
+  const a = size.length / 2;
+  const b = size.width / 2;
+  const r = Math.min(BEAD_CORNER_FRACTION * size.width, a, b);
+  const k = KAPPA * r;
+  // Local u runs along the hole axis, v across it (the axis turned a quarter clockwise on screen).
+  const at = (u: number, v: number): string => `${String(u * axis.x - v * axis.y)} ${String(u * axis.y + v * axis.x)}`;
+  return [
+    `M ${at(a, -b + r)}`,
+    `L ${at(a, b - r)}`,
+    `C ${at(a, b - r + k)} ${at(a - r + k, b)} ${at(a - r, b)}`,
+    `L ${at(-a + r, b)}`,
+    `C ${at(-a + r - k, b)} ${at(-a, b - r + k)} ${at(-a, b - r)}`,
+    `L ${at(-a, -b + r)}`,
+    `C ${at(-a, -b + r - k)} ${at(-a + r - k, -b)} ${at(-a + r, -b)}`,
+    `L ${at(a - r, -b)}`,
+    `C ${at(a - r + k, -b)} ${at(a, -b + r - k)} ${at(a, -b + r)}`,
+    'Z'
+  ].join(' ');
+}
+
+/**
+ * A bead lying on its side, centred at `x`, `top`, with `size` in points:
+ * the barrel in its printable colour with a darker rim, turned to
+ * `orientation`, as the chart renderer draws it.
+ */
+function drawBeadMark(ctx: Context, page: PDFPage, hex: string, x: number, top: number, size: BeadSize, orientation: BeadOrientation): void {
+  const fill = printableMarkColor(hex);
+  const y = page.getHeight() - top;
+  page.drawSvgPath(beadPath(size, beadAxis(orientation)), { x, y, color: color(ctx, fill), borderColor: color(ctx, threadEdgeColor(fill)), borderWidth: Math.max(0.25, size.width * 0.06) });
 }
 
 // --- chart pages ---------------------------------------------------------
@@ -673,13 +807,32 @@ function drawChartPage(ctx: Context, chartPage: ChartPage): void {
     );
     // A segment that only touches the page edge clips to a point; its round cap would print a dot.
     if (!clipped || Math.hypot(clipped[2] - clipped[0], clipped[3] - clipped[1]) < 1e-6) continue;
-    const hex = paletteColor(document, store.colors[i]);
-    const lum = relativeLuminance(hex);
     line(ctx, page,
       left + (clipped[0] - chartPage.x0) * cs, topEdge + (clipped[1] - chartPage.y0) * cs,
       left + (clipped[2] - chartPage.x0) * cs, topEdge + (clipped[3] - chartPage.y0) * cs,
-      Math.max(0.7, cs * 0.14), lum !== undefined && lum > 0.85 ? GRID_MID : hex, 'round');
+      Math.max(0.7, cs * 0.14), printableMarkColor(paletteColor(document, store.colors[i])), 'round');
   }
+
+  // Knots and beads sit over the backstitch. Beads are drawn at true size, so
+  // one can be wider than a cell: every mark that reaches this page's cell
+  // range is drawn, clipped to the chart, so a mark across a page edge is cut
+  // cleanly at the border on both pages.
+  const points = document.pointStitches;
+  const { lib } = ctx;
+  page.pushOperators(lib.pushGraphicsState(), lib.rectangle(left, pageHeight - topEdge - rows * cs, cols * cs, rows * cs), lib.clip(), lib.endPath());
+  for (let i = 0; i < points.ids.length; i += 1) {
+    const x = points.x[i] / unit;
+    const y = points.y[i] / unit;
+    const id = points.colors[i];
+    const bead = ctx.beadSizes.get(id);
+    const reach = (bead === undefined ? KNOT_DIAMETER : Math.max(bead.width, bead.length)) / 2;
+    if (x + reach < chartPage.x0 || x - reach > chartPage.x1 || y + reach < chartPage.y0 || y - reach > chartPage.y1) continue;
+    const centerX = left + (x - chartPage.x0) * cs;
+    const centerTop = topEdge + (y - chartPage.y0) * cs;
+    if (bead === undefined) drawKnotMark(ctx, page, paletteColor(document, id), centerX, centerTop, cs);
+    else drawBeadMark(ctx, page, paletteColor(document, id), centerX, centerTop, { width: bead.width * cs, length: bead.length * cs }, points.orientations[i] as BeadOrientation);
+  }
+  page.pushOperators(lib.popGraphicsState());
 
   const border = (): void => {
     line(ctx, page, left, topEdge, left + cols * cs, topEdge, 1, GRID_MAJOR);
@@ -727,7 +880,7 @@ function drawChartPage(ctx: Context, chartPage: ChartPage): void {
  *
  * `pdf-lib` and its font plugin load through dynamic imports so they stay out
  * of the main bundle. Output pages always equal
- * `estimateTotalPages(width, height, settings, legendRows)`.
+ * `estimateTotalPages(width, height, settings, legendLineCount(legend))`.
  */
 export async function writePatternPdf(input: PdfPatternInput, options: PdfWriteOptions = {}): Promise<Uint8Array> {
   const { signal, onProgress } = options;
@@ -739,10 +892,12 @@ export async function writePatternPdf(input: PdfPatternInput, options: PdfWriteO
   doc.registerFontkit(fontkitModule.default);
   const font = await doc.embedFont(input.fontBytes, { subset: true });
   const legend = buildLegend(input.document.palette, input.metrics, input.units);
-  const legendPages = legendPageCount(legend.rows.length, input.settings);
+  const lines = legendLines(legend);
+  const legendPages = legendPageCount(legendLineCount(legend), input.settings);
   const layout = layoutChartPages(input.document.width, input.document.height, input.settings, legendPages);
   const ctx: Context = {
     lib, doc, font, input, layout, legend, legendPages,
+    beadSizes: new Map(input.document.palette.filter(isBeadEntry).map((entry) => [entry.id, beadSizeCells(input.document, entry.id)])),
     supported: new Set(font.getCharacterSet())
   };
 
@@ -767,7 +922,7 @@ export async function writePatternPdf(input: PdfPatternInput, options: PdfWriteO
 
   const perPage = legendRowsPerPage(input.settings);
   for (let index = 0; index < legendPages; index += 1) {
-    drawLegendPage(ctx, legend.rows.slice(index * perPage, (index + 1) * perPage), index, 2 + index, index === legendPages - 1);
+    drawLegendPage(ctx, lines.slice(index * perPage, (index + 1) * perPage), index, 2 + index, index === legendPages - 1);
     await step();
   }
   for (const chartPage of layout.pages) {

@@ -1,0 +1,533 @@
+code,name,series,dmc
+00020,Royal Blue,Glass Seed,796
+00081,Jet,Glass Seed,3799
+00123,Cream,Glass Seed,Ecru
+00128,Yellow,Glass Seed,445
+00143,Robin Egg Blue,Glass Seed,3761
+00145,Pink,Glass Seed,963
+00146,Light Blue,Glass Seed,341
+00148,Pale Peach,Glass Seed,738
+00150,Grey,Glass Seed,415
+00151,Ash Mauve,Glass Seed,3743
+00161,Crystal,Glass Seed,Wht.
+00065,Christmas Red,Glass Seed,350
+00167,Christmas Green,Glass Seed,702
+00168,Sapphire,Glass Seed,340
+00206,Violet,Glass Seed,3041
+00221,Bronze,Glass Seed,434
+00252,Iris,Glass Seed,3746
+00275,Coral,Glass Seed,758
+00283,Mercury,Glass Seed,414
+00330,Copper,Glass Seed,898
+00332,Emerald,Glass Seed,890
+00358,Cobalt Blue,Glass Seed,824
+00367,Garnet,Glass Seed,814
+00374,Rainbow,Glass Seed,550
+00423,Tangerine,Glass Seed,740
+00431,Jade,Glass Seed,989
+00479,White,Glass Seed,Wht.
+00525,Light Green,Glass Seed,955
+00553,Old Rose,Glass Seed,3688
+00556,Antique Silver,Glass Seed,3722
+00557,Old Gold,Glass Seed,676
+00561,Ice Green,Glass Seed,503
+00968,Red,Glass Seed,321
+02001,Pearl,Glass Seed,677
+02002,Yellow Creme,Glass Seed,745
+02003,Peach Creme,Glass Seed,353
+02004,Tea Rose,Glass Seed,760
+02005,Dusty Rose,Glass Seed,3354
+02006,Ice Blue,Glass Seed,334
+02007,Satin Blue,Glass Seed,3325
+02008,Sea Breeze,Glass Seed,959
+02009,Ice Lilac,Glass Seed,210
+02010,Ice,Glass Seed,762
+02011,Victorian Gold,Glass Seed,3821
+02012,Royal Plum,Glass Seed,3685
+02013,Red Red,Glass Seed,666
+02014,Black,Glass Seed,310
+02015,Sea Blue,Glass Seed,926
+02016,Crystal Mint,Glass Seed,504
+02017,Crystal Aqua,Glass Seed,747
+02018,Crystal Pink,Glass Seed,3689
+02019,Crystal Honey,Glass Seed,3047
+02020,Creme de Mint,Glass Seed,909
+02021,Gunmetal,Glass Seed,3768
+02022,Silver,Glass Seed,3072
+02023,Root Beer,Glass Seed,801
+02024,Heather Mauve,Glass Seed,3042
+02025,Heather,Glass Seed,3740
+02026,Crystal Blue,Glass Seed,794
+02031,Citron,Glass Seed,907
+02033,Brilliant Orange,Glass Seed,741
+02034,Autumn Flame,Glass Seed,720
+02035,Shim. Apricot,Glass Seed,758
+02036,Shim. Bittersweet,Glass Seed,3341
+02037,Sheer Cinnamon,Glass Seed,350
+02038,Brilliant Copper,Glass Seed,400
+02039,Matte Maize,Glass Seed,728
+02040,Light Amber,Glass Seed,3829
+02041,Maple,Glass Seed,434
+02042,Matte Pumpkin,Glass Seed,720
+02043,Mt. Pomegranate,Glass Seed,3830
+02044,All Spice,Glass Seed,918
+02045,Santa Fe Sunset,Glass Seed,3803
+02046,Matte Willow,Glass Seed,3046
+02047,Soft Willow,Glass Seed,3012
+02048,Golden Olive,Glass Seed,830
+02049,Dark Basil,Glass Seed,319
+02050,Mt. Chocolate,Glass Seed,938
+02051,Nutmeg,Glass Seed,3726
+02052,Dark Coral,Glass Seed,356
+02053,Opaque Celadon,Glass Seed,501
+02054,Bril. Shamrock,Glass Seed,700
+02055,Brilliant Green,Glass Seed,3818
+02056,Sable,Glass Seed,838
+02057,Crystal Sea,Glass Seed,992
+02070,Sea Mist,Glass Seed,503
+02071,Opaque Seafoam,Glass Seed,502
+02072,Teal,Glass Seed,3809
+02073,Matte Dark Teal,Glass Seed,3847
+02074,Brilliant Teal,Glass Seed,3808
+02075,Grenadine,Glass Seed,221
+02076,Elderberry,Glass Seed,3803
+02077,Brilliant Magenta,Glass Seed,915
+02078,Wild Plum,Glass Seed,3834
+02079,Matte Wisteria,Glass Seed,3041
+02080,Dark Plum,Glass Seed,902
+02081,Matte Lilac,Glass Seed,3041
+02082,Opal Hyacinth,Glass Seed,3607
+02083,Opaque Lt. Mauve,Glass Seed,316
+02084,Shimmering Lilac,Glass Seed,3836
+02085,Brilliant Orchid,Glass Seed,3837
+02086,Purple Electra,Glass Seed,552
+02087,Shimmering Sea,Glass Seed,160
+02088,Opal Capri,Glass Seed,517
+02089,Brilliant Sea Blue,Glass Seed,3842
+02090,Brilliant Navy,Glass Seed,791
+02091,Purple Blue,Glass Seed,333
+02092,Dark Denim,Glass Seed,791
+02093,Opaque Autumn,Glass Seed,921
+02094,Opaque Moss,Glass Seed,935
+02095,Indigo Passion,Glass Seed,791
+02096,Orange,Glass Seed,741
+02097,Bahama Blue,Glass Seed,3846
+02098,Pine Green,Glass Seed,936
+02099,Ruby,Glass Seed,815
+02103,Periwinkle,Glass Seed,3746
+02104,Grasshopper,Glass Seed,471
+02105,Sweet Corn,Glass Seed,3827
+03001,replaced w/2014,Antique Glass,X
+03002,Midnight,Antique Glass,823
+03003,Ant. Cranberry,Antique Glass,347
+03004,Eggplant,Antique Glass,550
+03005,Platinum Rose,Antique Glass,224
+03006,replaced w/ 00556,Antique Glass,X
+03007,Silver Moon,Antique Glass,927
+03008,Pewter,Antique Glass,647
+03009,Charcoal,Antique Glass,413
+03010,Slate Blue,Antique Glass,3750
+03011,Pebble Grey,Antique Glass,645
+03012,Autumn Heather,Antique Glass,936
+03013,Stormy Blue H.,Antique Glass,3750
+03014,Matte Olive,Antique Glass,3011
+03015,Snow White,Antique Glass,Wht.
+03016,Vanilla,Antique Glass,712
+03017,Peachy Blush,Antique Glass,543
+03018,Coral Reef,Antique Glass,224
+03019,Soft Mauve,Antique Glass,3727
+03020,Dusty Mauve,Antique Glass,316
+03021,Royal Pearl,Antique Glass,712
+03022,Royal Teal,Antique Glass,501
+03023,Platinum Violet,Antique Glass,3740
+03024,Mocha,Antique Glass,838
+03025,Wildberry,Antique Glass,902
+03026,Wild Blueberry,Antique Glass,336
+03027,Caspian Blue,Antique Glass,312
+03028,Juniper Green,Antique Glass,3362
+03029,Autumn Green,Antique Glass,3051
+03030,Camouflage,Antique Glass,3740
+03031,Smokey Heather,Antique Glass,3041
+03032,replaced w/03028,Antique Glass,X
+03033,Claret,Antique Glass,221
+03034,Royal Amethyst,Antique Glass,3685
+03035,Royal Green,Antique Glass,991
+03036,Cognac,Antique Glass,3740
+03037,Abalone,Antique Glass,372
+03038,Antique Ginger,Antique Glass,921
+03039,Ant. Champagne,Antique Glass,950
+03040,Flat Black,Antique Glass,310
+03041,White Opal,Antique Glass,Wht.
+03042,Indigo,Antique Glass,312
+03043,Oriental Red,Antique Glass,606
+03044,Crystal Lilac,Antique Glass,211
+03045,Metallic Lilac,Antique Glass,554
+03046,Matte Cadet Blue,Antique Glass,931
+03047,Blue Iris,Antique Glass,806
+03048,Cinnamon Red,Antique Glass,347
+03049,Rich Red,Antique Glass,321
+03050,Champagne Ice,Antique Glass,225
+03051,Misty,Antique Glass,761
+03052,Desert Peach,Antique Glass,353
+03053,Purple Passion,Antique Glass,333
+03054,Desert Sand,Antique Glass,437
+03055,Bay Leaf,Antique Glass,503
+03056,Antique Red,Antique Glass,350
+03057,Cherry Sorbet,Antique Glass,760
+03058,Mardi Gras Red,Antique Glass,309
+03059,Green Velvet,Antique Glass,3346
+03060,Sage Blue,Antique Glass,927
+03061,Matte Periwinkle,Antique Glass,792
+03062,Blue Velvet,Antique Glass,820
+03063,Blue Twilight,Antique Glass,800
+03501,Satin Blush,Antique Glass,152
+03502,Satin Willow,Antique Glass,613
+03503,Satin Cranberry,Antique Glass,315
+03504,Satin Moss,Antique Glass,368
+03505,Satin Purple,Antique Glass,155
+03506,Satin Stone,Antique Glass,822
+03507,Satin Turquoise,Antique Glass,3849
+03545,Satin Lilac,Antique Glass,3042
+03550,Satin Chocolate,Antique Glass,451
+03553,Satin Old Rose,Antique Glass,316
+03557,Satin Old Gold,Antique Glass,422
+03561,Satin Ice Green,Antique Glass,992
+03575,Satin Coral,Antique Glass,3778
+02058,Crayon White,Crayon Seed,Wht.
+02059,Crayon Yellow,Crayon Seed,307
+02061,Cr. Dk. Orange,Crayon Seed,947
+02063,Crayon Crimson,Crayon Seed,321
+02064,Crayon Sky Blue,Crayon Seed,3761
+02065,Cr. Royal Blue,Crayon Seed,796
+02066,Cr. Yellow Green,Crayon Seed,905
+02068,Crayon Brown,Crayon Seed,801
+02069,Crayon Purple,Crayon Seed,208
+60020,Fr. Royal Blue,Frosted Glass,796
+60161,Frosted Crystal,Frosted Glass,762
+60168,Fr. Sapphire,Frosted Glass,340
+60367,Frosted Garnet,Frosted Glass,815
+60479,Frosted White,Frosted Glass,Wht.
+62004,Fr. Tea Rose,Frosted Glass,962
+62005,Fr. Dusty Rose,Frosted Glass,3716
+62010,Frosted Ice,Frosted Glass,3024
+62012,Fr. Royal Plum,Frosted Glass,347
+62013,Fr. Red Red,Frosted Glass,666
+62014,Frosted Black,Frosted Glass,310
+62020,Fr.Creme de Mint,Frosted Glass,909
+62021,Fr. Gunmetal,Frosted Glass,3768
+62023,Fr. Root Beer,Frosted Glass,3826
+62024,Fr. Heather Mauve,Frosted Glass,3042
+62031,Frosted Gold,Frosted Glass,676
+62032,Fr. Cranberry,Frosted Glass,919
+62033,Fr. Dusty Pink,Frosted Glass,818
+62034,Fr. Blue Violet,Frosted Glass,340
+62035,Fr. Peppermint,Frosted Glass,604
+62036,Fr. Pink Coral,Frosted Glass,3824
+62037,Fr. Mauve,Frosted Glass,3733
+62038,Fr. Aquamarine,Frosted Glass,964
+62039,Fr. Ivory Creme,Frosted Glass,3823
+62040,Frosted Apricot,Frosted Glass,951
+62041,Fr. Buttercup,Frosted Glass,744
+62042,Fr. Royal Purple,Frosted Glass,3746
+62043,Fr. Denim,Frosted Glass,930
+62044,Fr. Autumn,Frosted Glass,977
+62046,Fr. Pale Blue,Frosted Glass,3325
+62047,Fr. Lavender,Frosted Glass,210
+62048,Fr. Pink Parfait,Frosted Glass,819
+62049,Fr. Spring Green,Frosted Glass,989
+62056,Fr. Boysenberry,Frosted Glass,902
+62057,Frosted Khaki,Frosted Glass,3828
+65270,Fr. Bottle Green,Frosted Glass,991
+40020,Royal Blue,Petite Glass,796
+40065,Eggplant,Petite Glass,154
+40123,Cream,Petite Glass,Ecru
+40161,Crystal,Petite Glass,Wht.
+40168,Sapphire,Petite Glass,156
+40252,Iris,Petite Glass,3746
+40332,Emerald,Petite Glass,890
+40374,Rainbow,Petite Glass,550
+40479,White,Petite Glass,Wht.
+40553,Old Rose,Petite Glass,3688
+40556,Antique Silver,Petite Glass,3722
+40557,Old Gold,Petite Glass,676
+42010,Ice,Petite Glass,762
+42011,Victorian Gold,Petite Glass,3821
+42012,Royal Plum,Petite Glass,3685
+42013,Red Red,Petite Glass,666
+42014,Black,Petite Glass,310
+42017,Crystal Aqua,Petite Glass,747
+42018,Crystal Pink,Petite Glass,3689
+42024,Heather Mauve,Petite Glass,3042
+42027,Champagne,Petite Glass,225
+42028,Ginger,Petite Glass,921
+42029,Tapestry Teal,Petite Glass,3810
+42030,Vict. Copper,Petite Glass,950
+42031,Citron,Petite Glass,907
+42033,Autumn Flame,Petite Glass,720
+42034,Matte Pumpkin,Petite Glass,720
+42035,Matte Maize,Petite Glass,728
+42036,Bay Leaf,Petite Glass,522
+42037,Green Velvet,Petite Glass,3345
+42038,Matte Chocolate,Petite Glass,938
+42039,Brilliant Green,Petite Glass,3818
+42040,Periwinkle,Petite Glass,792
+42041,Dark Denim,Petite Glass,791
+42042,Misty,Petite Glass,761
+42043,Rich Red,Petite Glass,321
+42101,Purple,Petite Glass,552
+42102,Lemon,Petite Glass,445
+45270,Bottle Green,Petite Glass,991
+05002,Yellow Creme,Size 3 Pebble,746
+05011,Victorian Gold,Size 3 Pebble,3821
+05015,Frosted Citrus,Size 3 Pebble,471
+05016,Matte Fiesta Sunset,Size 3 Pebble,3731
+05021,Silver,Size 3 Pebble,762
+05022,Frosted Opal Capri,Size 3 Pebble,3746
+05025,Ruby,Size 3 Pebble,666
+05065,Eggplant,Size 3 Pebble,154
+05081,Black Frost,Size 3 Pebble,310
+05086,Midnight Rainbow,Size 3 Pebble,550
+05145,Pale Pink,Size 3 Pebble,963
+05147,Oriental Pearl,Size 3 Pebble,Ecru
+05161,Crystal,Size 3 Pebble,Wht.
+05168,Sapphire,Size 3 Pebble,340
+05202,Amethyst,Size 3 Pebble,209
+05270,Bottle Green,Size 3 Pebble,991
+05033,Pebble Gray,Size 3 Pebble,645
+05555,New Penny,Size 3 Pebble,950
+05557,Old Gold,Size 3 Pebble,676
+05609,Opal Smoky Topaz,Size 3 Pebble,434
+16002,Midnight,Size 6,823
+16004,Eggplant,Size 6,550
+16010,Ice,Size 6,762
+16011,Victorian Gold,Size 6,3821
+16014,Black,Size 6,310
+16021,Frosted Periwinkle,Size 6,975
+16022,Frosted Opal Capri,Size 6,825
+16024,Heather Mauve,Size 6,3042
+16025,Wildberry,Size 6,902
+16026,Crystal Blue,Size 6,794
+16031,Frosted Gold,Size 6,676
+16037,Abalone,Size 6,372
+16081,Jet,Size 6,3799
+16151,Ash Mauve,Size 6,3743
+16161,Crystal,Size 6,Wht.
+16168,Sapphire,Size 6,340
+16221,Bronze,Size 6,434
+16374,Rainbow,Size 6,550
+16601,White Opal,Size 6,Wht.
+16602,Frosted Ice,Size 6,762
+16603,Creamy Pearl,Size 6,746
+16604,Antique Mocha,Size 6,3790
+16605,Golden Amber,Size 6,3820
+16606,Brilliant Bronze,Size 6,400
+16607,Umber,Size 6,3781
+16608,Amethyst Ice,Size 6,208
+16609,Opal Smokey Topaz,Size 6,3858
+16610,Frosted Lilac,Size 6,3042
+16611,Frosted Jeweltones,Size 6,3750
+16612,Opal Periwinkle,Size 6,333
+16613,Juniper Green,Size 6,561
+16614,Brilliant Green,Size 6,699
+16615,Frosted Citrus,Size 6,704
+16616,Mt. Fiesta Sunset,Size 6,3731
+16617,Frosted Red Red,Size 6,666
+16618,Mayan Gold,Size 6,371
+18002,Midnight,Size 8,823
+18010,Ice,Size 8,762
+18011,Victorian Gold,Size 8,3821
+18014,Black,Size 8,310
+18027,Caspian Blue,Size 8,312
+18046,Matte Cadet Blue,Size 8,931
+18081,Jet,Size 8,3799
+18099,Ruby,Size 8,815
+18123,Cream,Size 8,Ecru
+18221,Bronze,Size 8,434
+18801,White Opal,Size 8,Wht.
+18812,Opal Periwinkle,Size 8,333
+18819,Opal Blush,Size 8,353
+18820,Opal Persimmon,Size 8,3721
+18821,Opal Dark Mauve,Size 8,315
+18822,Golden Opal,Size 8,3855
+18823,Fr. Opal Sm. Topaz,Size 8,3802
+18824,Opal Lilac,Size 8,211
+18825,Iced Nutmeg,Size 8,3041
+18826,Opal Hyacinth,Size 8,155
+18827,Mt. Confetti Amethyst,Size 8,552
+18828,Opal Seafoam,Size 8,3811
+18829,Opal Cornflower,Size 8,156
+18830,Ocean Blue Ice,Size 8,798
+18831,Golden Emerald,Size 8,909
+70020,Royal Blue,Small Bugle,796
+70123,Cream,Small Bugle,Ecru
+70161,Crystal,Small Bugle,Wht.
+70374,Rainbow,Small Bugle,550
+70479,White,Small Bugle,Wht.
+70777,Potpourri,Small Bugle,X
+72001,Pearl,Small Bugle,Ecru
+72003,Peach Creme,Small Bugle,353
+72005,Dusty Rose,Small Bugle,3354
+72006,Ice Blue,Small Bugle,334
+72008,Sea Breeze,Small Bugle,959
+72009,Ice Lilac,Small Bugle,210
+72010,Ice,Small Bugle,762
+72011,Victorian Gold,Small Bugle,3821
+72012,Royal Plum,Small Bugle,3685
+72013,Red Red,Small Bugle,666
+72014,Black,Small Bugle,310
+72020,Creme de Mint,Small Bugle,909
+72023,Root Beer,Small Bugle,801
+72035,Peppermint,Small Bugle,604
+72045,Willow,Small Bugle,3346
+72051,Royal Mauve,Small Bugle,553
+72052,Red Velvet,Small Bugle,498
+72053,Nutmeg,Small Bugle,316
+80020,Royal Blue,Medium Bugle,796
+80123,Cream,Medium Bugle,Ecru
+80161,Crystal,Medium Bugle,Wht.
+80168,Sapphire,Medium Bugle,340
+80374,Rainbow,Medium Bugle,550
+80479,White,Medium Bugle,Wht.
+80777,Potpourri,Medium Bugle,X
+82010,Ice,Medium Bugle,762
+82011,Victorian Gold,Medium Bugle,3821
+82012,Royal Plum,Medium Bugle,3685
+82014,Black,Medium Bugle,310
+82020,Creme de Mint,Medium Bugle,909
+82023,Root Beer,Medium Bugle,801
+82045,Willow,Medium Bugle,3346
+82050,Red Rainbow,Medium Bugle,817
+82051,Royal Mauve,Medium Bugle,553
+82053,Nutmeg,Medium Bugle,316
+82054,Aqua Ice,Medium Bugle,3811
+90020,Royal Blue,Large Bugle,796
+90123,Cream,Large Bugle,Ecru
+90161,Crystal,Large Bugle,Wht.
+90168,Sapphire,Large Bugle,340
+90374,Rainbow,Large Bugle,550
+90479,White,Large Bugle,Wht.
+92010,Ice,Large Bugle,762
+92011,Victorian Gold,Large Bugle,3821
+92014,Black,Large Bugle,310
+92023,Root Beer,Large Bugle,801
+92054,Aqua Ice,Large Bugle,3811
+92055,Red Rainbow,Large Bugle,817
+10001,Ice,Magnifica,762
+10002,Autumn Flame,Magnifica,720
+10003,Black,Magnifica,310
+10004,Jet,Magnifica,3799
+10005,Midnight,Magnifica,823
+10006,Eggplant,Magnifica,550
+10007,Mercury,Magnifica,414
+10008,Black Plum,Magnifica,3740
+10009,White,Magnifica,Wht.
+10010,Royal Pearl,Magnifica,Ecru
+10011,Opal Honey,Magnifica,3855
+10012,Bronze,Magnifica,434
+10013,Copper,Magnifica,898
+10014,Dk. Blue Iris,Magnifica,924
+10015,Golden Ginger,Magnifica,400
+10016,Royal Plum,Magnifica,3685
+10017,Olive Brilliance,Magnifica,936
+10018,Sheer Blueberry,Magnifica,3740
+10019,Claret,Magnifica,221
+10020,Royal Amethyst,Magnifica,3685
+10021,Bril.Blue Green,Magnifica,3750
+10022,Royal Green,Magnifica,991
+10023,Evergreen,Magnifica,3345
+10024,Cognac,Magnifica,3740
+10025,Platinum Rose,Magnifica,224
+10026,Old Rose,Magnifica,3688
+10027,Metallic Lilac,Magnifica,554
+10028,Silver,Magnifica,822
+10029,Brilliant Sage,Magnifica,368
+10030,Ice Green,Magnifica,503
+10031,Persimmon,Magnifica,720
+10032,Brilliant Fuchsia,Magnifica,3607
+10033,Ant. Cranberry,Magnifica,347
+10034,Silver Moon,Magnifica,927
+10035,Flat Black,Magnifica,310
+10036,Victorian Gold,Magnifica,3821
+10037,Wild Blueberry,Magnifica,336
+10038,Caspian Blue,Magnifica,312
+10039,Juniper Green,Magnifica,3362
+10040,Autumn Green,Magnifica,3051
+10041,Abalone,Magnifica,372
+10042,Vanilla,Magnifica,712
+10043,Butter Cream,Magnifica,745
+10044,Blue Iris,Magnifica,931
+10045,Opaline Jade,Magnifica,702
+10046,White Opal,Magnifica,Wht.
+10047,Opal. Periwinkle,Magnifica,792
+10048,Opal.Tea Rose,Magnifica,3706
+10049,Sky Blue Opal,Magnifica,519
+10050,Azure Opal,Magnifica,334
+10051,Opal Salmon,Magnifica,223
+10052,Fuchsia Opal,Magnifica,3805
+10053,Crystal Lilac,Magnifica,211
+10054,Sheer Deep Teal,Magnifica,3808
+10055,Royal Blue,Magnifica,797
+10056,Misty Pink,Magnifica,3354
+10057,Crystal Clear,Magnifica,Wht.
+10058,Sheer Aqua,Magnifica,519
+10059,Caribbean Blue,Magnifica,3809
+10060,Sheer Coral Red,Magnifica,3705
+10061,Silver Fox,Magnifica,318
+10062,Taupe Shimmer,Magnifica,632
+10063,Deep Periwinkle,Magnifica,792
+10064,Deep Sea Green,Magnifica,561
+10065,Christmas Gr.,Magnifica,702
+10066,Opal Sm. Topaz,Magnifica,632
+10067,True Gr.Opal,Magnifica,505
+10068,Nutmeg,Magnifica,3726
+10069,Royal Opal,Magnifica,Wht.
+10070,Opalescent Aqua,Magnifica,519
+10071,Opal.Cinn. Red,Magnifica,347
+10072,Khaki,Magnifica,841
+10073,Soft Willow,Magnifica,3012
+10074,Purple Passion,Magnifica,550
+10075,Vict. Copper,Magnifica,950
+10076,Gold,Magnifica,676
+10077,Charcoal,Magnifica,413
+10078,Dusty Mauve,Magnifica,316
+10079,Brilliant Teal,Magnifica,3847
+10080,Brilliant Bronze,Magnifica,434
+10081,Brilliant Green,Magnifica,3818
+10082,Heather Mauve,Magnifica,3042
+10083,Orange Sherbet,Magnifica,947
+10084,Golden Khaki,Magnifica,3045
+10085,Olivine,Magnifica,937
+10086,Capri Blue,Magnifica,3842
+10087,Pale Honey,Magnifica,676
+10088,Goldenrod,Magnifica,783
+10089,True Silver,Magnifica,3024
+10091,Gold Nugget,Magnifica,676
+10092,Iris,Magnifica,3746
+10093,Pink Shimmer,Magnifica,3354
+10094,Matte Heather,Magnifica,3740
+10095,Root Beer,Magnifica,801
+10096,Brill. Blueberry,Magnifica,336
+10097,Matte Olive,Magnifica,3051
+10098,Matte Orange,Magnifica,608
+10099,Sterling Rose,Magnifica,3042
+10100,Matte Cranberry,Magnifica,304
+10101,Navy Seas,Magnifica,336
+10102,Opal Autumn Gr.,Magnifica,3345
+10103,Sheer Lilac,Magnifica,3042
+10104,Tropic Seas,Magnifica,991
+10105,Sheer Pink,Magnifica,3716
+10106,Azalea,Magnifica,3831
+10107,Spring Green,Magnifica,703
+10108,Matte Pewter,Magnifica,647
+10109,Antique Silver,Magnifica,3722
+10110,Purple Pizzazz,Magnifica,3834
+10111,Mt. Wildberry,Magnifica,902
+10112,Cappuccino Rose,Magnifica,152
+10113,Aqua,Magnifica,3849
+10114,Cherry Red,Magnifica,321
+10115,Purple,Magnifica,333
+10116,Blue Satin,Magnifica,322
+10117,Lilac Satin,Magnifica,208
+10118,Dusty Purple,Magnifica,3837
+10119,Pumpkin,Magnifica,3854
+10120,Spice Brown,Magnifica,3830

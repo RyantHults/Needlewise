@@ -17,7 +17,7 @@ import { DEFAULT_CATALOG_DEFINITION } from '../catalog';
 import { EditorSurfaceController, type EditorSurfaceControllerOptions, backstitchPassesThroughCell, buildBackstitchCellIndex } from './controller';
 import {
   HIDDEN_LAYER_TOOL_HINT,
-  SPECIALTY_LAYER_BACKSTITCH_HINT,
+  SPECIALTY_LAYER_TOOL_HINT,
   STITCH_LAYER_TOOL_HINT,
   EDITABLE_LAYER_TOOL_HINT,
   CANVAS_ADVANCED_TOOL_HINT,
@@ -77,10 +77,10 @@ function backstitch(x1: number, y1: number, x2: number, y2: number, color = 1): 
 beforeEach(clearClipboard);
 
 describe('tool availability', () => {
-  const tools: readonly EditorToolKind[] = ['pan', 'eyedropper', 'select', 'lasso', 'eraser', 'paint', 'shape', 'fill', 'backstitch', 'canvas-brush'];
+  const tools: readonly EditorToolKind[] = ['pan', 'eyedropper', 'select', 'lasso', 'eraser', 'paint', 'shape', 'fill', 'specialty', 'canvas-brush'];
   const expected: Record<ActiveLayerKind, readonly EditorToolKind[]> = {
     stitch: ['pan', 'eyedropper', 'select', 'lasso', 'eraser', 'paint', 'shape', 'fill'],
-    specialty: ['pan', 'eyedropper', 'select', 'lasso', 'eraser', 'backstitch'],
+    specialty: ['pan', 'eyedropper', 'select', 'lasso', 'eraser', 'specialty'],
     canvas: ['pan'],
     reference: ['pan', 'eyedropper']
   };
@@ -120,7 +120,7 @@ describe('tool availability', () => {
   });
 
   it('gives short hints for tools the layer type cannot use', () => {
-    expect(toolAvailability('backstitch', undefined, { kind: 'stitch', visible: true })).toEqual({ enabled: false, hint: SPECIALTY_LAYER_BACKSTITCH_HINT });
+    expect(toolAvailability('specialty', undefined, { kind: 'stitch', visible: true })).toEqual({ enabled: false, hint: SPECIALTY_LAYER_TOOL_HINT });
     expect(toolAvailability('fill', undefined, { kind: 'canvas', visible: true })).toEqual({ enabled: false, hint: CANVAS_CROP_OFF_HINT });
     expect(toolAvailability('select', undefined, { kind: 'reference', visible: true })).toEqual({ enabled: false, hint: EDITABLE_LAYER_TOOL_HINT });
     expect(toolAvailability('fill', undefined, null).enabled).toBe(true);
@@ -135,12 +135,12 @@ describe('layered editor controller', () => {
     boundary.setActiveLayer(2);
     expect(uiStore.getState().activeLayer).toEqual({ id: 2, kind: 'specialty', visible: true });
     expect(uiStore.getState().tool).toEqual({ tool: 'pan' });
-    expect(controller.setTool({ tool: 'backstitch' })).toBe(true);
+    expect(controller.setTool({ tool: 'specialty', stitch: 'backstitch' })).toBe(true);
 
     boundary.setActiveLayer(1);
     expect(uiStore.getState().tool).toEqual({ tool: 'paint', brush: { kind: 'full', paletteId: 1 } });
     boundary.setActiveLayer(2);
-    expect(uiStore.getState().tool).toEqual({ tool: 'backstitch' });
+    expect(uiStore.getState().tool).toEqual({ tool: 'specialty', stitch: 'backstitch' });
 
     controller.setTool({ tool: 'select' });
     boundary.setActiveLayer(1);
@@ -158,12 +158,12 @@ describe('layered editor controller', () => {
     boundary.setActiveLayer(2);
     // Nothing is remembered for specialty yet, and the eraser works there.
     expect(uiStore.getState().tool.tool).toBe('eraser');
-    controller.setTool({ tool: 'backstitch' });
+    controller.setTool({ tool: 'specialty', stitch: 'backstitch' });
     boundary.setActiveLayer(1);
     expect(uiStore.getState().tool.tool).toBe('eraser');
     controller.setTool({ tool: 'pan' });
     boundary.setActiveLayer(2);
-    expect(uiStore.getState().tool).toEqual({ tool: 'backstitch' });
+    expect(uiStore.getState().tool).toEqual({ tool: 'specialty', stitch: 'backstitch' });
     // Between layers of one type the current tool stays.
     controller.setTool({ tool: 'eraser' });
     boundary.setActiveLayer(otherSpecialty);
@@ -520,7 +520,7 @@ describe('layered editor controller', () => {
     const document = layeredDocument();
     seed(document, 2, backstitch(4, 8, 12, 8));
     const { boundary, controller } = fixture(document, 2);
-    controller.setTool({ tool: 'backstitch' });
+    controller.setTool({ tool: 'specialty', stitch: 'backstitch' });
     controller.handlePointerDown({ ...at(1, 1, 1), screenX: 32, screenY: 32 });
     expect(controller.getSelectedBackstitchId()).toBeUndefined();
     controller.handlePointerUp({ ...at(1, 1, 3), screenX: 32, screenY: 64 });
@@ -534,7 +534,7 @@ describe('layered editor controller', () => {
 
   it('draws from a cell-edge midpoint to a corner', () => {
     const { boundary, controller } = fixture(layeredDocument(), 2);
-    controller.setTool({ tool: 'backstitch' });
+    controller.setTool({ tool: 'specialty', stitch: 'backstitch' });
     // (1.5, 2) is the midpoint of a horizontal edge; (3, 3) is a corner.
     controller.handlePointerDown({ ...at(1, 0, 0), screenX: 24, screenY: 32 });
     controller.handlePointerUp({ ...at(1, 0, 0), screenX: 48, screenY: 48 });
@@ -598,7 +598,7 @@ describe('layered editor controller', () => {
     seed(document, 2, backstitch(4, 8, 8, 8));
     const { boundary, controller, uiStore } = fixture(document, 2);
     expect(controller.setBackstitchMode('move')).toBe(true);
-    expect(uiStore.getState().tool).toEqual({ tool: 'backstitch', mode: 'move' });
+    expect(uiStore.getState().tool).toEqual({ tool: 'specialty', stitch: 'backstitch', mode: 'move' });
     expect(controller.handlePointerDown({ ...at(1, 1, 1), screenY: 32 })).toBe(true);
     expect(controller.getSelectedBackstitchId()).toBeDefined();
     controller.handlePointerUp({ ...at(1, 1, 1), screenY: 32 });
@@ -611,7 +611,7 @@ describe('layered editor controller', () => {
     expect(boundary.log.some((command) => command.type === 'add-backstitch')).toBe(false);
 
     expect(controller.setBackstitchMode('draw')).toBe(true);
-    expect(uiStore.getState().tool).toEqual({ tool: 'backstitch', mode: 'draw' });
+    expect(uiStore.getState().tool).toEqual({ tool: 'specialty', stitch: 'backstitch', mode: 'draw' });
     controller.dispose();
   });
 
@@ -619,7 +619,7 @@ describe('layered editor controller', () => {
     const { controller, notices, uiStore } = fixture();
     expect(controller.setBackstitchMode('move')).toBe(false);
     expect(uiStore.getState().tool.tool).toBe('paint');
-    expect(notices.at(-1)).toBe(SPECIALTY_LAYER_BACKSTITCH_HINT);
+    expect(notices.at(-1)).toBe(SPECIALTY_LAYER_TOOL_HINT);
     controller.dispose();
   });
 
@@ -628,7 +628,7 @@ describe('layered editor controller', () => {
     const other = addLayer(document, LayerType.Specialty);
     seed(document, other, backstitch(0, 8, 32, 8));
     const { controller } = fixture(document, 2);
-    controller.setTool({ tool: 'backstitch' });
+    controller.setTool({ tool: 'specialty', stitch: 'backstitch' });
     controller.handlePointerDown({ ...at(1, 1, 1), screenY: 32 });
     expect(controller.getSelectedBackstitchId()).toBeUndefined();
     controller.handlePointerCancel({ ...at(1, 1, 1), screenY: 32 });

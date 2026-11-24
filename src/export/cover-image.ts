@@ -1,4 +1,4 @@
-import { CellKind, componentKind, componentSlotMask, FIXED_POINT_UNITS_PER_CELL, isLegacyQuarterKind, isThreeQuarterPairKind, type PaletteEntry } from '../domain';
+import { CellKind, componentKind, componentSlotMask, FIXED_POINT_UNITS_PER_CELL, isLegacyQuarterKind, isBeadEntry, isThreeQuarterPairKind, type BeadOrientation, type PaletteEntry } from '../domain';
 import { DEFAULT_RENDERER_STYLE, type CanvasContextAdapter } from '../editor/contracts';
 import {
   drawThreadBackstitch,
@@ -7,6 +7,7 @@ import {
   drawThreadStitch,
   THREAD_MIN_DETAIL_CELL_PX
 } from '../rendering/thread-preview';
+import { beadSizeCells, drawBead, drawKnot } from '../rendering/point-stitches';
 import { throwIfAborted, yieldToEventLoop } from './cancellation';
 import type { PdfPatternDocument } from './pdf-writer';
 
@@ -100,6 +101,16 @@ export async function paintCover(
       cellPx,
       colorOf(store.colors[i])
     );
+  }
+  // Knots and beads go over the backstitch, at fixed-point corners and centres.
+  const beadSizes = new Map(palette.filter(isBeadEntry).map((entry) => [entry.id, beadSizeCells(document, entry.id)]));
+  const points = document.pointStitches;
+  for (let i = 0; i < points.ids.length; i += 1) {
+    const center = { x: (points.x[i] / FIXED_POINT_UNITS_PER_CELL) * cellPx, y: (points.y[i] / FIXED_POINT_UNITS_PER_CELL) * cellPx };
+    const hex = colorOf(points.colors[i]);
+    const beadSize = beadSizes.get(points.colors[i]);
+    if (beadSize !== undefined) drawBead(context, center, cellPx, beadSize, points.orientations[i] as BeadOrientation, hex);
+    else drawKnot(context, center, cellPx, hex);
   }
 }
 

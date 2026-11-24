@@ -17,7 +17,8 @@ function preferred(candidates: readonly PaletteEntry[], sourceId: number): Palet
 
 function findTargetMatch(target: PatternDocument, source: PaletteEntry): PaletteEntry | undefined {
   const ref = source.catalog;
-  // A catalogued source matches on catalogId + code only, never on hex.
+  // A catalogued source matches on catalogId + code only, never on hex. Bead
+  // and thread catalogs never share a catalogId, so a bead only maps onto a bead.
   if (ref !== undefined) return preferred(target.palette.filter((entry) => entry.catalog?.catalogId === ref.catalogId && entry.catalog.code === ref.code), source.id);
   const hex = source.color.toLowerCase();
   return preferred(target.palette.filter((entry) => entry.catalog === undefined && entry.color.toLowerCase() === hex), source.id);
@@ -54,7 +55,7 @@ export function planPastePalette(target: PatternDocument, source: readonly Palet
 
 export function remapFragmentColors(fragment: PatternFragment, idMap: ReadonlyMap<number, number>): PatternFragment {
   const result = clonePatternFragment(fragment);
-  for (const colors of [result.colors, result.backstitches.colors]) {
+  for (const colors of [result.colors, result.backstitches.colors, result.pointStitches.colors]) {
     for (let index = 0; index < colors.length; index += 1) colors[index] = idMap.get(colors[index]) ?? colors[index];
   }
   return result;
@@ -62,6 +63,6 @@ export function remapFragmentColors(fragment: PatternFragment, idMap: ReadonlyMa
 
 export function fragmentPaletteIds(fragment: PatternFragment): number[] {
   const ids = new Set<number>();
-  for (const colors of [fragment.colors, fragment.backstitches.colors]) for (const id of colors) if (id !== 0) ids.add(id);
+  for (const colors of [fragment.colors, fragment.backstitches.colors, fragment.pointStitches.colors]) for (const id of colors) if (id !== 0) ids.add(id);
   return [...ids].sort((a, b) => a - b);
 }

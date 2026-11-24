@@ -30,3 +30,21 @@ export function grayscaleColor(color: string): string {
   const value = luma(rgb);
   return rgbToHex(value, value, value);
 }
+
+/** Blend `color` toward `target` (0-255 gray) by `amount`; an unparseable color is returned unchanged. */
+export function mixToward(color: string, target: number, amount: number): string {
+  const rgb = parseHexColor(color);
+  if (!rgb) return color;
+  const [red, green, blue] = rgb.map((value) => value * (1 - amount) + target * amount);
+  return rgbToHex(red, green, blue);
+}
+
+/** Shaded edge of a thread or bead color. */
+export function threadEdgeColor(color: string): string {
+  return mixToward(color, 0, 0.35);
+}
+
+/** Lit highlight of a thread or bead color. */
+export function threadHighlightColor(color: string): string {
+  return mixToward(color, 255, 0.4);
+}

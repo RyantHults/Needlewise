@@ -41,7 +41,9 @@ import {
   type PatternDocument,
   type CatalogAssociation,
   type PatternFragment,
-  computePatternMetrics
+  computePatternMetrics,
+  nearestPointStitchPosition,
+  pointStitchesFromRecords
 } from './index';
 import { editorFromSurface, markBackstitchComplete, markCellComplete, onDefaultLayers, SPECIALTY_LAYER_ID, STITCH_LAYER_ID, applyCommand, bulkCellCommand, bulkEraseCellCommand, bulkEraseQuarterCommand, bulkSetFullCommand, bulkSetHalfCommand, bulkSetQuarterCommand, bulkSetThreeQuarterCommand, bulkRecolorCommand, getBackstitch, getCell, getQuarter, isQuarterKind, readPatternFragmentCell, TEST_CATALOG, cell, errorCode } from './test-fixtures';
 
@@ -1452,7 +1454,7 @@ describe('typed-array pattern document', () => {
       }
     } as PatternFragment;
     expect(errorCode(() => pasteFragmentCommand(invalidDuplicate, { x: 0, y: 0 }))).toBe('invalid-fragment');
-    const budgetEditor = editorFromSurface(document(4, 4), { historyLimitBytes: estimatePasteFragmentHistoryBytes(1, 0, 0) - 1 });
+    const budgetEditor = editorFromSurface(document(4, 4), { historyLimitBytes: estimatePasteFragmentHistoryBytes(1, 0, 0, 0, 0) - 1 });
     const budgetBefore = budgetEditor.composite;
     expect(errorCode(() => budgetEditor.execute(onDefaultLayers(pasteFragmentCommand(fragment, { x: 0, y: 0 }))))).toBe('history-entry-too-large');
     expect(budgetEditor.composite).toBe(budgetBefore);
@@ -1491,7 +1493,7 @@ describe('typed-array pattern document', () => {
     expect(documentContentSnapshot(editor.composite)).toEqual(before);
     editor.redo();
     expect(getCell(editor.composite, 1, 1)).toMatchObject({ kind: CellKind.Full, color: 1, completed: true });
-    expect(editor.historyBytes).toBe(estimateMoveFragmentHistoryBytes(4, 0, 0));
+    expect(editor.historyBytes).toBe(estimateMoveFragmentHistoryBytes(4, 0, 0, 0, 0));
   });
 
   it('clones rectangular and sparse footprints in the move factory', () => {
@@ -1605,7 +1607,7 @@ describe('typed-array pattern document', () => {
     expect(errorCode(() => palette.execute(onDefaultLayers(moveFragmentCommand({ kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } }, { x: 1, y: 0 }))))).toBe('unknown-palette');
     expect(palette.composite).toBe(paletteBefore);
 
-    const budget = editorFromSurface(pattern, { historyLimitBytes: estimateMoveFragmentHistoryBytes(2, 2, 2) - 1 });
+    const budget = editorFromSurface(pattern, { historyLimitBytes: estimateMoveFragmentHistoryBytes(2, 2, 2, 0, 0) - 1 });
     const budgetBefore = budget.composite;
     expect(errorCode(() => budget.execute(onDefaultLayers(moveFragmentCommand({ kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } }, { x: 1, y: 1 }))))).toBe('history-entry-too-large');
     expect(budget.composite).toBe(budgetBefore);
@@ -1642,7 +1644,7 @@ describe('typed-array pattern document', () => {
     const result = editor.execute(onDefaultLayers(moveFragmentCommand({ kind: 'rect', rect: { x: 0, y: 0, width: 1, height: 1 } }, { x: 3, y: 0 })));
     expect(result.changedIndices).toEqual(new Uint32Array(0));
     expect(result.movedBackstitchIds).toEqual(new Uint32Array([1]));
-    expect(editor.historyBytes).toBe(estimateMoveFragmentHistoryBytes(0, 1, 1));
+    expect(editor.historyBytes).toBe(estimateMoveFragmentHistoryBytes(0, 1, 1, 0, 0));
     const moved = listBackstitches(editor.composite);
     expect(moved[0]).toMatchObject({ x1: 12, y1: 0, x2: 16, y2: 0 });
     const undo = editor.undo();
@@ -1699,7 +1701,7 @@ describe('typed-array pattern document', () => {
     expect(result.changedIndices).toHaveLength(1);
     expect(result.revision).toBe(1);
     expect(editor.undoDepth).toBe(1);
-    expect(editor.historyBytes).toBe(estimatePasteFragmentHistoryBytes(1, 0, 0));
+    expect(editor.historyBytes).toBe(estimatePasteFragmentHistoryBytes(1, 0, 0, 0, 0));
     expect(editor.historyBytes).toBeLessThanOrEqual(DEFAULT_HISTORY_LIMIT_BYTES);
     editor.undo();
     expect(editor.composite.kind.at(-1)).toBe(CellKind.Empty);
@@ -1921,7 +1923,7 @@ describe('typed-array pattern document', () => {
     expect(noOpEditor.undoDepth).toBe(0);
 
     const occupied = apply(document(3, 3), cell(3, { type: 'set-full', x: 1, y: 1, color: 1 }));
-    const budgetEditor = editorFromSurface(occupied, { historyLimitBytes: estimateDeleteRegionHistoryBytes(1) - 1 });
+    const budgetEditor = editorFromSurface(occupied, { historyLimitBytes: estimateDeleteRegionHistoryBytes(1, 0, 0, 0, 0) - 1 });
     const budgetBefore = budgetEditor.composite;
     const budgetBeforeContent = documentContentSnapshot(budgetBefore);
     expect(errorCode(() => budgetEditor.execute(onDefaultLayers(deleteRegionCommand({ x: 1, y: 1, width: 1, height: 1 }, budgetEditor.revision))))).toBe('history-entry-too-large');
@@ -1938,7 +1940,7 @@ describe('typed-array pattern document', () => {
     source.execute(onDefaultLayers(cell(source.composite, { type: 'set-full', x: 1, y: 1, color: 1 })));
     source.execute(onDefaultLayers({ type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 8, y: 8 }, color: 1 }));
     source.clearHistory();
-    const required = estimateDeleteRegionHistoryBytes(1, 1, 1);
+    const required = estimateDeleteRegionHistoryBytes(1, 1, 1, 0, 0);
     const editor = editorFromSurface(source.composite, { historyLimitBytes: required - 1 });
     const before = editor.composite;
     expect(errorCode(() => editor.execute(onDefaultLayers(deleteRegionCommand({ x: 1, y: 1, width: 1, height: 1 }, editor.revision))))).toBe('history-entry-too-large');
@@ -2306,4 +2308,79 @@ describe('canvas mask enforcement', () => {
     expect('originY' in plain).toBe(false);
   });
 
+});
+
+describe('point stitches', () => {
+  const BEAD = { kind: MaterialKind.Bead, label: 'Mill Hill 00123', unit: MaterialUnit.Count };
+
+  function withBead(width = 4, height = 3): PatternDocument {
+    return createDocument({
+      width,
+      height,
+      catalog: TEST_CATALOG,
+      palette: [
+        { id: 1, name: 'Red', color: '#d33' },
+        { id: 2, name: 'Bead', color: '#123456', catalog: TEST_REFERENCE, material: BEAD }
+      ]
+    });
+  }
+
+  function withPoints(pattern: PatternDocument, points: Array<{ id: number; x: number; y: number; color: number }>): PatternDocument {
+    return { ...pattern, pointStitches: pointStitchesFromRecords(points.map((point) => ({ ...point, completed: false, orientation: 0 }))), nextBackstitchId: 100 };
+  }
+
+  it('accepts a bead entry only when it is counted and has a catalog reference', () => {
+    expect(withBead().palette[1].material.kind).toBe(MaterialKind.Bead);
+    const create = (entry: Record<string, unknown>) => () => createDocument({ width: 1, height: 1, catalog: TEST_CATALOG, palette: [{ id: 1, name: 'Bead', color: '#123456', ...entry }] });
+    expect(errorCode(create({ material: BEAD }))).toBe('invalid-material');
+    expect(errorCode(create({ catalog: TEST_REFERENCE, material: { ...BEAD, unit: MaterialUnit.Skeins } }))).toBe('invalid-material');
+  });
+
+  it('accepts knots and beads on corners and centres', () => {
+    const pattern = withPoints(withBead(), [
+      { id: 1, x: 0, y: 0, color: 1 },
+      { id: 2, x: 16, y: 12, color: 2 },
+      { id: 3, x: 6, y: 10, color: 1 }
+    ]);
+    expect(() => { assertValidDocument(pattern); }).not.toThrow();
+  });
+
+  it('rejects edge midpoints, shared positions, shared ids and points off the canvas', () => {
+    const base = withBead();
+    const invalid = (points: Array<{ id: number; x: number; y: number; color: number }>, overrides: Partial<PatternDocument> = {}) =>
+      errorCode(() => { assertValidDocument({ ...withPoints(base, points), ...overrides }); });
+    expect(invalid([{ id: 1, x: 2, y: 0, color: 1 }])).toBe('invalid-document');
+    expect(invalid([{ id: 1, x: 18, y: 2, color: 1 }])).toBe('invalid-document');
+    expect(invalid([{ id: 1, x: 4, y: 4, color: 1 }, { id: 2, x: 4, y: 4, color: 2 }])).toBe('invalid-document');
+    expect(invalid([{ id: 1, x: 4, y: 4, color: 1 }, { id: 1, x: 8, y: 4, color: 1 }])).toBe('invalid-document');
+    expect(invalid([{ id: 1, x: 4, y: 4, color: 1 }], { nextBackstitchId: 1 })).toBe('invalid-document');
+    const line = { ids: new Uint32Array([1]), x1: new Uint32Array([0]), y1: new Uint32Array([0]), x2: new Uint32Array([4]), y2: new Uint32Array([0]), colors: new Uint16Array([1]), completed: new Uint8Array(1) };
+    expect(invalid([{ id: 1, x: 4, y: 4, color: 1 }], { backstitches: line })).toBe('invalid-document');
+
+    // Cell (1, 1) is masked: its centre is off the canvas, its corners still touch active cells.
+    const canvasMask = new Uint8Array(12).fill(1);
+    canvasMask[5] = 0;
+    expect(invalid([{ id: 1, x: 6, y: 6, color: 1 }], { canvasMask })).toBe('invalid-document');
+    expect(() => { assertValidDocument({ ...withPoints(base, [{ id: 1, x: 4, y: 4, color: 1 }]), canvasMask }); }).not.toThrow();
+  });
+
+  it('rejects a bead colour on a cell or a backstitch', () => {
+    const pattern = withBead();
+    const onCell = { ...pattern, kind: pattern.kind.slice(), colors: pattern.colors.slice() };
+    onCell.kind[0] = CellKind.Full;
+    onCell.colors[0] = 2;
+    expect(errorCode(() => { assertValidDocument(onCell); })).toBe('invalid-document');
+    const line = { ids: new Uint32Array([1]), x1: new Uint32Array([0]), y1: new Uint32Array([0]), x2: new Uint32Array([4]), y2: new Uint32Array([0]), colors: new Uint16Array([2]), completed: new Uint8Array(1) };
+    expect(errorCode(() => { assertValidDocument({ ...pattern, backstitches: line, nextBackstitchId: 2 }); })).toBe('invalid-document');
+    expect(() => { assertValidDocument({ ...pattern, backstitches: { ...line, colors: new Uint16Array([1]) }, nextBackstitchId: 2 }); }).not.toThrow();
+  });
+
+  it('snaps to the nearest corner or centre inside the document', () => {
+    const bounds = { width: 4, height: 3 };
+    expect(nearestPointStitchPosition({ x: 1, y: 0.5 }, bounds)).toEqual({ x: 0, y: 0 });
+    expect(nearestPointStitchPosition({ x: 5.5, y: 6.4 }, bounds)).toEqual({ x: 6, y: 6 });
+    expect(nearestPointStitchPosition({ x: 7.2, y: 3.6 }, bounds)).toEqual({ x: 8, y: 4 });
+    expect(nearestPointStitchPosition({ x: -9, y: 40 }, bounds)).toEqual({ x: 0, y: 12 });
+    expect(nearestPointStitchPosition({ x: 14.5, y: 10.5 }, bounds)).toEqual({ x: 14, y: 10 });
+  });
 });

@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { computePatternMetrics, createDocument, type PatternDocument } from '../../domain';
 import { markCellComplete, applyCommand, cell } from '../../domain/test-fixtures';
+import { millHillBeadEntry, millHillCatalog } from '../../catalog/test-support';
 import { DEFAULT_CATALOG_DEFINITION } from '../../catalog';
 import type { ProjectWorkspace } from '../../application/workspace';
 import { TrackSurface } from './TrackSurface';
@@ -71,7 +72,8 @@ function setup(progressState: { canUndoMark?: boolean; canRedoMark?: boolean } =
     undoMark: vi.fn(),
     redoMark: vi.fn(),
     clearMarkHistory: vi.fn(),
-    availableCatalogs: () => []
+    threadCatalogs: () => [],
+    beadCatalogs: () => []
   };
   const document = trackedDocument();
   const onNavigate = vi.fn();
@@ -277,5 +279,20 @@ describe('TrackSurface', () => {
     expect(workspace.clearMarkHistory).not.toHaveBeenCalled();
     view.unmount();
     expect(workspace.clearMarkHistory).toHaveBeenCalledOnce();
+  });
+
+  it('lists beads in their own group with their Mill Hill code and placed count', () => {
+    let pattern = trackedDocument();
+    pattern = applyCommand(pattern, { type: 'palette-create', ...millHillBeadEntry(9) }).document;
+    pattern = applyCommand(pattern, { type: 'add-point-stitch', point: { x: 2, y: 2 }, color: 9, orientation: 0 }).document;
+    pattern = applyCommand(pattern, { type: 'add-point-stitch', point: { x: 6, y: 2 }, color: 9, orientation: 0 }).document;
+    pattern = { ...pattern, pointStitches: { ...pattern.pointStitches, completed: Uint8Array.from([1, 0]) } };
+    const workspace = { canUndoMark: false, canRedoMark: false, undoMark: vi.fn(), redoMark: vi.fn(), clearMarkHistory: vi.fn(), threadCatalogs: () => [DEFAULT_CATALOG_DEFINITION], beadCatalogs: () => [millHillCatalog()] };
+    render(<TrackSurface workspace={workspace as unknown as ProjectWorkspace} document={pattern} title="Garden sampler" metrics={computePatternMetrics(pattern)} />);
+
+    const beads = screen.getByRole('list', { name: 'Beads' });
+    const bead = millHillCatalog().records.find((record) => record.code === '00479')!;
+    expect(within(beads).getByRole('button', { name: `00479 ${bead.name}, 1 of 2 beads, 50% done` })).toHaveAttribute('aria-pressed', 'false');
+    expect(within(screen.getByRole('list', { name: 'Colors' })).queryByRole('button', { name: /00479/ })).not.toBeInTheDocument();
   });
 });

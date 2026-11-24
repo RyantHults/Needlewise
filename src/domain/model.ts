@@ -10,6 +10,8 @@ import {
   type PaletteMaterial,
   type PatternSettings,
   type PatternDocument,
+  type Point,
+  type PointStitchStore,
   type CatalogAssociation,
   type QuarterCorner,
   DEFAULT_PATTERN_SETTINGS,
@@ -17,10 +19,12 @@ import {
   MaterialUnit,
   DOCUMENT_SCHEMA_VERSION,
   PALETTE_ID_MAX,
-  MAX_PERSISTABLE_CELL_COUNT
+  MAX_PERSISTABLE_CELL_COUNT,
+  FIXED_POINT_UNITS_PER_CELL
 } from './types';
 import { SYMBOL_IDS } from '../symbols';
 import { allocateBackstitches, cloneBackstitches, readBackstitch } from './backstitch-store';
+import { allocatePointStitches, clonePointStitches } from './point-stitch-store';
 import { isRecord } from './guards';
 import { assertValidDocument } from './validation';
 import { parseHexColor } from './color';
@@ -135,6 +139,11 @@ function normalizeCatalogReference(value: unknown): PaletteCatalogReference | un
   return { catalogId: candidate.catalogId, sourceId: candidate.sourceId, code: candidate.code, name: candidate.name, hex: candidate.hex.toUpperCase(), rgb: [...rgb] as [number, number, number] };
 }
 
+/** Whether a palette entry is a bead, which only point stitches can use. */
+export function isBeadEntry(entry: Pick<PaletteEntry, 'material'>): boolean {
+  return entry.material.kind === MaterialKind.Bead;
+}
+
 export function paletteLimit(document: Pick<PatternDocument, 'catalog'>): number {
   return Math.min(document.catalog.colorCount, PALETTE_ID_MAX);
 }
@@ -146,9 +155,10 @@ function normalizeMaterial(value: unknown, fallbackName: string, catalog?: Palet
   const kind = candidate.kind;
   const label = candidate.label;
   const unit = candidate.unit;
-  if (kind !== MaterialKind.Floss && kind !== MaterialKind.Custom) throw new DomainError('invalid-material', 'Palette material kind is invalid.');
+  if (kind !== MaterialKind.Floss && kind !== MaterialKind.Custom && kind !== MaterialKind.Bead) throw new DomainError('invalid-material', 'Palette material kind is invalid.');
   if (typeof label !== 'string' || !label.trim()) throw new DomainError('invalid-material', 'Palette material labels must not be empty.');
   if (unit !== MaterialUnit.Skeins && unit !== MaterialUnit.Meters && unit !== MaterialUnit.Count) throw new DomainError('invalid-material', 'Palette material unit is invalid.');
+  if (kind === MaterialKind.Bead && (unit !== MaterialUnit.Count || catalog === undefined)) throw new DomainError('invalid-material', 'Bead materials are counted and need a catalog reference.');
   const amount = candidate.amount;
   if (amount !== undefined && (typeof amount !== 'number' || !Number.isFinite(amount) || amount < 0)) throw new DomainError('invalid-material', 'Palette material amount must be a non-negative finite number.');
   return { kind, label, unit, ...(amount === undefined ? {} : { amount }) };
@@ -171,6 +181,36 @@ export function normalizePaletteEntry(input: PaletteEntryInput | PaletteEntry, i
 
 export function emptyBackstitches(): BackstitchStore {
   return allocateBackstitches(0);
+}
+
+export function emptyPointStitches(): PointStitchStore {
+  return allocatePointStitches(0);
+}
+
+/** True for a fixed-point cell corner (both axes on a grid line) or cell centre (both axes mid-cell). */
+export function isPointStitchPosition(point: Point): boolean {
+  const { x, y } = point;
+  if (!Number.isSafeInteger(x) || !Number.isSafeInteger(y) || x < 0 || y < 0) return false;
+  const half = FIXED_POINT_UNITS_PER_CELL / 2;
+  return (x % FIXED_POINT_UNITS_PER_CELL === 0 && y % FIXED_POINT_UNITS_PER_CELL === 0)
+    || (x % FIXED_POINT_UNITS_PER_CELL === half && y % FIXED_POINT_UNITS_PER_CELL === half);
+}
+
+/**
+ * The cell corner or cell centre nearest a fixed-point position, inside a
+ * document of `bounds` cells. A tie between a corner and a centre goes to the corner.
+ */
+export function nearestPointStitchPosition(point: Point, bounds: Pick<PatternDocument, 'width' | 'height'>): Point {
+  const units = FIXED_POINT_UNITS_PER_CELL;
+  const x = Math.min(Math.max(point.x, 0), bounds.width * units);
+  const y = Math.min(Math.max(point.y, 0), bounds.height * units);
+  const corner = { x: Math.round(x / units) * units, y: Math.round(y / units) * units };
+  const centre = {
+    x: Math.min(Math.floor(x / units), bounds.width - 1) * units + units / 2,
+    y: Math.min(Math.floor(y / units), bounds.height - 1) * units + units / 2
+  };
+  const distance = (candidate: Point): number => (candidate.x - x) ** 2 + (candidate.y - y) ** 2;
+  return distance(centre) < distance(corner) ? centre : corner;
 }
 
 function normalizePalette(
@@ -240,6 +280,7 @@ export function createDocument(options: CreateDocumentOptions): PatternDocument 
     colors: new Uint16Array(cellCount * 4),
     completed: new Uint8Array(cellCount),
     backstitches: emptyBackstitches(),
+    pointStitches: emptyPointStitches(),
     palette,
     settings: normalizePatternSettings(options.settings),
     revision: 0,
@@ -264,6 +305,7 @@ export function cloneDocument(document: PatternDocument): PatternDocument {
     colors: document.colors.slice(),
     completed: document.completed.slice(),
     backstitches: cloneBackstitches(document.backstitches),
+    pointStitches: clonePointStitches(document.pointStitches),
     palette: document.palette.map(clonePaletteEntry),
     settings: clonePatternSettings(document.settings),
     revision: document.revision,

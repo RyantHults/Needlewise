@@ -5,10 +5,12 @@ import {
   type BackstitchStore,
   type MaterialUnit,
   type PatternDocument,
-  type PatternSettings
+  type PatternSettings,
+  type PointStitchStore
 } from './types';
 import { componentSlotMask } from './cell-components';
 import { isRecord } from './guards';
+import { isBeadEntry } from './model';
 
 /**
  * Material settings used by the estimator.  The document's v2 settings do
@@ -43,6 +45,8 @@ const THREE_QUARTER_WEIGHT = 0.75;
 const STITCH_THREAD_INCHES_AT_14 = 0.8;
 /** A backstitch line costs half a cross per cell: one diagonal against a cross's two. */
 const BACKSTITCH_CROSS_FRACTION = 0.5;
+/** A French knot uses about as much thread as one full cross. */
+export const KNOT_CROSS_EQUIVALENT = 1;
 
 export function normalizeAidaCount(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
@@ -119,6 +123,10 @@ export interface StitchCounts {
   /** Number of persisted three-quarter stitches. */
   readonly threeQuarter?: number;
   readonly backstitch: number;
+  /** French knots: point stitches whose palette entry is not a bead. */
+  readonly knot: number;
+  /** Point stitches whose palette entry is a bead. */
+  readonly bead: number;
 }
 
 export interface ComponentCounts {
@@ -127,6 +135,10 @@ export interface ComponentCounts {
   readonly remainingComponents: number;
 }
 
+/**
+ * A bead entry is counted, not measured: its estimate carries zero thread
+ * units and no physical length or skeins; its count is `PaletteMetrics.bead`.
+ */
 export interface MaterialEstimate {
   readonly paletteId: number;
   /** Full-cell equivalents before strands and waste are applied. */
@@ -353,6 +365,8 @@ export interface MetricCounts {
   quarter: number;
   threeQuarter: number;
   backstitch: number;
+  /** Point stitches, knots and beads alike; `metricsFromCounts` splits them by the entry's material. */
+  point: number;
   completedComponents: number;
   backstitchLengthFixed: number;
 }
@@ -364,6 +378,7 @@ export function emptyMetricCounts(): MetricCounts {
     quarter: 0,
     threeQuarter: 0,
     backstitch: 0,
+    point: 0,
     completedComponents: 0,
     backstitchLengthFixed: 0
   };
@@ -375,6 +390,7 @@ function hasCountBearingUsage(counts: MetricCounts): boolean {
     || counts.quarter !== 0
     || counts.threeQuarter !== 0
     || counts.backstitch !== 0
+    || counts.point !== 0
     || counts.completedComponents !== 0
     || counts.backstitchLengthFixed !== 0;
 }
@@ -386,18 +402,22 @@ export function addMetricCounts(target: MetricCounts, source: MetricCounts, mult
   target.quarter += multiplier * source.quarter;
   target.threeQuarter += multiplier * source.threeQuarter;
   target.backstitch += multiplier * source.backstitch;
+  target.point += multiplier * source.point;
   target.completedComponents += multiplier * source.completedComponents;
   target.backstitchLengthFixed += multiplier * source.backstitchLengthFixed;
 }
 
-function toTotalMetrics(counts: MetricCounts): TotalMetrics {
-  const totalComponents = counts.full + counts.half + counts.quarter + counts.threeQuarter + counts.backstitch;
+/** `bead` is how many of `counts.point` are beads; the rest are knots. */
+function toTotalMetrics(counts: MetricCounts, bead: number): TotalMetrics {
+  const totalComponents = counts.full + counts.half + counts.quarter + counts.threeQuarter + counts.backstitch + counts.point;
   return {
     full: counts.full,
     half: counts.half,
     quarter: counts.quarter,
     ...(counts.threeQuarter === 0 ? {} : { threeQuarter: counts.threeQuarter }),
     backstitch: counts.backstitch,
+    knot: counts.point - bead,
+    bead,
     backstitchLengthFixed: counts.backstitchLengthFixed,
     backstitchLength: counts.backstitchLengthFixed / FIXED_POINT_UNITS_PER_CELL,
     totalComponents,
@@ -412,6 +432,7 @@ export interface MaterialCountInput {
   readonly quarter: number;
   readonly threeQuarter?: number;
   readonly backstitchLengthFixed: number;
+  readonly knot: number;
 }
 
 /**
@@ -435,7 +456,8 @@ export function materialEstimateFromCounts(
   const crossUnits = counts.full
     + counts.half / 2
     + counts.quarter / 4
-    + threeQuarter * THREE_QUARTER_WEIGHT;
+    + threeQuarter * THREE_QUARTER_WEIGHT
+    + counts.knot * KNOT_CROSS_EQUIVALENT;
   const stitchUnits = crossUnits + backstitchCells;
   // A backstitch cell costs half of one full cross, so the physical paths
   // below weight backstitch cells by 0.5; the abstract units keep raw cells.
@@ -483,7 +505,7 @@ export function materialEstimateFromCounts(
         waste: settings.waste,
         ...(calibratedStitchLength === undefined ? { singleStrandFullCrossInchesAt14: STITCH_THREAD_INCHES_AT_14 } : {}),
         note: calibratedStitchLength === undefined
-          ? 'Fabric-count estimate: 0.8 single-strand inches (2.03 cm) per full cross at 14-count, scaled by count; half and quarter stitches are proportional; backstitch is half a cross per cell of line length at its own strand count.'
+          ? 'Fabric-count estimate: 0.8 single-strand inches (2.03 cm) per full cross at 14-count, scaled by count; half and quarter stitches are proportional; a French knot counts as one full cross; backstitch is half a cross per cell of line length at its own strand count.'
           : 'Manual stitch-length calibration overrides the fabric-count thread-length model; actual use varies.'
       };
   const estimateRange: MaterialEstimateRange | undefined = baseMeters === undefined || estimatedMeters === undefined
@@ -580,11 +602,19 @@ export class MetricCounter {
     counts.backstitchLengthFixed += multiplier * fixedPointBackstitchLength(store.x1[index], store.y1[index], store.x2[index], store.y2[index]);
     if (store.completed[index] !== 0) counts.completedComponents += multiplier;
   }
+
+  pointStitch(store: PointStitchStore, index: number, multiplier: 1 | -1): void {
+    const paletteId = store.colors[index];
+    if (paletteId === 0) return;
+    const counts = this.countsFor(paletteId);
+    counts.point += multiplier;
+    if (store.completed[index] !== 0) counts.completedComponents += multiplier;
+  }
 }
 
 /**
- * Per-palette counts of every cell component and backstitch, from one scan of
- * the dense cell arrays and the sparse backstitch arrays. The document is
+ * Per-palette counts of every cell component, backstitch and point stitch,
+ * from one scan of the dense cell arrays and the sparse specialty arrays. The document is
  * never mutated or given caches.
  */
 export function scanCounts(document: PatternDocument): Map<number, MetricCounts> {
@@ -600,6 +630,7 @@ export function scanCounts(document: PatternDocument): Map<number, MetricCounts>
   );
   for (let index = 0; index < cellCount; index += 1) counter.cell(document, index, 1);
   for (let index = 0; index < document.backstitches.ids.length; index += 1) counter.backstitch(document.backstitches, index, 1);
+  for (let index = 0; index < document.pointStitches.ids.length; index += 1) counter.pointStitch(document.pointStitches, index, 1);
   return counts;
 }
 
@@ -619,17 +650,25 @@ export function metricsFromCounts(
   const paletteIds = [...paletteEntries.keys()];
   for (const [paletteId, entry] of counts) if (!paletteEntries.has(paletteId) && hasCountBearingUsage(entry)) paletteIds.push(paletteId);
   const totalCounts = emptyMetricCounts();
+  let totalBeads = 0;
   const palettes: PaletteMetrics[] = [];
   const materials: MaterialEstimate[] = [];
   for (const paletteId of paletteIds) {
     const paletteCounts = counts.get(paletteId) ?? emptyMetricCounts();
-    const material = materialEstimateFromCounts(paletteId, paletteCounts, paletteEntries.get(paletteId)?.material.unit, settings, aidaCount);
-    palettes.push({ paletteId, ...toTotalMetrics(paletteCounts), material });
-    materials.push(material);
+    const entry = paletteEntries.get(paletteId);
+    const material = entry?.material;
+    const isBead = entry !== undefined && isBeadEntry(entry);
+    const bead = isBead ? paletteCounts.point : 0;
+    const estimate: MaterialEstimate = isBead
+      ? { paletteId, stitchUnits: 0, strandLength: 0, estimatedLength: 0, materialUnit: entry.material.unit }
+      : materialEstimateFromCounts(paletteId, { ...paletteCounts, knot: paletteCounts.point }, material?.unit, settings, aidaCount);
+    palettes.push({ paletteId, ...toTotalMetrics(paletteCounts, bead), material: estimate });
+    materials.push(estimate);
     addMetricCounts(totalCounts, paletteCounts, 1);
+    totalBeads += bead;
   }
 
-  const totals = toTotalMetrics(totalCounts);
+  const totals = toTotalMetrics(totalCounts, totalBeads);
   const fraction = totals.totalComponents === 0
     ? 0
     : totals.completedComponents / totals.totalComponents;
@@ -642,7 +681,7 @@ export function metricsFromCounts(
   };
 
   // The aggregate estimate belongs to no palette color.
-  const totalMaterial: Omit<MaterialEstimate, 'paletteId'> & { paletteId?: number } = materialEstimateFromCounts(0, totalCounts, undefined, settings, aidaCount);
+  const totalMaterial: Omit<MaterialEstimate, 'paletteId'> & { paletteId?: number } = materialEstimateFromCounts(0, { ...totalCounts, knot: totals.knot }, undefined, settings, aidaCount);
   delete totalMaterial.paletteId;
 
   return {

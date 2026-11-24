@@ -71,7 +71,7 @@ export function compositeUnchanged(result: CommandResult): boolean {
  * The base-layer invalidation a command result implies for the composite.
  * `compositeFull` wins, then composite changed indices, then the legacy
  * single-surface fields. Empty indices without the `compositeUnchanged` tag
- * still redraw in full, since single backstitch edits report no cells.
+ * still redraw in full, since single backstitch, knot, and bead edits report no cells.
  */
 export function compositeInvalidationFor(result: CommandResult, requestedIndices?: Uint32Array): Invalidation {
   // Exact composite cells let overview atlases repaint only what changed, even
@@ -82,7 +82,8 @@ export function compositeInvalidationFor(result: CommandResult, requestedIndices
   const backstitchesChanged = (result.changedBackstitchIds !== undefined && result.changedBackstitchIds.length > 0)
     || (result.movedBackstitchIds !== undefined && result.movedBackstitchIds.length > 0)
     || (result.createdBackstitchIds !== undefined && result.createdBackstitchIds.length > 0);
-  if (backstitchesChanged) return full;
+  const pointStitchesChanged = result.changedPointStitchIds !== undefined && result.changedPointStitchIds.length > 0;
+  if (backstitchesChanged || pointStitchesChanged) return full;
   const changed = result.compositeChangedIndices !== undefined
     ? result.compositeChangedIndices
     : result.changedIndices && result.changedIndices.length > 0 ? result.changedIndices : requestedIndices;

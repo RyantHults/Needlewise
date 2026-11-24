@@ -50,7 +50,7 @@ export function TrackSurface({ workspace, document, title, metrics, onNavigate, 
 
   const focused = highlightColor !== null ? document.palette.find((entry) => entry.id === highlightColor) ?? null : null;
   const progress = metrics ? paletteProgress(metrics, focused?.id ?? null) : null;
-  const catalogs = workspace.availableCatalogs();
+  const catalogs = [...workspace.threadCatalogs(), ...workspace.beadCatalogs()];
   const codeFor = (entry: PaletteEntry) => paletteCodeFor(entry, document.palette, catalogs).label;
   const focusedCode = focused ? codeFor(focused) : 'Total';
   const focusedPercent = progress ? progressPercent(progress.completedComponents, progress.totalComponents) : 0;

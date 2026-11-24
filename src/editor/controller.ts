@@ -45,6 +45,12 @@ import {
   threeQuarterPairComponents,
   layerSurface,
   findLayer,
+  isBeadEntry,
+  nearestPointStitchPosition,
+  pointKey,
+  pointStitchIdsInCellUnion,
+  pointWithinCanvas,
+  type BeadOrientation,
   type BulkCellEdit,
   type BulkCellPreflight,
   type BulkRecolorCommand,
@@ -54,6 +60,7 @@ import {
   type DomainCommand,
   type PaletteEntry,
   type PaletteEntryInput,
+  type PointStitchStore,
   type PastePalettePlan,
   type PatternDocument,
   type PatternFragment,
@@ -92,13 +99,15 @@ import type {
   EditorActiveLayer,
   ToolAvailability
 } from './contracts';
-import { CANVAS_BASIC_LOCKED_HINT, CHART_EDGE_MARGIN, DEFAULT_HALF_DIRECTION, FOCUS_COLOR_PROTECTED_HINT, HIDDEN_LAYER_PICK_HINT, normalizeBrushSize, toolStateAvailability } from './contracts';
+import { BEAD_COLOR_HINT, BEAD_TOOL_HINT, CANVAS_BASIC_LOCKED_HINT, CHART_EDGE_MARGIN, DEFAULT_HALF_DIRECTION, FOCUS_COLOR_PROTECTED_HINT, FRENCH_KNOT_COLOR_HINT, HIDDEN_LAYER_PICK_HINT, normalizeBrushSize, toolStateAvailability } from './contracts';
+import { distanceToSegment, nearestPointStitch, pointStitchesNearPath } from './point-hit';
 import {
   backstitchColor,
   cellEditableUnderFocus,
   componentEditableUnderFocus,
   filterEditableIndices,
   focusBackstitchIds,
+  focusPointStitchIds,
   focusColorIndices,
   focusPasteFragment,
   moveOverwritesProtected
@@ -224,10 +233,10 @@ export interface EditorSurfaceControllerLifecycle {
 
 type Gesture = PaintGesture | ShapeGesture | EraserGesture | SelectionGesture | LassoStrokeGesture | BackstitchGesture | TouchActionGesture | PanGesture | PinchGesture | MoveImageGesture | ResizeImageGesture | CanvasBrushGesture | CanvasSelectionGesture | MarkGesture;
 
-/** What a Mark press landed on: one component mask of a composite cell, or one backstitch. */
+/** What a Mark press landed on: one component mask of a composite cell, one backstitch, or one knot or bead. */
 type MarkTarget =
   | { readonly kind: 'cell'; readonly index: number; readonly mask: number; readonly done: boolean }
-  | { readonly kind: 'backstitch'; readonly id: number; readonly done: boolean };
+  | { readonly kind: 'backstitch' | 'point'; readonly id: number; readonly done: boolean };
 
 /**
  * Read-only progress marking on the composite. A release within the tap slop
@@ -249,6 +258,7 @@ interface MarkGesture {
   /** Composite cell index to the component mask the drag reached. */
   readonly cells: Map<number, number>;
   readonly backstitchIds: Set<number>;
+  readonly pointStitchIds: Set<number>;
   lastCell: ModelPoint | undefined;
   lastPoint: ModelPoint | undefined;
 }
@@ -331,6 +341,8 @@ interface EraserGesture {
   readonly backstitches?: Set<number>;
   /** Backstitches bucketed by cell, for a specialty erase wider than one cell. */
   readonly backstitchIndex?: BackstitchCellIndex;
+  /** Specialty-layer erase: knots and beads on the selected layer the eraser has reached. */
+  readonly pointStitches?: Set<number>;
   lastCell: ModelPoint | undefined;
   /** The previous model point of a one-cell specialty erase, so a fast drag is measured as a path. */
   lastPoint?: ModelPoint;
@@ -407,7 +419,7 @@ interface BackstitchGesture {
 interface TouchActionGesture {
   readonly kind: 'touch-action';
   readonly pointerId: number;
-  readonly tool: 'fill' | 'eyedropper';
+  readonly tool: 'fill' | 'eyedropper' | 'point-stitch';
   readonly token: EditorRevisionToken;
   readonly startScreenX: number;
   readonly startScreenY: number;
@@ -456,9 +468,10 @@ interface FloatingPasteState {
   readonly layers?: readonly FloatingMoveLayer[];
   readonly completion?: Uint8Array;
   readonly backstitches?: FloatingPasteBackstitches;
-  /** A move's source after the lift, and the backstitch ids it lifted; computed once. */
+  /** A move's source after the lift, and the backstitch, knot and bead ids it lifted; computed once. */
   readonly sourceHole?: readonly PendingCellState[];
   readonly liftedBackstitchIds?: ReadonlySet<number>;
+  readonly liftedPointStitchIds?: ReadonlySet<number>;
   /** Entries a cross-pattern paste creates in the target palette; `fragment` already uses their ids. */
   readonly pendingPalette?: readonly PaletteEntryInput[];
   /** A paste's source layer type, which decides where it lands. */
@@ -478,6 +491,8 @@ interface FloatingMoveLayer {
   readonly backstitches: FloatingPasteBackstitches;
   /** A Focus Color move of backstitches only: these ids commit as one batch of move-backstitch. */
   readonly focusBackstitchIds?: readonly number[];
+  /** With `focusBackstitchIds`: the focus-color knots and beads, which commit as a remove and a re-add at the shifted position. */
+  readonly focusPointStitchIds?: readonly number[];
 }
 
 interface MoveCapture {
@@ -807,17 +822,20 @@ function markCommand(gesture: MarkGesture): ProgressCommand | undefined {
   if (!gesture.dragging) {
     const tap = gesture.tap;
     if (!tap) return undefined;
-    return tap.kind === 'cell'
-      ? { cells: { indices: Uint32Array.of(tap.index), masks: Uint8Array.of(tap.mask) }, operation: 'toggle', expectedRevision }
+    if (tap.kind === 'cell') return { cells: { indices: Uint32Array.of(tap.index), masks: Uint8Array.of(tap.mask) }, operation: 'toggle', expectedRevision };
+    return tap.kind === 'point'
+      ? { pointStitchIds: Uint32Array.of(tap.id), operation: 'toggle', expectedRevision }
       : { backstitchIds: Uint32Array.of(tap.id), operation: 'toggle', expectedRevision };
   }
   if (gesture.operation === undefined) return undefined;
   const indices = Uint32Array.from(gesture.cells.keys()).sort();
   const masks = Uint8Array.from(indices, (index) => gesture.cells.get(index) ?? 0);
   const backstitchIds = Uint32Array.from(gesture.backstitchIds).sort();
+  const pointStitchIds = Uint32Array.from(gesture.pointStitchIds).sort();
   return {
     ...(indices.length > 0 ? { cells: { indices, masks } } : {}),
     ...(backstitchIds.length > 0 ? { backstitchIds } : {}),
+    ...(pointStitchIds.length > 0 ? { pointStitchIds } : {}),
     operation: gesture.operation,
     expectedRevision
   };
@@ -1127,15 +1145,6 @@ function fixedPointToModel(point: FixedPoint): ModelPoint {
   return { x: point.x / 4, y: point.y / 4 };
 }
 
-function distanceToSegment(point: ModelPoint, start: ModelPoint, end: ModelPoint): number {
-  const dx = end.x - start.x;
-  const dy = end.y - start.y;
-  const lengthSquared = dx * dx + dy * dy;
-  if (lengthSquared === 0) return Math.hypot(point.x - start.x, point.y - start.y);
-  const projection = Math.min(1, Math.max(0, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared));
-  return Math.hypot(point.x - (start.x + projection * dx), point.y - (start.y + projection * dy));
-}
-
 function cross(origin: ModelPoint, a: ModelPoint, b: ModelPoint): number {
   return (a.x - origin.x) * (b.y - origin.y) - (a.y - origin.y) * (b.x - origin.x);
 }
@@ -1307,13 +1316,13 @@ function withLayerId(command: DomainCommand, layerId: number | undefined): Domai
 }
 
 function isEmptyFragment(fragment: PatternFragment): boolean {
-  return fragment.backstitches.x1.length === 0 && fragment.kind.every((kind) => kind === CellKind.Empty);
+  return fragment.backstitches.x1.length === 0 && fragment.pointStitches.x.length === 0 && fragment.kind.every((kind) => kind === CellKind.Empty);
 }
 
-/** Whether a fragment carries cells or backstitches; an empty fragment counts as stitches. */
+/** Whether a fragment carries cells or specialty stitches; an empty fragment counts as stitches. */
 function fragmentLayerType(fragment: PatternFragment): LayerType {
   for (const kind of fragment.kind) if (kind !== CellKind.Empty) return LayerType.Stitch;
-  return fragment.backstitches.x1.length > 0 ? LayerType.Specialty : LayerType.Stitch;
+  return fragment.backstitches.x1.length > 0 || fragment.pointStitches.x.length > 0 ? LayerType.Specialty : LayerType.Stitch;
 }
 
 /** Ids of the backstitches whose endpoints lie inside the union of `indices`. */
@@ -1324,16 +1333,18 @@ function containedBackstitchIds(document: PatternDocument, indices: Uint32Array)
 
 /**
  * A selection's content under Focus Color: its focus-color cells, the
- * focus-color backstitches inside it, and whether it holds stitches of any
- * other color.
+ * focus-color backstitches, knots and beads inside it, and whether it holds
+ * stitches of any other color.
  */
-function focusSelectionContent(surface: PatternDocument, selection: FinalizedSelection, focus: number): { cells: Uint32Array; backstitchIds: number[]; protectedContent: boolean } {
+function focusSelectionContent(surface: PatternDocument, selection: FinalizedSelection, focus: number): { cells: Uint32Array; backstitchIds: number[]; pointStitchIds: number[]; protectedContent: boolean } {
   const indices = finalizedSelectionIndices(selection, surface) ?? new Uint32Array();
   const cells = focusColorIndices(surface, indices, focus);
   const contained = containedBackstitchIds(surface, indices);
   const backstitchIds = focusBackstitchIds(surface, contained, focus);
+  const containedPoints = pointStitchIdsInCellUnion(surface, indices);
+  const pointStitchIds = focusPointStitchIds(surface, containedPoints, focus);
   const occupied = indices.reduce((count, index) => count + (surface.kind[index] === CellKind.Empty ? 0 : 1), 0);
-  return { cells, backstitchIds, protectedContent: occupied > cells.length || contained.length > backstitchIds.length };
+  return { cells, backstitchIds, pointStitchIds, protectedContent: occupied > cells.length || contained.length > backstitchIds.length || containedPoints.length > pointStitchIds.length };
 }
 
 function fragmentSelectionIndices(selection: FragmentSelection, document: PatternDocument): Uint32Array {
@@ -1364,6 +1375,48 @@ function focusBackstitchMoveCommand(layer: FloatingMoveLayer, offset: ModelPoint
   return { type: 'batch', commands: order.map(({ id }): DomainCommand => ({ type: 'move-backstitch', id, dx, dy })) };
 }
 
+/** The store index of the knot or bead at fixed point `point`, if any. */
+function pointStitchIndexAt(store: PointStitchStore, point: FixedPoint): number | undefined {
+  for (let index = 0; index < store.ids.length; index += 1) {
+    if (store.x[index] === point.x && store.y[index] === point.y) return index;
+  }
+  return undefined;
+}
+
+/** The orientation after `orientation` in the turn order `/ | \ -`. */
+function nextBeadOrientation(orientation: number): BeadOrientation {
+  return ((orientation + 1) % 4) as BeadOrientation;
+}
+
+/** True when model `point` is within half a cell of the chart, the reach of the nearest corner or centre. */
+function withinPointStitchReach(point: ModelPoint, surface: Pick<PatternDocument, 'width' | 'height'>): boolean {
+  return point.x >= -0.5 && point.y >= -0.5 && point.x <= surface.width + 0.5 && point.y <= surface.height + 0.5;
+}
+
+/**
+ * A Focus Color move of knots and beads: each moves `offset` cells with
+ * move-point-stitch, keeping its id and completion, or is removed when that
+ * leaves the canvas, as move-fragment drops it. The points furthest along the
+ * move go first, so none lands on one still to move.
+ */
+function focusPointMoveCommands(surface: PatternDocument, ids: readonly number[], offset: ModelPoint): DomainCommand[] {
+  if (offset.x === 0 && offset.y === 0) return [];
+  const dx = offset.x * FIXED_POINT_UNITS_PER_CELL;
+  const dy = offset.y * FIXED_POINT_UNITS_PER_CELL;
+  const store = surface.pointStitches;
+  const moved = new Set(ids);
+  const commands: { readonly command: DomainCommand; readonly lead: number }[] = [];
+  for (let position = 0; position < store.ids.length; position += 1) {
+    const id = store.ids[position];
+    if (!moved.has(id)) continue;
+    const command: DomainCommand = pointWithinCanvas(surface, store.x[position] + dx, store.y[position] + dy)
+      ? { type: 'move-point-stitch', id, dx, dy }
+      : { type: 'remove-point-stitch', id };
+    commands.push({ command, lead: store.x[position] * dx + store.y[position] * dy });
+  }
+  return commands.sort((left, right) => right.lead - left.lead).map(({ command }) => command);
+}
+
 function selectionGeometry(selection: FinalizedSelection, bounds: GridRect): ClipboardSelectionGeometry {
   return selection.kind === 'sparse'
     ? {
@@ -1388,13 +1441,15 @@ function batchOf(commands: readonly DomainCommand[]): DomainCommand {
 
 /**
  * Several layers' move captures as one preview over `rect`: stitches bottom to
- * top, so the topmost non-empty cell wins, and every layer's backstitches.
+ * top, so the topmost non-empty cell wins, and every layer's backstitches,
+ * knots and beads.
  */
 function compositeMoveCaptures(captures: readonly MoveCapture[], rect: GridRect): Pick<MoveCapture, 'fragment' | 'completion' | 'backstitches'> {
   const kind = new Uint8Array(rect.width * rect.height);
   const colors = new Uint16Array(kind.length * 4);
   const completion = new Uint8Array(kind.length);
   const lines = allocateBackstitches(captures.reduce((count, capture) => count + capture.backstitches.ids.length, 0));
+  const points = { x: [] as number[], y: [] as number[], colors: [] as number[], orientations: [] as number[] };
   let cursor = 0;
   for (const capture of captures) {
     const { fragment, backstitches } = capture;
@@ -1412,10 +1467,18 @@ function compositeMoveCaptures(captures: readonly MoveCapture[], rect: GridRect)
     }
     const offset = { x: left * 4, y: top * 4 };
     for (let position = 0; position < backstitches.ids.length; position += 1) copyBackstitch(backstitches, position, lines, cursor++, offset);
+    const layerPoints = fragment.pointStitches;
+    for (let position = 0; position < layerPoints.x.length; position += 1) {
+      points.x.push(layerPoints.x[position] + offset.x);
+      points.y.push(layerPoints.y[position] + offset.y);
+      points.colors.push(layerPoints.colors[position]);
+      points.orientations.push(layerPoints.orientations[position]);
+    }
   }
   const { x1, y1, x2, y2, colors: lineColors } = lines;
+  const pointStitches = { x: Uint32Array.from(points.x), y: Uint32Array.from(points.y), colors: Uint16Array.from(points.colors), orientations: Uint8Array.from(points.orientations) };
   return {
-    fragment: { version: captures[0].fragment.version, width: rect.width, height: rect.height, kind, colors, backstitches: { x1, y1, x2, y2, colors: lineColors } },
+    fragment: { version: captures[0].fragment.version, width: rect.width, height: rect.height, kind, colors, backstitches: { x1, y1, x2, y2, colors: lineColors }, pointStitches },
     completion,
     backstitches: lines
   };
@@ -1564,6 +1627,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private eraserCorner: 0 | 1 | 2 | 3 = 0;
   /** The stitch brush the user last painted with, reapplied when the eyedropper picks a color. */
   private lastPaintBrush: { kind: 'full' | 'three-quarter' } | { kind: 'half'; direction?: '\\' | '/' } = { kind: 'full' };
+  /** The last thread and the last bead selected, which a tool change brings back when it shows that kind. */
+  private lastThreadId: number | undefined;
+  private lastBeadId: number | undefined;
+  /** The orientation the last bead rotation set, which new beads take. */
+  private lastBeadOrientation: BeadOrientation = 0;
   private selectedBackstitchId: number | undefined;
   private keyboardBackstitchAnchor: FixedPoint | undefined;
   private keyboardBackstitchToken: EditorRevisionToken | undefined;
@@ -1706,6 +1774,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if (state.tool.tool !== tool.tool && this.floatingPaste) this.discardFloatingPaste();
     if (state.tool.tool !== tool.tool) this.resetToolTransient();
+    this.selectShownKind(tool);
     if (tool.tool === 'move-image') {
       this.enterMoveImage();
       return true;
@@ -1720,16 +1789,59 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.exitImageTool();
     }
     if (tool.tool === 'eraser' && tool.corner !== undefined) this.eraserCorner = tool.corner;
-    this.uiStore.setTool(tool);
+    this.uiStore.setTool(tool.tool === 'paint' ? { tool: 'paint', brush: this.threadBrush(tool.brush) } : tool);
     return true;
   }
 
-  /** Select the Backstitch tool in the given mode; refused like `setTool` off a specialty layer. */
+  /**
+   * Select an entry of the kind `tool` shows, beads for Bead and threads for
+   * every other tool, when the selected entry is the other kind: the last one
+   * used, else the first active one. With none of that kind it keeps the selection.
+   */
+  private selectShownKind(tool: EditorToolState): void {
+    const selected = this.uiStore.getState().paletteId;
+    const entry = this.paletteEntry(selected);
+    if (!entry) return;
+    this.rememberPaletteSelection(entry);
+    const bead = tool.tool === 'specialty' && tool.stitch === 'bead';
+    if (isBeadEntry(entry) === bead) return;
+    const next = this.paletteIdOfKind(bead);
+    if (next !== undefined) this.uiStore.setState({ paletteId: next });
+  }
+
+  /** `brush` with a thread in place of a bead, since cells never take a bead. */
+  private threadBrush(brush: StitchBrush): StitchBrush {
+    const entry = this.paletteEntry(brush.paletteId);
+    if (!entry || !isBeadEntry(entry)) return brush;
+    const paletteId = this.paletteIdOfKind(false);
+    return paletteId === undefined ? brush : { ...brush, paletteId };
+  }
+
+  private paletteEntry(paletteId: number | null | undefined): PaletteEntry | undefined {
+    if (paletteId === null || paletteId === undefined) return undefined;
+    return this.gateway.getSnapshot().document?.palette.find((candidate) => candidate.id === paletteId);
+  }
+
+  private rememberPaletteSelection(entry: PaletteEntry): void {
+    if (isBeadEntry(entry)) this.lastBeadId = entry.id;
+    else this.lastThreadId = entry.id;
+  }
+
+  /** The last bead or thread selected, or the first active one of that kind when it is gone or inactive. */
+  private paletteIdOfKind(bead: boolean): number | undefined {
+    const palette = this.gateway.getSnapshot().document?.palette ?? [];
+    const remembered = bead ? this.lastBeadId : this.lastThreadId;
+    const usable = (entry: PaletteEntry) => entry.active && isBeadEntry(entry) === bead;
+    return palette.find((entry) => entry.id === remembered && usable(entry))?.id ?? palette.find(usable)?.id;
+  }
+
+  /** Select the Specialty tool's Backstitch in the given mode; refused like `setTool` off a specialty layer. */
   setBackstitchMode(mode: BackstitchMode): boolean {
     const current = this.uiStore.getState().tool;
-    if (current.tool === 'backstitch' && (current.mode ?? 'draw') === mode) return true;
-    if (current.tool === 'backstitch' && this.gesture?.kind === 'backstitch') this.cancelGesture();
-    return this.setTool({ tool: 'backstitch', mode });
+    const backstitch = current.tool === 'specialty' && current.stitch === 'backstitch';
+    if (backstitch && (current.mode ?? 'draw') === mode) return true;
+    if (backstitch && this.gesture?.kind === 'backstitch') this.cancelGesture();
+    return this.setTool({ tool: 'specialty', stitch: 'backstitch', mode });
   }
 
   getSelection(): GridRect | undefined {
@@ -1965,7 +2077,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         layerId,
         moveSelection: capture.source,
         backstitches: capture.backstitches,
-        ...(focusBackstitches ? { focusBackstitchIds: Array.from(focusBackstitches.ids) } : {})
+        ...(focus !== undefined && focusBackstitches ? {
+          focusBackstitchIds: Array.from(focusBackstitches.ids),
+          focusPointStitchIds: focusPointStitchIds(surface, pointStitchIdsInCellUnion(surface, fragmentSelectionIndices(capture.source, surface)), focus)
+        } : {})
       };
       parts.push({ layer, surface, selection: layerSelection, capture });
     }
@@ -2046,22 +2161,26 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   /**
    * What a move's source shows once lifted: each lifted cell as the stitch
-   * layers left under it show it, or fabric, and the lifted backstitch ids.
+   * layers left under it show it, or fabric, and the lifted backstitch, knot
+   * and bead ids.
    * Under Focus Color only the focus color lifts.
    */
   private moveSourceHole(
     snapshot: DocumentSnapshot,
     parts: readonly { readonly layer: FloatingMoveLayer; readonly surface: PatternDocument }[],
     focus: number | undefined
-  ): { sourceHole: PendingCellState[]; liftedBackstitchIds: Set<number> } {
+  ): { sourceHole: PendingCellState[]; liftedBackstitchIds: Set<number>; liftedPointStitchIds: Set<number> } {
     const lifted = new Map<number, Set<number>>();
     const indices = new Set<number>();
     const liftedBackstitchIds = new Set<number>();
+    const liftedPointStitchIds = new Set<number>();
     for (const { layer, surface } of parts) {
       const moved = layer.backstitches;
       for (let position = 0; position < moved.ids.length; position += 1) {
         if (focus === undefined || moved.colors[position] === focus) liftedBackstitchIds.add(moved.ids[position]);
       }
+      const points = pointStitchIdsInCellUnion(surface, fragmentSelectionIndices(layer.moveSelection, surface));
+      for (const id of focus === undefined ? points : focusPointStitchIds(surface, points, focus)) liftedPointStitchIds.add(id);
       if (layer.focusBackstitchIds) continue;
       const cells = new Set<number>();
       for (const index of fragmentSelectionIndices(layer.moveSelection, surface)) {
@@ -2079,7 +2198,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       colors: [0, 0, 0, 0],
       completed: 0
     }));
-    return { sourceHole: compositeEditStates(snapshot.layeredDocument, states, lifted), liftedBackstitchIds };
+    return { sourceHole: compositeEditStates(snapshot.layeredDocument, states, lifted), liftedBackstitchIds, liftedPointStitchIds };
   }
 
   pasteSelection(): boolean {
@@ -2264,7 +2383,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const [destination] = destinations;
       if (!floating.multiLayer && !destination.create && destination.layerId === activeId && snapshot.editSurface) {
         const preflight = preflightPasteFragmentCommand(withPendingPalette(snapshot.editSurface, creates), pasteFragmentCommand(fragment, position, snapshot.revision));
-        if (preflight.changedCellCount === 0 && preflight.newBackstitchCount === 0) {
+        if (preflight.changedCellCount === 0 && preflight.newBackstitchCount === 0 && preflight.newPointStitchCount === 0) {
           this.discardFloatingPaste();
           this.setStatus('No change');
           return true;
@@ -2322,7 +2441,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const id = this.selectedBackstitchId;
     const snapshot = this.gateway.getSnapshot();
     if (id === undefined || !hasRevision(snapshot)) return false;
-    const surface = this.editableSurface(snapshot, { tool: 'backstitch' }, true);
+    const surface = this.editableSurface(snapshot, { tool: 'specialty', stitch: 'backstitch' }, true);
     if (!surface) return false;
     const focus = this.focusColorId();
     if (focus !== undefined && backstitchColor(surface, id) !== focus) {
@@ -2788,7 +2907,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   setBrush(brush: StitchBrush): void {
-    this.uiStore.setState({ tool: { tool: 'paint', brush }, paletteId: brush.paletteId });
+    const threadBrush = this.threadBrush(brush);
+    const entry = this.paletteEntry(threadBrush.paletteId);
+    if (entry) this.rememberPaletteSelection(entry);
+    this.uiStore.setState({ tool: { tool: 'paint', brush: threadBrush }, paletteId: threadBrush.paletteId });
   }
 
   getBrushSize(): number {
@@ -2895,11 +3017,32 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return undefined;
   }
 
+  /**
+   * The Specialty tool after picking `paletteId`: a bead entry switches it to
+   * Bead, and a thread entry while on Bead switches it to French knot.
+   */
+  private specialtyToolFor(tool: EditorToolState & { readonly tool: 'specialty' }, paletteId: number): EditorToolState {
+    const entry = this.gateway.getSnapshot().document?.palette.find((candidate) => candidate.id === paletteId);
+    if (!entry) return tool;
+    if (isBeadEntry(entry)) return tool.stitch === 'bead' ? tool : { tool: 'specialty', stitch: 'bead' };
+    return tool.stitch === 'bead' ? { tool: 'specialty', stitch: 'french-knot' } : tool;
+  }
+
   /** Select a picked color, then the drawing tool for the selected layer's type when it has one. */
   private activatePickedColor(paletteId: number): void {
+    const layer = this.gateway.getSnapshot().activeLayer;
+    if (this.isBeadPaletteId(paletteId)) {
+      // A bead only places beads: on a specialty layer it picks Bead, elsewhere it is refused.
+      if (layer?.kind === 'specialty' && this.toolAvailable({ tool: 'specialty', stitch: 'bead' }, layer).enabled) {
+        this.lastBeadId = paletteId;
+        this.uiStore.setState({ paletteId });
+        this.uiStore.pulsePick(paletteId);
+        this.setTool({ tool: 'specialty', stitch: 'bead' });
+      } else this.notifyBeadColor();
+      return;
+    }
     this.selectPalette(paletteId);
     this.uiStore.pulsePick(paletteId);
-    const layer = this.gateway.getSnapshot().activeLayer;
     const remembered = this.lastPaintBrush;
     const brush: StitchBrush = remembered.kind === 'half'
       ? { kind: 'half', ...(remembered.direction === undefined ? {} : { direction: remembered.direction }), paletteId }
@@ -2907,8 +3050,9 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const paint: EditorToolState = { tool: 'paint', brush };
     if (this.toolAvailable(paint, layer).enabled) {
       this.setTool(paint);
-    } else if (layer?.kind === 'specialty' && this.toolAvailable({ tool: 'backstitch' }, layer).enabled) {
-      this.setTool({ tool: 'backstitch' });
+    } else if (layer?.kind === 'specialty' && this.toolAvailable({ tool: 'specialty', stitch: 'backstitch' }, layer).enabled) {
+      const current = this.uiStore.getState().tool;
+      this.setTool(this.specialtyToolFor(current.tool === 'specialty' ? current : { tool: 'specialty', stitch: 'backstitch' }, paletteId));
     } else {
       this.uiStore.setBrush({ kind: 'full', paletteId });
     }
@@ -3131,8 +3275,22 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   private setPaletteSelection(paletteId: number): void {
+    const picked = this.paletteEntry(paletteId);
+    if (picked) this.rememberPaletteSelection(picked);
     const state = this.uiStore.getState();
-    if (state.tool.tool === 'paint') {
+    const tool = state.tool.tool;
+    if ((tool === 'paint' || tool === 'shape' || tool === 'fill') && this.isBeadPaletteId(paletteId)) {
+      // Cells never take a bead: a specialty layer switches to Bead, a stitch layer keeps its color.
+      const layer = this.gateway.getSnapshot().activeLayer;
+      if (layer?.kind === 'specialty' && this.toolAvailable({ tool: 'specialty', stitch: 'bead' }, layer).enabled) {
+        this.uiStore.setState({ paletteId });
+        this.setTool({ tool: 'specialty', stitch: 'bead' });
+      } else this.notifyBeadColor();
+      return;
+    }
+    if (state.tool.tool === 'specialty') {
+      this.uiStore.setState({ paletteId, tool: this.specialtyToolFor(state.tool, paletteId) });
+    } else if (state.tool.tool === 'paint') {
       const brush = state.tool.brush;
       const nextBrush: StitchBrush = brush.kind === 'full'
         ? { kind: 'full', paletteId }
@@ -3239,7 +3397,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const paletteEntry = paletteId === null
         ? undefined
         : surface.palette.find((entry) => entry.id === paletteId && entry.active);
-      if (!cell || !paletteEntry) return false;
+      if (!cell || !paletteEntry || this.refuseBeadColor(paletteId)) return false;
       const transaction = this.gateway.beginTransaction();
       const gesture: ShapeGesture = {
         kind: 'shape',
@@ -3276,7 +3434,16 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       }
       return cell && (mask !== 0 || isEmpty) ? this.startFillAt(cell, mask || undefined) : false;
     }
-    if (selectedTool.tool === 'backstitch') return this.beginBackstitch(sample, snapshot, surface);
+    if (selectedTool.tool === 'specialty') {
+      if (selectedTool.stitch === 'backstitch') return this.beginBackstitch(sample, snapshot, surface);
+      if (sample.pointerType === 'touch') {
+        // A touch places on release, so a second finger can still turn it into a pinch.
+        this.gesture = { kind: 'touch-action', pointerId: sample.pointerId, tool: 'point-stitch', token: tokenOf(snapshot), startScreenX: sample.screenX, startScreenY: sample.screenY };
+        return true;
+      }
+      const point = this.lassoModelPoint(sample);
+      return point !== undefined && this.placePointStitchAt(point);
+    }
     if (selectedTool.tool === 'eraser') {
       const cell = this.paintHitCell(sample, snapshot.document);
       if (!cell) return false;
@@ -3286,9 +3453,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const components = new Map<string, { readonly cell: ModelPoint; readonly corner: number }>();
       const specialty = snapshot.activeLayer?.kind === 'specialty';
       const backstitches = specialty ? new Set<number>() : undefined;
+      const pointStitches = specialty ? new Set<number>() : undefined;
       const backstitchIndex = specialty && brushSize > 1 ? buildBackstitchCellIndex(surface) : undefined;
       const bounds = this.getSelectionIndices();
-      const gesture: EraserGesture = { kind: 'eraser', pointerId: sample.pointerId, transaction, brushSize, bounds, cells, components, backstitches, backstitchIndex, lastCell: cell };
+      const gesture: EraserGesture = { kind: 'eraser', pointerId: sample.pointerId, transaction, brushSize, bounds, cells, components, backstitches, backstitchIndex, pointStitches, lastCell: cell };
       this.addEraserSample(gesture, cell, sample, surface);
       this.addEraserBackstitches(gesture, sample, surface);
       this.gesture = gesture;
@@ -3297,7 +3465,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if (selectedTool.tool !== 'paint') return false;
     const cell = this.paintHitCell(sample, snapshot.document);
-    if (!cell) return false;
+    if (!cell || this.refuseBeadColor(selectedTool.brush.paletteId)) return false;
     const transaction = this.gateway.beginTransaction();
     const brushSize = this.getBrushSize();
     const bounds = this.getSelectionIndices();
@@ -3659,6 +3827,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (key === ' ' || key === 'Spacebar' || key === 'Space') {
       sample.preventDefault?.();
       this.spaceHeld = true;
+      this.clearBrushPreview();
       return true;
     }
     if (key === 'Enter') {
@@ -3683,7 +3852,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       if (this.floatingPaste) return true;
       if (this.canvasSelection && this.isCanvasActive()) this.applyCanvasSelection('remove');
       else if (this.selection) this.deleteSelection();
-      else if (this.uiStore.getState().tool.tool === 'backstitch' && this.selectedBackstitchId !== undefined) this.deleteSelectedBackstitch();
+      else if (this.uiStore.getState().tool.tool === 'specialty' && this.selectedBackstitchId !== undefined) this.deleteSelectedBackstitch();
       else this.eraseAtKeyboardCursor();
       return true;
     }
@@ -3864,6 +4033,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if (gesture.tool === 'eyedropper') {
       this.eyedropperAt(sample, snapshot.document);
+      return;
+    }
+    if (gesture.tool === 'point-stitch') {
+      const point = this.lassoModelPoint(sample);
+      if (point) this.placePointStitchAt(point, gesture.token);
       return;
     }
     const surface = this.editableSurface(snapshot, { tool: 'fill' }, true);
@@ -4144,7 +4318,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   private addEraserSample(
-    target: Pick<EraserGesture, 'cells' | 'components' | 'brushSize' | 'bounds' | 'backstitches' | 'backstitchIndex' | 'startCorner'>,
+    target: Pick<EraserGesture, 'cells' | 'components' | 'brushSize' | 'bounds' | 'backstitches' | 'backstitchIndex' | 'pointStitches' | 'startCorner'>,
     cell: ModelPoint,
     sample: PointerSample,
     document: PatternDocument
@@ -4156,7 +4330,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       for (const stampedCell of stamped) cells.set(cellKey(stampedCell), stampedCell);
       // A wider brush reaches exactly its drawn footprint; a one-cell brush is
       // measured from the pointer by addEraserBackstitches instead.
-      if (target.brushSize > 1) this.addBoundedBackstitches(target, document, (into) => backstitchesThroughCells(document, stamped, into, target.backstitchIndex));
+      if (target.brushSize > 1) {
+        this.addBoundedBackstitches(target, document, (into) => backstitchesThroughCells(document, stamped, into, target.backstitchIndex));
+        for (const id of pointStitchIdsInCellUnion(document, indicesForCells(stamped, document.width))) this.addBoundedPointStitch(target, document, id);
+      }
       return;
     }
     const point = screenToModel({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport);
@@ -4192,15 +4369,29 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   /**
-   * One-cell specialty erase: add the backstitches within the pick tolerance of
-   * the pointer's path since the previous sample, so a stitch sharing the cell
-   * survives. Wider brushes are handled by their footprint in addEraserSample.
+   * One-cell specialty erase: add the backstitches, knots and beads within the
+   * pick tolerance of the pointer's path since the previous sample, so a stitch
+   * sharing the cell survives. Wider brushes are handled by their footprint in addEraserSample.
    */
   private addEraserBackstitches(gesture: EraserGesture, sample: PointerSample, document: PatternDocument): void {
     if (!gesture.backstitches || gesture.brushSize > 1) return;
     const point = screenToModel({ x: sample.screenX, y: sample.screenY }, this.uiStore.getState().viewport);
     this.addBoundedBackstitches(gesture, document, (into) => backstitchesNearPath(document, gesture.lastPoint ?? point, point, this.backstitchHitTolerance(), into));
+    const reached = new Set<number>();
+    pointStitchesNearPath(document.pointStitches, gesture.lastPoint ?? point, point, this.backstitchHitTolerance(), reached);
+    for (const id of reached) this.addBoundedPointStitch(gesture, document, id);
     gesture.lastPoint = point;
+  }
+
+  /** Add a knot or bead the eraser reached when it lies inside the gesture's selection. */
+  private addBoundedPointStitch(target: Pick<EraserGesture, 'bounds' | 'pointStitches'>, document: PatternDocument, id: number): void {
+    const erased = target.pointStitches;
+    if (!erased || erased.has(id)) return;
+    if (target.bounds) {
+      const position = document.pointStitches.ids.indexOf(id);
+      if (position < 0 || !isFixedPointContainedInCellUnion(document.pointStitches.x[position], document.pointStitches.y[position], document.width, document.height, target.bounds)) return;
+    }
+    erased.add(id);
   }
 
   /** Add the backstitches `collect` reaches to the erase, keeping only those inside the gesture's selection. */
@@ -4246,6 +4437,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       operation: undefined,
       cells: new Map<number, number>(),
       backstitchIds: new Set<number>(),
+      pointStitchIds: new Set<number>(),
       lastCell: cell,
       lastPoint: point
     };
@@ -4253,12 +4445,16 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   /**
-   * The stitch a Mark press is on. A backstitch close to the press wins, since
-   * it draws over the cells; otherwise the cell component under it, then any
-   * backstitch within the pick tolerance.
+   * The stitch a Mark press is on. A knot or bead within the pick tolerance
+   * wins, since it draws over everything; then a backstitch close to the press,
+   * since it draws over the cells; otherwise the cell component under it, then
+   * any backstitch within the pick tolerance.
    */
   private markTargetAt(document: PatternDocument, point: ModelPoint, cell: ModelPoint | undefined, highlightColor: number | null): MarkTarget | undefined {
     const tolerance = this.backstitchHitTolerance();
+    const points = document.pointStitches;
+    const pointHit = nearestPointStitch(points, point, tolerance, (position) => highlightColor === null || points.colors[position] === highlightColor);
+    if (pointHit !== undefined) return { kind: 'point', id: points.ids[pointHit], done: points.completed[pointHit] !== 0 };
     const store = document.backstitches;
     let nearest: { position: number; distance: number } | undefined;
     for (let position = 0; position < store.ids.length; position += 1) {
@@ -4294,6 +4490,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const cell = this.paintHitCell(sample, document);
     if (point) {
       this.addMarkBackstitches(gesture, document, gesture.lastPoint ?? point, point);
+      this.addMarkPointStitches(gesture, document, gesture.lastPoint ?? point, point);
       gesture.lastPoint = point;
     }
     if (cell) {
@@ -4325,6 +4522,19 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       if (distanceBetweenSegments(from, to, start, end) > tolerance) continue;
       gesture.operation ??= store.completed[position] !== 0 ? 'clear' : 'set';
       gesture.backstitchIds.add(id);
+    }
+  }
+
+  private addMarkPointStitches(gesture: MarkGesture, document: PatternDocument, from: ModelPoint, to: ModelPoint): void {
+    const store = document.pointStitches;
+    const reached = new Set<number>();
+    pointStitchesNearPath(store, from, to, this.backstitchHitTolerance(), reached);
+    for (let position = 0; position < store.ids.length; position += 1) {
+      const id = store.ids[position];
+      if (!reached.has(id) || gesture.pointStitchIds.has(id)) continue;
+      if (gesture.highlightColor !== null && store.colors[position] !== gesture.highlightColor) continue;
+      gesture.operation ??= store.completed[position] !== 0 ? 'clear' : 'set';
+      gesture.pointStitchIds.add(id);
     }
   }
 
@@ -4419,7 +4629,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         this.setStatus('Erase cancelled: project changed');
         return;
       }
-      this.commitBackstitchRemovals(gesture.backstitches, snapshot, surface, 'Erase', (commands) => gesture.transaction.commitBatch(commands));
+      this.commitSpecialtyRemovals(gesture.backstitches, gesture.pointStitches ?? new Set(), snapshot, surface, 'Erase', (commands) => gesture.transaction.commitBatch(commands));
       return;
     }
     const targets = this.focusEraserTargets(gesture.cells, gesture.components, surface);
@@ -4459,28 +4669,37 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   /**
-   * Remove the touched backstitches of the selected specialty layer that Focus
-   * Color leaves editable, as one history entry committed by `commit`.
+   * Remove the touched backstitches, knots and beads of the selected specialty
+   * layer that Focus Color leaves editable, as one history entry committed by
+   * `commit`.
    */
-  private commitBackstitchRemovals(
+  private commitSpecialtyRemovals(
     touched: Set<number>,
+    touchedPoints: Set<number>,
     snapshot: WorkspaceEditorSnapshot,
     surface: PatternDocument,
     label: string,
     commit: (commands: readonly DomainCommand[]) => CommandResult
   ): void {
     const removals = this.focusRemovals(touched, surface);
-    if (removals.size === 0) {
-      if (touched.size > 0) this.notifyFocusProtected();
+    const pointRemovals = this.focusPointRemovals(touchedPoints, surface);
+    if (removals.size === 0 && pointRemovals.size === 0) {
+      if (touched.size > 0 || touchedPoints.size > 0) this.notifyFocusProtected();
       else this.setStatus('No change');
       return;
     }
     const ids = [...removals].sort((left, right) => left - right);
-    const commands = ids.map((id): DomainCommand => this.stamp({ type: 'remove-backstitch', id }, snapshot));
+    const pointIds = [...pointRemovals].sort((left, right) => left - right);
+    const commands = [
+      ...ids.map((id): DomainCommand => this.stamp({ type: 'remove-backstitch', id }, snapshot)),
+      ...pointIds.map((id): DomainCommand => this.stamp({ type: 'remove-point-stitch', id }, snapshot))
+    ];
     const result = this.runCommand(label, () => commit(commands));
     if (!result) return;
     if (this.selectedBackstitchId !== undefined && removals.has(this.selectedBackstitchId)) this.resetBackstitchState();
-    this.projectCommandResult(result, undefined, `Erased ${countLabel(ids.length, 'backstitch', 'backstitches')}`);
+    this.projectCommandResult(result, undefined, ids.length > 0
+      ? `Erased ${countLabel(ids.length, 'backstitch', 'backstitches')}`
+      : `Erased ${countLabel(pointIds.length, 'knot or bead', 'knots and beads')}`);
   }
 
   private publishSelectionOverlay(): void {
@@ -4518,6 +4737,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
             backstitches: this.floatingPaste.backstitches,
             ...(this.floatingPaste.sourceHole ? { sourceHole: this.floatingPaste.sourceHole } : {}),
             ...(this.floatingPaste.liftedBackstitchIds ? { liftedBackstitchIds: this.floatingPaste.liftedBackstitchIds } : {}),
+            ...(this.floatingPaste.liftedPointStitchIds ? { liftedPointStitchIds: this.floatingPaste.liftedPointStitchIds } : {}),
             ...(this.floatingPaste.pendingPalette ? { pendingPalette: this.floatingPaste.pendingPalette.map((entry) => normalizePaletteEntry(entry)) } : {}),
             color: this.activePaletteColor()
           }
@@ -4646,7 +4866,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const point = this.backstitchModelPoint(sample);
     if (point.x < 0 || point.y < 0 || point.x > surface.width || point.y > surface.height) return false;
     const tool = this.uiStore.getState().tool;
-    if (tool.tool === 'backstitch' && tool.mode === 'move') {
+    if (tool.tool === 'specialty' && tool.mode === 'move') {
       // Move mode only picks up the selected layer's backstitches; a miss draws
       // nothing and drops the selection.
       const focus = this.focusColorId();
@@ -4678,6 +4898,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     // Draw mode never hit-tests, so a stroke near an existing stitch starts a new
     // one; grid snapping still lets it chain from an existing endpoint.
     this.selectedBackstitchId = undefined;
+    if (this.refuseBeadColor(this.uiStore.getState().paletteId)) return false;
     const snapped = fixedPointAt(point, surface);
     this.gesture = {
       kind: 'backstitch',
@@ -4755,10 +4976,62 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (!changed) this.selectedBackstitchId = gesture.selectedId;
   }
 
+  /**
+   * Place a knot or bead with the Specialty tool at the cell corner or centre
+   * nearest `point` (model cells), in the active color. A color of the wrong
+   * kind (a bead on French knot, a thread on Bead) places nothing and shows a
+   * hint; Focus Color protects a point of another color already there.
+   */
+  private placePointStitchAt(point: ModelPoint, token?: EditorRevisionToken): boolean {
+    const state = this.uiStore.getState();
+    const tool = state.tool;
+    if (tool.tool !== 'specialty' || tool.stitch === 'backstitch' || !isFiniteModelPoint(point)) return false;
+    const snapshot = this.gateway.getSnapshot();
+    if (!hasRevision(snapshot)) return false;
+    const surface = this.editableSurface(snapshot, tool, true);
+    if (surface && !withinPointStitchReach(point, surface)) return false;
+    const color = state.paletteId;
+    const entry = color === null ? undefined : surface?.palette.find((candidate) => candidate.id === color);
+    if (!surface || color === null || !entry) return false;
+    if (isBeadEntry(entry) !== (tool.stitch === 'bead')) {
+      const hint = tool.stitch === 'bead' ? BEAD_COLOR_HINT : FRENCH_KNOT_COLOR_HINT;
+      this.notify(hint);
+      this.setStatus(hint);
+      return false;
+    }
+    const press = this.pointStitchPressAt(tool.stitch === 'bead', surface, color, point);
+    if (press.action === 'outside-selection') {
+      this.setStatus('Outside selection');
+      return false;
+    }
+    if (press.action === 'protected') {
+      this.notifyFocusProtected();
+      return false;
+    }
+    try {
+      if (press.action === 'rotate') {
+        // The next orientation is the one new beads then take.
+        const rotated = this.executeCommandWithToken({ type: 'set-point-stitch-orientation', id: press.id, orientation: press.orientation }, 'Rotated bead', token);
+        if (rotated) this.lastBeadOrientation = press.orientation;
+        return rotated;
+      }
+      // A duplicate or a point outside the canvas is left to the domain, whose refusal shows as the status.
+      const orientation = tool.stitch === 'bead' ? this.lastBeadOrientation : 0;
+      return this.executeCommandWithToken({ type: 'add-point-stitch', point: press.position, color, orientation }, tool.stitch === 'bead' ? 'Placed bead' : 'Placed French knot', token);
+    } catch (error) {
+      // Refusals such as a duplicate point or one outside the canvas show as the status.
+      if (error instanceof DomainError) {
+        this.setStatus(error.message);
+        return false;
+      }
+      throw error;
+    }
+  }
+
   private activateKeyboardBackstitch(): void {
     const snapshot = this.gateway.getSnapshot();
     if (!snapshot.document || !hasRevision(snapshot)) return;
-    if (this.refuseTool({ tool: 'backstitch' }, snapshot)) return;
+    if (this.refuseTool({ tool: 'specialty', stitch: 'backstitch' }, snapshot) || this.refuseBeadColor(this.uiStore.getState().paletteId)) return;
     const cursor = this.uiStore.getState().keyboardCursor ?? { x: 0, y: 0 };
     if (!isFiniteModelPoint(cursor)) return;
     if (!this.uiStore.getState().keyboardCursor) this.setKeyboardCursor(cursor);
@@ -4879,6 +5152,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (cellX < 0 || cellY < 0 || cellX >= surface.width || cellY >= surface.height) return false;
     this.cancelFill(false);
     const selectedPaletteId = this.uiStore.getState().paletteId;
+    if (this.refuseBeadColor(selectedPaletteId)) return true;
     const startIndex = cellY * surface.width + cellX;
     const selected = this.getSelectionIndices();
     if (selected && !selected.includes(startIndex)) {
@@ -5031,8 +5305,14 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   private activateKeyboardCursor(): void {
     const tool = this.uiStore.getState().tool;
-    if (tool.tool === 'backstitch') {
-      this.activateKeyboardBackstitch();
+    if (tool.tool === 'specialty') {
+      if (tool.stitch === 'backstitch') this.activateKeyboardBackstitch();
+      else {
+        const cursor = this.uiStore.getState().keyboardCursor ?? { x: 0, y: 0 };
+        if (!this.uiStore.getState().keyboardCursor) this.setKeyboardCursor(cursor);
+        // The cursor names a cell; its centre is the nearest point.
+        this.placePointStitchAt({ x: cursor.x + 0.5, y: cursor.y + 0.5 });
+      }
       return;
     }
     if (tool.tool === 'fill') {
@@ -5070,7 +5350,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const cursor = state.keyboardCursor ?? { x: 0, y: 0 };
     if (!snapshot.document || !hasRevision(snapshot) || !isFiniteModelPoint(cursor) || !isFiniteViewport(state.viewport)) return;
     const surface = this.editableSurface(snapshot, state.tool, true);
-    if (!surface) return;
+    if (!surface || this.refuseBeadColor(state.tool.brush.paletteId)) return;
     const cell = cloneCell(cursor);
     if (cell.x < 0 || cell.y < 0 || cell.x >= surface.width || cell.y >= surface.height) return;
     this.executeCellEdit(brushCells(cell, this.getBrushSize(), surface), editForBrush(state.tool.brush), `Stitched cell (${String(cell.x)}, ${String(cell.y)})`);
@@ -5089,8 +5369,9 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (snapshot.activeLayer?.kind === 'specialty') {
       const touched = new Set<number>();
       backstitchesThroughCells(surface, cells, touched);
+      const touchedPoints = new Set(pointStitchIdsInCellUnion(surface, indicesForCells(cells, surface.width)));
       const token = tokenOf(snapshot);
-      this.commitBackstitchRemovals(touched, snapshot, surface, 'Action', (commands) => this.gateway.executeBatch(commands, token));
+      this.commitSpecialtyRemovals(touched, touchedPoints, snapshot, surface, 'Action', (commands) => this.gateway.executeBatch(commands, token));
       return;
     }
     const eraser = state.tool.tool === 'eraser' ? state.tool : undefined;
@@ -5215,6 +5496,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       // Rename and add leave every visible plane as it was; skip the redraw.
       this.recordDocumentChange(before);
       this.setStatus(status);
+      this.refreshHoverPreview();
       return;
     }
     const invalidation: Invalidation = compositeInvalidationFor(result, requestedIndices);
@@ -5225,6 +5507,12 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.publishSelectedCell(false);
     this.recordDocumentChange(before);
     this.setStatus(status);
+    this.refreshHoverPreview();
+  }
+
+  /** Recompute the hover previews for a pointer that has not moved, since the document under it changed. */
+  private refreshHoverPreview(): void {
+    if (this.lastHoverSample && !this.gesture) this.updateBrushPreview(this.lastHoverSample);
   }
 
   private onGatewaySnapshot(snapshot: WorkspaceEditorSnapshot, force = false): void {
@@ -5272,7 +5560,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         ? { layer: 'all', full: true, reason: 'project-switch' }
         : externalInvalidation(snapshot, layerStackChanged ? 'layer-stack' : 'external-document'));
       // A change made outside the editor, as by a panel, is a document step too.
-      if (documentChanged && !projectChanged) this.recordDocumentChange(before);
+      if (documentChanged && !projectChanged) {
+        this.recordDocumentChange(before);
+        this.refreshHoverPreview();
+      }
     } else {
       this.renderer.setOverlay({});
       this.uiStore.setSelectedCell(null);
@@ -5334,7 +5625,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if (state.highlightColor !== previous.highlightColor) this.renderer.setStyle({ highlightColor: state.highlightColor });
     if (state.overlay !== previous.overlay) this.renderer.setOverlay(state.overlay);
-    if ((state.tool !== previous.tool || state.brushSize !== previous.brushSize || state.viewport !== previous.viewport) && this.lastHoverSample && !this.gesture) this.updateBrushPreview(this.lastHoverSample);
+    if ((state.tool !== previous.tool || state.brushSize !== previous.brushSize || state.viewport !== previous.viewport || state.paletteId !== previous.paletteId) && this.lastHoverSample && !this.gesture) this.updateBrushPreview(this.lastHoverSample);
     if (state.focusColor !== previous.focusColor || (state.focusColor && state.paletteId !== previous.paletteId)) this.onFocusColorChange();
   }
 
@@ -5432,6 +5723,13 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const focus = this.focusColorId();
     if (focus === undefined) return removals;
     return new Set(focusBackstitchIds(document, [...removals], focus));
+  }
+
+  /** The knot and bead removals Focus Color allows: focus-color points only. */
+  private focusPointRemovals(removals: Set<number>, document: PatternDocument): Set<number> {
+    const focus = this.focusColorId();
+    if (focus === undefined) return removals;
+    return new Set(focusPointStitchIds(document, [...removals], focus));
   }
 
   private pendingPaintStates(cells: Map<string, ModelPoint>, edit: BulkCellEdit, revision: number, document: PatternDocument): PendingCellState[] {
@@ -5572,22 +5870,70 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.clearBrushPreview();
   }
 
+  /** Clear the hover previews: the tool footprint, and the point a press would place or the bead it would turn. */
   private clearBrushPreview(): void {
     const overlay = this.uiStore.getState().overlay;
-    if (overlay.brushPreview) this.uiStore.setOverlay({ ...overlay, brushPreview: undefined });
+    if (overlay.brushPreview || overlay.pointStitchPreview || overlay.pointStitchRotate) {
+      this.uiStore.setOverlay({ ...overlay, brushPreview: undefined, pointStitchPreview: undefined, pointStitchRotate: undefined });
+    }
   }
 
-  /** Outline the cells a press here would reach, for the tools that have a footprint. */
+  /** Outline the cells a press here would reach, for the tools that have a footprint, or show the bead it would place. */
   private updateBrushPreview(sample: PointerSample): void {
-    const args = this.spaceHeld || (sample.buttons ?? 0) !== 0
-      ? undefined
-      : this.hoverFootprintArgs(this.uiStore.getState().tool, sample, this.gateway.getSnapshot());
+    const hovering = !this.spaceHeld && (sample.buttons ?? 0) === 0;
+    const snapshot = this.gateway.getSnapshot();
+    const tool = this.uiStore.getState().tool;
+    const args = hovering ? this.hoverFootprintArgs(tool, sample, snapshot) : undefined;
     const cells = args ? brushFootprint(args.center, args.size, args.bounds, args.accept) : [];
-    if (cells.length === 0) {
+    const { pointStitchPreview, pointStitchRotate } = hovering ? this.pointStitchHoverAt(tool, sample, snapshot) : {};
+    if (cells.length === 0 && !pointStitchPreview && !pointStitchRotate) {
       this.clearBrushPreview();
       return;
     }
-    this.uiStore.setOverlay({ ...this.uiStore.getState().overlay, brushPreview: { cells } });
+    this.uiStore.setOverlay({ ...this.uiStore.getState().overlay, brushPreview: cells.length === 0 ? undefined : { cells }, pointStitchPreview, pointStitchRotate });
+  }
+
+  /**
+   * What a Bead or French knot press at model `point` does with `color`; the
+   * caller has checked the color suits the stitch and the point is within reach.
+   * `place` adds onto a free point or over one of another color, leaving
+   * `orientation`; `rotate` turns the selected-color bead `id` to `orientation`;
+   * a `duplicate` (a selected-color knot) or `outside-canvas` press is refused by the domain.
+   */
+  private pointStitchPressAt(bead: boolean, surface: PatternDocument, color: number, point: ModelPoint):
+    | { readonly action: 'place'; readonly position: FixedPoint; readonly orientation: BeadOrientation }
+    | { readonly action: 'rotate'; readonly position: FixedPoint; readonly id: number; readonly orientation: BeadOrientation }
+    | { readonly action: 'duplicate' | 'outside-canvas' | 'outside-selection' | 'protected'; readonly position: FixedPoint } {
+    const position = nearestPointStitchPosition({ x: point.x * FIXED_POINT_UNITS_PER_CELL, y: point.y * FIXED_POINT_UNITS_PER_CELL }, surface);
+    const bounds = this.getSelectionIndices();
+    if (bounds && !isFixedPointContainedInCellUnion(position.x, position.y, surface.width, surface.height, bounds)) return { action: 'outside-selection', position };
+    const store = surface.pointStitches;
+    const existing = pointStitchIndexAt(store, position);
+    const focus = this.focusColorId();
+    if (focus !== undefined && existing !== undefined && store.colors[existing] !== focus) return { action: 'protected', position };
+    if (!pointWithinCanvas(surface, position.x, position.y)) return { action: 'outside-canvas', position };
+    const placed = bead ? this.lastBeadOrientation : 0;
+    if (existing === undefined) return { action: 'place', position, orientation: placed };
+    const occupant = store.colors[existing];
+    if (occupant === color) {
+      return bead ? { action: 'rotate', position, id: store.ids[existing], orientation: nextBeadOrientation(store.orientations[existing]) } : { action: 'duplicate', position };
+    }
+    // A bead recolored to another bead keeps its orientation.
+    return { action: 'place', position, orientation: bead && this.isBeadPaletteId(occupant) ? (store.orientations[existing] as BeadOrientation) : placed };
+  }
+
+  /** The ghost of what a press here would place, or the bead it would turn; neither where it would do nothing. */
+  private pointStitchHoverAt(tool: EditorToolState, sample: PointerSample, snapshot: WorkspaceEditorSnapshot): Pick<OverlayState, 'pointStitchPreview' | 'pointStitchRotate'> {
+    if (this.readOnly || tool.tool !== 'specialty' || tool.stitch === 'backstitch') return {};
+    const bead = tool.stitch === 'bead';
+    const paletteId = this.uiStore.getState().paletteId;
+    const surface = this.editableSurface(snapshot, tool);
+    const point = this.lassoModelPoint(sample);
+    if (!surface || !point || paletteId === null || !this.paletteEntry(paletteId) || this.isBeadPaletteId(paletteId) !== bead || !withinPointStitchReach(point, surface)) return {};
+    const press = this.pointStitchPressAt(bead, surface, paletteId, point);
+    if (press.action === 'place') return { pointStitchPreview: { point: press.position, paletteId, orientation: press.orientation } };
+    if (press.action === 'rotate') return { pointStitchRotate: { point: press.position } };
+    return {};
   }
 
   /** The `brushFootprint` arguments a press of `tool` here would stamp with; undefined for a tool without a footprint. */
@@ -5985,6 +6331,25 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return state.focusColor && !this.readOnly ? state.paletteId ?? 0 : undefined;
   }
 
+  /** Whether `paletteId` names a bead entry, which only places beads. */
+  private isBeadPaletteId(paletteId: number | null | undefined): boolean {
+    if (paletteId === null || paletteId === undefined) return false;
+    const entry = this.gateway.getSnapshot().document?.palette.find((candidate) => candidate.id === paletteId);
+    return entry !== undefined && isBeadEntry(entry);
+  }
+
+  private notifyBeadColor(): void {
+    this.notify(BEAD_TOOL_HINT);
+    this.setStatus(BEAD_TOOL_HINT);
+  }
+
+  /** True, after the hint, when a cell or backstitch tool would draw with bead `paletteId`. */
+  private refuseBeadColor(paletteId: number | null | undefined): boolean {
+    if (!this.isBeadPaletteId(paletteId)) return false;
+    this.notifyBeadColor();
+    return true;
+  }
+
   private notifyFocusProtected(): void {
     this.notify(FOCUS_COLOR_PROTECTED_HINT);
     this.setStatus(FOCUS_COLOR_PROTECTED_HINT);
@@ -5993,7 +6358,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   /**
    * The part of a selection Focus Color lets copy and move act on: its
    * focus-color cells as a sparse selection or, with none, the selection itself
-   * for its focus-color backstitches. Undefined when it holds nothing of the
+   * for its focus-color backstitches, knots and beads. Undefined when it holds nothing of the
    * focus color, after the notice when it holds other colors.
    */
   private focusSelection(surface: PatternDocument, selection: FinalizedSelection, focus: number, notify = true): FinalizedSelection | undefined {
@@ -6001,24 +6366,27 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (content.cells.length > 0) {
       return sparseSelection(content.cells, surface);
     }
-    if (content.backstitchIds.length > 0) return selection;
+    if (content.backstitchIds.length > 0 || content.pointStitchIds.length > 0) return selection;
     if (notify && content.protectedContent) this.notifyFocusProtected();
     return undefined;
   }
 
-  /** Delete only the selection's focus-color cells and backstitches on each target; undefined, after the notice, when it holds only other colors. */
+  /** Delete only the selection's focus-color cells, backstitches, knots and beads on each target; undefined, after the notice, when it holds only other colors. */
   private deleteFocusSelection(targets: readonly { readonly layerId: number; readonly surface: PatternDocument }[], selection: FinalizedSelection, focus: number, revision: number): boolean | undefined {
     const commands: DomainCommand[] = [];
     let cells = 0;
     let backstitches = 0;
+    let points = 0;
     let protectedContent = false;
     for (const { layerId, surface } of targets) {
       const content = focusSelectionContent(surface, selection, focus);
       cells += content.cells.length;
       backstitches += content.backstitchIds.length;
+      points += content.pointStitchIds.length;
       protectedContent ||= content.protectedContent;
       if (content.cells.length > 0) commands.push(withLayerId(deleteCellSetCommand(content.cells, revision), layerId));
       for (const id of content.backstitchIds) commands.push(withLayerId({ type: 'remove-backstitch', id }, layerId));
+      for (const id of content.pointStitchIds) commands.push(withLayerId({ type: 'remove-point-stitch', id }, layerId));
     }
     if (commands.length === 0) {
       if (protectedContent) {
@@ -6030,7 +6398,9 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     const status = cells > 0
       ? `Deleted ${countLabel(cells, 'cell')}`
-      : `Deleted ${countLabel(backstitches, 'backstitch', 'backstitches')}`;
+      : backstitches > 0
+        ? `Deleted ${countLabel(backstitches, 'backstitch', 'backstitches')}`
+        : `Deleted ${countLabel(points, 'knot or bead', 'knots and beads')}`;
     return this.executeCommandWithToken(batchOf(commands), status);
   }
 
@@ -6052,7 +6422,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const command = layer.focusBackstitchIds
         ? focusBackstitchMoveCommand(layer, offset)
         : moveFragmentCommand(layer.moveSelection, { x: origin.x + offset.x, y: origin.y + offset.y }, snapshot.revision);
-      const children = command.type === 'batch' ? command.commands : [command];
+      const children = command.type === 'batch' ? [...command.commands] : [command];
+      if (layer.focusPointStitchIds) children.push(...focusPointMoveCommands(surface, layer.focusPointStitchIds, offset));
       commands.push(...children.map((child) => withLayerId(child, layer.layerId)));
     }
     return commands.length === 0 ? undefined : batchOf(commands);
@@ -6062,6 +6433,19 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private focusMoveRefused(layer: FloatingMoveLayer, offset: ModelPoint, surface: PatternDocument, focus: number): boolean {
     const moved = layer.backstitches;
     if (moved.colors.some((color) => color !== focus)) return true;
+    const containedPoints = pointStitchIdsInCellUnion(surface, fragmentSelectionIndices(layer.moveSelection, surface));
+    if (layer.focusPointStitchIds) {
+      // A moved knot or bead may not land on one that stays, of any color, as move-fragment refuses.
+      const movedPoints = new Set(layer.focusPointStitchIds);
+      const store = surface.pointStitches;
+      const occupied = new Set<string>();
+      for (let position = 0; position < store.ids.length; position += 1) {
+        if (!movedPoints.has(store.ids[position])) occupied.add(pointKey(store.x[position], store.y[position]));
+      }
+      for (let position = 0; position < store.ids.length; position += 1) {
+        if (movedPoints.has(store.ids[position]) && occupied.has(pointKey(store.x[position] + offset.x * 4, store.y[position] + offset.y * 4))) return true;
+      }
+    } else if (focusPointStitchIds(surface, containedPoints, focus).length < containedPoints.length) return true;
     if (layer.focusBackstitchIds) {
       const origin = fragmentSelectionOrigin(layer.moveSelection);
       const shiftX = (origin.x + offset.x) * 4;
@@ -6161,10 +6545,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (gesture.backstitches) {
       const overlay = this.uiStore.getState().overlay;
       const ids = this.focusRemovals(gesture.backstitches, document);
-      const previous = overlay.erasingBackstitchIds;
-      // Keep the published set while its members are unchanged, so the renderer redraws only when a line disappears.
-      if (previous && previous.size === ids.size && [...ids].every((id) => previous.has(id))) return;
-      this.uiStore.setOverlay({ ...overlay, erasingBackstitchIds: new Set(ids) });
+      const pointIds = this.focusPointRemovals(gesture.pointStitches ?? new Set(), document);
+      const same = (previous: ReadonlySet<number> | undefined, next: Set<number>): boolean => previous !== undefined && previous.size === next.size && [...next].every((id) => previous.has(id));
+      // Keep the published sets while their members are unchanged, so the renderer redraws only when a stitch disappears.
+      if (same(overlay.erasingBackstitchIds, ids) && same(overlay.erasingPointStitchIds, pointIds)) return;
+      this.uiStore.setOverlay({ ...overlay, erasingBackstitchIds: new Set(ids), erasingPointStitchIds: new Set(pointIds) });
       return;
     }
     const targets = this.focusEraserTargets(gesture.cells, gesture.components, document);
@@ -6173,8 +6558,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
 
   private clearErasingBackstitches(): void {
     const state = this.uiStore.getState();
-    if (!state.overlay.erasingBackstitchIds) return;
-    this.uiStore.setOverlay({ ...state.overlay, erasingBackstitchIds: undefined });
+    if (!state.overlay.erasingBackstitchIds && !state.overlay.erasingPointStitchIds) return;
+    this.uiStore.setOverlay({ ...state.overlay, erasingBackstitchIds: undefined, erasingPointStitchIds: undefined });
   }
 
   private ensureStarted(): void {

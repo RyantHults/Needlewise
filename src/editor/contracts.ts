@@ -1,4 +1,4 @@
-import type { CellKind, PaletteEntry, PatternDocument, PatternFragment } from '../domain';
+import type { BeadOrientation, CellKind, PaletteEntry, PatternDocument, PatternFragment } from '../domain';
 
 /** The four ways in which a chart can present a stitch. */
 export const ChartPresentationMode = {
@@ -227,12 +227,18 @@ export interface OverlayState {
   readonly backstitchPreview?: BackstitchPreviewOverlay | null;
   /** The hover footprint of the active tool, outlined by the renderer. */
   readonly brushPreview?: BrushPreviewOverlay | null;
+  /** The knot or bead a press here would leave, at the snapped point in fixed-point quarter units; a bead's `orientation` is the one it would have. */
+  readonly pointStitchPreview?: { readonly point: FixedPoint; readonly paletteId: number; readonly orientation: BeadOrientation } | null;
+  /** The bead of the selected color a press here would turn, at its point in fixed-point quarter units. */
+  readonly pointStitchRotate?: { readonly point: FixedPoint } | null;
   readonly fillPending?: boolean;
   /** Exact sparse cell states that the pending gesture would produce. */
   readonly pendingCellStates?: readonly PendingCellState[];
   readonly floatingPaste?: FloatingPasteOverlay | null;
   /** Ids of the backstitches an uncommitted specialty-layer erase gesture removes; the renderer hides them. */
   readonly erasingBackstitchIds?: ReadonlySet<number>;
+  /** Ids of the French knots and beads an uncommitted specialty-layer erase gesture removes; the renderer hides them. */
+  readonly erasingPointStitchIds?: ReadonlySet<number>;
   readonly color?: string;
   readonly showCursor?: boolean;
   readonly showSelection?: boolean;
@@ -292,6 +298,8 @@ export interface FloatingPasteOverlay {
   readonly sourceHole?: readonly PendingCellState[];
   /** Move only: backstitch ids lifted out of the source; the base pass and per-cell backstitch redraws skip them. */
   readonly liftedBackstitchIds?: ReadonlySet<number>;
+  /** Move only: French knot and bead ids lifted out of the source; the base pass and per-cell point-stitch redraws skip them. */
+  readonly liftedPointStitchIds?: ReadonlySet<number>;
 }
 
 export interface FloatingPasteBackstitchOverlay {
@@ -618,7 +626,7 @@ export const EditorToolKind = {
   Select: 'select',
   Lasso: 'lasso',
   Fill: 'fill',
-  Backstitch: 'backstitch',
+  Specialty: 'specialty',
   Eyedropper: 'eyedropper',
   Shape: 'shape',
   CanvasBrush: 'canvas-brush'
@@ -695,9 +703,13 @@ export interface FillToolState {
 /** Draw always starts a new segment; Move only picks up existing ones. */
 export type BackstitchMode = 'draw' | 'move';
 
-export interface BackstitchToolState {
-  readonly tool: 'backstitch';
-  /** Undefined means `'draw'`. */
+/** What the Specialty tool places. */
+export type SpecialtyStitch = 'backstitch' | 'french-knot' | 'bead';
+
+export interface SpecialtyToolState {
+  readonly tool: 'specialty';
+  readonly stitch: SpecialtyStitch;
+  /** Backstitch only; undefined means `'draw'`. */
   readonly mode?: BackstitchMode;
 }
 
@@ -730,7 +742,7 @@ export interface ResizeImageToolState {
   readonly tool: 'resize-image';
 }
 
-export type EditorToolState = PaintToolState | PanToolState | EraserToolState | SelectToolState | LassoToolState | FillToolState | BackstitchToolState | EyedropperToolState | ShapeToolState | CanvasBrushToolState | MoveImageToolState | ResizeImageToolState | MarkToolState;
+export type EditorToolState = PaintToolState | PanToolState | EraserToolState | SelectToolState | LassoToolState | FillToolState | SpecialtyToolState | EyedropperToolState | ShapeToolState | CanvasBrushToolState | MoveImageToolState | ResizeImageToolState | MarkToolState;
 
 /** The kind of row selected in the layers panel. */
 export type ActiveLayerKind = 'stitch' | 'specialty' | 'canvas' | 'reference';
@@ -749,7 +761,13 @@ export interface ToolAvailability {
 
 export const HIDDEN_LAYER_TOOL_HINT = 'Show this layer to edit it.';
 export const STITCH_LAYER_TOOL_HINT = 'Select a stitch layer to use this tool.';
-export const SPECIALTY_LAYER_BACKSTITCH_HINT = 'Select a specialty layer to use Backstitch.';
+export const SPECIALTY_LAYER_TOOL_HINT = 'Select a specialty layer to use the Specialty tool.';
+/** Why a French knot was not placed with a bead colour selected. */
+export const FRENCH_KNOT_COLOR_HINT = 'French knots need a thread color. Pick a thread in the palette.';
+/** Why a bead was not placed with a thread colour selected. */
+export const BEAD_COLOR_HINT = 'Beads need a Mill Hill bead color. Pick a bead in the palette.';
+/** Why a stitch tool refused the bead selected in the palette. */
+export const BEAD_TOOL_HINT = 'Beads are placed with Specialty › Bead. Pick a thread to stitch.';
 export const EDITABLE_LAYER_TOOL_HINT = 'Select a stitch or specialty layer to use this tool.';
 /** Why the eyedropper does nothing while the active layer is hidden. */
 export const HIDDEN_LAYER_PICK_HINT = 'Select a visible layer to pick a color.';
@@ -773,7 +791,7 @@ function isEditingTool(tool: EditorToolKind | EditorToolState['tool']): boolean 
  *
  * Pan and Eyedropper always work. Select, Lasso and Eraser work on stitch and
  * specialty layers; stitch brushes, Shape and Fill only on stitch layers;
- * Backstitch only on specialty layers. Every editing tool is disabled on a
+ * the Specialty tool only on specialty layers. Every editing tool is disabled on a
  * hidden layer. A null layer means the workspace has no layer information.
  * `brush` is accepted so callers can gate brush variants; every current brush
  * is a stitch brush.
@@ -807,8 +825,8 @@ export function toolAvailability(
   if (tool === 'select' || tool === 'lasso' || tool === 'eraser') {
     return editable ? { enabled: true } : { enabled: false, hint: EDITABLE_LAYER_TOOL_HINT };
   }
-  if (tool === 'backstitch') {
-    return layer.kind === 'specialty' ? { enabled: true } : { enabled: false, hint: SPECIALTY_LAYER_BACKSTITCH_HINT };
+  if (tool === 'specialty') {
+    return layer.kind === 'specialty' ? { enabled: true } : { enabled: false, hint: SPECIALTY_LAYER_TOOL_HINT };
   }
   return layer.kind === 'stitch' ? { enabled: true } : { enabled: false, hint: STITCH_LAYER_TOOL_HINT };
 }

@@ -20,6 +20,11 @@ export function relativeLuminance(hex: string): number | undefined {
   return 0.2126 * linearChannel(rgb[0]) + 0.7152 * linearChannel(rgb[1]) + 0.0722 * linearChannel(rgb[2]);
 }
 
+/** WCAG 2.x contrast ratio between two relative luminances, in either order. */
+export function contrastRatio(left: number, right: number): number {
+  return (Math.max(left, right) + 0.05) / (Math.min(left, right) + 0.05);
+}
+
 /**
  * Backgrounds darker than 60% gray (`#999999`) get white ink. That is
  * deliberately above the 50% WCAG crossover (`#808080`-ish) so white ink is
