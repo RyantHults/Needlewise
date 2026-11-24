@@ -76,7 +76,6 @@ import type {
   CanvasEditMode,
   CanvasEditPreview,
   CellRect,
-  BackstitchMode,
   EditorToolState,
   EditorUiStore,
   FixedPoint,
@@ -214,7 +213,6 @@ export interface EditorSurfaceControllerLifecycle {
   /** Configure whether touch input is restricted to movement-only behavior. */
   setTouchMovementOnly(enabled: boolean): void;
   pasteSelection(): boolean;
-  moveSelection(): boolean;
   /** Commit the floating paste or move; false when nothing is floating or the commit is refused. */
   confirmFloatingPaste(): boolean;
   /** Remove a floating paste or undo a floating move, restoring the earlier selection; false when nothing is floating. */
@@ -231,7 +229,7 @@ export interface EditorSurfaceControllerLifecycle {
   dispose(): void;
 }
 
-type Gesture = PaintGesture | ShapeGesture | EraserGesture | SelectionGesture | LassoStrokeGesture | BackstitchGesture | TouchActionGesture | PanGesture | PinchGesture | MoveImageGesture | ResizeImageGesture | CanvasBrushGesture | CanvasSelectionGesture | MarkGesture;
+type Gesture = PaintGesture | ShapeGesture | EraserGesture | SelectionGesture | LassoStrokeGesture | BackstitchGesture | PointMoveGesture | MovePressGesture | TouchActionGesture | PanGesture | PinchGesture | MoveImageGesture | ResizeImageGesture | CanvasBrushGesture | CanvasSelectionGesture | MarkGesture;
 
 /** What a Mark press landed on: one component mask of a composite cell, one backstitch, or one knot or bead. */
 type MarkTarget =
@@ -399,12 +397,20 @@ interface TimelineEntry {
   readonly after: SelectionSnapshot;
 }
 
+/** Where a Move tool press on a knot, bead or backstitch began, shared by both of their gestures. */
+interface MarkPress {
+  readonly pointerId: number;
+  readonly token: EditorRevisionToken;
+  readonly pressScreen: ScreenPoint;
+  readonly slop: number;
+}
+
 interface BackstitchGesture {
   readonly kind: 'backstitch';
   readonly pointerId: number;
   readonly mode: 'create' | 'move';
   readonly token: EditorRevisionToken;
-  /** Draw mode: the selected indices at pointer-down; the drawn segment must lie inside them. */
+  /** Create: the selected indices at pointer-down; the drawn segment must lie inside them. */
   readonly bounds?: Uint32Array;
   readonly selectedId?: number;
   readonly movingEndpoint?: 'start' | 'end';
@@ -414,6 +420,35 @@ interface BackstitchGesture {
   dragging?: boolean;
   start: FixedPoint;
   end: FixedPoint;
+}
+
+/**
+ * A Move tool press over a selection or a floating paste. It does nothing
+ * until the pointer leaves the tap slop; then the selection lifts, or the
+ * floating paste is grabbed, and follows the pointer from the press point.
+ */
+interface MovePressGesture {
+  readonly kind: 'move-press';
+  readonly pointerId: number;
+  readonly startScreenX: number;
+  readonly startScreenY: number;
+  readonly slop: number;
+}
+
+/** A Move tool drag of one French knot or bead; it stays put until the pointer leaves the tap slop. */
+interface PointMoveGesture {
+  readonly kind: 'point-move';
+  readonly pointerId: number;
+  readonly token: EditorRevisionToken;
+  readonly id: number;
+  readonly origin: FixedPoint;
+  readonly paletteId: number;
+  readonly orientation: BeadOrientation;
+  readonly pressScreen: ScreenPoint;
+  readonly slop: number;
+  dragging: boolean;
+  /** Where release would leave it: the snapped point under the pointer, or `origin` where it cannot go. */
+  destination: FixedPoint;
 }
 
 interface TouchActionGesture {
@@ -570,10 +605,10 @@ export const TOUCH_HISTORY_TAP_SLOP_PIXELS = 12;
 const LASSO_CLOSE_PIXELS = 10;
 /** A mouse or pen lasso stroke within this travel is a click that adds one vertex; touch uses the history tap slop. */
 const LASSO_TAP_SLOP_PIXELS = 4;
-/** A Move-mode press on a backstitch only selects it until the pointer travels this far. */
-const BACKSTITCH_MOVE_SLOP_PIXELS = 4;
+/** A Move tool press does nothing, or only selects a mark, until the pointer travels this far. */
+const MOVE_TOOL_SLOP_PIXELS = 4;
+const MOVE_TOOL_TOUCH_SLOP_PIXELS = 8;
 const MARK_TAP_SLOP_PIXELS = 4;
-const BACKSTITCH_MOVE_TOUCH_SLOP_PIXELS = 8;
 /** The undo and redo timelines each keep at most this many steps, dropping the oldest. */
 const TIMELINE_LIMIT = 200;
 /** Maximum timestamp span permitted for a stationary multi-touch history tap. */
@@ -1393,6 +1428,16 @@ function withinPointStitchReach(point: ModelPoint, surface: Pick<PatternDocument
   return point.x >= -0.5 && point.y >= -0.5 && point.x <= surface.width + 0.5 && point.y <= surface.height + 0.5;
 }
 
+/** How far a Move tool press may travel and still count as a tap. */
+function moveToolSlop(sample: PointerSample): number {
+  return sample.pointerType === 'touch' ? MOVE_TOOL_TOUCH_SLOP_PIXELS : MOVE_TOOL_SLOP_PIXELS;
+}
+
+/** True while a Move tool press has not yet travelled past its tap slop, so it still only selects. */
+function withinTapSlop(press: ScreenPoint, slop: number, sample: PointerSample): boolean {
+  return Math.hypot(sample.screenX - press.x, sample.screenY - press.y) <= slop;
+}
+
 /**
  * A Focus Color move of knots and beads: each moves `offset` cells with
  * move-point-stitch, keeping its id and completion, or is removed when that
@@ -1633,6 +1678,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   /** The orientation the last bead rotation set, which new beads take. */
   private lastBeadOrientation: BeadOrientation = 0;
   private selectedBackstitchId: number | undefined;
+  /** The French knot or bead a Move tool tap selected; never set together with `selectedBackstitchId`. */
+  private selectedPointStitchId: number | undefined;
   private keyboardBackstitchAnchor: FixedPoint | undefined;
   private keyboardBackstitchToken: EditorRevisionToken | undefined;
   private fillJob: FillJob | undefined;
@@ -1833,15 +1880,6 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const remembered = bead ? this.lastBeadId : this.lastThreadId;
     const usable = (entry: PaletteEntry) => entry.active && isBeadEntry(entry) === bead;
     return palette.find((entry) => entry.id === remembered && usable(entry))?.id ?? palette.find(usable)?.id;
-  }
-
-  /** Select the Specialty tool's Backstitch in the given mode; refused like `setTool` off a specialty layer. */
-  setBackstitchMode(mode: BackstitchMode): boolean {
-    const current = this.uiStore.getState().tool;
-    const backstitch = current.tool === 'specialty' && current.stitch === 'backstitch';
-    if (backstitch && (current.mode ?? 'draw') === mode) return true;
-    if (backstitch && this.gesture?.kind === 'backstitch') this.cancelGesture();
-    return this.setTool({ tool: 'specialty', stitch: 'backstitch', mode });
   }
 
   getSelection(): GridRect | undefined {
@@ -2103,7 +2141,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
    * Each layer keeps its own part, which commits on that layer; the preview is
    * their composite. A layer holding nothing inside the selection stays put.
    */
-  moveSelection(): boolean {
+  private moveSelection(): boolean {
     const snapshot = this.gateway.getSnapshot();
     this.reconcileSelectionDimensions(snapshot.document);
     if (!hasDocument(snapshot) || !hasRevision(snapshot) || !this.selection) return false;
@@ -2452,7 +2490,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       { type: 'remove-backstitch', id },
       `Deleted backstitch ${String(id)}`
     );
-    if (result) this.resetBackstitchState();
+    if (result) this.resetSpecialtyMarkState();
     return result;
   }
 
@@ -2460,6 +2498,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   deleteSelection(): boolean {
     if (this.floatingPaste) return false;
     const selectedBackstitchId = this.selectedBackstitchId;
+    const selectedPointStitchId = this.selectedPointStitchId;
     const snapshot = this.gateway.getSnapshot();
     this.reconcileSelectionDimensions(snapshot.document);
     const currentSelection = this.selection;
@@ -2481,7 +2520,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       : this.deleteFocusSelection(targets, currentSelection, focus, revision);
     if (result === undefined) return false;
     const after = this.gateway.getSnapshot().editSurface;
-    if (result && selectedBackstitchId !== undefined && after && !after.backstitches.ids.some((id) => id === selectedBackstitchId)) this.resetBackstitchState();
+    if (result && after && ((selectedBackstitchId !== undefined && !after.backstitches.ids.includes(selectedBackstitchId))
+      || (selectedPointStitchId !== undefined && !after.pointStitches.ids.includes(selectedPointStitchId)))) this.resetSpecialtyMarkState();
     if (result) {
       // The delete step clears the selection, so one undo restores both.
       this.discardSelection();
@@ -3170,6 +3210,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         if (this.gesture?.kind !== 'pinch') this.beginPinch();
         return true;
       }
+      if (this.uiStore.getState().tool.tool === 'pan') {
+        this.beginMovePress(sample);
+        return true;
+      }
       // A tap outside the paste nudges it on release; only the floating controls and Enter commit it.
       this.floatingPasteTouchCandidate = {
         pointerId: sample.pointerId,
@@ -3189,6 +3233,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (sample.pointerType !== 'mouse' && sample.pointerType !== 'pen') return true;
     const primary = (sample.button ?? 0) === 0 && !this.spaceHeld;
     if (!primary || sample.button === 1 || Boolean(sample.buttons && (sample.buttons & 4) !== 0)) return true;
+    if (this.uiStore.getState().tool.tool === 'pan') {
+      this.beginMovePress(sample);
+      return true;
+    }
     // A press outside the paste nudges it; only the floating controls and Enter commit it.
     if (this.floatingPasteContains(sample)) {
       this.floatingPasteMoveGesture = {
@@ -3202,7 +3250,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   private handleFloatingPointerMove(sample: PointerSample): boolean | undefined {
-    if (!this.floatingPaste) return undefined;
+    if (!this.floatingPaste || this.ownsMovePress(sample)) return undefined;
     if (sample.pointerType === 'touch' && (this.gesture?.kind === 'pinch' || this.gesture?.kind === 'pan')) return undefined;
     if (this.floatingPasteMoveGesture?.pointerId === sample.pointerId) {
       if (sample.pointerType === 'touch') this.updateTouchHistoryCandidate(sample);
@@ -3222,7 +3270,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   private handleFloatingPointerUp(sample: PointerSample): boolean | undefined {
-    if (!this.floatingPaste) return undefined;
+    if (!this.floatingPaste || this.ownsMovePress(sample)) return undefined;
     if (sample.pointerType === 'touch' && (this.gesture?.kind === 'pinch' || this.gesture?.kind === 'pan')) return undefined;
     if (this.floatingPasteMoveGesture?.pointerId === sample.pointerId) {
       this.floatingPasteMoveGesture = undefined;
@@ -3338,12 +3386,14 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     if (this.gesture) return false;
     const selectedTool = this.uiStore.getState().tool;
-    const pan = (this.readOnly && selectedTool.tool !== 'mark') || sample.button === 1 || Boolean(sample.buttons && (sample.buttons & 4) !== 0) || this.spaceHeld || selectedTool.tool === 'pan';
-    if (pan) {
+    const pan = (this.readOnly && selectedTool.tool !== 'mark') || sample.button === 1 || Boolean(sample.buttons && (sample.buttons & 4) !== 0) || this.spaceHeld;
+    const primary = (sample.button ?? 0) === 0 && (sample.pointerType === 'mouse' || sample.pointerType === 'pen' || sample.pointerType === 'touch');
+    if (pan || selectedTool.tool === 'pan') {
+      if (!pan && primary && this.pressMoveTool(sample)) return true;
       this.gesture = { kind: 'pan', pointerId: sample.pointerId, lastX: sample.screenX, lastY: sample.screenY };
       return true;
     }
-    if ((sample.button ?? 0) !== 0 || (sample.pointerType !== 'mouse' && sample.pointerType !== 'pen' && sample.pointerType !== 'touch')) return false;
+    if (!primary) return false;
     const snapshot = this.gateway.getSnapshot();
     if (!snapshot.document || !hasRevision(snapshot)) return false;
     if (this.readOnly) return selectedTool.tool === 'mark' && this.beginMark(sample, snapshot.document, tokenOf(snapshot));
@@ -3483,6 +3533,14 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (!validScreenSample(sample)) return false;
     const floatingPointerMove = this.handleFloatingPointerMove(sample);
     if (floatingPointerMove !== undefined) return floatingPointerMove;
+    if (this.gesture?.kind === 'move-press' && this.gesture.pointerId === sample.pointerId) {
+      if (sample.pointerType === 'touch') {
+        this.touchPointers.set(sample.pointerId, sample);
+        this.updateTouchHistoryCandidate(sample);
+      }
+      this.advanceMovePress(this.gesture, sample);
+      return true;
+    }
     if (sample.pointerType !== 'touch') {
       this.lastHoverSample = sample;
       if (!this.gesture) this.updateBrushPreview(sample);
@@ -3591,6 +3649,12 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.followBackstitchPointer(gesture, sample, document);
       return true;
     }
+    if (gesture.kind === 'point-move') {
+      const surface = this.gateway.getSnapshot().editSurface;
+      if (!surface) return false;
+      this.followPointMove(gesture, sample, surface);
+      return true;
+    }
     this.updatePan(sample);
     return true;
   }
@@ -3605,6 +3669,16 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     }
     const floatingPointerUp = this.handleFloatingPointerUp(sample);
     if (floatingPointerUp !== undefined) return floatingPointerUp;
+    if (this.ownsMovePress(sample)) {
+      // A press that never left the tap slop does nothing.
+      this.gesture = undefined;
+      if (sample.pointerType === 'touch') {
+        this.updateTouchHistoryCandidate(sample);
+        this.touchPointers.delete(sample.pointerId);
+        if (this.touchPointers.size === 0) this.finishTouchHistoryCandidate();
+      }
+      return true;
+    }
     if (sample.pointerType === 'touch') {
       this.updateTouchHistoryCandidate(sample);
       this.touchPointers.delete(sample.pointerId);
@@ -3678,6 +3752,10 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       const document = this.gateway.getSnapshot().document;
       if (document && isFiniteViewport(this.uiStore.getState().viewport)) this.followBackstitchPointer(gesture, sample, document);
       this.finishBackstitch(gesture);
+    } else if (gesture.kind === 'point-move') {
+      const surface = this.gateway.getSnapshot().editSurface;
+      if (surface) this.followPointMove(gesture, sample, surface);
+      this.finishPointMove(gesture);
     } else if (gesture.kind === 'move-image') {
       this.finishMoveImage(gesture, sample);
     } else if (gesture.kind === 'resize-image') {
@@ -3735,7 +3813,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     else if (this.gesture?.kind === 'pinch') {
       if (this.gesture.pointerIds.includes(sample.pointerId)) this.rebaseTouchGesture();
     } else if (this.gesture?.kind === 'pan' && this.gesture.pointerId === sample.pointerId) this.gesture = undefined;
-    else if ((!this.touchMovementOnly || this.gesture?.kind === 'mark') && this.gesture?.pointerId === sample.pointerId) this.cancelGesture();
+    else if ((!this.touchMovementOnly || this.gesture?.kind === 'mark' || this.gesture?.kind === 'move-press') && this.gesture?.pointerId === sample.pointerId) this.cancelGesture();
     if (this.touchPointers.size === 0) this.clearTouchHistoryCandidate();
   }
 
@@ -3813,7 +3891,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.clearSelection();
       if (!canvasBusy && this.isCanvasEditing()) this.setCanvasCropActive(false);
       this.cancelFill();
-      this.resetBackstitchState();
+      this.resetSpecialtyMarkState();
       if (hadBackstitchAnchor) this.setStatus('Backstitch start cancelled');
       return true;
     }
@@ -3850,9 +3928,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
         return true;
       }
       if (this.floatingPaste) return true;
+      const markTool = this.uiStore.getState().tool.tool === 'specialty' || this.uiStore.getState().tool.tool === 'pan';
       if (this.canvasSelection && this.isCanvasActive()) this.applyCanvasSelection('remove');
       else if (this.selection) this.deleteSelection();
-      else if (this.uiStore.getState().tool.tool === 'specialty' && this.selectedBackstitchId !== undefined) this.deleteSelectedBackstitch();
+      else if (markTool && this.selectedBackstitchId !== undefined) this.deleteSelectedBackstitch();
+      else if (markTool && this.selectedPointStitchId !== undefined) this.deleteSelectedPointStitch();
       else this.eraseAtKeyboardCursor();
       return true;
     }
@@ -3891,7 +3971,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.floatingPasteTouchCandidate = undefined;
     this.rejectTouchHistoryCandidate('blur');
     this.clearTouchHistoryCandidate();
-    if (this.gesture?.kind === 'backstitch') this.resetBackstitchState();
+    if (this.gesture?.kind === 'backstitch') this.resetSpecialtyMarkState();
   }
 
   private beginTouchHistoryCandidate(sample: PointerSample): void {
@@ -4696,7 +4776,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     ];
     const result = this.runCommand(label, () => commit(commands));
     if (!result) return;
-    if (this.selectedBackstitchId !== undefined && removals.has(this.selectedBackstitchId)) this.resetBackstitchState();
+    if ((this.selectedBackstitchId !== undefined && removals.has(this.selectedBackstitchId))
+      || (this.selectedPointStitchId !== undefined && pointRemovals.has(this.selectedPointStitchId))) this.resetSpecialtyMarkState();
     this.projectCommandResult(result, undefined, ids.length > 0
       ? `Erased ${countLabel(ids.length, 'backstitch', 'backstitches')}`
       : `Erased ${countLabel(pointIds.length, 'knot or bead', 'knots and beads')}`);
@@ -4865,37 +4946,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.keyboardBackstitchToken = undefined;
     const point = this.backstitchModelPoint(sample);
     if (point.x < 0 || point.y < 0 || point.x > surface.width || point.y > surface.height) return false;
-    const tool = this.uiStore.getState().tool;
-    if (tool.tool === 'specialty' && tool.mode === 'move') {
-      // Move mode only picks up the selected layer's backstitches; a miss draws
-      // nothing and drops the selection.
-      const focus = this.focusColorId();
-      const hit = this.addBackstitchHit(surface, point, focus);
-      if (!hit) {
-        this.selectedBackstitchId = undefined;
-        if (focus !== undefined && this.addBackstitchHit(surface, point)) this.notifyFocusProtected();
-        return false;
-      }
-      this.selectedBackstitchId = hit.id;
-      const startDistance = Math.hypot(point.x - fixedPointToModel(hit.start).x, point.y - fixedPointToModel(hit.start).y);
-      const endDistance = Math.hypot(point.x - fixedPointToModel(hit.end).x, point.y - fixedPointToModel(hit.end).y);
-      this.gesture = {
-        kind: 'backstitch',
-        pointerId: sample.pointerId,
-        mode: 'move',
-        token: tokenOf(snapshot),
-        selectedId: hit.id,
-        movingEndpoint: startDistance <= endDistance ? 'start' : 'end',
-        pressScreen: { x: sample.screenX, y: sample.screenY },
-        slop: sample.pointerType === 'touch' ? BACKSTITCH_MOVE_TOUCH_SLOP_PIXELS : BACKSTITCH_MOVE_SLOP_PIXELS,
-        start: hit.start,
-        end: hit.end
-      };
-      this.publishBackstitchPreview(hit.start, hit.end);
-      this.setStatus(`Selected backstitch ${String(hit.id)}`);
-      return true;
-    }
-    // Draw mode never hit-tests, so a stroke near an existing stitch starts a new
+    // Drawing never hit-tests, so a stroke near an existing stitch starts a new
     // one; grid snapping still lets it chain from an existing endpoint.
     this.selectedBackstitchId = undefined;
     if (this.refuseBeadColor(this.uiStore.getState().paletteId)) return false;
@@ -4914,14 +4965,188 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   }
 
   /**
-   * Move the drawn or moving endpoint to the pointer. A Move-mode press leaves
+   * A Move tool press: with a selection, arm its drag wherever the press lands;
+   * without one, grab a knot, bead or backstitch on the selected, visible
+   * specialty layer. False when the press should pan instead.
+   */
+  private pressMoveTool(sample: PointerSample): boolean {
+    const snapshot = this.gateway.getSnapshot();
+    if (!snapshot.document || !hasRevision(snapshot) || this.isCanvasActive(snapshot)) return false;
+    if (this.getSelection()) {
+      this.beginMovePress(sample);
+      return true;
+    }
+    const layer = snapshot.activeLayer;
+    return layer?.kind === 'specialty' && layer.visible && snapshot.editSurface !== null
+      && this.grabSpecialtyMark(sample, tokenOf(snapshot), snapshot.editSurface);
+  }
+
+  private beginMovePress(sample: PointerSample): void {
+    this.gesture = { kind: 'move-press', pointerId: sample.pointerId, startScreenX: sample.screenX, startScreenY: sample.screenY, slop: moveToolSlop(sample) };
+  }
+
+  private ownsMovePress(sample: PointerSample): boolean {
+    return this.gesture?.kind === 'move-press' && this.gesture.pointerId === sample.pointerId;
+  }
+
+  /**
+   * Once a Move tool press leaves the tap slop, lift the selection unless a
+   * floating paste is already there, and hand the drag to the floating paste,
+   * measured from the press so the travel so far counts.
+   */
+  private advanceMovePress(gesture: MovePressGesture, sample: PointerSample): void {
+    if (withinTapSlop({ x: gesture.startScreenX, y: gesture.startScreenY }, gesture.slop, sample)) return;
+    this.gesture = undefined;
+    if (!this.floatingPaste && !this.moveSelection()) return;
+    const floating = this.floatingPaste;
+    if (!floating) return;
+    const move = { pointerId: gesture.pointerId, startScreenX: gesture.startScreenX, startScreenY: gesture.startScreenY, startDestination: { ...floating.destination } };
+    this.floatingPasteMoveGesture = move;
+    this.updateFloatingPasteDestination(sample, move);
+  }
+
+  /**
+   * Pick up the selected layer's knot or bead under the press, else its
+   * backstitch, and start dragging it. A miss drops the mark selection and
+   * returns false; a hit Focus Color protects notifies and starts nothing.
+   */
+  private grabSpecialtyMark(sample: PointerSample, token: EditorRevisionToken, surface: PatternDocument): boolean {
+    this.selectedBackstitchId = undefined;
+    this.selectedPointStitchId = undefined;
+    const point = this.lassoModelPoint(sample);
+    if (!point || !withinPointStitchReach(point, surface)) return false;
+    const focus = this.focusColorId();
+    const press = { pointerId: sample.pointerId, token, pressScreen: { x: sample.screenX, y: sample.screenY }, slop: moveToolSlop(sample) };
+    // Knots and beads draw over backstitches and are smaller targets, so they are tried first.
+    if (this.grabPointStitch(press, surface, point, focus) || this.grabBackstitch(press, surface, point, focus)) return true;
+    if (focus === undefined || (this.pointStitchHit(surface, point) === undefined && !this.addBackstitchHit(surface, point))) return false;
+    this.notifyFocusProtected();
+    return true;
+  }
+
+  /** Storage position of the nearest knot or bead within the pick tolerance; with `focus`, only that color. */
+  private pointStitchHit(surface: PatternDocument, point: ModelPoint, focus?: number): number | undefined {
+    const store = surface.pointStitches;
+    return nearestPointStitch(store, point, this.backstitchHitTolerance(), (position) => focus === undefined || store.colors[position] === focus);
+  }
+
+  private grabPointStitch(press: MarkPress, surface: PatternDocument, point: ModelPoint, focus: number | undefined): boolean {
+    const position = this.pointStitchHit(surface, point, focus);
+    if (position === undefined) return false;
+    const store = surface.pointStitches;
+    const id = store.ids[position];
+    const origin = { x: store.x[position], y: store.y[position] };
+    this.selectedPointStitchId = id;
+    this.gesture = {
+      kind: 'point-move',
+      ...press,
+      id,
+      origin,
+      paletteId: store.colors[position],
+      orientation: store.orientations[position] as BeadOrientation,
+      dragging: false,
+      destination: origin
+    };
+    this.setStatus(`Selected ${this.isBeadPaletteId(store.colors[position]) ? 'bead' : 'French knot'} ${String(id)}`);
+    return true;
+  }
+
+  /** Grab the backstitch under the press by its nearer endpoint. */
+  private grabBackstitch(press: MarkPress, surface: PatternDocument, point: ModelPoint, focus: number | undefined): boolean {
+    const hit = this.addBackstitchHit(surface, point, focus);
+    if (!hit) return false;
+    this.selectedBackstitchId = hit.id;
+    const startDistance = Math.hypot(point.x - fixedPointToModel(hit.start).x, point.y - fixedPointToModel(hit.start).y);
+    const endDistance = Math.hypot(point.x - fixedPointToModel(hit.end).x, point.y - fixedPointToModel(hit.end).y);
+    this.gesture = {
+      kind: 'backstitch',
+      ...press,
+      mode: 'move',
+      selectedId: hit.id,
+      movingEndpoint: startDistance <= endDistance ? 'start' : 'end',
+      start: hit.start,
+      end: hit.end
+    };
+    this.publishBackstitchPreview(hit.start, hit.end);
+    this.setStatus(`Selected backstitch ${String(hit.id)}`);
+    return true;
+  }
+
+  /**
+   * Follow the pointer with a dragged knot or bead, snapped the way placement
+   * snaps. Its source is hidden and a ghost shows where release leaves it,
+   * which is back at its source over another knot or bead, off the canvas, or
+   * outside the selection.
+   */
+  private followPointMove(gesture: PointMoveGesture, sample: PointerSample, surface: PatternDocument): void {
+    if (!gesture.dragging) {
+      if (withinTapSlop(gesture.pressScreen, gesture.slop, sample)) return;
+      gesture.dragging = true;
+    }
+    const point = this.lassoModelPoint(sample);
+    if (!point) return;
+    const position = nearestPointStitchPosition({ x: point.x * FIXED_POINT_UNITS_PER_CELL, y: point.y * FIXED_POINT_UNITS_PER_CELL }, surface);
+    const occupant = pointStitchIndexAt(surface.pointStitches, position);
+    const bounds = this.getSelectionIndices();
+    const allowed = (occupant === undefined || surface.pointStitches.ids[occupant] === gesture.id)
+      && pointWithinCanvas(surface, position.x, position.y)
+      && (!bounds || isFixedPointContainedInCellUnion(position.x, position.y, surface.width, surface.height, bounds));
+    gesture.destination = allowed ? position : gesture.origin;
+    this.uiStore.setOverlay({
+      ...this.uiStore.getState().overlay,
+      erasingPointStitchIds: new Set([gesture.id]),
+      pointStitchPreview: { point: gesture.destination, paletteId: gesture.paletteId, orientation: gesture.orientation }
+    });
+  }
+
+  /** Commit a dragged knot or bead with one move-point-stitch; a tap or a drag back to its source only selects it. */
+  private finishPointMove(gesture: PointMoveGesture): void {
+    this.gesture = undefined;
+    this.clearPointMovePreview();
+    this.selectedPointStitchId = gesture.id;
+    const dx = gesture.destination.x - gesture.origin.x;
+    const dy = gesture.destination.y - gesture.origin.y;
+    if (!gesture.dragging || (dx === 0 && dy === 0)) return;
+    this.executeCommandWithToken({ type: 'move-point-stitch', id: gesture.id, dx, dy }, this.isBeadPaletteId(gesture.paletteId) ? 'Moved bead' : 'Moved French knot', gesture.token);
+  }
+
+  private clearPointMovePreview(): void {
+    const overlay = this.uiStore.getState().overlay;
+    if (!overlay.erasingPointStitchIds && !overlay.pointStitchPreview) return;
+    this.uiStore.setOverlay({ ...overlay, erasingPointStitchIds: undefined, pointStitchPreview: undefined });
+  }
+
+  /** Remove the knot or bead a Move tool tap selected; a selection whose knot or bead is gone is dropped. */
+  private deleteSelectedPointStitch(): boolean {
+    if (this.floatingPaste) return false;
+    const id = this.selectedPointStitchId;
+    const snapshot = this.gateway.getSnapshot();
+    if (id === undefined || !hasRevision(snapshot)) return false;
+    const surface = this.editableSurface(snapshot, { tool: 'specialty', stitch: 'french-knot' }, true);
+    if (!surface) return false;
+    const position = surface.pointStitches.ids.indexOf(id);
+    if (position < 0) {
+      this.selectedPointStitchId = undefined;
+      return false;
+    }
+    const focus = this.focusColorId();
+    if (focus !== undefined && surface.pointStitches.colors[position] !== focus) {
+      this.notifyFocusProtected();
+      return false;
+    }
+    const result = this.executeCommandWithToken({ type: 'remove-point-stitch', id }, `Deleted ${this.isBeadPaletteId(surface.pointStitches.colors[position]) ? 'bead' : 'French knot'} ${String(id)}`);
+    if (result) this.resetSpecialtyMarkState();
+    return result;
+  }
+
+  /**
+   * Move the drawn or moving endpoint to the pointer. A Move tool press leaves
    * the stitch untouched until the pointer passes the tap slop, so a tap only
    * selects.
    */
   private followBackstitchPointer(gesture: BackstitchGesture, sample: PointerSample, document: PatternDocument): void {
     if (gesture.mode === 'move' && !gesture.dragging) {
-      const press = gesture.pressScreen;
-      if (press && Math.hypot(sample.screenX - press.x, sample.screenY - press.y) <= (gesture.slop ?? 0)) return;
+      if (gesture.pressScreen && withinTapSlop(gesture.pressScreen, gesture.slop ?? 0, sample)) return;
       gesture.dragging = true;
     }
     const snapped = fixedPointAt(this.backstitchModelPoint(sample), document);
@@ -4935,21 +5160,21 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.clearBackstitchPreview();
     const snapshot = this.gateway.getSnapshot();
     if (!snapshot.document || !hasRevision(snapshot)) {
-      this.resetBackstitchState();
+      this.resetSpecialtyMarkState();
       return;
     }
     if (gesture.mode === 'create') {
       if (gesture.start.x === gesture.end.x && gesture.start.y === gesture.end.y) {
-        this.resetBackstitchState();
+        this.resetSpecialtyMarkState();
         return;
       }
       if (!segmentInsideSelection(gesture.bounds, snapshot.document, gesture.start, gesture.end)) {
-        this.resetBackstitchState();
+        this.resetSpecialtyMarkState();
         this.setStatus('Outside selection');
         return;
       }
       if (this.backstitchProtected(snapshot, gesture.start, gesture.end)) {
-        this.resetBackstitchState();
+        this.resetSpecialtyMarkState();
         return;
       }
       const created = this.executeCommandResult({
@@ -5046,7 +5271,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     const anchor = this.keyboardBackstitchAnchor;
     const token = this.keyboardBackstitchToken;
     if (!token || token.projectId !== snapshot.projectId || token.revision !== snapshot.revision) {
-      this.resetBackstitchState();
+      this.resetSpecialtyMarkState();
       this.setStatus('Backstitch cancelled: project changed');
       return;
     }
@@ -5090,9 +5315,11 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     return after.backstitches.ids.length > 0 ? after.backstitches.ids[after.backstitches.ids.length - 1] : undefined;
   }
 
-  private resetBackstitchState(): void {
+  private resetSpecialtyMarkState(): void {
+    if (this.gesture?.kind === 'point-move') this.cancelGesture();
     if (this.gesture?.kind === 'backstitch') this.gesture = undefined;
     this.selectedBackstitchId = undefined;
+    this.selectedPointStitchId = undefined;
     this.keyboardBackstitchAnchor = undefined;
     this.keyboardBackstitchToken = undefined;
     this.clearBackstitchPreview();
@@ -5540,7 +5767,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     if (projectChanged) this.resetForProjectSwitch(snapshot);
     else if (this.gesture && ((this.gesture.kind === 'paint' || this.gesture.kind === 'shape' || this.gesture.kind === 'eraser')
       ? (this.gesture.transaction.token.revision !== snapshot.revision || this.gesture.transaction.token.projectId !== snapshot.projectId)
-      : (this.gesture.kind === 'backstitch' || this.gesture.kind === 'touch-action' || this.isCanvasGesture(this.gesture))
+      : (this.gesture.kind === 'backstitch' || this.gesture.kind === 'point-move' || this.gesture.kind === 'touch-action' || this.isCanvasGesture(this.gesture))
         ? (this.gesture.token.revision !== snapshot.revision || this.gesture.token.projectId !== snapshot.projectId)
         : false)) {
       const staleStatus = this.gesture.kind === 'touch-action' ? 'Action cancelled: project changed' : 'Stroke cancelled: project changed';
@@ -5577,7 +5804,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.cancelLassoPath();
     this.cancelGesture();
     this.cancelFill(false);
-    this.resetBackstitchState();
+    this.resetSpecialtyMarkState();
     this.selection = undefined;
     this.selectionAnchor = undefined;
     this.canvasSelection = undefined;
@@ -5833,7 +6060,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
   private cancelGesture(): void {
     const selection = this.gesture?.kind === 'selection' ? this.gesture : undefined;
     const lassoStroke = this.gesture?.kind === 'lasso-stroke';
-    const backstitch = this.gesture?.kind === 'backstitch';
+    const mark = this.gesture?.kind === 'backstitch' || this.gesture?.kind === 'point-move';
+    const pointMove = this.gesture?.kind === 'point-move';
     const canvasSelection = this.gesture?.kind === 'canvas-select' ? this.gesture : undefined;
     const canvas = this.isCanvasGesture(this.gesture) || this.canvasEdgeDrag !== undefined;
     this.gesture = undefined;
@@ -5848,7 +6076,8 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.clearErasingBackstitches();
     // A cancelled stroke, such as one a second finger interrupts, leaves the rest of the lasso open.
     if (lassoStroke) this.removeLassoStroke();
-    if (backstitch) this.resetBackstitchState();
+    if (pointMove) this.clearPointMovePreview();
+    if (mark) this.resetSpecialtyMarkState();
     if (selection) {
       this.selection = selection.previousSelection;
       this.selectionAnchor = selection.previousSelectionAnchor;
@@ -5866,7 +6095,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
     this.cancelGesture();
     this.cancelLassoPath();
     this.cancelFill(false);
-    this.resetBackstitchState();
+    this.resetSpecialtyMarkState();
     this.clearBrushPreview();
   }
 
@@ -6502,7 +6731,7 @@ export class EditorSurfaceController implements EditorSurfaceControllerLifecycle
       this.setStatus('Stroke cancelled: layer changed');
     }
     this.cancelFill(false);
-    this.resetBackstitchState();
+    this.resetSpecialtyMarkState();
     // Canvas editing belongs to the Canvas layer only; re-entering it starts with crop mode off.
     this.canvasSelection = undefined;
     this.cancelCanvasEdgeDrag();

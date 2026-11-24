@@ -15,7 +15,7 @@ import type { EditorSurfaceController } from './controller';
 import { createUiStore } from './ui-store';
 import type { ActiveLayerId } from './gateway';
 import type { PointerSample } from './input';
-import { fixture as layeredFixture, LayeredTestBoundary } from './test-support';
+import { fixture as layeredFixture, LayeredTestBoundary, liftSelection } from './test-support';
 import { FakeWorker } from '../test/fake-worker';
 
 function pointer(pointerId: number, screenX: number, screenY: number): PointerSample {
@@ -445,7 +445,7 @@ describe('advanced headless editor tools', () => {
     const { controller, boundary, uiStore } = fixture();
     controller.setTool({ tool: 'select' });
     controller.setSelection({ x: 0, y: 0 });
-    expect(controller.moveSelection()).toBe(true);
+    expect(liftSelection(controller, { x: 0, y: 0 })).toBe(true);
     expect(uiStore.getState().overlay.floatingPaste).toMatchObject({
       mode: 'move',
       destination: { x: 0, y: 0, width: 1, height: 1 },
@@ -479,7 +479,7 @@ describe('advanced headless editor tools', () => {
     cancelled.controller.setTool({ tool: 'lasso' });
     lassoCell(cancelled.controller, 0, 0);
     lassoCell(cancelled.controller, 2, 0, { shiftKey: true });
-    expect(cancelled.controller.moveSelection()).toBe(true);
+    expect(liftSelection(cancelled.controller, { x: 0, y: 0 })).toBe(true);
     expect(cancelled.uiStore.getState().overlay.floatingPaste).toMatchObject({
       mode: 'move',
       copySelection: { kind: 'sparse', rect: { x: 0, y: 0, width: 3, height: 1 } },
@@ -494,7 +494,7 @@ describe('advanced headless editor tools', () => {
     failed.controller.setTool({ tool: 'select' });
     failed.boundary.seed(cell(8, { type: 'set-full', x: 0, y: 0, color: 1 }));
     failed.controller.setSelection({ x: 0, y: 0 });
-    expect(failed.controller.moveSelection()).toBe(true);
+    expect(liftSelection(failed.controller, { x: 0, y: 0 })).toBe(true);
     refuseNext(failed.boundary, 'execute');
     failed.controller.confirmFloatingPaste();
     expect(failed.uiStore.getState().overlay.floatingPaste).toBeDefined();
@@ -508,7 +508,7 @@ describe('advanced headless editor tools', () => {
     const { controller, boundary, uiStore } = fixture();
     controller.setTool({ tool: 'select' });
     controller.setSelection({ x: 0, y: 0 });
-    expect(controller.moveSelection()).toBe(true);
+    expect(liftSelection(controller, { x: 0, y: 0 })).toBe(true);
     boundary.seed(cell(8, { type: 'set-full', x: 7, y: 7, color: 1 }));
     expect(uiStore.getState().overlay.floatingPaste).toBeUndefined();
     expect(controller.getSelection()).toEqual({ x: 0, y: 0, width: 1, height: 1 });
@@ -523,7 +523,7 @@ describe('advanced headless editor tools', () => {
     const noopClipboard = readClipboard()?.fragment;
     noop.controller.setSelection({ x: 4, y: 4 });
     const noopHistory = noop.boundary.undoDepth;
-    expect(noop.controller.moveSelection()).toBe(true);
+    expect(liftSelection(noop.controller, { x: 4, y: 4 })).toBe(true);
     noop.controller.confirmFloatingPaste();
     expect(noop.boundary.undoDepth).toBe(noopHistory);
     expect(noop.controller.getSelection()).toEqual({ x: 4, y: 4, width: 1, height: 1 });
@@ -754,8 +754,10 @@ describe('advanced headless editor tools', () => {
     const { controller, boundary, uiStore } = fixture();
     controller.setTool({ tool: 'select' });
     controller.setSelection({ x: 0, y: 0 });
-    expect(controller.moveSelection()).toBe(true);
-    tapModel(controller, 1, 3.5, 0.5);
+    expect(liftSelection(controller, { x: 0, y: 0 })).toBe(true);
+    controller.handlePointerDown(modelPointer(1, 0.5, 0.5));
+    controller.handlePointerMove(modelPointer(1, 1.5, 0.5));
+    controller.handlePointerUp(modelPointer(1, 1.5, 0.5));
     expect(floatingDestination(uiStore)).toEqual({ x: 1, y: 0, width: 1, height: 1 });
     expect(boundary.log.filter((command) => command.type === 'move-fragment')).toHaveLength(0);
     expect(controller.confirmFloatingPaste()).toBe(true);
@@ -781,7 +783,7 @@ describe('advanced headless editor tools', () => {
     const move = fixture();
     move.controller.setTool({ tool: 'select' });
     move.controller.setSelection({ x: 0, y: 0 });
-    expect(move.controller.moveSelection()).toBe(true);
+    expect(liftSelection(move.controller, { x: 0, y: 0 })).toBe(true);
     move.controller.handlePointerDown(pointer(1, 8, 8));
     move.controller.handlePointerMove(pointer(1, 88, 88));
     move.controller.handlePointerUp(pointer(1, 88, 88));
@@ -814,7 +816,7 @@ describe('advanced headless editor tools', () => {
     move.controller.setTool({ tool: 'select' });
     move.controller.setSelection({ x: 0, y: 0 });
     const moveRevision = move.boundary.document.revision;
-    expect(move.controller.moveSelection()).toBe(true);
+    expect(liftSelection(move.controller, { x: 0, y: 0 })).toBe(true);
     move.controller.handlePointerDown(pointer(1, 8, 8));
     move.controller.handlePointerMove(pointer(1, 88, 88));
     move.controller.handlePointerUp(pointer(1, 88, 88));
@@ -852,7 +854,7 @@ describe('advanced headless editor tools', () => {
     const move = fixture();
     move.controller.setTool({ tool: 'select' });
     move.controller.setSelection({ x: 0, y: 0 });
-    move.controller.moveSelection();
+    liftSelection(move.controller, { x: 0, y: 0 });
     move.controller.handlePointerDown(pointer(1, 8, 8));
     move.controller.handlePointerMove(pointer(1, 88, 88));
     move.controller.handlePointerUp(pointer(1, 88, 88));
@@ -1496,7 +1498,7 @@ describe('advanced headless editor tools', () => {
     expect(boundary.log.at(-1)).toMatchObject({ type: 'add-backstitch', start: { x: 4, y: 4 }, end: { x: 12, y: 8 }, layerId: SPECIALTY_LAYER_ID });
     expect(Array.from(backstitches().completed)).toEqual([0]);
 
-    controller.setBackstitchMode('move');
+    controller.setTool({ tool: 'pan' });
     controller.handlePointerDown(pointer(2, 24, 16));
     expect(controller.getSelectedBackstitchId()).toBe(1);
     controller.handlePointerUp(pointer(2, 24, 16));

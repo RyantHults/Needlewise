@@ -3,7 +3,6 @@ import {
   ChartPresentationMode,
   type EditorSurfaceController,
   type EditorUiState,
-  type BackstitchMode,
 } from "../../editor";
 import type { ProjectWorkspace } from "../../application/workspace";
 import {
@@ -89,7 +88,6 @@ const SPECIALTY_STITCHES = [
   { value: "bead", label: <><Icon name="bead" />Bead</> },
 ] as const satisfies readonly { value: SpecialtyStitch; label: React.ReactNode }[];
 /** Beads are counted catalog products that colour only French-knot-style points. */
-const BACKSTITCH_MODES = [{ value: "draw", label: "Draw" }, { value: "move", label: "Move" }] as const satisfies readonly { value: BackstitchMode; label: string }[];
 const STITCH_DIRECTIONS = [{ value: "/", label: "Bottom-left to top-right" }, { value: "\\", label: "Top-left to bottom-right" }] as const;
 
 /** How many pool entries carry each Unicode name. */
@@ -118,7 +116,7 @@ const symbolDialogTitle = (colorName: string, symbol: string | undefined): strin
 /** "Full stitch brush size", but "Canvas brush size" / "Canvas eraser size" for the canvas tools, whose labels already name the tool. */
 const brushSizeHeading = (label: string) => (label.startsWith("Canvas ") ? `${label} size` : `${label} brush size`);
 /** Stitch selections offer Copy/Paste/Move/Delete; canvas selections offer Add/Delete cells. */
-type SelectionAction = "copy" | "paste" | "move" | "delete" | "add-cells" | "delete-cells";
+type SelectionAction = "copy" | "paste" | "delete" | "add-cells" | "delete-cells";
 
 // The symbol picker renders the palette as one continuous wall: every pool
 // symbol is reachable, glyphs already held by other palette entries stay
@@ -156,7 +154,6 @@ export function EditorSurface({
   const frame = useRef<HTMLDivElement>(null),
     workspaceRoot = useRef<HTMLElement>(null);
   const canvasRefs = { frame, base: useRef<HTMLCanvasElement>(null), overlay: useRef<HTMLCanvasElement>(null), keyboardSurface: workspaceRoot };
-  const [lastBackstitchMode, setLastBackstitchMode] = useState<BackstitchMode>("draw");
   const [lastSpecialtyStitch, setLastSpecialtyStitch] = useState<SpecialtyStitch>("backstitch");
   const [selectedShape, setSelectedShape] = useState<ShapeKind>("triangle");
   const [selectChoice, setSelectChoice] = useState<SelectChoice>(SELECT_CHOICES[0]!);
@@ -284,7 +281,6 @@ export function EditorSurface({
   }, [toolKind, activeSpecialtyStitch]);
   const showingBeads = railTab === "beads";
   const shownPalette = showingBeads ? beadPalette : threadPalette;
-  const activeBackstitchMode = ui?.tool.tool === "specialty" && ui.tool.stitch === "backstitch" ? (ui.tool.mode ?? "draw") : undefined;
   const selectedPalette = palette.find((x) => x.id === ui?.paletteId) ?? palette[0];
   const noThreadEntry = threadPalette.length === 0;
   const choose = (kind: StitchKind) => {
@@ -792,7 +788,6 @@ export function EditorSurface({
     if (action === "add-cells" || action === "delete-cells") surface?.applyCanvasSelection(action === "add-cells" ? "add" : "remove");
     else if (action === "copy") (surface as (EditorSurfaceController & { copySelection?: () => unknown }) | null)?.copySelection?.();
     else if (action === "paste") surface?.pasteSelection();
-    else if (action === "move") surface?.moveSelection();
     else surface?.deleteSelection?.();
     window.setTimeout(() => frame.current?.focus(), 0);
   };
@@ -825,12 +820,7 @@ export function EditorSurface({
     (selectedBrush as { kind?: string } | undefined)?.kind === "three-quarter";
   const specialtyActive = ui?.tool.tool === "specialty";
   useEffect(() => { if (activeSpecialtyStitch) setLastSpecialtyStitch(activeSpecialtyStitch); }, [activeSpecialtyStitch]);
-  /** Backstitch comes back in its last mode; knots and beads have none. */
-  const chooseSpecialtyStitch = (stitch: SpecialtyStitch) => {
-    if (stitch === "backstitch") controller?.setBackstitchMode(lastBackstitchMode);
-    else controller?.setTool({ tool: "specialty", stitch });
-  };
-  useEffect(() => { if (activeBackstitchMode) setLastBackstitchMode(activeBackstitchMode); }, [activeBackstitchMode]);
+  const chooseSpecialtyStitch = (stitch: SpecialtyStitch) => controller?.setTool({ tool: "specialty", stitch });
   const shapeToolDisabled = noThreadEntry || ui?.paletteId == null || !palette.some((entry) => entry.id === ui.paletteId);
   const applyShapeTool = (shape: ShapeKind) => {
     if (shapeToolDisabled || refuseUnavailable("shape")) return;
@@ -919,7 +909,7 @@ export function EditorSurface({
         <aside ref={dock.dockRef} className="editor-rail-shell" aria-label="Editor controls">
           <DockPopover dock={dock} panel="tools">
           <nav className="editor-rail" aria-label="Editor sections">
-            <button className="rail-button" type="button" aria-label="Pan" title="Pan" aria-pressed={ui?.tool.tool === "pan"} onClick={() => invoke("pan")}>
+            <button className="rail-button" type="button" aria-label="Move" title="Move" aria-pressed={ui?.tool.tool === "pan"} onClick={() => invoke("pan")}>
               <Icon name="pan" />
             </button>
             <button
@@ -959,7 +949,7 @@ export function EditorSurface({
               {...toolGate("specialty", "Specialty")}
               type="button"
               disabled={noThread}
-              aria-label={activeBackstitchMode ? `Specialty, ${activeBackstitchMode} mode` : "Specialty"}
+              aria-label="Specialty"
               aria-pressed={specialtyActive}
               onClick={() => { if (refuseUnavailable("specialty")) return; chooseSpecialtyStitch(lastSpecialtyStitch); }}
             >
@@ -1142,14 +1132,6 @@ export function EditorSurface({
                       value={activeSpecialtyStitch}
                       onChange={chooseSpecialtyStitch}
                     />
-                    {activeBackstitchMode && (
-                      <SegmentedControl
-                        aria-label="Backstitch mode"
-                        options={BACKSTITCH_MODES}
-                        value={activeBackstitchMode}
-                        onChange={(mode) => { controller?.setBackstitchMode(mode); setLastBackstitchMode(mode); }}
-                      />
-                    )}
                   </>
                 ) : ui?.tool.tool === "shape" ? (
                   <div role="group" aria-label="Shape">
@@ -1171,7 +1153,7 @@ export function EditorSurface({
                     <div role="group" aria-label="Selection actions">
                       {(toolLayer?.kind === "canvas"
                         ? ([["add-cells", "Add", "Add selected cells to the canvas", !ui?.overlay.canvasEditing?.selection], ["delete-cells", "Delete", "Delete selected cells from the canvas", !ui?.overlay.canvasEditing?.selection]] as const)
-                        : ([["copy", "Copy", "Copy selection", !ui?.overlay.selection], ["paste", "Paste", "Paste selection", !ui?.canPaste], ["move", "Move", "Move selection", !ui?.overlay.selection], ["delete", "Delete", "Delete selection", !ui?.overlay.selection]] as const)
+                        : ([["copy", "Copy", "Copy selection", !ui?.overlay.selection], ["paste", "Paste", "Paste selection", !ui?.canPaste], ["delete", "Delete", "Delete selection", !ui?.overlay.selection]] as const)
                       ).map(([action, text, label, disabled]) => (
                         <ToolButton key={action} label={label} disabled={disabled} onClick={() => runSelectionAction(action)}>
                           {text}

@@ -237,7 +237,7 @@ export interface OverlayState {
   readonly floatingPaste?: FloatingPasteOverlay | null;
   /** Ids of the backstitches an uncommitted specialty-layer erase gesture removes; the renderer hides them. */
   readonly erasingBackstitchIds?: ReadonlySet<number>;
-  /** Ids of the French knots and beads an uncommitted specialty-layer erase gesture removes; the renderer hides them. */
+  /** Ids of the French knots and beads the renderer hides: those an uncommitted specialty-layer erase removes, or the one a Move tool drag is carrying. */
   readonly erasingPointStitchIds?: ReadonlySet<number>;
   readonly color?: string;
   readonly showCursor?: boolean;
@@ -700,17 +700,12 @@ export interface FillToolState {
   readonly brush?: StitchBrush;
 }
 
-/** Draw always starts a new segment; Move only picks up existing ones. */
-export type BackstitchMode = 'draw' | 'move';
-
 /** What the Specialty tool places. */
 export type SpecialtyStitch = 'backstitch' | 'french-knot' | 'bead';
 
 export interface SpecialtyToolState {
   readonly tool: 'specialty';
   readonly stitch: SpecialtyStitch;
-  /** Backstitch only; undefined means `'draw'`. */
-  readonly mode?: BackstitchMode;
 }
 
 /** Read-only completion marking on the Track page; never edits the chart. */

@@ -547,11 +547,11 @@ describe('layered editor controller', () => {
     { pointerType: 'mouse' as const, jitter: 3 },
     { pointerType: 'pen' as const, jitter: 3 },
     { pointerType: 'touch' as const, jitter: 7 }
-  ])('selects without moving on a Move-mode tap ($pointerType, $jitter px jitter)', ({ pointerType, jitter }) => {
+  ])('selects without moving on a Move tool tap ($pointerType, $jitter px jitter)', ({ pointerType, jitter }) => {
     const document = layeredDocument();
     seed(document, 2, backstitch(8, 8, 12, 8));
     const { boundary, controller, uiStore } = fixture(document, 2);
-    controller.setBackstitchMode('move');
+    controller.setTool({ tool: 'pan' });
     // Pressed beside the end corner (3, 2), well inside its snap range.
     const press = { ...at(1, 0, 0), pointerType, screenX: 46, screenY: 32 };
     controller.handlePointerDown(press);
@@ -569,7 +569,7 @@ describe('layered editor controller', () => {
     const document = layeredDocument();
     seed(document, 2, backstitch(8, 8, 12, 8));
     const { boundary, controller } = fixture(document, 2);
-    controller.setBackstitchMode('move');
+    controller.setTool({ tool: 'pan' });
     const press = { ...at(1, 0, 0), pointerType: 'touch' as const, screenX: 48, screenY: 32 };
     controller.handlePointerDown(press);
     controller.handlePointerMove({ ...press, screenY: 41 });
@@ -582,7 +582,7 @@ describe('layered editor controller', () => {
     const document = layeredDocument();
     seed(document, 2, backstitch(8, 8, 12, 8));
     const { boundary, controller } = fixture(document, 2);
-    controller.setBackstitchMode('move');
+    controller.setTool({ tool: 'pan' });
     controller.handlePointerDown({ ...at(1, 0, 0), screenX: 48, screenY: 32 });
     // (3, 2.5) is the midpoint of a vertical edge.
     controller.handlePointerMove({ ...at(1, 0, 0), screenX: 48, screenY: 40 });
@@ -593,33 +593,21 @@ describe('layered editor controller', () => {
     controller.dispose();
   });
 
-  it('only picks up backstitches in move mode, and a miss draws nothing and clears the selection', () => {
+  it('picks up a backstitch with the Move tool, and a miss draws nothing and clears the selection', () => {
     const document = layeredDocument();
     seed(document, 2, backstitch(4, 8, 8, 8));
-    const { boundary, controller, uiStore } = fixture(document, 2);
-    expect(controller.setBackstitchMode('move')).toBe(true);
-    expect(uiStore.getState().tool).toEqual({ tool: 'specialty', stitch: 'backstitch', mode: 'move' });
+    const { boundary, controller } = fixture(document, 2);
+    controller.setTool({ tool: 'pan' });
     expect(controller.handlePointerDown({ ...at(1, 1, 1), screenY: 32 })).toBe(true);
     expect(controller.getSelectedBackstitchId()).toBeDefined();
     controller.handlePointerUp({ ...at(1, 1, 1), screenY: 32 });
 
-    expect(controller.handlePointerDown(at(2, 5, 5))).toBe(false);
+    controller.handlePointerDown(at(2, 5, 5));
     controller.handlePointerUp(at(2, 6, 6));
     expect(controller.getSelectedBackstitchId()).toBeUndefined();
     const layer = findLayer(boundary.layeredDocument, 2)!;
     expect(layer.type === LayerType.Specialty && layer.backstitches.ids.length).toBe(1);
     expect(boundary.log.some((command) => command.type === 'add-backstitch')).toBe(false);
-
-    expect(controller.setBackstitchMode('draw')).toBe(true);
-    expect(uiStore.getState().tool).toEqual({ tool: 'specialty', stitch: 'backstitch', mode: 'draw' });
-    controller.dispose();
-  });
-
-  it('refuses a backstitch mode off a specialty layer', () => {
-    const { controller, notices, uiStore } = fixture();
-    expect(controller.setBackstitchMode('move')).toBe(false);
-    expect(uiStore.getState().tool.tool).toBe('paint');
-    expect(notices.at(-1)).toBe(SPECIALTY_LAYER_TOOL_HINT);
     controller.dispose();
   });
 

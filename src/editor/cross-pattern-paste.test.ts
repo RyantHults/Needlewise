@@ -11,7 +11,7 @@ import { createWorkspaceEditorGateway } from './gateway';
 import { createPointerEventsAdapter } from './input';
 import { createUiStore } from './ui-store';
 import { applyCommand, cell } from '../domain/test-fixtures';
-import { dragViewport, rendererFixture } from './test-support';
+import { dragViewport, liftSelection, rendererFixture } from './test-support';
 
 // The chart starts four cells in, so a paste hanging past its top-left edge is still on screen.
 const VIEWPORT: Viewport = { x: -4, y: -4, zoom: 16 };
@@ -195,7 +195,7 @@ describe('cross-pattern paste', () => {
   it('still clamps a floating move inside the chart', async () => {
     const { controller, uiStore } = await layeredFixture(paint(patternA(), [[0, 0, 1], [1, 1, 1]]));
     controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 1 });
-    expect(controller.moveSelection()).toBe(true);
+    expect(liftSelection(controller, { x: 0, y: 0 })).toBe(true);
     dragViewport(controller, uiStore, { x: 1, y: 1 }, { x: -2, y: -2 });
     expect(uiStore.getState().overlay.floatingPaste?.destination).toEqual({ x: 0, y: 0, width: 2, height: 2 });
     dragViewport(controller, uiStore, { x: 1, y: 1 }, { x: 9, y: 9 });

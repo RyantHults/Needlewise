@@ -19,7 +19,7 @@ import { getCanvasMetrics } from './coordinates';
 import { createWorkspaceEditorGateway, type WorkspaceEditorBoundary } from './gateway';
 import { createUiStore } from './ui-store';
 import { applyCommand, commitLayerSurface, createLayeredDocument, specialtyLayer, stitchLayer, cell } from '../domain/test-fixtures';
-import { drag, rendererFixture } from './test-support';
+import { drag, liftSelection, rendererFixture } from './test-support';
 
 /** Bottom to top: stitch 1, specialty 2, stitch 3. */
 function layeredDocument(): LayeredDocument {
@@ -114,7 +114,7 @@ describe('multi-layer move', () => {
     const { session, controller, executed } = fixture(document, 1, [3]);
     expect(session.layerSelection.layerIds).toEqual([1, 3]);
     controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 0 });
-    expect(controller.moveSelection()).toBe(true);
+    expect(liftSelection(controller, { x: 0, y: 0 })).toBe(true);
     drag(controller, { x: 0, y: 0 }, { x: 0, y: 2 });
     expect(controller.confirmFloatingPaste()).toBe(true);
     expect(executed).toHaveLength(1);
@@ -138,7 +138,7 @@ describe('multi-layer move', () => {
     seed(document, 2, backstitch(0, 0, 4, 4));
     const { session, controller, uiStore } = fixture(document, 1, [2]);
     controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 1 });
-    expect(controller.moveSelection()).toBe(true);
+    expect(liftSelection(controller, { x: 0, y: 0 })).toBe(true);
     const floating = uiStore.getState().overlay.floatingPaste!;
     expect(floating.fragment.kind[0]).toBe(CellKind.Full);
     expect(Array.from(floating.backstitches!.ids)).toEqual([...specialtyLayer(session.layeredDocument, 2).backstitches.ids]);
@@ -157,7 +157,7 @@ describe('multi-layer move', () => {
     const { session, controller } = fixture(document, 1, [3]);
     session.setLayerVisibility(3, false);
     controller.setSelection({ x: 0, y: 0 });
-    expect(controller.moveSelection()).toBe(true);
+    expect(liftSelection(controller, { x: 0, y: 0 })).toBe(true);
     drag(controller, { x: 0, y: 0 }, { x: 3, y: 0 });
     expect(controller.confirmFloatingPaste()).toBe(true);
     expect(stitchLayer(session.layeredDocument, 1).kind[3]).toBe(CellKind.Full);
@@ -175,7 +175,7 @@ describe('multi-layer move', () => {
     uiStore.setState({ paletteId: 1 });
     controller.setFocusColor(true);
     controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 1 });
-    expect(controller.moveSelection()).toBe(true);
+    expect(liftSelection(controller, { x: 0, y: 0 })).toBe(true);
     drag(controller, { x: 0, y: 0 }, { x: 0, y: 3 });
     expect(controller.confirmFloatingPaste()).toBe(true);
     expect(stitchLayer(session.layeredDocument, 1).kind[0]).toBe(CellKind.Empty);
@@ -195,7 +195,7 @@ describe('multi-layer move', () => {
     uiStore.setState({ paletteId: 1 });
     controller.setFocusColor(true);
     controller.setSelection({ x: 0, y: 0 });
-    expect(controller.moveSelection()).toBe(true);
+    expect(liftSelection(controller, { x: 0, y: 0 })).toBe(true);
     drag(controller, { x: 0, y: 0 }, { x: 0, y: 2 });
     expect(controller.confirmFloatingPaste()).toBe(false);
     expect(notices).toHaveLength(1);
@@ -209,7 +209,7 @@ describe('multi-layer move', () => {
     seed(document, 1, full(0, 0));
     const { session, controller, uiStore } = fixture(document, 1, [3]);
     controller.setSelection({ x: 0, y: 0 });
-    expect(controller.moveSelection()).toBe(true);
+    expect(liftSelection(controller, { x: 0, y: 0 })).toBe(true);
     session.toggleLayerSelected(2);
     expect(uiStore.getState().overlay.floatingPaste).toBeUndefined();
     expect(controller.getSelection()).toEqual({ x: 0, y: 0, width: 1, height: 1 });
@@ -360,7 +360,7 @@ describe('move source hole', () => {
     seed(document, 1, full(0, 0));
     const { controller, uiStore } = fixture(document, 1);
     controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 0 });
-    expect(controller.moveSelection()).toBe(true);
+    expect(liftSelection(controller, { x: 0, y: 0 })).toBe(true);
     expect(uiStore.getState().overlay.floatingPaste?.sourceHole).toEqual([
       { index: 0, cell: { x: 0, y: 0 }, kind: CellKind.Empty, colors: [0, 0, 0, 0], completed: 0 }
     ]);
@@ -373,7 +373,7 @@ describe('move source hole', () => {
     seed(document, 3, full(0, 0, 2));
     const { controller, uiStore } = fixture(document, 3);
     controller.setSelection({ x: 0, y: 0 });
-    expect(controller.moveSelection()).toBe(true);
+    expect(liftSelection(controller, { x: 0, y: 0 })).toBe(true);
     expect(uiStore.getState().overlay.floatingPaste?.sourceHole).toMatchObject([{ index: 0, kind: CellKind.Full, colors: [1, 0, 0, 0] }]);
     controller.dispose();
   });
@@ -385,7 +385,7 @@ describe('move source hole', () => {
     seed(document, 3, full(0, 0, 2));
     const { controller, uiStore } = fixture(document, 1);
     controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 0 });
-    expect(controller.moveSelection()).toBe(true);
+    expect(liftSelection(controller, { x: 0, y: 0 })).toBe(true);
     expect(uiStore.getState().overlay.floatingPaste?.sourceHole?.map((state) => state.index)).toEqual([1]);
     controller.dispose();
   });
@@ -398,7 +398,7 @@ describe('move source hole', () => {
     uiStore.setState({ paletteId: 1 });
     controller.setFocusColor(true);
     controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 0 });
-    expect(controller.moveSelection()).toBe(true);
+    expect(liftSelection(controller, { x: 0, y: 0 })).toBe(true);
     expect(uiStore.getState().overlay.floatingPaste?.sourceHole?.map((state) => state.index)).toEqual([0]);
     controller.dispose();
   });
@@ -410,7 +410,7 @@ describe('move source hole', () => {
     const { session, controller, uiStore } = fixture(document, 2);
     const inside = specialtyLayer(session.layeredDocument, 2).backstitches.ids[0];
     controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 1 });
-    expect(controller.moveSelection()).toBe(true);
+    expect(liftSelection(controller, { x: 0, y: 0 })).toBe(true);
     const floating = uiStore.getState().overlay.floatingPaste!;
     expect([...floating.liftedBackstitchIds!]).toEqual([inside]);
     expect(Array.from(floating.backstitches!.ids)).toEqual([inside]);
@@ -423,12 +423,12 @@ describe('move source hole', () => {
     seed(document, 1, full(0, 0));
     const { controller, uiStore } = fixture(document, 1);
     controller.setSelection({ x: 0, y: 0 });
-    expect(controller.moveSelection()).toBe(true);
+    expect(liftSelection(controller, { x: 0, y: 0 })).toBe(true);
     expect(uiStore.getState().overlay.floatingPaste?.sourceHole).toHaveLength(1);
     expect(controller.cancelFloatingPaste()).toBe(true);
     expect(uiStore.getState().overlay.floatingPaste).toBeUndefined();
 
-    expect(controller.moveSelection()).toBe(true);
+    expect(liftSelection(controller, { x: 0, y: 0 })).toBe(true);
     const hole = uiStore.getState().overlay.floatingPaste?.sourceHole;
     drag(controller, { x: 0, y: 0 }, { x: 2, y: 0 });
     // A drag only moves the destination, so the hole is the same array.

@@ -430,6 +430,16 @@ export function drag(controller: EditorSurfaceController, from: { x: number; y: 
   controller.handlePointerUp(at(pointerId, to.x, to.y));
 }
 
+/** Select the Move tool and drag out of `cell` and back, which lifts the selection into a floating move that ends where it started. Returns the press result. */
+export function liftSelection(controller: EditorSurfaceController, cell: { x: number; y: number }, pointerId = 1): boolean {
+  controller.setTool({ tool: 'pan' });
+  const pressed = controller.handlePointerDown(at(pointerId, cell.x, cell.y));
+  controller.handlePointerMove(at(pointerId, cell.x + 1, cell.y));
+  controller.handlePointerMove(at(pointerId, cell.x, cell.y));
+  controller.handlePointerUp(at(pointerId, cell.x, cell.y));
+  return pressed;
+}
+
 /** A mouse sample at the center of cell (x, y), reading the zoom and origin from the ui store's viewport. */
 export function atViewport(uiStore: ReturnType<typeof createUiStore>, pointerId: number, x: number, y: number, extra: Partial<PointerSample> = {}): PointerSample {
   const viewport = uiStore.getState().viewport;

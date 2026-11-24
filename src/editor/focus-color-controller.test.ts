@@ -11,7 +11,7 @@ import { FOCUS_COLOR_PROTECTED_HINT } from './contracts';
 import { getCanvasMetrics } from './coordinates';
 import { createWorkspaceEditorGateway, type ActiveLayerId } from './gateway';
 import { createUiStore } from './ui-store';
-import { LayeredTestBoundary, at, layeredDocument, rendererFixture } from './test-support';
+import { LayeredTestBoundary, at, layeredDocument, liftSelection, rendererFixture } from './test-support';
 import { applyCommand, commitLayerSurface, cell } from '../domain/test-fixtures';
 
 
@@ -201,10 +201,9 @@ describe('Focus Color', () => {
     const { controller, colorAt, notices } = fixture(document);
     controller.setTool({ tool: 'select' });
     controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 0 });
-    expect(controller.moveSelection()).toBe(true);
-    // A press right of the floating cell nudges it one cell, onto the blue stitch.
-    controller.handlePointerDown(at(1, 3, 0));
-    controller.handlePointerUp(at(1, 3, 0));
+    expect(liftSelection(controller, { x: 0, y: 0 })).toBe(true);
+    // Dragging the float one cell right lands it on the blue stitch.
+    drag(controller, [[0, 0], [1, 0]]);
     expect(controller.confirmFloatingPaste()).toBe(false);
     expect(notices).toEqual([FOCUS_COLOR_PROTECTED_HINT]);
     expect([colorAt(0, 0), colorAt(1, 0)]).toEqual([1, 2]);
@@ -240,9 +239,8 @@ describe('Focus Color', () => {
     const { controller, backstitches } = fixture(document, 2);
     controller.setTool({ tool: 'select' });
     controller.setSelection({ x: 0, y: 0 }, { x: 1, y: 1 });
-    expect(controller.moveSelection()).toBe(true);
-    controller.handlePointerDown(at(1, 4, 0));
-    controller.handlePointerUp(at(1, 4, 0));
+    expect(liftSelection(controller, { x: 0, y: 0 })).toBe(true);
+    drag(controller, [[0, 0], [1, 0]]);
     expect(controller.confirmFloatingPaste()).toBe(true);
     expect(backstitches()).toEqual({ '4,0-8,0': 1, '0,4-4,4': 2 });
     controller.dispose();

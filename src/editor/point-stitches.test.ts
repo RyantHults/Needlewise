@@ -9,7 +9,7 @@ import { EditorSurfaceController } from './controller';
 import { getCanvasMetrics } from './coordinates';
 import { createWorkspaceEditorGateway } from './gateway';
 import type { PointerSample } from './input';
-import { LayeredTestBoundary, rendererFixture } from './test-support';
+import { LayeredTestBoundary, liftSelection, rendererFixture } from './test-support';
 import { createUiStore } from './ui-store';
 
 const THREAD = 1;
@@ -116,7 +116,7 @@ describe('knots and beads in the editor', () => {
     useTool(controller, { tool: 'select' });
     controller.setSelection({ x: 1, y: 1 });
     controller.setFocusColor(true);
-    expect(controller.moveSelection()).toBe(true);
+    expect(liftSelection(controller, { x: 1, y: 1 })).toBe(true);
     const press = (screenX: number, screenY: number): PointerSample => ({ pointerId: 2, pointerType: 'mouse', screenX, screenY, button: 0, buttons: 1, isPrimary: true });
     controller.handlePointerDown(press(24, 24));
     controller.handlePointerMove(press(40, 24));
@@ -135,7 +135,7 @@ describe('knots and beads in the editor', () => {
     useTool(controller, { tool: 'select' });
     controller.setSelection({ x: 1, y: 1 });
     controller.setFocusColor(true);
-    expect(controller.moveSelection()).toBe(true);
+    expect(liftSelection(controller, { x: 1, y: 1 })).toBe(true);
     const press = (screenX: number, screenY: number): PointerSample => ({ pointerId: 2, pointerType: 'mouse', screenX, screenY, button: 0, buttons: 1, isPrimary: true });
     controller.handlePointerDown(press(24, 24));
     controller.handlePointerMove(press(40, 24));
@@ -176,7 +176,7 @@ describe('knots and beads in the editor', () => {
     expect(points(boundary).map(({ x, y, color }) => ({ x, y, color }))).toContainEqual({ x: 22, y: 6, color: BEAD });
 
     controller.setSelection({ x: 1, y: 1 }, { x: 2, y: 2 });
-    expect(controller.moveSelection()).toBe(true);
+    expect(liftSelection(controller, { x: 1, y: 1 })).toBe(true);
     const press = (screenX: number, screenY: number): PointerSample => ({ pointerId: 2, pointerType: 'mouse', screenX, screenY, button: 0, buttons: 1, isPrimary: true });
     controller.handlePointerDown(press(24, 24));
     controller.handlePointerMove(press(24, 72));

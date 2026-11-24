@@ -28,7 +28,7 @@ const COMPACT_DMC_DEFINITION: CatalogDefinition = {
 };
 
 const f = vi.hoisted(() => ({
-  c: { start: vi.fn(), setMetrics: vi.fn(), setDocument: vi.fn(), dispose: vi.fn(), setBrush: vi.fn(), setTool: vi.fn(), toggleFocusColor: vi.fn(), clearSelection: vi.fn(), setBackstitchMode: vi.fn(), selectPalette: vi.fn(), selectCreatedPalette: vi.fn(), setChartMode: vi.fn(), setThreadView: vi.fn(), setToolBrushSize: vi.fn(), setTouchMovementOnly: vi.fn(), copySelection: vi.fn(), pasteSelection: vi.fn(), moveSelection: vi.fn(), deleteSelection: vi.fn(), handleFocus: vi.fn(), handleKeyDown: vi.fn(() => false), getTraceImage: vi.fn(() => undefined), setTraceImage: vi.fn(), setTraceImageSettings: vi.fn(), clearTraceImage: vi.fn() },
+  c: { start: vi.fn(), setMetrics: vi.fn(), setDocument: vi.fn(), dispose: vi.fn(), setBrush: vi.fn(), setTool: vi.fn(), toggleFocusColor: vi.fn(), clearSelection: vi.fn(), selectPalette: vi.fn(), selectCreatedPalette: vi.fn(), setChartMode: vi.fn(), setThreadView: vi.fn(), setToolBrushSize: vi.fn(), setTouchMovementOnly: vi.fn(), copySelection: vi.fn(), pasteSelection: vi.fn(), deleteSelection: vi.fn(), handleFocus: vi.fn(), handleKeyDown: vi.fn(() => false), getTraceImage: vi.fn(() => undefined), setTraceImage: vi.fn(), setTraceImageSettings: vi.fn(), clearTraceImage: vi.fn() },
   adapter: vi.fn(() => ({ dispose: vi.fn() })),
   r: { dispose: vi.fn() }, resize: undefined as (() => void) | undefined,
   uiState: { mode: 'color', gridVisible: true, overlay: {}, tool: { tool: 'paint' }, paletteId: 1, pickPulse: null, canPaste: false, history: { canUndo: true, canRedo: true }, toolBrushSizes: { full: 1, half: 1, 'three-quarter': 1, eraser: 1 } }, createdUiState: null as unknown,
@@ -578,8 +578,8 @@ describe('EditorSurface', () => {
     const brushDescendant = screen.getByRole('button', { name: 'Stitch' }).querySelector('[data-icon="stitch"]')!;
     expect(adapterOptions.shouldExcludeTarget(brushDescendant, 'keydown')).toBe(true);
     expect(adapterOptions.shouldExcludeTarget(screen.getByRole('button', { name: 'Select' }).querySelector('[data-icon="select"]'), 'keydown')).toBe(true);
-    switchTool({ tool: 'specialty', stitch: 'backstitch', mode: 'move' });
-    expect(adapterOptions.shouldExcludeTarget(screen.getByRole('button', { name: 'Specialty, move mode' }), 'keydown')).toBe(true);
+    switchTool({ tool: 'specialty', stitch: 'backstitch' });
+    expect(adapterOptions.shouldExcludeTarget(screen.getByRole('button', { name: 'Specialty' }), 'keydown')).toBe(true);
     expect(adapterOptions.shouldExcludeTarget(document.querySelector('.canvas-frame'), 'keydown')).toBe(false);
   });
   it('wires the top-level stitch tools', () => { render(<EditorSurface workspace={ws} document={doc} />); f.resize?.(); expect(f.c.setMetrics).toHaveBeenCalled(); fireEvent.click(screen.getByRole('button', { name: 'Stitch' })); expect(f.c.setBrush).toHaveBeenCalledWith({ kind: 'full', paletteId: 1 }); });
@@ -698,31 +698,7 @@ describe('EditorSurface', () => {
       f.uiState.toolBrushSizes = { full: 1, half: 1, 'three-quarter': 1, eraser: 1 };
     }
   });
-  it('chooses a backstitch mode from Tool options and remembers it for plain clicks', () => {
-    f.uiState.tool = { tool: 'specialty', stitch: 'backstitch' } as never;
-    render(<EditorSurface workspace={ws} document={doc} />);
-    const backstitch = screen.getByRole('button', { name: 'Specialty, draw mode' });
-    const group = within(toolOptions()).getByRole('group', { name: 'Backstitch mode' });
-    expect(within(group).getByRole('button', { name: 'Draw' })).toHaveAttribute('aria-pressed', 'true');
-    expect(within(group).getByRole('button', { name: 'Move' })).toHaveAttribute('aria-pressed', 'false');
-    expect(within(group).getByRole('button', { name: 'Move' })).toHaveClass('segmented-option');
-    expect(within(toolOptions()).queryByRole('slider')).not.toBeInTheDocument();
-    fireEvent.click(within(group).getByRole('button', { name: 'Move' }));
-    expect(f.c.setBackstitchMode).toHaveBeenCalledWith('move');
-    f.c.setBackstitchMode.mockClear();
-    fireEvent.click(backstitch);
-    expect(f.c.setBackstitchMode).toHaveBeenCalledWith('move');
-    expect(f.c.setTool).not.toHaveBeenCalled();
-  });
-  it('labels the Specialty button with the current mode and presses that mode in Tool options', () => {
-    f.uiState.tool = { tool: 'specialty', stitch: 'backstitch', mode: 'move' } as never;
-    render(<EditorSurface workspace={ws} document={doc} />);
-    expect(screen.getByRole('button', { name: 'Specialty, move mode' })).toHaveAttribute('aria-pressed', 'true');
-    const group = within(toolOptions()).getByRole('group', { name: 'Backstitch mode' });
-    expect(within(group).getByRole('button', { name: 'Move' })).toHaveAttribute('aria-pressed', 'true');
-    expect(within(group).getByRole('button', { name: 'Draw' })).toHaveAttribute('aria-pressed', 'false');
-  });
-  it('offers Backstitch, French knot and Bead as Specialty stitches and keeps Draw/Move for Backstitch only', () => {
+  it('offers Backstitch, French knot and Bead as Specialty stitches', () => {
     f.uiState.tool = { tool: 'specialty', stitch: 'backstitch' } as never;
     render(<EditorSurface workspace={ws} document={doc} />);
     const stitches = within(toolOptions()).getByRole('group', { name: 'Specialty stitch' });
@@ -734,7 +710,6 @@ describe('EditorSurface', () => {
     const knotStitches = within(toolOptions()).getByRole('group', { name: 'Specialty stitch' });
     expect(within(knotStitches).getByRole('button', { name: 'French knot' })).toHaveAttribute('aria-pressed', 'true');
     expect(within(knotStitches).getByRole('button', { name: 'Backstitch' })).toHaveAttribute('aria-pressed', 'false');
-    expect(within(toolOptions()).queryByRole('group', { name: 'Backstitch mode' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Specialty' })).toHaveAttribute('aria-pressed', 'true');
 
     fireEvent.click(within(knotStitches).getByRole('button', { name: 'Bead' }));
@@ -747,7 +722,6 @@ describe('EditorSurface', () => {
     f.c.setTool.mockClear();
     fireEvent.click(screen.getByRole('button', { name: 'Specialty' }));
     expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'specialty', stitch: 'bead' });
-    expect(f.c.setBackstitchMode).not.toHaveBeenCalled();
   });
   it('disables the Specialty tool on a stitch layer', () => {
     (f.uiState as { activeLayer?: unknown }).activeLayer = { id: 1, kind: 'stitch', visible: true };
@@ -755,7 +729,6 @@ describe('EditorSurface', () => {
     const specialty = screen.getByRole('button', { name: 'Specialty' });
     expect(specialty).toHaveAttribute('aria-disabled', 'true');
     fireEvent.click(specialty);
-    expect(f.c.setBackstitchMode).not.toHaveBeenCalled();
     expect(f.c.setTool).not.toHaveBeenCalled();
   });
   it('adds a Mill Hill bead from the rail in Bead mode and shows it among the beads', () => {
@@ -840,7 +813,7 @@ describe('EditorSurface', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     const rail = within(screen.getByRole('navigation', { name: 'Editor sections' }));
     expect(rail.getAllByRole('button').map((button) => button.getAttribute('aria-label'))).toEqual([
-      'Pan', 'Select', 'Stitch',
+      'Move', 'Select', 'Stitch',
       'Shape', 'Specialty', 'Eraser', 'Fill', 'Eyedropper',
     ]);
   });
@@ -1006,19 +979,19 @@ describe('EditorSurface', () => {
     });
   });
   const selectionActions = () => within(toolOptions()).getByRole('group', { name: 'Selection actions' });
-  it.each([{ tool: 'select', shape: 'rectangle' }, { tool: 'select', shape: 'oval' }, { tool: 'lasso' }] as const)('offers Copy, Paste, Move and Delete after the Selection shape group for %j', (tool) => {
+  it.each([{ tool: 'select', shape: 'rectangle' }, { tool: 'select', shape: 'oval' }, { tool: 'lasso' }] as const)('offers Copy, Paste and Delete after the Selection shape group for %j', (tool) => {
     f.uiState.tool = tool as never;
     render(<EditorSurface workspace={ws} document={doc} />);
     const group = selectionActions();
     const items = within(group).getAllByRole('button');
-    expect(items.map((item) => item.textContent)).toEqual(['Copy', 'Paste', 'Move', 'Delete']);
-    expect(items.map((item) => item.getAttribute('aria-label'))).toEqual(['Copy selection', 'Paste selection', 'Move selection', 'Delete selection']);
+    expect(items.map((item) => item.textContent)).toEqual(['Copy', 'Paste', 'Delete']);
+    expect(items.map((item) => item.getAttribute('aria-label'))).toEqual(['Copy selection', 'Paste selection', 'Delete selection']);
     for (const item of items) { expect(item).toHaveClass('tool-option-button'); expect(item).toHaveAttribute('type', 'button'); }
     const shapes = within(toolOptions()).getByRole('group', { name: 'Selection shape' });
     expect(shapes.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
   it.each([
-    { tool: 'paint', brush: { kind: 'full', paletteId: 1 } }, { tool: 'eraser' }, { tool: 'specialty', stitch: 'backstitch', mode: 'draw' }, { tool: 'shape', shape: 'triangle' }, { tool: 'pan' },
+    { tool: 'paint', brush: { kind: 'full', paletteId: 1 } }, { tool: 'eraser' }, { tool: 'specialty', stitch: 'backstitch' }, { tool: 'shape', shape: 'triangle' }, { tool: 'pan' },
   ] as const)('shows no Selection actions for %j', (tool) => {
     f.uiState.tool = tool as never;
     f.uiState.overlay = { selection: { x: 1, y: 1, width: 2, height: 2 } };
@@ -1070,22 +1043,22 @@ describe('EditorSurface', () => {
       vi.useRealTimers();
     }
   });
-  it('disables Copy, Move and Delete without a selection and Paste without a clipboard', () => {
+  it('disables Copy and Delete without a selection and Paste without a clipboard', () => {
     f.uiState.tool = { tool: 'select', shape: 'rectangle' } as never;
     render(<EditorSurface workspace={ws} document={doc} />);
     const button = (name: string) => within(selectionActions()).getByRole('button', { name });
-    for (const name of ['Copy selection', 'Paste selection', 'Move selection', 'Delete selection']) expect(button(name)).toBeDisabled();
+    for (const name of ['Copy selection', 'Paste selection', 'Delete selection']) expect(button(name)).toBeDisabled();
     fireEvent.click(button('Copy selection'));
     expect(f.c.copySelection).not.toHaveBeenCalled();
     act(() => { f.uiState.overlay = { selection: { x: 1, y: 1, width: 2, height: 2 } }; f.uiListener?.({ ...f.uiState }); });
-    for (const name of ['Copy selection', 'Move selection', 'Delete selection']) expect(button(name)).toBeEnabled();
+    for (const name of ['Copy selection', 'Delete selection']) expect(button(name)).toBeEnabled();
     expect(button('Paste selection')).toBeDisabled();
     act(() => { f.uiState.overlay = {}; f.uiState.canPaste = true; f.uiListener?.({ ...f.uiState }); });
     expect(button('Paste selection')).toBeEnabled();
-    for (const name of ['Copy selection', 'Move selection', 'Delete selection']) expect(button(name)).toBeDisabled();
+    for (const name of ['Copy selection', 'Delete selection']) expect(button(name)).toBeDisabled();
   });
   it.each([
-    ['Copy selection', 'copySelection'], ['Paste selection', 'pasteSelection'], ['Move selection', 'moveSelection'], ['Delete selection', 'deleteSelection'],
+    ['Copy selection', 'copySelection'], ['Paste selection', 'pasteSelection'], ['Delete selection', 'deleteSelection'],
   ] as const)('runs %s from Tool options and returns focus to the canvas', async (name, method) => {
     f.uiState.tool = { tool: 'lasso' } as never;
     f.uiState.overlay = { selection: { x: 1, y: 1, width: 2, height: 2 } };
@@ -1095,7 +1068,7 @@ describe('EditorSurface', () => {
     button.focus();
     fireEvent.click(button);
     expect(f.c[method]).toHaveBeenCalledOnce();
-    for (const other of ['copySelection', 'pasteSelection', 'moveSelection', 'deleteSelection'] as const) if (other !== method) expect(f.c[other]).not.toHaveBeenCalled();
+    for (const other of ['copySelection', 'pasteSelection', 'deleteSelection'] as const) if (other !== method) expect(f.c[other]).not.toHaveBeenCalled();
     expect(f.c.setTool).not.toHaveBeenCalled();
     await waitFor(() => expect(document.activeElement).toBe(document.querySelector('.canvas-frame')));
   });
@@ -1118,7 +1091,7 @@ describe('EditorSurface', () => {
   it('leaves the Stitch button unpressed for other tools', () => {
     f.uiState.tool = { tool: 'specialty', stitch: 'backstitch' } as never;
     render(<EditorSurface workspace={ws} document={doc} />);
-    expect(screen.getByRole('button', { name: 'Specialty, draw mode' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Specialty' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', { name: 'Stitch' })).toHaveAttribute('aria-pressed', 'false');
     expect(within(toolOptions()).queryByRole('group', { name: 'Stitch type' })).not.toBeInTheDocument();
   });
@@ -1194,7 +1167,7 @@ describe('EditorSurface', () => {
     fireEvent.click(within(screen.getByRole('dialog', { name: 'Export pattern' })).getByRole('button', { name: 'Close export' }));
     expect(screen.queryByRole('dialog', { name: 'Export pattern' })).not.toBeInTheDocument();
   });
-  it.each([['Pan', { tool: 'pan' }], ['Fill', { tool: 'fill' }], ['Eyedropper', { tool: 'eyedropper' }]] as const)('renders no Tool options section for %s', (name, tool) => {
+  it.each([['Move', { tool: 'pan' }], ['Fill', { tool: 'fill' }], ['Eyedropper', { tool: 'eyedropper' }]] as const)('renders no Tool options section for %s', (name, tool) => {
     f.uiState.tool = tool as never;
     render(<EditorSurface workspace={ws} document={doc} />);
     expect(toolOptions()).toBeNull();
@@ -1212,7 +1185,7 @@ describe('EditorSurface', () => {
     [{ tool: 'select', shape: 'oval' }, 'Select'],
     [{ tool: 'lasso' }, 'Select'],
     [{ tool: 'shape', shape: 'triangle' }, 'Shape'],
-    [{ tool: 'specialty', stitch: 'backstitch', mode: 'draw' }, 'Specialty'],
+    [{ tool: 'specialty', stitch: 'backstitch' }, 'Specialty'],
     [{ tool: 'eraser' }, 'Eraser'],
     [{ tool: 'canvas-brush' }, 'Canvas brush'],
   ] as const)('names the Tool options section after %j', (tool, name) => {
@@ -1228,7 +1201,7 @@ describe('EditorSurface', () => {
     render(<EditorSurface workspace={ws} document={doc} />);
     const heading = () => within(toolOptions()).getByRole('heading', { level: 3 });
     expect(heading()).toHaveTextContent('Stitch');
-    for (const [tool, name] of [[{ tool: 'lasso' }, 'Select'], [{ tool: 'specialty', stitch: 'backstitch', mode: 'move' }, 'Specialty']] as const) {
+    for (const [tool, name] of [[{ tool: 'lasso' }, 'Select'], [{ tool: 'specialty', stitch: 'backstitch' }, 'Specialty']] as const) {
       switchTool(tool);
       expect(heading()).toHaveTextContent(name);
       expect(screen.getByRole('region', { name })).toBe(toolOptions());
@@ -1251,12 +1224,11 @@ describe('EditorSurface', () => {
     switchTool({ tool: 'paint', brush: { kind: 'half', paletteId: 1 } });
     expect(within(toolOptions()).getByRole('group', { name: 'Half stitch direction' })).toBeInTheDocument();
     expect(within(toolOptions()).getByRole('slider', { name: 'Half stitch brush size' })).toBeInTheDocument();
-    switchTool({ tool: 'specialty', stitch: 'backstitch', mode: 'draw' });
-    expect(within(toolOptions()).getByRole('group', { name: 'Backstitch mode' })).toBeInTheDocument();
+    switchTool({ tool: 'specialty', stitch: 'backstitch' });
+    expect(within(toolOptions()).getByRole('group', { name: 'Specialty stitch' })).toBeInTheDocument();
     expect(within(toolOptions()).queryByRole('slider')).not.toBeInTheDocument();
     switchTool({ tool: 'shape', shape: 'triangle' });
     expect(within(toolOptions()).getByRole('group', { name: 'Shape' })).toBeInTheDocument();
-    expect(within(toolOptions()).queryByRole('group', { name: 'Backstitch mode' })).not.toBeInTheDocument();
     switchTool({ tool: 'select', shape: 'rectangle' });
     expect(within(toolOptions()).getByRole('group', { name: 'Selection shape' })).toBeInTheDocument();
     expect(within(toolOptions()).queryByRole('group', { name: 'Stitch type' })).not.toBeInTheDocument();
@@ -1283,7 +1255,7 @@ describe('EditorSurface', () => {
     expect(fill).toHaveAttribute('aria-pressed', 'true');
     expect(fill.querySelector('[data-icon="paint-bucket"]')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Select' }).querySelector('[data-icon="select"]')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Pan' })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByRole('button', { name: 'Move' })).toHaveAttribute('aria-pressed', 'false');
     expect(screen.getByRole('button', { name: 'Eraser' })).toHaveAttribute('aria-pressed', 'false');
     expect(screen.getByRole('button', { name: 'Stitch' })).toHaveAttribute('aria-pressed', 'false');
   });
@@ -2357,7 +2329,7 @@ describe('EditorSurface layers', () => {
     for (const name of ['Select', 'Stitch', 'Shape', 'Specialty', 'Eraser', 'Fill']) {
       expect(screen.getByRole('button', { name })).toHaveAttribute('title', 'Show this layer to edit it.');
     }
-    for (const name of ['Pan', 'Eyedropper']) expect(screen.getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
+    for (const name of ['Move', 'Eyedropper']) expect(screen.getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
   });
 
   it('shows controller notices such as paste routing as a toast', () => {
@@ -2413,7 +2385,7 @@ describe('EditorSurface on the Canvas layer', () => {
     onCanvas('advanced');
     f.uiState.tool = { tool: 'canvas-brush' } as never;
     render(<EditorSurface workspace={ws} document={doc} />);
-    expect(stitchRail.map((entry) => entry.name)).toEqual(['Pan', 'Select', 'Stitch', 'Shape', 'Specialty', 'Eraser', 'Fill', 'Eyedropper']);
+    expect(stitchRail.map((entry) => entry.name)).toEqual(['Move', 'Select', 'Stitch', 'Shape', 'Specialty', 'Eraser', 'Fill', 'Eyedropper']);
     expect(railSnapshot()).toEqual(stitchRail);
     expect(document.querySelector('[data-icon="canvas-brush"]')).toBeNull();
 
@@ -2450,7 +2422,7 @@ describe('EditorSurface on the Canvas layer', () => {
     expect(f.c.setToolBrushSize).toHaveBeenCalledWith('eraser', 3);
     fireEvent.click(eraser);
     expect(f.c.setTool).toHaveBeenCalledWith({ tool: 'eraser' });
-    for (const name of ['Select', 'Pan']) expect(screen.getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
+    for (const name of ['Select', 'Move']) expect(screen.getByRole('button', { name })).not.toHaveAttribute('aria-disabled');
     expect(screen.queryByRole('group', { name: 'Resize canvas' })).not.toBeInTheDocument();
   });
 
@@ -2483,7 +2455,7 @@ describe('EditorSurface on the Canvas layer', () => {
     try {
       render(<EditorSurface workspace={ws} document={doc} />);
       expect(screen.queryByRole('group', { name: 'Resize canvas' })).not.toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Pan' })).not.toHaveAttribute('aria-disabled');
+      expect(screen.getByRole('button', { name: 'Move' })).not.toHaveAttribute('aria-disabled');
       for (const name of ['Select', 'Stitch', 'Eraser', 'Fill', 'Eyedropper']) {
         expect(screen.getByRole('button', { name })).toHaveAttribute('title', 'Turn on Crop to edit the canvas.');
       }
@@ -2524,7 +2496,7 @@ describe('EditorSurface on the Canvas layer', () => {
     f.uiState.tool = { tool: 'pan' } as never;
     render(<EditorSurface workspace={ws} document={doc} />);
     expect(screen.getByRole('button', { name: 'Stitch' })).toHaveAttribute('aria-disabled', 'true');
-    expect(screen.getByRole('button', { name: 'Pan' })).not.toHaveAttribute('aria-disabled');
+    expect(screen.getByRole('button', { name: 'Move' })).not.toHaveAttribute('aria-disabled');
     for (const name of ['Select', 'Eraser', 'Fill', 'Eyedropper']) {
       expect(screen.getByRole('button', { name })).toHaveAttribute('title', 'Switch the canvas to Advanced to use this tool.');
     }
